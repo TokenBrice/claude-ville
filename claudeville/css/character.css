@@ -1,0 +1,21 @@
+/* 캐릭터 모드 전용 스타일 */
+.content__character {
+    background: #0a0a0f;
+}
+
+#worldCanvas {
+    background: #0a0a0f;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+}
+
+#minimapCanvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    opacity: 0.85;
+}
+
+.content__minimap:hover {
+    opacity: 1;
+    border-color: rgba(232, 212, 77, 0.5);
+}

@@ -1,0 +1,361 @@
+/* ═══ 대시보드 모드 ═══ */
+/* .content__dashboard 기본 레이아웃은 layout.css에서 관리 */
+
+/* 그리드 레이아웃 - 섹션 기반 */
+.dashboard__grid {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+/* ═══ 프로젝트 섹션 ═══ */
+.dashboard__section {
+    background: rgba(20, 20, 35, 0.5);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.dashboard__section-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: rgba(26, 26, 46, 0.6);
+    border-left: 3px solid transparent;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.dashboard__section-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
+    flex-shrink: 0;
+}
+
+.dashboard__section-name {
+    font-size: 12px;
+    font-weight: bold;
+    color: #eee;
+    font-family: 'Press Start 2P', monospace;
+}
+
+.dashboard__section-path {
+    font-size: 10px;
+    color: #666;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dashboard__section-count {
+    font-size: 10px;
+    color: #8b8b9e;
+    background: rgba(255, 255, 255, 0.06);
+    padding: 2px 8px;
+    border-radius: 3px;
+    flex-shrink: 0;
+}
+
+.dashboard__section-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
+    gap: 12px;
+    padding: 12px;
+    align-content: start;
+}
+
+/* 빈 상태 */
+.dashboard__empty {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    height: 100%;
+}
+
+.dashboard__empty--visible {
+    display: flex;
+}
+
+.dashboard__empty-icon {
+    font-size: 36px;
+    color: #8b8b9e;
+    font-family: 'Press Start 2P', monospace;
+}
+
+.dashboard__empty-text {
+    font-size: 13px;
+    color: #e8d44d;
+    letter-spacing: 3px;
+    font-family: 'Press Start 2P', monospace;
+}
+
+.dashboard__empty-sub {
+    font-size: 10px;
+    color: #8b8b9e;
+    letter-spacing: 1px;
+    font-family: 'Press Start 2P', monospace;
+}
+
+/* ═══ 에이전트 카드 ═══ */
+.dash-card {
+    background: rgba(15, 15, 25, 0.95);
+    border: 1px solid rgba(232, 212, 77, 0.15);
+    border-radius: 8px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+
+.dash-card:hover {
+    border-color: rgba(232, 212, 77, 0.4);
+}
+
+.dash-card--working { border-left: 3px solid #4ade80; }
+.dash-card--idle    { border-left: 3px solid #60a5fa; }
+.dash-card--waiting { border-left: 3px solid #f97316; }
+
+/* ─ 카드 헤더 ─ */
+.dash-card__header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 12px;
+    background: rgba(26, 26, 46, 0.6);
+    border-bottom: 1px solid rgba(232, 212, 77, 0.08);
+}
+
+.dash-card__avatar {
+    width: 36px;
+    height: 48px;
+    flex-shrink: 0;
+}
+
+.dash-card__avatar canvas {
+    display: block;
+    image-rendering: pixelated;
+}
+
+.dash-card__info {
+    flex: 1;
+    min-width: 0;
+}
+
+.dash-card__name {
+    font-size: 12px;
+    font-weight: bold;
+    color: #e8d44d;
+    font-family: 'Press Start 2P', monospace;
+}
+
+.dash-card__meta {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 4px;
+    font-size: 10px;
+    color: #8b8b9e;
+}
+
+.dash-card__model {
+    background: rgba(74, 158, 255, 0.15);
+    color: #4a9eff;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+}
+
+.dash-card__role {
+    color: #8b8b9e;
+    font-size: 10px;
+}
+
+.dash-card__status {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 10px;
+    font-weight: bold;
+    text-transform: uppercase;
+    flex-shrink: 0;
+}
+
+.dash-card__status-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+}
+
+.dash-card__status--working .dash-card__status-dot { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+.dash-card__status--idle .dash-card__status-dot    { background: #60a5fa; }
+.dash-card__status--waiting .dash-card__status-dot { background: #f97316; animation: pulse-dot 1.5s infinite; }
+
+.dash-card__status--working { color: #4ade80; }
+.dash-card__status--idle    { color: #60a5fa; }
+.dash-card__status--waiting { color: #f97316; }
+
+@keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+}
+
+/* ─ 현재 활동 ─ */
+.dash-card__activity {
+    padding: 8px 12px;
+    border-bottom: 1px solid rgba(232, 212, 77, 0.08);
+}
+
+.dash-card__current-tool {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: rgba(74, 222, 128, 0.08);
+    border: 1px solid rgba(74, 222, 128, 0.2);
+    border-radius: 6px;
+}
+
+.dash-card__current-tool--idle {
+    background: rgba(96, 165, 250, 0.05);
+    border-color: rgba(96, 165, 250, 0.1);
+}
+
+.dash-card__tool-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+    width: 20px;
+    text-align: center;
+}
+
+.dash-card__tool-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.dash-card__tool-name {
+    font-size: 11px;
+    font-weight: bold;
+    color: #eee;
+}
+
+.dash-card__tool-detail {
+    font-size: 10px;
+    color: #8b8b9e;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    margin-top: 2px;
+}
+
+.dash-card__message {
+    margin-top: 6px;
+    padding: 5px 8px;
+    font-size: 10px;
+    color: #b0b0c0;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 4px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-style: italic;
+}
+
+/* ─ 도구 히스토리 ─ */
+.dash-card__tools {
+    padding: 6px 12px 10px;
+    max-height: 180px;
+    overflow-y: auto;
+}
+
+.dash-card__tools::-webkit-scrollbar {
+    width: 4px;
+}
+
+.dash-card__tools::-webkit-scrollbar-thumb {
+    background: rgba(232, 212, 77, 0.2);
+    border-radius: 2px;
+}
+
+.dash-card__tools-title {
+    font-size: 9px;
+    color: #8b8b9e;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    margin-bottom: 6px;
+}
+
+.dash-card__tool-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.dash-card__tool-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 6px;
+    border-radius: 3px;
+    transition: background 0.15s;
+}
+
+.dash-card__tool-item:hover {
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.dash-card__tool-item-icon {
+    width: 16px;
+    text-align: center;
+    font-size: 11px;
+    flex-shrink: 0;
+}
+
+.dash-card__tool-item-name {
+    font-size: 10px;
+    color: #ccc;
+    flex-shrink: 0;
+    min-width: 50px;
+}
+
+.dash-card__tool-item-detail {
+    font-size: 9px;
+    color: #666;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+}
+
+/* ─ 도구 카테고리 색상 ─ */
+.tool-cat--read    { color: #60a5fa; }
+.tool-cat--write   { color: #f59e0b; }
+.tool-cat--exec    { color: #ef4444; }
+.tool-cat--search  { color: #a78bfa; }
+.tool-cat--task    { color: #34d399; }
+.tool-cat--other   { color: #8b8b9e; }
+
+/* ─ 로딩 중 스피너 ─ */
+.dash-card__loading {
+    padding: 12px;
+    text-align: center;
+    color: #8b8b9e;
+    font-size: 10px;
+}
+
+.dash-card__loading-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border: 2px solid rgba(232, 212, 77, 0.2);
+    border-top-color: #e8d44d;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+    margin-right: 6px;
+    vertical-align: middle;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}

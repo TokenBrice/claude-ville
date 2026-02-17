@@ -1,0 +1,235 @@
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+}
+
+.modal {
+    background: rgba(15, 15, 25, 0.98);
+    border: 2px solid rgba(232, 212, 77, 0.3);
+    border-radius: 6px;
+    width: 90%;
+    max-width: 500px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.modal__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(232, 212, 77, 0.15);
+}
+
+.modal__title {
+    font-size: 12px;
+    color: #e8d44d;
+    letter-spacing: 1px;
+}
+
+.modal__close {
+    font-size: 11px;
+    color: #8b8b9e;
+    padding: 4px 8px;
+    border: 1px solid rgba(139, 139, 158, 0.3);
+    border-radius: 3px;
+    transition: all 0.15s;
+}
+
+.modal__close:hover {
+    color: #ef4444;
+    border-color: #ef4444;
+}
+
+.modal__content {
+    padding: 16px;
+    overflow-y: auto;
+    font-size: 11px;
+    color: #8b8b9e;
+    line-height: 1.8;
+}
+
+/* 에이전트 상세 패널 (하단 - flex 배치) */
+.agent-detail {
+    flex-shrink: 0;
+    background: rgba(15, 15, 25, 0.98);
+    border-top: 2px solid rgba(232, 212, 77, 0.3);
+    max-height: 200px;
+}
+
+.agent-detail__header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 16px;
+    border-bottom: 1px solid rgba(232, 212, 77, 0.1);
+}
+
+.agent-detail__name {
+    font-size: 11px;
+    color: #e8d44d;
+}
+
+.agent-detail__status {
+    font-size: 8px;
+    padding: 2px 8px;
+    border-radius: 3px;
+}
+
+.agent-detail__close {
+    margin-left: auto;
+    font-size: 10px;
+    color: #8b8b9e;
+    padding: 4px 8px;
+    border: 1px solid rgba(139, 139, 158, 0.3);
+    border-radius: 3px;
+}
+
+.agent-detail__close:hover {
+    color: #ef4444;
+    border-color: #ef4444;
+}
+
+.agent-detail__body {
+    padding: 10px 16px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 16px;
+}
+
+.agent-detail__row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.agent-detail__label {
+    font-size: 7px;
+    color: #8b8b9e;
+    letter-spacing: 1px;
+}
+
+.agent-detail__value {
+    font-size: 9px;
+    color: #e8d44d;
+}
+
+.agent-detail__message {
+    width: 100%;
+    font-size: 8px;
+    color: #8b8b9e;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 3px;
+    max-height: 40px;
+    overflow-y: auto;
+    line-height: 1.6;
+}
+
+/* 토스트 */
+.toast-container {
+    position: fixed;
+    top: 64px;
+    right: 16px;
+    z-index: 2000;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    pointer-events: none;
+}
+
+.toast {
+    padding: 10px 16px;
+    border-radius: 4px;
+    font-size: 9px;
+    border: 1px solid;
+    background: rgba(15, 15, 25, 0.95);
+    pointer-events: auto;
+    animation: toast-in 0.3s ease;
+    max-width: 320px;
+    line-height: 1.6;
+}
+
+.toast--info {
+    color: #60a5fa;
+    border-color: rgba(96, 165, 250, 0.4);
+}
+
+.toast--success {
+    color: #4ade80;
+    border-color: rgba(74, 222, 128, 0.4);
+}
+
+.toast--warning {
+    color: #f97316;
+    border-color: rgba(249, 115, 22, 0.4);
+}
+
+.toast--fadeout {
+    animation: toast-out 0.3s ease forwards;
+}
+
+@keyframes toast-in {
+    from { opacity: 0; transform: translateX(20px); }
+    to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes toast-out {
+    from { opacity: 1; transform: translateX(0); }
+    to { opacity: 0; transform: translateX(20px); }
+}
+
+/* 설정 폼 */
+.settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+}
+
+.settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.settings-label {
+    font-size: 11px;
+    color: #e8d44d;
+    letter-spacing: 1px;
+}
+
+.settings-lang-btns {
+    display: flex;
+    gap: 6px;
+}
+
+.settings-lang-btn {
+    font-size: 10px;
+    padding: 6px 14px;
+    border: 1px solid rgba(232, 212, 77, 0.3);
+    border-radius: 4px;
+    color: #8b8b9e;
+    background: transparent;
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: 'Press Start 2P', monospace;
+}
+
+.settings-lang-btn:hover {
+    color: #e8d44d;
+    border-color: rgba(232, 212, 77, 0.6);
+}
+
+.settings-lang-btn--active {
+    color: #0a0a0f;
+    background: #e8d44d;
+    border-color: #e8d44d;
+}

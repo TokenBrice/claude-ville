@@ -1,0 +1,15 @@
+export const THEME = {
+    bg: '#0a0a0f',
+    panel: 'rgba(15, 15, 25, 0.95)',
+    text: '#e8d44d',
+    textSecondary: '#8b8b9e',
+    accent: '#4a9eff',
+    working: '#4ade80',
+    idle: '#60a5fa',
+    waiting: '#f97316',
+    error: '#ef4444',
+    border: 'rgba(232, 212, 77, 0.3)',
+    grass: ['#2d5a27', '#3a6b35', '#4a7c43'],
+    path: ['#6b5b3a', '#7a6a49'],
+    water: ['#1a4a6b', '#1e5580'],
+};
