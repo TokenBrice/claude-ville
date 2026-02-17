@@ -3,10 +3,10 @@
  * 데이터 소스: ~/.codex/
  *
  * 세션 롤아웃 포맷 (JSONL):
- *   {"type":"session_meta","timestamp":"...","model":"gpt-4o","cwd":"/path"}
- *   {"type":"response_item","item":{"type":"function_call","name":"shell","arguments":"ls"}}
- *   {"type":"response_item","item":{"type":"message","role":"assistant","content":[...]}}
- *   {"type":"event_msg","msg":{"type":"turn_complete","usage":{...}}}
+ *   {"type":"session_meta","payload":{"id":"...","cwd":"/path","cli_version":"..."}}
+ *   {"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"ls"}}
+ *   {"type":"response_item","payload":{"type":"message","role":"assistant","content":[...]}}
+ *   {"type":"event_msg","payload":{"type":"turn_complete","usage":{...}}}
  */
 const fs = require('fs');
 const path = require('path');
@@ -17,12 +17,13 @@ const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
 
 // ─── 유틸 ─────────────────────────────────────────────
 
-function readLastLines(filePath, lineCount) {
+function readLines(filePath, { from = 'end', count = 50 } = {}) {
   try {
     if (!fs.existsSync(filePath)) return [];
     const content = fs.readFileSync(filePath, 'utf-8');
     const lines = content.trim().split('\n');
-    return lines.slice(-lineCount);
+    if (from === 'start') return lines.slice(0, count);
+    return lines.slice(-count);
   } catch {
     return [];
   }
@@ -41,6 +42,7 @@ function parseJsonLines(lines) {
 
 /**
  * Codex 롤아웃 JSONL에서 세션 메타/도구/메시지 추출
+ * 실제 포맷: 모든 데이터가 entry.payload 안에 있음
  */
 function parseRollout(filePath) {
   const detail = {
@@ -51,39 +53,50 @@ function parseRollout(filePath) {
     lastMessage: null,
   };
 
-  const lines = readLastLines(filePath, 50);
-  const entries = parseJsonLines(lines);
+  // session_meta는 파일 첫 줄에 있음 → 먼저 읽기
+  const firstLines = readLines(filePath, { from: 'start', count: 5 });
+  const firstEntries = parseJsonLines(firstLines);
+  for (const entry of firstEntries) {
+    if (entry.type === 'session_meta' && entry.payload) {
+      detail.model = entry.payload.model || null;
+      detail.project = entry.payload.cwd || null;
+      break;
+    }
+  }
+
+  // 최근 도구/메시지는 파일 끝에서 읽기
+  const lastLines = readLines(filePath, { from: 'end', count: 50 });
+  const entries = parseJsonLines(lastLines);
 
   for (const entry of entries) {
-    // 세션 메타데이터
-    if (entry.type === 'session_meta') {
-      if (!detail.model && entry.model) detail.model = entry.model;
-      if (!detail.project && entry.cwd) detail.project = entry.cwd;
-    }
+    const payload = entry.payload;
+    if (!payload) continue;
 
-    // 응답 항목
-    if (entry.type === 'response_item' && entry.item) {
-      const item = entry.item;
-
+    // response_item
+    if (entry.type === 'response_item') {
       // 도구 사용 (function_call)
-      if (!detail.lastTool && (item.type === 'function_call' || item.type === 'command_execution')) {
-        detail.lastTool = item.name || item.type;
-        if (item.arguments) {
-          detail.lastToolInput = (typeof item.arguments === 'string'
-            ? item.arguments : JSON.stringify(item.arguments)
+      if (!detail.lastTool && (payload.type === 'function_call' || payload.type === 'command_execution')) {
+        detail.lastTool = payload.name || payload.type;
+        if (payload.arguments) {
+          detail.lastToolInput = (typeof payload.arguments === 'string'
+            ? payload.arguments : JSON.stringify(payload.arguments)
           ).substring(0, 60);
-        } else if (item.command) {
-          detail.lastToolInput = item.command.substring(0, 60);
+        } else if (payload.command) {
+          detail.lastToolInput = payload.command.substring(0, 60);
         }
       }
 
-      // 텍스트 메시지
-      if (!detail.lastMessage && item.type === 'message' && item.role === 'assistant') {
-        const content = item.content;
+      // 텍스트 메시지 (assistant)
+      if (!detail.lastMessage && payload.type === 'message' && payload.role === 'assistant') {
+        const content = payload.content;
         if (typeof content === 'string') {
           detail.lastMessage = content.substring(0, 80);
         } else if (Array.isArray(content)) {
           for (const block of content) {
+            if (block.type === 'output_text' && block.text) {
+              detail.lastMessage = block.text.trim().substring(0, 80);
+              break;
+            }
             if (block.type === 'text' && block.text) {
               detail.lastMessage = block.text.trim().substring(0, 80);
               break;
@@ -91,24 +104,14 @@ function parseRollout(filePath) {
           }
         }
       }
-
-      // agent_message (Codex exec 모드)
-      if (!detail.lastMessage && item.type === 'agent_message' && item.text) {
-        detail.lastMessage = item.text.substring(0, 80);
-      }
     }
-  }
 
-  // 메타가 맨 앞에 있을 수 있으니 전체에서도 찾기
-  if (!detail.model || !detail.project) {
-    const allLines = readLastLines(filePath, 5);
-    const firstEntries = parseJsonLines(allLines);
-    for (const entry of firstEntries) {
-      if (entry.type === 'session_meta') {
-        if (!detail.model && entry.model) detail.model = entry.model;
-        if (!detail.project && entry.cwd) detail.project = entry.cwd;
-        break;
-      }
+    // model이 없을 경우 turn_context 또는 event_msg에서 추출 시도
+    if (!detail.model && entry.type === 'turn_context' && payload.model) {
+      detail.model = payload.model;
+    }
+    if (!detail.model && entry.type === 'event_msg' && payload.model) {
+      detail.model = payload.model;
     }
   }
 
@@ -121,24 +124,24 @@ function parseRollout(filePath) {
 function getToolHistory(filePath, maxItems = 15) {
   const tools = [];
   try {
-    const lines = readLastLines(filePath, 100);
+    const lines = readLines(filePath, { from: 'end', count: 100 });
     const entries = parseJsonLines(lines);
 
     for (const entry of entries) {
-      if (entry.type !== 'response_item' || !entry.item) continue;
-      const item = entry.item;
+      if (entry.type !== 'response_item' || !entry.payload) continue;
+      const payload = entry.payload;
 
-      if (item.type === 'function_call' || item.type === 'command_execution') {
+      if (payload.type === 'function_call' || payload.type === 'command_execution') {
         let detail = '';
-        if (item.arguments) {
-          detail = (typeof item.arguments === 'string'
-            ? item.arguments : JSON.stringify(item.arguments)
+        if (payload.arguments) {
+          detail = (typeof payload.arguments === 'string'
+            ? payload.arguments : JSON.stringify(payload.arguments)
           ).substring(0, 80);
-        } else if (item.command) {
-          detail = item.command.substring(0, 80);
+        } else if (payload.command) {
+          detail = payload.command.substring(0, 80);
         }
         tools.push({
-          tool: item.name || item.type,
+          tool: payload.name || payload.type,
           detail,
           ts: entry.timestamp ? new Date(entry.timestamp).getTime() : 0,
         });
@@ -154,23 +157,28 @@ function getToolHistory(filePath, maxItems = 15) {
 function getRecentMessages(filePath, maxItems = 5) {
   const messages = [];
   try {
-    const lines = readLastLines(filePath, 60);
+    const lines = readLines(filePath, { from: 'end', count: 60 });
     const entries = parseJsonLines(lines);
 
     for (const entry of entries) {
-      if (entry.type !== 'response_item' || !entry.item) continue;
-      const item = entry.item;
-      if (item.type !== 'message' && item.type !== 'agent_message') continue;
+      if (entry.type !== 'response_item' || !entry.payload) continue;
+      const payload = entry.payload;
+      if (payload.type !== 'message') continue;
 
-      const role = item.role || 'assistant';
+      const role = payload.role || 'assistant';
       let text = '';
-      if (item.type === 'agent_message' && item.text) {
-        text = item.text;
-      } else if (typeof item.content === 'string') {
-        text = item.content;
-      } else if (Array.isArray(item.content)) {
-        for (const block of item.content) {
-          if (block.type === 'text' && block.text) { text = block.text; break; }
+      if (typeof payload.content === 'string') {
+        text = payload.content;
+      } else if (Array.isArray(payload.content)) {
+        for (const block of payload.content) {
+          if ((block.type === 'output_text' || block.type === 'text') && block.text) {
+            text = block.text;
+            break;
+          }
+          if (block.type === 'input_text' && block.text && !block.text.startsWith('<environment_context>')) {
+            text = block.text;
+            break;
+          }
         }
       }
       if (text.trim().length > 0) {
@@ -271,7 +279,7 @@ class CodexAdapter {
         provider: 'codex',
         agentId: null,
         agentType: 'main',
-        model: detail.model || 'gpt-4o',
+        model: detail.model || 'codex',
         status: 'active',
         lastActivity: mtime,
         project: detail.project || null,
