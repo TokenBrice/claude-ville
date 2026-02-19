@@ -217,25 +217,26 @@ function handleWebSocketUpgrade(req, socket) {
 
   socket.write(responseStr, () => {
     wsClients.add(socket);
-    console.log(`[WS] 클라이언트 연결 (총 ${wsClients.size}개)`);
-    setTimeout(() => sendInitialData(socket), 100);
+    setTimeout(() => {
+      if (!socket.destroyed && socket.writable && wsClients.has(socket)) {
+        sendInitialData(socket);
+      }
+    }, 100);
   });
 
   socket.on('data', (buffer) => {
     try {
       handleWebSocketFrame(socket, buffer);
     } catch (err) {
-      console.error('[WS] 프레임 처리 에러:', err.message);
+      // 프레임 처리 에러 무시
     }
   });
 
   socket.on('close', () => {
     wsClients.delete(socket);
-    console.log(`[WS] 클라이언트 연결 해제 (총 ${wsClients.size}개)`);
   });
 
-  socket.on('error', (err) => {
-    console.error('[WS] 소켓 에러:', err.message);
+  socket.on('error', () => {
     wsClients.delete(socket);
   });
 }
@@ -329,11 +330,13 @@ function createWebSocketFrame(data, opcode = 0x1) {
 
 function wsSend(socket, data) {
   try {
-    if (socket.writable) {
+    if (!socket.destroyed && socket.writable) {
       socket.write(createWebSocketFrame(JSON.stringify(data)));
     }
   } catch (err) {
-    console.error('[WS] 전송 에러:', err.message);
+    if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
+      // 전송 에러 무시
+    }
     wsClients.delete(socket);
   }
 }
@@ -363,7 +366,7 @@ function sendInitialData(socket) {
       timestamp: Date.now(),
     });
   } catch (err) {
-    console.error('[WS] 초기 데이터 전송 실패:', err.message);
+    // 초기 데이터 전송 실패 무시
   }
 }
 

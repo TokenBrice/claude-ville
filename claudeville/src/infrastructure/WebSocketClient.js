@@ -6,6 +6,7 @@ export class WebSocketClient {
         this.ws = null;
         this.connected = false;
         this.reconnectTimer = null;
+        this.reconnectAttempts = 0;
         this.url = `ws://${window.location.host}`;
     }
 
@@ -21,6 +22,7 @@ export class WebSocketClient {
 
             this.ws.onopen = () => {
                 this.connected = true;
+                this.reconnectAttempts = 0;
                 console.log('[WS] 연결됨');
                 eventBus.emit('ws:connected');
                 this._clearReconnect();
@@ -85,10 +87,17 @@ export class WebSocketClient {
 
     _scheduleReconnect() {
         this._clearReconnect();
+        this.reconnectAttempts++;
+        const delay = Math.min(
+            WS_RECONNECT_INTERVAL * Math.pow(2, this.reconnectAttempts - 1),
+            30000
+        );
         this.reconnectTimer = setTimeout(() => {
-            console.log('[WS] 재연결 시도...');
+            if (this.reconnectAttempts > 3) {
+                console.log(`[WS] 재연결 시도... (${Math.round(delay / 1000)}초 후 재시도)`);
+            }
             this.connect();
-        }, WS_RECONNECT_INTERVAL);
+        }, delay);
     }
 
     _clearReconnect() {
