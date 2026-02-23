@@ -63,8 +63,12 @@ export class SessionWatcher {
 
     async _poll() {
         try {
-            const sessions = await this.dataSource.getSessions();
+            const [sessions, usage] = await Promise.all([
+                this.dataSource.getSessions(),
+                this.dataSource.getUsage(),
+            ]);
             this.agentManager.handleWebSocketMessage({ sessions });
+            if (usage) eventBus.emit('usage:updated', usage);
         } catch (err) {
             console.error('[SessionWatcher] 폴링 실패:', err.message);
         }

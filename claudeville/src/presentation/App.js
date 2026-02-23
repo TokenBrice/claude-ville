@@ -66,6 +66,11 @@ class App {
             // 5. 초기 데이터 로드
             await this.agentManager.loadInitialData();
 
+            // 5-1. 초기 usage 데이터 로드
+            this.dataSource.getUsage().then(usage => {
+                if (usage) eventBus.emit('usage:updated', usage);
+            });
+
             // 6. 세션 감시 시작
             this.sessionWatcher = new SessionWatcher(
                 this.agentManager, this.wsClient, this.dataSource

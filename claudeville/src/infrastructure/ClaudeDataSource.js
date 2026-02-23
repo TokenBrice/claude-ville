@@ -37,6 +37,17 @@ export class ClaudeDataSource {
         }
     }
 
+    async getUsage() {
+        try {
+            const res = await fetch(`${BASE_URL}/api/usage`);
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            return await res.json();
+        } catch (err) {
+            console.error('[DataSource] 사용량 조회 실패:', err.message);
+            return null;
+        }
+    }
+
     async getHistory(lines = 100) {
         try {
             const res = await fetch(`${BASE_URL}/api/history?lines=${lines}`);

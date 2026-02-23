@@ -12,11 +12,14 @@ const {
   adapters,
 } = require('./adapters');
 
+// ─── Usage Quota 서비스 ──────────────────────────────
+const usageQuota = require('./services/usageQuota');
+
 // Claude 어댑터 (팀/태스크는 Claude 전용)
 const claudeAdapter = adapters.find(a => a.provider === 'claude');
 
 // ─── 설정 ───────────────────────────────────────────────
-const PORT = 3000;
+const PORT = 4000;
 const STATIC_DIR = __dirname;
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2분
 
@@ -135,6 +138,20 @@ function handleGetProviders(req, res) {
   } catch (err) {
     console.error('프로바이더 조회 실패:', err.message);
     sendError(res, 500, '프로바이더 정보를 불러올 수 없습니다.');
+  }
+}
+
+/**
+ * GET /api/usage
+ * Claude 사용량 / 구독 정보
+ */
+function handleGetUsage(req, res) {
+  try {
+    const usage = usageQuota.fetchUsage();
+    sendJson(res, 200, usage);
+  } catch (err) {
+    console.error('사용량 조회 실패:', err.message);
+    sendError(res, 500, '사용량 정보를 불러올 수 없습니다.');
   }
 }
 
@@ -364,6 +381,7 @@ function sendInitialData(socket) {
       type: 'init',
       sessions: getAllSessions(ACTIVE_THRESHOLD_MS),
       teams: claudeAdapter ? claudeAdapter.getTeams() : [],
+      usage: usageQuota.fetchUsage(),
       timestamp: Date.now(),
     });
   } catch (err) {
@@ -380,6 +398,7 @@ function broadcastUpdate() {
       type: 'update',
       sessions: getAllSessions(ACTIVE_THRESHOLD_MS),
       teams: claudeAdapter ? claudeAdapter.getTeams() : [],
+      usage: usageQuota.fetchUsage(),
       timestamp: Date.now(),
     });
   } catch (err) {
@@ -453,6 +472,20 @@ const server = http.createServer((req, res) => {
         return handleGetSessionDetail(req, res);
       case '/api/providers':
         return handleGetProviders(req, res);
+      case '/api/usage':
+        return handleGetUsage(req, res);
+    }
+  }
+
+  // 위젯 파일 서빙 (/widget.html, /widget.css)
+  if (pathname === '/widget.html' || pathname === '/widget.css') {
+    const widgetFile = path.join(__dirname, '..', 'widget', 'Resources', pathname);
+    if (fs.existsSync(widgetFile)) {
+      const ext = path.extname(widgetFile).toLowerCase();
+      setCorsHeaders(res);
+      res.writeHead(200, { 'Content-Type': MIME_TYPES[ext], 'Cache-Control': 'no-cache' });
+      fs.createReadStream(widgetFile, { encoding: 'utf-8' }).pipe(res);
+      return;
     }
   }
 
@@ -507,6 +540,9 @@ server.listen(PORT, () => {
     }
   }
   console.log('');
+
+  // Usage Quota 서비스 초기화
+  usageQuota.init();
 
   startFileWatcher();
 });

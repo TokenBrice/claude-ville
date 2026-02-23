@@ -74,9 +74,11 @@ export class WebSocketClient {
         switch (data.type) {
             case 'init':
                 eventBus.emit('ws:init', data);
+                if (data.usage) eventBus.emit('usage:updated', data.usage);
                 break;
             case 'update':
                 eventBus.emit('ws:update', data);
+                if (data.usage) eventBus.emit('usage:updated', data.usage);
                 break;
             case 'pong':
                 break;

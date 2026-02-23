@@ -50,6 +50,27 @@
                     <span id="badgeWaiting">0</span> <span data-i18n="waiting">응답대기</span>
                 </span>
             </div>
+            <div class="topbar__divider"></div>
+            <div class="topbar__account" id="accountSection">
+                <span id="accountTier" class="topbar__account-tier"></span>
+                <span id="accountActivity" class="topbar__account-activity"></span>
+            </div>
+            <div id="quotaSection" class="topbar__quota" style="display: none;">
+                <div class="topbar__quota-bar">
+                    <span class="topbar__quota-label">5H</span>
+                    <div class="topbar__quota-track">
+                        <div id="quota5hBar" class="topbar__quota-fill"></div>
+                    </div>
+                    <span id="quota5hPct" class="topbar__quota-pct">0%</span>
+                </div>
+                <div class="topbar__quota-bar">
+                    <span class="topbar__quota-label">7D</span>
+                    <div class="topbar__quota-track">
+                        <div id="quota7dBar" class="topbar__quota-fill"></div>
+                    </div>
+                    <span id="quota7dPct" class="topbar__quota-pct">0%</span>
+                </div>
+            </div>
         </div>
         <div class="topbar__right">
             <button id="btnModeCharacter" data-i18n="world" class="topbar__mode-btn topbar__mode-btn--active">월드</button>

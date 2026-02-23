@@ -103,6 +103,85 @@
     color: #f97316;
 }
 
+/* ── 구분선 ── */
+.topbar__divider {
+    width: 1px;
+    height: 24px;
+    background: rgba(139, 139, 158, 0.3);
+}
+
+/* ── 계정/구독 섹션 ── */
+.topbar__account {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.topbar__account-tier {
+    font-size: 8px;
+    padding: 3px 8px;
+    border-radius: 3px;
+    background: rgba(167, 139, 250, 0.15);
+    color: #a78bfa;
+    letter-spacing: 0.5px;
+}
+
+.topbar__account-activity {
+    font-size: 8px;
+    color: #8b8b9e;
+}
+
+/* ── Quota 프로그레스 바 ── */
+.topbar__quota {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.topbar__quota-bar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.topbar__quota-label {
+    font-size: 7px;
+    color: #8b8b9e;
+    letter-spacing: 0.5px;
+    width: 16px;
+}
+
+.topbar__quota-track {
+    width: 48px;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.topbar__quota-fill {
+    height: 100%;
+    border-radius: 3px;
+    background: #4ade80;
+    transition: width 0.5s ease, background-color 0.3s;
+    width: 0%;
+}
+
+.topbar__quota-fill--warn {
+    background: #eab308;
+}
+
+.topbar__quota-fill--danger {
+    background: #ef4444;
+}
+
+.topbar__quota-pct {
+    font-size: 7px;
+    color: #8b8b9e;
+    width: 22px;
+    text-align: right;
+}
+
 .topbar__right {
     display: flex;
     gap: 4px;
