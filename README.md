@@ -68,7 +68,25 @@ cd claude-ville
 npm run dev
 ```
 
-Open http://localhost:3000 in your browser. That's it.
+Open http://localhost:4000 in your browser. That's it.
+
+### macOS Menu Bar Widget (Optional)
+
+A lightweight status bar widget that shows agent status at a glance.
+
+```bash
+cd widget
+bash build.sh
+open ClaudeVilleWidget.app
+```
+
+The widget:
+- Shows working/idle agent count in the menu bar
+- Displays agent list, token usage, and subscription info in a popover
+- Auto-starts the ClaudeVille server if not running
+- Click "Open Dashboard" to launch the full browser UI
+
+> `build.sh` auto-detects your project path and Node.js location. No manual configuration needed.
 
 ## Requirements
 
@@ -77,6 +95,7 @@ Open http://localhost:3000 in your browser. That's it.
   - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) (`~/.claude/`)
   - [Codex CLI](https://github.com/openai/codex) (`~/.codex/`)
   - [Gemini CLI](https://github.com/google-gemini/gemini-cli) (`~/.gemini/`)
+- **Widget only**: macOS + Xcode Command Line Tools (`xcode-select --install`)
 
 ## How It Works
 
@@ -111,6 +130,8 @@ claude-ville/
 │   │   ├── claude.js            #   Claude Code adapter
 │   │   ├── codex.js             #   Codex CLI adapter
 │   │   └── gemini.js            #   Gemini CLI adapter
+│   ├── services/                # Backend services
+│   │   └── usageQuota.js        #   Account & usage data
 │   ├── css/                     # Stylesheets
 │   └── src/
 │       ├── config/              # Theme, buildings, i18n, constants
@@ -118,6 +139,10 @@ claude-ville/
 │       ├── infrastructure/      # Data source, WebSocket client
 │       ├── application/         # Managers, session watcher
 │       └── presentation/        # UI renderers (world / dashboard)
+├── widget/                      # macOS menu bar widget
+│   ├── Sources/main.swift       #   Swift app (NSStatusItem + WKWebView)
+│   ├── Resources/               #   HTML/CSS for popover UI
+│   └── build.sh                 #   Build script
 └── package.json
 ```
 
@@ -140,8 +165,9 @@ claude-ville/
 | `GET /api/teams` | Claude Code team list |
 | `GET /api/tasks` | Claude Code task list |
 | `GET /api/providers` | Detected provider list |
+| `GET /api/usage` | Account info, subscription tier, daily activity |
 | `GET /api/history?lines=100` | Last N lines of Claude history |
-| `ws://localhost:3000` | Real-time updates (WebSocket) |
+| `ws://localhost:4000` | Real-time updates (WebSocket) |
 
 ## Contributing
 
