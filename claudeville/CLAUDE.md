@@ -4,18 +4,18 @@
 
 ```
 body (flex column, height 100vh)
-  header.topbar          ← 48px 고정 높이, flex-shrink: 0
-  div.main               ← flex: 1, flex-direction: column
-    div.main__body       ← flex: 1, display: flex (가로 배치)
-      aside.sidebar      ← width: 240px, flex-shrink: 0
-      div.content        ← flex: 1 (캐릭터/대시보드 모드)
-    div#agentDetail      ← flex-shrink: 0 (선택 시 하단에 표시)
+  header.topbar            ← 48px 고정 높이, flex-shrink: 0
+  div.main                 ← flex: 1, flex-direction: column
+    div.main__body         ← flex: 1, display: flex (가로 배치)
+      aside.sidebar        ← width: 240px, flex-shrink: 0
+      div.content          ← flex: 1 (캐릭터/대시보드 모드)
+      aside#activityPanel  ← width: 320px (에이전트 선택 시 표시, 기본 숨김)
 ```
 
 ### 주의사항
 - **절대 `position: fixed`로 UI 요소를 배치하지 말 것** (모달, 토스트 제외)
 - 새 패널 추가 시 반드시 flex 레이아웃 안에서 배치해야 함
-- topbar(48px) + agentDetail(최대 200px)이 컨텐츠 영역을 줄이므로, 새 컴포넌트 추가 시 남은 공간 계산 필요
+- activityPanel(320px)이 열리면 content 영역이 줄어드므로 반응형 고려 필요
 - 대시보드 모드는 `overflow-y: auto`로 스크롤, 캐릭터 모드는 캔버스가 남은 영역을 채움
 
 ## 기술 스택
@@ -35,3 +35,16 @@ body (flex column, height 100vh)
 ## 모드
 - **WORLD**: 아이소메트릭 픽셀 월드에서 에이전트가 캐릭터로 돌아다님
 - **DASHBOARD**: 에이전트별 카드 형태로 도구 사용/활동 실시간 모니터링
+
+## 주요 기능
+- **카메라 팔로우**: 에이전트 클릭 시 카메라가 lerp으로 부드럽게 따라감 (드래그 시 해제)
+- **실시간 활동 패널**: 우측 320px 패널에서 도구 히스토리, 메시지, 토큰 사용량 2초 폴링
+- **토큰 사용량**: 컨텍스트 프로그레스 바 + input/output/cache/turns + 예상 비용
+- **대화 애니메이션**: SendMessage 사용 시 캐릭터가 상대에게 걸어가서 말풍선 표시
+- **세션 감지**: history.jsonl + subagents/ + 프로젝트 디렉토리 직접 스캔 (고아 세션 포함)
+
+## 이벤트 흐름
+- `agent:selected` → ActivityPanel 열기 + 카메라 팔로우 시작
+- `agent:deselected` → ActivityPanel 닫기 + 카메라 팔로우 해제
+- `agent:updated` → 스프라이트/패널 실시간 갱신
+- `agent:added` / `agent:removed` → 스프라이트 생성/제거
