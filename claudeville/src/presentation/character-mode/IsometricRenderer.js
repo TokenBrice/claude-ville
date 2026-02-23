@@ -196,9 +196,11 @@ export class IsometricRenderer {
         if (clicked) {
             clicked.selected = true;
             this.selectedAgent = clicked.agent;
+            this.camera.followAgent(clicked);
             if (this.onAgentSelect) this.onAgentSelect(clicked.agent);
         } else {
             this.selectedAgent = null;
+            this.camera.stopFollow();
             if (this.onAgentSelect) this.onAgentSelect(null);
         }
     }
@@ -210,8 +212,70 @@ export class IsometricRenderer {
         this.frameId = requestAnimationFrame(() => this._loop());
     }
 
+    _updateChatMatching() {
+        // 현재 SendMessage 사용 중인 에이전트 찾기
+        const senders = new Set();
+
+        for (const sprite of this.agentSprites.values()) {
+            const agent = sprite.agent;
+            if (agent.currentTool === 'SendMessage' && agent.currentToolInput) {
+                senders.add(sprite);
+
+                // 이미 대화 중이면 스킵
+                if (sprite.chatPartner) continue;
+
+                // 수신자 이름으로 스프라이트 찾기
+                const recipientName = agent.currentToolInput;
+                let target = null;
+                for (const other of this.agentSprites.values()) {
+                    if (other === sprite) continue;
+                    if (other.agent.name === recipientName) {
+                        target = other;
+                        break;
+                    }
+                }
+
+                if (target) {
+                    sprite.startChat(target);
+                }
+            }
+        }
+
+        // SendMessage가 아닌 에이전트의 대화 상태 해제
+        for (const sprite of this.agentSprites.values()) {
+            if (sprite.chatPartner && !senders.has(sprite)) {
+                // 상대방이 아직 SendMessage 중이면 유지
+                if (sprite.chatPartner.agent.currentTool === 'SendMessage') continue;
+                sprite.endChat();
+            }
+        }
+    }
+
+    selectAgentById(agentId) {
+        for (const sprite of this.agentSprites.values()) {
+            sprite.selected = false;
+        }
+        if (agentId) {
+            const sprite = this.agentSprites.get(agentId);
+            if (sprite) {
+                sprite.selected = true;
+                this.selectedAgent = sprite.agent;
+                this.camera.followAgent(sprite);
+                return;
+            }
+        }
+        this.selectedAgent = null;
+        this.camera.stopFollow();
+    }
+
     _update() {
         this.waterFrame += 0.03;
+
+        // 카메라 팔로우 업데이트
+        if (this.camera) this.camera.updateFollow();
+
+        // 대화 매칭: SendMessage 사용 중인 에이전트 → 수신자 스프라이트로 이동
+        this._updateChatMatching();
 
         // Update agent sprites
         for (const sprite of this.agentSprites.values()) {

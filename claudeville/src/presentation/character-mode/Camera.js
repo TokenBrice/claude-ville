@@ -14,6 +14,10 @@ export class Camera {
         this.camStartX = 0;
         this.camStartY = 0;
 
+        // Follow 메커니즘
+        this.followTarget = null;      // AgentSprite 참조
+        this.followSmoothing = 0.08;   // lerp 계수 (낮을수록 부드러움)
+
         this._onMouseDown = this._onMouseDown.bind(this);
         this._onMouseMove = this._onMouseMove.bind(this);
         this._onMouseUp = this._onMouseUp.bind(this);
@@ -46,6 +50,22 @@ export class Camera {
         this.canvas.removeEventListener('wheel', this._onWheel);
     }
 
+    followAgent(sprite) {
+        this.followTarget = sprite;
+    }
+
+    stopFollow() {
+        this.followTarget = null;
+    }
+
+    updateFollow() {
+        if (!this.followTarget) return;
+        const targetX = -this.followTarget.x + this.canvas.width / (2 * this.zoom);
+        const targetY = -this.followTarget.y + this.canvas.height / (2 * this.zoom);
+        this.x += (targetX - this.x) * this.followSmoothing;
+        this.y += (targetY - this.y) * this.followSmoothing;
+    }
+
     _onMouseDown(e) {
         if (e.button !== 0) return;
         this.dragging = true;
@@ -54,6 +74,8 @@ export class Camera {
         this.camStartX = this.x;
         this.camStartY = this.y;
         this.canvas.style.cursor = 'grabbing';
+        // 드래그 시작하면 팔로우 해제
+        if (this.followTarget) this.stopFollow();
     }
 
     _onMouseMove(e) {

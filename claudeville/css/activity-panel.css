@@ -1,0 +1,351 @@
+/* ─── 우측 실시간 활동 패널 ──────────────────────── */
+
+.activity-panel {
+    width: 320px;
+    flex-shrink: 0;
+    background: rgba(15, 15, 25, 0.98);
+    border-left: 2px solid rgba(232, 212, 77, 0.3);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    font-family: 'Press Start 2P', monospace;
+    animation: ap-slide-in 0.2s ease;
+}
+
+@keyframes ap-slide-in {
+    from { width: 0; opacity: 0; }
+    to { width: 320px; opacity: 1; }
+}
+
+/* ─── 헤더 ─────────────────────────────────────── */
+
+.activity-panel__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 14px;
+    border-bottom: 1px solid rgba(232, 212, 77, 0.15);
+    flex-shrink: 0;
+}
+
+.activity-panel__agent-info {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.activity-panel__name {
+    font-size: 10px;
+    color: #e8d44d;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.activity-panel__status {
+    font-size: 7px;
+    padding: 2px 6px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.05);
+    white-space: nowrap;
+}
+
+.activity-panel__close {
+    font-size: 9px;
+    color: #8b8b9e;
+    background: transparent;
+    border: 1px solid rgba(139, 139, 158, 0.3);
+    border-radius: 3px;
+    padding: 3px 7px;
+    cursor: pointer;
+    font-family: inherit;
+    flex-shrink: 0;
+}
+
+.activity-panel__close:hover {
+    color: #ef4444;
+    border-color: #ef4444;
+}
+
+/* ─── 메타 정보 ────────────────────────────────── */
+
+.activity-panel__meta {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(232, 212, 77, 0.1);
+    flex-shrink: 0;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+.activity-panel__meta-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.activity-panel__label {
+    font-size: 6px;
+    color: #8b8b9e;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.activity-panel__value {
+    font-size: 8px;
+    color: #e8d44d;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* ─── 섹션 공통 ────────────────────────────────── */
+
+.activity-panel__section {
+    padding: 10px 14px;
+    border-bottom: 1px solid rgba(232, 212, 77, 0.05);
+    flex-shrink: 0;
+}
+
+.activity-panel__section--grow {
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.activity-panel__section-title {
+    font-size: 7px;
+    color: #8b8b9e;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+}
+
+/* ─── 현재 도구 ────────────────────────────────── */
+
+.activity-panel__current-tool {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 4px;
+    border-left: 3px solid #4ade80;
+}
+
+.activity-panel__current-tool--idle {
+    border-left-color: #60a5fa;
+}
+
+.activity-panel__tool-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.activity-panel__tool-detail {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+}
+
+.activity-panel__tool-name {
+    font-size: 8px;
+    color: #e8d44d;
+}
+
+.activity-panel__tool-input {
+    font-size: 7px;
+    color: #8b8b9e;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ─── 도구 히스토리 ────────────────────────────── */
+
+.activity-panel__tool-history {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.activity-panel__tool-history::-webkit-scrollbar {
+    width: 4px;
+}
+
+.activity-panel__tool-history::-webkit-scrollbar-thumb {
+    background: rgba(232, 212, 77, 0.2);
+    border-radius: 2px;
+}
+
+.activity-panel__tool-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 8px;
+    font-size: 7px;
+    border-radius: 3px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.activity-panel__tool-item:first-child {
+    background: rgba(74, 222, 128, 0.08);
+}
+
+.activity-panel__tool-item-icon {
+    flex-shrink: 0;
+    font-size: 10px;
+}
+
+.activity-panel__tool-item-name {
+    color: #e8d44d;
+    font-size: 7px;
+    white-space: nowrap;
+}
+
+.activity-panel__tool-item-detail {
+    color: #8b8b9e;
+    font-size: 6px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
+}
+
+/* ─── 메시지 ───────────────────────────────────── */
+
+.activity-panel__messages {
+    max-height: 140px;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.activity-panel__messages::-webkit-scrollbar {
+    width: 4px;
+}
+
+.activity-panel__messages::-webkit-scrollbar-thumb {
+    background: rgba(232, 212, 77, 0.2);
+    border-radius: 2px;
+}
+
+.activity-panel__msg {
+    padding: 6px 8px;
+    font-size: 7px;
+    color: #8b8b9e;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 3px;
+    line-height: 1.6;
+    border-left: 2px solid transparent;
+}
+
+.activity-panel__msg--assistant {
+    border-left-color: #4ade80;
+}
+
+.activity-panel__msg--user {
+    border-left-color: #60a5fa;
+}
+
+.activity-panel__msg-role {
+    font-size: 6px;
+    color: #e8d44d;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 2px;
+}
+
+/* ─── 토큰 사용량 ─────────────────────────────── */
+
+.activity-panel__token-usage {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.activity-panel__token-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.activity-panel__token-label {
+    font-size: 7px;
+    color: #8b8b9e;
+}
+
+.activity-panel__token-value {
+    font-size: 9px;
+    color: #e8d44d;
+    font-weight: bold;
+}
+
+.activity-panel__token-value--cost {
+    color: #4ade80;
+}
+
+.activity-panel__context-bar-wrap {
+    width: 100%;
+    height: 6px;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.activity-panel__context-bar {
+    height: 100%;
+    border-radius: 3px;
+    background: linear-gradient(90deg, #4ade80, #e8d44d);
+    transition: width 0.5s ease;
+}
+
+.activity-panel__context-bar--warning {
+    background: linear-gradient(90deg, #e8d44d, #f97316);
+}
+
+.activity-panel__context-bar--danger {
+    background: linear-gradient(90deg, #f97316, #ef4444);
+}
+
+.activity-panel__token-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 4px;
+}
+
+.activity-panel__token-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 4px 6px;
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 3px;
+}
+
+.activity-panel__token-cell-label {
+    font-size: 5px;
+    color: #8b8b9e;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.activity-panel__token-cell-value {
+    font-size: 8px;
+    color: #e8d44d;
+}
+
+/* ─── 비어있음 ────────────────────────────────── */
+
+.activity-panel__empty {
+    color: #555;
+    font-size: 7px;
+    padding: 4px 0;
+}

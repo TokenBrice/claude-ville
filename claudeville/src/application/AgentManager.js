@@ -6,6 +6,24 @@ export class AgentManager {
     constructor(world, dataSource) {
         this.world = world;
         this.dataSource = dataSource;
+        this._teamMembers = new Map();
+    }
+
+    _buildTeamMembers(teams) {
+        const teamMembers = new Map();
+        for (const team of teams) {
+            if (team.members) {
+                for (const member of team.members) {
+                    teamMembers.set(member.agentId, {
+                        name: member.name,
+                        teamName: team.teamName || team.name,
+                        agentType: member.agentType,
+                        model: member.model,
+                    });
+                }
+            }
+        }
+        return teamMembers;
     }
 
     async loadInitialData() {
@@ -15,23 +33,10 @@ export class AgentManager {
                 this.dataSource.getTeams(),
             ]);
 
-            // 팀 멤버 정보를 세션에 매핑
-            const teamMembers = new Map();
-            for (const team of teams) {
-                if (team.members) {
-                    for (const member of team.members) {
-                        teamMembers.set(member.agentId, {
-                            name: member.name,
-                            teamName: team.teamName || team.name,
-                            agentType: member.agentType,
-                            model: member.model,
-                        });
-                    }
-                }
-            }
+            this._teamMembers = this._buildTeamMembers(teams);
 
             for (const session of sessions) {
-                this._upsertAgent(session, teamMembers);
+                this._upsertAgent(session, this._teamMembers);
             }
 
             console.log(`[AgentManager] ${this.world.agents.size}개 에이전트 로드 완료`);
@@ -43,11 +48,16 @@ export class AgentManager {
     handleWebSocketMessage(data) {
         if (!data.sessions) return;
 
+        // 팀 데이터가 포함되어 있으면 갱신
+        if (data.teams) {
+            this._teamMembers = this._buildTeamMembers(data.teams);
+        }
+
         const currentIds = new Set();
 
         for (const session of data.sessions) {
             currentIds.add(session.sessionId);
-            this._upsertAgent(session, null);
+            this._upsertAgent(session, this._teamMembers);
         }
 
         // 서버 목록에 없는 에이전트 처리
@@ -72,10 +82,15 @@ export class AgentManager {
         const id = session.sessionId;
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
 
+        // 팀 이름: teamInfo에서 가져오거나, 프로젝트 경로에서 추출
+        const teamName = teamInfo?.teamName
+            || (session.project ? session.project.split('/').filter(Boolean).pop() : null);
+
         const agentData = {
             model: teamInfo?.model || session.model || 'unknown',
             status: this._resolveStatus(session),
             role: teamInfo?.agentType || session.agentType || 'general',
+            teamName,
             currentTool: session.lastTool || null,
             currentToolInput: session.lastToolInput || null,
             _lastMessage: session.lastMessage || null,
@@ -90,7 +105,7 @@ export class AgentManager {
                 model: agentData.model,
                 status: agentData.status,
                 role: agentData.role,
-                teamName: teamInfo?.teamName || null,
+                teamName,
                 projectPath: session.project || null,
                 lastTool: session.lastTool,
                 lastToolInput: session.lastToolInput,

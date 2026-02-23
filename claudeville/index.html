@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="css/modal.css">
     <link rel="stylesheet" href="css/character.css">
     <link rel="stylesheet" href="css/dashboard.css">
+    <link rel="stylesheet" href="css/activity-panel.css">
 </head>
 <body>
     <!-- 상단바 -->
@@ -91,39 +92,88 @@
                     </div>
                 </div>
             </div>
-        </div>
 
-        <!-- 에이전트 상세 패널 (main 안에서 flex로 배치) -->
-        <div id="agentDetail" class="agent-detail" style="display: none;">
-        <div class="agent-detail__header">
-            <span id="detailName" class="agent-detail__name"></span>
-            <span id="detailStatus" class="agent-detail__status"></span>
-            <button id="detailClose" class="agent-detail__close">X</button>
+            <!-- 우측 실시간 활동 패널 -->
+            <aside id="activityPanel" class="activity-panel" style="display: none;">
+                <div class="activity-panel__header">
+                    <div class="activity-panel__agent-info">
+                        <span id="panelAgentName" class="activity-panel__name"></span>
+                        <span id="panelAgentStatus" class="activity-panel__status"></span>
+                    </div>
+                    <button id="panelClose" class="activity-panel__close">X</button>
+                </div>
+                <div class="activity-panel__meta">
+                    <div class="activity-panel__meta-row">
+                        <span class="activity-panel__label" data-i18n="model">모델</span>
+                        <span id="panelModel" class="activity-panel__value"></span>
+                    </div>
+                    <div class="activity-panel__meta-row">
+                        <span class="activity-panel__label">Provider</span>
+                        <span id="panelProvider" class="activity-panel__value"></span>
+                    </div>
+                    <div class="activity-panel__meta-row">
+                        <span class="activity-panel__label" data-i18n="role">역할</span>
+                        <span id="panelRole" class="activity-panel__value"></span>
+                    </div>
+                    <div class="activity-panel__meta-row">
+                        <span class="activity-panel__label" data-i18n="team">팀</span>
+                        <span id="panelTeam" class="activity-panel__value"></span>
+                    </div>
+                </div>
+                <div class="activity-panel__section">
+                    <div class="activity-panel__section-title">Token Usage</div>
+                    <div id="panelTokenUsage" class="activity-panel__token-usage">
+                        <div class="activity-panel__token-row">
+                            <span class="activity-panel__token-label">Context</span>
+                            <span id="panelContextSize" class="activity-panel__token-value">-</span>
+                        </div>
+                        <div class="activity-panel__context-bar-wrap">
+                            <div id="panelContextBar" class="activity-panel__context-bar" style="width: 0%"></div>
+                        </div>
+                        <div class="activity-panel__token-grid">
+                            <div class="activity-panel__token-cell">
+                                <span class="activity-panel__token-cell-label">Input</span>
+                                <span id="panelInputTokens" class="activity-panel__token-cell-value">0</span>
+                            </div>
+                            <div class="activity-panel__token-cell">
+                                <span class="activity-panel__token-cell-label">Output</span>
+                                <span id="panelOutputTokens" class="activity-panel__token-cell-value">0</span>
+                            </div>
+                            <div class="activity-panel__token-cell">
+                                <span class="activity-panel__token-cell-label">Cache Read</span>
+                                <span id="panelCacheRead" class="activity-panel__token-cell-value">0</span>
+                            </div>
+                            <div class="activity-panel__token-cell">
+                                <span class="activity-panel__token-cell-label">Turns</span>
+                                <span id="panelTurnCount" class="activity-panel__token-cell-value">0</span>
+                            </div>
+                        </div>
+                        <div class="activity-panel__token-row">
+                            <span class="activity-panel__token-label">Est. Cost</span>
+                            <span id="panelEstCost" class="activity-panel__token-value activity-panel__token-value--cost">$0.00</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="activity-panel__section">
+                    <div class="activity-panel__section-title">Current Tool</div>
+                    <div id="panelCurrentTool" class="activity-panel__current-tool">
+                        <span class="activity-panel__tool-icon"></span>
+                        <div class="activity-panel__tool-detail">
+                            <span class="activity-panel__tool-name"></span>
+                            <span class="activity-panel__tool-input"></span>
+                        </div>
+                    </div>
+                </div>
+                <div class="activity-panel__section activity-panel__section--grow">
+                    <div class="activity-panel__section-title">Tool History</div>
+                    <div id="panelToolHistory" class="activity-panel__tool-history"></div>
+                </div>
+                <div class="activity-panel__section">
+                    <div class="activity-panel__section-title">Messages</div>
+                    <div id="panelMessages" class="activity-panel__messages"></div>
+                </div>
+            </aside>
         </div>
-        <div class="agent-detail__body">
-            <div class="agent-detail__row">
-                <span data-i18n="model" class="agent-detail__label">모델</span>
-                <span id="detailModel" class="agent-detail__value"></span>
-            </div>
-            <div class="agent-detail__row">
-                <span data-i18n="role" class="agent-detail__label">역할</span>
-                <span id="detailRole" class="agent-detail__value"></span>
-            </div>
-            <div class="agent-detail__row">
-                <span data-i18n="tokens" class="agent-detail__label">토큰</span>
-                <span id="detailTokens" class="agent-detail__value"></span>
-            </div>
-            <div class="agent-detail__row">
-                <span data-i18n="cost" class="agent-detail__label">비용</span>
-                <span id="detailCostValue" class="agent-detail__value"></span>
-            </div>
-            <div class="agent-detail__row">
-                <span data-i18n="team" class="agent-detail__label">팀</span>
-                <span id="detailTeam" class="agent-detail__value"></span>
-            </div>
-            <div id="detailMessage" class="agent-detail__message"></div>
-        </div>
-    </div>
     </div>
 
     <!-- 모달 컨테이너 -->

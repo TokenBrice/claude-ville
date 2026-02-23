@@ -363,6 +363,7 @@ function sendInitialData(socket) {
     wsSend(socket, {
       type: 'init',
       sessions: getAllSessions(ACTIVE_THRESHOLD_MS),
+      teams: claudeAdapter ? claudeAdapter.getTeams() : [],
       timestamp: Date.now(),
     });
   } catch (err) {
@@ -378,6 +379,7 @@ function broadcastUpdate() {
     wsBroadcast({
       type: 'update',
       sessions: getAllSessions(ACTIVE_THRESHOLD_MS),
+      teams: claudeAdapter ? claudeAdapter.getTeams() : [],
       timestamp: Date.now(),
     });
   } catch (err) {

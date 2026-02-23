@@ -18,6 +18,7 @@ import { TopBar } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
 import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
+import { ActivityPanel } from './shared/ActivityPanel.js';
 
 class App {
     constructor() {
@@ -34,6 +35,7 @@ class App {
         this.modal = null;
         this.renderer = null;
         this.dashboardRenderer = null;
+        this.activityPanel = null;
     }
 
     async boot() {
@@ -79,8 +81,9 @@ class App {
             // 8-1. 대시보드 렌더러 로드
             await this._loadDashboard();
 
-            // 9. 에이전트 선택 → 상세패널
-            this._bindAgentDetail();
+            // 9. 우측 실시간 활동 패널
+            this.activityPanel = new ActivityPanel();
+            this._bindAgentFollow();
 
             // 10. 설정 버튼
             this._bindSettings();
@@ -129,38 +132,19 @@ class App {
         }
     }
 
-    _bindAgentDetail() {
-        const detailEl = document.getElementById('agentDetail');
-        const closeBtn = document.getElementById('detailClose');
-
+    _bindAgentFollow() {
+        // 에이전트 선택 시 카메라 팔로우
         eventBus.on('agent:selected', (agent) => {
-            document.getElementById('detailName').textContent = agent.name;
-            document.getElementById('detailModel').textContent = agent.model;
-            document.getElementById('detailRole').textContent = agent.role;
-            document.getElementById('detailTokens').textContent =
-                `${agent.tokens.input + agent.tokens.output}`;
-            document.getElementById('detailCostValue').textContent =
-                `$${agent.cost.toFixed(4)}`;
-            document.getElementById('detailTeam').textContent =
-                agent.teamName || '-';
-
-            const statusEl = document.getElementById('detailStatus');
-            statusEl.textContent = agent.status.toUpperCase();
-            statusEl.style.color = {
-                working: '#4ade80',
-                idle: '#60a5fa',
-                waiting: '#f97316',
-            }[agent.status] || '#8b8b9e';
-
-            const msgEl = document.getElementById('detailMessage');
-            msgEl.textContent = agent.lastMessage
-                ? `"${agent.lastMessage}"` : '';
-
-            detailEl.style.display = '';
+            if (agent && this.renderer) {
+                this.renderer.selectAgentById(agent.id);
+            }
         });
 
-        closeBtn.addEventListener('click', () => {
-            detailEl.style.display = 'none';
+        // 패널 닫기 시 팔로우 해제
+        eventBus.on('agent:deselected', () => {
+            if (this.renderer) {
+                this.renderer.selectAgentById(null);
+            }
         });
     }
 

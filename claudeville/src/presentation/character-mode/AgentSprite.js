@@ -19,6 +19,12 @@ export class AgentSprite {
         this.statusAnim = 0;
         this._lastBuildingType = null;
 
+        // 대화 시스템
+        this.chatPartner = null;     // 대화 상대 AgentSprite
+        this.chatting = false;       // 대화 중 여부
+        this.chatTimer = 0;          // 대화 애니메이션 타이머
+        this.chatBubbleAnim = 0;     // 말풍선 애니메이션
+
         const screen = agent.position.toScreen(TILE_WIDTH, TILE_HEIGHT);
         this.x = screen.x;
         this.y = screen.y;
@@ -27,6 +33,15 @@ export class AgentSprite {
     }
 
     _pickTarget() {
+        // 대화 상대가 있으면 상대 위치로 이동
+        if (this.chatPartner) {
+            this.targetX = this.chatPartner.x + (this.x < this.chatPartner.x ? -25 : 25);
+            this.targetY = this.chatPartner.y;
+            this.moving = true;
+            this.waitTimer = 0;
+            return;
+        }
+
         // WORKING일 때만 도구 기반 이동, IDLE/WAITING이면 자유 이동
         const isWorking = this.agent.status === AgentStatus.WORKING;
         const buildingType = isWorking ? this.agent.targetBuildingType : null;
@@ -67,14 +82,51 @@ export class AgentSprite {
     update(particleSystem) {
         this.statusAnim += 0.05;
 
+        // 대화 중 상태 처리
+        if (this.chatting) {
+            this.chatBubbleAnim += 0.06;
+            // 대화 상대가 가까이 있으면 서로 마주보기
+            if (this.chatPartner) {
+                this.facingLeft = this.chatPartner.x < this.x;
+            }
+            return; // 대화 중엔 이동 안 함
+        }
+
+        // 대화 상대를 향해 이동 중 → 가까워지면 대화 시작
+        if (this.chatPartner) {
+            const cpDx = this.chatPartner.x - this.x;
+            const cpDy = this.chatPartner.y - this.y;
+            const cpDist = Math.sqrt(cpDx * cpDx + cpDy * cpDy);
+            if (cpDist < 35) {
+                this.chatting = true;
+                this.chatBubbleAnim = 0;
+                this.moving = false;
+                this.walkFrame = 0;
+                this.facingLeft = cpDx < 0;
+                // 상대도 대화 상태로
+                if (!this.chatPartner.chatting) {
+                    this.chatPartner.chatPartner = this;
+                    this.chatPartner.chatting = true;
+                    this.chatPartner.chatBubbleAnim = 0;
+                    this.chatPartner.moving = false;
+                    this.chatPartner.walkFrame = 0;
+                    this.chatPartner.facingLeft = cpDx > 0;
+                }
+                return;
+            }
+            // 상대 위치가 변하면 타겟 갱신
+            this.targetX = this.chatPartner.x + (this.x < this.chatPartner.x ? -25 : 25);
+            this.targetY = this.chatPartner.y;
+        }
+
         // WORKING 상태에서 도구가 바뀌면 즉시 새 건물로 방향 전환
-        if (this.agent.status === AgentStatus.WORKING) {
+        if (this.agent.status === AgentStatus.WORKING && !this.chatPartner) {
             const curBuilding = this.agent.targetBuildingType;
             if (curBuilding && curBuilding !== this._lastBuildingType) {
                 this._lastBuildingType = curBuilding;
                 this._pickTarget();
             }
-        } else {
+        } else if (!this.chatPartner) {
             this._lastBuildingType = null;
         }
 
@@ -97,12 +149,12 @@ export class AgentSprite {
 
         if (dist < 2) {
             this.moving = false;
-            this.waitTimer = 60 + Math.floor(Math.random() * 180);
+            this.waitTimer = this.chatPartner ? 10 : 60 + Math.floor(Math.random() * 180);
             this.walkFrame = 0;
             return;
         }
 
-        const speed = 1.5;
+        const speed = this.chatPartner ? 2.5 : 1.5; // 대화하러 갈 땐 좀 더 빨리
         this.x += (dx / dist) * speed;
         this.y += (dy / dist) * speed;
         this.walkFrame += 0.15;
@@ -111,6 +163,22 @@ export class AgentSprite {
         if (particleSystem && Math.random() < 0.3) {
             particleSystem.spawn('footstep', this.x, this.y + 16, 1);
         }
+    }
+
+    /** 대화 시작 (IsometricRenderer에서 호출) */
+    startChat(partnerSprite) {
+        this.chatPartner = partnerSprite;
+        this.chatting = false;
+        this.chatBubbleAnim = 0;
+        this._pickTarget(); // 상대에게 이동 시작
+    }
+
+    /** 대화 종료 */
+    endChat() {
+        this.chatPartner = null;
+        this.chatting = false;
+        this.chatBubbleAnim = 0;
+        this._pickTarget(); // 원래 행동 복귀
     }
 
     draw(ctx, zoom = 1) {
@@ -180,8 +248,15 @@ export class AgentSprite {
 
         ctx.restore();
 
+        // 대화 중 이펙트
+        if (this.chatting) {
+            this._drawChatEffect(ctx);
+        }
+
         // Status indicators (drawn without flip, zoom-independent)
-        this._drawStatus(ctx);
+        if (!this.chatting) {
+            this._drawStatus(ctx);
+        }
         this._drawNameTag(ctx);
     }
 
@@ -411,6 +486,54 @@ export class AgentSprite {
         ctx.lineTo(-hw - r, -10 + r);
         ctx.quadraticCurveTo(-hw - r, -10, -hw, -10);
         ctx.closePath();
+    }
+
+    _drawChatEffect(ctx) {
+        ctx.save();
+        const s = 1 / (this._zoom || 1);
+        ctx.translate(this.x, this.y);
+        ctx.scale(s, s);
+
+        const t = this.chatBubbleAnim;
+
+        // 말풍선 (번갈아 나타나는 효과)
+        const phase = Math.floor(t * 1.5) % 3;
+        const bubbleY = -38;
+
+        // 배경 원
+        ctx.fillStyle = 'rgba(26, 26, 46, 0.92)';
+        ctx.strokeStyle = '#4ade80';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, bubbleY, 14, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // 꼬리
+        ctx.fillStyle = 'rgba(26, 26, 46, 0.92)';
+        ctx.beginPath();
+        ctx.moveTo(-3, bubbleY + 12);
+        ctx.lineTo(0, bubbleY + 18);
+        ctx.lineTo(3, bubbleY + 12);
+        ctx.fill();
+
+        // 대화 아이콘 (말풍선 안에 점점점 애니메이션)
+        ctx.fillStyle = '#4ade80';
+        ctx.font = 'bold 12px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const dots = ['.', '..', '...'][phase];
+        ctx.fillText(dots, 0, bubbleY - 1);
+
+        // 위에 떠다니는 이모지 파티클
+        const floatY = -56 + Math.sin(t * 2) * 4;
+        ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 3);
+        ctx.font = '12px sans-serif';
+        const emojis = ['\u{1F4AC}', '\u{1F4AD}', '\u2728'];
+        ctx.fillText(emojis[Math.floor(t) % emojis.length], 0, floatY);
+        ctx.globalAlpha = 1;
+
+        ctx.restore();
     }
 
     _drawNameTag(ctx) {
