@@ -1,13 +1,14 @@
 // SpriteSheet locates the right cell within a character sheet PNG.
 // Sheet layout: 8 columns (directions S, SE, E, NE, N, NW, W, SW),
-// 6 rows (walk-0..3 then idle-0..1). Each cell is `cellSize` px square.
+// rows 0-5 walk (6 frames), rows 6-9 idle (4 frames). Each cell is `cellSize` px square.
 
 export const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
-export const WALK_FRAMES = 4;
-export const IDLE_FRAMES = 2;
+export const WALK_FRAMES = 6;
+export const IDLE_FRAMES = 4;
+export const DEFAULT_CELL = 92;
 
 export class SpriteSheet {
-    constructor(image, cellSize = 64) {
+    constructor(image, cellSize = DEFAULT_CELL) {
         this.image = image;
         this.cellSize = cellSize;
     }

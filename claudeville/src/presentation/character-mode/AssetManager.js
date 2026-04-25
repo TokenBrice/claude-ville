@@ -87,7 +87,7 @@ export class AssetManager {
 
     async _loadComposedBuilding(entry) {
         const [cols, rows] = entry.composeGrid;
-        const cellSize = entry.layers.base.size || 128;
+        const cellSize = entry.layers.base.size || 64;
         const canvas = document.createElement('canvas');
         canvas.width = cols * cellSize;
         canvas.height = rows * cellSize;
