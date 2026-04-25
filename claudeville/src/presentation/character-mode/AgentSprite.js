@@ -97,9 +97,7 @@ export class AgentSprite {
             return;
         }
 
-        // WORKING only, move based on tools; IDLE/WAITING moves freely
-        const isWorking = this.agent.status === AgentStatus.WORKING;
-        const buildingType = isWorking ? this.agent.targetBuildingType : null;
+        const buildingType = this._targetBuildingTypeForState();
         let building = null;
 
         if (buildingType) {
@@ -108,8 +106,8 @@ export class AgentSprite {
 
         if (!building) {
             const seed = Math.abs(this._hash(`${this.agent.id}:target:${this._targetCycle++}`));
-            // If no mapping exists, choose a stable building 70% of the time and empty ground 30% of the time.
-            if ((seed % 10) < 7) {
+            // If an active tool has no mapping, choose a stable building 70% of the time and empty ground 30% of the time.
+            if (this.agent.status === AgentStatus.WORKING && (seed % 10) < 7) {
                 building = BUILDING_DEFS[seed % BUILDING_DEFS.length];
             } else {
                 const tx = 10 + this._noise(seed, 3) * 20;
@@ -134,6 +132,30 @@ export class AgentSprite {
         this.targetY = screen.y;
         this.moving = true;
         this.waitTimer = 0;
+    }
+
+    _targetBuildingTypeForState() {
+        if (this.agent.status === AgentStatus.WORKING) {
+            return this.agent.targetBuildingType || (this.agent.isSubagent ? 'command' : 'watchtower');
+        }
+        if (this.agent.status === AgentStatus.WAITING) return 'watchtower';
+        if (this.agent.status === AgentStatus.IDLE) return 'sanctuary';
+        return null;
+    }
+
+    _waitDurationForState() {
+        if (this.agent.status === AgentStatus.WORKING) return 60 + Math.floor(Math.random() * 120);
+        if (this.agent.status === AgentStatus.WAITING) return 120 + Math.floor(Math.random() * 160);
+        if (this.agent.status === AgentStatus.IDLE) return 240 + Math.floor(Math.random() * 260);
+        return 90;
+    }
+
+    _speedForState() {
+        if (this.chatPartner) return 2.5;
+        if (this.agent.status === AgentStatus.WORKING) return 1.5;
+        if (this.agent.status === AgentStatus.WAITING) return 1.1;
+        if (this.agent.status === AgentStatus.IDLE) return 0.8;
+        return 1.2;
     }
 
     setMotionScale(scale) {
@@ -180,15 +202,13 @@ export class AgentSprite {
             this.targetY = this.chatPartner.y;
         }
 
-        // WORKING  state, immediately reroute to the new building when the tool changes
-        if (this.agent.status === AgentStatus.WORKING && !this.chatPartner) {
-            const curBuilding = this.agent.targetBuildingType;
-            if (curBuilding && curBuilding !== this._lastBuildingType) {
+        // Reroute immediately when status or fresh tool changes the intended building.
+        if (!this.chatPartner) {
+            const curBuilding = this._targetBuildingTypeForState();
+            if (curBuilding !== this._lastBuildingType) {
                 this._lastBuildingType = curBuilding;
                 this._pickTarget();
             }
-        } else if (!this.chatPartner) {
-            this._lastBuildingType = null;
         }
 
         if (this.waitTimer > 0) {
@@ -210,18 +230,18 @@ export class AgentSprite {
 
         if (dist < 2) {
             this.moving = false;
-            this.waitTimer = this.chatPartner ? 10 : 60 + Math.floor(Math.random() * 180);
+            this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
             this.walkFrame = 0;
             return;
         }
 
-        const speed = this.chatPartner ? 2.5 : 1.5; // move a bit faster when going to chat
+        const speed = this._speedForState();
         this.x += (dx / dist) * speed;
         this.y += (dy / dist) * speed;
         this.walkFrame += 0.15;
         this.facingLeft = dx < 0;
 
-        if (particleSystem && Math.random() < 0.3) {
+        if (this.motionScale > 0 && particleSystem && this.agent.status === AgentStatus.WORKING && Math.random() < 0.3) {
             particleSystem.spawn('footstep', this.x, this.y + 16, 1);
         }
     }
@@ -252,6 +272,7 @@ export class AgentSprite {
         const app = sprite.app;
         const profile = sprite.profile;
         this._drawIdentityAura(ctx, sprite);
+        this._drawStateRing(ctx);
 
         ctx.beginPath();
         ctx.ellipse(0, 21, 20, 8, 0, 0, Math.PI * 2);
@@ -467,6 +488,35 @@ export class AgentSprite {
             ctx.ellipse(0, -12, 15, 6, 0, 0, Math.PI * 2);
             ctx.stroke();
         }
+        ctx.restore();
+    }
+
+    _drawStateRing(ctx) {
+        const status = this.agent.status;
+        const color = status === AgentStatus.WORKING ? THEME.working :
+            status === AgentStatus.WAITING ? THEME.waiting :
+                THEME.idle;
+        const pulse = this.motionScale ? Math.sin(this.statusAnim * 2.4) : 0;
+
+        ctx.save();
+        ctx.translate(0, 21);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = status === AgentStatus.WORKING ? 2.2 : 1.5;
+        ctx.globalAlpha = status === AgentStatus.WORKING
+            ? 0.72 + Math.max(0, pulse) * 0.18
+            : status === AgentStatus.WAITING
+                ? 0.48 + Math.max(0, pulse) * 0.16
+                : 0.28;
+        if (status === AgentStatus.WORKING) {
+            ctx.setLineDash([8, 5]);
+            ctx.lineDashOffset = -this.statusAnim * 18;
+        } else if (status === AgentStatus.WAITING) {
+            ctx.setLineDash([2, 6]);
+            ctx.lineDashOffset = -this.statusAnim * 8;
+        }
+        ctx.beginPath();
+        ctx.ellipse(0, 0, status === AgentStatus.WORKING ? 25 : 22, status === AgentStatus.WORKING ? 10 : 8, 0, 0, Math.PI * 2);
+        ctx.stroke();
         ctx.restore();
     }
 

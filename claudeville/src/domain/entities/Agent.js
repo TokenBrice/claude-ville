@@ -10,10 +10,37 @@ const AGENT_NAMES_EN = [
 ];
 
 export class Agent {
-    constructor({ id, name, model, effort, status, role, tokens, messages, teamName, projectPath, lastTool, lastToolInput, lastMessage, provider }) {
+    constructor({
+        id,
+        name,
+        model,
+        effort,
+        status,
+        role,
+        tokens,
+        messages,
+        teamName,
+        projectPath,
+        currentTool,
+        currentToolInput,
+        lastTool,
+        lastToolInput,
+        lastMessage,
+        provider,
+        agentId,
+        agentName,
+        agentType,
+        parentSessionId,
+        lastSessionActivity,
+        activityAgeMs,
+    }) {
         this.id = id;
         this._customName = !!name; // Whether the name was assigned by a team
         this.name = name || this.generateName();
+        this.agentId = agentId || null;
+        this.agentName = agentName || name || null;
+        this.agentType = agentType || null;
+        this.parentSessionId = parentSessionId || null;
         this.model = model || 'unknown';
         this.effort = effort || null;
         this.status = status || AgentStatus.IDLE;
@@ -23,8 +50,12 @@ export class Agent {
         this.teamName = teamName;
         this.projectPath = projectPath;
         this.provider = provider || 'claude';
-        this.currentTool = lastTool || null;
-        this.currentToolInput = lastToolInput || null;
+        this.currentTool = currentTool || null;
+        this.currentToolInput = currentToolInput || null;
+        this.lastTool = lastTool || currentTool || null;
+        this.lastToolInput = lastToolInput || currentToolInput || null;
+        this.lastSessionActivity = lastSessionActivity || null;
+        this.activityAgeMs = Number.isFinite(Number(activityAgeMs)) ? Number(activityAgeMs) : null;
         this._lastMessage = lastMessage || null;
         this.appearance = Appearance.fromHash(id);
         this.position = new Position(20 + Math.random() * 10, 20 + Math.random() * 10);
@@ -39,6 +70,18 @@ export class Agent {
 
     get isIdle() {
         return this.status === AgentStatus.IDLE;
+    }
+
+    get isWaiting() {
+        return this.status === AgentStatus.WAITING;
+    }
+
+    get isSubagent() {
+        return !!this.parentSessionId || (this.agentType && this.agentType !== 'main');
+    }
+
+    get isToolFresh() {
+        return this.status === AgentStatus.WORKING && !!this.currentTool;
     }
 
     get cost() {
@@ -88,6 +131,15 @@ export class Agent {
             'WebSearch': 'observatory', 'WebFetch': 'observatory',
             'Edit': 'forge', 'Write': 'forge', 'NotebookEdit': 'alchemy',
             'Bash': 'mine',
+            'shell': 'mine',
+            'exec_command': 'mine',
+            'functions.exec_command': 'mine',
+            'functions.write_stdin': 'mine',
+            'apply_patch': 'forge',
+            'functions.apply_patch': 'forge',
+            'multi_tool_use.parallel': 'command',
+            'web.run': 'observatory',
+            'image_gen.imagegen': 'alchemy',
             'mcp__playwright__browser_navigate': 'portal',
             'mcp__playwright__browser_take_screenshot': 'portal',
             'mcp__playwright__browser_click': 'portal',
@@ -97,7 +149,18 @@ export class Agent {
             'SendMessage': 'chathall', 'TeamCreate': 'command',
             'command_execution': 'mine',
         };
-        return toolMap[this.currentTool] || null;
+        const mapped = toolMap[this.currentTool];
+        if (mapped) return mapped;
+
+        const tool = String(this.currentTool).toLowerCase();
+        if (tool.includes('exec_command') || tool.includes('bash') || tool.includes('shell')) return 'mine';
+        if (tool.includes('apply_patch') || tool.includes('edit') || tool.includes('write') || tool.includes('update_file') || tool.includes('create_file')) return 'forge';
+        if (tool.includes('read') || tool.includes('grep') || tool.includes('find') || tool.includes('search')) return 'archive';
+        if (tool.includes('web') || tool.includes('fetch') || tool.includes('browser')) return 'observatory';
+        if (tool.includes('spawn_agent') || tool.includes('task') || tool.includes('parallel')) return 'command';
+        if (tool.includes('wait_agent') || tool.includes('todo')) return 'taskboard';
+        if (tool.includes('image')) return 'alchemy';
+        return null;
     }
 
     /**

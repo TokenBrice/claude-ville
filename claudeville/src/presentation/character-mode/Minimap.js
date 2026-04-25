@@ -92,21 +92,26 @@ export class Minimap {
         // Agents
         for (const agent of world.agents.values()) {
             const isSelected = layers.selectedAgent?.id === agent.id;
+            const statusColor = agent.status === 'working' ? THEME.working :
+                agent.status === 'waiting' ? THEME.waiting : THEME.idle;
+            const x = agent.position.tileX * this.scale;
+            const y = agent.position.tileY * this.scale;
+            const radius = isSelected ? 3.2 : 2.2;
             ctx.fillStyle = agent.provider === 'codex' ? '#7be3d7' :
                 agent.provider === 'claude' ? '#f2d36b' :
                     agent.provider === 'gemini' ? '#b7ccff' :
-                    agent.status === 'working' ? THEME.working :
-                        agent.status === 'waiting' ? THEME.waiting : THEME.idle;
+                        statusColor;
             ctx.beginPath();
-            ctx.arc(
-                agent.position.tileX * this.scale,
-                agent.position.tileY * this.scale,
-                isSelected ? 3.2 : 2.2, 0, Math.PI * 2,
-            );
+            ctx.arc(x, y, radius, 0, Math.PI * 2);
             ctx.fill();
+            ctx.strokeStyle = statusColor;
+            ctx.lineWidth = 1.1;
+            ctx.stroke();
             if (isSelected) {
                 ctx.strokeStyle = '#fff1b8';
                 ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.arc(x, y, radius + 1.4, 0, Math.PI * 2);
                 ctx.stroke();
             }
         }

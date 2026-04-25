@@ -1,6 +1,7 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
 import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite } from './AgentSprite.js';
@@ -487,7 +488,7 @@ export class IsometricRenderer {
 
         for (const sprite of this.agentSprites.values()) {
             const agent = sprite.agent;
-            if (agent.currentTool === 'SendMessage' && agent.currentToolInput) {
+            if (agent.status === AgentStatus.WORKING && agent.currentTool === 'SendMessage' && agent.currentToolInput) {
                 senders.add(sprite);
 
                 // Skip if already chatting
@@ -498,7 +499,13 @@ export class IsometricRenderer {
                 let target = null;
                 for (const other of this.agentSprites.values()) {
                     if (other === sprite) continue;
-                    if (other.agent.name === recipientName) {
+                    const candidates = [
+                        other.agent.name,
+                        other.agent.agentName,
+                        other.agent.agentId,
+                        other.agent.id,
+                    ].filter(Boolean);
+                    if (candidates.includes(recipientName)) {
                         target = other;
                         break;
                     }
@@ -514,8 +521,10 @@ export class IsometricRenderer {
         for (const sprite of this.agentSprites.values()) {
             if (sprite.chatPartner && !senders.has(sprite)) {
                 // Keep it if the other side is still using SendMessage
-                if (sprite.chatPartner.agent.currentTool === 'SendMessage') continue;
+                if (senders.has(sprite.chatPartner)) continue;
+                const partner = sprite.chatPartner;
                 sprite.endChat();
+                if (partner.chatPartner === sprite) partner.endChat();
             }
         }
     }
