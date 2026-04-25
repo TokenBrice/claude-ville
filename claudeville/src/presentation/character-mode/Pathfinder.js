@@ -44,7 +44,7 @@ export class Pathfinder {
         // Fast path: if a tile-step line from `from` to `to` never crosses a blocked tile,
         // skip BFS entirely.
         if (this._lineWalkable(fx, fy, tx, ty)) {
-            return [{ tileX: to.tileX, tileY: to.tileY }];
+            return [{ tileX: tx, tileY: ty }];
         }
 
         // BFS.
@@ -105,7 +105,6 @@ export class Pathfinder {
     _simplify(tiles, bridgeTiles) {
         if (tiles.length <= 1) return tiles;
         const out = [];
-        let prev = tiles[0];
         let prevDir = null;
         for (let i = 0; i < tiles.length; i++) {
             const t = tiles[i];
@@ -119,7 +118,6 @@ export class Pathfinder {
             if (onBridge || dir !== prevDir) {
                 out.push(t);
             }
-            prev = t;
             prevDir = dir;
         }
         return out;
