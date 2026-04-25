@@ -1193,7 +1193,7 @@ export class AgentSprite {
         ctx.translate(this.x, this.y);
         ctx.scale(s, s); // fixed size in screen space
         ctx.translate(0, 38);
-        const name = this.agent.name;
+        const name = this.agent.displayName;
         ctx.font = 'bold 9px "Press Start 2P", monospace';
         const w = ctx.measureText(name).width + 10;
         ctx.fillStyle = 'rgba(242, 211, 107, 0.94)';

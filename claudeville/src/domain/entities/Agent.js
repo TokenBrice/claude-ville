@@ -93,6 +93,24 @@ export class Agent {
         return this._lastMessage || this.messages[this.messages.length - 1] || null;
     }
 
+    get displayName() {
+        const raw = String(this.name || '').trim();
+        if (!raw) {
+            return Agent.generateNameForLang(Appearance.hashCode(this.id), i18n.lang);
+        }
+        const CAP = 14;
+        if (raw.length <= CAP) return raw;
+        const words = raw.split(/\s+/);
+        let out = '';
+        for (const w of words) {
+            const next = out ? `${out} ${w}` : w;
+            if (next.length > CAP - 1) break;
+            out = next;
+        }
+        if (!out) out = raw.slice(0, CAP - 1);
+        return out + '…';
+    }
+
     update(data) {
         const updates = { ...(data || {}) };
         if (Object.prototype.hasOwnProperty.call(updates, 'tokens')) {
@@ -145,9 +163,10 @@ export class Agent {
     }
 
     /**
-     * Text to display in the speech bubble
+     * Text to display in the speech bubble (capped at ~24 chars).
      */
     get bubbleText() {
+        const CAP = 24;
         if (this.currentTool) {
             const toolLabel = {
                 'Read': 'Reading', 'Edit': 'Editing', 'Write': 'Writing',
@@ -156,11 +175,29 @@ export class Agent {
                 'WebSearch': 'Researching', 'WebFetch': 'Fetching',
                 'SendMessage': 'Messaging',
             }[this.currentTool] || this.currentTool;
-            const detail = this.currentToolInput ? ` ${this.currentToolInput}` : '';
-            return `${toolLabel}${detail}`.substring(0, 40);
+            const detail = Agent._compactInput(this.currentToolInput);
+            const full = detail ? `${toolLabel} ${detail}` : toolLabel;
+            return Agent._truncate(full, CAP);
         }
-        if (this._lastMessage) return this._lastMessage.substring(0, 40);
+        if (this._lastMessage) return Agent._truncate(this._lastMessage, CAP);
         return null;
+    }
+
+    static _compactInput(input) {
+        if (input == null) return '';
+        const raw = String(input).trim();
+        if (!raw) return '';
+        const lastSlash = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
+        const base = (lastSlash >= 0 ? raw.slice(lastSlash + 1) : raw).split(/\s+/)[0] || '';
+        // Drop hash-like inputs (long single token, hex/uuid/base32-ish)
+        if (base.length > 8 && /^[a-z0-9-]+$/i.test(base) && !/[aeiou]/i.test(base)) return '';
+        return base;
+    }
+
+    static _truncate(s, cap) {
+        const str = String(s);
+        if (str.length <= cap) return str;
+        return str.slice(0, cap - 1) + '…';
     }
 
     generateName() {
