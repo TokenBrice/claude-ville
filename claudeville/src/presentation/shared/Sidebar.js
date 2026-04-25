@@ -1,5 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
+import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 
 // Per-project color palette
 const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G' };
@@ -45,12 +46,14 @@ export class Sidebar {
                     <span class="sidebar__project-count">${groupAgents.length}</span>
                 </div>`;
             for (const agent of groupAgents) {
+                const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
+                const providerColor = identity.minimapColor || PROVIDER_COLORS[agent.provider] || '#8b8b9e';
                 html += `<div class="sidebar__agent ${agent.id === this.selectedId ? 'sidebar__agent--selected' : ''}"
                      data-agent-id="${agent.id}">
                     <span class="sidebar__agent-dot sidebar__agent-dot--${agent.status}"></span>
                     <div class="sidebar__agent-info">
                         <span class="sidebar__agent-name">${this._escape(agent.name)}</span>
-                        <span class="sidebar__agent-model"><span style="color:${PROVIDER_COLORS[agent.provider] || '#8b8b9e'};font-weight:bold">${PROVIDER_ICONS[agent.provider] || '?'}</span> ${this._shortModel(agent.model)}</span>
+                        <span class="sidebar__agent-model"><span style="color:${providerColor};font-weight:bold">${PROVIDER_ICONS[agent.provider] || '?'}</span> ${this._escape(this._shortModel(agent.model, agent.effort, agent.provider))}</span>
                     </div>
                 </div>`;
             }
@@ -109,12 +112,9 @@ export class Sidebar {
         return div.innerHTML;
     }
 
-    _shortModel(model) {
+    _shortModel(model, effort, provider) {
         if (!model) return '';
-        return model
-            .replace('claude-', '')
-            .replace('-20250929', '')
-            .replace('-20251001', '');
+        return formatModelLabel(model, effort, provider);
     }
 
     destroy() {

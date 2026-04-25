@@ -105,7 +105,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return (order[leftStatus] ?? 9) < (order[rightStatus] ?? 9)
         }
 
-        var agents: [(name: String, model: String, status: String)] = []
+        var agents: [(name: String, model: String, modelColor: String, status: String)] = []
         var working = 0, idle = 0, totalTokens = 0, totalCost: Double = 0
         var signatureParts: [String] = []
 
@@ -114,34 +114,50 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let name = (s["name"] as? String)
                 ?? (s["sessionId"] as? String)?.prefix(8).description
                 ?? "Unknown"
-            let model = (s["model"] as? String ?? "?")
-                .replacingOccurrences(of: "claude-", with: "")
-                .components(separatedBy: "-").first ?? "?"
+            let rawModel = s["model"] as? String ?? "?"
+            let effort = (s["reasoningEffort"] as? String) ?? (s["effort"] as? String)
+            let provider = s["provider"] as? String
+            let model = Self.modelLabel(rawModel, effort: effort, provider: provider)
+            let modelColor = Self.modelColor(rawModel, provider: provider)
             if status == "working" { working += 1 } else { idle += 1 }
             let tokenSource = s["tokenUsage"] as? [String: Any]
                 ?? s["tokens"] as? [String: Any]
                 ?? s["usage"] as? [String: Any]
-            if let tu = tokenSource {
-                let usage = Self.normalizeTokenUsage(tu)
-                totalTokens += usage.input + usage.output + usage.cacheRead + usage.cacheCreate
-            }
-            totalCost += (s["estimatedCost"] as? Double) ?? 0
-            signatureParts.append("\(name)|\(status)|\(model)|\(s["sessionId"] as? String ?? "")|\(String(format: "%.2f", totalCost))")
-            agents.append((name: name, model: model, status: status))
+            let normalizedUsage = Self.normalizeTokenUsage(tokenSource)
+            let sessionTokens = normalizedUsage.input + normalizedUsage.output + normalizedUsage.cacheRead + normalizedUsage.cacheCreate
+            totalTokens += sessionTokens
+
+            let estimatedCost = Self.toDouble(s["estimatedCost"]) ?? -1
+            let isEstimatedFinite = estimatedCost.isFinite && estimatedCost >= 0
+            let sessionCost = isEstimatedFinite
+                ? estimatedCost
+                : Self.estimateTokenCost(tokenSource, model: rawModel, provider: provider)
+
+            totalCost += sessionCost
+            let signatureSessionId = (s["sessionId"] as? String)
+                ?? (s["id"] as? String)
+                ?? String(signatureParts.count)
+            signatureParts.append("\(signatureSessionId)|\(status)|\(model)|\(sessionTokens)|\(String(format: "%.6f", sessionCost))")
+            agents.append((name: name, model: model, modelColor: modelColor, status: status))
         }
 
         let account = usage?["account"] as? [String: Any]
         let activity = usage?["activity"] as? [String: Any]
         let today = activity?["today"] as? [String: Any]
         let quota = usage?["quota"] as? [String: Any]
+        let msgs = Self.toInt(today?["messages"])
+        let sessions = Self.toInt(today?["sessions"])
+        let fiveHour = Self.toDouble(quota?["fiveHour"]) ?? 0
+        let sevenDay = Self.toDouble(quota?["sevenDay"]) ?? 0
+
         let quotaSignature = [
             usage?["quotaAvailable"] as? Bool == true ? "1" : "0",
             account?["rateLimitTier"] as? String ?? "",
             account?["subscriptionType"] as? String ?? "",
-            String(today?["messages"] as? Int ?? 0),
-            String(today?["sessions"] as? Int ?? 0),
-            String(quota?["fiveHour"] as? Double ?? 0),
-            String(quota?["sevenDay"] as? Double ?? 0),
+            String(msgs),
+            String(sessions),
+            String(fiveHour),
+            String(sevenDay),
         ].joined(separator: "|")
 
         let renderSignature = "\(sortedSessions.count)|\(working)|\(idle)|\(totalTokens)|\(String(format: "%.4f", totalCost))|\(quotaSignature)|\(signatureParts.joined(separator: "||"))"
@@ -169,16 +185,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
             if let activity = usage["activity"] as? [String: Any],
                let today = activity["today"] as? [String: Any] {
-                let msgs = today["messages"] as? Int ?? 0
-                let sess = today["sessions"] as? Int ?? 0
+                let msgs = Self.toInt(today["messages"])
+                let sess = Self.toInt(today["sessions"])
                 let msgsStr = msgs >= 1000 ? String(format: "%.1fK", Double(msgs)/1000) : "\(msgs)"
                 activityStr = "\(msgsStr) msgs / \(sess) sessions"
             }
             if let qa = usage["quotaAvailable"] as? Bool, qa,
                let quota = usage["quota"] as? [String: Any] {
                 quotaAvailable = true
-                fiveHourPct = Int((quota["fiveHour"] as? Double ?? 0) * 100)
-                sevenDayPct = Int((quota["sevenDay"] as? Double ?? 0) * 100)
+                let rawFiveHour = max(0, Self.toDouble(quota["fiveHour"]) ?? 0)
+                let rawSevenDay = max(0, Self.toDouble(quota["sevenDay"]) ?? 0)
+                let normalizedFiveHour = rawFiveHour > 1 ? rawFiveHour / 100 : rawFiveHour
+                let normalizedSevenDay = rawSevenDay > 1 ? rawSevenDay / 100 : rawSevenDay
+                fiveHourPct = Int((max(0, min(1, normalizedFiveHour)) * 100).rounded())
+                sevenDayPct = Int((max(0, min(1, normalizedSevenDay)) * 100).rounded())
             }
         }
 
@@ -204,13 +224,58 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         return "Free"
     }
 
-    static func buildHTML(agents: [(name: String, model: String, status: String)],
+    static func normalizedEffort(_ effort: String?) -> String? {
+        let normalized = (effort ?? "").lowercased()
+        if normalized.isEmpty { return nil }
+        if normalized == "none" { return "none" }
+        if normalized.contains("xhigh") || normalized.contains("extra") { return "xhigh" }
+        if normalized.contains("high") { return "high" }
+        if normalized.contains("medium") { return "medium" }
+        if normalized.contains("low") { return "low" }
+        return normalized
+    }
+
+    static func modelLabel(_ model: String, effort: String?, provider: String?) -> String {
+        let normalizedModel = model.lowercased()
+            .replacingOccurrences(of: ".", with: "-")
+            .replacingOccurrences(of: "_", with: "-")
+        let normalizedProvider = (provider ?? "").lowercased()
+        let base: String
+        if normalizedModel.contains("gpt-5-3-codex-spark") {
+            base = "5.3 Spark"
+        } else if normalizedModel.contains("gpt-5-5") {
+            base = "5.5"
+        } else if normalizedProvider.contains("codex") || normalizedModel.contains("codex") || normalizedModel.contains("gpt") {
+            base = model
+        } else {
+            base = model
+                .replacingOccurrences(of: "claude-", with: "")
+                .components(separatedBy: "-").first ?? model
+        }
+
+        guard let effort = normalizedEffort(effort), effort != "none" else { return base }
+        let effortLabels = ["medium": "med"]
+        return "\(base) \(effortLabels[effort] ?? effort)"
+    }
+
+    static func modelColor(_ model: String, provider: String?) -> String {
+        let normalizedModel = model.lowercased()
+            .replacingOccurrences(of: ".", with: "-")
+            .replacingOccurrences(of: "_", with: "-")
+        let normalizedProvider = (provider ?? "").lowercased()
+        if normalizedModel.contains("gpt-5-3-codex-spark") { return "#f8e36f" }
+        if normalizedModel.contains("gpt-5-5") { return "#fff1b8" }
+        if normalizedProvider.contains("codex") || normalizedModel.contains("codex") || normalizedModel.contains("gpt") { return "#7be3d7" }
+        return "#64748b"
+    }
+
+    static func buildHTML(agents: [(name: String, model: String, modelColor: String, status: String)],
                           working: Int, idle: Int, tokens: String, cost: String, offline: Bool,
                           tier: String = "", activity: String = "",
                           quotaAvailable: Bool = false,
                           fiveHourPct: Int = 0, sevenDayPct: Int = 0) -> String {
         let sorted = agents.sorted { a, b in
-            let order: [String: Int] = ["active": 0, "working": 0, "waiting": 1, "idle": 2]
+            let order: [String: Int] = ["working": 0, "waiting": 1, "idle": 2]
             return (order[a.status] ?? 9) < (order[b.status] ?? 9)
         }
 
@@ -235,13 +300,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 let isWaiting = a.status == "waiting"
                 let isIdle = a.status == "idle"
                 let dotColor = isWorking ? "#4ade80" : isWaiting ? "#f59e0b" : "#60a5fa"
-                let statusText = isWorking ? "Working..." : isWaiting ? "Waiting..." : isIdle ? "Idle" : String(a.status).capitalized
+                let statusText = isWorking ? "Working..." : isWaiting ? "Waiting..." : isIdle ? "Idle" : "Idle"
                 let opacity = isWaiting || isWorking ? "1" : "0.6"
                 rows += """
                 <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;opacity:\(opacity)">
                   <span style="color:\(dotColor);font-size:8px">●</span>
                   <span style="flex:1;font-size:12px;color:#e2e8f0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">\(escHTML(a.name))</span>
-                  <span style="font-size:9px;color:#64748b;font-family:monospace">\(escHTML(a.model))</span>
+                  <span style="font-size:9px;color:\(escHTML(a.modelColor));font-family:monospace">\(escHTML(a.model))</span>
                   <span style="font-size:10px;color:\(dotColor)">\(statusText)</span>
                 </div>
                 """
@@ -353,12 +418,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     static func normalizeStatus(_ status: String?) -> String {
-        let normalized = String(status ?? "idle").lowercased()
-        return normalized == "active" ? "working" : normalized
+        let normalized = String(status ?? "idle").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if normalized == "active" || normalized == "working" { return "working" }
+        if normalized == "waiting" { return "waiting" }
+        return normalized == "idle" ? "idle" : "idle"
     }
 
-    static func normalizeTokenUsage(_ usage: [String: Any]) -> (input: Int, output: Int, cacheRead: Int, cacheCreate: Int) {
-        let input = Self.readFirstInt(
+    static func normalizeTokenUsage(_ usage: [String: Any]?) -> (input: Int, output: Int, cacheRead: Int, cacheCreate: Int) {
+        guard let usage = usage else {
+            return (input: 0, output: 0, cacheRead: 0, cacheCreate: 0)
+        }
+
+        let input = Self.readFirstNumber(
             usage,
             keys: [
                 "input",
@@ -370,9 +441,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "promptTokens",
                 "total_input_tokens",
             ]
-        ) ?? 0
+        ) ?? 0.0
 
-        let output = Self.readFirstInt(
+        let output = Self.readFirstNumber(
             usage,
             keys: [
                 "output",
@@ -384,9 +455,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "completionTokens",
                 "total_output_tokens",
             ]
-        ) ?? 0
+        ) ?? 0.0
 
-        let cacheRead = Self.readFirstInt(
+        let cacheRead = Self.readFirstNumber(
             usage,
             keys: [
                 "cacheRead",
@@ -395,9 +466,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "cache_read_input_tokens",
                 "cacheReadInputTokens",
             ]
-        ) ?? 0
+        ) ?? 0.0
 
-        let cacheCreate = Self.readFirstInt(
+        let cacheCreate = Self.readFirstNumber(
             usage,
             keys: [
                 "cacheCreate",
@@ -407,31 +478,73 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 "cache_write",
                 "cache_creation_input_tokens",
             ]
-        ) ?? 0
+        ) ?? 0.0
 
         return (
-            input: max(0, input),
-            output: max(0, output),
-            cacheRead: max(0, cacheRead),
-            cacheCreate: max(0, cacheCreate),
+            input: Int(max(0, input.rounded())),
+            output: Int(max(0, output.rounded())),
+            cacheRead: Int(max(0, cacheRead.rounded())),
+            cacheCreate: Int(max(0, cacheCreate.rounded())),
         )
     }
 
-    static func readFirstInt(_ usage: [String: Any], keys: [String]) -> Int? {
+    static let claudeRates: [(match: String, input: Double, output: Double, cacheRead: Double, cacheCreate: Double)] = [
+        (match: "opus", input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75),
+        (match: "sonnet", input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75),
+        (match: "haiku", input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1),
+    ]
+
+    static let openAIRates: [(match: String, input: Double, output: Double, cacheRead: Double, cacheCreate: Double)] = [
+        (match: "gpt-5.5", input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0),
+        (match: "gpt-5.4", input: 10, output: 80, cacheRead: 1, cacheCreate: 0),
+        (match: "gpt-5.3", input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0),
+        (match: "gpt-5", input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0),
+    ]
+
+    static let defaultClaudeRates = (input: 3.0, output: 15.0, cacheRead: 0.3, cacheCreate: 3.75)
+    static let defaultOpenAIRates = (input: 1.25, output: 10.0, cacheRead: 0.125, cacheCreate: 0.0)
+
+    static func pricingForModel(_ model: String?, _ provider: String?) -> (input: Double, output: Double, cacheRead: Double, cacheCreate: Double) {
+        let normalizedModel = (model ?? "").lowercased()
+        let normalizedProvider = (provider ?? "").lowercased()
+        let table = (normalizedProvider == "codex" || normalizedModel.contains("gpt")) ? Self.openAIRates : Self.claudeRates
+        if let match = table.first(where: { normalizedModel.contains($0.match) }) {
+            return (input: match.input, output: match.output, cacheRead: match.cacheRead, cacheCreate: match.cacheCreate)
+        }
+        return normalizedProvider == "codex" || normalizedModel.contains("gpt") ? Self.defaultOpenAIRates : Self.defaultClaudeRates
+    }
+
+    static func estimateTokenCost(_ usage: [String: Any]?, model: String?, provider: String?) -> Double {
+        let normalizedUsage = Self.normalizeTokenUsage(usage)
+        let rates = Self.pricingForModel(model, provider)
+        let total = Double(normalizedUsage.input) * rates.input
+            + Double(normalizedUsage.output) * rates.output
+            + Double(normalizedUsage.cacheRead) * rates.cacheRead
+            + Double(normalizedUsage.cacheCreate) * rates.cacheCreate
+        return max(0, total / 1_000_000)
+    }
+
+    static func readFirstNumber(_ usage: [String: Any], keys: [String]) -> Double? {
         for key in keys {
-            if let value = usage[key], let intValue = Self.toInt(value) {
-                return intValue
+            if let value = usage[key], let parsed = Self.toDouble(value) {
+                return parsed
             }
         }
         return nil
     }
 
-    static func toInt(_ value: Any) -> Int? {
-        if let num = value as? NSNumber { return num.intValue }
-        if let intValue = value as? Int { return intValue }
-        if let doubleValue = value as? Double { return Int(doubleValue) }
-        if let stringValue = value as? String, let parsed = Double(stringValue) { return Int(parsed) }
+    static func toDouble(_ value: Any?) -> Double? {
+        if let num = value as? NSNumber { return num.doubleValue }
+        if let intValue = value as? Int { return Double(intValue) }
+        if let doubleValue = value as? Double { return doubleValue }
+        if let floatValue = value as? Float { return Double(floatValue) }
+        if let stringValue = value as? String { return Double(stringValue.trimmingCharacters(in: .whitespacesAndNewlines)) }
         return nil
+    }
+
+    static func toInt(_ value: Any?) -> Int {
+        guard let parsed = Self.toDouble(value), parsed.isFinite else { return 0 }
+        return max(0, Int(parsed.rounded()))
     }
 
     // MARK: - Server Management

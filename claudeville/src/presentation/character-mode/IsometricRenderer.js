@@ -343,8 +343,20 @@ export class IsometricRenderer {
     }
 
     show(canvas) {
+        if (!canvas || typeof canvas.getContext !== 'function') {
+            console.warn('[IsometricRenderer] show skipped: invalid canvas element');
+            return;
+        }
+        if (this.running) {
+            this.hide();
+        }
+
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
+        if (!this.ctx) {
+            console.warn('[IsometricRenderer] show skipped: failed to get 2d context');
+            return;
+        }
         this.camera = new Camera(canvas);
         this.camera.attach();
         this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
@@ -619,6 +631,8 @@ export class IsometricRenderer {
     _render() {
         const ctx = this.ctx;
         const canvas = this.canvas;
+        if (!ctx || !canvas) return;
+        if (!canvas.width || !canvas.height) return;
 
         // Clear
         ctx.setTransform(1, 0, 0, 1, 0, 0);

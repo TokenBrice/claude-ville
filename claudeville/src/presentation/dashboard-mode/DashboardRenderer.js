@@ -3,6 +3,7 @@ import { AvatarCanvas } from './AvatarCanvas.js';
 import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
+import { formatModelLabel, getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 
 const TOOL_ICONS = {
     Read: '📖', Edit: '✏️', Write: '📝', Grep: '🔍', Glob: '📁',
@@ -301,7 +302,10 @@ export class DashboardRenderer {
 
         // Header
         refs.name.textContent = agent.name;
-        refs.model.textContent = this._shortModel(agent.model);
+        const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
+        refs.model.textContent = this._shortModel(agent.model, agent.effort, agent.provider);
+        refs.model.style.color = identity.accent?.[0] || '';
+        refs.model.title = identity.label || agent.model || '';
         refs.role.textContent = agent.role || '';
 
         // Provider badge
@@ -428,9 +432,9 @@ export class DashboardRenderer {
         return TOOL_CATEGORIES[tool] || 'other';
     }
 
-    _shortModel(model) {
+    _shortModel(model, effort, provider) {
         if (!model) return '';
-        return model.replace('claude-', '').replace(/-\d{8}$/, '');
+        return formatModelLabel(model, effort, provider);
     }
 
     _truncate(str, max) {

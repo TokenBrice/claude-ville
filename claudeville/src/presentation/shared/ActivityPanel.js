@@ -2,6 +2,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
+import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 
 const TOOL_ICONS = {
     Read: '\u{1F4D6}', Edit: '\u270F\uFE0F', Write: '\u{1F4DD}',
@@ -107,8 +108,10 @@ export class ActivityPanel {
             working: '#4ade80', idle: '#60a5fa', waiting: '#f97316',
         }[status] || '#8b8b9e';
 
-        this.dom.panelModel.textContent =
-            (agent.model || '').replace('claude-', '').replace(/-2025\d+/, '');
+        const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
+        this.dom.panelModel.textContent = formatModelLabel(agent.model, agent.effort, agent.provider);
+        this.dom.panelModel.style.color = identity.accent?.[0] || '';
+        this.dom.panelModel.title = identity.label || agent.model || '';
         this.dom.panelProvider.textContent = agent.provider || 'claude';
         this.dom.panelRole.textContent = agent.role || 'general';
         this.dom.panelTeam.textContent = agent.teamName || '-';

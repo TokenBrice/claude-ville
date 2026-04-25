@@ -3,6 +3,7 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { TILE_WIDTH, TILE_HEIGHT, AGENT_SPEED } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
+import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 
 const PROVIDER_PROFILES = {
     claude: {
@@ -399,7 +400,10 @@ export class AgentSprite {
         const profile = PROVIDER_PROFILES[providerKey] || DEFAULT_PROFILE;
         const hash = Math.abs(this._hash(`${this.agent.id}:${this.agent.model || ''}:${providerKey}`));
         const pick = (items, offset = 0) => items[(hash >> offset) % items.length];
-        const modelTier = this._modelTier();
+        const modelIdentity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
+        const modelTier = modelIdentity.modelTier || this._modelTier();
+        const trim = pick(modelIdentity.trim || profile.trim, 18);
+        const accent = pick(modelIdentity.accent || profile.accent, 22);
 
         const app = {
             ...base,
@@ -413,11 +417,12 @@ export class AgentSprite {
             app,
             profile,
             hash,
-            trim: pick(profile.trim, 18),
-            accent: pick(profile.accent, 22),
+            trim,
+            accent,
             variant: hash % 4,
+            modelClass: modelIdentity.modelClass,
             modelTier,
-            effortTier: this._effortTier(),
+            effortTier: modelIdentity.effortTier || this._effortTier(),
             providerKey,
             bodyWidth: modelTier === 'apex' ? 10 : modelTier === 'strong' ? 9 : 8,
             modelScale: modelTier === 'apex' ? 1.08 : modelTier === 'swift' ? 0.96 : 1,
@@ -435,6 +440,7 @@ export class AgentSprite {
 
     _modelTier() {
         const model = String(this.agent.model || '').toLowerCase();
+        if (model.includes('spark')) return 'swift';
         if (model.includes('opus') || model.includes('5.5') || model.includes('pro')) return 'apex';
         if (model.includes('sonnet') || model.includes('5.4') || model.includes('5.3')) return 'strong';
         if (model.includes('haiku') || model.includes('mini') || model.includes('flash')) return 'swift';
@@ -471,7 +477,7 @@ export class AgentSprite {
             high: 0.2,
             xhigh: 0.28,
         }[sprite.effortTier] || 0;
-        const modelAlpha = sprite.modelTier === 'apex' ? 0.16 : sprite.modelTier === 'strong' ? 0.09 : 0;
+        const modelAlpha = sprite.modelClass === 'spark' ? 0.18 : sprite.modelTier === 'apex' ? 0.16 : sprite.modelTier === 'strong' ? 0.09 : 0;
         const alpha = effortAlpha + modelAlpha;
         if (alpha <= 0) return;
 
@@ -483,7 +489,14 @@ export class AgentSprite {
         ctx.beginPath();
         ctx.ellipse(0, 10, 26, 13, 0, 0, Math.PI * 2);
         ctx.stroke();
-        if (sprite.modelTier === 'apex') {
+        if (sprite.modelClass === 'spark') {
+            ctx.beginPath();
+            ctx.moveTo(-13, -3);
+            ctx.lineTo(-3, -10);
+            ctx.lineTo(5, -8);
+            ctx.lineTo(13, -14);
+            ctx.stroke();
+        } else if (sprite.modelTier === 'apex') {
             ctx.beginPath();
             ctx.ellipse(0, -12, 15, 6, 0, 0, Math.PI * 2);
             ctx.stroke();
@@ -625,7 +638,42 @@ export class AgentSprite {
         }[sprite.modelTier] || sprite.trim;
 
         ctx.fillStyle = color;
-        if (sprite.modelTier === 'apex') {
+        if (sprite.modelClass === 'spark') {
+            ctx.fillStyle = sprite.accent;
+            ctx.beginPath();
+            ctx.moveTo(1, -2);
+            ctx.lineTo(6, -2);
+            ctx.lineTo(2, 3);
+            ctx.lineTo(6, 3);
+            ctx.lineTo(-1, 10);
+            ctx.lineTo(1, 5);
+            ctx.lineTo(-4, 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = sprite.trim;
+            ctx.lineWidth = 0.7;
+            ctx.stroke();
+        } else if (sprite.modelClass === 'gpt55') {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(0, 3, 5, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(0, -2);
+            ctx.lineTo(5, 3);
+            ctx.lineTo(0, 8);
+            ctx.lineTo(-5, 3);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(3, 3);
+            ctx.lineTo(0, 6);
+            ctx.lineTo(-3, 3);
+            ctx.closePath();
+            ctx.fill();
+        } else if (sprite.modelTier === 'apex') {
             ctx.strokeStyle = color;
             ctx.lineWidth = 1;
             ctx.beginPath();
@@ -956,6 +1004,18 @@ export class AgentSprite {
             ctx.lineWidth = sprite.effortTier === 'xhigh' ? 1.4 : 0.9;
             ctx.beginPath();
             ctx.arc(0, -6, sprite.effortTier === 'xhigh' ? 12 : 10, Math.PI * 1.12, Math.PI * 1.88);
+            ctx.stroke();
+        }
+        if (sprite.modelClass === 'spark' && sprite.effortTier === 'xhigh') {
+            ctx.strokeStyle = sprite.accent;
+            ctx.lineWidth = 0.9;
+            ctx.beginPath();
+            ctx.moveTo(14, -15);
+            ctx.lineTo(18, -19);
+            ctx.moveTo(16, -10);
+            ctx.lineTo(22, -11);
+            ctx.moveTo(12, -2);
+            ctx.lineTo(16, 1);
             ctx.stroke();
         }
     }

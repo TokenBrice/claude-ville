@@ -226,13 +226,41 @@
       return map[normalized] || 'Idle';
     }
 
-    function getModelLabel(model) {
-      const map = {
-        opus: 'opus',
-        sonnet: 'sonnet',
-        haiku: 'haiku',
-      };
-      return map[model] || (model || '?');
+    function normalizeReasoningEffort(effort) {
+      const normalized = String(effort || '').toLowerCase();
+      if (!normalized || normalized === 'none') return normalized ? 'none' : null;
+      if (normalized.includes('xhigh') || normalized.includes('extra')) return 'xhigh';
+      if (normalized.includes('high')) return 'high';
+      if (normalized.includes('medium')) return 'medium';
+      if (normalized.includes('low')) return 'low';
+      return normalized;
+    }
+
+    function getModelIdentity(model, effort, provider) {
+      const normalizedModel = String(model || '').toLowerCase().replace(/[._]/g, '-').replace(/\s+/g, '-');
+      const normalizedProvider = String(provider || '').toLowerCase();
+      const effortTier = normalizeReasoningEffort(effort);
+      if (normalizedModel.includes('gpt-5-3-codex-spark')) {
+        return { label: '5.3 Spark', effortTier, color: '#f8e36f' };
+      }
+      if (normalizedModel.includes('gpt-5-5')) {
+        return { label: '5.5', effortTier, color: '#fff1b8' };
+      }
+      if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
+        return { label: model || 'Codex', effortTier, color: '#7be3d7' };
+      }
+      return { label: model || '?', effortTier, color: '#64748b' };
+    }
+
+    function getModelLabel(model, effort, provider) {
+      const identity = getModelIdentity(model, effort, provider);
+      const effortLabels = { low: 'low', medium: 'med', high: 'high', xhigh: 'xhigh' };
+      const suffix = identity.effortTier && identity.effortTier !== 'none'
+        ? ` ${effortLabels[identity.effortTier] || identity.effortTier}`
+        : '';
+      return `${identity.label}${suffix}`
+        .replace('claude-', '')
+        .replace(/-\d{8}$/, '');
     }
 
     // ── Badge update (Swift bridge) ───────────────────────
@@ -258,6 +286,7 @@
         els.idleCount.textContent = '0';
         els.totalTokens.textContent = '0 tokens';
         els.totalCost.textContent = '$0.00';
+        clearQuota();
         postBadge(0, 0);
         return;
       }
@@ -275,6 +304,7 @@
         els.idleCount.textContent = '0';
         els.totalTokens.textContent = '0 tokens';
         els.totalCost.textContent = '$0.00';
+        clearQuota();
         postBadge(0, list.length);
         return;
       }
@@ -305,7 +335,8 @@
         summary.push({
           id: s.sessionId || s.id || '',
           status,
-          model: getModelLabel(s.model),
+          model: getModelLabel(s.model, s.reasoningEffort || s.effort, s.provider),
+          modelColor: getModelIdentity(s.model, s.reasoningEffort || s.effort, s.provider).color,
           activity: getStatusLabel(status),
           tokens: sessionTokens,
           cost,
@@ -314,7 +345,7 @@
       });
 
       const signature = `${sorted.length}|${workingCount}|${idleCount}|${totalTokens}|${totalCost.toFixed(6)}|` +
-        summary.map(item => `${item.id}|${item.status}|${item.model}|${item.tokens}|${item.cost.toFixed(6)}`).join('|');
+        summary.map(item => `${item.id}|${item.status}|${item.model}|${item.modelColor}|${item.tokens}|${item.cost.toFixed(6)}`).join('|');
       if (signature === lastAgentsSignature) return;
       lastAgentsSignature = signature;
 
@@ -336,7 +367,7 @@
                 <div class="agent-name">${escHtml(s.displayName)}</div>
                 <div class="agent-activity">${escHtml(s.activity)}</div>
               </div>
-              <span class="agent-model">${escHtml(s.model)}</span>
+              <span class="agent-model" style="color:${escHtml(s.modelColor)}">${escHtml(s.model)}</span>
             </div>`;
         })
         .join('');
@@ -354,7 +385,8 @@
 
     // ── Quota rendering ──────────────────────────────────────
     function renderQuota(usage) {
-      if (!usage) {
+      const hasUsage = usage && typeof usage === 'object';
+      if (!hasUsage) {
         clearQuota();
         return;
       }
@@ -391,8 +423,10 @@
       const barsEl = els.quotaBars;
       if (usage.quotaAvailable && usage.quota) {
         barsEl.style.display = 'flex';
-        updateQuotaBar('quota-5h-fill', 'quota-5h-pct', usage.quota.fiveHour);
-        updateQuotaBar('quota-7d-fill', 'quota-7d-pct', usage.quota.sevenDay);
+        const fiveHour = toNumber(usage.quota.fiveHour);
+        const sevenDay = toNumber(usage.quota.sevenDay);
+        updateQuotaBar('quota-5h-fill', 'quota-5h-pct', fiveHour > 1 ? fiveHour / 100 : fiveHour);
+        updateQuotaBar('quota-7d-fill', 'quota-7d-pct', sevenDay > 1 ? sevenDay / 100 : sevenDay);
       } else {
         barsEl.style.display = 'none';
         updateQuotaBar('quota-5h-fill', 'quota-5h-pct', 0);
@@ -412,8 +446,7 @@
     }
 
     function updateQuotaBar(fillId, pctId, value) {
-      if (value == null) return;
-      const pct = Math.round(value * 100);
+      const pct = Math.max(0, Math.min(100, Math.round(toNumber(value) * 100)));
       const fillEl = fillId === 'quota-5h-fill' ? quotaEls.fill5h : quotaEls.fill7d;
       const pctEl = pctId === 'quota-5h-pct' ? quotaEls.pct5h : quotaEls.pct7d;
       fillEl.style.width = pct + '%';
@@ -448,7 +481,7 @@
           const data = JSON.parse(event.data);
           if (data.type === 'init' || data.type === 'update') {
             renderAgents(data.sessions || []);
-            if (data.usage) renderQuota(data.usage);
+            renderQuota(data.usage);
           }
         } catch (e) {
           console.error('WS parse error', e);

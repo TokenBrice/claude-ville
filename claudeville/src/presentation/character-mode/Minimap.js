@@ -1,5 +1,6 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
+import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 
 const MINIMAP_SIZE = 150;
 
@@ -78,16 +79,37 @@ export class Minimap {
             const isSelected = layers.selectedAgent?.id === agent.id;
             const statusColor = agent.status === 'working' ? THEME.working :
                 agent.status === 'waiting' ? THEME.waiting : THEME.idle;
+            const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
             const x = agent.position.tileX * this.scale;
             const y = agent.position.tileY * this.scale;
-            const radius = isSelected ? 3.2 : 2.2;
-            ctx.fillStyle = agent.provider === 'codex' ? '#7be3d7' :
+            const radius = isSelected ? 3.2 : identity.modelTier === 'apex' ? 2.7 : 2.2;
+            ctx.fillStyle = identity.minimapColor || (agent.provider === 'codex' ? '#7be3d7' :
                 agent.provider === 'claude' ? '#f2d36b' :
                     agent.provider === 'gemini' ? '#b7ccff' :
-                        statusColor;
-            ctx.beginPath();
-            ctx.arc(x, y, radius, 0, Math.PI * 2);
-            ctx.fill();
+                        statusColor);
+            if (identity.modelClass === 'spark') {
+                ctx.beginPath();
+                ctx.moveTo(x, y - radius - 1);
+                ctx.lineTo(x + radius, y);
+                ctx.lineTo(x + 1, y);
+                ctx.lineTo(x + radius - 1, y + radius + 1);
+                ctx.lineTo(x - radius, y + 1);
+                ctx.lineTo(x - 1, y);
+                ctx.closePath();
+                ctx.fill();
+            } else if (identity.modelClass === 'gpt55') {
+                ctx.beginPath();
+                ctx.moveTo(x, y - radius - 1);
+                ctx.lineTo(x + radius + 1, y);
+                ctx.lineTo(x, y + radius + 1);
+                ctx.lineTo(x - radius - 1, y);
+                ctx.closePath();
+                ctx.fill();
+            } else {
+                ctx.beginPath();
+                ctx.arc(x, y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
             ctx.strokeStyle = statusColor;
             ctx.lineWidth = 1.1;
             ctx.stroke();

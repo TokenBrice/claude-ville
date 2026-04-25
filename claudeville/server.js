@@ -23,6 +23,8 @@ const PORT = 4000;
 const STATIC_DIR = __dirname;
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 const ALLOWED_SESSION_PROVIDERS = Object.freeze(new Set(['claude', 'codex', 'gemini']));
+const STARTUP_BOOTSTRAP_DELAY_MS = 25;
+const STARTUP_STATS_WARNING_MS = 1500;
 
 // ─── MIME type mapping ─────────────────────────────────────
 const MIME_TYPES = {
@@ -77,21 +79,24 @@ function formatAge(ms) {
   return `${hours}h ago`;
 }
 
-function printStartupStats(providers) {
-  let sessions = [];
-  let watchPaths = [];
-
+function safeCollect(label, fn, fallback = null, warnMs = STARTUP_STATS_WARNING_MS) {
+  const start = Date.now();
   try {
-    sessions = getAllSessions(ACTIVE_THRESHOLD_MS);
+    const value = fn();
+    const elapsed = Date.now() - start;
+    if (elapsed >= warnMs) {
+      console.log(`[Perf] ${label} took ${elapsed}ms`);
+    }
+    return value;
   } catch (err) {
-    console.log(`  [Stats] Sessions unavailable: ${err.message}`);
+    console.error(`[${label}] ${err.message}`);
+    return fallback;
   }
+}
 
-  try {
-    watchPaths = getAllWatchPaths();
-  } catch {
-    watchPaths = [];
-  }
+function printStartupStats(providers) {
+  const sessions = safeCollect('getAllSessions', () => getAllSessions(ACTIVE_THRESHOLD_MS), []);
+  const watchPaths = safeCollect('getAllWatchPaths', getAllWatchPaths, []);
 
   const providerCounts = new Map();
   for (const session of sessions) {
@@ -116,6 +121,8 @@ function printStartupStats(providers) {
   console.log(`    - Latest activity: ${latestActivity ? formatAge(Date.now() - latestActivity) : 'none'}`);
   console.log(`    - Watch paths configured: ${watchPaths.length}`);
   console.log('');
+
+  return { sessions, watchPaths };
 }
 
 // ─── API handlers ─────────────────────────────────────────
@@ -505,8 +512,8 @@ function debouncedBroadcast() {
 
 // ─── File watching (multi-provider) ────────────────────────
 
-function startFileWatcher() {
-  const watchPaths = getAllWatchPaths();
+function startFileWatcher(initialWatchPaths = null) {
+  const watchPaths = Array.isArray(initialWatchPaths) ? initialWatchPaths : safeCollect('getAllWatchPaths', getAllWatchPaths, []);
   let watchCount = 0;
 
   for (const wp of watchPaths) {
@@ -633,12 +640,12 @@ server.listen(PORT, () => {
   }
   console.log('');
 
-  printStartupStats(providers);
-
-  // Initialize the usage quota service
-  usageQuota.init();
-
-  startFileWatcher();
+  setTimeout(() => {
+    const startupStats = printStartupStats(providers);
+    // Initialize the usage quota service
+    usageQuota.init();
+    startFileWatcher(startupStats.watchPaths);
+  }, STARTUP_BOOTSTRAP_DELAY_MS);
 });
 
 // ─── Error handling ────────────────────────────────────────

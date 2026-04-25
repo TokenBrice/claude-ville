@@ -2,6 +2,8 @@
  * Mini character avatar canvas for the dashboard
  * Static recreation of AgentSprite drawing logic
  */
+import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
+
 export class AvatarCanvas {
     constructor(agent) {
         this.agent = agent;
@@ -17,6 +19,9 @@ export class AvatarCanvas {
         const w = this.canvas.width;
         const h = this.canvas.height;
         const app = this.agent.appearance;
+        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
+        const trim = identity.trim?.[0] || app.shirt;
+        const accent = identity.accent?.[0] || app.skin;
 
         ctx.clearRect(0, 0, w, h);
         ctx.save();
@@ -39,8 +44,9 @@ export class AvatarCanvas {
         ctx.stroke();
 
         // Body
-        ctx.fillStyle = app.shirt;
+        ctx.fillStyle = identity.family === 'codex' ? trim : app.shirt;
         ctx.fillRect(-5, -2, 10, 12);
+        this._drawModelInsignia(ctx, identity, accent, trim);
 
         // Arms
         ctx.strokeStyle = app.skin;
@@ -167,5 +173,36 @@ export class AvatarCanvas {
         }
 
         ctx.restore();
+    }
+
+    _drawModelInsignia(ctx, identity, accent, trim) {
+        if (identity.modelClass === 'spark') {
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.moveTo(1, -1);
+            ctx.lineTo(5, -1);
+            ctx.lineTo(2, 3);
+            ctx.lineTo(5, 3);
+            ctx.lineTo(-1, 9);
+            ctx.lineTo(1, 5);
+            ctx.lineTo(-3, 5);
+            ctx.closePath();
+            ctx.fill();
+            return;
+        }
+
+        if (identity.modelClass === 'gpt55') {
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.lineTo(4, 4);
+            ctx.lineTo(0, 8);
+            ctx.lineTo(-4, 4);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.fillStyle = trim;
+            ctx.fillRect(-1, 3, 2, 2);
+        }
     }
 }

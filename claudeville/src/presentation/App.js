@@ -108,18 +108,41 @@ class App {
             const module = await import('./character-mode/IsometricRenderer.js');
             const canvas = document.getElementById('worldCanvas');
 
-            if (module.IsometricRenderer && canvas) {
-                this.renderer = new module.IsometricRenderer(this.world);
-                this.renderer.show(canvas);
-                // Recenter the camera after the canvas size is set
-                if (this.renderer.camera) {
+            if (!module.IsometricRenderer) {
+                throw new Error('IsometricRenderer module missing export');
+            }
+
+            if (!canvas) {
+                if (!this._loadRendererRetryScheduled) {
+                    this._loadRendererRetryScheduled = true;
+                    requestAnimationFrame(() => {
+                        this._loadRendererRetryScheduled = false;
+                        void this._loadRenderer();
+                    });
+                }
+                console.warn('[App] worldCanvas not found yet (retrying render mount)');
+                return;
+            }
+
+            if (this.renderer) {
+                // Avoid duplicated subscriptions/render loops if boot/refresh is retried.
+                this.renderer.hide();
+            }
+
+            this.renderer = new module.IsometricRenderer(this.world);
+            this.renderer.show(canvas);
+
+            requestAnimationFrame(() => {
+                if (this.renderer && this.renderer.camera) {
                     this.renderer.camera.centerOnMap();
                 }
-                this.renderer.onAgentSelect = (agent) => {
-                    if (agent) eventBus.emit('agent:selected', agent);
-                };
-                console.log('[App] IsometricRenderer loaded');
-            }
+            });
+
+            this.renderer.onAgentSelect = (agent) => {
+                if (agent) eventBus.emit('agent:selected', agent);
+            };
+
+            console.log('[App] IsometricRenderer loaded');
         } catch (err) {
             console.warn('[App] IsometricRenderer not available yet (waiting on canvas-artist work):', err.message);
         }
@@ -157,11 +180,27 @@ class App {
         const canvas = document.getElementById('worldCanvas');
         const container = canvas?.parentElement;
         if (!canvas || !container) return;
+        if (this._resizeHandle) {
+            cancelAnimationFrame(this._resizeHandle);
+            this._resizeHandle = null;
+        }
 
         const resize = () => {
             const w = container.clientWidth;
             const h = container.clientHeight;
-            if (w === 0 || h === 0) return;
+
+            if (w === 0 || h === 0) {
+                if (!this._resizeHandle && this.modeManager?.getCurrentMode() !== 'dashboard') {
+                    this._resizeHandle = requestAnimationFrame(() => {
+                        this._resizeHandle = null;
+                        resize();
+                    });
+                }
+                return;
+            }
+
+            this._resizeHandle = null;
+
             if (canvas.width === w && canvas.height === h) return;
             canvas.width = w;
             canvas.height = h;
