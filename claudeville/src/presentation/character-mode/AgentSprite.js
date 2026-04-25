@@ -98,6 +98,7 @@ export class AgentSprite {
         if (this.chatPartner) {
             this.targetX = this.chatPartner.x + (this.x < this.chatPartner.x ? -25 : 25);
             this.targetY = this.chatPartner.y;
+            this.waypoints = [];
             this.moving = true;
             this.waitTimer = 0;
             return;
@@ -120,8 +121,7 @@ export class AgentSprite {
                 const ty = 10 + this._noise(seed, 7) * 20;
                 const target = new Position(tx, ty);
                 const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
-                this.targetX = screen.x;
-                this.targetY = screen.y;
+                this._assignTarget(screen.x, screen.y, this.agent.position.tileX, this.agent.position.tileY);
                 this.moving = true;
                 this.waitTimer = 0;
                 return;
@@ -134,10 +134,48 @@ export class AgentSprite {
         const ty = building.y + 0.3 * building.height + this._noise(seed, 17) * 0.4 * building.height;
         const target = new Position(tx, ty);
         const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
-        this.targetX = screen.x;
-        this.targetY = screen.y;
+        this._assignTarget(screen.x, screen.y, this.agent.position.tileX, this.agent.position.tileY);
         this.moving = true;
         this.waitTimer = 0;
+    }
+
+    _assignTarget(targetScreenX, targetScreenY, targetTileX, targetTileY) {
+        if (!this.pathfinder) {
+            this.targetX = targetScreenX;
+            this.targetY = targetScreenY;
+            this.waypoints = [];
+            return;
+        }
+        const fromTile = this._screenToTile(this.x, this.y);
+        const tileKey = `${Math.round(targetTileX)},${Math.round(targetTileY)}`;
+        if (tileKey === this._lastPathTileKey && this.waypoints.length > 0) {
+            return;
+        }
+        this._lastPathTileKey = tileKey;
+        const tilePath = this.pathfinder.findPath(
+            fromTile,
+            { tileX: targetTileX, tileY: targetTileY },
+            this.bridgeTiles,
+        );
+        if (tilePath.length === 0) {
+            this.waypoints = [];
+            this.targetX = this.x;
+            this.targetY = this.y;
+            return;
+        }
+        this.waypoints = tilePath.map((t) => ({
+            x: (t.tileX - t.tileY) * TILE_WIDTH / 2,
+            y: (t.tileX + t.tileY) * TILE_HEIGHT / 2,
+        }));
+        const head = this.waypoints[0];
+        this.targetX = head.x;
+        this.targetY = head.y;
+    }
+
+    _screenToTile(x, y) {
+        const tileX = (x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) / 2;
+        const tileY = (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) / 2;
+        return { tileX, tileY };
     }
 
     _targetBuildingTypeForState() {
@@ -206,6 +244,7 @@ export class AgentSprite {
             // Refresh target when the partner position changes
             this.targetX = this.chatPartner.x + (this.x < this.chatPartner.x ? -25 : 25);
             this.targetY = this.chatPartner.y;
+            this.waypoints = [];
         }
 
         // Reroute immediately when status or fresh tool changes the intended building.
@@ -233,15 +272,25 @@ export class AgentSprite {
         const dx = this.targetX - this.x;
         const dy = this.targetY - this.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
+        const speed = this._speedForState();
 
-        if (dist < 2) {
+        if (dist < speed) {
+            this.x = this.targetX;
+            this.y = this.targetY;
+            if (this.waypoints && this.waypoints.length > 0) {
+                this.waypoints.shift();
+                if (this.waypoints.length > 0) {
+                    this.targetX = this.waypoints[0].x;
+                    this.targetY = this.waypoints[0].y;
+                    return;
+                }
+            }
             this.moving = false;
             this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
             this.walkFrame = 0;
             return;
         }
 
-        const speed = this._speedForState();
         this.x += (dx / dist) * speed;
         this.y += (dy / dist) * speed;
         this.walkFrame += 0.15;
