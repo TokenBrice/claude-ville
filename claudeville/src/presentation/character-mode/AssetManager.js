@@ -3,6 +3,7 @@
 
 const PLACEHOLDER_PATH = 'assets/sprites/_placeholder/checker-64.png';
 const OUTLINE_COLOR = '#f2d36b';
+const ALPHA_THRESHOLD = 16;
 
 export class AssetManager {
     constructor(manifestPath = 'assets/sprites/manifest.yaml') {
@@ -14,18 +15,30 @@ export class AssetManager {
         this.dimensions = new Map();   // id → { w, h }
         this.anchors = new Map();      // id → [cx, cy] in sprite-local px
         this.outlines = new Map();     // id → HTMLCanvasElement (1-px gold edge)
+        this._entriesCache = null;
     }
 
     async load() {
         const [manifestText, palettesText] = await Promise.all([
-            fetch(this.manifestPath).then(r => r.text()),
-            fetch('assets/sprites/palettes.yaml').then(r => r.text()),
+            this._fetchText(this.manifestPath),
+            this._fetchText('assets/sprites/palettes.yaml'),
         ]);
-        this.manifest = jsyaml.load(manifestText);
-        this.palettes = jsyaml.load(palettesText);
+        try {
+            this.manifest = jsyaml.load(manifestText);
+            this.palettes = jsyaml.load(palettesText);
+        } catch (err) {
+            throw new Error(`[AssetManager] failed to parse YAML: ${err.message}`);
+        }
 
         const entries = this._flattenManifest(this.manifest);
+        this._entriesCache = entries;
         await Promise.all(entries.map(e => this._loadEntry(e)));
+    }
+
+    async _fetchText(path) {
+        const r = await fetch(path);
+        if (!r.ok) throw new Error(`[AssetManager] HTTP ${r.status} for ${path}`);
+        return r.text();
     }
 
     _flattenManifest(root) {
@@ -149,7 +162,7 @@ export class AssetManager {
         const ctx = canvas.getContext('2d');
         const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
         const mask = new Uint8Array(canvas.width * canvas.height);
-        for (let i = 0; i < mask.length; i++) mask[i] = data[i * 4 + 3] > 16 ? 1 : 0;
+        for (let i = 0; i < mask.length; i++) mask[i] = data[i * 4 + 3] > ALPHA_THRESHOLD ? 1 : 0;
         return mask;
     }
 
@@ -181,6 +194,6 @@ export class AssetManager {
     getAnchor(id) { return this.anchors.get(id) ?? [0, 0]; }
     getOutline(id) { return this.outlines.get(id); }
     getEntry(id) {
-        return this._flattenManifest(this.manifest).find(e => e.id === id);
+        return this._entriesCache?.find(e => e.id === id);
     }
 }
