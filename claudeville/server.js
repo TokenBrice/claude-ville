@@ -211,7 +211,7 @@ function handleStaticFile(req, res) {
 
 // ─── WebSocket implementation (RFC 6455) ──────────────────────────
 
-const WS_MAGIC_STRING = '258EAFA5-E914-47DA-95CA-5AB5DC563B35';
+const WS_MAGIC_STRING = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
 function handleWebSocketUpgrade(req, socket) {
   const key = req.headers['sec-websocket-key'];

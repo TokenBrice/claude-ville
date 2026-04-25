@@ -47,6 +47,7 @@ function parseJsonLines(lines) {
 function parseRollout(filePath) {
   const detail = {
     model: null,
+    reasoningEffort: null,
     project: null,
     lastTool: null,
     lastToolInput: null,
@@ -110,8 +111,14 @@ function parseRollout(filePath) {
     if (!detail.model && entry.type === 'turn_context' && payload.model) {
       detail.model = payload.model;
     }
+    if (!detail.reasoningEffort && entry.type === 'turn_context') {
+      detail.reasoningEffort = payload.effort || payload.reasoning_effort || payload.collaboration_mode?.settings?.reasoning_effort || null;
+    }
     if (!detail.model && entry.type === 'event_msg' && payload.model) {
       detail.model = payload.model;
+    }
+    if (!detail.reasoningEffort && entry.type === 'event_msg') {
+      detail.reasoningEffort = payload.effort || payload.reasoning_effort || null;
     }
   }
 
@@ -378,6 +385,7 @@ class CodexAdapter {
         agentId: null,
         agentType: 'main',
         model: detail.model || 'codex',
+        reasoningEffort: detail.reasoningEffort,
         status: 'active',
         lastActivity: mtime,
         project: detail.project || null,

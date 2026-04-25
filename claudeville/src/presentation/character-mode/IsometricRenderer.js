@@ -47,6 +47,8 @@ export class IsometricRenderer {
         // Water tiles
         this.waterTiles = new Set();
         this._generateWater();
+        this.shoreTiles = new Set();
+        this._generateShorelines();
 
         // Event subscriptions
         this._unsubscribers = [];
@@ -100,6 +102,47 @@ export class IsometricRenderer {
                 }
             }
         }
+
+        // Curved northern stream gives the village a stronger fantasy-map frame.
+        for (let x = 2; x <= 22; x++) {
+            const centerY = 5 + Math.sin(x * 0.48) * 2.2;
+            for (let y = 1; y <= 11; y++) {
+                const dist = Math.abs(y - centerY);
+                if (dist < 1.2 || (dist < 1.85 && this._tileNoise(x, y) > 0.58)) {
+                    this.waterTiles.add(`${x},${y}`);
+                }
+            }
+        }
+
+        // Eastern moat below the portal and watchtower.
+        for (let x = 29; x <= 38; x++) {
+            for (let y = 26; y <= 36; y++) {
+                const dist = Math.sqrt(Math.pow((x - 34) / 1.35, 2) + Math.pow((y - 31) / 1.05, 2));
+                if (dist < 3.1 && this._tileNoise(x, y) > 0.18) {
+                    this.waterTiles.add(`${x},${y}`);
+                }
+            }
+        }
+    }
+
+    _generateShorelines() {
+        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        for (const key of this.waterTiles) {
+            const [x, y] = key.split(',').map(Number);
+            for (const [dx, dy] of dirs) {
+                const nx = x + dx;
+                const ny = y + dy;
+                const nKey = `${nx},${ny}`;
+                if (nx >= 0 && nx < MAP_SIZE && ny >= 0 && ny < MAP_SIZE && !this.waterTiles.has(nKey)) {
+                    this.shoreTiles.add(nKey);
+                }
+            }
+        }
+    }
+
+    _tileNoise(tileX, tileY) {
+        const n = Math.sin(tileX * 12.9898 + tileY * 78.233) * 43758.5453;
+        return n - Math.floor(n);
     }
 
     show(canvas) {
@@ -330,6 +373,7 @@ export class IsometricRenderer {
         this.camera.applyTransform(ctx);
 
         // 1. Terrain
+        this._drawBackgroundScenery(ctx);
         this._drawTerrain(ctx);
 
         // 2. Building shadows
@@ -422,6 +466,9 @@ export class IsometricRenderer {
             this._drawPathDetail(ctx, screenX, screenY, seed, tileX, tileY);
         } else if (!this.waterTiles.has(key)) {
             this._drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY);
+            if (this.shoreTiles.has(key)) {
+                this._drawShoreDetail(ctx, screenX, screenY, seed, tileX, tileY);
+            }
         }
 
         // Water shimmer effect
@@ -493,6 +540,44 @@ export class IsometricRenderer {
         return this.lightFadeColorCache.get(color);
     }
 
+    _drawBackgroundScenery(ctx) {
+        ctx.save();
+        ctx.globalAlpha = 0.82;
+
+        // Distant northern pines and hills sit outside the playable grid but move with the world.
+        for (let i = 0; i < 26; i++) {
+            const tileX = -2 + i * 1.7;
+            const tileY = -3 + Math.sin(i * 0.7) * 1.1;
+            const x = (tileX - tileY) * TILE_WIDTH / 2;
+            const y = (tileX + tileY) * TILE_HEIGHT / 2;
+            const h = 18 + (i % 5) * 4;
+            ctx.fillStyle = i % 3 === 0 ? 'rgba(37, 69, 41, 0.72)' : 'rgba(28, 55, 35, 0.76)';
+            ctx.beginPath();
+            ctx.moveTo(x, y - h);
+            ctx.lineTo(x + 10, y + 4);
+            ctx.lineTo(x - 10, y + 4);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = 'rgba(57, 38, 24, 0.58)';
+            ctx.fillRect(x - 1, y + 1, 2, 8);
+        }
+
+        ctx.strokeStyle = 'rgba(101, 84, 61, 0.36)';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        for (let i = 0; i <= 8; i++) {
+            const tileX = 5 + i * 4;
+            const tileY = -7 + Math.sin(i * 0.9) * 1.5;
+            const x = (tileX - tileY) * TILE_WIDTH / 2;
+            const y = (tileX + tileY) * TILE_HEIGHT / 2 - 8;
+            if (i === 0) ctx.moveTo(x, y);
+            else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        ctx.restore();
+    }
+
     _drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY) {
         const ox = (seed - 0.5) * TILE_WIDTH * 0.65;
         const oy = Math.sin((tileX + 1) * (tileY + 2)) * 5;
@@ -548,6 +633,25 @@ export class IsometricRenderer {
             ctx.lineTo(screenX + 9, screenY - 4);
         }
         ctx.stroke();
+    }
+
+    _drawShoreDetail(ctx, screenX, screenY, seed, tileX, tileY) {
+        ctx.fillStyle = 'rgba(177, 151, 88, 0.24)';
+        ctx.beginPath();
+        ctx.ellipse(screenX + (seed - 0.5) * 8, screenY + 2, 15, 4, 0.15, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (seed > 0.48) {
+            ctx.strokeStyle = 'rgba(126, 142, 68, 0.52)';
+            ctx.lineWidth = 1;
+            const x = screenX - 12 + seed * 18;
+            ctx.beginPath();
+            ctx.moveTo(x, screenY + 5);
+            ctx.lineTo(x - 1, screenY - 5);
+            ctx.moveTo(x + 3, screenY + 4);
+            ctx.lineTo(x + 7, screenY - 4);
+            ctx.stroke();
+        }
     }
 
     _drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY) {

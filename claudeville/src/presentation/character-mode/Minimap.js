@@ -10,6 +10,11 @@ const BUILDING_COLORS = {
     taskboard: '#78c6e7',
     chathall: '#88d67e',
     observatory: '#c9903f',
+    archive: '#d8b96d',
+    portal: '#76d8ff',
+    alchemy: '#c9f26b',
+    sanctuary: '#9fb66a',
+    watchtower: '#a8d9ff',
 };
 
 export class Minimap {
@@ -89,6 +94,7 @@ export class Minimap {
             const isSelected = layers.selectedAgent?.id === agent.id;
             ctx.fillStyle = agent.provider === 'codex' ? '#7be3d7' :
                 agent.provider === 'claude' ? '#f2d36b' :
+                    agent.provider === 'gemini' ? '#b7ccff' :
                     agent.status === 'working' ? THEME.working :
                         agent.status === 'waiting' ? THEME.waiting : THEME.idle;
             ctx.beginPath();

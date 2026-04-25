@@ -62,6 +62,51 @@ const BUILDING_STYLES = {
         customRoof: 'observatory',
         windowGlow: true,
     },
+    archive: {
+        wallColor: '#5d432b',
+        roofColor: '#2e2119',
+        accentColor: '#d8b96d',
+        trimColor: '#2a1a12',
+        wallHeight: 46,
+        customRoof: 'archive',
+        windowGlow: true,
+    },
+    portal: {
+        wallColor: '#3d3f52',
+        roofColor: '#1b2034',
+        accentColor: '#76d8ff',
+        trimColor: '#171625',
+        wallHeight: 54,
+        customRoof: 'portal',
+        windowGlow: true,
+    },
+    alchemy: {
+        wallColor: '#4f3151',
+        roofColor: '#613f73',
+        accentColor: '#c9f26b',
+        trimColor: '#24152b',
+        wallHeight: 43,
+        customRoof: 'alchemy',
+        windowGlow: true,
+    },
+    sanctuary: {
+        wallColor: '#4f5e3c',
+        roofColor: '#6d7441',
+        accentColor: '#f2d36b',
+        trimColor: '#25311e',
+        wallHeight: 36,
+        customRoof: 'sanctuary',
+        windowGlow: true,
+    },
+    watchtower: {
+        wallColor: '#4b4a45',
+        roofColor: '#28394d',
+        accentColor: '#a8d9ff',
+        trimColor: '#1b1f24',
+        wallHeight: 72,
+        customRoof: 'watchtower',
+        windowGlow: true,
+    },
 };
 
 export class BuildingRenderer {
@@ -183,6 +228,21 @@ export class BuildingRenderer {
                     this.particleSystem.spawn('sparkle', center.x + 4, center.y - style.wallHeight - 48, 1);
                 }
                 break;
+            case 'portal':
+                if (Math.random() < 0.05) {
+                    this.particleSystem.spawn('sparkle', center.x, center.y - style.wallHeight - 18, 1);
+                }
+                break;
+            case 'alchemy':
+                if (Math.random() < 0.045) {
+                    this.particleSystem.spawn('sparkle', center.x - halfW * 0.25 + Math.random() * halfW * 0.5, center.y - style.wallHeight - 5, 1);
+                }
+                break;
+            case 'watchtower':
+                if (Math.random() < 0.03) {
+                    this.particleSystem.spawn('sparkle', center.x, center.y - style.wallHeight - 40, 1);
+                }
+                break;
         }
     }
 
@@ -248,6 +308,33 @@ export class BuildingRenderer {
                     sources.push(
                         { x: center.x + 4, y: center.y - style.wallHeight - halfH - 42, radius: 92, color: 'rgba(255, 191, 90, 0.2)' },
                         { x: center.x, y: center.y - style.wallHeight / 2, radius: 70, color: 'rgba(201, 144, 63, 0.13)' },
+                    );
+                    break;
+                case 'archive':
+                    sources.push(
+                        { x: center.x, y: center.y - style.wallHeight / 2, radius: 76, color: 'rgba(216, 185, 109, 0.14)' },
+                        { x: center.x - halfW + 12, y: center.y - style.wallHeight + 8, radius: 42, color: 'rgba(255, 226, 154, 0.14)' },
+                    );
+                    break;
+                case 'portal':
+                    sources.push(
+                        { x: center.x, y: center.y - style.wallHeight - 8, radius: 98, color: 'rgba(118, 216, 255, 0.2)' },
+                        { x: center.x, y: center.y - style.wallHeight + 5, radius: 62, color: 'rgba(154, 111, 255, 0.12)' },
+                    );
+                    break;
+                case 'alchemy':
+                    sources.push(
+                        { x: center.x, y: center.y - style.wallHeight - halfH - 18, radius: 78, color: 'rgba(201, 242, 107, 0.16)' },
+                        { x: center.x + halfW - 12, y: center.y - style.wallHeight / 2, radius: 48, color: 'rgba(234, 126, 255, 0.12)' },
+                    );
+                    break;
+                case 'sanctuary':
+                    sources.push({ x: center.x, y: center.y - style.wallHeight / 2, radius: 76, color: 'rgba(242, 211, 107, 0.12)' });
+                    break;
+                case 'watchtower':
+                    sources.push(
+                        { x: center.x, y: center.y - style.wallHeight - halfH - 24, radius: 96, color: 'rgba(168, 217, 255, 0.19)' },
+                        { x: center.x, y: center.y - style.wallHeight / 2, radius: 56, color: 'rgba(168, 217, 255, 0.09)' },
                     );
                     break;
             }
@@ -363,6 +450,16 @@ export class BuildingRenderer {
                 this._drawCommandRoof(ctx, halfW, halfH, style);
             } else if (style.customRoof === 'observatory') {
                 this._drawObservatoryRoof(ctx, halfW, halfH, style);
+            } else if (style.customRoof === 'archive') {
+                this._drawArchiveRoof(ctx, halfW, halfH, style);
+            } else if (style.customRoof === 'portal') {
+                this._drawPortalRoof(ctx, halfW, halfH, style);
+            } else if (style.customRoof === 'alchemy') {
+                this._drawAlchemyRoof(ctx, halfW, halfH, style);
+            } else if (style.customRoof === 'sanctuary') {
+                this._drawSanctuaryRoof(ctx, halfW, halfH, style);
+            } else if (style.customRoof === 'watchtower') {
+                this._drawWatchtowerRoof(ctx, halfW, halfH, style);
             } else if (style.hasRoundRoof) {
                 this._drawRoundRoof(ctx, halfW, halfH, style);
             } else {
@@ -566,6 +663,75 @@ export class BuildingRenderer {
                 ctx.beginPath();
                 ctx.arc(12, -8, 10, 0, Math.PI * 2);
                 ctx.fill();
+                break;
+            case 'archive':
+                ctx.fillStyle = '#3a2418';
+                for (const x of [-18, -5, 8]) {
+                    ctx.fillRect(x, -12, 9, 22);
+                    ctx.fillStyle = '#d8b96d';
+                    ctx.fillRect(x + 2, -9, 5, 1);
+                    ctx.fillRect(x + 2, -4, 4, 1);
+                    ctx.fillRect(x + 2, 2, 5, 1);
+                    ctx.fillStyle = '#3a2418';
+                }
+                ctx.fillStyle = '#b98b4a';
+                ctx.fillRect(-8, 8, 18, 5);
+                ctx.fillStyle = '#ead8a6';
+                ctx.fillRect(-5, 6, 12, 5);
+                break;
+            case 'portal':
+                ctx.strokeStyle = '#76d8ff';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.ellipse(0, -3, 17, 23, 0, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(118, 216, 255, 0.25)';
+                ctx.beginPath();
+                ctx.ellipse(0, -3, 11, 17, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#2d2444';
+                ctx.fillRect(-17, 12, 34, 5);
+                break;
+            case 'alchemy':
+                ctx.fillStyle = '#38233f';
+                ctx.fillRect(-17, -8, 34, 12);
+                ctx.fillStyle = '#7f4b88';
+                ctx.fillRect(-14, -10, 28, 9);
+                for (const p of [[-8, -7, '#c9f26b'], [2, -8, '#76d8ff'], [9, -5, '#f0a6ff']]) {
+                    ctx.fillStyle = p[2];
+                    ctx.beginPath();
+                    ctx.arc(p[0], p[1], 3, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+                ctx.fillStyle = 'rgba(201, 242, 107, 0.22)';
+                ctx.beginPath();
+                ctx.arc(0, -5, 19, 0, Math.PI * 2);
+                ctx.fill();
+                break;
+            case 'sanctuary':
+                ctx.fillStyle = '#354227';
+                ctx.beginPath();
+                ctx.ellipse(0, 1, 20, 10, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#8a6a3d';
+                ctx.fillRect(-18, -5, 36, 4);
+                ctx.fillRect(-16, 6, 32, 4);
+                ctx.fillStyle = '#f2d36b';
+                ctx.fillRect(-2, -7, 4, 8);
+                break;
+            case 'watchtower':
+                ctx.fillStyle = '#2d3135';
+                ctx.fillRect(-12, -12, 24, 22);
+                ctx.fillStyle = '#a8d9ff';
+                ctx.fillRect(-8, -8, 5, 5);
+                ctx.fillRect(3, -8, 5, 5);
+                ctx.strokeStyle = '#1b1f24';
+                ctx.beginPath();
+                ctx.moveTo(-12, 2);
+                ctx.lineTo(12, 2);
+                ctx.moveTo(0, -12);
+                ctx.lineTo(0, 10);
+                ctx.stroke();
                 break;
         }
     }
@@ -1160,6 +1326,147 @@ export class BuildingRenderer {
         this._drawAstrolabeCrown(ctx, 4, capY - 13, style, 0, 1);
     }
 
+    _drawArchiveRoof(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        this._drawTriangleRoof(ctx, halfW, halfH, style);
+        const spineY = -wh - halfH - 18;
+
+        ctx.fillStyle = '#16100c';
+        ctx.fillRect(-halfW * 0.56, spineY + 19, halfW * 1.12, 7);
+        ctx.fillStyle = style.accentColor;
+        for (let i = -2; i <= 2; i++) {
+            ctx.fillRect(i * 11 - 2, spineY + 17 + Math.abs(i % 2) * 2, 4, 11);
+        }
+        ctx.strokeStyle = '#2a1a12';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-halfW * 0.55, spineY + 26);
+        ctx.lineTo(0, spineY + 5);
+        ctx.lineTo(halfW * 0.55, spineY + 26);
+        ctx.stroke();
+    }
+
+    _drawPortalRoof(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        const baseY = -wh + 6;
+        const topY = -wh - halfH - 34;
+
+        ctx.fillStyle = '#171625';
+        ctx.beginPath();
+        ctx.moveTo(-halfW - 8, baseY);
+        ctx.lineTo(-halfW * 0.52, topY + 18);
+        ctx.lineTo(0, topY);
+        ctx.lineTo(halfW * 0.52, topY + 18);
+        ctx.lineTo(halfW + 8, baseY);
+        ctx.lineTo(0, halfH - wh + 9);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.strokeStyle = style.accentColor;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.ellipse(0, -wh - 6, halfW * 0.52, halfH + 25, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(154, 111, 255, 0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(0, -wh - 6, halfW * 0.34, halfH + 17, 0.35, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.fillStyle = 'rgba(118, 216, 255, 0.24)';
+        ctx.beginPath();
+        ctx.ellipse(0, -wh - 6, halfW * 0.26, halfH + 12, 0, 0, Math.PI * 2);
+        ctx.fill();
+        for (const x of [-halfW * 0.58, halfW * 0.58]) {
+            ctx.fillStyle = '#24233a';
+            ctx.fillRect(x - 5, -wh - halfH - 6, 10, halfH + 31);
+            ctx.fillStyle = style.accentColor;
+            ctx.fillRect(x - 3, -wh - halfH - 2, 6, 5);
+        }
+    }
+
+    _drawAlchemyRoof(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        this._drawRoundRoof(ctx, halfW, halfH, style);
+        const y = -wh - halfH - 20;
+        ctx.fillStyle = '#24152b';
+        ctx.fillRect(-9, y + 14, 18, 12);
+        ctx.fillStyle = style.accentColor;
+        ctx.beginPath();
+        ctx.arc(0, y + 11, 8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#613f73';
+        ctx.beginPath();
+        ctx.arc(0, y + 11, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(201, 242, 107, 0.6)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-18, y + 29);
+        ctx.quadraticCurveTo(0, y + 22, 18, y + 29);
+        ctx.stroke();
+    }
+
+    _drawSanctuaryRoof(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        const y = -wh - halfH - 7;
+        const frontY = halfH - wh + 8;
+        ctx.fillStyle = this._lighten(style.roofColor, -16);
+        ctx.beginPath();
+        ctx.moveTo(-halfW - 10, -wh + 2);
+        ctx.quadraticCurveTo(-halfW * 0.35, y - 10, 0, y);
+        ctx.quadraticCurveTo(halfW * 0.35, y - 10, halfW + 10, -wh + 2);
+        ctx.lineTo(0, frontY);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = this._lighten(style.roofColor, 12);
+        ctx.beginPath();
+        ctx.moveTo(-halfW - 4, -wh + 6);
+        ctx.quadraticCurveTo(0, y + 7, halfW + 4, -wh + 6);
+        ctx.lineTo(0, frontY + 3);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#25311e';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-halfW - 10, -wh + 2);
+        ctx.quadraticCurveTo(0, y - 14, halfW + 10, -wh + 2);
+        ctx.stroke();
+        ctx.fillStyle = '#f2d36b';
+        ctx.beginPath();
+        ctx.arc(0, y - 1, 4, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    _drawWatchtowerRoof(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        const deckY = -wh - halfH + 4;
+        ctx.fillStyle = '#1b1f24';
+        ctx.fillRect(-halfW - 5, deckY, halfW * 2 + 10, 9);
+        ctx.fillStyle = '#394f68';
+        ctx.fillRect(-halfW - 2, deckY - 7, halfW * 2 + 4, 7);
+        ctx.strokeStyle = '#a8d9ff';
+        ctx.lineWidth = 1;
+        for (let x = -halfW; x <= halfW; x += 9) {
+            ctx.beginPath();
+            ctx.moveTo(x, deckY - 7);
+            ctx.lineTo(x, deckY + 9);
+            ctx.stroke();
+        }
+        ctx.fillStyle = style.roofColor;
+        ctx.beginPath();
+        ctx.moveTo(-halfW - 9, deckY - 8);
+        ctx.lineTo(0, deckY - 33);
+        ctx.lineTo(halfW + 9, deckY - 8);
+        ctx.lineTo(0, deckY + 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#151b22';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        this._drawBeaconLantern(ctx, 0, deckY - 28, style.accentColor);
+    }
+
     _drawAstrolabeCrown(ctx, x, y, style, rotation = 0, alpha = 1) {
         ctx.save();
         ctx.translate(x, y);
@@ -1265,6 +1572,22 @@ export class BuildingRenderer {
                 break;
             case 'observatory':
                 this._drawBeaconLantern(ctx, 4, -style.wallHeight - halfH - 26, '#ffbf5a');
+                break;
+            case 'archive':
+                this._drawPinLight(ctx, -halfW + 11, -style.wallHeight + 10, '#d8b96d');
+                this._drawPinLight(ctx, halfW - 11, -style.wallHeight + 10, '#d8b96d');
+                break;
+            case 'portal':
+                this._drawBeaconLantern(ctx, 0, -style.wallHeight - 6, '#76d8ff');
+                break;
+            case 'alchemy':
+                this._drawPinLight(ctx, halfW - 12, -style.wallHeight / 2 - 5, '#c9f26b');
+                break;
+            case 'sanctuary':
+                this._drawPinLight(ctx, 0, halfH - style.wallHeight / 2 - 2, '#f2d36b');
+                break;
+            case 'watchtower':
+                this._drawBeaconLantern(ctx, 0, -style.wallHeight - halfH - 24, '#a8d9ff');
                 break;
         }
     }
@@ -1424,6 +1747,50 @@ export class BuildingRenderer {
                 ctx.fill();
                 this._drawAstrolabeCrown(ctx, 4, -style.wallHeight - halfH - 26, style, 0, 0.38);
                 break;
+            case 'archive':
+                ctx.fillStyle = 'rgba(216, 185, 109, 0.11)';
+                ctx.beginPath();
+                ctx.ellipse(0, 4, halfW + 11, halfH + 8, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(85, 58, 34, 0.42)';
+                ctx.lineWidth = 1;
+                for (let i = -2; i <= 2; i++) {
+                    ctx.beginPath();
+                    ctx.moveTo(i * 10, -halfH);
+                    ctx.lineTo(i * 14, halfH);
+                    ctx.stroke();
+                }
+                break;
+            case 'portal':
+                ctx.strokeStyle = 'rgba(118, 216, 255, 0.26)';
+                ctx.lineWidth = 1.2;
+                for (let i = 0; i < 3; i++) {
+                    ctx.beginPath();
+                    ctx.ellipse(0, 2, halfW + 8 + i * 11, halfH + 7 + i * 5, 0, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                break;
+            case 'alchemy':
+                ctx.fillStyle = 'rgba(201, 242, 107, 0.11)';
+                ctx.beginPath();
+                ctx.ellipse(0, 2, halfW + 12, halfH + 9, 0, 0, Math.PI * 2);
+                ctx.fill();
+                break;
+            case 'sanctuary':
+                ctx.fillStyle = 'rgba(242, 211, 107, 0.08)';
+                ctx.beginPath();
+                ctx.ellipse(0, 5, halfW + 14, halfH + 12, 0, 0, Math.PI * 2);
+                ctx.fill();
+                break;
+            case 'watchtower':
+                ctx.strokeStyle = 'rgba(168, 217, 255, 0.16)';
+                ctx.lineWidth = 1;
+                for (let i = 0; i < 4; i++) {
+                    ctx.beginPath();
+                    ctx.ellipse(0, 1, halfW + 8 + i * 8, halfH + 6 + i * 3, 0, 0, Math.PI * 2);
+                    ctx.stroke();
+                }
+                break;
         }
 
         ctx.restore();
@@ -1452,6 +1819,21 @@ export class BuildingRenderer {
                 break;
             case 'observatory':
                 this._drawObservatoryActivity(ctx, halfW, halfH, style, t, motion);
+                break;
+            case 'archive':
+                this._drawArchiveActivity(ctx, halfW, halfH, style, t, motion);
+                break;
+            case 'portal':
+                this._drawPortalActivity(ctx, halfW, halfH, style, t, motion);
+                break;
+            case 'alchemy':
+                this._drawAlchemyActivity(ctx, halfW, halfH, style, t, motion);
+                break;
+            case 'sanctuary':
+                this._drawSanctuaryActivity(ctx, halfW, halfH, style, t, motion);
+                break;
+            case 'watchtower':
+                this._drawWatchtowerActivity(ctx, halfW, halfH, style, t, motion);
                 break;
         }
 
@@ -1619,6 +2001,80 @@ export class BuildingRenderer {
         }
     }
 
+    _drawArchiveActivity(ctx, halfW, halfH, style, t, motion) {
+        const glow = motion ? 0.18 + Math.max(0, Math.sin(t * 2.4)) * 0.2 : 0.25;
+        ctx.fillStyle = `rgba(216, 185, 109, ${glow})`;
+        ctx.beginPath();
+        ctx.ellipse(0, -style.wallHeight / 2 - 5, halfW + 4, 12, 0, 0, Math.PI);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(255, 238, 184, 0.5)';
+        ctx.lineWidth = 1;
+        const pageX = motion ? Math.sin(t * 2) * 3 : 1;
+        ctx.beginPath();
+        ctx.moveTo(pageX - 8, -style.wallHeight - 3);
+        ctx.quadraticCurveTo(pageX, -style.wallHeight - 8, pageX + 8, -style.wallHeight - 3);
+        ctx.stroke();
+    }
+
+    _drawPortalActivity(ctx, halfW, halfH, style, t, motion) {
+        const spin = motion ? t * 0.55 : 0.2;
+        const y = -style.wallHeight - 6;
+        ctx.save();
+        ctx.translate(0, y);
+        ctx.rotate(spin);
+        ctx.strokeStyle = 'rgba(118, 216, 255, 0.66)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, halfW * 0.35, halfH + 12, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, halfW * 0.18, halfH + 18, Math.PI / 2.6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle = 'rgba(118, 216, 255, 0.22)';
+        ctx.beginPath();
+        ctx.arc(0, y, 16 + (motion ? Math.sin(t * 3) * 3 : 1), 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    _drawAlchemyActivity(ctx, halfW, halfH, style, t, motion) {
+        const bubble = motion ? Math.sin(t * 4) * 3 : 0;
+        for (const p of [[-10, -style.wallHeight + 1, '#c9f26b'], [2, -style.wallHeight - 9, '#76d8ff'], [12, -style.wallHeight - 1, '#f0a6ff']]) {
+            ctx.fillStyle = p[2];
+            ctx.beginPath();
+            ctx.arc(p[0], p[1] + bubble, 3, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.strokeStyle = 'rgba(201, 242, 107, 0.48)';
+        ctx.beginPath();
+        ctx.moveTo(-halfW + 8, -style.wallHeight / 2);
+        ctx.quadraticCurveTo(0, -style.wallHeight - 12, halfW - 8, -style.wallHeight / 2);
+        ctx.stroke();
+    }
+
+    _drawSanctuaryActivity(ctx, halfW, halfH, style, t, motion) {
+        const pulse = motion ? (Math.sin(t * 1.4) + 1) / 2 : 0.45;
+        ctx.strokeStyle = `rgba(242, 211, 107, ${0.16 + pulse * 0.16})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(0, -style.wallHeight / 2, halfW * 0.7 + pulse * 6, halfH + pulse * 3, 0, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    _drawWatchtowerActivity(ctx, halfW, halfH, style, t, motion) {
+        const y = -style.wallHeight - halfH - 24;
+        const sweep = motion ? Math.sin(t * 1.7) : 0.2;
+        ctx.fillStyle = 'rgba(168, 217, 255, 0.18)';
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(sweep * 58 - 18, y + 28);
+        ctx.lineTo(sweep * 58 + 18, y + 28);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#d9f0ff';
+        ctx.beginPath();
+        ctx.arc(0, y, 3, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
     _drawDecorations(ctx, building, halfW, halfH, style) {
         switch (building.type) {
             case 'command':
@@ -1649,7 +2105,119 @@ export class BuildingRenderer {
             case 'observatory':
                 this._drawObservatoryDecorations(ctx, halfW, halfH, style);
                 break;
+            case 'archive':
+                this._drawArchiveDecorations(ctx, halfW, halfH, style);
+                break;
+            case 'portal':
+                this._drawPortalDecorations(ctx, halfW, halfH, style);
+                break;
+            case 'alchemy':
+                this._drawAlchemyDecorations(ctx, halfW, halfH, style);
+                break;
+            case 'sanctuary':
+                this._drawSanctuaryDecorations(ctx, halfW, halfH, style);
+                break;
+            case 'watchtower':
+                this._drawWatchtowerDecorations(ctx, halfW, halfH, style);
+                break;
         }
+    }
+
+    _drawArchiveDecorations(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        ctx.fillStyle = '#2f1f14';
+        ctx.fillRect(-halfW + 8, -wh + 7, 12, wh - 5);
+        ctx.fillRect(halfW - 20, -wh + 7, 12, wh - 5);
+        const books = ['#d8b96d', '#9fd9d1', '#c9914c', '#e7d6a4'];
+        for (let i = 0; i < 7; i++) {
+            ctx.fillStyle = books[i % books.length];
+            ctx.fillRect(-halfW + 10 + (i % 2) * 5, -wh + 10 + i * 5, 4, 8);
+            ctx.fillRect(halfW - 18 + (i % 2) * 5, -wh + 9 + i * 5, 4, 8);
+        }
+        ctx.fillStyle = '#ead8a6';
+        ctx.fillRect(-12, halfH - wh / 3 - 8, 24, 11);
+        ctx.strokeStyle = '#5d432b';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(-12.5, halfH - wh / 3 - 8.5, 25, 12);
+        ctx.fillStyle = '#6f4427';
+        ctx.fillRect(-8, halfH - wh / 3 - 4, 16, 1.5);
+        ctx.fillRect(-7, halfH - wh / 3, 14, 1.5);
+    }
+
+    _drawPortalDecorations(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        for (const x of [-halfW + 9, halfW - 15]) {
+            ctx.fillStyle = '#211f35';
+            ctx.fillRect(x, -wh + 2, 10, wh + 1);
+            ctx.fillStyle = '#76d8ff';
+            ctx.fillRect(x + 3, -wh + 7, 4, 9);
+            ctx.fillRect(x + 3, -wh + 25, 4, 9);
+        }
+        ctx.strokeStyle = 'rgba(118, 216, 255, 0.48)';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(-halfW + 14, -wh + 12);
+        ctx.lineTo(0, -wh - 2);
+        ctx.lineTo(halfW - 10, -wh + 12);
+        ctx.stroke();
+    }
+
+    _drawAlchemyDecorations(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        ctx.fillStyle = '#2b1731';
+        ctx.fillRect(-halfW + 9, -wh / 2 - 8, 13, 15);
+        ctx.fillRect(halfW - 22, -wh / 2 - 5, 13, 12);
+        ctx.fillStyle = '#c9f26b';
+        ctx.fillRect(-halfW + 12, -wh / 2 - 4, 7, 8);
+        ctx.fillStyle = '#f0a6ff';
+        ctx.fillRect(halfW - 19, -wh / 2 - 2, 7, 6);
+        ctx.strokeStyle = '#24152b';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(-halfW + 8.5, -wh / 2 - 8.5, 14, 16);
+        ctx.strokeRect(halfW - 22.5, -wh / 2 - 5.5, 14, 13);
+        ctx.fillStyle = '#d8b96d';
+        ctx.fillRect(-8, halfH - wh / 3 - 6, 16, 8);
+    }
+
+    _drawSanctuaryDecorations(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        ctx.fillStyle = '#25311e';
+        ctx.fillRect(-halfW + 7, -wh + 9, 7, wh + 2);
+        ctx.fillRect(halfW - 14, -wh + 9, 7, wh + 2);
+        ctx.fillStyle = '#8b9b57';
+        ctx.beginPath();
+        ctx.arc(-halfW + 10, -wh + 7, 10, 0, Math.PI * 2);
+        ctx.arc(halfW - 10, -wh + 7, 10, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#f2d36b';
+        ctx.fillRect(-3, halfH - wh / 2 - 5, 6, 13);
+        ctx.fillStyle = 'rgba(242, 211, 107, 0.24)';
+        ctx.beginPath();
+        ctx.arc(0, halfH - wh / 2, 15, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    _drawWatchtowerDecorations(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        ctx.strokeStyle = '#1b1f24';
+        ctx.lineWidth = 3;
+        for (const x of [-halfW + 7, halfW - 7]) {
+            ctx.beginPath();
+            ctx.moveTo(x, -wh + 4);
+            ctx.lineTo(x * 0.35, halfH - 2);
+            ctx.stroke();
+        }
+        ctx.strokeStyle = '#667680';
+        ctx.lineWidth = 1;
+        for (let y = -wh + 11; y < 0; y += 12) {
+            ctx.beginPath();
+            ctx.moveTo(-halfW + 11, y);
+            ctx.lineTo(halfW - 11, y - 3);
+            ctx.stroke();
+        }
+        ctx.fillStyle = '#a8d9ff';
+        ctx.fillRect(-8, -wh / 2 - 10, 5, 7);
+        ctx.fillRect(3, -wh / 2 - 10, 5, 7);
     }
 
     _drawObservatoryDecorations(ctx, halfW, halfH, style) {

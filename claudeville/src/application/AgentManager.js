@@ -88,6 +88,7 @@ export class AgentManager {
 
         const agentData = {
             model: teamInfo?.model || session.model || 'unknown',
+            effort: session.reasoningEffort || session.effort || null,
             status: this._resolveStatus(session),
             role: teamInfo?.agentType || session.agentType || 'general',
             teamName,
@@ -104,6 +105,7 @@ export class AgentManager {
                 id,
                 name: teamInfo?.name || null,
                 model: agentData.model,
+                effort: agentData.effort,
                 status: agentData.status,
                 role: agentData.role,
                 tokens: agentData.tokens,

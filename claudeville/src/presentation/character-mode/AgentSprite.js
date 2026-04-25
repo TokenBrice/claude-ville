@@ -27,6 +27,17 @@ const PROVIDER_PROFILES = {
         accessory: ['goggles', 'toolBand', 'rogueMask'],
         eyeStyle: ['determined', 'normal', 'happy'],
     },
+    gemini: {
+        family: 'gemini',
+        shadow: 'rgba(35, 31, 79, 0.58)',
+        outline: '#241d50',
+        robe: ['#4f46a5', '#5d65c8', '#44528e'],
+        pants: ['#201c43', '#27244d', '#1f2d55'],
+        trim: ['#b7ccff', '#d6b7ff', '#7bdff2'],
+        accent: ['#f2edff', '#b9f2ff', '#d6b7ff'],
+        accessory: ['starCrown', 'oracleVeil', 'moonBand'],
+        eyeStyle: ['normal', 'determined', 'happy'],
+    },
 };
 
 const DEFAULT_PROFILE = {
@@ -41,10 +52,10 @@ const DEFAULT_PROFILE = {
     eyeStyle: null,
 };
 
-const SPRITE_SCALE = 1.18;
-const SPRITE_HIT_HALF_WIDTH = 15;
-const SPRITE_HIT_TOP = -24;
-const SPRITE_HIT_BOTTOM = 24;
+const SPRITE_SCALE = 1.36;
+const SPRITE_HIT_HALF_WIDTH = 18;
+const SPRITE_HIT_TOP = -31;
+const SPRITE_HIT_BOTTOM = 28;
 
 export class AgentSprite {
     constructor(agent) {
@@ -230,13 +241,13 @@ export class AgentSprite {
         ctx.translate(this.x, this.y);
 
         ctx.beginPath();
-        ctx.ellipse(0, 17, 12, 5, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 18, 15, 6, 0, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(12, 8, 5, 0.34)';
         ctx.fill();
 
         if (this.selected) {
             ctx.beginPath();
-            ctx.ellipse(0, 17, 17, 7, 0, 0, Math.PI * 2);
+            ctx.ellipse(0, 18, 21, 8, 0, 0, Math.PI * 2);
             ctx.fillStyle = 'rgba(242, 211, 107, 0.24)';
             ctx.fill();
             ctx.strokeStyle = '#f2d36b';
@@ -293,6 +304,7 @@ export class AgentSprite {
         ctx.closePath();
         ctx.fill();
         this._drawProviderBodyDetails(ctx, sprite);
+        this._drawModelInsignia(ctx, sprite);
 
         // Arms
         ctx.strokeStyle = profile.outline;
@@ -333,6 +345,7 @@ export class AgentSprite {
         // Accessory
         this._drawAccessory(ctx, app, sprite);
         this._drawProviderHandProp(ctx, sprite, swing);
+        this._drawEffortBadge(ctx, sprite);
 
         ctx.restore();
 
@@ -370,15 +383,35 @@ export class AgentSprite {
             trim: pick(profile.trim, 18),
             accent: pick(profile.accent, 22),
             variant: hash % 4,
+            modelTier: this._modelTier(),
+            effortTier: this._effortTier(),
         };
     }
 
     _providerKey() {
         const provider = String(this.agent.provider || '').toLowerCase();
         const model = String(this.agent.model || '').toLowerCase();
+        if (provider.includes('gemini') || model.includes('gemini')) return 'gemini';
         if (provider.includes('codex') || model.includes('codex') || model.includes('gpt')) return 'codex';
         if (provider.includes('claude') || model.includes('claude')) return 'claude';
         return 'default';
+    }
+
+    _modelTier() {
+        const model = String(this.agent.model || '').toLowerCase();
+        if (model.includes('opus') || model.includes('5.5') || model.includes('pro')) return 'apex';
+        if (model.includes('sonnet') || model.includes('5.4') || model.includes('5.3')) return 'strong';
+        if (model.includes('haiku') || model.includes('mini') || model.includes('flash')) return 'swift';
+        return 'standard';
+    }
+
+    _effortTier() {
+        const effort = String(this.agent.effort || '').toLowerCase();
+        if (effort.includes('xhigh') || effort.includes('extra')) return 'xhigh';
+        if (effort.includes('high')) return 'high';
+        if (effort.includes('medium')) return 'medium';
+        if (effort.includes('low')) return 'low';
+        return null;
     }
 
     _hash(str) {
@@ -411,9 +444,58 @@ export class AgentSprite {
             return;
         }
 
+        if (sprite.profile.family === 'gemini') {
+            ctx.fillStyle = sprite.trim;
+            ctx.beginPath();
+            ctx.moveTo(0, -2);
+            ctx.lineTo(4, 4);
+            ctx.lineTo(0, 10);
+            ctx.lineTo(-4, 4);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = sprite.accent;
+            ctx.fillRect(-1, 2, 2, 5);
+            return;
+        }
+
         ctx.fillStyle = 'rgba(242, 211, 107, 0.65)';
         ctx.fillRect(-1, -1, 2, 11);
         ctx.fillRect(-4, 3, 8, 1);
+    }
+
+    _drawModelInsignia(ctx, sprite) {
+        const color = {
+            apex: '#fff1b8',
+            strong: sprite.trim,
+            swift: '#9fd9d1',
+            standard: 'rgba(242, 211, 107, 0.72)',
+        }[sprite.modelTier] || sprite.trim;
+
+        ctx.fillStyle = color;
+        if (sprite.modelTier === 'apex') {
+            ctx.beginPath();
+            ctx.moveTo(0, -1);
+            ctx.lineTo(3, 3);
+            ctx.lineTo(0, 7);
+            ctx.lineTo(-3, 3);
+            ctx.closePath();
+            ctx.fill();
+        } else if (sprite.modelTier === 'strong') {
+            ctx.fillRect(-3, 2, 6, 2);
+            ctx.fillRect(-1, 0, 2, 6);
+        } else if (sprite.modelTier === 'swift') {
+            ctx.beginPath();
+            ctx.moveTo(-4, 3);
+            ctx.lineTo(2, 0);
+            ctx.lineTo(-1, 4);
+            ctx.lineTo(4, 4);
+            ctx.lineTo(-2, 9);
+            ctx.lineTo(0, 5);
+            ctx.closePath();
+            ctx.fill();
+        } else {
+            ctx.fillRect(-2, 3, 4, 2);
+        }
     }
 
     _drawHair(ctx, app) {
@@ -491,6 +573,10 @@ export class AgentSprite {
         }
         if (sprite?.profile.family === 'codex') {
             this._drawCodexAccessory(ctx, app, sprite);
+            return;
+        }
+        if (sprite?.profile.family === 'gemini') {
+            this._drawGeminiAccessory(ctx, app, sprite);
             return;
         }
 
@@ -614,6 +700,46 @@ export class AgentSprite {
         }
     }
 
+    _drawGeminiAccessory(ctx, app, sprite) {
+        switch (app.accessory) {
+            case 'starCrown':
+                ctx.fillStyle = sprite.trim;
+                for (const x of [-4, 0, 4]) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, -16);
+                    ctx.lineTo(x + 2, -12);
+                    ctx.lineTo(x - 2, -12);
+                    ctx.closePath();
+                    ctx.fill();
+                }
+                ctx.strokeStyle = sprite.accent;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(-6, -12);
+                ctx.lineTo(6, -12);
+                ctx.stroke();
+                break;
+            case 'oracleVeil':
+                ctx.fillStyle = 'rgba(183, 204, 255, 0.58)';
+                ctx.fillRect(-6, -9, 12, 4);
+                ctx.fillStyle = sprite.accent;
+                ctx.fillRect(-4, -8, 2, 1);
+                ctx.fillRect(2, -8, 2, 1);
+                break;
+            case 'moonBand':
+                ctx.strokeStyle = sprite.trim;
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                ctx.arc(0, -8, 6, Math.PI * 1.05, Math.PI * 1.95);
+                ctx.stroke();
+                ctx.fillStyle = sprite.accent;
+                ctx.beginPath();
+                ctx.arc(4, -12, 2, Math.PI * 0.4, Math.PI * 1.6);
+                ctx.fill();
+                break;
+        }
+    }
+
     _drawProviderHandProp(ctx, sprite, swing) {
         if (sprite.profile.family === 'claude') {
             ctx.fillStyle = '#6b3f1f';
@@ -636,6 +762,34 @@ export class AgentSprite {
             ctx.stroke();
             ctx.fillStyle = '#0b2529';
             ctx.fillRect(5, -1, 2, 10);
+        }
+
+        if (sprite.profile.family === 'gemini') {
+            ctx.strokeStyle = sprite.accent;
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.moveTo(-8 + swing, 5);
+            ctx.lineTo(-12 + swing, 0);
+            ctx.stroke();
+            ctx.fillStyle = sprite.trim;
+            ctx.beginPath();
+            ctx.arc(-12 + swing, 0, 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+
+    _drawEffortBadge(ctx, sprite) {
+        if (!sprite.effortTier) return;
+        const marks = { low: 1, medium: 2, high: 3, xhigh: 4 }[sprite.effortTier] || 0;
+        const colors = {
+            low: 'rgba(126, 183, 214, 0.82)',
+            medium: 'rgba(242, 211, 107, 0.88)',
+            high: 'rgba(255, 138, 42, 0.9)',
+            xhigh: 'rgba(255, 241, 184, 0.96)',
+        };
+        ctx.fillStyle = colors[sprite.effortTier];
+        for (let i = 0; i < marks; i++) {
+            ctx.fillRect(7, -2 + i * 3, 2, 2);
         }
     }
 

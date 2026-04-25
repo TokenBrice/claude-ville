@@ -10,11 +10,12 @@ const AGENT_NAMES_EN = [
 ];
 
 export class Agent {
-    constructor({ id, name, model, status, role, tokens, messages, teamName, projectPath, lastTool, lastToolInput, lastMessage, provider }) {
+    constructor({ id, name, model, effort, status, role, tokens, messages, teamName, projectPath, lastTool, lastToolInput, lastMessage, provider }) {
         this.id = id;
         this._customName = !!name; // Whether the name was assigned by a team
         this.name = name || this.generateName();
         this.model = model || 'unknown';
+        this.effort = effort || null;
         this.status = status || AgentStatus.IDLE;
         this.role = role || 'general';
         this.tokens = tokens || { input: 0, output: 0 };
@@ -83,12 +84,18 @@ export class Agent {
     get targetBuildingType() {
         if (!this.currentTool) return null;
         const toolMap = {
-            'Read': 'chathall', 'Grep': 'chathall', 'Glob': 'chathall',
+            'Read': 'archive', 'Grep': 'archive', 'Glob': 'archive',
             'WebSearch': 'observatory', 'WebFetch': 'observatory',
-            'Edit': 'forge', 'Write': 'forge', 'NotebookEdit': 'forge',
-            'Bash': 'mine', 'mcp__playwright__browser_navigate': 'mine', 'mcp__playwright__browser_take_screenshot': 'mine',
+            'Edit': 'forge', 'Write': 'forge', 'NotebookEdit': 'alchemy',
+            'Bash': 'mine',
+            'mcp__playwright__browser_navigate': 'portal',
+            'mcp__playwright__browser_take_screenshot': 'portal',
+            'mcp__playwright__browser_click': 'portal',
+            'mcp__playwright__browser_type': 'portal',
+            'mcp__playwright__browser_snapshot': 'portal',
             'Task': 'command', 'TaskCreate': 'taskboard', 'TaskUpdate': 'taskboard', 'TaskList': 'taskboard',
-            'SendMessage': 'command', 'TeamCreate': 'command',
+            'SendMessage': 'chathall', 'TeamCreate': 'command',
+            'command_execution': 'mine',
         };
         return toolMap[this.currentTool] || null;
     }
