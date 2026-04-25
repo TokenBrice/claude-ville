@@ -243,7 +243,7 @@ export const BOULDERS = [
     { tileX: 25.7, tileY: 12.3, scale: 0.9, variant: 'b' },
     { tileX: 11.5, tileY: 22.8, scale: 0.85, variant: 'a' },
     { tileX: 33.4, tileY: 21.5, scale: 1.0, variant: 'b' },
-    { tileX: 9.1, tileY: 9.4, scale: 0.85, variant: 'a' },
+    { tileX: 9.1, tileY: 11.5, scale: 0.85, variant: 'a' },  // moved south of Idle Sanctuary footprint (y=7..9)
     { tileX: 30.3, tileY: 36.2, scale: 1.0, variant: 'b' },
 ];
 
@@ -459,7 +459,7 @@ console.log('shore tiles:', eng.getShoreTiles().size);
 "
 ```
 
-Expected: water tiles between 80 and 250, deep water > 0, shore tiles > 0. If all zero, the rasterization is broken — debug `_distanceToSegment` first. Do not proceed until counts look plausible.
+Expected: water tiles ~300–340, deep water tiles ~70–110, shore tiles ~150–190. (The earlier "80–250" estimate was wrong; the polylines cover more area than I initially estimated. Verified count: 333/86/167.) If all zero, the rasterization is broken — debug `_distanceToSegment` first. Do not proceed until counts look plausible.
 
 - [ ] **Step 4: Commit**
 

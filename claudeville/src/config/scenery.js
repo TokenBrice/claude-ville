@@ -62,6 +62,9 @@ export const BRIDGE_HINTS = [
 // Tree clusters: anchor tile + radius (tiles) + density (0..1).
 // Density is multiplied against per-tile noise; trees only spawn on
 // non-water, non-path, non-shore, non-building-footprint tiles.
+// SceneryEngine MUST clamp iteration to [0, MAP_SIZE-1] — corner clusters
+// (4,4) and (36,36) intentionally extend past map edges to thicken the
+// fringe forest.
 export const TREE_CLUSTERS = [
     { centerX: 4, centerY: 4, radius: 5, density: 0.55 },
     { centerX: 4, centerY: 35, radius: 4, density: 0.45 },
@@ -81,7 +84,7 @@ export const BOULDERS = [
     { tileX: 25.7, tileY: 12.3, scale: 0.9, variant: 'b' },
     { tileX: 11.5, tileY: 22.8, scale: 0.85, variant: 'a' },
     { tileX: 33.4, tileY: 21.5, scale: 1.0, variant: 'b' },
-    { tileX: 9.1, tileY: 9.4, scale: 0.85, variant: 'a' },
+    { tileX: 9.1, tileY: 11.5, scale: 0.85, variant: 'a' },
     { tileX: 30.3, tileY: 36.2, scale: 1.0, variant: 'b' },
 ];
 
