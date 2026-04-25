@@ -38,6 +38,8 @@ export class BuildingSprite {
 
     setAgentSprites(sprites) { this.agentSprites = sprites; }
 
+    // Hover state does NOT invalidate _drawablesCache — drawDrawable reads
+    // this.hovered live at draw time, so a fresh enumerate isn't required.
     setHovered(b) { this.hovered = b; }
 
     update(dt) {
@@ -198,6 +200,7 @@ export class BuildingSprite {
             const overlayWx = wx - baseAnchor[0] + ax + layerDims.w / 2;
             const overlayWy = wy - baseAnchor[1] + ay + layerDims.h;
             // Animated pulse: fade alpha by sine of frame.
+            // 0.08 rad/frame ≈ 1.27 Hz at 60fps (slow heartbeat).
             let alpha = 1;
             if (layer.animation === 'pulse') {
                 alpha = 0.6 + 0.4 * Math.sin(this.frame * 0.08);
@@ -212,7 +215,8 @@ export class BuildingSprite {
         const center = this._buildingScreenCenter(b);
         const baseAnchor = this.assets.getAnchor(entry.id);
         for (const [particleType, [lx, ly]] of Object.entries(entry.emitters)) {
-            // Stochastic spawn, similar rate to legacy BuildingRenderer emitters.
+            // Stochastic spawn rate matching legacy BuildingRenderer emitters
+            // (~0.04 → ~2.4 spawns per emitter per second at 60fps).
             if (Math.random() > 0.04) continue;
             const wx = center.x - baseAnchor[0] + lx;
             const wy = center.y - baseAnchor[1] + ly;
