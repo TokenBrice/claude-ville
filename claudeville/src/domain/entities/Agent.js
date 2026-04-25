@@ -116,6 +116,9 @@ export class Agent {
         if (Object.prototype.hasOwnProperty.call(updates, 'tokens')) {
             updates.tokens = TokenUsage.normalize(updates.tokens);
         }
+        if (Object.prototype.hasOwnProperty.call(updates, 'name') && !updates.name) {
+            updates.name = this.generateName();
+        }
         Object.assign(this, updates);
         this.lastActive = Date.now();
     }

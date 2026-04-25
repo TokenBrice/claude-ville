@@ -10,6 +10,7 @@ const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const TEAMS_DIR = path.join(CLAUDE_DIR, 'teams');
 const TASKS_DIR = path.join(CLAUDE_DIR, 'tasks');
+const SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions');
 
 // ─── Utilities ─────────────────────────────────────────────
 
@@ -40,6 +41,25 @@ function readJsonLines(filePath) {
   } catch {
     return [];
   }
+}
+
+function readClaudeSessionNames() {
+  const names = new Map();
+  try {
+    if (!fs.existsSync(SESSIONS_DIR)) return names;
+    const files = fs.readdirSync(SESSIONS_DIR)
+      .filter(file => file.endsWith('.json') && !file.startsWith('.'));
+
+    for (const file of files) {
+      try {
+        const meta = JSON.parse(fs.readFileSync(path.join(SESSIONS_DIR, file), 'utf-8'));
+        const sessionId = typeof meta.sessionId === 'string' ? meta.sessionId.trim() : '';
+        const name = typeof meta.name === 'string' ? meta.name.trim() : '';
+        if (sessionId && name) names.set(sessionId, name);
+      } catch { /* ignore malformed session metadata */ }
+    }
+  } catch { /* ignore */ }
+  return names;
 }
 
 function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {}) {
@@ -300,6 +320,7 @@ class ClaudeAdapter {
     const sessionsMap = new Map();
     const projectPathMap = new Map(); // Encoded directory name to real path
     const activeSessionIdsByProject = new Map();
+    const sessionNames = readClaudeSessionNames();
 
     const HISTORY_SCAN_MS = 10 * 60 * 1000;
     for (const entry of entries) {
@@ -345,8 +366,11 @@ class ClaudeAdapter {
       session.lastActivity = lastActive;
       const detail = getSessionDetail(session.sessionId, session.project);
       const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
+      const sessionName = sessionNames.get(session.sessionId) || null;
       mainSessions.push({
         ...session,
+        name: sessionName,
+        agentName: sessionName,
         model: detail.model || session.model,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
@@ -365,7 +389,7 @@ class ClaudeAdapter {
       ...Array.from(sessionsMap.keys()),
       ...subAgents.map(s => s.sessionId.replace('subagent-', '')),
     ]);
-    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, knownIds);
+    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, knownIds, sessionNames);
 
     return [...mainSessions, ...subAgents, ...orphans];
   }
@@ -436,7 +460,7 @@ class ClaudeAdapter {
     return results;
   }
 
-  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set()) {
+  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), sessionNames = new Map()) {
     const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (!fs.existsSync(projectsDir)) return [];
 
@@ -468,11 +492,14 @@ class ClaudeAdapter {
 
           const detail = getSubAgentDetail(filePath);
           const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name);
+          const sessionName = sessionNames.get(sessionId) || null;
 
           results.push({
             sessionId,
             provider: 'claude',
             agentId: sessionId,
+            name: sessionName,
+            agentName: sessionName,
             agentType: 'team-member',
             model: detail.model || 'unknown',
             status: 'active',
@@ -507,6 +534,10 @@ class ClaudeAdapter {
     // history.jsonl
     if (fs.existsSync(HISTORY_FILE)) {
       paths.push({ type: 'file', path: HISTORY_FILE });
+    }
+
+    if (fs.existsSync(SESSIONS_DIR)) {
+      paths.push({ type: 'directory', path: SESSIONS_DIR, filter: '.json' });
     }
 
     // Project directory (recursive also detects subagent files)

@@ -93,7 +93,7 @@ export class AgentManager {
 
         const agentData = {
             agentId: session.agentId || null,
-            agentName: session.agentName || session.name || session.nickname || null,
+            agentName,
             agentType: session.agentType || null,
             parentSessionId: session.parentSessionId || null,
             model: teamInfo?.model || session.model || 'unknown',
@@ -109,7 +109,8 @@ export class AgentManager {
             lastSessionActivity,
             activityAgeMs,
             _lastMessage: session.lastMessage || null,
-            ...(agentName ? { name: agentName, _customName: true } : {}),
+            name: agentName || null,
+            _customName: !!agentName,
         };
 
         if (this.world.agents.has(id)) {

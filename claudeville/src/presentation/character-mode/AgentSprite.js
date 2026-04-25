@@ -1326,11 +1326,14 @@ export class AgentSprite {
         ctx.translate(this.x, this.y);
         ctx.scale(s, s); // fixed size in screen space
         ctx.translate(0, 38);
-        const name = this.agent.displayName;
-        ctx.font = 'bold 9px "Press Start 2P", monospace';
-        const w = ctx.measureText(name).width + 10;
+        const rawName = String(this.agent.name || this.agent.displayName || '').trim() || this.agent.displayName;
+        ctx.font = 'bold 8px "Press Start 2P", monospace';
+        const lines = this._wrapNameTagLines(ctx, rawName);
+        const contentW = Math.max(...lines.map(line => ctx.measureText(line).width));
+        const w = Math.min(190, contentW + 12);
         ctx.fillStyle = 'rgba(242, 211, 107, 0.94)';
-        const h = 16, r = 4;
+        const h = lines.length > 1 ? 26 : 16;
+        const r = 4;
         ctx.beginPath();
         ctx.moveTo(-w/2 + r, -h/2);
         ctx.lineTo(w/2 - r, -h/2);
@@ -1349,8 +1352,62 @@ export class AgentSprite {
         ctx.fillStyle = '#241812';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(name, 0, 1);
+        if (lines.length === 1) {
+            ctx.fillText(lines[0], 0, 1);
+        } else {
+            ctx.fillText(lines[0], 0, -5);
+            ctx.fillText(lines[1], 0, 6);
+        }
         ctx.restore();
+    }
+
+    _wrapNameTagLines(ctx, rawName) {
+        const MAX_WIDTH = 178;
+        const name = String(rawName || '').trim();
+        if (!name) return ['Agent'];
+        if (ctx.measureText(name).width <= MAX_WIDTH) return [name];
+
+        const parts = name
+            .replace(/-/g, '- ')
+            .split(/\s+/)
+            .filter(Boolean);
+
+        const lines = [];
+        let current = '';
+        for (const part of parts) {
+            const joiner = current && !current.endsWith('-') ? ' ' : '';
+            const candidate = `${current}${joiner}${part}`;
+            if (!current || ctx.measureText(candidate).width <= MAX_WIDTH) {
+                current = candidate;
+                continue;
+            }
+            lines.push(current.trim());
+            current = part;
+            if (lines.length === 1) break;
+        }
+        if (current && lines.length < 2) lines.push(current.trim());
+
+        if (lines.length === 0) return [this._truncateNameTagLine(ctx, name, MAX_WIDTH)];
+        if (lines.length === 1) return [this._truncateNameTagLine(ctx, lines[0], MAX_WIDTH)];
+
+        const consumed = lines.join(' ').replace(/- /g, '-');
+        const normalized = name.replace(/\s+/g, ' ');
+        if (consumed.length < normalized.length) {
+            const remaining = normalized.slice(consumed.length).trim();
+            lines[1] = this._truncateNameTagLine(ctx, `${lines[1]} ${remaining}`.trim(), MAX_WIDTH);
+        } else {
+            lines[1] = this._truncateNameTagLine(ctx, lines[1], MAX_WIDTH);
+        }
+        return lines.slice(0, 2).map(line => line.replace(/- /g, '-'));
+    }
+
+    _truncateNameTagLine(ctx, text, maxWidth) {
+        let out = String(text || '').trim().replace(/- /g, '-');
+        if (ctx.measureText(out).width <= maxWidth) return out;
+        while (out.length > 1 && ctx.measureText(`${out}…`).width > maxWidth) {
+            out = out.slice(0, -1);
+        }
+        return `${out}…`;
     }
 
     hitTest(screenX, screenY) {
