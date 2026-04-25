@@ -15,7 +15,7 @@ const BUILDING_COLORS = {
     portal: '#76d8ff',
     alchemy: '#c9f26b',
     sanctuary: '#9fb66a',
-    watchtower: '#a8d9ff',
+    watchtower: '#ffd36a',
 };
 
 export class Minimap {

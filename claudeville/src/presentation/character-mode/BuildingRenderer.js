@@ -101,10 +101,10 @@ const BUILDING_STYLES = {
         windowGlow: true,
     },
     watchtower: {
-        wallColor: '#4b4a45',
-        roofColor: '#28394d',
-        accentColor: '#a8d9ff',
-        trimColor: '#1b1f24',
+        wallColor: '#d8d0bd',
+        roofColor: '#9f2f2c',
+        accentColor: '#ffd36a',
+        trimColor: '#1e2830',
         wallHeight: 72,
         customRoof: 'watchtower',
         windowGlow: true,
@@ -362,8 +362,8 @@ export class BuildingRenderer {
                     break;
                 case 'watchtower':
                     sources.push(
-                        { x: center.x, y: center.y - style.wallHeight - halfH - 24, radius: 96, color: 'rgba(168, 217, 255, 0.19)' },
-                        { x: center.x, y: center.y - style.wallHeight / 2, radius: 56, color: 'rgba(168, 217, 255, 0.09)' },
+                        { x: center.x, y: center.y - style.wallHeight - halfH - 24, radius: 124, color: 'rgba(255, 211, 106, 0.2)' },
+                        { x: center.x, y: center.y - style.wallHeight / 2, radius: 58, color: 'rgba(255, 211, 106, 0.08)' },
                     );
                     break;
             }
@@ -598,13 +598,14 @@ export class BuildingRenderer {
                 }
                 break;
             case 'watchtower':
-                ctx.strokeStyle = '#a8d9ff';
-                ctx.lineWidth = 1.2;
+                ctx.strokeStyle = '#1e2830';
+                ctx.lineWidth = 1.4;
                 ctx.beginPath();
-                ctx.moveTo(0, -wh - halfH - 48);
-                ctx.lineTo(0, -wh - halfH - 28);
-                ctx.moveTo(-6, -wh - halfH - 42);
-                ctx.lineTo(6, -wh - halfH - 36);
+                ctx.moveTo(0, -wh - halfH - 46);
+                ctx.lineTo(0, -wh - halfH - 35);
+                ctx.moveTo(0, -wh - halfH - 46);
+                ctx.lineTo(6, -wh - halfH - 41);
+                ctx.lineTo(0, -wh - halfH - 38);
                 ctx.stroke();
                 break;
         }
@@ -1806,30 +1807,48 @@ export class BuildingRenderer {
     _drawWatchtowerRoof(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
         const deckY = -wh - halfH + 4;
-        ctx.fillStyle = '#1b1f24';
-        ctx.fillRect(-halfW - 5, deckY, halfW * 2 + 10, 9);
-        ctx.fillStyle = '#394f68';
-        ctx.fillRect(-halfW - 2, deckY - 7, halfW * 2 + 4, 7);
-        ctx.strokeStyle = '#a8d9ff';
+        ctx.fillStyle = '#1e2830';
+        ctx.fillRect(-halfW - 5, deckY, halfW * 2 + 10, 8);
+        ctx.fillStyle = '#32414a';
+        ctx.fillRect(-halfW - 1, deckY - 7, halfW * 2 + 2, 7);
+        ctx.strokeStyle = '#ffd36a';
         ctx.lineWidth = 1;
         for (let x = -halfW; x <= halfW; x += 9) {
             ctx.beginPath();
             ctx.moveTo(x, deckY - 7);
-            ctx.lineTo(x, deckY + 9);
+            ctx.lineTo(x, deckY + 8);
             ctx.stroke();
         }
+
+        const lanternY = deckY - 25;
+        ctx.fillStyle = '#27343d';
+        ctx.fillRect(-18, lanternY - 5, 36, 21);
+        ctx.fillStyle = 'rgba(255, 225, 137, 0.72)';
+        ctx.fillRect(-13, lanternY - 1, 7, 13);
+        ctx.fillRect(-3, lanternY - 2, 6, 14);
+        ctx.fillRect(7, lanternY - 1, 7, 13);
+        ctx.strokeStyle = '#121a20';
+        ctx.lineWidth = 1;
+        for (const x of [-16, -5, 5, 16]) {
+            ctx.beginPath();
+            ctx.moveTo(x, lanternY - 5);
+            ctx.lineTo(x, lanternY + 16);
+            ctx.stroke();
+        }
+        ctx.strokeRect(-18.5, lanternY - 5.5, 37, 22);
+
         ctx.fillStyle = style.roofColor;
         ctx.beginPath();
-        ctx.moveTo(-halfW - 9, deckY - 8);
-        ctx.lineTo(0, deckY - 33);
-        ctx.lineTo(halfW + 9, deckY - 8);
-        ctx.lineTo(0, deckY + 2);
+        ctx.moveTo(-23, lanternY - 7);
+        ctx.lineTo(0, lanternY - 25);
+        ctx.lineTo(23, lanternY - 7);
+        ctx.lineTo(0, lanternY);
         ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = '#151b22';
+        ctx.strokeStyle = '#591b1c';
         ctx.lineWidth = 2;
         ctx.stroke();
-        this._drawBeaconLantern(ctx, 0, deckY - 28, style.accentColor);
+        this._drawBeaconLantern(ctx, 0, lanternY + 3, style.accentColor);
     }
 
     _drawAstrolabeCrown(ctx, x, y, style, rotation = 0, alpha = 1) {
@@ -1954,7 +1973,7 @@ export class BuildingRenderer {
                 this._drawPinLight(ctx, 0, halfH - style.wallHeight / 2 - 2, '#f2d36b');
                 break;
             case 'watchtower':
-                this._drawBeaconLantern(ctx, 0, -style.wallHeight - halfH - 24, '#a8d9ff');
+                this._drawBeaconLantern(ctx, 0, -style.wallHeight - halfH - 24, '#ffd36a');
                 break;
         }
     }
@@ -2463,14 +2482,14 @@ export class BuildingRenderer {
     _drawWatchtowerActivity(ctx, halfW, halfH, style, t, motion) {
         const y = -style.wallHeight - halfH - 24;
         const sweep = motion ? Math.sin(t * 1.7) : 0.2;
-        ctx.fillStyle = 'rgba(168, 217, 255, 0.18)';
+        ctx.fillStyle = 'rgba(255, 211, 106, 0.2)';
         ctx.beginPath();
         ctx.moveTo(0, y);
-        ctx.lineTo(sweep * 58 - 18, y + 28);
-        ctx.lineTo(sweep * 58 + 18, y + 28);
+        ctx.lineTo(sweep * 82 - 28, y + 23);
+        ctx.lineTo(sweep * 82 + 28, y + 23);
         ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = '#d9f0ff';
+        ctx.fillStyle = '#fff0b8';
         ctx.beginPath();
         ctx.arc(0, y, 3, 0, Math.PI * 2);
         ctx.fill();
@@ -2590,25 +2609,22 @@ export class BuildingRenderer {
 
     _drawWatchtowerDecorations(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
-        ctx.strokeStyle = '#1b1f24';
-        ctx.lineWidth = 3;
-        for (const x of [-halfW + 7, halfW - 7]) {
-            ctx.beginPath();
-            ctx.moveTo(x, -wh + 4);
-            ctx.lineTo(x * 0.35, halfH - 2);
-            ctx.stroke();
+        ctx.fillStyle = 'rgba(159, 47, 44, 0.9)';
+        for (const y of [-wh + 12, -wh + 33, -wh + 54]) {
+            ctx.fillRect(-halfW + 5, y, halfW * 2 - 10, 5);
         }
-        ctx.strokeStyle = '#667680';
-        ctx.lineWidth = 1;
-        for (let y = -wh + 11; y < 0; y += 12) {
-            ctx.beginPath();
-            ctx.moveTo(-halfW + 11, y);
-            ctx.lineTo(halfW - 11, y - 3);
-            ctx.stroke();
-        }
-        ctx.fillStyle = '#a8d9ff';
-        ctx.fillRect(-8, -wh / 2 - 10, 5, 7);
-        ctx.fillRect(3, -wh / 2 - 10, 5, 7);
+        ctx.fillStyle = '#1e2830';
+        ctx.beginPath();
+        ctx.moveTo(-8, halfH - 18);
+        ctx.lineTo(8, halfH - 18);
+        ctx.lineTo(8, halfH - 4);
+        ctx.lineTo(-8, halfH - 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#ffd36a';
+        ctx.fillRect(-6, -wh + 19, 5, 7);
+        ctx.fillRect(3, -wh + 39, 5, 7);
+        ctx.fillRect(-3, -wh + 58, 6, 6);
     }
 
     _drawCommandDecorations(ctx, halfW, halfH, style) {

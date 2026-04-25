@@ -1,7 +1,9 @@
 import { MAP_SIZE } from '../../config/constants.js';
 import {
     WATER_POLYLINES,
+    WATER_BASINS,
     BRIDGE_HINTS,
+    HARBOR_DOCK_TILES,
     TREE_CLUSTERS,
     BOULDERS,
     BUSH_DENSITY,
@@ -65,6 +67,9 @@ export class SceneryEngine {
         for (const poly of WATER_POLYLINES) {
             this._rasterizePolyline(poly);
         }
+        for (const basin of WATER_BASINS) {
+            this._rasterizeBasin(basin);
+        }
     }
 
     _rasterizePolyline({ kind, width, points }) {
@@ -124,6 +129,31 @@ export class SceneryEngine {
         return Math.hypot(x - cx, y - cy);
     }
 
+    _rasterizeBasin({ kind, centerX, centerY, radiusX, radiusY, edgeNoise = 0.15 }) {
+        const deepRatio = kind === 'moat' ? 0.64 : 0;
+        const x0 = Math.max(0, Math.floor(centerX - radiusX - 1));
+        const x1 = Math.min(MAP_SIZE - 1, Math.ceil(centerX + radiusX + 1));
+        const y0 = Math.max(0, Math.floor(centerY - radiusY - 1));
+        const y1 = Math.min(MAP_SIZE - 1, Math.ceil(centerY + radiusY + 1));
+
+        for (let ty = y0; ty <= y1; ty++) {
+            for (let tx = x0; tx <= x1; tx++) {
+                const key = `${tx},${ty}`;
+                if (this._buildingFootprints.has(key)) continue;
+                const nx = (tx + 0.5 - centerX) / radiusX;
+                const ny = (ty + 0.5 - centerY) / radiusY;
+                const d = nx * nx + ny * ny;
+                const noise = (this.tileNoise(tx + 313, ty + 197) - 0.5) * edgeNoise;
+                if (d <= 1 + noise) {
+                    this.waterTiles.add(key);
+                    if (deepRatio && d <= deepRatio + noise * 0.35) {
+                        this.deepWaterTiles.add(key);
+                    }
+                }
+            }
+        }
+    }
+
     _generateShorelines() {
         for (const key of this.waterTiles) {
             const comma = key.indexOf(',');
@@ -146,10 +176,11 @@ export class SceneryEngine {
         for (const hint of BRIDGE_HINTS) {
             const key = `${hint.tileX},${hint.tileY}`;
             if (!this.waterTiles.has(key)) continue;
-            this.bridgeTiles.set(key, {
-                orientation: hint.orientation || this._inferOrientation(hint.tileX, hint.tileY),
-            });
+            this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation);
         }
+        this._addHarborDocks();
+        if (this.bridgeTiles.size > 0) return;
+
         // 2. Auto-place where any path tile lies on water.
         for (const key of pathTiles) {
             if (!this.waterTiles.has(key)) continue;
@@ -161,6 +192,59 @@ export class SceneryEngine {
                 orientation: this._inferOrientation(tileX, tileY),
             });
         }
+    }
+
+    _addHarborDocks() {
+        for (const dock of HARBOR_DOCK_TILES) {
+            const key = `${dock.tileX},${dock.tileY}`;
+            if (!this.waterTiles.has(key)) continue;
+            if (this._buildingFootprints.has(key)) continue;
+            this.bridgeTiles.set(key, {
+                orientation: dock.orientation || this._inferOrientation(dock.tileX, dock.tileY),
+                kind: 'dock',
+            });
+        }
+    }
+
+    _addBridgeSpan(tileX, tileY, forcedOrientation) {
+        const orientation = forcedOrientation || this._inferOrientation(tileX, tileY);
+        const spanAxis = orientation === 'EW' ? [1, 0] : [0, 1];
+        const bridgeLine = [[tileX, tileY]];
+        this._addBridgeTile(tileX, tileY, orientation);
+
+        for (const direction of [-1, 1]) {
+            for (let step = 1; step <= 4; step++) {
+                const nx = tileX + spanAxis[0] * step * direction;
+                const ny = tileY + spanAxis[1] * step * direction;
+                if (nx < 0 || nx >= MAP_SIZE || ny < 0 || ny >= MAP_SIZE) break;
+                const key = `${nx},${ny}`;
+                if (this._buildingFootprints.has(key)) break;
+                if (!this.waterTiles.has(key)) break;
+                this._addBridgeTile(nx, ny, orientation);
+                bridgeLine.push([nx, ny]);
+            }
+        }
+
+        // Make authored city crossings read as landmark bridges rather than
+        // single-file planks. Only widen over existing water so land, building
+        // footprints, and authored shore shapes keep control.
+        const crossAxis = orientation === 'EW' ? [0, 1] : [1, 0];
+        for (const [bx, by] of bridgeLine) {
+            for (const direction of [-1, 1]) {
+                const nx = bx + crossAxis[0] * direction;
+                const ny = by + crossAxis[1] * direction;
+                if (nx < 0 || nx >= MAP_SIZE || ny < 0 || ny >= MAP_SIZE) continue;
+                const key = `${nx},${ny}`;
+                if (this._buildingFootprints.has(key)) continue;
+                if (!this.waterTiles.has(key)) continue;
+                this._addBridgeTile(nx, ny, orientation);
+            }
+        }
+    }
+
+    _addBridgeTile(tileX, tileY, orientation) {
+        const key = `${tileX},${tileY}`;
+        this.bridgeTiles.set(key, { orientation });
     }
 
     _inferOrientation(tileX, tileY) {

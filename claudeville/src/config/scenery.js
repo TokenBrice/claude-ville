@@ -6,57 +6,98 @@
 // Water polylines. `width` is the half-width in tiles around the centerline.
 // `kind` controls visual depth: 'river' is shallow, 'moat' is deeper.
 export const WATER_POLYLINES = [
-    // Preserved: northern curved stream (replaces inline pond+stream from
-    // IsometricRenderer._generateWater).
-    {
-        kind: 'river',
-        width: 1.4,
-        points: [[2, 5], [8, 4], [14, 6], [20, 5], [22, 6]],
-    },
-    // Preserved: SW pond reframed as a wider river-end basin.
-    {
-        kind: 'river',
-        width: 2.2,
-        points: [[3, 33], [6, 32], [8, 33]],
-    },
-    // SW partial moat: short corner segment.
+    // Top-right sea inlet: a broad deep-water body that reads as the river's
+    // destination instead of a defensive moat around the map edge.
     {
         kind: 'moat',
-        width: 1.6,
-        points: [[1, 28], [1, 38], [10, 38]],
+        width: 4.5,
+        points: [[24, 0], [30, 1], [36, 3], [39, 5]],
     },
-    // NE partial moat: short corner segment.
     {
         kind: 'moat',
-        width: 1.6,
-        points: [[28, 1], [38, 1], [38, 11]],
+        width: 3.8,
+        points: [[39, 4], [38, 9], [38, 14], [36, 18]],
     },
-    // Diagonal river through the city, connecting the two moat ends.
-    // Width tapers via per-segment control if needed; for v1 it's uniform.
-    // Routed to avoid every building footprint per BUILDING_DEFS — in
-    // particular it bends north of Code Forge (28..31, 15..17) and Sky
-    // Watchtower (34..36, 10..14). DO NOT shorten back to (28,16) etc. —
-    // that point is inside Code Forge and will silently corrupt water and
-    // bridge generation.
+    {
+        kind: 'moat',
+        width: 2.6,
+        points: [[36, 18], [39, 19]],
+    },
+    // Main river through the village. It enters from the lower-left edge,
+    // cuts between the command plaza and workshop district, then empties into
+    // the top-right sea. Control points are kept clear of building footprints
+    // in BUILDING_DEFS, especially Command Center, Code Forge, Watchtower, and
+    // Prompt Alchemy.
     {
         kind: 'river',
-        width: 1.3,
-        points: [[10, 38], [16, 32], [22, 24], [26, 19], [30, 13], [34, 8], [38, 5]],
+        width: 1.35,
+        points: [[0, 29], [7, 28], [13, 27], [18, 24], [23, 22], [27, 20], [30, 18], [31, 14], [33, 9], [36, 6], [39, 5]],
+    },
+];
+
+// Broad authored water masses. These supplement polylines for sea/bay shapes
+// where a line stroke would look too rectangular.
+export const WATER_BASINS = [
+    {
+        kind: 'moat',
+        centerX: 43.5,
+        centerY: 20,
+        radiusX: 13.2,
+        radiusY: 27,
+        edgeNoise: 0.12,
+    },
+    {
+        kind: 'moat',
+        centerX: 37.5,
+        centerY: 3,
+        radiusX: 12,
+        radiusY: 8,
+        edgeNoise: 0.16,
+    },
+    {
+        kind: 'moat',
+        centerX: 35.5,
+        centerY: 17.2,
+        radiusX: 5.8,
+        radiusY: 4.1,
+        edgeNoise: 0.22,
     },
 ];
 
 // Bridge hints: explicit tile positions where a deck must exist.
-// SceneryEngine will also auto-place bridges where the river polyline
-// intersects pathTiles, but these guarantee the gameplay-critical crossings
-// even if the river drifts during tuning. `orientation` is optional;
-// when omitted the engine derives it from neighbor water tiles.
+// SceneryEngine may auto-place extra crossings when no hints are present, but
+// these three city bridges intentionally define the visible river crossings.
+// `orientation` is optional; when omitted the engine derives it from neighbor
+// water tiles.
 export const BRIDGE_HINTS = [
-    { tileX: 5, tileY: 38, orientation: 'NS' },   // SW gate
-    { tileX: 38, tileY: 5, orientation: 'EW' },   // NE gate
-    { tileX: 16, tileY: 32 },                     // diagonal crossing #1
-    { tileX: 22, tileY: 24 },                     // central crossing (S of Command Center)
-    { tileX: 30, tileY: 13 },                     // crossing N of Code Forge
-    { tileX: 34, tileY: 8 },                      // crossing N of Watchtower
+    { tileX: 13, tileY: 27 }, // west village crossing near Token Mine
+    { tileX: 20, tileY: 23 }, // central crossing below Command Center
+    { tileX: 30, tileY: 18 }, // workshop crossing above Code Forge
+];
+
+// Harbor decks are water tiles with dock planks. They are intentionally
+// separate from BRIDGE_HINTS so the city still has three river crossings.
+export const HARBOR_DOCK_TILES = [
+    { tileX: 31, tileY: 18, orientation: 'EW' },
+    { tileX: 32, tileY: 18, orientation: 'EW' },
+    { tileX: 33, tileY: 18, orientation: 'EW' },
+    { tileX: 34, tileY: 18, orientation: 'EW' },
+    { tileX: 35, tileY: 18, orientation: 'EW' },
+    { tileX: 36, tileY: 18, orientation: 'EW' },
+    { tileX: 37, tileY: 18, orientation: 'EW' },
+    { tileX: 38, tileY: 18, orientation: 'EW' },
+    { tileX: 34, tileY: 16, orientation: 'NS' },
+    { tileX: 35, tileY: 16, orientation: 'NS' },
+    { tileX: 36, tileY: 16, orientation: 'NS' },
+    { tileX: 34, tileY: 17, orientation: 'NS' },
+    { tileX: 35, tileY: 17, orientation: 'NS' },
+    { tileX: 36, tileY: 17, orientation: 'NS' },
+    { tileX: 34, tileY: 19, orientation: 'NS' },
+    { tileX: 35, tileY: 19, orientation: 'NS' },
+    { tileX: 36, tileY: 19, orientation: 'NS' },
+    { tileX: 34, tileY: 20, orientation: 'NS' },
+    { tileX: 35, tileY: 20, orientation: 'NS' },
+    { tileX: 36, tileY: 20, orientation: 'NS' },
 ];
 
 // Tree clusters: anchor tile + radius (tiles) + density (0..1).
@@ -66,14 +107,17 @@ export const BRIDGE_HINTS = [
 // (4,4) and (36,36) intentionally extend past map edges to thicken the
 // fringe forest.
 export const TREE_CLUSTERS = [
-    { centerX: 4, centerY: 4, radius: 5, density: 0.55 },
-    { centerX: 4, centerY: 35, radius: 4, density: 0.45 },
-    { centerX: 35, centerY: 4, radius: 4, density: 0.5 },
-    { centerX: 36, centerY: 36, radius: 5, density: 0.55 },
-    // Inland thickets between buildings — sparser.
-    { centerX: 12, centerY: 28, radius: 3, density: 0.32 },
-    { centerX: 28, centerY: 32, radius: 3, density: 0.32 },
-    { centerX: 14, centerY: 10, radius: 2.5, density: 0.28 },
+    { centerX: 4, centerY: 4, radius: 5.5, density: 0.62 },
+    { centerX: 4, centerY: 35, radius: 5, density: 0.58 },
+    { centerX: 35, centerY: 4, radius: 5, density: 0.62 },
+    { centerX: 36, centerY: 36, radius: 5.5, density: 0.6 },
+    // Abundant but path-safe woodland around the settlement.
+    { centerX: 10, centerY: 30, radius: 4, density: 0.48 },
+    { centerX: 18, centerY: 31, radius: 3.5, density: 0.42 },
+    { centerX: 28, centerY: 31, radius: 4, density: 0.46 },
+    { centerX: 33, centerY: 20, radius: 3.2, density: 0.38 },
+    { centerX: 14, centerY: 9, radius: 3.5, density: 0.4 },
+    { centerX: 27, centerY: 7, radius: 3.2, density: 0.36 },
 ];
 
 // Static large boulders. Drawn Y-sorted (occlude behind agents).
@@ -92,5 +136,5 @@ export const BOULDERS = [
 // `BUSH_DENSITY` and `GRASS_TUFT_DENSITY` are noise thresholds in [0, 1] —
 // a tile becomes a bush/tuft when its noise value falls in the band.
 // Tuned to roughly match the existing 'flowers'/'mushrooms' densities.
-export const BUSH_DENSITY = { min: 0.05, max: 0.13 };
-export const GRASS_TUFT_DENSITY = { min: 0.18, max: 0.34 };
+export const BUSH_DENSITY = { min: 0.05, max: 0.16 };
+export const GRASS_TUFT_DENSITY = { min: 0.18, max: 0.39 };

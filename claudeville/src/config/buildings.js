@@ -9,5 +9,5 @@ export const BUILDING_DEFS = [
     { type: 'portal', x: 31, y: 23, width: 4, height: 4, label: 'PORTAL GATE', icon: 'O', description: 'Browser and remote tools' },
     { type: 'alchemy', x: 23, y: 9, width: 3, height: 3, label: 'PROMPT ALCHEMY', icon: 'P', description: 'Notebook and prompt work' },
     { type: 'sanctuary', x: 9, y: 7, width: 4, height: 3, label: 'IDLE SANCTUARY', icon: 'S', description: 'Resting agents' },
-    { type: 'watchtower', x: 34, y: 10, width: 3, height: 5, label: 'SKY WATCHTOWER', icon: 'W', description: 'Monitoring and status' },
+    { type: 'watchtower', x: 34, y: 10, width: 3, height: 5, label: 'HARBOR LIGHTHOUSE', icon: 'L', description: 'Harbor monitoring' },
 ];

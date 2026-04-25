@@ -47,6 +47,13 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 17.6, tileY: 24.0, type: 'marketStall' },
     { tileX: 23.1, tileY: 19.7, type: 'flowerCart' },
     { tileX: 21.8, tileY: 16.2, type: 'noticePillar' },
+    { tileX: 34.4, tileY: 17.6, type: 'harborPier' },
+    { tileX: 36.5, tileY: 18.9, type: 'harborPier' },
+    { tileX: 36.1, tileY: 16.6, type: 'harborBoat' },
+    { tileX: 33.2, tileY: 20.8, type: 'harborBoat' },
+    { tileX: 33.7, tileY: 15.7, type: 'harborCrates' },
+    { tileX: 37.1, tileY: 19.4, type: 'harborCrates' },
+    { tileX: 32.4, tileY: 18.7, type: 'harborCrane' },
 ];
 
 class StaticPropSprite {
@@ -1029,6 +1036,10 @@ export class IsometricRenderer {
             else if (prop.type === 'marketStall') this._drawMarketStall(ctx, x, y);
             else if (prop.type === 'flowerCart') this._drawFlowerCart(ctx, x, y);
             else if (prop.type === 'noticePillar') this._drawNoticePillar(ctx, x, y);
+            else if (prop.type === 'harborPier') this._drawHarborPier(ctx, x, y);
+            else if (prop.type === 'harborBoat') this._drawHarborBoat(ctx, x, y);
+            else if (prop.type === 'harborCrates') this._drawHarborCrates(ctx, x, y);
+            else if (prop.type === 'harborCrane') this._drawHarborCrane(ctx, x, y);
         }
 
         for (const prop of this.commandCenterGroundProps) {
@@ -1448,6 +1459,14 @@ export class IsometricRenderer {
         const info = this.bridgeTiles.get(key);
         const orientation = info?.orientation || 'EW';
         const wood = THEME.bridgeWood;
+        const [tileX, tileY] = key.split(',').map(Number);
+        const axis = orientation === 'EW' ? [1, 0] : [0, 1];
+        const prevBridge = this.bridgeTiles.has(`${tileX - axis[0]},${tileY - axis[1]}`);
+        const nextBridge = this.bridgeTiles.has(`${tileX + axis[0]},${tileY + axis[1]}`);
+        if (info?.kind === 'dock') {
+            this._drawDockDeck(ctx, screenX, screenY, seed, orientation, prevBridge, nextBridge);
+            return;
+        }
 
         // Deck fill (covers the diamond — the water fill is already painted under it).
         ctx.fillStyle = wood.deck;
@@ -1464,6 +1483,22 @@ export class IsometricRenderer {
         ctx.globalAlpha = 0.35 + seed * 0.15;
         ctx.fill();
         ctx.globalAlpha = 1;
+
+        ctx.strokeStyle = 'rgba(246, 207, 119, 0.22)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (orientation === 'EW') {
+            ctx.moveTo(screenX - 17, screenY - 7);
+            ctx.lineTo(screenX + 17, screenY + 7);
+            ctx.moveTo(screenX - 17, screenY + 7);
+            ctx.lineTo(screenX + 17, screenY - 7);
+        } else {
+            ctx.moveTo(screenX - 17, screenY - 7);
+            ctx.lineTo(screenX + 17, screenY + 7);
+            ctx.moveTo(screenX + 17, screenY - 7);
+            ctx.lineTo(screenX - 17, screenY + 7);
+        }
+        ctx.stroke();
 
         // Three plank lines, perpendicular to orientation. EW = planks run NS.
         ctx.strokeStyle = wood.plankLine;
@@ -1509,6 +1544,196 @@ export class IsometricRenderer {
         ctx.strokeStyle = wood.railLight;
         ctx.lineWidth = 0.75;
         ctx.stroke();
+
+        ctx.fillStyle = '#2b1b0f';
+        ctx.strokeStyle = '#8a673b';
+        ctx.lineWidth = 1;
+        const postPairs = orientation === 'EW'
+            ? [[-24, -10], [-24, 10], [24, -10], [24, 10]]
+            : [[-17, -14], [17, -14], [-17, 14], [17, 14]];
+        for (const [px, py] of postPairs) {
+            const endPost = (px < 0 || py < 0) ? !prevBridge : !nextBridge;
+            if (!endPost) continue;
+            const h = endPost ? 13 : 9;
+            ctx.fillRect(screenX + px - 1.5, screenY + py - h, 3, h);
+            ctx.strokeRect(screenX + px - 1.5, screenY + py - h + 0.5, 3, h - 0.5);
+            if (endPost) {
+                ctx.fillStyle = '#f2d36b';
+                ctx.fillRect(screenX + px - 2.5, screenY + py - h - 3, 5, 3);
+                ctx.fillStyle = '#2b1b0f';
+            }
+        }
+
+        if (!prevBridge || !nextBridge) {
+            ctx.fillStyle = '#615d50';
+            ctx.strokeStyle = '#2f2c26';
+            ctx.lineWidth = 1;
+            const blocks = orientation === 'EW'
+                ? (!prevBridge ? [[-31, -3], [-27, 5]] : [[25, -5], [29, 3]])
+                : (!prevBridge ? [[-8, -14], [4, -16]] : [[-8, 12], [4, 10]]);
+            for (const [bx, by] of blocks) {
+                ctx.fillRect(screenX + bx, screenY + by, 8, 5);
+                ctx.strokeRect(screenX + bx + 0.5, screenY + by + 0.5, 7, 4);
+            }
+        }
+    }
+
+    _drawDockDeck(ctx, screenX, screenY, seed, orientation, prevDock, nextDock) {
+        ctx.fillStyle = '#6b4a27';
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
+        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
+        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
+        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(158, 111, 56, 0.38)';
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(35, 22, 10, 0.55)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (orientation === 'EW') {
+            for (const offset of [-14, 0, 14]) {
+                ctx.moveTo(screenX + offset, screenY - 8);
+                ctx.lineTo(screenX + offset, screenY + 8);
+            }
+        } else {
+            for (const offset of [-6, 2, 10]) {
+                ctx.moveTo(screenX - 18, screenY + offset);
+                ctx.lineTo(screenX + 18, screenY + offset);
+            }
+        }
+        ctx.stroke();
+
+        if (!prevDock || !nextDock || seed > 0.55) {
+            ctx.fillStyle = '#2b1b0f';
+            const posts = orientation === 'EW'
+                ? [[-21, -9], [21, 9]]
+                : [[-15, -11], [15, 11]];
+            for (const [px, py] of posts) {
+                ctx.fillRect(screenX + px - 1.5, screenY + py - 12, 3, 13);
+                ctx.fillStyle = '#d8b96d';
+                ctx.fillRect(screenX + px - 2.5, screenY + py - 15, 5, 3);
+                ctx.fillStyle = '#2b1b0f';
+            }
+        }
+    }
+
+    _drawHarborPier(ctx, x, y) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.fillStyle = '#5a3f24';
+        ctx.strokeStyle = '#2a1a0f';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 6; i++) {
+            ctx.beginPath();
+            ctx.moveTo(-36 + i * 15, -7 + i * 4);
+            ctx.lineTo(-18 + i * 15, 2 + i * 4);
+            ctx.lineTo(-25 + i * 15, 7 + i * 4);
+            ctx.lineTo(-43 + i * 15, -2 + i * 4);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+        }
+        ctx.strokeStyle = '#8a673b';
+        ctx.beginPath();
+        ctx.moveTo(-42, -3);
+        ctx.lineTo(52, 23);
+        ctx.moveTo(-33, 6);
+        ctx.lineTo(61, 32);
+        ctx.stroke();
+        ctx.fillStyle = '#2b1b0f';
+        for (const [px, py] of [[-39, -7], [-21, -1], [-2, 6], [18, 12], [36, 18], [54, 26]]) {
+            ctx.fillRect(px, py - 13, 3, 16);
+            ctx.fillStyle = '#f2d36b';
+            ctx.fillRect(px - 1, py - 16, 5, 3);
+            ctx.fillStyle = '#2b1b0f';
+        }
+        ctx.restore();
+    }
+
+    _drawHarborBoat(ctx, x, y) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.fillStyle = 'rgba(15, 28, 33, 0.45)';
+        ctx.beginPath();
+        ctx.ellipse(0, 5, 25, 8, 0.25, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#6b4225';
+        ctx.beginPath();
+        ctx.moveTo(-22, -2);
+        ctx.lineTo(16, -7);
+        ctx.lineTo(26, 0);
+        ctx.lineTo(9, 10);
+        ctx.lineTo(-15, 9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = '#a8753d';
+        ctx.fillRect(-10, -5, 18, 5);
+        ctx.strokeStyle = '#e8d7a6';
+        ctx.beginPath();
+        ctx.moveTo(2, -7);
+        ctx.lineTo(2, -25);
+        ctx.lineTo(16, -10);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(232, 215, 166, 0.6)';
+        ctx.beginPath();
+        ctx.moveTo(3, -24);
+        ctx.lineTo(16, -10);
+        ctx.lineTo(3, -10);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawHarborCrates(ctx, x, y) {
+        ctx.fillStyle = '#6b4225';
+        ctx.fillRect(x - 12, y - 12, 10, 10);
+        ctx.fillRect(x, y - 15, 10, 10);
+        ctx.fillRect(x + 7, y - 8, 10, 10);
+        ctx.fillRect(x - 4, y - 23, 9, 9);
+        ctx.fillStyle = '#9a6a3b';
+        ctx.fillRect(x - 10, y - 10, 6, 2);
+        ctx.fillRect(x + 2, y - 13, 6, 2);
+        ctx.fillRect(x + 9, y - 6, 6, 2);
+        ctx.fillRect(x - 2, y - 21, 5, 2);
+        ctx.strokeStyle = '#2a1a0f';
+        ctx.strokeRect(x - 12.5, y - 12.5, 11, 11);
+        ctx.strokeRect(x - 0.5, y - 15.5, 11, 11);
+        ctx.strokeRect(x + 6.5, y - 8.5, 11, 11);
+        ctx.strokeRect(x - 4.5, y - 23.5, 10, 10);
+    }
+
+    _drawHarborCrane(ctx, x, y) {
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.strokeStyle = '#2b1b0f';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, 4);
+        ctx.lineTo(0, -38);
+        ctx.moveTo(0, -35);
+        ctx.lineTo(36, -47);
+        ctx.moveTo(8, -37);
+        ctx.lineTo(25, -18);
+        ctx.stroke();
+
+        ctx.strokeStyle = '#d8b96d';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(0, -33);
+        ctx.lineTo(32, -44);
+        ctx.moveTo(24, -43);
+        ctx.lineTo(24, -16);
+        ctx.stroke();
+        ctx.fillStyle = '#6b4225';
+        ctx.fillRect(18, -14, 12, 8);
+        ctx.fillStyle = '#f2d36b';
+        ctx.fillRect(-3, -42, 6, 5);
+        ctx.restore();
     }
 
     _drawTerrainFeature(ctx, screenX, screenY, seed, key) {

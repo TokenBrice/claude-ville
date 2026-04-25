@@ -22,9 +22,6 @@ export class Pathfinder {
     findPath(from, to, bridgeTiles) {
         const fx = Math.round(from.tileX);
         const fy = Math.round(from.tileY);
-        const tx = Math.round(to.tileX);
-        const ty = Math.round(to.tileY);
-        if (!this.isWalkable(tx, ty)) return [];
 
         // Guard: if the start tile is unwalkable (e.g., agent currently
         // straddling a shore tile due to floating-point drift), search the
@@ -41,24 +38,33 @@ export class Pathfinder {
             return [];
         }
 
+        const targetCandidates = this._walkableCandidates(Math.round(to.tileX), Math.round(to.tileY));
+        if (targetCandidates.length === 0) return [];
+
         // Fast path: if a tile-step line from `from` to `to` never crosses a blocked tile,
         // skip BFS entirely.
-        if (this._lineWalkable(fx, fy, tx, ty)) {
-            return [{ tileX: tx, tileY: ty }];
+        for (const target of targetCandidates) {
+            if (this._lineWalkable(fx, fy, target.tileX, target.tileY)) {
+                return [{ tileX: target.tileX, tileY: target.tileY }];
+            }
         }
 
         // BFS.
         const N = MAP_SIZE;
         const visited = new Uint8Array(N * N);
         const parent = new Int32Array(N * N).fill(-1);
+        const targetSet = new Set(targetCandidates.map(({ tileX, tileY }) => `${tileX},${tileY}`));
         const queue = [fy * N + fx];
         visited[fy * N + fx] = 1;
-        let found = false;
+        let foundIdx = -1;
         while (queue.length) {
             const cur = queue.shift();
-            if (cur === ty * N + tx) { found = true; break; }
             const cx = cur % N;
             const cy = (cur - cx) / N;
+            if (targetSet.has(`${cx},${cy}`)) {
+                foundIdx = cur;
+                break;
+            }
             for (const [dx, dy] of DIRS) {
                 const nx = cx + dx;
                 const ny = cy + dy;
@@ -71,17 +77,34 @@ export class Pathfinder {
                 queue.push(idx);
             }
         }
-        if (!found) return [];
+        if (foundIdx === -1) return [];
 
         // Reconstruct path from to -> from.
         const tiles = [];
-        let cur = ty * N + tx;
+        let cur = foundIdx;
         while (cur !== -1 && cur !== fy * N + fx) {
             tiles.push({ tileX: cur % N, tileY: (cur - (cur % N)) / N });
             cur = parent[cur];
         }
         tiles.reverse();
         return this._simplify(tiles, bridgeTiles);
+    }
+
+    _walkableCandidates(tileX, tileY) {
+        const candidates = [];
+        if (this.isWalkable(tileX, tileY)) candidates.push({ tileX, tileY });
+
+        for (let radius = 1; radius <= 5; radius++) {
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+                    const nx = tileX + dx;
+                    const ny = tileY + dy;
+                    if (this.isWalkable(nx, ny)) candidates.push({ tileX: nx, tileY: ny });
+                }
+            }
+        }
+        return candidates;
     }
 
     _lineWalkable(x0, y0, x1, y1) {
