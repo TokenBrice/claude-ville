@@ -17,13 +17,64 @@ const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
 
 // ─── Utilities ─────────────────────────────────────────────
 
+const MAX_HEAD_BYTES = 64 * 1024;
+const TAIL_CHUNK_BYTES = 64 * 1024;
+const MAX_TAIL_BYTES = 8 * 1024 * 1024;
+
+function readHeadLines(filePath, count) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    if (stat.size === 0) return [];
+
+    const bytesToRead = Math.min(stat.size, MAX_HEAD_BYTES);
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
+    return buffer.toString('utf-8', 0, bytesRead).split('\n').slice(0, count);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function readTailLines(filePath, count) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    if (stat.size === 0) return [];
+
+    const chunks = [];
+    let position = stat.size;
+    let bytesCollected = 0;
+    let newlineCount = 0;
+
+    while (position > 0 && newlineCount <= count && bytesCollected < MAX_TAIL_BYTES) {
+      const bytesToRead = Math.min(TAIL_CHUNK_BYTES, position, MAX_TAIL_BYTES - bytesCollected);
+      position -= bytesToRead;
+
+      const buffer = Buffer.allocUnsafe(bytesToRead);
+      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
+      if (bytesRead <= 0) break;
+
+      const chunk = buffer.toString('utf-8', 0, bytesRead);
+      chunks.unshift(chunk);
+      bytesCollected += bytesRead;
+
+      for (let i = 0; i < chunk.length; i++) {
+        if (chunk.charCodeAt(i) === 10) newlineCount++;
+      }
+    }
+
+    return chunks.join('').trim().split('\n').slice(-count);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function readLines(filePath, { from = 'end', count = 50 } = {}) {
   try {
     if (!fs.existsSync(filePath)) return [];
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const lines = content.trim().split('\n');
-    if (from === 'start') return lines.slice(0, count);
-    return lines.slice(-count);
+    if (from === 'start') return readHeadLines(filePath, count);
+    return readTailLines(filePath, count);
   } catch {
     return [];
   }
