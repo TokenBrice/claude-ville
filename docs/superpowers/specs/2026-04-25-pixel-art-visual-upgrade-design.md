@@ -47,7 +47,8 @@ claudeville/
         status.{name}.png                  # selected ring, chat, working, idle
       buildings/
         building.{type}/
-          base-{quadrant}.png              # quadrant ∈ tl|tr|bl|br for hero (composed); single for standard
+          base-{c}-{r}.png                 # column,row of composeGrid for hero buildings (e.g., base-0-0.png)
+          base.png                         # single PNG for standard (≤4×3) buildings
           beacon.png, banner.png, ...      # named animated overlays
       props/
         prop.{name}/
@@ -361,7 +362,7 @@ Estimated ~5,000 LOC retired:
 
 ## 13. Acceptance criteria
 
-- World mode renders fully via sprites; no `ctx.fillRect`/`beginPath`/etc. in any drawing-related path.
+- World mode renders fully via sprites; no `ctx.fillRect`/`beginPath`/etc. in **the world tile + building + character + scenery render paths**. Explicit exemptions: chat bubbles (DOM-style speech), drop shadows under buildings (cheap ellipse fill), the atmosphere vignette overlay, and `Minimap.js` (intentionally vector parchment art rendered into a small offscreen canvas; out of scope for this PR — its visual style is a deliberate departure).
 - All 11 buildings, all props, all vegetation, all terrain classes display correct pixel-art assets.
 - Agents move in 8 directions with walk/idle animations.
 - Provider palette + per-agent accessory variation preserved.

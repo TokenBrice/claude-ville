@@ -438,16 +438,30 @@ export class SpriteSheet {
 }
 
 // Velocity → direction index. Returns 0..7 matching DIRECTIONS order.
+// DIRECTIONS = ['s','se','e','ne','n','nw','w','sw'].
+// In screen space: vy > 0 means moving south (down). atan2(vy, vx) is 0 at East,
+// π/2 at South. We want South → 0, SE → 1, E → 2, NE → 3, N → 4, NW → 5, W → 6, SW → 7.
 export function dirFromVelocity(vx, vy) {
     if (vx === 0 && vy === 0) return null;
-    const angle = Math.atan2(vy, vx);                       // -π..π
-    const idx = Math.round((angle + Math.PI) / (Math.PI / 4)) % 8;
-    // atan2 returns 0 along +x (East). Remap so index 0 = South (down on iso screen).
-    // Iso screen south is angle = π/4; we map via lookup.
-    const remap = [2, 1, 0, 7, 6, 5, 4, 3];                 // angle bucket → DIRECTIONS index
-    return remap[idx];
+    const angle = Math.atan2(vy, vx);                       // -π..π, 0 at East, π/2 at South
+    // Shift so South is 0; divide by 45° step.
+    const stepped = Math.round((angle - Math.PI / 2) / (Math.PI / 4));
+    return ((stepped % 8) + 8) % 8;
 }
 ```
+
+**Smoke test the math before Step 2** by pasting this 8-cardinal probe into a node REPL or a temporary scratch file:
+```javascript
+const tests = [
+    [0, 1, 's'], [1, 1, 'se'], [1, 0, 'e'], [1, -1, 'ne'],
+    [0, -1, 'n'], [-1, -1, 'nw'], [-1, 0, 'w'], [-1, 1, 'sw'],
+];
+for (const [vx, vy, want] of tests) {
+    const got = ['s','se','e','ne','n','nw','w','sw'][dirFromVelocity(vx, vy)];
+    if (got !== want) console.error(`FAIL (${vx},${vy}): want ${want} got ${got}`);
+}
+```
+If any FAIL prints, do not proceed — the math is wrong and agents will face backwards.
 
 - [ ] **Step 2: Validate**
 
@@ -529,12 +543,19 @@ export class Compositor {
             [hexToRgb(sourcePants), hexToRgb(targetPants)],
             [hexToRgb(sourceTrim), hexToRgb(targetTrim)],
         ];
+        // ΔE bucket: tolerate ±12 per channel so painterly anti-aliased pixels
+        // also recolor. Without this tolerance, only fully-saturated marker
+        // pixels swap and the result looks half-painted.
+        const TOL = 12;
         for (let i = 0; i < data.length; i += 4) {
             const r = data[i], g = data[i+1], b = data[i+2], a = data[i+3];
             if (a < 16) continue;
             for (const [src, dst] of swap) {
-                if (r === src[0] && g === src[1] && b === src[2]) {
-                    data[i] = dst[0]; data[i+1] = dst[1]; data[i+2] = dst[2];
+                if (Math.abs(r - src[0]) <= TOL && Math.abs(g - src[1]) <= TOL && Math.abs(b - src[2]) <= TOL) {
+                    // Preserve the per-pixel offset from src to keep AA gradients.
+                    data[i]   = Math.max(0, Math.min(255, dst[0] + (r - src[0])));
+                    data[i+1] = Math.max(0, Math.min(255, dst[1] + (g - src[1])));
+                    data[i+2] = Math.max(0, Math.min(255, dst[2] + (b - src[2])));
                     break;
                 }
             }
@@ -768,12 +789,20 @@ git commit -m "feat(sprites): add TerrainTileset (Wang neighbor lookup)"
 **Files:**
 - Create: `claudeville/src/presentation/character-mode/BuildingSprite.js`
 
+**Pre-step (REQUIRED):** Sweep the existing `BuildingRenderer` API surface so `BuildingSprite` reaches parity. Run:
+
+```bash
+rg -n "buildingRenderer\." claudeville/src/presentation/character-mode/IsometricRenderer.js
+```
+
+Expected call sites today: `setBuildings`, `setMotionScale`, `setAgentSprites`, `update`, `draw`, `drawShadows`, `drawBubbles`, `getLightSources`, `hitTest`, `hoveredBuilding` (property). Each MUST be addressed by `BuildingSprite` — either reimplemented or **explicitly out-of-scope** with a comment in this task. Silent loss = scope regression. Per spec §3 (roof-fade dropped) only `roofAlpha` is intentionally lost; bubbles, shadows, and lighting are NOT.
+
 - [ ] **Step 1: Write the module**
 
 ```javascript
-// BuildingSprite replaces BuildingRenderer. It draws each building from its
-// sprite + animated overlays, exposes emitter points for the particle system,
-// and supports occlusion split for hero buildings.
+// BuildingSprite replaces BuildingRenderer. Draws buildings from sprites,
+// exposes emitter points for particles, supports occlusion split for hero
+// buildings. Reimplements the full BuildingRenderer external surface.
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 
@@ -783,15 +812,86 @@ export class BuildingSprite {
         this.sprites = spriteRenderer;
         this.particles = particleSystem;
         this.buildings = [];
+        this.agentSprites = [];
         this.hovered = null;
         this.frame = 0;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
+        this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
+        this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
+        this._motionMq?.addEventListener?.('change', this._onMotionChange);
+    }
+
+    dispose() {
+        this._motionMq?.removeEventListener?.('change', this._onMotionChange);
     }
 
     setMotionScale(s) { this.motionScale = s; }
 
     setBuildings(map) {
-        this.buildings = Array.from(map.values());
+        // Accepts a Map (preferred — matches world.buildings) or an Array.
+        this.buildings = map instanceof Map ? Array.from(map.values()) : Array.from(map);
+    }
+
+    setAgentSprites(sprites) { this.agentSprites = sprites; }
+
+    // Vector chat bubbles ARE preserved (not pixel-art); they overlay the world.
+    drawBubbles(ctx, world) {
+        for (const sprite of this.agentSprites) {
+            if (!sprite.chatting || !sprite.chatBubbleText) continue;
+            this._drawBubble(ctx, sprite);
+        }
+    }
+
+    _drawBubble(ctx, sprite) {
+        // Port the existing bubble logic from BuildingRenderer.drawBubbles
+        // verbatim — text rendering is intentionally vector + DOM-font.
+        // Implementer: copy the existing implementation, no behavioural change.
+    }
+
+    // Returns soft drop shadows under each building footprint.
+    drawShadows(ctx) {
+        for (const b of this.buildings) {
+            const c = this._buildingScreenCenter(b);
+            const halfW = (b.width + b.height) * TILE_WIDTH / 4;
+            ctx.save();
+            ctx.fillStyle = 'rgba(15, 22, 30, 0.32)';
+            ctx.beginPath();
+            ctx.ellipse(Math.round(c.x), Math.round(c.y + 4), halfW, halfW * 0.32, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
+    // Light sources for water/wall additive light passes.
+    getLightSources() {
+        const out = [];
+        for (const b of this.buildings) {
+            const entry = this.assets.getEntry(`building.${b.type}`);
+            if (!entry?.lightSource) continue;
+            const c = this._buildingScreenCenter(b);
+            const baseAnchor = this.assets.getAnchor(entry.id);
+            const [lx, ly] = entry.lightSource;
+            out.push({
+                x: c.x - baseAnchor[0] + lx,
+                y: c.y - baseAnchor[1] + ly,
+                color: entry.lightColor || 'rgba(255,210,140,0.4)',
+                radius: entry.lightRadius || 64,
+            });
+        }
+        return out;
+    }
+
+    // Per-pixel hit test against any building's alpha mask.
+    hitTest(worldX, worldY) {
+        for (const d of this.enumerateDrawables().reverse()) {
+            if (d.kind === 'building-back') continue;
+            const id = d.entry.id;
+            const [ax, ay] = this.assets.getAnchor(id);
+            if (this.sprites.hitTest(id, worldX, worldY, d.wx - ax, d.wy - ay)) {
+                return d.building;
+            }
+        }
+        return null;
     }
 
     update(dt) {
@@ -1172,7 +1272,7 @@ import { BuildingSprite } from './BuildingSprite.js';
 
 // in constructor, after this.sprites/terrain:
 this.buildingSprite = new BuildingSprite(this.assets, this.sprites, this.particleSystem);
-this.buildingSprite.setBuildings(this.world.getBuildingsMap());      // adapt to actual API
+this.buildingSprite.setBuildings(this.world.buildings);      // adapt to actual API
 ```
 
 - [ ] **Step 2: Replace BuildingRenderer usage in the render loop**
@@ -1457,6 +1557,184 @@ git commit -m "feat(sprites): integer-only DPR + camera snap; smoothing off"
 
 ---
 
+## Phase 2.5 — Reviewer-driven gates before mass generation
+
+The three Opus reviewers flagged five issues that must land before Phase 3 spends ~94 MCP credits. Each task is small but the order matters — these are the gates.
+
+### Task 2.5.1: Camera.js integer zoom
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/Camera.js`
+
+The current `zoom` is a fractional float (e.g. `1.05`); pixel art breaks at non-integer zoom.
+
+- [ ] **Step 1: Find the zoom field + setters**
+
+```bash
+grep -n "zoom" claudeville/src/presentation/character-mode/Camera.js
+```
+
+- [ ] **Step 2: Constrain zoom to integer steps {1, 2, 3}**
+
+In every place `this.zoom = ...` is assigned, wrap with `Math.max(1, Math.min(3, Math.round(value)))`. If a smooth-zoom interpolation exists, replace with discrete steps on wheel/pinch input.
+
+- [ ] **Step 3: Validate + commit**
+
+```bash
+node --check claudeville/src/presentation/character-mode/Camera.js
+git add claudeville/src/presentation/character-mode/Camera.js
+git commit -m "feat(sprites): clamp camera zoom to integer steps {1,2,3} for pixel-perfect blits"
+```
+
+---
+
+### Task 2.5.2: Cache-Control for sprite assets
+
+**Files:**
+- Modify: `claudeville/server.js`
+
+Server currently sends `Cache-Control: no-cache` for every static file. With ~195 PNGs (~30 MB total) reloading on every dev refresh, the boot target of <2s is unsafe.
+
+- [ ] **Step 1: Find the static-file response path**
+
+```bash
+grep -n "Cache-Control\|no-cache" claudeville/server.js
+```
+
+- [ ] **Step 2: Add a path-prefix branch for `/assets/sprites/`** that emits `Cache-Control: public, max-age=31536000, immutable` while preserving `no-cache` for everything else. PNG paths are content-stable (manifest id = filename); regeneration writes new bytes to the same path, which busts the cache via `If-Modified-Since` on next reload.
+
+- [ ] **Step 3: Smoke**
+
+```bash
+npm run dev &
+sleep 1
+curl -sI http://localhost:4000/assets/sprites/_placeholder/checker-64.png | grep -i cache
+kill %1
+```
+
+Expected: `Cache-Control: public, max-age=31536000, immutable`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add claudeville/server.js
+git commit -m "feat(sprites): cache sprite assets aggressively (public, immutable)"
+```
+
+---
+
+### Task 2.5.3: Per-frame perf — bake outline at load + memoize enumerateDrawables
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/AssetManager.js`
+- Modify: `claudeville/src/presentation/character-mode/SpriteRenderer.js`
+- Modify: `claudeville/src/presentation/character-mode/BuildingSprite.js`
+
+`SpriteRenderer.drawOutline` walks every pixel of the sprite alpha mask each frame (98k iterations for a 384×256 lighthouse — runs every frame the building is hovered). `BuildingSprite.enumerateDrawables()` rebuilds the array twice per frame (sort + hit-test). Both fix at-load.
+
+- [ ] **Step 1: In `AssetManager._loadEntry` and `_loadComposedBuilding`, bake an outline canvas per entry**
+
+```javascript
+// after building alphaMask:
+this.outlines.set(entry.id, this._bakeOutline(canvas, this.alphaMasks.get(entry.id)));
+```
+
+Where `_bakeOutline(canvas, mask)` creates a new HTMLCanvasElement at the same dims and paints 1-px gold edges via the same mask-walk currently in `SpriteRenderer.drawOutline`. Add `getOutline(id)` getter.
+
+- [ ] **Step 2: Replace `SpriteRenderer.drawOutline`** with a single `ctx.drawImage(this.assets.getOutline(id), dx, dy)`. Per-frame cost drops from O(w·h) to O(1).
+
+- [ ] **Step 3: In `BuildingSprite`, memoize `enumerateDrawables()` per frame**
+
+```javascript
+update(dt) {
+    this.frame += (dt / 16) * (this.motionScale || 0);
+    this._drawablesCache = null;          // invalidate once per frame
+    for (const b of this.buildings) this._spawnEmittersFor(b);
+}
+
+enumerateDrawables() {
+    if (this._drawablesCache) return this._drawablesCache;
+    // ... existing build logic
+    this._drawablesCache = out;
+    return out;
+}
+```
+
+- [ ] **Step 4: Validate + commit**
+
+```bash
+node --check claudeville/src/presentation/character-mode/{AssetManager,SpriteRenderer,BuildingSprite}.js
+git add claudeville/src/presentation/character-mode/
+git commit -m "perf(sprites): bake outlines at load + memoize building drawables per frame"
+```
+
+---
+
+### Task 2.5.4: Reference-asset smoke — generate three pieces, pause, human-approve
+
+**Goal:** Validate pipeline coherence on 3 generations before spending the remaining ~91 calls.
+
+**Files:**
+- Generates: 1 character (claude), 1 hero building base (lighthouse, 6 quadrants OR 1 reduced cell), 1 terrain Wang tileset (grass-shore — visible in screenshots).
+
+- [ ] **Step 1: Generate exactly three reference assets**
+
+```
+mcp__pixellab__create_character(description: "<style.anchor> <claude prompt>", n_directions: 8)
+mcp__pixellab__animate_character(character_id: <id>, animation: "walk")
+mcp__pixellab__animate_character(character_id: <id>, animation: "idle")
+mcp__pixellab__isometric_tile(description: "<style.anchor> <lighthouse base prompt>", size: 128)  # ×6 quadrants
+mcp__pixellab__tileset(lower: "ancient forest grass with wildflowers and moss", upper: "wet sand and pebbles, scattered driftwood")
+```
+
+- [ ] **Step 2: Save PNGs to manifest paths and run**
+
+```bash
+npm run dev
+```
+
+Take a screenshot of the rendered scene via playwright MCP. Observable: the claude agent walking on grass-shore terrain near the lighthouse, with everything else still checkerboard placeholders.
+
+- [ ] **Step 3: STOP and ask the user to approve coherence**
+
+Show the screenshot. Ask explicitly: "Do these three assets feel like one art direction? Yes → continue Phase 3. No → which prompt anchors need adjustment?"
+
+- [ ] **Step 4: If no, regenerate (max 3 attempts per asset). If still off, escalate to user with prompt-tweak options.**
+
+- [ ] **Step 5: Once approved, commit the three reference assets**
+
+```bash
+git add claudeville/assets/sprites/characters/agent.claude.base/ \
+        claudeville/assets/sprites/buildings/building.watchtower/ \
+        claudeville/assets/sprites/terrain/terrain.grass-shore/
+git commit -m "feat(sprites): generate reference assets (claude character, lighthouse, grass-shore) — coherence-approved"
+```
+
+The three reference paths become the **style anchor** — every later prompt SHOULD include "match the style of the existing reference assets" if pixellab supports image-conditioning, or otherwise reuse the same prompt suffix language verbatim.
+
+---
+
+### Task 2.5.5: Light-reflection compositing path
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/IsometricRenderer.js`
+
+Spec §4 declares `atmosphere.light.{lighthouse-beam, fire-glow, lantern-glow}.png` but no task wires them in. They render as additive overlays on water tiles within radius of each light source.
+
+- [ ] **Step 1: After terrain tiles are drawn but before sprites**, iterate `this.buildingSprite.getLightSources()` and for each, draw the corresponding `atmosphere.light.*.png` centered on the source position with `globalCompositeOperation = 'lighter'` and `globalAlpha = 0.5 + 0.2 * Math.sin(frame * 0.06)` (slow pulse).
+
+- [ ] **Step 2: Restore composite op + alpha after.**
+
+- [ ] **Step 3: Validate + commit**
+
+```bash
+node --check claudeville/src/presentation/character-mode/IsometricRenderer.js
+git add claudeville/src/presentation/character-mode/IsometricRenderer.js
+git commit -m "feat(sprites): wire light-reflection overlays for building light sources"
+```
+
+---
+
 ## Phase 3 — Asset generation (requires pixellab MCP from Task 0.2)
 
 Each task in this phase = one or more MCP tool calls. The implementer pastes the prompts below verbatim, augmented with the `style.anchor` from `manifest.yaml`. Save returned PNGs to the manifest-implied path.
@@ -1704,40 +1982,46 @@ git commit -m "feat(sprites): generate bridges, docks, atmosphere"
 
 ## Phase 4 — Cleanup, validation, docs
 
-### Task 4.1: Delete BuildingRenderer.js
+### Task 4.1: Rename BuildingRenderer.js → BuildingRenderer.legacy.js (don't delete yet)
+
+**Reversibility:** the original reviewer flagged that deleting ~3,270 LOC with no fallback makes rollback expensive after main moves. Compromise: rename the file (so no import resolves to it accidentally) but keep it on disk for one release cycle. Delete in a follow-up PR after the sprite renderer has shipped without major bugs.
 
 **Files:**
-- Delete: `claudeville/src/presentation/character-mode/BuildingRenderer.js`
+- Rename: `claudeville/src/presentation/character-mode/BuildingRenderer.js` → `BuildingRenderer.legacy.js`
 
-- [ ] **Step 1: Confirm no remaining references**
-
-```bash
-rg -n "BuildingRenderer" claudeville/
-```
-
-Expected: zero matches outside the file itself.
-
-- [ ] **Step 2: Delete the file**
+- [ ] **Step 1: Confirm no remaining import references**
 
 ```bash
-git rm claudeville/src/presentation/character-mode/BuildingRenderer.js
+rg -n "BuildingRenderer" claudeville/ | grep -v "BuildingRenderer.legacy.js$"
 ```
 
-- [ ] **Step 3: Smoke**
+Expected: zero matches outside the file's own header comment. If anything still imports `BuildingRenderer`, fix the importer first (likely an oversight in Task 2.3).
+
+- [ ] **Step 2: Rename the file**
+
+```bash
+git mv claudeville/src/presentation/character-mode/BuildingRenderer.js \
+       claudeville/src/presentation/character-mode/BuildingRenderer.legacy.js
+```
+
+- [ ] **Step 3: Add a top-of-file deprecation banner**
+
+Insert at line 1 of `BuildingRenderer.legacy.js`:
+```javascript
+// LEGACY — replaced by BuildingSprite + AssetManager + SpriteRenderer.
+// Kept as a non-imported reference for one release cycle; delete in a follow-up
+// PR after the sprite renderer has shipped without rollback. Do not import.
+```
+
+- [ ] **Step 4: Smoke + commit**
 
 ```bash
 npm run dev &
 sleep 2
 curl -s http://localhost:4000/api/sessions | head -c 80
 kill %1
-```
-
-Expected: API responds (server still healthy).
-
-- [ ] **Step 4: Commit**
-
-```bash
-git commit -m "chore(sprites): delete BuildingRenderer.js (~3270 LOC) — replaced by BuildingSprite"
+git add claudeville/src/presentation/character-mode/BuildingRenderer.legacy.js
+git commit -m "chore(sprites): rename BuildingRenderer.js → .legacy.js (rollback fallback for one cycle)"
 ```
 
 ---
@@ -1775,15 +2059,15 @@ git commit -m "chore(sprites): strip ~600 LOC of vector character drawing from A
 **Files:**
 - Modify: `claudeville/src/presentation/character-mode/IsometricRenderer.js`
 
-- [ ] **Step 1: Identify dead methods**
+- [ ] **Step 1: Identify the methods that actually exist**
 
 ```bash
-grep -n "_drawHarborPier\|_drawHarborBoat\|_drawHarborCrane\|_drawHarborCrates\|_drawTerrainFeature\|_drawBush\|_drawGrassTuft\|_drawReed\|_drawAncientRuin\|_drawCommandCenterDecoration\|_drawAtmosphereVignette\|_drawBackgroundForest" claudeville/src/presentation/character-mode/IsometricRenderer.js
+grep -n "_drawHarborPier\|_drawHarborBoat\|_drawHarborCrane\|_drawHarborCrates\|_drawTerrainFeature\|_drawBush\|_drawGrassTuft\|_drawAncientRuin" claudeville/src/presentation/character-mode/IsometricRenderer.js
 ```
 
-- [ ] **Step 2: Delete each method**. Keep `_drawAtmosphereVignette` if it's a generic edge-vignette (still useful) — confirm by reading the method first.
+Confirmed-present methods (per codebase review): `_drawHarborPier`, `_drawHarborBoat`, `_drawHarborCrane`, `_drawHarborCrates`, `_drawTerrainFeature`, `_drawBush`, `_drawGrassTuft`, `_drawAncientRuin`. **DO NOT** assume `_drawCommandCenterDecoration`, `_drawAtmosphereVignette`, `_drawBackgroundForest`, or `_drawReed` exist — they don't (verified). The atmosphere vignette IS rendered (via `atmosphereVignetteCache`) — keep that path; it's useful for framing.
 
-For background forest + ancient ruins, replace with a single sprite blit of `veg.tree.*` and `prop.ruin.*` instead of vector polygons.
+- [ ] **Step 2: Delete the confirmed-present methods**. The ancient-ruins inline vector code (around `_drawAncientRuin`, called near `IsometricRenderer.js:1026`) and any inline background-forest loop are replaced with a single sprite blit per ruin / per background tree using `veg.tree.*` and `prop.ruin.*`.
 
 - [ ] **Step 3: Delete the prop iteration that called `_drawHarbor*`**
 
@@ -1810,30 +2094,35 @@ git commit -m "chore(sprites): strip ~700 LOC of vector shape drawing from Isome
 
 ---
 
-### Task 4.4: Strip water-surface vector code from SceneryEngine.js
+### Task 4.4: Strip water-surface vector drawing from IsometricRenderer.js
+
+**Correction from earlier draft:** SceneryEngine has no drawing methods today (only generation + walkability). The water-fill code lives in `IsometricRenderer._drawTerrain` (~lines 777-880), where `this.waterTiles` / `this.scenery.getDeepWaterTiles()` / `this.scenery.getShoreTiles()` are checked and painted via `ctx.fillStyle` / `ctx.fillRect`. That is the actual deletion target.
 
 **Files:**
-- Modify: `claudeville/src/presentation/character-mode/SceneryEngine.js`
+- Modify: `claudeville/src/presentation/character-mode/IsometricRenderer.js`
 
-- [ ] **Step 1: Identify the methods that paint water onto the canvas** (vs. methods that compute walkability or generate scenery data).
+- [ ] **Step 1: Identify the water-fill code paths in `_drawTerrain` (or whichever method paints terrain tiles)**
 
 ```bash
-grep -n "renderWater\|_drawShimmer\|fillStyle.*water" claudeville/src/presentation/character-mode/SceneryEngine.js
+grep -n "waterTiles\|deepWater\|shoreTiles\|fillStyle" claudeville/src/presentation/character-mode/IsometricRenderer.js | head -40
 ```
 
-- [ ] **Step 2: Delete those drawing methods**. Water rendering now happens via `TerrainTileset.drawTile(ctx, 'terrain.shore-shallow', ...)` and `terrain.shallow-deep` from the IsometricRenderer terrain loop. Walkability + generation methods stay.
+- [ ] **Step 2: Replace water-tile fills with `TerrainTileset.drawTile(ctx, 'terrain.shore-shallow', x, y, isShallow)` and `terrain.shallow-deep`**, where `isShallow(tx, ty)` returns true if `(tx, ty)` is in `this.scenery.getShoreTiles()`. The Wang lookup handles transitions.
 
-- [ ] **Step 3: Validate**
+- [ ] **Step 3: SceneryEngine stays untouched**. Walkability + polyline generation remain. Confirm:
 
 ```bash
-node --check claudeville/src/presentation/character-mode/SceneryEngine.js
+rg -n "fillStyle|drawImage|ctx\." claudeville/src/presentation/character-mode/SceneryEngine.js
 ```
 
-- [ ] **Step 4: Commit**
+Expected: zero matches.
+
+- [ ] **Step 4: Validate + commit**
 
 ```bash
-git add claudeville/src/presentation/character-mode/SceneryEngine.js
-git commit -m "chore(sprites): strip water-surface vector drawing from SceneryEngine"
+node --check claudeville/src/presentation/character-mode/IsometricRenderer.js
+git add claudeville/src/presentation/character-mode/IsometricRenderer.js
+git commit -m "chore(sprites): route water tiles through TerrainTileset (was inline in _drawTerrain)"
 ```
 
 ---
@@ -1904,6 +2193,38 @@ git commit -m "docs(sprites): commit visual baseline screenshots"
 
 ---
 
+### Task 4.6.5: Automated visual regression smoke
+
+**Files:**
+- Create: `scripts/sprites/visual-diff.mjs`
+- Modify: `package.json`
+
+A 5,000-LOC PR with no test runner needs at least one automated safety net. Compares the 5 baseline screenshots from Task 4.6 against fresh captures using `pixelmatch`.
+
+- [ ] **Step 1: Vendor `pixelmatch` + `pngjs` (used by validator already)**
+
+```bash
+npm install --save-dev pixelmatch pngjs
+```
+
+- [ ] **Step 2: Write `scripts/sprites/visual-diff.mjs`** that loads the 5 baseline PNGs, captures a fresh set via the playwright MCP at the same camera positions, runs `pixelmatch(a.data, b.data, diff.data, w, h, { threshold: 0.1 })`, and exits non-zero if any pose has > 0.5% pixels different. Save the diff PNG next to the baseline for inspection.
+
+- [ ] **Step 3: Add npm script**
+
+```json
+"sprites:visual-diff": "node scripts/sprites/visual-diff.mjs"
+```
+
+- [ ] **Step 4: Run + commit**
+
+```bash
+npm run sprites:visual-diff
+git add scripts/sprites/visual-diff.mjs package.json package-lock.json
+git commit -m "feat(sprites): pixelmatch visual diff against committed baselines"
+```
+
+---
+
 ### Task 4.7: Performance check
 
 **Files:** none (validation only)
@@ -1970,7 +2291,19 @@ EOF
 
 ## Self-Review Notes
 
-- **Spec coverage:** Phases 1-4 cover all 13 spec sections. Asset budget reconciled. Hero building list (`watchtower`, `command`, `observatory`, `portal`) matches spec §3.
+- **Spec coverage:** Phases 1-4 cover all 13 spec sections. Phase 2.5 (added post-review) covers the perf + reversibility + coherence gates surfaced by Opus reviewers. Asset budget reconciled.
 - **No placeholders:** Every "TBD"-shaped reference has been replaced with concrete prompts/paths/commands.
-- **Type consistency:** `AssetManager.get/getDims/getMask/getAnchor/getEntry` used consistently. `SpriteRenderer.drawSprite/drawSheetCell/hitTest/drawOutline/drawSilhouette` used consistently. `BuildingSprite.enumerateDrawables/drawDrawable` used consistently. `dirFromVelocity` returns 0..7 across all callers.
-- **Open dependency:** Phase 3 blocks on the user completing Task 0.2 (pixellab MCP setup). The implementer MAY ship Phases 0-2 as a draft PR with placeholder PNGs in evidence; Phase 3-4 then complete the PR.
+- **Type consistency:** `AssetManager.get/getDims/getMask/getAnchor/getEntry/getOutline` used consistently. `SpriteRenderer.drawSprite/drawSheetCell/hitTest/drawOutline/drawSilhouette` used consistently. `BuildingSprite.enumerateDrawables/drawDrawable/drawShadows/drawBubbles/getLightSources/setAgentSprites/hitTest` matches the existing `BuildingRenderer` external surface (verified via `rg buildingRenderer\\.`). `dirFromVelocity` returns 0..7 across all callers and is smoke-tested in Task 1.4 before any consumer ships.
+- **Open dependency:** Phase 3 blocks on the user completing Task 0.2 (pixellab MCP setup). Phase 2.5 has its own gate (Task 2.5.4 — reference-asset coherence approval) before mass generation begins.
+
+### Reviewer-driven changes (post-initial-draft)
+The plan was reviewed by 3 parallel Opus 4.7 agents. Consolidated fixes applied inline above:
+- **Bug fixes**: `dirFromVelocity` math corrected + smoke test; `world.getBuildingsMap()` → `world.buildings`; non-existent methods (`_drawCommandCenterDecoration`, `_drawAtmosphereVignette`, `_drawBackgroundForest`, `_drawReed`) removed from deletion list; Task 4.4 retargeted from SceneryEngine (no drawing code) to `IsometricRenderer._drawTerrain`.
+- **API parity**: `BuildingSprite` reimplements `drawShadows`, `drawBubbles`, `getLightSources`, `setAgentSprites`, `hitTest` (was missing) — matches `BuildingRenderer`'s full external surface.
+- **Reversibility**: `BuildingRenderer.js` → `BuildingRenderer.legacy.js` (rename, not delete) for one release cycle.
+- **Coherence discipline**: new Phase 2.5 reference-asset smoke gate before mass generation.
+- **Perf**: outline baked at load (`AssetManager.getOutline`) + `BuildingSprite.enumerateDrawables` memoized per frame.
+- **Style robustness**: palette swap uses ±12 ΔE tolerance (handles painterly anti-aliased pixels).
+- **Cross-cutting**: `Camera.zoom` clamped to integer steps; `/assets/sprites/` gets aggressive `Cache-Control`; `prefers-reduced-motion` change subscribed by `BuildingSprite`; `Minimap.js` explicitly exempted from the "no fillRect" acceptance criterion (it's intentionally vector parchment art).
+- **Safety net**: `npm run sprites:visual-diff` (pixelmatch) added in Task 4.6.5.
+- **Filename convention**: spec §4 standardized on `base-{c}-{r}.png` for composed buildings (matched in code + validator).
