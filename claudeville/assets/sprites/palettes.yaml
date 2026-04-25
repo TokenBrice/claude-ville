@@ -1,3 +1,5 @@
+# Mirror of the `palettes:` block in manifest.yaml. Source of truth is the manifest.
+# Keep both files in sync if either is edited.
 claude:
   robe: ['#8f4f21', '#a85f24', '#7b3f1c']
   pants: ['#3b2418', '#4b2c1a', '#33231a']

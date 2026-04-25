@@ -31,6 +31,8 @@ characters:
     anchor: [32, 56]
 
 # ─── PALETTES ────────────────────────────────────────────────────────────────
+# Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
+# this block for standalone tooling — keep both in sync if you edit either.
 palettes:
   claude:
     robe: ['#8f4f21', '#a85f24', '#7b3f1c']
@@ -146,6 +148,8 @@ buildings:
       torch4: [176, 140]
       sparkle: [120, 18]
       sparkle2: [200, 18]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
     lightSource: [120, 30]
     lightColor: '#ffcc66'
     lightRadius: 80
@@ -168,6 +172,8 @@ buildings:
         animation: pulse
     emitters:
       torch: [144, 28]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
     lightSource: [144, 28]
     lightColor: '#ffe066'
     lightRadius: 120
@@ -190,6 +196,8 @@ buildings:
         animation: pulse
     emitters:
       sparkle: [144, 18]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
     lightSource: [144, 20]
     lightColor: '#aaccff'
     lightRadius: 60
@@ -213,6 +221,8 @@ buildings:
     emitters:
       sparkle: [144, 60]
       sparkle2: [120, 80]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
     lightSource: [144, 60]
     lightColor: '#cc99ff'
     lightRadius: 70
@@ -222,12 +232,19 @@ buildings:
     tool: isometric_tile
     prompt: "epic code forge smithy, glowing forge mouth with molten amber light, iron chimney stack billowing smoke, rune-inscribed anvil visible through arched doorway, isometric"
     size: 128
+    emitters:
+      smoke: [88, 12]
+      mining: [40, 80]
+      sparkle: [70, 90]
 
   # ── STANDARD: Token Mine ──
   - id: building.mine
     tool: isometric_tile
     prompt: "epic token mine entrance, reinforced timber pit-head frame, cart tracks leading inside, lantern hung at mouth, veins of glowing ore in stone, isometric"
     size: 128
+    emitters:
+      sparkle: [60, 70]
+      mining: [80, 92]
 
   # ── STANDARD: Task Board ──
   - id: building.taskboard
@@ -240,6 +257,8 @@ buildings:
     tool: isometric_tile
     prompt: "epic chat hall tavern, timbered walls, warm window glow, chimney smoke, carved speech-rune above arched doorway, isometric"
     size: 128
+    emitters:
+      sparkle: [88, 24]
 
   # ── STANDARD: Lore Archive ──
   - id: building.archive
@@ -252,6 +271,8 @@ buildings:
     tool: isometric_tile
     prompt: "epic prompt alchemy workshop, bubbling cauldron visible through round window, strange vapours drifting from vent, arcane ingredient jars stacked outside, isometric"
     size: 128
+    emitters:
+      sparkle: [64, 80]
 
   # ── STANDARD: Idle Sanctuary ──
   - id: building.sanctuary
@@ -260,6 +281,8 @@ buildings:
     size: 128
 
 # ─── PROPS ───────────────────────────────────────────────────────────────────
+# Prop ids match the camelCase `type` field in IsometricRenderer.js
+# AMBIENT_GROUND_PROPS so renderer lookup stays one-to-one.
 props:
   - id: prop.lantern
     tool: isometric_tile
