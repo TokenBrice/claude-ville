@@ -8,6 +8,7 @@ import { AgentSprite } from './AgentSprite.js';
 import { BuildingRenderer } from './BuildingRenderer.js';
 import { Minimap } from './Minimap.js';
 import { SceneryEngine } from './SceneryEngine.js';
+import { Pathfinder } from './Pathfinder.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -161,6 +162,10 @@ export class IsometricRenderer {
             tileY: b.tileY,
             drawFn: (ctx, x, y) => this._drawBoulder(ctx, x, y, b),
         }));
+
+        // Walkability grid + Pathfinder (Task 11)
+        this.walkabilityGrid = this.scenery.getWalkabilityGrid(this.pathTiles);
+        this.pathfinder = new Pathfinder(this.walkabilityGrid);
 
         this.commandCenterGroundProps = [];
         this._generateCommandCenterAmbience();
@@ -556,7 +561,10 @@ export class IsometricRenderer {
 
     _addAgentSprite(agent) {
         if (!this.agentSprites.has(agent.id)) {
-            const sprite = new AgentSprite(agent);
+            const sprite = new AgentSprite(agent, {
+                pathfinder: this.pathfinder,
+                bridgeTiles: this.bridgeTiles,
+            });
             sprite.setMotionScale(this.motionScale);
             this.agentSprites.set(agent.id, sprite);
             this._markSpritesDirty();
@@ -754,6 +762,7 @@ export class IsometricRenderer {
         this.minimap.draw(this.world, this.camera, canvas, {
             pathTiles: this.pathTiles,
             waterTiles: this.waterTiles,
+            bridgeTiles: this.bridgeTiles,
             selectedAgent: this.selectedAgent,
         });
     }
