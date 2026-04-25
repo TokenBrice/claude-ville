@@ -9,6 +9,8 @@ import { BuildingRenderer } from './BuildingRenderer.js';
 import { Minimap } from './Minimap.js';
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
+import { SpriteRenderer } from './SpriteRenderer.js';
+import { TerrainTileset } from './TerrainTileset.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -73,6 +75,8 @@ export class IsometricRenderer {
     constructor(world, options = {}) {
         this.world = world;
         this.assets = options.assets || null;
+        this.sprites = this.assets ? new SpriteRenderer(this.assets) : null;
+        this.terrain = this.assets ? new TerrainTileset(this.assets) : null;
         this.canvas = null;
         this.ctx = null;
         this.camera = null;
@@ -776,6 +780,7 @@ export class IsometricRenderer {
     }
 
     _drawTerrain(ctx) {
+        SpriteRenderer.disableSmoothing(ctx);
         // Isometric tiles are diamond-shaped, so all four screen corners must be checked
         const w = this.canvas.width;
         const h = this.canvas.height;
@@ -823,19 +828,24 @@ export class IsometricRenderer {
             fillColor = this._terrainRegionTint(fillColor, tileX, tileY, seed);
         }
 
-        ctx.fillStyle = fillColor;
-        ctx.beginPath();
-        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
-        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
-        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
-        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
-        ctx.closePath();
-        ctx.fill();
-
-        // Tile border
-        ctx.strokeStyle = this.pathTiles.has(key) ? 'rgba(42, 31, 18, 0.2)' : 'rgba(255, 239, 179, 0.022)';
-        ctx.lineWidth = 0.5;
-        ctx.stroke();
+        if (this.terrain) {
+            const sheetId = this._terrainSheetIdAt(tileX, tileY);
+            this.terrain.drawTile(ctx, sheetId, tileX, tileY,
+                (tx, ty) => this._sameTerrainClass(tileX, tileY, tx, ty));
+        } else {
+            // Fallback: legacy diamond fill (kept for the no-assets defensive path).
+            ctx.fillStyle = fillColor;
+            ctx.beginPath();
+            ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
+            ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
+            ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
+            ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = this.pathTiles.has(key) ? 'rgba(42, 31, 18, 0.2)' : 'rgba(255, 239, 179, 0.022)';
+            ctx.lineWidth = 0.5;
+            ctx.stroke();
+        }
 
         if (this.bridgeTiles?.has(key)) {
             // No path/grass detail under a bridge.
@@ -870,12 +880,42 @@ export class IsometricRenderer {
         if (this.bridgeTiles?.has(key)) {
             this._drawBridgeDeck(ctx, screenX, screenY, seed, key);
         } else if (this.waterTiles.has(key)) {
-            const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.055 + 0.055 : STATIC_WATER_SHIMMER;
-            ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
-            ctx.fill();
+            if (!this.terrain) {
+                const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.055 + 0.055 : STATIC_WATER_SHIMMER;
+                ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
+                ctx.fill();
+            }
             this._drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY);
             this._drawWaterEdge(ctx, screenX, screenY, seed, tileX, tileY);
         }
+    }
+
+    // Map a tile's class to the appropriate Wang tileset id.
+    // Priority: water (deep > shallow) > shore > town square > main avenue > path > grass.
+    _terrainSheetIdAt(x, y) {
+        const key = `${x},${y}`;
+        if (this.deepWaterTiles.has(key)) return 'terrain.shallow-deep';
+        if (this.waterTiles.has(key)) return 'terrain.shore-shallow';
+        if (this.shoreTiles.has(key)) return 'terrain.grass-shore';
+        if (this.townSquareTiles.has(key)) return 'terrain.cobble-square';
+        if (this.mainAvenueTiles?.has(key)) return 'terrain.grass-cobble';
+        if (this.pathTiles.has(key) || this.dirtPathTiles?.has(key)) return 'terrain.grass-dirt';
+        // Pure grass: any tileset works since mask = 0 paints the lower (grass) variant.
+        return 'terrain.grass-dirt';
+    }
+
+    // True if the neighbour tile (tx, ty) belongs to the same "upper" class
+    // as the tileset chosen for the origin tile (originX, originY).
+    _sameTerrainClass(originX, originY, tx, ty) {
+        const id = this._terrainSheetIdAt(originX, originY);
+        const tkey = `${tx},${ty}`;
+        if (id === 'terrain.shallow-deep') return this.deepWaterTiles.has(tkey);
+        if (id === 'terrain.shore-shallow') return this.waterTiles.has(tkey) && !this.deepWaterTiles.has(tkey);
+        if (id === 'terrain.grass-shore') return this.shoreTiles.has(tkey);
+        if (id === 'terrain.cobble-square') return this.townSquareTiles.has(tkey);
+        if (id === 'terrain.grass-cobble') return this.mainAvenueTiles?.has(tkey);
+        if (id === 'terrain.grass-dirt') return this.pathTiles.has(tkey) || (this.dirtPathTiles?.has(tkey) ?? false);
+        return false;
     }
 
     _terrainRegionTint(baseColor, tileX, tileY, seed) {
