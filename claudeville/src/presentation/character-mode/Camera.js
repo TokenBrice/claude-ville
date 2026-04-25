@@ -5,7 +5,7 @@ export class Camera {
         this.canvas = canvas;
         this.x = 0;
         this.y = 0;
-        this.zoom = 1.2;
+        this.zoom = 1.05;
         this.minZoom = 0.5;
         this.maxZoom = 3;
         this.dragging = false;

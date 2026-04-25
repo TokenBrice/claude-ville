@@ -41,6 +41,11 @@ const DEFAULT_PROFILE = {
     eyeStyle: null,
 };
 
+const SPRITE_SCALE = 1.18;
+const SPRITE_HIT_HALF_WIDTH = 15;
+const SPRITE_HIT_TOP = -24;
+const SPRITE_HIT_BOTTOM = 24;
+
 export class AgentSprite {
     constructor(agent) {
         this.agent = agent;
@@ -225,13 +230,13 @@ export class AgentSprite {
         ctx.translate(this.x, this.y);
 
         ctx.beginPath();
-        ctx.ellipse(0, 16, 10, 4, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 17, 12, 5, 0, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(12, 8, 5, 0.34)';
         ctx.fill();
 
         if (this.selected) {
             ctx.beginPath();
-            ctx.ellipse(0, 16, 14, 6, 0, 0, Math.PI * 2);
+            ctx.ellipse(0, 17, 17, 7, 0, 0, Math.PI * 2);
             ctx.fillStyle = 'rgba(242, 211, 107, 0.24)';
             ctx.fill();
             ctx.strokeStyle = '#f2d36b';
@@ -240,7 +245,7 @@ export class AgentSprite {
         }
 
         const scaleX = this.facingLeft ? -1 : 1;
-        ctx.scale(scaleX, 1);
+        ctx.scale(scaleX * SPRITE_SCALE, SPRITE_SCALE);
 
         const swing = this.moving ? Math.sin(this.walkFrame * 4) * 4 : 0;
         const sprite = this._getSpriteAppearance();
@@ -806,7 +811,7 @@ export class AgentSprite {
         const s = 1 / (this._zoom || 1); // inverse zoom correction
         ctx.translate(this.x, this.y);
         ctx.scale(s, s); // fixed size in screen space
-        ctx.translate(0, 24);
+        ctx.translate(0, 30);
         const name = this.agent.name;
         ctx.font = 'bold 9px "Press Start 2P", monospace';
         const w = ctx.measureText(name).width + 10;
@@ -837,6 +842,6 @@ export class AgentSprite {
     hitTest(screenX, screenY) {
         const dx = screenX - this.x;
         const dy = screenY - this.y;
-        return Math.abs(dx) < 12 && dy > -20 && dy < 20;
+        return Math.abs(dx) < SPRITE_HIT_HALF_WIDTH && dy > SPRITE_HIT_TOP && dy < SPRITE_HIT_BOTTOM;
     }
 }

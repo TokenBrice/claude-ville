@@ -4,4 +4,5 @@ export const BUILDING_DEFS = [
     { type: 'mine', x: 12, y: 24, width: 4, height: 3, label: 'TOKEN MINE', icon: '⛏️', description: 'Token usage' },
     { type: 'taskboard', x: 25, y: 25, width: 3, height: 3, label: 'TASK BOARD', icon: '📋', description: 'Task status' },
     { type: 'chathall', x: 15, y: 14, width: 4, height: 3, label: 'CHAT HALL', icon: '💬', description: 'Messages' },
+    { type: 'observatory', x: 9, y: 13, width: 4, height: 4, label: 'RESEARCH OBSERVATORY', icon: '*', description: 'External research' },
 ];

@@ -9,6 +9,7 @@ const BUILDING_COLORS = {
     mine: '#e8c15e',
     taskboard: '#78c6e7',
     chathall: '#88d67e',
+    observatory: '#c9903f',
 };
 
 export class Minimap {

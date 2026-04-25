@@ -1,5 +1,8 @@
+const PARTICLE_GRAVITY = 0.05;
+const MAX_PARTICLES = 240;
+
 class Particle {
-    constructor(x, y, vx, vy, life, color, size) {
+    constructor(x, y, vx, vy, life, color, size, gravity) {
         this.x = x;
         this.y = y;
         this.vx = vx;
@@ -8,12 +11,15 @@ class Particle {
         this.maxLife = life;
         this.color = color;
         this.size = size;
+        this.gravity = gravity;
     }
 
     update() {
         this.x += this.vx;
         this.y += this.vy;
-        this.vy += 0.05;
+        if (this.gravity) {
+            this.vy += PARTICLE_GRAVITY;
+        }
         this.life--;
     }
 
@@ -82,15 +88,32 @@ function pick(arr) {
 }
 
 export class ParticleSystem {
-    constructor() {
+    constructor({ maxParticles = MAX_PARTICLES } = {}) {
         this.particles = [];
+        this.maxParticles = maxParticles;
+        this.motionEnabled = true;
+    }
+
+    setMotionEnabled(enabled) {
+        this.motionEnabled = enabled;
+        if (!enabled) {
+            this.clear();
+        }
     }
 
     spawn(type, x, y, count = 3) {
         const preset = PARTICLE_PRESETS[type];
-        if (!preset) return;
+        if (!preset || !this.motionEnabled) return;
 
-        for (let i = 0; i < count; i++) {
+        const spawnCount = Math.min(Math.max(0, Math.floor(count)), this.maxParticles);
+        if (spawnCount === 0) return;
+
+        const overflow = this.particles.length + spawnCount - this.maxParticles;
+        if (overflow > 0) {
+            this.particles.splice(0, overflow);
+        }
+
+        for (let i = 0; i < spawnCount; i++) {
             const size = rand(preset.size[0], preset.size[1]);
             const life = Math.floor(rand(preset.life[0], preset.life[1]));
             const speed = rand(preset.speed[0], preset.speed[1]);
@@ -115,28 +138,24 @@ export class ParticleSystem {
                     break;
             }
 
-            const p = new Particle(x + rand(-3, 3), y + rand(-3, 3), vx, vy, life, color, size);
-            if (!preset.gravity) {
-                p.update = function () {
-                    this.x += this.vx;
-                    this.y += this.vy;
-                    this.life--;
-                };
-            }
-            this.particles.push(p);
+            this.particles.push(new Particle(x + rand(-3, 3), y + rand(-3, 3), vx, vy, life, color, size, preset.gravity));
         }
     }
 
     update() {
-        for (let i = this.particles.length - 1; i >= 0; i--) {
-            this.particles[i].update();
-            if (!this.particles[i].alive) {
-                this.particles.splice(i, 1);
+        let next = 0;
+        for (let i = 0; i < this.particles.length; i++) {
+            const particle = this.particles[i];
+            particle.update();
+            if (particle.alive) {
+                this.particles[next++] = particle;
             }
         }
+        this.particles.length = next;
     }
 
     draw(ctx) {
+        if (this.particles.length === 0) return;
         for (const p of this.particles) {
             p.draw(ctx);
         }

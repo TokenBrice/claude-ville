@@ -7,6 +7,9 @@ import { AgentSprite } from './AgentSprite.js';
 import { BuildingRenderer } from './BuildingRenderer.js';
 import { Minimap } from './Minimap.js';
 
+const WATER_FRAME_STEP = 0.03;
+const STATIC_WATER_SHIMMER = 0.08;
+
 export class IsometricRenderer {
     constructor(world) {
         this.world = world;
@@ -22,6 +25,13 @@ export class IsometricRenderer {
         this.terrainCache = null;
         this.terrainSeed = [];
         this.waterFrame = 0;
+        this.motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
+        this.motionScale = this.motionQuery?.matches ? 0 : 1;
+        this.particleSystem.setMotionEnabled(this.motionScale > 0);
+        this._onMotionPreferenceChange = (event) => this._setMotionScale(event.matches ? 0 : 1);
+        this.atmosphereVignetteCache = null;
+        this.atmosphereVignetteCacheKey = '';
+        this.lightFadeColorCache = new Map();
         this.selectedAgent = null;
         this.onAgentSelect = null;
 
@@ -97,6 +107,12 @@ export class IsometricRenderer {
         this.ctx = canvas.getContext('2d');
         this.camera = new Camera(canvas);
         this.camera.attach();
+        this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
+        if (this.motionQuery?.addEventListener) {
+            this.motionQuery.addEventListener('change', this._onMotionPreferenceChange);
+        } else if (this.motionQuery?.addListener) {
+            this.motionQuery.addListener(this._onMotionPreferenceChange);
+        }
 
         this.buildingRenderer.setBuildings(this.world.buildings);
 
@@ -159,6 +175,11 @@ export class IsometricRenderer {
         if (this.camera) {
             this.camera.detach();
         }
+        if (this.motionQuery?.removeEventListener) {
+            this.motionQuery.removeEventListener('change', this._onMotionPreferenceChange);
+        } else if (this.motionQuery?.removeListener) {
+            this.motionQuery.removeListener(this._onMotionPreferenceChange);
+        }
         this.minimap.detach();
         for (const unsub of this._unsubscribers) {
             unsub();
@@ -170,6 +191,12 @@ export class IsometricRenderer {
         }
         this.agentSprites.clear();
         this.particleSystem.clear();
+    }
+
+    _setMotionScale(scale) {
+        this.motionScale = scale;
+        this.buildingRenderer.setMotionScale(scale);
+        this.particleSystem.setMotionEnabled(scale > 0);
     }
 
     _addAgentSprite(agent) {
@@ -269,7 +296,7 @@ export class IsometricRenderer {
     }
 
     _update() {
-        this.waterFrame += 0.03;
+        this.waterFrame += WATER_FRAME_STEP * this.motionScale;
 
         // Update camera follow
         if (this.camera) this.camera.updateFollow();
@@ -399,7 +426,7 @@ export class IsometricRenderer {
 
         // Water shimmer effect
         if (this.waterTiles.has(key)) {
-            const shimmer = Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.15 + 0.1;
+            const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.15 + 0.1 : STATIC_WATER_SHIMMER;
             ctx.fillStyle = `rgba(255, 255, 255, ${shimmer})`;
             ctx.fill();
             this._drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY);
@@ -411,7 +438,36 @@ export class IsometricRenderer {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
-        const vignette = ctx.createRadialGradient(
+        ctx.drawImage(this._getAtmosphereVignette(canvas), 0, 0);
+
+        for (const light of this.buildingRenderer.getLightSources()) {
+            const p = this.camera.worldToScreen(light.x, light.y);
+            if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
+            const radius = light.radius * this.camera.zoom;
+            const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
+            glow.addColorStop(0, light.color);
+            glow.addColorStop(0.42, this._getLightFadeColor(light.color));
+            glow.addColorStop(1, 'rgba(255, 146, 47, 0)');
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.restore();
+    }
+
+    _getAtmosphereVignette(canvas) {
+        const cacheKey = `${canvas.width}x${canvas.height}`;
+        if (this.atmosphereVignetteCache && this.atmosphereVignetteCacheKey === cacheKey) {
+            return this.atmosphereVignetteCache;
+        }
+
+        const overlay = document.createElement('canvas');
+        overlay.width = canvas.width;
+        overlay.height = canvas.height;
+        const overlayCtx = overlay.getContext('2d');
+        const vignette = overlayCtx.createRadialGradient(
             canvas.width * 0.5,
             canvas.height * 0.46,
             Math.min(canvas.width, canvas.height) * 0.18,
@@ -422,24 +478,19 @@ export class IsometricRenderer {
         vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
         vignette.addColorStop(0.72, 'rgba(16, 10, 8, 0.04)');
         vignette.addColorStop(1, 'rgba(0, 0, 0, 0.32)');
-        ctx.fillStyle = vignette;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        overlayCtx.fillStyle = vignette;
+        overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
-        for (const light of this.buildingRenderer.getLightSources()) {
-            const p = this.camera.worldToScreen(light.x, light.y);
-            if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
-            const radius = light.radius * this.camera.zoom;
-            const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
-            glow.addColorStop(0, light.color);
-            glow.addColorStop(0.42, light.color.replace(/[\d.]+\)$/, '0.07)'));
-            glow.addColorStop(1, 'rgba(255, 146, 47, 0)');
-            ctx.fillStyle = glow;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-            ctx.fill();
+        this.atmosphereVignetteCache = overlay;
+        this.atmosphereVignetteCacheKey = cacheKey;
+        return overlay;
+    }
+
+    _getLightFadeColor(color) {
+        if (!this.lightFadeColorCache.has(color)) {
+            this.lightFadeColorCache.set(color, color.replace(/[\d.]+\)$/, '0.07)'));
         }
-
-        ctx.restore();
+        return this.lightFadeColorCache.get(color);
     }
 
     _drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY) {
@@ -502,7 +553,7 @@ export class IsometricRenderer {
     _drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY) {
         ctx.strokeStyle = 'rgba(182, 229, 222, 0.16)';
         ctx.lineWidth = 1;
-        const wave = Math.sin(this.waterFrame * 4 + seed * 10 + tileX) * 3;
+        const wave = this.motionScale ? Math.sin(this.waterFrame * 4 + seed * 10 + tileX) * 3 : (seed - 0.5) * 2;
         ctx.beginPath();
         ctx.moveTo(screenX - 14, screenY + wave);
         ctx.quadraticCurveTo(screenX - 4, screenY - 4 + wave, screenX + 8, screenY + wave);

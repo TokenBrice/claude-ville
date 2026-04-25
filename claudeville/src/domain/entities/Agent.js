@@ -83,7 +83,8 @@ export class Agent {
     get targetBuildingType() {
         if (!this.currentTool) return null;
         const toolMap = {
-            'Read': 'chathall', 'Grep': 'chathall', 'Glob': 'chathall', 'WebSearch': 'chathall', 'WebFetch': 'chathall',
+            'Read': 'chathall', 'Grep': 'chathall', 'Glob': 'chathall',
+            'WebSearch': 'observatory', 'WebFetch': 'observatory',
             'Edit': 'forge', 'Write': 'forge', 'NotebookEdit': 'forge',
             'Bash': 'mine', 'mcp__playwright__browser_navigate': 'mine', 'mcp__playwright__browser_take_screenshot': 'mine',
             'Task': 'command', 'TaskCreate': 'taskboard', 'TaskUpdate': 'taskboard', 'TaskList': 'taskboard',
@@ -101,7 +102,8 @@ export class Agent {
                 'Read': 'Reading', 'Edit': 'Editing', 'Write': 'Writing',
                 'Bash': 'Running', 'Grep': 'Searching', 'Glob': 'Finding',
                 'Task': 'Delegating', 'TaskCreate': 'Planning',
-                'WebSearch': 'Researching', 'SendMessage': 'Messaging',
+                'WebSearch': 'Researching', 'WebFetch': 'Fetching',
+                'SendMessage': 'Messaging',
             }[this.currentTool] || this.currentTool;
             const detail = this.currentToolInput ? ` ${this.currentToolInput}` : '';
             return `${toolLabel}${detail}`.substring(0, 40);
