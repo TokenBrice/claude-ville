@@ -11,6 +11,7 @@ import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { TerrainTileset } from './TerrainTileset.js';
+import { Compositor } from './Compositor.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -77,6 +78,7 @@ export class IsometricRenderer {
         this.assets = options.assets || null;
         this.sprites = this.assets ? new SpriteRenderer(this.assets) : null;
         this.terrain = this.assets ? new TerrainTileset(this.assets) : null;
+        this.compositor = this.assets ? new Compositor(this.assets) : null;
         this.canvas = null;
         this.ctx = null;
         this.camera = null;
@@ -578,6 +580,8 @@ export class IsometricRenderer {
             const sprite = new AgentSprite(agent, {
                 pathfinder: this.pathfinder,
                 bridgeTiles: this.bridgeTiles,
+                assets: this.assets,
+                compositor: this.compositor,
             });
             sprite.setMotionScale(this.motionScale);
             this.agentSprites.set(agent.id, sprite);
@@ -586,16 +590,33 @@ export class IsometricRenderer {
     }
 
     _handleClick(worldX, worldY) {
-        if (!this.agentSprites.size) return;
+        if (!this.agentSprites.size && !this.buildingRenderer) return;
 
-        // Check agents first
         let clicked = null;
-        for (const sprite of this.agentSprites.values()) {
-            if (!clicked && sprite.hitTest(worldX, worldY)) {
-                clicked = sprite;
+
+        // Per-pixel agent hit test (sorted: most front first)
+        const sorted = Array.from(this.agentSprites.values())
+            .sort((a, b) => b.y - a.y);            // front-most first
+        for (const sprite of sorted) {
+            const spriteId = `agent.${sprite.agent.provider || 'claude'}.base`;
+            const dims = this.assets?.getDims?.(spriteId);
+            if (this.sprites && dims) {
+                // Per-pixel: anchor agent at (sprite.x - 32, sprite.y - 56) per AgentSprite.draw()
+                if (this.sprites.hitTest(spriteId, worldX, worldY, sprite.x - 32, sprite.y - 56)) {
+                    clicked = sprite;
+                    break;
+                }
+            } else {
+                // Fallback: legacy bounding-box hitTest on the sprite itself
+                if (sprite.hitTest(worldX, worldY)) {
+                    clicked = sprite;
+                    break;
+                }
             }
-            sprite.selected = false;
         }
+
+        // Deselect all
+        for (const sprite of this.agentSprites.values()) sprite.selected = false;
 
         if (clicked) {
             clicked.selected = true;
@@ -753,6 +774,30 @@ export class IsometricRenderer {
         this._drawTerrain(ctx);
         this._drawAmbientGroundProps(ctx);
 
+        // Phase 2.5.5: light reflections — additive overlays over terrain near each
+        // building's declared light source. Pulses softly with the global frame.
+        if (this.buildingRenderer && this.assets) {
+            const lights = this.buildingRenderer.getLightSources();
+            const pulse = 0.5 + 0.2 * Math.sin((this.waterFrame || 0) * 1.27);
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalAlpha = pulse;
+            for (const light of lights) {
+                // Map light source kind to its overlay sprite id.
+                const overlayId = 'atmosphere.light.lighthouse-beam';
+                const overlayImg = this.assets.get(overlayId);
+                if (!overlayImg) continue;
+                const dims = this.assets.getDims(overlayId);
+                if (!dims) continue;
+                ctx.drawImage(
+                    overlayImg,
+                    Math.round(light.x - dims.w / 2),
+                    Math.round(light.y - dims.h / 2)
+                );
+            }
+            ctx.restore();
+        }
+
         // 2. Building shadows
         this.buildingRenderer?.drawShadows(ctx);
 
@@ -771,6 +816,26 @@ export class IsometricRenderer {
                 item.payload.draw(ctx, zoom);
             } else {
                 this.buildingRenderer.drawDrawable(ctx, item.payload);
+            }
+        }
+
+        // X-ray silhouette: draw tinted overlay of any agent passing behind a hero
+        // building's front half so the agent stays findable through the obstruction.
+        if (this.buildingRenderer && this.assets) {
+            const xrayDrawables = this.buildingRenderer.enumerateDrawables();
+            for (const d of xrayDrawables) {
+                if (d.kind !== 'building-front') continue;
+                const dims = this.assets.getDims(d.entry.id);
+                if (!dims) continue;
+                const backY = d.sortY - dims.h / 2;     // back-half sortY
+                const frontY = d.sortY;
+                for (const sprite of this.agentSprites.values()) {
+                    if (sprite.y >= backY && sprite.y < frontY) {
+                        // Sprite is behind the building's front-half — draw tinted silhouette atop.
+                        const spriteId = `agent.${sprite.agent.provider || 'claude'}.base`;
+                        this.sprites.drawSilhouette(ctx, spriteId, sprite.x, sprite.y);
+                    }
+                }
             }
         }
 
