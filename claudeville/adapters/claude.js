@@ -277,6 +277,11 @@ function getSessionFileActivity(sessionId, project) {
   return 0;
 }
 
+function resolveProjectPathFromMap(projectPathMap, encodedProject) {
+  return projectPathMap.get(encodedProject)
+    || `/${encodedProject.replace(/^-/, '').replace(/-/g, '/')}`;
+}
+
 // ─── Adapter class ────────────────────────────────────
 
 class ClaudeAdapter {
@@ -294,6 +299,7 @@ class ClaudeAdapter {
     const now = Date.now();
     const sessionsMap = new Map();
     const projectPathMap = new Map(); // Encoded directory name to real path
+    const activeSessionIdsByProject = new Map();
 
     const HISTORY_SCAN_MS = 10 * 60 * 1000;
     for (const entry of entries) {
@@ -301,6 +307,9 @@ class ClaudeAdapter {
       if (entry.project) {
         const encoded = entry.project.replace(/\//g, '-');
         projectPathMap.set(encoded, entry.project);
+        if (!activeSessionIdsByProject.has(encoded)) {
+          activeSessionIdsByProject.set(encoded, new Set());
+        }
       }
 
       if (!entry.sessionId) continue;
@@ -308,6 +317,11 @@ class ClaudeAdapter {
 
       const existing = sessionsMap.get(entry.sessionId);
       if (!existing || (entry.timestamp || 0) > (existing.timestamp || 0)) {
+        if (entry.project) {
+          const encoded = entry.project.replace(/\//g, '-');
+          activeSessionIdsByProject.set(encoded, activeSessionIdsByProject.get(encoded) || new Set());
+          activeSessionIdsByProject.get(encoded).add(entry.sessionId);
+        }
         sessionsMap.set(entry.sessionId, {
           sessionId: entry.sessionId,
           provider: 'claude',
@@ -344,7 +358,7 @@ class ClaudeAdapter {
     mainSessions.sort((a, b) => b.lastActivity - a.lastActivity);
 
     // Subagents (pass the project path map)
-    const subAgents = this._getActiveSubAgents(activeThresholdMs, projectPathMap);
+    const subAgents = this._getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject, projectPathMap);
 
     // Orphan sessions (team members not found in history.jsonl or subagents/)
     const knownIds = new Set([
@@ -356,7 +370,9 @@ class ClaudeAdapter {
     return [...mainSessions, ...subAgents, ...orphans];
   }
 
-  _getActiveSubAgents(activeThresholdMs, projectPathMap = new Map()) {
+  _getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject = new Map(), projectPathMap = new Map()) {
+    if (activeSessionIdsByProject.size === 0) return [];
+
     const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (!fs.existsSync(projectsDir)) return [];
 
@@ -364,21 +380,14 @@ class ClaudeAdapter {
     const results = [];
 
     try {
-      const projDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
-        .filter(d => d.isDirectory());
+      for (const [encodedProject, sessionIds] of activeSessionIdsByProject.entries()) {
+        const projPath = path.join(projectsDir, encodedProject);
+        if (!fs.existsSync(projPath)) continue;
 
-      for (const projDir of projDirs) {
-        const projPath = path.join(projectsDir, projDir.name);
-        let sessionDirs;
-        try {
-          sessionDirs = fs.readdirSync(projPath, { withFileTypes: true })
-            .filter(d => d.isDirectory());
-        } catch { continue; }
-
-        for (const sessionDir of sessionDirs) {
-          const subagentsDir = path.join(projPath, sessionDir.name, 'subagents');
+        for (const sessionId of sessionIds) {
+          const subagentsDir = path.join(projPath, sessionId, 'subagents');
           if (!fs.existsSync(subagentsDir)) continue;
-          const parentSessionFile = path.join(projPath, `${sessionDir.name}.jsonl`);
+          const parentSessionFile = path.join(projPath, `${sessionId}.jsonl`);
           const agentLaunches = getAgentLaunches(parentSessionFile);
 
           let agentFiles;
@@ -400,9 +409,7 @@ class ClaudeAdapter {
             const launch = prompt
               ? agentLaunches.find(item => item.prompt === prompt)
               : null;
-            // projectPathMapfor the exact path; fall back if missing (prevents paths containing hyphens from breaking)
-            const decodedProject = projectPathMap.get(projDir.name)
-              || '/' + projDir.name.replace(/^-/, '').replace(/-/g, '/');
+            const decodedProject = resolveProjectPathFromMap(projectPathMap, encodedProject);
 
             results.push({
               sessionId: `subagent-${agentId}`,
@@ -419,7 +426,7 @@ class ClaudeAdapter {
               lastTool: detail.lastTool,
               lastToolInput: detail.lastToolInput,
               tokenUsage: getTokenUsage(filePath),
-              parentSessionId: sessionDir.name,
+              parentSessionId: sessionId,
             });
           }
         }
@@ -460,8 +467,7 @@ class ClaudeAdapter {
           if (now - stat.mtimeMs > activeThresholdMs) continue;
 
           const detail = getSubAgentDetail(filePath);
-          const decodedProject = projectPathMap.get(projDir.name)
-            || '/' + projDir.name.replace(/^-/, '').replace(/-/g, '/');
+          const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name);
 
           results.push({
             sessionId,
