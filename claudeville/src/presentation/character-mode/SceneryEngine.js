@@ -42,6 +42,7 @@ export class SceneryEngine {
     getBushTiles() { return this.bushTiles; }
     getGrassTuftTiles() { return this.grassTuftTiles; }
     getTreeProps() { return this.treeProps; }
+    getBoulderProps() { return this.boulderProps; }
 
     // --- Generation -------------------------------------------------------
 
@@ -222,6 +223,19 @@ export class SceneryEngine {
                     }
                 }
             }
+        }
+    }
+
+    generateBoulders(pathTiles, bridgeTiles) {
+        for (const b of BOULDERS) {
+            const tx = Math.floor(b.tileX);
+            const ty = Math.floor(b.tileY);
+            const key = `${tx},${ty}`;
+            if (this.waterTiles.has(key)) continue;
+            if (pathTiles.has(key)) continue;
+            if (bridgeTiles.has(key)) continue;
+            if (this._buildingFootprints.has(key)) continue;
+            this.boulderProps.push({ ...b });
         }
     }
 }
