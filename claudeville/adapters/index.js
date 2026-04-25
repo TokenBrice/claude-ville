@@ -12,10 +12,28 @@ const adapters = [
   new GeminiAdapter(),
 ];
 
+const ADAPTER_BY_PROVIDER = Object.fromEntries(adapters.map((adapter) => [adapter.provider, adapter]));
+const SESSION_LIST_CACHE_TTL_MS = 500;
+const SESSION_DETAIL_CACHE_TTL_MS = 1250;
+const SESSION_DETAIL_MAX_CACHE = 256;
+
+const _sessionListCache = {
+  at: 0,
+  threshold: null,
+  sessions: [],
+};
+
+const _sessionDetailCache = new Map();
+
 /**
  * Collect sessions from all active adapters
  */
 function getAllSessions(activeThresholdMs) {
+  const now = Date.now();
+  if (_sessionListCache.threshold === activeThresholdMs && (now - _sessionListCache.at) < SESSION_LIST_CACHE_TTL_MS) {
+    return _sessionListCache.sessions;
+  }
+
   const allSessions = [];
   for (const adapter of adapters) {
     if (!adapter.isAvailable()) continue;
@@ -26,20 +44,49 @@ function getAllSessions(activeThresholdMs) {
       console.error(`[${adapter.name}] Failed to fetch sessions:`, err.message);
     }
   }
-  return allSessions.sort((a, b) => b.lastActivity - a.lastActivity);
+  const sessions = allSessions.sort((a, b) => b.lastActivity - a.lastActivity);
+
+  _sessionListCache.at = now;
+  _sessionListCache.threshold = activeThresholdMs;
+  _sessionListCache.sessions = sessions;
+  return sessions;
 }
 
 /**
  * Fetch session details for a specific provider
  */
 function getSessionDetailByProvider(provider, sessionId, project) {
-  const adapter = adapters.find(a => a.provider === provider);
+  const now = Date.now();
+  const key = `${provider}::${sessionId}::${project || ''}`;
+  const cached = _sessionDetailCache.get(key);
+
+  if (cached && (now - cached.at) < SESSION_DETAIL_CACHE_TTL_MS) {
+    _sessionDetailCache.delete(key);
+    _sessionDetailCache.set(key, cached);
+    return cached.value;
+  }
+
+  const adapter = ADAPTER_BY_PROVIDER[provider];
   if (!adapter) return { toolHistory: [], messages: [] };
+
   try {
-    return adapter.getSessionDetail(sessionId, project);
+    const value = adapter.getSessionDetail(sessionId, project);
+    _sessionDetailCache.set(key, { value, at: now });
+    _trimSessionDetailCache();
+    return value;
   } catch (err) {
     console.error(`[${adapter.name}] Failed to fetch session details:`, err.message);
-    return { toolHistory: [], messages: [] };
+    return cached?.value || { toolHistory: [], messages: [] };
+  }
+}
+
+function _trimSessionDetailCache() {
+  if (_sessionDetailCache.size <= SESSION_DETAIL_MAX_CACHE) return;
+  const removeCount = _sessionDetailCache.size - SESSION_DETAIL_MAX_CACHE;
+  for (let i = 0; i < removeCount; i++) {
+    const oldest = _sessionDetailCache.keys().next().value;
+    if (oldest === undefined) break;
+    _sessionDetailCache.delete(oldest);
   }
 }
 

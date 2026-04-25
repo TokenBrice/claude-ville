@@ -63,12 +63,25 @@ export class SessionWatcher {
 
     async _poll() {
         try {
-            const [sessions, usage] = await Promise.all([
+            const [sessionsResult, usageResult] = await Promise.allSettled([
                 this.dataSource.getSessions(),
                 this.dataSource.getUsage(),
             ]);
-            this.agentManager.handleWebSocketMessage({ sessions });
-            if (usage) eventBus.emit('usage:updated', usage);
+            if (sessionsResult.status === 'fulfilled') {
+                const sessions = sessionsResult.value;
+                if (sessions) {
+                    this.agentManager.handleWebSocketMessage({ sessions });
+                }
+            } else {
+                console.error('[SessionWatcher] Polling sessions failed:', sessionsResult.reason?.message || sessionsResult.reason);
+            }
+
+            if (usageResult.status === 'fulfilled') {
+                const usage = usageResult.value;
+                if (usage) eventBus.emit('usage:updated', usage);
+            } else {
+                console.error('[SessionWatcher] Polling usage failed:', usageResult.reason?.message || usageResult.reason);
+            }
         } catch (err) {
             console.error('[SessionWatcher] Polling failed:', err.message);
         }

@@ -2,6 +2,7 @@ import { AgentStatus } from '../value-objects/AgentStatus.js';
 import { Position } from '../value-objects/Position.js';
 import { Appearance } from '../value-objects/Appearance.js';
 import { i18n } from '../../config/i18n.js';
+import { TokenUsage } from '../value-objects/TokenUsage.js';
 
 const AGENT_NAMES_EN = [
     'Atlas', 'Nova', 'Cipher', 'Pixel', 'Spark',
@@ -45,7 +46,7 @@ export class Agent {
         this.effort = effort || null;
         this.status = status || AgentStatus.IDLE;
         this.role = role || 'general';
-        this.tokens = tokens || { input: 0, output: 0 };
+        this.tokens = TokenUsage.normalize(tokens);
         this.messages = messages || [];
         this.teamName = teamName;
         this.projectPath = projectPath;
@@ -85,40 +86,20 @@ export class Agent {
     }
 
     get cost() {
-        const model = String(this.model || '').toLowerCase();
-        const provider = String(this.provider || '').toLowerCase();
-        const rates = this._pricingFor(model, provider);
-        const tokens = this.tokens || {};
-        return (
-            (tokens.input || 0) * rates.input +
-            (tokens.output || 0) * rates.output +
-            (tokens.cacheRead || 0) * rates.cacheRead +
-            (tokens.cacheCreate || 0) * rates.cacheCreate
-        ) / 1000000;
-    }
-
-    _pricingFor(model, provider) {
-        const claudeRates = [
-            { match: 'opus', input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
-            { match: 'sonnet', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
-            { match: 'haiku', input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
-        ];
-        const openAiRates = [
-            { match: 'gpt-5.5', input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0 },
-            { match: 'gpt-5.4', input: 10, output: 80, cacheRead: 1, cacheCreate: 0 },
-            { match: 'gpt-5.3', input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0 },
-            { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
-        ];
-
-        const table = provider === 'codex' || model.includes('gpt') ? openAiRates : claudeRates;
-        const found = table.find(rate => model.includes(rate.match));
-        return found || (table === openAiRates
-            ? { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 }
-            : { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 });
+        return TokenUsage.estimateCost(this.tokens, this.model, this.provider);
     }
 
     get lastMessage() {
         return this._lastMessage || this.messages[this.messages.length - 1] || null;
+    }
+
+    update(data) {
+        const updates = { ...(data || {}) };
+        if (Object.prototype.hasOwnProperty.call(updates, 'tokens')) {
+            updates.tokens = TokenUsage.normalize(updates.tokens);
+        }
+        Object.assign(this, updates);
+        this.lastActive = Date.now();
     }
 
     /**
@@ -192,8 +173,4 @@ export class Agent {
         return AGENT_NAMES_EN[h % AGENT_NAMES_EN.length];
     }
 
-    update(data) {
-        Object.assign(this, data);
-        this.lastActive = Date.now();
-    }
 }

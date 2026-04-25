@@ -101,7 +101,7 @@ export class AgentManager {
             status,
             role: teamInfo?.agentType || session.agentType || 'general',
             teamName,
-            tokens: this._normalizeTokens(session.tokenUsage || session.tokens || session.usage),
+            tokens: session.tokenUsage || session.tokens || session.usage || null,
             currentTool: hasFreshTool ? session.lastTool : null,
             currentToolInput: hasFreshTool ? session.lastToolInput || null : null,
             lastTool: session.lastTool || null,
@@ -152,18 +152,4 @@ export class AgentManager {
         return AgentStatus.IDLE;
     }
 
-    _normalizeTokens(raw) {
-        if (!raw) return { input: 0, output: 0, cacheRead: 0, cacheCreate: 0 };
-        return {
-            input: this._number(raw.input ?? raw.totalInput ?? raw.input_tokens ?? raw.prompt_tokens),
-            output: this._number(raw.output ?? raw.totalOutput ?? raw.output_tokens ?? raw.completion_tokens),
-            cacheRead: this._number(raw.cacheRead ?? raw.cache_read_input_tokens ?? raw.cached_input_tokens),
-            cacheCreate: this._number(raw.cacheCreate ?? raw.cache_creation_input_tokens),
-        };
-    }
-
-    _number(value) {
-        const n = Number(value);
-        return Number.isFinite(n) ? n : 0;
-    }
 }

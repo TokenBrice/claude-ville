@@ -22,6 +22,7 @@ const claudeAdapter = adapters.find(a => a.provider === 'claude');
 const PORT = 4000;
 const STATIC_DIR = __dirname;
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+const ALLOWED_SESSION_PROVIDERS = Object.freeze(new Set(['claude', 'codex', 'gemini']));
 
 // ─── MIME type mapping ─────────────────────────────────────
 const MIME_TYPES = {
@@ -169,10 +170,11 @@ function handleGetSessionDetail(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`);
     const sessionId = url.searchParams.get('sessionId');
-    const project = url.searchParams.get('project');
-    const provider = url.searchParams.get('provider') || 'claude';
+    const project = url.searchParams.get('project') || '';
+    const provider = String(url.searchParams.get('provider') || 'claude').toLowerCase();
 
     if (!sessionId) return sendError(res, 400, 'sessionId is required');
+    if (!ALLOWED_SESSION_PROVIDERS.has(provider)) return sendError(res, 400, 'invalid provider');
 
     const result = getSessionDetailByProvider(provider, sessionId, project);
     sendJson(res, 200, result);
@@ -460,17 +462,37 @@ function sendInitialData(socket) {
 }
 
 let watchDebounce = null;
+let lastBroadcastSignature = null;
+
+const BROADCAST_POLL_INTERVAL = 2000;
+const BROADCAST_DEBOUNCE_MS = 100;
 
 function broadcastUpdate() {
   if (wsClients.size === 0) return;
   try {
-    wsBroadcast({
+    const payload = {
       type: 'update',
       sessions: getAllSessions(ACTIVE_THRESHOLD_MS),
       teams: claudeAdapter ? claudeAdapter.getTeams() : [],
       usage: usageQuota.fetchUsage(),
       timestamp: Date.now(),
-    });
+    };
+
+    const signature = crypto
+      .createHash('sha1')
+      .update(JSON.stringify({
+        sessions: payload.sessions,
+        teams: payload.teams,
+        usage: payload.usage,
+      }))
+      .digest('hex');
+
+    if (signature === lastBroadcastSignature) {
+      return;
+    }
+
+    lastBroadcastSignature = signature;
+    wsBroadcast(payload);
   } catch (err) {
     console.error('[Watch] Failed to process data:', err.message);
   }
@@ -478,7 +500,7 @@ function broadcastUpdate() {
 
 function debouncedBroadcast() {
   if (watchDebounce) clearTimeout(watchDebounce);
-  watchDebounce = setTimeout(broadcastUpdate, 100);
+  watchDebounce = setTimeout(broadcastUpdate, BROADCAST_DEBOUNCE_MS);
 }
 
 // ─── File watching (multi-provider) ────────────────────────
@@ -513,7 +535,7 @@ function startFileWatcher() {
   // Periodic polling (2 seconds) to catch missed changes
   setInterval(() => {
     if (wsClients.size > 0) broadcastUpdate();
-  }, 2000);
+  }, BROADCAST_POLL_INTERVAL);
   console.log('[Watch] Started 2-second polling');
 }
 
