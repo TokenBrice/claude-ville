@@ -328,8 +328,9 @@ export class AgentSprite {
         this.animState = this.moving ? 'walk' : 'idle';
 
         const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
-        const dx = Math.round(this.x - 32);
-        const dy = Math.round(this.y - 56);   // anchor: bottom-center of feet, sprite is 64×64
+        const cellSize = this.spriteSheet?.cellSize || 92;
+        const dx = Math.round(this.x - cellSize / 2);
+        const dy = Math.round(this.y - (cellSize - 12));   // 12px head clearance, anchor at leg-bottom
         ctx.drawImage(
             this.spriteCanvas,
             cell.sx, cell.sy, cell.sw, cell.sh,

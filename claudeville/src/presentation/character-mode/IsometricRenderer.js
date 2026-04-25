@@ -601,8 +601,9 @@ export class IsometricRenderer {
             const spriteId = `agent.${sprite.agent.provider || 'claude'}.base`;
             const dims = this.assets?.getDims?.(spriteId);
             if (this.sprites && dims) {
-                // Per-pixel: anchor agent at (sprite.x - 32, sprite.y - 56) per AgentSprite.draw()
-                if (this.sprites.hitTest(spriteId, worldX, worldY, sprite.x - 32, sprite.y - 56)) {
+                // Per-pixel: anchor agent at sprite anchor point (cellSize/2, cellSize-12)
+                const cell = sprite.spriteSheet?.cellSize || 92;
+                if (this.sprites.hitTest(spriteId, worldX, worldY, sprite.x - cell / 2, sprite.y - (cell - 12))) {
                     clicked = sprite;
                     break;
                 }
