@@ -99,6 +99,31 @@ export class IsometricRenderer {
         this.waterTiles = this.scenery.getWaterTiles();
         this.shoreTiles = this.scenery.getShoreTiles();
         this.deepWaterTiles = this.scenery.getDeepWaterTiles();
+
+        // Bridges (Task 5): authored hints + auto-place where roads cross water.
+        this.scenery.generateBridges(this.pathTiles);
+        this.bridgeTiles = this.scenery.getBridgeTiles();
+        for (const key of this.bridgeTiles.keys()) {
+            this.pathTiles.add(key);
+        }
+        // Re-classify so newly-pathified bridge tiles inherit avenue style.
+        // CRITICAL: _classifyRoadMaterials *adds* to mainAvenueTiles and
+        // dirtPathTiles without clearing them, so a tile could end up in
+        // BOTH sets and break _drawTile's mutually-exclusive styling.
+        // Clear first.
+        this.mainAvenueTiles.clear();
+        this.dirtPathTiles.clear();
+        const command = this._getCommandBuilding();
+        const plazaHub = command
+            ? {
+                x: Math.floor(command.position.tileX + command.width / 2),
+                y: Math.floor(command.position.tileY + command.height + 2),
+            }
+            : { x: 20, y: 22 };
+        this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
+
+        // Now that bridges are in pathTiles, generate terrain features so
+        // bridges don't get tagged with reeds/flowers/stones/mushrooms.
         this.featureTiles = new Map();
         this._generateTerrainFeatures();
         this.commandCenterGroundProps = [];
@@ -756,7 +781,9 @@ export class IsometricRenderer {
         ctx.lineWidth = 0.5;
         ctx.stroke();
 
-        if (this.pathTiles.has(key)) {
+        if (this.bridgeTiles?.has(key)) {
+            // No path/grass detail under a bridge.
+        } else if (this.pathTiles.has(key)) {
             if (this.townSquareTiles.has(key)) {
                 this._drawTownSquareDetail(ctx, screenX, screenY, seed, tileX, tileY);
             } else {
@@ -777,8 +804,10 @@ export class IsometricRenderer {
             this._drawCommandGuardpost(ctx, screenX + (seed - 0.5) * 3, screenY + (seed - 0.5) * 2);
         }
 
-        // Water shimmer effect
-        if (this.waterTiles.has(key)) {
+        // Water shimmer / bridge deck
+        if (this.bridgeTiles?.has(key)) {
+            this._drawBridgeDeck(ctx, screenX, screenY, seed, key);
+        } else if (this.waterTiles.has(key)) {
             const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.055 + 0.055 : STATIC_WATER_SHIMMER;
             ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
             ctx.fill();
@@ -1359,6 +1388,73 @@ export class IsometricRenderer {
             ctx.lineTo(x + 7, screenY - 4);
             ctx.stroke();
         }
+    }
+
+    _drawBridgeDeck(ctx, screenX, screenY, seed, key) {
+        const info = this.bridgeTiles.get(key);
+        const orientation = info?.orientation || 'EW';
+        const wood = THEME.bridgeWood;
+
+        // Deck fill (covers the diamond — the water fill is already painted under it).
+        ctx.fillStyle = wood.deck;
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
+        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
+        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
+        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
+        ctx.closePath();
+        ctx.fill();
+
+        // Subtle highlight band based on seed.
+        ctx.fillStyle = wood.deckLight;
+        ctx.globalAlpha = 0.35 + seed * 0.15;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // Three plank lines, perpendicular to orientation. EW = planks run NS.
+        ctx.strokeStyle = wood.plankLine;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (orientation === 'EW') {
+            for (let i = 1; i <= 3; i++) {
+                const t = i / 4;
+                const x = screenX - TILE_WIDTH / 2 + t * TILE_WIDTH;
+                const dyEdge = (1 - Math.abs(2 * t - 1)) * TILE_HEIGHT / 2;
+                ctx.moveTo(x, screenY - dyEdge);
+                ctx.lineTo(x, screenY + dyEdge);
+            }
+        } else {
+            for (let i = 1; i <= 3; i++) {
+                const t = i / 4;
+                const y = screenY - TILE_HEIGHT / 2 + t * TILE_HEIGHT;
+                const dxEdge = (1 - Math.abs(2 * t - 1)) * TILE_WIDTH / 2;
+                ctx.moveTo(screenX - dxEdge, y);
+                ctx.lineTo(screenX + dxEdge, y);
+            }
+        }
+        ctx.stroke();
+
+        // Rails along the two outer edges.
+        ctx.strokeStyle = wood.rail;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        if (orientation === 'EW') {
+            ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
+            ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
+            ctx.moveTo(screenX, screenY + TILE_HEIGHT / 2);
+            ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
+        } else {
+            ctx.moveTo(screenX - TILE_WIDTH / 2, screenY);
+            ctx.lineTo(screenX, screenY - TILE_HEIGHT / 2);
+            ctx.moveTo(screenX + TILE_WIDTH / 2, screenY);
+            ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
+        }
+        ctx.stroke();
+
+        // Rail highlight.
+        ctx.strokeStyle = wood.railLight;
+        ctx.lineWidth = 0.75;
+        ctx.stroke();
     }
 
     _drawTerrainFeature(ctx, screenX, screenY, seed, key) {
