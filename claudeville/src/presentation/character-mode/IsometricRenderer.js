@@ -5,7 +5,7 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
 import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite } from './AgentSprite.js';
-import { BuildingRenderer } from './BuildingRenderer.js';
+import { BuildingSprite } from './BuildingSprite.js';
 import { Minimap } from './Minimap.js';
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
@@ -81,7 +81,9 @@ export class IsometricRenderer {
         this.ctx = null;
         this.camera = null;
         this.particleSystem = new ParticleSystem();
-        this.buildingRenderer = new BuildingRenderer(this.particleSystem);
+        this.buildingRenderer = this.assets
+            ? new BuildingSprite(this.assets, this.sprites, this.particleSystem)
+            : null;
         this.minimap = new Minimap();
         this.agentSprites = new Map();
         this._sortedSprites = [];
@@ -460,7 +462,7 @@ export class IsometricRenderer {
             this.motionQuery.addListener(this._onMotionPreferenceChange);
         }
 
-        this.buildingRenderer.setBuildings(this.world.buildings);
+        this.buildingRenderer?.setBuildings(this.world.buildings);
 
         // Create sprites for existing agents
         for (const agent of this.world.agents.values()) {
@@ -510,7 +512,7 @@ export class IsometricRenderer {
             const screenX = e.clientX - rect.left;
             const screenY = e.clientY - rect.top;
             const worldPos = this.camera.screenToWorld(screenX, screenY);
-            this.buildingRenderer.hoveredBuilding = this.buildingRenderer.hitTest(worldPos.x, worldPos.y);
+            this.buildingRenderer?.setHovered(this.buildingRenderer.hitTest(worldPos.x, worldPos.y) ?? null);
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
 
@@ -564,7 +566,7 @@ export class IsometricRenderer {
 
     _setMotionScale(scale) {
         this.motionScale = scale;
-        this.buildingRenderer.setMotionScale(scale);
+        this.buildingRenderer?.setMotionScale(scale);
         this.particleSystem.setMotionEnabled(scale > 0);
         for (const sprite of this.agentSprites.values()) {
             sprite.setMotionScale(scale);
@@ -609,7 +611,10 @@ export class IsometricRenderer {
 
     _loop() {
         if (!this.running) return;
-        this._update();
+        const now = performance.now();
+        const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
+        this._lastFrameTime = now;
+        this._update(dt);
         this._render();
         this.frameId = requestAnimationFrame(() => this._loop());
     }
@@ -679,7 +684,7 @@ export class IsometricRenderer {
         this.camera.stopFollow();
     }
 
-    _update() {
+    _update(dt = 16) {
         this.waterFrame += WATER_FRAME_STEP * this.motionScale;
 
         // Update camera follow
@@ -702,8 +707,8 @@ export class IsometricRenderer {
         }
 
         // Update building renderer (pass agent sprite positions)
-        this.buildingRenderer.setAgentSprites(this._snapshotSortedSprites());
-        this.buildingRenderer.update();
+        this.buildingRenderer?.setAgentSprites(this._snapshotSortedSprites());
+        this.buildingRenderer?.update(dt);
         this._updateAmbientEffects();
 
         // Update particles
@@ -748,23 +753,31 @@ export class IsometricRenderer {
         this._drawAmbientGroundProps(ctx);
 
         // 2. Building shadows
-        this.buildingRenderer.drawShadows(ctx);
+        this.buildingRenderer?.drawShadows(ctx);
 
-        // 3. Buildings
-        this.buildingRenderer.draw(ctx);
-
-        // 4. Agents (sorted by Y for depth)
+        // 3. Buildings + 4. Agents — interleaved by sortY for proper occlusion
+        const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
         const sortedSprites = this._snapshotSortedSprites();
         const zoom = this.camera.zoom;
-        for (const sprite of sortedSprites) {
-            sprite.draw(ctx, zoom);
+
+        const drawables = [];
+        for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
+        for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
+        drawables.sort((a, b) => a.sortY - b.sortY);
+
+        for (const item of drawables) {
+            if (item.kind === 'agent') {
+                item.payload.draw(ctx, zoom);
+            } else {
+                this.buildingRenderer.drawDrawable(ctx, item.payload);
+            }
         }
 
         // 5. Particles
         this.particleSystem.draw(ctx);
 
         // 6. Building bubbles (on top)
-        this.buildingRenderer.drawBubbles(ctx, this.world);
+        this.buildingRenderer?.drawBubbles(ctx, this.world);
 
         // Reset transform for UI
         ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -935,7 +948,7 @@ export class IsometricRenderer {
 
         ctx.drawImage(this._getAtmosphereVignette(canvas), 0, 0);
 
-        for (const light of this.buildingRenderer.getLightSources()) {
+        if (this.buildingRenderer) for (const light of this.buildingRenderer.getLightSources()) {
             const p = this.camera.worldToScreen(light.x, light.y);
             if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
             const radius = light.radius * this.camera.zoom;
