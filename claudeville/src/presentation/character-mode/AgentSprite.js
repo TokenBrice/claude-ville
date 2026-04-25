@@ -59,7 +59,7 @@ const SPRITE_HIT_TOP = -44;
 const SPRITE_HIT_BOTTOM = 34;
 
 export class AgentSprite {
-    constructor(agent) {
+    constructor(agent, { pathfinder = null, bridgeTiles = null } = {}) {
         this.agent = agent;
         this.x = 0;
         this.y = 0;
@@ -84,6 +84,11 @@ export class AgentSprite {
         const screen = agent.position.toScreen(TILE_WIDTH, TILE_HEIGHT);
         this.x = screen.x;
         this.y = screen.y;
+
+        this.pathfinder = pathfinder;
+        this.bridgeTiles = bridgeTiles;
+        this.waypoints = [];
+        this._lastPathTileKey = null;
 
         this._pickTarget();
     }
