@@ -39,6 +39,8 @@ export class SceneryEngine {
     getDeepWaterTiles() { return this.deepWaterTiles; }
     getShoreTiles() { return this.shoreTiles; }
     getBridgeTiles() { return this.bridgeTiles; }
+    getBushTiles() { return this.bushTiles; }
+    getGrassTuftTiles() { return this.grassTuftTiles; }
 
     // --- Generation -------------------------------------------------------
 
@@ -168,5 +170,26 @@ export class SceneryEngine {
         const ew = (eastWater ? 1 : 0) + (westWater ? 1 : 0);
         const ns = (northWater ? 1 : 0) + (southWater ? 1 : 0);
         return ew >= ns ? 'EW' : 'NS';
+    }
+
+    generateFlatVegetation(pathTiles, bridgeTiles) {
+        for (let y = 0; y < MAP_SIZE; y++) {
+            for (let x = 0; x < MAP_SIZE; x++) {
+                const key = `${x},${y}`;
+                if (this.waterTiles.has(key)) continue;
+                if (this.shoreTiles.has(key)) continue;
+                if (pathTiles.has(key)) continue;
+                if (bridgeTiles.has(key)) continue;
+                if (this._buildingFootprints.has(key)) continue;
+
+                const noise = this.tileNoise(x + 109, y + 67);
+                if (noise >= BUSH_DENSITY.min && noise < BUSH_DENSITY.max) {
+                    const variant = Math.floor(this.tileNoise(x + 7, y + 13) * 3);
+                    this.bushTiles.set(key, { variant });
+                } else if (noise >= GRASS_TUFT_DENSITY.min && noise < GRASS_TUFT_DENSITY.max) {
+                    this.grassTuftTiles.set(key, { variant: Math.floor(this.tileNoise(x + 21, y + 5) * 2) });
+                }
+            }
+        }
     }
 }
