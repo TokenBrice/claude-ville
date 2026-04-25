@@ -1,18 +1,23 @@
-/* ═══ 대시보드 모드 ═══ */
-/* .content__dashboard 기본 레이아웃은 layout.css에서 관리 */
+/* ═══ Dashboard mode ═══ */
+/* .content__dashboard base layout is managed in layout.css */
 
-/* 그리드 레이아웃 - 섹션 기반 */
+/* Grid layout - section-based */
 .dashboard__grid {
     display: flex;
     flex-direction: column;
-    gap: 20px;
+    gap: 16px;
 }
 
-/* ═══ 프로젝트 섹션 ═══ */
+/* ═══ Project section ═══ */
 .dashboard__section {
-    background: rgba(20, 20, 35, 0.5);
-    border: 1px solid rgba(255, 255, 255, 0.05);
-    border-radius: 10px;
+    background:
+        linear-gradient(180deg, rgba(35, 25, 22, 0.9), rgba(15, 11, 13, 0.92)),
+        repeating-linear-gradient(0deg, rgba(242, 211, 107, 0.018) 0 1px, transparent 1px 18px);
+    border: 1px solid var(--cv-border-soft);
+    border-radius: 3px;
+    box-shadow:
+        inset 0 0 0 1px rgba(0, 0, 0, 0.32),
+        0 8px 22px rgba(0, 0, 0, 0.2);
     overflow: hidden;
 }
 
@@ -21,9 +26,9 @@
     align-items: center;
     gap: 8px;
     padding: 10px 14px;
-    background: rgba(26, 26, 46, 0.6);
+    background: rgba(20, 13, 11, 0.58);
     border-left: 3px solid transparent;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: 1px solid rgba(199, 157, 76, 0.18);
 }
 
 .dashboard__section-dot {
@@ -36,13 +41,14 @@
 .dashboard__section-name {
     font-size: 12px;
     font-weight: bold;
-    color: #eee;
+    color: var(--cv-gold);
     font-family: 'Press Start 2P', monospace;
+    text-shadow: 1px 1px 0 #4b2b19;
 }
 
 .dashboard__section-path {
     font-size: 10px;
-    color: #666;
+    color: var(--cv-text-muted);
     flex: 1;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -51,10 +57,11 @@
 
 .dashboard__section-count {
     font-size: 10px;
-    color: #8b8b9e;
-    background: rgba(255, 255, 255, 0.06);
+    color: #d7b979;
+    background: rgba(57, 37, 24, 0.78);
+    border: 1px solid rgba(199, 157, 76, 0.22);
     padding: 2px 8px;
-    border-radius: 3px;
+    border-radius: 2px;
     flex-shrink: 0;
 }
 
@@ -66,7 +73,7 @@
     align-content: start;
 }
 
-/* 빈 상태 */
+/* Empty state */
 .dashboard__empty {
     display: none;
     flex-direction: column;
@@ -100,31 +107,40 @@
     font-family: 'Press Start 2P', monospace;
 }
 
-/* ═══ 에이전트 카드 ═══ */
+/* ═══ Agent cards ═══ */
 .dash-card {
-    background: rgba(15, 15, 25, 0.95);
-    border: 1px solid rgba(232, 212, 77, 0.15);
-    border-radius: 8px;
+    background:
+        linear-gradient(180deg, rgba(24, 17, 16, 0.98), rgba(12, 9, 11, 0.98)),
+        repeating-linear-gradient(0deg, rgba(242, 211, 107, 0.018) 0 1px, transparent 1px 16px);
+    border: 1px solid rgba(199, 157, 76, 0.2);
+    border-radius: 3px;
+    box-shadow:
+        inset 0 0 0 1px rgba(0, 0, 0, 0.34),
+        0 6px 16px rgba(0, 0, 0, 0.18);
     overflow: hidden;
-    transition: border-color 0.2s;
+    transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 
 .dash-card:hover {
-    border-color: rgba(232, 212, 77, 0.4);
+    border-color: rgba(242, 211, 107, 0.5);
+    box-shadow:
+        inset 0 0 0 1px rgba(255, 226, 138, 0.12),
+        0 8px 18px rgba(0, 0, 0, 0.26);
+    transform: translateY(-1px);
 }
 
 .dash-card--working { border-left: 3px solid #4ade80; }
 .dash-card--idle    { border-left: 3px solid #60a5fa; }
 .dash-card--waiting { border-left: 3px solid #f97316; }
 
-/* ─ 카드 헤더 ─ */
+/* ─ Card header ─ */
 .dash-card__header {
     display: flex;
     align-items: center;
     gap: 10px;
     padding: 10px 12px;
-    background: rgba(26, 26, 46, 0.6);
-    border-bottom: 1px solid rgba(232, 212, 77, 0.08);
+    background: rgba(20, 13, 11, 0.62);
+    border-bottom: 1px solid rgba(199, 157, 76, 0.16);
 }
 
 .dash-card__avatar {
@@ -156,7 +172,7 @@
     gap: 8px;
     margin-top: 4px;
     font-size: 10px;
-    color: #8b8b9e;
+    color: var(--cv-text-muted);
 }
 
 .dash-card__provider-badge {
@@ -168,15 +184,16 @@
 }
 
 .dash-card__model {
-    background: rgba(74, 158, 255, 0.15);
-    color: #4a9eff;
+    background: rgba(126, 183, 214, 0.14);
+    color: #7eb7d6;
+    border: 1px solid rgba(126, 183, 214, 0.18);
     padding: 1px 6px;
     border-radius: 3px;
     font-size: 10px;
 }
 
 .dash-card__role {
-    color: #8b8b9e;
+    color: var(--cv-text-muted);
     font-size: 10px;
 }
 
@@ -209,10 +226,10 @@
     50% { opacity: 0.3; }
 }
 
-/* ─ 현재 활동 ─ */
+/* ─ Current activity ─ */
 .dash-card__activity {
     padding: 8px 12px;
-    border-bottom: 1px solid rgba(232, 212, 77, 0.08);
+    border-bottom: 1px solid rgba(199, 157, 76, 0.12);
 }
 
 .dash-card__current-tool {
@@ -222,7 +239,7 @@
     padding: 6px 10px;
     background: rgba(74, 222, 128, 0.08);
     border: 1px solid rgba(74, 222, 128, 0.2);
-    border-radius: 6px;
+    border-radius: 2px;
 }
 
 .dash-card__current-tool--idle {
@@ -245,12 +262,12 @@
 .dash-card__tool-name {
     font-size: 11px;
     font-weight: bold;
-    color: #eee;
+    color: #f5df8a;
 }
 
 .dash-card__tool-detail {
     font-size: 10px;
-    color: #8b8b9e;
+    color: var(--cv-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -261,16 +278,17 @@
     margin-top: 6px;
     padding: 5px 8px;
     font-size: 10px;
-    color: #b0b0c0;
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 4px;
+    color: #c6b08a;
+    background: rgba(31, 22, 18, 0.52);
+    border: 1px solid rgba(199, 157, 76, 0.08);
+    border-radius: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-style: italic;
 }
 
-/* ─ 도구 히스토리 ─ */
+/* ─ Tool history ─ */
 .dash-card__tools {
     padding: 6px 12px 10px;
     max-height: 180px;
@@ -282,13 +300,13 @@
 }
 
 .dash-card__tools::-webkit-scrollbar-thumb {
-    background: rgba(232, 212, 77, 0.2);
+    background: rgba(199, 157, 76, 0.32);
     border-radius: 2px;
 }
 
 .dash-card__tools-title {
     font-size: 9px;
-    color: #8b8b9e;
+    color: var(--cv-text-muted);
     letter-spacing: 2px;
     text-transform: uppercase;
     margin-bottom: 6px;
@@ -305,12 +323,12 @@
     align-items: center;
     gap: 6px;
     padding: 3px 6px;
-    border-radius: 3px;
+    border-radius: 2px;
     transition: background 0.15s;
 }
 
 .dash-card__tool-item:hover {
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(242, 211, 107, 0.06);
 }
 
 .dash-card__tool-item-icon {
@@ -322,33 +340,33 @@
 
 .dash-card__tool-item-name {
     font-size: 10px;
-    color: #ccc;
+    color: #d7b979;
     flex-shrink: 0;
     min-width: 50px;
 }
 
 .dash-card__tool-item-detail {
     font-size: 9px;
-    color: #666;
+    color: #8d7659;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
 }
 
-/* ─ 도구 카테고리 색상 ─ */
+/* ─ Tool category colors ─ */
 .tool-cat--read    { color: #60a5fa; }
 .tool-cat--write   { color: #f59e0b; }
 .tool-cat--exec    { color: #ef4444; }
 .tool-cat--search  { color: #a78bfa; }
 .tool-cat--task    { color: #34d399; }
-.tool-cat--other   { color: #8b8b9e; }
+.tool-cat--other   { color: #a89476; }
 
-/* ─ 로딩 중 스피너 ─ */
+/* ─ Loading spinner ─ */
 .dash-card__loading {
     padding: 12px;
     text-align: center;
-    color: #8b8b9e;
+    color: var(--cv-text-muted);
     font-size: 10px;
 }
 
@@ -356,8 +374,8 @@
     display: inline-block;
     width: 12px;
     height: 12px;
-    border: 2px solid rgba(232, 212, 77, 0.2);
-    border-top-color: #e8d44d;
+    border: 2px solid rgba(199, 157, 76, 0.22);
+    border-top-color: var(--cv-gold);
     border-radius: 50%;
     animation: spin 0.6s linear infinite;
     margin-right: 6px;

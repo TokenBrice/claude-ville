@@ -213,7 +213,7 @@ export class IsometricRenderer {
     }
 
     _updateChatMatching() {
-        // 현재 SendMessage 사용 중인 에이전트 찾기
+        // Find the agent currently using SendMessage
         const senders = new Set();
 
         for (const sprite of this.agentSprites.values()) {
@@ -221,10 +221,10 @@ export class IsometricRenderer {
             if (agent.currentTool === 'SendMessage' && agent.currentToolInput) {
                 senders.add(sprite);
 
-                // 이미 대화 중이면 스킵
+                // Skip if already chatting
                 if (sprite.chatPartner) continue;
 
-                // 수신자 이름으로 스프라이트 찾기
+                // Find sprite by recipient name
                 const recipientName = agent.currentToolInput;
                 let target = null;
                 for (const other of this.agentSprites.values()) {
@@ -241,10 +241,10 @@ export class IsometricRenderer {
             }
         }
 
-        // SendMessage가 아닌 에이전트의 대화 상태 해제
+        // Clear chat state for agents not using SendMessage
         for (const sprite of this.agentSprites.values()) {
             if (sprite.chatPartner && !senders.has(sprite)) {
-                // 상대방이 아직 SendMessage 중이면 유지
+                // Keep it if the other side is still using SendMessage
                 if (sprite.chatPartner.agent.currentTool === 'SendMessage') continue;
                 sprite.endChat();
             }
@@ -271,10 +271,10 @@ export class IsometricRenderer {
     _update() {
         this.waterFrame += 0.03;
 
-        // 카메라 팔로우 업데이트
+        // Update camera follow
         if (this.camera) this.camera.updateFollow();
 
-        // 대화 매칭: SendMessage 사용 중인 에이전트 → 수신자 스프라이트로 이동
+        // Chat matching: Agent using SendMessage moves to the recipient sprite
         this._updateChatMatching();
 
         // Update agent sprites
@@ -282,7 +282,7 @@ export class IsometricRenderer {
             sprite.update(this.particleSystem);
         }
 
-        // Update building renderer (에이전트 스프라이트 위치 전달)
+        // Update building renderer (pass agent sprite positions)
         this.buildingRenderer.setAgentSprites(Array.from(this.agentSprites.values()));
         this.buildingRenderer.update();
 
@@ -327,13 +327,18 @@ export class IsometricRenderer {
 
         // Reset transform for UI
         ctx.setTransform(1, 0, 0, 1, 0, 0);
+        this._drawAtmosphere(ctx);
 
         // Minimap
-        this.minimap.draw(this.world, this.camera, canvas);
+        this.minimap.draw(this.world, this.camera, canvas, {
+            pathTiles: this.pathTiles,
+            waterTiles: this.waterTiles,
+            selectedAgent: this.selectedAgent,
+        });
     }
 
     _drawTerrain(ctx) {
-        // 아이소메트릭은 다이아몬드 형태라 화면 네 모서리 모두 체크해야 함
+        // Isometric tiles are diamond-shaped, so all four screen corners must be checked
         const w = this.canvas.width;
         const h = this.canvas.height;
         const c1 = this.camera.screenToTile(0, 0);
@@ -382,15 +387,135 @@ export class IsometricRenderer {
         ctx.fill();
 
         // Tile border
-        ctx.strokeStyle = 'rgba(255, 255, 255, 0.03)';
+        ctx.strokeStyle = this.pathTiles.has(key) ? 'rgba(42, 31, 18, 0.22)' : 'rgba(255, 239, 179, 0.035)';
         ctx.lineWidth = 0.5;
         ctx.stroke();
+
+        if (this.pathTiles.has(key)) {
+            this._drawPathDetail(ctx, screenX, screenY, seed, tileX, tileY);
+        } else if (!this.waterTiles.has(key)) {
+            this._drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY);
+        }
 
         // Water shimmer effect
         if (this.waterTiles.has(key)) {
             const shimmer = Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.15 + 0.1;
             ctx.fillStyle = `rgba(255, 255, 255, ${shimmer})`;
             ctx.fill();
+            this._drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY);
+        }
+    }
+
+    _drawAtmosphere(ctx) {
+        const canvas = this.canvas;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+
+        const vignette = ctx.createRadialGradient(
+            canvas.width * 0.5,
+            canvas.height * 0.46,
+            Math.min(canvas.width, canvas.height) * 0.18,
+            canvas.width * 0.5,
+            canvas.height * 0.5,
+            Math.max(canvas.width, canvas.height) * 0.72,
+        );
+        vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        vignette.addColorStop(0.72, 'rgba(16, 10, 8, 0.04)');
+        vignette.addColorStop(1, 'rgba(0, 0, 0, 0.32)');
+        ctx.fillStyle = vignette;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        for (const light of this.buildingRenderer.getLightSources()) {
+            const p = this.camera.worldToScreen(light.x, light.y);
+            if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
+            const radius = light.radius * this.camera.zoom;
+            const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
+            glow.addColorStop(0, light.color);
+            glow.addColorStop(0.42, light.color.replace(/[\d.]+\)$/, '0.07)'));
+            glow.addColorStop(1, 'rgba(255, 146, 47, 0)');
+            ctx.fillStyle = glow;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.restore();
+    }
+
+    _drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY) {
+        const ox = (seed - 0.5) * TILE_WIDTH * 0.65;
+        const oy = Math.sin((tileX + 1) * (tileY + 2)) * 5;
+
+        if (seed < 0.045) {
+            // Tiny dark pines help the empty grass read as an RPG field, not a flat board.
+            ctx.fillStyle = 'rgba(24, 67, 32, 0.8)';
+            ctx.beginPath();
+            ctx.moveTo(screenX + ox, screenY + oy - 10);
+            ctx.lineTo(screenX + ox + 7, screenY + oy + 2);
+            ctx.lineTo(screenX + ox - 7, screenY + oy + 2);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = 'rgba(64, 44, 25, 0.72)';
+            ctx.fillRect(screenX + ox - 1, screenY + oy + 1, 2, 5);
+        } else if (seed < 0.18) {
+            ctx.fillStyle = seed < 0.08 ? 'rgba(238, 206, 91, 0.62)' : 'rgba(94, 128, 54, 0.46)';
+            ctx.fillRect(screenX + ox, screenY + oy, 2, 2);
+            ctx.fillRect(screenX + ox + 3, screenY + oy - 2, 2, 2);
+        } else if (seed > 0.93) {
+            ctx.fillStyle = 'rgba(34, 45, 31, 0.35)';
+            ctx.beginPath();
+            ctx.ellipse(screenX - 8, screenY + 2, 3, 2, -0.4, 0, Math.PI * 2);
+            ctx.fill();
+            if (seed > 0.975) {
+                ctx.fillStyle = 'rgba(198, 185, 148, 0.46)';
+                ctx.fillRect(screenX - 6, screenY, 2, 2);
+                ctx.fillRect(screenX - 3, screenY - 2, 2, 2);
+            }
+        }
+    }
+
+    _drawPathDetail(ctx, screenX, screenY, seed, tileX, tileY) {
+        const offset = (seed - 0.5) * 10;
+        ctx.fillStyle = 'rgba(64, 45, 27, 0.18)';
+        for (let i = 0; i < 2; i++) {
+            const px = screenX + offset * (i ? -0.55 : 0.7) + (i ? 10 : -11);
+            const py = screenY + (i ? 3 : -4);
+            ctx.beginPath();
+            ctx.ellipse(px, py, 5, 2, 0.35, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.strokeStyle = 'rgba(43, 31, 20, 0.2)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(screenX - 16 + offset, screenY - 2);
+        ctx.lineTo(screenX - 3 + offset, screenY + 5);
+        ctx.moveTo(screenX + 4 - offset, screenY - 5);
+        ctx.lineTo(screenX + 16 - offset, screenY + 1);
+        if ((tileX + tileY) % 3 === 0) {
+            ctx.moveTo(screenX - 2, screenY - 10);
+            ctx.lineTo(screenX + 9, screenY - 4);
+        }
+        ctx.stroke();
+    }
+
+    _drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY) {
+        ctx.strokeStyle = 'rgba(182, 229, 222, 0.16)';
+        ctx.lineWidth = 1;
+        const wave = Math.sin(this.waterFrame * 4 + seed * 10 + tileX) * 3;
+        ctx.beginPath();
+        ctx.moveTo(screenX - 14, screenY + wave);
+        ctx.quadraticCurveTo(screenX - 4, screenY - 4 + wave, screenX + 8, screenY + wave);
+        ctx.stroke();
+
+        if (seed > 0.72) {
+            ctx.strokeStyle = 'rgba(119, 137, 68, 0.42)';
+            ctx.beginPath();
+            ctx.moveTo(screenX - 18, screenY + 1);
+            ctx.lineTo(screenX - 18, screenY - 6);
+            ctx.moveTo(screenX - 15, screenY + 2);
+            ctx.lineTo(screenX - 12, screenY - 4);
+            ctx.stroke();
         }
     }
 }

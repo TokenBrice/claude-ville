@@ -1,51 +1,51 @@
-# ClaudeVille - 프로젝트 규칙
+# ClaudeVille - Project Rules
 
-## 레이아웃 구조 (중요)
+## Layout Structure (Important)
 
 ```
 body (flex column, height 100vh)
-  header.topbar            ← 48px 고정 높이, flex-shrink: 0
+  header.topbar            ← 48px fixed height, flex-shrink: 0
   div.main                 ← flex: 1, flex-direction: column
-    div.main__body         ← flex: 1, display: flex (가로 배치)
+    div.main__body         ← flex: 1, display: flex (horizontal layout)
       aside.sidebar        ← width: 240px, flex-shrink: 0
-      div.content          ← flex: 1 (캐릭터/대시보드 모드)
-      aside#activityPanel  ← width: 320px (에이전트 선택 시 표시, 기본 숨김)
+      div.content          ← flex: 1 (character/dashboard modes)
+      aside#activityPanel  ← width: 320px (shown when an agent is selected; hidden by default)
 ```
 
-### 주의사항
-- **절대 `position: fixed`로 UI 요소를 배치하지 말 것** (모달, 토스트 제외)
-- 새 패널 추가 시 반드시 flex 레이아웃 안에서 배치해야 함
-- activityPanel(320px)이 열리면 content 영역이 줄어드므로 반응형 고려 필요
-- 대시보드 모드는 `overflow-y: auto`로 스크롤, 캐릭터 모드는 캔버스가 남은 영역을 채움
+### Notes
+- **Never position UI elements with `position: fixed`** (except modals and toasts)
+- New panels must be placed inside the flex layout
+- When activityPanel (320px) opens, the content area shrinks; account for responsive behavior
+- Dashboard mode scrolls with `overflow-y: auto`; character mode has the canvas fill the remaining area
 
-## 기술 스택
-- 순수 HTML/CSS/JS (프레임워크 없음)
+## Tech Stack
+- Plain HTML/CSS/JS (no framework)
 - ES Modules (import/export)
-- Node.js 서버 (server.js) - HTTP + WebSocket (RFC 6455 직접 구현)
-- Canvas 2D API로 아이소메트릭 렌더링
-- 어댑터 패턴으로 멀티 프로바이더 지원 (adapters/ 디렉토리)
-- **서버 포트: 4000** (3000 아님! 변경하지 말 것)
+- Node.js server (server.js) - HTTP + WebSocket (RFC 6455 implemented directly)
+- Canvas 2D API for isometric rendering
+- Adapter pattern for multi-provider support (adapters/ directory)
+- **Server port: 4000** (not 3000; do not change it)
 
-## 데이터 소스 (멀티 프로바이더)
+## Data Sources (multi-provider)
 - **Claude Code**: `~/.claude/` (history.jsonl, projects/, teams/, tasks/)
 - **Codex CLI**: `~/.codex/sessions/` (rollout-*.jsonl)
 - **Gemini CLI**: `~/.gemini/tmp/` (session-*.json)
-- 각 어댑터는 `adapters/claude.js`, `adapters/codex.js`, `adapters/gemini.js`에 구현
-- `adapters/index.js`가 레지스트리 역할, 설치된 CLI만 자동 감지
+- Each adapter is implemented in `adapters/claude.js`, `adapters/codex.js`, `adapters/gemini.js`
+- `adapters/index.js` acts as the registry and auto-detects only installed CLIs
 
-## 모드
-- **WORLD**: 아이소메트릭 픽셀 월드에서 에이전트가 캐릭터로 돌아다님
-- **DASHBOARD**: 에이전트별 카드 형태로 도구 사용/활동 실시간 모니터링
+## Modes
+- **WORLD**: Agents move around as characters in an isometric pixel world
+- **DASHBOARD**: Real-time tool/activity monitoring with one card per agent
 
-## 주요 기능
-- **카메라 팔로우**: 에이전트 클릭 시 카메라가 lerp으로 부드럽게 따라감 (드래그 시 해제)
-- **실시간 활동 패널**: 우측 320px 패널에서 도구 히스토리, 메시지, 토큰 사용량 2초 폴링
-- **토큰 사용량**: 컨텍스트 프로그레스 바 + input/output/cache/turns + 예상 비용
-- **대화 애니메이션**: SendMessage 사용 시 캐릭터가 상대에게 걸어가서 말풍선 표시
-- **세션 감지**: history.jsonl + subagents/ + 프로젝트 디렉토리 직접 스캔 (고아 세션 포함)
+## Key Features
+- **Camera follow**: Clicking an agent makes the camera smoothly follow with lerp (released on drag)
+- **Live activity panel**: Right-side 320px panel polls tool history, messages, and token usage every 2 seconds
+- **Token usage**: context progress bar + input/output/cache/turns + estimated cost
+- **Chat animation**: moves a character to its partner and shows a speech bubble when SendMessage is used
+- **Session detection**: history.jsonl + subagents/ + direct project directory scan (including orphan sessions)
 
-## 이벤트 흐름
-- `agent:selected` → ActivityPanel 열기 + 카메라 팔로우 시작
-- `agent:deselected` → ActivityPanel 닫기 + 카메라 팔로우 해제
-- `agent:updated` → 스프라이트/패널 실시간 갱신
-- `agent:added` / `agent:removed` → 스프라이트 생성/제거
+## Event Flow
+- `agent:selected` → ActivityPanel open + Camera follow start
+- `agent:deselected` → ActivityPanel close + Camera follow clear
+- `agent:updated` → update sprites/panels in real time
+- `agent:added` / `agent:removed` → create/remove sprites

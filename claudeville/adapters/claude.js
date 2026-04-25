@@ -1,6 +1,6 @@
 /**
- * Claude Code CLI 어댑터
- * 데이터 소스: ~/.claude/
+ * Claude Code CLI adapter
+ * Data source: ~/.claude/
  */
 const fs = require('fs');
 const path = require('path');
@@ -11,7 +11,7 @@ const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const TEAMS_DIR = path.join(CLAUDE_DIR, 'teams');
 const TASKS_DIR = path.join(CLAUDE_DIR, 'tasks');
 
-// ─── 유틸 ─────────────────────────────────────────────
+// ─── Utilities ─────────────────────────────────────────────
 
 function readLastLines(filePath, lineCount) {
   try {
@@ -28,12 +28,12 @@ function parseJsonLines(lines) {
   const results = [];
   for (const line of lines) {
     if (!line.trim()) continue;
-    try { results.push(JSON.parse(line)); } catch { /* 무시 */ }
+    try { results.push(JSON.parse(line)); } catch { /* ignore */ }
   }
   return results;
 }
 
-// ─── 세션 파싱 ────────────────────────────────────────
+// ─── Session parsing ────────────────────────────────────────
 
 function getSessionDetail(sessionId, projectPath) {
   const detail = { model: null, lastTool: null, lastMessage: null, lastToolInput: null };
@@ -74,7 +74,7 @@ function getSessionDetail(sessionId, projectPath) {
       }
       if (detail.model && detail.lastTool && detail.lastMessage) break;
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
 
   return detail;
 }
@@ -111,7 +111,7 @@ function getSubAgentDetail(filePath) {
       }
       if (detail.model && detail.lastTool && detail.lastMessage) break;
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return detail;
 }
 
@@ -142,7 +142,7 @@ function getToolHistory(sessionFilePath, maxItems = 15) {
         tools.push({ tool: block.name || 'unknown', detail, ts: entry.timestamp || 0 });
       }
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return tools.slice(-maxItems);
 }
 
@@ -165,7 +165,7 @@ function getRecentMessages(sessionFilePath, maxItems = 5) {
         messages.push({ role: msg.role, text: text.substring(0, 200), ts: entry.timestamp || 0 });
       }
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return messages.slice(-maxItems);
 }
 
@@ -175,7 +175,7 @@ function getTokenUsage(sessionFilePath) {
     totalOutput: 0,
     cacheRead: 0,
     cacheCreate: 0,
-    contextWindow: 0,  // 마지막 턴의 컨텍스트 크기
+    contextWindow: 0,  // Context size for the last turn
     turnCount: 0,
   };
   try {
@@ -195,14 +195,14 @@ function getTokenUsage(sessionFilePath) {
       lastUsage = u;
     }
 
-    // 마지막 턴의 컨텍스트 = input + cache_read + cache_create
+    // Last turn context = input + cache_read + cache_create
     if (lastUsage) {
       usage.contextWindow =
         (lastUsage.input_tokens || 0) +
         (lastUsage.cache_read_input_tokens || 0) +
         (lastUsage.cache_creation_input_tokens || 0);
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return usage;
 }
 
@@ -220,7 +220,7 @@ function resolveSessionFilePath(sessionId, project) {
         const agentFile = path.join(projectsDir, dir.name, 'subagents', `agent-${agentId}.jsonl`);
         if (fs.existsSync(agentFile)) return agentFile;
       }
-    } catch { /* 무시 */ }
+    } catch { /* ignore */ }
     return null;
   }
 
@@ -234,11 +234,11 @@ function getSessionFileActivity(sessionId, project) {
   const sessionFile = path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`);
   try {
     if (fs.existsSync(sessionFile)) return fs.statSync(sessionFile).mtimeMs;
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return 0;
 }
 
-// ─── 어댑터 클래스 ────────────────────────────────────
+// ─── Adapter class ────────────────────────────────────
 
 class ClaudeAdapter {
   get name() { return 'Claude Code'; }
@@ -254,11 +254,11 @@ class ClaudeAdapter {
     const entries = parseJsonLines(lines);
     const now = Date.now();
     const sessionsMap = new Map();
-    const projectPathMap = new Map(); // 인코딩된 디렉토리명 → 실제 경로
+    const projectPathMap = new Map(); // Encoded directory name to real path
 
     const HISTORY_SCAN_MS = 10 * 60 * 1000;
     for (const entry of entries) {
-      // 모든 엔트리에서 프로젝트 경로 맵 구축 (활성 여부 무관)
+      // Build the project path map from all entries, regardless of active state
       if (entry.project) {
         const encoded = entry.project.replace(/\//g, '-');
         projectPathMap.set(encoded, entry.project);
@@ -291,21 +291,23 @@ class ClaudeAdapter {
 
       session.lastActivity = lastActive;
       const detail = getSessionDetail(session.sessionId, session.project);
+      const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
       mainSessions.push({
         ...session,
         model: detail.model || session.model,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
         lastMessage: detail.lastMessage || session.lastMessage,
+        tokenUsage: sessionFilePath ? getTokenUsage(sessionFilePath) : null,
       });
     }
 
     mainSessions.sort((a, b) => b.lastActivity - a.lastActivity);
 
-    // 서브에이전트 (프로젝트 경로 맵 전달)
+    // Subagents (pass the project path map)
     const subAgents = this._getActiveSubAgents(activeThresholdMs, projectPathMap);
 
-    // 고아 세션 (history.jsonl에 없고 subagents/에도 없는 팀 멤버 등)
+    // Orphan sessions (team members not found in history.jsonl or subagents/)
     const knownIds = new Set([
       ...Array.from(sessionsMap.keys()),
       ...subAgents.map(s => s.sessionId.replace('subagent-', '')),
@@ -353,7 +355,7 @@ class ClaudeAdapter {
 
             const agentId = agentFile.replace('agent-', '').replace('.jsonl', '');
             const detail = getSubAgentDetail(filePath);
-            // projectPathMap에서 정확한 경로 조회, 없으면 폴백 (하이픈 포함 경로 깨짐 방지)
+            // projectPathMapfor the exact path; fall back if missing (prevents paths containing hyphens from breaking)
             const decodedProject = projectPathMap.get(projDir.name)
               || '/' + projDir.name.replace(/^-/, '').replace(/-/g, '/');
 
@@ -369,12 +371,13 @@ class ClaudeAdapter {
               lastMessage: detail.lastMessage,
               lastTool: detail.lastTool,
               lastToolInput: detail.lastToolInput,
+              tokenUsage: getTokenUsage(filePath),
               parentSessionId: sessionDir.name,
             });
           }
         }
       }
-    } catch { /* 무시 */ }
+    } catch { /* ignore */ }
 
     return results;
   }
@@ -400,7 +403,7 @@ class ClaudeAdapter {
 
         for (const file of files) {
           const sessionId = file.replace('.jsonl', '');
-          // 이미 알려진 세션이면 스킵
+          // Skip sessions already known
           if (knownIds.has(sessionId)) continue;
 
           const filePath = path.join(projPath, file);
@@ -425,10 +428,11 @@ class ClaudeAdapter {
             lastMessage: detail.lastMessage,
             lastTool: detail.lastTool,
             lastToolInput: detail.lastToolInput,
+            tokenUsage: getTokenUsage(filePath),
           });
         }
       }
-    } catch { /* 무시 */ }
+    } catch { /* ignore */ }
 
     return results;
   }
@@ -452,7 +456,7 @@ class ClaudeAdapter {
       paths.push({ type: 'file', path: HISTORY_FILE });
     }
 
-    // 프로젝트 디렉토리 (recursive로 서브에이전트 파일도 감지)
+    // Project directory (recursive also detects subagent files)
     const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (fs.existsSync(projectsDir)) {
       try {
@@ -466,10 +470,10 @@ class ClaudeAdapter {
             recursive: true,
           });
         }
-      } catch { /* 무시 */ }
+      } catch { /* ignore */ }
     }
 
-    // 팀 디렉토리 감시 (팀 생성/변경 감지)
+    // Watch team directory (detect team creation/changes)
     if (fs.existsSync(TEAMS_DIR)) {
       paths.push({
         type: 'directory',
@@ -482,7 +486,7 @@ class ClaudeAdapter {
     return paths;
   }
 
-  // ─── 팀/태스크 (Claude 전용) ──────────────────────
+  // ─── Teams/tasks (Claude-only) ──────────────────────
 
   getTeams() {
     if (!fs.existsSync(TEAMS_DIR)) return [];
@@ -498,10 +502,10 @@ class ClaudeAdapter {
             teams.push({ teamName: dir.name, ...config });
           }
         } catch {
-          teams.push({ teamName: dir.name, error: '파싱 실패' });
+          teams.push({ teamName: dir.name, error: 'parse failed' });
         }
       }
-    } catch { /* 무시 */ }
+    } catch { /* ignore */ }
     return teams;
   }
 
@@ -519,16 +523,16 @@ class ClaudeAdapter {
           for (const file of files) {
             try {
               tasks.push(JSON.parse(fs.readFileSync(path.join(groupDir, file), 'utf-8')));
-            } catch { /* 무시 */ }
+            } catch { /* ignore */ }
           }
-        } catch { /* 무시 */ }
+        } catch { /* ignore */ }
         taskGroups.push({
           groupName: dir.name,
           tasks: tasks.sort((a, b) => Number(a.id || 0) - Number(b.id || 0)),
           count: tasks.length,
         });
       }
-    } catch { /* 무시 */ }
+    } catch { /* ignore */ }
     return taskGroups;
   }
 }

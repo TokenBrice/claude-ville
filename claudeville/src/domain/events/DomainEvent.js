@@ -1,4 +1,4 @@
-// 싱글턴 이벤트 버스 (옵저버 패턴)
+// Singleton event bus (observer pattern)
 class DomainEvent {
     constructor() {
         this.listeners = new Map();

@@ -56,7 +56,7 @@
     line-height: 1.8;
 }
 
-/* 에이전트 상세 패널 (하단 - flex 배치) */
+/* Agent detail panel (bottom, flex layout) */
 .agent-detail {
     flex-shrink: 0;
     background: rgba(15, 15, 25, 0.98);
@@ -133,7 +133,7 @@
     line-height: 1.6;
 }
 
-/* 토스트 */
+/* Toast */
 .toast-container {
     position: fixed;
     top: 64px;
@@ -186,7 +186,7 @@
     to { opacity: 0; transform: translateX(20px); }
 }
 
-/* 설정 폼 */
+/* Settings form */
 .settings-form {
     display: flex;
     flex-direction: column;

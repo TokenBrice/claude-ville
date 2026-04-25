@@ -1,6 +1,6 @@
 /**
- * 어댑터 레지스트리
- * 모든 AI 코딩 CLI 어댑터를 등록하고 관리
+ * Adapter registry
+ * Registers and manages all AI coding CLI adapters
  */
 const { ClaudeAdapter } = require('./claude');
 const { CodexAdapter } = require('./codex');
@@ -13,7 +13,7 @@ const adapters = [
 ];
 
 /**
- * 모든 활성 어댑터에서 세션 수집
+ * Collect sessions from all active adapters
  */
 function getAllSessions(activeThresholdMs) {
   const allSessions = [];
@@ -23,14 +23,14 @@ function getAllSessions(activeThresholdMs) {
       const sessions = adapter.getActiveSessions(activeThresholdMs);
       allSessions.push(...sessions);
     } catch (err) {
-      console.error(`[${adapter.name}] 세션 조회 실패:`, err.message);
+      console.error(`[${adapter.name}] Failed to fetch sessions:`, err.message);
     }
   }
   return allSessions.sort((a, b) => b.lastActivity - a.lastActivity);
 }
 
 /**
- * 특정 프로바이더의 세션 상세 조회
+ * Fetch session details for a specific provider
  */
 function getSessionDetailByProvider(provider, sessionId, project) {
   const adapter = adapters.find(a => a.provider === provider);
@@ -38,13 +38,13 @@ function getSessionDetailByProvider(provider, sessionId, project) {
   try {
     return adapter.getSessionDetail(sessionId, project);
   } catch (err) {
-    console.error(`[${adapter.name}] 세션 상세 조회 실패:`, err.message);
+    console.error(`[${adapter.name}] Failed to fetch session details:`, err.message);
     return { toolHistory: [], messages: [] };
   }
 }
 
 /**
- * 모든 활성 어댑터의 감시 경로 수집
+ * Collect watch paths from all active adapters
  */
 function getAllWatchPaths() {
   const paths = [];
@@ -53,14 +53,14 @@ function getAllWatchPaths() {
     try {
       paths.push(...adapter.getWatchPaths());
     } catch {
-      // 무시
+      // ignore
     }
   }
   return paths;
 }
 
 /**
- * 활성 어댑터 목록
+ * Active adapter list
  */
 function getActiveProviders() {
   return adapters.filter(a => a.isAvailable()).map(a => ({

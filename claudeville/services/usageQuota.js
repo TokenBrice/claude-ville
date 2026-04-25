@@ -1,11 +1,11 @@
 /**
- * usageQuota.js - Claude 사용량 데이터 수집 & 캐싱 모듈
+ * usageQuota.js - Claude usage data collection and caching module
  *
- * 데이터 소스:
+ * Data source:
  *   A) ~/.claude/.credentials.json → subscriptionType, rateLimitTier
- *   B) ~/.claude/stats-cache.json → 일별 활동 (messageCount, sessionCount, toolCallCount)
- *   C) claude auth status (서버 시작 시 1회) → email
- *   D) api.anthropic.com/api/oauth/usage → 5h/7d quota (현재 불가, 주기적 재시도)
+ *   B) ~/.claude/stats-cache.json → daily activity (messageCount, sessionCount, toolCallCount)
+ *   C) claude auth status (once at server startup) → email
+ *   D) api.anthropic.com/api/oauth/usage → 5h/7d quota (currently unavailable; retry periodically)
  */
 
 const fs = require('fs');
@@ -18,12 +18,12 @@ const CREDENTIALS_PATH = path.join(CLAUDE_HOME, '.credentials.json');
 const STATS_CACHE_PATH = path.join(CLAUDE_HOME, 'stats-cache.json');
 const HISTORY_PATH = path.join(CLAUDE_HOME, 'history.jsonl');
 
-// 캐시 TTL
-const CREDENTIALS_TTL = 30_000;   // 30초
-const STATS_TTL = 30_000;         // 30초
-const QUOTA_API_TTL = 5 * 60_000; // 5분
+// Cache TTL
+const CREDENTIALS_TTL = 30_000;   // 30 seconds
+const STATS_TTL = 30_000;         // 30 seconds
+const QUOTA_API_TTL = 5 * 60_000; // 5 minutes
 
-// 캐시 저장소
+// Cache store
 const cache = {
   credentials: { data: null, ts: 0 },
   stats: { data: null, ts: 0 },
@@ -31,7 +31,7 @@ const cache = {
   quota: { data: null, ts: 0, available: false },
 };
 
-// ─── 자격 증명 (구독 정보만 추출) ────────────────────────────
+// ─── Credentials (extract subscription information only) ────────────────────────────
 
 function readCredentials() {
   const now = Date.now();
@@ -53,13 +53,13 @@ function readCredentials() {
   }
 }
 
-// ─── 이메일 (서버 시작 시 1회) ───────────────────────────────
+// ─── Email (once at server startup) ───────────────────────────────
 
 function fetchEmail() {
   return new Promise((resolve) => {
     execFile('claude', ['auth', 'status'], { timeout: 10_000 }, (err, stdout) => {
       if (err) { resolve(null); return; }
-      // "Logged in as user@example.com" 패턴 추출
+      // "Logged in as user@example.com" pattern extraction
       const match = stdout.match(/(?:as|email[:\s]+)\s*([^\s]+@[^\s]+)/i);
       cache.email = match ? match[1] : null;
       resolve(cache.email);
@@ -67,7 +67,7 @@ function fetchEmail() {
   });
 }
 
-// ─── history.jsonl 실시간 파싱 + stats-cache.json 병합 ────────
+// ─── Real-time history.jsonl parsing plus stats-cache.json merge ────────
 
 function readStats() {
   const now = Date.now();
@@ -75,17 +75,17 @@ function readStats() {
     return cache.stats.data;
   }
 
-  // history.jsonl에서 오늘/이번주 활동 직접 계산 (실시간)
+  // Calculate today/this-week activity directly from history.jsonl (real time)
   const live = readHistoryLive();
 
-  // stats-cache.json에서 누적 totals 읽기
+  // Read accumulated totals from stats-cache.json
   let totalSessions = 0, totalMessages = 0;
   try {
     const raw = fs.readFileSync(STATS_CACHE_PATH, 'utf-8');
     const json = JSON.parse(raw);
     totalSessions = json.totalSessions || 0;
     totalMessages = json.totalMessages || 0;
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
 
   const result = {
     today: live.today,
@@ -99,8 +99,8 @@ function readStats() {
 }
 
 /**
- * history.jsonl에서 오늘/이번주 메시지·세션 수를 직접 계산
- * 파일을 뒤에서부터 읽어서 날짜 범위 밖이면 중단 (성능 최적화)
+ * Calculate today/this-week message and session counts directly from history.jsonl
+ * Read the file from the end and stop outside the date range (performance optimization)
  */
 function readHistoryLive() {
   const empty = {
@@ -115,7 +115,7 @@ function readHistoryLive() {
     const todayStr = nowDate.toISOString().slice(0, 10);
     const todayStart = new Date(todayStr + 'T00:00:00').getTime();
 
-    // 이번 주 월요일 00:00
+    // This Monday at 00:00
     const dayOfWeek = nowDate.getDay();
     const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
     const monday = new Date(nowDate);
@@ -123,7 +123,7 @@ function readHistoryLive() {
     monday.setHours(0, 0, 0, 0);
     const weekStart = monday.getTime();
 
-    // 파일을 뒤에서부터 읽기 (최신 데이터가 뒤에 있음)
+    // Read the file from the end (newest data is at the end)
     const content = fs.readFileSync(HISTORY_PATH, 'utf-8');
     const lines = content.trim().split('\n');
 
@@ -137,7 +137,7 @@ function readHistoryLive() {
         const ts = entry.timestamp;
         if (!ts) continue;
 
-        // 이번 주보다 이전이면 중단
+        // Stop when entries are older than this week
         if (ts < weekStart) break;
 
         weekMsgs++;
@@ -147,7 +147,7 @@ function readHistoryLive() {
           todayMsgs++;
           if (entry.sessionId) todaySessions.add(entry.sessionId);
         }
-      } catch { /* 파싱 실패 줄 무시 */ }
+      } catch { /* ignore lines that fail to parse */ }
     }
 
     return {
@@ -159,7 +159,7 @@ function readHistoryLive() {
   }
 }
 
-// ─── Quota API (현재 불가, 나중에 활성화) ────────────────────
+// ─── Quota API (currently unavailable; enable later) ────────────────────
 
 function tryFetchQuota() {
   const now = Date.now();
@@ -169,7 +169,7 @@ function tryFetchQuota() {
   const creds = readCredentials();
   if (!creds.subscriptionType) return;
 
-  // credentials에서 accessToken 읽기
+  // Read accessToken from credentials
   let accessToken;
   try {
     const raw = fs.readFileSync(CREDENTIALS_PATH, 'utf-8');
@@ -202,25 +202,25 @@ function tryFetchQuota() {
             sevenDay: data.sevenDayPercent ?? data.seven_day_percent ?? null,
           };
           cache.quota.available = true;
-          console.log('[Usage] Quota API 활성화!');
-        } catch { /* 파싱 실패 */ }
+          console.log('[Usage] Quota API enabled!');
+        } catch { /* parse failed */ }
       }
-      // 실패 시 조용히 무시 (다음 주기에 재시도)
+      // Ignore failures silently and retry on the next cycle.
     });
   });
 
-  req.on('error', () => { /* 네트워크 에러 무시 */ });
+  req.on('error', () => { /* ignore network errors */ });
   req.on('timeout', () => { req.destroy(); });
   req.end();
 }
 
-// ─── 공개 API ────────────────────────────────────────────────
+// ─── Public API ────────────────────────────────────────────────
 
 function fetchUsage() {
   const credentials = readCredentials();
   const stats = readStats();
 
-  // 비동기적으로 quota API 시도 (결과는 캐시에 저장)
+  // Try the quota API asynchronously (store results in the cache)
   tryFetchQuota();
 
   return {
@@ -245,13 +245,13 @@ function fetchUsage() {
 }
 
 function init() {
-  // 서버 시작 시 이메일 가져오기 (비동기)
+  // Fetch email at server startup (async)
   fetchEmail().then(email => {
-    if (email) console.log(`[Usage] 계정: ${email}`);
-    else console.log('[Usage] 이메일 조회 실패 (claude auth status)');
+    if (email) console.log(`[Usage] Account: ${email}`);
+    else console.log('[Usage] Failed to fetch email (claude auth status)');
   });
 
-  // 최초 quota API 시도
+  // Initial quota API attempt
   tryFetchQuota();
 }
 

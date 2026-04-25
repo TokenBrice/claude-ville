@@ -23,7 +23,7 @@ export class WebSocketClient {
             this.ws.onopen = () => {
                 this.connected = true;
                 this.reconnectAttempts = 0;
-                console.log('[WS] 연결됨');
+                console.log('[WS] Connected');
                 eventBus.emit('ws:connected');
                 this._clearReconnect();
             };
@@ -33,23 +33,23 @@ export class WebSocketClient {
                     const data = JSON.parse(event.data);
                     this._handleMessage(data);
                 } catch (err) {
-                    console.error('[WS] 메시지 파싱 실패:', err.message);
+                    console.error('[WS] Failed to parse message:', err.message);
                 }
             };
 
             this.ws.onclose = () => {
                 this.connected = false;
-                console.log('[WS] 연결 해제');
+                console.log('[WS] Disconnected');
                 eventBus.emit('ws:disconnected');
                 this._scheduleReconnect();
             };
 
             this.ws.onerror = (err) => {
-                console.error('[WS] 에러 발생');
+                console.error('[WS] Error occurred');
                 this.connected = false;
             };
         } catch (err) {
-            console.error('[WS] 연결 실패:', err.message);
+            console.error('[WS] Connection failed:', err.message);
             this._scheduleReconnect();
         }
     }
@@ -96,7 +96,7 @@ export class WebSocketClient {
         );
         this.reconnectTimer = setTimeout(() => {
             if (this.reconnectAttempts > 3) {
-                console.log(`[WS] 재연결 시도... (${Math.round(delay / 1000)}초 후 재시도)`);
+                console.log(`[WS] Reconnect attempt... (retrying in ${Math.round(delay / 1000)} seconds)`);
             }
             this.connect();
         }, delay);

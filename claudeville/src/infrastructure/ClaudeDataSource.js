@@ -8,7 +8,7 @@ export class ClaudeDataSource {
             const data = await res.json();
             return data.sessions || [];
         } catch (err) {
-            console.error('[DataSource] 세션 조회 실패:', err.message);
+            console.error('[DataSource] Failed to fetch sessions:', err.message);
             return [];
         }
     }
@@ -20,7 +20,7 @@ export class ClaudeDataSource {
             const data = await res.json();
             return data.teams || [];
         } catch (err) {
-            console.error('[DataSource] 팀 조회 실패:', err.message);
+            console.error('[DataSource] Failed to fetch teams:', err.message);
             return [];
         }
     }
@@ -32,7 +32,7 @@ export class ClaudeDataSource {
             const data = await res.json();
             return data.taskGroups || [];
         } catch (err) {
-            console.error('[DataSource] 태스크 조회 실패:', err.message);
+            console.error('[DataSource] Failed to fetch tasks:', err.message);
             return [];
         }
     }
@@ -43,7 +43,7 @@ export class ClaudeDataSource {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             return await res.json();
         } catch (err) {
-            console.error('[DataSource] 사용량 조회 실패:', err.message);
+            console.error('[DataSource] Failed to fetch usage:', err.message);
             return null;
         }
     }
@@ -55,7 +55,7 @@ export class ClaudeDataSource {
             const data = await res.json();
             return data.entries || [];
         } catch (err) {
-            console.error('[DataSource] 히스토리 조회 실패:', err.message);
+            console.error('[DataSource] Failed to fetch history:', err.message);
             return [];
         }
     }

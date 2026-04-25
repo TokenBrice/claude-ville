@@ -9,7 +9,7 @@
 <body>
   <div class="widget" id="widget">
 
-    <!-- 헤더 -->
+    <!-- Header -->
     <div class="header">
       <div class="header-title">ClaudeVille</div>
       <div class="stats-row">
@@ -32,7 +32,7 @@
       </div>
     </div>
 
-    <!-- 계정/Quota 섹션 -->
+    <!-- Account/quota section -->
     <div class="quota-section" id="quota-section">
       <div class="quota-info">
         <span id="quota-tier" class="quota-tier"></span>
@@ -56,14 +56,14 @@
       </div>
     </div>
 
-    <!-- 에이전트 목록 -->
+    <!-- Agent list -->
     <div class="agent-list-wrap" id="agent-list-wrap">
       <div class="empty-wrap" id="empty-state">
-        <span class="empty-text">에이전트 없음</span>
+        <span class="empty-text">No agents</span>
       </div>
     </div>
 
-    <!-- 푸터 -->
+    <!-- Footer -->
     <div class="footer">
       <button class="open-dashboard-btn" id="open-dashboard-btn">
         Open Dashboard
@@ -81,7 +81,7 @@
     let reconnectTimer = null;
     let isOnline = false;
 
-    // ── 유틸 ──────────────────────────────────────────────
+    // ── Utilities ──────────────────────────────────────────────
     function formatTokens(n) {
       if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
       if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
@@ -110,14 +110,14 @@
       return map[model] || (model || '?');
     }
 
-    // ── badge 업데이트 (Swift 통신) ───────────────────────
+    // ── Badge update (Swift bridge) ───────────────────────
     function postBadge(working, total) {
       try {
         webkit.messageHandlers.badge.postMessage({ working, total });
-      } catch (_) { /* 브라우저 테스트 환경 */ }
+      } catch (_) { /* Browser test environment */ }
     }
 
-    // ── UI 렌더링 ─────────────────────────────────────────
+    // ── UI rendering ─────────────────────────────────────────
     function renderAgents(sessions) {
       const wrap = document.getElementById('agent-list-wrap');
 
@@ -139,7 +139,7 @@
       if (!sessions || sessions.length === 0) {
         wrap.innerHTML = `
           <div class="empty-wrap">
-            <span class="empty-text">에이전트 없음</span>
+            <span class="empty-text">No agents</span>
           </div>`;
         document.getElementById('working-count').textContent = '0';
         document.getElementById('idle-count').textContent = '0';
@@ -149,7 +149,7 @@
         return;
       }
 
-      // 통계
+      // Stats
       let workingCount = 0;
       let idleCount = 0;
       let totalTokens = 0;
@@ -172,7 +172,7 @@
 
       postBadge(workingCount, sessions.length);
 
-      // 목록 렌더
+      // Render list
       const items = sessions
         .sort((a, b) => {
           const order = { working: 0, waiting: 1, idle: 2 };
@@ -206,7 +206,7 @@
         .replace(/"/g, '&quot;');
     }
 
-    // ── Quota 렌더링 ──────────────────────────────────────
+    // ── Quota rendering ──────────────────────────────────────
     function renderQuota(usage) {
       if (!usage) return;
 
@@ -299,12 +299,12 @@
       try {
         webkit.messageHandlers.openDashboard.postMessage({});
       } catch (_) {
-        // 브라우저 테스트 환경: 새 탭으로 열기
+        // Browser test environment: open in a new tab
         window.open('http://localhost:4000', '_blank');
       }
     });
 
-    // ── 초기화 ────────────────────────────────────────────
+    // ── Initialization ────────────────────────────────────────────
     connect();
   </script>
 </body>

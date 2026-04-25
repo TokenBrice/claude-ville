@@ -1,11 +1,17 @@
 .topbar {
-    height: 52px;
+    height: 54px;
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 0 16px;
-    background: rgba(15, 15, 25, 0.95);
-    border-bottom: 2px solid rgba(232, 212, 77, 0.3);
+    background:
+        linear-gradient(180deg, rgba(42, 30, 24, 0.98), rgba(18, 13, 15, 0.98)),
+        repeating-linear-gradient(90deg, transparent 0 18px, rgba(242, 211, 107, 0.04) 18px 19px);
+    border-bottom: 2px solid rgba(199, 157, 76, 0.62);
+    box-shadow:
+        inset 0 -1px 0 rgba(75, 45, 26, 0.8),
+        0 4px 16px rgba(0, 0, 0, 0.35),
+        0 1px 0 rgba(255, 226, 138, 0.08);
     flex-shrink: 0;
     z-index: 100;
 }
@@ -18,16 +24,18 @@
 
 .topbar__logo {
     font-size: 13px;
-    color: #e8d44d;
+    color: #f2d36b;
     letter-spacing: 2px;
+    text-shadow: 2px 2px 0 #4b2b19, 0 0 10px rgba(242, 211, 107, 0.2);
 }
 
 .topbar__version {
     font-size: 8px;
-    color: #8b8b9e;
+    color: #c0a172;
     padding: 2px 6px;
-    border: 1px solid rgba(139, 139, 158, 0.3);
-    border-radius: 2px;
+    border: 1px solid rgba(199, 157, 76, 0.45);
+    background: rgba(36, 24, 17, 0.9);
+    border-radius: 1px;
 }
 
 .topbar__center {
@@ -45,13 +53,14 @@
 
 .topbar__stat-label {
     font-size: 7px;
-    color: #8b8b9e;
+    color: #a89476;
     letter-spacing: 1px;
 }
 
 .topbar__stat-value {
     font-size: 11px;
-    color: #e8d44d;
+    color: #f2d36b;
+    text-shadow: 0 0 8px rgba(242, 211, 107, 0.16);
 }
 
 .topbar__badges {
@@ -64,9 +73,11 @@
     align-items: center;
     gap: 4px;
     font-size: 8px;
-    padding: 3px 8px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.05);
+    padding: 4px 8px;
+    border: 1px solid rgba(199, 157, 76, 0.22);
+    border-radius: 2px;
+    background: rgba(31, 22, 18, 0.72);
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.24);
 }
 
 .topbar__badge-dot {
@@ -103,14 +114,14 @@
     color: #f97316;
 }
 
-/* ── 구분선 ── */
+/* ── Divider ── */
 .topbar__divider {
     width: 1px;
     height: 24px;
-    background: rgba(139, 139, 158, 0.3);
+    background: rgba(199, 157, 76, 0.35);
 }
 
-/* ── 계정/구독 섹션 ── */
+/* ── Account/subscription section ── */
 .topbar__account {
     display: flex;
     align-items: center;
@@ -120,18 +131,19 @@
 .topbar__account-tier {
     font-size: 8px;
     padding: 3px 8px;
-    border-radius: 3px;
-    background: rgba(167, 139, 250, 0.15);
-    color: #a78bfa;
+    border-radius: 2px;
+    background: rgba(85, 64, 37, 0.72);
+    border: 1px solid rgba(199, 157, 76, 0.28);
+    color: #d7b979;
     letter-spacing: 0.5px;
 }
 
 .topbar__account-activity {
     font-size: 8px;
-    color: #8b8b9e;
+    color: #a89476;
 }
 
-/* ── Quota 프로그레스 바 ── */
+/* ── Quota progress bar ── */
 .topbar__quota {
     display: flex;
     align-items: center;
@@ -146,7 +158,7 @@
 
 .topbar__quota-label {
     font-size: 7px;
-    color: #8b8b9e;
+    color: #a89476;
     letter-spacing: 0.5px;
     width: 16px;
 }
@@ -154,15 +166,16 @@
 .topbar__quota-track {
     width: 48px;
     height: 6px;
-    background: rgba(255, 255, 255, 0.08);
-    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.32);
+    border: 1px solid rgba(199, 157, 76, 0.2);
+    border-radius: 1px;
     overflow: hidden;
 }
 
 .topbar__quota-fill {
     height: 100%;
-    border-radius: 3px;
-    background: #4ade80;
+    border-radius: 0;
+    background: #72d071;
     transition: width 0.5s ease, background-color 0.3s;
     width: 0%;
 }
@@ -177,7 +190,7 @@
 
 .topbar__quota-pct {
     font-size: 7px;
-    color: #8b8b9e;
+    color: #a89476;
     width: 22px;
     text-align: right;
 }
@@ -190,22 +203,24 @@
 .topbar__mode-btn {
     font-size: 9px;
     padding: 6px 14px;
-    border: 1px solid rgba(232, 212, 77, 0.3);
-    border-radius: 3px;
-    color: #8b8b9e;
-    background: transparent;
+    border: 1px solid rgba(199, 157, 76, 0.48);
+    border-radius: 2px;
+    color: #bba17a;
+    background: rgba(25, 17, 15, 0.86);
+    box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.28);
     transition: all 0.15s;
 }
 
 .topbar__mode-btn:hover {
-    color: #e8d44d;
-    border-color: rgba(232, 212, 77, 0.6);
+    color: #f2d36b;
+    border-color: rgba(242, 211, 107, 0.72);
+    background: rgba(57, 37, 24, 0.78);
 }
 
 .topbar__mode-btn--active {
-    color: #0a0a0f;
-    background: #e8d44d;
-    border-color: #e8d44d;
+    color: #241812;
+    background: linear-gradient(180deg, #ffe28a, #c79d4c);
+    border-color: #f2d36b;
 }
 
 .topbar__mode-btn--active:hover {
@@ -219,16 +234,17 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    border: 1px solid rgba(232, 212, 77, 0.3);
-    border-radius: 3px;
-    color: #8b8b9e;
-    background: transparent;
+    border: 1px solid rgba(199, 157, 76, 0.48);
+    border-radius: 2px;
+    color: #bba17a;
+    background: rgba(25, 17, 15, 0.86);
     transition: all 0.15s;
     margin-left: 8px;
     cursor: pointer;
 }
 
 .topbar__settings-btn:hover {
-    color: #e8d44d;
-    border-color: rgba(232, 212, 77, 0.6);
+    color: #f2d36b;
+    border-color: rgba(242, 211, 107, 0.72);
+    background: rgba(57, 37, 24, 0.78);
 }

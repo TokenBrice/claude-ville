@@ -1,7 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
 
-// 프로젝트별 색상 팔레트
+// Per-project color palette
 const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G' };
 const PROVIDER_COLORS = { claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa' };
 
@@ -30,7 +30,7 @@ export class Sidebar {
         const agents = Array.from(this.world.agents.values());
         this.countEl.textContent = agents.length;
 
-        // 프로젝트별 그룹핑
+        // Group by project
         const groups = this._groupByProject(agents);
         this._assignProjectColors(groups);
 
@@ -59,7 +59,7 @@ export class Sidebar {
 
         this.listEl.innerHTML = html;
 
-        // 클릭 이벤트 바인딩
+        // Bind click events
         this.listEl.querySelectorAll('.sidebar__agent').forEach(el => {
             el.addEventListener('click', () => {
                 const id = el.dataset.agentId;
@@ -97,7 +97,7 @@ export class Sidebar {
         if (!path || path === '_unknown') return i18n.t('unknownProject');
         const parts = path.replace(/\/+$/, '').split('/').filter(Boolean);
         const last = parts[parts.length - 1] || path;
-        // 홈 디렉토리 자체인 경우 (예: /Users/username) → ~ 로 표시
+        // When this is the home directory itself (for example, /Users/username) → ~ display as
         if (parts.length <= 2 && parts[0] === 'Users') return '~';
         return last;
     }

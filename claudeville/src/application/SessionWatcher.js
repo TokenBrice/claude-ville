@@ -19,16 +19,16 @@ export class SessionWatcher {
         if (this.running) return;
         this.running = true;
 
-        // WebSocket 이벤트 구독
+        // Subscribe to WebSocket events
         eventBus.on('ws:init', this._onWsInit);
         eventBus.on('ws:update', this._onWsUpdate);
         eventBus.on('ws:disconnected', this._onWsDisconnected);
         eventBus.on('ws:connected', this._onWsConnected);
 
-        // WebSocket 연결
+        // Connect WebSocket
         this.wsClient.connect();
 
-        // 폴백 폴링도 시작 (WebSocket 연결 전까지)
+        // Start fallback polling too (until the WebSocket connects)
         if (!this.wsClient.isConnected) {
             this._startPolling();
         }
@@ -48,7 +48,7 @@ export class SessionWatcher {
 
     _startPolling() {
         if (this.pollTimer || !this.running) return;
-        console.log('[SessionWatcher] 폴링 시작 (폴백)');
+        console.log('[SessionWatcher] Started fallback polling');
         this._poll();
         this.pollTimer = setInterval(() => this._poll(), REFRESH_INTERVAL);
     }
@@ -57,7 +57,7 @@ export class SessionWatcher {
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
-            console.log('[SessionWatcher] 폴링 중지 (WebSocket 활성)');
+            console.log('[SessionWatcher] Stopped polling (WebSocket active)');
         }
     }
 
@@ -70,7 +70,7 @@ export class SessionWatcher {
             this.agentManager.handleWebSocketMessage({ sessions });
             if (usage) eventBus.emit('usage:updated', usage);
         } catch (err) {
-            console.error('[SessionWatcher] 폴링 실패:', err.message);
+            console.error('[SessionWatcher] Polling failed:', err.message);
         }
     }
 }

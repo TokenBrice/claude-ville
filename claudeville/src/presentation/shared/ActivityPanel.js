@@ -91,7 +91,7 @@ export class ActivityPanel {
         }
     }
 
-    // ─── 실시간 폴링 ────────────────────────────────
+    // ─── Live polling ────────────────────────────────
 
     _startPolling() {
         this._stopPolling();
@@ -124,11 +124,11 @@ export class ActivityPanel {
                 this._renderTokenUsage(data.tokenUsage);
             }
         } catch {
-            // 네트워크 에러 무시
+            // Ignore network errors.
         }
     }
 
-    // ─── 렌더링 ─────────────────────────────────────
+    // ─── Rendering ─────────────────────────────────────
 
     _renderToolHistory(tools) {
         const el = document.getElementById('panelToolHistory');
@@ -168,10 +168,10 @@ export class ActivityPanel {
     _renderTokenUsage(usage) {
         if (!usage) return;
 
-        const MAX_CONTEXT = 200000; // Opus 200k context window
+        const MAX_CONTEXT = usage.contextWindowMax || this._contextLimitFor(this.currentAgent);
         const contextPct = Math.min(100, (usage.contextWindow / MAX_CONTEXT) * 100);
 
-        // Context size (읽기 쉬운 형태)
+        // Context size (human-readable form)
         document.getElementById('panelContextSize').textContent =
             this._formatTokens(usage.contextWindow) + ` / ${this._formatTokens(MAX_CONTEXT)}`;
 
@@ -192,9 +192,8 @@ export class ActivityPanel {
         document.getElementById('panelTurnCount').textContent =
             usage.turnCount.toLocaleString();
 
-        // Estimated cost (Opus 4.6 기본 요금)
-        const cost = this._estimateCost(usage);
-        document.getElementById('panelEstCost').textContent = `$${cost.toFixed(4)}`;
+        const cost = this._estimateCost(usage, this.currentAgent);
+        document.getElementById('panelEstCost').textContent = this._formatCost(cost);
     }
 
     _formatTokens(n) {
@@ -203,17 +202,50 @@ export class ActivityPanel {
         return String(n);
     }
 
-    _estimateCost(usage) {
-        // Opus 4.6 pricing: input $15/M, output $75/M, cache_read $1.5/M, cache_create $18.75/M
+    _estimateCost(usage, agent) {
+        const rates = this._pricingFor(agent);
         return (
-            (usage.totalInput * 15 / 1000000) +
-            (usage.totalOutput * 75 / 1000000) +
-            (usage.cacheRead * 1.5 / 1000000) +
-            (usage.cacheCreate * 18.75 / 1000000)
+            (usage.totalInput * rates.input / 1000000) +
+            (usage.totalOutput * rates.output / 1000000) +
+            (usage.cacheRead * rates.cacheRead / 1000000) +
+            (usage.cacheCreate * rates.cacheCreate / 1000000)
         );
     }
 
-    // ─── 유틸 ───────────────────────────────────────
+    _pricingFor(agent) {
+        const model = String(agent?.model || '').toLowerCase();
+        const provider = String(agent?.provider || '').toLowerCase();
+        const claudeRates = [
+            { match: 'opus', input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+            { match: 'sonnet', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+            { match: 'haiku', input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
+        ];
+        const openAiRates = [
+            { match: 'gpt-5.5', input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0 },
+            { match: 'gpt-5.4', input: 10, output: 80, cacheRead: 1, cacheCreate: 0 },
+            { match: 'gpt-5.3', input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0 },
+            { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
+        ];
+        const table = provider === 'codex' || model.includes('gpt') ? openAiRates : claudeRates;
+        return table.find(rate => model.includes(rate.match)) || (table === openAiRates
+            ? { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 }
+            : { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 });
+    }
+
+    _contextLimitFor(agent) {
+        const model = String(agent?.model || '').toLowerCase();
+        if (String(agent?.provider || '').toLowerCase() === 'codex' || model.includes('gpt')) return 258400;
+        return 200000;
+    }
+
+    _formatCost(cost) {
+        if (!Number.isFinite(cost) || cost <= 0) return '$0.0000';
+        if (cost < 0.0001) return '<$0.0001';
+        if (cost >= 10) return `$${cost.toFixed(2)}`;
+        return `$${cost.toFixed(4)}`;
+    }
+
+    // ─── Utilities ───────────────────────────────────────
 
     _icon(tool) {
         if (!tool) return '\u2753';

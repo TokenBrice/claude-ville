@@ -28,7 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         stopServer()
     }
 
-    // MARK: - REST API 폴링 → 뱃지 + 팝오버 HTML 갱신
+    // MARK: - Poll the REST API to refresh the badge and popover HTML
 
     func startPolling() {
         fetchAndRender()
@@ -104,7 +104,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                    : totalTokens >= 1000 ? String(format: "%.1fK", Double(totalTokens)/1000)
                    : "\(totalTokens)"
         let costStr = String(format: "$%.2f", totalCost)
-        // Usage/Quota 파싱
+        // Parse usage/quota
         var tierStr = ""
         var activityStr = ""
         var quotaAvailable = false
@@ -177,7 +177,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else if sorted.isEmpty {
             rows = """
             <div style="text-align:center;padding:40px 0;color:#64748b">
-              <div style="font-size:11px">에이전트 없음</div>
+              <div style="font-size:11px">No agents</div>
             </div>
             """
         } else {

@@ -9,20 +9,10 @@ const AGENT_NAMES_EN = [
     'Prism', 'Qubit', 'Rune', 'Sage', 'Vex',
 ];
 
-const SURNAMES_KO = [
-    '김', '이', '박', '최', '정', '강', '조', '윤', '장', '임',
-    '한', '오', '서', '신', '권', '황', '안', '송', '류', '홍',
-];
-
-const TITLES_KO = [
-    '대표', '실장', '부장', '과장', '차장', '팀장', '이사',
-    '수석', '책임', '선임', '주임', '대리', '매니저', '센터장', '국장',
-];
-
 export class Agent {
     constructor({ id, name, model, status, role, tokens, messages, teamName, projectPath, lastTool, lastToolInput, lastMessage, provider }) {
         this.id = id;
-        this._customName = !!name; // 팀에서 지정된 이름인지 여부
+        this._customName = !!name; // Whether the name was assigned by a team
         this.name = name || this.generateName();
         this.model = model || 'unknown';
         this.status = status || AgentStatus.IDLE;
@@ -51,13 +41,36 @@ export class Agent {
     }
 
     get cost() {
-        const rates = {
-            'claude-opus-4-6': { input: 15, output: 75 },
-            'claude-sonnet-4-5': { input: 3, output: 15 },
-            'claude-haiku-4-5': { input: 0.8, output: 4 },
-        };
-        const rate = rates[this.model] || rates['claude-sonnet-4-5'];
-        return (this.tokens.input * rate.input + this.tokens.output * rate.output) / 1000000;
+        const model = String(this.model || '').toLowerCase();
+        const provider = String(this.provider || '').toLowerCase();
+        const rates = this._pricingFor(model, provider);
+        const tokens = this.tokens || {};
+        return (
+            (tokens.input || 0) * rates.input +
+            (tokens.output || 0) * rates.output +
+            (tokens.cacheRead || 0) * rates.cacheRead +
+            (tokens.cacheCreate || 0) * rates.cacheCreate
+        ) / 1000000;
+    }
+
+    _pricingFor(model, provider) {
+        const claudeRates = [
+            { match: 'opus', input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+            { match: 'sonnet', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+            { match: 'haiku', input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
+        ];
+        const openAiRates = [
+            { match: 'gpt-5.5', input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0 },
+            { match: 'gpt-5.4', input: 10, output: 80, cacheRead: 1, cacheCreate: 0 },
+            { match: 'gpt-5.3', input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0 },
+            { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
+        ];
+
+        const table = provider === 'codex' || model.includes('gpt') ? openAiRates : claudeRates;
+        const found = table.find(rate => model.includes(rate.match));
+        return found || (table === openAiRates
+            ? { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 }
+            : { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 });
     }
 
     get lastMessage() {
@@ -65,7 +78,7 @@ export class Agent {
     }
 
     /**
-     * 현재 도구에 따른 목표 건물 타입 반환
+     * Return the target building type for the current tool
      */
     get targetBuildingType() {
         if (!this.currentTool) return null;
@@ -80,7 +93,7 @@ export class Agent {
     }
 
     /**
-     * 말풍선에 표시할 텍스트
+     * Text to display in the speech bubble
      */
     get bubbleText() {
         if (this.currentTool) {
@@ -104,11 +117,6 @@ export class Agent {
 
     static generateNameForLang(hash, lang) {
         const h = Math.abs(hash);
-        if (lang === 'ko') {
-            const surname = SURNAMES_KO[h % SURNAMES_KO.length];
-            const title = TITLES_KO[(h >> 4) % TITLES_KO.length];
-            return `${surname}${title}`;
-        }
         return AGENT_NAMES_EN[h % AGENT_NAMES_EN.length];
     }
 

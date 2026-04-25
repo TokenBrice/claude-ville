@@ -4,11 +4,11 @@ import { THEME } from '../../config/theme.js';
 const MINIMAP_SIZE = 150;
 
 const BUILDING_COLORS = {
-    command: '#8b0000',
-    forge: '#ff6b00',
-    mine: '#ffd700',
-    taskboard: '#4a9eff',
-    chathall: '#51cf66',
+    command: '#c83d2d',
+    forge: '#d8843a',
+    mine: '#e8c15e',
+    taskboard: '#78c6e7',
+    chathall: '#88d67e',
 };
 
 export class Minimap {
@@ -16,16 +16,9 @@ export class Minimap {
         this.canvas = document.createElement('canvas');
         this.canvas.width = MINIMAP_SIZE;
         this.canvas.height = MINIMAP_SIZE;
-        this.canvas.style.cssText = `
-            position: absolute;
-            bottom: 10px;
-            left: 10px;
-            border: 1px solid ${THEME.border};
-            border-radius: 4px;
-            background: rgba(10, 10, 15, 0.85);
-            cursor: pointer;
-            z-index: 10;
-        `;
+        this.canvas.className = 'content__minimap';
+        this.canvas.style.cursor = 'crosshair';
+        this.canvas.style.zIndex = '10';
         this.ctx = this.canvas.getContext('2d');
         this.scale = MINIMAP_SIZE / MAP_SIZE;
         this.onNavigate = null;
@@ -58,62 +51,99 @@ export class Minimap {
         this.canvas.style.cursor = 'crosshair';
     }
 
-    draw(world, camera, mainCanvas) {
+    draw(world, camera, mainCanvas, layers = {}) {
         const ctx = this.ctx;
         ctx.clearRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
 
         // Background
-        ctx.fillStyle = '#0a0f0a';
+        ctx.fillStyle = '#182414';
         ctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
 
-        // Terrain approximation (simple green fill)
-        ctx.fillStyle = THEME.grass[1];
-        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = '#314f2b';
         ctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
-        ctx.globalAlpha = 1;
+
+        ctx.fillStyle = 'rgba(242, 211, 107, 0.07)';
+        for (let x = 0; x <= MINIMAP_SIZE; x += this.scale * 5) {
+            ctx.fillRect(x, 0, 1, MINIMAP_SIZE);
+            ctx.fillRect(0, x, MINIMAP_SIZE, 1);
+        }
+
+        this._drawTileLayer(ctx, layers.waterTiles, '#2a7891', 1.1);
+        this._drawTileLayer(ctx, layers.pathTiles, '#9d7d4b', 1.25);
 
         // Buildings
         for (const building of world.buildings.values()) {
             const color = BUILDING_COLORS[building.type] || '#666';
+            const x = building.position.tileX * this.scale;
+            const y = building.position.tileY * this.scale;
             ctx.fillStyle = color;
-            ctx.fillRect(
-                building.position.tileX * this.scale,
-                building.position.tileY * this.scale,
-                building.width * this.scale,
-                building.height * this.scale,
-            );
+            ctx.fillRect(x, y, building.width * this.scale, building.height * this.scale);
+            ctx.strokeStyle = '#2a1b10';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 0.5, y + 0.5, building.width * this.scale - 1, building.height * this.scale - 1);
         }
 
         // Agents
         for (const agent of world.agents.values()) {
-            ctx.fillStyle = agent.status === 'working' ? THEME.working :
-                agent.status === 'waiting' ? THEME.waiting : THEME.idle;
+            const isSelected = layers.selectedAgent?.id === agent.id;
+            ctx.fillStyle = agent.provider === 'codex' ? '#7be3d7' :
+                agent.provider === 'claude' ? '#f2d36b' :
+                    agent.status === 'working' ? THEME.working :
+                        agent.status === 'waiting' ? THEME.waiting : THEME.idle;
             ctx.beginPath();
             ctx.arc(
                 agent.position.tileX * this.scale,
                 agent.position.tileY * this.scale,
-                2, 0, Math.PI * 2,
+                isSelected ? 3.2 : 2.2, 0, Math.PI * 2,
             );
             ctx.fill();
+            if (isSelected) {
+                ctx.strokeStyle = '#fff1b8';
+                ctx.lineWidth = 1;
+                ctx.stroke();
+            }
         }
 
-        // Viewport rectangle
+        // Viewport polygon
         if (camera && mainCanvas) {
-            const topLeft = camera.screenToTile(0, 0);
-            const bottomRight = camera.screenToTile(mainCanvas.width, mainCanvas.height);
-            ctx.strokeStyle = '#ff4444';
+            const corners = [
+                camera.screenToTile(0, 0),
+                camera.screenToTile(mainCanvas.width, 0),
+                camera.screenToTile(mainCanvas.width, mainCanvas.height),
+                camera.screenToTile(0, mainCanvas.height),
+            ];
+            ctx.strokeStyle = '#ff4c3a';
             ctx.lineWidth = 1.5;
-            ctx.strokeRect(
-                topLeft.tileX * this.scale,
-                topLeft.tileY * this.scale,
-                (bottomRight.tileX - topLeft.tileX) * this.scale,
-                (bottomRight.tileY - topLeft.tileY) * this.scale,
-            );
+            ctx.beginPath();
+            corners.forEach((corner, index) => {
+                const x = corner.tileX * this.scale;
+                const y = corner.tileY * this.scale;
+                if (index === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            });
+            ctx.closePath();
+            ctx.stroke();
         }
 
-        // Border
+        ctx.fillStyle = '#d7b979';
+        ctx.font = '7px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('N', MINIMAP_SIZE / 2, 10);
+        ctx.fillText('S', MINIMAP_SIZE / 2, MINIMAP_SIZE - 4);
+        ctx.fillText('W', 8, MINIMAP_SIZE / 2 + 3);
+        ctx.fillText('E', MINIMAP_SIZE - 8, MINIMAP_SIZE / 2 + 3);
+
         ctx.strokeStyle = THEME.border;
         ctx.lineWidth = 1;
-        ctx.strokeRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+        ctx.strokeRect(0.5, 0.5, MINIMAP_SIZE - 1, MINIMAP_SIZE - 1);
+    }
+
+    _drawTileLayer(ctx, tiles, color, size = 1) {
+        if (!tiles) return;
+        ctx.fillStyle = color;
+        for (const key of tiles) {
+            const [x, y] = key.split(',').map(Number);
+            ctx.fillRect(x * this.scale, y * this.scale, Math.max(size, this.scale), Math.max(size, this.scale));
+        }
     }
 }

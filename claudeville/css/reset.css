@@ -4,13 +4,28 @@
     padding: 0;
 }
 
+:root {
+    --cv-bg: #08070b;
+    --cv-panel: rgba(20, 15, 18, 0.96);
+    --cv-panel-deep: rgba(13, 9, 11, 0.98);
+    --cv-panel-warm: rgba(31, 22, 18, 0.72);
+    --cv-gold: #f2d36b;
+    --cv-gold-deep: #c79d4c;
+    --cv-text-muted: #a89476;
+    --cv-border: rgba(199, 157, 76, 0.42);
+    --cv-border-soft: rgba(199, 157, 76, 0.16);
+    --cv-shadow: rgba(0, 0, 0, 0.38);
+}
+
 html, body {
     width: 100%;
     height: 100%;
     overflow: hidden;
     font-family: 'Press Start 2P', monospace;
-    background: #0a0a0f;
-    color: #e8d44d;
+    background:
+        radial-gradient(circle at 50% 12%, rgba(95, 67, 33, 0.16), transparent 36%),
+        linear-gradient(180deg, #09070a 0%, #110c0d 100%);
+    color: #f2d36b;
     -webkit-font-smoothing: none;
     -moz-osx-font-smoothing: unset;
     image-rendering: pixelated;
@@ -38,14 +53,14 @@ a {
 }
 
 ::-webkit-scrollbar-track {
-    background: #0a0a0f;
+    background: #130d0f;
 }
 
 ::-webkit-scrollbar-thumb {
-    background: rgba(232, 212, 77, 0.3);
+    background: rgba(199, 157, 76, 0.45);
     border-radius: 3px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-    background: rgba(232, 212, 77, 0.5);
+    background: rgba(242, 211, 107, 0.65);
 }

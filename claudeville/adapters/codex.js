@@ -1,8 +1,8 @@
 /**
- * OpenAI Codex CLI 어댑터
- * 데이터 소스: ~/.codex/
+ * OpenAI Codex CLI adapter
+ * Data source: ~/.codex/
  *
- * 세션 롤아웃 포맷 (JSONL):
+ * Session rollout format (JSONL):
  *   {"type":"session_meta","payload":{"id":"...","cwd":"/path","cli_version":"..."}}
  *   {"type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"ls"}}
  *   {"type":"response_item","payload":{"type":"message","role":"assistant","content":[...]}}
@@ -15,7 +15,7 @@ const os = require('os');
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
 
-// ─── 유틸 ─────────────────────────────────────────────
+// ─── Utilities ─────────────────────────────────────────────
 
 function readLines(filePath, { from = 'end', count = 50 } = {}) {
   try {
@@ -33,16 +33,16 @@ function parseJsonLines(lines) {
   const results = [];
   for (const line of lines) {
     if (!line.trim()) continue;
-    try { results.push(JSON.parse(line)); } catch { /* 무시 */ }
+    try { results.push(JSON.parse(line)); } catch { /* ignore */ }
   }
   return results;
 }
 
-// ─── 롤아웃 파싱 ──────────────────────────────────────
+// ─── Rollout parsing ──────────────────────────────────────
 
 /**
- * Codex 롤아웃 JSONL에서 세션 메타/도구/메시지 추출
- * 실제 포맷: 모든 데이터가 entry.payload 안에 있음
+ * Extract session metadata/tools/messages from Codex rollout JSONL
+ * Actual format: all data is inside entry.payload
  */
 function parseRollout(filePath) {
   const detail = {
@@ -53,7 +53,7 @@ function parseRollout(filePath) {
     lastMessage: null,
   };
 
-  // session_meta는 파일 첫 줄에 있음 → 먼저 읽기
+  // session_meta is on the first line, so read it first
   const firstLines = readLines(filePath, { from: 'start', count: 5 });
   const firstEntries = parseJsonLines(firstLines);
   for (const entry of firstEntries) {
@@ -64,7 +64,7 @@ function parseRollout(filePath) {
     }
   }
 
-  // 최근 도구/메시지는 파일 끝에서 읽기
+  // Read recent tools/messages from the end of the file
   const lastLines = readLines(filePath, { from: 'end', count: 50 });
   const entries = parseJsonLines(lastLines);
 
@@ -74,7 +74,7 @@ function parseRollout(filePath) {
 
     // response_item
     if (entry.type === 'response_item') {
-      // 도구 사용 (function_call)
+      // Tool use (function_call)
       if (!detail.lastTool && (payload.type === 'function_call' || payload.type === 'command_execution')) {
         detail.lastTool = payload.name || payload.type;
         if (payload.arguments) {
@@ -86,7 +86,7 @@ function parseRollout(filePath) {
         }
       }
 
-      // 텍스트 메시지 (assistant)
+      // Text message (assistant)
       if (!detail.lastMessage && payload.type === 'message' && payload.role === 'assistant') {
         const content = payload.content;
         if (typeof content === 'string') {
@@ -106,7 +106,7 @@ function parseRollout(filePath) {
       }
     }
 
-    // model이 없을 경우 turn_context 또는 event_msg에서 추출 시도
+    // If model is missing, try extracting it from turn_context or event_msg
     if (!detail.model && entry.type === 'turn_context' && payload.model) {
       detail.model = payload.model;
     }
@@ -119,7 +119,7 @@ function parseRollout(filePath) {
 }
 
 /**
- * Codex 롤아웃에서 도구 히스토리 추출
+ * Extract tool history from Codex rollouts
  */
 function getToolHistory(filePath, maxItems = 15) {
   const tools = [];
@@ -147,12 +147,12 @@ function getToolHistory(filePath, maxItems = 15) {
         });
       }
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return tools.slice(-maxItems);
 }
 
 /**
- * Codex 롤아웃에서 최근 메시지 추출
+ * Extract recent messages from Codex rollouts
  */
 function getRecentMessages(filePath, maxItems = 5) {
   const messages = [];
@@ -189,12 +189,110 @@ function getRecentMessages(filePath, maxItems = 5) {
         });
       }
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return messages.slice(-maxItems);
 }
 
+function readUsageNumber(usage, keys) {
+  for (const key of keys) {
+    const value = usage?.[key];
+    if (Number.isFinite(Number(value))) return Number(value);
+  }
+  return 0;
+}
+
 /**
- * 최근 날짜 디렉토리에서 롤아웃 파일 스캔
+ * Codex rollout usage is usually emitted as cumulative token_count events.
+ * Older formats may attach per-turn usage directly, so keep that fallback too.
+ */
+function getTokenUsage(filePath) {
+  const tokenUsage = {
+    totalInput: 0,
+    totalOutput: 0,
+    cacheRead: 0,
+    cacheCreate: 0,
+    contextWindow: 0,
+    contextWindowMax: 0,
+    turnCount: 0,
+  };
+
+  try {
+    const lines = readLines(filePath, { from: 'end', count: 500 });
+    const entries = parseJsonLines(lines);
+    let lastInput = 0;
+    let latestTokenCount = null;
+
+    for (const entry of entries) {
+      if (entry.payload?.type === 'token_count' && entry.payload.info?.total_token_usage) {
+        latestTokenCount = entry.payload.info;
+        continue;
+      }
+
+      const usage = entry.payload?.usage || entry.usage;
+      if (!usage) continue;
+
+      const input = readUsageNumber(usage, [
+        'input_tokens',
+        'inputTokens',
+        'prompt_tokens',
+        'promptTokens',
+        'total_input_tokens',
+      ]);
+      const output = readUsageNumber(usage, [
+        'output_tokens',
+        'outputTokens',
+        'completion_tokens',
+        'completionTokens',
+        'total_output_tokens',
+      ]);
+      const cacheRead = readUsageNumber(usage, [
+        'cached_input_tokens',
+        'cache_read_input_tokens',
+        'cacheReadInputTokens',
+      ]);
+      const cacheCreate = readUsageNumber(usage, [
+        'cache_creation_input_tokens',
+        'cacheCreationInputTokens',
+      ]);
+
+      tokenUsage.totalInput += input;
+      tokenUsage.totalOutput += output;
+      tokenUsage.cacheRead += cacheRead;
+      tokenUsage.cacheCreate += cacheCreate;
+      tokenUsage.turnCount++;
+      lastInput = input + cacheRead + cacheCreate;
+    }
+
+    if (latestTokenCount) {
+      const total = latestTokenCount.total_token_usage || {};
+      const last = latestTokenCount.last_token_usage || {};
+      const totalInput = readUsageNumber(total, ['input_tokens', 'inputTokens']);
+      const cachedInput = readUsageNumber(total, [
+        'cached_input_tokens',
+        'cache_read_input_tokens',
+        'cacheReadInputTokens',
+      ]);
+      const lastTotal = readUsageNumber(last, ['total_tokens', 'totalTokens', 'input_tokens', 'inputTokens']);
+
+      tokenUsage.totalInput = Math.max(0, totalInput - cachedInput);
+      tokenUsage.totalOutput = readUsageNumber(total, ['output_tokens', 'outputTokens']);
+      tokenUsage.cacheRead = cachedInput;
+      tokenUsage.cacheCreate = 0;
+      tokenUsage.contextWindow = latestTokenCount.model_context_window
+        ? Math.min(lastTotal, latestTokenCount.model_context_window)
+        : lastTotal;
+      tokenUsage.contextWindowMax = latestTokenCount.model_context_window || 0;
+      tokenUsage.turnCount = entries.filter(entry => entry.payload?.type === 'token_count').length || tokenUsage.turnCount;
+    } else {
+      tokenUsage.contextWindow = lastInput;
+    }
+  } catch { /* ignore */ }
+
+  return tokenUsage;
+}
+
+/**
+ * Scan rollout files from recent date directories
  */
 function scanRecentRollouts(activeThresholdMs) {
   const results = [];
@@ -203,13 +301,13 @@ function scanRecentRollouts(activeThresholdMs) {
   const now = Date.now();
 
   try {
-    // YYYY 디렉토리 순회
+    // YYYY directory traversal
     const years = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .map(d => d.name)
       .sort()
       .reverse()
-      .slice(0, 2); // 최근 2년만
+      .slice(0, 2); // only the last 2 years
 
     for (const year of years) {
       const yearDir = path.join(SESSIONS_DIR, year);
@@ -218,7 +316,7 @@ function scanRecentRollouts(activeThresholdMs) {
         .map(d => d.name)
         .sort()
         .reverse()
-        .slice(0, 2); // 최근 2개월만
+        .slice(0, 2); // only the last 2 months
 
       for (const month of months) {
         const monthDir = path.join(yearDir, month);
@@ -227,7 +325,7 @@ function scanRecentRollouts(activeThresholdMs) {
           .map(d => d.name)
           .sort()
           .reverse()
-          .slice(0, 3); // 최근 3일만
+          .slice(0, 3); // only the last 3 days
 
         for (const day of days) {
           const dayDir = path.join(monthDir, day);
@@ -249,12 +347,12 @@ function scanRecentRollouts(activeThresholdMs) {
         }
       }
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
 
   return results;
 }
 
-// ─── 어댑터 클래스 ────────────────────────────────────
+// ─── Adapter class ────────────────────────────────────
 
 class CodexAdapter {
   get name() { return 'Codex CLI'; }
@@ -271,7 +369,7 @@ class CodexAdapter {
 
     for (const { filePath, mtime, fileName } of rollouts) {
       const detail = parseRollout(filePath);
-      // 파일명에서 세션 ID 추출: rollout-2025-01-22T10-30-00-abc123.jsonl
+      // Extract session ID from the filename: rollout-2025-01-22T10-30-00-abc123.jsonl
       const sessionId = fileName.replace('rollout-', '').replace('.jsonl', '');
 
       sessions.push({
@@ -286,6 +384,7 @@ class CodexAdapter {
         lastMessage: detail.lastMessage,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
+        tokenUsage: getTokenUsage(filePath),
         parentSessionId: null,
       });
     }
@@ -294,9 +393,9 @@ class CodexAdapter {
   }
 
   getSessionDetail(sessionId, project) {
-    // sessionId에서 파일 찾기
+    // sessionIdto find the file
     const cleanId = sessionId.replace('codex-', '');
-    const rollouts = scanRecentRollouts(30 * 60 * 1000); // 30분 범위로 확대
+    const rollouts = scanRecentRollouts(30 * 60 * 1000); // expand to a 30-minute range
 
     for (const { filePath, fileName } of rollouts) {
       const fileId = fileName.replace('rollout-', '').replace('.jsonl', '');
@@ -304,12 +403,13 @@ class CodexAdapter {
         return {
           toolHistory: getToolHistory(filePath),
           messages: getRecentMessages(filePath),
+          tokenUsage: getTokenUsage(filePath),
           sessionId,
         };
       }
     }
 
-    return { toolHistory: [], messages: [] };
+    return { toolHistory: [], messages: [], tokenUsage: null };
   }
 
   getWatchPaths() {

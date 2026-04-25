@@ -1,4 +1,4 @@
-// Moltcraft Demo Server - 가짜 API로 UI 구경용
+// Moltcraft Demo Server - fake API for previewing the UI
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -15,7 +15,7 @@ const MIME = {
   '.svg': 'image/svg+xml',
 };
 
-// 데모용 가짜 세션 데이터
+// Fake demo session data
 const DEMO_SESSIONS = [
   {
     sessionId: 'agent-leader-001',
@@ -25,7 +25,7 @@ const DEMO_SESSIONS = [
     created: Date.now() - 300000,
     lastActive: Date.now() - 5000,
     tokenUsage: { input: 45000, output: 12000 },
-    messages: [{ role: 'assistant', content: 'PR 리뷰 진행 중입니다. 3개 파일 검토 완료.' }]
+    messages: [{ role: 'assistant', content: 'PR review in progress. Three files reviewed.' }]
   },
   {
     sessionId: 'agent-researcher-002',
@@ -35,7 +35,7 @@ const DEMO_SESSIONS = [
     created: Date.now() - 250000,
     lastActive: Date.now() - 2000,
     tokenUsage: { input: 32000, output: 8500 },
-    messages: [{ role: 'assistant', content: 'API 문서 분석 중... Supabase Auth 패턴 조사' }]
+    messages: [{ role: 'assistant', content: 'Analyzing API docs... researching Supabase Auth patterns' }]
   },
   {
     sessionId: 'agent-coder-003',
@@ -45,7 +45,7 @@ const DEMO_SESSIONS = [
     created: Date.now() - 200000,
     lastActive: Date.now() - 1000,
     tokenUsage: { input: 67000, output: 23000 },
-    messages: [{ role: 'assistant', content: 'React 컴포넌트 작성 중 - LoginForm.tsx 완료' }]
+    messages: [{ role: 'assistant', content: 'Writing React components - LoginForm.tsx complete' }]
   },
   {
     sessionId: 'agent-tester-004',
@@ -55,7 +55,7 @@ const DEMO_SESSIONS = [
     created: Date.now() - 180000,
     lastActive: Date.now() - 60000,
     tokenUsage: { input: 15000, output: 4200 },
-    messages: [{ role: 'assistant', content: '테스트 대기 중 - Frontend Dev 작업 완료 대기' }]
+    messages: [{ role: 'assistant', content: 'Waiting for tests - pending Frontend Dev completion' }]
   },
   {
     sessionId: 'agent-reviewer-005',
@@ -65,7 +65,7 @@ const DEMO_SESSIONS = [
     created: Date.now() - 150000,
     lastActive: Date.now() - 30000,
     tokenUsage: { input: 22000, output: 6800 },
-    messages: [{ role: 'assistant', content: '코드 리뷰 대기 중' }]
+    messages: [{ role: 'assistant', content: 'Waiting for code review' }]
   }
 ];
 
@@ -81,14 +81,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 가짜 API 응답
+  // Fake API response
   if (req.url.startsWith('/api/')) {
     res.writeHead(200, {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
     });
 
-    // tools/invoke 엔드포인트
+    // tools/invoke endpoint
     if (req.url.includes('/api/tools/invoke')) {
       let body = '';
       req.on('data', chunk => body += chunk);
@@ -139,12 +139,12 @@ const server = http.createServer((req, res) => {
       return;
     }
 
-    // 기타 API
+    // Other API
     res.end(JSON.stringify({ ok: true }));
     return;
   }
 
-  // 정적 파일 서빙 (Moltcraft 소스에서)
+  // Static file serving (Moltcraft source)
   const cleanUrl = req.url.split('?')[0];
   let filePath = cleanUrl === '/' ? '/index.html' : cleanUrl;
   filePath = path.join(MOLTCRAFT_DIR, filePath);
@@ -169,5 +169,5 @@ const server = http.createServer((req, res) => {
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`\n⛏️  MOLTCRAFT Demo Server`);
   console.log(`   http://localhost:${PORT}`);
-  console.log(`   5개 데모 에이전트 로드됨\n`);
+  console.log(`   Loaded 5 demo agents\n`);
 });

@@ -1,11 +1,11 @@
 /**
- * Google Gemini CLI 어댑터
- * 데이터 소스: ~/.gemini/
+ * Google Gemini CLI adapter
+ * Data source: ~/.gemini/
  *
- * 세션 포맷 (JSON 객체):
+ * Session format (JSON object):
  *   {
  *     "sessionId": "...",
- *     "projectHash": "...",      // cwd의 SHA-256 해시
+ *     "projectHash": "...",      // cwd SHA-256 hash
  *     "messages": [
  *       {"type": "user", "content": "Hello"},
  *       {"type": "gemini", "content": "Hi!", "model": "gemini-2.5-flash", "tokens": {...}},
@@ -13,8 +13,8 @@
  *     ]
  *   }
  *
- * 프로젝트 경로 복원: projectHash는 cwd의 SHA-256이므로
- * 알려진 프로젝트 경로들을 해시해서 매핑
+ * Restore project paths: projectHash is the SHA-256 hash of cwd
+ * Hash known project paths to map them
  */
 const fs = require('fs');
 const path = require('path');
@@ -24,11 +24,11 @@ const crypto = require('crypto');
 const GEMINI_DIR = path.join(os.homedir(), '.gemini');
 const TMP_DIR = path.join(GEMINI_DIR, 'tmp');
 
-// ─── 프로젝트 경로 복원 ──────────────────────────────
+// ─── Restore project paths ──────────────────────────────
 
 /**
- * SHA-256 해시에서 프로젝트 경로를 역매핑
- * 알려진 경로 후보들의 해시를 계산해서 매칭
+ * Reverse-map project paths from SHA-256 hashes
+ * calculate hashes for known path candidates and match them
  */
 const _hashToPathCache = new Map();
 
@@ -37,20 +37,20 @@ function sha256(str) {
 }
 
 function resolveProjectPath(projectHash) {
-  // 캐시 확인
+  // Check cache
   if (_hashToPathCache.has(projectHash)) {
     return _hashToPathCache.get(projectHash);
   }
 
   const homeDir = os.homedir();
 
-  // 후보 1: 홈 디렉토리 자체
+  // Candidate 1: home directory itself
   if (sha256(homeDir) === projectHash) {
     _hashToPathCache.set(projectHash, homeDir);
     return homeDir;
   }
 
-  // 후보 2: 홈 디렉토리 하위 1단계 (Desktop, Documents, Projects 등)
+  // Candidate 2: first-level children under the home directory (Desktop, Documents, Projects etc.)
   const commonDirs = ['Desktop', 'Documents', 'Projects', 'Developer', 'dev', 'src', 'code', 'repos', 'workspace', 'work'];
   for (const dir of commonDirs) {
     const fullPath = path.join(homeDir, dir);
@@ -58,12 +58,12 @@ function resolveProjectPath(projectHash) {
       _hashToPathCache.set(projectHash, fullPath);
       return fullPath;
     }
-    // 2단계까지 탐색
+    // Search up to two levels deep
     try {
       if (fs.existsSync(fullPath)) {
         const subdirs = fs.readdirSync(fullPath, { withFileTypes: true })
           .filter(d => d.isDirectory() && !d.name.startsWith('.'))
-          .slice(0, 50); // 너무 많으면 제한
+          .slice(0, 50); // Limit if there are too many
         for (const sub of subdirs) {
           const subPath = path.join(fullPath, sub.name);
           if (sha256(subPath) === projectHash) {
@@ -72,16 +72,16 @@ function resolveProjectPath(projectHash) {
           }
         }
       }
-    } catch { /* 무시 */ }
+    } catch { /* ignore */ }
   }
 
-  // 후보 3: Claude Code 프로젝트 경로에서도 해시 체크
+  // Candidate 3: check hashes from Claude Code project paths
   const claudeProjectsDir = path.join(homeDir, '.claude', 'projects');
   try {
     if (fs.existsSync(claudeProjectsDir)) {
       const projDirs = fs.readdirSync(claudeProjectsDir);
       for (const dir of projDirs) {
-        // Claude projects 디렉토리명: -Users-name-path 형식
+        // Claude projects directory name: -Users-name-path format
         const projPath = '/' + dir.replace(/-/g, '/').replace(/^\//, '');
         if (sha256(projPath) === projectHash) {
           _hashToPathCache.set(projectHash, projPath);
@@ -89,18 +89,18 @@ function resolveProjectPath(projectHash) {
         }
       }
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
 
-  // 매핑 실패 → null 반환 (해시 디렉토리명은 표시하지 않음)
+  // Mapping failed; return null (do not show the hash directory name)
   _hashToPathCache.set(projectHash, null);
   return null;
 }
 
-// ─── 세션 파싱 ────────────────────────────────────────
+// ─── Session parsing ────────────────────────────────────────
 
 /**
- * Gemini 세션 JSON에서 모델/도구/메시지 추출
- * 실제 포맷: {sessionId, projectHash, messages: [{type, content, model, ...}]}
+ * Extract model/tools/messages from Gemini session JSON
+ * Actual format: {sessionId, projectHash, messages: [{type, content, model, ...}]}
  */
 function parseSession(filePath) {
   const detail = {
@@ -117,18 +117,18 @@ function parseSession(filePath) {
     const messages = session.messages;
     if (!Array.isArray(messages)) return detail;
 
-    // 마지막부터 역순으로 탐색
+    // Scan backward from the end
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i];
 
-      // Gemini 응답 메시지
+      // Gemini response message
       if (msg.type === 'gemini') {
-        // 모델 정보
+        // Model information
         if (!detail.model && msg.model) {
           detail.model = msg.model;
         }
 
-        // 텍스트 메시지
+        // Text message
         if (!detail.lastMessage && msg.content) {
           const text = typeof msg.content === 'string' ? msg.content.trim() : '';
           if (text.length > 0) {
@@ -136,7 +136,7 @@ function parseSession(filePath) {
           }
         }
 
-        // 도구 사용 (functionCall이 있는 경우)
+        // Tool use (when functionCall is present)
         if (!detail.lastTool && msg.toolCalls && Array.isArray(msg.toolCalls)) {
           for (const tc of msg.toolCalls) {
             detail.lastTool = tc.name || 'function_call';
@@ -151,7 +151,7 @@ function parseSession(filePath) {
         }
       }
 
-      // 도구 호출 결과 (tool_call 타입)
+      // Tool call result (tool_call type)
       if (!detail.lastTool && msg.type === 'tool_call') {
         detail.lastTool = msg.name || msg.toolName || 'tool';
         if (msg.input) {
@@ -163,13 +163,13 @@ function parseSession(filePath) {
 
       if (detail.lastMessage && detail.model) break;
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
 
   return detail;
 }
 
 /**
- * Gemini 세션에서 도구 히스토리 추출
+ * Extract tool history from Gemini sessions
  */
 function getToolHistory(filePath, maxItems = 15) {
   const tools = [];
@@ -180,7 +180,7 @@ function getToolHistory(filePath, maxItems = 15) {
     if (!Array.isArray(messages)) return tools;
 
     for (const msg of messages) {
-      // gemini 타입에서 toolCalls 체크
+      // gemini type: check toolCalls
       if (msg.type === 'gemini' && msg.toolCalls && Array.isArray(msg.toolCalls)) {
         for (const tc of msg.toolCalls) {
           let detail = '';
@@ -197,7 +197,7 @@ function getToolHistory(filePath, maxItems = 15) {
         }
       }
 
-      // tool_call 타입
+      // tool_call type
       if (msg.type === 'tool_call') {
         let detail = '';
         if (msg.input) {
@@ -212,12 +212,12 @@ function getToolHistory(filePath, maxItems = 15) {
         });
       }
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return tools.slice(-maxItems);
 }
 
 /**
- * Gemini 세션에서 최근 메시지 추출
+ * Extract recent messages from Gemini sessions
  */
 function getRecentMessages(filePath, maxItems = 5) {
   const msgList = [];
@@ -228,7 +228,7 @@ function getRecentMessages(filePath, maxItems = 5) {
     if (!Array.isArray(messages)) return msgList;
 
     for (const msg of messages) {
-      if (msg.type === 'info') continue; // info 메시지 건너뛰기
+      if (msg.type === 'info') continue; // skip info messages
 
       const text = typeof msg.content === 'string' ? msg.content.trim() : '';
       if (text.length === 0) continue;
@@ -239,12 +239,12 @@ function getRecentMessages(filePath, maxItems = 5) {
         ts: msg.timestamp ? new Date(msg.timestamp).getTime() : 0,
       });
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
   return msgList.slice(-maxItems);
 }
 
 /**
- * 활성 세션 파일 스캔
+ * Scan active session files
  * ~/.gemini/tmp/<project_hash>/chats/session-*.json
  */
 function scanActiveSessions(activeThresholdMs) {
@@ -282,12 +282,12 @@ function scanActiveSessions(activeThresholdMs) {
         });
       }
     }
-  } catch { /* 무시 */ }
+  } catch { /* ignore */ }
 
   return results;
 }
 
-// ─── 어댑터 클래스 ────────────────────────────────────
+// ─── Adapter class ────────────────────────────────────
 
 class GeminiAdapter {
   get name() { return 'Gemini CLI'; }
@@ -356,7 +356,7 @@ class GeminiAdapter {
             paths.push({ type: 'directory', path: chatsDir, filter: '.json' });
           }
         }
-      } catch { /* 무시 */ }
+      } catch { /* ignore */ }
     }
     return paths;
   }

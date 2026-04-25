@@ -14,9 +14,9 @@ export class Camera {
         this.camStartX = 0;
         this.camStartY = 0;
 
-        // Follow 메커니즘
-        this.followTarget = null;      // AgentSprite 참조
-        this.followSmoothing = 0.08;   // lerp 계수 (낮을수록 부드러움)
+        // Follow mechanism
+        this.followTarget = null;      // AgentSprite reference
+        this.followSmoothing = 0.08;   // lerp factor (lower is smoother)
 
         this._onMouseDown = this._onMouseDown.bind(this);
         this._onMouseMove = this._onMouseMove.bind(this);
@@ -74,7 +74,7 @@ export class Camera {
         this.camStartX = this.x;
         this.camStartY = this.y;
         this.canvas.style.cursor = 'grabbing';
-        // 드래그 시작하면 팔로우 해제
+        // Stop following when dragging starts
         if (this.followTarget) this.stopFollow();
     }
 
@@ -99,12 +99,12 @@ export class Camera {
         const worldBeforeX = (mouseX / this.zoom) - this.x;
         const worldBeforeY = (mouseY / this.zoom) - this.y;
 
-        // deltaMode 정규화 (0=px, 1=line, 2=page)
+        // deltaMode normalize (0=px, 1=line, 2=page)
         let rawDelta = e.deltaY;
         if (e.deltaMode === 1) rawDelta *= 16;
         if (e.deltaMode === 2) rawDelta *= 100;
 
-        // 클램핑: 맥 트랙패드(작은값 다수) / 윈도우 휠(큰값 소수) 둘 다 대응
+        // Clamp: Mac trackpads(many small values) / Windows wheels(fewer large values) handle both
         const clamped = Math.max(-60, Math.min(60, rawDelta));
         const zoomSpeed = 0.003;
         const factor = 1 - clamped * zoomSpeed;

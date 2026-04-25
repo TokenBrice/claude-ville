@@ -1,6 +1,6 @@
 /**
- * 대시보드용 미니 캐릭터 아바타 캔버스
- * AgentSprite의 드로잉 로직을 정적으로 재현
+ * Mini character avatar canvas for the dashboard
+ * Static recreation of AgentSprite drawing logic
  */
 export class AvatarCanvas {
     constructor(agent) {

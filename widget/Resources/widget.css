@@ -42,7 +42,7 @@ html, body {
   border: 1px solid var(--border);
 }
 
-/* ── 헤더 ── */
+/* ── Header ── */
 .header {
   padding: 14px 16px 10px;
   border-bottom: 1px solid var(--border);
@@ -119,7 +119,7 @@ html, body {
   letter-spacing: 0.3px;
 }
 
-/* ── Quota 섹션 ── */
+/* ── Quota section ── */
 .quota-section {
   padding: 8px 16px;
   border-bottom: 1px solid var(--border);
@@ -199,7 +199,7 @@ html, body {
   text-align: right;
 }
 
-/* ── 에이전트 목록 ── */
+/* ── Agent list ── */
 .agent-list-wrap {
   flex: 1;
   overflow-y: auto;
@@ -301,7 +301,7 @@ html, body {
   letter-spacing: 0.2px;
 }
 
-/* ── 오프라인 상태 ── */
+/* ── Offline state ── */
 .offline-wrap {
   flex: 1;
   display: flex;
@@ -330,7 +330,7 @@ html, body {
   opacity: 0.6;
 }
 
-/* ── 빈 상태 ── */
+/* ── Empty state ── */
 .empty-wrap {
   flex: 1;
   display: flex;
@@ -346,7 +346,7 @@ html, body {
   opacity: 0.5;
 }
 
-/* ── 푸터 ── */
+/* ── Footer ── */
 .footer {
   padding: 10px 16px;
   border-top: 1px solid var(--border);

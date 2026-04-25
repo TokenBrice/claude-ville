@@ -37,7 +37,7 @@ export class TopBar {
         const stats = this.world.getStats();
 
         this.els.tokens.textContent = this._formatNumber(stats.totalTokens);
-        this.els.cost.textContent = `$${stats.totalCost.toFixed(4)}`;
+        this.els.cost.textContent = this._formatCost(stats.totalCost);
         this.els.working.textContent = stats.working;
         this.els.idle.textContent = stats.idle;
         this.els.waiting.textContent = stats.waiting;
@@ -46,19 +46,19 @@ export class TopBar {
     renderQuota(usage) {
         if (!usage) return;
 
-        // 구독 정보
+        // Subscription information
         if (usage.account) {
             const tier = this._formatTier(usage.account.rateLimitTier, usage.account.subscriptionType);
             this.els.accountTier.textContent = tier;
         }
 
-        // 오늘 활동량
+        // Today's activity
         if (usage.activity?.today) {
             const t = usage.activity.today;
             this.els.accountActivity.textContent = `${this._formatNumber(t.messages)} msgs`;
         }
 
-        // Quota 바 (API 성공 시에만 표시)
+        // Quota bar (shown only when the API succeeds)
         if (usage.quotaAvailable && usage.quota) {
             this.els.quotaSection.style.display = 'flex';
             this._updateQuotaBar(this.els.quota5hBar, this.els.quota5hPct, usage.quota.fiveHour);
@@ -72,7 +72,7 @@ export class TopBar {
         barEl.style.width = `${pct}%`;
         pctEl.textContent = `${pct}%`;
 
-        // 색상 클래스 설정
+        // Set color class
         barEl.classList.remove('topbar__quota-fill--warn', 'topbar__quota-fill--danger');
         if (pct >= 80) {
             barEl.classList.add('topbar__quota-fill--danger');
@@ -107,6 +107,13 @@ export class TopBar {
         if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
         if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
         return String(num);
+    }
+
+    _formatCost(cost) {
+        if (!Number.isFinite(cost) || cost <= 0) return '$0.0000';
+        if (cost < 0.0001) return '<$0.0001';
+        if (cost >= 10) return `$${cost.toFixed(2)}`;
+        return `$${cost.toFixed(4)}`;
     }
 
     destroy() {

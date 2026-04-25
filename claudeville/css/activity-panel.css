@@ -1,10 +1,15 @@
-/* ─── 우측 실시간 활동 패널 ──────────────────────── */
+/* ─── right-side live activity panel ──────────────────────── */
 
 .activity-panel {
     width: 320px;
     flex-shrink: 0;
-    background: rgba(15, 15, 25, 0.98);
-    border-left: 2px solid rgba(232, 212, 77, 0.3);
+    background:
+        linear-gradient(180deg, rgba(35, 25, 22, 0.98), rgba(15, 11, 13, 0.98)),
+        repeating-linear-gradient(0deg, rgba(242, 211, 107, 0.025) 0 1px, transparent 1px 18px);
+    border-left: 2px solid rgba(199, 157, 76, 0.62);
+    box-shadow:
+        inset 1px 0 0 rgba(78, 48, 27, 0.76),
+        -8px 0 20px rgba(0, 0, 0, 0.18);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -17,14 +22,16 @@
     to { width: 320px; opacity: 1; }
 }
 
-/* ─── 헤더 ─────────────────────────────────────── */
+/* ─── Header ─────────────────────────────────────── */
 
 .activity-panel__header {
     display: flex;
     align-items: center;
     justify-content: space-between;
     padding: 12px 14px;
-    border-bottom: 1px solid rgba(232, 212, 77, 0.15);
+    border-bottom: 1px solid rgba(199, 157, 76, 0.34);
+    background: rgba(20, 13, 11, 0.46);
+    box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.22);
     flex-shrink: 0;
 }
 
@@ -37,7 +44,7 @@
 
 .activity-panel__name {
     font-size: 10px;
-    color: #e8d44d;
+    color: #f2d36b;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -46,17 +53,18 @@
 .activity-panel__status {
     font-size: 7px;
     padding: 2px 6px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.05);
+    border-radius: 2px;
+    background: rgba(57, 37, 24, 0.88);
+    border: 1px solid rgba(199, 157, 76, 0.28);
     white-space: nowrap;
 }
 
 .activity-panel__close {
     font-size: 9px;
-    color: #8b8b9e;
-    background: transparent;
-    border: 1px solid rgba(139, 139, 158, 0.3);
-    border-radius: 3px;
+    color: #bba17a;
+    background: rgba(25, 17, 15, 0.86);
+    border: 1px solid rgba(199, 157, 76, 0.48);
+    border-radius: 2px;
     padding: 3px 7px;
     cursor: pointer;
     font-family: inherit;
@@ -68,11 +76,11 @@
     border-color: #ef4444;
 }
 
-/* ─── 메타 정보 ────────────────────────────────── */
+/* ─── Metadata ────────────────────────────────── */
 
 .activity-panel__meta {
     padding: 10px 14px;
-    border-bottom: 1px solid rgba(232, 212, 77, 0.1);
+    border-bottom: 1px solid rgba(199, 157, 76, 0.16);
     flex-shrink: 0;
     display: grid;
     grid-template-columns: 1fr 1fr;
@@ -87,24 +95,24 @@
 
 .activity-panel__label {
     font-size: 6px;
-    color: #8b8b9e;
+    color: #a89476;
     letter-spacing: 1px;
     text-transform: uppercase;
 }
 
 .activity-panel__value {
     font-size: 8px;
-    color: #e8d44d;
+    color: #f2d36b;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
 }
 
-/* ─── 섹션 공통 ────────────────────────────────── */
+/* ─── Shared section styles ────────────────────────────────── */
 
 .activity-panel__section {
     padding: 10px 14px;
-    border-bottom: 1px solid rgba(232, 212, 77, 0.05);
+    border-bottom: 1px solid rgba(199, 157, 76, 0.1);
     flex-shrink: 0;
 }
 
@@ -118,26 +126,28 @@
 
 .activity-panel__section-title {
     font-size: 7px;
-    color: #8b8b9e;
+    color: #a89476;
     letter-spacing: 1px;
     text-transform: uppercase;
     margin-bottom: 8px;
 }
 
-/* ─── 현재 도구 ────────────────────────────────── */
+/* ─── Current tool ────────────────────────────────── */
 
 .activity-panel__current-tool {
     display: flex;
     align-items: center;
     gap: 8px;
     padding: 6px 10px;
-    background: rgba(255, 255, 255, 0.03);
-    border-radius: 4px;
-    border-left: 3px solid #4ade80;
+    background: rgba(31, 22, 18, 0.72);
+    border: 1px solid rgba(199, 157, 76, 0.16);
+    border-radius: 2px;
+    border-left: 3px solid #72d071;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22);
 }
 
 .activity-panel__current-tool--idle {
-    border-left-color: #60a5fa;
+    border-left-color: #7eb7d6;
 }
 
 .activity-panel__tool-icon {
@@ -154,18 +164,18 @@
 
 .activity-panel__tool-name {
     font-size: 8px;
-    color: #e8d44d;
+    color: #f2d36b;
 }
 
 .activity-panel__tool-input {
     font-size: 7px;
-    color: #8b8b9e;
+    color: #a89476;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 
-/* ─── 도구 히스토리 ────────────────────────────── */
+/* ─── Tool history ────────────────────────────── */
 
 .activity-panel__tool-history {
     flex: 1;
@@ -180,7 +190,7 @@
 }
 
 .activity-panel__tool-history::-webkit-scrollbar-thumb {
-    background: rgba(232, 212, 77, 0.2);
+    background: rgba(199, 157, 76, 0.32);
     border-radius: 2px;
 }
 
@@ -190,12 +200,13 @@
     gap: 6px;
     padding: 4px 8px;
     font-size: 7px;
-    border-radius: 3px;
-    background: rgba(255, 255, 255, 0.02);
+    border-radius: 2px;
+    background: rgba(31, 22, 18, 0.48);
+    border: 1px solid rgba(199, 157, 76, 0.06);
 }
 
 .activity-panel__tool-item:first-child {
-    background: rgba(74, 222, 128, 0.08);
+    background: rgba(114, 208, 113, 0.1);
 }
 
 .activity-panel__tool-item-icon {
@@ -204,13 +215,13 @@
 }
 
 .activity-panel__tool-item-name {
-    color: #e8d44d;
+    color: #f2d36b;
     font-size: 7px;
     white-space: nowrap;
 }
 
 .activity-panel__tool-item-detail {
-    color: #8b8b9e;
+    color: #a89476;
     font-size: 6px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -218,7 +229,7 @@
     min-width: 0;
 }
 
-/* ─── 메시지 ───────────────────────────────────── */
+/* ─── Messages ───────────────────────────────────── */
 
 .activity-panel__messages {
     max-height: 140px;
@@ -233,37 +244,38 @@
 }
 
 .activity-panel__messages::-webkit-scrollbar-thumb {
-    background: rgba(232, 212, 77, 0.2);
+    background: rgba(199, 157, 76, 0.32);
     border-radius: 2px;
 }
 
 .activity-panel__msg {
     padding: 6px 8px;
     font-size: 7px;
-    color: #8b8b9e;
-    background: rgba(255, 255, 255, 0.02);
-    border-radius: 3px;
+    color: #a89476;
+    background: rgba(31, 22, 18, 0.48);
+    border-radius: 2px;
     line-height: 1.6;
     border-left: 2px solid transparent;
+    border-top: 1px solid rgba(199, 157, 76, 0.06);
 }
 
 .activity-panel__msg--assistant {
-    border-left-color: #4ade80;
+    border-left-color: #72d071;
 }
 
 .activity-panel__msg--user {
-    border-left-color: #60a5fa;
+    border-left-color: #7eb7d6;
 }
 
 .activity-panel__msg-role {
     font-size: 6px;
-    color: #e8d44d;
+    color: #f2d36b;
     text-transform: uppercase;
     letter-spacing: 0.5px;
     margin-bottom: 2px;
 }
 
-/* ─── 토큰 사용량 ─────────────────────────────── */
+/* ─── Token usage ─────────────────────────────── */
 
 .activity-panel__token-usage {
     display: flex;
@@ -279,40 +291,41 @@
 
 .activity-panel__token-label {
     font-size: 7px;
-    color: #8b8b9e;
+    color: #a89476;
 }
 
 .activity-panel__token-value {
     font-size: 9px;
-    color: #e8d44d;
+    color: #f2d36b;
     font-weight: bold;
 }
 
 .activity-panel__token-value--cost {
-    color: #4ade80;
+    color: #72d071;
 }
 
 .activity-panel__context-bar-wrap {
     width: 100%;
     height: 6px;
-    background: rgba(255, 255, 255, 0.05);
-    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.32);
+    border: 1px solid rgba(199, 157, 76, 0.18);
+    border-radius: 1px;
     overflow: hidden;
 }
 
 .activity-panel__context-bar {
     height: 100%;
-    border-radius: 3px;
-    background: linear-gradient(90deg, #4ade80, #e8d44d);
+    border-radius: 0;
+    background: linear-gradient(90deg, #72d071, #f2d36b);
     transition: width 0.5s ease;
 }
 
 .activity-panel__context-bar--warning {
-    background: linear-gradient(90deg, #e8d44d, #f97316);
+    background: linear-gradient(90deg, #f2d36b, #d8843a);
 }
 
 .activity-panel__context-bar--danger {
-    background: linear-gradient(90deg, #f97316, #ef4444);
+    background: linear-gradient(90deg, #d8843a, #ef4444);
 }
 
 .activity-panel__token-grid {
@@ -326,26 +339,27 @@
     flex-direction: column;
     gap: 1px;
     padding: 4px 6px;
-    background: rgba(255, 255, 255, 0.02);
-    border-radius: 3px;
+    background: rgba(31, 22, 18, 0.48);
+    border: 1px solid rgba(199, 157, 76, 0.1);
+    border-radius: 2px;
 }
 
 .activity-panel__token-cell-label {
     font-size: 5px;
-    color: #8b8b9e;
+    color: #a89476;
     text-transform: uppercase;
     letter-spacing: 0.5px;
 }
 
 .activity-panel__token-cell-value {
     font-size: 8px;
-    color: #e8d44d;
+    color: #f2d36b;
 }
 
-/* ─── 비어있음 ────────────────────────────────── */
+/* ─── Empty ────────────────────────────────── */
 
 .activity-panel__empty {
-    color: #555;
+    color: #755f44;
     font-size: 7px;
     padding: 4px 0;
 }
