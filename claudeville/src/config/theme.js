@@ -13,4 +13,22 @@ export const THEME = {
     path: ['#755f3c', '#866d45', '#987f54', '#624d32'],
     plaza: ['#8a7656', '#988362', '#796748', '#a08b68'],
     water: ['#103a55', '#174f70', '#216984'],
+    deepWater: ['#0a2336', '#0e2c44', '#103456'],
+    bridgeWood: {
+        deck: '#5a3f24',
+        deckLight: '#74532f',
+        plankLine: 'rgba(28, 18, 8, 0.42)',
+        rail: '#3a2917',
+        railLight: '#553b21',
+    },
+    treeFoliage: ['#1f4a26', '#28552d', '#316336', '#264e29', '#2d5a32'],
+    treeTrunk: '#3b2715',
+    treeTrunkLight: '#52391f',
+    bushFoliage: ['#2d5a30', '#345f33', '#3a6b3a', '#2c5429'],
+    rock: {
+        base: '#52524a',
+        light: '#6c6c63',
+        dark: '#36352f',
+        moss: 'rgba(54, 84, 38, 0.55)',
+    },
 };
