@@ -1825,7 +1825,7 @@ this.targetY = screen.y;
 with:
 
 ```js
-this._assignTarget(screen.x, screen.y, this.agent.position.tileX, this.agent.position.tileY);
+this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
 ```
 
 `Position` (verified at `claudeville/src/domain/value-objects/Position.js:1-26`) exposes `tileX` and `tileY` directly — no defensive fallback needed.

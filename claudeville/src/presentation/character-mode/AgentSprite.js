@@ -121,7 +121,7 @@ export class AgentSprite {
                 const ty = 10 + this._noise(seed, 7) * 20;
                 const target = new Position(tx, ty);
                 const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
-                this._assignTarget(screen.x, screen.y, this.agent.position.tileX, this.agent.position.tileY);
+                this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
                 this.moving = true;
                 this.waitTimer = 0;
                 return;
@@ -134,7 +134,7 @@ export class AgentSprite {
         const ty = building.y + 0.3 * building.height + this._noise(seed, 17) * 0.4 * building.height;
         const target = new Position(tx, ty);
         const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
-        this._assignTarget(screen.x, screen.y, this.agent.position.tileX, this.agent.position.tileY);
+        this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
         this.moving = true;
         this.waitTimer = 0;
     }
