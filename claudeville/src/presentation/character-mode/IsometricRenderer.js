@@ -7,6 +7,7 @@ import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite } from './AgentSprite.js';
 import { BuildingRenderer } from './BuildingRenderer.js';
 import { Minimap } from './Minimap.js';
+import { SceneryEngine } from './SceneryEngine.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -89,11 +90,15 @@ export class IsometricRenderer {
         this.commandCenterRoadTiles = new Set();
         this._generatePaths();
 
-        // Water tiles
-        this.waterTiles = new Set();
-        this._generateWater();
-        this.shoreTiles = new Set();
-        this._generateShorelines();
+        // Scenery (water, shorelines, bridges, vegetation, rocks)
+        this.scenery = new SceneryEngine({
+            world: this.world,
+            terrainSeed: this.terrainSeed,
+            tileNoise: (x, y) => this._tileNoise(x, y),
+        });
+        this.waterTiles = this.scenery.getWaterTiles();
+        this.shoreTiles = this.scenery.getShoreTiles();
+        this.deepWaterTiles = this.scenery.getDeepWaterTiles();
         this.featureTiles = new Map();
         this._generateTerrainFeatures();
         this.commandCenterGroundProps = [];
@@ -178,53 +183,6 @@ export class IsometricRenderer {
                 this.mainAvenueTiles.add(key);
             } else if (routeNoise < 0.34 || ((x + y) % 5 === 0)) {
                 this.dirtPathTiles.add(key);
-            }
-        }
-    }
-
-    _generateWater() {
-        // Small pond near bottom-left
-        for (let x = 3; x <= 8; x++) {
-            for (let y = 30; y <= 35; y++) {
-                const dist = Math.sqrt(Math.pow(x - 5.5, 2) + Math.pow(y - 32.5, 2));
-                if (dist < 3) {
-                    this.waterTiles.add(`${x},${y}`);
-                }
-            }
-        }
-
-        // Curved northern stream gives the village a stronger fantasy-map frame.
-        for (let x = 2; x <= 22; x++) {
-            const centerY = 5 + Math.sin(x * 0.48) * 2.2;
-            for (let y = 1; y <= 11; y++) {
-                const dist = Math.abs(y - centerY);
-                if (dist < 1.2 || (dist < 1.85 && this._tileNoise(x, y) > 0.58)) {
-                    this.waterTiles.add(`${x},${y}`);
-                }
-            }
-        }
-
-        // Eastern moat below the portal and watchtower.
-        for (let x = 29; x <= 38; x++) {
-            for (let y = 26; y <= 36; y++) {
-                const dist = Math.sqrt(Math.pow((x - 34) / 1.35, 2) + Math.pow((y - 31) / 1.05, 2));
-                if (dist < 3.1 && this._tileNoise(x, y) > 0.18) {
-                    this.waterTiles.add(`${x},${y}`);
-                }
-            }
-        }
-    }
-
-    _generateShorelines() {
-        for (const key of this.waterTiles) {
-            const [x, y] = key.split(',').map(Number);
-            for (const [dx, dy] of CARDINAL_DIRS) {
-                const nx = x + dx;
-                const ny = y + dy;
-                const nKey = `${nx},${ny}`;
-                if (nx >= 0 && nx < MAP_SIZE && ny >= 0 && ny < MAP_SIZE && !this.waterTiles.has(nKey)) {
-                    this.shoreTiles.add(nKey);
-                }
             }
         }
     }
@@ -766,8 +724,9 @@ export class IsometricRenderer {
 
         let fillColor;
         if (this.waterTiles.has(key)) {
-            const waterIdx = Math.floor(seed * THEME.water.length);
-            fillColor = THEME.water[waterIdx];
+            const palette = this.deepWaterTiles.has(key) ? THEME.deepWater : THEME.water;
+            const waterIdx = Math.floor(seed * palette.length);
+            fillColor = palette[waterIdx];
         } else if (this.townSquareTiles.has(key)) {
             const plazaIdx = Math.floor(seed * THEME.plaza.length);
             fillColor = THEME.plaza[plazaIdx];
