@@ -1,72 +1,36 @@
 import { Position } from '../../domain/value-objects/Position.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { TILE_WIDTH, TILE_HEIGHT, AGENT_SPEED } from '../../config/constants.js';
+import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
-import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
+import { SpriteSheet, dirFromVelocity } from './SpriteSheet.js';
+import { Compositor } from './Compositor.js';
 
-const PROVIDER_PROFILES = {
-    claude: {
-        family: 'claude',
-        shadow: 'rgba(62, 38, 18, 0.58)',
-        outline: '#2b1b10',
-        robe: ['#8f4f21', '#a85f24', '#7b3f1c'],
-        pants: ['#3b2418', '#4b2c1a', '#33231a'],
-        trim: ['#f2d36b', '#e9b85f', '#ffd98a'],
-        accent: ['#fff1b8', '#f7c96f', '#d8843a'],
-        accessory: ['mageHood', 'scholarCap', 'goldCirclet'],
-        eyeStyle: ['happy', 'normal', 'sleepy'],
-    },
-    codex: {
-        family: 'codex',
-        shadow: 'rgba(13, 45, 48, 0.58)',
-        outline: '#0d2d30',
-        robe: ['#116466', '#167d86', '#1f6f8b'],
-        pants: ['#102f3a', '#12353b', '#18334a'],
-        trim: ['#7be3d7', '#55c7f0', '#8ee88e'],
-        accent: ['#bff7ee', '#6ee7d8', '#5ad6ff'],
-        accessory: ['goggles', 'toolBand', 'rogueMask'],
-        eyeStyle: ['determined', 'normal', 'happy'],
-    },
-    gemini: {
-        family: 'gemini',
-        shadow: 'rgba(35, 31, 79, 0.58)',
-        outline: '#241d50',
-        robe: ['#4f46a5', '#5d65c8', '#44528e'],
-        pants: ['#201c43', '#27244d', '#1f2d55'],
-        trim: ['#b7ccff', '#d6b7ff', '#7bdff2'],
-        accent: ['#f2edff', '#b9f2ff', '#d6b7ff'],
-        accessory: ['starCrown', 'oracleVeil', 'moonBand'],
-        eyeStyle: ['normal', 'determined', 'happy'],
-    },
-};
-
-const DEFAULT_PROFILE = {
-    family: 'default',
-    shadow: 'rgba(43, 32, 24, 0.55)',
-    outline: '#1d1410',
-    robe: null,
-    pants: null,
-    trim: ['#f2d36b'],
-    accent: ['#f2d36b'],
-    accessory: null,
-    eyeStyle: null,
-};
-
-const SPRITE_SCALE = 1.62;
+// Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
 const SPRITE_HIT_TOP = -44;
 const SPRITE_HIT_BOTTOM = 34;
 
+// Accessory id lists per provider — used by _chooseAccessory().
+const PROVIDER_ACCESSORIES = {
+    claude: ['mageHood', 'scholarCap', 'goldCirclet'],
+    codex:  ['goggles', 'toolBand', 'rogueMask'],
+    gemini: ['starCrown', 'oracleVeil', 'moonBand'],
+};
+
 export class AgentSprite {
-    constructor(agent, { pathfinder = null, bridgeTiles = null } = {}) {
+    constructor(agent, {
+        pathfinder = null,
+        bridgeTiles = null,
+        assets = null,
+        compositor = null,
+    } = {}) {
         this.agent = agent;
         this.x = 0;
         this.y = 0;
         this.targetX = 0;
         this.targetY = 0;
         this.moving = false;
-        this.facingLeft = false;
         this.walkFrame = 0;
         this.waitTimer = 0;
         this.selected = false;
@@ -89,6 +53,16 @@ export class AgentSprite {
         this.bridgeTiles = bridgeTiles;
         this.waypoints = [];
         this._lastPathTileKey = null;
+
+        // Sprite rendering fields
+        this.assets = assets;
+        this.compositor = compositor;
+        this.direction = 0;          // 0..7 index into DIRECTIONS
+        this.animState = 'idle';
+        this.frame = 0;
+        this.frameTimer = 0;
+        this.spriteCanvas = null;
+        this.spriteSheet = null;     // cached SpriteSheet wrapper, set on first draw
 
         this._pickTarget();
     }
@@ -212,10 +186,6 @@ export class AgentSprite {
         // Handle chatting state
         if (this.chatting) {
             this.chatBubbleAnim += 0.06;
-            // Face each other when chat partners are nearby
-            if (this.chatPartner) {
-                this.facingLeft = this.chatPartner.x < this.x;
-            }
             return; // Do not move while chatting
         }
 
@@ -229,7 +199,9 @@ export class AgentSprite {
                 this.chatBubbleAnim = 0;
                 this.moving = false;
                 this.walkFrame = 0;
-                this.facingLeft = cpDx < 0;
+                // Derive facing direction toward chat partner.
+                const dir = dirFromVelocity(cpDx, cpDy);
+                if (dir != null) this.direction = dir;
                 // Put the partner in chat state too
                 if (!this.chatPartner.chatting) {
                     this.chatPartner.chatPartner = this;
@@ -237,7 +209,9 @@ export class AgentSprite {
                     this.chatPartner.chatBubbleAnim = 0;
                     this.chatPartner.moving = false;
                     this.chatPartner.walkFrame = 0;
-                    this.chatPartner.facingLeft = cpDx > 0;
+                    // Partner faces back.
+                    const partnerDir = dirFromVelocity(-cpDx, -cpDy);
+                    if (partnerDir != null) this.chatPartner.direction = partnerDir;
                 }
                 return;
             }
@@ -294,14 +268,30 @@ export class AgentSprite {
         this.x += (dx / dist) * speed;
         this.y += (dy / dist) * speed;
         this.walkFrame += 0.15;
-        this.facingLeft = dx < 0;
 
         if (this.motionScale > 0 && particleSystem && this.agent.status === AgentStatus.WORKING && Math.random() < 0.3) {
             particleSystem.spawn('footstep', this.x, this.y + 16, 1);
         }
+
+        // Derive direction from velocity; hold last direction when stationary.
+        const dir = dirFromVelocity(dx, dy);
+        if (dir != null) this.direction = dir;
+
+        // Animation state and frame tick.
+        this.animState = this.moving ? 'walk' : 'idle';
+        // dt approximation: legacy code was frame-driven with no real dt parameter,
+        // so 16ms per frame (≈60fps) is a reasonable constant.
+        const dt = 16;
+        this.frameTimer += dt;
+        const fps = this.animState === 'walk' ? 8 : 2;
+        const tick = 1000 / fps;
+        while (this.frameTimer > tick) {
+            this.frame++;
+            this.frameTimer -= tick;
+        }
     }
 
-    /** Start chat (IsometricRenderercalled from) */
+    /** Start chat (called from IsometricRenderer) */
     startChat(partnerSprite) {
         this.chatPartner = partnerSprite;
         this.chatting = false;
@@ -320,219 +310,88 @@ export class AgentSprite {
     draw(ctx, zoom = 1) {
         this._zoom = zoom;
 
-        ctx.save();
-        ctx.translate(this.x, this.y);
+        if (!this.compositor) return;       // defensive: no compositor → render nothing
 
-        const sprite = this._getSpriteAppearance();
-        const app = sprite.app;
-        const profile = sprite.profile;
-        this._drawIdentityAura(ctx, sprite);
-        this._drawStateRing(ctx);
-        this._drawGroundShadow(ctx, sprite);
-
-        if (this.selected) {
-            ctx.beginPath();
-            ctx.ellipse(0, 21, 28, 10, 0, 0, Math.PI * 2);
-            ctx.fillStyle = 'rgba(242, 211, 107, 0.24)';
-            ctx.fill();
-            ctx.strokeStyle = '#f2d36b';
-            ctx.lineWidth = 1.4;
-            ctx.stroke();
+        if (!this.spriteCanvas) {
+            const provider = this._providerKey();
+            const variant = this._hashVariant();
+            const accessory = this._chooseAccessory();
+            this.spriteCanvas = this.compositor.spriteFor(provider, variant, accessory);
+            if (this.spriteCanvas) {
+                this.spriteSheet = new SpriteSheet(this.spriteCanvas, 64);
+            }
         }
 
-        const scaleX = this.facingLeft ? -1 : 1;
-        ctx.scale(scaleX * SPRITE_SCALE * sprite.modelScale, SPRITE_SCALE * sprite.modelScale);
+        if (!this.spriteCanvas || !this.spriteSheet) return;
 
-        const swing = this.moving ? Math.sin(this.walkFrame * 4) * 4 : 0;
-        this._drawProviderSilhouette(ctx, sprite);
-        this._drawHeroCape(ctx, sprite, swing);
+        // Ensure animState reflects current movement (idle when not moving).
+        this.animState = this.moving ? 'walk' : 'idle';
 
-        // Boots and legs
-        this._drawBootContact(ctx, sprite, swing);
-        ctx.strokeStyle = '#2b2018';
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(-3, 8);
-        ctx.lineTo(-3 - swing, 16);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(3, 8);
-        ctx.lineTo(3 + swing, 16);
-        ctx.stroke();
-        ctx.strokeStyle = app.pants;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(-3, 7);
-        ctx.lineTo(-3 - swing, 14);
-        ctx.moveTo(3, 7);
-        ctx.lineTo(3 + swing, 14);
-        ctx.stroke();
+        const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
+        const dx = Math.round(this.x - 32);
+        const dy = Math.round(this.y - 56);   // anchor: bottom-center of feet, sprite is 64×64
+        ctx.drawImage(
+            this.spriteCanvas,
+            cell.sx, cell.sy, cell.sw, cell.sh,
+            dx, dy, cell.sw, cell.sh
+        );
 
-        // Cloak shadow
-        ctx.fillStyle = profile.shadow;
-        ctx.beginPath();
-        ctx.moveTo(-sprite.bodyWidth, -3);
-        ctx.lineTo(0, 15);
-        ctx.lineTo(sprite.bodyWidth, -3);
-        ctx.closePath();
-        ctx.fill();
+        // Selection ring (if selected) — drawn at feet level.
+        if (this.selected) this._drawSelectionRing(ctx);
 
-        // Body
-        ctx.fillStyle = profile.outline;
-        ctx.fillRect(-sprite.bodyWidth + 1, -3, (sprite.bodyWidth - 1) * 2, 13);
-        ctx.fillStyle = app.shirt;
-        ctx.beginPath();
-        ctx.moveTo(-sprite.bodyWidth + 2, -2);
-        ctx.lineTo(sprite.bodyWidth - 2, -2);
-        ctx.lineTo(sprite.bodyWidth - 3, 10);
-        ctx.lineTo(-sprite.bodyWidth + 3, 10);
-        ctx.closePath();
-        ctx.fill();
-        this._drawProviderBodyDetails(ctx, sprite);
-        this._drawModelInsignia(ctx, sprite);
-
-        // Arms
-        ctx.strokeStyle = profile.outline;
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(-5, 0);
-        ctx.lineTo(-8 + swing, 8);
-        ctx.moveTo(5, 0);
-        ctx.lineTo(8 - swing, 8);
-        ctx.stroke();
-        ctx.strokeStyle = app.skin;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(-5, 0);
-        ctx.lineTo(-8 + swing, 8);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.moveTo(5, 0);
-        ctx.lineTo(8 - swing, 8);
-        ctx.stroke();
-
-        // Head
-        ctx.fillStyle = profile.outline;
-        ctx.beginPath();
-        ctx.arc(0, -6, 6, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = app.skin;
-        ctx.beginPath();
-        ctx.arc(0, -6, 5, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Hair
-        this._drawHair(ctx, app);
-
-        // Eyes
-        this._drawEyes(ctx, app, profile);
-
-        // Accessory
-        this._drawAccessory(ctx, app, sprite);
-        this._drawProviderHandProp(ctx, sprite, swing);
-        this._drawEffortBadge(ctx, sprite);
-
-        ctx.restore();
-
-        // Chatting effects
+        // Chat bubble overlay (if chatting).
+        // Per-agent floating text bubbles are deferred to Phase 4; the chat
+        // ellipsis animation already handled by _drawChatEffect below.
         if (this.chatting) {
             this._drawChatEffect(ctx);
         }
 
-        // Status indicators (drawn without flip, zoom-independent)
+        // Status indicators (drawn without flip, zoom-independent).
         if (!this.chatting) {
             this._drawStatus(ctx);
         }
         this._drawNameTag(ctx);
     }
 
-    _getSpriteAppearance() {
-        const base = this.agent.appearance;
-        const providerKey = this._providerKey();
-        const profile = PROVIDER_PROFILES[providerKey] || DEFAULT_PROFILE;
-        const hash = Math.abs(this._hash(`${this.agent.id}:${this.agent.model || ''}:${providerKey}`));
-        const pick = (items, offset = 0) => items[(hash >> offset) % items.length];
-        const modelIdentity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
-        const modelTier = modelIdentity.modelTier || this._modelTier();
-        const trim = pick(modelIdentity.trim || profile.trim, 18);
-        const accent = pick(modelIdentity.accent || profile.accent, 22);
-
-        const app = {
-            ...base,
-            shirt: profile.robe ? pick(profile.robe, 2) : base.shirt,
-            pants: profile.pants ? pick(profile.pants, 6) : base.pants,
-            accessory: profile.accessory ? pick(profile.accessory, 10) : base.accessory,
-            eyeStyle: profile.eyeStyle ? pick(profile.eyeStyle, 14) : base.eyeStyle,
-        };
-
-        return {
-            app,
-            profile,
-            hash,
-            trim,
-            accent,
-            variant: hash % 4,
-            modelClass: modelIdentity.modelClass,
-            modelTier,
-            effortTier: modelIdentity.effortTier || this._effortTier(),
-            providerKey,
-            bodyWidth: modelTier === 'apex' ? 10 : modelTier === 'strong' ? 9 : 8,
-            modelScale: modelTier === 'apex' ? 1.08 : modelTier === 'swift' ? 0.96 : 1,
-        };
-    }
-
-    _drawGroundShadow(ctx, sprite) {
-        const motionSquash = this.moving ? Math.abs(Math.sin(this.walkFrame * 4)) : 0;
-        const tierBoost = sprite.modelTier === 'apex' ? 4 : sprite.modelTier === 'strong' ? 2 : 0;
-        const workingBoost = this.agent.status === AgentStatus.WORKING ? 2 : 0;
-        const baseW = 20 + tierBoost + workingBoost;
-        const baseH = 8 + tierBoost * 0.22;
-
+    _drawSelectionRing(ctx) {
+        if (!this.assets) return;
+        const ring = this.assets.get('overlay.status.selected');
+        if (ring) {
+            const dx = Math.round(this.x - ring.width / 2);
+            const dy = Math.round(this.y - 6);     // just under feet
+            ctx.drawImage(ring, dx, dy);
+            return;
+        }
+        // Fallback: draw a simple ellipse when the overlay asset is not loaded.
         ctx.save();
-        ctx.translate(0, 21);
-        ctx.fillStyle = 'rgba(7, 5, 4, 0.28)';
         ctx.beginPath();
-        ctx.ellipse(4, 3, baseW + 7, baseH + 3, 0.06, 0, Math.PI * 2);
+        ctx.ellipse(this.x, this.y + 21, 28, 10, 0, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(242, 211, 107, 0.24)';
         ctx.fill();
-
-        const contact = ctx.createRadialGradient(0, 0, 2, 0, 0, baseW + 12);
-        contact.addColorStop(0, this._profileShadowColor(sprite.profile, 0.7));
-        contact.addColorStop(0.55, this._profileShadowColor(sprite.profile, 0.34));
-        contact.addColorStop(1, this._profileShadowColor(sprite.profile, 0));
-        ctx.fillStyle = contact;
-        ctx.beginPath();
-        ctx.ellipse(0, 0, baseW + motionSquash * 3, baseH - motionSquash * 0.8, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(255, 231, 166, 0.08)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.ellipse(-1, -1, baseW - 5, baseH - 3, 0, 0, Math.PI * 2);
+        ctx.strokeStyle = '#f2d36b';
+        ctx.lineWidth = 1.4;
         ctx.stroke();
         ctx.restore();
     }
 
-    _profileShadowColor(profile, alpha) {
-        if (profile.family === 'codex') return `rgba(9, 31, 34, ${alpha})`;
-        if (profile.family === 'gemini') return `rgba(22, 19, 55, ${alpha})`;
-        if (profile.family === 'claude') return `rgba(43, 25, 13, ${alpha})`;
-        return `rgba(30, 21, 15, ${alpha})`;
+    // --- Variant and accessory helpers (used by draw to select sprite) ---
+
+    /** Returns a palette variant index (0..3) stable for this agent. */
+    _hashVariant() {
+        const hash = Math.abs(this._hash(`${this.agent.id}:${this.agent.model || ''}:${this._providerKey()}`));
+        return hash % 4;
     }
 
-    _drawBootContact(ctx, sprite, swing) {
-        ctx.save();
-        ctx.fillStyle = sprite.profile.family === 'codex' ? 'rgba(11, 38, 42, 0.92)' :
-            sprite.profile.family === 'gemini' ? 'rgba(24, 21, 60, 0.92)' :
-                'rgba(35, 22, 15, 0.92)';
-        ctx.beginPath();
-        ctx.ellipse(-3 - swing, 16.5, 4.2, 1.8, 0, 0, Math.PI * 2);
-        ctx.ellipse(3 + swing, 16.5, 4.2, 1.8, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(255, 226, 160, 0.18)';
-        ctx.fillRect(-5 - swing, 15, 4, 1);
-        ctx.fillRect(1 + swing, 15, 4, 1);
-        ctx.restore();
+    /** Returns the accessory id string for this agent, or null. */
+    _chooseAccessory() {
+        const provider = this._providerKey();
+        const accessories = PROVIDER_ACCESSORIES[provider];
+        if (!accessories) return null;
+        const hash = Math.abs(this._hash(`${this.agent.id}:${this.agent.model || ''}:${provider}`));
+        return accessories[(hash >> 10) % accessories.length];
     }
+
+    // --- Provider / model helpers ---
 
     _providerKey() {
         const provider = String(this.agent.provider || '').toLowerCase();
@@ -543,23 +402,7 @@ export class AgentSprite {
         return 'default';
     }
 
-    _modelTier() {
-        const model = String(this.agent.model || '').toLowerCase();
-        if (model.includes('spark')) return 'swift';
-        if (model.includes('opus') || model.includes('5.5') || model.includes('pro')) return 'apex';
-        if (model.includes('sonnet') || model.includes('5.4') || model.includes('5.3')) return 'strong';
-        if (model.includes('haiku') || model.includes('mini') || model.includes('flash')) return 'swift';
-        return 'standard';
-    }
-
-    _effortTier() {
-        const effort = String(this.agent.effort || '').toLowerCase();
-        if (effort.includes('xhigh') || effort.includes('extra')) return 'xhigh';
-        if (effort.includes('high')) return 'high';
-        if (effort.includes('medium')) return 'medium';
-        if (effort.includes('low')) return 'low';
-        return null;
-    }
+    // --- Utility helpers ---
 
     _hash(str) {
         let hash = 0;
@@ -575,583 +418,7 @@ export class AgentSprite {
         return n - Math.floor(n);
     }
 
-    _drawIdentityAura(ctx, sprite) {
-        const effortAlpha = {
-            low: 0.08,
-            medium: 0.13,
-            high: 0.2,
-            xhigh: 0.28,
-        }[sprite.effortTier] || 0;
-        const modelAlpha = sprite.modelClass === 'spark' ? 0.18 : sprite.modelTier === 'apex' ? 0.16 : sprite.modelTier === 'strong' ? 0.09 : 0;
-        const alpha = effortAlpha + modelAlpha;
-        if (alpha <= 0) return;
-
-        const pulse = this.motionScale ? Math.sin(this.statusAnim * 2.1) * 0.12 : 0;
-        ctx.save();
-        ctx.strokeStyle = sprite.accent;
-        ctx.globalAlpha = Math.max(0, Math.min(0.42, alpha + pulse));
-        ctx.lineWidth = sprite.effortTier === 'xhigh' ? 2 : 1.2;
-        ctx.beginPath();
-        ctx.ellipse(0, 10, 26, 13, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        if (sprite.modelClass === 'spark') {
-            ctx.beginPath();
-            ctx.moveTo(-13, -3);
-            ctx.lineTo(-3, -10);
-            ctx.lineTo(5, -8);
-            ctx.lineTo(13, -14);
-            ctx.stroke();
-        } else if (sprite.modelTier === 'apex') {
-            ctx.beginPath();
-            ctx.ellipse(0, -12, 15, 6, 0, 0, Math.PI * 2);
-            ctx.stroke();
-        }
-        ctx.restore();
-    }
-
-    _drawStateRing(ctx) {
-        const status = this.agent.status;
-        const color = status === AgentStatus.WORKING ? THEME.working :
-            status === AgentStatus.WAITING ? THEME.waiting :
-                THEME.idle;
-        const pulse = this.motionScale ? Math.sin(this.statusAnim * 2.4) : 0;
-
-        ctx.save();
-        ctx.translate(0, 21);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = status === AgentStatus.WORKING ? 2.2 : 1.5;
-        ctx.globalAlpha = status === AgentStatus.WORKING
-            ? 0.72 + Math.max(0, pulse) * 0.18
-            : status === AgentStatus.WAITING
-                ? 0.48 + Math.max(0, pulse) * 0.16
-                : 0.28;
-        if (status === AgentStatus.WORKING) {
-            ctx.setLineDash([8, 5]);
-            ctx.lineDashOffset = -this.statusAnim * 18;
-        } else if (status === AgentStatus.WAITING) {
-            ctx.setLineDash([2, 6]);
-            ctx.lineDashOffset = -this.statusAnim * 8;
-        }
-        ctx.beginPath();
-        ctx.ellipse(0, 0, status === AgentStatus.WORKING ? 25 : 22, status === AgentStatus.WORKING ? 10 : 8, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    _drawProviderSilhouette(ctx, sprite) {
-        if (sprite.profile.family === 'claude') {
-            ctx.fillStyle = 'rgba(92, 45, 19, 0.92)';
-            ctx.beginPath();
-            ctx.moveTo(-10, -1);
-            ctx.quadraticCurveTo(-6, -12, 0, -15);
-            ctx.quadraticCurveTo(6, -12, 10, -1);
-            ctx.lineTo(7, 11);
-            ctx.lineTo(-7, 11);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = sprite.trim;
-            ctx.lineWidth = 0.9;
-            ctx.beginPath();
-            ctx.moveTo(-5, -9);
-            ctx.quadraticCurveTo(0, -13, 5, -9);
-            ctx.stroke();
-            return;
-        }
-
-        if (sprite.profile.family === 'codex') {
-            ctx.fillStyle = 'rgba(8, 37, 41, 0.92)';
-            ctx.fillRect(-10, -3, 20, 13);
-            ctx.fillStyle = sprite.trim;
-            ctx.fillRect(-12, 0, 3, 8);
-            ctx.fillRect(9, 0, 3, 8);
-            ctx.strokeStyle = sprite.accent;
-            ctx.lineWidth = 0.9;
-            ctx.beginPath();
-            ctx.moveTo(-8, -5);
-            ctx.lineTo(8, -5);
-            ctx.moveTo(-6, -7);
-            ctx.lineTo(-2, -7);
-            ctx.moveTo(2, -7);
-            ctx.lineTo(6, -7);
-            ctx.stroke();
-            return;
-        }
-
-        if (sprite.profile.family === 'gemini') {
-            ctx.strokeStyle = sprite.trim;
-            ctx.lineWidth = 1.1;
-            ctx.beginPath();
-            ctx.arc(0, -9, 11, Math.PI * 1.05, Math.PI * 1.95);
-            ctx.stroke();
-            ctx.fillStyle = 'rgba(50, 42, 111, 0.9)';
-            ctx.beginPath();
-            ctx.moveTo(-9, -2);
-            ctx.lineTo(0, 13);
-            ctx.lineTo(9, -2);
-            ctx.lineTo(0, 2);
-            ctx.closePath();
-            ctx.fill();
-        }
-    }
-
-    _drawProviderBodyDetails(ctx, sprite) {
-        if (sprite.profile.family === 'claude') {
-            ctx.fillStyle = sprite.trim;
-            ctx.fillRect(-1, -1, 2, 11);
-            ctx.fillRect(-4, 3, 8, 1);
-            ctx.fillStyle = 'rgba(255, 241, 184, 0.75)';
-            ctx.fillRect(sprite.variant % 2 ? 2 : -3, 5, 2, 2);
-            return;
-        }
-
-        if (sprite.profile.family === 'codex') {
-            ctx.fillStyle = sprite.trim;
-            ctx.fillRect(-4, 1, 8, 2);
-            ctx.fillRect(sprite.variant % 2 ? 2 : -4, -1, 2, 10);
-            ctx.fillStyle = '#0b2529';
-            ctx.fillRect(-5, 7, 10, 2);
-            ctx.fillStyle = sprite.accent;
-            ctx.fillRect(-4 + sprite.variant, 7, 2, 2);
-            return;
-        }
-
-        if (sprite.profile.family === 'gemini') {
-            ctx.fillStyle = sprite.trim;
-            ctx.beginPath();
-            ctx.moveTo(0, -2);
-            ctx.lineTo(4, 4);
-            ctx.lineTo(0, 10);
-            ctx.lineTo(-4, 4);
-            ctx.closePath();
-            ctx.fill();
-            ctx.fillStyle = sprite.accent;
-            ctx.fillRect(-1, 2, 2, 5);
-            return;
-        }
-
-        ctx.fillStyle = 'rgba(242, 211, 107, 0.65)';
-        ctx.fillRect(-1, -1, 2, 11);
-        ctx.fillRect(-4, 3, 8, 1);
-    }
-
-    _drawHeroCape(ctx, sprite, swing) {
-        const capeAlpha = sprite.modelTier === 'apex' ? 0.92 : sprite.modelTier === 'strong' ? 0.74 : 0.58;
-        const tail = this.moving ? swing * 0.35 : Math.sin(this.statusAnim) * 1.2;
-        ctx.save();
-        ctx.globalAlpha = capeAlpha;
-        ctx.fillStyle = sprite.profile.family === 'claude' ? '#5f2b18' :
-            sprite.profile.family === 'codex' ? '#0c3d42' :
-                sprite.profile.family === 'gemini' ? '#312a76' : '#4d3126';
-        ctx.beginPath();
-        ctx.moveTo(-sprite.bodyWidth + 2, -1);
-        ctx.lineTo(0, 16);
-        ctx.lineTo(sprite.bodyWidth - 2, -1);
-        ctx.lineTo(5 + tail, 10);
-        ctx.lineTo(0, 18);
-        ctx.lineTo(-5 + tail, 10);
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = sprite.trim;
-        ctx.globalAlpha = Math.min(1, capeAlpha + 0.1);
-        ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.moveTo(-sprite.bodyWidth + 4, 0);
-        ctx.lineTo(0, 15);
-        ctx.lineTo(sprite.bodyWidth - 4, 0);
-        ctx.stroke();
-        ctx.restore();
-    }
-
-    _drawModelInsignia(ctx, sprite) {
-        const color = {
-            apex: '#fff1b8',
-            strong: sprite.trim,
-            swift: '#9fd9d1',
-            standard: 'rgba(242, 211, 107, 0.72)',
-        }[sprite.modelTier] || sprite.trim;
-
-        ctx.fillStyle = color;
-        if (sprite.modelClass === 'spark') {
-            ctx.fillStyle = sprite.accent;
-            ctx.beginPath();
-            ctx.moveTo(1, -2);
-            ctx.lineTo(6, -2);
-            ctx.lineTo(2, 3);
-            ctx.lineTo(6, 3);
-            ctx.lineTo(-1, 10);
-            ctx.lineTo(1, 5);
-            ctx.lineTo(-4, 5);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = sprite.trim;
-            ctx.lineWidth = 0.7;
-            ctx.stroke();
-        } else if (sprite.modelClass === 'gpt55') {
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.arc(0, 3, 5, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(0, -2);
-            ctx.lineTo(5, 3);
-            ctx.lineTo(0, 8);
-            ctx.lineTo(-5, 3);
-            ctx.closePath();
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(0, 0);
-            ctx.lineTo(3, 3);
-            ctx.lineTo(0, 6);
-            ctx.lineTo(-3, 3);
-            ctx.closePath();
-            ctx.fill();
-        } else if (sprite.modelTier === 'apex') {
-            ctx.strokeStyle = color;
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.arc(0, 3, 5, 0, Math.PI * 2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(0, -1);
-            ctx.lineTo(4, 3);
-            ctx.lineTo(0, 7);
-            ctx.lineTo(-4, 3);
-            ctx.closePath();
-            ctx.fill();
-        } else if (sprite.modelTier === 'strong') {
-            ctx.fillRect(-4, 2, 8, 2);
-            ctx.fillRect(-1, -1, 2, 8);
-        } else if (sprite.modelTier === 'swift') {
-            ctx.beginPath();
-            ctx.moveTo(-4, 3);
-            ctx.lineTo(2, 0);
-            ctx.lineTo(-1, 4);
-            ctx.lineTo(4, 4);
-            ctx.lineTo(-2, 9);
-            ctx.lineTo(0, 5);
-            ctx.closePath();
-            ctx.fill();
-        } else {
-            ctx.fillRect(-2, 3, 4, 2);
-        }
-    }
-
-    _drawHair(ctx, app) {
-        ctx.fillStyle = app.hair;
-        switch (app.hairStyle) {
-            case 'short':
-                ctx.beginPath();
-                ctx.arc(0, -8, 5, Math.PI, 0);
-                ctx.fill();
-                ctx.fillRect(-4, -8, 8, 2);
-                break;
-            case 'long':
-                ctx.beginPath();
-                ctx.arc(0, -8, 5, Math.PI, 0);
-                ctx.fill();
-                ctx.fillRect(-5, -8, 2, 8);
-                ctx.fillRect(3, -8, 2, 8);
-                break;
-            case 'spiky':
-                ctx.beginPath();
-                ctx.moveTo(-4, -8);
-                ctx.lineTo(-2, -14);
-                ctx.lineTo(0, -9);
-                ctx.lineTo(2, -14);
-                ctx.lineTo(4, -8);
-                ctx.fill();
-                break;
-            case 'mohawk':
-                ctx.fillRect(-1, -14, 2, 6);
-                break;
-            case 'bald':
-                break;
-        }
-    }
-
-    _drawEyes(ctx, app, profile = DEFAULT_PROFILE) {
-        ctx.fillStyle = profile.family === 'codex' ? '#bff7ee' : '#000';
-        ctx.strokeStyle = profile.family === 'codex' ? '#bff7ee' : '#000';
-        switch (app.eyeStyle) {
-            case 'normal':
-                ctx.fillRect(-3, -7, 2, 2);
-                ctx.fillRect(1, -7, 2, 2);
-                break;
-            case 'happy':
-                ctx.beginPath();
-                ctx.arc(-2, -6, 1.5, 0, Math.PI);
-                ctx.stroke();
-                ctx.beginPath();
-                ctx.arc(2, -6, 1.5, 0, Math.PI);
-                ctx.stroke();
-                break;
-            case 'determined':
-                ctx.fillRect(-3, -7, 2, 1.5);
-                ctx.fillRect(1, -7, 2, 1.5);
-                break;
-            case 'sleepy':
-                ctx.strokeStyle = '#000';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(-3, -6);
-                ctx.lineTo(-1, -6);
-                ctx.stroke();
-                ctx.beginPath();
-                ctx.moveTo(1, -6);
-                ctx.lineTo(3, -6);
-                ctx.stroke();
-                break;
-        }
-    }
-
-    _drawAccessory(ctx, app, sprite = null) {
-        if (sprite?.profile.family === 'claude') {
-            this._drawClaudeAccessory(ctx, app, sprite);
-            return;
-        }
-        if (sprite?.profile.family === 'codex') {
-            this._drawCodexAccessory(ctx, app, sprite);
-            return;
-        }
-        if (sprite?.profile.family === 'gemini') {
-            this._drawGeminiAccessory(ctx, app, sprite);
-            return;
-        }
-
-        switch (app.accessory) {
-            case 'crown':
-                ctx.fillStyle = '#f2d36b';
-                ctx.beginPath();
-                ctx.moveTo(-4, -12);
-                ctx.lineTo(-4, -15);
-                ctx.lineTo(-2, -13);
-                ctx.lineTo(0, -16);
-                ctx.lineTo(2, -13);
-                ctx.lineTo(4, -15);
-                ctx.lineTo(4, -12);
-                ctx.closePath();
-                ctx.fill();
-                ctx.strokeStyle = '#5a371d';
-                ctx.lineWidth = 0.8;
-                ctx.stroke();
-                break;
-            case 'glasses':
-                ctx.strokeStyle = '#2b2018';
-                ctx.lineWidth = 0.8;
-                ctx.beginPath();
-                ctx.rect(-4, -8, 3, 3);
-                ctx.rect(1, -8, 3, 3);
-                ctx.moveTo(-1, -6.5);
-                ctx.lineTo(1, -6.5);
-                ctx.stroke();
-                break;
-            case 'headphones':
-                ctx.strokeStyle = '#2b2018';
-                ctx.lineWidth = 1.5;
-                ctx.beginPath();
-                ctx.arc(0, -7, 6, Math.PI, 0);
-                ctx.stroke();
-                ctx.fillStyle = '#5c4b39';
-                ctx.fillRect(-7, -7, 3, 4);
-                ctx.fillRect(4, -7, 3, 4);
-                break;
-            case 'hat':
-                ctx.fillStyle = '#5a371d';
-                ctx.fillRect(-7, -12, 14, 2);
-                ctx.fillRect(-4, -16, 8, 4);
-                ctx.fillStyle = '#f2d36b';
-                ctx.fillRect(-3, -13, 6, 1);
-                break;
-        }
-    }
-
-    _drawClaudeAccessory(ctx, app, sprite) {
-        switch (app.accessory) {
-            case 'mageHood':
-                ctx.fillStyle = '#6f3518';
-                ctx.beginPath();
-                ctx.moveTo(-7, -8);
-                ctx.lineTo(0, -17);
-                ctx.lineTo(7, -8);
-                ctx.closePath();
-                ctx.fill();
-                ctx.strokeStyle = sprite.trim;
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(-4, -10);
-                ctx.lineTo(0, -15);
-                ctx.lineTo(4, -10);
-                ctx.stroke();
-                break;
-            case 'scholarCap':
-                ctx.fillStyle = '#5a371d';
-                ctx.fillRect(-6, -13, 12, 2);
-                ctx.fillRect(-4, -16, 8, 4);
-                ctx.fillStyle = sprite.trim;
-                ctx.fillRect(-3, -13, 6, 1);
-                ctx.fillRect(5, -13, 1, 4);
-                break;
-            case 'goldCirclet':
-                ctx.strokeStyle = sprite.trim;
-                ctx.lineWidth = 1.2;
-                ctx.beginPath();
-                ctx.arc(0, -8, 5, Math.PI * 1.05, Math.PI * 1.95);
-                ctx.stroke();
-                ctx.fillStyle = sprite.accent;
-                ctx.fillRect(-1, -12, 2, 2);
-                break;
-        }
-    }
-
-    _drawCodexAccessory(ctx, app, sprite) {
-        switch (app.accessory) {
-            case 'goggles':
-                ctx.strokeStyle = sprite.trim;
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.rect(-5, -9, 4, 3);
-                ctx.rect(1, -9, 4, 3);
-                ctx.moveTo(-1, -7.5);
-                ctx.lineTo(1, -7.5);
-                ctx.stroke();
-                ctx.fillStyle = 'rgba(191, 247, 238, 0.45)';
-                ctx.fillRect(-4, -8, 2, 1);
-                ctx.fillRect(2, -8, 2, 1);
-                break;
-            case 'toolBand':
-                ctx.strokeStyle = sprite.trim;
-                ctx.lineWidth = 1.4;
-                ctx.beginPath();
-                ctx.moveTo(-6, -12);
-                ctx.lineTo(6, -12);
-                ctx.stroke();
-                ctx.fillStyle = sprite.accent;
-                ctx.fillRect(sprite.variant % 2 ? 3 : -4, -15, 2, 4);
-                break;
-            case 'rogueMask':
-                ctx.fillStyle = '#092529';
-                ctx.fillRect(-5, -8, 10, 3);
-                ctx.fillStyle = sprite.trim;
-                ctx.fillRect(-3, -7, 2, 1);
-                ctx.fillRect(1, -7, 2, 1);
-                break;
-        }
-    }
-
-    _drawGeminiAccessory(ctx, app, sprite) {
-        switch (app.accessory) {
-            case 'starCrown':
-                ctx.fillStyle = sprite.trim;
-                for (const x of [-4, 0, 4]) {
-                    ctx.beginPath();
-                    ctx.moveTo(x, -16);
-                    ctx.lineTo(x + 2, -12);
-                    ctx.lineTo(x - 2, -12);
-                    ctx.closePath();
-                    ctx.fill();
-                }
-                ctx.strokeStyle = sprite.accent;
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(-6, -12);
-                ctx.lineTo(6, -12);
-                ctx.stroke();
-                break;
-            case 'oracleVeil':
-                ctx.fillStyle = 'rgba(183, 204, 255, 0.58)';
-                ctx.fillRect(-6, -9, 12, 4);
-                ctx.fillStyle = sprite.accent;
-                ctx.fillRect(-4, -8, 2, 1);
-                ctx.fillRect(2, -8, 2, 1);
-                break;
-            case 'moonBand':
-                ctx.strokeStyle = sprite.trim;
-                ctx.lineWidth = 1.2;
-                ctx.beginPath();
-                ctx.arc(0, -8, 6, Math.PI * 1.05, Math.PI * 1.95);
-                ctx.stroke();
-                ctx.fillStyle = sprite.accent;
-                ctx.beginPath();
-                ctx.arc(4, -12, 2, Math.PI * 0.4, Math.PI * 1.6);
-                ctx.fill();
-                break;
-        }
-    }
-
-    _drawProviderHandProp(ctx, sprite, swing) {
-        if (sprite.profile.family === 'claude') {
-            ctx.fillStyle = '#6b3f1f';
-            ctx.fillRect(-11 + swing, 5, 5, 6);
-            ctx.fillStyle = sprite.trim;
-            ctx.fillRect(-10 + swing, 5, 1, 6);
-            ctx.fillStyle = sprite.accent;
-            ctx.fillRect(-8 + swing, 4, 2, 1);
-            return;
-        }
-
-        if (sprite.profile.family === 'codex') {
-            ctx.strokeStyle = sprite.accent;
-            ctx.lineWidth = 1.3;
-            ctx.beginPath();
-            ctx.moveTo(8 - swing, 6);
-            ctx.lineTo(12 - swing, 2);
-            ctx.moveTo(10 - swing, 2);
-            ctx.lineTo(12 - swing, 4);
-            ctx.stroke();
-            ctx.fillStyle = '#0b2529';
-            ctx.fillRect(5, -1, 2, 10);
-        }
-
-        if (sprite.profile.family === 'gemini') {
-            ctx.strokeStyle = sprite.accent;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.moveTo(-8 + swing, 5);
-            ctx.lineTo(-12 + swing, 0);
-            ctx.stroke();
-            ctx.fillStyle = sprite.trim;
-            ctx.beginPath();
-            ctx.arc(-12 + swing, 0, 2, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
-    _drawEffortBadge(ctx, sprite) {
-        if (!sprite.effortTier) return;
-        const marks = { low: 1, medium: 2, high: 3, xhigh: 4 }[sprite.effortTier] || 0;
-        const colors = {
-            low: 'rgba(126, 183, 214, 0.82)',
-            medium: 'rgba(242, 211, 107, 0.88)',
-            high: 'rgba(255, 138, 42, 0.9)',
-            xhigh: 'rgba(255, 241, 184, 0.96)',
-        };
-        ctx.fillStyle = colors[sprite.effortTier];
-        for (let i = 0; i < marks; i++) {
-            ctx.beginPath();
-            ctx.arc(11, -5 + i * 4, 1.7, 0, Math.PI * 2);
-            ctx.fill();
-        }
-        if (sprite.effortTier === 'high' || sprite.effortTier === 'xhigh') {
-            ctx.strokeStyle = colors[sprite.effortTier];
-            ctx.lineWidth = sprite.effortTier === 'xhigh' ? 1.4 : 0.9;
-            ctx.beginPath();
-            ctx.arc(0, -6, sprite.effortTier === 'xhigh' ? 12 : 10, Math.PI * 1.12, Math.PI * 1.88);
-            ctx.stroke();
-        }
-        if (sprite.modelClass === 'spark' && sprite.effortTier === 'xhigh') {
-            ctx.strokeStyle = sprite.accent;
-            ctx.lineWidth = 0.9;
-            ctx.beginPath();
-            ctx.moveTo(14, -15);
-            ctx.lineTo(18, -19);
-            ctx.moveTo(16, -10);
-            ctx.lineTo(22, -11);
-            ctx.moveTo(12, -2);
-            ctx.lineTo(16, 1);
-            ctx.stroke();
-        }
-    }
+    // --- Status / UI overlay drawing ---
 
     _drawStatus(ctx) {
         const agent = this.agent;
@@ -1313,7 +580,7 @@ export class AgentSprite {
         const floatY = -56 + Math.sin(t * 2) * 4;
         ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 3);
         ctx.font = '12px "Press Start 2P", monospace';
-        const emojis = ['\u{1F4AC}', '\u{1F4AD}', '\u2728'];
+        const emojis = ['\u{1F4AC}', '\u{1F4AD}', '✨'];
         ctx.fillText(emojis[Math.floor(t) % emojis.length], 0, floatY);
         ctx.globalAlpha = 1;
 
