@@ -21,7 +21,7 @@ export class SceneryEngine {
         this.shoreTiles = new Set();
         this.bridgeTiles = new Map(); // key -> { orientation: 'NS' | 'EW' }
         this.bushTiles = new Map();    // key -> { variant: 0..2 }
-        this.grassTuftTiles = new Map();
+        this.grassTuftTiles = new Map(); // key -> { variant: 0..1 }
         this.smallRockTiles = new Set();
         this.treeProps = [];           // { tileX, tileY, variant, scale }
         this.boulderProps = [];        // { tileX, tileY, variant, scale }
@@ -130,7 +130,7 @@ export class SceneryEngine {
                 const ny = y + dy;
                 if (nx < 0 || nx >= MAP_SIZE || ny < 0 || ny >= MAP_SIZE) continue;
                 const nKey = `${nx},${ny}`;
-                if (!this.waterTiles.has(nKey)) {
+                if (!this.waterTiles.has(nKey) && !this._buildingFootprints.has(nKey)) {
                     this.shoreTiles.add(nKey);
                 }
             }
