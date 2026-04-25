@@ -206,9 +206,21 @@ class App {
 
             this._resizeHandle = null;
 
-            if (canvas.width === w && canvas.height === h) return;
-            canvas.width = w;
-            canvas.height = h;
+            const cssWidth = w;
+            const cssHeight = h;
+            const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+            const newW = cssWidth * dpr;
+            const newH = cssHeight * dpr;
+            if (canvas.width === newW && canvas.height === newH) return;
+            canvas.width = newW;
+            canvas.height = newH;
+            canvas.style.width = `${cssWidth}px`;
+            canvas.style.height = `${cssHeight}px`;
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.imageSmoothingEnabled = false;
+            ctx.mozImageSmoothingEnabled = false;
+            ctx.webkitImageSmoothingEnabled = false;
             if (this.renderer && this.renderer.camera) {
                 this.renderer.camera.centerOnMap();
             }

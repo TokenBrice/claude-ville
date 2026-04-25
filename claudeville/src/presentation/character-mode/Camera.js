@@ -129,6 +129,6 @@ export class Camera {
     }
 
     applyTransform(ctx) {
-        ctx.setTransform(this.zoom, 0, 0, this.zoom, this.x * this.zoom, this.y * this.zoom);
+        ctx.setTransform(this.zoom, 0, 0, this.zoom, Math.round(this.x * this.zoom), Math.round(this.y * this.zoom));
     }
 }

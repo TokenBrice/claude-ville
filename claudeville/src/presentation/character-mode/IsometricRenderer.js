@@ -741,6 +741,7 @@ export class IsometricRenderer {
 
         // Clear
         ctx.setTransform(1, 0, 0, 1, 0, 0);
+        SpriteRenderer.disableSmoothing(ctx);
         ctx.fillStyle = THEME.bg;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -781,6 +782,7 @@ export class IsometricRenderer {
 
         // Reset transform for UI
         ctx.setTransform(1, 0, 0, 1, 0, 0);
+        SpriteRenderer.disableSmoothing(ctx);
         this._drawAtmosphere(ctx);
 
         // Minimap
