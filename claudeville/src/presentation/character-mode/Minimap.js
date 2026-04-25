@@ -160,7 +160,8 @@ export class Minimap {
         const buildingsSignature = this._snapshotBuildings(world);
         const waterSize = layers.waterTiles?.size || 0;
         const pathSize = layers.pathTiles?.size || 0;
-        const key = `${waterSize}|${pathSize}|${buildingsSignature}`;
+        const bridgeSize = layers.bridgeTiles?.size || 0;
+        const key = `${waterSize}|${pathSize}|${bridgeSize}|${buildingsSignature}`;
         if (this._staticLayer && this._staticLayerKey === key) return;
 
         this._staticLayer = document.createElement('canvas');
@@ -194,6 +195,15 @@ export class Minimap {
 
         this._drawTileLayer(staticCtx, layers.waterTiles, '#1d5c78', 1.2);
         this._drawTileLayer(staticCtx, layers.pathTiles, '#d1ac6b', 1.3);
+        if (layers.bridgeTiles) {
+            // _drawTileLayer iterates with `for (const key of layer)`. Set
+            // and Array iterators yield keys; Map yields entries. Convert
+            // Map to a key Set so the call works either way.
+            const bridgeKeys = layers.bridgeTiles instanceof Map
+                ? new Set(layers.bridgeTiles.keys())
+                : layers.bridgeTiles;
+            this._drawTileLayer(staticCtx, bridgeKeys, '#b3854c', 1.4);
+        }
 
         // Buildings
         for (const building of world.buildings.values()) {
