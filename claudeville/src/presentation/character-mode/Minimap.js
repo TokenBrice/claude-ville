@@ -169,20 +169,31 @@ export class Minimap {
         const staticCtx = this._staticLayer.getContext('2d');
 
         // Background
-        staticCtx.fillStyle = '#182414';
+        staticCtx.fillStyle = '#392b1d';
         staticCtx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
 
-        staticCtx.fillStyle = '#314f2b';
-        staticCtx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+        const parchment = staticCtx.createRadialGradient(
+            MINIMAP_SIZE * 0.45,
+            MINIMAP_SIZE * 0.42,
+            10,
+            MINIMAP_SIZE * 0.5,
+            MINIMAP_SIZE * 0.5,
+            MINIMAP_SIZE * 0.8,
+        );
+        parchment.addColorStop(0, '#7b6a46');
+        parchment.addColorStop(0.68, '#4d3d27');
+        parchment.addColorStop(1, '#201811');
+        staticCtx.fillStyle = parchment;
+        staticCtx.fillRect(3, 3, MINIMAP_SIZE - 6, MINIMAP_SIZE - 6);
 
-        staticCtx.fillStyle = 'rgba(242, 211, 107, 0.07)';
+        staticCtx.fillStyle = 'rgba(255, 232, 166, 0.06)';
         for (let x = 0; x <= MINIMAP_SIZE; x += this.scale * 5) {
             staticCtx.fillRect(x, 0, 1, MINIMAP_SIZE);
             staticCtx.fillRect(0, x, MINIMAP_SIZE, 1);
         }
 
-        this._drawTileLayer(staticCtx, layers.waterTiles, '#2a7891', 1.1);
-        this._drawTileLayer(staticCtx, layers.pathTiles, '#9d7d4b', 1.25);
+        this._drawTileLayer(staticCtx, layers.waterTiles, '#1d5c78', 1.2);
+        this._drawTileLayer(staticCtx, layers.pathTiles, '#d1ac6b', 1.3);
 
         // Buildings
         for (const building of world.buildings.values()) {
@@ -190,10 +201,16 @@ export class Minimap {
             const x = building.position.tileX * this.scale;
             const y = building.position.tileY * this.scale;
             staticCtx.fillStyle = color;
-            staticCtx.fillRect(x, y, building.width * this.scale, building.height * this.scale);
+            staticCtx.beginPath();
+            staticCtx.moveTo(x + building.width * this.scale / 2, y);
+            staticCtx.lineTo(x + building.width * this.scale, y + building.height * this.scale / 2);
+            staticCtx.lineTo(x + building.width * this.scale / 2, y + building.height * this.scale);
+            staticCtx.lineTo(x, y + building.height * this.scale / 2);
+            staticCtx.closePath();
+            staticCtx.fill();
             staticCtx.strokeStyle = '#2a1b10';
             staticCtx.lineWidth = 1;
-            staticCtx.strokeRect(x + 0.5, y + 0.5, building.width * this.scale - 1, building.height * this.scale - 1);
+            staticCtx.stroke();
         }
 
         this._staticLayerKey = key;

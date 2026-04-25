@@ -77,6 +77,30 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'up',
     },
+    firefly: {
+        colors: ['#fff1a8', '#f6da82', '#b8f58a'],
+        size: [1, 2.4],
+        life: [34, 72],
+        speed: [0.08, 0.28],
+        gravity: false,
+        direction: 'random',
+    },
+    leaf: {
+        colors: ['#8fbf58', '#b8914b', '#6f8f3e'],
+        size: [1.4, 3],
+        life: [30, 58],
+        speed: [0.18, 0.45],
+        gravity: false,
+        direction: 'down',
+    },
+    portalRune: {
+        colors: ['#8feaff', '#76d8ff', '#d7b8ff'],
+        size: [1.5, 3],
+        life: [22, 44],
+        speed: [0.2, 0.6],
+        gravity: false,
+        direction: 'up',
+    },
 };
 
 function rand(min, max) {

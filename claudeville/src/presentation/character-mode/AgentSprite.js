@@ -274,11 +274,7 @@ export class AgentSprite {
         const profile = sprite.profile;
         this._drawIdentityAura(ctx, sprite);
         this._drawStateRing(ctx);
-
-        ctx.beginPath();
-        ctx.ellipse(0, 21, 20, 8, 0, 0, Math.PI * 2);
-        ctx.fillStyle = profile.shadow;
-        ctx.fill();
+        this._drawGroundShadow(ctx, sprite);
 
         if (this.selected) {
             ctx.beginPath();
@@ -295,8 +291,10 @@ export class AgentSprite {
 
         const swing = this.moving ? Math.sin(this.walkFrame * 4) * 4 : 0;
         this._drawProviderSilhouette(ctx, sprite);
+        this._drawHeroCape(ctx, sprite, swing);
 
         // Boots and legs
+        this._drawBootContact(ctx, sprite, swing);
         ctx.strokeStyle = '#2b2018';
         ctx.lineWidth = 4;
         ctx.beginPath();
@@ -427,6 +425,59 @@ export class AgentSprite {
             bodyWidth: modelTier === 'apex' ? 10 : modelTier === 'strong' ? 9 : 8,
             modelScale: modelTier === 'apex' ? 1.08 : modelTier === 'swift' ? 0.96 : 1,
         };
+    }
+
+    _drawGroundShadow(ctx, sprite) {
+        const motionSquash = this.moving ? Math.abs(Math.sin(this.walkFrame * 4)) : 0;
+        const tierBoost = sprite.modelTier === 'apex' ? 4 : sprite.modelTier === 'strong' ? 2 : 0;
+        const workingBoost = this.agent.status === AgentStatus.WORKING ? 2 : 0;
+        const baseW = 20 + tierBoost + workingBoost;
+        const baseH = 8 + tierBoost * 0.22;
+
+        ctx.save();
+        ctx.translate(0, 21);
+        ctx.fillStyle = 'rgba(7, 5, 4, 0.28)';
+        ctx.beginPath();
+        ctx.ellipse(4, 3, baseW + 7, baseH + 3, 0.06, 0, Math.PI * 2);
+        ctx.fill();
+
+        const contact = ctx.createRadialGradient(0, 0, 2, 0, 0, baseW + 12);
+        contact.addColorStop(0, this._profileShadowColor(sprite.profile, 0.7));
+        contact.addColorStop(0.55, this._profileShadowColor(sprite.profile, 0.34));
+        contact.addColorStop(1, this._profileShadowColor(sprite.profile, 0));
+        ctx.fillStyle = contact;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, baseW + motionSquash * 3, baseH - motionSquash * 0.8, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = 'rgba(255, 231, 166, 0.08)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(-1, -1, baseW - 5, baseH - 3, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _profileShadowColor(profile, alpha) {
+        if (profile.family === 'codex') return `rgba(9, 31, 34, ${alpha})`;
+        if (profile.family === 'gemini') return `rgba(22, 19, 55, ${alpha})`;
+        if (profile.family === 'claude') return `rgba(43, 25, 13, ${alpha})`;
+        return `rgba(30, 21, 15, ${alpha})`;
+    }
+
+    _drawBootContact(ctx, sprite, swing) {
+        ctx.save();
+        ctx.fillStyle = sprite.profile.family === 'codex' ? 'rgba(11, 38, 42, 0.92)' :
+            sprite.profile.family === 'gemini' ? 'rgba(24, 21, 60, 0.92)' :
+                'rgba(35, 22, 15, 0.92)';
+        ctx.beginPath();
+        ctx.ellipse(-3 - swing, 16.5, 4.2, 1.8, 0, 0, Math.PI * 2);
+        ctx.ellipse(3 + swing, 16.5, 4.2, 1.8, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255, 226, 160, 0.18)';
+        ctx.fillRect(-5 - swing, 15, 4, 1);
+        ctx.fillRect(1 + swing, 15, 4, 1);
+        ctx.restore();
     }
 
     _providerKey() {
@@ -627,6 +678,34 @@ export class AgentSprite {
         ctx.fillStyle = 'rgba(242, 211, 107, 0.65)';
         ctx.fillRect(-1, -1, 2, 11);
         ctx.fillRect(-4, 3, 8, 1);
+    }
+
+    _drawHeroCape(ctx, sprite, swing) {
+        const capeAlpha = sprite.modelTier === 'apex' ? 0.92 : sprite.modelTier === 'strong' ? 0.74 : 0.58;
+        const tail = this.moving ? swing * 0.35 : Math.sin(this.statusAnim) * 1.2;
+        ctx.save();
+        ctx.globalAlpha = capeAlpha;
+        ctx.fillStyle = sprite.profile.family === 'claude' ? '#5f2b18' :
+            sprite.profile.family === 'codex' ? '#0c3d42' :
+                sprite.profile.family === 'gemini' ? '#312a76' : '#4d3126';
+        ctx.beginPath();
+        ctx.moveTo(-sprite.bodyWidth + 2, -1);
+        ctx.lineTo(0, 16);
+        ctx.lineTo(sprite.bodyWidth - 2, -1);
+        ctx.lineTo(5 + tail, 10);
+        ctx.lineTo(0, 18);
+        ctx.lineTo(-5 + tail, 10);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = sprite.trim;
+        ctx.globalAlpha = Math.min(1, capeAlpha + 0.1);
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        ctx.moveTo(-sprite.bodyWidth + 4, 0);
+        ctx.lineTo(0, 15);
+        ctx.lineTo(sprite.bodyWidth - 4, 0);
+        ctx.stroke();
+        ctx.restore();
     }
 
     _drawModelInsignia(ctx, sprite) {

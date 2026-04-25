@@ -4,9 +4,10 @@
     width: 320px;
     flex-shrink: 0;
     background:
-        linear-gradient(180deg, rgba(35, 25, 22, 0.98), rgba(15, 11, 13, 0.98)),
-        repeating-linear-gradient(0deg, rgba(242, 211, 107, 0.025) 0 1px, transparent 1px 18px);
-    border-left: 2px solid rgba(199, 157, 76, 0.62);
+        radial-gradient(circle at 50% 0%, rgba(246, 218, 130, 0.08), transparent 28%),
+        linear-gradient(180deg, rgba(47, 31, 22, 0.98), rgba(16, 11, 10, 0.98)),
+        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.03) 0 1px, transparent 1px 18px);
+    border-left: 2px solid rgba(214, 169, 81, 0.68);
     box-shadow:
         inset 1px 0 0 rgba(78, 48, 27, 0.76),
         -8px 0 20px rgba(0, 0, 0, 0.18);
@@ -139,8 +140,9 @@
     align-items: center;
     gap: 8px;
     padding: 6px 10px;
-    background: rgba(31, 22, 18, 0.72);
-    border: 1px solid rgba(199, 157, 76, 0.16);
+    background:
+        linear-gradient(180deg, rgba(59, 42, 26, 0.72), rgba(31, 22, 18, 0.72));
+    border: 1px solid rgba(214, 169, 81, 0.22);
     border-radius: 2px;
     border-left: 3px solid #72d071;
     box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22);
@@ -201,8 +203,8 @@
     padding: 4px 8px;
     font-size: 7px;
     border-radius: 2px;
-    background: rgba(31, 22, 18, 0.48);
-    border: 1px solid rgba(199, 157, 76, 0.06);
+    background: rgba(45, 31, 20, 0.52);
+    border: 1px solid rgba(214, 169, 81, 0.08);
 }
 
 .activity-panel__tool-item:first-child {
@@ -252,7 +254,7 @@
     padding: 6px 8px;
     font-size: 7px;
     color: #a89476;
-    background: rgba(31, 22, 18, 0.48);
+    background: rgba(54, 38, 24, 0.52);
     border-radius: 2px;
     line-height: 1.6;
     border-left: 2px solid transparent;
@@ -339,8 +341,8 @@
     flex-direction: column;
     gap: 1px;
     padding: 4px 6px;
-    background: rgba(31, 22, 18, 0.48);
-    border: 1px solid rgba(199, 157, 76, 0.1);
+    background: rgba(54, 38, 24, 0.52);
+    border: 1px solid rgba(214, 169, 81, 0.12);
     border-radius: 2px;
 }
 
@@ -362,4 +364,80 @@
     color: #755f44;
     font-size: 7px;
     padding: 4px 0;
+}
+
+/* Worker C quest log refinement layer */
+.activity-panel {
+    background:
+        radial-gradient(circle at 50% -4%, rgba(255, 226, 138, 0.12), transparent 30%),
+        linear-gradient(270deg, rgba(255, 226, 138, 0.055), transparent 20%),
+        linear-gradient(180deg, rgba(48, 31, 22, 0.99), rgba(14, 10, 9, 0.99)),
+        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.028) 0 1px, transparent 1px 18px);
+    border-left-color: rgba(235, 184, 82, 0.78);
+    box-shadow:
+        inset 1px 0 0 rgba(255, 226, 138, 0.1),
+        inset 5px 0 16px rgba(0, 0, 0, 0.2),
+        -8px 0 20px rgba(0, 0, 0, 0.2);
+}
+
+.activity-panel__header {
+    background:
+        linear-gradient(180deg, rgba(38, 24, 17, 0.86), rgba(18, 12, 10, 0.68));
+    border-bottom-color: rgba(214, 169, 81, 0.42);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 226, 138, 0.1),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.32);
+}
+
+.activity-panel__name {
+    color: #ffe58d;
+    text-shadow: 1px 1px 0 #2d1a12, 0 0 10px rgba(255, 226, 138, 0.16);
+}
+
+.activity-panel__status,
+.activity-panel__close {
+    background:
+        linear-gradient(180deg, rgba(74, 50, 29, 0.9), rgba(25, 17, 14, 0.9));
+    border-color: rgba(214, 169, 81, 0.42);
+    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.1);
+}
+
+.activity-panel__meta {
+    background:
+        linear-gradient(180deg, rgba(35, 23, 17, 0.42), rgba(16, 11, 10, 0.22));
+    border-bottom-color: rgba(214, 169, 81, 0.18);
+}
+
+.activity-panel__section {
+    background:
+        linear-gradient(180deg, rgba(255, 226, 138, 0.018), transparent 40%);
+}
+
+.activity-panel__section-title {
+    color: #cbb183;
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.68);
+}
+
+.activity-panel__current-tool {
+    background:
+        radial-gradient(circle at 0% 0%, rgba(114, 208, 113, 0.13), transparent 40%),
+        linear-gradient(180deg, rgba(63, 44, 27, 0.78), rgba(27, 19, 16, 0.78));
+    border-color: rgba(214, 169, 81, 0.3);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 226, 138, 0.08),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.28);
+}
+
+.activity-panel__tool-item,
+.activity-panel__msg {
+    background:
+        linear-gradient(180deg, rgba(54, 38, 24, 0.64), rgba(31, 22, 17, 0.58));
+    border-color: rgba(214, 169, 81, 0.12);
+    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.05);
+}
+
+.activity-panel__tool-item:first-child {
+    background:
+        linear-gradient(180deg, rgba(83, 91, 45, 0.34), rgba(31, 22, 17, 0.64));
+    border-color: rgba(114, 208, 113, 0.22);
 }

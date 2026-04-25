@@ -1,9 +1,10 @@
 .sidebar {
     width: 240px;
     background:
-        linear-gradient(180deg, rgba(35, 25, 22, 0.98), rgba(15, 11, 13, 0.98)),
-        repeating-linear-gradient(0deg, rgba(242, 211, 107, 0.025) 0 1px, transparent 1px 18px);
-    border-right: 2px solid rgba(199, 157, 76, 0.62);
+        radial-gradient(circle at 40% 0%, rgba(246, 218, 130, 0.08), transparent 24%),
+        linear-gradient(180deg, rgba(45, 30, 23, 0.98), rgba(15, 11, 10, 0.98)),
+        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.03) 0 1px, transparent 1px 18px);
+    border-right: 2px solid rgba(214, 169, 81, 0.68);
     box-shadow:
         inset -1px 0 0 rgba(78, 48, 27, 0.76),
         8px 0 20px rgba(0, 0, 0, 0.16);
@@ -53,18 +54,21 @@
     cursor: pointer;
     transition: background 0.15s;
     border-left: 3px solid transparent;
-    border-bottom: 1px solid rgba(199, 157, 76, 0.05);
+    border-bottom: 1px solid rgba(214, 169, 81, 0.07);
 }
 
 .sidebar__agent:hover {
-    background: rgba(242, 211, 107, 0.07);
-    box-shadow: inset 0 0 0 1px rgba(199, 157, 76, 0.08);
+    background: rgba(246, 218, 130, 0.08);
+    box-shadow: inset 0 0 0 1px rgba(214, 169, 81, 0.12);
 }
 
 .sidebar__agent--selected {
-    background: rgba(92, 57, 27, 0.46);
-    border-left-color: #f2d36b;
-    box-shadow: inset 0 0 0 1px rgba(199, 157, 76, 0.14);
+    background:
+        linear-gradient(90deg, rgba(246, 218, 130, 0.18), rgba(92, 57, 27, 0.34));
+    border-left-color: #f6da82;
+    box-shadow:
+        inset 0 0 0 1px rgba(214, 169, 81, 0.18),
+        inset 16px 0 24px rgba(246, 218, 130, 0.06);
 }
 
 .sidebar__agent-dot {
@@ -162,4 +166,95 @@
     border: 1px solid rgba(199, 157, 76, 0.2);
     padding: 1px 6px;
     border-radius: 2px;
+}
+
+/* Worker C guild ledger refinement layer */
+.sidebar {
+    background:
+        radial-gradient(circle at 42% -8%, rgba(255, 226, 138, 0.12), transparent 25%),
+        linear-gradient(90deg, rgba(255, 226, 138, 0.06), transparent 18%),
+        linear-gradient(180deg, rgba(48, 31, 22, 0.99), rgba(13, 10, 9, 0.99)),
+        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.03) 0 1px, transparent 1px 18px);
+    border-right-color: rgba(235, 184, 82, 0.78);
+    box-shadow:
+        inset -1px 0 0 rgba(255, 226, 138, 0.1),
+        inset -4px 0 14px rgba(0, 0, 0, 0.2),
+        8px 0 20px rgba(0, 0, 0, 0.18);
+}
+
+.sidebar__header {
+    background:
+        linear-gradient(180deg, rgba(36, 23, 16, 0.82), rgba(18, 12, 10, 0.66));
+    border-bottom-color: rgba(214, 169, 81, 0.42);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 226, 138, 0.1),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.32);
+}
+
+.sidebar__title {
+    color: #ffe58d;
+    text-shadow: 1px 1px 0 #2d1a12, 0 0 10px rgba(255, 226, 138, 0.18);
+}
+
+.sidebar__count,
+.sidebar__project-count {
+    background:
+        linear-gradient(180deg, rgba(74, 50, 29, 0.88), rgba(29, 20, 16, 0.88));
+    border-color: rgba(214, 169, 81, 0.38);
+    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.1);
+}
+
+.sidebar__agent {
+    position: relative;
+    background:
+        linear-gradient(90deg, rgba(255, 226, 138, 0.025), transparent 34%);
+    border-bottom-color: rgba(214, 169, 81, 0.1);
+}
+
+.sidebar__agent::after {
+    content: "";
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    bottom: 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255, 226, 138, 0.14), transparent);
+    pointer-events: none;
+}
+
+.sidebar__agent:hover {
+    background:
+        linear-gradient(90deg, rgba(255, 226, 138, 0.12), rgba(92, 57, 27, 0.15));
+    box-shadow:
+        inset 0 0 0 1px rgba(214, 169, 81, 0.14),
+        inset 12px 0 18px rgba(246, 218, 130, 0.045);
+}
+
+.sidebar__agent--selected {
+    background:
+        linear-gradient(90deg, rgba(255, 226, 138, 0.22), rgba(92, 57, 27, 0.38) 62%, rgba(20, 13, 11, 0.2));
+    border-left-color: #ffe58d;
+    box-shadow:
+        inset 0 1px 0 rgba(255, 226, 138, 0.12),
+        inset 0 -1px 0 rgba(0, 0, 0, 0.26),
+        inset 18px 0 24px rgba(246, 218, 130, 0.08);
+}
+
+.sidebar__agent-dot {
+    border: 1px solid rgba(255, 245, 205, 0.48);
+    box-shadow:
+        inset 0 1px 1px rgba(255, 255, 255, 0.28),
+        0 0 6px currentColor;
+}
+
+.sidebar__agent-name {
+    color: #f8dc86;
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.68);
+}
+
+.sidebar__project-header {
+    background:
+        linear-gradient(90deg, rgba(70, 45, 25, 0.46), rgba(15, 10, 9, 0.46));
+    border-top-color: rgba(214, 169, 81, 0.12);
+    border-bottom-color: rgba(214, 169, 81, 0.12);
 }

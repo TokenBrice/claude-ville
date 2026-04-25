@@ -256,15 +256,35 @@ export class BuildingRenderer {
 
     drawShadows(ctx) {
         ctx.save();
-        ctx.fillStyle = 'rgba(14, 9, 6, 0.36)';
         for (const b of this.buildings) {
             const center = this._getBuildingCenter(b);
             const style = BUILDING_STYLES[b.type];
             if (!style) continue;
             const halfW = b.width * TILE_WIDTH / 4;
             const halfH = b.height * TILE_HEIGHT / 4;
+
+            const landmarkBoost = ['command', 'forge', 'portal', 'observatory', 'sanctuary'].includes(b.type) ? 1 : 0;
+            const wallWeight = Math.min(1, style.wallHeight / 72);
+            const castAlpha = 0.18 + wallWeight * 0.16 + landmarkBoost * 0.04;
+            const contactAlpha = 0.32 + wallWeight * 0.2 + landmarkBoost * 0.05;
+
+            ctx.fillStyle = `rgba(12, 8, 6, ${castAlpha})`;
             ctx.beginPath();
-            ctx.ellipse(center.x + 8, center.y + 6, halfW + 5, halfH + 3, 0.2, 0, Math.PI * 2);
+            ctx.ellipse(center.x + 18 + landmarkBoost * 6, center.y + 14, halfW + 20 + landmarkBoost * 8, halfH + 9, 0.18, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = `rgba(8, 5, 4, ${contactAlpha})`;
+            ctx.beginPath();
+            ctx.ellipse(center.x + 3, center.y + 5, halfW + 8, halfH + 4, 0.06, 0, Math.PI * 2);
+            ctx.fill();
+
+            const anchor = ctx.createRadialGradient(center.x, center.y + 2, 4, center.x, center.y + 5, halfW + halfH + 12);
+            anchor.addColorStop(0, `rgba(5, 3, 2, ${0.18 + landmarkBoost * 0.04})`);
+            anchor.addColorStop(0.58, 'rgba(7, 4, 3, 0.08)');
+            anchor.addColorStop(1, 'rgba(7, 4, 3, 0)');
+            ctx.fillStyle = anchor;
+            ctx.beginPath();
+            ctx.ellipse(center.x, center.y + 4, halfW + 14, halfH + 8, 0, 0, Math.PI * 2);
             ctx.fill();
         }
         ctx.restore();
@@ -376,6 +396,7 @@ export class BuildingRenderer {
         ctx.strokeStyle = '#241811';
         ctx.lineWidth = 1.2;
         ctx.stroke();
+        this._drawFoundationMaterial(ctx, halfW, halfH, style);
 
         const wh = style.wallHeight;
 
@@ -441,6 +462,7 @@ export class BuildingRenderer {
 
         // Front wall window
         this._drawFrontWindows(ctx, halfW, halfH, wh, style);
+        this._drawEaveAmbientOcclusion(ctx, halfW, halfH, wh, style);
         ctx.restore();
 
         // === 4. Roof (fades out when agents approach) ===
@@ -474,6 +496,7 @@ export class BuildingRenderer {
             } else {
                 this._drawTriangleRoof(ctx, halfW, halfH, style);
             }
+            this._drawRoofEdgeHighlights(ctx, building.type, halfW, halfH, style);
             ctx.restore();
         }
 
@@ -484,6 +507,7 @@ export class BuildingRenderer {
         this._drawDecorations(ctx, building, halfW, halfH, style);
         this._drawBuildingLightProps(ctx, building, halfW, halfH, style);
         this._drawAnimatedBuildingLayer(ctx, building, halfW, halfH, style);
+        this._drawExteriorSetDressing(ctx, building, halfW, halfH, style);
         ctx.restore();
 
         this._drawOpenSilhouetteAnchors(ctx, building, halfW, halfH, style, alpha);
@@ -503,6 +527,87 @@ export class BuildingRenderer {
         ctx.fillText(building.label, 0, labelY + 1);
 
         ctx.restore();
+    }
+
+    _drawExteriorSetDressing(ctx, building, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        switch (building.type) {
+            case 'forge':
+                ctx.fillStyle = '#211611';
+                ctx.fillRect(-halfW - 18, halfH - wh + 4, 28, 9);
+                ctx.fillStyle = '#5e666b';
+                ctx.fillRect(-halfW - 13, halfH - wh + 1, 18, 5);
+                ctx.fillStyle = '#ff8a2a';
+                ctx.fillRect(-halfW - 5, halfH - wh - 3, 5, 4);
+                break;
+            case 'mine':
+                ctx.strokeStyle = '#2a1c14';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(-halfW + 4, halfH - wh + 6);
+                ctx.lineTo(-halfW - 26, halfH - wh + 23);
+                ctx.moveTo(-halfW + 13, halfH - wh + 10);
+                ctx.lineTo(-halfW - 17, halfH - wh + 27);
+                ctx.stroke();
+                ctx.fillStyle = '#f5c85b';
+                ctx.fillRect(-halfW - 21, halfH - wh + 16, 3, 3);
+                break;
+            case 'chathall':
+                ctx.fillStyle = '#6b4225';
+                ctx.fillRect(halfW + 2, halfH - wh - 11, 9, 14);
+                ctx.fillStyle = '#d8b96d';
+                ctx.fillRect(halfW + 4, halfH - wh - 7, 5, 2);
+                ctx.fillStyle = '#a23b2a';
+                ctx.beginPath();
+                ctx.moveTo(-halfW - 8, halfH - wh - 18);
+                ctx.lineTo(-halfW + 20, halfH - wh - 24);
+                ctx.lineTo(-halfW + 16, halfH - wh - 13);
+                ctx.lineTo(-halfW - 11, halfH - wh - 8);
+                ctx.closePath();
+                ctx.fill();
+                break;
+            case 'archive':
+                ctx.fillStyle = '#d8b96d';
+                ctx.fillRect(-halfW - 10, halfH - wh - 16, 8, 19);
+                ctx.fillStyle = '#5d432b';
+                ctx.fillRect(-halfW - 8, halfH - wh - 12, 4, 10);
+                break;
+            case 'portal':
+                ctx.strokeStyle = 'rgba(118, 216, 255, 0.72)';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.arc(halfW + 6, -wh - 7, 11, Math.PI * 0.85, Math.PI * 1.82);
+                ctx.stroke();
+                ctx.fillStyle = 'rgba(118, 216, 255, 0.18)';
+                ctx.beginPath();
+                ctx.ellipse(halfW + 2, -wh - 4, 9, 16, 0, 0, Math.PI * 2);
+                ctx.fill();
+                break;
+            case 'sanctuary':
+                ctx.fillStyle = '#355c2b';
+                for (const x of [-halfW - 8, halfW + 8]) {
+                    ctx.beginPath();
+                    ctx.moveTo(x, halfH - wh - 30);
+                    ctx.lineTo(x + 11, halfH - wh - 10);
+                    ctx.lineTo(x - 11, halfH - wh - 10);
+                    ctx.closePath();
+                    ctx.fill();
+                    ctx.fillStyle = '#664a2c';
+                    ctx.fillRect(x - 1, halfH - wh - 10, 2, 12);
+                    ctx.fillStyle = '#355c2b';
+                }
+                break;
+            case 'watchtower':
+                ctx.strokeStyle = '#a8d9ff';
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                ctx.moveTo(0, -wh - halfH - 48);
+                ctx.lineTo(0, -wh - halfH - 28);
+                ctx.moveTo(-6, -wh - halfH - 42);
+                ctx.lineTo(6, -wh - halfH - 36);
+                ctx.stroke();
+                break;
+        }
     }
 
     _drawInterior(ctx, building, halfW, halfH, style) {
@@ -1453,7 +1558,11 @@ export class BuildingRenderer {
         const baseY = -wh + 6;
         const topY = -wh - halfH - 34;
 
-        ctx.fillStyle = '#171625';
+        const shell = ctx.createLinearGradient(-halfW, topY, halfW, baseY + 16);
+        shell.addColorStop(0, '#111322');
+        shell.addColorStop(0.46, '#211f35');
+        shell.addColorStop(1, '#32334a');
+        ctx.fillStyle = shell;
         ctx.beginPath();
         ctx.moveTo(-halfW - 8, baseY);
         ctx.lineTo(-halfW * 0.52, topY + 18);
@@ -1463,6 +1572,20 @@ export class BuildingRenderer {
         ctx.lineTo(0, halfH - wh + 9);
         ctx.closePath();
         ctx.fill();
+        ctx.strokeStyle = '#10101c';
+        ctx.lineWidth = 2.2;
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(118, 216, 255, 0.22)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 3; i++) {
+            const inset = i * 8;
+            ctx.beginPath();
+            ctx.moveTo(-halfW - 1 + inset * 0.45, baseY - 1 - inset * 0.35);
+            ctx.lineTo(0, topY + 7 + inset * 0.55);
+            ctx.lineTo(halfW + 1 - inset * 0.45, baseY - 1 - inset * 0.35);
+            ctx.stroke();
+        }
 
         ctx.strokeStyle = style.accentColor;
         ctx.lineWidth = 3;
@@ -1484,6 +1607,8 @@ export class BuildingRenderer {
             ctx.fillRect(x - 5, -wh - halfH - 6, 10, halfH + 31);
             ctx.fillStyle = style.accentColor;
             ctx.fillRect(x - 3, -wh - halfH - 2, 6, 5);
+            ctx.fillStyle = 'rgba(8, 9, 18, 0.34)';
+            ctx.fillRect(x - 5, -wh - halfH + halfH + 18, 10, 7);
         }
     }
 
@@ -1583,6 +1708,99 @@ export class BuildingRenderer {
         ctx.beginPath();
         ctx.arc(0, y - 1, 11, 0, Math.PI * 2);
         ctx.stroke();
+    }
+
+    _drawFoundationMaterial(ctx, halfW, halfH, style) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(13, 9, 6, 0.38)';
+        ctx.lineWidth = 1;
+        for (let i = 1; i <= 3; i++) {
+            const t = i / 4;
+            ctx.beginPath();
+            ctx.moveTo(-halfW * (1 - t), halfH * t);
+            ctx.lineTo(0, halfH * (1 - t));
+            ctx.lineTo(halfW * (1 - t), halfH * t);
+            ctx.stroke();
+        }
+        ctx.strokeStyle = 'rgba(230, 190, 118, 0.16)';
+        ctx.beginPath();
+        ctx.moveTo(-halfW + 4, -1);
+        ctx.lineTo(0, -halfH + 3);
+        ctx.lineTo(halfW - 4, -1);
+        ctx.stroke();
+        ctx.fillStyle = 'rgba(9, 5, 3, 0.22)';
+        ctx.beginPath();
+        ctx.ellipse(0, halfH - 1, halfW * 0.78, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = this._lighten(style.trimColor, 10);
+        ctx.globalAlpha = 0.28;
+        ctx.beginPath();
+        ctx.moveTo(-halfW + 2, 0);
+        ctx.lineTo(0, halfH - 1);
+        ctx.lineTo(halfW - 2, 0);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawEaveAmbientOcclusion(ctx, halfW, halfH, wh, style) {
+        ctx.save();
+        ctx.strokeStyle = 'rgba(10, 6, 4, 0.34)';
+        ctx.lineWidth = 4;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(-halfW + 3, -wh + 1);
+        ctx.lineTo(0, halfH - wh + 2);
+        ctx.lineTo(halfW - 3, -wh + 1);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(255, 228, 156, 0.16)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-halfW + 4, -wh + 4);
+        ctx.lineTo(0, halfH - wh + 5);
+        ctx.lineTo(halfW - 4, -wh + 4);
+        ctx.stroke();
+
+        ctx.fillStyle = style.trimColor;
+        ctx.globalAlpha = 0.65;
+        for (const x of [-halfW + 8, halfW - 11]) {
+            ctx.fillRect(x, -wh + 2, 3, 8);
+        }
+        ctx.restore();
+    }
+
+    _drawRoofEdgeHighlights(ctx, type, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        const landmark = ['command', 'forge', 'portal', 'observatory', 'sanctuary'].includes(type);
+
+        ctx.save();
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = 'rgba(16, 9, 7, 0.46)';
+        ctx.lineWidth = landmark ? 2.4 : 1.7;
+        ctx.beginPath();
+        ctx.moveTo(-halfW - 4, -wh + 2);
+        ctx.lineTo(0, halfH - wh + 6);
+        ctx.lineTo(halfW + 4, -wh + 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = this._lighten(style.roofColor, landmark ? 42 : 30);
+        ctx.globalAlpha = landmark ? 0.34 : 0.22;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-halfW + 3, -wh + 1);
+        ctx.lineTo(0, halfH - wh + 2);
+        ctx.lineTo(halfW - 3, -wh + 1);
+        ctx.stroke();
+
+        ctx.globalAlpha = landmark ? 0.32 : 0.2;
+        ctx.strokeStyle = style.accentColor;
+        for (let i = -2; i <= 2; i++) {
+            ctx.beginPath();
+            ctx.moveTo(i * (halfW / 3), -wh - 2);
+            ctx.lineTo(i * (halfW / 4), -wh - halfH * 0.55);
+            ctx.stroke();
+        }
+        ctx.restore();
     }
 
     _drawWatchtowerRoof(ctx, halfW, halfH, style) {
@@ -2888,7 +3106,7 @@ export class BuildingRenderer {
 
     _drawWallTexture(ctx, halfW, halfH, wh, style, side) {
         ctx.save();
-        ctx.strokeStyle = 'rgba(35, 23, 17, 0.34)';
+        ctx.strokeStyle = 'rgba(20, 12, 8, 0.42)';
         ctx.lineWidth = 1;
 
         const yTop = -wh + 7;
@@ -2902,6 +3120,27 @@ export class BuildingRenderer {
             ctx.stroke();
         }
 
+        ctx.strokeStyle = 'rgba(255, 224, 151, 0.12)';
+        ctx.lineWidth = 0.8;
+        for (let i = 0; i < 2; i++) {
+            const y = -wh + 13 + i * (wh / 3.2);
+            ctx.beginPath();
+            ctx.moveTo(-halfW + 7 + i * 5, y - 1);
+            ctx.lineTo(-2, y + halfH * 0.34);
+            ctx.moveTo(halfW - 7 - i * 5, y - 1);
+            ctx.lineTo(2, y + halfH * 0.34);
+            ctx.stroke();
+        }
+
+        ctx.fillStyle = 'rgba(8, 5, 3, 0.1)';
+        ctx.beginPath();
+        ctx.moveTo(-halfW, -wh);
+        ctx.lineTo(-halfW, -wh + 12);
+        ctx.lineTo(0, -wh - halfH + 12);
+        ctx.lineTo(0, -wh - halfH);
+        ctx.closePath();
+        ctx.fill();
+
         ctx.strokeStyle = style.trimColor;
         ctx.lineWidth = 2;
         if (side === 'front') {
@@ -2914,6 +3153,14 @@ export class BuildingRenderer {
             ctx.lineTo(-halfW * 0.45, yBottom);
             ctx.moveTo(halfW * 0.45, -wh + 5);
             ctx.lineTo(halfW * 0.45, yBottom);
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(11, 7, 5, 0.3)';
+            ctx.lineWidth = 1.3;
+            ctx.beginPath();
+            ctx.moveTo(-halfW + 3, -wh + 2);
+            ctx.lineTo(0, halfH - wh + 1);
+            ctx.lineTo(halfW - 3, -wh + 2);
             ctx.stroke();
         }
         ctx.restore();
