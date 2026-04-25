@@ -213,8 +213,12 @@ function handleGetUsage(req, res) {
 // ─── Static file serving ─────────────────────────────────────
 
 function handleStaticFile(req, res) {
+  if (process.env.DEBUG_STATIC) {
+    console.log('[Static] request', req.url);
+  }
   try {
-    let filePath = path.join(STATIC_DIR, req.url === '/' ? 'index.html' : req.url);
+    const requestedPath = decodeURIComponent(req.url.split('?')[0] || '/');
+    let filePath = path.join(STATIC_DIR, requestedPath === '/' ? 'index.html' : requestedPath);
 
     const resolvedPath = path.resolve(filePath);
     if (!resolvedPath.startsWith(STATIC_DIR)) {
@@ -242,19 +246,30 @@ function handleStaticFile(req, res) {
                    contentType.includes('json') ||
                    contentType.includes('svg');
 
-    setCorsHeaders(res);
-    res.writeHead(200, {
-      'Content-Type': contentType,
-      'Cache-Control': 'no-cache',
-    });
+    if (process.env.DEBUG_STATIC) {
+      console.log('[Static] resolved', filePath, 'type', contentType);
+    }
 
-    const stream = fs.createReadStream(filePath, isText ? { encoding: 'utf-8' } : undefined);
-    stream.pipe(res);
-    stream.on('error', (err) => {
-      console.error('File stream error:', err.message);
-      if (!res.headersSent) {
-        sendError(res, 500, 'Internal Server Error');
+    setCorsHeaders(res);
+    fs.readFile(filePath, isText ? 'utf-8' : undefined, (err, data) => {
+      if (process.env.DEBUG_STATIC) {
+        console.log('[Static] read callback for', filePath, 'err?', Boolean(err));
       }
+      if (err) {
+        console.error('File read error:', err.message);
+        return sendError(res, 500, 'Internal Server Error');
+      }
+
+      if (process.env.DEBUG_STATIC) {
+        const byteLength = Buffer.isBuffer(data) ? data.length : String(data).length;
+        console.log('[Static] serving', filePath, 'bytes', byteLength, 'type', contentType);
+      }
+
+      res.writeHead(200, {
+        'Content-Type': contentType,
+        'Cache-Control': 'no-cache',
+      });
+      res.end(data);
     });
   } catch (err) {
     console.error('Static file serving failed:', err.message);
