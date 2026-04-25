@@ -114,16 +114,22 @@ body
 
 ## World Mode
 
-World mode is the current RPG visual direction. It is Canvas 2D isometric rendering under `src/presentation/character-mode/`.
+World mode is the current RPG visual direction. It is sprite-based pixel-art Canvas 2D isometric rendering under `src/presentation/character-mode/`.
 
 Key files:
 
-- `IsometricRenderer.js`: render loop, terrain, water, roads, minimap attachment, hit testing, event subscriptions.
-- `Camera.js`: pan, zoom, centering, and selected-agent follow behavior.
-- `AgentSprite.js`: sprite state, movement, selection, and chat animation.
-- `BuildingRenderer.js`: building visuals, hover state, and effects.
-- `ParticleSystem.js`: particles and ambient effects.
-- `Minimap.js`: minimap rendering and navigation.
+- `IsometricRenderer.js`: render loop orchestration; routes terrain, buildings, and agents through sprite renderers.
+- `Camera.js`: pan, zoom (clamped to integer steps {1,2,3} for pixel-perfect blits), follow.
+- `AgentSprite.js`: state and animation only; drawing delegated to `SpriteRenderer`, `Compositor`, and `SpriteSheet`.
+- `BuildingSprite.js`: building sprite blits with occlusion split for hero buildings; replaces `BuildingRenderer.js`.
+- `BuildingRenderer.js`: LEGACY (still present, will be retired).
+- `ParticleSystem.js`: particles and ambient effects; emitter hooks now driven by manifest-declared coordinates.
+- `Minimap.js`: intentionally vector parchment art, out of scope for the pixel-art migration.
+- `AssetManager.js`: manifest loader, PNG cache, alpha mask + outline cache.
+- `SpriteRenderer.js`: sole entry point for sprite blits; integer snap, smoothing off.
+- `SpriteSheet.js`: frame strip lookup and 8-direction velocity-to-direction mapping.
+- `Compositor.js`: palette swap with ΔE tolerance and accessory overlay compositing.
+- `TerrainTileset.js`: Wang-tile neighbor mask lookup and isometric transform.
 
 Buildings from `src/config/buildings.js` (eleven total):
 
@@ -140,6 +146,21 @@ Buildings from `src/config/buildings.js` (eleven total):
 - Sky Watchtower: monitoring and status.
 
 Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears selection. Agents using `SendMessage` can move toward a matched recipient and show chat state.
+
+## Sprite Generation
+
+Pixel-art sprites are generated through the [pixellab MCP server](https://mcpservers.org/servers/pixellab-code/pixellab-mcp). The asset manifest at `claudeville/assets/sprites/manifest.yaml` is the single source of truth — every sprite the renderer references must have a corresponding manifest entry, and every PNG on disk must correspond to a manifest entry.
+
+Workflow:
+
+1. User installs the pixellab MCP server with their API token (`claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`).
+2. Claude Code session reads `manifest.yaml`, calls the appropriate MCP tool per entry (`mcp__pixellab__create_character`, `mcp__pixellab__animate_character`, `mcp__pixellab__tileset`, `mcp__pixellab__isometric_tile`).
+3. Resulting PNGs are saved to the manifest-implied path (see `AssetManager._pathFor` for the mapping).
+4. Run `npm run sprites:validate` to confirm every manifest entry resolves to a real PNG and no orphan PNGs exist.
+
+The `style.anchor` field at the top of `manifest.yaml` is concatenated into every prompt at generation time, locking the visual tone across all assets.
+
+For full asset generation steps see `scripts/sprites/generate.md`.
 
 ## Dashboard Mode
 
@@ -180,6 +201,11 @@ In-app specifics (run after rendering/layout/event-bus changes):
 - Open `http://localhost:4000`, switch between World and Dashboard modes.
 - Select and deselect an agent to confirm `agent:selected`/`agent:deselected` open and close the right activity panel and toggle camera follow.
 - Confirm the world canvas resizes with `.content` (not via `position: fixed`).
+
+Asset validation:
+
+- `npm run sprites:validate` — manifest ↔ PNG bidirectional check.
+- `npm run sprites:visual-diff` — pixelmatch baseline comparison (added in a later task).
 
 Documentation validation (project-wide, English-only):
 
