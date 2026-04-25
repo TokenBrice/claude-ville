@@ -52,10 +52,10 @@ const DEFAULT_PROFILE = {
     eyeStyle: null,
 };
 
-const SPRITE_SCALE = 1.36;
-const SPRITE_HIT_HALF_WIDTH = 18;
-const SPRITE_HIT_TOP = -31;
-const SPRITE_HIT_BOTTOM = 28;
+const SPRITE_SCALE = 1.62;
+const SPRITE_HIT_HALF_WIDTH = 24;
+const SPRITE_HIT_TOP = -44;
+const SPRITE_HIT_BOTTOM = 34;
 
 export class AgentSprite {
     constructor(agent) {
@@ -70,7 +70,9 @@ export class AgentSprite {
         this.waitTimer = 0;
         this.selected = false;
         this.statusAnim = 0;
+        this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._lastBuildingType = null;
+        this._targetCycle = 0;
 
         // Chat system
         this.chatPartner = null;     // Chat partner AgentSprite
@@ -105,12 +107,13 @@ export class AgentSprite {
         }
 
         if (!building) {
-            // If no mapping exists, choose a random building 70% of the time and empty ground 30% of the time
-            if (Math.random() < 0.7) {
-                building = BUILDING_DEFS[Math.floor(Math.random() * BUILDING_DEFS.length)];
+            const seed = Math.abs(this._hash(`${this.agent.id}:target:${this._targetCycle++}`));
+            // If no mapping exists, choose a stable building 70% of the time and empty ground 30% of the time.
+            if ((seed % 10) < 7) {
+                building = BUILDING_DEFS[seed % BUILDING_DEFS.length];
             } else {
-                const tx = 10 + Math.random() * 20;
-                const ty = 10 + Math.random() * 20;
+                const tx = 10 + this._noise(seed, 3) * 20;
+                const ty = 10 + this._noise(seed, 7) * 20;
                 const target = new Position(tx, ty);
                 const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
                 this.targetX = screen.x;
@@ -122,8 +125,9 @@ export class AgentSprite {
         }
 
         // Move inside the building (near the building center)
-        const tx = building.x + 0.3 * building.width + Math.random() * 0.4 * building.width;
-        const ty = building.y + 0.3 * building.height + Math.random() * 0.4 * building.height;
+        const seed = Math.abs(this._hash(`${this.agent.id}:${building.type}:${this._targetCycle++}`));
+        const tx = building.x + 0.3 * building.width + this._noise(seed, 11) * 0.4 * building.width;
+        const ty = building.y + 0.3 * building.height + this._noise(seed, 17) * 0.4 * building.height;
         const target = new Position(tx, ty);
         const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
         this.targetX = screen.x;
@@ -132,8 +136,12 @@ export class AgentSprite {
         this.waitTimer = 0;
     }
 
+    setMotionScale(scale) {
+        this.motionScale = scale;
+    }
+
     update(particleSystem) {
-        this.statusAnim += 0.05;
+        this.statusAnim += 0.05 * this.motionScale;
 
         // Handle chatting state
         if (this.chatting) {
@@ -240,28 +248,31 @@ export class AgentSprite {
         ctx.save();
         ctx.translate(this.x, this.y);
 
+        const sprite = this._getSpriteAppearance();
+        const app = sprite.app;
+        const profile = sprite.profile;
+        this._drawIdentityAura(ctx, sprite);
+
         ctx.beginPath();
-        ctx.ellipse(0, 18, 15, 6, 0, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(12, 8, 5, 0.34)';
+        ctx.ellipse(0, 21, 20, 8, 0, 0, Math.PI * 2);
+        ctx.fillStyle = profile.shadow;
         ctx.fill();
 
         if (this.selected) {
             ctx.beginPath();
-            ctx.ellipse(0, 18, 21, 8, 0, 0, Math.PI * 2);
+            ctx.ellipse(0, 21, 28, 10, 0, 0, Math.PI * 2);
             ctx.fillStyle = 'rgba(242, 211, 107, 0.24)';
             ctx.fill();
             ctx.strokeStyle = '#f2d36b';
-            ctx.lineWidth = 1;
+            ctx.lineWidth = 1.4;
             ctx.stroke();
         }
 
         const scaleX = this.facingLeft ? -1 : 1;
-        ctx.scale(scaleX * SPRITE_SCALE, SPRITE_SCALE);
+        ctx.scale(scaleX * SPRITE_SCALE * sprite.modelScale, SPRITE_SCALE * sprite.modelScale);
 
         const swing = this.moving ? Math.sin(this.walkFrame * 4) * 4 : 0;
-        const sprite = this._getSpriteAppearance();
-        const app = sprite.app;
-        const profile = sprite.profile;
+        this._drawProviderSilhouette(ctx, sprite);
 
         // Boots and legs
         ctx.strokeStyle = '#2b2018';
@@ -286,21 +297,21 @@ export class AgentSprite {
         // Cloak shadow
         ctx.fillStyle = profile.shadow;
         ctx.beginPath();
-        ctx.moveTo(-8, -3);
+        ctx.moveTo(-sprite.bodyWidth, -3);
         ctx.lineTo(0, 15);
-        ctx.lineTo(8, -3);
+        ctx.lineTo(sprite.bodyWidth, -3);
         ctx.closePath();
         ctx.fill();
 
         // Body
         ctx.fillStyle = profile.outline;
-        ctx.fillRect(-6, -3, 12, 13);
+        ctx.fillRect(-sprite.bodyWidth + 1, -3, (sprite.bodyWidth - 1) * 2, 13);
         ctx.fillStyle = app.shirt;
         ctx.beginPath();
-        ctx.moveTo(-5, -2);
-        ctx.lineTo(5, -2);
-        ctx.lineTo(4, 10);
-        ctx.lineTo(-4, 10);
+        ctx.moveTo(-sprite.bodyWidth + 2, -2);
+        ctx.lineTo(sprite.bodyWidth - 2, -2);
+        ctx.lineTo(sprite.bodyWidth - 3, 10);
+        ctx.lineTo(-sprite.bodyWidth + 3, 10);
         ctx.closePath();
         ctx.fill();
         this._drawProviderBodyDetails(ctx, sprite);
@@ -367,6 +378,7 @@ export class AgentSprite {
         const profile = PROVIDER_PROFILES[providerKey] || DEFAULT_PROFILE;
         const hash = Math.abs(this._hash(`${this.agent.id}:${this.agent.model || ''}:${providerKey}`));
         const pick = (items, offset = 0) => items[(hash >> offset) % items.length];
+        const modelTier = this._modelTier();
 
         const app = {
             ...base,
@@ -383,8 +395,11 @@ export class AgentSprite {
             trim: pick(profile.trim, 18),
             accent: pick(profile.accent, 22),
             variant: hash % 4,
-            modelTier: this._modelTier(),
+            modelTier,
             effortTier: this._effortTier(),
+            providerKey,
+            bodyWidth: modelTier === 'apex' ? 10 : modelTier === 'strong' ? 9 : 8,
+            modelScale: modelTier === 'apex' ? 1.08 : modelTier === 'swift' ? 0.96 : 1,
         };
     }
 
@@ -421,6 +436,94 @@ export class AgentSprite {
             hash |= 0;
         }
         return hash;
+    }
+
+    _noise(seed, salt) {
+        const n = Math.sin((seed + salt) * 12.9898) * 43758.5453;
+        return n - Math.floor(n);
+    }
+
+    _drawIdentityAura(ctx, sprite) {
+        const effortAlpha = {
+            low: 0.08,
+            medium: 0.13,
+            high: 0.2,
+            xhigh: 0.28,
+        }[sprite.effortTier] || 0;
+        const modelAlpha = sprite.modelTier === 'apex' ? 0.16 : sprite.modelTier === 'strong' ? 0.09 : 0;
+        const alpha = effortAlpha + modelAlpha;
+        if (alpha <= 0) return;
+
+        const pulse = this.motionScale ? Math.sin(this.statusAnim * 2.1) * 0.12 : 0;
+        ctx.save();
+        ctx.strokeStyle = sprite.accent;
+        ctx.globalAlpha = Math.max(0, Math.min(0.42, alpha + pulse));
+        ctx.lineWidth = sprite.effortTier === 'xhigh' ? 2 : 1.2;
+        ctx.beginPath();
+        ctx.ellipse(0, 10, 26, 13, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        if (sprite.modelTier === 'apex') {
+            ctx.beginPath();
+            ctx.ellipse(0, -12, 15, 6, 0, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    _drawProviderSilhouette(ctx, sprite) {
+        if (sprite.profile.family === 'claude') {
+            ctx.fillStyle = 'rgba(92, 45, 19, 0.92)';
+            ctx.beginPath();
+            ctx.moveTo(-10, -1);
+            ctx.quadraticCurveTo(-6, -12, 0, -15);
+            ctx.quadraticCurveTo(6, -12, 10, -1);
+            ctx.lineTo(7, 11);
+            ctx.lineTo(-7, 11);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = sprite.trim;
+            ctx.lineWidth = 0.9;
+            ctx.beginPath();
+            ctx.moveTo(-5, -9);
+            ctx.quadraticCurveTo(0, -13, 5, -9);
+            ctx.stroke();
+            return;
+        }
+
+        if (sprite.profile.family === 'codex') {
+            ctx.fillStyle = 'rgba(8, 37, 41, 0.92)';
+            ctx.fillRect(-10, -3, 20, 13);
+            ctx.fillStyle = sprite.trim;
+            ctx.fillRect(-12, 0, 3, 8);
+            ctx.fillRect(9, 0, 3, 8);
+            ctx.strokeStyle = sprite.accent;
+            ctx.lineWidth = 0.9;
+            ctx.beginPath();
+            ctx.moveTo(-8, -5);
+            ctx.lineTo(8, -5);
+            ctx.moveTo(-6, -7);
+            ctx.lineTo(-2, -7);
+            ctx.moveTo(2, -7);
+            ctx.lineTo(6, -7);
+            ctx.stroke();
+            return;
+        }
+
+        if (sprite.profile.family === 'gemini') {
+            ctx.strokeStyle = sprite.trim;
+            ctx.lineWidth = 1.1;
+            ctx.beginPath();
+            ctx.arc(0, -9, 11, Math.PI * 1.05, Math.PI * 1.95);
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(50, 42, 111, 0.9)';
+            ctx.beginPath();
+            ctx.moveTo(-9, -2);
+            ctx.lineTo(0, 13);
+            ctx.lineTo(9, -2);
+            ctx.lineTo(0, 2);
+            ctx.closePath();
+            ctx.fill();
+        }
     }
 
     _drawProviderBodyDetails(ctx, sprite) {
@@ -473,16 +576,21 @@ export class AgentSprite {
 
         ctx.fillStyle = color;
         if (sprite.modelTier === 'apex') {
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(0, 3, 5, 0, Math.PI * 2);
+            ctx.stroke();
             ctx.beginPath();
             ctx.moveTo(0, -1);
-            ctx.lineTo(3, 3);
+            ctx.lineTo(4, 3);
             ctx.lineTo(0, 7);
-            ctx.lineTo(-3, 3);
+            ctx.lineTo(-4, 3);
             ctx.closePath();
             ctx.fill();
         } else if (sprite.modelTier === 'strong') {
-            ctx.fillRect(-3, 2, 6, 2);
-            ctx.fillRect(-1, 0, 2, 6);
+            ctx.fillRect(-4, 2, 8, 2);
+            ctx.fillRect(-1, -1, 2, 8);
         } else if (sprite.modelTier === 'swift') {
             ctx.beginPath();
             ctx.moveTo(-4, 3);
@@ -789,7 +897,16 @@ export class AgentSprite {
         };
         ctx.fillStyle = colors[sprite.effortTier];
         for (let i = 0; i < marks; i++) {
-            ctx.fillRect(7, -2 + i * 3, 2, 2);
+            ctx.beginPath();
+            ctx.arc(11, -5 + i * 4, 1.7, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        if (sprite.effortTier === 'high' || sprite.effortTier === 'xhigh') {
+            ctx.strokeStyle = colors[sprite.effortTier];
+            ctx.lineWidth = sprite.effortTier === 'xhigh' ? 1.4 : 0.9;
+            ctx.beginPath();
+            ctx.arc(0, -6, sprite.effortTier === 'xhigh' ? 12 : 10, Math.PI * 1.12, Math.PI * 1.88);
+            ctx.stroke();
         }
     }
 
@@ -821,7 +938,7 @@ export class AgentSprite {
             ctx.save();
             ctx.translate(this.x, this.y);
             ctx.scale(s, s); // inverse zoom correction
-            ctx.translate(0, -36);
+            ctx.translate(0, -48);
             ctx.fillStyle = 'rgba(34, 24, 19, 0.92)';
             ctx.strokeStyle = '#d8843a';
             ctx.lineWidth = 1.5;
@@ -860,7 +977,7 @@ export class AgentSprite {
         const bubbleH = 24;
         const radius = 6;
 
-        ctx.translate(0, -38);
+        ctx.translate(0, -50);
 
         // Speech bubble background
         const halfW = bubbleW / 2;
@@ -922,7 +1039,7 @@ export class AgentSprite {
 
         // Speech bubble (alternating effect)
         const phase = Math.floor(t * 1.5) % 3;
-        const bubbleY = -38;
+        const bubbleY = -50;
 
         // Background circle
         ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
@@ -965,7 +1082,7 @@ export class AgentSprite {
         const s = 1 / (this._zoom || 1); // inverse zoom correction
         ctx.translate(this.x, this.y);
         ctx.scale(s, s); // fixed size in screen space
-        ctx.translate(0, 30);
+        ctx.translate(0, 38);
         const name = this.agent.name;
         ctx.font = 'bold 9px "Press Start 2P", monospace';
         const w = ctx.measureText(name).width + 10;

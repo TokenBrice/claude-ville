@@ -33,6 +33,66 @@ function parseJsonLines(lines) {
   return results;
 }
 
+function readJsonLines(filePath) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    return parseJsonLines(fs.readFileSync(filePath, 'utf-8').trim().split('\n'));
+  } catch {
+    return [];
+  }
+}
+
+function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {}) {
+  if (!input) return null;
+
+  let value = null;
+  if (input.command) value = input.command;
+  else if (input.file_path) value = basenameFile ? input.file_path.split('/').pop() : input.file_path;
+  else if (input.pattern) value = input.pattern;
+  else if (input.query) value = input.query;
+  else if (input.recipient) value = input.recipient;
+  else if (input.description) value = input.description;
+  else if (input.prompt) value = input.prompt;
+  else if (input.url) value = input.url;
+
+  return value ? String(value).substring(0, maxLength) : null;
+}
+
+function getFirstUserPrompt(filePath) {
+  const entries = readJsonLines(filePath);
+  for (const entry of entries) {
+    if (entry.message?.role !== 'user') continue;
+    const content = entry.message.content;
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      const text = content.find(block => block.type === 'text' && block.text)?.text;
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
+function getAgentLaunches(sessionFilePath) {
+  const launches = [];
+  const entries = readJsonLines(sessionFilePath);
+
+  for (const entry of entries) {
+    const msg = entry.message;
+    if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+
+    for (const block of msg.content) {
+      if (block.type !== 'tool_use' || block.name !== 'Agent' || !block.input) continue;
+      launches.push({
+        name: block.input.description || null,
+        agentType: block.input.subagent_type || 'sub-agent',
+        prompt: block.input.prompt || null,
+      });
+    }
+  }
+
+  return launches;
+}
+
 // ─── Session parsing ────────────────────────────────────────
 
 function getSessionDetail(sessionId, projectPath) {
@@ -59,13 +119,7 @@ function getSessionDetail(sessionId, projectPath) {
       for (const block of content) {
         if (!detail.lastTool && block.type === 'tool_use') {
           detail.lastTool = block.name || null;
-          if (block.input) {
-            if (block.input.command) detail.lastToolInput = block.input.command.substring(0, 60);
-            else if (block.input.file_path) detail.lastToolInput = block.input.file_path.split('/').pop();
-            else if (block.input.pattern) detail.lastToolInput = block.input.pattern;
-            else if (block.input.query) detail.lastToolInput = block.input.query.substring(0, 40);
-            else if (block.input.recipient) detail.lastToolInput = block.input.recipient;
-          }
+          detail.lastToolInput = summarizeToolInput(block.input, { maxLength: 60, basenameFile: true });
         }
         if (!detail.lastMessage && block.type === 'text' && block.text) {
           const text = block.text.trim();
@@ -96,13 +150,7 @@ function getSubAgentDetail(filePath) {
       for (const block of content) {
         if (!detail.lastTool && block.type === 'tool_use') {
           detail.lastTool = block.name || null;
-          if (block.input) {
-            if (block.input.command) detail.lastToolInput = block.input.command.substring(0, 60);
-            else if (block.input.file_path) detail.lastToolInput = block.input.file_path.split('/').pop();
-            else if (block.input.pattern) detail.lastToolInput = block.input.pattern;
-            else if (block.input.query) detail.lastToolInput = block.input.query.substring(0, 40);
-            else if (block.input.recipient) detail.lastToolInput = block.input.recipient;
-          }
+          detail.lastToolInput = summarizeToolInput(block.input, { maxLength: 60, basenameFile: true });
         }
         if (!detail.lastMessage && block.type === 'text' && block.text) {
           const text = block.text.trim();
@@ -129,16 +177,7 @@ function getToolHistory(sessionFilePath, maxItems = 15) {
 
       for (const block of content) {
         if (block.type !== 'tool_use') continue;
-        let detail = '';
-        if (block.input) {
-          if (block.input.command) detail = block.input.command.substring(0, 80);
-          else if (block.input.file_path) detail = block.input.file_path;
-          else if (block.input.pattern) detail = block.input.pattern;
-          else if (block.input.query) detail = block.input.query.substring(0, 60);
-          else if (block.input.prompt) detail = block.input.prompt.substring(0, 60);
-          else if (block.input.url) detail = block.input.url;
-          else if (block.input.description) detail = block.input.description.substring(0, 60);
-        }
+        const detail = summarizeToolInput(block.input, { maxLength: 80, basenameFile: false }) || '';
         tools.push({ tool: block.name || 'unknown', detail, ts: entry.timestamp || 0 });
       }
     }
@@ -339,6 +378,8 @@ class ClaudeAdapter {
         for (const sessionDir of sessionDirs) {
           const subagentsDir = path.join(projPath, sessionDir.name, 'subagents');
           if (!fs.existsSync(subagentsDir)) continue;
+          const parentSessionFile = path.join(projPath, `${sessionDir.name}.jsonl`);
+          const agentLaunches = getAgentLaunches(parentSessionFile);
 
           let agentFiles;
           try {
@@ -355,6 +396,10 @@ class ClaudeAdapter {
 
             const agentId = agentFile.replace('agent-', '').replace('.jsonl', '');
             const detail = getSubAgentDetail(filePath);
+            const prompt = getFirstUserPrompt(filePath);
+            const launch = prompt
+              ? agentLaunches.find(item => item.prompt === prompt)
+              : null;
             // projectPathMapfor the exact path; fall back if missing (prevents paths containing hyphens from breaking)
             const decodedProject = projectPathMap.get(projDir.name)
               || '/' + projDir.name.replace(/^-/, '').replace(/-/g, '/');
@@ -363,7 +408,9 @@ class ClaudeAdapter {
               sessionId: `subagent-${agentId}`,
               provider: 'claude',
               agentId,
-              agentType: 'sub-agent',
+              name: launch?.name || null,
+              agentName: launch?.name || null,
+              agentType: launch?.agentType || 'sub-agent',
               model: detail.model || 'unknown',
               status: 'active',
               lastActivity: stat.mtimeMs,
