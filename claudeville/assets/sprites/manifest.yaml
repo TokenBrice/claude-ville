@@ -8,7 +8,7 @@ characters:
     prompt: "epic high-fantasy mage scholar, warm amber robes with gold trim, glowing rune sigil on chest, hooded silhouette, front 3/4 view"
     n_directions: 8
     size: 64
-    animations: [walk, idle]
+    animations: [walk, breathing-idle]
     palette_layer: claude
     anchor: [32, 56]
 
@@ -17,7 +17,7 @@ characters:
     prompt: "epic arcane engineer, deep teal coat with circuit-glow trim, rogue mask, tool-belt, front 3/4 view"
     n_directions: 8
     size: 64
-    animations: [walk, idle]
+    animations: [walk, breathing-idle]
     palette_layer: codex
     anchor: [32, 56]
 
@@ -26,7 +26,7 @@ characters:
     prompt: "epic celestial oracle, deep violet vestments with starlight trim, constellation veil, front 3/4 view"
     n_directions: 8
     size: 64
-    animations: [walk, idle]
+    animations: [walk, breathing-idle]
     palette_layer: gemini
     anchor: [32, 56]
 
@@ -128,7 +128,7 @@ buildings:
       base:
         tool: isometric_tile
         prompt: "epic command center castle keep, grand stone walls with arched gates, dual dragon banners on parapets, golden flame torches, imposing isometric fortress"
-        size: 128
+        size: 64
       watchfire:
         tool: isometric_tile
         prompt: "roaring golden watchfire on stone brazier, dancing flame, transparent background, isometric"
@@ -163,7 +163,7 @@ buildings:
       base:
         tool: isometric_tile
         prompt: "epic harbor lighthouse, weathered grey stone tower, crimson conical roof, brass lantern dome, dragon banner, isometric, dramatic"
-        size: 128
+        size: 64
       beacon:
         tool: isometric_tile
         prompt: "bright golden lantern dome glow, rotating beam suggestion, transparent background, isometric"
@@ -187,7 +187,7 @@ buildings:
       base:
         tool: isometric_tile
         prompt: "epic research observatory, domed copper roof with star etchings, tall arched windows glowing starlight blue, stone turret, isometric"
-        size: 128
+        size: 64
       astrolabe:
         tool: isometric_tile
         prompt: "brass astrolabe ring rotating above dome, star sparkle, transparent background, isometric"
@@ -211,7 +211,7 @@ buildings:
       base:
         tool: isometric_tile
         prompt: "epic portal gate archway, ancient stone arch with swirling arcane energy, violet and gold runes, massive scale, isometric"
-        size: 128
+        size: 64
       portalGlow:
         tool: isometric_tile
         prompt: "swirling violet portal vortex energy, arcane rune ring, transparent background, isometric"
@@ -231,7 +231,7 @@ buildings:
   - id: building.forge
     tool: isometric_tile
     prompt: "epic code forge smithy, glowing forge mouth with molten amber light, iron chimney stack billowing smoke, rune-inscribed anvil visible through arched doorway, isometric"
-    size: 128
+    size: 64
     emitters:
       smoke: [88, 12]
       mining: [40, 80]
@@ -241,7 +241,7 @@ buildings:
   - id: building.mine
     tool: isometric_tile
     prompt: "epic token mine entrance, reinforced timber pit-head frame, cart tracks leading inside, lantern hung at mouth, veins of glowing ore in stone, isometric"
-    size: 128
+    size: 64
     emitters:
       sparkle: [60, 70]
       mining: [80, 92]
@@ -250,13 +250,13 @@ buildings:
   - id: building.taskboard
     tool: isometric_tile
     prompt: "epic task board hall, open-sided pavilion with carved stone pillars, scrolls and parchment notices pinned to boards, guild pennant flying, isometric"
-    size: 128
+    size: 64
 
   # ── STANDARD: Chat Hall ──
   - id: building.chathall
     tool: isometric_tile
     prompt: "epic chat hall tavern, timbered walls, warm window glow, chimney smoke, carved speech-rune above arched doorway, isometric"
-    size: 128
+    size: 64
     emitters:
       sparkle: [88, 24]
 
@@ -264,13 +264,13 @@ buildings:
   - id: building.archive
     tool: isometric_tile
     prompt: "epic lore archive library, tall narrow windows of stained glass, shelves of tomes visible inside, carved stone lintel with open book motif, isometric"
-    size: 128
+    size: 64
 
   # ── STANDARD: Prompt Alchemy ──
   - id: building.alchemy
     tool: isometric_tile
     prompt: "epic prompt alchemy workshop, bubbling cauldron visible through round window, strange vapours drifting from vent, arcane ingredient jars stacked outside, isometric"
-    size: 128
+    size: 64
     emitters:
       sparkle: [64, 80]
 
@@ -278,7 +278,7 @@ buildings:
   - id: building.sanctuary
     tool: isometric_tile
     prompt: "epic idle sanctuary chapel, serene stone walls with ivy, glowing peaceful rune above door, soft golden light from within, isometric"
-    size: 128
+    size: 64
 
 # ─── PROPS ───────────────────────────────────────────────────────────────────
 # Prop ids match the camelCase `type` field in IsometricRenderer.js
