@@ -1,0 +1,265 @@
+# Swarm Orchestration SOP
+
+Use this procedure when a request can be split into parallel, independent workstreams, or when the user explicitly asks for swarm/subagent execution.
+
+Do not use this SOP when the user forbids subagents or asks for a quick direct change.
+
+## Activation Matrix
+
+| Task shape | Default workflow |
+| --- | --- |
+| Single-file, low-risk edit | Direct execution; no subagents unless requested. |
+| Multi-file but one tightly coupled implementation | Orchestrator implements; optional reviewer if risky. |
+| Tightly coupled security or data-correctness implementation | Orchestrator implements; reviewer required. |
+| Independent research, code, docs, or validation slices | Swarm workflow. |
+| Broad refactor with independent slices | Swarm workflow with reviewer required. |
+| Multi-slice security/data investigation with separable research or validation tracks | Swarm workflow with reviewer required. |
+| User explicitly asks for subagents/swarm | Swarm workflow, within concurrency limits. |
+
+If sensitive work is tightly coupled, keep implementation with the orchestrator and use an independent reviewer.
+
+## SUBAGENTS ORCHESTRATION GUIDELINE
+
+1. Up to 5 `gpt-5.5` subagents can be active at once, with appropriate effort level (`low`, `medium`, or `high`). `gpt-5.3-codex-spark` xhigh can also be used for quick, well-scoped tasks.
+2. Spawn subagents to research, perform, and execute tasks needed throughout the mission.
+3. Spawn a specialized high-effort reviewer subagent to review other agent tasks, return commit-ready recommendations, and identify in-scope optimization, maintainability, and de-duplication opportunities. The reviewer may commit or directly implement only when explicitly delegated for a specific slice, with owned paths and commit authority stated in the assignment packet.
+4. Spawn one medium-effort handover subagent for broad enhancement research and handover-note writing on multi-slice/risky swarm work, broad enhancement work, or when requested. Otherwise the orchestrator writes the final handoff.
+5. Reuse or close previous subagent sessions **that you spawned** as needed, except the reviewer or handover agents while their standing roles are still active.
+6. Do not close subagent sessions spawned by other agents.
+
+## Standard Role Set
+
+- **Swarm orchestrator (you)**
+  - Owns scope, assignment packets, integration, staging, commits, pushes, final checks, and final user handoff unless explicitly delegated.
+- **Specialist worker subagents (0-3)**
+  - Execute independent code/docs/research slices.
+  - Default to patch snippets, findings, and validation notes.
+- **High-effort reviewer subagent**
+  - Reviews worker output and confirms correctness, risk, and scope boundaries.
+  - Defaults to notes-only recommendations.
+  - Commits or edits only when explicitly delegated per slice.
+- **Medium-effort handover subagent**
+  - Produces notes-only broad enhancement research and a final handover note.
+  - Does not expand implementation scope unless explicitly assigned.
+
+## Model and Effort Selection
+
+| Effort | Use for |
+| --- | --- |
+| `low` | Read-only searches, docs checks, narrow verification, simple inventory. |
+| `medium` | Contained implementation, focused review, validation slices, handover synthesis. |
+| `high` | Security, data correctness, cross-cutting architecture, reviewer role, high-risk merges. |
+| `xhigh` quick model | Fast, well-scoped mechanical tasks where speed matters and the output is easy to review. |
+
+If a named model is unavailable, use the closest available model with the same role: highest-reasoning for review/risk, fastest reliable coding model for bounded mechanical edits.
+
+## Spawn and Concurrency Rules
+
+- Keep total active subagents to **five or fewer**.
+- Spawn workers in parallel only where outputs are independent.
+- Use dedicated reviewer/handover on multi-slice work or tasks marked non-trivial/risky.
+- For small, single-file, low-risk edits, skip reviewer/handover unless requested.
+- Reuse reviewer/handover agents across slices where possible.
+- Close unused subagent sessions you spawned as soon as their scope is complete.
+- Do not close another agent's subagents.
+- Never kill local processes, occupied ports, dev servers, terminals, or CLI sessions unless the user explicitly approves and ownership is confirmed.
+- Do not assign overlapping write ownership unless all agents are returning notes/patches only.
+
+An immediate blocking task is the next step that must complete before any other slice can proceed. The orchestrator handles those directly. Examples: repo-state checks, failing setup commands, branch decisions, and shared interface decisions. Independent research, validation, or isolated implementation can be delegated.
+
+## Core Workflow
+
+1. **Scope split**
+   - Separate the request into clear tasks with minimal overlap.
+   - Identify the files and boundaries each task must touch.
+   - Record an assignment baseline before handing off work.
+2. **Parallel execution**
+   - Spawn one worker per independent task.
+   - Include the assignment packet and expected deliverables.
+3. **Collect + review**
+   - Feed worker outputs to reviewer.
+   - Reviewer returns one of: `approve`, `approve-with-fixes`, `request-changes`, or `defer-follow-up`.
+   - Reviewer includes risks, file/line references, validation evidence, and scope notes.
+4. **Merge-and-optimize pass**
+   - Re-run `git status --short` and compare owned paths to the assignment baseline before integrating each worker patch.
+   - Stop and ask for direction if another agent changed an owned path since assignment.
+   - Apply only approved worker outputs.
+   - Treat required correctness fixes separately from optional cleanup.
+   - Apply reviewer-suggested optimization/de-duplication only when required for the assigned slice or explicitly approved through a mini-assignment.
+   - Put out-of-scope improvements in the handover note.
+5. **Handover**
+   - Handover agent documents what changed, what remains, and follow-up candidates when a handover agent is spawned.
+   - For smaller swarm runs without a handover agent, the orchestrator writes the same note in the final response.
+
+## Assignment Baseline
+
+Before assigning a worker or reviewer any owned paths, record:
+
+- Current `HEAD`.
+- Current `git status --short`.
+- Owned path list.
+- Read-only path list.
+- Existing diffs for owned paths (`git diff -- <paths>`) or an equivalent file/hash snapshot.
+- Whether direct edits are allowed.
+- Which agent owns the paths and when the assignment started.
+
+Before integrating output, compare current state against this baseline. If owned paths changed unexpectedly, stop and ask for direction.
+
+## Edit Ownership
+
+- Workers are patch/notes-only by default.
+- Direct worker edits require:
+  - explicit exclusive path ownership
+  - clean owned paths or explicitly acknowledged pre-existing diffs
+  - no overlapping agents on those paths
+  - pre-edit and post-edit `git status --short`
+  - final orchestrator review before staging or commit
+- The orchestrator owns staging, commits, pushes, and final status checks unless the user explicitly delegates those steps.
+
+## Commit and Push Gates
+
+- Do not commit or push unless the user explicitly asks or approves.
+- Before committing:
+  - re-run `git status --short`
+  - review the staged diff
+  - confirm only intentional paths are staged
+- Before pushing:
+  - confirm current branch and upstream
+  - run `git fetch`
+  - check divergence from upstream
+  - confirm exact target remote and branch
+  - ensure unrelated staged, modified, or untracked files are not included
+
+## Destructive Command Gates
+
+Never run destructive or ownership-disrupting commands without explicit approval. This includes:
+
+- `git reset --hard`
+- `git checkout --`
+- `git restore`
+- `git clean`
+- `rm -rf`
+- `git stash drop` or `git stash clear`
+- bulk formatters outside assigned scope
+- `kill`, `pkill`, `killall`, or port-killing pipelines
+
+## Assignment Packet Template
+
+```text
+Goal:
+Scope:
+  cwd:
+  owned paths:
+  read-only paths:
+  current HEAD:
+  current git status summary:
+  owned-path baseline:
+Non-goals:
+Direct edits allowed: yes/no
+Expected output:
+Validation required:
+Stop conditions:
+Effort/model:
+Return format:
+```
+
+Example:
+
+```text
+Goal: Review adapter token normalization and identify correctness risks.
+Scope:
+  cwd: /home/ahirice/Documents/git/claude-ville
+  owned paths: none
+  read-only paths: claudeville/adapters/*.js, claudeville/src/domain/entities/Agent.js
+  current HEAD: <sha>
+  current git status summary: AGENTS.md modified; docs SOP untracked; app files untouched by this assignment
+  owned-path baseline: none, read-only task
+Non-goals: Do not edit files, do not stage, do not commit.
+Direct edits allowed: no
+Expected output: Findings with file/line references and risk severity.
+Validation required: None unless a finding depends on a command result.
+Stop conditions: Stop if requested files change during review or required files are missing.
+Effort/model: gpt-5.5 medium
+Return format: Reviewer Output template
+```
+
+## Output Templates
+
+### Worker Output
+
+```text
+Files touched or patch paths:
+Why this changed:
+Patch/applicability notes:
+Validation run:
+Assumptions:
+Conflict risk:
+What is not done:
+Suggested next step:
+```
+
+### Reviewer Output
+
+```text
+Verdict: approve | approve-with-fixes | request-changes | defer-follow-up
+Blockers:
+Required fixes:
+File/line references:
+Validation evidence:
+Scope notes:
+Risk severity:
+Integration recommendation:
+```
+
+`approve-with-fixes` means integrate only after listed fixes are applied and rechecked.
+
+### Final Handover
+
+```text
+Landed changes:
+Validation performed:
+Validation skipped and why:
+Residual risks:
+Follow-up opportunities ranked by effort vs reward:
+Recommended next task boundary:
+```
+
+## Reviewer Gates
+
+- `approve`: safe to integrate as-is.
+- `approve-with-fixes`: safe only after specific small fixes are applied and rechecked.
+- `request-changes`: do not integrate until blockers are resolved.
+- `defer-follow-up`: valid improvement, but outside current task scope.
+
+The orchestrator should not integrate `request-changes` output without resolving the blocker or explicitly documenting why it is being deferred.
+
+## Decision Rules
+
+- Preserve unrelated edits in a shared checkout.
+- Keep changes minimal and file-scoped to the assigned task.
+- Enhancement research is notes-only unless the user requested implementation.
+- Cleanup/de-duplication may be implemented only when required for the assigned slice or explicitly approved.
+- For docs-only process updates, use a brief diff review and `git status --short` confirmation.
+
+## Process Checkpoints
+
+- Before edits: `git status --short`.
+- Before assigning owned paths: record the assignment baseline.
+- Before integrating each worker output: re-run `git status --short` and inspect owned-path diffs against the baseline.
+- Before commits: scope-only staged diff review.
+- After merge decisions: run relevant validation from `AGENTS.md` and record skipped checks with reasons.
+- Before final handoff: final `git status --short`.
+
+## Validation Mapping
+
+- Server or adapter edits: use the syntax checklist in `AGENTS.md`.
+- API, runtime, or rendering behavior changes: use runtime and visual checks in `AGENTS.md`.
+- Process/docs changes (`AGENTS.md`, `claudeville/CLAUDE.md`, `README.md`, `docs/*.md`): diff review plus `git status --short`.
+- Visible docs or locale-sensitive copy changes in `README.md` or `claudeville/CLAUDE.md`: also run the Hangul scan listed in `claudeville/CLAUDE.md`.
+
+## Skills and Docs to Reuse
+
+- Reuse existing project docs (`AGENTS.md`, `claudeville/CLAUDE.md`) as canonical context.
+- Root `AGENTS.md` is the workflow and git-hygiene authority; `claudeville/CLAUDE.md` is the area-specific implementation and validation context.
+- Use local skills and process docs when they directly match the task.
+- Use this SOP for repeatable swarm execution across future feature, refactor, and review tasks.

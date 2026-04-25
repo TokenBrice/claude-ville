@@ -15,6 +15,14 @@
 - Launch widget: `npm run widget` (`open widget/ClaudeVilleWidget.app`)
 - There is no install step, bundler, transpiler, or test runner in this repo today.
 
+## Swarm-Workflow Procedure
+
+- For work that is truly multi-part (at least two independent workstreams) or explicitly requested as a swarm workflow, use the standard procedure in [docs/swarm-orchestration-procedure.md](docs/swarm-orchestration-procedure.md).
+- If a task is single-file and single-owner, use direct execution unless the user explicitly requests subagents.
+- When the SOP applies, first produce a scope split and assignment packets before editing.
+- For shared-checkout work, the SOP's ownership, baseline, destructive-command, and commit/push gates are mandatory.
+- Use the SOP for spawn, review, merge, and handoff decisions before coding.
+
 ## Project Map
 
 - `claudeville/server.js` is the zero-dependency Node HTTP/WebSocket server. Port `4000` is hardcoded and assumed by docs, widget, and local workflow.
@@ -85,7 +93,7 @@
   - `npm run widget:build`
   - `npm run widget`
   - Confirm the menu bar app can reach port `4000`.
-- For docs-only `AGENTS.md` edits, a diff review plus `git status --short` is sufficient.
+- For docs-only process edits, a diff review plus `git status --short` is sufficient.
 
 ## GitHub And Remotes
 
@@ -98,5 +106,5 @@
 - Re-run `git status --short` before editing, before committing, and before final response.
 - Preserve unrelated local modifications and untracked files. Do not revert, stage, commit, delete, or format files outside the task scope.
 - Do not delete generated local app-bundle files or `.playwright-cli/` unless explicitly asked.
-- Do not run destructive commands such as `git reset --hard` or `git checkout --` without explicit approval.
+- Do not run destructive commands such as `git reset --hard`, `git checkout --`, `git restore`, `git clean`, `rm -rf`, `git stash drop`, `git stash clear`, bulk formatters outside scope, `kill`, `pkill`, `killall`, or port-killing pipelines without explicit approval.
 - Before committing, inspect the diff and ensure only intentional paths are included.

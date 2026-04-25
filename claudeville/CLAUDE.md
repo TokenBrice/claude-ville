@@ -8,6 +8,7 @@ This file is for agents working inside `claudeville/`. Keep it current when arch
 - This checkout may be edited by multiple agents. Run `git status --short` before changes and do not revert or absorb unrelated edits.
 - For documentation-only tasks scoped to `README.md` and `claudeville/CLAUDE.md`, edit only those files.
 - Prefer `rg` and `rg --files` for discovery.
+- Workflow, git hygiene, and subagent orchestration are controlled by the root `AGENTS.md` and [docs/swarm-orchestration-procedure.md](../docs/swarm-orchestration-procedure.md); this file provides implementation context and validation details for `claudeville/`.
 
 ## Project Shape
 
