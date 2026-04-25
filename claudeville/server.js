@@ -62,6 +62,61 @@ function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
 }
 
+function formatAge(ms) {
+  if (!Number.isFinite(ms) || ms < 0) return 'unknown';
+  if (ms < 1000) return 'now';
+
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s ago`;
+
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+
+  const hours = Math.round(minutes / 60);
+  return `${hours}h ago`;
+}
+
+function printStartupStats(providers) {
+  let sessions = [];
+  let watchPaths = [];
+
+  try {
+    sessions = getAllSessions(ACTIVE_THRESHOLD_MS);
+  } catch (err) {
+    console.log(`  [Stats] Sessions unavailable: ${err.message}`);
+  }
+
+  try {
+    watchPaths = getAllWatchPaths();
+  } catch {
+    watchPaths = [];
+  }
+
+  const providerCounts = new Map();
+  for (const session of sessions) {
+    providerCounts.set(session.provider, (providerCounts.get(session.provider) || 0) + 1);
+  }
+
+  const projects = new Set(sessions.map(session => session.project).filter(Boolean));
+  const namedCodexAgents = sessions.filter(session => session.provider === 'codex' && (session.name || session.agentName)).length;
+  const sessionsWithTools = sessions.filter(session => session.lastTool).length;
+  const latestActivity = sessions.reduce((latest, session) => Math.max(latest, session.lastActivity || 0), 0);
+
+  console.log('  Startup stats:');
+  console.log(`    - Sessions: ${sessions.length} active across ${projects.size} project${projects.size === 1 ? '' : 's'}`);
+  if (providers.length > 0) {
+    const providerSummary = providers
+      .map(provider => `${provider.name}: ${providerCounts.get(provider.provider) || 0}`)
+      .join(', ');
+    console.log(`    - Provider sessions: ${providerSummary}`);
+  }
+  console.log(`    - Named Codex agents: ${namedCodexAgents}`);
+  console.log(`    - Sessions with current tool: ${sessionsWithTools}`);
+  console.log(`    - Latest activity: ${latestActivity ? formatAge(Date.now() - latestActivity) : 'none'}`);
+  console.log(`    - Watch paths configured: ${watchPaths.length}`);
+  console.log('');
+}
+
 // ─── API handlers ─────────────────────────────────────────
 
 /**
@@ -540,6 +595,8 @@ server.listen(PORT, () => {
     }
   }
   console.log('');
+
+  printStartupStats(providers);
 
   // Initialize the usage quota service
   usageQuota.init();

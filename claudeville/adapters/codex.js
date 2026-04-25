@@ -46,6 +46,10 @@ function parseJsonLines(lines) {
  */
 function parseRollout(filePath) {
   const detail = {
+    agentId: null,
+    agentName: null,
+    agentType: 'main',
+    parentThreadId: null,
     model: null,
     reasoningEffort: null,
     project: null,
@@ -59,6 +63,11 @@ function parseRollout(filePath) {
   const firstEntries = parseJsonLines(firstLines);
   for (const entry of firstEntries) {
     if (entry.type === 'session_meta' && entry.payload) {
+      const subagent = entry.payload.source?.subagent?.thread_spawn;
+      detail.agentId = entry.payload.id || null;
+      detail.agentName = entry.payload.agent_nickname || subagent?.agent_nickname || null;
+      detail.agentType = entry.payload.agent_role || subagent?.agent_role || 'main';
+      detail.parentThreadId = subagent?.parent_thread_id || null;
       detail.model = entry.payload.model || null;
       detail.project = entry.payload.cwd || null;
       break;
@@ -373,17 +382,27 @@ class CodexAdapter {
   getActiveSessions(activeThresholdMs) {
     const rollouts = scanRecentRollouts(activeThresholdMs);
     const sessions = [];
+    const parsedRollouts = [];
+    const sessionIdByThreadId = new Map();
 
     for (const { filePath, mtime, fileName } of rollouts) {
       const detail = parseRollout(filePath);
       // Extract session ID from the filename: rollout-2025-01-22T10-30-00-abc123.jsonl
       const sessionId = fileName.replace('rollout-', '').replace('.jsonl', '');
+      const fullSessionId = `codex-${sessionId}`;
+      const threadId = detail.agentId || sessionId;
+      sessionIdByThreadId.set(threadId, fullSessionId);
+      parsedRollouts.push({ filePath, mtime, detail, sessionId, fullSessionId, threadId });
+    }
 
+    for (const { filePath, mtime, detail, sessionId, fullSessionId, threadId } of parsedRollouts) {
       sessions.push({
-        sessionId: `codex-${sessionId}`,
+        sessionId: fullSessionId,
         provider: 'codex',
-        agentId: null,
-        agentType: 'main',
+        agentId: threadId,
+        name: detail.agentName,
+        agentName: detail.agentName,
+        agentType: detail.agentType || 'main',
         model: detail.model || 'codex',
         reasoningEffort: detail.reasoningEffort,
         status: 'active',
@@ -393,7 +412,9 @@ class CodexAdapter {
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
         tokenUsage: getTokenUsage(filePath),
-        parentSessionId: null,
+        parentSessionId: detail.parentThreadId
+          ? sessionIdByThreadId.get(detail.parentThreadId) || `codex-${detail.parentThreadId}`
+          : null,
       });
     }
 

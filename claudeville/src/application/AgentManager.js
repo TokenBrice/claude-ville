@@ -81,6 +81,7 @@ export class AgentManager {
     _upsertAgent(session, teamMembers) {
         const id = session.sessionId;
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
+        const agentName = teamInfo?.name || session.name || session.agentName || session.nickname || null;
 
         // Team name: get it from teamInfo or extract it from the project path
         const teamName = teamInfo?.teamName
@@ -96,6 +97,7 @@ export class AgentManager {
             currentTool: session.lastTool || null,
             currentToolInput: session.lastToolInput || null,
             _lastMessage: session.lastMessage || null,
+            ...(agentName ? { name: agentName, _customName: true } : {}),
         };
 
         if (this.world.agents.has(id)) {
@@ -103,7 +105,7 @@ export class AgentManager {
         } else {
             const agent = new Agent({
                 id,
-                name: teamInfo?.name || null,
+                name: agentName,
                 model: agentData.model,
                 effort: agentData.effort,
                 status: agentData.status,
