@@ -41,6 +41,7 @@ export class SceneryEngine {
     getBridgeTiles() { return this.bridgeTiles; }
     getBushTiles() { return this.bushTiles; }
     getGrassTuftTiles() { return this.grassTuftTiles; }
+    getTreeProps() { return this.treeProps; }
 
     // --- Generation -------------------------------------------------------
 
@@ -188,6 +189,37 @@ export class SceneryEngine {
                     this.bushTiles.set(key, { variant });
                 } else if (noise >= GRASS_TUFT_DENSITY.min && noise < GRASS_TUFT_DENSITY.max) {
                     this.grassTuftTiles.set(key, { variant: Math.floor(this.tileNoise(x + 21, y + 5) * 2) });
+                }
+            }
+        }
+    }
+
+    generateTrees(pathTiles, bridgeTiles) {
+        for (const cluster of TREE_CLUSTERS) {
+            const r = cluster.radius;
+            const r2 = r * r;
+            for (let dy = -Math.ceil(r); dy <= Math.ceil(r); dy++) {
+                for (let dx = -Math.ceil(r); dx <= Math.ceil(r); dx++) {
+                    const tx = cluster.centerX + dx;
+                    const ty = cluster.centerY + dy;
+                    if (tx < 0 || tx >= MAP_SIZE || ty < 0 || ty >= MAP_SIZE) continue;
+                    if (dx * dx + dy * dy > r2) continue;
+                    const key = `${tx},${ty}`;
+                    if (this.waterTiles.has(key)) continue;
+                    if (this.shoreTiles.has(key)) continue;
+                    if (pathTiles.has(key)) continue;
+                    if (bridgeTiles.has(key)) continue;
+                    if (this._buildingFootprints.has(key)) continue;
+                    if (this.bushTiles.has(key)) continue;
+
+                    const noise = this.tileNoise(tx + 251, ty + 137);
+                    if (noise > 1 - cluster.density) {
+                        const jx = (this.tileNoise(tx + 11, ty + 3) - 0.5) * 0.6;
+                        const jy = (this.tileNoise(tx + 5, ty + 19) - 0.5) * 0.6;
+                        const variant = Math.floor(this.tileNoise(tx + 41, ty + 91) * 3);
+                        const scale = 0.85 + this.tileNoise(tx + 17, ty + 71) * 0.4;
+                        this.treeProps.push({ tileX: tx + 0.5 + jx, tileY: ty + 0.5 + jy, variant, scale });
+                    }
                 }
             }
         }
