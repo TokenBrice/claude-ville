@@ -15,12 +15,6 @@ import { Compositor } from './Compositor.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
-const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-const BACKGROUND_FOREST_ROWS = [
-    { startX: -5, startY: -4.6, count: 33, stepX: 1.45, wave: 0.92, alpha: 0.62, scale: 0.86 },
-    { startX: -3, startY: -2.7, count: 29, stepX: 1.62, wave: 1.15, alpha: 0.78, scale: 1 },
-    { startX: 31, startY: 3.2, count: 18, stepX: 0.58, stepY: 1.35, wave: 0.7, alpha: 0.58, scale: 0.9 },
-];
 const ANCIENT_RUINS = [
     { tileX: 37, tileY: 3, scale: 1.05 },
     { tileX: 2, tileY: 16, scale: 0.82 },
@@ -165,19 +159,31 @@ export class IsometricRenderer {
 
         // Trees (Y-sorted props)
         this.scenery.generateTrees(this.pathTiles, this.bridgeTiles);
-        this.treePropSprites = this.scenery.getTreeProps().map((t) => new StaticPropSprite({
-            tileX: t.tileX,
-            tileY: t.tileY,
-            drawFn: (ctx, x, y) => this._drawTree(ctx, x, y, t),
-        }));
+        this.treePropSprites = this.scenery.getTreeProps().map((t) => {
+            // variant 0 → oak, 1 → pine, 2 → willow; size driven by scale threshold.
+            const species = ['oak', 'pine', 'willow'][(t.variant ?? 0) % 3];
+            const size = (t.scale ?? 1) >= 1.0 ? 'large' : 'small';
+            const id = `veg.tree.${species}.${size}`;
+            return new StaticPropSprite({
+                tileX: t.tileX,
+                tileY: t.tileY,
+                drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
+            });
+        });
 
         // Boulders (Y-sorted props)
         this.scenery.generateBoulders(this.pathTiles, this.bridgeTiles);
-        this.boulderPropSprites = this.scenery.getBoulderProps().map((b) => new StaticPropSprite({
-            tileX: b.tileX,
-            tileY: b.tileY,
-            drawFn: (ctx, x, y) => this._drawBoulder(ctx, x, y, b),
-        }));
+        this.boulderPropSprites = this.scenery.getBoulderProps().map((b) => {
+            // variant 'a' → mossy, 'b' → granite; size driven by scale threshold.
+            const species = b.variant === 'b' ? 'granite' : 'mossy';
+            const size = (b.scale ?? 1) >= 1.0 ? 'large' : 'small';
+            const id = `veg.boulder.${species}.${size}`;
+            return new StaticPropSprite({
+                tileX: b.tileX,
+                tileY: b.tileY,
+                drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
+            });
+        });
 
         // Walkability grid + Pathfinder (Task 11)
         this.walkabilityGrid = this.scenery.getWalkabilityGrid(this.pathTiles);
@@ -770,7 +776,6 @@ export class IsometricRenderer {
         this.camera.applyTransform(ctx);
 
         // 1. Terrain
-        this._drawBackgroundScenery(ctx);
         this._drawTerrain(ctx);
         this._drawAmbientGroundProps(ctx);
 
@@ -888,33 +893,13 @@ export class IsometricRenderer {
         const key = `${tileX},${tileY}`;
         const seed = this.terrainSeed[tileY * MAP_SIZE + tileX] || 0;
 
-        let fillColor;
-        if (this.waterTiles.has(key)) {
-            const palette = this.deepWaterTiles.has(key) ? THEME.deepWater : THEME.water;
-            const waterIdx = Math.floor(seed * palette.length);
-            fillColor = palette[waterIdx];
-        } else if (this.townSquareTiles.has(key)) {
-            const plazaIdx = Math.floor(seed * THEME.plaza.length);
-            fillColor = THEME.plaza[plazaIdx];
-        } else if (this.pathTiles.has(key)) {
-            const pathIdx = Math.floor(seed * THEME.path.length);
-            fillColor = THEME.path[pathIdx];
-        } else {
-            const grassIdx = Math.floor(seed * THEME.grass.length);
-            fillColor = THEME.grass[grassIdx];
-        }
-
-        if (!this.waterTiles.has(key) && !this.pathTiles.has(key)) {
-            fillColor = this._terrainRegionTint(fillColor, tileX, tileY, seed);
-        }
-
         if (this.terrain) {
             const sheetId = this._terrainSheetIdAt(tileX, tileY);
             this.terrain.drawTile(ctx, sheetId, tileX, tileY,
                 (tx, ty) => this._sameTerrainClass(tileX, tileY, tx, ty));
         } else {
-            // Fallback: legacy diamond fill (kept for the no-assets defensive path).
-            ctx.fillStyle = fillColor;
+            // Fallback: solid diamond (no-assets defensive path).
+            ctx.fillStyle = '#33403c';
             ctx.beginPath();
             ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
             ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
@@ -922,33 +907,22 @@ export class IsometricRenderer {
             ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
             ctx.closePath();
             ctx.fill();
-            ctx.strokeStyle = this.pathTiles.has(key) ? 'rgba(42, 31, 18, 0.2)' : 'rgba(255, 239, 179, 0.022)';
-            ctx.lineWidth = 0.5;
-            ctx.stroke();
         }
 
-        if (this.bridgeTiles?.has(key)) {
-            // No path/grass detail under a bridge.
-        } else if (this.pathTiles.has(key)) {
-            if (this.townSquareTiles.has(key)) {
-                this._drawTownSquareDetail(ctx, screenX, screenY, seed, tileX, tileY);
-            } else {
-                this._drawPathDetail(ctx, screenX, screenY, seed, tileX, tileY);
-            }
-            if (this.commandCenterRoadTiles.has(key)) {
+        if (!this.bridgeTiles?.has(key)) {
+            if (this.commandCenterRoadTiles.has(key) && this.pathTiles.has(key)) {
                 this._drawCommandApproachRoadDetail(ctx, screenX, screenY, seed, tileX, tileY);
-            }
-        } else if (!this.waterTiles.has(key)) {
-            this._drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY);
-            this._drawTerrainFeature(ctx, screenX, screenY, seed, key);
-            if (this.bushTiles?.has(key)) {
-                this._drawBush(ctx, screenX, screenY, seed, this.bushTiles.get(key));
-            }
-            if (this.grassTuftTiles?.has(key)) {
-                this._drawGrassTuft(ctx, screenX, screenY, seed, this.grassTuftTiles.get(key));
-            }
-            if (this.shoreTiles.has(key)) {
-                this._drawShoreDetail(ctx, screenX, screenY, seed, tileX, tileY);
+            } else if (!this.waterTiles.has(key)) {
+                if (this.bushTiles?.has(key)) {
+                    const bInfo = this.bushTiles.get(key);
+                    const bushId = ['veg.bush.a', 'veg.bush.b', 'veg.bush.c'][(bInfo?.variant ?? 0) % 3];
+                    if (this.sprites) this.sprites.drawSprite(ctx, bushId, screenX, screenY);
+                }
+                if (this.grassTuftTiles?.has(key)) {
+                    const gInfo = this.grassTuftTiles.get(key);
+                    const tuftId = ['veg.grassTuft.a', 'veg.grassTuft.b'][(gInfo?.variant ?? 0) % 2];
+                    if (this.sprites) this.sprites.drawSprite(ctx, tuftId, screenX, screenY);
+                }
             }
         }
 
@@ -958,15 +932,15 @@ export class IsometricRenderer {
 
         // Water shimmer / bridge deck
         if (this.bridgeTiles?.has(key)) {
-            this._drawBridgeDeck(ctx, screenX, screenY, seed, key);
-        } else if (this.waterTiles.has(key)) {
-            if (!this.terrain) {
-                const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.055 + 0.055 : STATIC_WATER_SHIMMER;
-                ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
-                ctx.fill();
-            }
-            this._drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY);
-            this._drawWaterEdge(ctx, screenX, screenY, seed, tileX, tileY);
+            const bInfo = this.bridgeTiles.get(key);
+            const orientation = (bInfo?.orientation || 'EW').toLowerCase();
+            const isDoc = bInfo?.kind === 'dock';
+            const bridgeSpriteId = isDoc ? `dock.${orientation}` : `bridge.${orientation}`;
+            if (this.sprites) this.sprites.drawSprite(ctx, bridgeSpriteId, screenX, screenY);
+        } else if (this.waterTiles.has(key) && !this.terrain) {
+            const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.055 + 0.055 : STATIC_WATER_SHIMMER;
+            ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
+            ctx.fill();
         }
     }
 
@@ -1068,56 +1042,6 @@ export class IsometricRenderer {
         return this.lightFadeColorCache.get(color);
     }
 
-    _drawBackgroundScenery(ctx) {
-        ctx.save();
-        ctx.globalAlpha = 0.82;
-
-        // Layered pines outside the playable grid make the map edge feel like a forest mass,
-        // not the end of a debug board.
-        for (const row of BACKGROUND_FOREST_ROWS) {
-            for (let i = 0; i < row.count; i++) {
-                const tileX = row.startX + i * row.stepX;
-                const tileY = row.startY + (row.stepY ? i * row.stepY : 0) + Math.sin(i * 0.7) * row.wave;
-                const x = (tileX - tileY) * TILE_WIDTH / 2;
-                const y = (tileX + tileY) * TILE_HEIGHT / 2;
-                const noise = this._tileNoise(i + row.startX, row.startY * 3);
-                const h = (17 + (i % 6) * 4 + noise * 7) * row.scale;
-                const half = (8 + noise * 5) * row.scale;
-                ctx.fillStyle = i % 3 === 0
-                    ? `rgba(37, 69, 41, ${row.alpha})`
-                    : `rgba(25, 51, 34, ${row.alpha + 0.04})`;
-                ctx.beginPath();
-                ctx.moveTo(x, y - h);
-                ctx.lineTo(x + half, y + 4);
-                ctx.lineTo(x - half, y + 4);
-                ctx.closePath();
-                ctx.fill();
-                ctx.fillStyle = `rgba(57, 38, 24, ${row.alpha * 0.68})`;
-                ctx.fillRect(x - 1, y + 1, 2, 8 * row.scale);
-            }
-        }
-
-        ctx.fillStyle = 'rgba(30, 50, 31, 0.18)';
-        ctx.beginPath();
-        ctx.ellipse(62, -18, 420, 42, -0.07, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(101, 84, 61, 0.36)';
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        for (let i = 0; i <= 8; i++) {
-            const tileX = 5 + i * 4;
-            const tileY = -7 + Math.sin(i * 0.9) * 1.5;
-            const x = (tileX - tileY) * TILE_WIDTH / 2;
-            const y = (tileX + tileY) * TILE_HEIGHT / 2 - 8;
-            if (i === 0) ctx.moveTo(x, y);
-            else ctx.lineTo(x, y);
-        }
-        ctx.stroke();
-
-        ctx.restore();
-    }
-
     _drawAncientRuins(ctx) {
         const pulse = this.motionScale ? (Math.sin(this.waterFrame * 1.7) + 1) / 2 : 0.45;
         for (const ruin of ANCIENT_RUINS) {
@@ -1145,22 +1069,12 @@ export class IsometricRenderer {
     _drawAmbientGroundProps(ctx) {
         ctx.save();
         this._drawAncientRuins(ctx);
-        for (const prop of AMBIENT_GROUND_PROPS) {
-            const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
-            const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
-            if (prop.type === 'lantern') this._drawPathLantern(ctx, x, y);
-            else if (prop.type === 'signpost') this._drawSignpost(ctx, x, y);
-            else if (prop.type === 'runestone') this._drawRunestone(ctx, x, y);
-            else if (prop.type === 'scrollCrates') this._drawScrollCrates(ctx, x, y);
-            else if (prop.type === 'oreCart') this._drawSmallOreCart(ctx, x, y);
-            else if (prop.type === 'well') this._drawVillageWell(ctx, x, y);
-            else if (prop.type === 'marketStall') this._drawMarketStall(ctx, x, y);
-            else if (prop.type === 'flowerCart') this._drawFlowerCart(ctx, x, y);
-            else if (prop.type === 'noticePillar') this._drawNoticePillar(ctx, x, y);
-            else if (prop.type === 'harborPier') this._drawHarborPier(ctx, x, y);
-            else if (prop.type === 'harborBoat') this._drawHarborBoat(ctx, x, y);
-            else if (prop.type === 'harborCrates') this._drawHarborCrates(ctx, x, y);
-            else if (prop.type === 'harborCrane') this._drawHarborCrane(ctx, x, y);
+        if (this.sprites) {
+            for (const prop of AMBIENT_GROUND_PROPS) {
+                const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
+                const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
+                this.sprites.drawSprite(ctx, `prop.${prop.type}`, x, y);
+            }
         }
 
         for (const prop of this.commandCenterGroundProps) {
@@ -1412,657 +1326,5 @@ export class IsometricRenderer {
         ctx.fill();
     }
 
-    _drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY) {
-        const ox = (seed - 0.5) * TILE_WIDTH * 0.65;
-        const oy = Math.sin((tileX + 1) * (tileY + 2)) * 5;
-        const wash = this._tileNoise(tileX + 113, tileY + 127);
 
-        if (wash > 0.54) {
-            ctx.fillStyle = wash > 0.8 ? 'rgba(255, 229, 149, 0.035)' : 'rgba(20, 50, 24, 0.04)';
-            ctx.beginPath();
-            ctx.ellipse(screenX + (wash - 0.5) * 18, screenY + (seed - 0.5) * 8, 19, 5, (seed - 0.5) * 0.6, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        if (seed < 0.045) {
-            // Tiny dark pines help the empty grass read as an RPG field, not a flat board.
-            ctx.fillStyle = 'rgba(24, 67, 32, 0.8)';
-            ctx.beginPath();
-            ctx.moveTo(screenX + ox, screenY + oy - 10);
-            ctx.lineTo(screenX + ox + 7, screenY + oy + 2);
-            ctx.lineTo(screenX + ox - 7, screenY + oy + 2);
-            ctx.closePath();
-            ctx.fill();
-            ctx.fillStyle = 'rgba(64, 44, 25, 0.72)';
-            ctx.fillRect(screenX + ox - 1, screenY + oy + 1, 2, 5);
-        } else if (seed < 0.18) {
-            ctx.fillStyle = seed < 0.08 ? 'rgba(238, 206, 91, 0.62)' : 'rgba(94, 128, 54, 0.46)';
-            ctx.fillRect(screenX + ox, screenY + oy, 2, 2);
-            ctx.fillRect(screenX + ox + 3, screenY + oy - 2, 2, 2);
-        } else if (seed > 0.93) {
-            ctx.fillStyle = 'rgba(34, 45, 31, 0.35)';
-            ctx.beginPath();
-            ctx.ellipse(screenX - 8, screenY + 2, 3, 2, -0.4, 0, Math.PI * 2);
-            ctx.fill();
-            if (seed > 0.975) {
-                ctx.fillStyle = 'rgba(198, 185, 148, 0.46)';
-                ctx.fillRect(screenX - 6, screenY, 2, 2);
-                ctx.fillRect(screenX - 3, screenY - 2, 2, 2);
-            }
-        }
-    }
-
-    _drawPathDetail(ctx, screenX, screenY, seed, tileX, tileY) {
-        const offset = (seed - 0.5) * 10;
-        const key = `${tileX},${tileY}`;
-        const isMain = this.mainAvenueTiles.has(key);
-        const isDirt = this.dirtPathTiles.has(key);
-
-        if (isMain) {
-            ctx.fillStyle = 'rgba(222, 187, 112, 0.08)';
-            ctx.beginPath();
-            ctx.moveTo(screenX, screenY - 9);
-            ctx.lineTo(screenX + 20, screenY);
-            ctx.lineTo(screenX, screenY + 9);
-            ctx.lineTo(screenX - 20, screenY);
-            ctx.closePath();
-            ctx.fill();
-            ctx.strokeStyle = 'rgba(48, 34, 21, 0.24)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(screenX - 18, screenY - 1);
-            ctx.lineTo(screenX + 18, screenY - 1);
-            ctx.moveTo(screenX - 12, screenY + 5);
-            ctx.lineTo(screenX + 12, screenY + 5);
-            ctx.stroke();
-        } else if (isDirt) {
-            ctx.fillStyle = 'rgba(43, 31, 20, 0.12)';
-            ctx.beginPath();
-            ctx.ellipse(screenX + offset * 0.2, screenY + 1, 18, 5, -0.08, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        ctx.fillStyle = isDirt ? 'rgba(58, 42, 25, 0.2)' : 'rgba(64, 45, 27, 0.16)';
-        for (let i = 0; i < 2; i++) {
-            const px = screenX + offset * (i ? -0.55 : 0.7) + (i ? 10 : -11);
-            const py = screenY + (i ? 3 : -4);
-            ctx.beginPath();
-            ctx.ellipse(px, py, 5, 2, 0.35, 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        ctx.strokeStyle = isMain ? 'rgba(63, 45, 27, 0.18)' : 'rgba(43, 31, 20, 0.2)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 16 + offset, screenY - 2);
-        ctx.lineTo(screenX - 3 + offset, screenY + 5);
-        ctx.moveTo(screenX + 4 - offset, screenY - 5);
-        ctx.lineTo(screenX + 16 - offset, screenY + 1);
-        if ((tileX + tileY) % 3 === 0) {
-            ctx.moveTo(screenX - 2, screenY - 10);
-            ctx.lineTo(screenX + 9, screenY - 4);
-        }
-        ctx.stroke();
-    }
-
-    _drawTownSquareDetail(ctx, screenX, screenY, seed, tileX, tileY) {
-        const wobble = (seed - 0.5) * 4;
-        ctx.fillStyle = 'rgba(255, 232, 166, 0.045)';
-        ctx.beginPath();
-        ctx.moveTo(screenX - 20 + wobble, screenY - 1);
-        ctx.lineTo(screenX - 5, screenY - 7 + wobble * 0.3);
-        ctx.lineTo(screenX + 12 - wobble, screenY - 3);
-        ctx.lineTo(screenX + 20, screenY + 3 + wobble * 0.2);
-        ctx.lineTo(screenX + 2, screenY + 8);
-        ctx.lineTo(screenX - 17, screenY + 4 - wobble * 0.2);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(52, 37, 24, 0.22)';
-        ctx.lineWidth = 0.7;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 24, screenY + wobble * 0.25);
-        ctx.quadraticCurveTo(screenX - 5, screenY - 2 + wobble * 0.2, screenX + 24, screenY + wobble * -0.18);
-        ctx.moveTo(screenX - 7 + wobble * 0.2, screenY - 11);
-        ctx.quadraticCurveTo(screenX + 1, screenY - 1, screenX + 7 - wobble * 0.2, screenY + 11);
-        if ((tileX + tileY) % 3 === 0) {
-            ctx.moveTo(screenX - 18, screenY - 5);
-            ctx.quadraticCurveTo(screenX - 4, screenY + 1, screenX + 11, screenY + 7);
-        }
-        ctx.stroke();
-
-        if ((tileX + tileY) % 2 === 0) {
-            ctx.fillStyle = 'rgba(255, 230, 155, 0.055)';
-            ctx.beginPath();
-            ctx.moveTo(screenX + wobble, screenY - 6);
-            ctx.lineTo(screenX + 12, screenY - 1 + wobble * 0.2);
-            ctx.lineTo(screenX - wobble * 0.3, screenY + 6);
-            ctx.lineTo(screenX - 13, screenY + wobble * 0.2);
-            ctx.closePath();
-            ctx.fill();
-        }
-
-        if (seed > 0.72) {
-            ctx.fillStyle = 'rgba(55, 37, 24, 0.22)';
-            ctx.beginPath();
-            ctx.ellipse(screenX + (seed - 0.5) * 18, screenY + 2, 5, 2.3, 0.2, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
-    _drawShoreDetail(ctx, screenX, screenY, seed, tileX, tileY) {
-        ctx.fillStyle = 'rgba(177, 151, 88, 0.18)';
-        ctx.beginPath();
-        ctx.ellipse(screenX + (seed - 0.5) * 8, screenY + 2, 15, 4, 0.15, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(231, 218, 172, 0.12)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 18 + seed * 4, screenY + 4);
-        ctx.quadraticCurveTo(screenX - 2, screenY + 8, screenX + 18 - seed * 5, screenY + 3);
-        ctx.stroke();
-
-        if (seed > 0.48) {
-            ctx.strokeStyle = 'rgba(126, 142, 68, 0.52)';
-            ctx.lineWidth = 1;
-            const x = screenX - 12 + seed * 18;
-            ctx.beginPath();
-            ctx.moveTo(x, screenY + 5);
-            ctx.lineTo(x - 1, screenY - 5);
-            ctx.moveTo(x + 3, screenY + 4);
-            ctx.lineTo(x + 7, screenY - 4);
-            ctx.stroke();
-        }
-    }
-
-    _drawBridgeDeck(ctx, screenX, screenY, seed, key) {
-        const info = this.bridgeTiles.get(key);
-        const orientation = info?.orientation || 'EW';
-        const wood = THEME.bridgeWood;
-        const [tileX, tileY] = key.split(',').map(Number);
-        const axis = orientation === 'EW' ? [1, 0] : [0, 1];
-        const prevBridge = this.bridgeTiles.has(`${tileX - axis[0]},${tileY - axis[1]}`);
-        const nextBridge = this.bridgeTiles.has(`${tileX + axis[0]},${tileY + axis[1]}`);
-        if (info?.kind === 'dock') {
-            this._drawDockDeck(ctx, screenX, screenY, seed, orientation, prevBridge, nextBridge);
-            return;
-        }
-
-        // Deck fill (covers the diamond — the water fill is already painted under it).
-        ctx.fillStyle = wood.deck;
-        ctx.beginPath();
-        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
-        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
-        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
-        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
-        ctx.closePath();
-        ctx.fill();
-
-        // Subtle highlight band based on seed.
-        ctx.fillStyle = wood.deckLight;
-        ctx.globalAlpha = 0.35 + seed * 0.15;
-        ctx.fill();
-        ctx.globalAlpha = 1;
-
-        ctx.strokeStyle = 'rgba(246, 207, 119, 0.22)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        if (orientation === 'EW') {
-            ctx.moveTo(screenX - 17, screenY - 7);
-            ctx.lineTo(screenX + 17, screenY + 7);
-            ctx.moveTo(screenX - 17, screenY + 7);
-            ctx.lineTo(screenX + 17, screenY - 7);
-        } else {
-            ctx.moveTo(screenX - 17, screenY - 7);
-            ctx.lineTo(screenX + 17, screenY + 7);
-            ctx.moveTo(screenX + 17, screenY - 7);
-            ctx.lineTo(screenX - 17, screenY + 7);
-        }
-        ctx.stroke();
-
-        // Three plank lines, perpendicular to orientation. EW = planks run NS.
-        ctx.strokeStyle = wood.plankLine;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        if (orientation === 'EW') {
-            for (let i = 1; i <= 3; i++) {
-                const t = i / 4;
-                const x = screenX - TILE_WIDTH / 2 + t * TILE_WIDTH;
-                const dyEdge = (1 - Math.abs(2 * t - 1)) * TILE_HEIGHT / 2;
-                ctx.moveTo(x, screenY - dyEdge);
-                ctx.lineTo(x, screenY + dyEdge);
-            }
-        } else {
-            for (let i = 1; i <= 3; i++) {
-                const t = i / 4;
-                const y = screenY - TILE_HEIGHT / 2 + t * TILE_HEIGHT;
-                const dxEdge = (1 - Math.abs(2 * t - 1)) * TILE_WIDTH / 2;
-                ctx.moveTo(screenX - dxEdge, y);
-                ctx.lineTo(screenX + dxEdge, y);
-            }
-        }
-        ctx.stroke();
-
-        // Rails along the two outer edges.
-        ctx.strokeStyle = wood.rail;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        if (orientation === 'EW') {
-            ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
-            ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
-            ctx.moveTo(screenX, screenY + TILE_HEIGHT / 2);
-            ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
-        } else {
-            ctx.moveTo(screenX - TILE_WIDTH / 2, screenY);
-            ctx.lineTo(screenX, screenY - TILE_HEIGHT / 2);
-            ctx.moveTo(screenX + TILE_WIDTH / 2, screenY);
-            ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
-        }
-        ctx.stroke();
-
-        // Rail highlight.
-        ctx.strokeStyle = wood.railLight;
-        ctx.lineWidth = 0.75;
-        ctx.stroke();
-
-        ctx.fillStyle = '#2b1b0f';
-        ctx.strokeStyle = '#8a673b';
-        ctx.lineWidth = 1;
-        const postPairs = orientation === 'EW'
-            ? [[-24, -10], [-24, 10], [24, -10], [24, 10]]
-            : [[-17, -14], [17, -14], [-17, 14], [17, 14]];
-        for (const [px, py] of postPairs) {
-            const endPost = (px < 0 || py < 0) ? !prevBridge : !nextBridge;
-            if (!endPost) continue;
-            const h = endPost ? 13 : 9;
-            ctx.fillRect(screenX + px - 1.5, screenY + py - h, 3, h);
-            ctx.strokeRect(screenX + px - 1.5, screenY + py - h + 0.5, 3, h - 0.5);
-            if (endPost) {
-                ctx.fillStyle = '#f2d36b';
-                ctx.fillRect(screenX + px - 2.5, screenY + py - h - 3, 5, 3);
-                ctx.fillStyle = '#2b1b0f';
-            }
-        }
-
-        if (!prevBridge || !nextBridge) {
-            ctx.fillStyle = '#615d50';
-            ctx.strokeStyle = '#2f2c26';
-            ctx.lineWidth = 1;
-            const blocks = orientation === 'EW'
-                ? (!prevBridge ? [[-31, -3], [-27, 5]] : [[25, -5], [29, 3]])
-                : (!prevBridge ? [[-8, -14], [4, -16]] : [[-8, 12], [4, 10]]);
-            for (const [bx, by] of blocks) {
-                ctx.fillRect(screenX + bx, screenY + by, 8, 5);
-                ctx.strokeRect(screenX + bx + 0.5, screenY + by + 0.5, 7, 4);
-            }
-        }
-    }
-
-    _drawDockDeck(ctx, screenX, screenY, seed, orientation, prevDock, nextDock) {
-        ctx.fillStyle = '#6b4a27';
-        ctx.beginPath();
-        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
-        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
-        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
-        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.fillStyle = 'rgba(158, 111, 56, 0.38)';
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(35, 22, 10, 0.55)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        if (orientation === 'EW') {
-            for (const offset of [-14, 0, 14]) {
-                ctx.moveTo(screenX + offset, screenY - 8);
-                ctx.lineTo(screenX + offset, screenY + 8);
-            }
-        } else {
-            for (const offset of [-6, 2, 10]) {
-                ctx.moveTo(screenX - 18, screenY + offset);
-                ctx.lineTo(screenX + 18, screenY + offset);
-            }
-        }
-        ctx.stroke();
-
-        if (!prevDock || !nextDock || seed > 0.55) {
-            ctx.fillStyle = '#2b1b0f';
-            const posts = orientation === 'EW'
-                ? [[-21, -9], [21, 9]]
-                : [[-15, -11], [15, 11]];
-            for (const [px, py] of posts) {
-                ctx.fillRect(screenX + px - 1.5, screenY + py - 12, 3, 13);
-                ctx.fillStyle = '#d8b96d';
-                ctx.fillRect(screenX + px - 2.5, screenY + py - 15, 5, 3);
-                ctx.fillStyle = '#2b1b0f';
-            }
-        }
-    }
-
-    _drawHarborPier(ctx, x, y) {
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.fillStyle = '#5a3f24';
-        ctx.strokeStyle = '#2a1a0f';
-        ctx.lineWidth = 1;
-        for (let i = 0; i < 6; i++) {
-            ctx.beginPath();
-            ctx.moveTo(-36 + i * 15, -7 + i * 4);
-            ctx.lineTo(-18 + i * 15, 2 + i * 4);
-            ctx.lineTo(-25 + i * 15, 7 + i * 4);
-            ctx.lineTo(-43 + i * 15, -2 + i * 4);
-            ctx.closePath();
-            ctx.fill();
-            ctx.stroke();
-        }
-        ctx.strokeStyle = '#8a673b';
-        ctx.beginPath();
-        ctx.moveTo(-42, -3);
-        ctx.lineTo(52, 23);
-        ctx.moveTo(-33, 6);
-        ctx.lineTo(61, 32);
-        ctx.stroke();
-        ctx.fillStyle = '#2b1b0f';
-        for (const [px, py] of [[-39, -7], [-21, -1], [-2, 6], [18, 12], [36, 18], [54, 26]]) {
-            ctx.fillRect(px, py - 13, 3, 16);
-            ctx.fillStyle = '#f2d36b';
-            ctx.fillRect(px - 1, py - 16, 5, 3);
-            ctx.fillStyle = '#2b1b0f';
-        }
-        ctx.restore();
-    }
-
-    _drawHarborBoat(ctx, x, y) {
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.fillStyle = 'rgba(15, 28, 33, 0.45)';
-        ctx.beginPath();
-        ctx.ellipse(0, 5, 25, 8, 0.25, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#6b4225';
-        ctx.beginPath();
-        ctx.moveTo(-22, -2);
-        ctx.lineTo(16, -7);
-        ctx.lineTo(26, 0);
-        ctx.lineTo(9, 10);
-        ctx.lineTo(-15, 9);
-        ctx.closePath();
-        ctx.fill();
-        ctx.fillStyle = '#a8753d';
-        ctx.fillRect(-10, -5, 18, 5);
-        ctx.strokeStyle = '#e8d7a6';
-        ctx.beginPath();
-        ctx.moveTo(2, -7);
-        ctx.lineTo(2, -25);
-        ctx.lineTo(16, -10);
-        ctx.closePath();
-        ctx.stroke();
-        ctx.fillStyle = 'rgba(232, 215, 166, 0.6)';
-        ctx.beginPath();
-        ctx.moveTo(3, -24);
-        ctx.lineTo(16, -10);
-        ctx.lineTo(3, -10);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-    }
-
-    _drawHarborCrates(ctx, x, y) {
-        ctx.fillStyle = '#6b4225';
-        ctx.fillRect(x - 12, y - 12, 10, 10);
-        ctx.fillRect(x, y - 15, 10, 10);
-        ctx.fillRect(x + 7, y - 8, 10, 10);
-        ctx.fillRect(x - 4, y - 23, 9, 9);
-        ctx.fillStyle = '#9a6a3b';
-        ctx.fillRect(x - 10, y - 10, 6, 2);
-        ctx.fillRect(x + 2, y - 13, 6, 2);
-        ctx.fillRect(x + 9, y - 6, 6, 2);
-        ctx.fillRect(x - 2, y - 21, 5, 2);
-        ctx.strokeStyle = '#2a1a0f';
-        ctx.strokeRect(x - 12.5, y - 12.5, 11, 11);
-        ctx.strokeRect(x - 0.5, y - 15.5, 11, 11);
-        ctx.strokeRect(x + 6.5, y - 8.5, 11, 11);
-        ctx.strokeRect(x - 4.5, y - 23.5, 10, 10);
-    }
-
-    _drawHarborCrane(ctx, x, y) {
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.strokeStyle = '#2b1b0f';
-        ctx.lineWidth = 3;
-        ctx.beginPath();
-        ctx.moveTo(0, 4);
-        ctx.lineTo(0, -38);
-        ctx.moveTo(0, -35);
-        ctx.lineTo(36, -47);
-        ctx.moveTo(8, -37);
-        ctx.lineTo(25, -18);
-        ctx.stroke();
-
-        ctx.strokeStyle = '#d8b96d';
-        ctx.lineWidth = 1.4;
-        ctx.beginPath();
-        ctx.moveTo(0, -33);
-        ctx.lineTo(32, -44);
-        ctx.moveTo(24, -43);
-        ctx.lineTo(24, -16);
-        ctx.stroke();
-        ctx.fillStyle = '#6b4225';
-        ctx.fillRect(18, -14, 12, 8);
-        ctx.fillStyle = '#f2d36b';
-        ctx.fillRect(-3, -42, 6, 5);
-        ctx.restore();
-    }
-
-    _drawTerrainFeature(ctx, screenX, screenY, seed, key) {
-        const feature = this.featureTiles.get(key);
-        if (!feature) return;
-        const ox = (seed - 0.5) * TILE_WIDTH * 0.45;
-        const oy = Math.sin(seed * 80) * 4;
-
-        if (feature === 'flowers') {
-            const colors = ['#f2d36b', '#e58da4', '#a7d982'];
-            ctx.fillStyle = colors[Math.floor(seed * colors.length) % colors.length];
-            ctx.fillRect(screenX + ox, screenY + oy, 2, 2);
-            ctx.fillRect(screenX + ox + 4, screenY + oy - 2, 2, 2);
-            ctx.fillStyle = 'rgba(41, 87, 38, 0.62)';
-            ctx.fillRect(screenX + ox + 2, screenY + oy + 2, 2, 2);
-        } else if (feature === 'stones') {
-            ctx.fillStyle = 'rgba(49, 51, 45, 0.55)';
-            ctx.beginPath();
-            ctx.ellipse(screenX + ox, screenY + oy, 6, 3, -0.28, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(177, 166, 137, 0.35)';
-            ctx.beginPath();
-            ctx.ellipse(screenX + ox - 2, screenY + oy - 1, 2, 1, -0.2, 0, Math.PI * 2);
-            ctx.fill();
-        } else if (feature === 'mushrooms') {
-            ctx.fillStyle = '#e8d7a6';
-            ctx.fillRect(screenX + ox, screenY + oy - 1, 2, 4);
-            ctx.fillStyle = '#c85c45';
-            ctx.beginPath();
-            ctx.ellipse(screenX + ox + 1, screenY + oy - 2, 5, 3, 0, Math.PI, 0);
-            ctx.fill();
-        } else if (feature === 'reeds') {
-            ctx.strokeStyle = 'rgba(126, 142, 68, 0.56)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(screenX + ox, screenY + oy + 5);
-            ctx.lineTo(screenX + ox - 2, screenY + oy - 6);
-            ctx.moveTo(screenX + ox + 4, screenY + oy + 4);
-            ctx.lineTo(screenX + ox + 8, screenY + oy - 5);
-            ctx.stroke();
-        }
-    }
-
-    _drawBush(ctx, screenX, screenY, seed, info) {
-        const palette = THEME.bushFoliage;
-        const color = palette[(info?.variant ?? 0) % palette.length];
-        const ox = (seed - 0.5) * 6;
-        const oy = (seed - 0.5) * 2 - 1;
-
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.ellipse(screenX + ox - 3, screenY + oy + 1, 4, 3, 0, 0, Math.PI * 2);
-        ctx.ellipse(screenX + ox + 3, screenY + oy + 1, 4, 3, 0, 0, Math.PI * 2);
-        ctx.ellipse(screenX + ox, screenY + oy - 1, 5, 3.5, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.fillStyle = 'rgba(168, 199, 134, 0.35)';
-        ctx.beginPath();
-        ctx.ellipse(screenX + ox - 1, screenY + oy - 2, 3, 1.5, 0, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    _drawGrassTuft(ctx, screenX, screenY, seed, info) {
-        ctx.strokeStyle = 'rgba(96, 138, 64, 0.7)';
-        ctx.lineWidth = 1;
-        const ox = (seed - 0.5) * 8;
-        const oy = (seed - 0.5) * 4;
-        ctx.beginPath();
-        ctx.moveTo(screenX + ox, screenY + oy + 3);
-        ctx.lineTo(screenX + ox - 2, screenY + oy - 3);
-        ctx.moveTo(screenX + ox + 1, screenY + oy + 3);
-        ctx.lineTo(screenX + ox + 1, screenY + oy - 4);
-        ctx.moveTo(screenX + ox + 2, screenY + oy + 3);
-        ctx.lineTo(screenX + ox + 4, screenY + oy - 2);
-        ctx.stroke();
-    }
-
-    _drawTree(ctx, screenX, screenY, info) {
-        const palette = THEME.treeFoliage;
-        const foliage = palette[(info.variant ?? 0) % palette.length];
-        const trunkColor = THEME.treeTrunk;
-        const trunkLight = THEME.treeTrunkLight;
-        const s = info.scale ?? 1;
-
-        // Shadow under canopy.
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
-        ctx.beginPath();
-        ctx.ellipse(screenX, screenY + 3, 12 * s, 4 * s, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Trunk.
-        const trunkH = 14 * s;
-        const trunkW = 3 * s;
-        ctx.fillStyle = trunkColor;
-        ctx.fillRect(screenX - trunkW / 2, screenY - trunkH, trunkW, trunkH);
-        ctx.fillStyle = trunkLight;
-        ctx.fillRect(screenX - trunkW / 2, screenY - trunkH, 1, trunkH);
-
-        // Canopy: 3 overlapping ellipses.
-        ctx.fillStyle = foliage;
-        ctx.beginPath();
-        ctx.ellipse(screenX, screenY - trunkH - 3 * s, 11 * s, 9 * s, 0, 0, Math.PI * 2);
-        ctx.ellipse(screenX - 6 * s, screenY - trunkH + 1, 7 * s, 6 * s, 0, 0, Math.PI * 2);
-        ctx.ellipse(screenX + 6 * s, screenY - trunkH + 1, 7 * s, 6 * s, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Highlight on the sun side.
-        ctx.fillStyle = 'rgba(208, 232, 174, 0.32)';
-        ctx.beginPath();
-        ctx.ellipse(screenX - 3 * s, screenY - trunkH - 6 * s, 5 * s, 3 * s, 0, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
-    _drawBoulder(ctx, screenX, screenY, info) {
-        const s = info.scale ?? 1;
-        const r = THEME.rock;
-
-        // Shadow.
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
-        ctx.beginPath();
-        ctx.ellipse(screenX, screenY + 4, 12 * s, 4 * s, 0, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Boulder body.
-        ctx.fillStyle = r.base;
-        ctx.beginPath();
-        if (info.variant === 'b') {
-            ctx.ellipse(screenX, screenY - 5 * s, 11 * s, 8 * s, 0, 0, Math.PI * 2);
-        } else {
-            ctx.ellipse(screenX, screenY - 4 * s, 13 * s, 7 * s, -0.15, 0, Math.PI * 2);
-        }
-        ctx.fill();
-
-        // Highlight.
-        ctx.fillStyle = r.light;
-        ctx.beginPath();
-        ctx.ellipse(screenX - 3 * s, screenY - 7 * s, 5 * s, 2.5 * s, -0.2, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Shadow side.
-        ctx.fillStyle = r.dark;
-        ctx.beginPath();
-        ctx.ellipse(screenX + 4 * s, screenY - 2 * s, 4 * s, 2 * s, 0.1, 0, Math.PI * 2);
-        ctx.fill();
-
-        // Moss patch on variant 'a'.
-        if (info.variant === 'a') {
-            ctx.fillStyle = r.moss;
-            ctx.beginPath();
-            ctx.ellipse(screenX - 4 * s, screenY - 6 * s, 4 * s, 1.5 * s, -0.3, 0, Math.PI * 2);
-            ctx.fill();
-        }
-    }
-
-    _drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY) {
-        const depth = this._tileNoise(tileX + 211, tileY + 223);
-        ctx.fillStyle = `rgba(5, 22, 34, ${0.05 + depth * 0.08})`;
-        ctx.beginPath();
-        ctx.ellipse(screenX + (seed - 0.5) * 7, screenY + 1, 17, 6, (seed - 0.5) * 0.3, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(182, 229, 222, 0.13)';
-        ctx.lineWidth = 1;
-        const wave = this.motionScale ? Math.sin(this.waterFrame * 4 + seed * 10 + tileX) * 3 : (seed - 0.5) * 2;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 14, screenY + wave);
-        ctx.quadraticCurveTo(screenX - 4, screenY - 4 + wave, screenX + 8, screenY + wave);
-        ctx.stroke();
-
-        if (depth > 0.54) {
-            ctx.strokeStyle = 'rgba(117, 198, 205, 0.09)';
-            ctx.beginPath();
-            ctx.moveTo(screenX - 5, screenY - 7 - wave * 0.2);
-            ctx.quadraticCurveTo(screenX + 6, screenY - 10, screenX + 15, screenY - 5 + wave * 0.2);
-            ctx.stroke();
-        }
-
-        if (seed > 0.72) {
-            ctx.strokeStyle = 'rgba(119, 137, 68, 0.42)';
-            ctx.beginPath();
-            ctx.moveTo(screenX - 18, screenY + 1);
-            ctx.lineTo(screenX - 18, screenY - 6);
-            ctx.moveTo(screenX - 15, screenY + 2);
-            ctx.lineTo(screenX - 12, screenY - 4);
-            ctx.stroke();
-        }
-    }
-
-    _drawWaterEdge(ctx, screenX, screenY, seed, tileX, tileY) {
-        let hasShore = false;
-        for (const [dx, dy] of CARDINAL_DIRS) {
-            if (this.shoreTiles.has(`${tileX + dx},${tileY + dy}`)) {
-                hasShore = true;
-                break;
-            }
-        }
-        if (!hasShore) return;
-
-        ctx.fillStyle = 'rgba(210, 229, 194, 0.055)';
-        ctx.beginPath();
-        ctx.ellipse(screenX + (seed - 0.5) * 5, screenY + 3, 20, 6, 0.08, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.strokeStyle = 'rgba(207, 229, 190, 0.2)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 18 + seed * 7, screenY + 6);
-        ctx.quadraticCurveTo(screenX, screenY + 11, screenX + 18 - seed * 5, screenY + 5);
-        ctx.stroke();
-    }
 }
