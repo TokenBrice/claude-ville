@@ -238,4 +238,18 @@ export class SceneryEngine {
             this.boulderProps.push({ ...b });
         }
     }
+
+    getWalkabilityGrid(pathTiles) {
+        const grid = new Uint8Array(MAP_SIZE * MAP_SIZE);
+        for (let y = 0; y < MAP_SIZE; y++) {
+            for (let x = 0; x < MAP_SIZE; x++) {
+                const key = `${x},${y}`;
+                const idx = y * MAP_SIZE + x;
+                if (this._buildingFootprints.has(key)) continue; // 0
+                if (this.waterTiles.has(key) && !this.bridgeTiles.has(key)) continue; // 0
+                grid[idx] = 1;
+            }
+        }
+        return grid;
+    }
 }
