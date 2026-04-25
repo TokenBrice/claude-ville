@@ -70,8 +70,9 @@ class StaticPropSprite {
 }
 
 export class IsometricRenderer {
-    constructor(world) {
+    constructor(world, options = {}) {
         this.world = world;
+        this.assets = options.assets || null;
         this.canvas = null;
         this.ctx = null;
         this.camera = null;
