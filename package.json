@@ -9,9 +9,12 @@
     "dev": "node claudeville/server.js",
     "widget:build": "cd widget && bash build.sh",
     "widget": "open widget/ClaudeVilleWidget.app",
-    "sprites:validate": "node scripts/sprites/manifest-validator.mjs"
+    "sprites:validate": "node scripts/sprites/manifest-validator.mjs",
+    "sprites:visual-diff": "node scripts/sprites/visual-diff.mjs"
   },
   "devDependencies": {
-    "js-yaml": "^4.1.1"
+    "js-yaml": "^4.1.1",
+    "pixelmatch": "^7.1.0",
+    "pngjs": "^7.0.0"
   }
 }
