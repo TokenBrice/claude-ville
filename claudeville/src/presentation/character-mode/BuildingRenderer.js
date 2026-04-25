@@ -3,11 +3,13 @@ import { THEME } from '../../config/theme.js';
 
 const BUILDING_STYLES = {
     command: {
-        wallColor: '#71472b',
-        roofColor: '#a51e18',
-        accentColor: '#ffd56d',
-        trimColor: '#2f2017',
-        wallHeight: 58,
+        wallColor: '#4a3726',
+        roofColor: '#a12525',
+        accentColor: '#ffd86f',
+        trimColor: '#251810',
+        coreColor: '#86defd',
+        bannerColor: '#ffd56d',
+        wallHeight: 60,
         customRoof: 'command',
         hasAntenna: true,
         hasFlag: true,
@@ -195,8 +197,14 @@ export class BuildingRenderer {
         if (!this.motionScale) return;
         switch (building.type) {
             case 'command':
-                if (Math.random() < 0.045) {
+                if (Math.random() < 0.055) {
                     this.particleSystem.spawn('sparkle', center.x, center.y - style.wallHeight - 48, 1);
+                }
+                if (Math.random() < 0.022) {
+                    this.particleSystem.spawn('sparkle', center.x + (Math.random() - 0.5) * 22, center.y - style.wallHeight - 36, 1);
+                }
+                if (Math.random() < 0.018) {
+                    this.particleSystem.spawn('sparkle', center.x + (Math.random() - 0.5) * 26, center.y - style.wallHeight - 26, 1);
                 }
                 break;
             case 'forge':
@@ -277,12 +285,13 @@ export class BuildingRenderer {
             const halfW = b.width * TILE_WIDTH / 4;
             const halfH = b.height * TILE_HEIGHT / 4;
             switch (b.type) {
-                case 'command':
-                    sources.push(
-                        { x: center.x, y: center.y - style.wallHeight - halfH - 42, radius: 92, color: 'rgba(255, 213, 109, 0.22)' },
-                        { x: center.x, y: center.y - style.wallHeight / 2, radius: 70, color: 'rgba(255, 214, 116, 0.1)' },
-                    );
-                    break;
+            case 'command':
+                sources.push(
+                    { x: center.x, y: center.y - style.wallHeight - halfH - 42, radius: 102, color: 'rgba(255, 219, 118, 0.24)' },
+                    { x: center.x - 16, y: center.y - style.wallHeight - halfH - 24, radius: 58, color: 'rgba(140, 230, 255, 0.16)' },
+                    { x: center.x + 14, y: center.y - style.wallHeight + 4, radius: 72, color: 'rgba(255, 214, 116, 0.12)' },
+                );
+                break;
                 case 'forge':
                     sources.push(
                         { x: center.x - halfW + 15, y: center.y - style.wallHeight / 2 - 2, radius: 104, color: 'rgba(255, 86, 30, 0.24)' },
@@ -520,17 +529,57 @@ export class BuildingRenderer {
         // Interior furniture by building
         switch (building.type) {
             case 'command':
-                // Center table
-                ctx.fillStyle = '#6b4a2a';
-                ctx.fillRect(-10, -4, 20, 8);
-                // Monitor
-                ctx.fillStyle = '#1a3a5a';
-                ctx.fillRect(-7, -3, 6, 5);
-                ctx.fillRect(1, -3, 6, 5);
-                // Screen glow
-                ctx.fillStyle = 'rgba(74, 158, 255, 0.6)';
-                ctx.fillRect(-6, -2, 4, 3);
-                ctx.fillRect(2, -2, 4, 3);
+                // Rune-lined command deck
+                ctx.fillStyle = '#3f2a18';
+                ctx.fillRect(-26, -12, 52, 18);
+                ctx.fillStyle = '#251b12';
+                ctx.fillRect(-22, -8, 44, 11);
+                ctx.fillStyle = '#5a412a';
+                for (let i = 0; i < 9; i++) {
+                    ctx.fillRect(-20 + i * 5.4, -10, 1, 12);
+                }
+
+                // Central tactical table.
+                ctx.fillStyle = '#4d371f';
+                ctx.fillRect(-9, -3, 18, 8);
+                ctx.fillStyle = '#2f2016';
+                ctx.fillRect(-8, -2, 16, 6);
+                ctx.strokeStyle = '#f9e7a8';
+                ctx.lineWidth = 0.8;
+                ctx.beginPath();
+                ctx.moveTo(-5, 1);
+                ctx.lineTo(5, 1);
+                ctx.moveTo(-8, -1);
+                ctx.lineTo(8, -1);
+                ctx.stroke();
+
+                // Glowing status cores.
+                const signalPulse = 0.45 + Math.sin(this.torchFrame * 1.8) * 0.25;
+                const core = ctx.createRadialGradient(0, -2, 0, 0, -2, 8);
+                core.addColorStop(0, `rgba(132, 231, 255, ${0.22 + signalPulse * 0.25})`);
+                core.addColorStop(0.6, `rgba(132, 231, 255, ${0.09 + signalPulse * 0.1})`);
+                core.addColorStop(1, 'rgba(132, 231, 255, 0)');
+                ctx.fillStyle = core;
+                ctx.beginPath();
+                ctx.ellipse(0, -2, 10, 6, 0, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = style.coreColor;
+                ctx.beginPath();
+                ctx.arc(0, -1, 2.4, 0, Math.PI * 2);
+                ctx.fill();
+
+                // Console glyph markers.
+                const glyphs = [
+                    { x: -18, y: -1 },
+                    { x: 17, y: -1 },
+                    { x: 1, y: -8 },
+                ];
+                for (const g of glyphs) {
+                    ctx.fillStyle = '#ffeeb3';
+                    ctx.beginPath();
+                    ctx.arc(g.x, g.y, 1.8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
                 break;
             case 'forge':
                 // Hearth, anvil, and bench keep the open-roof view readable.
@@ -801,15 +850,16 @@ export class BuildingRenderer {
 
     _drawCommandRoof(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
-        const ov = 7;
-        const peakY = -wh - halfH - 19;
-        const left = { x: -halfW - ov, y: -wh + 1 };
+        const ov = 10;
+        const peakY = -wh - halfH - 40;
+        const ridgeY = -wh - halfH - 18;
+        const left = { x: -halfW - ov, y: -wh - 1 };
         const back = { x: 0, y: -halfH - wh - ov };
-        const right = { x: halfW + ov, y: -wh + 1 };
-        const front = { x: 0, y: halfH - wh + ov };
+        const right = { x: halfW + ov, y: -wh - 1 };
+        const front = { x: 0, y: halfH - wh + ov * 0.7 };
 
-        // Keep the strong red command silhouette, but make it a citadel rather than a box.
-        ctx.fillStyle = this._lighten(style.roofColor, -20);
+        // Citadel-grade roof shell with deeper silhouette.
+        ctx.fillStyle = this._lighten(style.roofColor, -24);
         ctx.beginPath();
         ctx.moveTo(left.x, left.y);
         ctx.lineTo(back.x, back.y);
@@ -817,7 +867,7 @@ export class BuildingRenderer {
         ctx.closePath();
         ctx.fill();
 
-        ctx.fillStyle = this._lighten(style.roofColor, -7);
+        ctx.fillStyle = this._lighten(style.roofColor, -12);
         ctx.beginPath();
         ctx.moveTo(back.x, back.y);
         ctx.lineTo(right.x, right.y);
@@ -825,7 +875,7 @@ export class BuildingRenderer {
         ctx.closePath();
         ctx.fill();
 
-        ctx.fillStyle = style.roofColor;
+        ctx.fillStyle = this._lighten(style.roofColor, 2);
         ctx.beginPath();
         ctx.moveTo(left.x, left.y);
         ctx.lineTo(front.x, front.y);
@@ -833,7 +883,7 @@ export class BuildingRenderer {
         ctx.closePath();
         ctx.fill();
 
-        ctx.fillStyle = this._lighten(style.roofColor, 18);
+        ctx.fillStyle = this._lighten(style.roofColor, 24);
         ctx.beginPath();
         ctx.moveTo(front.x, front.y);
         ctx.lineTo(right.x, right.y);
@@ -841,7 +891,66 @@ export class BuildingRenderer {
         ctx.closePath();
         ctx.fill();
 
-        ctx.strokeStyle = '#3a160f';
+        // Outer battlement ring on the main roof edge.
+        ctx.fillStyle = this._lighten(style.wallColor, -14);
+        for (let i = -2; i < 3; i++) {
+            ctx.fillRect(i * 12 - 8, -wh - 12, 7, 9);
+            ctx.fillRect(i * 12 + 3, -wh - 12, 3, 7);
+        }
+
+        // Defensible watch-towers rising from the parapet line.
+        ctx.fillStyle = this._lighten(style.wallColor, -6);
+        for (const tower of [
+            { x: left.x + 15, y: -wh + 2 },
+            { x: right.x - 24, y: -wh + 2 },
+            { x: -2, y: ridgeY + 4 },
+        ]) {
+            ctx.fillRect(tower.x, tower.y, 10, 17);
+            ctx.fillStyle = this._lighten(style.roofColor, -10);
+            ctx.fillRect(tower.x + 1, tower.y - 6, 8, 7);
+            ctx.fillStyle = this._lighten(style.wallColor, -6);
+        }
+
+        // Central command spire and crystal socket.
+        const spireY = ridgeY - 20;
+        ctx.fillStyle = this._lighten(style.roofColor, -4);
+        ctx.beginPath();
+        ctx.moveTo(-11, ridgeY + 4);
+        ctx.lineTo(11, ridgeY + 4);
+        ctx.lineTo(0, spireY + 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = this._lighten(style.wallColor, -15);
+        ctx.beginPath();
+        ctx.moveTo(0, spireY);
+        ctx.lineTo(-6, spireY + 6);
+        ctx.lineTo(6, spireY + 6);
+        ctx.closePath();
+        ctx.fill();
+
+        // Signal glow cap.
+        const beaconPulse = this.motionScale ? 0.25 + (Math.sin(this.torchFrame) + 1) / 2 * 0.18 : 0.3;
+        const capGlow = ctx.createRadialGradient(0, spireY + 2, 0, 0, spireY + 2, 10);
+        capGlow.addColorStop(0, `rgba(255, 215, 111, ${beaconPulse + 0.45})`);
+        capGlow.addColorStop(1, 'rgba(255, 215, 111, 0)');
+        ctx.fillStyle = capGlow;
+        ctx.beginPath();
+        ctx.ellipse(0, spireY + 2, 6, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Rune grooves across the roof core.
+        ctx.strokeStyle = 'rgba(255, 221, 130, 0.34)';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < 3; i++) {
+            const y = ridgeY + 4 + i * 5;
+            ctx.beginPath();
+            ctx.moveTo(-halfW - 2, y);
+            ctx.lineTo(0, ridgeY - 2 + i * 3);
+            ctx.lineTo(halfW + 2, y);
+            ctx.stroke();
+        }
+
+        ctx.strokeStyle = '#2b160f';
         ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(left.x, left.y);
@@ -850,36 +959,6 @@ export class BuildingRenderer {
         ctx.moveTo(front.x, front.y);
         ctx.lineTo(0, peakY);
         ctx.stroke();
-
-        // Gold command ribs and a beacon plinth give it "orchestration" identity.
-        ctx.strokeStyle = 'rgba(255, 221, 120, 0.55)';
-        ctx.lineWidth = 1;
-        for (let i = -2; i <= 2; i++) {
-            ctx.beginPath();
-            ctx.moveTo(i * 10, -wh + 3);
-            ctx.lineTo(0, peakY + 5);
-            ctx.stroke();
-        }
-
-        ctx.fillStyle = '#4e2d1c';
-        ctx.fillRect(-8, peakY + 7, 16, 9);
-        ctx.fillStyle = style.accentColor;
-        ctx.fillRect(-5, peakY + 4, 10, 5);
-        ctx.strokeStyle = '#2f2017';
-        ctx.lineWidth = 1;
-        ctx.strokeRect(-8.5, peakY + 6.5, 17, 10);
-
-        ctx.fillStyle = '#431b14';
-        for (const tower of [
-            { x: left.x + 2, y: left.y - 5, w: 9, h: 16 },
-            { x: right.x - 11, y: right.y - 5, w: 9, h: 16 },
-            { x: -5, y: front.y - 10, w: 10, h: 14 },
-        ]) {
-            ctx.fillRect(tower.x, tower.y, tower.w, tower.h);
-            ctx.fillStyle = style.accentColor;
-            ctx.fillRect(tower.x + 2, tower.y + 2, tower.w - 4, 3);
-            ctx.fillStyle = '#431b14';
-        }
     }
 
     _drawRoundRoof(ctx, halfW, halfH, style) {
@@ -1083,10 +1162,14 @@ export class BuildingRenderer {
         ctx.strokeStyle = '#332216';
         ctx.lineWidth = 1.2;
         ctx.strokeRect(-23.5, -wh - 13.5, 47, 12);
+        ctx.fillStyle = '#7a1f1f';
+        ctx.beginPath();
+        ctx.arc(-8, -wh - 7, 2.4, 0, Math.PI * 2);
+        ctx.arc(8, -wh - 7, 2.4, 0, Math.PI * 2);
+        ctx.fill();
         ctx.fillStyle = '#2f2016';
-        ctx.font = '5px "Press Start 2P", monospace';
-        ctx.textAlign = 'center';
-        ctx.fillText('TASKS', 0, -wh - 5);
+        ctx.fillRect(-13, -wh - 8, 6, 1.4);
+        ctx.fillRect(3, -wh - 8, 7, 1.4);
 
         ctx.fillStyle = style.accentColor;
         ctx.beginPath();
@@ -1328,22 +1411,41 @@ export class BuildingRenderer {
 
     _drawArchiveRoof(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
-        this._drawTriangleRoof(ctx, halfW, halfH, style);
-        const spineY = -wh - halfH - 18;
+        const shelfY = -wh - halfH - 8;
+        const frontY = halfH - wh + 7;
+        const books = ['#2e2119', '#6f4427', '#d8b96d', '#8a5f35', '#ead8a6'];
 
-        ctx.fillStyle = '#16100c';
-        ctx.fillRect(-halfW * 0.56, spineY + 19, halfW * 1.12, 7);
-        ctx.fillStyle = style.accentColor;
-        for (let i = -2; i <= 2; i++) {
-            ctx.fillRect(i * 11 - 2, spineY + 17 + Math.abs(i % 2) * 2, 4, 11);
-        }
-        ctx.strokeStyle = '#2a1a12';
-        ctx.lineWidth = 1;
+        ctx.fillStyle = '#1d130d';
         ctx.beginPath();
-        ctx.moveTo(-halfW * 0.55, spineY + 26);
-        ctx.lineTo(0, spineY + 5);
-        ctx.lineTo(halfW * 0.55, spineY + 26);
-        ctx.stroke();
+        ctx.moveTo(-halfW - 9, -wh + 3);
+        ctx.lineTo(0, shelfY - 19);
+        ctx.lineTo(halfW + 9, -wh + 3);
+        ctx.lineTo(0, frontY);
+        ctx.closePath();
+        ctx.fill();
+
+        for (let i = -4; i <= 4; i++) {
+            const x = i * 8;
+            const h = 17 + (Math.abs(i) % 3) * 5;
+            ctx.fillStyle = books[(i + 8) % books.length];
+            ctx.fillRect(x - 3, shelfY - h, 6, h + 17);
+            ctx.fillStyle = 'rgba(255, 238, 184, 0.45)';
+            ctx.fillRect(x - 1, shelfY - h + 4, 2, h - 1);
+        }
+
+        ctx.fillStyle = '#2f1f14';
+        ctx.fillRect(-halfW - 7, shelfY + 11, halfW * 2 + 14, 8);
+        ctx.fillStyle = style.accentColor;
+        ctx.beginPath();
+        ctx.moveTo(0, shelfY - 28);
+        ctx.lineTo(5, shelfY - 19);
+        ctx.lineTo(0, shelfY - 10);
+        ctx.lineTo(-5, shelfY - 19);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#2a1a12';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-halfW - 7.5, shelfY + 10.5, halfW * 2 + 15, 9);
     }
 
     _drawPortalRoof(ctx, halfW, halfH, style) {
@@ -1387,30 +1489,70 @@ export class BuildingRenderer {
 
     _drawAlchemyRoof(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
-        this._drawRoundRoof(ctx, halfW, halfH, style);
-        const y = -wh - halfH - 20;
+        const domeY = -wh - halfH - 12;
+        const frontY = halfH - wh + 8;
+
         ctx.fillStyle = '#24152b';
-        ctx.fillRect(-9, y + 14, 18, 12);
-        ctx.fillStyle = style.accentColor;
         ctx.beginPath();
-        ctx.arc(0, y + 11, 8, 0, Math.PI * 2);
+        ctx.moveTo(-halfW - 6, -wh + 4);
+        ctx.lineTo(0, domeY - 18);
+        ctx.lineTo(halfW + 6, -wh + 4);
+        ctx.lineTo(0, frontY);
+        ctx.closePath();
         ctx.fill();
-        ctx.fillStyle = '#613f73';
+        ctx.fillStyle = this._lighten(style.roofColor, 14);
         ctx.beginPath();
-        ctx.arc(0, y + 11, 4, 0, Math.PI * 2);
+        ctx.moveTo(-halfW, -wh + 7);
+        ctx.lineTo(0, frontY + 2);
+        ctx.lineTo(halfW, -wh + 7);
+        ctx.lineTo(0, -wh - 3);
+        ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = 'rgba(201, 242, 107, 0.6)';
-        ctx.lineWidth = 1;
+
+        ctx.fillStyle = 'rgba(201, 242, 107, 0.76)';
         ctx.beginPath();
-        ctx.moveTo(-18, y + 29);
-        ctx.quadraticCurveTo(0, y + 22, 18, y + 29);
+        ctx.arc(0, domeY - 11, 12, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(118, 216, 255, 0.48)';
+        ctx.beginPath();
+        ctx.arc(-4, domeY - 14, 5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = '#c9f26b';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, domeY + 1);
+        ctx.lineTo(0, domeY + 19);
+        ctx.quadraticCurveTo(-16, domeY + 23, -18, domeY + 39);
+        ctx.moveTo(0, domeY + 19);
+        ctx.quadraticCurveTo(16, domeY + 23, 18, domeY + 39);
         ctx.stroke();
+        ctx.fillStyle = '#f0a6ff';
+        ctx.beginPath();
+        ctx.arc(-18, domeY + 40, 5, 0, Math.PI * 2);
+        ctx.arc(18, domeY + 40, 5, 0, Math.PI * 2);
+        ctx.fill();
     }
 
     _drawSanctuaryRoof(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
         const y = -wh - halfH - 7;
         const frontY = halfH - wh + 8;
+        ctx.fillStyle = '#25311e';
+        for (const tree of [
+            { x: -halfW * 0.6, h: 25, r: 14 },
+            { x: halfW * 0.62, h: 23, r: 13 },
+            { x: 0, h: 31, r: 18 },
+        ]) {
+            ctx.fillRect(tree.x - 2, -wh - tree.h + 7, 4, tree.h + 18);
+            ctx.fillStyle = '#6d7441';
+            ctx.beginPath();
+            ctx.arc(tree.x, -wh - tree.h, tree.r, 0, Math.PI * 2);
+            ctx.arc(tree.x - tree.r * 0.45, -wh - tree.h + 7, tree.r * 0.72, 0, Math.PI * 2);
+            ctx.arc(tree.x + tree.r * 0.45, -wh - tree.h + 7, tree.r * 0.72, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = '#25311e';
+        }
+
         ctx.fillStyle = this._lighten(style.roofColor, -16);
         ctx.beginPath();
         ctx.moveTo(-halfW - 10, -wh + 2);
@@ -1436,6 +1578,11 @@ export class BuildingRenderer {
         ctx.beginPath();
         ctx.arc(0, y - 1, 4, 0, Math.PI * 2);
         ctx.fill();
+        ctx.strokeStyle = 'rgba(242, 211, 107, 0.55)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(0, y - 1, 11, 0, Math.PI * 2);
+        ctx.stroke();
     }
 
     _drawWatchtowerRoof(ctx, halfW, halfH, style) {
@@ -1556,6 +1703,8 @@ export class BuildingRenderer {
         switch (building.type) {
             case 'command':
                 this._drawBeaconLantern(ctx, 0, -style.wallHeight - halfH - 43, '#ffd56d');
+                this._drawPinLight(ctx, -halfW + 14, -style.wallHeight - halfH + 4, style.coreColor);
+                this._drawPinLight(ctx, halfW - 14, -style.wallHeight - halfH + 4, style.coreColor);
                 break;
             case 'forge':
                 this._drawTorch(ctx, -halfW + 4, -style.wallHeight / 2 - 6);
@@ -1601,22 +1750,25 @@ export class BuildingRenderer {
         switch (building.type) {
             case 'command': {
                 const crownY = -style.wallHeight - halfH - 18;
-                ctx.fillStyle = '#401c14';
-                ctx.fillRect(-22, crownY + 17, 44, 5);
-                ctx.fillRect(-18, crownY + 8, 8, 17);
-                ctx.fillRect(10, crownY + 8, 8, 17);
-                ctx.fillStyle = '#a51e18';
-                ctx.fillRect(-20, crownY + 4, 12, 8);
-                ctx.fillRect(8, crownY + 4, 12, 8);
+                ctx.fillStyle = '#281910';
+                for (let x = -22; x <= 16; x += 12) {
+                    ctx.fillRect(x, crownY + 14, 8, 6);
+                }
+                ctx.fillStyle = '#d1a95a';
+                ctx.fillRect(-18, crownY + 8, 10, 11);
+                ctx.fillRect(8, crownY + 8, 10, 11);
+                ctx.fillStyle = '#f7e1a8';
+                ctx.fillRect(-16, crownY + 5, 7, 4);
+                ctx.fillRect(10, crownY + 5, 7, 4);
                 ctx.strokeStyle = '#ffd56d';
                 ctx.lineWidth = 1.5;
                 ctx.beginPath();
-                ctx.moveTo(0, crownY + 18);
-                ctx.lineTo(0, crownY - 18);
+                ctx.moveTo(0, crownY + 19);
+                ctx.lineTo(0, crownY - 22);
                 ctx.stroke();
-                ctx.fillStyle = '#fff1b8';
+                ctx.fillStyle = style.coreColor;
                 ctx.beginPath();
-                ctx.arc(0, crownY - 18, 4, 0, Math.PI * 2);
+                ctx.arc(0, crownY - 22, 3.6, 0, Math.PI * 2);
                 ctx.fill();
                 break;
             }
@@ -1666,13 +1818,22 @@ export class BuildingRenderer {
         switch (building.type) {
             case 'command': {
                 const pulse = this.motionScale ? (Math.sin(t * 1.5) + 1) / 2 : 0.45;
-                ctx.strokeStyle = `rgba(255, 213, 109, ${0.16 + pulse * 0.12})`;
+                ctx.fillStyle = `rgba(44, 29, 18, ${0.34 + pulse * 0.14})`;
+                ctx.beginPath();
+                ctx.ellipse(0, 2, halfW + 16 + pulse * 6, halfH + 10 + pulse * 3, 0, 0, Math.PI * 2);
+                ctx.fill();
+
+                ctx.strokeStyle = `rgba(255, 219, 118, ${0.24 + pulse * 0.24})`;
                 ctx.lineWidth = 1.2;
-                for (let i = 0; i < 3; i++) {
-                    const grow = i * 11 + pulse * 7;
+                for (let i = 0; i < 4; i++) {
+                    const grow = i * 10 + pulse * 6;
                     ctx.beginPath();
-                    ctx.ellipse(0, 1, halfW + 12 + grow, halfH + 8 + grow * 0.42, 0, 0, Math.PI * 2);
+                    ctx.ellipse(0, 1, halfW + 12 + grow, halfH + 7 + grow * 0.48, 0, 0, Math.PI * 2);
                     ctx.stroke();
+                }
+                ctx.fillStyle = `rgba(140, 230, 255, ${0.1 + pulse * 0.12})`;
+                for (let i = -1; i <= 1; i++) {
+                    ctx.fillRect(i * 4 - 1, -style.wallHeight + i * 4 - 18, 2.5, 12);
                 }
                 break;
             }
@@ -1842,12 +2003,15 @@ export class BuildingRenderer {
 
     _drawCommandActivity(ctx, halfW, halfH, style, t, motion) {
         const beaconY = -style.wallHeight - halfH - 43;
+        const coreY = -style.wallHeight - halfH - 22;
         const pulse = motion ? (Math.sin(t * 2.2) + 1) / 2 : 0.6;
+        const sweep = motion ? (t * 0.7) % 1 : 0.35;
+        const rotation = motion ? t * 0.45 : 0;
 
         ctx.strokeStyle = `rgba(255, 213, 109, ${0.28 + pulse * 0.35})`;
         ctx.lineWidth = 1.2;
-        for (let i = 0; i < 2; i++) {
-            const r = 8 + i * 7 + pulse * 5;
+        for (let i = 0; i < 3; i++) {
+            const r = 7 + i * 6 + pulse * 5;
             ctx.beginPath();
             ctx.ellipse(0, beaconY, r, r * 0.55, 0, 0, Math.PI * 2);
             ctx.stroke();
@@ -1858,12 +2022,31 @@ export class BuildingRenderer {
         ctx.arc(0, beaconY, 3 + pulse * 1.5, 0, Math.PI * 2);
         ctx.fill();
 
-        const flagWave = motion ? Math.sin(t * 3) * 1.4 : 0;
-        ctx.fillStyle = style.accentColor;
+        const corePulse = motion ? Math.sin(t * 3.1) * 0.9 + 1.1 : 1;
+        ctx.fillStyle = `rgba(132, 231, 255, ${0.24 + corePulse * 0.18})`;
         ctx.beginPath();
-        ctx.moveTo(halfW + 9, -style.wallHeight - 20);
-        ctx.quadraticCurveTo(halfW + 17, -style.wallHeight - 24 + flagWave, halfW + 24, -style.wallHeight - 17);
-        ctx.quadraticCurveTo(halfW + 17, -style.wallHeight - 14 + flagWave, halfW + 9, -style.wallHeight - 10);
+        ctx.arc(0, coreY, 1.8 + corePulse * 0.6, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Defensive banners and rotating glyph sweep.
+        const wave = motion ? Math.sin(t * 3) * 2 : 0;
+        const flagY = -style.wallHeight - 20;
+        for (const [sx, ox] of [[-halfW - 12, 9], [halfW + 12, -4]]) {
+            ctx.fillStyle = style.bannerColor;
+            ctx.beginPath();
+            ctx.moveTo(sx, flagY);
+            ctx.quadraticCurveTo(sx + ox, flagY - 8 + wave, sx + (sx > 0 ? 6 : 26), flagY - 2);
+            ctx.quadraticCurveTo(sx + ox + (sx > 0 ? 6 : 20), flagY + 6, sx, flagY + 8);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        ctx.fillStyle = this._lighten(style.roofColor, 20);
+        const sweepY = -style.wallHeight - halfH - 24;
+        ctx.beginPath();
+        ctx.moveTo(0, sweepY);
+        ctx.lineTo(Math.cos(rotation + sweep) * 15, sweepY + Math.sin(rotation + sweep) * 12);
+        ctx.lineTo(Math.cos(rotation + sweep + 0.18) * 15, sweepY + Math.sin(rotation + sweep + 0.18) * 12);
         ctx.closePath();
         ctx.fill();
     }
@@ -2078,17 +2261,7 @@ export class BuildingRenderer {
     _drawDecorations(ctx, building, halfW, halfH, style) {
         switch (building.type) {
             case 'command':
-                // Antenna
-                ctx.strokeStyle = '#888';
-                ctx.lineWidth = 1.5;
-                ctx.beginPath();
-                ctx.moveTo(0, -style.wallHeight - halfH - 12);
-                ctx.lineTo(0, -style.wallHeight - halfH - 28);
-                ctx.stroke();
-                ctx.fillStyle = '#ff0000';
-                ctx.beginPath();
-                ctx.arc(0, -style.wallHeight - halfH - 28, 2, 0, Math.PI * 2);
-                ctx.fill();
+                this._drawCommandDecorations(ctx, halfW, halfH, style);
                 break;
             case 'forge':
                 this._drawForgeDecorations(ctx, halfW, halfH, style);
@@ -2218,6 +2391,65 @@ export class BuildingRenderer {
         ctx.fillStyle = '#a8d9ff';
         ctx.fillRect(-8, -wh / 2 - 10, 5, 7);
         ctx.fillRect(3, -wh / 2 - 10, 5, 7);
+    }
+
+    _drawCommandDecorations(ctx, halfW, halfH, style) {
+        const wh = style.wallHeight;
+        const beaconY = -wh - halfH - 24;
+        const bannerY = -wh - 6;
+
+        // Command mast and signal bead.
+        ctx.strokeStyle = '#6a5240';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(0, -wh + 8);
+        ctx.lineTo(0, -wh - halfH - 4);
+        ctx.stroke();
+        ctx.fillStyle = style.coreColor;
+        ctx.beginPath();
+        ctx.arc(0, -wh - halfH - 4, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(132, 231, 255, 0.3)';
+        ctx.beginPath();
+        ctx.ellipse(0, -wh - halfH - 4, 8, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Defensive banners at both flanks.
+        for (const b of [-1, 1]) {
+            const x = b * (halfW - 12);
+            ctx.fillStyle = this._lighten(style.bannerColor, -8);
+            ctx.fillRect(x, bannerY + 4, b * 2, 2);
+            ctx.fillStyle = style.bannerColor;
+            ctx.beginPath();
+            ctx.moveTo(x, bannerY + 4);
+            ctx.quadraticCurveTo(x + b * 16, bannerY - 4, x + b * 26, bannerY + 2);
+            ctx.quadraticCurveTo(x + b * 12, bannerY + 8, x, bannerY + 9);
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = '#281c12';
+            ctx.fillRect(x + b * 10, bannerY - 1, b * 6, 2);
+        }
+
+        // Glowing runic glyph band.
+        ctx.fillStyle = 'rgba(255, 219, 120, 0.38)';
+        for (let i = -2; i <= 2; i++) {
+            const gx = i * 7;
+            ctx.fillRect(gx - 1, beaconY + i + 1, 2, 5);
+            ctx.fillRect(gx + 1, beaconY + i + 3, 1, 3);
+        }
+
+        // Parapet crenellations (readability from distance).
+        ctx.fillStyle = this._lighten(style.wallColor, -16);
+        for (let x = -halfW + 8; x < halfW - 6; x += 10) {
+            const h = (Math.abs((x / 10) % 2) < 1 ? 8 : 5);
+            ctx.fillRect(x, -wh + 5, 5, h);
+        }
+        ctx.strokeStyle = 'rgba(132, 231, 255, 0.28)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-halfW + 6, -wh + 4);
+        ctx.lineTo(halfW - 6, -wh + 4);
+        ctx.stroke();
     }
 
     _drawObservatoryDecorations(ctx, halfW, halfH, style) {
