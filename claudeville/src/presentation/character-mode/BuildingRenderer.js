@@ -1083,14 +1083,10 @@ export class BuildingRenderer {
         ctx.strokeStyle = '#332216';
         ctx.lineWidth = 1.2;
         ctx.strokeRect(-23.5, -wh - 13.5, 47, 12);
-        ctx.fillStyle = '#7a1f1f';
-        ctx.beginPath();
-        ctx.arc(-8, -wh - 7, 2.4, 0, Math.PI * 2);
-        ctx.arc(8, -wh - 7, 2.4, 0, Math.PI * 2);
-        ctx.fill();
         ctx.fillStyle = '#2f2016';
-        ctx.fillRect(-13, -wh - 8, 6, 1.4);
-        ctx.fillRect(3, -wh - 8, 7, 1.4);
+        ctx.font = '5px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('TASKS', 0, -wh - 5);
 
         ctx.fillStyle = style.accentColor;
         ctx.beginPath();
@@ -1332,41 +1328,22 @@ export class BuildingRenderer {
 
     _drawArchiveRoof(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
-        const shelfY = -wh - halfH - 8;
-        const frontY = halfH - wh + 7;
-        const books = ['#2e2119', '#6f4427', '#d8b96d', '#8a5f35', '#ead8a6'];
+        this._drawTriangleRoof(ctx, halfW, halfH, style);
+        const spineY = -wh - halfH - 18;
 
-        ctx.fillStyle = '#1d130d';
-        ctx.beginPath();
-        ctx.moveTo(-halfW - 9, -wh + 3);
-        ctx.lineTo(0, shelfY - 19);
-        ctx.lineTo(halfW + 9, -wh + 3);
-        ctx.lineTo(0, frontY);
-        ctx.closePath();
-        ctx.fill();
-
-        for (let i = -4; i <= 4; i++) {
-            const x = i * 8;
-            const h = 17 + (Math.abs(i) % 3) * 5;
-            ctx.fillStyle = books[(i + 8) % books.length];
-            ctx.fillRect(x - 3, shelfY - h, 6, h + 17);
-            ctx.fillStyle = 'rgba(255, 238, 184, 0.45)';
-            ctx.fillRect(x - 1, shelfY - h + 4, 2, h - 1);
-        }
-
-        ctx.fillStyle = '#2f1f14';
-        ctx.fillRect(-halfW - 7, shelfY + 11, halfW * 2 + 14, 8);
+        ctx.fillStyle = '#16100c';
+        ctx.fillRect(-halfW * 0.56, spineY + 19, halfW * 1.12, 7);
         ctx.fillStyle = style.accentColor;
-        ctx.beginPath();
-        ctx.moveTo(0, shelfY - 28);
-        ctx.lineTo(5, shelfY - 19);
-        ctx.lineTo(0, shelfY - 10);
-        ctx.lineTo(-5, shelfY - 19);
-        ctx.closePath();
-        ctx.fill();
+        for (let i = -2; i <= 2; i++) {
+            ctx.fillRect(i * 11 - 2, spineY + 17 + Math.abs(i % 2) * 2, 4, 11);
+        }
         ctx.strokeStyle = '#2a1a12';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(-halfW - 7.5, shelfY + 10.5, halfW * 2 + 15, 9);
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-halfW * 0.55, spineY + 26);
+        ctx.lineTo(0, spineY + 5);
+        ctx.lineTo(halfW * 0.55, spineY + 26);
+        ctx.stroke();
     }
 
     _drawPortalRoof(ctx, halfW, halfH, style) {
@@ -1410,70 +1387,30 @@ export class BuildingRenderer {
 
     _drawAlchemyRoof(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
-        const domeY = -wh - halfH - 12;
-        const frontY = halfH - wh + 8;
-
+        this._drawRoundRoof(ctx, halfW, halfH, style);
+        const y = -wh - halfH - 20;
         ctx.fillStyle = '#24152b';
+        ctx.fillRect(-9, y + 14, 18, 12);
+        ctx.fillStyle = style.accentColor;
         ctx.beginPath();
-        ctx.moveTo(-halfW - 6, -wh + 4);
-        ctx.lineTo(0, domeY - 18);
-        ctx.lineTo(halfW + 6, -wh + 4);
-        ctx.lineTo(0, frontY);
-        ctx.closePath();
+        ctx.arc(0, y + 11, 8, 0, Math.PI * 2);
         ctx.fill();
-        ctx.fillStyle = this._lighten(style.roofColor, 14);
+        ctx.fillStyle = '#613f73';
         ctx.beginPath();
-        ctx.moveTo(-halfW, -wh + 7);
-        ctx.lineTo(0, frontY + 2);
-        ctx.lineTo(halfW, -wh + 7);
-        ctx.lineTo(0, -wh - 3);
-        ctx.closePath();
+        ctx.arc(0, y + 11, 4, 0, Math.PI * 2);
         ctx.fill();
-
-        ctx.fillStyle = 'rgba(201, 242, 107, 0.76)';
+        ctx.strokeStyle = 'rgba(201, 242, 107, 0.6)';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.arc(0, domeY - 11, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = 'rgba(118, 216, 255, 0.48)';
-        ctx.beginPath();
-        ctx.arc(-4, domeY - 14, 5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#c9f26b';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(0, domeY + 1);
-        ctx.lineTo(0, domeY + 19);
-        ctx.quadraticCurveTo(-16, domeY + 23, -18, domeY + 39);
-        ctx.moveTo(0, domeY + 19);
-        ctx.quadraticCurveTo(16, domeY + 23, 18, domeY + 39);
+        ctx.moveTo(-18, y + 29);
+        ctx.quadraticCurveTo(0, y + 22, 18, y + 29);
         ctx.stroke();
-        ctx.fillStyle = '#f0a6ff';
-        ctx.beginPath();
-        ctx.arc(-18, domeY + 40, 5, 0, Math.PI * 2);
-        ctx.arc(18, domeY + 40, 5, 0, Math.PI * 2);
-        ctx.fill();
     }
 
     _drawSanctuaryRoof(ctx, halfW, halfH, style) {
         const wh = style.wallHeight;
         const y = -wh - halfH - 7;
         const frontY = halfH - wh + 8;
-        ctx.fillStyle = '#25311e';
-        for (const tree of [
-            { x: -halfW * 0.6, h: 25, r: 14 },
-            { x: halfW * 0.62, h: 23, r: 13 },
-            { x: 0, h: 31, r: 18 },
-        ]) {
-            ctx.fillRect(tree.x - 2, -wh - tree.h + 7, 4, tree.h + 18);
-            ctx.fillStyle = '#6d7441';
-            ctx.beginPath();
-            ctx.arc(tree.x, -wh - tree.h, tree.r, 0, Math.PI * 2);
-            ctx.arc(tree.x - tree.r * 0.45, -wh - tree.h + 7, tree.r * 0.72, 0, Math.PI * 2);
-            ctx.arc(tree.x + tree.r * 0.45, -wh - tree.h + 7, tree.r * 0.72, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = '#25311e';
-        }
-
         ctx.fillStyle = this._lighten(style.roofColor, -16);
         ctx.beginPath();
         ctx.moveTo(-halfW - 10, -wh + 2);
@@ -1499,11 +1436,6 @@ export class BuildingRenderer {
         ctx.beginPath();
         ctx.arc(0, y - 1, 4, 0, Math.PI * 2);
         ctx.fill();
-        ctx.strokeStyle = 'rgba(242, 211, 107, 0.55)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.arc(0, y - 1, 11, 0, Math.PI * 2);
-        ctx.stroke();
     }
 
     _drawWatchtowerRoof(ctx, halfW, halfH, style) {

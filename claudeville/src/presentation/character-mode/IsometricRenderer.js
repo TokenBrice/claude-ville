@@ -9,19 +9,6 @@ import { Minimap } from './Minimap.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
-const ANCIENT_RUINS = [
-    { tileX: 37, tileY: 3, scale: 1.05 },
-    { tileX: 2, tileY: 16, scale: 0.82 },
-    { tileX: 36, tileY: 34, scale: 0.95 },
-];
-const AMBIENT_GROUND_PROPS = [
-    { tileX: 19.5, tileY: 18.5, type: 'lantern' },
-    { tileX: 24.5, tileY: 24.5, type: 'signpost' },
-    { tileX: 30.2, tileY: 22.2, type: 'runestone' },
-    { tileX: 8.5, tileY: 20.5, type: 'scrollCrates' },
-    { tileX: 27.4, tileY: 16.8, type: 'oreCart' },
-    { tileX: 13.2, tileY: 13.8, type: 'lantern' },
-];
 
 export class IsometricRenderer {
     constructor(world) {
@@ -48,11 +35,9 @@ export class IsometricRenderer {
         this.selectedAgent = null;
         this.onAgentSelect = null;
 
-        // Generate deterministic terrain seed so the village keeps its geography across reloads.
-        for (let y = 0; y < MAP_SIZE; y++) {
-            for (let x = 0; x < MAP_SIZE; x++) {
-                this.terrainSeed.push(this._tileNoise(x, y));
-            }
+        // Generate terrain seed for consistent random patterns
+        for (let i = 0; i < MAP_SIZE * MAP_SIZE; i++) {
+            this.terrainSeed.push(Math.random());
         }
 
         // Path tiles (near buildings)
@@ -64,10 +49,6 @@ export class IsometricRenderer {
         this._generateWater();
         this.shoreTiles = new Set();
         this._generateShorelines();
-        this.featureTiles = new Map();
-        this._generateTerrainFeatures();
-        this.ambientEmitters = [];
-        this._generateAmbientEmitters();
 
         // Event subscriptions
         this._unsubscribers = [];
@@ -157,40 +138,6 @@ export class IsometricRenderer {
                 }
             }
         }
-    }
-
-    _generateTerrainFeatures() {
-        for (let y = 0; y < MAP_SIZE; y++) {
-            for (let x = 0; x < MAP_SIZE; x++) {
-                const key = `${x},${y}`;
-                if (this.waterTiles.has(key) || this.pathTiles.has(key)) continue;
-                const noise = this._tileNoise(x + 41, y + 17);
-                if (this.shoreTiles.has(key) && noise > 0.46) {
-                    this.featureTiles.set(key, 'reeds');
-                } else if (noise < 0.045) {
-                    this.featureTiles.set(key, 'flowers');
-                } else if (noise > 0.948) {
-                    this.featureTiles.set(key, 'stones');
-                } else if (noise > 0.918 && this._tileNoise(x - 9, y + 23) > 0.62) {
-                    this.featureTiles.set(key, 'mushrooms');
-                }
-            }
-        }
-    }
-
-    _generateAmbientEmitters() {
-        const emitters = [
-            { tileX: 24.5, tileY: 10.5, particleType: 'sparkle', chance: 0.018 },
-            { tileX: 24.5, tileY: 9.5, particleType: 'sparkle', chance: 0.012 },
-            { tileX: 33, tileY: 25, particleType: 'sparkle', chance: 0.016 },
-            { tileX: 11, tileY: 8.5, particleType: 'sparkle', chance: 0.01 },
-            { tileX: 28, tileY: 16.5, particleType: 'smoke', chance: 0.012 },
-        ];
-        this.ambientEmitters = emitters.map(emitter => ({
-            ...emitter,
-            x: (emitter.tileX - emitter.tileY) * TILE_WIDTH / 2,
-            y: (emitter.tileX + emitter.tileY) * TILE_HEIGHT / 2,
-        }));
     }
 
     _tileNoise(tileX, tileY) {
@@ -293,16 +240,11 @@ export class IsometricRenderer {
         this.motionScale = scale;
         this.buildingRenderer.setMotionScale(scale);
         this.particleSystem.setMotionEnabled(scale > 0);
-        for (const sprite of this.agentSprites.values()) {
-            sprite.setMotionScale(scale);
-        }
     }
 
     _addAgentSprite(agent) {
         if (!this.agentSprites.has(agent.id)) {
-            const sprite = new AgentSprite(agent);
-            sprite.setMotionScale(this.motionScale);
-            this.agentSprites.set(agent.id, sprite);
+            this.agentSprites.set(agent.id, new AgentSprite(agent));
         }
     }
 
@@ -413,22 +355,9 @@ export class IsometricRenderer {
         // Update building renderer (pass agent sprite positions)
         this.buildingRenderer.setAgentSprites(Array.from(this.agentSprites.values()));
         this.buildingRenderer.update();
-        this._updateAmbientEffects();
 
         // Update particles
         this.particleSystem.update();
-    }
-
-    _updateAmbientEffects() {
-        if (!this.motionScale || this.ambientEmitters.length === 0) return;
-        let spawned = 0;
-        for (const emitter of this.ambientEmitters) {
-            if (spawned >= 2) break;
-            if (Math.random() < emitter.chance) {
-                this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y - 18, 1);
-                spawned++;
-            }
-        }
     }
 
     _render() {
@@ -446,7 +375,6 @@ export class IsometricRenderer {
         // 1. Terrain
         this._drawBackgroundScenery(ctx);
         this._drawTerrain(ctx);
-        this._drawAmbientGroundProps(ctx);
 
         // 2. Building shadows
         this.buildingRenderer.drawShadows(ctx);
@@ -538,7 +466,6 @@ export class IsometricRenderer {
             this._drawPathDetail(ctx, screenX, screenY, seed, tileX, tileY);
         } else if (!this.waterTiles.has(key)) {
             this._drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY);
-            this._drawTerrainFeature(ctx, screenX, screenY, seed, key);
             if (this.shoreTiles.has(key)) {
                 this._drawShoreDetail(ctx, screenX, screenY, seed, tileX, tileY);
             }
@@ -550,7 +477,6 @@ export class IsometricRenderer {
             ctx.fillStyle = `rgba(255, 255, 255, ${shimmer})`;
             ctx.fill();
             this._drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY);
-            this._drawWaterEdge(ctx, screenX, screenY, seed, tileX, tileY);
         }
     }
 
@@ -652,111 +578,6 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawAncientRuins(ctx) {
-        const pulse = this.motionScale ? (Math.sin(this.waterFrame * 1.7) + 1) / 2 : 0.45;
-        for (const ruin of ANCIENT_RUINS) {
-            const x = (ruin.tileX - ruin.tileY) * TILE_WIDTH / 2;
-            const y = (ruin.tileX + ruin.tileY) * TILE_HEIGHT / 2;
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.scale(ruin.scale, ruin.scale);
-            ctx.fillStyle = 'rgba(59, 53, 42, 0.62)';
-            ctx.fillRect(-18, -28, 8, 31);
-            ctx.fillRect(10, -24, 8, 27);
-            ctx.fillRect(-18, -30, 36, 7);
-            ctx.fillStyle = 'rgba(163, 147, 104, 0.35)';
-            ctx.fillRect(-15, -25, 3, 24);
-            ctx.fillRect(13, -21, 3, 22);
-            ctx.strokeStyle = `rgba(201, 242, 107, ${0.08 + pulse * 0.14})`;
-            ctx.lineWidth = 1.2;
-            ctx.beginPath();
-            ctx.arc(0, -11, 14, Math.PI * 1.08, Math.PI * 1.92);
-            ctx.stroke();
-            ctx.restore();
-        }
-    }
-
-    _drawAmbientGroundProps(ctx) {
-        ctx.save();
-        this._drawAncientRuins(ctx);
-        for (const prop of AMBIENT_GROUND_PROPS) {
-            const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
-            const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
-            if (prop.type === 'lantern') this._drawPathLantern(ctx, x, y);
-            else if (prop.type === 'signpost') this._drawSignpost(ctx, x, y);
-            else if (prop.type === 'runestone') this._drawRunestone(ctx, x, y);
-            else if (prop.type === 'scrollCrates') this._drawScrollCrates(ctx, x, y);
-            else if (prop.type === 'oreCart') this._drawSmallOreCart(ctx, x, y);
-        }
-        ctx.restore();
-    }
-
-    _drawPathLantern(ctx, x, y) {
-        const glow = this.motionScale ? 0.16 + Math.max(0, Math.sin(this.waterFrame * 7 + x)) * 0.12 : 0.2;
-        ctx.fillStyle = `rgba(242, 211, 107, ${glow})`;
-        ctx.beginPath();
-        ctx.arc(x, y - 17, 12, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#4c321f';
-        ctx.fillRect(x - 1, y - 18, 2, 19);
-        ctx.fillStyle = '#f2d36b';
-        ctx.fillRect(x - 3, y - 22, 6, 5);
-    }
-
-    _drawSignpost(ctx, x, y) {
-        ctx.fillStyle = '#4b3020';
-        ctx.fillRect(x - 1, y - 16, 3, 19);
-        ctx.fillStyle = '#9a6a3b';
-        ctx.fillRect(x - 13, y - 16, 24, 6);
-        ctx.fillStyle = '#d8b96d';
-        ctx.fillRect(x - 10, y - 14, 15, 1.5);
-    }
-
-    _drawRunestone(ctx, x, y) {
-        ctx.fillStyle = '#303447';
-        ctx.beginPath();
-        ctx.moveTo(x - 8, y + 2);
-        ctx.lineTo(x - 6, y - 18);
-        ctx.lineTo(x, y - 25);
-        ctx.lineTo(x + 7, y - 17);
-        ctx.lineTo(x + 8, y + 2);
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(118, 216, 255, 0.65)';
-        ctx.beginPath();
-        ctx.moveTo(x - 3, y - 15);
-        ctx.lineTo(x + 3, y - 15);
-        ctx.moveTo(x, y - 20);
-        ctx.lineTo(x, y - 8);
-        ctx.stroke();
-    }
-
-    _drawScrollCrates(ctx, x, y) {
-        ctx.fillStyle = '#5a3a22';
-        ctx.fillRect(x - 13, y - 9, 12, 9);
-        ctx.fillStyle = '#7c5530';
-        ctx.fillRect(x + 1, y - 7, 11, 7);
-        ctx.fillStyle = '#ead8a6';
-        ctx.fillRect(x - 6, y - 13, 14, 4);
-        ctx.fillStyle = '#8d663c';
-        ctx.fillRect(x - 2, y - 13, 2, 4);
-    }
-
-    _drawSmallOreCart(ctx, x, y) {
-        ctx.fillStyle = '#211914';
-        ctx.fillRect(x - 12, y - 7, 22, 9);
-        ctx.fillStyle = '#8c5f34';
-        ctx.fillRect(x - 10, y - 10, 18, 7);
-        ctx.fillStyle = '#f5c85b';
-        ctx.fillRect(x - 5, y - 12, 3, 3);
-        ctx.fillRect(x + 2, y - 13, 2, 2);
-        ctx.fillStyle = '#111';
-        ctx.beginPath();
-        ctx.arc(x - 7, y + 2, 2.5, 0, Math.PI * 2);
-        ctx.arc(x + 6, y + 2, 2.5, 0, Math.PI * 2);
-        ctx.fill();
-    }
-
     _drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY) {
         const ox = (seed - 0.5) * TILE_WIDTH * 0.65;
         const oy = Math.sin((tileX + 1) * (tileY + 2)) * 5;
@@ -833,47 +654,6 @@ export class IsometricRenderer {
         }
     }
 
-    _drawTerrainFeature(ctx, screenX, screenY, seed, key) {
-        const feature = this.featureTiles.get(key);
-        if (!feature) return;
-        const ox = (seed - 0.5) * TILE_WIDTH * 0.45;
-        const oy = Math.sin(seed * 80) * 4;
-
-        if (feature === 'flowers') {
-            const colors = ['#f2d36b', '#e58da4', '#a7d982'];
-            ctx.fillStyle = colors[Math.floor(seed * colors.length) % colors.length];
-            ctx.fillRect(screenX + ox, screenY + oy, 2, 2);
-            ctx.fillRect(screenX + ox + 4, screenY + oy - 2, 2, 2);
-            ctx.fillStyle = 'rgba(41, 87, 38, 0.62)';
-            ctx.fillRect(screenX + ox + 2, screenY + oy + 2, 2, 2);
-        } else if (feature === 'stones') {
-            ctx.fillStyle = 'rgba(49, 51, 45, 0.55)';
-            ctx.beginPath();
-            ctx.ellipse(screenX + ox, screenY + oy, 6, 3, -0.28, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.fillStyle = 'rgba(177, 166, 137, 0.35)';
-            ctx.beginPath();
-            ctx.ellipse(screenX + ox - 2, screenY + oy - 1, 2, 1, -0.2, 0, Math.PI * 2);
-            ctx.fill();
-        } else if (feature === 'mushrooms') {
-            ctx.fillStyle = '#e8d7a6';
-            ctx.fillRect(screenX + ox, screenY + oy - 1, 2, 4);
-            ctx.fillStyle = '#c85c45';
-            ctx.beginPath();
-            ctx.ellipse(screenX + ox + 1, screenY + oy - 2, 5, 3, 0, Math.PI, 0);
-            ctx.fill();
-        } else if (feature === 'reeds') {
-            ctx.strokeStyle = 'rgba(126, 142, 68, 0.56)';
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.moveTo(screenX + ox, screenY + oy + 5);
-            ctx.lineTo(screenX + ox - 2, screenY + oy - 6);
-            ctx.moveTo(screenX + ox + 4, screenY + oy + 4);
-            ctx.lineTo(screenX + ox + 8, screenY + oy - 5);
-            ctx.stroke();
-        }
-    }
-
     _drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY) {
         ctx.strokeStyle = 'rgba(182, 229, 222, 0.16)';
         ctx.lineWidth = 1;
@@ -892,24 +672,5 @@ export class IsometricRenderer {
             ctx.lineTo(screenX - 12, screenY - 4);
             ctx.stroke();
         }
-    }
-
-    _drawWaterEdge(ctx, screenX, screenY, seed, tileX, tileY) {
-        const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        let hasShore = false;
-        for (const [dx, dy] of dirs) {
-            if (this.shoreTiles.has(`${tileX + dx},${tileY + dy}`)) {
-                hasShore = true;
-                break;
-            }
-        }
-        if (!hasShore) return;
-
-        ctx.strokeStyle = 'rgba(207, 229, 190, 0.22)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 18 + seed * 7, screenY + 6);
-        ctx.quadraticCurveTo(screenX, screenY + 11, screenX + 18 - seed * 5, screenY + 5);
-        ctx.stroke();
     }
 }
