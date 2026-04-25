@@ -1,3 +1,7 @@
+// LEGACY — replaced by BuildingSprite + AssetManager + SpriteRenderer.
+// Kept as a non-imported reference for one release cycle; delete in a follow-up
+// PR after the sprite renderer has shipped without rollback. Do not import.
+
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 
