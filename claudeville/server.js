@@ -65,6 +65,12 @@ function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
 }
 
+function cacheControlFor(reqPath) {
+  return reqPath.startsWith('/assets/sprites/')
+    ? 'public, max-age=31536000, immutable'
+    : 'no-cache';
+}
+
 function formatAge(ms) {
   if (!Number.isFinite(ms) || ms < 0) return 'unknown';
   if (ms < 1000) return 'now';
@@ -276,7 +282,7 @@ function handleStaticFile(req, res) {
 
       res.writeHead(200, {
         'Content-Type': contentType,
-        'Cache-Control': 'no-cache',
+        'Cache-Control': cacheControlFor(req.url),
       });
       res.end(data);
     });
@@ -582,7 +588,7 @@ const server = http.createServer((req, res) => {
     if (fs.existsSync(widgetFile)) {
       const ext = path.extname(widgetFile).toLowerCase();
       setCorsHeaders(res);
-      res.writeHead(200, { 'Content-Type': MIME_TYPES[ext], 'Cache-Control': 'no-cache' });
+      res.writeHead(200, { 'Content-Type': MIME_TYPES[ext], 'Cache-Control': cacheControlFor(pathname) });
       fs.createReadStream(widgetFile, { encoding: 'utf-8' }).pipe(res);
       return;
     }
