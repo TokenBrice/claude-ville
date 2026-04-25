@@ -136,4 +136,37 @@ export class SceneryEngine {
             }
         }
     }
+
+    generateBridges(pathTiles) {
+        // 1. Authored hints — always placed if the tile is water.
+        for (const hint of BRIDGE_HINTS) {
+            const key = `${hint.tileX},${hint.tileY}`;
+            if (!this.waterTiles.has(key)) continue;
+            this.bridgeTiles.set(key, {
+                orientation: hint.orientation || this._inferOrientation(hint.tileX, hint.tileY),
+            });
+        }
+        // 2. Auto-place where any path tile lies on water.
+        for (const key of pathTiles) {
+            if (!this.waterTiles.has(key)) continue;
+            if (this.bridgeTiles.has(key)) continue;
+            const comma = key.indexOf(',');
+            const tileX = Number(key.slice(0, comma));
+            const tileY = Number(key.slice(comma + 1));
+            this.bridgeTiles.set(key, {
+                orientation: this._inferOrientation(tileX, tileY),
+            });
+        }
+    }
+
+    _inferOrientation(tileX, tileY) {
+        // EW bridge if water extends left/right; NS if it extends up/down.
+        const eastWater = this.waterTiles.has(`${tileX + 1},${tileY}`);
+        const westWater = this.waterTiles.has(`${tileX - 1},${tileY}`);
+        const northWater = this.waterTiles.has(`${tileX},${tileY - 1}`);
+        const southWater = this.waterTiles.has(`${tileX},${tileY + 1}`);
+        const ew = (eastWater ? 1 : 0) + (westWater ? 1 : 0);
+        const ns = (northWater ? 1 : 0) + (southWater ? 1 : 0);
+        return ew >= ns ? 'EW' : 'NS';
+    }
 }
