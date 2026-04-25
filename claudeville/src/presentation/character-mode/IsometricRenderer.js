@@ -48,6 +48,19 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 21.8, tileY: 16.2, type: 'noticePillar' },
 ];
 
+class StaticPropSprite {
+    constructor({ tileX, tileY, drawFn }) {
+        this.tileX = tileX;
+        this.tileY = tileY;
+        this.x = (tileX - tileY) * TILE_WIDTH / 2;
+        this.y = (tileX + tileY) * TILE_HEIGHT / 2;
+        this.drawFn = drawFn;
+    }
+    draw(ctx, zoom) {
+        this.drawFn(ctx, this.x, this.y, zoom);
+    }
+}
+
 export class IsometricRenderer {
     constructor(world) {
         this.world = world;
@@ -132,6 +145,22 @@ export class IsometricRenderer {
         this.scenery.generateFlatVegetation(this.pathTiles, this.bridgeTiles);
         this.bushTiles = this.scenery.getBushTiles();
         this.grassTuftTiles = this.scenery.getGrassTuftTiles();
+
+        // Trees (Y-sorted props)
+        this.scenery.generateTrees(this.pathTiles, this.bridgeTiles);
+        this.treePropSprites = this.scenery.getTreeProps().map((t) => new StaticPropSprite({
+            tileX: t.tileX,
+            tileY: t.tileY,
+            drawFn: (ctx, x, y) => this._drawTree(ctx, x, y, t),
+        }));
+
+        // Boulders (Y-sorted props)
+        this.scenery.generateBoulders(this.pathTiles, this.bridgeTiles);
+        this.boulderPropSprites = this.scenery.getBoulderProps().map((b) => new StaticPropSprite({
+            tileX: b.tileX,
+            tileY: b.tileY,
+            drawFn: (ctx, x, y) => this._drawBoulder(ctx, x, y, b),
+        }));
 
         this.commandCenterGroundProps = [];
         this._generateCommandCenterAmbience();
@@ -507,8 +536,11 @@ export class IsometricRenderer {
 
     _snapshotSortedSprites() {
         if (!this._spritesNeedSort) return this._sortedSprites;
-        this._sortedSprites = Array.from(this.agentSprites.values())
-            .sort((a, b) => a.y - b.y);
+        const agents = Array.from(this.agentSprites.values());
+        const trees = this.treePropSprites || [];
+        const boulders = this.boulderPropSprites || [];
+        this._sortedSprites = [...agents, ...trees, ...boulders];
+        this._sortedSprites.sort((a, b) => a.y - b.y);
         this._spritesNeedSort = false;
         return this._sortedSprites;
     }
@@ -1543,6 +1575,83 @@ export class IsometricRenderer {
         ctx.moveTo(screenX + ox + 2, screenY + oy + 3);
         ctx.lineTo(screenX + ox + 4, screenY + oy - 2);
         ctx.stroke();
+    }
+
+    _drawTree(ctx, screenX, screenY, info) {
+        const palette = THEME.treeFoliage;
+        const foliage = palette[(info.variant ?? 0) % palette.length];
+        const trunkColor = THEME.treeTrunk;
+        const trunkLight = THEME.treeTrunkLight;
+        const s = info.scale ?? 1;
+
+        // Shadow under canopy.
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(screenX, screenY + 3, 12 * s, 4 * s, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Trunk.
+        const trunkH = 14 * s;
+        const trunkW = 3 * s;
+        ctx.fillStyle = trunkColor;
+        ctx.fillRect(screenX - trunkW / 2, screenY - trunkH, trunkW, trunkH);
+        ctx.fillStyle = trunkLight;
+        ctx.fillRect(screenX - trunkW / 2, screenY - trunkH, 1, trunkH);
+
+        // Canopy: 3 overlapping ellipses.
+        ctx.fillStyle = foliage;
+        ctx.beginPath();
+        ctx.ellipse(screenX, screenY - trunkH - 3 * s, 11 * s, 9 * s, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX - 6 * s, screenY - trunkH + 1, 7 * s, 6 * s, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX + 6 * s, screenY - trunkH + 1, 7 * s, 6 * s, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Highlight on the sun side.
+        ctx.fillStyle = 'rgba(208, 232, 174, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(screenX - 3 * s, screenY - trunkH - 6 * s, 5 * s, 3 * s, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    _drawBoulder(ctx, screenX, screenY, info) {
+        const s = info.scale ?? 1;
+        const r = THEME.rock;
+
+        // Shadow.
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(screenX, screenY + 4, 12 * s, 4 * s, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Boulder body.
+        ctx.fillStyle = r.base;
+        ctx.beginPath();
+        if (info.variant === 'b') {
+            ctx.ellipse(screenX, screenY - 5 * s, 11 * s, 8 * s, 0, 0, Math.PI * 2);
+        } else {
+            ctx.ellipse(screenX, screenY - 4 * s, 13 * s, 7 * s, -0.15, 0, Math.PI * 2);
+        }
+        ctx.fill();
+
+        // Highlight.
+        ctx.fillStyle = r.light;
+        ctx.beginPath();
+        ctx.ellipse(screenX - 3 * s, screenY - 7 * s, 5 * s, 2.5 * s, -0.2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Shadow side.
+        ctx.fillStyle = r.dark;
+        ctx.beginPath();
+        ctx.ellipse(screenX + 4 * s, screenY - 2 * s, 4 * s, 2 * s, 0.1, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Moss patch on variant 'a'.
+        if (info.variant === 'a') {
+            ctx.fillStyle = r.moss;
+            ctx.beginPath();
+            ctx.ellipse(screenX - 4 * s, screenY - 6 * s, 4 * s, 1.5 * s, -0.3, 0, Math.PI * 2);
+            ctx.fill();
+        }
     }
 
     _drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY) {
