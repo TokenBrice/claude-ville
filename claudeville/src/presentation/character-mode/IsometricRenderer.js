@@ -47,6 +47,8 @@ export class IsometricRenderer {
         this.buildingRenderer = new BuildingRenderer(this.particleSystem);
         this.minimap = new Minimap();
         this.agentSprites = new Map();
+        this._sortedSprites = [];
+        this._spritesNeedSort = true;
         this.running = false;
         this.frameId = null;
         this.terrainCache = null;
@@ -362,10 +364,16 @@ export class IsometricRenderer {
         // Subscribe to domain events
         this._unsubscribers.push(
             eventBus.on('agent:added', (agent) => this._addAgentSprite(agent)),
-            eventBus.on('agent:removed', (agent) => this.agentSprites.delete(agent.id)),
+            eventBus.on('agent:removed', (agent) => {
+                this.agentSprites.delete(agent.id);
+                this._markSpritesDirty();
+            }),
             eventBus.on('agent:updated', (agent) => {
                 const sprite = this.agentSprites.get(agent.id);
-                if (sprite) sprite.agent = agent;
+                if (sprite) {
+                    sprite.agent = agent;
+                    this._markSpritesDirty();
+                }
             }),
         );
 
@@ -427,8 +435,22 @@ export class IsometricRenderer {
             this.canvas.removeEventListener('click', this._onClick);
             this.canvas.removeEventListener('mousemove', this._onMouseMoveMain);
         }
+        this._sortedSprites = [];
+        this._spritesNeedSort = true;
         this.agentSprites.clear();
         this.particleSystem.clear();
+    }
+
+    _markSpritesDirty() {
+        this._spritesNeedSort = true;
+    }
+
+    _snapshotSortedSprites() {
+        if (!this._spritesNeedSort) return this._sortedSprites;
+        this._sortedSprites = Array.from(this.agentSprites.values())
+            .sort((a, b) => a.y - b.y);
+        this._spritesNeedSort = false;
+        return this._sortedSprites;
     }
 
     _setMotionScale(scale) {
@@ -445,21 +467,19 @@ export class IsometricRenderer {
             const sprite = new AgentSprite(agent);
             sprite.setMotionScale(this.motionScale);
             this.agentSprites.set(agent.id, sprite);
+            this._markSpritesDirty();
         }
     }
 
     _handleClick(worldX, worldY) {
+        if (!this.agentSprites.size) return;
+
         // Check agents first
         let clicked = null;
         for (const sprite of this.agentSprites.values()) {
-            if (sprite.hitTest(worldX, worldY)) {
+            if (!clicked && sprite.hitTest(worldX, worldY)) {
                 clicked = sprite;
-                break;
             }
-        }
-
-        // Deselect all
-        for (const sprite of this.agentSprites.values()) {
             sprite.selected = false;
         }
 
@@ -483,35 +503,36 @@ export class IsometricRenderer {
     }
 
     _updateChatMatching() {
-        // Find the agent currently using SendMessage
         const senders = new Set();
+        const spriteByRecipient = new Map();
 
         for (const sprite of this.agentSprites.values()) {
             const agent = sprite.agent;
+            if (!agent) continue;
+            const aliases = [
+                agent.name,
+                agent.agentName,
+                agent.agentId,
+                agent.id,
+            ].filter(Boolean);
+
+            for (const alias of aliases) {
+                if (!spriteByRecipient.has(alias)) {
+                    spriteByRecipient.set(alias, sprite);
+                }
+            }
+        }
+
+        for (const sprite of this.agentSprites.values()) {
+            const agent = sprite.agent;
+            if (!agent) continue;
             if (agent.status === AgentStatus.WORKING && agent.currentTool === 'SendMessage' && agent.currentToolInput) {
                 senders.add(sprite);
 
-                // Skip if already chatting
                 if (sprite.chatPartner) continue;
 
-                // Find sprite by recipient name
-                const recipientName = agent.currentToolInput;
-                let target = null;
-                for (const other of this.agentSprites.values()) {
-                    if (other === sprite) continue;
-                    const candidates = [
-                        other.agent.name,
-                        other.agent.agentName,
-                        other.agent.agentId,
-                        other.agent.id,
-                    ].filter(Boolean);
-                    if (candidates.includes(recipientName)) {
-                        target = other;
-                        break;
-                    }
-                }
-
-                if (target) {
+                const target = spriteByRecipient.get(agent.currentToolInput);
+                if (target && target !== sprite) {
                     sprite.startChat(target);
                 }
             }
@@ -556,12 +577,20 @@ export class IsometricRenderer {
         this._updateChatMatching();
 
         // Update agent sprites
+        let shouldResort = false;
         for (const sprite of this.agentSprites.values()) {
             sprite.update(this.particleSystem);
+            if (sprite._lastSortedY !== sprite.y) {
+                shouldResort = true;
+                sprite._lastSortedY = sprite.y;
+            }
+        }
+        if (shouldResort) {
+            this._markSpritesDirty();
         }
 
         // Update building renderer (pass agent sprite positions)
-        this.buildingRenderer.setAgentSprites(Array.from(this.agentSprites.values()));
+        this.buildingRenderer.setAgentSprites(this._snapshotSortedSprites());
         this.buildingRenderer.update();
         this._updateAmbientEffects();
 
@@ -611,8 +640,7 @@ export class IsometricRenderer {
         this.buildingRenderer.draw(ctx);
 
         // 4. Agents (sorted by Y for depth)
-        const sortedSprites = Array.from(this.agentSprites.values())
-            .sort((a, b) => a.y - b.y);
+        const sortedSprites = this._snapshotSortedSprites();
         const zoom = this.camera.zoom;
         for (const sprite of sortedSprites) {
             sprite.draw(ctx, zoom);

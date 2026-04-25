@@ -28,6 +28,11 @@ export class Minimap {
         this.ctx = this.canvas.getContext('2d');
         this.scale = MINIMAP_SIZE / MAP_SIZE;
         this.onNavigate = null;
+        this._staticLayer = null;
+        this._staticLayerKey = '';
+        this._cachedBuildingsSignature = '';
+        this._cachedBuildingsMap = null;
+        this._cachedBuildingsCount = -1;
 
         this.canvas.addEventListener('click', this._onClick.bind(this));
         this.canvas.addEventListener('mousemove', this._onMouseMove.bind(this));
@@ -41,6 +46,8 @@ export class Minimap {
         if (this.canvas.parentNode) {
             this.canvas.parentNode.removeChild(this.canvas);
         }
+        this._staticLayer = null;
+        this._staticLayerKey = '';
     }
 
     _onClick(e) {
@@ -58,35 +65,12 @@ export class Minimap {
     }
 
     draw(world, camera, mainCanvas, layers = {}) {
+        this._ensureStaticLayer(world, layers);
         const ctx = this.ctx;
         ctx.clearRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
 
-        // Background
-        ctx.fillStyle = '#182414';
-        ctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
-
-        ctx.fillStyle = '#314f2b';
-        ctx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
-
-        ctx.fillStyle = 'rgba(242, 211, 107, 0.07)';
-        for (let x = 0; x <= MINIMAP_SIZE; x += this.scale * 5) {
-            ctx.fillRect(x, 0, 1, MINIMAP_SIZE);
-            ctx.fillRect(0, x, MINIMAP_SIZE, 1);
-        }
-
-        this._drawTileLayer(ctx, layers.waterTiles, '#2a7891', 1.1);
-        this._drawTileLayer(ctx, layers.pathTiles, '#9d7d4b', 1.25);
-
-        // Buildings
-        for (const building of world.buildings.values()) {
-            const color = BUILDING_COLORS[building.type] || '#666';
-            const x = building.position.tileX * this.scale;
-            const y = building.position.tileY * this.scale;
-            ctx.fillStyle = color;
-            ctx.fillRect(x, y, building.width * this.scale, building.height * this.scale);
-            ctx.strokeStyle = '#2a1b10';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(x + 0.5, y + 0.5, building.width * this.scale - 1, building.height * this.scale - 1);
+        if (this._staticLayer) {
+            ctx.drawImage(this._staticLayer, 0, 0);
         }
 
         // Agents
@@ -148,6 +132,71 @@ export class Minimap {
         ctx.strokeStyle = THEME.border;
         ctx.lineWidth = 1;
         ctx.strokeRect(0.5, 0.5, MINIMAP_SIZE - 1, MINIMAP_SIZE - 1);
+    }
+
+    _ensureStaticLayer(world, layers = {}) {
+        const buildingsSignature = this._snapshotBuildings(world);
+        const waterSize = layers.waterTiles?.size || 0;
+        const pathSize = layers.pathTiles?.size || 0;
+        const key = `${waterSize}|${pathSize}|${buildingsSignature}`;
+        if (this._staticLayer && this._staticLayerKey === key) return;
+
+        this._staticLayer = document.createElement('canvas');
+        this._staticLayer.width = MINIMAP_SIZE;
+        this._staticLayer.height = MINIMAP_SIZE;
+        const staticCtx = this._staticLayer.getContext('2d');
+
+        // Background
+        staticCtx.fillStyle = '#182414';
+        staticCtx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+
+        staticCtx.fillStyle = '#314f2b';
+        staticCtx.fillRect(0, 0, MINIMAP_SIZE, MINIMAP_SIZE);
+
+        staticCtx.fillStyle = 'rgba(242, 211, 107, 0.07)';
+        for (let x = 0; x <= MINIMAP_SIZE; x += this.scale * 5) {
+            staticCtx.fillRect(x, 0, 1, MINIMAP_SIZE);
+            staticCtx.fillRect(0, x, MINIMAP_SIZE, 1);
+        }
+
+        this._drawTileLayer(staticCtx, layers.waterTiles, '#2a7891', 1.1);
+        this._drawTileLayer(staticCtx, layers.pathTiles, '#9d7d4b', 1.25);
+
+        // Buildings
+        for (const building of world.buildings.values()) {
+            const color = BUILDING_COLORS[building.type] || '#666';
+            const x = building.position.tileX * this.scale;
+            const y = building.position.tileY * this.scale;
+            staticCtx.fillStyle = color;
+            staticCtx.fillRect(x, y, building.width * this.scale, building.height * this.scale);
+            staticCtx.strokeStyle = '#2a1b10';
+            staticCtx.lineWidth = 1;
+            staticCtx.strokeRect(x + 0.5, y + 0.5, building.width * this.scale - 1, building.height * this.scale - 1);
+        }
+
+        this._staticLayerKey = key;
+    }
+
+    _snapshotBuildings(world) {
+        const buildings = world?.buildings;
+        if (!buildings) return '';
+
+        if (this._cachedBuildingsMap === buildings &&
+            this._cachedBuildingsCount === buildings.size &&
+            this._cachedBuildingsSignature) {
+            return this._cachedBuildingsSignature;
+        }
+
+        const values = [];
+        for (const building of buildings.values()) {
+            const pos = building.position || {};
+            values.push(`${building.type}|${pos.tileX}|${pos.tileY}|${building.width}|${building.height}`);
+        }
+        values.sort();
+        this._cachedBuildingsSignature = values.join(',');
+        this._cachedBuildingsCount = buildings.size;
+        this._cachedBuildingsMap = buildings;
+        return this._cachedBuildingsSignature;
     }
 
     _drawTileLayer(ctx, tiles, color, size = 1) {

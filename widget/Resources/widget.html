@@ -80,25 +80,150 @@
     let ws = null;
     let reconnectTimer = null;
     let isOnline = false;
+    let lastAgentsSignature = '';
+    let lastQuotaSignature = '';
+    const els = {
+      agentListWrap: document.getElementById('agent-list-wrap'),
+      workingCount: document.getElementById('working-count'),
+      idleCount: document.getElementById('idle-count'),
+      totalTokens: document.getElementById('total-tokens'),
+      totalCost: document.getElementById('total-cost'),
+      quotaTier: document.getElementById('quota-tier'),
+      quotaActivity: document.getElementById('quota-activity'),
+      quotaBars: document.getElementById('quota-bars'),
+      openDashboardBtn: document.getElementById('open-dashboard-btn'),
+    };
+    const quotaEls = {
+      fill5h: document.getElementById('quota-5h-fill'),
+      pct5h: document.getElementById('quota-5h-pct'),
+      fill7d: document.getElementById('quota-7d-fill'),
+      pct7d: document.getElementById('quota-7d-pct'),
+    };
 
     // ── Utilities ──────────────────────────────────────────────
     function formatTokens(n) {
-      if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-      if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-      return String(n);
+      const num = Number(n);
+      if (!Number.isFinite(num)) return '0';
+      if (num >= 1000000) return (num / 1000000).toFixed(1) + 'M';
+      if (num >= 1000) return (num / 1000).toFixed(1) + 'K';
+      return String(Math.round(num));
     }
 
     function formatCost(n) {
-      return '$' + n.toFixed(2);
+      const num = Number(n);
+      return '$' + (Number.isFinite(num) ? num.toFixed(2) : '0.00');
+    }
+
+    function toNumber(value) {
+      const n = Number(value);
+      return Number.isFinite(n) ? n : 0;
+    }
+
+    function normalizeTokenUsage(raw) {
+      if (!raw || typeof raw !== 'object') {
+        return {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheCreate: 0,
+          totalInput: 0,
+          totalOutput: 0,
+        };
+      }
+
+      return {
+        input: toNumber(
+          raw.input ??
+          raw.totalInput ??
+          raw.total_input ??
+          raw.input_tokens ??
+          raw.inputTokens ??
+          raw.prompt_tokens ??
+          raw.promptTokens ??
+          raw.total_input_tokens
+        ),
+        output: toNumber(
+          raw.output ??
+          raw.totalOutput ??
+          raw.total_output ??
+          raw.output_tokens ??
+          raw.outputTokens ??
+          raw.completion_tokens ??
+          raw.completionTokens ??
+          raw.total_output_tokens
+        ),
+        cacheRead: toNumber(
+          raw.cacheRead ??
+          raw.cache_read ??
+          raw.cached_input_tokens ??
+          raw.cache_read_input_tokens ??
+          raw.cacheReadInputTokens
+        ),
+        cacheCreate: toNumber(
+          raw.cacheCreate ??
+          raw.cache_create_tokens ??
+          raw.cacheCreateTokens ??
+          raw.cacheWrite ??
+          raw.cache_write ??
+          raw.cache_creation_input_tokens
+        ),
+        totalInput: toNumber(raw.totalInput ?? raw.total_input ?? raw.input),
+        totalOutput: toNumber(raw.totalOutput ?? raw.total_output ?? raw.output),
+      };
+    }
+
+    const CLAUDE_RATES = [
+      { match: 'opus', input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
+      { match: 'sonnet', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
+      { match: 'haiku', input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
+    ];
+
+    const OPEN_AI_RATES = [
+      { match: 'gpt-5.5', input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0 },
+      { match: 'gpt-5.4', input: 10, output: 80, cacheRead: 1, cacheCreate: 0 },
+      { match: 'gpt-5.3', input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0 },
+      { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
+    ];
+
+    function pricingForModel(model, provider) {
+      const normalizedModel = String(model || '').toLowerCase();
+      const normalizedProvider = String(provider || '').toLowerCase();
+      const table = normalizedProvider === 'codex' || normalizedModel.includes('gpt')
+        ? OPEN_AI_RATES
+        : CLAUDE_RATES;
+      return table.find((entry) => normalizedModel.includes(entry.match)) ||
+        (table === OPEN_AI_RATES
+          ? { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 }
+          : { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 });
+    }
+
+    function estimateTokenCost(rawUsage, model, provider) {
+      const usage = normalizeTokenUsage(rawUsage);
+      const rates = pricingForModel(model, provider);
+      return (
+        usage.totalInput * rates.input +
+        usage.totalOutput * rates.output +
+        usage.cacheRead * rates.cacheRead +
+        usage.cacheCreate * rates.cacheCreate
+      ) / 1000000;
+    }
+
+    function normalizeStatus(status) {
+      const normalized = String(status || 'idle').trim().toLowerCase();
+      if (normalized === 'active') return 'working';
+      if (normalized === 'working') return 'working';
+      if (normalized === 'waiting') return 'waiting';
+      return normalized === 'idle' ? 'idle' : 'idle';
     }
 
     function getStatusLabel(status) {
+      const normalized = normalizeStatus(status);
       const map = {
         working: 'Working...',
         idle: 'Idle',
         waiting: 'Waiting...',
       };
-      return map[status] || status;
+      return map[normalized] || 'Idle';
     }
 
     function getModelLabel(model) {
@@ -119,7 +244,8 @@
 
     // ── UI rendering ─────────────────────────────────────────
     function renderAgents(sessions) {
-      const wrap = document.getElementById('agent-list-wrap');
+      const list = Array.isArray(sessions) ? [...sessions] : [];
+      const wrap = els.agentListWrap;
 
       if (!isOnline) {
         wrap.innerHTML = `
@@ -128,24 +254,28 @@
             <div class="offline-text">SERVER OFFLINE</div>
             <div class="offline-retry">Reconnecting...</div>
           </div>`;
-        document.getElementById('working-count').textContent = '0';
-        document.getElementById('idle-count').textContent = '0';
-        document.getElementById('total-tokens').textContent = '0 tokens';
-        document.getElementById('total-cost').textContent = '$0.00';
+        els.workingCount.textContent = '0';
+        els.idleCount.textContent = '0';
+        els.totalTokens.textContent = '0 tokens';
+        els.totalCost.textContent = '$0.00';
         postBadge(0, 0);
         return;
       }
 
-      if (!sessions || sessions.length === 0) {
+      if (!list.length) {
+        const signature = 'empty|0';
+        if (signature === lastAgentsSignature) return;
+        lastAgentsSignature = signature;
+
         wrap.innerHTML = `
           <div class="empty-wrap">
             <span class="empty-text">No agents</span>
           </div>`;
-        document.getElementById('working-count').textContent = '0';
-        document.getElementById('idle-count').textContent = '0';
-        document.getElementById('total-tokens').textContent = '0 tokens';
-        document.getElementById('total-cost').textContent = '$0.00';
-        postBadge(0, sessions.length);
+        els.workingCount.textContent = '0';
+        els.idleCount.textContent = '0';
+        els.totalTokens.textContent = '0 tokens';
+        els.totalCost.textContent = '$0.00';
+        postBadge(0, list.length);
         return;
       }
 
@@ -154,43 +284,59 @@
       let idleCount = 0;
       let totalTokens = 0;
       let totalCost = 0;
-
-      sessions.forEach(s => {
-        if (s.status === 'working') workingCount++;
-        else idleCount++;
-        if (s.tokenUsage) {
-          totalTokens += (s.tokenUsage.input || 0) + (s.tokenUsage.output || 0)
-            + (s.tokenUsage.cacheRead || 0) + (s.tokenUsage.cacheWrite || 0);
-        }
-        totalCost += s.estimatedCost || 0;
+      const summary = [];
+      const sorted = list.sort((a, b) => {
+        const order = { working: 0, waiting: 1, idle: 2 };
+        return (order[normalizeStatus(a.status)] ?? 9) - (order[normalizeStatus(b.status)] ?? 9);
       });
 
-      document.getElementById('working-count').textContent = workingCount;
-      document.getElementById('idle-count').textContent = idleCount;
-      document.getElementById('total-tokens').textContent = formatTokens(totalTokens) + ' tokens';
-      document.getElementById('total-cost').textContent = formatCost(totalCost);
+      sorted.forEach(s => {
+        const status = normalizeStatus(s.status);
+        const isWorking = status === 'working';
+        if (isWorking) workingCount++;
+        else idleCount++;
+        const tokenSource = s.tokenUsage || s.tokens || s.usage;
+        const estimatedCost = Number(s.estimatedCost);
+        const cost = Number.isFinite(estimatedCost) ? estimatedCost : estimateTokenCost(tokenSource, s.model, s.provider);
+        const tokenUsage = normalizeTokenUsage(tokenSource);
+        const sessionTokens = tokenUsage.input + tokenUsage.output + tokenUsage.cacheRead + tokenUsage.cacheCreate;
+        totalTokens += sessionTokens;
+        totalCost += cost;
+        summary.push({
+          id: s.sessionId || s.id || '',
+          status,
+          model: getModelLabel(s.model),
+          activity: getStatusLabel(status),
+          tokens: sessionTokens,
+          cost,
+          displayName: s.name || s.sessionId?.slice(0, 8) || 'Unknown',
+        });
+      });
 
-      postBadge(workingCount, sessions.length);
+      const signature = `${sorted.length}|${workingCount}|${idleCount}|${totalTokens}|${totalCost.toFixed(6)}|` +
+        summary.map(item => `${item.id}|${item.status}|${item.model}|${item.tokens}|${item.cost.toFixed(6)}`).join('|');
+      if (signature === lastAgentsSignature) return;
+      lastAgentsSignature = signature;
+
+      els.workingCount.textContent = workingCount;
+      els.idleCount.textContent = idleCount;
+      els.totalTokens.textContent = formatTokens(totalTokens) + ' tokens';
+      els.totalCost.textContent = formatCost(totalCost);
+
+      postBadge(workingCount, list.length);
 
       // Render list
-      const items = sessions
-        .sort((a, b) => {
-          const order = { working: 0, waiting: 1, idle: 2 };
-          return (order[a.status] ?? 9) - (order[b.status] ?? 9);
-        })
+      const items = summary
         .map(s => {
           const statusClass = s.status || 'idle';
-          const name = s.name || s.sessionId?.slice(0, 8) || 'Unknown';
-          const model = getModelLabel(s.model);
-          const activity = getStatusLabel(s.status);
           return `
             <div class="agent-item">
               <span class="agent-dot ${statusClass}"></span>
               <div class="agent-info">
-                <div class="agent-name">${escHtml(name)}</div>
-                <div class="agent-activity">${escHtml(activity)}</div>
+                <div class="agent-name">${escHtml(s.displayName)}</div>
+                <div class="agent-activity">${escHtml(s.activity)}</div>
               </div>
-              <span class="agent-model">${escHtml(model)}</span>
+              <span class="agent-model">${escHtml(s.model)}</span>
             </div>`;
         })
         .join('');
@@ -208,25 +354,49 @@
 
     // ── Quota rendering ──────────────────────────────────────
     function renderQuota(usage) {
-      if (!usage) return;
+      if (!usage) {
+        clearQuota();
+        return;
+      }
+      const quotaPayload = usage.quota || {};
+      const today = usage.activity && usage.activity.today ? usage.activity.today : {};
+      const signature = [
+        !!usage.quotaAvailable,
+        usage.account?.rateLimitTier || '',
+        usage.account?.subscriptionType || '',
+        today.messages || 0,
+        today.sessions || 0,
+        quotaPayload.fiveHour || 0,
+        quotaPayload.sevenDay || 0,
+      ].join('|');
+      if (signature === lastQuotaSignature) return;
+      lastQuotaSignature = signature;
 
-      const tierEl = document.getElementById('quota-tier');
-      const activityEl = document.getElementById('quota-activity');
+      const tierEl = els.quotaTier;
+      const activityEl = els.quotaActivity;
 
       if (usage.account) {
         tierEl.textContent = formatTier(usage.account.rateLimitTier, usage.account.subscriptionType);
+      } else {
+        tierEl.textContent = '';
       }
 
       if (usage.activity && usage.activity.today) {
         const t = usage.activity.today;
         activityEl.textContent = formatTokens(t.messages) + ' msgs / ' + t.sessions + ' sessions';
+      } else {
+        activityEl.textContent = '--';
       }
 
+      const barsEl = els.quotaBars;
       if (usage.quotaAvailable && usage.quota) {
-        const barsEl = document.getElementById('quota-bars');
         barsEl.style.display = 'flex';
         updateQuotaBar('quota-5h-fill', 'quota-5h-pct', usage.quota.fiveHour);
         updateQuotaBar('quota-7d-fill', 'quota-7d-pct', usage.quota.sevenDay);
+      } else {
+        barsEl.style.display = 'none';
+        updateQuotaBar('quota-5h-fill', 'quota-5h-pct', 0);
+        updateQuotaBar('quota-7d-fill', 'quota-7d-pct', 0);
       }
     }
 
@@ -244,13 +414,22 @@
     function updateQuotaBar(fillId, pctId, value) {
       if (value == null) return;
       const pct = Math.round(value * 100);
-      const fillEl = document.getElementById(fillId);
-      const pctEl = document.getElementById(pctId);
+      const fillEl = fillId === 'quota-5h-fill' ? quotaEls.fill5h : quotaEls.fill7d;
+      const pctEl = pctId === 'quota-5h-pct' ? quotaEls.pct5h : quotaEls.pct7d;
       fillEl.style.width = pct + '%';
       pctEl.textContent = pct + '%';
       fillEl.className = 'quota-bar-fill';
       if (pct >= 80) fillEl.classList.add('quota-bar-fill--danger');
       else if (pct >= 50) fillEl.classList.add('quota-bar-fill--warn');
+    }
+
+    function clearQuota() {
+      els.quotaTier.textContent = 'Unavailable';
+      els.quotaActivity.textContent = '--';
+      els.quotaBars.style.display = 'none';
+      updateQuotaBar('quota-5h-fill', 'quota-5h-pct', 0);
+      updateQuotaBar('quota-7d-fill', 'quota-7d-pct', 0);
+      lastQuotaSignature = '';
     }
 
     // ── WebSocket ─────────────────────────────────────────
@@ -279,12 +458,14 @@
       ws.onclose = () => {
         isOnline = false;
         renderAgents([]);
+        renderQuota();
         scheduleReconnect();
       };
 
       ws.onerror = () => {
         isOnline = false;
         renderAgents([]);
+        renderQuota();
         ws.close();
       };
     }
@@ -295,7 +476,7 @@
     }
 
     // ── Open Dashboard ────────────────────────────────────
-    document.getElementById('open-dashboard-btn').addEventListener('click', () => {
+    els.openDashboardBtn.addEventListener('click', () => {
       try {
         webkit.messageHandlers.openDashboard.postMessage({});
       } catch (_) {

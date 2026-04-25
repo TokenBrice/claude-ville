@@ -1,4 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
+import { sessionDetailsService } from './SessionDetailsService.js';
+import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
 
 const TOOL_ICONS = {
     Read: '\u{1F4D6}', Edit: '\u270F\uFE0F', Write: '\u{1F4DD}',
@@ -16,6 +19,34 @@ export class ActivityPanel {
         this.closeBtn = document.getElementById('panelClose');
         this.currentAgent = null;
         this._pollTimer = null;
+        this.dom = {
+            panelAgentName: document.getElementById('panelAgentName'),
+            panelAgentStatus: document.getElementById('panelAgentStatus'),
+            panelModel: document.getElementById('panelModel'),
+            panelProvider: document.getElementById('panelProvider'),
+            panelRole: document.getElementById('panelRole'),
+            panelTeam: document.getElementById('panelTeam'),
+            panelCurrentTool: document.getElementById('panelCurrentTool'),
+            panelToolHistory: document.getElementById('panelToolHistory'),
+            panelMessages: document.getElementById('panelMessages'),
+            panelContextSize: document.getElementById('panelContextSize'),
+            panelContextBar: document.getElementById('panelContextBar'),
+            panelInputTokens: document.getElementById('panelInputTokens'),
+            panelOutputTokens: document.getElementById('panelOutputTokens'),
+            panelCacheRead: document.getElementById('panelCacheRead'),
+            panelTurnCount: document.getElementById('panelTurnCount'),
+            panelEstCost: document.getElementById('panelEstCost'),
+        };
+        this._toolEls = {
+            icon: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-icon'),
+            name: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-name'),
+            input: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-input'),
+        };
+        this._renderSignatures = {
+            toolHistory: '',
+            messages: '',
+            tokenUsage: '',
+        };
 
         this._bind();
     }
@@ -44,6 +75,11 @@ export class ActivityPanel {
 
     show(agent) {
         this.currentAgent = agent;
+        this._renderSignatures = {
+            toolHistory: '',
+            messages: '',
+            tokenUsage: '',
+        };
         this.panelEl.style.display = '';
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
@@ -53,30 +89,37 @@ export class ActivityPanel {
     hide() {
         this.panelEl.style.display = 'none';
         this.currentAgent = null;
+        this._renderSignatures = {
+            toolHistory: '',
+            messages: '',
+            tokenUsage: '',
+        };
         this._stopPolling();
         eventBus.emit('agent:deselected');
     }
 
     _updateInfo(agent) {
-        document.getElementById('panelAgentName').textContent = agent.name;
-        const statusEl = document.getElementById('panelAgentStatus');
-        statusEl.textContent = agent.status.toUpperCase();
+        const status = this._normalizeStatus(agent.status);
+        this.dom.panelAgentName.textContent = agent.name;
+        const statusEl = this.dom.panelAgentStatus;
+        statusEl.textContent = status.toUpperCase();
         statusEl.style.color = {
             working: '#4ade80', idle: '#60a5fa', waiting: '#f97316',
-        }[agent.status] || '#8b8b9e';
+        }[status] || '#8b8b9e';
 
-        document.getElementById('panelModel').textContent =
+        this.dom.panelModel.textContent =
             (agent.model || '').replace('claude-', '').replace(/-2025\d+/, '');
-        document.getElementById('panelProvider').textContent = agent.provider || 'claude';
-        document.getElementById('panelRole').textContent = agent.role || 'general';
-        document.getElementById('panelTeam').textContent = agent.teamName || '-';
+        this.dom.panelProvider.textContent = agent.provider || 'claude';
+        this.dom.panelRole.textContent = agent.role || 'general';
+        this.dom.panelTeam.textContent = agent.teamName || '-';
     }
 
     _updateCurrentTool(agent) {
-        const container = document.getElementById('panelCurrentTool');
-        const iconEl = container.querySelector('.activity-panel__tool-icon');
-        const nameEl = container.querySelector('.activity-panel__tool-name');
-        const inputEl = container.querySelector('.activity-panel__tool-input');
+        const container = this.dom.panelCurrentTool;
+        const iconEl = this._toolEls.icon;
+        const nameEl = this._toolEls.name;
+        const inputEl = this._toolEls.input;
+        const status = this._normalizeStatus(agent.status);
 
         if (agent.currentTool) {
             container.classList.remove('activity-panel__current-tool--idle');
@@ -85,10 +128,15 @@ export class ActivityPanel {
             inputEl.textContent = agent.currentToolInput || '';
         } else {
             container.classList.add('activity-panel__current-tool--idle');
-            iconEl.textContent = agent.status === 'idle' ? '\u{1F4A4}' : '\u23F3';
-            nameEl.textContent = agent.status === 'idle' ? 'Idle' : 'Waiting...';
+            iconEl.textContent = status === 'idle' ? '\u{1F4A4}' : '\u23F3';
+            nameEl.textContent = status === 'idle' ? 'Idle' : 'Waiting...';
             inputEl.textContent = '';
         }
+    }
+
+    _normalizeStatus(status) {
+        const normalized = String(status || 'idle').toLowerCase();
+        return normalized === 'active' ? 'working' : normalized;
     }
 
     // ─── Live polling ────────────────────────────────
@@ -96,7 +144,7 @@ export class ActivityPanel {
     _startPolling() {
         this._stopPolling();
         this._fetchDetail();
-        this._pollTimer = setInterval(() => this._fetchDetail(), 2000);
+        this._pollTimer = setInterval(() => this._fetchDetail(), SESSION_DETAIL_PANEL_REFRESH_INTERVAL);
     }
 
     _stopPolling() {
@@ -109,29 +157,25 @@ export class ActivityPanel {
     async _fetchDetail() {
         if (!this.currentAgent) return;
         const agent = this.currentAgent;
-        try {
-            const params = new URLSearchParams({
-                sessionId: agent.id,
-                project: agent.projectPath || '',
-                provider: agent.provider || 'claude',
-            });
-            const resp = await fetch(`/api/session-detail?${params}`);
-            if (!resp.ok) return;
-            const data = await resp.json();
-            if (this.currentAgent && this.currentAgent.id === agent.id) {
-                this._renderToolHistory(data.toolHistory || []);
-                this._renderMessages(data.messages || []);
-                this._renderTokenUsage(data.tokenUsage);
-            }
-        } catch {
-            // Ignore network errors.
-        }
+        const data = await sessionDetailsService.fetchSessionDetail(agent);
+        if (!data || !this.currentAgent || this.currentAgent.id !== agent.id) return;
+        this._renderToolHistory(data.toolHistory || []);
+        this._renderMessages(data.messages || []);
+        this._renderTokenUsage(data.tokenUsage || data.tokens || data.usage);
     }
 
     // ─── Rendering ─────────────────────────────────────
 
     _renderToolHistory(tools) {
-        const el = document.getElementById('panelToolHistory');
+        const signature = JSON.stringify((tools || []).map((tool) => ({
+            tool: tool.tool || '',
+            detail: (tool.detail || '').slice(0, 45),
+            ts: tool.ts || 0,
+        })));
+        if (signature === this._renderSignatures.toolHistory) return;
+        this._renderSignatures.toolHistory = signature;
+
+        const el = this.dom.panelToolHistory;
         if (!tools.length) {
             el.innerHTML = '<div class="activity-panel__empty">No tool usage</div>';
             return;
@@ -150,7 +194,15 @@ export class ActivityPanel {
     }
 
     _renderMessages(messages) {
-        const el = document.getElementById('panelMessages');
+        const signature = JSON.stringify((messages || []).map((message) => ({
+            role: message.role || '',
+            text: (message.text || '').slice(0, 60),
+            ts: message.ts || 0,
+        })));
+        if (signature === this._renderSignatures.messages) return;
+        this._renderSignatures.messages = signature;
+
+        const el = this.dom.panelMessages;
         if (!messages.length) {
             el.innerHTML = '<div class="activity-panel__empty">No messages</div>';
             return;
@@ -160,7 +212,7 @@ export class ActivityPanel {
             const cls = m.role === 'assistant' ? 'assistant' : 'user';
             return `<div class="activity-panel__msg activity-panel__msg--${cls}">
                 <div class="activity-panel__msg-role">${m.role}</div>
-                <div>${this._esc(m.text)}</div>
+                <div>${this._esc(this._trunc(m.text || '', 60))}</div>
             </div>`;
         }).join('');
     }
@@ -168,68 +220,47 @@ export class ActivityPanel {
     _renderTokenUsage(usage) {
         if (!usage) return;
 
-        const MAX_CONTEXT = usage.contextWindowMax || this._contextLimitFor(this.currentAgent);
-        const contextPct = Math.min(100, (usage.contextWindow / MAX_CONTEXT) * 100);
+        const normalizedUsage = TokenUsage.normalize(usage);
+        const usageSignature = `${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}`;
+        if (usageSignature === this._renderSignatures.tokenUsage) return;
+        this._renderSignatures.tokenUsage = usageSignature;
+
+        const MAX_CONTEXT = normalizedUsage.contextWindowMax || this._contextLimitFor(this.currentAgent);
+        const contextPct = MAX_CONTEXT ? Math.min(100, (normalizedUsage.contextWindow / MAX_CONTEXT) * 100) : 0;
 
         // Context size (human-readable form)
-        document.getElementById('panelContextSize').textContent =
-            this._formatTokens(usage.contextWindow) + ` / ${this._formatTokens(MAX_CONTEXT)}`;
+        this.dom.panelContextSize.textContent =
+            this._formatTokens(normalizedUsage.contextWindow) + ` / ${this._formatTokens(MAX_CONTEXT)}`;
 
         // Context bar
-        const bar = document.getElementById('panelContextBar');
+        const bar = this.dom.panelContextBar;
         bar.style.width = contextPct + '%';
         bar.className = 'activity-panel__context-bar';
         if (contextPct > 80) bar.classList.add('activity-panel__context-bar--danger');
         else if (contextPct > 50) bar.classList.add('activity-panel__context-bar--warning');
 
         // Token cells
-        document.getElementById('panelInputTokens').textContent =
-            this._formatTokens(usage.totalInput);
-        document.getElementById('panelOutputTokens').textContent =
-            this._formatTokens(usage.totalOutput);
-        document.getElementById('panelCacheRead').textContent =
-            this._formatTokens(usage.cacheRead);
-        document.getElementById('panelTurnCount').textContent =
-            usage.turnCount.toLocaleString();
+        this.dom.panelInputTokens.textContent =
+            this._formatTokens(normalizedUsage.totalInput);
+        this.dom.panelOutputTokens.textContent =
+            this._formatTokens(normalizedUsage.totalOutput);
+        this.dom.panelCacheRead.textContent =
+            this._formatTokens(normalizedUsage.cacheRead);
+        this.dom.panelTurnCount.textContent =
+            normalizedUsage.turnCount.toLocaleString();
 
-        const cost = this._estimateCost(usage, this.currentAgent);
-        document.getElementById('panelEstCost').textContent = this._formatCost(cost);
+        const cost = TokenUsage.estimateCost(
+            normalizedUsage,
+            this.currentAgent?.model,
+            this.currentAgent?.provider,
+        );
+        this.dom.panelEstCost.textContent = this._formatCost(cost);
     }
 
     _formatTokens(n) {
         if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
         if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
         return String(n);
-    }
-
-    _estimateCost(usage, agent) {
-        const rates = this._pricingFor(agent);
-        return (
-            (usage.totalInput * rates.input / 1000000) +
-            (usage.totalOutput * rates.output / 1000000) +
-            (usage.cacheRead * rates.cacheRead / 1000000) +
-            (usage.cacheCreate * rates.cacheCreate / 1000000)
-        );
-    }
-
-    _pricingFor(agent) {
-        const model = String(agent?.model || '').toLowerCase();
-        const provider = String(agent?.provider || '').toLowerCase();
-        const claudeRates = [
-            { match: 'opus', input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
-            { match: 'sonnet', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
-            { match: 'haiku', input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
-        ];
-        const openAiRates = [
-            { match: 'gpt-5.5', input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0 },
-            { match: 'gpt-5.4', input: 10, output: 80, cacheRead: 1, cacheCreate: 0 },
-            { match: 'gpt-5.3', input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0 },
-            { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
-        ];
-        const table = provider === 'codex' || model.includes('gpt') ? openAiRates : claudeRates;
-        return table.find(rate => model.includes(rate.match)) || (table === openAiRates
-            ? { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 }
-            : { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 });
     }
 
     _contextLimitFor(agent) {

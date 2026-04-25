@@ -1,6 +1,8 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AvatarCanvas } from './AvatarCanvas.js';
 import { i18n } from '../../config/i18n.js';
+import { sessionDetailsService } from '../shared/SessionDetailsService.js';
+import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 
 const TOOL_ICONS = {
     Read: '📖', Edit: '✏️', Write: '📝', Grep: '🔍', Glob: '📁',
@@ -35,10 +37,13 @@ export class DashboardRenderer {
         this.emptyEl = document.getElementById('dashboardEmpty');
         this.cards = new Map();
         this.toolHistories = new Map();
+        this.toolHistoryRenderSignatures = new Map();
         this.active = false;
         this._fetchTimers = new Map();
+        this._isFetchingDetails = false;
         this._projectColorMap = new Map();
         this._sectionEls = new Map(); // projectPath → section element
+        this._sectionRefs = new Map(); // projectPath → cached section refs
 
         this._onAgentChanged = () => { if (this.active) this.render(); };
         eventBus.on('agent:added', this._onAgentChanged);
@@ -79,18 +84,29 @@ export class DashboardRenderer {
 
         for (const [projectPath, groupAgents] of groups) {
             existingSections.add(projectPath);
-            groupAgents.sort((a, b) => (order[a.status] ?? 3) - (order[b.status] ?? 3));
+            groupAgents.sort((a, b) => {
+                const statusA = this._normalizeStatus(a.status);
+                const statusB = this._normalizeStatus(b.status);
+                return (order[statusA] ?? 3) - (order[statusB] ?? 3);
+            });
 
             // Create/get section element
             let sectionEl = this._sectionEls.get(projectPath);
             if (!sectionEl) {
                 sectionEl = this._createSection(projectPath);
                 this._sectionEls.set(projectPath, sectionEl);
+                this._sectionRefs.set(projectPath, {
+                    name: sectionEl.querySelector('.dashboard__section-name'),
+                    path: sectionEl.querySelector('.dashboard__section-path'),
+                    count: sectionEl.querySelector('.dashboard__section-count'),
+                    grid: sectionEl.querySelector('.dashboard__section-grid'),
+                });
                 this.gridEl.appendChild(sectionEl);
             }
             this._updateSectionHeader(sectionEl, projectPath, groupAgents);
 
-            const gridInner = sectionEl.querySelector('.dashboard__section-grid');
+            const sectionRefs = this._sectionRefs.get(projectPath) || {};
+            const gridInner = sectionRefs.grid || sectionEl.querySelector('.dashboard__section-grid');
 
             for (const agent of groupAgents) {
                 existingIds.add(agent.id);
@@ -116,6 +132,7 @@ export class DashboardRenderer {
                 cardEl.remove();
                 this.cards.delete(id);
                 this.toolHistories.delete(id);
+                this.toolHistoryRenderSignatures.delete(id);
             }
         }
 
@@ -124,6 +141,7 @@ export class DashboardRenderer {
             if (!existingSections.has(path)) {
                 sectionEl.remove();
                 this._sectionEls.delete(path);
+                this._sectionRefs.delete(path);
             }
         }
     }
@@ -176,13 +194,19 @@ export class DashboardRenderer {
     }
 
     _updateSectionHeader(sectionEl, projectPath, agents) {
+        const refs = sectionEl._sectionRefs || {
+            name: sectionEl.querySelector('.dashboard__section-name'),
+            path: sectionEl.querySelector('.dashboard__section-path'),
+            count: sectionEl.querySelector('.dashboard__section-count'),
+        };
+        sectionEl._sectionRefs = refs;
         const name = this._shortProjectName(projectPath);
-        sectionEl.querySelector('.dashboard__section-name').textContent = name;
-        sectionEl.querySelector('.dashboard__section-count').textContent = i18n.t('nAgents')(agents.length);
+        refs.name.textContent = name;
+        refs.count.textContent = i18n.t('nAgents')(agents.length);
 
         // Display shortened path
         const shortPath = projectPath === '_unknown' ? '' : this._truncatePath(projectPath);
-        sectionEl.querySelector('.dashboard__section-path').textContent = shortPath;
+        refs.path.textContent = shortPath;
     }
 
     _truncatePath(path) {
@@ -250,66 +274,86 @@ export class DashboardRenderer {
             eventBus.emit('agent:selected', agent);
         });
 
+        card._elements = {
+            name: card.querySelector('.dash-card__name'),
+            model: card.querySelector('.dash-card__model'),
+            role: card.querySelector('.dash-card__role'),
+            providerBadge: card.querySelector('.dash-card__provider-badge'),
+            status: card.querySelector('.dash-card__status'),
+            statusLabel: card.querySelector('.dash-card__status-label'),
+            currentTool: card.querySelector('.dash-card__current-tool'),
+            toolIcon: card.querySelector('.dash-card__tool-icon'),
+            toolName: card.querySelector('.dash-card__tool-name'),
+            toolDetail: card.querySelector('.dash-card__tool-detail'),
+            message: card.querySelector('.dash-card__message'),
+            toolList: card.querySelector('.dash-card__tool-list'),
+        };
+
         return card;
     }
 
     _updateCard(cardEl, agent) {
+        const refs = cardEl._elements;
+        const status = this._normalizeStatus(agent.status);
+
         // Status class
-        cardEl.className = `dash-card dash-card--${agent.status}`;
+        cardEl.className = `dash-card dash-card--${status}`;
 
         // Header
-        cardEl.querySelector('.dash-card__name').textContent = agent.name;
-        cardEl.querySelector('.dash-card__model').textContent = this._shortModel(agent.model);
-        cardEl.querySelector('.dash-card__role').textContent = agent.role || '';
+        refs.name.textContent = agent.name;
+        refs.model.textContent = this._shortModel(agent.model);
+        refs.role.textContent = agent.role || '';
 
         // Provider badge
-        const badgeEl = cardEl.querySelector('.dash-card__provider-badge');
         const badge = PROVIDER_BADGES[agent.provider] || PROVIDER_BADGES.claude;
-        badgeEl.textContent = badge.label;
-        badgeEl.style.color = badge.color;
-        badgeEl.style.background = badge.bg;
+        refs.providerBadge.textContent = badge.label;
+        refs.providerBadge.style.color = badge.color;
+        refs.providerBadge.style.background = badge.bg;
 
-        const statusEl = cardEl.querySelector('.dash-card__status');
-        statusEl.className = `dash-card__status dash-card__status--${agent.status}`;
+        refs.status.className = `dash-card__status dash-card__status--${status}`;
         const statusKey = { working: 'statusWorking', idle: 'statusIdle', waiting: 'statusWaiting' };
-        cardEl.querySelector('.dash-card__status-label').textContent = i18n.t(statusKey[agent.status] || agent.status);
+        refs.statusLabel.textContent = i18n.t(statusKey[status] || status);
 
         // Current tool
-        const toolBox = cardEl.querySelector('.dash-card__current-tool');
-        const toolIcon = cardEl.querySelector('.dash-card__tool-icon');
-        const toolName = cardEl.querySelector('.dash-card__tool-name');
-        const toolDetail = cardEl.querySelector('.dash-card__tool-detail');
-
         if (agent.currentTool) {
-            toolBox.classList.remove('dash-card__current-tool--idle');
-            toolIcon.textContent = this._getToolIcon(agent.currentTool);
-            toolName.textContent = agent.currentTool;
-            toolDetail.textContent = agent.currentToolInput || '';
+            refs.currentTool.classList.remove('dash-card__current-tool--idle');
+            refs.toolIcon.textContent = this._getToolIcon(agent.currentTool);
+            refs.toolName.textContent = agent.currentTool;
+            refs.toolDetail.textContent = agent.currentToolInput || '';
         } else {
-            toolBox.classList.add('dash-card__current-tool--idle');
-            toolIcon.textContent = agent.status === 'idle' ? '💤' : '⏳';
-            toolName.textContent = agent.status === 'idle' ? i18n.t('statusIdle') : i18n.t('statusWaiting') + '...';
-            toolDetail.textContent = '';
+            refs.currentTool.classList.add('dash-card__current-tool--idle');
+            refs.toolIcon.textContent = status === 'idle' ? '💤' : '⏳';
+            refs.toolName.textContent = status === 'idle' ? i18n.t('statusIdle') : i18n.t('statusWaiting') + '...';
+            refs.toolDetail.textContent = '';
         }
 
         // Messages
-        const msgEl = cardEl.querySelector('.dash-card__message');
         if (agent.lastMessage) {
-            msgEl.textContent = `"${agent.lastMessage}"`;
-            msgEl.style.display = '';
+            refs.message.textContent = `"${agent.lastMessage}"`;
+            refs.message.style.display = '';
         } else {
-            msgEl.style.display = 'none';
+            refs.message.style.display = 'none';
         }
 
         // Render tool history
         const history = this.toolHistories.get(agent.id);
         if (history) {
-            this._renderToolHistory(cardEl, history);
+            this._renderToolHistory(cardEl, agent.id, history);
         }
     }
 
-    _renderToolHistory(cardEl, tools) {
-        const listEl = cardEl.querySelector('.dash-card__tool-list');
+    _renderToolHistory(cardEl, agentId, tools) {
+        const listEl = cardEl._elements.toolList;
+
+        const signature = JSON.stringify((tools || []).map((tool) => ({
+            tool: tool.tool || '',
+            detail: (tool.detail || '').slice(0, 60),
+            ts: tool.ts || 0,
+        })));
+
+        if (this.toolHistoryRenderSignatures.get(agentId) === signature) return;
+        this.toolHistoryRenderSignatures.set(agentId, signature);
+
         if (!tools || tools.length === 0) {
             listEl.innerHTML = `<div class="dash-card__loading" style="color:#666">${i18n.t('noToolUsage')}</div>`;
             return;
@@ -334,7 +378,7 @@ export class DashboardRenderer {
         this._stopDetailFetching();
         // Run once immediately, then every 3 seconds
         this._fetchAllDetails();
-        this._globalFetchTimer = setInterval(() => this._fetchAllDetails(), 3000);
+        this._globalFetchTimer = setInterval(() => this._fetchAllDetails(), SESSION_DETAIL_REFRESH_INTERVAL);
     }
 
     _stopDetailFetching() {
@@ -342,32 +386,32 @@ export class DashboardRenderer {
             clearInterval(this._globalFetchTimer);
             this._globalFetchTimer = null;
         }
+        this._isFetchingDetails = false;
     }
 
     async _fetchAllDetails() {
+        if (this._isFetchingDetails) return;
+        this._isFetchingDetails = true;
+
         const agents = Array.from(this.world.agents.values());
-        const promises = agents.map(agent => this._fetchDetail(agent));
-        await Promise.allSettled(promises);
+        try {
+            await Promise.allSettled(agents.map(agent => this._fetchDetail(agent)));
+        } finally {
+            this._isFetchingDetails = false;
+        }
     }
 
     async _fetchDetail(agent) {
-        try {
-            const params = new URLSearchParams({
-                sessionId: agent.id,
-                project: agent.projectPath || '',
-                provider: agent.provider || 'claude',
-            });
-            const resp = await fetch(`/api/session-detail?${params}`);
-            if (!resp.ok) return;
-            const data = await resp.json();
-            if (data.toolHistory) {
-                this.toolHistories.set(agent.id, data.toolHistory);
-                const cardEl = this.cards.get(agent.id);
-                if (cardEl) this._renderToolHistory(cardEl, data.toolHistory);
-            }
-        } catch {
-            // Ignore network errors.
-        }
+        const data = await sessionDetailsService.fetchSessionDetail(agent);
+        if (!data || !data.toolHistory) return;
+        this.toolHistories.set(agent.id, data.toolHistory);
+        const cardEl = this.cards.get(agent.id);
+        if (cardEl) this._renderToolHistory(cardEl, agent.id, data.toolHistory);
+    }
+
+    _normalizeStatus(status) {
+        const normalized = String(status || 'idle').toLowerCase();
+        return normalized === 'active' ? 'working' : normalized;
     }
 
     _getToolIcon(tool) {

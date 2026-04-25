@@ -12,6 +12,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var dashboardWebView: WKWebView?
     var pollTimer: Timer?
     var lastHTML: String = ""
+    var lastRenderSignature: String = ""
+    var isFetching = false
+    var fetchGeneration = 0
+    let serverBase = "http://localhost:4000"
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         setupStatusItem()
@@ -38,10 +42,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func fetchAndRender() {
-        guard let sessionsURL = URL(string: "http://localhost:4000/api/sessions"),
-              let usageURL = URL(string: "http://localhost:4000/api/usage") else {
+        if isFetching { return }
+
+        guard let sessionsURL = URL(string: "\(serverBase)/api/sessions"),
+              let usageURL = URL(string: "\(serverBase)/api/usage") else {
             renderOffline(); return
         }
+
+        isFetching = true
+        fetchGeneration += 1
+        let generation = fetchGeneration
 
         let group = DispatchGroup()
         var sessionsResult: [[String: Any]]?
@@ -66,6 +76,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         group.notify(queue: .main) { [weak self] in
             guard let self = self else { return }
+            guard generation == self.fetchGeneration else {
+                self.isFetching = false
+                return
+            }
+
+            self.isFetching = false
             guard let sessions = sessionsResult else {
                 self.renderOffline(); return
             }
@@ -74,30 +90,63 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func renderOffline() {
+        if lastRenderSignature == "offline" { return }
+        lastRenderSignature = "offline"
         updateBadge(working: 0)
         let html = Self.buildHTML(agents: [], working: 0, idle: 0, tokens: "0", cost: "$0.00", offline: true)
         if html != lastHTML { lastHTML = html; webView.loadHTMLString(html, baseURL: nil) }
     }
 
     func renderSessions(_ sessions: [[String: Any]], usage: [String: Any]? = nil) {
+        let sortedSessions = sessions.sorted { (left, right) -> Bool in
+            let leftStatus = Self.normalizeStatus(left["status"] as? String)
+            let rightStatus = Self.normalizeStatus(right["status"] as? String)
+            let order: [String: Int] = ["working": 0, "waiting": 1, "idle": 2]
+            return (order[leftStatus] ?? 9) < (order[rightStatus] ?? 9)
+        }
+
         var agents: [(name: String, model: String, status: String)] = []
         var working = 0, idle = 0, totalTokens = 0, totalCost: Double = 0
+        var signatureParts: [String] = []
 
-        for s in sessions {
-            let status = (s["status"] as? String) ?? "idle"
+        for s in sortedSessions {
+            let status = Self.normalizeStatus(s["status"] as? String)
             let name = (s["name"] as? String)
                 ?? (s["sessionId"] as? String)?.prefix(8).description
                 ?? "Unknown"
             let model = (s["model"] as? String ?? "?")
                 .replacingOccurrences(of: "claude-", with: "")
                 .components(separatedBy: "-").first ?? "?"
-            if status == "active" { working += 1 } else { idle += 1 }
-            if let tu = s["tokenUsage"] as? [String: Any] {
-                totalTokens += (tu["input"] as? Int ?? 0) + (tu["output"] as? Int ?? 0)
+            if status == "working" { working += 1 } else { idle += 1 }
+            let tokenSource = s["tokenUsage"] as? [String: Any]
+                ?? s["tokens"] as? [String: Any]
+                ?? s["usage"] as? [String: Any]
+            if let tu = tokenSource {
+                let usage = Self.normalizeTokenUsage(tu)
+                totalTokens += usage.input + usage.output + usage.cacheRead + usage.cacheCreate
             }
             totalCost += (s["estimatedCost"] as? Double) ?? 0
+            signatureParts.append("\(name)|\(status)|\(model)|\(s["sessionId"] as? String ?? "")|\(String(format: "%.2f", totalCost))")
             agents.append((name: name, model: model, status: status))
         }
+
+        let account = usage?["account"] as? [String: Any]
+        let activity = usage?["activity"] as? [String: Any]
+        let today = activity?["today"] as? [String: Any]
+        let quota = usage?["quota"] as? [String: Any]
+        let quotaSignature = [
+            usage?["quotaAvailable"] as? Bool == true ? "1" : "0",
+            account?["rateLimitTier"] as? String ?? "",
+            account?["subscriptionType"] as? String ?? "",
+            String(today?["messages"] as? Int ?? 0),
+            String(today?["sessions"] as? Int ?? 0),
+            String(quota?["fiveHour"] as? Double ?? 0),
+            String(quota?["sevenDay"] as? Double ?? 0),
+        ].joined(separator: "|")
+
+        let renderSignature = "\(sortedSessions.count)|\(working)|\(idle)|\(totalTokens)|\(String(format: "%.4f", totalCost))|\(quotaSignature)|\(signatureParts.joined(separator: "||"))"
+        if renderSignature == lastRenderSignature { return }
+        lastRenderSignature = renderSignature
 
         updateBadge(working: working)
         let tokStr = totalTokens >= 1_000_000 ? String(format: "%.1fM", Double(totalTokens)/1_000_000)
@@ -182,10 +231,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             """
         } else {
             for a in sorted {
-                let isActive = a.status == "active"
-                let dotColor = isActive ? "#4ade80" : "#60a5fa"
-                let statusText = isActive ? "Working..." : "Idle"
-                let opacity = isActive ? "1" : "0.6"
+                let isWorking = a.status == "working"
+                let isWaiting = a.status == "waiting"
+                let isIdle = a.status == "idle"
+                let dotColor = isWorking ? "#4ade80" : isWaiting ? "#f59e0b" : "#60a5fa"
+                let statusText = isWorking ? "Working..." : isWaiting ? "Waiting..." : isIdle ? "Idle" : String(a.status).capitalized
+                let opacity = isWaiting || isWorking ? "1" : "0.6"
                 rows += """
                 <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;opacity:\(opacity)">
                   <span style="color:\(dotColor);font-size:8px">●</span>
@@ -301,6 +352,88 @@ class AppDelegate: NSObject, NSApplicationDelegate {
          .replacingOccurrences(of: ">", with: "&gt;")
     }
 
+    static func normalizeStatus(_ status: String?) -> String {
+        let normalized = String(status ?? "idle").lowercased()
+        return normalized == "active" ? "working" : normalized
+    }
+
+    static func normalizeTokenUsage(_ usage: [String: Any]) -> (input: Int, output: Int, cacheRead: Int, cacheCreate: Int) {
+        let input = Self.readFirstInt(
+            usage,
+            keys: [
+                "input",
+                "totalInput",
+                "total_input",
+                "input_tokens",
+                "inputTokens",
+                "prompt_tokens",
+                "promptTokens",
+                "total_input_tokens",
+            ]
+        ) ?? 0
+
+        let output = Self.readFirstInt(
+            usage,
+            keys: [
+                "output",
+                "totalOutput",
+                "total_output",
+                "output_tokens",
+                "outputTokens",
+                "completion_tokens",
+                "completionTokens",
+                "total_output_tokens",
+            ]
+        ) ?? 0
+
+        let cacheRead = Self.readFirstInt(
+            usage,
+            keys: [
+                "cacheRead",
+                "cache_read",
+                "cached_input_tokens",
+                "cache_read_input_tokens",
+                "cacheReadInputTokens",
+            ]
+        ) ?? 0
+
+        let cacheCreate = Self.readFirstInt(
+            usage,
+            keys: [
+                "cacheCreate",
+                "cache_create_tokens",
+                "cacheCreateTokens",
+                "cacheWrite",
+                "cache_write",
+                "cache_creation_input_tokens",
+            ]
+        ) ?? 0
+
+        return (
+            input: max(0, input),
+            output: max(0, output),
+            cacheRead: max(0, cacheRead),
+            cacheCreate: max(0, cacheCreate),
+        )
+    }
+
+    static func readFirstInt(_ usage: [String: Any], keys: [String]) -> Int? {
+        for key in keys {
+            if let value = usage[key], let intValue = Self.toInt(value) {
+                return intValue
+            }
+        }
+        return nil
+    }
+
+    static func toInt(_ value: Any) -> Int? {
+        if let num = value as? NSNumber { return num.intValue }
+        if let intValue = value as? Int { return intValue }
+        if let doubleValue = value as? Double { return Int(doubleValue) }
+        if let stringValue = value as? String, let parsed = Double(stringValue) { return Int(parsed) }
+        return nil
+    }
+
     // MARK: - Server Management
 
     func startServerIfNeeded() {
@@ -405,7 +538,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         window.isReleasedWhenClosed = false
         let wv = WKWebView(frame: window.contentView!.bounds)
         wv.autoresizingMask = [.width, .height]
-        wv.load(URLRequest(url: URL(string: "http://localhost:4000")!))
+        wv.load(URLRequest(url: URL(string: serverBase)!))
         window.contentView?.addSubview(wv)
         dashboardWebView = wv; dashboardWindow = window
         window.makeKeyAndOrderFront(nil)
