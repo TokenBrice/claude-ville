@@ -6,7 +6,7 @@ This file is for agents working inside `claudeville/`. Keep it current when arch
 
 - Work from the repo root: `/home/ahirice/Documents/git/claude-ville`.
 - This checkout may be edited by multiple agents. Run `git status --short` before changes and do not revert or absorb unrelated edits.
-- For documentation-only tasks scoped to `README.md` and `claudeville/CLAUDE.md`, edit only those files.
+- For documentation-only tasks scoped to `README.md`, root `AGENTS.md`/`CLAUDE.md`, or `claudeville/CLAUDE.md`, edit only those files.
 - Prefer `rg` and `rg --files` for discovery.
 - Workflow, git hygiene, and subagent orchestration are controlled by the root `AGENTS.md` and [docs/swarm-orchestration-procedure.md](../docs/swarm-orchestration-procedure.md); this file provides implementation context and validation details for `claudeville/`.
 
@@ -32,7 +32,7 @@ npm run widget        # open widget/ClaudeVilleWidget.app
 - WebSocket upgrades are handled directly with an RFC 6455 frame implementation.
 - CORS headers are permissive for local tooling.
 - Watch paths come from active provider adapters.
-- Updates are debounced on filesystem events and also polled every 2 seconds while WebSocket clients are connected.
+- Updates are debounced on filesystem events. A 2-second polling interval also runs continuously; the broadcast no-ops when no WebSocket clients are connected (`server.js:499-502`, `server.js:450`).
 
 Current API surface:
 
@@ -74,16 +74,17 @@ Treat all provider session files as read-only inputs.
 
 `src/presentation/App.js` owns startup:
 
-1. Creates the domain `World`.
-2. Adds buildings from `src/config/buildings.js`.
-3. Creates `ClaudeDataSource` and `WebSocketClient`.
-4. Creates shared UI: `Toast`, `Modal`, `TopBar`, `Sidebar`, and `ActivityPanel`.
-5. Loads initial sessions through `AgentManager`.
+1. Creates the domain `World` and adds buildings from `src/config/buildings.js`.
+2. Creates `ClaudeDataSource` and `WebSocketClient`.
+3. Creates shared UI: `Toast`, `Modal`, `TopBar`, `Sidebar`.
+4. Creates application services: `AgentManager`, `ModeManager`, `NotificationService`.
+5. Loads initial sessions through `AgentManager.loadInitialData()` and seeds usage data.
 6. Starts `SessionWatcher`.
 7. Binds canvas resizing with `ResizeObserver`.
-8. Loads `character-mode/IsometricRenderer.js`.
-9. Loads `dashboard-mode/DashboardRenderer.js`.
-10. Binds settings and i18n.
+8. Loads `character-mode/IsometricRenderer.js`, then `dashboard-mode/DashboardRenderer.js`.
+9. Constructs `ActivityPanel` and binds agent-follow event handlers.
+10. Binds the settings button.
+11. Applies initial i18n.
 
 The app still exposes a language setting, but the current visible strings are English. Documentation should also stay English.
 
@@ -124,13 +125,19 @@ Key files:
 - `ParticleSystem.js`: particles and ambient effects.
 - `Minimap.js`: minimap rendering and navigation.
 
-Current building concepts from `src/config/buildings.js`:
+Buildings from `src/config/buildings.js` (eleven total):
 
 - Command Center: team status.
 - Code Forge: code work.
 - Token Mine: token usage.
 - Task Board: task status.
 - Chat Hall: messages.
+- Research Observatory: external research.
+- Lore Archive: reading and search.
+- Portal Gate: browser and remote tools.
+- Prompt Alchemy: notebook and prompt work.
+- Idle Sanctuary: resting agents.
+- Sky Watchtower: monitoring and status.
 
 Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears selection. Agents using `SendMessage` can move toward a matched recipient and show chat state.
 
@@ -168,46 +175,40 @@ npm run widget
 
 ## Validation
 
-Basic syntax smoke:
+In-app specifics (run after rendering/layout/event-bus changes):
+
+- Open `http://localhost:4000`, switch between World and Dashboard modes.
+- Select and deselect an agent to confirm `agent:selected`/`agent:deselected` open and close the right activity panel and toggle camera follow.
+- Confirm the world canvas resizes with `.content` (not via `position: fixed`).
+
+Documentation validation (project-wide, English-only):
 
 ```bash
-node --check claudeville/server.js
-find claudeville/adapters claudeville/services -name '*.js' -print0 | xargs -0 -n1 node --check
-```
-
-Runtime smoke:
-
-```bash
-npm run dev
-curl http://localhost:4000/api/providers
-curl http://localhost:4000/api/sessions
-```
-
-Visual smoke for rendering or layout work:
-
-- Open `http://localhost:4000`.
-- Test both World and Dashboard modes.
-- Select and deselect an agent if sessions exist.
-- Open and close the right activity panel.
-- Resize the browser and confirm the world canvas still fills `.content`.
-- Check the browser console for errors related to the changed area.
-
-Documentation validation:
-
-```bash
-rg -n -P "\\p{Hangul}" README.md claudeville/CLAUDE.md
+rg -n -P "\\p{Hangul}" $(rg --files -g '*.md' --glob '!node_modules')
 ```
 
 That command should return no matches.
 
-## Event Flow
+See `AGENTS.md` § Validation Checklist for the canonical syntax/runtime/widget smoke list.
 
-- `agent:selected`: open the activity panel and start camera follow.
-- `agent:deselected`: close the activity panel and clear camera follow.
-- `agent:added`: create sprites/cards.
-- `agent:updated`: refresh sprite/card/panel state.
-- `agent:removed`: remove sprites/cards.
-- `mode:changed`: toggle World and Dashboard behavior.
+## Event Bus
+
+The singleton bus lives at `src/domain/events/DomainEvent.js` and exports `eventBus`. It is a plain in-memory observer with `on/off/emit`; there is no replay or persistence. Modules import the same instance, so subscriptions are global.
+
+| Event | Payload | Emitter (file:line) | Primary subscribers |
+| --- | --- | --- | --- |
+| `agent:added` | `Agent` | `domain/entities/World.js:12` | `IsometricRenderer.js:355`, `dashboard-mode/DashboardRenderer.js:44`, `shared/Sidebar.js:22`, `shared/TopBar.js:25`, `application/NotificationService.js:40` |
+| `agent:updated` | `Agent` | `domain/entities/World.js:27` | `IsometricRenderer.js:357`, `DashboardRenderer.js:45`, `Sidebar.js:23`, `TopBar.js:26`, `shared/ActivityPanel.js:30` |
+| `agent:removed` | `Agent` | `domain/entities/World.js:19` | `IsometricRenderer.js:356`, `DashboardRenderer.js:46`, `Sidebar.js:24`, `TopBar.js:27`, `ActivityPanel.js:38`, `NotificationService.js:41` |
+| `agent:selected` | `Agent` | `presentation/App.js:119` (canvas hit), `Sidebar.js:69`, `DashboardRenderer.js:250` | `App.js:142` (renderer follow), `ActivityPanel.js:26` (panel open) |
+| `agent:deselected` | none | `ActivityPanel.js:57` (panel close) | `App.js:149` (clear renderer follow) |
+| `mode:changed` | `'character' \| 'dashboard'` | `application/ModeManager.js:31` | `DashboardRenderer.js:47`, `NotificationService.js:44` |
+| `usage:updated` | usage object from `/api/usage` | `App.js:71` (initial fetch), `SessionWatcher.js:71`, `WebSocketClient.js:77,81` | `shared/TopBar.js:30` |
+| `ws:connected` | none | `infrastructure/WebSocketClient.js:27` | `SessionWatcher.js:26`, `NotificationService.js:42` |
+| `ws:disconnected` | none | `WebSocketClient.js:43` | `SessionWatcher.js:25`, `NotificationService.js:43` |
+| `ws:init` | initial server payload (`sessions`, `teams`, `usage`) | `WebSocketClient.js:76` | `SessionWatcher.js:23` |
+| `ws:update` | server update payload | `WebSocketClient.js:80` | `SessionWatcher.js:24` |
+| `ws:message` | unknown WS message | `WebSocketClient.js:86` | (none currently — kept for future hooks) |
 
 ## Development Constraints
 

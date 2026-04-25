@@ -61,16 +61,20 @@ claude-ville/
 
 ## Runtime Architecture
 
-`claudeville/server.js` serves static files from `claudeville/`, serves `/widget.html` and `/widget.css` from `widget/Resources/`, exposes JSON API endpoints, upgrades WebSocket clients at `ws://localhost:4000`, watches provider data paths, and broadcasts updates while clients are connected.
+`claudeville/server.js` serves static files from `claudeville/`, serves `/widget.html` and `/widget.css` from `widget/Resources/`, exposes JSON API endpoints, upgrades WebSocket clients at `ws://localhost:4000`, watches provider data paths, and broadcasts updates while clients are connected. Updates are debounced on filesystem events; a 2-second interval also runs unconditionally, with broadcasts becoming no-ops when no WebSocket clients are connected.
 
 The frontend boot path is `claudeville/src/presentation/App.js`:
 
-1. Creates a `World` and populates configured buildings.
-2. Creates `ClaudeDataSource` and `WebSocketClient`.
-3. Creates shared UI components: top bar, sidebar, toast, modal, and activity panel.
-4. Loads sessions through `AgentManager`.
-5. Starts `SessionWatcher` for WebSocket and REST refreshes.
-6. Loads World mode and Dashboard mode renderers.
+1. Domain: create `World` and add `BUILDING_DEFS` buildings.
+2. Infrastructure: `ClaudeDataSource` and `WebSocketClient`.
+3. Shared UI: `Toast`, `Modal`, `TopBar`, `Sidebar`.
+4. Application services: `AgentManager`, `ModeManager`, `NotificationService`.
+5. Load initial sessions and usage.
+6. Start `SessionWatcher`.
+7. Bind canvas `ResizeObserver`.
+8. Dynamically load `IsometricRenderer` (World mode), then `DashboardRenderer`.
+9. Create the right-side `ActivityPanel` and bind agent-follow.
+10. Settings binding and i18n.
 
 The layout is a full-height flex shell: fixed-height top bar, left sidebar, central content area, and an optional 320px right activity panel. World mode fills the content area with a canvas. Dashboard mode scrolls vertically.
 
@@ -115,6 +119,14 @@ World mode is the current RPG visual direction. It renders an isometric pixel vi
 - Token Mine: token usage.
 - Task Board: task status.
 - Chat Hall: messages.
+- Research Observatory: external research.
+- Lore Archive: reading and search.
+- Portal Gate: browser and remote tools.
+- Prompt Alchemy: notebook and prompt work.
+- Idle Sanctuary: resting agents.
+- Sky Watchtower: monitoring and status.
+
+See `claudeville/src/config/buildings.js` for the source of truth.
 
 Agents can be selected on the canvas. Selection opens the activity panel and makes the camera follow the selected sprite until the selection clears or the user drags the camera. Agents using `SendMessage` can move toward a matched recipient and show chat animation state.
 
@@ -124,7 +136,7 @@ Dashboard mode renders DOM cards grouped by project. Cards show provider badge, 
 
 ## macOS Menu Bar Widget
 
-The optional widget is a small Swift `NSStatusItem` app with a `WKWebView` popover. It polls:
+The optional widget is a small Swift `NSStatusItem` app with a `WKWebView` popover. It polls these endpoints every 3 seconds:
 
 - `http://localhost:4000/api/sessions`
 - `http://localhost:4000/api/usage`
@@ -166,6 +178,18 @@ For widget changes, run `npm run widget:build`, then `npm run widget`, and confi
 - Keep small changes within the current vanilla JavaScript and CSS architecture. There is no framework, bundler, transpiler, package install, or test runner today.
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.
 - See `docs/visual-experience-crafting.md` for the transferable design method behind the RPG world model. It is intended as a handoff note for applying the same visual-representation logic to unrelated datasets.
+- `demo-server.js` at the repo root is unused/abandoned and not wired into `package.json`; do not run it.
+
+## Docs Map
+
+| File | Audience | Purpose |
+| --- | --- | --- |
+| `README.md` | Everyone | Project overview, quick start, runtime architecture. |
+| `AGENTS.md` | Generic agent tools (Codex, etc.) | Project shape, conventions, validation, git hygiene. |
+| `CLAUDE.md` | Claude Code | Mirror of `AGENTS.md`; kept byte-identical apart from the title. Claude Code auto-loads it; AGENTS.md is the canonical source — when changing one, change both. |
+| `claudeville/CLAUDE.md` | Agents working inside `claudeville/` | Implementation context: server, adapters, layout, event flow. |
+| `docs/swarm-orchestration-procedure.md` | Multi-agent workflows | SOP for splitting work across subagents in a shared checkout. |
+| `docs/visual-experience-crafting.md` | Visual/UX work | Transferable design method behind the RPG world model. |
 
 ## License
 

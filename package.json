@@ -2,6 +2,9 @@
   "name": "claude-ville",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "dev": "node claudeville/server.js",
     "widget:build": "cd widget && bash build.sh",

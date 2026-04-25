@@ -1,4 +1,6 @@
-# Agent Notes
+# Claude Code Notes
+
+This file mirrors `AGENTS.md` for Claude Code. Keep both in sync when project shape, runtime behavior, or validation paths change.
 
 ## Scope And Purpose
 
