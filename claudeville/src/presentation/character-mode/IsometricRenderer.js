@@ -126,6 +126,13 @@ export class IsometricRenderer {
         // bridges don't get tagged with reeds/flowers/stones/mushrooms.
         this.featureTiles = new Map();
         this._generateTerrainFeatures();
+
+        // Flat vegetation (bushes, grass tufts) — populated after terrain features
+        // so noise samples don't compete and after bridges so they're skipped.
+        this.scenery.generateFlatVegetation(this.pathTiles, this.bridgeTiles);
+        this.bushTiles = this.scenery.getBushTiles();
+        this.grassTuftTiles = this.scenery.getGrassTuftTiles();
+
         this.commandCenterGroundProps = [];
         this._generateCommandCenterAmbience();
         this.ambientEmitters = [];
@@ -795,6 +802,12 @@ export class IsometricRenderer {
         } else if (!this.waterTiles.has(key)) {
             this._drawGrassDetail(ctx, screenX, screenY, seed, tileX, tileY);
             this._drawTerrainFeature(ctx, screenX, screenY, seed, key);
+            if (this.bushTiles?.has(key)) {
+                this._drawBush(ctx, screenX, screenY, seed, this.bushTiles.get(key));
+            }
+            if (this.grassTuftTiles?.has(key)) {
+                this._drawGrassTuft(ctx, screenX, screenY, seed, this.grassTuftTiles.get(key));
+            }
             if (this.shoreTiles.has(key)) {
                 this._drawShoreDetail(ctx, screenX, screenY, seed, tileX, tileY);
             }
@@ -1496,6 +1509,40 @@ export class IsometricRenderer {
             ctx.lineTo(screenX + ox + 8, screenY + oy - 5);
             ctx.stroke();
         }
+    }
+
+    _drawBush(ctx, screenX, screenY, seed, info) {
+        const palette = THEME.bushFoliage;
+        const color = palette[(info?.variant ?? 0) % palette.length];
+        const ox = (seed - 0.5) * 6;
+        const oy = (seed - 0.5) * 2 - 1;
+
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.ellipse(screenX + ox - 3, screenY + oy + 1, 4, 3, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX + ox + 3, screenY + oy + 1, 4, 3, 0, 0, Math.PI * 2);
+        ctx.ellipse(screenX + ox, screenY + oy - 1, 5, 3.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(168, 199, 134, 0.35)';
+        ctx.beginPath();
+        ctx.ellipse(screenX + ox - 1, screenY + oy - 2, 3, 1.5, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    _drawGrassTuft(ctx, screenX, screenY, seed, info) {
+        ctx.strokeStyle = 'rgba(96, 138, 64, 0.7)';
+        ctx.lineWidth = 1;
+        const ox = (seed - 0.5) * 8;
+        const oy = (seed - 0.5) * 4;
+        ctx.beginPath();
+        ctx.moveTo(screenX + ox, screenY + oy + 3);
+        ctx.lineTo(screenX + ox - 2, screenY + oy - 3);
+        ctx.moveTo(screenX + ox + 1, screenY + oy + 3);
+        ctx.lineTo(screenX + ox + 1, screenY + oy - 4);
+        ctx.moveTo(screenX + ox + 2, screenY + oy + 3);
+        ctx.lineTo(screenX + ox + 4, screenY + oy - 2);
+        ctx.stroke();
     }
 
     _drawWaterDetail(ctx, screenX, screenY, seed, tileX, tileY) {
