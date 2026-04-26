@@ -3,6 +3,8 @@ style:
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
+# Character sheets are 8 direction columns by 10 animation rows:
+# 6 walk rows followed by 4 breathing-idle rows, with 92px square cells.
 characters:
   - id: agent.claude.opus
     tool: create_character
@@ -51,30 +53,30 @@ characters:
 
   - id: agent.claude.base
     tool: create_character
-    prompt: "epic high-fantasy mage scholar, warm amber robes with gold trim, glowing rune sigil on chest, hooded silhouette, front 3/4 view"
+    prompt: "epic high-fantasy mage scholar, warm amber robes with gold trim, glowing rune sigil on chest, hooded silhouette, readable RPG silhouette, 8-direction pixel art"
     n_directions: 8
-    size: 64
+    size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
-    anchor: [32, 56]
+    anchor: [46, 80]
 
   - id: agent.codex.base
     tool: create_character
-    prompt: "epic arcane engineer, deep teal coat with circuit-glow trim, rogue mask, tool-belt, front 3/4 view"
+    prompt: "epic arcane engineer, deep teal coat with circuit-glow trim, rogue mask, tool-belt, readable RPG silhouette, 8-direction pixel art"
     n_directions: 8
-    size: 64
+    size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
-    anchor: [32, 56]
+    anchor: [46, 80]
 
   - id: agent.gemini.base
     tool: create_character
-    prompt: "epic celestial oracle, deep violet vestments with starlight trim, constellation veil, front 3/4 view"
+    prompt: "epic celestial oracle, deep violet vestments with starlight trim, constellation veil, readable RPG silhouette, 8-direction pixel art"
     n_directions: 8
-    size: 64
+    size: 92
     animations: [walk, breathing-idle]
     palette_layer: gemini
-    anchor: [32, 56]
+    anchor: [46, 80]
 
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors

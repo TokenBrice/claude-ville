@@ -10,6 +10,13 @@ const CELL = 92;
 const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
 const WALK_FRAMES = 6;
 const IDLE_FRAMES = 4;
+const args = new Set(process.argv.slice(2));
+const onlyCharacters = args.has('--characters-only');
+const onlyOverlays = args.has('--overlays-only');
+const idsArg = process.argv.slice(2).find((arg) => arg.startsWith('--ids='));
+const idFilter = idsArg
+    ? new Set(idsArg.slice('--ids='.length).split(',').map((id) => id.trim()).filter(Boolean))
+    : null;
 
 const SPECS = [
     {
@@ -72,6 +79,42 @@ const SPECS = [
         skin: '#c98f67',
         hair: '#1f2a30',
     },
+    {
+        id: 'agent.claude.base',
+        family: 'claude',
+        model: 'base',
+        robe: '#8f4f21',
+        robeDark: '#5b2f18',
+        trim: '#f2d36b',
+        accent: '#ffd98a',
+        metal: '#e9b85f',
+        skin: '#d69b72',
+        hair: '#3a2418',
+    },
+    {
+        id: 'agent.codex.base',
+        family: 'codex',
+        model: 'base',
+        robe: '#116466',
+        robeDark: '#0b3840',
+        trim: '#7be3d7',
+        accent: '#55c7f0',
+        metal: '#b58b4f',
+        skin: '#c98f67',
+        hair: '#1f2a30',
+    },
+    {
+        id: 'agent.gemini.base',
+        family: 'gemini',
+        model: 'base',
+        robe: '#42316d',
+        robeDark: '#251b45',
+        trim: '#7fc7ff',
+        accent: '#d7b8ff',
+        metal: '#f2d36b',
+        skin: '#c99172',
+        hair: '#2b2440',
+    },
 ];
 
 const EFFORTS = [
@@ -81,21 +124,27 @@ const EFFORTS = [
     { id: 'overlay.accessory.effortXhigh', kind: 'xhigh', color: '#fff1b8', glow: '#c8a3ff' },
 ];
 
-for (const spec of SPECS) {
-    const png = new PNG({ width: CELL * DIRECTIONS.length, height: CELL * (WALK_FRAMES + IDLE_FRAMES) });
-    for (let row = 0; row < WALK_FRAMES + IDLE_FRAMES; row++) {
-        for (let col = 0; col < DIRECTIONS.length; col++) {
-            const frame = row < WALK_FRAMES ? row : row - WALK_FRAMES;
-            drawCharacter(png, col * CELL, row * CELL, spec, DIRECTIONS[col], row < WALK_FRAMES, frame);
+if (!onlyOverlays) {
+    for (const spec of SPECS) {
+        if (idFilter && !idFilter.has(spec.id)) continue;
+        const png = new PNG({ width: CELL * DIRECTIONS.length, height: CELL * (WALK_FRAMES + IDLE_FRAMES) });
+        for (let row = 0; row < WALK_FRAMES + IDLE_FRAMES; row++) {
+            for (let col = 0; col < DIRECTIONS.length; col++) {
+                const frame = row < WALK_FRAMES ? row : row - WALK_FRAMES;
+                drawCharacter(png, col * CELL, row * CELL, spec, DIRECTIONS[col], row < WALK_FRAMES, frame);
+            }
         }
+        writePng(join(spritesRoot, 'characters', spec.id, 'sheet.png'), png);
     }
-    writePng(join(spritesRoot, 'characters', spec.id, 'sheet.png'), png);
 }
 
-for (const effort of EFFORTS) {
-    const png = new PNG({ width: 32, height: 32 });
-    drawEffortOverlay(png, effort);
-    writePng(join(spritesRoot, 'overlays', `${effort.id}.png`), png);
+if (!onlyCharacters) {
+    for (const effort of EFFORTS) {
+        if (idFilter && !idFilter.has(effort.id)) continue;
+        const png = new PNG({ width: 32, height: 32 });
+        drawEffortOverlay(png, effort);
+        writePng(join(spritesRoot, 'overlays', `${effort.id}.png`), png);
+    }
 }
 
 function drawCharacter(png, x0, y0, spec, direction, walking, frame) {
@@ -124,6 +173,7 @@ function drawCharacter(png, x0, y0, spec, direction, walking, frame) {
     ], spec.robeDark, 235);
 
     if (spec.family === 'claude') drawClaudeBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob);
+    else if (spec.family === 'gemini') drawGeminiBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob);
     else drawCodexBody(png, cx, y0, feetY, headY, spec, front, back, side, sideSign, step, bob);
 }
 
@@ -185,6 +235,25 @@ function drawCodexBody(png, cx, y0, feetY, headY, spec, front, back, side, sideS
         rect(png, cx + 3 + sideSign, headY, 3, 2, spec.accent);
         line(png, cx - 1 + sideSign, headY + 1, cx + 1 + sideSign, headY + 1, spec.metal, 1);
     }
+}
+
+function drawGeminiBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob) {
+    polygon(png, [[cx - 12, y0 + 42 + bob], [cx + 12, y0 + 42 + bob], [cx + 9, feetY - 8], [cx - 9, feetY - 8]], spec.robe);
+    polygon(png, [[cx - 15, y0 + 48 + bob], [cx, y0 + 39 + bob], [cx + 15, y0 + 48 + bob], [cx + 11, y0 + 58 + bob], [cx - 11, y0 + 58 + bob]], spec.robeDark, 220);
+    line(png, cx, y0 + 42 + bob, cx, feetY - 10, spec.trim, 2);
+    diamond(png, cx, y0 + 55 + bob, 5, spec.accent);
+    ellipse(png, cx, headY - 7, 14, 6, spec.accent, 90);
+    rect(png, cx - 15, y0 + 45 + bob + step / 2, 5, 16, spec.robeDark);
+    rect(png, cx + 10, y0 + 45 + bob - step / 2, 5, 16, spec.robeDark);
+    ellipse(png, cx, headY + 1, 10, 11, spec.skin);
+    polygon(png, [[cx - 11, headY - 4], [cx, headY - 15], [cx + 11, headY - 4], [cx + 8, headY + 8], [cx - 8, headY + 8]], spec.robeDark);
+    line(png, cx - 8, headY - 4, cx + 8, headY - 4, spec.trim, 2);
+    if (!back) {
+        rect(png, cx - 4 + sideSign, headY, 2, 2, '#1d1712');
+        rect(png, cx + 3 + sideSign, headY, 2, 2, '#1d1712');
+        px(png, cx, headY - 8, spec.accent, 220);
+    }
+    star(png, cx + 17 * (sideSign || 1), y0 + 35 + bob, 4, spec.accent);
 }
 
 function drawEffortOverlay(png, effort) {
@@ -280,6 +349,13 @@ function polygon(png, points, hex, alpha = 255) {
 
 function diamond(png, cx, cy, r, hex, alpha = 255) {
     polygon(png, [[cx, cy - r], [cx + r, cy], [cx, cy + r], [cx - r, cy]], hex, alpha);
+}
+
+function star(png, cx, cy, r, hex, alpha = 255) {
+    line(png, cx - r, cy, cx + r, cy, hex, 1, alpha);
+    line(png, cx, cy - r, cx, cy + r, hex, 1, alpha);
+    px(png, cx - 1, cy - 1, hex, alpha);
+    px(png, cx + 1, cy + 1, hex, alpha);
 }
 
 function gear(png, cx, cy, r, hex) {

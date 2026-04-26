@@ -169,28 +169,27 @@ async function generateBuilding(token, spec) {
 }
 
 async function generateCharacter(token, spec) {
-    const png = await pixflux(token, {
-        cacheKey: `characters/${spec.id}.raw.png`,
-        description: `${STYLE}, full body RPG character sprite, ${spec.description}, centered standing pose, readable at 92 pixels`,
-        width: CELL,
-        height: CELL,
+    const sheet = await pixflux(token, {
+        cacheKey: `characters/${spec.id}.sheet.raw.png`,
+        description: [
+            STYLE,
+            'complete transparent character animation sprite sheet',
+            `${spec.description}`,
+            `exact ${DIRECTIONS.length} columns for directions ${DIRECTIONS.join(', ')}`,
+            `${WALK_ROWS + IDLE_ROWS} rows total`,
+            `first ${WALK_ROWS} rows are a walk cycle with alternating legs, arms, robe hem, and planted foot contact`,
+            `last ${IDLE_ROWS} rows are breathing idle poses`,
+            `${CELL}px square cells, no grid lines, no labels, no text`,
+        ].join(', '),
+        width: CELL * DIRECTIONS.length,
+        height: CELL * (WALK_ROWS + IDLE_ROWS),
         transparent: true,
         seed: hashSeed(spec.id),
     });
-    const sheet = new PNG({ width: CELL * DIRECTIONS.length, height: CELL * (WALK_ROWS + IDLE_ROWS) });
-    const base = resizeNearest(png, CELL, CELL);
-    for (let row = 0; row < WALK_ROWS + IDLE_ROWS; row++) {
-        const isWalk = row < WALK_ROWS;
-        const frame = isWalk ? row : row - WALK_ROWS;
-        for (let col = 0; col < DIRECTIONS.length; col++) {
-            const direction = DIRECTIONS[col];
-            const flipped = ['w', 'nw', 'sw'].includes(direction);
-            const bob = isWalk ? [0, -1, -2, -1, 0, 1][frame % 6] : [0, -1, 0, 1][frame % 4];
-            const shade = ['n', 'ne', 'nw'].includes(direction) ? 0.84 : ['e', 'w'].includes(direction) ? 0.94 : 1;
-            blitTransformed(sheet, base, col * CELL, row * CELL + bob, { flipped, shade });
-        }
-    }
-    writePng(join(spritesRoot, 'characters', spec.id, 'sheet.png'), sheet);
+    writePng(
+        join(spritesRoot, 'characters', spec.id, 'sheet.png'),
+        resizeNearest(sheet, CELL * DIRECTIONS.length, CELL * (WALK_ROWS + IDLE_ROWS))
+    );
 }
 
 function keyOutEdgeBackground(src) {
@@ -354,26 +353,6 @@ function clonePng(src) {
     const out = new PNG({ width: src.width, height: src.height });
     src.data.copy(out.data);
     return out;
-}
-
-function blitTransformed(dst, src, dx, dy, { flipped = false, shade = 1 } = {}) {
-    for (let y = 0; y < src.height; y++) {
-        for (let x = 0; x < src.width; x++) {
-            const sx = flipped ? src.width - 1 - x : x;
-            const si = (src.width * y + sx) << 2;
-            const a = src.data[si + 3];
-            if (a === 0) continue;
-            const tx = dx + x;
-            const ty = dy + y;
-            if (tx < 0 || ty < 0 || tx >= dst.width || ty >= dst.height) continue;
-            const di = (dst.width * ty + tx) << 2;
-            const inv = 255 - a;
-            dst.data[di] = Math.round((src.data[si] * shade * a + dst.data[di] * inv) / 255);
-            dst.data[di + 1] = Math.round((src.data[si + 1] * shade * a + dst.data[di + 1] * inv) / 255);
-            dst.data[di + 2] = Math.round((src.data[si + 2] * shade * a + dst.data[di + 2] * inv) / 255);
-            dst.data[di + 3] = Math.min(255, a + Math.round(dst.data[di + 3] * inv / 255));
-        }
-    }
 }
 
 function copyPixel(src, dst, sx, sy, dx, dy) {
