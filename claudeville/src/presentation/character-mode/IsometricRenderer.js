@@ -21,11 +21,11 @@ const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const DISTRICT_WASHES = [
-    { x: 20, y: 20, radiusX: 12, radiusY: 8, color: '#5f3e21', alpha: 0.11 },
-    { x: 34, y: 19, radiusX: 9, radiusY: 7, color: '#1e5b61', alpha: 0.13 },
-    { x: 14, y: 23, radiusX: 7, radiusY: 5, color: '#62471f', alpha: 0.10 },
-    { x: 14, y: 13, radiusX: 8, radiusY: 6, color: '#1f4e2a', alpha: 0.12 },
-    { x: 30, y: 28, radiusX: 10, radiusY: 8, color: '#243d29', alpha: 0.12 },
+    { x: 20, y: 23, radiusX: 12, radiusY: 8, color: '#5f3e21', alpha: 0.11 },
+    { x: 35, y: 20, radiusX: 10, radiusY: 8, color: '#1e5b61', alpha: 0.14 },
+    { x: 15, y: 26, radiusX: 7, radiusY: 5, color: '#62471f', alpha: 0.10 },
+    { x: 15, y: 16, radiusX: 8, radiusY: 6, color: '#1f4e2a', alpha: 0.12 },
+    { x: 29, y: 31, radiusX: 10, radiusY: 8, color: '#243d29', alpha: 0.12 },
 ];
 const ANCIENT_RUINS = [
     { tileX: 37, tileY: 3, scale: 1.05 },
@@ -53,30 +53,30 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 40.2, tileY: 19.2, type: 'harborCrane' },
 
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
-    { tileX: 30.0, tileY: 24.0, type: 'oreCart' },
-    { tileX: 33.4, tileY: 25.0, type: 'lantern' },
-    { tileX: 18.6, tileY: 24.8, type: 'oreCart' },
-    { tileX: 16.0, tileY: 27.8, type: 'lantern' },
-    { tileX: 20.0, tileY: 26.5, type: 'runestone' },
+    { tileX: 29.0, tileY: 27.0, type: 'oreCart' },
+    { tileX: 32.4, tileY: 28.0, type: 'lantern' },
+    { tileX: 20.6, tileY: 27.8, type: 'oreCart' },
+    { tileX: 17.0, tileY: 30.8, type: 'lantern' },
+    { tileX: 21.0, tileY: 29.5, type: 'runestone' },
 
     // Civic core: utility props around the square, not scattered through the woods.
-    { tileX: 20.4, tileY: 19.6, type: 'well' },
-    { tileX: 17.4, tileY: 19.6, type: 'marketStall' },
-    { tileX: 25.4, tileY: 21.2, type: 'signpost' },
-    { tileX: 23.0, tileY: 19.6, type: 'scrollCrates' },
-    { tileX: 24.0, tileY: 21.6, type: 'noticePillar' },
-    { tileX: 26.6, tileY: 23.8, type: 'scrollCrates' },
-    { tileX: 22.0, tileY: 23.5, type: 'signpost' },
+    { tileX: 20.4, tileY: 22.6, type: 'well' },
+    { tileX: 17.4, tileY: 22.6, type: 'marketStall' },
+    { tileX: 25.4, tileY: 24.2, type: 'signpost' },
+    { tileX: 23.0, tileY: 22.6, type: 'scrollCrates' },
+    { tileX: 24.0, tileY: 24.6, type: 'noticePillar' },
+    { tileX: 26.6, tileY: 26.8, type: 'scrollCrates' },
+    { tileX: 22.0, tileY: 26.5, type: 'signpost' },
 
     // Research edges: fewer, quieter accents near knowledge landmarks.
-    { tileX: 15.5, tileY: 14.4, type: 'lantern' },
-    { tileX: 26.4, tileY: 14.0, type: 'noticePillar' },
-    { tileX: 29.6, tileY: 16.8, type: 'scrollCrates' },
-    { tileX: 31.7, tileY: 14.9, type: 'runestone' },
-    { tileX: 28.3, tileY: 12.6, type: 'lantern' },
-    { tileX: 11.2, tileY: 21.0, type: 'runestone' },
-    { tileX: 15.7, tileY: 20.2, type: 'runestone' },
-    { tileX: 15.8, tileY: 23.6, type: 'lantern' },
+    { tileX: 15.5, tileY: 17.4, type: 'lantern' },
+    { tileX: 26.4, tileY: 17.0, type: 'noticePillar' },
+    { tileX: 29.6, tileY: 19.8, type: 'scrollCrates' },
+    { tileX: 31.7, tileY: 17.9, type: 'runestone' },
+    { tileX: 28.3, tileY: 15.6, type: 'lantern' },
+    { tileX: 11.2, tileY: 24.0, type: 'runestone' },
+    { tileX: 15.7, tileY: 23.2, type: 'runestone' },
+    { tileX: 15.8, tileY: 26.6, type: 'lantern' },
 ];
 const OPEN_SEA_GULLS = [
     { tileX: 37.2, tileY: 5.4, altitude: 36, scale: 1.15, phase: 0.2 },
@@ -514,17 +514,17 @@ export class IsometricRenderer {
 
     _generateAmbientEmitters() {
         const emitters = [
-            { tileX: 24.5, tileY: 10.5, particleType: 'sparkle', chance: 0.018 },
-            { tileX: 24.5, tileY: 9.5, particleType: 'sparkle', chance: 0.012 },
-            { tileX: 33, tileY: 25, particleType: 'sparkle', chance: 0.016 },
-            { tileX: 11, tileY: 8.5, particleType: 'sparkle', chance: 0.01 },
-            { tileX: 28, tileY: 16.5, particleType: 'smoke', chance: 0.012 },
-            { tileX: 18.5, tileY: 24.5, particleType: 'mineDust', chance: 0.016 },
-            { tileX: 20.5, tileY: 24.4, particleType: 'firefly', chance: 0.016 },
-            { tileX: 31.8, tileY: 24.6, particleType: 'forgeEmber', chance: 0.02 },
-            { tileX: 14.0, tileY: 22.8, particleType: 'portalRune', chance: 0.022 },
-            { tileX: 24.6, tileY: 21.6, particleType: 'questPing', chance: 0.014 },
-            { tileX: 29.3, tileY: 15.3, particleType: 'archiveMote', chance: 0.022 },
+            { tileX: 24.5, tileY: 13.5, particleType: 'sparkle', chance: 0.018 },
+            { tileX: 24.5, tileY: 12.5, particleType: 'sparkle', chance: 0.012 },
+            { tileX: 32, tileY: 28, particleType: 'sparkle', chance: 0.016 },
+            { tileX: 12, tileY: 11.5, particleType: 'sparkle', chance: 0.01 },
+            { tileX: 28, tileY: 19.5, particleType: 'smoke', chance: 0.012 },
+            { tileX: 20.5, tileY: 27.5, particleType: 'mineDust', chance: 0.016 },
+            { tileX: 20.5, tileY: 27.4, particleType: 'firefly', chance: 0.016 },
+            { tileX: 30.8, tileY: 27.6, particleType: 'forgeEmber', chance: 0.02 },
+            { tileX: 15.0, tileY: 25.8, particleType: 'portalRune', chance: 0.022 },
+            { tileX: 24.6, tileY: 24.6, particleType: 'questPing', chance: 0.014 },
+            { tileX: 27.3, tileY: 18.3, particleType: 'archiveMote', chance: 0.022 },
             { tileX: 35.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
         ];
@@ -1733,7 +1733,7 @@ export class IsometricRenderer {
     }
 
     _isHarborWater(tileX, tileY) {
-        return tileX >= 31 && tileX <= 39 && tileY >= 13 && tileY <= 25;
+        return tileX >= 29 && tileX <= 39 && tileY >= 13 && tileY <= 27;
     }
 
     _isOpenSeaTile(tileX, tileY, openness = null) {
@@ -1742,7 +1742,7 @@ export class IsometricRenderer {
         if (!this.deepWaterTiles.has(key)) return false;
         const open = openness ?? this._waterOpenness(tileX, tileY);
         if (open < 0.62) return false;
-        const rightSea = tileX >= 34 && tileY <= 25;
+        const rightSea = tileX >= 33 && tileY <= 27;
         const upperSea = tileX >= 30 && tileY <= 11;
         return rightSea || upperSea;
     }
