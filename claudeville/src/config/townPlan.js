@@ -34,7 +34,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'archive-stair',
         material: 'avenue',
         width: 1,
-        points: [[23, 22], [24, 20], [25, 19]],
+        points: [[23, 22], [23, 19], [23, 17]],
     },
     {
         id: 'observatory-road',

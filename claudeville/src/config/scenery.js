@@ -86,6 +86,11 @@ export const BRIDGE_HINTS = [
 export const HARBOR_DOCK_TILES = [
     // South quay/causeway: directly touches the lighthouse entrance while
     // staying just outside the watchtower footprint (34..36, 14..18).
+    { tileX: 25, tileY: 19, orientation: 'EW' },
+    { tileX: 26, tileY: 19, orientation: 'EW' },
+    { tileX: 27, tileY: 19, orientation: 'EW' },
+    { tileX: 28, tileY: 19, orientation: 'EW' },
+    { tileX: 29, tileY: 19, orientation: 'EW' },
     { tileX: 30, tileY: 19, orientation: 'EW' },
     { tileX: 31, tileY: 19, orientation: 'EW' },
     { tileX: 32, tileY: 19, orientation: 'EW' },
@@ -114,6 +119,7 @@ export const HARBOR_DOCK_TILES = [
     // Harbor mouth decking: explicit docks avoid the bridge-span slab that
     // would otherwise cover the bay.
     { tileX: 28, tileY: 22, orientation: 'EW' },
+    { tileX: 28, tileY: 21, orientation: 'NS' },
     { tileX: 29, tileY: 21, orientation: 'EW' },
     { tileX: 29, tileY: 20, orientation: 'EW' },
     { tileX: 30, tileY: 20, orientation: 'EW' },

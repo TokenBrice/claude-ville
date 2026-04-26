@@ -65,8 +65,8 @@ export const BUILDING_DEFS = [
     },
     {
         type: 'archive',
-        x: 23,
-        y: 15,
+        x: 21,
+        y: 14,
         width: 5,
         height: 3,
         label: 'GRAND LORE ARCHIVE',
@@ -76,8 +76,8 @@ export const BUILDING_DEFS = [
         district: 'knowledge',
         visualTier: 'hero',
         labelPriority: 'landmark',
-        entrance: { tileX: 25, tileY: 19 },
-        visitTiles: [{ tileX: 25, tileY: 19 }, { tileX: 23, tileY: 18 }, { tileX: 28, tileY: 18 }],
+        entrance: { tileX: 23, tileY: 17 },
+        visitTiles: [{ tileX: 23, tileY: 17 }, { tileX: 20, tileY: 16 }, { tileX: 23, tileY: 18 }],
     },
     {
         type: 'observatory',

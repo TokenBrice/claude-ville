@@ -70,10 +70,10 @@ const AMBIENT_GROUND_PROPS = [
 
     // Research edges: fewer, quieter accents near knowledge landmarks.
     { tileX: 15.5, tileY: 17.4, type: 'lantern' },
-    { tileX: 24.4, tileY: 16.0, type: 'noticePillar' },
-    { tileX: 27.6, tileY: 18.8, type: 'scrollCrates' },
-    { tileX: 29.7, tileY: 16.9, type: 'runestone' },
-    { tileX: 26.3, tileY: 14.6, type: 'lantern' },
+    { tileX: 22.4, tileY: 15.0, type: 'noticePillar' },
+    { tileX: 25.6, tileY: 17.8, type: 'scrollCrates' },
+    { tileX: 27.7, tileY: 15.9, type: 'runestone' },
+    { tileX: 24.3, tileY: 13.6, type: 'lantern' },
     { tileX: 11.2, tileY: 24.0, type: 'runestone' },
     { tileX: 15.7, tileY: 23.2, type: 'runestone' },
     { tileX: 15.8, tileY: 26.6, type: 'lantern' },
@@ -524,7 +524,7 @@ export class IsometricRenderer {
             { tileX: 30.8, tileY: 27.6, particleType: 'forgeEmber', chance: 0.02 },
             { tileX: 15.0, tileY: 25.8, particleType: 'portalRune', chance: 0.022 },
             { tileX: 24.6, tileY: 24.6, particleType: 'questPing', chance: 0.014 },
-            { tileX: 25.3, tileY: 17.3, particleType: 'archiveMote', chance: 0.022 },
+            { tileX: 23.3, tileY: 16.3, particleType: 'archiveMote', chance: 0.022 },
             { tileX: 35.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
         ];
