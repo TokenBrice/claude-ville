@@ -11,7 +11,7 @@ import { Compositor } from './Compositor.js';
 const SPRITE_HIT_HALF_WIDTH = 24;
 const SPRITE_HIT_TOP = -72;
 const SPRITE_HIT_BOTTOM = 24;
-const WALK_PIXELS_PER_FRAME = 7.5;
+const WALK_PIXELS_PER_FRAME = 4.5;
 const DIRECTION_HOLD_MS = 70;
 const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
 const STATUS_VISUALS = {
@@ -19,33 +19,22 @@ const STATUS_VISUALS = {
         color: THEME.working,
         glow: 'rgba(121, 217, 117, 0.32)',
         label: 'WORK',
-        mark: '>',
     },
     [AgentStatus.WAITING]: {
         color: THEME.waiting,
         glow: 'rgba(223, 140, 63, 0.34)',
         label: 'WAIT',
-        mark: '!',
     },
     [AgentStatus.IDLE]: {
         color: THEME.idle,
         glow: 'rgba(134, 191, 224, 0.22)',
         label: 'IDLE',
-        mark: '-',
     },
     chatting: {
         color: '#f2d36b',
         glow: 'rgba(242, 211, 107, 0.30)',
         label: 'CHAT',
-        mark: '..',
     },
-};
-
-// Accessory id lists per provider — used by _chooseAccessory().
-const PROVIDER_ACCESSORIES = {
-    claude: ['mageHood', 'scholarCap'],
-    codex:  ['goggles', 'toolBand'],
-    gemini: ['starCrown', 'oracleVeil'],
 };
 const PROVIDER_TRIM = {
     claude: '#c7a6ff',
@@ -428,7 +417,7 @@ export class AgentSprite {
         const variant = this._hashVariant();
         const spriteId = identity.spriteId || `agent.${provider}.base`;
         const paletteKey = identity.paletteKey || provider;
-        const accessory = identity.effortAccessory || this._chooseAccessory();
+        const accessory = null;
         const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}`;
 
         if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
@@ -451,7 +440,6 @@ export class AgentSprite {
 
         if (!this.selected && zoom < 1) {
             this._drawLowZoomImpostor(ctx);
-            this._drawStatus(ctx);
             this._drawCompactNameStatus(ctx);
             return;
         }
@@ -488,54 +476,15 @@ export class AgentSprite {
             this._drawSelectionRing(ctx);
         }
 
-        // Status beacon above head — at-a-glance state without relying on tiny speech bubbles.
-        this._drawStatusDot(ctx, contentTopY);
-
         // Chat bubble overlay (if chatting).
         // Per-agent floating text bubbles are deferred to Phase 4; the chat
         // ellipsis animation already handled by _drawChatEffect below.
         if (this.chatting) {
             this._drawChatEffect(ctx);
-        }
-
-        // Status indicators (drawn without flip, zoom-independent).
-        if (!this.chatting) {
-            this._drawStatus(ctx);
+        } else {
+            this._drawStatus(ctx, contentTopY);
         }
         this._drawNameTag(ctx);
-    }
-
-    _drawStatusDot(ctx, contentTopY) {
-        const visual = this._statusVisual();
-        if (!visual) return;
-        const s = 1 / (this._zoom || 1);
-        const y = Math.round(contentTopY - 8);
-        ctx.save();
-        ctx.translate(Math.round(this.x), y);
-        ctx.scale(s, s);
-
-        ctx.shadowColor = visual.color;
-        ctx.shadowBlur = 8;
-        ctx.fillStyle = visual.glow;
-        ctx.beginPath();
-        ctx.arc(0, 0, 9, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = 'rgba(22, 17, 14, 0.92)';
-        ctx.strokeStyle = visual.color;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.arc(0, 0, 6.5, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.fillStyle = visual.color;
-        ctx.font = 'bold 7px "Press Start 2P", monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(visual.mark, 0, 0.5);
-        ctx.restore();
     }
 
     _drawGrounding(ctx) {
@@ -753,15 +702,6 @@ export class AgentSprite {
         return hash % 4;
     }
 
-    /** Returns the accessory id string for this agent, or null. */
-    _chooseAccessory() {
-        const provider = this._providerKey();
-        const accessories = PROVIDER_ACCESSORIES[provider];
-        if (!accessories) return null;
-        const hash = Math.abs(this._hash(`${this.agent.id}:${this.agent.model || ''}:${provider}`));
-        return accessories[(hash >> 10) % accessories.length];
-    }
-
     // --- Provider / model helpers ---
 
     _providerKey() {
@@ -791,23 +731,23 @@ export class AgentSprite {
 
     // --- Status / UI overlay drawing ---
 
-    _drawStatus(ctx) {
-        const agent = this.agent;
+    _drawStatus(ctx, contentTopY = null) {
         const visual = this._statusVisual();
         const text = this._activityLabel();
-        this._drawBubble(ctx, text, visual.color);
+        this._drawBubble(ctx, text, visual.color, contentTopY);
     }
 
-    _drawBubble(ctx, text, accentColor) {
+    _drawBubble(ctx, text, accentColor, contentTopY = null) {
         ctx.save();
         const s = 1 / (this._zoom || 1); // inverse zoom correction
 
-        ctx.translate(this.x, this.y);
+        ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
         ctx.scale(s, s); // fixed size in screen space
 
         // Measure text size and auto-truncate
-        ctx.font = 'bold 10px "Press Start 2P", monospace';
-        const maxWidth = 180;
+        const anchored = Number.isFinite(contentTopY);
+        ctx.font = `bold ${anchored ? 7 : 10}px "Press Start 2P", monospace`;
+        const maxWidth = anchored ? 116 : 180;
         let displayText = text;
         // Truncate by actual pixel width instead of character count
         while (displayText.length > 0 && ctx.measureText(displayText).width > maxWidth) {
@@ -817,11 +757,11 @@ export class AgentSprite {
             displayText = displayText.substring(0, displayText.length - 1) + '…';
         }
         const textWidth = ctx.measureText(displayText).width;
-        const bubbleW = textWidth + 20;
-        const bubbleH = 24;
-        const radius = 6;
+        const bubbleW = textWidth + (anchored ? 14 : 20);
+        const bubbleH = anchored ? 18 : 24;
+        const radius = anchored ? 5 : 6;
 
-        ctx.translate(0, -50);
+        ctx.translate(0, anchored ? -18 : -50);
 
         // Speech bubble background
         const halfW = bubbleW / 2;
@@ -835,7 +775,7 @@ export class AgentSprite {
         ctx.lineTo(halfW, bubbleH / 2 - radius);
         ctx.quadraticCurveTo(halfW, bubbleH / 2, halfW - radius, bubbleH / 2);
         ctx.lineTo(4, bubbleH / 2);
-        ctx.lineTo(0, bubbleH / 2 + 7);
+        ctx.lineTo(0, bubbleH / 2 + (anchored ? 6 : 7));
         ctx.lineTo(-4, bubbleH / 2);
         ctx.lineTo(-halfW + radius, bubbleH / 2);
         ctx.quadraticCurveTo(-halfW, bubbleH / 2, -halfW, bubbleH / 2 - radius);

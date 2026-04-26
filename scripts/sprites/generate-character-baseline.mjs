@@ -152,8 +152,8 @@ function drawCharacter(png, x0, y0, spec, direction, walking, frame) {
     const back = ['n', 'ne', 'nw'].includes(direction);
     const side = ['e', 'w'].includes(direction);
     const sideSign = ['e', 'ne', 'se'].includes(direction) ? 1 : ['w', 'nw', 'sw'].includes(direction) ? -1 : 0;
-    const step = walking ? [0, 2, 4, 1, -2, -4][frame % 6] : 0;
-    const bob = walking ? Math.abs(step) > 2 ? -1 : 0 : Math.round(Math.sin(frame * Math.PI / 2) * 1);
+    const step = walking ? [0, 4, 7, 3, -4, -7][frame % 6] : 0;
+    const bob = walking ? (frame % 3 === 2 ? -1 : 0) : Math.round(Math.sin(frame * Math.PI / 2) * 1);
     const cx = x0 + 46;
     const feetY = y0 + 78 + bob;
     const headY = y0 + 28 + bob;
