@@ -897,71 +897,157 @@ export class BuildingSprite {
     }
 
     _drawHarborMasterOffice(ctx, localPoint, pulse) {
-        const cabin = localPoint(48, 51);
-        const lamp = localPoint(48, 36);
-        const ledger = localPoint(68, 63);
+        const quay = localPoint(64, 77);
+        const office = localPoint(51, 52);
+        const awning = localPoint(89, 70);
+        const crane = localPoint(101, 46);
+        const lamp = localPoint(58, 39);
         const flagLift = this.motionScale ? Math.sin(this.frame * 0.08) * 1.5 : 0;
 
-        ctx.globalAlpha = 0.92;
-        ctx.fillStyle = '#68432b';
-        ctx.strokeStyle = '#24170f';
+        ctx.globalAlpha = 0.82;
+        ctx.fillStyle = '#6f6558';
+        ctx.strokeStyle = '#251913';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(cabin.x - 26, cabin.y + 5);
-        ctx.lineTo(cabin.x + 9, cabin.y - 7);
-        ctx.lineTo(cabin.x + 27, cabin.y + 5);
-        ctx.lineTo(cabin.x - 8, cabin.y + 18);
+        ctx.moveTo(quay.x - 62, quay.y + 12);
+        ctx.lineTo(quay.x - 7, quay.y - 8);
+        ctx.lineTo(quay.x + 63, quay.y + 11);
+        ctx.lineTo(quay.x + 6, quay.y + 31);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = '#2f5b66';
+        ctx.globalAlpha = 0.38;
+        ctx.strokeStyle = '#b8aa90';
+        ctx.lineWidth = 1;
+        for (const offset of [-43, -24, -5, 14, 33]) {
+            ctx.beginPath();
+            ctx.moveTo(quay.x + offset, quay.y + 17);
+            ctx.lineTo(quay.x + offset + 51, quay.y);
+            ctx.stroke();
+        }
+        for (const offset of [-46, -17, 12, 41]) {
+            ctx.beginPath();
+            ctx.moveTo(quay.x + offset, quay.y + 8);
+            ctx.lineTo(quay.x + offset + 47, quay.y + 22);
+            ctx.stroke();
+        }
+
+        ctx.globalAlpha = 0.96;
+        ctx.fillStyle = '#70432d';
+        ctx.strokeStyle = '#21130e';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(cabin.x - 28, cabin.y - 5);
-        ctx.lineTo(cabin.x + 6, cabin.y - 22);
-        ctx.lineTo(cabin.x + 31, cabin.y - 7);
-        ctx.lineTo(cabin.x - 2, cabin.y + 7);
+        ctx.moveTo(office.x - 31, office.y + 8);
+        ctx.lineTo(office.x + 3, office.y - 6);
+        ctx.lineTo(office.x + 34, office.y + 8);
+        ctx.lineTo(office.x + 0, office.y + 23);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
 
+        ctx.fillStyle = '#a94e32';
+        ctx.beginPath();
+        ctx.moveTo(office.x - 35, office.y - 5);
+        ctx.lineTo(office.x + 1, office.y - 25);
+        ctx.lineTo(office.x + 39, office.y - 6);
+        ctx.lineTo(office.x + 4, office.y + 9);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.globalAlpha = 0.72;
+        ctx.strokeStyle = '#e0a060';
+        ctx.beginPath();
+        ctx.moveTo(office.x - 18, office.y - 10);
+        ctx.lineTo(office.x + 16, office.y - 23);
+        ctx.moveTo(office.x - 4, office.y - 2);
+        ctx.lineTo(office.x + 29, office.y - 16);
+        ctx.stroke();
+
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = '#ffd37a';
+        ctx.fillRect(lamp.x - 3, lamp.y - 4, 6, 8);
+        ctx.strokeStyle = '#3a2616';
+        ctx.strokeRect(lamp.x - 3.5, lamp.y - 4.5, 7, 9);
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.22 + pulse * 0.22;
+        ctx.globalAlpha = 0.20 + pulse * 0.22;
         ctx.fillStyle = '#ffd37a';
         ctx.beginPath();
-        ctx.ellipse(lamp.x, lamp.y, 24, 13, -0.18, 0, Math.PI * 2);
+        ctx.ellipse(lamp.x, lamp.y, 27, 14, -0.16, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
 
-        ctx.globalAlpha = 0.95;
-        ctx.fillStyle = '#ffd37a';
-        ctx.fillRect(lamp.x - 3, lamp.y - 4, 6, 7);
-        ctx.strokeStyle = '#3a2616';
-        ctx.strokeRect(lamp.x - 3.5, lamp.y - 4.5, 7, 8);
-
-        ctx.globalAlpha = 0.88;
-        ctx.strokeStyle = '#3a2616';
+        ctx.globalAlpha = 0.94;
+        ctx.fillStyle = '#d9c08a';
+        ctx.strokeStyle = '#27180f';
         ctx.lineWidth = 1.25;
         ctx.beginPath();
-        ctx.moveTo(cabin.x + 24, cabin.y - 18);
-        ctx.lineTo(cabin.x + 24, cabin.y + 15);
-        ctx.stroke();
-        ctx.fillStyle = '#f2d36b';
-        ctx.beginPath();
-        ctx.moveTo(cabin.x + 24, cabin.y - 17 + flagLift);
-        ctx.lineTo(cabin.x + 42, cabin.y - 12 + flagLift);
-        ctx.lineTo(cabin.x + 24, cabin.y - 7 + flagLift);
+        ctx.moveTo(awning.x - 22, awning.y - 9);
+        ctx.lineTo(awning.x + 18, awning.y - 20);
+        ctx.lineTo(awning.x + 31, awning.y - 10);
+        ctx.lineTo(awning.x - 10, awning.y + 3);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
+        ctx.fillStyle = '#b94b3f';
+        for (const dx of [-14, 2, 18]) {
+            ctx.beginPath();
+            ctx.moveTo(awning.x + dx, awning.y - 11);
+            ctx.lineTo(awning.x + dx + 8, awning.y - 14);
+            ctx.lineTo(awning.x + dx + 14, awning.y - 6);
+            ctx.lineTo(awning.x + dx + 6, awning.y - 3);
+            ctx.closePath();
+            ctx.fill();
+        }
 
-        ctx.fillStyle = '#c4935d';
-        ctx.strokeStyle = '#2b1a11';
+        ctx.globalAlpha = 0.88;
+        ctx.strokeStyle = '#3b2417';
+        ctx.lineWidth = 3;
         ctx.beginPath();
-        ctx.moveTo(ledger.x - 13, ledger.y - 2);
-        ctx.lineTo(ledger.x + 9, ledger.y - 8);
-        ctx.lineTo(ledger.x + 17, ledger.y - 2);
-        ctx.lineTo(ledger.x - 5, ledger.y + 5);
+        ctx.moveTo(crane.x - 3, crane.y + 35);
+        ctx.lineTo(crane.x - 3, crane.y - 10);
+        ctx.lineTo(crane.x + 31, crane.y + 1);
+        ctx.stroke();
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(crane.x + 29, crane.y + 2);
+        ctx.lineTo(crane.x + 20, crane.y + 30);
+        ctx.stroke();
+        ctx.fillStyle = '#2c1a12';
+        ctx.fillRect(crane.x + 17, crane.y + 29, 7, 7);
+
+        const cargo = [
+            [quay.x - 35, quay.y + 20, '#8f613c'],
+            [quay.x - 23, quay.y + 16, '#73513a'],
+            [quay.x + 31, quay.y + 21, '#8f613c'],
+            [quay.x + 43, quay.y + 17, '#73513a'],
+        ];
+        ctx.globalAlpha = 0.94;
+        ctx.strokeStyle = '#21130e';
+        for (const [x, y, color] of cargo) {
+            ctx.fillStyle = color;
+            ctx.fillRect(x - 5, y - 6, 11, 10);
+            ctx.strokeRect(x - 5.5, y - 6.5, 12, 11);
+        }
+
+        ctx.strokeStyle = '#2b1a11';
+        ctx.lineWidth = 1.25;
+        for (const [x, y] of [[quay.x - 54, quay.y + 21], [quay.x + 55, quay.y + 20], [quay.x + 5, quay.y + 31]]) {
+            ctx.fillStyle = '#51331f';
+            ctx.fillRect(x - 2, y - 16, 4, 18);
+            ctx.strokeRect(x - 2.5, y - 16.5, 5, 19);
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(office.x + 34, office.y - 17);
+        ctx.lineTo(office.x + 34, office.y + 15);
+        ctx.stroke();
+        ctx.fillStyle = '#f2d36b';
+        ctx.beginPath();
+        ctx.moveTo(office.x + 34, office.y - 16 + flagLift);
+        ctx.lineTo(office.x + 52, office.y - 11 + flagLift);
+        ctx.lineTo(office.x + 34, office.y - 6 + flagLift);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();

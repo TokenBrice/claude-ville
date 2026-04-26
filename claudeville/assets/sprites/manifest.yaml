@@ -262,10 +262,10 @@ buildings:
   - id: building.harbor
     assetPath: assets/sprites/props/prop.harborPier.png
     tool: isometric_tile
-    prompt: "harbor master pier office, weathered dock planks, small quay cabin, signal flags, mooring rings, cargo ledger desk, isometric"
+    prompt: "medieval harbor master quay, stone waterfront deck, timber office with red roof, signal flags, crane, barrels, awnings, mooring posts, cargo ledger desk, isometric"
     size: 64
-    displaySize: 96
-    anchor: [48, 84]
+    displaySize: 128
+    anchor: [64, 112]
     emitters:
       torch: [48, 42]
     lightSource: [48, 42]
