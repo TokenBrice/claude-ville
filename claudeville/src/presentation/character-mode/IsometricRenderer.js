@@ -196,12 +196,13 @@ export class IsometricRenderer {
         // Trees (Y-sorted props)
         this.scenery.generateTrees(this.pathTiles, this.bridgeTiles);
         const generatedTrees = this.scenery.getTreeProps();
-        const authoredPalms = TROPICAL_PALMS.map((p) => ({
+        const canPlaceAuthoredTree = (p) => !this.waterTiles.has(`${Math.floor(p.tileX)},${Math.floor(p.tileY)}`);
+        const authoredPalms = TROPICAL_PALMS.filter(canPlaceAuthoredTree).map((p) => ({
             ...p,
             variant: 2,
             tropical: true,
         }));
-        const authoredBroadleafTrees = TROPICAL_BROADLEAF_TREES.map((p) => ({
+        const authoredBroadleafTrees = TROPICAL_BROADLEAF_TREES.filter(canPlaceAuthoredTree).map((p) => ({
             ...p,
             variant: 3,
             tropical: true,
