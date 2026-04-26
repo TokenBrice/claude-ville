@@ -2,9 +2,9 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 
 const SHIP_SPRITE_ID = 'prop.harborBoat';
 const MAX_VISIBLE_SHIPS = 8;
-const DEPARTURE_MS = 24000;
+const DEPARTURE_MS = 36000;
 const EXIT_HOLD_MS = 1200;
-const HISTORICAL_EVENT_GRACE_MS = 5000;
+const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
 const MAX_LABEL_CHARS = 30;
 
 const BERTHS = [
@@ -173,7 +173,7 @@ function pointAlongPath(points, progress) {
 function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
     const latestPush = latestPushTimes.get(event.project) || 0;
     if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
-    return Math.max(0, now - latestPush) > HISTORICAL_EVENT_GRACE_MS;
+    return Math.max(0, now - latestPush) > RECENT_PUSH_REPLAY_MS;
 }
 
 export function snapshotHarborTrafficState(state) {
@@ -299,7 +299,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
                 ? Math.max(0, now - event.timestamp)
                 : 0;
-            const skipDepartureAnimation = motionScale === 0 || eventAge > HISTORICAL_EVENT_GRACE_MS;
+            const skipDepartureAnimation = motionScale === 0 || eventAge > RECENT_PUSH_REPLAY_MS;
             const pushTime = Number.isFinite(event.timestamp) && event.timestamp > 0 ? event.timestamp : 0;
             for (const ship of state.ships.values()) {
                 if (ship.project !== event.project || ship.status !== 'docked') continue;
