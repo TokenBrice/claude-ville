@@ -10,9 +10,6 @@ const BUILDING_OFFSETS = {
     command: [
         { x: -42, y: -48 }, { x: -16, y: -62 }, { x: 20, y: -58 }, { x: 44, y: -36 },
     ],
-    chathall: [
-        { x: -36, y: -36 }, { x: -10, y: -50 }, { x: 20, y: -42 }, { x: 40, y: -22 },
-    ],
     forge: [
         { x: -28, y: -30 }, { x: -6, y: -42 }, { x: 20, y: -30 }, { x: 38, y: -12 },
     ],
@@ -29,7 +26,6 @@ const TOOL_LABELS = {
     taskboard: 'CHECK',
     command: 'SEND',
     mine: 'TOK',
-    chathall: 'MSG',
 };
 
 function toWorld(tileX, tileY) {
@@ -98,6 +94,12 @@ function isCommandTool(agent) {
         tool.includes('parallel') ||
         tool === 'task' ||
         tool === 'multi_tool_use';
+}
+
+function commandActivityLabel(agent) {
+    if (agent?.currentTool === 'SendMessage') return 'MSG';
+    if (agent?.currentTool === 'Task') return 'SUMMON';
+    return compactLabel(agent?.currentTool, TOOL_LABELS.command);
 }
 
 export class LandmarkActivity {
@@ -171,7 +173,6 @@ export class LandmarkActivity {
         const building = agent.targetBuildingType;
         if (building === 'forge') this._addForgeItem(agent, now);
         if (building === 'taskboard') this._addTaskItem(agent, now);
-        if (building === 'chathall') this._addChatItem(agent, now);
         if (building === 'command' || isCommandTool(agent)) this._addCommandItem(agent, now);
     }
 
@@ -240,7 +241,7 @@ export class LandmarkActivity {
                 this.items.set(id, {
                     id,
                     type: 'chat-line',
-                    building: 'chathall',
+                    building: 'command',
                     createdAt: now,
                     expiresAt: now + 2500,
                     startX: sprite.x,
@@ -308,25 +309,6 @@ export class LandmarkActivity {
         this._capKind('task', MAX_ITEMS_PER_KIND);
     }
 
-    _addChatItem(agent, now) {
-        const id = activityKey(agent, 'chat');
-        if (this.seenSnapshots.has(id)) return;
-        this.seenSnapshots.add(id);
-        const slot = stableHash(id) % BUILDING_OFFSETS.chathall.length;
-        this.items.set(id, {
-            id,
-            type: 'chat',
-            building: 'chathall',
-            agentId: agent.id,
-            createdAt: now,
-            expiresAt: now + SNAPSHOT_TTL_MS,
-            slot,
-            label: compactLabel(agent.currentToolInput, TOOL_LABELS.chathall),
-            sortOffset: 4,
-        });
-        this._capKind('chat', MAX_ITEMS_PER_KIND);
-    }
-
     _addCommandItem(agent, now) {
         const id = activityKey(agent, 'command');
         if (this.seenSnapshots.has(id)) return;
@@ -340,7 +322,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + COMMAND_ITEM_TTL_MS,
             slot,
-            label: compactLabel(agent.currentTool, TOOL_LABELS.command),
+            label: commandActivityLabel(agent),
             sortOffset: -2,
         });
         this._capKind('command', MAX_ITEMS_PER_KIND);

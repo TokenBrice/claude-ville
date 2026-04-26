@@ -4,7 +4,7 @@
 
 export const TOWN_DISTRICTS = Object.freeze([
     { id: 'civic', label: 'City Center', center: [20, 20], radius: 7 },
-    { id: 'knowledge', label: 'Upper Periphery', center: [14, 13], radius: 5 },
+    { id: 'knowledge', label: 'Scholars Ridge', center: [22, 13], radius: 8 },
     { id: 'workshop', label: 'Forge Row', center: [30, 26], radius: 5 },
     { id: 'resource', label: 'Mine Yard', center: [18, 26], radius: 4 },
     { id: 'arcane', label: 'Portal Periphery', center: [14, 23], radius: 4 },
@@ -16,7 +16,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'city-center-spine',
         material: 'avenue',
         width: 2,
-        points: [[17, 19], [20, 19], [23, 19], [25, 20], [25, 25]],
+        points: [[17, 19], [20, 19], [23, 19], [27, 18], [29, 17], [25, 25]],
     },
     {
         id: 'city-center-south-bridge',
@@ -25,10 +25,16 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         points: [[20, 19], [21, 21], [22, 21], [25, 22]],
     },
     {
-        id: 'city-hall-bridge',
+        id: 'west-civic-bridge',
         material: 'avenue',
         width: 1,
         points: [[15, 19], [16, 22], [18, 23], [22, 24]],
+    },
+    {
+        id: 'archive-stair',
+        material: 'avenue',
+        width: 1,
+        points: [[23, 19], [25, 17], [29, 17]],
     },
     {
         id: 'observatory-road',

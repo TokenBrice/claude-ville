@@ -36,22 +36,22 @@ const DIRECT_TOOL_BUILDINGS = {
     'mcp__playwright__browser_snapshot': 'portal',
     'mcp__playwright__browser_resize': 'portal',
 
-    Task: 'command',
+    Task: 'portal',
     TeamCreate: 'command',
-    SendMessage: 'chathall',
+    SendMessage: 'command',
     multi_tool_use: 'command',
     'multi_tool_use.parallel': 'command',
-    'functions.spawn_agent': 'command',
-    'functions.send_input': 'command',
-    'functions.close_agent': 'command',
-    'functions.resume_agent': 'command',
+    'functions.spawn_agent': 'portal',
+    'functions.send_input': 'portal',
+    'functions.wait_agent': 'portal',
+    'functions.close_agent': 'portal',
+    'functions.resume_agent': 'portal',
 
     TaskCreate: 'taskboard',
     TaskUpdate: 'taskboard',
     TaskList: 'taskboard',
     TodoWrite: 'taskboard',
     'functions.update_plan': 'taskboard',
-    'functions.wait_agent': 'taskboard',
     'functions.request_user_input': 'taskboard',
 };
 
@@ -208,8 +208,9 @@ export class Agent {
         if (tool.includes('image') || tool.includes('prompt') || tool.includes('notebook')) return 'forge';
         if (tool.includes('github') || tool.includes('pull_request') || tool.includes(' pr_')) return 'watchtower';
         if (tool.includes('apply_patch') || tool.includes('edit') || tool.includes('write') || tool.includes('update_file') || tool.includes('create_file') || tool.includes('delete_file')) return 'forge';
-        if (tool.includes('spawn_agent') || tool.includes('send_input') || tool.includes('team') || tool.includes('parallel')) return 'command';
-        if (tool.includes('wait_agent') || tool.includes('task') || tool.includes('todo') || tool.includes('plan')) return 'taskboard';
+        if (tool.includes('spawn_agent') || tool.includes('send_input') || tool.includes('wait_agent') || tool.includes('resume_agent') || tool.includes('close_agent')) return 'portal';
+        if (tool.includes('team') || tool.includes('parallel')) return 'command';
+        if (tool.includes('task') || tool.includes('todo') || tool.includes('plan')) return 'taskboard';
         if (tool.includes('read') || tool.includes('grep') || tool.includes('glob') || tool.includes('find') || tool.includes('search')) return 'archive';
         return null;
     }

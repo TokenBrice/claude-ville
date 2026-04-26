@@ -336,15 +336,6 @@ buildings:
     size: 64
     displaySize: 112
 
-  # ── STANDARD: City Hall (chat/council destination) ──
-  - id: building.chathall
-    tool: isometric_tile
-    prompt: "epic fantasy city hall council house, steep slate roof, messenger balcony, civic banner, warm assembly windows, carved speech-rune above arched doorway, isometric"
-    size: 64
-    displaySize: 112
-    emitters:
-      sparkle: [88, 24]
-
   # ── STANDARD: Lore Archive ──
   - id: building.archive
     tool: isometric_tile

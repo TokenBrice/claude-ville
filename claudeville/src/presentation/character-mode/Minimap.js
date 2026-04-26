@@ -9,7 +9,6 @@ const BUILDING_COLORS = {
     forge: '#d8843a',
     mine: '#e8c15e',
     taskboard: '#78c6e7',
-    chathall: '#88d67e',
     observatory: '#c9903f',
     archive: '#d8b96d',
     portal: '#76d8ff',
