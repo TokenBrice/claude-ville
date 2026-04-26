@@ -2,10 +2,16 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 
 const SHIP_SPRITE_ID = 'prop.harborBoat';
 const MAX_VISIBLE_SHIPS = 8;
-const DEPARTURE_MS = 36000;
-const EXIT_HOLD_MS = 1200;
+const DEPARTURE_MS = 48000;
+const EXIT_HOLD_MS = 1800;
+const EXIT_FADE_MS = 4200;
+const FADE_DELAY_MS = 3200;
+const FINALE_EFFECT_MS = 9000;
+const SCREEN_SUMMARY_MS = 16000;
 const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
 const MAX_LABEL_CHARS = 30;
+const HARBOR_FINALE_TILE = { tileX: 39.2, tileY: 6.4 };
+const HARBOR_SUMMARY_TILE = { tileX: 36.5, tileY: 18.8 };
 
 const BERTHS = [
     { tileX: 38.2, tileY: 21.3 },
@@ -24,26 +30,58 @@ const SEA_LANES = [
         { tileX: 39.0, tileY: 18.1 },
         { tileX: 39.0, tileY: 15.4 },
         { tileX: 38.4, tileY: 12.8 },
+        { tileX: 39.3, tileY: 9.6 },
+        { tileX: 39.4, tileY: 6.2 },
     ],
     [
         { tileX: 39.0, tileY: 19.6 },
         { tileX: 38.8, tileY: 17.3 },
         { tileX: 38.4, tileY: 14.7 },
         { tileX: 37.9, tileY: 12.3 },
+        { tileX: 38.9, tileY: 9.4 },
+        { tileX: 39.0, tileY: 5.6 },
     ],
     [
         { tileX: 38.2, tileY: 19.1 },
         { tileX: 38.8, tileY: 16.8 },
         { tileX: 38.3, tileY: 14.2 },
         { tileX: 37.7, tileY: 11.9 },
+        { tileX: 38.8, tileY: 8.8 },
+        { tileX: 39.2, tileY: 4.8 },
     ],
     [
         { tileX: 37.8, tileY: 20.4 },
         { tileX: 38.7, tileY: 18.2 },
         { tileX: 39.0, tileY: 15.8 },
         { tileX: 38.3, tileY: 13.3 },
+        { tileX: 39.2, tileY: 10.1 },
+        { tileX: 39.5, tileY: 7.2 },
     ],
 ];
+
+const PUSH_STATUS_STYLE = {
+    success: {
+        label: 'Push landed',
+        shortLabel: 'landed',
+        accent: '#6cdb94',
+        panel: 'rgba(22, 54, 43, 0.92)',
+        glow: 'rgba(108, 219, 148, 0.58)',
+    },
+    failed: {
+        label: 'Push failed',
+        shortLabel: 'failed',
+        accent: '#f07668',
+        panel: 'rgba(62, 31, 34, 0.93)',
+        glow: 'rgba(240, 87, 76, 0.55)',
+    },
+    unknown: {
+        label: 'Push sent',
+        shortLabel: 'sent',
+        accent: '#f6cf60',
+        panel: 'rgba(58, 48, 27, 0.92)',
+        glow: 'rgba(246, 207, 96, 0.52)',
+    },
+};
 
 function toWorld(tileX, tileY) {
     return {
@@ -69,6 +107,12 @@ function stableHash(input) {
         hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
     }
     return Math.abs(hash);
+}
+
+function projectName(project) {
+    const text = String(project || 'unknown').trim();
+    const parts = text.split(/[\\/]/).filter(Boolean);
+    return shortenLabel(parts.at(-1) || text || 'unknown', 26);
 }
 
 function shortenLabel(value, maxChars = MAX_LABEL_CHARS) {
@@ -120,10 +164,30 @@ function cloneState(previous = {}) {
     for (const [id, ship] of sourceShips) {
         ships.set(id, { ...ship });
     }
+    const sourceBatches = previous.batches instanceof Map
+        ? previous.batches.entries()
+        : Object.entries(previous.batches || {});
+    const batches = new Map();
+    for (const [id, batch] of sourceBatches) {
+        batches.set(id, {
+            ...batch,
+            shipIds: Array.isArray(batch.shipIds) ? [...batch.shipIds] : [],
+        });
+    }
+    const sourcePushEvents = previous.pushEvents instanceof Map
+        ? previous.pushEvents.entries()
+        : Object.entries(previous.pushEvents || {});
+    const pushEvents = new Map();
+    for (const [id, pushEvent] of sourcePushEvents) {
+        pushEvents.set(id, { ...pushEvent });
+    }
     return {
         seenEventIds,
         ships,
+        batches,
+        pushEvents,
         nextSequence: Number.isFinite(previous.nextSequence) ? previous.nextSequence : ships.size,
+        nextBatchSequence: Number.isFinite(previous.nextBatchSequence) ? previous.nextBatchSequence : batches.size,
     };
 }
 
@@ -188,11 +252,34 @@ export function snapshotHarborTrafficState(state) {
                 sha: ship.sha || '',
                 label: ship.label || '',
                 status: ship.status,
+                pushStatus: ship.pushStatus || null,
+                batchId: ship.batchId || null,
                 berthIndex: ship.berthIndex,
                 laneIndex: ship.laneIndex,
                 eventTime: ship.eventTime,
                 departEventId: ship.departEventId || null,
                 departStartedAt: ship.departStartedAt || null,
+            }))
+            .sort((a, b) => (a.eventTime - b.eventTime) || a.id.localeCompare(b.id)),
+        batches: [...cloned.batches.values()]
+            .map(batch => ({
+                id: batch.id,
+                project: batch.project,
+                label: batch.label || '',
+                status: batch.status || 'unknown',
+                targetRef: batch.targetRef || '',
+                shipCount: batch.shipCount || 0,
+                eventTime: batch.eventTime || 0,
+                startedAt: batch.startedAt || 0,
+                shipIds: [...(batch.shipIds || [])].sort(),
+            }))
+            .sort((a, b) => (a.eventTime - b.eventTime) || a.id.localeCompare(b.id)),
+        pushEvents: [...cloned.pushEvents.values()]
+            .map(push => ({
+                id: push.id,
+                status: push.status || 'unknown',
+                eventTime: push.eventTime || 0,
+                batchId: push.batchId || null,
             }))
             .sort((a, b) => (a.eventTime - b.eventTime) || a.id.localeCompare(b.id)),
     };
@@ -205,6 +292,26 @@ function eventKind(event) {
     if (event?.pushed === true || Array.isArray(event?.commits)) return 'push';
     if (event?.sha || event?.commit || event?.hash) return 'commit';
     return null;
+}
+
+function normalizePushStatus(event) {
+    if (!event || typeof event !== 'object') return 'unknown';
+    if (typeof event.success === 'boolean') return event.success ? 'success' : 'failed';
+    const exitCode = event.exitCode ?? event.exit_code ?? event.code ?? event.returnCode ?? event.return_code;
+    if (Number.isFinite(Number(exitCode))) return Number(exitCode) === 0 ? 'success' : 'failed';
+
+    const raw = event.status
+        ?? event.outcome
+        ?? event.conclusion
+        ?? event.result
+        ?? event.state
+        ?? event.lifecycle
+        ?? '';
+    const text = String(raw).toLowerCase();
+    if (!text) return 'unknown';
+    if (['success', 'succeeded', 'ok', 'passed', 'pass', 'complete', 'completed', 'landed'].includes(text)) return 'success';
+    if (['failed', 'failure', 'fail', 'error', 'errored', 'cancelled', 'canceled', 'timed_out', 'timeout'].includes(text)) return 'failed';
+    return 'unknown';
 }
 
 export function normalizeGitEvent(event, agent = {}, index = 0) {
@@ -240,6 +347,14 @@ export function normalizeGitEvent(event, agent = {}, index = 0) {
         sha: sha ? String(sha) : '',
         timestamp,
         label: eventLabel(event, type, sha),
+        command: event.command ? String(event.command) : '',
+        targetRef: event.targetRef || event.ref || event.branch || '',
+        success: typeof event.success === 'boolean' ? event.success : null,
+        exitCode: Number.isFinite(Number(event.exitCode ?? event.exit_code))
+            ? Number(event.exitCode ?? event.exit_code)
+            : null,
+        completedAt: parseTime(event.completedAt || event.completed_at, 0),
+        status: type === 'push' ? normalizePushStatus(event) : null,
     };
 }
 
@@ -273,8 +388,10 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     const latestPushTimes = latestPushTimesByProject(sorted);
 
     for (const event of sorted) {
-        if (state.seenEventIds.has(event.id)) continue;
-        state.seenEventIds.add(event.id);
+        if (event.type !== 'push') {
+            if (state.seenEventIds.has(event.id)) continue;
+            state.seenEventIds.add(event.id);
+        }
 
         if (event.type === 'commit') {
             if (isHistoricalCommittedBeforePush(event, latestPushTimes, now)) continue;
@@ -299,16 +416,88 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
                 ? Math.max(0, now - event.timestamp)
                 : 0;
-            const skipDepartureAnimation = motionScale === 0 || eventAge > RECENT_PUSH_REPLAY_MS;
+            const skipOldReplay = eventAge > RECENT_PUSH_REPLAY_MS;
+            const skipDepartureAnimation = motionScale === 0 || skipOldReplay;
             const pushTime = Number.isFinite(event.timestamp) && event.timestamp > 0 ? event.timestamp : 0;
-            for (const ship of state.ships.values()) {
-                if (ship.project !== event.project || ship.status !== 'docked') continue;
-                if (pushTime > 0 && Number.isFinite(ship.eventTime) && ship.eventTime > pushTime) continue;
+            const batchId = `push-batch:${event.id}`;
+            const previousPush = state.pushEvents.get(event.id);
+            const incomingStatus = event.status || 'unknown';
+            const previousStatus = previousPush?.status || null;
+            const status = previousStatus && incomingStatus === 'unknown' ? previousStatus : incomingStatus;
+            const existingBatch = state.batches.get(batchId);
+            const statusChanged = previousStatus && previousStatus !== status;
+            if (previousPush && !statusChanged) continue;
+
+            let selectedShips = [];
+            if (existingBatch?.shipIds?.length) {
+                selectedShips = existingBatch.shipIds
+                    .map(id => state.ships.get(id))
+                    .filter(Boolean);
+            } else {
+                for (const ship of state.ships.values()) {
+                    if (ship.project !== event.project || ship.status !== 'docked') continue;
+                    if (pushTime > 0 && Number.isFinite(ship.eventTime) && ship.eventTime > pushTime) continue;
+                    selectedShips.push(ship);
+                }
+            }
+
+            if (!existingBatch && selectedShips.length === 0) {
+                state.pushEvents.set(event.id, {
+                    id: event.id,
+                    status,
+                    eventTime: event.timestamp || now,
+                    batchId: null,
+                    seenAt: now,
+                });
+                continue;
+            }
+
+            const shipIds = existingBatch?.shipIds?.length
+                ? [...existingBatch.shipIds]
+                : selectedShips.map(ship => ship.id);
+            const startedAt = existingBatch?.startedAt
+                || (skipOldReplay ? now - SCREEN_SUMMARY_MS - FINALE_EFFECT_MS - 1 : now);
+            const batch = {
+                ...(existingBatch || {}),
+                id: batchId,
+                project: event.project,
+                label: event.label || existingBatch?.label || '',
+                targetRef: event.targetRef || existingBatch?.targetRef || '',
+                status,
+                shipIds,
+                shipCount: shipIds.length,
+                sequence: existingBatch?.sequence || ++state.nextBatchSequence,
+                eventTime: event.timestamp || existingBatch?.eventTime || now,
+                startedAt,
+                statusUpdatedAt: statusChanged ? now : existingBatch?.statusUpdatedAt || now,
+            };
+            state.batches.set(batchId, batch);
+            state.pushEvents.set(event.id, {
+                id: event.id,
+                status,
+                eventTime: event.timestamp || now,
+                batchId,
+                seenAt: previousPush?.seenAt || now,
+            });
+
+            for (const ship of selectedShips) {
+                ship.pushStatus = status;
+                ship.batchId = batchId;
+                ship.pushEventId = event.id;
+                ship.pushSeenAt = now;
+                if (status === 'failed') {
+                    ship.status = 'docked';
+                    ship.failedAt = skipOldReplay ? null : now;
+                    ship.departEventId = null;
+                    ship.departStartedAt = null;
+                    ship.departEventTime = null;
+                    continue;
+                }
                 ship.status = 'departing';
                 ship.departEventId = event.id;
                 ship.departStartedAt = skipDepartureAnimation
-                    ? now - DEPARTURE_MS - EXIT_HOLD_MS - 1
-                    : now;
+                    ? now - DEPARTURE_MS - FADE_DELAY_MS - EXIT_FADE_MS - EXIT_HOLD_MS - 1
+                    : ship.departStartedAt || now;
                 ship.departEventTime = event.timestamp || now;
             }
         }
@@ -318,8 +507,15 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         if (ship.status !== 'departing') continue;
         const startedAt = ship.departStartedAt || now;
         const progress = motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / DEPARTURE_MS));
-        if (progress >= 1 && now - startedAt > DEPARTURE_MS + EXIT_HOLD_MS) {
+        if (progress >= 1 && now - startedAt > DEPARTURE_MS + FADE_DELAY_MS + EXIT_FADE_MS + EXIT_HOLD_MS) {
             state.ships.delete(id);
+        }
+    }
+
+    for (const [id, batch] of state.batches) {
+        const age = now - (batch.startedAt || now);
+        if (age > SCREEN_SUMMARY_MS + FINALE_EFFECT_MS + DEPARTURE_MS) {
+            state.batches.delete(id);
         }
     }
 
@@ -386,6 +582,81 @@ export class HarborTraffic {
         return visible.sort((a, b) => a.sortY - b.sortY);
     }
 
+    activeFinaleEffects(now = Date.now()) {
+        const effects = [];
+        for (const batch of this.state.batches.values()) {
+            const startedAt = this._batchClockStart(batch, now);
+            const age = now - startedAt;
+            if (age < 0) continue;
+            const status = batch.status || 'unknown';
+            const finaleDelay = this._batchFinaleDelay(batch);
+            const effectAge = age - finaleDelay;
+            if (effectAge < 0 || effectAge > FINALE_EFFECT_MS) continue;
+            const origin = this._batchOrigin(batch);
+            effects.push({
+                ...batch,
+                status,
+                x: origin.x,
+                y: origin.y,
+                effectAge,
+                progress: Math.max(0, Math.min(1, effectAge / FINALE_EFFECT_MS)),
+            });
+        }
+        return effects.sort((a, b) => (a.startedAt - b.startedAt) || a.id.localeCompare(b.id));
+    }
+
+    latestScreenSummary(now = Date.now()) {
+        let latest = null;
+        for (const batch of this.state.batches.values()) {
+            const age = this._batchSummaryAge(batch, now);
+            if (age < 0 || age > SCREEN_SUMMARY_MS) continue;
+            if (!latest || (batch.startedAt || 0) > (latest.startedAt || 0)) latest = batch;
+        }
+        return latest;
+    }
+
+    _batchFinaleDelay(batch) {
+        const status = batch?.status || 'unknown';
+        if (status === 'failed' || this.motionScale === 0) return 0;
+        return DEPARTURE_MS * 0.96;
+    }
+
+    _batchClockStart(batch, now = Date.now()) {
+        if ((batch?.status || 'unknown') === 'failed') {
+            return batch.statusUpdatedAt || batch.startedAt || now;
+        }
+        return batch?.startedAt || now;
+    }
+
+    _batchSummaryAge(batch, now = Date.now()) {
+        return now - this._batchClockStart(batch, now) - this._batchFinaleDelay(batch);
+    }
+
+    _batchOrigin(batch) {
+        const points = [];
+        for (const shipId of batch.shipIds || []) {
+            const ship = this.state.ships.get(shipId);
+            if (!ship) continue;
+            if ((batch.status || 'unknown') === 'failed') {
+                const berth = BERTHS[ship.berthIndex % BERTHS.length];
+                points.push(toWorld(berth.tileX, berth.tileY));
+                continue;
+            }
+            const lane = SEA_LANES[ship.laneIndex % SEA_LANES.length];
+            const endpoint = lane?.[lane.length - 1];
+            if (endpoint) points.push(toWorld(endpoint.tileX, endpoint.tileY));
+        }
+        if (points.length === 0) return toWorld(HARBOR_FINALE_TILE.tileX, HARBOR_FINALE_TILE.tileY);
+        const sum = points.reduce((acc, point) => ({
+            x: acc.x + point.x,
+            y: acc.y + point.y,
+        }), { x: 0, y: 0 });
+        return {
+            x: sum.x / points.length,
+            y: sum.y / points.length,
+        };
+    }
+
     draw(ctx, drawable, zoom = 1) {
         if (!drawable?.payload) return;
         if (drawable.payload.type === 'cluster') {
@@ -393,6 +664,70 @@ export class HarborTraffic {
             return;
         }
         this._drawShip(ctx, drawable.payload, zoom);
+    }
+
+    drawFinaleEffects(ctx, now = Date.now()) {
+        for (const effect of this.activeFinaleEffects(now)) {
+            this._drawFinaleEffect(ctx, effect);
+        }
+    }
+
+    drawScreenSummary(ctx, canvas, camera, now = Date.now()) {
+        const summary = this.latestScreenSummary(now);
+        if (!summary || !canvas) return;
+        const style = PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown;
+        const age = this._batchSummaryAge(summary, now);
+        const fade = this.motionScale === 0
+            ? 1
+            : Math.min(1, Math.max(0, (SCREEN_SUMMARY_MS - age) / 1600));
+        if (fade <= 0) return;
+
+        const project = projectName(summary.project);
+        const count = Number(summary.shipCount || 0);
+        const commitLabel = count === 1 ? '1 commit' : `${count} commits`;
+        const title = summary.status === 'success'
+            ? `${commitLabel} successfully pushed`
+            : summary.status === 'failed'
+                ? 'Push failed'
+                : `${commitLabel} sent to sea`;
+        const target = summary.targetRef ? ` -> ${summary.targetRef}` : '';
+        const detail = `${project}${target}`;
+        const width = Math.min(350, Math.max(236, Math.max(title.length, detail.length) * 6.4 + 34));
+        const height = 58;
+        const origin = this._batchOrigin(summary);
+        const screen = camera?.worldToScreen
+            ? camera.worldToScreen(origin.x, origin.y)
+            : { x: canvas.width - width - 18, y: 72 };
+        const minimapW = 150 + 28;
+        const minimapH = 150 + 28;
+        const maxX = canvas.width - width - 14;
+        const maxY = canvas.height - height - 14;
+        let x = Math.round(Math.max(14, Math.min(maxX, screen.x - width / 2)));
+        let y = Math.round(Math.max(14, Math.min(maxY, screen.y - height - 26)));
+        if (x + width > canvas.width - minimapW && y + height > canvas.height - minimapH) {
+            y = Math.max(14, canvas.height - minimapH - height - 12);
+        }
+
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = style.panel;
+        ctx.fillRect(x, y, width, height);
+        ctx.strokeStyle = style.accent;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+        ctx.fillStyle = style.accent;
+        ctx.fillRect(x, y, 4, height);
+
+        ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText(shortenLabel(title, 46), x + 14, y + 10);
+        ctx.fillStyle = 'rgba(244, 232, 190, 0.92)';
+        ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.fillText(shortenLabel(detail, 44), x + 14, y + 29);
+        ctx.fillStyle = 'rgba(244, 232, 190, 0.58)';
+        ctx.fillRect(x + 14, y + 46, Math.max(34, width - 28), 1);
+        ctx.restore();
     }
 
     _shipDrawable(ship, now) {
@@ -431,13 +766,14 @@ export class HarborTraffic {
                 tailX: ship.tailX,
                 tailY: ship.tailY,
                 progress,
+                elapsed: Math.max(0, now - (ship.departStartedAt || now)),
             },
         };
     }
 
     _drawShip(ctx, ship, zoom) {
         const alpha = ship.status === 'departing'
-            ? Math.max(0, Math.min(1, 1 - Math.max(0, ship.progress - 0.82) / 0.18))
+            ? this._departureAlpha(ship)
             : 1;
         if (alpha <= 0.02) return;
 
@@ -458,7 +794,17 @@ export class HarborTraffic {
         if (ship.status === 'docked') {
             this._drawMooringTick(ctx, ship, zoom);
         }
+        if (ship.status === 'docked' && ship.pushStatus === 'failed') {
+            this._drawFailedPushMark(ctx, ship, zoom);
+        }
         this._drawCommitPennant(ctx, ship, zoom, alpha);
+    }
+
+    _departureAlpha(ship) {
+        const elapsed = Number.isFinite(ship.elapsed) ? ship.elapsed : ship.progress * DEPARTURE_MS;
+        const fadeStart = DEPARTURE_MS + FADE_DELAY_MS;
+        if (elapsed <= fadeStart) return 1;
+        return Math.max(0, Math.min(1, 1 - (elapsed - fadeStart) / EXIT_FADE_MS));
     }
 
     _drawDockedShipWake(ctx, ship, zoom) {
@@ -514,15 +860,40 @@ export class HarborTraffic {
 
     _drawMooringTick(ctx, ship, zoom) {
         const s = 1 / Math.max(1, zoom || 1);
+        const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
         ctx.save();
-        ctx.fillStyle = 'rgba(251, 224, 141, 0.82)';
+        ctx.fillStyle = ship.pushStatus ? style.accent : 'rgba(251, 224, 141, 0.82)';
         ctx.fillRect(Math.round(ship.x + 17 * s), Math.round(ship.y - 23 * s), Math.max(1, Math.round(2 * s)), Math.max(1, Math.round(5 * s)));
+        ctx.restore();
+    }
+
+    _drawFailedPushMark(ctx, ship, zoom) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const pulse = this.motionScale > 0
+            ? 0.55 + Math.sin(this.frame * 0.16 + ship.berthIndex) * 0.18
+            : 0.62;
+        ctx.save();
+        ctx.globalAlpha = pulse;
+        ctx.strokeStyle = PUSH_STATUS_STYLE.failed.accent;
+        ctx.lineWidth = Math.max(1, Math.round(2 * s));
+        const cx = Math.round(ship.x + 18 * s);
+        const cy = Math.round(ship.y - 36 * s);
+        ctx.beginPath();
+        ctx.arc(cx, cy, 7 * s, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx - 3 * s, cy - 3 * s);
+        ctx.lineTo(cx + 3 * s, cy + 3 * s);
+        ctx.moveTo(cx + 3 * s, cy - 3 * s);
+        ctx.lineTo(cx - 3 * s, cy + 3 * s);
+        ctx.stroke();
         ctx.restore();
     }
 
     _drawCommitPennant(ctx, ship, zoom, alpha = 1) {
         const s = 1 / Math.max(1, zoom || 1);
         const label = shortenLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS);
+        const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
         const textSize = Math.max(7, Math.round(8 * s));
         const width = Math.max(42 * s, Math.min(142 * s, label.length * textSize * 0.62 + 12 * s));
         const x = Math.round(ship.x - width / 2);
@@ -532,15 +903,82 @@ export class HarborTraffic {
         ctx.globalAlpha = 0.94 * alpha;
         ctx.fillStyle = 'rgba(24, 42, 39, 0.9)';
         ctx.fillRect(x, y, Math.round(width), Math.round(height));
-        ctx.strokeStyle = 'rgba(246, 207, 96, 0.9)';
+        ctx.strokeStyle = ship.pushStatus ? style.accent : 'rgba(246, 207, 96, 0.9)';
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
-        ctx.fillStyle = '#f6cf60';
+        ctx.fillStyle = ship.pushStatus ? style.accent : '#f6cf60';
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, Math.round(ship.x), Math.round(y + height / 2 + 0.5));
-        ctx.fillStyle = 'rgba(108, 219, 148, 0.9)';
+        ctx.fillStyle = ship.pushStatus ? style.accent : 'rgba(108, 219, 148, 0.9)';
         ctx.fillRect(Math.round(ship.x - 22 * s), Math.round(ship.y - 31 * s), Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
+        ctx.restore();
+    }
+
+    _drawFinaleEffect(ctx, effect) {
+        const style = PUSH_STATUS_STYLE[effect.status] || PUSH_STATUS_STYLE.unknown;
+        const progress = Math.max(0, Math.min(1, effect.progress || 0));
+        const alpha = this.motionScale === 0 ? 0.78 : Math.max(0, 1 - progress);
+        const wave = this.motionScale === 0 ? 0.55 : Math.sin(progress * Math.PI);
+        const summary = toWorld(HARBOR_SUMMARY_TILE.tileX, HARBOR_SUMMARY_TILE.tileY);
+        const count = Math.max(1, Number(effect.shipCount || 1));
+        const intensity = Math.max(1, Math.min(4, Math.sqrt(count)));
+        const burstCount = Math.min(28, 8 + count * 2);
+
+        ctx.save();
+        ctx.globalCompositeOperation = effect.status === 'failed' ? 'source-over' : 'screen';
+        ctx.globalAlpha = Math.max(0.18, alpha);
+        ctx.strokeStyle = style.accent;
+        ctx.fillStyle = style.glow;
+        ctx.lineWidth = 2;
+
+        if (effect.status === 'failed') {
+            const radius = 20 + wave * 12;
+            ctx.beginPath();
+            ctx.arc(effect.x, effect.y - 24, radius, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.moveTo(effect.x - 11, effect.y - 35);
+            ctx.lineTo(effect.x + 11, effect.y - 13);
+            ctx.moveTo(effect.x + 11, effect.y - 35);
+            ctx.lineTo(effect.x - 11, effect.y - 13);
+            ctx.stroke();
+        } else {
+            for (let i = 0; i < Math.ceil(intensity) + 1; i++) {
+                const ringProgress = Math.max(0, Math.min(1, progress * 1.18 - i * 0.14));
+                const ring = 24 + ringProgress * (54 + intensity * 14);
+                ctx.globalAlpha = Math.max(0.08, alpha * (1 - i * 0.16));
+                ctx.beginPath();
+                ctx.ellipse(effect.x, effect.y, ring, ring * 0.34, -0.22, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.globalAlpha = Math.max(0.10, alpha * 0.55);
+            ctx.beginPath();
+            ctx.moveTo(summary.x - 8, summary.y - 72);
+            ctx.lineTo(effect.x + 72, effect.y - 18);
+            ctx.lineTo(effect.x - 18, effect.y + 12);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.globalAlpha = Math.max(0.22, alpha * 0.88);
+            for (let i = 0; i < burstCount; i++) {
+                const seed = stableHash(`${effect.id}:${i}`);
+                const angle = (seed % 628) / 100;
+                const distance = 20 + ((seed >> 3) % 52) * (0.45 + progress * 0.7) * intensity / 2;
+                const size = 1 + (seed % 3);
+                const x = effect.x + Math.cos(angle) * distance;
+                const y = effect.y + Math.sin(angle) * distance * 0.38;
+                ctx.fillRect(Math.round(x), Math.round(y), size, size);
+            }
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = Math.max(0.48, alpha);
+        ctx.fillStyle = style.accent;
+        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(style.shortLabel, Math.round(effect.x), Math.round(effect.y - 52));
         ctx.restore();
     }
 

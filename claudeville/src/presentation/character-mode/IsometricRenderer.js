@@ -855,6 +855,7 @@ export class IsometricRenderer {
         const canvas = this.canvas;
         if (!ctx || !canvas) return;
         if (!canvas.width || !canvas.height) return;
+        const renderNow = Date.now();
 
         // Clear
         ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -953,6 +954,7 @@ export class IsometricRenderer {
 
         // 5. Particles
         this.particleSystem.draw(ctx);
+        this.harborTraffic?.drawFinaleEffects(ctx, renderNow);
 
         // 6. Screen-space atmosphere, before text overlays. This preserves the
         // diorama mood without lowering final contrast on labels or status badges.
@@ -973,6 +975,7 @@ export class IsometricRenderer {
         // Reset transform for UI
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         SpriteRenderer.disableSmoothing(ctx);
+        this.harborTraffic?.drawScreenSummary(ctx, canvas, this.camera, renderNow);
 
         // Minimap
         this.minimap.draw(this.world, this.camera, canvas, {
