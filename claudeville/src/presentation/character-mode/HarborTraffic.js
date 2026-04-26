@@ -5,6 +5,7 @@ const MAX_VISIBLE_SHIPS = 8;
 const DEPARTURE_MS = 14000;
 const EXIT_HOLD_MS = 1200;
 const HISTORICAL_EVENT_GRACE_MS = 5000;
+const UNPAIRED_COMMIT_REPLAY_MS = 2 * 60 * 1000;
 
 const BERTHS = [
     { tileX: 37.2, tileY: 14.6 },
@@ -65,6 +66,53 @@ function cloneState(previous = {}) {
         seenEventIds,
         ships,
         nextSequence: Number.isFinite(previous.nextSequence) ? previous.nextSequence : ships.size,
+    };
+}
+
+function eventAgeMs(event, now) {
+    if (!Number.isFinite(event?.timestamp) || event.timestamp <= 0) return Infinity;
+    return Math.max(0, now - event.timestamp);
+}
+
+function latestPushTimesByProject(events) {
+    const latest = new Map();
+    for (const event of events) {
+        if (event?.type !== 'push' || !event.project || !Number.isFinite(event.timestamp) || event.timestamp <= 0) continue;
+        const previous = latest.get(event.project) || 0;
+        if (event.timestamp > previous) latest.set(event.project, event.timestamp);
+    }
+    return latest;
+}
+
+function isHistoricalCommittedBeforePush(event, latestPushTimes) {
+    const latestPush = latestPushTimes.get(event.project) || 0;
+    return latestPush > 0 && Number.isFinite(event.timestamp) && event.timestamp <= latestPush;
+}
+
+function shouldIgnoreHistoricalCommit(event, latestPushTimes, now, staleReplayWindowMs) {
+    if (isHistoricalCommittedBeforePush(event, latestPushTimes)) return true;
+    if (eventAgeMs(event, now) <= staleReplayWindowMs) return false;
+    return !latestPushTimes.has(event.project);
+}
+
+export function snapshotHarborTrafficState(state) {
+    const cloned = cloneState(state);
+    return {
+        nextSequence: cloned.nextSequence,
+        seenEventIds: [...cloned.seenEventIds].sort(),
+        ships: [...cloned.ships.values()]
+            .map(ship => ({
+                id: ship.id,
+                project: ship.project,
+                sha: ship.sha || '',
+                status: ship.status,
+                berthIndex: ship.berthIndex,
+                laneIndex: ship.laneIndex,
+                eventTime: ship.eventTime,
+                departEventId: ship.departEventId || null,
+                departStartedAt: ship.departStartedAt || null,
+            }))
+            .sort((a, b) => (a.eventTime - b.eventTime) || a.id.localeCompare(b.id)),
     };
 }
 
@@ -136,16 +184,21 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     const state = cloneState(previous);
     const now = Number.isFinite(options.now) ? options.now : Date.now();
     const motionScale = options.motionScale === 0 ? 0 : 1;
+    const staleReplayWindowMs = Number.isFinite(options.staleReplayWindowMs)
+        ? Math.max(0, options.staleReplayWindowMs)
+        : UNPAIRED_COMMIT_REPLAY_MS;
 
     const sorted = [...(events || [])]
         .filter(event => event?.id && event?.type && event?.project)
         .sort((a, b) => (a.timestamp - b.timestamp) || a.id.localeCompare(b.id));
+    const latestPushTimes = latestPushTimesByProject(sorted);
 
     for (const event of sorted) {
         if (state.seenEventIds.has(event.id)) continue;
         state.seenEventIds.add(event.id);
 
         if (event.type === 'commit') {
+            if (shouldIgnoreHistoricalCommit(event, latestPushTimes, now, staleReplayWindowMs)) continue;
             const berthIndex = state.nextSequence % BERTHS.length;
             const laneIndex = stableHash(`${event.project}:${event.id}`) % SEA_LANES.length;
             state.nextSequence++;
@@ -167,8 +220,10 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ? Math.max(0, now - event.timestamp)
                 : 0;
             const skipDepartureAnimation = motionScale === 0 || eventAge > HISTORICAL_EVENT_GRACE_MS;
+            const pushTime = Number.isFinite(event.timestamp) && event.timestamp > 0 ? event.timestamp : 0;
             for (const ship of state.ships.values()) {
                 if (ship.project !== event.project || ship.status !== 'docked') continue;
+                if (pushTime > 0 && Number.isFinite(ship.eventTime) && ship.eventTime > pushTime) continue;
                 ship.status = 'departing';
                 ship.departEventId = event.id;
                 ship.departStartedAt = skipDepartureAnimation
