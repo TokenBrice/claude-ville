@@ -3,13 +3,14 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
+import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { SpriteSheet, dirFromVelocity } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
 
 // Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
-const SPRITE_HIT_TOP = -44;
-const SPRITE_HIT_BOTTOM = 34;
+const SPRITE_HIT_TOP = -72;
+const SPRITE_HIT_BOTTOM = 24;
 const STATUS_VISUALS = {
     [AgentStatus.WORKING]: {
         color: THEME.working,
@@ -39,9 +40,9 @@ const STATUS_VISUALS = {
 
 // Accessory id lists per provider — used by _chooseAccessory().
 const PROVIDER_ACCESSORIES = {
-    claude: ['mageHood', 'scholarCap', 'goldCirclet'],
-    codex:  ['goggles', 'toolBand', 'rogueMask'],
-    gemini: ['starCrown', 'oracleVeil', 'moonBand'],
+    claude: ['mageHood', 'scholarCap'],
+    codex:  ['goggles', 'toolBand'],
+    gemini: ['starCrown', 'oracleVeil'],
 };
 const PROVIDER_TRIM = {
     claude: '#c7a6ff',
@@ -227,12 +228,13 @@ export class AgentSprite {
         this.motionScale = scale;
     }
 
-    update(particleSystem) {
-        this.statusAnim += 0.05 * this.motionScale;
+    update(particleSystem, dt = 16) {
+        const frameScale = Math.max(0, Math.min(3, dt / 16));
+        this.statusAnim += 0.05 * this.motionScale * frameScale;
 
         // Handle chatting state
         if (this.chatting) {
-            this.chatBubbleAnim += 0.06;
+            this.chatBubbleAnim += 0.06 * frameScale;
             return; // Do not move while chatting
         }
 
@@ -278,7 +280,7 @@ export class AgentSprite {
         }
 
         if (this.waitTimer > 0) {
-            this.waitTimer--;
+            this.waitTimer -= frameScale;
             if (this.waitTimer <= 0) {
                 this._pickTarget();
             }
@@ -294,8 +296,9 @@ export class AgentSprite {
         const dy = this.targetY - this.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
         const speed = this._speedForState();
+        const step = speed * frameScale;
 
-        if (dist < speed) {
+        if (dist < step) {
             this.x = this.targetX;
             this.y = this.targetY;
             if (this.waypoints && this.waypoints.length > 0) {
@@ -312,11 +315,11 @@ export class AgentSprite {
             return;
         }
 
-        this.x += (dx / dist) * speed;
-        this.y += (dy / dist) * speed;
-        this.walkFrame += 0.15;
+        this.x += (dx / dist) * step;
+        this.y += (dy / dist) * step;
+        this.walkFrame += 0.15 * frameScale;
 
-        if (this.motionScale > 0 && particleSystem && this.agent.status === AgentStatus.WORKING && Math.random() < 0.3) {
+        if (this.motionScale > 0 && particleSystem && this.agent.status === AgentStatus.WORKING && Math.random() < 0.3 * frameScale) {
             particleSystem.spawn('footstep', this.x, this.y + 16, 1);
         }
 
@@ -326,9 +329,6 @@ export class AgentSprite {
 
         // Animation state and frame tick.
         this.animState = this.moving ? 'walk' : 'idle';
-        // dt approximation: legacy code was frame-driven with no real dt parameter,
-        // so 16ms per frame (≈60fps) is a reasonable constant.
-        const dt = 16;
         this.frameTimer += dt;
         const fps = this.animState === 'walk' ? 8 : 2;
         const tick = 1000 / fps;
@@ -359,13 +359,21 @@ export class AgentSprite {
 
         if (!this.compositor) return;       // defensive: no compositor → render nothing
 
-        if (!this.spriteCanvas) {
-            const provider = this._providerKey();
-            const variant = this._hashVariant();
-            const accessory = this._chooseAccessory();
-            this.spriteCanvas = this.compositor.spriteFor(provider, variant, accessory);
+        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
+        const provider = this._providerKey();
+        const variant = this._hashVariant();
+        const spriteId = identity.spriteId || `agent.${provider}.base`;
+        const paletteKey = identity.paletteKey || provider;
+        const accessory = identity.effortAccessory || this._chooseAccessory();
+        const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}`;
+
+        if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
+            this.spriteCanvas = this.compositor.spriteFor(spriteId, paletteKey, variant, accessory);
             if (this.spriteCanvas) {
-                this.spriteSheet = new SpriteSheet(this.spriteCanvas, 64);
+                this.spriteSheet = new SpriteSheet(this.spriteCanvas);
+                this._spriteProfileKey = profileKey;
+                this._silhouetteCellCache.clear();
+                this._cellBoundsCache.clear();
             }
         }
 
@@ -386,12 +394,17 @@ export class AgentSprite {
 
         const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
         const cellSize = this.spriteSheet?.cellSize || 92;
+        const bounds = this._getCellContentBounds(cell);
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
         const bobY = this.animState === 'idle'
             ? Math.round(Math.sin(this.frame * 0.4) * 0.6)
             : 0;
-        const dx = Math.round(this.x - cellSize / 2);
-        const dy = Math.round(this.y - (cellSize - 12)) + bobY;   // 12px head clearance, anchor at leg-bottom
+        const drawX = this._snapWorldToScreenPixel(this.x);
+        const drawY = this._snapWorldToScreenPixel(this.y);
+        const contentCenterX = (bounds.minX + bounds.maxX) / 2;
+        const dx = drawX - contentCenterX;
+        const dy = drawY - bounds.maxY + 2 + bobY;
+        const contentTopY = dy + bounds.minY;
         this._drawSpriteSilhouette(ctx, cell, dx, dy);
         ctx.drawImage(
             this.spriteCanvas,
@@ -407,12 +420,12 @@ export class AgentSprite {
             ctx.ellipse(Math.round(this.x), Math.round(this.y - 2), 22, 8, 0, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
-            this._drawFocusPillar(ctx, cellSize);
+            this._drawFocusPillar(ctx, contentTopY);
             this._drawSelectionRing(ctx);
         }
 
         // Status beacon above head — at-a-glance state without relying on tiny speech bubbles.
-        this._drawStatusDot(ctx, cellSize);
+        this._drawStatusDot(ctx, contentTopY);
 
         // Chat bubble overlay (if chatting).
         // Per-agent floating text bubbles are deferred to Phase 4; the chat
@@ -428,11 +441,11 @@ export class AgentSprite {
         this._drawNameTag(ctx);
     }
 
-    _drawStatusDot(ctx, cellSize) {
+    _drawStatusDot(ctx, contentTopY) {
         const visual = this._statusVisual();
         if (!visual) return;
         const s = 1 / (this._zoom || 1);
-        const y = Math.round(this.y - cellSize + 3);
+        const y = Math.round(contentTopY - 8);
         ctx.save();
         ctx.translate(Math.round(this.x), y);
         ctx.scale(s, s);
@@ -495,10 +508,10 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _drawFocusPillar(ctx, cellSize) {
+    _drawFocusPillar(ctx, contentTopY) {
         const visual = this._statusVisual();
         const trim = this._providerTrimColor();
-        const top = this.y - cellSize + 3;
+        const top = contentTopY - 6;
         const gradient = ctx.createLinearGradient(this.x, top, this.x, this.y + 8);
         gradient.addColorStop(0, this._rgba(trim, 0));
         gradient.addColorStop(0.34, this._rgba(trim, 0.22));
@@ -517,21 +530,75 @@ export class AgentSprite {
     }
 
     _drawSpriteSilhouette(ctx, cell, dx, dy) {
-        ctx.save();
-        ctx.globalAlpha = 0.54;
-        ctx.filter = 'brightness(0)';
+        const silhouette = this._getSilhouetteCell(cell);
+        if (!silhouette) return;
+        ctx.drawImage(silhouette, dx - 2, dy - 2);
+    }
+
+    _getSilhouetteCell(cell) {
+        if (!this.spriteCanvas) return null;
+        const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
+        const cached = this._silhouetteCellCache.get(key);
+        if (cached) return cached;
+
+        const pad = 2;
+        const black = document.createElement('canvas');
+        black.width = cell.sw + pad * 2;
+        black.height = cell.sh + pad * 2;
+        const blackCtx = black.getContext('2d');
+        blackCtx.imageSmoothingEnabled = false;
+        blackCtx.drawImage(this.spriteCanvas, cell.sx, cell.sy, cell.sw, cell.sh, pad, pad, cell.sw, cell.sh);
+        blackCtx.globalCompositeOperation = 'source-in';
+        blackCtx.fillStyle = 'black';
+        blackCtx.fillRect(0, 0, black.width, black.height);
+
+        const outline = document.createElement('canvas');
+        outline.width = black.width;
+        outline.height = black.height;
+        const outlineCtx = outline.getContext('2d');
+        outlineCtx.imageSmoothingEnabled = false;
+        outlineCtx.globalAlpha = 0.54;
         const offsets = [
             [-2, 0], [2, 0], [0, -2], [0, 2],
             [-1, -1], [1, -1], [-1, 1], [1, 1],
         ];
         for (const [ox, oy] of offsets) {
-            ctx.drawImage(
-                this.spriteCanvas,
-                cell.sx, cell.sy, cell.sw, cell.sh,
-                dx + ox, dy + oy, cell.sw, cell.sh
-            );
+            outlineCtx.drawImage(black, ox, oy);
         }
-        ctx.restore();
+        this._silhouetteCellCache.set(key, outline);
+        return outline;
+    }
+
+    _getCellContentBounds(cell) {
+        const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
+        const cached = this._cellBoundsCache.get(key);
+        if (cached) return cached;
+
+        const scratch = document.createElement('canvas');
+        scratch.width = cell.sw;
+        scratch.height = cell.sh;
+        const scratchCtx = scratch.getContext('2d', { willReadFrequently: true });
+        scratchCtx.imageSmoothingEnabled = false;
+        scratchCtx.drawImage(this.spriteCanvas, cell.sx, cell.sy, cell.sw, cell.sh, 0, 0, cell.sw, cell.sh);
+        const data = scratchCtx.getImageData(0, 0, cell.sw, cell.sh).data;
+        let minX = cell.sw;
+        let minY = cell.sh;
+        let maxX = 0;
+        let maxY = 0;
+        for (let y = 0; y < cell.sh; y++) {
+            for (let x = 0; x < cell.sw; x++) {
+                if (data[(y * cell.sw + x) * 4 + 3] < 16) continue;
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+            }
+        }
+        const bounds = maxX > minX && maxY > minY
+            ? { minX, minY, maxX, maxY }
+            : { minX: 24, minY: 12, maxX: cell.sw - 24, maxY: cell.sh - 18 };
+        this._cellBoundsCache.set(key, bounds);
+        return bounds;
     }
 
     _statusVisual() {
@@ -545,7 +612,6 @@ export class AgentSprite {
 
     _drawStatusRibbon(ctx, visual) {
         const s = 1 / (this._zoom || 1);
-        if (!this.selected && this._zoom < 2.5) return;
         ctx.save();
         ctx.translate(this.x, this.y);
         ctx.scale(s, s);
@@ -941,7 +1007,8 @@ export class AgentSprite {
     }
 
     _providerTrimColor() {
-        return PROVIDER_TRIM[this._providerKey()] || PROVIDER_TRIM.default;
+        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
+        return identity.trim?.[0] || PROVIDER_TRIM[this._providerKey()] || PROVIDER_TRIM.default;
     }
 
     _rgba(color, alpha) {

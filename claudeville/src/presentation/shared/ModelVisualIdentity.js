@@ -4,6 +4,8 @@ const DEFAULT_CODEX_IDENTITY = Object.freeze({
     modelTier: null,
     label: 'Codex',
     shortLabel: 'Codex',
+    spriteId: 'agent.codex.base',
+    paletteKey: 'codex',
     trim: ['#7be3d7', '#55c7f0', '#8ee88e'],
     accent: ['#bff7ee', '#6ee7d8', '#5ad6ff'],
     minimapColor: '#7be3d7',
@@ -15,6 +17,13 @@ const EFFORT_LABELS = Object.freeze({
     medium: 'med',
     high: 'high',
     xhigh: 'xhigh',
+});
+
+const EFFORT_ACCESSORIES = Object.freeze({
+    low: 'effortLow',
+    medium: 'effortMedium',
+    high: 'effortHigh',
+    xhigh: 'effortXhigh',
 });
 
 function normalizeModel(model) {
@@ -38,6 +47,41 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     const normalizedModel = normalizeModel(model);
     const normalizedProvider = String(provider || '').toLowerCase();
     const effortTier = normalizeReasoningEffort(effort);
+    const effortAccessory = EFFORT_ACCESSORIES[effortTier] || null;
+
+    if (normalizedModel.includes('opus')) {
+        return {
+            family: 'claude',
+            modelClass: 'opus',
+            modelTier: 'apex',
+            label: 'Claude Opus',
+            shortLabel: 'Opus',
+            effortTier,
+            effortAccessory,
+            spriteId: 'agent.claude.opus',
+            paletteKey: 'claude',
+            trim: ['#ffe7a8', '#c8a3ff', '#f4b15f'],
+            accent: ['#fff4cf', '#d8bcff', '#ffca7a'],
+            minimapColor: '#ffe7a8',
+        };
+    }
+
+    if (normalizedModel.includes('sonnet') || normalizedProvider.includes('claude')) {
+        return {
+            family: 'claude',
+            modelClass: 'sonnet',
+            modelTier: 'balanced',
+            label: 'Claude Sonnet',
+            shortLabel: normalizedModel.includes('sonnet') ? 'Sonnet' : 'Claude',
+            effortTier,
+            effortAccessory,
+            spriteId: 'agent.claude.sonnet',
+            paletteKey: 'claude',
+            trim: ['#f2d36b', '#b7ccff', '#e9b85f'],
+            accent: ['#ffe39a', '#dfe8ff', '#f7bf6d'],
+            minimapColor: '#f2d36b',
+        };
+    }
 
     if (normalizedModel.includes('gpt-5-3-codex-spark')) {
         return {
@@ -47,6 +91,9 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.3 Codex Spark',
             shortLabel: '5.3 Spark',
             effortTier,
+            effortAccessory,
+            spriteId: 'agent.codex.gpt53spark',
+            paletteKey: 'codex',
             trim: ['#f8e36f', '#87f7ff', '#c5ff72'],
             accent: ['#fff6a3', '#55e7ff', '#b8ff5c'],
             minimapColor: '#f8e36f',
@@ -61,9 +108,29 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.5',
             shortLabel: '5.5',
             effortTier,
+            effortAccessory,
+            spriteId: 'agent.codex.gpt55',
+            paletteKey: 'codex',
             trim: ['#fff1b8', '#7be3d7', '#f8c45f'],
             accent: ['#ffffff', '#bff7ee', '#ffd98a'],
             minimapColor: '#fff1b8',
+        };
+    }
+
+    if (normalizedModel.includes('gpt-5-4') || normalizedModel.includes('gpt-5.4')) {
+        return {
+            family: 'codex',
+            modelClass: 'gpt54',
+            modelTier: 'senior',
+            label: 'GPT-5.4',
+            shortLabel: '5.4',
+            effortTier,
+            effortAccessory,
+            spriteId: 'agent.codex.gpt54',
+            paletteKey: 'codex',
+            trim: ['#8bd6ff', '#7be3d7', '#a9b7ff'],
+            accent: ['#d5f4ff', '#95f0df', '#d3dcff'],
+            minimapColor: '#8bd6ff',
         };
     }
 
@@ -71,6 +138,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         return {
             ...DEFAULT_CODEX_IDENTITY,
             effortTier,
+            effortAccessory,
         };
     }
 
@@ -81,6 +149,9 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         label: String(model || ''),
         shortLabel: String(model || ''),
         effortTier,
+        effortAccessory,
+        spriteId: null,
+        paletteKey: null,
         trim: null,
         accent: null,
         minimapColor: null,
