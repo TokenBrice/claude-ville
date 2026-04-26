@@ -20,15 +20,15 @@ export const WATER_POLYLINES = [
     },
     {
         kind: 'moat',
-        width: 4.4,
-        points: [[29, 20], [33, 20], [37, 21], [39, 22]],
+        width: 2.6,
+        points: [[31, 22], [34, 22], [37, 22], [39, 23]],
     },
     // Main river through City Center. It separates the north civic landmarks
     // from the task-board/forge side, then drains into the harbor sea.
     {
-        kind: 'river',
-        width: 1.18,
-        points: [[5, 23], [10, 23], [15, 24], [19, 24], [23, 23], [28, 22], [33, 21], [39, 20]],
+        kind: 'moat',
+        width: 2.15,
+        points: [[0, 25], [9, 25], [14, 25], [22, 25], [30, 24], [35, 23], [39, 22]],
     },
 ];
 
@@ -53,10 +53,10 @@ export const WATER_BASINS = [
     },
     {
         kind: 'moat',
-        centerX: 36.5,
-        centerY: 21.4,
-        radiusX: 8.2,
-        radiusY: 7.8,
+        centerX: 37.3,
+        centerY: 21.7,
+        radiusX: 6.8,
+        radiusY: 7.4,
         edgeNoise: 0.16,
     },
     {
@@ -75,21 +75,15 @@ export const WATER_BASINS = [
 // `orientation` is optional; when omitted the engine derives it from neighbor
 // water tiles.
 export const BRIDGE_HINTS = [
-    { tileX: 11, tileY: 23, orientation: 'NS' }, // west river crossing toward Portal and Token Mine
-    { tileX: 17, tileY: 24, orientation: 'NS' }, // civic bridge into the southern plaza
-    { tileX: 20, tileY: 22, orientation: 'NS' }, // command-center front crossing
-    { tileX: 22, tileY: 23, orientation: 'NS' }, // Command/Archive bridge into Task Board
+    { tileX: 14, tileY: 25, orientation: 'NS' }, // Portal/Mine bridge across the production river
+    { tileX: 22, tileY: 25, orientation: 'NS' }, // Command/Tasks bridge into the production row
 ];
 
 // Harbor decks are water tiles with dock planks. They are intentionally
 // separate from BRIDGE_HINTS so river crossings and harbor decking stay distinct.
 export const HARBOR_DOCK_TILES = [
-    // South quay/causeway: directly touches the lighthouse entrance while
-    // staying just outside the watchtower footprint (34..36, 14..18).
-    { tileX: 25, tileY: 19, orientation: 'EW' },
-    { tileX: 26, tileY: 19, orientation: 'EW' },
-    { tileX: 27, tileY: 19, orientation: 'EW' },
-    { tileX: 28, tileY: 19, orientation: 'EW' },
+    // Lighthouse causeway: a narrow bridge from the archive bank to the
+    // harbor docks, separate from the wider south river crossings.
     { tileX: 29, tileY: 19, orientation: 'EW' },
     { tileX: 30, tileY: 19, orientation: 'EW' },
     { tileX: 31, tileY: 19, orientation: 'EW' },
@@ -108,26 +102,26 @@ export const HARBOR_DOCK_TILES = [
     { tileX: 37, tileY: 16, orientation: 'NS' },
     { tileX: 37, tileY: 17, orientation: 'NS' },
     { tileX: 37, tileY: 18, orientation: 'NS' },
+    { tileX: 38, tileY: 17, orientation: 'EW' },
     { tileX: 39, tileY: 15, orientation: 'NS' },
     { tileX: 39, tileY: 16, orientation: 'NS' },
     { tileX: 39, tileY: 17, orientation: 'NS' },
     { tileX: 39, tileY: 18, orientation: 'NS' },
+    { tileX: 38, tileY: 20, orientation: 'EW' },
     { tileX: 39, tileY: 20, orientation: 'NS' },
     { tileX: 39, tileY: 21, orientation: 'NS' },
     { tileX: 39, tileY: 22, orientation: 'NS' },
 
     // Harbor mouth decking: explicit docks avoid the bridge-span slab that
     // would otherwise cover the bay.
-    { tileX: 28, tileY: 22, orientation: 'EW' },
-    { tileX: 28, tileY: 21, orientation: 'NS' },
-    { tileX: 29, tileY: 21, orientation: 'EW' },
-    { tileX: 29, tileY: 20, orientation: 'EW' },
-    { tileX: 30, tileY: 20, orientation: 'EW' },
-    { tileX: 31, tileY: 20, orientation: 'EW' },
     { tileX: 32, tileY: 20, orientation: 'EW' },
     { tileX: 33, tileY: 20, orientation: 'EW' },
     { tileX: 34, tileY: 20, orientation: 'EW' },
     { tileX: 35, tileY: 20, orientation: 'EW' },
+    { tileX: 32, tileY: 21, orientation: 'EW' },
+    { tileX: 33, tileY: 21, orientation: 'EW' },
+    { tileX: 34, tileY: 21, orientation: 'EW' },
+    { tileX: 35, tileY: 21, orientation: 'EW' },
 
     // Outer lower berth for boats entering from the river mouth.
     { tileX: 36, tileY: 21, orientation: 'EW' },
@@ -154,11 +148,11 @@ export const TREE_CLUSTERS = [
     { centerX: 7, centerY: 31, radiusX: 6.8, radiusY: 4.6, density: 0.60 },
     { centerX: 17, centerY: 32, radiusX: 5.8, radiusY: 3.6, density: 0.52 },
     { centerX: 28, centerY: 32, radiusX: 6.2, radiusY: 3.8, density: 0.52 },
-    { centerX: 33, centerY: 21, radiusX: 3.2, radiusY: 4.5, density: 0.42 },
-    { centerX: 13, centerY: 9, radiusX: 5.8, radiusY: 4.0, density: 0.52 },
+    { centerX: 33, centerY: 22, radiusX: 3.0, radiusY: 4.4, density: 0.30 },
+    { centerX: 10, centerY: 10, radiusX: 5.8, radiusY: 4.0, density: 0.50 },
     { centerX: 26, centerY: 7, radiusX: 4.8, radiusY: 3.5, density: 0.44 },
-    { centerX: 6, centerY: 19, radiusX: 4.8, radiusY: 4.8, density: 0.52 },
-    { centerX: 18, centerY: 9, radiusX: 4.2, radiusY: 2.9, density: 0.32 },
+    { centerX: 6, centerY: 20, radiusX: 4.8, radiusY: 4.8, density: 0.50 },
+    { centerX: 18, centerY: 10, radiusX: 4.2, radiusY: 2.9, density: 0.30 },
 ];
 
 // Static large boulders. Drawn Y-sorted (occlude behind agents).
@@ -182,11 +176,11 @@ export const BOULDERS = [
 // uniformly sprinkling props. Radius is radial falloff in tiles; the engine
 // clamps blocked/path/water/building tiles after applying these weights.
 export const VEGETATION_DISTRICTS = [
-    { name: 'north-grove', centerX: 13, centerY: 15, radius: 6.8, bushBoost: 0.025, grassBoost: 0.06, treeBoost: 0.05 },
-    { name: 'west-wilderness-frame', centerX: 7, centerY: 22, radius: 7.0, bushBoost: 0.04, grassBoost: 0.045, treeBoost: 0.07 },
-    { name: 'portal-grove', centerX: 15.5, centerY: 26.5, radius: 4.5, bushBoost: 0.035, grassBoost: 0.025, treeBoost: 0.02 },
-    { name: 'south-wildwood', centerX: 19, centerY: 35, radius: 12, bushBoost: 0.04, grassBoost: 0.05, treeBoost: 0.08 },
-    { name: 'harbor-windbreak', centerX: 33, centerY: 22, radius: 5.2, bushBoost: 0.028, grassBoost: 0.018, treeBoost: 0.012 },
+    { name: 'scholars-ridge', centerX: 17, centerY: 18, radius: 10.0, bushBoost: 0.022, grassBoost: 0.048, treeBoost: 0.040 },
+    { name: 'west-river-frame', centerX: 7, centerY: 22, radius: 7.0, bushBoost: 0.04, grassBoost: 0.045, treeBoost: 0.065 },
+    { name: 'portal-grove', centerX: 10.5, centerY: 28.5, radius: 5.0, bushBoost: 0.032, grassBoost: 0.023, treeBoost: 0.018 },
+    { name: 'south-wildwood', centerX: 22, centerY: 35, radius: 12, bushBoost: 0.04, grassBoost: 0.05, treeBoost: 0.08 },
+    { name: 'harbor-windbreak', centerX: 35, centerY: 22, radius: 5.2, bushBoost: 0.020, grassBoost: 0.014, treeBoost: 0.008 },
 ];
 
 // Shoreline accents are deterministic bands near water. They add readable
@@ -202,14 +196,14 @@ export const SHORELINE_VEGETATION = {
 // district density boosts. Strength is subtracted from generated scenery
 // density with radial falloff.
 export const SCENERY_CLEARINGS = [
-    { name: 'city-center', centerX: 20, centerY: 23.5, radius: 7.0, strength: 0.20 },
-    { name: 'harbor-stage', centerX: 36.5, centerY: 21, radius: 7.4, strength: 0.27 },
-    { name: 'forge-yard', centerX: 29, centerY: 27.5, radius: 4.5, strength: 0.12 },
-    { name: 'portal-yard', centerX: 15.5, centerY: 27, radius: 4.0, strength: 0.16 },
-    { name: 'mine-yard', centerX: 20, centerY: 28, radius: 3.8, strength: 0.14 },
-    { name: 'civic-bridge', centerX: 17, centerY: 24, radius: 3.5, strength: 0.22 },
-    { name: 'command-bridge', centerX: 22, centerY: 23, radius: 3.5, strength: 0.22 },
-    { name: 'harbor-bridge', centerX: 31, centerY: 21, radius: 3.8, strength: 0.22 },
+    { name: 'north-bank-civic', centerX: 20, centerY: 22, radius: 6.4, strength: 0.23 },
+    { name: 'observatory-terrace', centerX: 10, centerY: 19, radius: 4.8, strength: 0.20 },
+    { name: 'archive-terrace', centerX: 28, centerY: 18, radius: 4.8, strength: 0.18 },
+    { name: 'production-row', centerX: 22, centerY: 29.5, radius: 12.0, strength: 0.21 },
+    { name: 'harbor-stage', centerX: 37, centerY: 20.5, radius: 7.5, strength: 0.28 },
+    { name: 'portal-mine-bridge', centerX: 14, centerY: 24, radius: 3.5, strength: 0.24 },
+    { name: 'command-task-bridge', centerX: 22, centerY: 24, radius: 3.6, strength: 0.25 },
+    { name: 'harbor-mouth', centerX: 32, centerY: 21, radius: 4.0, strength: 0.24 },
 ];
 
 // Density thresholds for noise-driven flat features.

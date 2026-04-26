@@ -21,11 +21,11 @@ const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const DISTRICT_WASHES = [
-    { x: 20, y: 23, radiusX: 12, radiusY: 8, color: '#5f3e21', alpha: 0.11 },
-    { x: 35, y: 20, radiusX: 10, radiusY: 8, color: '#1e5b61', alpha: 0.14 },
-    { x: 15, y: 26, radiusX: 7, radiusY: 5, color: '#62471f', alpha: 0.10 },
-    { x: 14, y: 16, radiusX: 8, radiusY: 6, color: '#1f4e2a', alpha: 0.12 },
-    { x: 29, y: 31, radiusX: 10, radiusY: 8, color: '#243d29', alpha: 0.12 },
+    { x: 20, y: 22, radiusX: 10, radiusY: 6, color: '#654020', alpha: 0.12 },
+    { x: 37, y: 20, radiusX: 10, radiusY: 8, color: '#1e5b61', alpha: 0.15 },
+    { x: 10, y: 28, radiusX: 7, radiusY: 5, color: '#5f3a22', alpha: 0.10 },
+    { x: 18, y: 18, radiusX: 12, radiusY: 6, color: '#203f26', alpha: 0.12 },
+    { x: 22, y: 30, radiusX: 15, radiusY: 6, color: '#2f3323', alpha: 0.13 },
 ];
 const ANCIENT_RUINS = [
     { tileX: 37, tileY: 3, scale: 1.05 },
@@ -46,37 +46,38 @@ const COMMAND_CENTER_DECORATION = [
     { type: 'guardpost', localX: 2.5, localY: 2.5 },
 ];
 const AMBIENT_GROUND_PROPS = [
-    // Harbor/lighthouse: keep large piers in authored dock tiles so ships stay legible.
-    { tileX: 33.4, tileY: 16.2, type: 'harborCrates' },
-    { tileX: 32.5, tileY: 18.3, type: 'harborCrane' },
-    { tileX: 38.4, tileY: 20.4, type: 'harborCrates' },
-    { tileX: 40.2, tileY: 19.2, type: 'harborCrane' },
+    // Harbor/lighthouse: authored dock props make the harbor read as a
+    // separate commit-ship place while the lighthouse keeps Git routing.
+    { tileX: 35.0, tileY: 21.3, type: 'harborPier' },
+    { tileX: 34.2, tileY: 21.3, type: 'harborCrates' },
+    { tileX: 37.2, tileY: 21.8, type: 'harborCrates' },
+    { tileX: 34.0, tileY: 19.0, type: 'harborCrane' },
+    { tileX: 38.6, tileY: 20.6, type: 'harborCrane' },
 
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
-    { tileX: 29.0, tileY: 27.0, type: 'oreCart' },
-    { tileX: 32.4, tileY: 28.0, type: 'lantern' },
-    { tileX: 20.6, tileY: 27.8, type: 'oreCart' },
-    { tileX: 17.0, tileY: 30.8, type: 'lantern' },
-    { tileX: 21.0, tileY: 29.5, type: 'runestone' },
+    { tileX: 29.4, tileY: 30.7, type: 'oreCart' },
+    { tileX: 30.4, tileY: 30.6, type: 'lantern' },
+    { tileX: 18.3, tileY: 30.7, type: 'oreCart' },
+    { tileX: 12.0, tileY: 30.8, type: 'lantern' },
+    { tileX: 20.5, tileY: 30.4, type: 'runestone' },
+    { tileX: 26.5, tileY: 30.6, type: 'noticePillar' },
 
     // Civic core: utility props around the square, not scattered through the woods.
-    { tileX: 20.4, tileY: 22.6, type: 'well' },
-    { tileX: 17.4, tileY: 22.6, type: 'marketStall' },
-    { tileX: 25.4, tileY: 24.2, type: 'signpost' },
-    { tileX: 23.0, tileY: 22.6, type: 'scrollCrates' },
-    { tileX: 24.0, tileY: 24.6, type: 'noticePillar' },
-    { tileX: 26.6, tileY: 26.8, type: 'scrollCrates' },
-    { tileX: 22.0, tileY: 26.5, type: 'signpost' },
+    { tileX: 20.3, tileY: 22.4, type: 'well' },
+    { tileX: 17.1, tileY: 22.0, type: 'marketStall' },
+    { tileX: 22.8, tileY: 21.4, type: 'signpost' },
+    { tileX: 23.2, tileY: 19.0, type: 'scrollCrates' },
+    { tileX: 27.6, tileY: 19.8, type: 'noticePillar' },
 
     // Research edges: fewer, quieter accents near knowledge landmarks.
-    { tileX: 15.5, tileY: 17.4, type: 'lantern' },
-    { tileX: 22.4, tileY: 15.0, type: 'noticePillar' },
-    { tileX: 25.6, tileY: 17.8, type: 'scrollCrates' },
-    { tileX: 27.7, tileY: 15.9, type: 'runestone' },
-    { tileX: 24.3, tileY: 13.6, type: 'lantern' },
-    { tileX: 11.2, tileY: 24.0, type: 'runestone' },
-    { tileX: 15.7, tileY: 23.2, type: 'runestone' },
-    { tileX: 15.8, tileY: 26.6, type: 'lantern' },
+    { tileX: 8.1, tileY: 21.2, type: 'lantern' },
+    { tileX: 11.8, tileY: 20.6, type: 'runestone' },
+    { tileX: 26.5, tileY: 18.5, type: 'noticePillar' },
+    { tileX: 27.6, tileY: 18.8, type: 'scrollCrates' },
+    { tileX: 25.8, tileY: 16.4, type: 'runestone' },
+    { tileX: 28.4, tileY: 14.0, type: 'lantern' },
+    { tileX: 10.6, tileY: 22.8, type: 'runestone' },
+    { tileX: 16.0, tileY: 22.2, type: 'runestone' },
 ];
 const OPEN_SEA_GULLS = [
     { tileX: 37.2, tileY: 5.4, altitude: 36, scale: 1.15, phase: 0.2 },
@@ -176,12 +177,7 @@ export class IsometricRenderer {
         this.mainAvenueTiles.clear();
         this.dirtPathTiles.clear();
         const command = this._getCommandBuilding();
-        const plazaHub = command
-            ? {
-                x: Math.floor(command.position.tileX + command.width / 2),
-                y: Math.floor(command.position.tileY + command.height + 2),
-            }
-            : { x: 20, y: 22 };
+        const plazaHub = this._commandPlazaHub(command);
         this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
 
         // Now that bridges are in pathTiles, generate terrain features so
@@ -239,12 +235,7 @@ export class IsometricRenderer {
     _generatePaths() {
         const buildingDefs = Array.from(this.world.buildings.values());
         const command = this._getCommandBuilding();
-        const plazaHub = command
-            ? {
-                x: Math.floor(command.position.tileX + command.width / 2),
-                y: Math.floor(command.position.tileY + command.height + 2),
-            }
-            : { x: 20, y: 22 };
+        const plazaHub = this._commandPlazaHub(command);
         for (const b of buildingDefs) {
             // Paths around buildings
             for (let x = b.position.tileX - 1; x <= b.position.tileX + b.width; x++) {
@@ -331,12 +322,28 @@ export class IsometricRenderer {
         };
     }
 
+    _commandPlazaHub(command) {
+        const visit = typeof command?.primaryVisitTile === 'function'
+            ? command.primaryVisitTile()
+            : command?.entrance;
+        if (visit && Number.isFinite(visit.tileX) && Number.isFinite(visit.tileY)) {
+            return { x: Math.round(visit.tileX), y: Math.round(visit.tileY) };
+        }
+        if (command) {
+            return {
+                x: Math.floor(command.position.tileX + command.width / 2),
+                y: Math.floor(command.position.tileY + command.height),
+            };
+        }
+        return { x: 20, y: 22 };
+    }
+
     _generateTownSquare(centerX, centerY) {
-        for (let x = centerX - 5; x <= centerX + 6; x++) {
-            for (let y = centerY - 4; y <= centerY + 4; y++) {
-                const dx = (x - centerX) / 5.8;
-                const dy = (y - centerY) / 4.4;
-                if ((dx * dx + dy * dy) <= 1.1 && this._inMapBounds(x, y)) {
+        for (let x = centerX - 4; x <= centerX + 5; x++) {
+            for (let y = centerY - 3; y <= centerY + 3; y++) {
+                const dx = (x - centerX) / 4.4;
+                const dy = (y - centerY) / 2.8;
+                if ((dx * dx + dy * dy) <= 1.0 && this._inMapBounds(x, y)) {
                     const key = `${x},${y}`;
                     this.townSquareTiles.add(key);
                     this.pathTiles.add(key);
@@ -367,7 +374,9 @@ export class IsometricRenderer {
             const comma = key.indexOf(',');
             const x = Number(key.slice(0, comma));
             const y = Number(key.slice(comma + 1));
-            const nearPlaza = Math.abs(x - plazaHubX) <= 4 || Math.abs(y - plazaHubY) <= 3;
+            const dx = (x - plazaHubX) / 4.2;
+            const dy = (y - plazaHubY) / 3.0;
+            const nearPlaza = (dx * dx + dy * dy) <= 1.0;
             const routeNoise = this._tileNoise(x + 73, y + 29);
             if (this.commandCenterRoadTiles?.has(key) || nearPlaza || routeNoise > 0.72) {
                 this.mainAvenueTiles.add(key);
@@ -514,18 +523,18 @@ export class IsometricRenderer {
 
     _generateAmbientEmitters() {
         const emitters = [
-            { tileX: 24.5, tileY: 13.5, particleType: 'sparkle', chance: 0.018 },
-            { tileX: 24.5, tileY: 12.5, particleType: 'sparkle', chance: 0.012 },
-            { tileX: 32, tileY: 28, particleType: 'sparkle', chance: 0.016 },
-            { tileX: 12, tileY: 11.5, particleType: 'sparkle', chance: 0.01 },
-            { tileX: 28, tileY: 19.5, particleType: 'smoke', chance: 0.012 },
-            { tileX: 20.5, tileY: 27.5, particleType: 'mineDust', chance: 0.016 },
-            { tileX: 20.5, tileY: 27.4, particleType: 'firefly', chance: 0.016 },
-            { tileX: 30.8, tileY: 27.6, particleType: 'forgeEmber', chance: 0.02 },
-            { tileX: 15.0, tileY: 25.8, particleType: 'portalRune', chance: 0.022 },
-            { tileX: 24.6, tileY: 24.6, particleType: 'questPing', chance: 0.014 },
-            { tileX: 23.3, tileY: 16.3, particleType: 'archiveMote', chance: 0.022 },
-            { tileX: 35.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
+            { tileX: 9.8, tileY: 17.4, particleType: 'sparkle', chance: 0.018 },
+            { tileX: 10.8, tileY: 18.2, particleType: 'sparkle', chance: 0.012 },
+            { tileX: 33.0, tileY: 30.2, particleType: 'sparkle', chance: 0.016 },
+            { tileX: 8.5, tileY: 12.0, particleType: 'sparkle', chance: 0.01 },
+            { tileX: 34.0, tileY: 19.5, particleType: 'smoke', chance: 0.012 },
+            { tileX: 18.4, tileY: 30.3, particleType: 'mineDust', chance: 0.016 },
+            { tileX: 18.4, tileY: 30.0, particleType: 'firefly', chance: 0.014 },
+            { tileX: 32.8, tileY: 30.2, particleType: 'forgeEmber', chance: 0.02 },
+            { tileX: 10.8, tileY: 29.2, particleType: 'portalRune', chance: 0.022 },
+            { tileX: 26.4, tileY: 30.1, particleType: 'questPing', chance: 0.014 },
+            { tileX: 28.3, tileY: 17.3, particleType: 'archiveMote', chance: 0.022 },
+            { tileX: 36.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
         ];
 
