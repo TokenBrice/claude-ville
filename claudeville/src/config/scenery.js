@@ -105,11 +105,14 @@ export const HARBOR_DOCK_TILES = [
     { tileX: 39, tileY: 19, orientation: 'EW' },
 
     // North beacon approach plus two berth fingers on the open-sea side.
+    { tileX: 31, tileY: 10, orientation: 'NS' },
+    { tileX: 31, tileY: 11, orientation: 'NS' },
+    { tileX: 32, tileY: 9, orientation: 'EW' },
+    { tileX: 32, tileY: 10, orientation: 'EW' },
+    { tileX: 32, tileY: 12, orientation: 'NS' },
+    { tileX: 32, tileY: 13, orientation: 'NS' },
+    { tileX: 32, tileY: 14, orientation: 'NS' },
     { tileX: 34, tileY: 17, orientation: 'NS' },
-    { tileX: 35, tileY: 15, orientation: 'NS' },
-    { tileX: 35, tileY: 16, orientation: 'NS' },
-    { tileX: 36, tileY: 14, orientation: 'EW' },
-    { tileX: 36, tileY: 15, orientation: 'EW' },
     { tileX: 37, tileY: 14, orientation: 'NS' },
     { tileX: 37, tileY: 15, orientation: 'NS' },
     { tileX: 37, tileY: 16, orientation: 'NS' },

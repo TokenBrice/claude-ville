@@ -8,7 +8,7 @@ export const TOWN_DISTRICTS = Object.freeze([
     { id: 'workshop', label: 'Forge Row', center: [31, 29], radius: 5 },
     { id: 'resource', label: 'Mine Yard', center: [18, 33], radius: 4 },
     { id: 'arcane', label: 'Portal Periphery', center: [10, 31], radius: 5 },
-    { id: 'harbor', label: 'Harbor Quay', center: [36, 18], radius: 8 },
+    { id: 'harbor', label: 'Harbor Quay', center: [35, 17], radius: 9 },
 ]);
 
 export const TOWN_ROAD_ROUTES = Object.freeze([
@@ -16,7 +16,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'north-bank-promenade',
         material: 'avenue',
         width: 1,
-        points: [[12, 21], [20, 22], [28, 18], [33, 17], [35, 15]],
+        points: [[12, 21], [20, 22], [27, 20], [30, 15], [31, 10]],
     },
     {
         id: 'production-row',
@@ -40,13 +40,13 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'archive-walk',
         material: 'avenue',
         width: 1,
-        points: [[28, 18], [28, 17]],
+        points: [[27, 20], [27, 19]],
     },
     {
         id: 'lighthouse-quay',
         material: 'dock',
         width: 1,
-        points: [[33, 19], [34, 17], [35, 15]],
+        points: [[33, 19], [32, 14], [31, 10]],
     },
     {
         id: 'harbor-berths',
