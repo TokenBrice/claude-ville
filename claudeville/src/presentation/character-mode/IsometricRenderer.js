@@ -23,8 +23,8 @@ const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const DISTRICT_WASHES = [
     { x: 20, y: 20, radiusX: 12, radiusY: 8, color: '#5f3e21', alpha: 0.11 },
     { x: 34, y: 19, radiusX: 9, radiusY: 7, color: '#1e5b61', alpha: 0.13 },
-    { x: 9, y: 25, radiusX: 9, radiusY: 8, color: '#62471f', alpha: 0.10 },
-    { x: 8, y: 8, radiusX: 10, radiusY: 8, color: '#1f4e2a', alpha: 0.12 },
+    { x: 14, y: 23, radiusX: 7, radiusY: 5, color: '#62471f', alpha: 0.10 },
+    { x: 14, y: 13, radiusX: 8, radiusY: 6, color: '#1f4e2a', alpha: 0.12 },
     { x: 30, y: 28, radiusX: 10, radiusY: 8, color: '#243d29', alpha: 0.12 },
 ];
 const ANCIENT_RUINS = [
@@ -55,9 +55,9 @@ const AMBIENT_GROUND_PROPS = [
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
     { tileX: 30.0, tileY: 24.0, type: 'oreCart' },
     { tileX: 33.4, tileY: 25.0, type: 'lantern' },
-    { tileX: 6.6, tileY: 30.2, type: 'oreCart' },
-    { tileX: 4.2, tileY: 32.8, type: 'lantern' },
-    { tileX: 9.0, tileY: 29.4, type: 'runestone' },
+    { tileX: 18.6, tileY: 24.8, type: 'oreCart' },
+    { tileX: 16.0, tileY: 27.8, type: 'lantern' },
+    { tileX: 20.0, tileY: 26.5, type: 'runestone' },
 
     // Civic core: utility props around the square, not scattered through the woods.
     { tileX: 20.4, tileY: 19.6, type: 'well' },
@@ -67,7 +67,7 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 23.0, tileY: 19.6, type: 'scrollCrates' },
 
     // Research edges: fewer, quieter accents near knowledge landmarks.
-    { tileX: 12.8, tileY: 10.8, type: 'lantern' },
+    { tileX: 15.5, tileY: 14.4, type: 'lantern' },
 ];
 
 class StaticPropSprite {
