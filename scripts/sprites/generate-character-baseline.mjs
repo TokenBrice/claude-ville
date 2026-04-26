@@ -1,0 +1,292 @@
+#!/usr/bin/env node
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PNG } from 'pngjs';
+
+const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+const spritesRoot = join(repoRoot, 'claudeville', 'assets', 'sprites');
+const CELL = 92;
+const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
+const WALK_FRAMES = 6;
+const IDLE_FRAMES = 4;
+
+const SPECS = [
+    {
+        id: 'agent.claude.opus',
+        family: 'claude',
+        model: 'opus',
+        robe: '#8f4f21',
+        robeDark: '#5b2f18',
+        trim: '#ffe7a8',
+        accent: '#c8a3ff',
+        metal: '#f2d36b',
+        skin: '#d69b72',
+        hair: '#3a2418',
+    },
+    {
+        id: 'agent.claude.sonnet',
+        family: 'claude',
+        model: 'sonnet',
+        robe: '#a85f24',
+        robeDark: '#673718',
+        trim: '#f2d36b',
+        accent: '#b7ccff',
+        metal: '#e9b85f',
+        skin: '#d69b72',
+        hair: '#3a2418',
+    },
+    {
+        id: 'agent.codex.gpt55',
+        family: 'codex',
+        model: 'gpt55',
+        robe: '#116466',
+        robeDark: '#0b3840',
+        trim: '#fff1b8',
+        accent: '#7be3d7',
+        metal: '#f8c45f',
+        skin: '#c98f67',
+        hair: '#1f2a30',
+    },
+    {
+        id: 'agent.codex.gpt54',
+        family: 'codex',
+        model: 'gpt54',
+        robe: '#1f6f8b',
+        robeDark: '#12353b',
+        trim: '#8bd6ff',
+        accent: '#7be3d7',
+        metal: '#b58b4f',
+        skin: '#c98f67',
+        hair: '#1f2a30',
+    },
+    {
+        id: 'agent.codex.gpt53spark',
+        family: 'codex',
+        model: 'spark',
+        robe: '#1b6069',
+        robeDark: '#102f3a',
+        trim: '#f8e36f',
+        accent: '#55e7ff',
+        metal: '#c5ff72',
+        skin: '#c98f67',
+        hair: '#1f2a30',
+    },
+];
+
+const EFFORTS = [
+    { id: 'overlay.accessory.effortLow', kind: 'low', color: '#b98948', glow: '#f2d36b' },
+    { id: 'overlay.accessory.effortMedium', kind: 'medium', color: '#b7ccff', glow: '#7be3d7' },
+    { id: 'overlay.accessory.effortHigh', kind: 'high', color: '#f2d36b', glow: '#fff1b8' },
+    { id: 'overlay.accessory.effortXhigh', kind: 'xhigh', color: '#fff1b8', glow: '#c8a3ff' },
+];
+
+for (const spec of SPECS) {
+    const png = new PNG({ width: CELL * DIRECTIONS.length, height: CELL * (WALK_FRAMES + IDLE_FRAMES) });
+    for (let row = 0; row < WALK_FRAMES + IDLE_FRAMES; row++) {
+        for (let col = 0; col < DIRECTIONS.length; col++) {
+            const frame = row < WALK_FRAMES ? row : row - WALK_FRAMES;
+            drawCharacter(png, col * CELL, row * CELL, spec, DIRECTIONS[col], row < WALK_FRAMES, frame);
+        }
+    }
+    writePng(join(spritesRoot, 'characters', spec.id, 'sheet.png'), png);
+}
+
+for (const effort of EFFORTS) {
+    const png = new PNG({ width: 32, height: 32 });
+    drawEffortOverlay(png, effort);
+    writePng(join(spritesRoot, 'overlays', `${effort.id}.png`), png);
+}
+
+function drawCharacter(png, x0, y0, spec, direction, walking, frame) {
+    const front = ['s', 'se', 'sw'].includes(direction);
+    const back = ['n', 'ne', 'nw'].includes(direction);
+    const side = ['e', 'w'].includes(direction);
+    const sideSign = ['e', 'ne', 'se'].includes(direction) ? 1 : ['w', 'nw', 'sw'].includes(direction) ? -1 : 0;
+    const step = walking ? [0, 2, 4, 1, -2, -4][frame % 6] : 0;
+    const bob = walking ? Math.abs(step) > 2 ? -1 : 0 : Math.round(Math.sin(frame * Math.PI / 2) * 1);
+    const cx = x0 + 46;
+    const feetY = y0 + 78 + bob;
+    const headY = y0 + 28 + bob;
+
+    ellipse(png, cx, feetY + 2, 17, 5, '#05080c', 82);
+    rect(png, cx - 5 + step, feetY - 13, 5, 14, spec.robeDark);
+    rect(png, cx + 1 - step, feetY - 13, 5, 14, spec.robeDark);
+    rect(png, cx - 7 + step, feetY - 2, 7, 3, '#151515');
+    rect(png, cx + 1 - step, feetY - 2, 7, 3, '#151515');
+
+    const capeShift = sideSign * 4;
+    polygon(png, [
+        [cx - 15 - capeShift, y0 + 39 + bob],
+        [cx + 15 - capeShift, y0 + 39 + bob],
+        [cx + 12 - capeShift, feetY - 6],
+        [cx - 12 - capeShift, feetY - 6],
+    ], spec.robeDark, 235);
+
+    if (spec.family === 'claude') drawClaudeBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob);
+    else drawCodexBody(png, cx, y0, feetY, headY, spec, front, back, side, sideSign, step, bob);
+}
+
+function drawClaudeBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob) {
+    polygon(png, [[cx - 13, y0 + 41 + bob], [cx + 13, y0 + 41 + bob], [cx + 10, feetY - 8], [cx - 10, feetY - 8]], spec.robe);
+    rect(png, cx - 8, y0 + 45 + bob, 16, 3, spec.trim);
+    line(png, cx, y0 + 43 + bob, cx, feetY - 12, spec.trim, 2);
+
+    if (spec.model === 'opus') {
+        polygon(png, [[cx - 18, y0 + 40 + bob], [cx, y0 + 31 + bob], [cx + 18, y0 + 40 + bob], [cx + 10, y0 + 50 + bob], [cx - 10, y0 + 50 + bob]], spec.trim, 220);
+        diamond(png, cx, y0 + 54 + bob, 5, spec.accent);
+        line(png, cx + 17, y0 + 34 + bob, cx + 20, feetY - 7, '#5b351d', 2);
+        ellipse(png, cx + 18, y0 + 31 + bob, 4, 4, spec.accent, 230);
+    } else {
+        rect(png, cx - 9, y0 + 53 + bob, 18, 9, '#d8bd82');
+        line(png, cx - 9, y0 + 53 + bob, cx + 9, y0 + 62 + bob, spec.accent, 1);
+        line(png, cx + 14, y0 + 41 + bob, cx + 20, y0 + 32 + bob, '#f7efe2', 2);
+        line(png, cx + 19, y0 + 31 + bob, cx + 23, y0 + 28 + bob, spec.accent, 1);
+    }
+
+    rect(png, cx - 16, y0 + 45 + bob + step / 2, 6, 16, spec.robeDark);
+    rect(png, cx + 10, y0 + 45 + bob - step / 2, 6, 16, spec.robeDark);
+    ellipse(png, cx, headY + 1, 10, 11, spec.skin);
+    polygon(png, [[cx - 12, headY - 4], [cx, headY - 16], [cx + 12, headY - 4], [cx + 9, headY + 8], [cx - 9, headY + 8]], spec.robeDark);
+    line(png, cx - 9, headY - 3, cx + 9, headY - 3, spec.trim, 2);
+    if (!back) {
+        rect(png, cx - 4 + sideSign, headY, 2, 2, '#1d1712');
+        rect(png, cx + 3 + sideSign, headY, 2, 2, '#1d1712');
+    }
+}
+
+function drawCodexBody(png, cx, y0, feetY, headY, spec, front, back, side, sideSign, step, bob) {
+    rect(png, cx - 11, y0 + 42 + bob, 22, 26, spec.robe);
+    rect(png, cx - 13, y0 + 50 + bob, 26, 5, spec.robeDark);
+    line(png, cx - 7, y0 + 43 + bob, cx - 7, y0 + 66 + bob, spec.trim, 2);
+    line(png, cx + 7, y0 + 43 + bob, cx + 7, y0 + 66 + bob, spec.accent, 2);
+
+    if (spec.model === 'gpt55') {
+        diamond(png, cx, y0 + 55 + bob, 6, spec.trim);
+        ellipse(png, cx, headY - 12, 13, 4, spec.trim, 210);
+        ellipse(png, cx, headY - 12, 8, 2, spec.accent, 220);
+    } else if (spec.model === 'gpt54') {
+        gear(png, cx + 12, y0 + 47 + bob, 7, spec.metal);
+        rect(png, cx - 18, y0 + 55 + bob, 11, 8, '#d8bd82');
+        line(png, cx - 17, y0 + 57 + bob, cx - 9, y0 + 57 + bob, spec.accent, 1);
+    } else {
+        polygon(png, [[cx - 5, y0 + 44 + bob], [cx + 8, y0 + 44 + bob], [cx + 1, y0 + 55 + bob], [cx + 9, y0 + 55 + bob], [cx - 4, y0 + 70 + bob], [cx, y0 + 58 + bob], [cx - 9, y0 + 58 + bob]], spec.trim);
+        line(png, cx - 15, y0 + 42 + bob, cx - 22, y0 + 35 + bob, spec.accent, 2);
+    }
+
+    rect(png, cx - 16, y0 + 46 + bob + step / 2, 6, 16, spec.robeDark);
+    rect(png, cx + 10, y0 + 46 + bob - step / 2, 6, 16, spec.robeDark);
+    ellipse(png, cx, headY + 2, 10, 10, spec.skin);
+    rect(png, cx - 9, headY - 7, 18, 7, spec.hair);
+    if (!back) {
+        rect(png, cx - 8 + sideSign, headY - 1, 7, 4, '#1e2b2f');
+        rect(png, cx + 1 + sideSign, headY - 1, 7, 4, '#1e2b2f');
+        rect(png, cx - 6 + sideSign, headY, 3, 2, spec.accent);
+        rect(png, cx + 3 + sideSign, headY, 3, 2, spec.accent);
+        line(png, cx - 1 + sideSign, headY + 1, cx + 1 + sideSign, headY + 1, spec.metal, 1);
+    }
+}
+
+function drawEffortOverlay(png, effort) {
+    const cx = 16;
+    if (effort.kind === 'low') {
+        diamond(png, cx, 15, 4, effort.color);
+        rect(png, cx - 1, 11, 2, 8, effort.glow, 180);
+    } else if (effort.kind === 'medium') {
+        ellipse(png, cx, 16, 10, 4, effort.color, 220);
+        rect(png, cx - 7, 14, 14, 4, '#252018', 210);
+        rect(png, cx - 4, 15, 8, 2, effort.glow, 220);
+    } else if (effort.kind === 'high') {
+        polygon(png, [[cx - 9, 20], [cx - 5, 10], [cx, 17], [cx + 5, 10], [cx + 9, 20]], effort.color);
+        rect(png, cx - 8, 19, 16, 3, '#362818', 210);
+        diamond(png, cx, 15, 4, effort.glow);
+    } else {
+        ellipse(png, cx, 15, 12, 7, effort.glow, 120);
+        ellipse(png, cx, 15, 8, 4, effort.color, 220);
+        diamond(png, cx, 15, 5, '#ffffff', 210);
+        line(png, cx, 4, cx, 26, effort.glow, 1);
+        line(png, 5, 15, 27, 15, effort.glow, 1);
+    }
+}
+
+function writePng(path, png) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, PNG.sync.write(png));
+    console.log(`wrote ${path.replace(repoRoot + '/', '')}`);
+}
+
+function color(hex, alpha = 255) {
+    const h = hex.replace('#', '');
+    return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16), alpha];
+}
+
+function px(png, x, y, hex, alpha = 255) {
+    x = Math.round(x); y = Math.round(y);
+    if (x < 0 || y < 0 || x >= png.width || y >= png.height) return;
+    const [r, g, b, a] = color(hex, alpha);
+    const idx = (png.width * y + x) << 2;
+    const inv = 255 - a;
+    png.data[idx] = Math.round((r * a + png.data[idx] * inv) / 255);
+    png.data[idx + 1] = Math.round((g * a + png.data[idx + 1] * inv) / 255);
+    png.data[idx + 2] = Math.round((b * a + png.data[idx + 2] * inv) / 255);
+    png.data[idx + 3] = Math.min(255, a + Math.round(png.data[idx + 3] * inv / 255));
+}
+
+function rect(png, x, y, w, h, hex, alpha = 255) {
+    for (let yy = Math.round(y); yy < Math.round(y + h); yy++)
+        for (let xx = Math.round(x); xx < Math.round(x + w); xx++)
+            px(png, xx, yy, hex, alpha);
+}
+
+function ellipse(png, cx, cy, rx, ry, hex, alpha = 255) {
+    for (let y = Math.floor(cy - ry); y <= Math.ceil(cy + ry); y++)
+        for (let x = Math.floor(cx - rx); x <= Math.ceil(cx + rx); x++)
+            if (((x - cx) ** 2) / (rx ** 2) + ((y - cy) ** 2) / (ry ** 2) <= 1)
+                px(png, x, y, hex, alpha);
+}
+
+function line(png, x0, y0, x1, y1, hex, width = 1, alpha = 255) {
+    x0 = Math.round(x0); y0 = Math.round(y0); x1 = Math.round(x1); y1 = Math.round(y1);
+    const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+    const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+    let err = dx + dy;
+    while (true) {
+        rect(png, x0 - Math.floor(width / 2), y0 - Math.floor(width / 2), width, width, hex, alpha);
+        if (x0 === x1 && y0 === y1) break;
+        const e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+function polygon(png, points, hex, alpha = 255) {
+    const minY = Math.floor(Math.min(...points.map(p => p[1])));
+    const maxY = Math.ceil(Math.max(...points.map(p => p[1])));
+    for (let y = minY; y <= maxY; y++) {
+        const xs = [];
+        for (let i = 0; i < points.length; i++) {
+            const [x1, y1] = points[i];
+            const [x2, y2] = points[(i + 1) % points.length];
+            if ((y1 <= y && y2 > y) || (y2 <= y && y1 > y)) {
+                xs.push(x1 + (y - y1) * (x2 - x1) / (y2 - y1));
+            }
+        }
+        xs.sort((a, b) => a - b);
+        for (let i = 0; i < xs.length; i += 2) {
+            for (let x = Math.ceil(xs[i]); x <= Math.floor(xs[i + 1]); x++) px(png, x, y, hex, alpha);
+        }
+    }
+}
+
+function diamond(png, cx, cy, r, hex, alpha = 255) {
+    polygon(png, [[cx, cy - r], [cx + r, cy], [cx, cy + r], [cx - r, cy]], hex, alpha);
+}
+
+function gear(png, cx, cy, r, hex) {
+    ellipse(png, cx, cy, r, r, hex, 230);
+    for (let i = 0; i < 8; i++) {
+        const a = i * Math.PI / 4;
+        rect(png, cx + Math.cos(a) * r - 1, cy + Math.sin(a) * r - 1, 3, 3, hex, 240);
+    }
+    ellipse(png, cx, cy, Math.max(2, r - 4), Math.max(2, r - 4), '#12353b', 255);
+}
