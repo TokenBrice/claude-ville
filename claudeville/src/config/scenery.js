@@ -37,6 +37,14 @@ export const WATER_POLYLINES = [
 export const WATER_BASINS = [
     {
         kind: 'moat',
+        centerX: 0.8,
+        centerY: 25,
+        radiusX: 4.2,
+        radiusY: 3.3,
+        edgeNoise: 0.06,
+    },
+    {
+        kind: 'moat',
         centerX: 43,
         centerY: 19,
         radiusX: 13.6,
