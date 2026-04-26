@@ -22,7 +22,7 @@ const claudeAdapter = adapters.find(a => a.provider === 'claude');
 const PORT = 4000;
 const STATIC_DIR = __dirname;
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
-const ALLOWED_SESSION_PROVIDERS = Object.freeze(new Set(['claude', 'codex', 'gemini']));
+const ALLOWED_SESSION_PROVIDERS = Object.freeze(new Set(['claude', 'codex', 'gemini', 'git']));
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
 

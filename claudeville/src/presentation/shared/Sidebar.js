@@ -3,8 +3,8 @@ import { i18n } from '../../config/i18n.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 
 // Per-project color palette
-const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G' };
-const PROVIDER_COLORS = { claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa' };
+const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G', git: '#' };
+const PROVIDER_COLORS = { claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa', git: '#f6cf60' };
 
 const PROJECT_COLORS = [
     '#e8d44d', '#4ade80', '#60a5fa', '#f97316', '#a78bfa',

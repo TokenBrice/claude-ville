@@ -24,6 +24,7 @@ const PROVIDER_BADGES = {
     claude: { label: 'Claude', color: '#a78bfa', bg: 'rgba(167,139,250,0.15)' },
     codex:  { label: 'Codex',  color: '#4ade80', bg: 'rgba(74,222,128,0.15)' },
     gemini: { label: 'Gemini', color: '#60a5fa', bg: 'rgba(96,165,250,0.15)' },
+    git:    { label: 'Git',    color: '#f6cf60', bg: 'rgba(246,207,96,0.15)' },
 };
 
 const PROJECT_COLORS = [

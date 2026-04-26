@@ -5,6 +5,7 @@
 const { ClaudeAdapter } = require('./claude');
 const { CodexAdapter } = require('./codex');
 const { GeminiAdapter } = require('./gemini');
+const { execFileSync } = require('child_process');
 const {
   inferPushedGitEventsForSessions,
   inferUnpushedGitEventsForSessions,
@@ -20,6 +21,7 @@ const ADAPTER_BY_PROVIDER = Object.fromEntries(adapters.map((adapter) => [adapte
 const SESSION_LIST_CACHE_TTL_MS = 500;
 const SESSION_DETAIL_CACHE_TTL_MS = 1250;
 const SESSION_DETAIL_MAX_CACHE = 256;
+const REPOSITORY_SCAN_CACHE_TTL_MS = 5000;
 
 const _sessionListCache = {
   at: 0,
@@ -28,6 +30,37 @@ const _sessionListCache = {
 };
 
 const _sessionDetailCache = new Map();
+const _repositoryScanCache = {
+  at: 0,
+  projects: [],
+};
+
+function runGit(args) {
+  return execFileSync('git', args, {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 750,
+  }).trim();
+}
+
+function getRepositoryScanProjects() {
+  const now = Date.now();
+  if ((now - _repositoryScanCache.at) < REPOSITORY_SCAN_CACHE_TTL_MS) {
+    return _repositoryScanCache.projects;
+  }
+
+  const projects = [];
+  try {
+    const root = runGit(['rev-parse', '--show-toplevel']);
+    if (root) projects.push(root);
+  } catch {
+    // ClaudeVille can run outside a git checkout, so repo scanning is optional.
+  }
+
+  _repositoryScanCache.at = now;
+  _repositoryScanCache.projects = [...new Set(projects)];
+  return _repositoryScanCache.projects;
+}
 
 /**
  * Collect sessions from all active adapters
@@ -48,7 +81,9 @@ function getAllSessions(activeThresholdMs) {
       console.error(`[${adapter.name}] Failed to fetch sessions:`, err.message);
     }
   }
-  const sessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions))
+  const sessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions, {
+    projects: getRepositoryScanProjects(),
+  }))
     .sort((a, b) => b.lastActivity - a.lastActivity);
 
   _sessionListCache.at = now;

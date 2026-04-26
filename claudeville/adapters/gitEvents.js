@@ -517,24 +517,60 @@ function inferPushedGitEvents(events, options = {}) {
   return dedupeGitEvents(enriched);
 }
 
-function inferUnpushedGitEventsForSessions(sessions) {
-  if (!Array.isArray(sessions) || sessions.length === 0) return sessions;
+function createRepositoryGitSession(project, gitEvents) {
+  const events = Array.isArray(gitEvents) ? gitEvents : [];
+  const latestActivity = events.reduce((latest, event) => {
+    const eventTime = event?.completedAt || event?.ts || 0;
+    return Math.max(latest, Number(eventTime) || 0);
+  }, Date.now());
+  const count = events.length;
 
+  return {
+    sessionId: `git-repo-${stableHash(project)}`,
+    provider: 'git',
+    agentId: null,
+    agentType: 'repository',
+    name: 'Repo Watch',
+    agentName: 'Repo Watch',
+    model: 'git',
+    status: 'active',
+    lastActivity: latestActivity || Date.now(),
+    project,
+    lastMessage: count === 1 ? '1 unpushed commit' : `${count} unpushed commits`,
+    lastTool: 'git status',
+    lastToolInput: 'Scan unpushed commits',
+    tokenUsage: null,
+    gitEvents: events,
+    parentSessionId: null,
+  };
+}
+
+function inferUnpushedGitEventsForSessions(sessions, options = {}) {
+  if (!Array.isArray(sessions)) return sessions;
+
+  const extraProjects = Array.isArray(options.projects)
+    ? options.projects.filter(Boolean)
+    : [];
+  if (sessions.length === 0 && extraProjects.length === 0) return sessions;
   const eventsByProject = new Map();
-  for (const session of sessions) {
-    const project = session?.project;
+  const projects = [
+    ...sessions.map((session) => session?.project).filter(Boolean),
+    ...extraProjects,
+  ];
+
+  for (const project of projects) {
     if (!project) continue;
     if (!eventsByProject.has(project)) {
       eventsByProject.set(project, readUnpushedCommitEvents(project, {
-        provider: session.provider,
-        sessionId: session.sessionId,
+        provider: 'git',
+        sessionId: `git-repo-${stableHash(project)}`,
       }));
     }
   }
 
   if (![...eventsByProject.values()].some((events) => events.length > 0)) return sessions;
 
-  return sessions.map((session) => {
+  const enrichedSessions = sessions.map((session) => {
     const project = session?.project;
     const unpushed = project ? eventsByProject.get(project) || [] : [];
     if (!unpushed.length) return session;
@@ -546,6 +582,16 @@ function inferUnpushedGitEventsForSessions(sessions) {
       gitEvents: dedupeGitEvents([...nonCommitEvents, ...unpushed]),
     };
   });
+
+  const sessionProjects = new Set(sessions.map((session) => session?.project).filter(Boolean));
+  for (const project of extraProjects) {
+    if (sessionProjects.has(project)) continue;
+    const unpushed = eventsByProject.get(project) || [];
+    if (!unpushed.length) continue;
+    enrichedSessions.push(createRepositoryGitSession(project, unpushed));
+  }
+
+  return enrichedSessions;
 }
 
 function inferPushedGitEventsForSessions(sessions, options = {}) {
