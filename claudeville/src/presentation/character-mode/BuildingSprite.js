@@ -31,8 +31,46 @@ const LANDMARK_LABEL_ACCENTS = {
     observatory: '#bda7ff',
     mine: '#ffab47',
     taskboard: '#8bd7ff',
-    chathall: '#ffeb8f',
     archive: '#b3d68c',
+};
+const PARTICLE_ALIASES = {
+    sparkle2: 'sparkle',
+    sparkle3: 'sparkle',
+    torch2: 'torch',
+    torch3: 'torch',
+    torch4: 'torch',
+};
+const BUILDING_EMITTER_FALLBACKS = {
+    forge: [
+        { type: 'forgeEmber', at: [66, 76], chance: 0.06, count: 1 },
+        { type: 'forgeSpark', at: [48, 83], chance: 0.032, count: 1 },
+        { type: 'smoke', at: [88, 13], chance: 0.035, count: 1 },
+    ],
+    mine: [
+        { type: 'mineDust', at: [70, 82], chance: 0.035, count: 1 },
+        { type: 'mining', at: [82, 90], chance: 0.026, count: 1 },
+    ],
+    portal: [
+        { type: 'portalRune', at: [144, 60], chance: 0.05, count: 1 },
+        { type: 'sparkle', at: [122, 80], chance: 0.025, count: 1 },
+    ],
+    watchtower: [
+        { type: 'beaconMote', at: [196, 32], chance: 0.038, count: 1 },
+    ],
+    taskboard: [
+        { type: 'questPing', at: [56, 58], chance: 0.024, count: 1 },
+    ],
+    archive: [
+        { type: 'archiveMote', at: [56, 42], chance: 0.034, count: 1 },
+        { type: 'archiveMote', at: [25, 65], chance: 0.018, count: 1 },
+        { type: 'archiveMote', at: [90, 60], chance: 0.018, count: 1 },
+    ],
+};
+const BUILDING_LIGHT_FALLBACKS = {
+    forge: { at: [64, 78], color: '#ff8a33', radius: 62, overlay: 'atmosphere.light.fire-glow' },
+    mine: { at: [72, 82], color: '#ffb84d', radius: 52, overlay: 'atmosphere.light.lantern-glow' },
+    taskboard: { at: [56, 58], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
+    archive: { at: [58, 45], color: '#b3d68c', radius: 72, overlay: 'atmosphere.light.lantern-glow' },
 };
 
 export class BuildingSprite {
@@ -47,6 +85,7 @@ export class BuildingSprite {
         this._drawablesCache = null;
         this._lightSourcesCache = null;
         this._labelMetricsCache = new Map();
+        this._visitorCountByType = new Map();
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -75,6 +114,7 @@ export class BuildingSprite {
 
     update(dt) {
         this.frame += (dt / 16) * (this.motionScale || 0);
+        this._updateVisitorCounts();
         for (const b of this.buildings) this._spawnEmittersFor(b);
     }
 
@@ -575,17 +615,33 @@ export class BuildingSprite {
         const out = [];
         for (const b of this.buildings) {
             const entry = this.assets.getEntry(`building.${b.type}`);
-            if (!entry?.lightSource) continue;
             const c = this._buildingScreenCenter(b);
-            const baseAnchor = this.assets.getAnchor(entry.id);
-            const [lx, ly] = entry.lightSource;
-            out.push({
-                x: c.x - baseAnchor[0] + lx,
-                y: c.y - baseAnchor[1] + ly,
-                color: entry.lightColor || 'rgba(255,210,140,0.4)',
-                radius: entry.lightRadius || 64,
-                overlay: entry.lightOverlay || 'atmosphere.light.lighthouse-beam',
-            });
+            if (entry?.lightSource) {
+                const baseAnchor = this.assets.getAnchor(entry.id);
+                const [lx, ly] = entry.lightSource;
+                out.push({
+                    x: c.x - baseAnchor[0] + lx,
+                    y: c.y - baseAnchor[1] + ly,
+                    color: entry.lightColor || 'rgba(255,210,140,0.4)',
+                    radius: entry.lightRadius || 64,
+                    overlay: entry.lightOverlay || 'atmosphere.light.lighthouse-beam',
+                    buildingType: b.type,
+                });
+                continue;
+            }
+            const fallback = BUILDING_LIGHT_FALLBACKS[b.type];
+            if (fallback) {
+                const baseAnchor = this.assets.getAnchor(`building.${b.type}`);
+                const [lx, ly] = fallback.at;
+                out.push({
+                    x: c.x - baseAnchor[0] + lx,
+                    y: c.y - baseAnchor[1] + ly,
+                    color: fallback.color,
+                    radius: fallback.radius,
+                    overlay: fallback.overlay,
+                    buildingType: b.type,
+                });
+            }
         }
         this._lightSourcesCache = out;
         return out;
@@ -638,7 +694,7 @@ export class BuildingSprite {
         const id = d.entry.id;
         if (d.kind === 'building') {
             this.sprites.drawSprite(ctx, id, d.wx, d.wy);
-            this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy);
+            this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building);
         } else {
             const dims = this.assets.getDims(id);
             const [ax, ay] = this.assets.getAnchor(id);
@@ -651,14 +707,22 @@ export class BuildingSprite {
             } else {
                 ctx.drawImage(img, 0, d.horizonY, dims.w, dims.h - d.horizonY,
                                    dx, dy + d.horizonY, dims.w, dims.h - d.horizonY);
-                this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy);
+                this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building);
             }
         }
         if (this.hovered === d.building) this.sprites.drawOutline(ctx, id, d.wx, d.wy);
     }
 
-    _drawAnimatedOverlays(ctx, entry, wx, wy) {
-        if (!entry.layers) return;
+    _drawAnimatedOverlays(ctx, entry, wx, wy, building = null) {
+        if (entry.layers) {
+            this._drawManifestLayers(ctx, entry, wx, wy);
+        }
+        if (building) {
+            this._drawFunctionalOverlay(ctx, building, entry, wx, wy);
+        }
+    }
+
+    _drawManifestLayers(ctx, entry, wx, wy) {
         const baseAnchor = this.assets.getAnchor(entry.id);
         for (const [name, layer] of Object.entries(entry.layers)) {
             if (name === 'base') continue;
@@ -678,19 +742,235 @@ export class BuildingSprite {
         }
     }
 
+    _drawFunctionalOverlay(ctx, building, entry, wx, wy) {
+        const baseAnchor = this.assets.getAnchor(entry.id);
+        const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
+        const pulse = this.motionScale ? (Math.sin(this.frame * 0.1) + 1) / 2 : 0.55;
+
+        ctx.save();
+        if (building.type === 'forge') {
+            const hearth = localPoint(64, 78);
+            const anvil = localPoint(45, 84);
+            const hammer = Math.sin(this.frame * 0.18) * 0.75 - 0.25;
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.34 + pulse * 0.22;
+            ctx.fillStyle = '#ff8a33';
+            ctx.beginPath();
+            ctx.ellipse(hearth.x, hearth.y, 22, 10, -0.25, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 0.88;
+            ctx.strokeStyle = '#2f1d12';
+            ctx.fillStyle = '#cfa66f';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(anvil.x - 14, anvil.y + 2);
+            ctx.lineTo(anvil.x + 12, anvil.y - 4);
+            ctx.lineTo(anvil.x + 17, anvil.y + 3);
+            ctx.lineTo(anvil.x - 9, anvil.y + 8);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.translate(anvil.x - 3, anvil.y - 12);
+            ctx.rotate(hammer);
+            ctx.fillStyle = '#6f5136';
+            ctx.fillRect(-2, -18, 4, 22);
+            ctx.fillStyle = '#d9b36f';
+            ctx.fillRect(-9, -22, 18, 6);
+        } else if (building.type === 'mine') {
+            const mouth = localPoint(70, 78);
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.24 + pulse * 0.18;
+            ctx.fillStyle = '#ffc15a';
+            ctx.beginPath();
+            ctx.ellipse(mouth.x, mouth.y - 1, 25, 10, -0.22, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 0.75;
+            ctx.strokeStyle = '#8f6a3d';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(mouth.x - 28, mouth.y + 11);
+            ctx.lineTo(mouth.x + 30, mouth.y - 4);
+            ctx.moveTo(mouth.x - 21, mouth.y + 18);
+            ctx.lineTo(mouth.x + 36, mouth.y + 2);
+            ctx.stroke();
+        } else if (building.type === 'taskboard') {
+            const board = localPoint(56, 60);
+            const swing = this.motionScale ? Math.sin(this.frame * 0.08) * 1.5 : 0;
+            ctx.globalAlpha = 0.94;
+            ctx.fillStyle = 'rgba(58, 38, 22, 0.88)';
+            ctx.strokeStyle = '#8bd7ff';
+            ctx.lineWidth = 1.5;
+            ctx.fillRect(board.x - 23, board.y - 22 + swing, 46, 30);
+            ctx.strokeRect(board.x - 23.5, board.y - 22.5 + swing, 47, 31);
+            const notes = [
+                [-16, -15, '#f2d36b'], [-2, -16, '#e2c48a'], [12, -14, '#f5e4b7'],
+                [-12, -2, '#f5e4b7'], [5, -1, '#f2d36b'],
+            ];
+            for (const [dx, dy, color] of notes) {
+                ctx.fillStyle = color;
+                ctx.fillRect(board.x + dx, board.y + dy + swing, 9, 8);
+            }
+            ctx.strokeStyle = '#2c6b45';
+            ctx.beginPath();
+            ctx.moveTo(board.x + 14, board.y + 5 + swing);
+            ctx.lineTo(board.x + 18, board.y + 9 + swing);
+            ctx.lineTo(board.x + 25, board.y + 0 + swing);
+            ctx.stroke();
+        } else if (building.type === 'portal') {
+            const gate = localPoint(144, 60);
+            const visitors = this._visitorCountFor(building);
+            const activeBoost = visitors > 0 ? 0.28 : 0;
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.28 + pulse * 0.22 + activeBoost;
+            ctx.strokeStyle = '#8feaff';
+            ctx.lineWidth = 2;
+            for (let i = 0; i < 3; i++) {
+                const r = 19 + i * 8 + Math.sin(this.frame * 0.06 + i) * 2;
+                ctx.beginPath();
+                ctx.ellipse(gate.x, gate.y, r, r * 0.58, this.frame * 0.012 + i * 0.8, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            if (visitors > 0) {
+                ctx.fillStyle = '#bda7ff';
+                ctx.beginPath();
+                ctx.ellipse(gate.x, gate.y + 4, 34, 17, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        } else if (building.type === 'watchtower') {
+            const beacon = localPoint(196, 34);
+            const angle = this.frame * 0.018;
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.24 + pulse * 0.12;
+            ctx.fillStyle = '#ffe066';
+            ctx.beginPath();
+            ctx.arc(beacon.x, beacon.y, 13, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 0.18 + pulse * 0.08;
+            ctx.beginPath();
+            ctx.moveTo(beacon.x, beacon.y);
+            ctx.lineTo(beacon.x + Math.cos(angle) * 180, beacon.y + Math.sin(angle) * 55);
+            ctx.lineTo(beacon.x + Math.cos(angle + 0.2) * 150, beacon.y + Math.sin(angle + 0.2) * 44);
+            ctx.closePath();
+            ctx.fill();
+        } else if (building.type === 'archive') {
+            const window = localPoint(58, 45);
+            const leftWing = localPoint(18, 74);
+            const rightWing = localPoint(97, 71);
+            const base = localPoint(58, 89);
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.18 + pulse * 0.2;
+            ctx.fillStyle = '#b3d68c';
+            ctx.beginPath();
+            ctx.ellipse(window.x, window.y, 38, 18, -0.15, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = 'source-over';
+
+            ctx.globalAlpha = 0.86;
+            ctx.fillStyle = 'rgba(52, 36, 25, 0.84)';
+            ctx.strokeStyle = '#b3d68c';
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(base.x - 58, base.y - 7);
+            ctx.lineTo(base.x - 12, base.y - 25);
+            ctx.lineTo(base.x + 54, base.y - 10);
+            ctx.lineTo(base.x + 10, base.y + 10);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = 'rgba(82, 62, 39, 0.9)';
+            ctx.strokeStyle = '#3b2819';
+            for (const wing of [leftWing, rightWing]) {
+                ctx.beginPath();
+                ctx.moveTo(wing.x - 12, wing.y - 28);
+                ctx.lineTo(wing.x + 10, wing.y - 34);
+                ctx.lineTo(wing.x + 15, wing.y - 4);
+                ctx.lineTo(wing.x - 8, wing.y + 2);
+                ctx.closePath();
+                ctx.fill();
+                ctx.stroke();
+                ctx.fillStyle = '#b3d68c';
+                ctx.globalAlpha = 0.45 + pulse * 0.22;
+                ctx.fillRect(wing.x - 5, wing.y - 25, 5, 14);
+                ctx.fillRect(wing.x + 5, wing.y - 27, 5, 16);
+                ctx.globalAlpha = 0.86;
+                ctx.fillStyle = 'rgba(82, 62, 39, 0.9)';
+            }
+
+            ctx.globalAlpha = 0.82;
+            ctx.fillStyle = '#f2dfaa';
+            ctx.strokeStyle = '#4a3420';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(window.x - 26, window.y + 27);
+            ctx.quadraticCurveTo(window.x - 10, window.y + 16, window.x, window.y + 25);
+            ctx.quadraticCurveTo(window.x + 13, window.y + 14, window.x + 29, window.y + 24);
+            ctx.lineTo(window.x + 26, window.y + 35);
+            ctx.quadraticCurveTo(window.x + 9, window.y + 27, window.x, window.y + 37);
+            ctx.quadraticCurveTo(window.x - 13, window.y + 27, window.x - 29, window.y + 35);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.strokeStyle = 'rgba(74, 52, 32, 0.5)';
+            ctx.beginPath();
+            ctx.moveTo(window.x, window.y + 25);
+            ctx.lineTo(window.x, window.y + 36);
+            ctx.moveTo(window.x - 20, window.y + 28);
+            ctx.lineTo(window.x - 4, window.y + 31);
+            ctx.moveTo(window.x + 5, window.y + 31);
+            ctx.lineTo(window.x + 23, window.y + 28);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
     _spawnEmittersFor(b) {
         const entry = this.assets.getEntry(`building.${b.type}`);
-        if (!entry?.emitters || !this.motionScale) return;
+        if (!this.motionScale) return;
         const center = this._buildingScreenCenter(b);
-        const baseAnchor = this.assets.getAnchor(entry.id);
-        for (const [particleType, [lx, ly]] of Object.entries(entry.emitters)) {
-            // Stochastic spawn rate matching legacy BuildingRenderer emitters
-            // (~0.04 → ~2.4 spawns per emitter per second at 60fps).
-            if (Math.random() > 0.04) continue;
-            const wx = center.x - baseAnchor[0] + lx;
-            const wy = center.y - baseAnchor[1] + ly;
-            this.particles.spawn(particleType, wx, wy, 1);
+        const entryId = entry?.id || `building.${b.type}`;
+        const baseAnchor = this.assets.getAnchor(entryId);
+        for (const [particleType, [lx, ly]] of Object.entries(entry?.emitters || {})) {
+            const normalizedType = PARTICLE_ALIASES[particleType] || particleType;
+            this._spawnBuildingParticle(normalizedType, center, baseAnchor, [lx, ly], 0.035, 1);
         }
+        for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
+            const chance = emitter.chance * (this._visitorCountFor(b) > 0 ? 1.6 : 1);
+            this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1);
+        }
+    }
+
+    _spawnBuildingParticle(type, center, baseAnchor, at, chance, count) {
+        if (Math.random() > chance) return;
+        const [lx, ly] = at;
+        const wx = center.x - baseAnchor[0] + lx;
+        const wy = center.y - baseAnchor[1] + ly;
+        this.particles.spawn(type, wx, wy, count);
+    }
+
+    _updateVisitorCounts() {
+        this._visitorCountByType.clear();
+        if (!this.agentSprites?.length || !this.buildings.length) return;
+
+        for (const sprite of this.agentSprites) {
+            const position = this._spriteTilePosition(sprite);
+            if (!position) continue;
+            const agentAtPosition = { ...sprite.agent, position };
+            for (const building of this.buildings) {
+                const isVisiting = typeof building.isAgentVisiting === 'function'
+                    ? building.isAgentVisiting(agentAtPosition)
+                    : building.containsPoint(position.tileX, position.tileY);
+                if (!isVisiting) continue;
+                this._visitorCountByType.set(building.type, (this._visitorCountByType.get(building.type) || 0) + 1);
+            }
+        }
+    }
+
+    _visitorCountFor(building) {
+        return this._visitorCountByType.get(building?.type) || 0;
     }
 
     _buildingScreenCenter(b) {
