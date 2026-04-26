@@ -1,7 +1,7 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 import { TOWN_ROAD_ROUTES } from '../../config/townPlan.js';
-import { FOREST_FLOOR_REGIONS } from '../../config/scenery.js';
+import { FOREST_FLOOR_REGIONS, TROPICAL_PALMS, TROPICAL_WATERFALLS } from '../../config/scenery.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
@@ -22,11 +22,11 @@ const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const DISTRICT_WASHES = [
-    { x: 20, y: 22, radiusX: 10, radiusY: 6, color: '#654020', alpha: 0.12 },
-    { x: 37, y: 20, radiusX: 10, radiusY: 8, color: '#1e5b61', alpha: 0.15 },
-    { x: 10, y: 28, radiusX: 7, radiusY: 5, color: '#5f3a22', alpha: 0.10 },
-    { x: 18, y: 18, radiusX: 12, radiusY: 6, color: '#203f26', alpha: 0.12 },
-    { x: 22, y: 30, radiusX: 15, radiusY: 6, color: '#2f3323', alpha: 0.13 },
+    { x: 20, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
+    { x: 37, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
+    { x: 10, y: 28, radiusX: 7, radiusY: 5, color: '#7d4b25', alpha: 0.10 },
+    { x: 18, y: 18, radiusX: 12, radiusY: 6, color: '#476b2c', alpha: 0.11 },
+    { x: 22, y: 30, radiusX: 15, radiusY: 6, color: '#5b5228', alpha: 0.11 },
 ];
 const ANCIENT_RUINS = [
     { tileX: 37, tileY: 3, scale: 1.05 },
@@ -195,15 +195,21 @@ export class IsometricRenderer {
 
         // Trees (Y-sorted props)
         this.scenery.generateTrees(this.pathTiles, this.bridgeTiles);
-        this.treePropSprites = this.scenery.getTreeProps().map((t) => {
-            if (t.canopy) {
+        const generatedTrees = this.scenery.getTreeProps();
+        const authoredPalms = TROPICAL_PALMS.map((p) => ({
+            ...p,
+            variant: 2,
+            tropical: true,
+        }));
+        this.treePropSprites = [...generatedTrees, ...authoredPalms].map((t) => {
+            if (t.canopy || t.tropical) {
                 return new StaticPropSprite({
                     tileX: t.tileX,
                     tileY: t.tileY,
                     drawFn: (ctx, x, y) => this._drawFantasyForestTree(ctx, x, y, t),
                 });
             }
-            // variant 0 → oak, 1 → pine, 2 → willow; size driven by scale threshold.
+            // variant 0 -> oak, 1 -> pine, 2 -> willow; size driven by scale threshold.
             const species = ['oak', 'pine', 'willow'][(t.variant ?? 0) % 3];
             const size = (t.scale ?? 1) >= 1.0 ? 'large' : 'small';
             const id = `veg.tree.${species}.${size}`;
@@ -910,6 +916,7 @@ export class IsometricRenderer {
 
         // 1. Terrain
         this._drawTerrain(ctx);
+        this._drawTropicalWaterfalls(ctx);
         this._drawOpenSeaGulls(ctx);
 
         // Phase 2.5.5: light reflections — soft, screen-blended overlays over
@@ -2120,15 +2127,15 @@ export class IsometricRenderer {
         if (this.deepWaterTiles.has(key)) {
             const openSea = this._isOpenSeaTile(tileX, tileY);
             fill = openSea
-                ? (seed > 0.5 ? '#031332' : '#05225a')
-                : (seed > 0.5 ? '#041a3f' : '#08285a');
-            alpha = openSea ? 0.64 : 0.54;
+                ? (seed > 0.5 ? '#03244a' : '#074276')
+                : (seed > 0.5 ? '#075274' : '#0b6c8d');
+            alpha = openSea ? 0.58 : 0.48;
         } else if (this.waterTiles.has(key)) {
-            fill = seed > 0.5 ? '#0b3d69' : '#13517a';
-            alpha = 0.46;
+            fill = seed > 0.5 ? '#0c98a6' : '#18b7bc';
+            alpha = 0.42;
         } else if (this.shoreTiles.has(key)) {
-            fill = seed > 0.45 ? '#7a6338' : '#6f5c34';
-            alpha = 0.13;
+            fill = seed > 0.45 ? '#c29a55' : '#ad8346';
+            alpha = 0.15;
         } else if (this.townSquareTiles.has(key)) {
             fill = '#2d2219';
             alpha = 0.09;
@@ -2146,8 +2153,8 @@ export class IsometricRenderer {
                 alpha = 0.18 + forestFloor.strength * 0.20;
             } else {
                 const broad = this._tileNoise(Math.floor(tileX / 5) + 97, Math.floor(tileY / 5) + 131);
-                fill = broad > 0.68 ? '#263f24' : broad < 0.26 ? '#3c552d' : '#30482a';
-                alpha = 0.10;
+                fill = broad > 0.68 ? '#537339' : broad < 0.26 ? '#6d8742' : '#5d7c3c';
+                alpha = 0.11;
             }
         }
 
@@ -2175,7 +2182,7 @@ export class IsometricRenderer {
 
         if (this.waterTiles.has(key) && this.motionScale && seed > 0.72) {
             const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
-            ctx.strokeStyle = `rgba(132, 211, 240, ${shimmer})`;
+            ctx.strokeStyle = `rgba(188, 253, 246, ${shimmer})`;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(screenX - 12, screenY - 2);
@@ -2217,7 +2224,7 @@ export class IsometricRenderer {
     _drawForestFloorTexture(ctx, screenX, screenY, seed, forestFloor) {
         ctx.save();
         ctx.globalCompositeOperation = 'multiply';
-        ctx.fillStyle = `rgba(8, 24, 12, ${0.045 + forestFloor.strength * 0.095})`;
+        ctx.fillStyle = `rgba(34, 52, 12, ${0.035 + forestFloor.strength * 0.075})`;
         this._drawDiamond(ctx, screenX, screenY);
         ctx.fill();
 
@@ -2226,7 +2233,7 @@ export class IsometricRenderer {
             ctx.lineCap = 'round';
             ctx.lineWidth = 1;
             const alpha = 0.035 + forestFloor.strength * 0.07;
-            ctx.strokeStyle = `rgba(160, 215, 118, ${alpha})`;
+            ctx.strokeStyle = `rgba(209, 236, 104, ${alpha})`;
             ctx.beginPath();
             ctx.moveTo(screenX - 17 + seed * 5, screenY - 3);
             ctx.quadraticCurveTo(screenX - 5, screenY - 9 - seed * 2, screenX + 14 - seed * 3, screenY - 6);
@@ -2235,9 +2242,9 @@ export class IsometricRenderer {
 
         if (seed > 0.78) {
             ctx.globalCompositeOperation = 'source-over';
-            ctx.fillStyle = `rgba(231, 211, 126, ${0.08 + forestFloor.strength * 0.06})`;
+            ctx.fillStyle = `rgba(252, 216, 118, ${0.09 + forestFloor.strength * 0.06})`;
             ctx.fillRect(Math.round(screenX - 2), Math.round(screenY - 9), 2, 2);
-            ctx.fillStyle = `rgba(123, 190, 92, ${0.10 + forestFloor.strength * 0.08})`;
+            ctx.fillStyle = `rgba(153, 221, 82, ${0.11 + forestFloor.strength * 0.08})`;
             ctx.fillRect(Math.round(screenX + 7), Math.round(screenY - 4), 2, 1);
         }
         ctx.restore();
@@ -2265,8 +2272,8 @@ export class IsometricRenderer {
 
         const scale = scaleBucket / 100;
         const seed = seedBucket / 100;
-        const baseWidth = variant === 1 ? 72 : 92;
-        const topHeight = variant === 1 ? 82 : 84;
+        const baseWidth = variant === 2 ? 96 : variant === 1 ? 72 : 92;
+        const topHeight = variant === 2 ? 100 : variant === 1 ? 82 : 84;
         const bottomPad = 16;
         const padding = 8;
         const canvas = document.createElement('canvas');
@@ -2291,11 +2298,85 @@ export class IsometricRenderer {
         ctx.ellipse(0, 2, 20, 7, 0, 0, Math.PI * 2);
         ctx.fill();
 
-        if (variant === 1) {
+        if (variant === 2) {
+            this._drawPalmSilhouette(ctx, seed);
+        } else if (variant === 1) {
             this._drawPineSilhouette(ctx, seed);
         } else {
             this._drawOakSilhouette(ctx, seed);
         }
+    }
+
+    _drawPalmSilhouette(ctx, seed) {
+        const lean = (seed - 0.5) * 12;
+        ctx.save();
+        ctx.translate(lean * 0.18, 0);
+
+        ctx.lineWidth = 7;
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = '#3d2517';
+        ctx.beginPath();
+        ctx.moveTo(-4, 1);
+        ctx.quadraticCurveTo(-8 + lean * 0.18, -33, lean, -69);
+        ctx.stroke();
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = '#7a4d26';
+        ctx.beginPath();
+        ctx.moveTo(-1, -1);
+        ctx.quadraticCurveTo(-5 + lean * 0.18, -34, lean + 2, -68);
+        ctx.stroke();
+
+        const crownX = lean;
+        const crownY = -72;
+        ctx.fillStyle = '#172414';
+        for (let i = 0; i < 7; i++) {
+            const angle = -Math.PI * 0.96 + i * (Math.PI * 1.92 / 6);
+            this._tracePalmFrond(ctx, crownX + 2, crownY + 4, angle, 39 + (i % 2) * 7, 15);
+            ctx.fill();
+        }
+
+        const greens = ['#91d34f', '#69b844', '#4a973a', '#2f7532'];
+        for (let i = 0; i < 8; i++) {
+            const angle = -Math.PI * 0.98 + i * (Math.PI * 1.96 / 7);
+            ctx.fillStyle = greens[(i + Math.floor(seed * 4)) % greens.length];
+            this._tracePalmFrond(ctx, crownX, crownY, angle, 40 + ((i + 1) % 3) * 8, 13 + (i % 2) * 3);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(231, 247, 111, 0.20)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(crownX, crownY);
+            ctx.lineTo(crownX + Math.cos(angle) * 28, crownY + Math.sin(angle) * 12);
+            ctx.stroke();
+        }
+
+        ctx.fillStyle = '#c58a32';
+        ctx.beginPath();
+        ctx.arc(crownX - 3, crownY + 2, 3, 0, Math.PI * 2);
+        ctx.arc(crownX + 4, crownY + 3, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _tracePalmFrond(ctx, x, y, angle, length, width) {
+        const tipX = x + Math.cos(angle) * length;
+        const tipY = y + Math.sin(angle) * length * 0.52;
+        const normalX = -Math.sin(angle);
+        const normalY = Math.cos(angle) * 0.52;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.quadraticCurveTo(
+            x + Math.cos(angle) * length * 0.42 + normalX * width,
+            y + Math.sin(angle) * length * 0.26 + normalY * width,
+            tipX,
+            tipY
+        );
+        ctx.quadraticCurveTo(
+            x + Math.cos(angle) * length * 0.38 - normalX * width * 0.54,
+            y + Math.sin(angle) * length * 0.24 - normalY * width * 0.54,
+            x,
+            y
+        );
+        ctx.closePath();
     }
 
     _drawPineSilhouette(ctx, seed) {
@@ -2451,11 +2532,79 @@ export class IsometricRenderer {
     _terrainRegionTint(baseColor, tileX, tileY, seed) {
         const broad = this._tileNoise(Math.floor(tileX / 4) + 11, Math.floor(tileY / 4) + 19);
         const wash = this._tileNoise(Math.floor((tileX + tileY) / 7) + 37, Math.floor((tileY - tileX) / 7) + 43);
-        if (broad > 0.76) return seed > 0.42 ? '#3a6336' : '#345c33';
-        if (broad < 0.18) return seed > 0.54 ? '#2e562f' : '#315931';
-        if (wash > 0.82) return '#3d6439';
-        if (wash < 0.12) return '#2f5630';
+        if (broad > 0.76) return seed > 0.42 ? '#6e873e' : '#5f7f39';
+        if (broad < 0.18) return seed > 0.54 ? '#557438' : '#617b3b';
+        if (wash > 0.82) return '#718a43';
+        if (wash < 0.12) return '#59783a';
         return baseColor;
+    }
+
+    _drawTropicalWaterfalls(ctx) {
+        if (!TROPICAL_WATERFALLS.length) return;
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        for (const fall of TROPICAL_WATERFALLS) {
+            const x = (fall.tileX - fall.tileY) * TILE_WIDTH / 2;
+            const y = (fall.tileX + fall.tileY) * TILE_HEIGHT / 2;
+            const scale = fall.scale ?? 1;
+            const shimmer = this.motionScale
+                ? Math.sin(this.waterFrame * 5.2 + (fall.phase ?? 0)) * 2.5
+                : 0;
+
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.scale(scale, scale);
+
+            ctx.fillStyle = 'rgba(91, 68, 39, 0.68)';
+            ctx.beginPath();
+            ctx.moveTo(-fall.width * 0.58, 2);
+            ctx.lineTo(-fall.width * 0.28, -fall.height * 0.66);
+            ctx.lineTo(0, -fall.height - 10);
+            ctx.lineTo(fall.width * 0.42, -fall.height * 0.58);
+            ctx.lineTo(fall.width * 0.58, 4);
+            ctx.lineTo(0, 12);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.fillStyle = 'rgba(180, 126, 66, 0.42)';
+            ctx.beginPath();
+            ctx.moveTo(-fall.width * 0.42, -4);
+            ctx.lineTo(-fall.width * 0.18, -fall.height * 0.62);
+            ctx.lineTo(5, -fall.height - 4);
+            ctx.lineTo(fall.width * 0.34, -fall.height * 0.50);
+            ctx.lineTo(fall.width * 0.42, -3);
+            ctx.closePath();
+            ctx.fill();
+
+            const stream = ctx.createLinearGradient(0, -fall.height, 0, 8);
+            stream.addColorStop(0, 'rgba(202, 255, 250, 0.88)');
+            stream.addColorStop(0.52, 'rgba(71, 211, 229, 0.72)');
+            stream.addColorStop(1, 'rgba(216, 255, 250, 0.46)');
+            ctx.fillStyle = stream;
+            ctx.beginPath();
+            ctx.moveTo(-fall.width * 0.16 + shimmer, -fall.height + 2);
+            ctx.bezierCurveTo(-fall.width * 0.30, -fall.height * 0.54, -fall.width * 0.14, -fall.height * 0.28, -fall.width * 0.22, 4);
+            ctx.lineTo(fall.width * 0.18, 6);
+            ctx.bezierCurveTo(fall.width * 0.24, -fall.height * 0.28, fall.width * 0.12, -fall.height * 0.58, fall.width * 0.18 + shimmer, -fall.height + 2);
+            ctx.closePath();
+            ctx.fill();
+
+            ctx.strokeStyle = 'rgba(235, 255, 246, 0.72)';
+            ctx.lineWidth = 1.2;
+            for (let i = -1; i <= 1; i++) {
+                ctx.beginPath();
+                ctx.moveTo(i * 8 + shimmer * 0.35, -fall.height * 0.86);
+                ctx.bezierCurveTo(i * 4 - shimmer, -fall.height * 0.56, i * 7 + shimmer, -fall.height * 0.24, i * 5, 2);
+                ctx.stroke();
+            }
+
+            ctx.fillStyle = 'rgba(226, 255, 246, 0.48)';
+            ctx.beginPath();
+            ctx.ellipse(0, 7, fall.width * 0.46, 8, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+        ctx.restore();
     }
 
     _drawAtmosphere(ctx) {
@@ -2506,9 +2655,9 @@ export class IsometricRenderer {
         overlay.height = canvas.height;
         const overlayCtx = overlay.getContext('2d');
         const skyWash = overlayCtx.createLinearGradient(0, 0, 0, canvas.height);
-        skyWash.addColorStop(0, 'rgba(33, 62, 64, 0.18)');
-        skyWash.addColorStop(0.42, 'rgba(17, 13, 10, 0)');
-        skyWash.addColorStop(1, 'rgba(0, 0, 0, 0.30)');
+        skyWash.addColorStop(0, 'rgba(78, 93, 45, 0.14)');
+        skyWash.addColorStop(0.42, 'rgba(58, 34, 12, 0)');
+        skyWash.addColorStop(1, 'rgba(39, 20, 6, 0.28)');
         overlayCtx.fillStyle = skyWash;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -2520,8 +2669,8 @@ export class IsometricRenderer {
             canvas.height * 0.50,
             Math.max(canvas.width, canvas.height) * 0.58,
         );
-        warmCore.addColorStop(0, 'rgba(237, 181, 80, 0.055)');
-        warmCore.addColorStop(0.5, 'rgba(76, 48, 22, 0.025)');
+        warmCore.addColorStop(0, 'rgba(255, 199, 90, 0.090)');
+        warmCore.addColorStop(0.5, 'rgba(128, 76, 22, 0.040)');
         warmCore.addColorStop(1, 'rgba(0, 0, 0, 0)');
         overlayCtx.fillStyle = warmCore;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
@@ -2535,8 +2684,8 @@ export class IsometricRenderer {
             Math.max(canvas.width, canvas.height) * 0.72,
         );
         vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        vignette.addColorStop(0.62, 'rgba(18, 11, 8, 0.07)');
-        vignette.addColorStop(1, 'rgba(0, 0, 0, 0.44)');
+        vignette.addColorStop(0.62, 'rgba(33, 18, 7, 0.055)');
+        vignette.addColorStop(1, 'rgba(23, 11, 4, 0.40)');
         overlayCtx.fillStyle = vignette;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 

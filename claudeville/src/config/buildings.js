@@ -113,8 +113,8 @@ export const BUILDING_DEFS = [
     },
     {
         type: 'watchtower',
-        x: 29,
-        y: 5,
+        x: 31,
+        y: 8,
         width: 3,
         height: 5,
         label: 'PHAROS LIGHTHOUSE',
@@ -124,8 +124,8 @@ export const BUILDING_DEFS = [
         district: 'harbor',
         visualTier: 'hero',
         labelPriority: 'landmark',
-        entrance: { tileX: 31, tileY: 10 },
-        visitTiles: [{ tileX: 31, tileY: 10 }, { tileX: 32, tileY: 9 }, { tileX: 30, tileY: 10 }],
+        entrance: { tileX: 33, tileY: 13 },
+        visitTiles: [{ tileX: 33, tileY: 13 }, { tileX: 34, tileY: 12 }, { tileX: 32, tileY: 13 }],
     },
     {
         type: 'harbor',

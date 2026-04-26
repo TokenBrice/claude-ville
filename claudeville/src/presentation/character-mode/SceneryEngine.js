@@ -394,12 +394,21 @@ export class SceneryEngine {
                         const jx = (this.tileNoise(tx + 11, ty + 3) - 0.5) * 0.6;
                         const jy = (this.tileNoise(tx + 5, ty + 19) - 0.5) * 0.6;
                         const variantNoise = this.tileNoise(tx + 41, ty + 91);
+                        const palmNoise = this.tileNoise(tx + 73, ty + 211);
                         const northernCanopy = ty <= 13;
-                        const variant = northernCanopy
+                        const palmBias = cluster.palmBias ?? (ty > 13 ? 0.42 : 0);
+                        const shorelinePalm = this._distanceToWater(tx, ty) !== Infinity ? 0.34 : 0;
+                        const villagePalm = ty >= 14 && ty <= 30 ? 0.30 : 0;
+                        const isPalm = palmNoise < Math.min(0.98, palmBias + shorelinePalm + villagePalm);
+                        const variant = isPalm
+                            ? 2
+                            : northernCanopy
                             ? (variantNoise > 0.72 ? 0 : 1)
                             : Math.floor(variantNoise * 3);
                         const scaleNoise = this.tileNoise(tx + 17, ty + 71);
-                        const scale = northernCanopy
+                        const scale = isPalm
+                            ? 0.96 + scaleNoise * 0.34
+                            : northernCanopy
                             ? 1.02 + scaleNoise * 0.34
                             : 0.85 + scaleNoise * 0.4;
                         this.treeProps.push({
@@ -407,7 +416,8 @@ export class SceneryEngine {
                             tileY: ty + 0.5 + jy,
                             variant,
                             scale,
-                            canopy: northernCanopy,
+                            canopy: northernCanopy && !isPalm,
+                            tropical: isPalm,
                             seed: variantNoise,
                         });
                     }

@@ -16,7 +16,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'north-bank-promenade',
         material: 'avenue',
         width: 1,
-        points: [[12, 21], [20, 22], [27, 20], [30, 15], [31, 10]],
+        points: [[12, 21], [20, 22], [27, 20], [31, 16], [33, 13]],
     },
     {
         id: 'production-row',
@@ -46,7 +46,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'lighthouse-quay',
         material: 'dock',
         width: 1,
-        points: [[33, 19], [32, 14], [31, 10]],
+        points: [[33, 19], [33, 16], [33, 13]],
     },
     {
         id: 'harbor-berths',
