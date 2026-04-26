@@ -10,6 +10,69 @@ const AGENT_NAMES_EN = [
     'Prism', 'Qubit', 'Rune', 'Sage', 'Vex',
 ];
 
+const DIRECT_TOOL_BUILDINGS = {
+    Read: 'archive',
+    Grep: 'archive',
+    Glob: 'archive',
+    LS: 'archive',
+
+    WebSearch: 'observatory',
+    WebFetch: 'observatory',
+    'web.run': 'observatory',
+
+    Edit: 'forge',
+    MultiEdit: 'forge',
+    Write: 'forge',
+    apply_patch: 'forge',
+    'functions.apply_patch': 'forge',
+
+    NotebookEdit: 'alchemy',
+    'image_gen.imagegen': 'alchemy',
+
+    'mcp__playwright__browser_navigate': 'portal',
+    'mcp__playwright__browser_take_screenshot': 'portal',
+    'mcp__playwright__browser_click': 'portal',
+    'mcp__playwright__browser_type': 'portal',
+    'mcp__playwright__browser_snapshot': 'portal',
+    'mcp__playwright__browser_resize': 'portal',
+
+    Task: 'command',
+    TeamCreate: 'command',
+    SendMessage: 'chathall',
+    multi_tool_use: 'command',
+    'multi_tool_use.parallel': 'command',
+    'functions.spawn_agent': 'command',
+    'functions.send_input': 'command',
+    'functions.close_agent': 'command',
+    'functions.resume_agent': 'command',
+
+    TaskCreate: 'taskboard',
+    TaskUpdate: 'taskboard',
+    TaskList: 'taskboard',
+    TodoWrite: 'taskboard',
+    'functions.update_plan': 'taskboard',
+    'functions.wait_agent': 'taskboard',
+    'functions.request_user_input': 'taskboard',
+};
+
+const SHELL_TOOL_NAMES = new Set([
+    'Bash',
+    'shell',
+    'exec_command',
+    'functions.exec_command',
+    'functions.write_stdin',
+    'command_execution',
+]);
+
+const TOOL_PATTERNS = [
+    { building: 'watchtower', pattern: /\b(git\s+(commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/ },
+    { building: 'taskboard', pattern: /\b(npm\s+(test|run\s+(test|check|lint|build|sprites:validate|sprites:visual-diff))|node\s+--check|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/ },
+    { building: 'archive', pattern: /\b(rg|grep|find|fd|ls|cat|sed|head|tail|nl|wc|git\s+(status|diff|show|log|branch|rev-list|fetch)|jq)\b/ },
+    { building: 'portal', pattern: /\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/ },
+    { building: 'observatory', pattern: /\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/ },
+    { building: 'forge', pattern: /\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/ },
+];
+
 export class Agent {
     constructor({
         id,
@@ -129,42 +192,49 @@ export class Agent {
      * Return the target building type for the current tool
      */
     get targetBuildingType() {
-        if (!this.currentTool) return null;
-        const toolMap = {
-            'Read': 'archive', 'Grep': 'archive', 'Glob': 'archive',
-            'WebSearch': 'observatory', 'WebFetch': 'observatory',
-            'Edit': 'forge', 'Write': 'forge', 'NotebookEdit': 'alchemy',
-            'Bash': 'mine',
-            'shell': 'mine',
-            'exec_command': 'mine',
-            'functions.exec_command': 'mine',
-            'functions.write_stdin': 'mine',
-            'apply_patch': 'forge',
-            'functions.apply_patch': 'forge',
-            'multi_tool_use.parallel': 'command',
-            'web.run': 'observatory',
-            'image_gen.imagegen': 'alchemy',
-            'mcp__playwright__browser_navigate': 'portal',
-            'mcp__playwright__browser_take_screenshot': 'portal',
-            'mcp__playwright__browser_click': 'portal',
-            'mcp__playwright__browser_type': 'portal',
-            'mcp__playwright__browser_snapshot': 'portal',
-            'Task': 'command', 'TaskCreate': 'taskboard', 'TaskUpdate': 'taskboard', 'TaskList': 'taskboard',
-            'SendMessage': 'chathall', 'TeamCreate': 'command',
-            'command_execution': 'mine',
-        };
-        const mapped = toolMap[this.currentTool];
+        const toolName = this.currentTool;
+        if (!toolName) return null;
+
+        const mapped = DIRECT_TOOL_BUILDINGS[toolName];
         if (mapped) return mapped;
 
-        const tool = String(this.currentTool).toLowerCase();
-        if (tool.includes('exec_command') || tool.includes('bash') || tool.includes('shell')) return 'mine';
-        if (tool.includes('apply_patch') || tool.includes('edit') || tool.includes('write') || tool.includes('update_file') || tool.includes('create_file')) return 'forge';
-        if (tool.includes('read') || tool.includes('grep') || tool.includes('find') || tool.includes('search')) return 'archive';
-        if (tool.includes('web') || tool.includes('fetch') || tool.includes('browser')) return 'observatory';
-        if (tool.includes('spawn_agent') || tool.includes('task') || tool.includes('parallel')) return 'command';
-        if (tool.includes('wait_agent') || tool.includes('todo')) return 'taskboard';
-        if (tool.includes('image')) return 'alchemy';
+        if (SHELL_TOOL_NAMES.has(toolName)) {
+            return Agent._buildingForShellInput(this.currentToolInput || this.lastToolInput) || 'mine';
+        }
+
+        const tool = String(toolName).toLowerCase();
+        if (tool.includes('playwright') || tool.includes('browser') || tool.includes('chrome')) return 'portal';
+        if (tool.includes('web') || tool.includes('fetch')) return 'observatory';
+        if (tool.includes('image') || tool.includes('prompt') || tool.includes('notebook')) return 'alchemy';
+        if (tool.includes('github') || tool.includes('pull_request') || tool.includes(' pr_')) return 'watchtower';
+        if (tool.includes('apply_patch') || tool.includes('edit') || tool.includes('write') || tool.includes('update_file') || tool.includes('create_file') || tool.includes('delete_file')) return 'forge';
+        if (tool.includes('spawn_agent') || tool.includes('send_input') || tool.includes('team') || tool.includes('parallel')) return 'command';
+        if (tool.includes('wait_agent') || tool.includes('task') || tool.includes('todo') || tool.includes('plan')) return 'taskboard';
+        if (tool.includes('read') || tool.includes('grep') || tool.includes('glob') || tool.includes('find') || tool.includes('search')) return 'archive';
         return null;
+    }
+
+    static _buildingForShellInput(input) {
+        const text = Agent._normalizeToolInput(input);
+        if (!text) return null;
+        const matched = TOOL_PATTERNS.find(({ pattern }) => pattern.test(text));
+        return matched ? matched.building : null;
+    }
+
+    static _normalizeToolInput(input) {
+        if (input == null) return '';
+        if (typeof input === 'string') return input.toLowerCase();
+        if (typeof input === 'object') {
+            const fields = ['cmd', 'command', 'script', 'args', 'url', 'path'];
+            const parts = [];
+            for (const field of fields) {
+                if (input[field] != null) {
+                    parts.push(String(input[field]));
+                }
+            }
+            if (parts.length) return parts.join(' ').toLowerCase();
+        }
+        return String(input).toLowerCase();
     }
 
     /**

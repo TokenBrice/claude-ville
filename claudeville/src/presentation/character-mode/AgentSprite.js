@@ -197,9 +197,9 @@ export class AgentSprite {
 
     _targetBuildingTypeForState() {
         if (this.agent.status === AgentStatus.WORKING) {
-            return this.agent.targetBuildingType || (this.agent.isSubagent ? 'command' : 'watchtower');
+            return this.agent.targetBuildingType || 'command';
         }
-        if (this.agent.status === AgentStatus.WAITING) return 'watchtower';
+        if (this.agent.status === AgentStatus.WAITING) return this.agent.targetBuildingType || 'taskboard';
         if (this.agent.status === AgentStatus.IDLE) return 'sanctuary';
         return null;
     }
