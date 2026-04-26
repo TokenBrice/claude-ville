@@ -1,8 +1,54 @@
 style:
+  assetVersion: "2026-04-26-visual-revamp"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
 characters:
+  - id: agent.claude.opus
+    tool: create_character
+    prompt: "epic high-fantasy Claude Opus archmage scholar, ivory and amber robes, broad gold rune mantle, high collar, glowing tome, short staff, strong readable RPG silhouette, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: claude
+    anchor: [46, 80]
+
+  - id: agent.claude.sonnet
+    tool: create_character
+    prompt: "epic high-fantasy Claude Sonnet scribe mage, amber scholar cloak, silver quill, open tome, nimble readable RPG silhouette, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: claude
+    anchor: [46, 80]
+
+  - id: agent.codex.gpt55
+    tool: create_character
+    prompt: "epic high-fantasy Codex GPT-5.5 master artificer, teal engineer coat, gold arcane lens, luminous chest core, tool belt, heroic readable RPG silhouette, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+
+  - id: agent.codex.gpt54
+    tool: create_character
+    prompt: "epic high-fantasy Codex GPT-5.4 senior engineer, blue teal coat, brass goggles, gear pauldron, blueprint scroll, sturdy readable RPG silhouette, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+
+  - id: agent.codex.gpt53spark
+    tool: create_character
+    prompt: "epic high-fantasy Codex GPT-5.3 Spark scout artificer, yellow cyan lightning sash, light runner coat, compact fast readable RPG silhouette, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+
   - id: agent.claude.base
     tool: create_character
     prompt: "epic high-fantasy mage scholar, warm amber robes with gold trim, glowing rune sigil on chest, hooded silhouette, front 3/4 view"
@@ -49,6 +95,34 @@ palettes:
 
 # ─── ACCESSORIES ─────────────────────────────────────────────────────────────
 accessories:
+  - id: overlay.accessory.effortLow
+    tool: isometric_tile
+    prompt: "small bronze focus pin for low reasoning effort, readable pixel art, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 12]
+
+  - id: overlay.accessory.effortMedium
+    tool: isometric_tile
+    prompt: "standard silver focus band for medium reasoning effort, readable pixel art, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 12]
+
+  - id: overlay.accessory.effortHigh
+    tool: isometric_tile
+    prompt: "tall gold reasoning crest for high reasoning effort, readable pixel art, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 13]
+
+  - id: overlay.accessory.effortXhigh
+    tool: isometric_tile
+    prompt: "radiant arcane halo crown for extra high reasoning effort, readable pixel art, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 14]
+
   - id: overlay.accessory.mageHood
     tool: isometric_tile
     prompt: "wizard hood, deep amber fabric, drapes over shoulders, rune stitching, transparent background"

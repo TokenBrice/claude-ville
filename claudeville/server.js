@@ -67,7 +67,7 @@ function sendError(res, statusCode, message) {
 
 function cacheControlFor(reqPath) {
   return reqPath.startsWith('/assets/sprites/')
-    ? 'public, max-age=31536000, immutable'
+    ? 'no-cache'
     : 'no-cache';
 }
 
