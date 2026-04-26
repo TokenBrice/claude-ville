@@ -13,6 +13,7 @@ import { Pathfinder } from './Pathfinder.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
+import { HarborTraffic } from './HarborTraffic.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -47,7 +48,6 @@ const AMBIENT_GROUND_PROPS = [
     // Harbor/lighthouse: docks, cargo, and a boat make the water edge read as a harbor.
     { tileX: 34.0, tileY: 17.7, type: 'harborPier' },
     { tileX: 36.0, tileY: 17.7, type: 'harborPier' },
-    { tileX: 37.6, tileY: 18.8, type: 'harborBoat' },
     { tileX: 33.4, tileY: 16.2, type: 'harborCrates' },
     { tileX: 32.5, tileY: 18.3, type: 'harborCrane' },
 
@@ -98,6 +98,7 @@ export class IsometricRenderer {
         this.buildingRenderer = this.assets
             ? new BuildingSprite(this.assets, this.sprites, this.particleSystem)
             : null;
+        this.harborTraffic = new HarborTraffic({ sprites: this.sprites });
         this.minimap = new Minimap();
         this.agentSprites = new Map();
         this._sortedSprites = [];
@@ -660,6 +661,7 @@ export class IsometricRenderer {
     _setMotionScale(scale) {
         this.motionScale = scale;
         this.buildingRenderer?.setMotionScale(scale);
+        this.harborTraffic?.setMotionScale(scale);
         this.particleSystem.setMotionEnabled(scale > 0);
         for (const sprite of this.agentSprites.values()) {
             sprite.setMotionScale(scale);
@@ -810,6 +812,7 @@ export class IsometricRenderer {
         if (shouldResort) {
             this._markSpritesDirty();
         }
+        this.harborTraffic?.update(this.world.agents.values(), dt);
 
         // Update building renderer (pass agent sprite positions)
         this.buildingRenderer?.setAgentSprites(this._snapshotSortedSprites());
@@ -899,17 +902,21 @@ export class IsometricRenderer {
         // 3. Buildings + 4. Agents — interleaved by sortY for proper occlusion
         const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
         const sortedSprites = this._snapshotSortedSprites();
+        const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
         const zoom = this.camera.zoom;
         this._assignAgentOverlaySlots(sortedSprites, zoom);
 
         const drawables = [];
         for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
         for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
+        for (const d of harborDrawables) drawables.push({ kind: 'harbor-traffic', sortY: d.sortY, payload: d });
         drawables.sort((a, b) => a.sortY - b.sortY);
 
         for (const item of drawables) {
             if (item.kind === 'agent') {
                 item.payload.draw(ctx, zoom);
+            } else if (item.kind === 'harbor-traffic') {
+                this.harborTraffic.draw(ctx, item.payload, zoom);
             } else {
                 this.buildingRenderer.drawDrawable(ctx, item.payload);
             }

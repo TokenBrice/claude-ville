@@ -66,6 +66,7 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | `tokenUsage` | object \| null | See "Token normalization" below. Some adapters omit this. |
 | `parentSessionId` | string \| null | Set on subagent / spawned-thread sessions. |
 | `reasoningEffort` | string \| null | Codex-only. Pulled from `turn_context` / `event_msg`. |
+| `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Dry-run events are omitted. |
 
 ### Token normalization
 

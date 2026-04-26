@@ -27,6 +27,7 @@ export class Agent {
         lastTool,
         lastToolInput,
         lastMessage,
+        gitEvents,
         provider,
         agentId,
         agentName,
@@ -55,6 +56,7 @@ export class Agent {
         this.currentToolInput = currentToolInput || null;
         this.lastTool = lastTool || currentTool || null;
         this.lastToolInput = lastToolInput || currentToolInput || null;
+        this.gitEvents = Array.isArray(gitEvents) ? gitEvents : [];
         this.lastSessionActivity = lastSessionActivity || null;
         this.activityAgeMs = Number.isFinite(Number(activityAgeMs)) ? Number(activityAgeMs) : null;
         this._lastMessage = lastMessage || null;

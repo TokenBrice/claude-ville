@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -265,6 +266,29 @@ function getTokenUsage(sessionFilePath) {
   return usage;
 }
 
+function getGitEvents(sessionFilePath, context) {
+  const events = [];
+  try {
+    const lines = readLastLines(sessionFilePath, 500);
+    const entries = parseJsonLines(lines);
+
+    entries.forEach((entry, entryIndex) => {
+      const msg = entry.message;
+      if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) return;
+
+      msg.content.forEach((block, blockIndex) => {
+        if (block.type !== 'tool_use' || !block.input) return;
+        events.push(...extractGitEventsFromCommandSource(block.input, {
+          ...context,
+          ts: entry.timestamp || entry.created_at || 0,
+          sourceId: block.id || entry.uuid || entry.id || `${stableHash(JSON.stringify(entry))}:${blockIndex}`,
+        }));
+      });
+    });
+  } catch { /* ignore */ }
+  return dedupeGitEvents(events);
+}
+
 function resolveSessionFilePath(sessionId, project) {
   if (!project) return null;
   const encoded = project.replace(/\//g, '-');
@@ -376,6 +400,11 @@ class ClaudeAdapter {
         lastToolInput: detail.lastToolInput,
         lastMessage: detail.lastMessage || session.lastMessage,
         tokenUsage: sessionFilePath ? getTokenUsage(sessionFilePath) : null,
+        gitEvents: sessionFilePath ? getGitEvents(sessionFilePath, {
+          provider: 'claude',
+          sessionId: session.sessionId,
+          project: session.project,
+        }) : [],
       });
     }
 
@@ -450,6 +479,11 @@ class ClaudeAdapter {
               lastTool: detail.lastTool,
               lastToolInput: detail.lastToolInput,
               tokenUsage: getTokenUsage(filePath),
+              gitEvents: getGitEvents(filePath, {
+                provider: 'claude',
+                sessionId: `subagent-${agentId}`,
+                project: decodedProject,
+              }),
               parentSessionId: sessionId,
             });
           }
@@ -509,6 +543,11 @@ class ClaudeAdapter {
             lastTool: detail.lastTool,
             lastToolInput: detail.lastToolInput,
             tokenUsage: getTokenUsage(filePath),
+            gitEvents: getGitEvents(filePath, {
+              provider: 'claude',
+              sessionId,
+              project: decodedProject,
+            }),
           });
         }
       }

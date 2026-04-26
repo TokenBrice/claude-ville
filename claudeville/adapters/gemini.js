@@ -20,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 
 const GEMINI_DIR = path.join(os.homedir(), '.gemini');
 const TMP_DIR = path.join(GEMINI_DIR, 'tmp');
@@ -243,6 +244,39 @@ function getRecentMessages(filePath, maxItems = 5) {
   return msgList.slice(-maxItems);
 }
 
+function getGitEvents(filePath, context) {
+  const events = [];
+  try {
+    const content = fs.readFileSync(filePath, 'utf-8');
+    const session = JSON.parse(content);
+    const messages = session.messages;
+    if (!Array.isArray(messages)) return events;
+
+    messages.forEach((msg, msgIndex) => {
+      const ts = msg.timestamp || 0;
+      if (msg.type === 'gemini' && Array.isArray(msg.toolCalls)) {
+        msg.toolCalls.forEach((tc, callIndex) => {
+          if (!tc.args) return;
+          events.push(...extractGitEventsFromCommandSource(tc.args, {
+            ...context,
+            ts,
+            sourceId: tc.id || msg.id || `${stableHash(JSON.stringify(msg))}:${callIndex}`,
+          }));
+        });
+      }
+
+      if (msg.type === 'tool_call' && msg.input) {
+        events.push(...extractGitEventsFromCommandSource(msg.input, {
+          ...context,
+          ts,
+          sourceId: msg.id || `${stableHash(JSON.stringify(msg))}:input`,
+        }));
+      }
+    });
+  } catch { /* ignore */ }
+  return dedupeGitEvents(events);
+}
+
 /**
  * Scan active session files
  * ~/.gemini/tmp/<project_hash>/chats/session-*.json
@@ -319,6 +353,11 @@ class GeminiAdapter {
         lastMessage: detail.lastMessage,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
+        gitEvents: getGitEvents(filePath, {
+          provider: 'gemini',
+          sessionId: `gemini-${sessionId}`,
+          project,
+        }),
         parentSessionId: null,
       });
     }

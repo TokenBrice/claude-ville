@@ -237,12 +237,12 @@ buildings:
     layers:
       base:
         tool: isometric_tile
-        prompt: "epic harbor lighthouse, weathered grey stone tower, crimson conical roof, brass lantern dome, dragon banner, isometric, dramatic"
+        prompt: "Great Lighthouse of Alexandria Pharos, white limestone square podium, tapering stacked tower stages, bronze lantern crown, attached stone quay and narrow causeway, heroic isometric harbor landmark, dramatic warm dawn light"
         size: 64
         displaySize: 104
       beacon:
         tool: isometric_tile
-        prompt: "bright golden lantern dome glow, rotating beam suggestion, transparent background, isometric"
+        prompt: "warm golden beacon from Pharos lantern crown, soft rotating beam suggestion, transparent background, isometric"
         size: 64
         anchor: [144, 38]
         animation: pulse
@@ -574,14 +574,14 @@ terrain:
 
   - id: terrain.shore-shallow
     tool: tileset
-    lower: "sandy shore with pebbles and sea foam"
-    upper: "shallow clear water, sandy bed visible, ripples"
+    lower: "pale limestone harbor shore, wet sand, pebbles, broken sea foam"
+    upper: "clear turquoise shallow harbor water, sandy bed visible, small wavelets"
     size: 32
 
   - id: terrain.shallow-deep
     tool: tileset
-    lower: "shallow clear water, sandy bed visible, ripples"
-    upper: "deep dark river water, dark currents, painterly"
+    lower: "clear turquoise shallow harbor water with foam and sunlit ripples"
+    upper: "deep cobalt open sea water, darker currents, subtle wave crests"
     size: 32
 
   - id: terrain.cobble-square

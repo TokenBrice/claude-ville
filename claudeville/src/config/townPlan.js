@@ -8,7 +8,7 @@ export const TOWN_DISTRICTS = Object.freeze([
     { id: 'workshop', label: 'Forge Row', center: [29, 21], radius: 5 },
     { id: 'resource', label: 'Mine Yard', center: [9, 28], radius: 5 },
     { id: 'arcane', label: 'Rune Gate', center: [28, 29], radius: 6 },
-    { id: 'harbor', label: 'Harbor Quay', center: [34, 18], radius: 5 },
+    { id: 'harbor', label: 'Harbor Quay', center: [36, 19], radius: 5 },
     { id: 'quiet', label: 'Sanctuary Grove', center: [9, 8], radius: 5 },
 ]);
 
@@ -47,7 +47,13 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'harbor-quay',
         material: 'dock',
         width: 2,
-        points: [[30, 18], [33, 19], [34, 19], [36, 19]],
+        points: [[30, 18], [32, 19], [35, 19], [39, 19]],
+    },
+    {
+        id: 'harbor-berths',
+        material: 'dock',
+        width: 1,
+        points: [[37, 14], [37, 19], [39, 19], [39, 21]],
     },
     {
         id: 'mine-road',

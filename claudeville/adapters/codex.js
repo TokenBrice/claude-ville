@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
@@ -358,6 +359,33 @@ function getTokenUsage(filePath) {
   return tokenUsage;
 }
 
+function getGitEvents(filePath, context) {
+  const events = [];
+  try {
+    const lines = readLines(filePath, { from: 'end', count: 500 });
+    const entries = parseJsonLines(lines);
+
+    entries.forEach((entry, entryIndex) => {
+      if (entry.type !== 'response_item' || !entry.payload) return;
+      const payload = entry.payload;
+      if (payload.type !== 'function_call' && payload.type !== 'command_execution') return;
+
+      const commandSources = [];
+      if (payload.command) commandSources.push(payload.command);
+      if (payload.arguments) commandSources.push(payload.arguments);
+
+      commandSources.forEach((source, sourceIndex) => {
+        events.push(...extractGitEventsFromCommandSource(source, {
+          ...context,
+          ts: entry.timestamp || payload.timestamp || 0,
+          sourceId: payload.call_id || payload.id || entry.id || `${stableHash(JSON.stringify(entry))}:${sourceIndex}`,
+        }));
+      });
+    });
+  } catch { /* ignore */ }
+  return dedupeGitEvents(events);
+}
+
 /**
  * Scan rollout files from recent date directories
  */
@@ -463,6 +491,11 @@ class CodexAdapter {
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
         tokenUsage: getTokenUsage(filePath),
+        gitEvents: getGitEvents(filePath, {
+          provider: 'codex',
+          sessionId: fullSessionId,
+          project: detail.project || null,
+        }),
         parentSessionId: detail.parentThreadId
           ? sessionIdByThreadId.get(detail.parentThreadId) || `codex-${detail.parentThreadId}`
           : null,

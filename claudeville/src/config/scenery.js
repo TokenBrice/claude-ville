@@ -6,22 +6,22 @@
 // Water polylines. `width` is the half-width in tiles around the centerline.
 // `kind` controls visual depth: 'river' is shallow, 'moat' is deeper.
 export const WATER_POLYLINES = [
-    // Top-right sea inlet: a broad deep-water body that reads as the river's
-    // destination instead of a defensive moat around the map edge.
+    // Top-right sea inlet: a broad deep-water body that reads as open water
+    // feeding the harbor instead of a defensive moat around the map edge.
     {
         kind: 'moat',
-        width: 5.2,
+        width: 5.8,
         points: [[24, 0], [30, 1], [36, 3], [39, 5]],
     },
     {
         kind: 'moat',
-        width: 4.4,
-        points: [[39, 4], [38, 9], [38, 14], [36, 18]],
+        width: 5.2,
+        points: [[39, 4], [38, 9], [38, 14], [38, 20], [39, 24]],
     },
     {
         kind: 'moat',
-        width: 3.1,
-        points: [[36, 18], [39, 19]],
+        width: 3.2,
+        points: [[32, 19], [35, 20], [39, 20]],
     },
     // Main river through the village. It enters from the lower-left edge,
     // cuts between the command plaza and workshop district, then empties into
@@ -31,7 +31,7 @@ export const WATER_POLYLINES = [
     {
         kind: 'river',
         width: 1.55,
-        points: [[0, 29], [7, 28], [13, 27], [18, 24], [23, 22], [27, 20], [30, 18], [31, 14], [33, 9], [36, 6], [39, 5]],
+        points: [[0, 29], [7, 28], [13, 27], [18, 24], [23, 22], [27, 20], [30, 18], [32, 19], [35, 20], [39, 20]],
     },
 ];
 
@@ -40,11 +40,11 @@ export const WATER_POLYLINES = [
 export const WATER_BASINS = [
     {
         kind: 'moat',
-        centerX: 43,
-        centerY: 20.5,
-        radiusX: 15,
-        radiusY: 29,
-        edgeNoise: 0.1,
+        centerX: 44,
+        centerY: 16,
+        radiusX: 13,
+        radiusY: 24,
+        edgeNoise: 0.11,
     },
     {
         kind: 'moat',
@@ -56,11 +56,19 @@ export const WATER_BASINS = [
     },
     {
         kind: 'moat',
-        centerX: 35.2,
-        centerY: 17.5,
-        radiusX: 6.8,
-        radiusY: 5,
-        edgeNoise: 0.2,
+        centerX: 37.4,
+        centerY: 18.6,
+        radiusX: 6.6,
+        radiusY: 5.4,
+        edgeNoise: 0.16,
+    },
+    {
+        kind: 'moat',
+        centerX: 39.2,
+        centerY: 16.2,
+        radiusX: 4.8,
+        radiusY: 6.4,
+        edgeNoise: 0.12,
     },
 ];
 
@@ -78,26 +86,35 @@ export const BRIDGE_HINTS = [
 // Harbor decks are water tiles with dock planks. They are intentionally
 // separate from BRIDGE_HINTS so the city still has three river crossings.
 export const HARBOR_DOCK_TILES = [
-    { tileX: 31, tileY: 18, orientation: 'EW' },
-    { tileX: 32, tileY: 18, orientation: 'EW' },
-    { tileX: 33, tileY: 18, orientation: 'EW' },
-    { tileX: 34, tileY: 18, orientation: 'EW' },
-    { tileX: 35, tileY: 18, orientation: 'EW' },
-    { tileX: 36, tileY: 18, orientation: 'EW' },
-    { tileX: 37, tileY: 18, orientation: 'EW' },
-    { tileX: 38, tileY: 18, orientation: 'EW' },
-    { tileX: 34, tileY: 16, orientation: 'NS' },
-    { tileX: 35, tileY: 16, orientation: 'NS' },
-    { tileX: 36, tileY: 16, orientation: 'NS' },
-    { tileX: 34, tileY: 17, orientation: 'NS' },
-    { tileX: 35, tileY: 17, orientation: 'NS' },
-    { tileX: 36, tileY: 17, orientation: 'NS' },
-    { tileX: 34, tileY: 19, orientation: 'NS' },
-    { tileX: 35, tileY: 19, orientation: 'NS' },
-    { tileX: 36, tileY: 19, orientation: 'NS' },
-    { tileX: 34, tileY: 20, orientation: 'NS' },
-    { tileX: 35, tileY: 20, orientation: 'NS' },
-    { tileX: 36, tileY: 20, orientation: 'NS' },
+    // South quay/causeway: directly touches the lighthouse entrance while
+    // staying just outside the watchtower footprint (34..36, 14..18).
+    { tileX: 31, tileY: 19, orientation: 'EW' },
+    { tileX: 32, tileY: 19, orientation: 'EW' },
+    { tileX: 33, tileY: 19, orientation: 'EW' },
+    { tileX: 34, tileY: 19, orientation: 'EW' },
+    { tileX: 35, tileY: 19, orientation: 'EW' },
+    { tileX: 36, tileY: 19, orientation: 'EW' },
+    { tileX: 37, tileY: 19, orientation: 'EW' },
+    { tileX: 38, tileY: 19, orientation: 'EW' },
+    { tileX: 39, tileY: 19, orientation: 'EW' },
+
+    // Two berth fingers run along the open-sea side of the lighthouse.
+    { tileX: 37, tileY: 14, orientation: 'NS' },
+    { tileX: 37, tileY: 15, orientation: 'NS' },
+    { tileX: 37, tileY: 16, orientation: 'NS' },
+    { tileX: 37, tileY: 17, orientation: 'NS' },
+    { tileX: 37, tileY: 18, orientation: 'NS' },
+    { tileX: 39, tileY: 15, orientation: 'NS' },
+    { tileX: 39, tileY: 16, orientation: 'NS' },
+    { tileX: 39, tileY: 17, orientation: 'NS' },
+    { tileX: 39, tileY: 18, orientation: 'NS' },
+    { tileX: 39, tileY: 20, orientation: 'NS' },
+    { tileX: 39, tileY: 21, orientation: 'NS' },
+
+    // Outer lower berth for boats entering from the river mouth.
+    { tileX: 36, tileY: 21, orientation: 'EW' },
+    { tileX: 37, tileY: 21, orientation: 'EW' },
+    { tileX: 38, tileY: 21, orientation: 'EW' },
 ];
 
 // Tree clusters: anchor tile + radius (tiles) + density (0..1).
@@ -146,7 +163,7 @@ export const VEGETATION_DISTRICTS = [
     { name: 'north-sacred-grove', centerX: 12, centerY: 7, radius: 8.5, bushBoost: 0.03, grassBoost: 0.07, treeBoost: 0.08 },
     { name: 'west-archive-brake', centerX: 6, centerY: 22, radius: 7, bushBoost: 0.05, grassBoost: 0.03, treeBoost: 0.04 },
     { name: 'south-wildwood', centerX: 19, centerY: 34, radius: 13, bushBoost: 0.05, grassBoost: 0.06, treeBoost: 0.10 },
-    { name: 'harbor-windbreak', centerX: 33, centerY: 20, radius: 5.5, bushBoost: 0.04, grassBoost: 0.02, treeBoost: 0.03 },
+    { name: 'harbor-windbreak', centerX: 33, centerY: 21, radius: 5.5, bushBoost: 0.035, grassBoost: 0.02, treeBoost: 0.02 },
     { name: 'alchemy-heath', centerX: 25, centerY: 10, radius: 5, bushBoost: 0.04, grassBoost: 0.04, treeBoost: 0.02 },
 ];
 
@@ -164,7 +181,7 @@ export const SHORELINE_VEGETATION = {
 // density with radial falloff.
 export const SCENERY_CLEARINGS = [
     { name: 'command-plaza', centerX: 20.5, centerY: 20.5, radius: 6.5, strength: 0.18 },
-    { name: 'harbor-stage', centerX: 34.5, centerY: 18.5, radius: 5.5, strength: 0.20 },
+    { name: 'harbor-stage', centerX: 36.5, centerY: 19.5, radius: 6.0, strength: 0.24 },
     { name: 'forge-yard', centerX: 30, centerY: 16.5, radius: 4.5, strength: 0.12 },
     { name: 'sanctuary-lawn', centerX: 10.5, centerY: 8.5, radius: 4.8, strength: 0.14 },
     { name: 'west-bridge', centerX: 13, centerY: 27, radius: 3.2, strength: 0.20 },

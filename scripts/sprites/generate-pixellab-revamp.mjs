@@ -38,7 +38,7 @@ const STYLE = [
 
 const BUILDINGS = [
     hero('building.command', 'grand guild command keep, carved stone fortress, blue domed council roof, dragon banners, golden watchfire braziers, ceremonial stair, reads instantly as town command center', 312, 208),
-    hero('building.watchtower', 'harbor lighthouse tower, weathered stone base, crimson roof, brass lantern room, bright beacon, dock-side nautical silhouette, reads instantly as lighthouse harbor landmark', 312, 208),
+    hero('building.watchtower', 'Great Lighthouse of Alexandria Pharos, white limestone square podium, tapering stacked tower stages, bronze lantern crown, attached stone quay and narrow causeway, heroic harbor landmark, no crimson roof', 312, 208),
     hero('building.observatory', 'research observatory tower, copper blue dome, visible telescope and brass astrolabe, star-etched stone, scholarly magical landmark', 312, 208),
     hero('building.portal', 'ancient portal gate, freestanding rune-carved stone arch on small plinth, violet energy vortex in open center, glowing crystals, dramatic arcane landmark, no mountain, narrow readable silhouette', 312, 208),
     standard('building.forge', 'code forge smithy, glowing furnace mouth, tall iron chimney, rune anvil outside, soot-dark stone, amber molten light, unmistakable forge', 112),
