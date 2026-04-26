@@ -10,12 +10,44 @@ import { Compositor } from './Compositor.js';
 const SPRITE_HIT_HALF_WIDTH = 24;
 const SPRITE_HIT_TOP = -44;
 const SPRITE_HIT_BOTTOM = 34;
+const STATUS_VISUALS = {
+    [AgentStatus.WORKING]: {
+        color: THEME.working,
+        glow: 'rgba(121, 217, 117, 0.32)',
+        label: 'WORK',
+        mark: '>',
+    },
+    [AgentStatus.WAITING]: {
+        color: THEME.waiting,
+        glow: 'rgba(223, 140, 63, 0.34)',
+        label: 'WAIT',
+        mark: '!',
+    },
+    [AgentStatus.IDLE]: {
+        color: THEME.idle,
+        glow: 'rgba(134, 191, 224, 0.22)',
+        label: 'IDLE',
+        mark: '-',
+    },
+    chatting: {
+        color: '#f2d36b',
+        glow: 'rgba(242, 211, 107, 0.30)',
+        label: 'CHAT',
+        mark: '..',
+    },
+};
 
 // Accessory id lists per provider — used by _chooseAccessory().
 const PROVIDER_ACCESSORIES = {
     claude: ['mageHood', 'scholarCap', 'goldCirclet'],
     codex:  ['goggles', 'toolBand', 'rogueMask'],
     gemini: ['starCrown', 'oracleVeil', 'moonBand'],
+};
+const PROVIDER_TRIM = {
+    claude: '#c7a6ff',
+    codex: '#67f29a',
+    gemini: '#7fc7ff',
+    default: '#f2d36b',
 };
 
 export class AgentSprite {
@@ -327,13 +359,13 @@ export class AgentSprite {
         // Ensure animState reflects current movement (idle when not moving).
         this.animState = this.moving ? 'walk' : 'idle';
 
-        // Soft drop shadow under feet — gives agents weight against the busy terrain.
-        ctx.save();
-        ctx.fillStyle = 'rgba(15, 22, 30, 0.42)';
-        ctx.beginPath();
-        ctx.ellipse(Math.round(this.x), Math.round(this.y + 2), 14, 4, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.restore();
+        // Strong ground language keeps agents readable against dense pixel-art terrain.
+        this._drawGrounding(ctx);
+
+        if (!this.selected && zoom <= 1) {
+            this._drawLowZoomImpostor(ctx);
+            return;
+        }
 
         const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
         const cellSize = this.spriteSheet?.cellSize || 92;
@@ -343,6 +375,7 @@ export class AgentSprite {
             : 0;
         const dx = Math.round(this.x - cellSize / 2);
         const dy = Math.round(this.y - (cellSize - 12)) + bobY;   // 12px head clearance, anchor at leg-bottom
+        this._drawSpriteSilhouette(ctx, cell, dx, dy);
         ctx.drawImage(
             this.spriteCanvas,
             cell.sx, cell.sy, cell.sw, cell.sh,
@@ -357,10 +390,11 @@ export class AgentSprite {
             ctx.ellipse(Math.round(this.x), Math.round(this.y - 2), 22, 8, 0, 0, Math.PI * 2);
             ctx.fill();
             ctx.restore();
+            this._drawFocusPillar(ctx, cellSize);
             this._drawSelectionRing(ctx);
         }
 
-        // Status indicator dot above head — at-a-glance state without reading the name tag.
+        // Status beacon above head — at-a-glance state without relying on tiny speech bubbles.
         this._drawStatusDot(ctx, cellSize);
 
         // Chat bubble overlay (if chatting).
@@ -378,22 +412,156 @@ export class AgentSprite {
     }
 
     _drawStatusDot(ctx, cellSize) {
-        // Resolve current status. Sprite-level chatting flag overrides domain status
-        // because the chat lifecycle is driven by IsometricRenderer, not the adapter feed.
-        const rawStatus = this.agent?.status;
-        const status = this.chatting
-            ? 'chatting'
-            : (typeof rawStatus === 'string' ? rawStatus : (rawStatus?.value || 'idle'));
-        const statusColor = status === AgentStatus.WORKING ? '#7be3d7'
-            : status === 'chatting' ? '#f2d36b'
-            : status === AgentStatus.IDLE ? 'rgba(155, 155, 155, 0.6)'
-            : null;
-        if (!statusColor) return;
+        const visual = this._statusVisual();
+        if (!visual) return;
+        const s = 1 / (this._zoom || 1);
+        const y = Math.round(this.y - cellSize + 3);
         ctx.save();
-        ctx.fillStyle = statusColor;
+        ctx.translate(Math.round(this.x), y);
+        ctx.scale(s, s);
+
+        ctx.shadowColor = visual.color;
+        ctx.shadowBlur = 8;
+        ctx.fillStyle = visual.glow;
         ctx.beginPath();
-        ctx.arc(Math.round(this.x), Math.round(this.y - cellSize + 4), 2.5, 0, Math.PI * 2);
+        ctx.arc(0, 0, 9, 0, Math.PI * 2);
         ctx.fill();
+
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = 'rgba(22, 17, 14, 0.92)';
+        ctx.strokeStyle = visual.color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(0, 0, 6.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = visual.color;
+        ctx.font = 'bold 7px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(visual.mark, 0, 0.5);
+        ctx.restore();
+    }
+
+    _drawGrounding(ctx) {
+        const visual = this._statusVisual();
+        const trim = this._providerTrimColor();
+        const pulse = 0.75 + 0.25 * Math.sin(this.statusAnim * 2.2);
+        ctx.save();
+        ctx.translate(Math.round(this.x), Math.round(this.y));
+
+        ctx.fillStyle = 'rgba(5, 8, 12, 0.56)';
+        ctx.beginPath();
+        ctx.ellipse(0, 6, 20, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = 'rgba(246, 218, 130, 0.10)';
+        ctx.beginPath();
+        ctx.ellipse(0, 2, 17, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (visual) {
+            ctx.globalAlpha = this.selected ? 0.95 : 0.26 + 0.16 * pulse;
+            ctx.strokeStyle = visual.color;
+            ctx.lineWidth = this.selected ? 2 : 1.2;
+            ctx.beginPath();
+            ctx.ellipse(0, 4, this.selected ? 24 : 18, this.selected ? 8 : 6, 0, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = this.selected ? 0.85 : 0.42;
+        ctx.strokeStyle = trim;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(0, 4, this.selected ? 17 : 12, this.selected ? 5 : 4, 0, Math.PI * 0.12, Math.PI * 0.88);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawFocusPillar(ctx, cellSize) {
+        const visual = this._statusVisual();
+        const trim = this._providerTrimColor();
+        const top = this.y - cellSize + 3;
+        const gradient = ctx.createLinearGradient(this.x, top, this.x, this.y + 8);
+        gradient.addColorStop(0, this._rgba(trim, 0));
+        gradient.addColorStop(0.34, this._rgba(trim, 0.22));
+        gradient.addColorStop(1, this._rgba(visual?.color || '#f2d36b', 0.08));
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(this.x - 13, this.y + 8);
+        ctx.lineTo(this.x - 4, top);
+        ctx.lineTo(this.x + 4, top);
+        ctx.lineTo(this.x + 13, this.y + 8);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawSpriteSilhouette(ctx, cell, dx, dy) {
+        ctx.save();
+        ctx.globalAlpha = 0.54;
+        ctx.filter = 'brightness(0)';
+        const offsets = [
+            [-2, 0], [2, 0], [0, -2], [0, 2],
+            [-1, -1], [1, -1], [-1, 1], [1, 1],
+        ];
+        for (const [ox, oy] of offsets) {
+            ctx.drawImage(
+                this.spriteCanvas,
+                cell.sx, cell.sy, cell.sw, cell.sh,
+                dx + ox, dy + oy, cell.sw, cell.sh
+            );
+        }
+        ctx.restore();
+    }
+
+    _statusVisual() {
+        // Sprite-level chatting flag overrides domain status because chat lifecycle
+        // is driven by IsometricRenderer, not the adapter feed.
+        if (this.chatting) return STATUS_VISUALS.chatting;
+        const rawStatus = this.agent?.status;
+        const status = typeof rawStatus === 'string' ? rawStatus : (rawStatus?.value || AgentStatus.IDLE);
+        return STATUS_VISUALS[status] || STATUS_VISUALS[AgentStatus.IDLE];
+    }
+
+    _drawStatusRibbon(ctx, visual) {
+        const s = 1 / (this._zoom || 1);
+        if (!this.selected && this._zoom < 2.5) return;
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.scale(s, s);
+        ctx.translate(0, -49);
+        const w = visual.label.length * 8 + 13;
+        const h = 15;
+        const pulse = 0.75 + 0.25 * Math.sin(this.statusAnim * 2.4);
+
+        ctx.fillStyle = 'rgba(24, 18, 14, 0.94)';
+        ctx.strokeStyle = visual.color;
+        ctx.lineWidth = 1.5;
+        ctx.shadowColor = visual.color;
+        ctx.shadowBlur = 4 * pulse;
+        ctx.beginPath();
+        ctx.moveTo(-w / 2 + 5, -h / 2);
+        ctx.lineTo(w / 2 - 5, -h / 2);
+        ctx.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + 5);
+        ctx.lineTo(w / 2, h / 2 - 5);
+        ctx.quadraticCurveTo(w / 2, h / 2, w / 2 - 5, h / 2);
+        ctx.lineTo(-w / 2 + 5, h / 2);
+        ctx.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - 5);
+        ctx.lineTo(-w / 2, -h / 2 + 5);
+        ctx.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + 5, -h / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.shadowBlur = 0;
+        ctx.fillStyle = '#f8ead1';
+        ctx.font = 'bold 7px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(visual.label, 0, 1);
         ctx.restore();
     }
 
@@ -474,43 +642,28 @@ export class AgentSprite {
         const agent = this.agent;
         const t = this.statusAnim;
         const bubble = agent.bubbleText;
-        const s = 1 / (this._zoom || 1); // inverse zoom correction
+        const visual = this._statusVisual();
 
-        if (agent.status === AgentStatus.WORKING || (agent.status === AgentStatus.WAITING && bubble)) {
-            this._drawBubble(ctx, bubble || '...', agent.status === AgentStatus.WORKING ? THEME.working : '#f97316');
+        if (this.selected && bubble && (agent.status === AgentStatus.WORKING || agent.status === AgentStatus.WAITING)) {
+            this._drawBubble(ctx, bubble, visual.color);
+        } else if (agent.status === AgentStatus.WORKING || agent.status === AgentStatus.WAITING) {
+            this._drawStatusRibbon(ctx, visual);
         } else if (agent.status === AgentStatus.IDLE) {
             ctx.save();
+            const s = 1 / (this._zoom || 1); // inverse zoom correction
             ctx.translate(this.x, this.y);
             ctx.scale(s, s); // inverse zoom correction
             ctx.fillStyle = THEME.idle;
             ctx.textAlign = 'center';
             const offsetY = Math.sin(t * 1.5) * 4;
-            ctx.globalAlpha = 0.5 + 0.5 * Math.sin(t * 2);
-            ctx.font = 'bold 9px sans-serif';
-            ctx.fillText('z', 10, -22 + offsetY);
-            ctx.font = 'bold 12px sans-serif';
-            ctx.fillText('z', 16, -32 + offsetY);
-            ctx.font = 'bold 16px sans-serif';
-            ctx.fillText('Z', 22, -44 + offsetY);
+            ctx.globalAlpha = 0.35 + 0.25 * Math.sin(t * 2);
+            ctx.font = 'bold 8px "Press Start 2P", monospace';
+            ctx.fillText('-', 13, -30 + offsetY);
+            ctx.fillText('-', 19, -39 + offsetY);
             ctx.globalAlpha = 1;
             ctx.restore();
         } else if (agent.status === AgentStatus.WAITING) {
-            ctx.save();
-            ctx.translate(this.x, this.y);
-            ctx.scale(s, s); // inverse zoom correction
-            ctx.translate(0, -48);
-            ctx.fillStyle = 'rgba(34, 24, 19, 0.92)';
-            ctx.strokeStyle = '#d8843a';
-            ctx.lineWidth = 1.5;
-            this._bubblePath(ctx, 36);
-            ctx.fill();
-            ctx.stroke();
-            ctx.fillStyle = '#f3e2bd';
-            ctx.font = 'bold 12px "Press Start 2P", monospace';
-            ctx.textAlign = 'center';
-            const dots = '.'.repeat(1 + Math.floor(t * 2) % 3);
-            ctx.fillText(dots, 0, 3);
-            ctx.restore();
+            this._drawStatusRibbon(ctx, visual);
         }
     }
 
@@ -626,18 +779,14 @@ export class AgentSprite {
         const dots = ['.', '..', '...'][phase];
         ctx.fillText(dots, 0, bubbleY - 1);
 
-        // floating emoji particles above
-        const floatY = -56 + Math.sin(t * 2) * 4;
-        ctx.globalAlpha = 0.5 + 0.3 * Math.sin(t * 3);
-        ctx.font = '12px "Press Start 2P", monospace';
-        const emojis = ['\u{1F4AC}', '\u{1F4AD}', '✨'];
-        ctx.fillText(emojis[Math.floor(t) % emojis.length], 0, floatY);
-        ctx.globalAlpha = 1;
-
         ctx.restore();
     }
 
     _drawNameTag(ctx) {
+        if (!this.selected && this._zoom < 3) {
+            this._drawCompactAgentBadge(ctx);
+            return;
+        }
         ctx.save();
         const s = 1 / (this._zoom || 1); // inverse zoom correction
         ctx.translate(this.x, this.y);
@@ -648,7 +797,7 @@ export class AgentSprite {
         const lines = this._wrapNameTagLines(ctx, rawName);
         const contentW = Math.max(...lines.map(line => ctx.measureText(line).width));
         const w = Math.min(190, contentW + 12);
-        ctx.fillStyle = 'rgba(242, 211, 107, 0.94)';
+        ctx.fillStyle = this.selected ? 'rgba(255, 239, 176, 0.98)' : 'rgba(242, 211, 107, 0.90)';
         const h = lines.length > 1 ? 26 : 16;
         const r = 4;
         ctx.beginPath();
@@ -663,8 +812,8 @@ export class AgentSprite {
         ctx.quadraticCurveTo(-w/2, -h/2, -w/2 + r, -h/2);
         ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = '#5a371d';
-        ctx.lineWidth = 1;
+        ctx.strokeStyle = this.selected ? '#f2d36b' : '#5a371d';
+        ctx.lineWidth = this.selected ? 1.5 : 1;
         ctx.stroke();
         ctx.fillStyle = '#241812';
         ctx.textAlign = 'center';
@@ -676,6 +825,70 @@ export class AgentSprite {
             ctx.fillText(lines[1], 0, 6);
         }
         ctx.restore();
+    }
+
+    _drawCompactAgentBadge(ctx) {
+        const visual = this._statusVisual();
+        const trim = this._providerTrimColor();
+        const s = 1 / (this._zoom || 1);
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.scale(s, s);
+        ctx.translate(0, 16 + (this.overlaySlot || 0) * 9);
+        ctx.fillStyle = 'rgba(20, 14, 10, 0.78)';
+        ctx.strokeStyle = trim;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (ctx.roundRect) {
+            ctx.roundRect(-9, -5, 18, 10, 3);
+        } else {
+            ctx.rect(-9, -5, 18, 10);
+        }
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = visual?.color || trim;
+        ctx.font = 'bold 6px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(visual?.mark || '.', 0, 0.5);
+        ctx.restore();
+    }
+
+    _drawLowZoomImpostor(ctx) {
+        const visual = this._statusVisual();
+        const trim = this._providerTrimColor();
+        ctx.save();
+        ctx.translate(Math.round(this.x), Math.round(this.y));
+        ctx.fillStyle = 'rgba(7, 10, 12, 0.84)';
+        ctx.strokeStyle = trim;
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.moveTo(0, -17);
+        ctx.lineTo(9, 1);
+        ctx.lineTo(0, 8);
+        ctx.lineTo(-9, 1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = visual?.color || trim;
+        ctx.beginPath();
+        ctx.arc(0, -3, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _providerTrimColor() {
+        return PROVIDER_TRIM[this._providerKey()] || PROVIDER_TRIM.default;
+    }
+
+    _rgba(color, alpha) {
+        if (color.startsWith('#') && color.length === 7) {
+            const r = parseInt(color.slice(1, 3), 16);
+            const g = parseInt(color.slice(3, 5), 16);
+            const b = parseInt(color.slice(5, 7), 16);
+            return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        }
+        return color;
     }
 
     _wrapNameTagLines(ctx, rawName) {

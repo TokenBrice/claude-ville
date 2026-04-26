@@ -15,6 +15,15 @@ import { Compositor } from './Compositor.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
+const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
+const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
+const DISTRICT_WASHES = [
+    { x: 20, y: 18, radiusX: 13, radiusY: 9, color: '#5f3e21', alpha: 0.11 },
+    { x: 30, y: 18, radiusX: 10, radiusY: 7, color: '#1e5b61', alpha: 0.13 },
+    { x: 11, y: 24, radiusX: 11, radiusY: 8, color: '#62471f', alpha: 0.10 },
+    { x: 7, y: 8, radiusX: 9, radiusY: 8, color: '#1f4e2a', alpha: 0.12 },
+    { x: 32, y: 31, radiusX: 11, radiusY: 8, color: '#243d29', alpha: 0.13 },
+];
 const ANCIENT_RUINS = [
     { tileX: 37, tileY: 3, scale: 1.05 },
     { tileX: 2, tileY: 16, scale: 0.82 },
@@ -44,12 +53,8 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 17.6, tileY: 24.0, type: 'marketStall' },
     { tileX: 23.1, tileY: 19.7, type: 'flowerCart' },
     { tileX: 21.8, tileY: 16.2, type: 'noticePillar' },
-    { tileX: 34.4, tileY: 17.6, type: 'harborPier' },
-    { tileX: 36.5, tileY: 18.9, type: 'harborPier' },
     { tileX: 36.1, tileY: 16.6, type: 'harborBoat' },
-    { tileX: 33.2, tileY: 20.8, type: 'harborBoat' },
     { tileX: 33.7, tileY: 15.7, type: 'harborCrates' },
-    { tileX: 37.1, tileY: 19.4, type: 'harborCrates' },
     { tileX: 32.4, tileY: 18.7, type: 'harborCrane' },
 ];
 
@@ -753,12 +758,21 @@ export class IsometricRenderer {
         const particleBudget = Math.max(0.22, 1 - activeParticles / maxParticles);
         let spawned = 0;
         for (const emitter of this.ambientEmitters) {
-            if (spawned >= 2) break;
-            if (Math.random() < emitter.chance * particleBudget) {
+            if (spawned >= 1) break;
+            const localBudget = this._ambientEmitterBudget(emitter);
+            if (Math.random() < emitter.chance * particleBudget * localBudget) {
                 this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y - 18, 1);
                 spawned++;
             }
         }
+    }
+
+    _ambientEmitterBudget(emitter) {
+        const nearHarbor = emitter.tileX >= 30 && emitter.tileY >= 15 && emitter.tileY <= 25;
+        const nearCommand = emitter.tileX >= 16 && emitter.tileX <= 24 && emitter.tileY >= 16 && emitter.tileY <= 23;
+        if (nearCommand) return 0.9;
+        if (nearHarbor) return 0.45;
+        return 0.65;
     }
 
     _render() {
@@ -779,6 +793,7 @@ export class IsometricRenderer {
         // 1. Terrain
         this._drawTerrain(ctx);
         this._drawAmbientGroundProps(ctx);
+        this._drawWorldEdgeRim(ctx);
 
         // Phase 2.5.5: light reflections — soft, screen-blended overlays over
         // terrain near each building's declared light source. `screen` (vs the
@@ -789,7 +804,7 @@ export class IsometricRenderer {
         // beam when the field is omitted.
         if (this.buildingRenderer && this.assets) {
             const lights = this.buildingRenderer.getLightSources();
-            const pulse = 0.18 + 0.08 * Math.sin((this.waterFrame || 0) * 1.27);
+            const pulse = 0.10 + 0.05 * Math.sin((this.waterFrame || 0) * 1.27);
             ctx.save();
             ctx.globalCompositeOperation = 'screen';
             ctx.globalAlpha = pulse;
@@ -815,6 +830,7 @@ export class IsometricRenderer {
         const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
         const sortedSprites = this._snapshotSortedSprites();
         const zoom = this.camera.zoom;
+        this._assignAgentOverlaySlots(sortedSprites);
 
         const drawables = [];
         for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
@@ -837,10 +853,20 @@ export class IsometricRenderer {
                 if (d.kind !== 'building-front') continue;
                 const dims = this.assets.getDims(d.entry.id);
                 if (!dims) continue;
+                const [ax, ay] = this.assets.getAnchor(d.entry.id);
+                const left = d.wx - ax;
+                const top = d.wy - ay;
+                const right = left + dims.w;
+                const bottom = top + dims.h;
                 const backY = d.sortY - dims.h / 2;     // back-half sortY
                 const frontY = d.sortY;
                 for (const sprite of this.agentSprites.values()) {
-                    if (sprite.y >= backY && sprite.y < frontY) {
+                    if (!sprite.selected) continue;
+                    const withinSpriteBounds = sprite.x >= left - 12
+                        && sprite.x <= right + 12
+                        && sprite.y >= top
+                        && sprite.y <= bottom + 12;
+                    if (withinSpriteBounds && sprite.y >= backY && sprite.y < frontY) {
                         // Sprite is behind the building's front-half — draw tinted silhouette atop.
                         const spriteId = `agent.${sprite.agent.provider || 'claude'}.base`;
                         this.sprites.drawSilhouette(ctx, spriteId, sprite.x, sprite.y);
@@ -856,7 +882,7 @@ export class IsometricRenderer {
         this.buildingRenderer?.drawBubbles(ctx, this.world);
 
         // 7. Building labels + identity badges (on top, persistent)
-        this.buildingRenderer?.drawLabels(ctx);
+        this.buildingRenderer?.drawLabels(ctx, { zoom });
 
         // Reset transform for UI
         ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -872,8 +898,31 @@ export class IsometricRenderer {
         });
     }
 
+    _assignAgentOverlaySlots(sprites) {
+        const occupied = [];
+        const zoom = this.camera?.zoom || 1;
+        for (const sprite of sprites) {
+            if (!sprite.agent) continue;
+            sprite.overlaySlot = 0;
+            if (sprite.selected || zoom >= 3) {
+                occupied.push({ x: sprite.x, y: sprite.y, slot: 0 });
+                continue;
+            }
+            let slot = 0;
+            while (slot < 3 && occupied.some((item) => item.slot === slot
+                && Math.abs(item.x - sprite.x) < 28
+                && Math.abs(item.y - sprite.y) < 20)) {
+                slot++;
+            }
+            sprite.overlaySlot = slot;
+            occupied.push({ x: sprite.x, y: sprite.y, slot });
+        }
+    }
+
     _drawTerrain(ctx) {
         SpriteRenderer.disableSmoothing(ctx);
+        this._drawDioramaBackdrop(ctx);
+        this._drawWorldBaseShadow(ctx);
         // Isometric tiles are diamond-shaped, so all four screen corners must be checked
         const w = this.canvas.width;
         const h = this.canvas.height;
@@ -893,6 +942,9 @@ export class IsometricRenderer {
                 this._drawTile(ctx, x, y);
             }
         }
+
+        this._drawDistrictAtmosphere(ctx);
+        this._drawRiverContourLines(ctx, startX, endX, startY, endY);
     }
 
     _drawTile(ctx, tileX, tileY) {
@@ -916,6 +968,8 @@ export class IsometricRenderer {
             ctx.closePath();
             ctx.fill();
         }
+
+        this._drawTerrainTone(ctx, screenX, screenY, key, seed, tileX, tileY);
 
         if (!this.bridgeTiles?.has(key)) {
             if (this.commandCenterRoadTiles.has(key) && this.pathTiles.has(key)) {
@@ -950,6 +1004,304 @@ export class IsometricRenderer {
             ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
             ctx.fill();
         }
+    }
+
+    _worldDiamondPoints() {
+        const last = MAP_SIZE - 1;
+        return [
+            { x: 0, y: -WORLD_EDGE_PAD_Y },
+            { x: last * TILE_WIDTH / 2 + WORLD_EDGE_PAD_X, y: last * TILE_HEIGHT / 2 },
+            { x: 0, y: last * TILE_HEIGHT + WORLD_EDGE_PAD_Y },
+            { x: -last * TILE_WIDTH / 2 - WORLD_EDGE_PAD_X, y: last * TILE_HEIGHT / 2 },
+        ];
+    }
+
+    _drawWorldBaseShadow(ctx) {
+        const points = this._worldDiamondPoints();
+        ctx.save();
+        ctx.translate(0, 34);
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.46)';
+        ctx.shadowColor = 'rgba(0, 0, 0, 0.72)';
+        ctx.shadowBlur = 48;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.translate(0, 18);
+        ctx.fillStyle = 'rgba(30, 17, 9, 0.22)';
+        ctx.shadowColor = 'rgba(83, 50, 18, 0.28)';
+        ctx.shadowBlur = 18;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawWorldEdgeRim(ctx) {
+        const points = this._worldDiamondPoints();
+        ctx.save();
+        const sideGradient = ctx.createLinearGradient(0, points[0].y, 0, points[2].y + 44);
+        sideGradient.addColorStop(0, 'rgba(87, 62, 31, 0.10)');
+        sideGradient.addColorStop(0.55, 'rgba(44, 28, 16, 0.34)');
+        sideGradient.addColorStop(1, 'rgba(13, 9, 7, 0.62)');
+        ctx.fillStyle = sideGradient;
+        ctx.beginPath();
+        ctx.moveTo(points[1].x, points[1].y);
+        ctx.lineTo(points[2].x, points[2].y);
+        ctx.lineTo(points[2].x, points[2].y + 38);
+        ctx.lineTo(points[1].x - 26, points[1].y + 24);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(points[2].x, points[2].y);
+        ctx.lineTo(points[3].x, points[3].y);
+        ctx.lineTo(points[3].x + 26, points[3].y + 24);
+        ctx.lineTo(points[2].x, points[2].y + 38);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = 'rgba(238, 191, 94, 0.24)';
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.closePath();
+        ctx.stroke();
+
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = 'rgba(0, 0, 0, 0.52)';
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y + 2);
+        ctx.lineTo(points[1].x - 2, points[1].y + 1);
+        ctx.lineTo(points[2].x, points[2].y - 1);
+        ctx.lineTo(points[3].x + 2, points[3].y + 1);
+        ctx.closePath();
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawDioramaBackdrop(ctx) {
+        const points = this._worldDiamondPoints();
+        const gradient = ctx.createLinearGradient(0, points[0].y - 80, 0, points[2].y + 120);
+        gradient.addColorStop(0, 'rgba(33, 58, 59, 0.16)');
+        gradient.addColorStop(0.42, 'rgba(77, 52, 26, 0.08)');
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0.34)');
+        ctx.save();
+        ctx.translate(0, 12);
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y - 44);
+        ctx.lineTo(points[1].x + 78, points[1].y + 18);
+        ctx.lineTo(points[2].x, points[2].y + 86);
+        ctx.lineTo(points[3].x - 78, points[3].y + 18);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawDistrictAtmosphere(ctx) {
+        const zoom = this.camera?.zoom || 1;
+        const intensity = Math.max(0.38, Math.min(1, (3.4 - zoom) / 2.2));
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        for (const wash of DISTRICT_WASHES) {
+            const x = (wash.x - wash.y) * TILE_WIDTH / 2;
+            const y = (wash.x + wash.y) * TILE_HEIGHT / 2;
+            const radius = Math.max(wash.radiusX * TILE_WIDTH, wash.radiusY * TILE_HEIGHT);
+            const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+            gradient.addColorStop(0, this._withAlpha(wash.color, wash.alpha * intensity));
+            gradient.addColorStop(0.62, this._withAlpha(wash.color, wash.alpha * 0.38 * intensity));
+            gradient.addColorStop(1, this._withAlpha(wash.color, 0));
+            ctx.fillStyle = gradient;
+            ctx.beginPath();
+            ctx.ellipse(x, y, wash.radiusX * TILE_WIDTH / 2, wash.radiusY * TILE_HEIGHT / 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.strokeStyle = `rgba(247, 205, 116, ${0.04 * intensity})`;
+        ctx.lineWidth = 1;
+        const points = this._worldDiamondPoints();
+        for (let i = 1; i <= 4; i++) {
+            const inset = i * 34;
+            ctx.beginPath();
+            ctx.moveTo(points[0].x, points[0].y + inset);
+            ctx.lineTo(points[1].x - inset * 0.7, points[1].y + inset * 0.34);
+            ctx.lineTo(points[2].x, points[2].y - inset);
+            ctx.lineTo(points[3].x + inset * 0.7, points[3].y + inset * 0.34);
+            ctx.closePath();
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    _drawRiverContourLines(ctx, startX, endX, startY, endY) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+                const edge = this._waterEdgeMask(x, y);
+                if (edge === 0) continue;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                ctx.strokeStyle = this.deepWaterTiles.has(key) ? 'rgba(3, 13, 22, 0.34)' : 'rgba(184, 218, 190, 0.22)';
+                ctx.lineWidth = this.deepWaterTiles.has(key) ? 2 : 1;
+                this._strokeDiamondEdges(ctx, screenX, screenY, edge);
+            }
+        }
+        ctx.restore();
+    }
+
+    _waterEdgeMask(tileX, tileY) {
+        let mask = 0;
+        if (!this.waterTiles.has(`${tileX},${tileY - 1}`)) mask |= 1;
+        if (!this.waterTiles.has(`${tileX + 1},${tileY}`)) mask |= 2;
+        if (!this.waterTiles.has(`${tileX},${tileY + 1}`)) mask |= 4;
+        if (!this.waterTiles.has(`${tileX - 1},${tileY}`)) mask |= 8;
+        return mask;
+    }
+
+    _strokeDiamondEdges(ctx, screenX, screenY, mask) {
+        const top = { x: screenX, y: screenY - TILE_HEIGHT / 2 };
+        const right = { x: screenX + TILE_WIDTH / 2, y: screenY };
+        const bottom = { x: screenX, y: screenY + TILE_HEIGHT / 2 };
+        const left = { x: screenX - TILE_WIDTH / 2, y: screenY };
+        if (mask & 1) this._strokeSegment(ctx, left, top);
+        if (mask & 2) this._strokeSegment(ctx, top, right);
+        if (mask & 4) this._strokeSegment(ctx, right, bottom);
+        if (mask & 8) this._strokeSegment(ctx, bottom, left);
+    }
+
+    _strokeSegment(ctx, a, b) {
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+    }
+
+    _drawWaterDepthAccent(ctx, screenX, screenY, seed, tileX, tileY) {
+        const isDeep = this.deepWaterTiles.has(`${tileX},${tileY}`);
+        ctx.fillStyle = isDeep ? 'rgba(0, 7, 17, 0.24)' : 'rgba(2, 18, 29, 0.13)';
+        ctx.beginPath();
+        ctx.moveTo(screenX + TILE_WIDTH / 2, screenY);
+        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
+        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
+        ctx.lineTo(screenX, screenY + 2);
+        ctx.closePath();
+        ctx.fill();
+
+        const glint = this.motionScale
+            ? 0.04 + Math.max(0, Math.sin(this.waterFrame * 1.6 + tileX * 0.7 - tileY * 0.4 + seed * 5)) * 0.09
+            : 0.055;
+        const light = isDeep ? '#66bed5' : '#a9e2da';
+        ctx.strokeStyle = this._withAlpha(light, Math.min(0.18, glint + (isDeep ? 0.02 : 0.05)));
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(screenX - 18 + seed * 6, screenY - 6);
+        ctx.lineTo(screenX + 3 + seed * 10, screenY - 10);
+        ctx.stroke();
+    }
+
+    _drawShoreCrest(ctx, screenX, screenY, seed, tileX, tileY) {
+        const adjacentWater = this.waterTiles.has(`${tileX},${tileY - 1}`)
+            || this.waterTiles.has(`${tileX + 1},${tileY}`)
+            || this.waterTiles.has(`${tileX},${tileY + 1}`)
+            || this.waterTiles.has(`${tileX - 1},${tileY}`);
+        ctx.fillStyle = adjacentWater
+            ? `rgba(226, 190, 102, ${0.08 + seed * 0.06})`
+            : `rgba(87, 70, 36, ${0.07 + seed * 0.04})`;
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2 + 2);
+        ctx.lineTo(screenX + TILE_WIDTH / 2 - 5, screenY);
+        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2 - 3);
+        ctx.lineTo(screenX - TILE_WIDTH / 2 + 5, screenY);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    _drawPathInsetShadow(ctx, screenX, screenY, seed, tileX, tileY) {
+        const isSquare = this.townSquareTiles.has(`${tileX},${tileY}`);
+        ctx.strokeStyle = isSquare
+            ? `rgba(26, 18, 11, ${0.10 + seed * 0.04})`
+            : `rgba(20, 13, 7, ${0.08 + seed * 0.035})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(screenX - 18, screenY + 1);
+        ctx.lineTo(screenX, screenY + 9);
+        ctx.lineTo(screenX + 18, screenY + 1);
+        ctx.stroke();
+    }
+
+    _drawTerrainTone(ctx, screenX, screenY, key, seed, tileX, tileY) {
+        let fill = null;
+        let alpha = 0;
+
+        if (this.deepWaterTiles.has(key)) {
+            fill = seed > 0.5 ? '#061927' : '#082035';
+            alpha = 0.22;
+        } else if (this.waterTiles.has(key)) {
+            fill = seed > 0.5 ? '#0c3143' : '#123d4c';
+            alpha = 0.12;
+        } else if (this.shoreTiles.has(key)) {
+            fill = seed > 0.45 ? '#6b5a2f' : '#364a2f';
+            alpha = 0.12;
+        } else if (this.townSquareTiles.has(key)) {
+            fill = '#2d2219';
+            alpha = 0.09;
+        } else if (this.mainAvenueTiles?.has(key)) {
+            fill = '#3a2a18';
+            alpha = 0.07;
+        } else if (this.pathTiles.has(key) || this.dirtPathTiles?.has(key)) {
+            fill = '#2f2818';
+            alpha = 0.055;
+        } else {
+            const broad = this._tileNoise(Math.floor(tileX / 5) + 97, Math.floor(tileY / 5) + 131);
+            fill = broad > 0.68 ? '#263f24' : broad < 0.26 ? '#3c552d' : '#30482a';
+            alpha = 0.10;
+        }
+
+        if (!fill || alpha <= 0) return;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = this._withAlpha(fill, alpha);
+        this._drawDiamond(ctx, screenX, screenY);
+        ctx.fill();
+
+        if (this.waterTiles.has(key) && this.motionScale && seed > 0.72) {
+            const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
+            ctx.strokeStyle = `rgba(185, 229, 224, ${shimmer})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(screenX - 12, screenY - 2);
+            ctx.lineTo(screenX + 10, screenY - 6);
+            ctx.stroke();
+        }
+        if (this.waterTiles.has(key)) {
+            this._drawWaterDepthAccent(ctx, screenX, screenY, seed, tileX, tileY);
+        } else if (this.shoreTiles.has(key)) {
+            this._drawShoreCrest(ctx, screenX, screenY, seed, tileX, tileY);
+        } else if (this.pathTiles.has(key) || this.dirtPathTiles?.has(key)) {
+            this._drawPathInsetShadow(ctx, screenX, screenY, seed, tileX, tileY);
+        }
+        ctx.restore();
+    }
+
+    _drawDiamond(ctx, screenX, screenY) {
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
+        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
+        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
+        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
+        ctx.closePath();
     }
 
     // Map a tile's class to the appropriate Wang tileset id.
@@ -995,7 +1347,10 @@ export class IsometricRenderer {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
+        const zoom = this.camera?.zoom || 1;
+        ctx.globalAlpha = Math.max(0.58, Math.min(1, (3.7 - zoom) / 2.3));
         ctx.drawImage(this._getAtmosphereVignette(canvas), 0, 0);
+        ctx.globalAlpha = 1;
 
         // Building light glows: a gentle radial halo, not a saturated disc. The
         // earlier mix paired full-alpha hex colors with a thin edge fade, which
@@ -1004,7 +1359,7 @@ export class IsometricRenderer {
         // hint without washing out the sprite underneath.
         if (this.buildingRenderer) {
             ctx.save();
-            ctx.globalAlpha = 0.32;
+            ctx.globalAlpha = 0.22;
             for (const light of this.buildingRenderer.getLightSources()) {
                 const p = this.camera.worldToScreen(light.x, light.y);
                 if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
@@ -1034,6 +1389,27 @@ export class IsometricRenderer {
         overlay.width = canvas.width;
         overlay.height = canvas.height;
         const overlayCtx = overlay.getContext('2d');
+        const skyWash = overlayCtx.createLinearGradient(0, 0, 0, canvas.height);
+        skyWash.addColorStop(0, 'rgba(33, 62, 64, 0.18)');
+        skyWash.addColorStop(0.42, 'rgba(17, 13, 10, 0)');
+        skyWash.addColorStop(1, 'rgba(0, 0, 0, 0.30)');
+        overlayCtx.fillStyle = skyWash;
+        overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const warmCore = overlayCtx.createRadialGradient(
+            canvas.width * 0.5,
+            canvas.height * 0.46,
+            0,
+            canvas.width * 0.5,
+            canvas.height * 0.50,
+            Math.max(canvas.width, canvas.height) * 0.58,
+        );
+        warmCore.addColorStop(0, 'rgba(237, 181, 80, 0.055)');
+        warmCore.addColorStop(0.5, 'rgba(76, 48, 22, 0.025)');
+        warmCore.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        overlayCtx.fillStyle = warmCore;
+        overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
+
         const vignette = overlayCtx.createRadialGradient(
             canvas.width * 0.5,
             canvas.height * 0.46,
@@ -1043,8 +1419,8 @@ export class IsometricRenderer {
             Math.max(canvas.width, canvas.height) * 0.72,
         );
         vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        vignette.addColorStop(0.72, 'rgba(16, 10, 8, 0.04)');
-        vignette.addColorStop(1, 'rgba(0, 0, 0, 0.32)');
+        vignette.addColorStop(0.62, 'rgba(18, 11, 8, 0.07)');
+        vignette.addColorStop(1, 'rgba(0, 0, 0, 0.44)');
         overlayCtx.fillStyle = vignette;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
