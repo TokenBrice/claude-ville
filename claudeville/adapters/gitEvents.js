@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const { execFileSync } = require('child_process');
 
 const GIT_EVENT_TYPES = new Set(['commit', 'push']);
 const GIT_GLOBAL_FLAGS_WITH_VALUE = new Set([
@@ -42,6 +43,8 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
   '--receive-pack',
   '--repo',
 ]);
+const GIT_STATUS_CACHE_TTL_MS = 5000;
+const _gitStatusCache = new Map();
 
 function stableHash(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
@@ -370,6 +373,138 @@ function dedupeGitEvents(events) {
   return unique;
 }
 
+function runGit(project, args) {
+  if (!project) return '';
+  return execFileSync('git', ['-C', project, ...args], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    timeout: 750,
+  }).trim();
+}
+
+function readPushState(project) {
+  const now = Date.now();
+  const cached = _gitStatusCache.get(project);
+  if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) return cached.value;
+
+  let value = { pushedToUpstream: false, upstream: null };
+  try {
+    if (runGit(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
+      _gitStatusCache.set(project, { at: now, value });
+      return value;
+    }
+    const upstream = runGit(project, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    const counts = runGit(project, ['rev-list', '--left-right', '--count', 'HEAD...@{u}'])
+      .split(/\s+/)
+      .map((part) => Number(part));
+    const ahead = Number.isFinite(counts[0]) ? counts[0] : null;
+    value = {
+      pushedToUpstream: ahead === 0,
+      upstream: upstream || null,
+    };
+  } catch {
+    value = { pushedToUpstream: false, upstream: null };
+  }
+
+  _gitStatusCache.set(project, { at: now, value });
+  return value;
+}
+
+function syntheticPushForProject(project, commitEvents, now = Date.now()) {
+  const commits = (commitEvents || [])
+    .filter((event) => event?.type === 'commit' && event.project === project && event.success !== false)
+    .sort((a, b) => ((b.completedAt || b.ts || 0) - (a.completedAt || a.ts || 0)));
+  if (!commits.length) return null;
+
+  const pushState = readPushState(project);
+  if (!pushState.pushedToUpstream) return null;
+
+  const latestCommit = commits[0];
+  const latestCommitTime = latestCommit.completedAt || latestCommit.ts || 0;
+  const id = `git-push-inferred-${stableHash([
+    project,
+    pushState.upstream || 'upstream',
+    latestCommit.id || latestCommit.commandHash || latestCommit.command || latestCommitTime,
+  ].join('|'))}`;
+
+  return {
+    id,
+    type: 'push',
+    command: `git push (${pushState.upstream || 'upstream'} already contains HEAD)`,
+    project,
+    provider: latestCommit.provider,
+    sessionId: latestCommit.sessionId,
+    sourceId: 'git-upstream-status',
+    ts: now,
+    commandHash: stableHash(id),
+    dryRun: false,
+    success: true,
+    exitCode: 0,
+    completedAt: now,
+    status: 'success',
+    targetRef: pushState.upstream,
+    label: pushState.upstream ? `Pushed to ${pushState.upstream}` : 'Pushed',
+    inferred: true,
+  };
+}
+
+function inferPushedGitEvents(events, options = {}) {
+  const list = Array.isArray(events) ? events : [];
+  const now = Number.isFinite(options.now) ? options.now : Date.now();
+  const projects = new Set(
+    list
+      .filter((event) => event?.type === 'commit' && event.project)
+      .map((event) => event.project)
+  );
+  if (!projects.size) return list;
+
+  const enriched = [...list];
+  for (const project of projects) {
+    const hasObservedPush = list.some((event) => event?.type === 'push' && event.project === project);
+    if (hasObservedPush) continue;
+    const inferred = syntheticPushForProject(project, list, now);
+    if (inferred) enriched.push(inferred);
+  }
+  return dedupeGitEvents(enriched);
+}
+
+function inferPushedGitEventsForSessions(sessions, options = {}) {
+  if (!Array.isArray(sessions) || sessions.length === 0) return sessions;
+
+  const eventsByProject = new Map();
+  for (const session of sessions) {
+    for (const event of session.gitEvents || []) {
+      if (!event?.project) continue;
+      const events = eventsByProject.get(event.project) || [];
+      events.push(event);
+      eventsByProject.set(event.project, events);
+    }
+  }
+
+  const inferredByProject = new Map();
+  for (const [project, events] of eventsByProject.entries()) {
+    const enriched = inferPushedGitEvents(events, options);
+    const inferred = enriched.filter((event) => event.inferred && !events.some((existing) => existing.id === event.id));
+    if (inferred.length) inferredByProject.set(project, inferred);
+  }
+
+  if (!inferredByProject.size) return sessions;
+  return sessions.map((session) => {
+    const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
+    const additions = [];
+    for (const event of ownEvents) {
+      if (event?.type === 'commit' && event.project && inferredByProject.has(event.project)) {
+        additions.push(...inferredByProject.get(event.project));
+      }
+    }
+    if (!additions.length) return session;
+    return {
+      ...session,
+      gitEvents: dedupeGitEvents([...ownEvents, ...additions]),
+    };
+  });
+}
+
 function extractGitEventsFromCommandSource(source, context = {}, options = {}) {
   const command = extractCommand(source);
   return parseGitEventsFromCommand(command, context, options);
@@ -379,6 +514,8 @@ module.exports = {
   dedupeGitEvents,
   extractCommand,
   extractGitEventsFromCommandSource,
+  inferPushedGitEvents,
+  inferPushedGitEventsForSessions,
   parseGitEventsFromCommand,
   stableHash,
 };
