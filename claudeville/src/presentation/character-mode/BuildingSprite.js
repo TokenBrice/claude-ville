@@ -48,11 +48,16 @@ export class BuildingSprite {
         for (const b of this.buildings) this._spawnEmittersFor(b);
     }
 
-    // Soft drop shadows under each building footprint.
+    // Soft drop shadows under each building footprint. Hero buildings use the
+    // composed sprite width so the shadow tracks the actual visible footprint
+    // rather than the much-smaller tile rect.
     drawShadows(ctx) {
         for (const b of this.buildings) {
             const c = this._buildingScreenCenter(b);
-            const halfW = (b.width + b.height) * TILE_WIDTH / 4;
+            const tileHalfW = (b.width + b.height) * TILE_WIDTH / 4;
+            const dims = this.assets.getDims(`building.${b.type}`);
+            const spriteHalfW = dims ? dims.w / 2 : tileHalfW;
+            const halfW = Math.max(tileHalfW, spriteHalfW * 0.7);
             ctx.save();
             ctx.fillStyle = 'rgba(15, 22, 30, 0.32)';
             ctx.beginPath();
@@ -108,6 +113,8 @@ export class BuildingSprite {
     }
 
     // Light sources for water/wall additive light passes (Phase 2.5.5).
+    // `overlay` is the atmosphere sprite id used for the additive reflection;
+    // defaults to the lighthouse beam when the manifest entry omits it.
     getLightSources() {
         const out = [];
         for (const b of this.buildings) {
@@ -121,6 +128,7 @@ export class BuildingSprite {
                 y: c.y - baseAnchor[1] + ly,
                 color: entry.lightColor || 'rgba(255,210,140,0.4)',
                 radius: entry.lightRadius || 64,
+                overlay: entry.lightOverlay || 'atmosphere.light.lighthouse-beam',
             });
         }
         return out;
@@ -154,7 +162,11 @@ export class BuildingSprite {
             const wy = center.y;
             if (entry.splitForOcclusion) {
                 const dims = this.assets.getDims(entry.id);
-                const horizonY = entry.horizonY ?? Math.floor(dims.h / 2);
+                // Clamp manifest horizonY to a valid sub-rect inside the sprite so
+                // the front half (`drawImage(... , h - horizonY, ...)`) never receives
+                // a negative or zero source-rect height when manifest values drift.
+                const rawHorizon = entry.horizonY ?? Math.floor(dims.h / 2);
+                const horizonY = Math.max(1, Math.min(rawHorizon, dims.h - 1));
                 out.push({ kind: 'building-back', building: b, entry, wx, wy, horizonY, sortY: wy - dims.h / 2 });
                 out.push({ kind: 'building-front', building: b, entry, wx, wy, horizonY, sortY: wy });
             } else {

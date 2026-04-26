@@ -780,17 +780,21 @@ export class IsometricRenderer {
         this._drawTerrain(ctx);
         this._drawAmbientGroundProps(ctx);
 
-        // Phase 2.5.5: light reflections — additive overlays over terrain near each
-        // building's declared light source. Pulses softly with the global frame.
+        // Phase 2.5.5: light reflections — soft, screen-blended overlays over
+        // terrain near each building's declared light source. `screen` (vs the
+        // earlier `lighter`) keeps the additive feel without saturating to white,
+        // and the alpha pulse is intentionally low so the overlays read as gentle
+        // glints rather than dominant blobs. Each light may name its own overlay
+        // (manifest `lightOverlay`); BuildingSprite falls back to the lighthouse
+        // beam when the field is omitted.
         if (this.buildingRenderer && this.assets) {
             const lights = this.buildingRenderer.getLightSources();
-            const pulse = 0.5 + 0.2 * Math.sin((this.waterFrame || 0) * 1.27);
+            const pulse = 0.18 + 0.08 * Math.sin((this.waterFrame || 0) * 1.27);
             ctx.save();
-            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalCompositeOperation = 'screen';
             ctx.globalAlpha = pulse;
             for (const light of lights) {
-                // Map light source kind to its overlay sprite id.
-                const overlayId = 'atmosphere.light.lighthouse-beam';
+                const overlayId = light.overlay || 'atmosphere.light.lighthouse-beam';
                 const overlayImg = this.assets.get(overlayId);
                 if (!overlayImg) continue;
                 const dims = this.assets.getDims(overlayId);
@@ -990,18 +994,28 @@ export class IsometricRenderer {
 
         ctx.drawImage(this._getAtmosphereVignette(canvas), 0, 0);
 
-        if (this.buildingRenderer) for (const light of this.buildingRenderer.getLightSources()) {
-            const p = this.camera.worldToScreen(light.x, light.y);
-            if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
-            const radius = light.radius * this.camera.zoom;
-            const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
-            glow.addColorStop(0, light.color);
-            glow.addColorStop(0.42, this._getLightFadeColor(light.color));
-            glow.addColorStop(1, 'rgba(255, 146, 47, 0)');
-            ctx.fillStyle = glow;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-            ctx.fill();
+        // Building light glows: a gentle radial halo, not a saturated disc. The
+        // earlier mix paired full-alpha hex colors with a thin edge fade, which
+        // read as opaque "UFO" blobs over the buildings. Capping the pass with a
+        // low globalAlpha and adding an inner soft step keeps the warm-light
+        // hint without washing out the sprite underneath.
+        if (this.buildingRenderer) {
+            ctx.save();
+            ctx.globalAlpha = 0.32;
+            for (const light of this.buildingRenderer.getLightSources()) {
+                const p = this.camera.worldToScreen(light.x, light.y);
+                if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
+                const radius = light.radius * this.camera.zoom;
+                const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
+                glow.addColorStop(0, this._withAlpha(light.color, 0.55));
+                glow.addColorStop(0.42, this._withAlpha(light.color, 0.18));
+                glow.addColorStop(1, this._withAlpha(light.color, 0));
+                ctx.fillStyle = glow;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            ctx.restore();
         }
 
         ctx.restore();
@@ -1036,11 +1050,23 @@ export class IsometricRenderer {
         return overlay;
     }
 
-    _getLightFadeColor(color) {
-        if (!this.lightFadeColorCache.has(color)) {
-            this.lightFadeColorCache.set(color, color.replace(/[\d.]+\)$/, '0.07)'));
+    // Cache `color` → rgba(r,g,b,a) strings keyed by `${color}|${alpha}` so the
+    // light pass doesn't re-parse colors per frame.
+    _withAlpha(color, alpha) {
+        const key = `${color}|${alpha}`;
+        if (this.lightFadeColorCache.has(key)) return this.lightFadeColorCache.get(key);
+        let r = 255, g = 255, b = 255;
+        if (color.startsWith('#') && color.length === 7) {
+            r = parseInt(color.slice(1, 3), 16);
+            g = parseInt(color.slice(3, 5), 16);
+            b = parseInt(color.slice(5, 7), 16);
+        } else {
+            const m = color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (m) { r = +m[1]; g = +m[2]; b = +m[3]; }
         }
-        return this.lightFadeColorCache.get(color);
+        const out = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        this.lightFadeColorCache.set(key, out);
+        return out;
     }
 
     _drawAncientRuins(ctx) {
