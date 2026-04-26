@@ -166,6 +166,7 @@ export class IsometricRenderer {
         // Bridges (Task 5): authored hints + auto-place where roads cross water.
         this.scenery.generateBridges(this.pathTiles);
         this.bridgeTiles = this.scenery.getBridgeTiles();
+        this.bridgeSpans = this._buildBridgeSpans();
         for (const key of this.bridgeTiles.keys()) {
             this.pathTiles.add(key);
         }
@@ -1213,6 +1214,7 @@ export class IsometricRenderer {
         this._drawRiverContourLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
         this._drawWaterFoamLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
         this._drawOpenSeaSurfBreaks(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+        this._drawLandmarkBridgeSpans(cacheCtx);
         this._drawAmbientGroundProps(cacheCtx);
         this._drawWorldEdgeRim(cacheCtx);
         this.motionScale = previousMotionScale;
@@ -1502,15 +1504,276 @@ export class IsometricRenderer {
         // Water shimmer / bridge deck
         if (this.bridgeTiles?.has(key)) {
             const bInfo = this.bridgeTiles.get(key);
-            const orientation = (bInfo?.orientation || 'EW').toLowerCase();
             const isDoc = bInfo?.kind === 'dock';
-            const bridgeSpriteId = isDoc ? `dock.${orientation}` : `bridge.${orientation}`;
-            if (this.sprites) this.sprites.drawSprite(ctx, bridgeSpriteId, screenX, screenY);
+            if (isDoc) {
+                const orientation = (bInfo?.orientation || 'EW').toLowerCase();
+                if (this.sprites) this.sprites.drawSprite(ctx, `dock.${orientation}`, screenX, screenY);
+            }
         } else if (this.waterTiles.has(key) && !this.terrain) {
             const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.055 + 0.055 : STATIC_WATER_SHIMMER;
             ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
             ctx.fill();
         }
+    }
+
+    _buildBridgeSpans() {
+        if (!this.bridgeTiles?.size) return [];
+
+        const spans = [];
+        const visited = new Set();
+        const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+        const isBridgeDeck = (key, orientation) => {
+            const info = this.bridgeTiles.get(key);
+            return info && info.kind !== 'dock' && (!orientation || info.orientation === orientation);
+        };
+
+        for (const [key, info] of this.bridgeTiles.entries()) {
+            if (visited.has(key) || info?.kind === 'dock') continue;
+
+            const orientation = info?.orientation || 'EW';
+            const queue = [key];
+            const tiles = [];
+            visited.add(key);
+
+            while (queue.length) {
+                const current = queue.shift();
+                const comma = current.indexOf(',');
+                const x = Number(current.slice(0, comma));
+                const y = Number(current.slice(comma + 1));
+                tiles.push({ x, y });
+
+                for (const [dx, dy] of directions) {
+                    const next = `${x + dx},${y + dy}`;
+                    if (visited.has(next) || !isBridgeDeck(next, orientation)) continue;
+                    visited.add(next);
+                    queue.push(next);
+                }
+            }
+
+            if (tiles.length) {
+                spans.push(this._bridgeSpanFromTiles(tiles, orientation));
+            }
+        }
+
+        return spans.sort((a, b) => a.depth - b.depth);
+    }
+
+    _bridgeSpanFromTiles(tiles, orientation) {
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+
+        for (const tile of tiles) {
+            minX = Math.min(minX, tile.x);
+            maxX = Math.max(maxX, tile.x);
+            minY = Math.min(minY, tile.y);
+            maxY = Math.max(maxY, tile.y);
+        }
+
+        const isEastWest = orientation === 'EW';
+        const centerX = (minX + maxX) / 2;
+        const centerY = (minY + maxY) / 2;
+        const startTile = isEastWest
+            ? { x: minX - 0.45, y: centerY }
+            : { x: centerX, y: minY - 0.45 };
+        const endTile = isEastWest
+            ? { x: maxX + 0.45, y: centerY }
+            : { x: centerX, y: maxY + 0.45 };
+        const axisVector = isEastWest
+            ? { x: TILE_WIDTH / 2, y: TILE_HEIGHT / 2 }
+            : { x: -TILE_WIDTH / 2, y: TILE_HEIGHT / 2 };
+        const crossVector = isEastWest
+            ? { x: -TILE_WIDTH / 2, y: TILE_HEIGHT / 2 }
+            : { x: TILE_WIDTH / 2, y: TILE_HEIGHT / 2 };
+        const crossLength = Math.hypot(crossVector.x, crossVector.y) || 1;
+        const axisLength = Math.hypot(axisVector.x, axisVector.y) || 1;
+        const lengthTiles = isEastWest ? maxX - minX + 1 : maxY - minY + 1;
+        const crossTiles = isEastWest ? maxY - minY + 1 : maxX - minX + 1;
+
+        return {
+            orientation,
+            start: this._tileToScreen(startTile.x, startTile.y),
+            end: this._tileToScreen(endTile.x, endTile.y),
+            axisUnit: { x: axisVector.x / axisLength, y: axisVector.y / axisLength },
+            crossUnit: { x: crossVector.x / crossLength, y: crossVector.y / crossLength },
+            halfWidth: Math.max(34, Math.min(54, 24 + crossTiles * 8)),
+            rise: Math.max(16, Math.min(32, 12 + lengthTiles * 1.9)),
+            lengthTiles,
+            depth: (centerX + centerY) * TILE_HEIGHT / 2,
+        };
+    }
+
+    _tileToScreen(tileX, tileY) {
+        return {
+            x: (tileX - tileY) * TILE_WIDTH / 2,
+            y: (tileX + tileY) * TILE_HEIGHT / 2,
+        };
+    }
+
+    _drawLandmarkBridgeSpans(ctx) {
+        if (!this.bridgeSpans?.length) return;
+
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+        for (const span of this.bridgeSpans) {
+            this._drawLandmarkBridgeSpan(ctx, span);
+        }
+        ctx.restore();
+    }
+
+    _bridgePoint(span, t, crossOffset = 0, verticalLift = 0, drop = 0) {
+        const arch = Math.sin(Math.PI * t);
+        const x = span.start.x + (span.end.x - span.start.x) * t + span.crossUnit.x * crossOffset;
+        const y = span.start.y + (span.end.y - span.start.y) * t + span.crossUnit.y * crossOffset - arch * span.rise - verticalLift + drop;
+        return { x, y };
+    }
+
+    _bridgeSidePoints(span, crossOffset, verticalLift = 0, drop = 0, steps = 14) {
+        const points = [];
+        for (let i = 0; i <= steps; i++) {
+            points.push(this._bridgePoint(span, i / steps, crossOffset, verticalLift, drop));
+        }
+        return points;
+    }
+
+    _traceBridgeRibbon(ctx, leftPoints, rightPoints) {
+        ctx.beginPath();
+        ctx.moveTo(leftPoints[0].x, leftPoints[0].y);
+        for (let i = 1; i < leftPoints.length; i++) ctx.lineTo(leftPoints[i].x, leftPoints[i].y);
+        for (let i = rightPoints.length - 1; i >= 0; i--) ctx.lineTo(rightPoints[i].x, rightPoints[i].y);
+        ctx.closePath();
+    }
+
+    _strokeBridgeCurve(ctx, points) {
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.stroke();
+    }
+
+    _drawLandmarkBridgeSpan(ctx, span) {
+        const leftDeck = this._bridgeSidePoints(span, -span.halfWidth);
+        const rightDeck = this._bridgeSidePoints(span, span.halfWidth);
+        const shadowLeft = this._bridgeSidePoints(span, -span.halfWidth - 7, 0, 15, 10);
+        const shadowRight = this._bridgeSidePoints(span, span.halfWidth + 7, 0, 15, 10);
+        const railLeft = this._bridgeSidePoints(span, -span.halfWidth - 3, 24, 0, 14);
+        const railRight = this._bridgeSidePoints(span, span.halfWidth + 3, 24, 0, 14);
+        const centerSeam = this._bridgeSidePoints(span, 0, 0, 0, 14);
+
+        ctx.save();
+
+        this._traceBridgeRibbon(ctx, shadowLeft, shadowRight);
+        ctx.fillStyle = 'rgba(20, 7, 5, 0.32)';
+        ctx.fill();
+
+        for (const t of [0, 1]) {
+            const capLeft = this._bridgePoint(span, t, -span.halfWidth - 9, 0, 7);
+            const capRight = this._bridgePoint(span, t, span.halfWidth + 9, 0, 7);
+            ctx.strokeStyle = 'rgba(54, 36, 27, 0.72)';
+            ctx.lineWidth = 7;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(capLeft.x, capLeft.y);
+            ctx.lineTo(capRight.x, capRight.y);
+            ctx.stroke();
+            ctx.strokeStyle = 'rgba(185, 132, 78, 0.8)';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(capLeft.x, capLeft.y - 2);
+            ctx.lineTo(capRight.x, capRight.y - 2);
+            ctx.stroke();
+        }
+
+        this._traceBridgeRibbon(ctx, leftDeck, rightDeck);
+        const deckGradient = ctx.createLinearGradient(span.start.x, span.start.y - span.rise, span.end.x, span.end.y);
+        deckGradient.addColorStop(0, '#7d3f27');
+        deckGradient.addColorStop(0.22, '#b46236');
+        deckGradient.addColorStop(0.55, '#d48a52');
+        deckGradient.addColorStop(1, '#8d4729');
+        ctx.fillStyle = deckGradient;
+        ctx.fill();
+        ctx.strokeStyle = '#3d1b13';
+        ctx.lineWidth = 4;
+        ctx.lineJoin = 'round';
+        ctx.stroke();
+
+        ctx.globalAlpha = 0.55;
+        this._traceBridgeRibbon(
+            ctx,
+            this._bridgeSidePoints(span, -span.halfWidth + 6, 3, 4, 10),
+            this._bridgeSidePoints(span, span.halfWidth - 6, 3, 4, 10)
+        );
+        ctx.fillStyle = 'rgba(255, 187, 103, 0.22)';
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        ctx.strokeStyle = 'rgba(74, 31, 18, 0.74)';
+        ctx.lineWidth = 2;
+        for (let i = 1; i <= span.lengthTiles + 2; i++) {
+            const t = i / (span.lengthTiles + 3);
+            const a = this._bridgePoint(span, t, -span.halfWidth + 8, 1);
+            const b = this._bridgePoint(span, t, span.halfWidth - 8, 1);
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.stroke();
+        }
+
+        ctx.strokeStyle = '#4a2015';
+        ctx.lineWidth = 3;
+        this._strokeBridgeCurve(ctx, centerSeam);
+        this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, -span.halfWidth + 4));
+        this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, span.halfWidth - 4));
+
+        const postCount = Math.max(5, Math.min(9, Math.round(span.lengthTiles / 1.35)));
+        for (let i = 0; i <= postCount; i++) {
+            const t = i / postCount;
+            const postLift = 19 + Math.sin(Math.PI * t) * 9;
+            for (const side of [-1, 1]) {
+                const deck = this._bridgePoint(span, t, side * (span.halfWidth - 1), 0);
+                const rail = this._bridgePoint(span, t, side * (span.halfWidth + 4), postLift);
+                ctx.strokeStyle = '#2f120c';
+                ctx.lineWidth = i === 0 || i === postCount ? 5 : 4;
+                ctx.lineCap = 'round';
+                ctx.beginPath();
+                ctx.moveTo(deck.x, deck.y + 4);
+                ctx.lineTo(rail.x, rail.y);
+                ctx.stroke();
+                ctx.strokeStyle = '#8e4528';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(deck.x - span.axisUnit.x * 1.5, deck.y + 2);
+                ctx.lineTo(rail.x - span.axisUnit.x * 1.5, rail.y + 1);
+                ctx.stroke();
+            }
+        }
+
+        ctx.strokeStyle = '#2a0f09';
+        ctx.lineWidth = 5;
+        ctx.lineCap = 'round';
+        this._strokeBridgeCurve(ctx, railLeft);
+        this._strokeBridgeCurve(ctx, railRight);
+        ctx.strokeStyle = '#a75a32';
+        ctx.lineWidth = 2;
+        this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, -span.halfWidth - 4, 27, 0, 14));
+        this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, span.halfWidth + 2, 27, 0, 14));
+
+        for (const t of [0, 1]) {
+            for (const side of [-1, 1]) {
+                const base = this._bridgePoint(span, t, side * (span.halfWidth + 7), 0, 5);
+                ctx.fillStyle = '#2f120c';
+                ctx.beginPath();
+                ctx.arc(base.x, base.y - 14, 5, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#c0713d';
+                ctx.beginPath();
+                ctx.arc(base.x - 1, base.y - 16, 2, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        ctx.restore();
     }
 
     _worldDiamondPoints() {
