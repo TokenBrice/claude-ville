@@ -1,7 +1,7 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 import { TOWN_ROAD_ROUTES } from '../../config/townPlan.js';
-import { FOREST_FLOOR_REGIONS, TROPICAL_PALMS, TROPICAL_WATERFALLS } from '../../config/scenery.js';
+import { FOREST_FLOOR_REGIONS, TROPICAL_BROADLEAF_TREES, TROPICAL_PALMS, TROPICAL_WATERFALLS } from '../../config/scenery.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
@@ -201,7 +201,13 @@ export class IsometricRenderer {
             variant: 2,
             tropical: true,
         }));
-        this.treePropSprites = [...generatedTrees, ...authoredPalms].map((t) => {
+        const authoredBroadleafTrees = TROPICAL_BROADLEAF_TREES.map((p) => ({
+            ...p,
+            variant: 3,
+            tropical: true,
+            canopy: true,
+        }));
+        this.treePropSprites = [...generatedTrees, ...authoredPalms, ...authoredBroadleafTrees].map((t) => {
             if (t.canopy || t.tropical) {
                 return new StaticPropSprite({
                     tileX: t.tileX,
@@ -549,7 +555,7 @@ export class IsometricRenderer {
             { tileX: 10.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
             { tileX: 26.4, tileY: 32.1, particleType: 'questPing', chance: 0.014 },
             { tileX: 28.3, tileY: 17.3, particleType: 'archiveMote', chance: 0.022 },
-            { tileX: 36.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
+            { tileX: 33.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
         ];
 
@@ -2272,8 +2278,8 @@ export class IsometricRenderer {
 
         const scale = scaleBucket / 100;
         const seed = seedBucket / 100;
-        const baseWidth = variant === 2 ? 96 : variant === 1 ? 72 : 92;
-        const topHeight = variant === 2 ? 100 : variant === 1 ? 82 : 84;
+        const baseWidth = variant === 3 ? 104 : variant === 2 ? 96 : variant === 1 ? 72 : 92;
+        const topHeight = variant === 3 ? 92 : variant === 2 ? 100 : variant === 1 ? 82 : 84;
         const bottomPad = 16;
         const padding = 8;
         const canvas = document.createElement('canvas');
@@ -2298,13 +2304,74 @@ export class IsometricRenderer {
         ctx.ellipse(0, 2, 20, 7, 0, 0, Math.PI * 2);
         ctx.fill();
 
-        if (variant === 2) {
+        if (variant === 3) {
+            this._drawJungleBroadleafSilhouette(ctx, seed);
+        } else if (variant === 2) {
             this._drawPalmSilhouette(ctx, seed);
         } else if (variant === 1) {
             this._drawPineSilhouette(ctx, seed);
         } else {
             this._drawOakSilhouette(ctx, seed);
         }
+    }
+
+    _drawJungleBroadleafSilhouette(ctx, seed) {
+        ctx.save();
+        const trunkLean = (seed - 0.5) * 8;
+        ctx.fillStyle = '#503016';
+        ctx.beginPath();
+        ctx.moveTo(-5, 2);
+        ctx.lineTo(5, 2);
+        ctx.lineTo(8 + trunkLean * 0.35, -46);
+        ctx.lineTo(-2 + trunkLean * 0.35, -46);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = 'rgba(28, 16, 8, 0.28)';
+        ctx.fillRect(-5, -38, 3, 40);
+
+        const crownX = trunkLean;
+        const crownY = -54;
+        const leafColors = ['#7ccf45', '#5faf3a', '#3f8d35', '#9bd857'];
+        const leaves = [
+            { x: -25, y: -8, rx: 30, ry: 12, a: -0.32 },
+            { x: 23, y: -10, rx: 32, ry: 12, a: 0.28 },
+            { x: -14, y: -24, rx: 25, ry: 13, a: -0.76 },
+            { x: 14, y: -27, rx: 27, ry: 13, a: 0.72 },
+            { x: -2, y: -34, rx: 24, ry: 12, a: -0.08 },
+            { x: -30, y: 6, rx: 21, ry: 10, a: 0.16 },
+            { x: 30, y: 4, rx: 22, ry: 10, a: -0.14 },
+        ];
+
+        ctx.fillStyle = 'rgba(13, 29, 12, 0.76)';
+        for (const leaf of leaves) {
+            this._traceBroadLeaf(ctx, crownX + leaf.x + 3, crownY + leaf.y + 5, leaf.rx, leaf.ry, leaf.a);
+            ctx.fill();
+        }
+        for (let i = 0; i < leaves.length; i++) {
+            const leaf = leaves[i];
+            ctx.fillStyle = leafColors[(i + Math.floor(seed * 4)) % leafColors.length];
+            this._traceBroadLeaf(ctx, crownX + leaf.x, crownY + leaf.y, leaf.rx, leaf.ry, leaf.a);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(229, 242, 111, 0.16)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(crownX, crownY - 2);
+            ctx.lineTo(crownX + leaf.x * 0.72, crownY + leaf.y * 0.72);
+            ctx.stroke();
+        }
+
+        ctx.fillStyle = '#d49a35';
+        ctx.beginPath();
+        ctx.arc(crownX - 3, crownY - 1, 3, 0, Math.PI * 2);
+        ctx.arc(crownX + 5, crownY + 1, 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _traceBroadLeaf(ctx, x, y, radiusX, radiusY, angle) {
+        ctx.beginPath();
+        ctx.ellipse(x, y, radiusX, radiusY, angle, 0, Math.PI * 2);
+        ctx.closePath();
     }
 
     _drawPalmSilhouette(ctx, seed) {
