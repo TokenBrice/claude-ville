@@ -2,7 +2,7 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 
 const SHIP_SPRITE_ID = 'prop.harborBoat';
 const MAX_VISIBLE_SHIPS = 8;
-const DEPARTURE_MS = 14000;
+const DEPARTURE_MS = 24000;
 const EXIT_HOLD_MS = 1200;
 const HISTORICAL_EVENT_GRACE_MS = 5000;
 const MAX_LABEL_CHARS = 30;
