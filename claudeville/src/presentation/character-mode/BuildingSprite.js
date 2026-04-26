@@ -62,6 +62,77 @@ export class BuildingSprite {
         }
     }
 
+    // Persistent building labels (parchment tag + identity badge) above each sprite.
+    // Restores parity with the legacy BuildingRenderer label pass and adds a per-type
+    // icon glyph so similar-looking sprites stay distinguishable. Drawn as a top overlay
+    // (called from IsometricRenderer._render after drawBubbles) so labels stay readable
+    // regardless of depth-sort occlusion.
+    drawLabels(ctx) {
+        for (const b of this.buildings) {
+            if (!b.label) continue;
+            const center = this._buildingScreenCenter(b);
+            const dims = this.assets.getDims(`building.${b.type}`);
+            if (!dims) continue;
+            const isHovered = this.hovered === b;
+
+            ctx.save();
+            ctx.font = '8px sans-serif';
+            const text = b.label;
+            const tw = ctx.measureText(text).width;
+            const iconSize = b.icon ? 14 : 0;
+            const iconGap = b.icon ? 4 : 0;
+            const padX = 6;
+            const tagW = tw + iconSize + iconGap + padX * 2;
+            const tagH = 14;
+            const bx = center.x;
+            const by = center.y - dims.h - 28;
+
+            const tagLeft = bx - tagW / 2;
+            const tagTop = by - tagH / 2;
+
+            // Soft hover glow underneath the tag.
+            if (isHovered) {
+                ctx.fillStyle = 'rgba(242, 211, 107, 0.22)';
+                ctx.beginPath();
+                ctx.ellipse(bx, by + tagH / 2 + 2, tagW / 2 + 6, 5, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+
+            // Parchment tag — same palette as drawBubbles for consistency.
+            ctx.fillStyle = isHovered ? 'rgba(64, 42, 24, 0.96)' : 'rgba(48, 31, 19, 0.94)';
+            ctx.strokeStyle = isHovered ? '#f3e2bd' : '#d7b979';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.rect(tagLeft, tagTop, tagW, tagH);
+            ctx.fill();
+            ctx.stroke();
+
+            // Identity badge: gold circle with the building's icon glyph.
+            if (b.icon) {
+                const iconCx = tagLeft + padX + iconSize / 2;
+                const iconCy = by;
+                ctx.fillStyle = 'rgba(242, 211, 107, 0.85)';
+                ctx.beginPath();
+                ctx.arc(iconCx, iconCy, iconSize / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = '#2a1c11';
+                ctx.font = '9px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(b.icon, iconCx, iconCy + 0.5);
+            }
+
+            // Label text.
+            ctx.fillStyle = '#f3e2bd';
+            ctx.font = isHovered ? 'bold 8px sans-serif' : '8px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(text, tagLeft + padX + iconSize + iconGap, by + 0.5);
+
+            ctx.restore();
+        }
+    }
+
     // Vector chat bubbles preserved (parchment-style overlay).
     // Ported from BuildingRenderer.drawBubbles (legacy file lines 3215-3256),
     // swapping `style.wallHeight` for sprite `dims.h` to anchor above the sprite top.

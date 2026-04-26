@@ -851,6 +851,9 @@ export class IsometricRenderer {
         // 6. Building bubbles (on top)
         this.buildingRenderer?.drawBubbles(ctx, this.world);
 
+        // 7. Building labels + identity badges (on top, persistent)
+        this.buildingRenderer?.drawLabels(ctx);
+
         // Reset transform for UI
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         SpriteRenderer.disableSmoothing(ctx);
