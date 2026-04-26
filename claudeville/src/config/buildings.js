@@ -113,7 +113,7 @@ export const BUILDING_DEFS = [
     },
     {
         type: 'watchtower',
-        x: 31,
+        x: 28,
         y: 8,
         width: 3,
         height: 5,
@@ -124,8 +124,8 @@ export const BUILDING_DEFS = [
         district: 'harbor',
         visualTier: 'hero',
         labelPriority: 'landmark',
-        entrance: { tileX: 33, tileY: 13 },
-        visitTiles: [{ tileX: 33, tileY: 13 }, { tileX: 34, tileY: 12 }, { tileX: 32, tileY: 13 }],
+        entrance: { tileX: 30, tileY: 13 },
+        visitTiles: [{ tileX: 30, tileY: 13 }, { tileX: 31, tileY: 12 }, { tileX: 29, tileY: 13 }],
     },
     {
         type: 'harbor',

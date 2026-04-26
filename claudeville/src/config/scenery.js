@@ -202,7 +202,7 @@ export const FOREST_FLOOR_REGIONS = [
     { name: 'northern-canopy', centerX: 17.5, centerY: 6.2, radiusX: 13.2, radiusY: 6.4, base: '#28562e', accent: '#659644', strength: 1.00 },
     { name: 'archive-greenwood', centerX: 27.8, centerY: 8.2, radiusX: 9.8, radiusY: 6.6, base: '#2e5835', accent: '#6c9648', strength: 0.80 },
     { name: 'observatory-grove', centerX: 10.5, centerY: 14.2, radiusX: 6.2, radiusY: 4.8, base: '#315f32', accent: '#729948', strength: 0.68 },
-    { name: 'lighthouse-windbreak', centerX: 33.2, centerY: 10.8, radiusX: 5.8, radiusY: 6.2, base: '#315a36', accent: '#73924c', strength: 0.58 },
+    { name: 'lighthouse-windbreak', centerX: 30.2, centerY: 10.8, radiusX: 5.8, radiusY: 6.2, base: '#315a36', accent: '#73924c', strength: 0.58 },
 ];
 
 // Tree clusters: anchor tile + radius (tiles) + density (0..1).
@@ -216,7 +216,7 @@ export const TREE_CLUSTERS = [
     { centerX: 4, centerY: 5, radiusX: 8.4, radiusY: 6.2, density: 0.84, palmBias: 0.62 },
     { centerX: 14, centerY: 5, radiusX: 10.6, radiusY: 5.6, density: 0.80, palmBias: 0.54 },
     { centerX: 24, centerY: 5, radiusX: 8.8, radiusY: 5.4, density: 0.76, palmBias: 0.42 },
-    { centerX: 31, centerY: 8, radiusX: 5.4, radiusY: 5.8, density: 0.58, palmBias: 0.42 },
+    { centerX: 28, centerY: 8, radiusX: 5.4, radiusY: 5.8, density: 0.58, palmBias: 0.42 },
     { centerX: 13, centerY: 12, radiusX: 6.8, radiusY: 4.6, density: 0.68, palmBias: 0.50 },
     { centerX: 22, centerY: 12, radiusX: 5.6, radiusY: 4.0, density: 0.56, palmBias: 0.54 },
     { centerX: 4, centerY: 35, radiusX: 7.6, radiusY: 5.6, density: 0.68, palmBias: 0.52 },
@@ -307,7 +307,7 @@ export const SCENERY_CLEARINGS = [
     { name: 'archive-skybreak', centerX: 28.4, centerY: 14.0, radius: 5.8, strength: 0.95 },
     { name: 'observatory-approach', centerX: 11.2, centerY: 16.8, radius: 3.9, strength: 0.24 },
     { name: 'command-skyline', centerX: 20.4, centerY: 16.0, radius: 4.4, strength: 0.22 },
-    { name: 'lighthouse-beacon-skybreak', centerX: 34.0, centerY: 12.6, radius: 3.8, strength: 0.24 },
+    { name: 'lighthouse-beacon-skybreak', centerX: 31.0, centerY: 12.6, radius: 3.8, strength: 0.24 },
     { name: 'north-bank-civic', centerX: 20, centerY: 22, radius: 6.4, strength: 0.23 },
     { name: 'observatory-terrace', centerX: 10, centerY: 19, radius: 4.8, strength: 0.20 },
     { name: 'archive-terrace', centerX: 28, centerY: 18, radius: 5.2, strength: 0.36 },
