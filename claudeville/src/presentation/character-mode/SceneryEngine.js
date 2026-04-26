@@ -400,8 +400,12 @@ export class SceneryEngine {
                         const shorelinePalm = this._distanceToWater(tx, ty) !== Infinity ? 0.34 : 0;
                         const villagePalm = ty >= 14 && ty <= 30 ? 0.30 : 0;
                         const isPalm = palmNoise < Math.min(0.98, palmBias + shorelinePalm + villagePalm);
+                        const isNorthwestJungle = tx <= 20 && ty <= 13;
+                        const isBroadleaf = !isPalm && isNorthwestJungle && variantNoise > 0.28;
                         const variant = isPalm
                             ? 2
+                            : isBroadleaf
+                            ? 3
                             : northernCanopy
                             ? (variantNoise > 0.72 ? 0 : 1)
                             : Math.floor(variantNoise * 3);
@@ -416,8 +420,8 @@ export class SceneryEngine {
                             tileY: ty + 0.5 + jy,
                             variant,
                             scale,
-                            canopy: northernCanopy && !isPalm,
-                            tropical: isPalm,
+                            canopy: (northernCanopy && !isPalm) || isBroadleaf,
+                            tropical: isPalm || isBroadleaf,
                             seed: variantNoise,
                         });
                     }
