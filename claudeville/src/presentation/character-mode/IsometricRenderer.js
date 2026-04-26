@@ -1,5 +1,6 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
+import { TOWN_ROAD_ROUTES } from '../../config/townPlan.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
@@ -43,19 +44,31 @@ const COMMAND_CENTER_DECORATION = [
     { type: 'guardpost', localX: 2.5, localY: 2.5 },
 ];
 const AMBIENT_GROUND_PROPS = [
-    { tileX: 19.5, tileY: 18.5, type: 'lantern' },
-    { tileX: 24.5, tileY: 24.5, type: 'signpost' },
-    { tileX: 30.2, tileY: 22.2, type: 'runestone' },
-    { tileX: 8.5, tileY: 20.5, type: 'scrollCrates' },
-    { tileX: 27.4, tileY: 16.8, type: 'oreCart' },
-    { tileX: 13.2, tileY: 13.8, type: 'lantern' },
+    // Harbor/lighthouse: docks, cargo, and a boat make the water edge read as a harbor.
+    { tileX: 34.0, tileY: 17.7, type: 'harborPier' },
+    { tileX: 36.0, tileY: 17.7, type: 'harborPier' },
+    { tileX: 37.6, tileY: 18.8, type: 'harborBoat' },
+    { tileX: 33.4, tileY: 16.2, type: 'harborCrates' },
+    { tileX: 32.5, tileY: 18.3, type: 'harborCrane' },
+
+    // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
+    { tileX: 27.7, tileY: 16.2, type: 'oreCart' },
+    { tileX: 29.9, tileY: 14.2, type: 'lantern' },
+    { tileX: 11.2, tileY: 24.0, type: 'oreCart' },
+    { tileX: 12.8, tileY: 22.8, type: 'lantern' },
+    { tileX: 10.4, tileY: 25.4, type: 'runestone' },
+
+    // Civic core: utility props around the square, not scattered through the woods.
     { tileX: 20.5, tileY: 24.4, type: 'well' },
     { tileX: 17.6, tileY: 24.0, type: 'marketStall' },
-    { tileX: 23.1, tileY: 19.7, type: 'flowerCart' },
+    { tileX: 24.2, tileY: 24.6, type: 'signpost' },
     { tileX: 21.8, tileY: 16.2, type: 'noticePillar' },
-    { tileX: 36.1, tileY: 16.6, type: 'harborBoat' },
-    { tileX: 33.7, tileY: 15.7, type: 'harborCrates' },
-    { tileX: 32.4, tileY: 18.7, type: 'harborCrane' },
+    { tileX: 8.5, tileY: 20.5, type: 'scrollCrates' },
+
+    // Sacred/research edges: fewer, quieter accents near magical buildings.
+    { tileX: 13.2, tileY: 13.8, type: 'lantern' },
+    { tileX: 24.2, tileY: 10.8, type: 'runestone' },
+    { tileX: 10.8, tileY: 8.5, type: 'flowerCart' },
 ];
 
 class StaticPropSprite {
@@ -92,6 +105,8 @@ export class IsometricRenderer {
         this.running = false;
         this.frameId = null;
         this.terrainCache = null;
+        this.terrainCacheBounds = null;
+        this.terrainCacheKey = '';
         this.terrainSeed = [];
         this.waterFrame = 0;
         this.motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
@@ -103,6 +118,7 @@ export class IsometricRenderer {
         this.lightFadeColorCache = new Map();
         this.selectedAgent = null;
         this.onAgentSelect = null;
+        this._chatMatchAccumulator = 250;
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
         for (let y = 0; y < MAP_SIZE; y++) {
@@ -223,14 +239,63 @@ export class IsometricRenderer {
             }
         }
         this._generateTownSquare(plazaHub.x, plazaHub.y);
-        // Connecting roads between buildings (simple horizontal/vertical)
-        if (buildingDefs.length >= 2) {
-            for (const bDef of buildingDefs) {
-                const destination = this._buildingRoadDestination(bDef);
+        this._generatePlannedRoads();
+        // Fallback connection for future buildings that are not covered by
+        // the authored road plan.
+        for (const bDef of buildingDefs) {
+            const destination = this._buildingRoadDestination(bDef);
+            const key = `${destination.x},${destination.y}`;
+            if (!this.pathTiles.has(key)) {
                 this._addTownRoad(plazaHub.x, plazaHub.y, destination.x, destination.y);
             }
         }
         this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
+    }
+
+    _generatePlannedRoads() {
+        for (const route of TOWN_ROAD_ROUTES) {
+            this._addRoadPolyline(route.points, route.width || 1, route.material || 'dirt');
+        }
+    }
+
+    _addRoadPolyline(points = [], width = 1, material = 'dirt') {
+        if (points.length < 2) return;
+        for (let i = 0; i < points.length - 1; i++) {
+            this._addRoadSegment(points[i], points[i + 1], width, material);
+        }
+    }
+
+    _addRoadSegment(from, to, width = 1, material = 'dirt') {
+        const [fromX, fromY] = from;
+        const [toX, toY] = to;
+        const steps = Math.max(Math.abs(toX - fromX), Math.abs(toY - fromY), 1) * 2;
+        const radius = Math.max(0, Math.floor(width / 2));
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const x = Math.round(fromX + (toX - fromX) * t);
+            const y = Math.round(fromY + (toY - fromY) * t);
+            for (let ox = -radius; ox <= radius; ox++) {
+                for (let oy = -radius; oy <= radius; oy++) {
+                    const tx = x + ox;
+                    const ty = y + oy;
+                    if (!this._inMapBounds(tx, ty)) continue;
+                    const key = `${tx},${ty}`;
+                    this.pathTiles.add(key);
+                    this._markRoadMaterial(key, material);
+                }
+            }
+        }
+    }
+
+    _markRoadMaterial(key, material) {
+        if (material === 'avenue' || material === 'dock') {
+            this.mainAvenueTiles.add(key);
+        } else {
+            this.dirtPathTiles.add(key);
+        }
+        if (material === 'avenue') {
+            this.commandCenterRoadTiles.add(key);
+        }
     }
 
     _buildingRoadDestination(building) {
@@ -624,21 +689,9 @@ export class IsometricRenderer {
         const sorted = Array.from(this.agentSprites.values())
             .sort((a, b) => b.y - a.y);            // front-most first
         for (const sprite of sorted) {
-            const spriteId = `agent.${sprite.agent.provider || 'claude'}.base`;
-            const dims = this.assets?.getDims?.(spriteId);
-            if (this.sprites && dims) {
-                // Per-pixel: anchor agent at sprite anchor point (cellSize/2, cellSize-12)
-                const cell = sprite.spriteSheet?.cellSize || 92;
-                if (this.sprites.hitTest(spriteId, worldX, worldY, sprite.x - cell / 2, sprite.y - (cell - 12))) {
-                    clicked = sprite;
-                    break;
-                }
-            } else {
-                // Fallback: legacy bounding-box hitTest on the sprite itself
-                if (sprite.hitTest(worldX, worldY)) {
-                    clicked = sprite;
-                    break;
-                }
+            if (sprite.hitTest(worldX, worldY)) {
+                clicked = sprite;
+                break;
             }
         }
 
@@ -738,13 +791,17 @@ export class IsometricRenderer {
         // Update camera follow
         if (this.camera) this.camera.updateFollow();
 
-        // Chat matching: Agent using SendMessage moves to the recipient sprite
-        this._updateChatMatching();
+        // Chat matching only depends on session/tool state, not frame-perfect motion.
+        this._chatMatchAccumulator += dt;
+        if (this._chatMatchAccumulator >= 250) {
+            this._chatMatchAccumulator = 0;
+            this._updateChatMatching();
+        }
 
         // Update agent sprites
         let shouldResort = false;
         for (const sprite of this.agentSprites.values()) {
-            sprite.update(this.particleSystem);
+            sprite.update(this.particleSystem, dt);
             if (sprite._lastSortedY !== sprite.y) {
                 shouldResort = true;
                 sprite._lastSortedY = sprite.y;
@@ -807,8 +864,6 @@ export class IsometricRenderer {
 
         // 1. Terrain
         this._drawTerrain(ctx);
-        this._drawAmbientGroundProps(ctx);
-        this._drawWorldEdgeRim(ctx);
 
         // Phase 2.5.5: light reflections — soft, screen-blended overlays over
         // terrain near each building's declared light source. `screen` (vs the
@@ -845,7 +900,7 @@ export class IsometricRenderer {
         const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
         const sortedSprites = this._snapshotSortedSprites();
         const zoom = this.camera.zoom;
-        this._assignAgentOverlaySlots(sortedSprites);
+        this._assignAgentOverlaySlots(sortedSprites, zoom);
 
         const drawables = [];
         for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
@@ -863,8 +918,7 @@ export class IsometricRenderer {
         // X-ray silhouette: draw tinted overlay of any agent passing behind a hero
         // building's front half so the agent stays findable through the obstruction.
         if (this.buildingRenderer && this.assets) {
-            const xrayDrawables = this.buildingRenderer.enumerateDrawables();
-            for (const d of xrayDrawables) {
+            for (const d of buildingDrawables) {
                 if (d.kind !== 'building-front') continue;
                 const dims = this.assets.getDims(d.entry.id);
                 if (!dims) continue;
@@ -893,16 +947,25 @@ export class IsometricRenderer {
         // 5. Particles
         this.particleSystem.draw(ctx);
 
-        // 6. Building bubbles (on top)
+        // 6. Screen-space atmosphere, before text overlays. This preserves the
+        // diorama mood without lowering final contrast on labels or status badges.
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        SpriteRenderer.disableSmoothing(ctx);
+        this._drawAtmosphere(ctx);
+        this.camera.applyTransform(ctx);
+
+        // 7. Building bubbles (on top)
         this.buildingRenderer?.drawBubbles(ctx, this.world);
 
-        // 7. Building labels + identity badges (on top, persistent)
-        this.buildingRenderer?.drawLabels(ctx, { zoom });
+        // 8. Building labels + identity badges (on top, persistent)
+        this.buildingRenderer?.drawLabels(ctx, {
+            zoom,
+            occupiedBoxes: this._collectAgentLabelHitRects(sortedSprites),
+        });
 
         // Reset transform for UI
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         SpriteRenderer.disableSmoothing(ctx);
-        this._drawAtmosphere(ctx);
 
         // Minimap
         this.minimap.draw(this.world, this.camera, canvas, {
@@ -913,32 +976,148 @@ export class IsometricRenderer {
         });
     }
 
-    _assignAgentOverlaySlots(sprites) {
-        const occupied = [];
-        const zoom = this.camera?.zoom || 1;
+    _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1) {
+        const compactOccupied = [];
+        const nameOccupied = [];
         for (const sprite of sprites) {
             if (!sprite.agent) continue;
-            sprite.overlaySlot = 0;
-            if (sprite.selected || zoom >= 3) {
-                occupied.push({ x: sprite.x, y: sprite.y, slot: 0 });
+
+            sprite.overlaySlot = null;
+            sprite.nameTagSlot = null;
+
+            if (sprite.selected) {
+                compactOccupied.push(this._agentCompactSlotRect(sprite, 0));
+                nameOccupied.push(this._agentNameSlotRect(sprite, 0));
+                sprite.overlaySlot = 0;
+                sprite.nameTagSlot = 0;
                 continue;
             }
-            let slot = 0;
-            while (slot < 3 && occupied.some((item) => item.slot === slot
-                && Math.abs(item.x - sprite.x) < 28
-                && Math.abs(item.y - sprite.y) < 20)) {
-                slot++;
+
+            let compactSlot = 0;
+            while (compactSlot < 4 && compactOccupied.some((item) => this._rectsOverlap(this._agentCompactSlotRect(sprite, compactSlot), item))) {
+                compactSlot++;
             }
-            sprite.overlaySlot = slot;
-            occupied.push({ x: sprite.x, y: sprite.y, slot });
+            if (compactSlot >= 4) {
+                sprite.overlaySlot = null;
+            } else {
+                sprite.overlaySlot = compactSlot;
+                compactOccupied.push(this._agentCompactSlotRect(sprite, compactSlot));
+            }
+
+            if (zoom < 3) {
+                if (sprite.overlaySlot === null) continue;
+                sprite.nameTagSlot = null;
+                continue;
+            }
+
+            let nameSlot = 0;
+            while (nameSlot < 7 && nameOccupied.some((item) => this._rectsOverlap(this._agentNameSlotRect(sprite, nameSlot), item))) {
+                nameSlot++;
+            }
+            if (nameSlot >= 7) {
+                sprite.nameTagSlot = null;
+            } else {
+                sprite.nameTagSlot = nameSlot;
+                nameOccupied.push(this._agentNameSlotRect(sprite, nameSlot));
+            }
         }
+    }
+
+    _collectAgentLabelHitRects(sprites) {
+        const zoom = this.camera?.zoom || 1;
+        const out = [];
+        for (const sprite of sprites) {
+            if (!sprite.agent) continue;
+
+            const usesNameTag = (sprite.selected || zoom >= 3) && sprite.nameTagSlot != null;
+            if (usesNameTag) {
+                out.push(this._agentNameSlotRect(sprite, sprite.nameTagSlot || 0));
+                continue;
+            }
+            if (sprite.overlaySlot == null) continue;
+            out.push(this._agentCompactSlotRect(sprite, sprite.overlaySlot || 0));
+        }
+        return out;
+    }
+
+    _agentImpostorSlotRect(sprite) {
+        const s = 1 / ((this.camera?.zoom) || 1);
+        const halfW = 11 * s;
+        const halfH = 13 * s;
+        return {
+            x: sprite.x - halfW,
+            y: sprite.y - 17 * s,
+            w: halfW * 2,
+            h: halfH * 2,
+        };
+    }
+
+    _agentCompactSlotRect(sprite, slot) {
+        const s = 1 / ((this.camera?.zoom) || 1);
+        const offsetX = sprite.x;
+        const offsetY = sprite.y + (20 + slot * 11) * s;
+        const pad = 2 * s;
+        const halfW = 69 * s;
+        const halfH = 7 * s;
+        return {
+            x: offsetX - halfW - pad,
+            y: offsetY - halfH - pad,
+            w: halfW * 2 + pad * 2,
+            h: halfH * 2 + pad * 2,
+        };
+    }
+
+    _agentNameSlotRect(sprite, slot) {
+        const s = 1 / ((this.camera?.zoom) || 1);
+        const offsetY = sprite.y + (38 + this._nameTagSlotYOffset(slot)) * s;
+        const anchorX = sprite.x;
+        const pad = 2 * s;
+        const width = this._estimateNameTagWidth(sprite) * s;
+        const height = this._estimateNameTagHeight(sprite) * s;
+        return {
+            x: anchorX - width / 2 - pad,
+            y: offsetY - height / 2 - pad,
+            w: width + pad * 2,
+            h: height + pad * 2,
+            slot,
+        };
+    }
+
+    _nameTagSlotYOffset(slot) {
+        const offsets = [0, -10, 10, -18, 18, -26, 26, -34];
+        return offsets[Math.min(slot, offsets.length - 1)];
+    }
+
+    _estimateNameTagWidth(sprite) {
+        const name = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
+        // Conservative width approximation in canvas space before zoom correction.
+        const rawLen = Math.min(name.length, 28);
+        return Math.min(190, Math.max(52, rawLen * 6 + 12));
+    }
+
+    _estimateNameTagHeight(sprite) {
+        const name = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
+        const lines = name.length > 17 ? 2 : 1;
+        return lines === 1 ? 16 : 26;
+    }
+
+    _rectsOverlap(a, b) {
+        return a.x < b.x + b.w
+            && a.x + a.w > b.x
+            && a.y < b.y + b.h
+            && a.y + a.h > b.y;
     }
 
     _drawTerrain(ctx) {
         SpriteRenderer.disableSmoothing(ctx);
-        this._drawDioramaBackdrop(ctx);
-        this._drawWorldBaseShadow(ctx);
-        // Isometric tiles are diamond-shaped, so all four screen corners must be checked
+        const cached = this._getTerrainCache();
+        if (cached) {
+            ctx.drawImage(cached.canvas, cached.bounds.x, cached.bounds.y);
+        }
+        this._drawDynamicWaterHighlights(ctx);
+    }
+
+    _getVisibleTileBounds(margin = 5) {
         const w = this.canvas.width;
         const h = this.canvas.height;
         const c1 = this.camera.screenToTile(0, 0);
@@ -946,20 +1125,90 @@ export class IsometricRenderer {
         const c3 = this.camera.screenToTile(0, h);
         const c4 = this.camera.screenToTile(w, h);
 
-        const margin = 5;
-        const startX = Math.max(0, Math.min(c1.tileX, c2.tileX, c3.tileX, c4.tileX) - margin);
-        const endX = Math.min(MAP_SIZE - 1, Math.max(c1.tileX, c2.tileX, c3.tileX, c4.tileX) + margin);
-        const startY = Math.max(0, Math.min(c1.tileY, c2.tileY, c3.tileY, c4.tileY) - margin);
-        const endY = Math.min(MAP_SIZE - 1, Math.max(c1.tileY, c2.tileY, c3.tileY, c4.tileY) + margin);
+        return {
+            startX: Math.max(0, Math.min(c1.tileX, c2.tileX, c3.tileX, c4.tileX) - margin),
+            endX: Math.min(MAP_SIZE - 1, Math.max(c1.tileX, c2.tileX, c3.tileX, c4.tileX) + margin),
+            startY: Math.max(0, Math.min(c1.tileY, c2.tileY, c3.tileY, c4.tileY) - margin),
+            endY: Math.min(MAP_SIZE - 1, Math.max(c1.tileY, c2.tileY, c3.tileY, c4.tileY) + margin),
+        };
+    }
 
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                this._drawTile(ctx, x, y);
+    _getTerrainCache() {
+        const bounds = this._terrainCacheBounds();
+        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}|${this.assets ? 'assets' : 'fallback'}`;
+        if (this.terrainCache && this.terrainCacheKey === key) {
+            return { canvas: this.terrainCache, bounds };
+        }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = bounds.w;
+        canvas.height = bounds.h;
+        const cacheCtx = canvas.getContext('2d');
+        SpriteRenderer.disableSmoothing(cacheCtx);
+        cacheCtx.setTransform(1, 0, 0, 1, -bounds.x, -bounds.y);
+
+        const previousMotionScale = this.motionScale;
+        this.motionScale = 0;
+        this._drawDioramaBackdrop(cacheCtx);
+        this._drawWorldBaseShadow(cacheCtx);
+
+        for (let y = 0; y < MAP_SIZE; y++) {
+            for (let x = 0; x < MAP_SIZE; x++) {
+                this._drawTile(cacheCtx, x, y);
             }
         }
 
-        this._drawDistrictAtmosphere(ctx);
-        this._drawRiverContourLines(ctx, startX, endX, startY, endY);
+        this._drawDistrictAtmosphere(cacheCtx);
+        this._drawRiverContourLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+        this._drawAmbientGroundProps(cacheCtx);
+        this._drawWorldEdgeRim(cacheCtx);
+        this.motionScale = previousMotionScale;
+
+        this.terrainCache = canvas;
+        this.terrainCacheBounds = bounds;
+        this.terrainCacheKey = key;
+        return { canvas, bounds };
+    }
+
+    _terrainCacheBounds() {
+        if (this.terrainCacheBounds) return this.terrainCacheBounds;
+        const points = this._worldDiamondPoints();
+        const margin = 360;
+        const minX = Math.floor(Math.min(...points.map(p => p.x)) - margin);
+        const maxX = Math.ceil(Math.max(...points.map(p => p.x)) + margin);
+        const minY = Math.floor(Math.min(...points.map(p => p.y)) - margin);
+        const maxY = Math.ceil(Math.max(...points.map(p => p.y)) + margin);
+        this.terrainCacheBounds = {
+            x: minX,
+            y: minY,
+            w: maxX - minX,
+            h: maxY - minY,
+        };
+        return this.terrainCacheBounds;
+    }
+
+    _drawDynamicWaterHighlights(ctx) {
+        if (!this.motionScale) return;
+        const { startX, endX, startY, endY } = this._getVisibleTileBounds(3);
+        ctx.save();
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
+                if (seed <= 0.72) continue;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
+                ctx.strokeStyle = `rgba(132, 211, 240, ${shimmer})`;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(screenX - 12, screenY - 2);
+                ctx.lineTo(screenX + 10, screenY - 6);
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
     }
 
     _drawTile(ctx, tileX, tileY) {
@@ -999,6 +1248,10 @@ export class IsometricRenderer {
                     const gInfo = this.grassTuftTiles.get(key);
                     const tuftId = ['veg.grassTuft.a', 'veg.grassTuft.b'][(gInfo?.variant ?? 0) % 2];
                     if (this.sprites) this.sprites.drawSprite(ctx, tuftId, screenX, screenY);
+                }
+                if (this.featureTiles?.get(key) === 'reeds') {
+                    const reedId = seed > 0.58 ? 'veg.reed.a' : 'veg.reed.b';
+                    if (this.sprites) this.sprites.drawSprite(ctx, reedId, screenX, screenY);
                 }
             }
         }
@@ -1167,7 +1420,7 @@ export class IsometricRenderer {
                 if (edge === 0) continue;
                 const screenX = (x - y) * TILE_WIDTH / 2;
                 const screenY = (x + y) * TILE_HEIGHT / 2;
-                ctx.strokeStyle = this.deepWaterTiles.has(key) ? 'rgba(3, 13, 22, 0.34)' : 'rgba(184, 218, 190, 0.22)';
+                ctx.strokeStyle = this.deepWaterTiles.has(key) ? 'rgba(5, 19, 42, 0.42)' : 'rgba(124, 205, 232, 0.30)';
                 ctx.lineWidth = this.deepWaterTiles.has(key) ? 2 : 1;
                 this._strokeDiamondEdges(ctx, screenX, screenY, edge);
             }
@@ -1204,7 +1457,7 @@ export class IsometricRenderer {
 
     _drawWaterDepthAccent(ctx, screenX, screenY, seed, tileX, tileY) {
         const isDeep = this.deepWaterTiles.has(`${tileX},${tileY}`);
-        ctx.fillStyle = isDeep ? 'rgba(0, 7, 17, 0.24)' : 'rgba(2, 18, 29, 0.13)';
+        ctx.fillStyle = isDeep ? 'rgba(0, 12, 34, 0.32)' : 'rgba(5, 34, 61, 0.18)';
         ctx.beginPath();
         ctx.moveTo(screenX + TILE_WIDTH / 2, screenY);
         ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
@@ -1216,7 +1469,7 @@ export class IsometricRenderer {
         const glint = this.motionScale
             ? 0.04 + Math.max(0, Math.sin(this.waterFrame * 1.6 + tileX * 0.7 - tileY * 0.4 + seed * 5)) * 0.09
             : 0.055;
-        const light = isDeep ? '#66bed5' : '#a9e2da';
+        const light = isDeep ? '#5eb8ee' : '#9fe8f2';
         ctx.strokeStyle = this._withAlpha(light, Math.min(0.18, glint + (isDeep ? 0.02 : 0.05)));
         ctx.lineWidth = 1;
         ctx.beginPath();
@@ -1260,14 +1513,14 @@ export class IsometricRenderer {
         let alpha = 0;
 
         if (this.deepWaterTiles.has(key)) {
-            fill = seed > 0.5 ? '#061927' : '#082035';
-            alpha = 0.22;
+            fill = seed > 0.5 ? '#041a3f' : '#08285a';
+            alpha = 0.54;
         } else if (this.waterTiles.has(key)) {
-            fill = seed > 0.5 ? '#0c3143' : '#123d4c';
-            alpha = 0.12;
+            fill = seed > 0.5 ? '#0b3d69' : '#13517a';
+            alpha = 0.46;
         } else if (this.shoreTiles.has(key)) {
-            fill = seed > 0.45 ? '#6b5a2f' : '#364a2f';
-            alpha = 0.12;
+            fill = seed > 0.45 ? '#7a6338' : '#6f5c34';
+            alpha = 0.13;
         } else if (this.townSquareTiles.has(key)) {
             fill = '#2d2219';
             alpha = 0.09;
@@ -1291,9 +1544,18 @@ export class IsometricRenderer {
         this._drawDiamond(ctx, screenX, screenY);
         ctx.fill();
 
+        const allowRegionTint = !this.waterTiles.has(key) && !this.shoreTiles.has(key);
+        const regionTone = allowRegionTint ? this._terrainRegionTint(fill, tileX, tileY, seed) : null;
+        if (regionTone && regionTone !== fill) {
+            const regionAlpha = Math.min(0.08, alpha * 0.45);
+            ctx.fillStyle = this._withAlpha(regionTone, regionAlpha);
+            this._drawDiamond(ctx, screenX, screenY);
+            ctx.fill();
+        }
+
         if (this.waterTiles.has(key) && this.motionScale && seed > 0.72) {
             const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
-            ctx.strokeStyle = `rgba(185, 229, 224, ${shimmer})`;
+            ctx.strokeStyle = `rgba(132, 211, 240, ${shimmer})`;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(screenX - 12, screenY - 2);
@@ -1363,7 +1625,7 @@ export class IsometricRenderer {
         ctx.globalCompositeOperation = 'source-over';
 
         const zoom = this.camera?.zoom || 1;
-        ctx.globalAlpha = Math.max(0.58, Math.min(1, (3.7 - zoom) / 2.3));
+        ctx.globalAlpha = Math.max(0.32, Math.min(0.72, (3.1 - zoom) / 2.6));
         ctx.drawImage(this._getAtmosphereVignette(canvas), 0, 0);
         ctx.globalAlpha = 1;
 
@@ -1374,7 +1636,7 @@ export class IsometricRenderer {
         // hint without washing out the sprite underneath.
         if (this.buildingRenderer) {
             ctx.save();
-            ctx.globalAlpha = 0.22;
+            ctx.globalAlpha = zoom < 1 ? 0.12 : 0.18;
             for (const light of this.buildingRenderer.getLightSources()) {
                 const p = this.camera.worldToScreen(light.x, light.y);
                 if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
