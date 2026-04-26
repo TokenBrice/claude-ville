@@ -448,6 +448,55 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
   };
 }
 
+function readUnpushedCommitEvents(project, context = {}) {
+  if (!project) return [];
+
+  try {
+    if (runGit(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') return [];
+    const upstream = runGit(project, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    if (!upstream) return [];
+
+    const output = runGit(project, [
+      'log',
+      '--reverse',
+      '--format=%H%x1f%ct%x1f%s',
+      `${upstream}..HEAD`,
+    ]);
+    if (!output) return [];
+
+    return output
+      .split('\n')
+      .map((line) => {
+        const [sha, timestampSeconds, subject] = line.split('\x1f');
+        if (!sha) return null;
+        const ts = Number(timestampSeconds) * 1000;
+        const id = `git-unpushed-${stableHash(`${project}:${sha}`)}`;
+        return {
+          id,
+          type: 'commit',
+          command: `git commit ${sha.slice(0, 10)} (${subject || 'unpushed commit'})`,
+          project,
+          provider: context.provider,
+          sessionId: context.sessionId,
+          sourceId: 'git-upstream-status',
+          ts: Number.isFinite(ts) ? ts : Date.now(),
+          commandHash: stableHash(id),
+          dryRun: false,
+          success: true,
+          exitCode: 0,
+          completedAt: Number.isFinite(ts) ? ts : Date.now(),
+          sha,
+          label: subject || sha.slice(0, 10),
+          inferred: true,
+          upstream,
+        };
+      })
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
 function inferPushedGitEvents(events, options = {}) {
   const list = Array.isArray(events) ? events : [];
   const now = Number.isFinite(options.now) ? options.now : Date.now();
@@ -466,6 +515,37 @@ function inferPushedGitEvents(events, options = {}) {
     if (inferred) enriched.push(inferred);
   }
   return dedupeGitEvents(enriched);
+}
+
+function inferUnpushedGitEventsForSessions(sessions) {
+  if (!Array.isArray(sessions) || sessions.length === 0) return sessions;
+
+  const eventsByProject = new Map();
+  for (const session of sessions) {
+    const project = session?.project;
+    if (!project) continue;
+    if (!eventsByProject.has(project)) {
+      eventsByProject.set(project, readUnpushedCommitEvents(project, {
+        provider: session.provider,
+        sessionId: session.sessionId,
+      }));
+    }
+  }
+
+  if (![...eventsByProject.values()].some((events) => events.length > 0)) return sessions;
+
+  return sessions.map((session) => {
+    const project = session?.project;
+    const unpushed = project ? eventsByProject.get(project) || [] : [];
+    if (!unpushed.length) return session;
+
+    const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
+    const nonCommitEvents = ownEvents.filter((event) => event?.type !== 'commit');
+    return {
+      ...session,
+      gitEvents: dedupeGitEvents([...nonCommitEvents, ...unpushed]),
+    };
+  });
 }
 
 function inferPushedGitEventsForSessions(sessions, options = {}) {
@@ -516,6 +596,7 @@ module.exports = {
   extractGitEventsFromCommandSource,
   inferPushedGitEvents,
   inferPushedGitEventsForSessions,
+  inferUnpushedGitEventsForSessions,
   parseGitEventsFromCommand,
   stableHash,
 };

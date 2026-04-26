@@ -5,7 +5,10 @@
 const { ClaudeAdapter } = require('./claude');
 const { CodexAdapter } = require('./codex');
 const { GeminiAdapter } = require('./gemini');
-const { inferPushedGitEventsForSessions } = require('./gitEvents');
+const {
+  inferPushedGitEventsForSessions,
+  inferUnpushedGitEventsForSessions,
+} = require('./gitEvents');
 
 const adapters = [
   new ClaudeAdapter(),
@@ -45,7 +48,7 @@ function getAllSessions(activeThresholdMs) {
       console.error(`[${adapter.name}] Failed to fetch sessions:`, err.message);
     }
   }
-  const sessions = inferPushedGitEventsForSessions(allSessions)
+  const sessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions))
     .sort((a, b) => b.lastActivity - a.lastActivity);
 
   _sessionListCache.at = now;
