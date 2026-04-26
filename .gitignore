@@ -3,7 +3,12 @@ node_modules/
 *.log
 docs/plans/
 output/
+smoke-*.png
 .playwright-cli/
 .playwright-mcp/
 .worktrees/
 .superpowers/
+.env
+.env.*
+.dev.var
+.dev.vars
