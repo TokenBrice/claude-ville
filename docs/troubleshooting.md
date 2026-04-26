@@ -19,13 +19,19 @@ Fix: install at least one of Claude Code, Codex, or Gemini and run a session so 
 
 ## Providers detected, but `/api/sessions` is empty
 
-Only sessions whose last activity is within `ACTIVE_THRESHOLD_MS` are returned. The constant is defined at `claudeville/server.js:24` and is currently `2 * 60 * 1000` (two minutes). If you have not used the CLI in the last two minutes, the dashboard correctly shows nothing active.
+Only sessions whose last activity is within `ACTIVE_THRESHOLD_MS` are returned. The constant is defined in `claudeville/server.js` and is currently `2 * 60 * 1000` (two minutes). If you have not used the CLI in the last two minutes, the dashboard correctly shows nothing active.
 
 Confirm by running a CLI command in a real session, then refresh `/api/sessions` within two minutes.
 
+Provider scan windows also matter:
+
+- Claude uses recent `history.jsonl` entries to find active sessions, then checks recent project/session files.
+- Codex scans recent date folders under `~/.codex/sessions/YYYY/MM/DD/` and filters by file activity.
+- Codex and Gemini detail lookup can search a wider window than the active-session list, so a detail URL may work for a session that no longer appears as active.
+
 ## WebSocket never connects / port 4000 collision (`EADDRINUSE`)
 
-The port is hardcoded at `claudeville/server.js:22` (`const PORT = 4000;`). On startup, `server.on('error', ...)` (`claudeville/server.js:609-615`) prints `Port 4000 is already in use.` and the process stays up but cannot serve.
+The port is hardcoded at `claudeville/server.js` (`const PORT = 4000;`). On startup, `server.on('error', ...)` prints `Port 4000 is already in use.` and the process stays up but cannot serve.
 
 Find and stop the other process holding port 4000:
 
@@ -35,7 +41,29 @@ lsof -i :4000
 ss -ltnp | grep 4000
 ```
 
-The widget, README, both `CLAUDE.md` files, `widget/Sources/main.swift:41-42, 408`, and `widget/Resources/widget.html:77, 303` all assume port 4000. See `docs/design-decisions.md` for why it is hardcoded.
+The widget, README, both `CLAUDE.md` files, and `widget/Resources/widget.html` all assume port 4000. See `docs/design-decisions.md` for why it is hardcoded.
+
+If the browser shows a blank page but the port is open, first confirm there is only one listener:
+
+```bash
+ss -ltnp '( sport = :4000 )'
+```
+
+Stale `node claudeville/server.js` processes can make repeated curl/browser tests disagree. Do not kill a listener in a shared checkout unless ownership is clear and the user has approved process cleanup.
+
+## Port is open, but `/` or `/api/sessions` hangs
+
+Treat zero-byte HTTP timeouts as backend evidence before debugging canvas rendering:
+
+```bash
+curl -v -m 3 http://127.0.0.1:4000/
+curl -v -m 3 http://127.0.0.1:4000/api/sessions
+curl -v -m 3 http://127.0.0.1:4000/api/providers
+```
+
+If `/api/sessions` hangs, time adapter aggregation. The previous expensive path was Claude subagent discovery scanning broad `~/.claude/projects/*` trees. Benchmark `getAllSessions(120000)` and each adapter before changing frontend code.
+
+If `/` hangs while `claudeville/index.html` is readable and `/api/providers` eventually returns JSON, inspect the static route handler in `server.js`. The root route should strip query strings, map `/` to `index.html`, stay inside the `claudeville/` static directory, and avoid stalled response streams.
 
 ## `/api/usage` returns nulls or partial data
 
@@ -48,15 +76,17 @@ The widget, README, both `CLAUDE.md` files, `widget/Sources/main.swift:41-42, 40
 
 Source 4 is documented as "currently unavailable; retry periodically" (`claudeville/services/usageQuota.js:8`). When it fails, the response still returns with `quota: { fiveHour: null, sevenDay: null }` and `quotaAvailable: false`. The other fields keep working. This is expected and non-fatal.
 
+Credential and activity sources are cached briefly, and quota checks are best-effort. Missing local files, failed `claude auth status`, or failed Anthropic quota calls should return partial/null fields rather than breaking `/api/usage`.
+
 ## Cost numbers look wrong
 
-Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. The tables live in `claudeville/src/domain/entities/Agent.js:57-75` and `claudeville/src/presentation/shared/ActivityPanel.js:215-233`. They are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`). Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
+Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. The shared pricing and token normalization logic lives in `claudeville/src/domain/value-objects/TokenUsage.js`. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`). Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
 
-If a model is missing or its price has changed, edit both tables. They are duplicated on purpose; see `docs/design-decisions.md`.
+If a model is missing or its price has changed, update `TokenUsage.js`; `Agent` and `ActivityPanel` both call `TokenUsage.estimateCost(...)`.
 
 ## Widget shows "offline"
 
-The Swift widget polls `http://localhost:4000/api/sessions` and `/api/usage` every three seconds (`widget/Sources/main.swift:35`). It can also auto-launch the server using two paths recorded in the bundle at build time:
+The Swift widget polls `http://localhost:4000/api/sessions` and `/api/usage` every three seconds. It can also auto-launch the server using two paths recorded in the bundle at build time:
 
 - `ClaudeVilleWidget.app/Contents/Resources/project_path`
 - `ClaudeVilleWidget.app/Contents/Resources/node_path`
@@ -67,13 +97,17 @@ Both are written by `widget/build.sh:25-27`. If you moved the repo or upgraded N
 npm run widget:build
 ```
 
+`widget/build.sh` recreates `widget/ClaudeVilleWidget.app`, so treat widget builds as generated-output changes in the shared checkout. Do not delete or rebuild the app bundle unless widget validation is in scope.
+
+There are two widget HTML surfaces. The native menu-bar popover is generated inline in `widget/Sources/main.swift`; `widget/Resources/widget.html` is a static resource served by the local server and copied into the bundle. Editing `widget.html` alone may not change the native popover.
+
 ## Widget will not build
 
 The widget is macOS only. `widget/build.sh` invokes `swiftc`, which requires the Xcode Command Line Tools. On Linux or Windows the build script will fail at the first compile step. There is no fallback for those platforms.
 
 ## Browser console errors after editing
 
-There is no transpiler, bundler, or test runner. A typo in any module aborts page startup with a console error pointing at the failing module. Run a server-side syntax check first:
+There is no transpiler, bundler, or app test runner. A typo in any module aborts page startup with a console error pointing at the failing module. Run a server-side syntax check first:
 
 ```bash
 node --check claudeville/server.js
@@ -81,6 +115,18 @@ find claudeville/adapters claudeville/services -name '*.js' -print0 | xargs -0 -
 ```
 
 For frontend modules, open the browser devtools console. There is no build step that would catch the error earlier.
+
+## Sprite validation scripts fail with missing packages
+
+Runtime does not require installed npm packages, but sprite validation and visual-diff scripts do. If `npm run sprites:validate`, `sprites:capture-*`, or `sprites:visual-diff` fails with `ERR_MODULE_NOT_FOUND`, run `npm install` when dependency installation is in scope.
+
+If installing dependencies is out of scope, fall back to:
+
+- Inspect `claudeville/assets/sprites/manifest.yaml` and `AssetManager._pathFor()`.
+- Use `file` on touched PNGs to confirm dimensions and file type.
+- Check for checkerboard placeholders in the browser, which indicate a missing/invalid sprite path.
+
+`AssetManager` also loads `claudeville/assets/sprites/palettes.yaml`; keep it aligned with the `palettes` block in `manifest.yaml`. Bump `style.assetVersion` after changing PNGs if browser cache is suspected.
 
 ## Agent display name keeps changing
 
@@ -90,7 +136,7 @@ If you renamed an agent in code and the rename was overwritten, check that the c
 
 ## Server starts but the page fails to load static assets
 
-`server.js` resolves the request URL inside `STATIC_DIR` (`claudeville/server.js:217-222`) and rejects anything outside that directory with `403 Forbidden`. Do not add symlinks pointing outside `claudeville/`; they will be refused.
+`server.js` resolves the request URL inside `STATIC_DIR` and rejects anything outside that directory with `403 Forbidden`. Do not add symlinks pointing outside `claudeville/`; they will be refused.
 
 ## Required runtime: Node 18+, no Windows path support in adapters
 

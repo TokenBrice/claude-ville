@@ -12,7 +12,9 @@ This file is for agents working inside `claudeville/`. Keep it current when arch
 
 ## Project Shape
 
-ClaudeVille is a local AI coding agent dashboard. It has no npm dependency install step, no bundler, no transpiler, and no test runner. The browser app is static HTML, CSS, and vanilla ES modules. The backend is `server.js` using only Node built-in modules.
+ClaudeVille is a local AI coding agent dashboard. Runtime has no dependency install step, no bundler, no transpiler, and no app test runner. The browser app is static HTML, CSS, and vanilla ES modules. The backend is `server.js` using only Node built-in modules.
+
+The repo does have `package-lock.json` and dev dependencies for sprite validation, Playwright screenshot capture, and pixelmatch visual diffs. Run `npm install` only when those development scripts are in scope.
 
 Top-level scripts:
 
@@ -32,7 +34,7 @@ npm run widget        # open widget/ClaudeVilleWidget.app
 - WebSocket upgrades are handled directly with an RFC 6455 frame implementation.
 - CORS headers are permissive for local tooling.
 - Watch paths come from active provider adapters.
-- Updates are debounced on filesystem events. A 2-second polling interval also runs continuously; the broadcast no-ops when no WebSocket clients are connected (`server.js:499-502`, `server.js:450`).
+- Updates are debounced on filesystem events. A 2-second polling interval also runs continuously; the broadcast no-ops when no WebSocket clients are connected.
 
 Current API surface:
 
@@ -65,10 +67,20 @@ Adapters are in `adapters/` and registered by `adapters/index.js`.
   - Source: `~/.gemini/tmp/`.
   - Reads `tmp/<project_hash>/chats/session-*.json`.
   - Extracts model, tool calls, messages, and attempts to reverse-map project hashes to local paths.
+- `gitEvents.js`
+  - Shared parser for git `commit` and `push` commands seen in provider tool logs.
+  - Dry-runs are omitted.
+  - Events are attached to active session objects as `gitEvents`; detail payloads currently focus on tools/messages/tokens.
 
 Adapter availability is automatic. A machine can have any subset of providers installed, and empty provider output is not necessarily an error.
 
 Treat all provider session files as read-only inputs.
+
+`adapters/index.js` also protects the live polling path with short TTL caches:
+
+- Session lists are cached for 500ms.
+- Session details are cached for 1250ms with a small LRU-style trim.
+- Detail failures return the stale cached payload when one exists, otherwise `{ toolHistory: [], messages: [] }`.
 
 ## Frontend Boot Path
 
@@ -121,8 +133,8 @@ Key files:
 - `IsometricRenderer.js`: render loop orchestration; routes terrain, buildings, and agents through sprite renderers.
 - `Camera.js`: pan, zoom (clamped to integer steps {1,2,3} for pixel-perfect blits), follow.
 - `AgentSprite.js`: state and animation only; drawing delegated to `SpriteRenderer`, `Compositor`, and `SpriteSheet`.
-- `BuildingSprite.js`: building sprite blits with occlusion split for hero buildings; replaces `BuildingRenderer.js`.
-- `BuildingRenderer.js`: LEGACY (still present, will be retired).
+- `BuildingSprite.js`: building sprite blits with occlusion split for hero buildings; replaces the legacy building renderer.
+- `BuildingRenderer.legacy.js`: historical reference/fallback code, not the current render path.
 - `ParticleSystem.js`: particles and ambient effects; emitter hooks now driven by manifest-declared coordinates.
 - `Minimap.js`: intentionally vector parchment art, out of scope for the pixel-art migration.
 - `AssetManager.js`: manifest loader, PNG cache, alpha mask + outline cache.
@@ -130,6 +142,9 @@ Key files:
 - `SpriteSheet.js`: frame strip lookup and 8-direction velocity-to-direction mapping.
 - `Compositor.js`: palette swap with ΔE tolerance and accessory overlay compositing.
 - `TerrainTileset.js`: Wang-tile neighbor mask lookup and isometric transform.
+- `SceneryEngine.js`: authored and generated water, shore, bridges, vegetation, boulders, and walkability.
+- `Pathfinder.js`: grid pathfinding over the walkability map.
+- `HarborTraffic.js`: ship/harbor motion and git-event-aware harbor activity.
 
 Buildings from `src/config/buildings.js` (eleven total):
 
@@ -145,11 +160,13 @@ Buildings from `src/config/buildings.js` (eleven total):
 - Idle Sanctuary: resting agents.
 - Sky Watchtower: monitoring and status.
 
-Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears selection. Agents using `SendMessage` can move toward a matched recipient and show chat state.
+Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears renderer selection and stops follow, but the activity panel closes through its own close action or when the selected agent is removed. Agents using `SendMessage` can move toward a matched recipient and show chat state.
 
 ## Sprite Generation
 
 Pixel-art sprites are generated through the [pixellab MCP server](https://mcpservers.org/servers/pixellab-code/pixellab-mcp). The asset manifest at `claudeville/assets/sprites/manifest.yaml` is the single source of truth — every sprite the renderer references must have a corresponding manifest entry, and every PNG on disk must correspond to a manifest entry.
+
+`AssetManager` fetches `manifest.yaml` and `palettes.yaml`, appends `style.assetVersion` as a cache-busting query parameter for PNG loads, and falls back to `assets/sprites/_placeholder/checker-64.png` when an image is missing or invalid. If a renderer shows checkerboard assets, check the manifest ID, path mapping, and asset version first.
 
 Workflow:
 
@@ -158,7 +175,8 @@ Workflow:
 3. Resulting PNGs are saved to the manifest-implied path (see `AssetManager._pathFor` for the mapping).
 4. Run `npm run sprites:validate` to confirm every manifest entry resolves to a real PNG and no orphan PNGs exist.
 
-The `style.anchor` field at the top of `manifest.yaml` is concatenated into every prompt at generation time, locking the visual tone across all assets.
+The `style.anchor` field at the top of `manifest.yaml` is concatenated into every prompt at generation time, locking the visual tone across all assets. `style.assetVersion` should be bumped when PNGs change and browser cache behavior matters.
+The `palettes` block in `manifest.yaml` is mirrored in `claudeville/assets/sprites/palettes.yaml`; keep both in sync if editing either.
 
 For full asset generation steps see `scripts/sprites/generate.md`.
 
@@ -167,9 +185,12 @@ For full asset generation steps see `scripts/sprites/generate.md`.
 Dashboard mode is DOM/card rendering under `src/presentation/dashboard-mode/`.
 
 - `DashboardRenderer.js` groups agents by project.
-- Cards show avatar, provider badge, model, role, status, current tool, recent message, token usage, and fetched tool history.
+- Cards show avatar, provider badge, model, role, status, current tool, recent message, and fetched tool history.
 - It listens for `agent:added`, `agent:updated`, `agent:removed`, and `mode:changed`.
-- Detail fetching runs while Dashboard mode is active.
+- Detail fetching runs while Dashboard mode is active and stops when leaving Dashboard mode.
+- Existing project sections and cards are reused across updates; stale cards and sections are removed after each render.
+- Card clicks emit `agent:selected`, matching sidebar/canvas selection behavior.
+- Session details flow through `shared/SessionDetailsService.js`, which dedupes in-flight requests and serves short-lived cached data.
 
 ## Activity Panel
 
@@ -177,15 +198,19 @@ Dashboard mode is DOM/card rendering under `src/presentation/dashboard-mode/`.
 
 It polls session detail every 2 seconds for the selected agent and shows tool history, recent messages, and token usage when the provider adapter exposes those fields.
 
+The panel shares `SessionDetailsService.js` with Dashboard mode. It renders only when detail signatures change, so stale-looking output can be caused by cached detail data or an unchanged signature rather than a missed DOM update.
+
 ## Widget
 
 The optional macOS widget lives outside `claudeville/` in `widget/`.
 
 - `widget/Sources/main.swift` creates an `NSStatusItem` and a `WKWebView` popover.
 - It polls `/api/sessions` and `/api/usage` every 3 seconds.
+- The native menu popover is generated inline in Swift (`buildHTML()` and `loadHTMLString(...)`).
+- `widget/Resources/widget.html` and `widget.css` are static resources served by `server.js` and copied into the app bundle, but editing them does not automatically change the native Swift-generated popover.
 - It can start `claudeville/server.js` using the project path and Node path recorded in the app bundle.
 - The dashboard menu/window opens `http://localhost:4000`.
-- `widget/build.sh` compiles Swift, creates `ClaudeVilleWidget.app`, copies resources, and writes `project_path` and `node_path`.
+- `widget/build.sh` compiles Swift, recreates `ClaudeVilleWidget.app`, copies resources, and writes `project_path` and `node_path`.
 
 Widget changes require macOS validation with:
 
@@ -204,8 +229,9 @@ In-app specifics (run after rendering/layout/event-bus changes):
 
 Asset validation:
 
+- Run `npm install` first if `node_modules/` is missing and asset validation is in scope.
 - `npm run sprites:validate` — manifest ↔ PNG bidirectional check.
-- `npm run sprites:visual-diff` — pixelmatch baseline comparison (added in a later task).
+- `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` — pixelmatch baseline comparison.
 
 Documentation validation (project-wide, English-only):
 

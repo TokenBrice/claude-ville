@@ -12,17 +12,38 @@ npm run dev
 
 Open `http://localhost:4000`.
 
-There is no install step in this repo today. `package.json` only defines:
+Runtime is dependency-free: `npm run dev` uses only Node built-ins and static browser files. The repo also has a `package-lock.json` and dev dependencies for sprite validation, visual diffs, and Playwright-based capture scripts; run `npm install` only when those development scripts are needed.
+
+`package.json` defines:
 
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | Start `claudeville/server.js` on port `4000`. |
 | `npm run widget:build` | Compile the optional macOS widget app. |
 | `npm run widget` | Open `widget/ClaudeVilleWidget.app`. |
+| `npm run sprites:validate` | Validate `assets/sprites/manifest.yaml` against PNG files and character-sheet shape. Requires dev dependencies. |
+| `npm run sprites:capture-baseline` | Capture baseline world screenshots for sprite visual diffing. Requires the dev server and Playwright. |
+| `npm run sprites:capture-fresh` | Capture fresh screenshots next to the baseline set. Requires the dev server and Playwright. |
+| `npm run sprites:visual-diff` | Compare baseline and fresh sprite screenshots with `pixelmatch`. Requires dev dependencies. |
+
+## Fast Onboarding Path
+
+For an unfamiliar agent, read these first:
+
+1. `README.md` for the app shape, commands, API surface, and docs map.
+2. `AGENTS.md` or `CLAUDE.md` for repo workflow, shared-checkout rules, validation, and known pitfalls.
+3. `claudeville/CLAUDE.md` for implementation-level architecture inside the app.
+4. The area README for the slice you are editing:
+   - `claudeville/adapters/README.md` for provider parsing and normalized session contracts.
+   - `claudeville/src/presentation/character-mode/README.md` for World mode.
+   - `claudeville/src/presentation/dashboard-mode/README.md` for Dashboard mode.
+   - `claudeville/src/presentation/shared/README.md` for shared UI and detail fetches.
+   - `scripts/sprites/generate.md` for sprite generation and validation.
 
 ## Requirements
 
 - Node.js 18 or newer.
+- `npm install` only for dev scripts that import packages (`js-yaml`, `pngjs`, `pixelmatch`, `playwright`). The server itself does not need installed packages.
 - At least one local provider directory:
   - Claude Code: `~/.claude/`
   - Codex CLI: `~/.codex/sessions/`
@@ -42,16 +63,20 @@ claude-ville/
 |   |   |-- claude.js
 |   |   |-- codex.js
 |   |   |-- gemini.js
+|   |   |-- gitEvents.js            # Git commit/push extraction from tool commands
 |   |   `-- index.js               # Adapter registry
+|   |-- assets/sprites/            # Pixel-art manifest and generated PNG assets
 |   |-- services/
 |   |   `-- usageQuota.js          # Usage, quota, and account metadata
 |   |-- css/                       # Static CSS loaded directly by index.html
+|   |-- vendor/                    # Browser-vendored helper libraries
 |   `-- src/
 |       |-- config/                # Constants, theme, i18n strings, building definitions
 |       |-- domain/                # World, agents, buildings, tasks, events, value objects
 |       |-- application/           # Agent, mode, session watcher, notification coordination
 |       |-- infrastructure/        # REST data source and WebSocket client
 |       `-- presentation/          # Shared UI plus world and dashboard renderers
+|-- scripts/sprites/               # Manifest validation, sprite generation docs, visual diff helpers
 |-- widget/
 |   |-- Sources/main.swift         # macOS status item app
 |   |-- Resources/                 # Widget HTML and CSS served by the Node server
@@ -102,11 +127,13 @@ Adapters live in `claudeville/adapters/` and are registered in `adapters/index.j
 
 | Provider | Directory | Session source | Notes |
 | --- | --- | --- | --- |
-| Claude Code | `~/.claude/` | `history.jsonl`, `projects/*/*.jsonl`, subagent files, teams, tasks | Supports main sessions, subagents, orphan/team-member sessions, token usage, teams, and tasks. |
-| Codex CLI | `~/.codex/sessions/` | Recent `rollout-*.jsonl` files under date folders | Reads recent rollouts, session metadata, tools, messages, and token count events. |
-| Gemini CLI | `~/.gemini/tmp/` | `tmp/<project_hash>/chats/session-*.json` | Reads recent chat JSON files and attempts to reverse-map project hashes to local paths. |
+| Claude Code | `~/.claude/` | `history.jsonl`, `projects/*/*.jsonl`, subagent files, teams, tasks | Supports main sessions, subagents, orphan/team-member sessions, token usage, teams, tasks, and git commit/push extraction. |
+| Codex CLI | `~/.codex/sessions/` | Recent `rollout-*.jsonl` files under date folders | Reads recent rollouts, session metadata, tools, messages, token count events, reasoning effort, and git commit/push extraction. |
+| Gemini CLI | `~/.gemini/tmp/` | `tmp/<project_hash>/chats/session-*.json` | Reads recent chat JSON files, attempts to reverse-map project hashes to local paths, and extracts git commit/push events where commands are present. |
 
 Only active adapters are used. Claude-only concepts such as teams and tasks are optional and return empty arrays when unavailable.
+
+`claudeville/adapters/index.js` owns aggregation and short-lived caches: session lists are cached briefly to protect the 2-second poll path, detail payloads are cached a little longer to dedupe Dashboard and Activity Panel requests, and adapter failures degrade to an empty or stale cached detail response instead of breaking the app.
 
 ## UI Modes
 
@@ -130,9 +157,13 @@ See `claudeville/src/config/buildings.js` for the source of truth.
 
 Agents can be selected on the canvas. Selection opens the activity panel and makes the camera follow the selected sprite until the selection clears or the user drags the camera. Agents using `SendMessage` can move toward a matched recipient and show chat animation state.
 
+Rendering is sprite-first. `IsometricRenderer.js` orchestrates the draw loop and data flow; `SceneryEngine.js`, `TerrainTileset.js`, `BuildingSprite.js`, `HarborTraffic.js`, `AgentSprite.js`, `SpriteRenderer.js`, `Compositor.js`, `SpriteSheet.js`, and `AssetManager.js` do the specialized work. `BuildingRenderer.legacy.js` is historical fallback/reference code, not the current building renderer.
+
 ### Dashboard Mode
 
-Dashboard mode renders DOM cards grouped by project. Cards show provider badge, model, role, status, current tool, recent message, token usage, and fetched tool history. Dashboard mode is designed for scanning active sessions without the RPG world.
+Dashboard mode renders DOM cards grouped by project. Cards show provider badge, model, role, status, current tool, recent message, and fetched tool history. Dashboard mode is designed for scanning active sessions without the RPG world.
+
+`DashboardRenderer.js` fetches session details only while Dashboard mode is active, reuses project sections/cards across updates, and emits the same selection events as the sidebar/canvas. It shares `SessionDetailsService.js` with the activity panel so duplicate detail requests can be coalesced and briefly cached.
 
 ## macOS Menu Bar Widget
 
@@ -148,7 +179,12 @@ npm run widget:build
 npm run widget
 ```
 
-`widget/build.sh` compiles `widget/Sources/main.swift`, creates `widget/ClaudeVilleWidget.app`, copies widget resources, and writes the current project path and Node binary path into the app bundle. The app can start `claudeville/server.js` itself if needed, and its dashboard button opens `http://localhost:4000` in a native window.
+`widget/build.sh` compiles `widget/Sources/main.swift`, recreates `widget/ClaudeVilleWidget.app`, copies widget resources, and writes the current project path and Node binary path into the app bundle. The app can start `claudeville/server.js` itself if needed, and its dashboard button opens `http://localhost:4000` in a native window.
+
+There are two widget surfaces:
+
+- The native menu-bar popover is rendered by Swift (`buildHTML()` in `widget/Sources/main.swift`) with `webView.loadHTMLString(...)`.
+- `widget/Resources/widget.html` and `widget.css` are static resources served by `server.js` at `/widget.html` and `/widget.css`, and are also copied into the app bundle. Editing them does not automatically change the native Swift-generated popover.
 
 ## Validation
 
@@ -169,13 +205,24 @@ curl http://localhost:4000/api/sessions
 
 For rendering changes, open `http://localhost:4000`, test both World and Dashboard modes, resize the browser, and verify the activity panel opens and closes when an agent can be selected.
 
+Asset validation, when dev dependencies are installed:
+
+```bash
+npm run sprites:validate
+npm run sprites:capture-fresh
+npm run sprites:visual-diff
+```
+
+If dependencies are not installed and installing them is out of scope, fall back to manifest/code inspection plus `file claudeville/assets/sprites/**/*.png` checks for touched assets.
+
 For widget changes, run `npm run widget:build`, then `npm run widget`, and confirm the app can reach port `4000`.
 
 ## Development Notes
 
 - Keep provider session files read-only. ClaudeVille observes local CLI logs; it should not mutate them.
 - Keep port `4000` unless all dependent docs, widget code, and local workflows are updated together.
-- Keep small changes within the current vanilla JavaScript and CSS architecture. There is no framework, bundler, transpiler, package install, or test runner today.
+- Keep small changes within the current vanilla JavaScript and CSS architecture. There is no framework, bundler, transpiler, or app test runner today.
+- Do not edit generated sprite PNGs without also checking `claudeville/assets/sprites/manifest.yaml` and the sprite validation rules.
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.
 - See `docs/visual-experience-crafting.md` for the transferable design method behind the RPG world model. It is intended as a handoff note for applying the same visual-representation logic to unrelated datasets.
 - `demo-server.js` at the repo root is unused/abandoned and not wired into `package.json`; do not run it.
@@ -186,10 +233,17 @@ For widget changes, run `npm run widget:build`, then `npm run widget`, and confi
 | --- | --- | --- |
 | `README.md` | Everyone | Project overview, quick start, runtime architecture. |
 | `AGENTS.md` | Generic agent tools (Codex, etc.) | Project shape, conventions, validation, git hygiene. |
-| `CLAUDE.md` | Claude Code | Mirror of `AGENTS.md`; kept byte-identical apart from the title. Claude Code auto-loads it; AGENTS.md is the canonical source — when changing one, change both. |
+| `CLAUDE.md` | Claude Code | Mirrors `AGENTS.md` content for Claude Code. Claude Code auto-loads it; AGENTS.md is the canonical source — when changing one, change both. |
 | `claudeville/CLAUDE.md` | Agents working inside `claudeville/` | Implementation context: server, adapters, layout, event flow. |
+| `claudeville/adapters/README.md` | Adapter work | Provider contract, normalized session fields, token and git-event extraction. |
+| `claudeville/src/presentation/character-mode/README.md` | World mode work | Canvas renderer pipeline, selection lifecycle, sprite/world contracts. |
+| `claudeville/src/presentation/dashboard-mode/README.md` | Dashboard work | DOM renderer lifecycle, detail polling, selection contract. |
+| `claudeville/src/presentation/shared/README.md` | Shared UI work | Top bar/sidebar/activity panel, model identity, session-detail cache. |
 | `docs/swarm-orchestration-procedure.md` | Multi-agent workflows | SOP for splitting work across subagents in a shared checkout. |
+| `docs/design-decisions.md` | Maintainers | Load-bearing constraints and what to update if one changes. |
+| `docs/troubleshooting.md` | Operators and agents | Common first-hour failures and diagnosis paths. |
 | `docs/visual-experience-crafting.md` | Visual/UX work | Transferable design method behind the RPG world model. |
+| `scripts/sprites/generate.md` | Sprite work | Manifest-first Pixellab generation and asset validation runbook. |
 
 ## License
 
