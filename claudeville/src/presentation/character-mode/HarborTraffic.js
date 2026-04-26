@@ -11,7 +11,7 @@ const SCREEN_SUMMARY_MS = 16000;
 const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
 const MAX_LABEL_CHARS = 30;
 const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
-const HARBOR_SUMMARY_TILE = { tileX: 35.6, tileY: 20.2 };
+const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
 
 const BERTHS = [
     { tileX: 33.2, tileY: 20.8 },

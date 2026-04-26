@@ -28,6 +28,7 @@ const LANDMARK_LABEL_ACCENTS = {
     forge: '#f08a4b',
     portal: '#8bd7ff',
     watchtower: '#ffe59a',
+    harbor: '#ffd37a',
     observatory: '#bda7ff',
     mine: '#ffab47',
     taskboard: '#8bd7ff',
@@ -47,8 +48,8 @@ const BUILDING_EMITTER_FALLBACKS = {
         { type: 'smoke', at: [88, 13], chance: 0.035, count: 1 },
     ],
     mine: [
-        { type: 'mineDust', at: [70, 82], chance: 0.035, count: 1 },
-        { type: 'mining', at: [82, 90], chance: 0.026, count: 1 },
+        { type: 'mineDust', at: [82, 98], chance: 0.035, count: 1 },
+        { type: 'mining', at: [102, 124], chance: 0.026, count: 1 },
     ],
     portal: [
         { type: 'portalRune', at: [144, 60], chance: 0.05, count: 1 },
@@ -57,20 +58,25 @@ const BUILDING_EMITTER_FALLBACKS = {
     watchtower: [
         { type: 'beaconMote', at: [196, 32], chance: 0.038, count: 1 },
     ],
+    harbor: [
+        { type: 'torch', at: [48, 42], chance: 0.026, count: 1 },
+        { type: 'sparkle', at: [70, 58], chance: 0.014, count: 1 },
+    ],
     taskboard: [
         { type: 'questPing', at: [56, 58], chance: 0.024, count: 1 },
     ],
     archive: [
-        { type: 'archiveMote', at: [56, 42], chance: 0.034, count: 1 },
-        { type: 'archiveMote', at: [25, 65], chance: 0.018, count: 1 },
-        { type: 'archiveMote', at: [90, 60], chance: 0.018, count: 1 },
+        { type: 'archiveMote', at: [154, 82], chance: 0.034, count: 1 },
+        { type: 'archiveMote', at: [61, 149], chance: 0.018, count: 1 },
+        { type: 'archiveMote', at: [246, 141], chance: 0.018, count: 1 },
     ],
 };
 const BUILDING_LIGHT_FALLBACKS = {
     forge: { at: [64, 78], color: '#ff8a33', radius: 62, overlay: 'atmosphere.light.fire-glow' },
-    mine: { at: [72, 82], color: '#ffb84d', radius: 52, overlay: 'atmosphere.light.lantern-glow' },
+    mine: { at: [84, 98], color: '#ffb84d', radius: 68, overlay: 'atmosphere.light.lantern-glow' },
     taskboard: { at: [56, 58], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
-    archive: { at: [58, 45], color: '#b3d68c', radius: 72, overlay: 'atmosphere.light.lantern-glow' },
+    archive: { at: [154, 96], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
+    harbor: { at: [48, 42], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };
 
 export class BuildingSprite {
@@ -752,22 +758,22 @@ export class BuildingSprite {
         if (building.type === 'forge') {
             this._drawForgeEnhancement(ctx, localPoint, pulse);
         } else if (building.type === 'mine') {
-            const mouth = localPoint(70, 78);
+            const mouth = localPoint(84, 98);
             ctx.globalCompositeOperation = 'screen';
             ctx.globalAlpha = 0.24 + pulse * 0.18;
             ctx.fillStyle = '#ffc15a';
             ctx.beginPath();
-            ctx.ellipse(mouth.x, mouth.y - 1, 25, 10, -0.22, 0, Math.PI * 2);
+            ctx.ellipse(mouth.x, mouth.y - 1, 31, 13, -0.22, 0, Math.PI * 2);
             ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
             ctx.globalAlpha = 0.75;
             ctx.strokeStyle = '#8f6a3d';
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.moveTo(mouth.x - 28, mouth.y + 11);
-            ctx.lineTo(mouth.x + 30, mouth.y - 4);
-            ctx.moveTo(mouth.x - 21, mouth.y + 18);
-            ctx.lineTo(mouth.x + 36, mouth.y + 2);
+            ctx.moveTo(mouth.x - 34, mouth.y + 14);
+            ctx.lineTo(mouth.x + 37, mouth.y - 6);
+            ctx.moveTo(mouth.x - 26, mouth.y + 23);
+            ctx.lineTo(mouth.x + 44, mouth.y + 3);
             ctx.stroke();
         } else if (building.type === 'taskboard') {
             const board = localPoint(56, 60);
@@ -815,16 +821,18 @@ export class BuildingSprite {
         } else if (building.type === 'watchtower') {
             const beacon = localPoint(196, 34);
             this._drawWatchtowerFire(ctx, beacon, pulse);
+        } else if (building.type === 'harbor') {
+            this._drawHarborMasterOffice(ctx, localPoint, pulse);
         } else if (building.type === 'archive') {
-            const window = localPoint(58, 45);
-            const leftWing = localPoint(18, 74);
-            const rightWing = localPoint(97, 71);
-            const base = localPoint(58, 89);
+            const window = localPoint(154, 92);
+            const leftWing = localPoint(82, 128);
+            const rightWing = localPoint(226, 124);
+            const base = localPoint(154, 158);
             ctx.globalCompositeOperation = 'screen';
             ctx.globalAlpha = 0.18 + pulse * 0.2;
             ctx.fillStyle = '#b3d68c';
             ctx.beginPath();
-            ctx.ellipse(window.x, window.y, 38, 18, -0.15, 0, Math.PI * 2);
+            ctx.ellipse(window.x, window.y, 58, 32, -0.12, 0, Math.PI * 2);
             ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
 
@@ -833,10 +841,10 @@ export class BuildingSprite {
             ctx.strokeStyle = '#b3d68c';
             ctx.lineWidth = 1.5;
             ctx.beginPath();
-            ctx.moveTo(base.x - 58, base.y - 7);
-            ctx.lineTo(base.x - 12, base.y - 25);
-            ctx.lineTo(base.x + 54, base.y - 10);
-            ctx.lineTo(base.x + 10, base.y + 10);
+            ctx.moveTo(base.x - 88, base.y - 2);
+            ctx.lineTo(base.x - 16, base.y - 31);
+            ctx.lineTo(base.x + 86, base.y - 4);
+            ctx.lineTo(base.x + 18, base.y + 21);
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
@@ -845,17 +853,17 @@ export class BuildingSprite {
             ctx.strokeStyle = '#3b2819';
             for (const wing of [leftWing, rightWing]) {
                 ctx.beginPath();
-                ctx.moveTo(wing.x - 12, wing.y - 28);
-                ctx.lineTo(wing.x + 10, wing.y - 34);
-                ctx.lineTo(wing.x + 15, wing.y - 4);
-                ctx.lineTo(wing.x - 8, wing.y + 2);
+                ctx.moveTo(wing.x - 18, wing.y - 42);
+                ctx.lineTo(wing.x + 15, wing.y - 50);
+                ctx.lineTo(wing.x + 23, wing.y - 6);
+                ctx.lineTo(wing.x - 12, wing.y + 4);
                 ctx.closePath();
                 ctx.fill();
                 ctx.stroke();
                 ctx.fillStyle = '#b3d68c';
                 ctx.globalAlpha = 0.45 + pulse * 0.22;
-                ctx.fillRect(wing.x - 5, wing.y - 25, 5, 14);
-                ctx.fillRect(wing.x + 5, wing.y - 27, 5, 16);
+                ctx.fillRect(wing.x - 8, wing.y - 37, 7, 21);
+                ctx.fillRect(wing.x + 7, wing.y - 40, 7, 24);
                 ctx.globalAlpha = 0.86;
                 ctx.fillStyle = 'rgba(82, 62, 39, 0.9)';
             }
@@ -865,27 +873,98 @@ export class BuildingSprite {
             ctx.strokeStyle = '#4a3420';
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(window.x - 26, window.y + 27);
-            ctx.quadraticCurveTo(window.x - 10, window.y + 16, window.x, window.y + 25);
-            ctx.quadraticCurveTo(window.x + 13, window.y + 14, window.x + 29, window.y + 24);
-            ctx.lineTo(window.x + 26, window.y + 35);
-            ctx.quadraticCurveTo(window.x + 9, window.y + 27, window.x, window.y + 37);
-            ctx.quadraticCurveTo(window.x - 13, window.y + 27, window.x - 29, window.y + 35);
+            ctx.moveTo(window.x - 42, window.y + 58);
+            ctx.quadraticCurveTo(window.x - 16, window.y + 42, window.x, window.y + 55);
+            ctx.quadraticCurveTo(window.x + 20, window.y + 40, window.x + 45, window.y + 53);
+            ctx.lineTo(window.x + 40, window.y + 69);
+            ctx.quadraticCurveTo(window.x + 14, window.y + 58, window.x, window.y + 72);
+            ctx.quadraticCurveTo(window.x - 20, window.y + 58, window.x - 45, window.y + 69);
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
 
             ctx.strokeStyle = 'rgba(74, 52, 32, 0.5)';
             ctx.beginPath();
-            ctx.moveTo(window.x, window.y + 25);
-            ctx.lineTo(window.x, window.y + 36);
-            ctx.moveTo(window.x - 20, window.y + 28);
-            ctx.lineTo(window.x - 4, window.y + 31);
-            ctx.moveTo(window.x + 5, window.y + 31);
-            ctx.lineTo(window.x + 23, window.y + 28);
+            ctx.moveTo(window.x, window.y + 55);
+            ctx.lineTo(window.x, window.y + 71);
+            ctx.moveTo(window.x - 31, window.y + 60);
+            ctx.lineTo(window.x - 6, window.y + 64);
+            ctx.moveTo(window.x + 8, window.y + 64);
+            ctx.lineTo(window.x + 35, window.y + 59);
             ctx.stroke();
         }
         ctx.restore();
+    }
+
+    _drawHarborMasterOffice(ctx, localPoint, pulse) {
+        const cabin = localPoint(48, 51);
+        const lamp = localPoint(48, 36);
+        const ledger = localPoint(68, 63);
+        const flagLift = this.motionScale ? Math.sin(this.frame * 0.08) * 1.5 : 0;
+
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = '#68432b';
+        ctx.strokeStyle = '#24170f';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(cabin.x - 26, cabin.y + 5);
+        ctx.lineTo(cabin.x + 9, cabin.y - 7);
+        ctx.lineTo(cabin.x + 27, cabin.y + 5);
+        ctx.lineTo(cabin.x - 8, cabin.y + 18);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#2f5b66';
+        ctx.beginPath();
+        ctx.moveTo(cabin.x - 28, cabin.y - 5);
+        ctx.lineTo(cabin.x + 6, cabin.y - 22);
+        ctx.lineTo(cabin.x + 31, cabin.y - 7);
+        ctx.lineTo(cabin.x - 2, cabin.y + 7);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.22 + pulse * 0.22;
+        ctx.fillStyle = '#ffd37a';
+        ctx.beginPath();
+        ctx.ellipse(lamp.x, lamp.y, 24, 13, -0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = '#ffd37a';
+        ctx.fillRect(lamp.x - 3, lamp.y - 4, 6, 7);
+        ctx.strokeStyle = '#3a2616';
+        ctx.strokeRect(lamp.x - 3.5, lamp.y - 4.5, 7, 8);
+
+        ctx.globalAlpha = 0.88;
+        ctx.strokeStyle = '#3a2616';
+        ctx.lineWidth = 1.25;
+        ctx.beginPath();
+        ctx.moveTo(cabin.x + 24, cabin.y - 18);
+        ctx.lineTo(cabin.x + 24, cabin.y + 15);
+        ctx.stroke();
+        ctx.fillStyle = '#f2d36b';
+        ctx.beginPath();
+        ctx.moveTo(cabin.x + 24, cabin.y - 17 + flagLift);
+        ctx.lineTo(cabin.x + 42, cabin.y - 12 + flagLift);
+        ctx.lineTo(cabin.x + 24, cabin.y - 7 + flagLift);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#c4935d';
+        ctx.strokeStyle = '#2b1a11';
+        ctx.beginPath();
+        ctx.moveTo(ledger.x - 13, ledger.y - 2);
+        ctx.lineTo(ledger.x + 9, ledger.y - 8);
+        ctx.lineTo(ledger.x + 17, ledger.y - 2);
+        ctx.lineTo(ledger.x - 5, ledger.y + 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
     }
 
     _drawForgeEnhancement(ctx, localPoint, pulse) {
@@ -894,52 +973,170 @@ export class BuildingSprite {
         const anvil = localPoint(44, 84);
         const workbench = localPoint(82, 86);
         const coal = localPoint(31, 90);
+        const trough = localPoint(63, 101);
         const flicker = this.motionScale
             ? Math.sin(this.frame * 0.25) * 1.8 + Math.sin(this.frame * 0.43) * 1.1
             : 0.8;
 
+        this._drawForgeStoneApron(ctx, hearth, trough);
         this._drawForgeHeatBloom(ctx, hearth, pulse);
+        this._drawForgeSmithyMass(ctx, hearth);
         this._drawForgeRoofAndStack(ctx, chimney, hearth, flicker, pulse);
         this._drawForgeMouth(ctx, hearth, flicker, pulse);
+        this._drawForgeMoltenTrough(ctx, trough, pulse, flicker);
         this._drawForgeYardTools(ctx, anvil, workbench, coal, pulse);
+    }
+
+    _drawForgeStoneApron(ctx, hearth, trough) {
+        ctx.globalAlpha = 0.78;
+        ctx.fillStyle = '#51483f';
+        ctx.strokeStyle = '#201713';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(hearth.x - 42, hearth.y + 8);
+        ctx.lineTo(hearth.x + 29, hearth.y - 8);
+        ctx.lineTo(trough.x + 31, trough.y - 4);
+        ctx.lineTo(trough.x - 42, trough.y + 12);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = '#837765';
+        ctx.lineWidth = 1;
+        const seams = [
+            [[hearth.x - 23, hearth.y + 11], [trough.x - 15, trough.y + 8]],
+            [[hearth.x + 1, hearth.y + 5], [trough.x + 9, trough.y + 2]],
+            [[hearth.x + 23, hearth.y], [trough.x + 30, trough.y - 3]],
+            [[hearth.x - 33, hearth.y + 23], [hearth.x + 37, hearth.y + 7]],
+        ];
+        for (const [[x1, y1], [x2, y2]] of seams) {
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    _drawForgeSmithyMass(ctx, hearth) {
+        ctx.globalAlpha = 0.94;
+        ctx.fillStyle = '#6c6257';
+        ctx.strokeStyle = '#1f1714';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(hearth.x - 39, hearth.y - 38);
+        ctx.lineTo(hearth.x + 19, hearth.y - 53);
+        ctx.lineTo(hearth.x + 45, hearth.y - 31);
+        ctx.lineTo(hearth.x + 39, hearth.y + 11);
+        ctx.lineTo(hearth.x - 29, hearth.y + 24);
+        ctx.lineTo(hearth.x - 43, hearth.y + 3);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.globalAlpha = 0.48;
+        ctx.strokeStyle = '#b1a188';
+        ctx.lineWidth = 1;
+        for (const [x1, y1, x2, y2] of [
+            [-31, -24, 28, -38],
+            [-38, -8, 38, -25],
+            [-28, 8, 35, -7],
+            [-20, -35, -14, 16],
+            [2, -42, 7, 10],
+            [24, -36, 27, 1],
+        ]) {
+            ctx.beginPath();
+            ctx.moveTo(hearth.x + x1, hearth.y + y1);
+            ctx.lineTo(hearth.x + x2, hearth.y + y2);
+            ctx.stroke();
+        }
+
+        ctx.globalAlpha = 0.72;
+        ctx.fillStyle = '#35241b';
+        ctx.strokeStyle = '#15100d';
+        for (const beam of [{ x: -36, h: 43 }, { x: 37, h: 37 }]) {
+            ctx.fillRect(hearth.x + beam.x - 4, hearth.y - beam.h, 8, beam.h + 21);
+            ctx.strokeRect(hearth.x + beam.x - 4, hearth.y - beam.h, 8, beam.h + 21);
+        }
+        ctx.globalAlpha = 1;
     }
 
     _drawForgeHeatBloom(ctx, hearth, pulse) {
         ctx.globalCompositeOperation = 'screen';
-        const glow = ctx.createRadialGradient(hearth.x, hearth.y, 1, hearth.x, hearth.y, 42 + pulse * 10);
+        const glow = ctx.createRadialGradient(hearth.x, hearth.y, 1, hearth.x, hearth.y, 52 + pulse * 13);
         glow.addColorStop(0, 'rgba(255, 239, 154, 0.74)');
         glow.addColorStop(0.35, 'rgba(255, 126, 39, 0.34)');
         glow.addColorStop(1, 'rgba(255, 75, 24, 0)');
-        ctx.globalAlpha = 0.52 + pulse * 0.22;
+        ctx.globalAlpha = 0.58 + pulse * 0.26;
         ctx.fillStyle = glow;
         ctx.beginPath();
-        ctx.ellipse(hearth.x + 3, hearth.y - 1, 47, 28, -0.24, 0, Math.PI * 2);
+        ctx.ellipse(hearth.x + 2, hearth.y - 1, 55, 32, -0.24, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
     }
 
     _drawForgeRoofAndStack(ctx, chimney, hearth, flicker, pulse) {
-        ctx.globalAlpha = 0.72;
-        ctx.strokeStyle = 'rgba(18, 14, 20, 0.74)';
-        ctx.lineWidth = 2;
+        ctx.globalAlpha = 0.96;
+        ctx.fillStyle = '#a9552d';
+        ctx.strokeStyle = '#21130e';
+        ctx.lineWidth = 2.5;
         ctx.beginPath();
-        ctx.moveTo(hearth.x - 35, hearth.y - 51);
-        ctx.lineTo(hearth.x + 12, hearth.y - 70);
-        ctx.lineTo(hearth.x + 43, hearth.y - 45);
-        ctx.moveTo(hearth.x - 21, hearth.y - 55);
-        ctx.lineTo(hearth.x + 20, hearth.y - 38);
-        ctx.moveTo(hearth.x - 4, hearth.y - 62);
-        ctx.lineTo(hearth.x + 37, hearth.y - 44);
+        ctx.moveTo(hearth.x - 50, hearth.y - 50);
+        ctx.lineTo(hearth.x + 9, hearth.y - 76);
+        ctx.lineTo(hearth.x + 55, hearth.y - 45);
+        ctx.lineTo(hearth.x + 36, hearth.y - 31);
+        ctx.lineTo(hearth.x - 54, hearth.y - 36);
+        ctx.closePath();
+        ctx.fill();
         ctx.stroke();
+
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.35 + pulse * 0.14;
+        ctx.fillStyle = '#ffb34d';
+        ctx.beginPath();
+        ctx.moveTo(hearth.x - 43, hearth.y - 48);
+        ctx.lineTo(hearth.x + 7, hearth.y - 70);
+        ctx.lineTo(hearth.x + 47, hearth.y - 45);
+        ctx.lineTo(hearth.x + 32, hearth.y - 37);
+        ctx.lineTo(hearth.x - 47, hearth.y - 40);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+
+        ctx.globalAlpha = 0.78;
+        ctx.strokeStyle = '#f0a255';
+        ctx.lineWidth = 1.25;
+        for (const offset of [-38, -24, -10, 4, 18, 32, 45]) {
+            ctx.beginPath();
+            ctx.moveTo(hearth.x + offset, hearth.y - 58 + Math.abs(offset) * 0.07);
+            ctx.lineTo(hearth.x + offset + 31, hearth.y - 37);
+            ctx.stroke();
+        }
+        ctx.strokeStyle = '#321c14';
+        for (const yOffset of [-66, -55, -44]) {
+            ctx.beginPath();
+            ctx.moveTo(hearth.x - 42, hearth.y + yOffset + 13);
+            ctx.lineTo(hearth.x + 45, hearth.y + yOffset);
+            ctx.stroke();
+        }
+
+        ctx.globalAlpha = 0.82;
+        ctx.fillStyle = '#4b2d1d';
+        for (const post of [{ x: hearth.x - 33, h: 40 }, { x: hearth.x + 37, h: 34 }]) {
+            ctx.fillRect(post.x - 3, hearth.y - post.h, 6, post.h + 18);
+            ctx.strokeStyle = '#1f120c';
+            ctx.strokeRect(post.x - 3, hearth.y - post.h, 6, post.h + 18);
+        }
 
         ctx.globalAlpha = 0.92;
         const stack = [
-            { x: chimney.x - 12, y: chimney.y + 34 },
-            { x: chimney.x - 9, y: chimney.y - 3 },
-            { x: chimney.x + 8, y: chimney.y - 9 },
-            { x: chimney.x + 15, y: chimney.y + 30 },
-            { x: chimney.x + 3, y: chimney.y + 40 },
+            { x: chimney.x - 15, y: chimney.y + 42 },
+            { x: chimney.x - 12, y: chimney.y - 5 },
+            { x: chimney.x + 8, y: chimney.y - 13 },
+            { x: chimney.x + 18, y: chimney.y + 34 },
+            { x: chimney.x + 4, y: chimney.y + 45 },
         ];
         ctx.fillStyle = '#4d4a45';
         ctx.strokeStyle = '#211711';
@@ -952,15 +1149,24 @@ export class BuildingSprite {
         ctx.stroke();
 
         ctx.fillStyle = '#837c6e';
-        for (const [dx, dy, w] of [[-7, 1, 13], [-9, 10, 18], [-6, 20, 16], [-10, 29, 20]]) {
+        for (const [dx, dy, w] of [[-8, -2, 14], [-11, 8, 22], [-7, 19, 18], [-12, 30, 24]]) {
             ctx.fillRect(chimney.x + dx, chimney.y + dy, w, 3);
         }
+        ctx.fillStyle = '#2d2a28';
+        ctx.beginPath();
+        ctx.moveTo(chimney.x - 16, chimney.y + 12);
+        ctx.lineTo(chimney.x + 16, chimney.y + 4);
+        ctx.lineTo(chimney.x + 20, chimney.y + 12);
+        ctx.lineTo(chimney.x - 11, chimney.y + 20);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
         ctx.fillStyle = '#2d2420';
-        ctx.fillRect(chimney.x - 12, chimney.y - 8, 26, 7);
+        ctx.fillRect(chimney.x - 14, chimney.y - 12, 30, 8);
         ctx.fillStyle = '#7a6f61';
-        ctx.fillRect(chimney.x - 9, chimney.y - 11, 19, 4);
+        ctx.fillRect(chimney.x - 10, chimney.y - 16, 21, 5);
 
-        this._drawForgeChimneyVent(ctx, { x: chimney.x + 1, y: chimney.y - 12 }, pulse);
+        this._drawForgeChimneyVent(ctx, { x: chimney.x + 1, y: chimney.y - 17 }, pulse);
     }
 
     _drawForgeChimneyVent(ctx, top, pulse) {
@@ -986,15 +1192,39 @@ export class BuildingSprite {
 
     _drawForgeMouth(ctx, hearth, flicker, pulse) {
         ctx.globalAlpha = 0.96;
-        ctx.fillStyle = 'rgba(36, 22, 16, 0.9)';
+        ctx.fillStyle = '#786d60';
+        ctx.strokeStyle = '#211711';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(hearth.x - 35, hearth.y + 12);
+        ctx.lineTo(hearth.x - 29, hearth.y - 9);
+        ctx.quadraticCurveTo(hearth.x - 17, hearth.y - 31, hearth.x + 4, hearth.y - 33);
+        ctx.quadraticCurveTo(hearth.x + 30, hearth.y - 25, hearth.x + 35, hearth.y + 9);
+        ctx.lineTo(hearth.x + 26, hearth.y + 17);
+        ctx.lineTo(hearth.x - 25, hearth.y + 20);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.globalAlpha = 0.92;
+        ctx.strokeStyle = '#aa967e';
+        ctx.lineWidth = 1;
+        for (const [dx, dy, r] of [[-24, -1, 5], [-14, -20, 6], [4, -27, 7], [23, -13, 6], [25, 8, 5], [-17, 13, 5]]) {
+            ctx.beginPath();
+            ctx.ellipse(hearth.x + dx, hearth.y + dy, r, r * 0.68, -0.2, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        ctx.globalAlpha = 0.98;
+        ctx.fillStyle = 'rgba(36, 22, 16, 0.94)';
         ctx.strokeStyle = '#2b160f';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.moveTo(hearth.x - 28, hearth.y + 4);
-        ctx.quadraticCurveTo(hearth.x - 18, hearth.y - 20, hearth.x + 2, hearth.y - 23);
-        ctx.quadraticCurveTo(hearth.x + 25, hearth.y - 16, hearth.x + 27, hearth.y + 7);
-        ctx.lineTo(hearth.x + 14, hearth.y + 13);
-        ctx.lineTo(hearth.x - 19, hearth.y + 13);
+        ctx.moveTo(hearth.x - 24, hearth.y + 6);
+        ctx.quadraticCurveTo(hearth.x - 16, hearth.y - 18, hearth.x + 3, hearth.y - 22);
+        ctx.quadraticCurveTo(hearth.x + 24, hearth.y - 16, hearth.x + 26, hearth.y + 8);
+        ctx.lineTo(hearth.x + 14, hearth.y + 14);
+        ctx.lineTo(hearth.x - 18, hearth.y + 14);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
@@ -1024,6 +1254,55 @@ export class BuildingSprite {
         ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
+
+        ctx.globalAlpha = 0.78;
+        ctx.strokeStyle = '#ffcf6a';
+        ctx.lineWidth = 1.5;
+        for (const mark of [-18, 18]) {
+            ctx.beginPath();
+            ctx.moveTo(hearth.x + mark - 3, hearth.y - 11);
+            ctx.lineTo(hearth.x + mark + 3, hearth.y - 16);
+            ctx.lineTo(hearth.x + mark + 1, hearth.y - 6);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    _drawForgeMoltenTrough(ctx, trough, pulse, flicker) {
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = '#2b211c';
+        ctx.strokeStyle = '#130d0a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(trough.x - 26, trough.y - 4);
+        ctx.lineTo(trough.x + 18, trough.y - 14);
+        ctx.lineTo(trough.x + 31, trough.y - 7);
+        ctx.lineTo(trough.x - 14, trough.y + 5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.66 + pulse * 0.24;
+        ctx.fillStyle = '#ff8a25';
+        ctx.beginPath();
+        ctx.moveTo(trough.x - 19, trough.y - 2);
+        ctx.lineTo(trough.x + 17, trough.y - 10);
+        ctx.quadraticCurveTo(trough.x + 21, trough.y - 7 - flicker * 0.4, trough.x + 27, trough.y - 5);
+        ctx.lineTo(trough.x - 10, trough.y + 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 0.9;
+        ctx.fillStyle = '#ffe071';
+        ctx.beginPath();
+        ctx.moveTo(trough.x - 9, trough.y - 2);
+        ctx.lineTo(trough.x + 12, trough.y - 7);
+        ctx.lineTo(trough.x + 18, trough.y - 4);
+        ctx.lineTo(trough.x - 3, trough.y + 1);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
     }
 
     _drawForgeYardTools(ctx, anvil, workbench, coal, pulse) {
@@ -1048,6 +1327,27 @@ export class BuildingSprite {
             ctx.lineTo(workbench.x + offset + 15, workbench.y - 2);
             ctx.stroke();
         }
+
+        ctx.globalAlpha = 0.84;
+        ctx.fillStyle = '#9f7650';
+        ctx.strokeStyle = '#25170f';
+        ctx.lineWidth = 1;
+        const bellows = { x: workbench.x + 25, y: workbench.y - 18 };
+        ctx.beginPath();
+        ctx.moveTo(bellows.x - 13, bellows.y + 3);
+        ctx.quadraticCurveTo(bellows.x - 2, bellows.y - 9, bellows.x + 15, bellows.y - 4);
+        ctx.lineTo(bellows.x + 12, bellows.y + 7);
+        ctx.quadraticCurveTo(bellows.x - 3, bellows.y + 11, bellows.x - 13, bellows.y + 3);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#d5b06e';
+        ctx.beginPath();
+        ctx.moveTo(bellows.x + 13, bellows.y - 3);
+        ctx.lineTo(bellows.x + 23, bellows.y - 2);
+        ctx.lineTo(bellows.x + 14, bellows.y + 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
 
         this._drawForgeAnvil(ctx, anvil, pulse);
 

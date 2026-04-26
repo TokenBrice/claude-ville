@@ -386,14 +386,30 @@ export class SceneryEngine {
                     const noise = this.tileNoise(tx + 251, ty + 137);
                     const districtBoost = this._districtBias(tx, ty, 'treeBoost');
                     const shorelineBoost = this._shorelineBias(tx, ty, 'treeBoost');
-                    const clearing = this._clearingBias(tx, ty) + this._nearPathNegativeSpace(tx, ty, pathTiles, bridgeTiles);
+                    const authoredClearing = this._clearingBias(tx, ty);
+                    if (authoredClearing >= 0.62) continue;
+                    const clearing = authoredClearing + this._nearPathNegativeSpace(tx, ty, pathTiles, bridgeTiles);
                     const density = Math.min(0.78, Math.max(0.05, cluster.density + districtBoost + shorelineBoost - clearing));
                     if (noise > 1 - density) {
                         const jx = (this.tileNoise(tx + 11, ty + 3) - 0.5) * 0.6;
                         const jy = (this.tileNoise(tx + 5, ty + 19) - 0.5) * 0.6;
-                        const variant = Math.floor(this.tileNoise(tx + 41, ty + 91) * 3);
-                        const scale = 0.85 + this.tileNoise(tx + 17, ty + 71) * 0.4;
-                        this.treeProps.push({ tileX: tx + 0.5 + jx, tileY: ty + 0.5 + jy, variant, scale });
+                        const variantNoise = this.tileNoise(tx + 41, ty + 91);
+                        const northernCanopy = ty <= 13;
+                        const variant = northernCanopy
+                            ? (variantNoise > 0.72 ? 0 : 1)
+                            : Math.floor(variantNoise * 3);
+                        const scaleNoise = this.tileNoise(tx + 17, ty + 71);
+                        const scale = northernCanopy
+                            ? 1.02 + scaleNoise * 0.34
+                            : 0.85 + scaleNoise * 0.4;
+                        this.treeProps.push({
+                            tileX: tx + 0.5 + jx,
+                            tileY: ty + 0.5 + jy,
+                            variant,
+                            scale,
+                            canopy: northernCanopy,
+                            seed: variantNoise,
+                        });
                     }
                 }
             }

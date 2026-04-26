@@ -140,6 +140,7 @@ export class AssetManager {
     }
 
     _pathFor(entry) {
+        if (entry.assetPath) return entry.assetPath;
         // Deterministic path mapping by id prefix.
         if (entry.id.startsWith('agent.')) return `assets/sprites/characters/${entry.id}/sheet.png`;
         if (entry.id.startsWith('overlay.accessory.')) return `assets/sprites/overlays/${entry.id}.png`;

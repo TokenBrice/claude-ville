@@ -6,9 +6,9 @@ export const TOWN_DISTRICTS = Object.freeze([
     { id: 'civic', label: 'City Center', center: [20, 22], radius: 6 },
     { id: 'knowledge', label: 'Scholars Ridge', center: [18, 18], radius: 10 },
     { id: 'workshop', label: 'Forge Row', center: [31, 29], radius: 5 },
-    { id: 'resource', label: 'Mine Yard', center: [18, 29], radius: 4 },
-    { id: 'arcane', label: 'Portal Periphery', center: [10, 28], radius: 5 },
-    { id: 'harbor', label: 'Harbor Quay', center: [37, 20], radius: 7 },
+    { id: 'resource', label: 'Mine Yard', center: [18, 33], radius: 4 },
+    { id: 'arcane', label: 'Portal Periphery', center: [10, 31], radius: 5 },
+    { id: 'harbor', label: 'Harbor Quay', center: [36, 18], radius: 8 },
 ]);
 
 export const TOWN_ROAD_ROUTES = Object.freeze([
@@ -16,25 +16,25 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'north-bank-promenade',
         material: 'avenue',
         width: 1,
-        points: [[12, 21], [20, 22], [28, 18], [33, 19], [38, 19]],
+        points: [[12, 21], [20, 22], [28, 18], [33, 17], [35, 15]],
     },
     {
         id: 'production-row',
         material: 'dirt',
         width: 1,
-        points: [[12, 30], [18, 30], [26, 30], [30, 30]],
+        points: [[12, 33], [18, 34], [26, 32], [30, 30]],
     },
     {
         id: 'portal-mine-bridge',
         material: 'avenue',
         width: 1,
-        points: [[12, 21], [14, 25], [12, 28], [12, 30]],
+        points: [[12, 21], [14, 25], [12, 28], [12, 33]],
     },
     {
         id: 'command-task-bridge',
         material: 'avenue',
         width: 1,
-        points: [[21, 22], [22, 25], [26, 28], [26, 30]],
+        points: [[21, 22], [22, 25], [26, 30], [26, 32]],
     },
     {
         id: 'archive-walk',
@@ -46,12 +46,12 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'lighthouse-quay',
         material: 'dock',
         width: 1,
-        points: [[33, 19], [36, 19], [38, 19]],
+        points: [[33, 19], [34, 17], [35, 15]],
     },
     {
         id: 'harbor-berths',
         material: 'dock',
         width: 1,
-        points: [[35, 21], [37, 22], [39, 21], [39, 18], [38, 17]],
+        points: [[33, 21], [35, 22], [37, 21], [39, 21], [39, 18], [38, 17]],
     },
 ]);

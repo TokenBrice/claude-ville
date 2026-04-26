@@ -24,6 +24,7 @@ const ALPHA_THRESHOLD = 16;
 const MIN_NORMALIZED_WALK_DELTA = 32;
 
 function pathFor(entry) {
+    if (entry.assetPath) return String(entry.assetPath).replace(/^assets\/sprites\//, '');
     if (entry.id.startsWith('agent.')) return `characters/${entry.id}/sheet.png`;
     if (entry.id.startsWith('overlay.')) return `overlays/${entry.id}.png`;
     if (entry.id.startsWith('building.')) return `buildings/${entry.id}/base.png`;

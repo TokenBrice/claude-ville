@@ -13,6 +13,7 @@ const BUILDING_COLORS = {
     archive: '#d8b96d',
     portal: '#76d8ff',
     watchtower: '#ffd36a',
+    harbor: '#d49a54',
 };
 
 export class Minimap {

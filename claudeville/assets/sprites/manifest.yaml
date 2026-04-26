@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-26-visual-refresh-harbor-ships-v1"
+  assetVersion: "2026-04-27-epic-mine-v3"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -258,6 +258,21 @@ buildings:
     lightRadius: 96
     lightOverlay: 'atmosphere.light.fire-glow'
 
+  # ── STANDARD: Harbor Master (commit ships / push departures) ──
+  - id: building.harbor
+    assetPath: assets/sprites/props/prop.harborPier.png
+    tool: isometric_tile
+    prompt: "harbor master pier office, weathered dock planks, small quay cabin, signal flags, mooring rings, cargo ledger desk, isometric"
+    size: 64
+    displaySize: 96
+    anchor: [48, 84]
+    emitters:
+      torch: [48, 42]
+    lightSource: [48, 42]
+    lightColor: '#ffd37a'
+    lightRadius: 58
+    lightOverlay: 'atmosphere.light.lantern-glow'
+
   # ── HERO: Research Observatory ──
   - id: building.observatory
     composeGrid: [3, 2]
@@ -312,7 +327,7 @@ buildings:
   # ── STANDARD: Code Forge ──
   - id: building.forge
     tool: isometric_tile
-    prompt: "epic code forge smithy, glowing forge mouth with molten amber light, iron chimney stack billowing smoke, rune-inscribed anvil visible through arched doorway, isometric"
+    prompt: "epic fantasy code forge smithy, oversized stone furnace arch, orange tiled timber canopy roof, tall soot-black chimney with iron crown, molten trough, rune-inscribed anvil, bellows and tool racks, amber firelight, heroic isometric RPG landmark"
     size: 64
     displaySize: 112
     emitters:
@@ -323,12 +338,12 @@ buildings:
   # ── STANDARD: Token Mine ──
   - id: building.mine
     tool: isometric_tile
-    prompt: "epic token mine entrance, reinforced timber pit-head frame, cart tracks leading inside, lantern hung at mouth, veins of glowing ore in stone, isometric"
+    prompt: "large epic old-school RPG token mine landmark, craggy stone mountain entrance, oversized heavy timber pit-head frame and pulley lift, dark arched cave mouth glowing with amber torchlight, mine cart rails leading out, blue magical ore veins and crystals, lanterns, rubble, moss, bold heroic isometric fantasy silhouette"
     size: 64
-    displaySize: 112
+    displaySize: 160
     emitters:
-      sparkle: [60, 70]
-      mining: [80, 92]
+      sparkle: [84, 94]
+      mining: [102, 124]
 
   # ── STANDARD: Task Board ──
   - id: building.taskboard
@@ -340,9 +355,17 @@ buildings:
   # ── STANDARD: Lore Archive ──
   - id: building.archive
     tool: isometric_tile
-    prompt: "epic lore archive library, tall narrow windows of stained glass, shelves of tomes visible inside, carved stone lintel with open book motif, isometric"
-    size: 64
-    displaySize: 112
+    prompt: "epic old-school RPG grand lore archive, tall stone-walled library chamber with steep copper roof, arched stained-glass window, visible bookshelves, open-book crest, stair and desk details, glowing green magic lamps, heroic isometric fantasy landmark"
+    splitForOcclusion: true
+    horizonY: 132
+    emitters:
+      sparkle: [154, 82]
+      sparkle2: [61, 149]
+      sparkle3: [246, 141]
+    lightSource: [154, 96]
+    lightColor: '#b3d68c'
+    lightRadius: 96
+    lightOverlay: 'atmosphere.light.lantern-glow'
 
 # ─── PROPS ───────────────────────────────────────────────────────────────────
 # Prop ids match the camelCase `type` field in IsometricRenderer.js

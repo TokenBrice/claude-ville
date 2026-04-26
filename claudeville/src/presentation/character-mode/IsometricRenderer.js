@@ -1,6 +1,7 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 import { TOWN_ROAD_ROUTES } from '../../config/townPlan.js';
+import { FOREST_FLOOR_REGIONS } from '../../config/scenery.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
@@ -46,21 +47,20 @@ const COMMAND_CENTER_DECORATION = [
     { type: 'guardpost', localX: 2.5, localY: 2.5 },
 ];
 const AMBIENT_GROUND_PROPS = [
-    // Harbor/lighthouse: authored dock props make the harbor read as a
-    // separate commit-ship place while the lighthouse keeps Git routing.
-    { tileX: 35.0, tileY: 21.3, type: 'harborPier' },
+    // Harbor/lighthouse: authored dock props keep commit ships tied to the
+    // Harbor Master while the lighthouse reads as a separate sea beacon.
     { tileX: 34.2, tileY: 21.3, type: 'harborCrates' },
     { tileX: 37.2, tileY: 21.8, type: 'harborCrates' },
-    { tileX: 34.0, tileY: 19.0, type: 'harborCrane' },
+    { tileX: 33.2, tileY: 20.6, type: 'harborCrane' },
     { tileX: 38.6, tileY: 20.6, type: 'harborCrane' },
 
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
     { tileX: 29.4, tileY: 30.7, type: 'oreCart' },
     { tileX: 30.4, tileY: 30.6, type: 'lantern' },
-    { tileX: 18.3, tileY: 30.7, type: 'oreCart' },
-    { tileX: 12.0, tileY: 30.8, type: 'lantern' },
-    { tileX: 20.5, tileY: 30.4, type: 'runestone' },
-    { tileX: 26.5, tileY: 30.6, type: 'noticePillar' },
+    { tileX: 18.3, tileY: 34.7, type: 'oreCart' },
+    { tileX: 12.0, tileY: 33.8, type: 'lantern' },
+    { tileX: 20.5, tileY: 34.4, type: 'runestone' },
+    { tileX: 26.5, tileY: 32.6, type: 'noticePillar' },
 
     // Civic core: utility props around the square, not scattered through the woods.
     { tileX: 20.3, tileY: 22.4, type: 'well' },
@@ -125,6 +125,7 @@ export class IsometricRenderer {
         this.terrainCache = null;
         this.terrainCacheBounds = null;
         this.terrainCacheKey = '';
+        this.fantasyForestTreeCache = new Map();
         this.terrainSeed = [];
         this.waterFrame = 0;
         this.motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
@@ -195,6 +196,13 @@ export class IsometricRenderer {
         // Trees (Y-sorted props)
         this.scenery.generateTrees(this.pathTiles, this.bridgeTiles);
         this.treePropSprites = this.scenery.getTreeProps().map((t) => {
+            if (t.canopy) {
+                return new StaticPropSprite({
+                    tileX: t.tileX,
+                    tileY: t.tileY,
+                    drawFn: (ctx, x, y) => this._drawFantasyForestTree(ctx, x, y, t),
+                });
+            }
             // variant 0 → oak, 1 → pine, 2 → willow; size driven by scale threshold.
             const species = ['oak', 'pine', 'willow'][(t.variant ?? 0) % 3];
             const size = (t.scale ?? 1) >= 1.0 ? 'large' : 'small';
@@ -529,11 +537,11 @@ export class IsometricRenderer {
             { tileX: 33.0, tileY: 30.2, particleType: 'sparkle', chance: 0.016 },
             { tileX: 8.5, tileY: 12.0, particleType: 'sparkle', chance: 0.01 },
             { tileX: 34.0, tileY: 19.5, particleType: 'smoke', chance: 0.012 },
-            { tileX: 18.4, tileY: 30.3, particleType: 'mineDust', chance: 0.016 },
-            { tileX: 18.4, tileY: 30.0, particleType: 'firefly', chance: 0.014 },
+            { tileX: 18.4, tileY: 34.3, particleType: 'mineDust', chance: 0.016 },
+            { tileX: 18.4, tileY: 34.0, particleType: 'firefly', chance: 0.014 },
             { tileX: 32.8, tileY: 30.2, particleType: 'forgeEmber', chance: 0.02 },
-            { tileX: 10.8, tileY: 29.2, particleType: 'portalRune', chance: 0.022 },
-            { tileX: 26.4, tileY: 30.1, particleType: 'questPing', chance: 0.014 },
+            { tileX: 10.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
+            { tileX: 26.4, tileY: 32.1, particleType: 'questPing', chance: 0.014 },
             { tileX: 28.3, tileY: 17.3, particleType: 'archiveMote', chance: 0.022 },
             { tileX: 36.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
@@ -671,6 +679,7 @@ export class IsometricRenderer {
         this._spritesNeedSort = true;
         this.agentSprites.clear();
         this.particleSystem.clear();
+        this.fantasyForestTreeCache.clear();
     }
 
     _markSpritesDirty() {
@@ -2130,9 +2139,16 @@ export class IsometricRenderer {
             fill = '#2f2818';
             alpha = 0.055;
         } else {
-            const broad = this._tileNoise(Math.floor(tileX / 5) + 97, Math.floor(tileY / 5) + 131);
-            fill = broad > 0.68 ? '#263f24' : broad < 0.26 ? '#3c552d' : '#30482a';
-            alpha = 0.10;
+            const forestFloor = this._forestFloorAt(tileX, tileY);
+            if (forestFloor) {
+                const mix = this._tileNoise(tileX + 709, tileY + 431);
+                fill = mix > 0.56 ? forestFloor.accent : forestFloor.base;
+                alpha = 0.18 + forestFloor.strength * 0.20;
+            } else {
+                const broad = this._tileNoise(Math.floor(tileX / 5) + 97, Math.floor(tileY / 5) + 131);
+                fill = broad > 0.68 ? '#263f24' : broad < 0.26 ? '#3c552d' : '#30482a';
+                alpha = 0.10;
+            }
         }
 
         if (!fill || alpha <= 0) return;
@@ -2152,6 +2168,11 @@ export class IsometricRenderer {
             ctx.fill();
         }
 
+        const forestFloor = allowRegionTint ? this._forestFloorAt(tileX, tileY) : null;
+        if (forestFloor) {
+            this._drawForestFloorTexture(ctx, screenX, screenY, seed, forestFloor);
+        }
+
         if (this.waterTiles.has(key) && this.motionScale && seed > 0.72) {
             const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
             ctx.strokeStyle = `rgba(132, 211, 240, ${shimmer})`;
@@ -2169,6 +2190,188 @@ export class IsometricRenderer {
             this._drawPathInsetShadow(ctx, screenX, screenY, seed, tileX, tileY);
         }
         ctx.restore();
+    }
+
+    _forestFloorAt(tileX, tileY) {
+        let strongest = null;
+        for (const region of FOREST_FLOOR_REGIONS) {
+            const dx = (tileX + 0.5 - region.centerX) / region.radiusX;
+            const dy = (tileY + 0.5 - region.centerY) / region.radiusY;
+            const distance = dx * dx + dy * dy;
+            if (distance > 1) continue;
+            const edge = 1 - distance;
+            const ragged = (this._tileNoise(tileX + 593, tileY + 277) - 0.5) * 0.18;
+            const strength = Math.max(0, Math.min(1, (edge + ragged) * region.strength));
+            if (strength <= 0.05) continue;
+            if (!strongest || strength > strongest.strength) {
+                strongest = {
+                    base: region.base,
+                    accent: region.accent,
+                    strength,
+                };
+            }
+        }
+        return strongest;
+    }
+
+    _drawForestFloorTexture(ctx, screenX, screenY, seed, forestFloor) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.fillStyle = `rgba(8, 24, 12, ${0.045 + forestFloor.strength * 0.095})`;
+        this._drawDiamond(ctx, screenX, screenY);
+        ctx.fill();
+
+        if (seed > 0.34) {
+            ctx.globalCompositeOperation = 'screen';
+            ctx.lineCap = 'round';
+            ctx.lineWidth = 1;
+            const alpha = 0.035 + forestFloor.strength * 0.07;
+            ctx.strokeStyle = `rgba(160, 215, 118, ${alpha})`;
+            ctx.beginPath();
+            ctx.moveTo(screenX - 17 + seed * 5, screenY - 3);
+            ctx.quadraticCurveTo(screenX - 5, screenY - 9 - seed * 2, screenX + 14 - seed * 3, screenY - 6);
+            ctx.stroke();
+        }
+
+        if (seed > 0.78) {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.fillStyle = `rgba(231, 211, 126, ${0.08 + forestFloor.strength * 0.06})`;
+            ctx.fillRect(Math.round(screenX - 2), Math.round(screenY - 9), 2, 2);
+            ctx.fillStyle = `rgba(123, 190, 92, ${0.10 + forestFloor.strength * 0.08})`;
+            ctx.fillRect(Math.round(screenX + 7), Math.round(screenY - 4), 2, 1);
+        }
+        ctx.restore();
+    }
+
+    _drawFantasyForestTree(ctx, x, y, tree) {
+        const cached = this._getFantasyForestTreeCache(tree);
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+        ctx.drawImage(
+            cached.canvas,
+            Math.round(x - cached.anchorX),
+            Math.round(y - cached.anchorY)
+        );
+        ctx.restore();
+    }
+
+    _getFantasyForestTreeCache(tree) {
+        const scaleBucket = Math.round((tree.scale ?? 1) * 100);
+        const seedBucket = Math.round((tree.seed ?? 0.5) * 100);
+        const variant = tree.variant ?? 1;
+        const key = `${variant}:${scaleBucket}:${seedBucket}`;
+        const existing = this.fantasyForestTreeCache.get(key);
+        if (existing) return existing;
+
+        const scale = scaleBucket / 100;
+        const seed = seedBucket / 100;
+        const baseWidth = variant === 1 ? 72 : 92;
+        const topHeight = variant === 1 ? 82 : 84;
+        const bottomPad = 16;
+        const padding = 8;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.ceil(baseWidth * scale) + padding * 2;
+        canvas.height = Math.ceil((topHeight + bottomPad) * scale) + padding * 2;
+        const anchorX = Math.round(canvas.width / 2);
+        const anchorY = Math.round(topHeight * scale) + padding;
+        const cacheCtx = canvas.getContext('2d');
+        SpriteRenderer.disableSmoothing(cacheCtx);
+        cacheCtx.translate(anchorX, anchorY);
+        cacheCtx.scale(scale, scale);
+        this._drawFantasyForestTreeBody(cacheCtx, seed, variant);
+
+        const cached = { canvas, anchorX, anchorY };
+        this.fantasyForestTreeCache.set(key, cached);
+        return cached;
+    }
+
+    _drawFantasyForestTreeBody(ctx, seed, variant) {
+        ctx.fillStyle = `rgba(6, 15, 8, ${0.24 + seed * 0.10})`;
+        ctx.beginPath();
+        ctx.ellipse(0, 2, 20, 7, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (variant === 1) {
+            this._drawPineSilhouette(ctx, seed);
+        } else {
+            this._drawOakSilhouette(ctx, seed);
+        }
+    }
+
+    _drawPineSilhouette(ctx, seed) {
+        const trunkHeight = 30;
+        ctx.fillStyle = '#4a2919';
+        ctx.fillRect(-4, -trunkHeight, 8, trunkHeight + 5);
+        ctx.fillStyle = '#24130d';
+        ctx.fillRect(-4, -trunkHeight, 2, trunkHeight + 4);
+
+        const layers = [
+            { y: -70, w: 22, h: 22, color: seed > 0.45 ? '#3f8b42' : '#34783b' },
+            { y: -54, w: 30, h: 25, color: seed > 0.50 ? '#2f7437' : '#286832' },
+            { y: -36, w: 38, h: 27, color: seed > 0.35 ? '#255d31' : '#1f542e' },
+            { y: -17, w: 45, h: 25, color: '#1b4528' },
+        ];
+
+        for (const layer of layers) {
+            ctx.fillStyle = '#102216';
+            this._tracePineLayer(ctx, layer.y + 3, layer.w + 3, layer.h);
+            ctx.fill();
+            ctx.fillStyle = layer.color;
+            this._tracePineLayer(ctx, layer.y, layer.w, layer.h);
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(158, 214, 91, 0.18)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-layer.w * 0.34, layer.y + layer.h * 0.34);
+            ctx.lineTo(0, layer.y + 3);
+            ctx.lineTo(layer.w * 0.28, layer.y + layer.h * 0.30);
+            ctx.stroke();
+        }
+    }
+
+    _tracePineLayer(ctx, y, width, height) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width * 0.52, y + height);
+        ctx.lineTo(width * 0.18, y + height - 4);
+        ctx.lineTo(width * 0.30, y + height + 4);
+        ctx.lineTo(0, y + height - 2);
+        ctx.lineTo(-width * 0.30, y + height + 4);
+        ctx.lineTo(-width * 0.18, y + height - 4);
+        ctx.lineTo(-width * 0.52, y + height);
+        ctx.closePath();
+    }
+
+    _drawOakSilhouette(ctx, seed) {
+        ctx.fillStyle = '#55311d';
+        ctx.fillRect(-5, -31, 10, 36);
+        ctx.fillStyle = '#2d170e';
+        ctx.fillRect(-5, -30, 3, 33);
+
+        const crowns = [
+            { x: -17, y: -48, r: 18, color: '#2e6d34' },
+            { x: 3, y: -57, r: 22, color: seed > 0.45 ? '#438342' : '#367a3b' },
+            { x: 20, y: -43, r: 17, color: '#285f32' },
+            { x: -3, y: -34, r: 22, color: '#24582f' },
+        ];
+
+        for (const crown of crowns) {
+            ctx.fillStyle = '#102214';
+            ctx.beginPath();
+            ctx.ellipse(crown.x, crown.y + 4, crown.r * 1.05, crown.r * 0.82, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = crown.color;
+            ctx.beginPath();
+            ctx.ellipse(crown.x, crown.y, crown.r, crown.r * 0.78, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.strokeStyle = 'rgba(180, 222, 99, 0.16)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(-14, -56);
+        ctx.quadraticCurveTo(1, -67, 16, -55);
+        ctx.stroke();
     }
 
     _drawOpenSeaGulls(ctx) {
