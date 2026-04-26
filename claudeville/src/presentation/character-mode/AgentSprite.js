@@ -4,13 +4,16 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
-import { SpriteSheet, dirFromVelocity } from './SpriteSheet.js';
+import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
 
 // Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
 const SPRITE_HIT_TOP = -72;
 const SPRITE_HIT_BOTTOM = 24;
+const WALK_PIXELS_PER_FRAME = 7.5;
+const DIRECTION_HOLD_MS = 70;
+const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
 const STATUS_VISUALS = {
     [AgentStatus.WORKING]: {
         color: THEME.working,
@@ -95,6 +98,9 @@ export class AgentSprite {
         this.animState = 'idle';
         this.frame = 0;
         this.frameTimer = 0;
+        this._strideDistance = 0;
+        this._candidateDirection = null;
+        this._candidateDirectionMs = 0;
         this.spriteCanvas = null;
         this.spriteSheet = null;     // cached SpriteSheet wrapper, set on first draw
         this._spriteProfileKey = '';
@@ -235,6 +241,7 @@ export class AgentSprite {
         // Handle chatting state
         if (this.chatting) {
             this.chatBubbleAnim += 0.06 * frameScale;
+            this._advanceIdleAnimation(dt);
             return; // Do not move while chatting
         }
 
@@ -247,7 +254,7 @@ export class AgentSprite {
                 this.chatting = true;
                 this.chatBubbleAnim = 0;
                 this.moving = false;
-                this.walkFrame = 0;
+                this._resetWalkCycle();
                 // Derive facing direction toward chat partner.
                 const dir = dirFromVelocity(cpDx, cpDy);
                 if (dir != null) this.direction = dir;
@@ -257,7 +264,7 @@ export class AgentSprite {
                     this.chatPartner.chatting = true;
                     this.chatPartner.chatBubbleAnim = 0;
                     this.chatPartner.moving = false;
-                    this.chatPartner.walkFrame = 0;
+                    this.chatPartner._resetWalkCycle();
                     // Partner faces back.
                     const partnerDir = dirFromVelocity(-cpDx, -cpDy);
                     if (partnerDir != null) this.chatPartner.direction = partnerDir;
@@ -284,10 +291,12 @@ export class AgentSprite {
             if (this.waitTimer <= 0) {
                 this._pickTarget();
             }
+            this._advanceIdleAnimation(dt);
             return;
         }
 
         if (!this.moving) {
+            this._advanceIdleAnimation(dt);
             this._pickTarget();
             return;
         }
@@ -301,6 +310,7 @@ export class AgentSprite {
         if (dist < step) {
             this.x = this.targetX;
             this.y = this.targetY;
+            this._advanceWalkAnimation(dist, dx, dy, dt, particleSystem);
             if (this.waypoints && this.waypoints.length > 0) {
                 this.waypoints.shift();
                 if (this.waypoints.length > 0) {
@@ -311,31 +321,85 @@ export class AgentSprite {
             }
             this.moving = false;
             this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
-            this.walkFrame = 0;
+            this._resetWalkCycle();
             return;
         }
 
         this.x += (dx / dist) * step;
         this.y += (dy / dist) * step;
-        this.walkFrame += 0.15 * frameScale;
+        this._advanceWalkAnimation(step, dx, dy, dt, particleSystem);
+    }
 
-        if (this.motionScale > 0 && particleSystem && this.agent.status === AgentStatus.WORKING && Math.random() < 0.3 * frameScale) {
-            particleSystem.spawn('footstep', this.x, this.y + 16, 1);
+    _advanceWalkAnimation(distance, dx, dy, dt, particleSystem) {
+        this.animState = this.motionScale > 0 ? 'walk' : 'idle';
+        this._updateFacingDirection(dx, dy, dt);
+
+        if (this.motionScale <= 0) {
+            this.frame = 0;
+            this.frameTimer = 0;
+            this.walkFrame = 0;
+            return;
         }
 
-        // Derive direction from velocity; hold last direction when stationary.
-        const dir = dirFromVelocity(dx, dy);
-        if (dir != null) this.direction = dir;
+        const previousFrame = this.frame % WALK_FRAMES;
+        this._strideDistance += Math.max(0, distance);
+        this.frame = Math.floor(this._strideDistance / WALK_PIXELS_PER_FRAME) % WALK_FRAMES;
+        this.walkFrame = this.frame;
+        this.frameTimer = 0;
 
-        // Animation state and frame tick.
-        this.animState = this.moving ? 'walk' : 'idle';
+        if (
+            particleSystem &&
+            this.agent.status === AgentStatus.WORKING &&
+            previousFrame !== this.frame &&
+            FOOTFALL_FRAMES.has(this.frame)
+        ) {
+            const footSide = this.frame === 0 ? -5 : 5;
+            particleSystem.spawn('footstep', this.x + footSide, this.y + 7, 1);
+        }
+    }
+
+    _advanceIdleAnimation(dt) {
+        this.animState = 'idle';
+        if (this.motionScale <= 0) {
+            this.frame = 0;
+            this.frameTimer = 0;
+            return;
+        }
         this.frameTimer += dt;
-        const fps = this.animState === 'walk' ? 8 : 2;
-        const tick = 1000 / fps;
+        const tick = 500;
         while (this.frameTimer > tick) {
-            this.frame++;
+            this.frame = (this.frame + 1) % IDLE_FRAMES;
             this.frameTimer -= tick;
         }
+    }
+
+    _updateFacingDirection(dx, dy, dt) {
+        const dir = dirFromVelocity(dx, dy);
+        if (dir == null || dir === this.direction) {
+            this._candidateDirection = null;
+            this._candidateDirectionMs = 0;
+            return;
+        }
+        if (this._candidateDirection !== dir) {
+            this._candidateDirection = dir;
+            this._candidateDirectionMs = 0;
+        }
+        this._candidateDirectionMs += dt;
+        if (this._candidateDirectionMs >= DIRECTION_HOLD_MS) {
+            this.direction = dir;
+            this._candidateDirection = null;
+            this._candidateDirectionMs = 0;
+        }
+    }
+
+    _resetWalkCycle() {
+        this.walkFrame = 0;
+        this._strideDistance = 0;
+        this._candidateDirection = null;
+        this._candidateDirectionMs = 0;
+        this.frameTimer = 0;
+        this.frame = 0;
+        this.animState = 'idle';
     }
 
     /** Start chat (called from IsometricRenderer) */
@@ -380,7 +444,7 @@ export class AgentSprite {
         if (!this.spriteCanvas || !this.spriteSheet) return;
 
         // Ensure animState reflects current movement (idle when not moving).
-        this.animState = this.moving ? 'walk' : 'idle';
+        this.animState = this.moving && this.motionScale > 0 ? 'walk' : 'idle';
 
         // Strong ground language keeps agents readable against dense pixel-art terrain.
         this._drawGrounding(ctx);
@@ -478,12 +542,18 @@ export class AgentSprite {
         const visual = this._statusVisual();
         const trim = this._providerTrimColor();
         const pulse = 0.75 + 0.25 * Math.sin(this.statusAnim * 2.2);
+        const walking = this.animState === 'walk' && this.motionScale > 0;
+        const strideCompression = walking
+            ? Math.abs(Math.sin((this.frame % WALK_FRAMES) / WALK_FRAMES * Math.PI * 2))
+            : 0;
+        const shadowRadiusX = 20 + strideCompression * 1.6;
+        const shadowRadiusY = 7 - strideCompression * 0.9;
         ctx.save();
         ctx.translate(Math.round(this.x), Math.round(this.y));
 
         ctx.fillStyle = 'rgba(5, 8, 12, 0.56)';
         ctx.beginPath();
-        ctx.ellipse(0, 6, 20, 7, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 6, shadowRadiusX, shadowRadiusY, 0, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.fillStyle = 'rgba(246, 218, 130, 0.10)';
