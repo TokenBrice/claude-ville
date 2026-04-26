@@ -21,6 +21,7 @@ const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
 const MAX_HEAD_BYTES = 64 * 1024;
 const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
+const GIT_EVENT_SCAN_LINES = 5000;
 
 function readHeadLines(filePath, count) {
   const fd = fs.openSync(filePath, 'r');
@@ -362,7 +363,7 @@ function getTokenUsage(filePath) {
 function getGitEvents(filePath, context) {
   const events = [];
   try {
-    const lines = readLines(filePath, { from: 'end', count: 500 });
+    const lines = readLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
     const entries = parseJsonLines(lines);
 
     entries.forEach((entry, entryIndex) => {

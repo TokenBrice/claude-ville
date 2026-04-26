@@ -12,6 +12,7 @@ const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
 const TEAMS_DIR = path.join(CLAUDE_DIR, 'teams');
 const TASKS_DIR = path.join(CLAUDE_DIR, 'tasks');
 const SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions');
+const GIT_EVENT_SCAN_LINES = 5000;
 
 // ─── Utilities ─────────────────────────────────────────────
 
@@ -269,7 +270,7 @@ function getTokenUsage(sessionFilePath) {
 function getGitEvents(sessionFilePath, context) {
   const events = [];
   try {
-    const lines = readLastLines(sessionFilePath, 500);
+    const lines = readLastLines(sessionFilePath, GIT_EVENT_SCAN_LINES);
     const entries = parseJsonLines(lines);
 
     entries.forEach((entry, entryIndex) => {

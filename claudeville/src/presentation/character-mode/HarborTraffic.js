@@ -5,6 +5,7 @@ const MAX_VISIBLE_SHIPS = 8;
 const DEPARTURE_MS = 14000;
 const EXIT_HOLD_MS = 1200;
 const HISTORICAL_EVENT_GRACE_MS = 5000;
+const MAX_LABEL_CHARS = 30;
 
 const BERTHS = [
     { tileX: 38.2, tileY: 21.3 },
@@ -18,10 +19,30 @@ const BERTHS = [
 ];
 
 const SEA_LANES = [
-    { tileX: 43.5, tileY: 13.2 },
-    { tileX: 45.0, tileY: 15.2 },
-    { tileX: 44.2, tileY: 18.7 },
-    { tileX: 42.8, tileY: 21.6 },
+    [
+        { tileX: 38.6, tileY: 20.7 },
+        { tileX: 39.0, tileY: 18.1 },
+        { tileX: 39.0, tileY: 15.4 },
+        { tileX: 38.4, tileY: 12.8 },
+    ],
+    [
+        { tileX: 39.0, tileY: 19.6 },
+        { tileX: 38.8, tileY: 17.3 },
+        { tileX: 38.4, tileY: 14.7 },
+        { tileX: 37.9, tileY: 12.3 },
+    ],
+    [
+        { tileX: 38.2, tileY: 19.1 },
+        { tileX: 38.8, tileY: 16.8 },
+        { tileX: 38.3, tileY: 14.2 },
+        { tileX: 37.7, tileY: 11.9 },
+    ],
+    [
+        { tileX: 37.8, tileY: 20.4 },
+        { tileX: 38.7, tileY: 18.2 },
+        { tileX: 39.0, tileY: 15.8 },
+        { tileX: 38.3, tileY: 13.3 },
+    ],
 ];
 
 function toWorld(tileX, tileY) {
@@ -48,6 +69,43 @@ function stableHash(input) {
         hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
     }
     return Math.abs(hash);
+}
+
+function shortenLabel(value, maxChars = MAX_LABEL_CHARS) {
+    const text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    if (text.length <= maxChars) return text;
+    return `${text.slice(0, Math.max(1, maxChars - 1))}…`;
+}
+
+function stripShellQuotes(value = '') {
+    const text = String(value).trim();
+    if (text.length >= 2) {
+        const first = text[0];
+        const last = text[text.length - 1];
+        if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
+            return text.slice(1, -1);
+        }
+    }
+    return text;
+}
+
+function commitMessageFromCommand(command) {
+    const text = String(command || '');
+    const match = text.match(/(?:^|\s)(?:-m|--message)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/);
+    if (!match) return '';
+    return stripShellQuotes(match[1] || match[2] || match[3] || '');
+}
+
+function eventLabel(event, type, sha) {
+    const explicit = event.label || event.message || event.subject || event.title || '';
+    if (explicit) return shortenLabel(explicit);
+    if (type === 'commit') {
+        const commandLabel = commitMessageFromCommand(event.command);
+        if (commandLabel) return shortenLabel(commandLabel);
+    }
+    if (sha) return shortenLabel(sha.slice(0, 10));
+    return shortenLabel(event.commandHash || event.id || type);
 }
 
 function cloneState(previous = {}) {
@@ -79,6 +137,39 @@ function latestPushTimesByProject(events) {
     return latest;
 }
 
+function pointAlongPath(points, progress) {
+    if (!Array.isArray(points) || points.length === 0) return { x: 0, y: 0 };
+    if (points.length === 1) return points[0];
+
+    const lengths = [];
+    let total = 0;
+    for (let i = 1; i < points.length; i++) {
+        const a = points[i - 1];
+        const b = points[i];
+        const length = Math.hypot(b.x - a.x, b.y - a.y);
+        lengths.push(length);
+        total += length;
+    }
+    if (total <= 0) return points[points.length - 1];
+
+    let remaining = Math.max(0, Math.min(1, progress)) * total;
+    for (let i = 1; i < points.length; i++) {
+        const length = lengths[i - 1];
+        if (remaining <= length || i === points.length - 1) {
+            const a = points[i - 1];
+            const b = points[i];
+            const t = length <= 0 ? 1 : remaining / length;
+            return {
+                x: a.x + (b.x - a.x) * t,
+                y: a.y + (b.y - a.y) * t,
+            };
+        }
+        remaining -= length;
+    }
+
+    return points[points.length - 1];
+}
+
 function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
     const latestPush = latestPushTimes.get(event.project) || 0;
     if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
@@ -95,6 +186,7 @@ export function snapshotHarborTrafficState(state) {
                 id: ship.id,
                 project: ship.project,
                 sha: ship.sha || '',
+                label: ship.label || '',
                 status: ship.status,
                 berthIndex: ship.berthIndex,
                 laneIndex: ship.laneIndex,
@@ -147,7 +239,7 @@ export function normalizeGitEvent(event, agent = {}, index = 0) {
         project: String(project),
         sha: sha ? String(sha) : '',
         timestamp,
-        label: event.label || event.message || event.subject || '',
+        label: eventLabel(event, type, sha),
     };
 }
 
@@ -193,6 +285,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 id: event.id,
                 project: event.project,
                 sha: event.sha,
+                label: event.label,
                 status: 'docked',
                 berthIndex,
                 laneIndex,
@@ -311,12 +404,19 @@ export class HarborTraffic {
 
         if (ship.status === 'departing') {
             const lane = SEA_LANES[ship.laneIndex % SEA_LANES.length];
-            const end = toWorld(lane.tileX, lane.tileY);
+            const route = [
+                start,
+                ...lane.map(point => toWorld(point.tileX, point.tileY)),
+            ];
             const startedAt = ship.departStartedAt || now;
             progress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / DEPARTURE_MS));
             const eased = easedDeparture(progress);
-            x = start.x + (end.x - start.x) * eased;
-            y = start.y + (end.y - start.y) * eased;
+            const pos = pointAlongPath(route, eased);
+            const previous = pointAlongPath(route, Math.max(0, eased - 0.035));
+            x = pos.x;
+            y = pos.y;
+            ship.tailX = previous.x;
+            ship.tailY = previous.y;
             if (progress >= 1 && this.motionScale === 0) return null;
         }
 
@@ -328,6 +428,8 @@ export class HarborTraffic {
                 type: 'ship',
                 x,
                 y,
+                tailX: ship.tailX,
+                tailY: ship.tailY,
                 progress,
             },
         };
@@ -343,8 +445,8 @@ export class HarborTraffic {
             this._drawDockedShipWake(ctx, ship, zoom);
         }
 
-        if (ship.status === 'departing' && this.motionScale > 0 && ship.progress < 0.92) {
-            this._drawWake(ctx, ship);
+        if (ship.status === 'departing' && this.motionScale > 0 && ship.progress < 0.94) {
+            this._drawWake(ctx, ship, alpha);
         }
 
         if (this.sprites) {
@@ -355,8 +457,8 @@ export class HarborTraffic {
 
         if (ship.status === 'docked') {
             this._drawMooringTick(ctx, ship, zoom);
-            this._drawCommitPennant(ctx, ship, zoom);
         }
+        this._drawCommitPennant(ctx, ship, zoom, alpha);
     }
 
     _drawDockedShipWake(ctx, ship, zoom) {
@@ -379,17 +481,32 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawWake(ctx, ship) {
+    _drawWake(ctx, ship, alpha = 1) {
         const phase = this.frame * 0.18 + ship.berthIndex;
+        const dx = ship.x - (ship.tailX ?? ship.x - 1);
+        const dy = ship.y - (ship.tailY ?? ship.y);
+        const length = Math.hypot(dx, dy) || 1;
+        const ux = dx / length;
+        const uy = dy / length;
+        const px = -uy;
+        const py = ux;
         ctx.save();
-        ctx.globalAlpha = Math.max(0.12, 0.34 * (1 - ship.progress));
+        ctx.globalAlpha = Math.max(0.12, 0.34 * (1 - ship.progress)) * alpha;
         ctx.strokeStyle = 'rgba(198, 236, 241, 0.7)';
         ctx.lineWidth = 1;
         for (let i = 0; i < 3; i++) {
             const offset = i * 8 + Math.sin(phase + i) * 2;
+            const spread = 4 + i * 2;
+            const startBack = 14 + offset;
+            const endBack = 30 + offset;
             ctx.beginPath();
-            ctx.moveTo(ship.x - 18 - offset, ship.y + 8 + i * 3);
-            ctx.quadraticCurveTo(ship.x - 28 - offset, ship.y + 4 + i * 2, ship.x - 38 - offset, ship.y + 11 + i);
+            ctx.moveTo(ship.x - ux * startBack + px * spread, ship.y - uy * startBack + py * spread);
+            ctx.quadraticCurveTo(
+                ship.x - ux * ((startBack + endBack) / 2) + px * Math.sin(phase + i) * 3,
+                ship.y - uy * ((startBack + endBack) / 2) + py * Math.sin(phase + i) * 3,
+                ship.x - ux * endBack - px * spread,
+                ship.y - uy * endBack - py * spread
+            );
             ctx.stroke();
         }
         ctx.restore();
@@ -403,23 +520,25 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawCommitPennant(ctx, ship, zoom) {
+    _drawCommitPennant(ctx, ship, zoom, alpha = 1) {
         const s = 1 / Math.max(1, zoom || 1);
-        const x = Math.round(ship.x - 18 * s);
+        const label = shortenLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS);
+        const textSize = Math.max(7, Math.round(8 * s));
+        const width = Math.max(42 * s, Math.min(142 * s, label.length * textSize * 0.62 + 12 * s));
+        const x = Math.round(ship.x - width / 2);
         const y = Math.round(ship.y - 44 * s);
-        const width = 42 * s;
         const height = 12 * s;
         ctx.save();
-        ctx.globalAlpha = 0.94;
+        ctx.globalAlpha = 0.94 * alpha;
         ctx.fillStyle = 'rgba(24, 42, 39, 0.9)';
         ctx.fillRect(x, y, Math.round(width), Math.round(height));
         ctx.strokeStyle = 'rgba(246, 207, 96, 0.9)';
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
         ctx.fillStyle = '#f6cf60';
-        ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('commit', Math.round(ship.x + 3 * s), Math.round(y + height / 2 + 0.5));
+        ctx.fillText(label, Math.round(ship.x), Math.round(y + height / 2 + 0.5));
         ctx.fillStyle = 'rgba(108, 219, 148, 0.9)';
         ctx.fillRect(Math.round(ship.x - 22 * s), Math.round(ship.y - 31 * s), Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
         ctx.restore();
