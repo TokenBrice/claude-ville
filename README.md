@@ -227,8 +227,8 @@ For widget changes, run `npm run widget:build`, then `npm run widget`, and confi
 | File | Audience | Purpose |
 | --- | --- | --- |
 | `README.md` | Everyone | Project overview, quick start, runtime architecture. |
-| `AGENTS.md` | Generic agent tools (Codex, etc.) | Project shape, conventions, validation, git hygiene. |
-| `CLAUDE.md` | Claude Code | Mirrors `AGENTS.md` content for Claude Code. Claude Code auto-loads it; AGENTS.md is the canonical source — when changing one, change both. |
+| `AGENTS.md` | Codex CLI and any generic agent harness | Canonical agent-context file: harness map, `/agents/` artifact convention, project shape, conventions, validation, git hygiene. |
+| `CLAUDE.md` | Claude Code | Byte-for-byte mirror of `AGENTS.md` (after the heading) so Claude Code's auto-loader sees the same content. `AGENTS.md` is canonical — when changing one, change both and run the parity diff in either file's Validation Checklist. |
 | `claudeville/CLAUDE.md` | Agents working inside `claudeville/` | Implementation context: server, adapters, layout, event flow. |
 | `claudeville/adapters/README.md` | Adapter work | Provider contract, normalized session fields, token and git-event extraction. |
 | `claudeville/src/presentation/character-mode/README.md` | World mode work | Canvas renderer pipeline, selection lifecycle, sprite/world contracts. |

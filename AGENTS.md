@@ -1,5 +1,23 @@
 # Agent Notes
 
+`AGENTS.md` is the canonical agent-context file for this repo, mirrored byte-for-byte (after the heading) by `CLAUDE.md` so Claude Code's auto-loader sees the same content. When the two diverge, `AGENTS.md` wins; edit both together.
+
+## Agent Harness Map
+
+| Harness | Auto-loads | Notes |
+| --- | --- | --- |
+| Codex CLI | `AGENTS.md` (root) | Canonical source. Nested `claudeville/CLAUDE.md` is also worth reading for in-app work. |
+| Claude Code | `CLAUDE.md` (root) plus nested `claudeville/CLAUDE.md` | Auto-walks the parent CLAUDE.md chain. |
+| Other agents | Start at `AGENTS.md`, then `claudeville/CLAUDE.md`. | |
+
+This repo is agent-first: arriving agents should treat the root `AGENTS.md`/`CLAUDE.md` and the in-app `claudeville/CLAUDE.md` as the ground truth before reading code.
+
+## Agent Artifacts
+
+- Plans, scratch notes, and handover memos written by agents go under `/agents/` and are committed.
+- Use `/agents/plans/<slug>.md` for implementation plans and `/agents/handover/<slug>.md` for handovers.
+- `docs/plans/` is gitignored personal scratch — do not put shared work there.
+
 ## Scope And Purpose
 
 - Work from `/home/ahirice/Documents/git/claude-ville`.
@@ -140,6 +158,7 @@ For full asset generation steps see `scripts/sprites/generate.md`.
   - `npm run widget`
   - Confirm the menu bar app can reach port `4000`.
 - For docs-only process edits, a diff review plus `git status --short` is sufficient.
+- For changes to the root agent docs (`AGENTS.md` or `CLAUDE.md`), confirm parity with `diff <(tail -n +3 CLAUDE.md) <(tail -n +3 AGENTS.md)` — output should be empty.
 
 ## GitHub And Remotes
 
