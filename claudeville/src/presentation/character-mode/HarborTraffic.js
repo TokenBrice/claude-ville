@@ -5,17 +5,16 @@ const MAX_VISIBLE_SHIPS = 8;
 const DEPARTURE_MS = 14000;
 const EXIT_HOLD_MS = 1200;
 const HISTORICAL_EVENT_GRACE_MS = 5000;
-const UNPAIRED_COMMIT_REPLAY_MS = 2 * 60 * 1000;
 
 const BERTHS = [
-    { tileX: 37.2, tileY: 14.6 },
-    { tileX: 37.2, tileY: 16.2 },
-    { tileX: 37.2, tileY: 18.2 },
-    { tileX: 39.1, tileY: 15.6 },
-    { tileX: 39.1, tileY: 17.5 },
-    { tileX: 33.4, tileY: 19.5 },
-    { tileX: 36.3, tileY: 21.4 },
     { tileX: 38.2, tileY: 21.3 },
+    { tileX: 36.3, tileY: 21.4 },
+    { tileX: 39.1, tileY: 17.5 },
+    { tileX: 39.1, tileY: 15.6 },
+    { tileX: 37.2, tileY: 18.2 },
+    { tileX: 37.2, tileY: 16.2 },
+    { tileX: 37.2, tileY: 14.6 },
+    { tileX: 33.4, tileY: 19.5 },
 ];
 
 const SEA_LANES = [
@@ -52,6 +51,7 @@ function stableHash(input) {
 }
 
 function cloneState(previous = {}) {
+    previous = previous || {};
     const seenEventIds = previous.seenEventIds instanceof Set
         ? new Set(previous.seenEventIds)
         : new Set(previous.seenEventIds || []);
@@ -69,11 +69,6 @@ function cloneState(previous = {}) {
     };
 }
 
-function eventAgeMs(event, now) {
-    if (!Number.isFinite(event?.timestamp) || event.timestamp <= 0) return Infinity;
-    return Math.max(0, now - event.timestamp);
-}
-
 function latestPushTimesByProject(events) {
     const latest = new Map();
     for (const event of events) {
@@ -84,15 +79,10 @@ function latestPushTimesByProject(events) {
     return latest;
 }
 
-function isHistoricalCommittedBeforePush(event, latestPushTimes) {
+function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
     const latestPush = latestPushTimes.get(event.project) || 0;
-    return latestPush > 0 && Number.isFinite(event.timestamp) && event.timestamp <= latestPush;
-}
-
-function shouldIgnoreHistoricalCommit(event, latestPushTimes, now, staleReplayWindowMs) {
-    if (isHistoricalCommittedBeforePush(event, latestPushTimes)) return true;
-    if (eventAgeMs(event, now) <= staleReplayWindowMs) return false;
-    return !latestPushTimes.has(event.project);
+    if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
+    return Math.max(0, now - latestPush) > HISTORICAL_EVENT_GRACE_MS;
 }
 
 export function snapshotHarborTrafficState(state) {
@@ -184,9 +174,6 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     const state = cloneState(previous);
     const now = Number.isFinite(options.now) ? options.now : Date.now();
     const motionScale = options.motionScale === 0 ? 0 : 1;
-    const staleReplayWindowMs = Number.isFinite(options.staleReplayWindowMs)
-        ? Math.max(0, options.staleReplayWindowMs)
-        : UNPAIRED_COMMIT_REPLAY_MS;
 
     const sorted = [...(events || [])]
         .filter(event => event?.id && event?.type && event?.project)
@@ -198,7 +185,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         state.seenEventIds.add(event.id);
 
         if (event.type === 'commit') {
-            if (shouldIgnoreHistoricalCommit(event, latestPushTimes, now, staleReplayWindowMs)) continue;
+            if (isHistoricalCommittedBeforePush(event, latestPushTimes, now)) continue;
             const berthIndex = state.nextSequence % BERTHS.length;
             const laneIndex = stableHash(`${event.project}:${event.id}`) % SEA_LANES.length;
             state.nextSequence++;
@@ -352,6 +339,10 @@ export class HarborTraffic {
             : 1;
         if (alpha <= 0.02) return;
 
+        if (ship.status === 'docked') {
+            this._drawDockedShipWake(ctx, ship, zoom);
+        }
+
         if (ship.status === 'departing' && this.motionScale > 0 && ship.progress < 0.92) {
             this._drawWake(ctx, ship);
         }
@@ -364,7 +355,28 @@ export class HarborTraffic {
 
         if (ship.status === 'docked') {
             this._drawMooringTick(ctx, ship, zoom);
+            this._drawCommitPennant(ctx, ship, zoom);
         }
+    }
+
+    _drawDockedShipWake(ctx, ship, zoom) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const pulse = this.motionScale > 0
+            ? 0.55 + 0.25 * Math.sin(this.frame * 0.08 + ship.berthIndex)
+            : 0.62;
+        ctx.save();
+        ctx.globalAlpha = pulse;
+        ctx.strokeStyle = 'rgba(249, 214, 105, 0.72)';
+        ctx.lineWidth = Math.max(1, Math.round(2 * s));
+        ctx.beginPath();
+        ctx.ellipse(Math.round(ship.x), Math.round(ship.y + 4 * s), 30 * s, 16 * s, -0.18, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 0.45;
+        ctx.fillStyle = 'rgba(255, 232, 132, 0.16)';
+        ctx.beginPath();
+        ctx.ellipse(Math.round(ship.x), Math.round(ship.y + 5 * s), 26 * s, 13 * s, -0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
     }
 
     _drawWake(ctx, ship) {
@@ -388,6 +400,28 @@ export class HarborTraffic {
         ctx.save();
         ctx.fillStyle = 'rgba(251, 224, 141, 0.82)';
         ctx.fillRect(Math.round(ship.x + 17 * s), Math.round(ship.y - 23 * s), Math.max(1, Math.round(2 * s)), Math.max(1, Math.round(5 * s)));
+        ctx.restore();
+    }
+
+    _drawCommitPennant(ctx, ship, zoom) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = Math.round(ship.x - 18 * s);
+        const y = Math.round(ship.y - 44 * s);
+        const width = 42 * s;
+        const height = 12 * s;
+        ctx.save();
+        ctx.globalAlpha = 0.94;
+        ctx.fillStyle = 'rgba(24, 42, 39, 0.9)';
+        ctx.fillRect(x, y, Math.round(width), Math.round(height));
+        ctx.strokeStyle = 'rgba(246, 207, 96, 0.9)';
+        ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        ctx.fillStyle = '#f6cf60';
+        ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('commit', Math.round(ship.x + 3 * s), Math.round(y + height / 2 + 0.5));
+        ctx.fillStyle = 'rgba(108, 219, 148, 0.9)';
+        ctx.fillRect(Math.round(ship.x - 22 * s), Math.round(ship.y - 31 * s), Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
         ctx.restore();
     }
 

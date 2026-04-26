@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-26-harbor-pharos-v2"
+  assetVersion: "2026-04-26-commit-harbor-v3"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -434,7 +434,7 @@ props:
 
   - id: prop.harborBoat
     tool: isometric_tile
-    prompt: "epic fishing boat, weathered hull, raised lantern, sailcloth furled, isometric"
+    prompt: "commit cargo boat marker, dark hull, bright white sail with gold branch sigil, glowing sealed cargo crate, transparent background, isometric"
     size: 64
     anchor: [32, 32]
 

@@ -27,8 +27,8 @@ export class Camera {
     }
 
     centerOnMap() {
-        // Frame the heart of the village (slightly off-center from Command Center at 18,18)
-        const tx = 20, ty = 20;
+        // Frame the village core while keeping the Pharos commit harbor in the first view.
+        const tx = 28, ty = 20;
         const screenX = (tx - ty) * (TILE_WIDTH / 2);
         const screenY = (tx + ty) * (TILE_HEIGHT / 2);
         this.zoom = 1;

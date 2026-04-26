@@ -48,6 +48,8 @@ const AMBIENT_GROUND_PROPS = [
     // Harbor/lighthouse: keep large piers in authored dock tiles so ships stay legible.
     { tileX: 33.4, tileY: 16.2, type: 'harborCrates' },
     { tileX: 32.5, tileY: 18.3, type: 'harborCrane' },
+    { tileX: 38.4, tileY: 20.4, type: 'harborCrates' },
+    { tileX: 40.2, tileY: 19.2, type: 'harborCrane' },
 
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
     { tileX: 27.7, tileY: 16.2, type: 'oreCart' },
