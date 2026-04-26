@@ -1165,8 +1165,10 @@ export class IsometricRenderer {
             }
         }
 
+        this._drawOpenWaterDepthWash(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
         this._drawDistrictAtmosphere(cacheCtx);
         this._drawRiverContourLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+        this._drawWaterFoamLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
         this._drawAmbientGroundProps(cacheCtx);
         this._drawWorldEdgeRim(cacheCtx);
         this.motionScale = previousMotionScale;
@@ -1197,21 +1199,99 @@ export class IsometricRenderer {
     _drawDynamicWaterHighlights(ctx) {
         if (!this.motionScale) return;
         const { startX, endX, startY, endY } = this._getVisibleTileBounds(3);
+        this._drawAnimatedCurrentBands(ctx, startX, endX, startY, endY);
         ctx.save();
+        ctx.globalCompositeOperation = 'screen';
         for (let y = startY; y <= endY; y++) {
             for (let x = startX; x <= endX; x++) {
                 const key = `${x},${y}`;
                 if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
                 const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                if (seed <= 0.72) continue;
+                if (seed <= 0.82) continue;
                 const screenX = (x - y) * TILE_WIDTH / 2;
                 const screenY = (x + y) * TILE_HEIGHT / 2;
-                const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
+                const shimmer = 0.035 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.045;
                 ctx.strokeStyle = `rgba(132, 211, 240, ${shimmer})`;
                 ctx.lineWidth = 1;
                 ctx.beginPath();
                 ctx.moveTo(screenX - 12, screenY - 2);
                 ctx.lineTo(screenX + 10, screenY - 6);
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
+    }
+
+    _drawOpenWaterDepthWash(ctx, startX, endX, startY, endY) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                const openness = this._waterOpenness(x, y);
+                if (openness < 0.42) continue;
+                const isDeep = this.deepWaterTiles.has(key);
+                const harbor = this._isHarborWater(x, y);
+                const alpha = Math.min(0.22, (isDeep ? 0.12 : 0.055) * openness + (harbor ? 0.035 : 0));
+                ctx.fillStyle = isDeep
+                    ? `rgba(0, 9, 28, ${alpha})`
+                    : `rgba(4, 39, 62, ${alpha})`;
+                this._drawDiamond(ctx, screenX, screenY);
+                ctx.fill();
+            }
+        }
+        ctx.restore();
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (let y = Math.max(0, startY); y <= Math.min(MAP_SIZE - 1, endY); y++) {
+            for (let x = Math.max(0, startX); x <= Math.min(MAP_SIZE - 1, endX); x++) {
+                const key = `${x},${y}`;
+                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key) || !this._isHarborWater(x, y)) continue;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                ctx.fillStyle = 'rgba(87, 185, 205, 0.045)';
+                this._drawDiamond(ctx, screenX, screenY);
+                ctx.fill();
+            }
+        }
+        ctx.restore();
+    }
+
+    _drawAnimatedCurrentBands(ctx, startX, endX, startY, endY) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.lineCap = 'round';
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+                const openness = this._waterOpenness(x, y);
+                const harbor = this._isHarborWater(x, y);
+                if (openness < 0.56 && !harbor) continue;
+                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
+                const crest = (Math.sin(this.waterFrame * 0.82 + x * 0.42 - y * 0.28 + seed * 2.6) + 1) / 2;
+                if (crest < 0.76) continue;
+                const isDeep = this.deepWaterTiles.has(key);
+                const alpha = Math.min(0.16, (crest - 0.76) * (isDeep ? 0.48 : 0.32) * (0.62 + openness * 0.5));
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                const drift = Math.sin(this.waterFrame * 0.45 + seed * 6.28) * 2;
+                ctx.strokeStyle = isDeep
+                    ? `rgba(94, 184, 238, ${alpha})`
+                    : `rgba(154, 231, 238, ${alpha})`;
+                ctx.lineWidth = isDeep ? 1.4 : 1;
+                ctx.beginPath();
+                ctx.moveTo(screenX - TILE_WIDTH * 0.40, screenY - 2 + drift);
+                ctx.quadraticCurveTo(
+                    screenX - TILE_WIDTH * 0.02,
+                    screenY - 8 + drift * 0.35,
+                    screenX + TILE_WIDTH * 0.40,
+                    screenY - 5 - drift * 0.25
+                );
                 ctx.stroke();
             }
         }
@@ -1435,6 +1515,44 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
+    _drawWaterFoamLines(ctx, startX, endX, startY, endY) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.lineCap = 'round';
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+                const edge = this._waterEdgeMask(x, y);
+                if (edge === 0) continue;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
+                ctx.strokeStyle = `rgba(221, 249, 255, ${0.18 + seed * 0.09})`;
+                ctx.lineWidth = this.deepWaterTiles.has(key) ? 1.4 : 1;
+                this._strokeDiamondEdges(ctx, screenX, screenY, edge);
+            }
+        }
+
+        if (this.bridgeTiles) {
+            for (const [key, info] of this.bridgeTiles.entries()) {
+                if (info?.kind !== 'dock') continue;
+                const comma = key.indexOf(',');
+                const x = Number(key.slice(0, comma));
+                const y = Number(key.slice(comma + 1));
+                if (x < startX || x > endX || y < startY || y > endY) continue;
+                const edge = this._dockWaterEdgeMask(x, y);
+                if (edge === 0) continue;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                ctx.strokeStyle = 'rgba(238, 252, 238, 0.28)';
+                ctx.lineWidth = 1.6;
+                this._strokeDiamondEdges(ctx, screenX, screenY, edge);
+            }
+        }
+        ctx.restore();
+    }
+
     _waterEdgeMask(tileX, tileY) {
         let mask = 0;
         if (!this.waterTiles.has(`${tileX},${tileY - 1}`)) mask |= 1;
@@ -1442,6 +1560,37 @@ export class IsometricRenderer {
         if (!this.waterTiles.has(`${tileX},${tileY + 1}`)) mask |= 4;
         if (!this.waterTiles.has(`${tileX - 1},${tileY}`)) mask |= 8;
         return mask;
+    }
+
+    _dockWaterEdgeMask(tileX, tileY) {
+        let mask = 0;
+        if (this._isOpenWaterTile(tileX, tileY - 1)) mask |= 1;
+        if (this._isOpenWaterTile(tileX + 1, tileY)) mask |= 2;
+        if (this._isOpenWaterTile(tileX, tileY + 1)) mask |= 4;
+        if (this._isOpenWaterTile(tileX - 1, tileY)) mask |= 8;
+        return mask;
+    }
+
+    _isOpenWaterTile(tileX, tileY) {
+        const key = `${tileX},${tileY}`;
+        return this.waterTiles.has(key) && !this.bridgeTiles?.has(key);
+    }
+
+    _waterOpenness(tileX, tileY) {
+        let waterNeighbors = 0;
+        let checks = 0;
+        for (let y = tileY - 1; y <= tileY + 1; y++) {
+            for (let x = tileX - 1; x <= tileX + 1; x++) {
+                if (x === tileX && y === tileY) continue;
+                checks++;
+                if (this.waterTiles.has(`${x},${y}`)) waterNeighbors++;
+            }
+        }
+        return checks ? waterNeighbors / checks : 0;
+    }
+
+    _isHarborWater(tileX, tileY) {
+        return tileX >= 31 && tileX <= 39 && tileY >= 14 && tileY <= 22;
     }
 
     _strokeDiamondEdges(ctx, screenX, screenY, mask) {
