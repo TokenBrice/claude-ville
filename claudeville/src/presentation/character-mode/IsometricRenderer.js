@@ -83,6 +83,7 @@ const OPEN_SEA_GULLS = [
     { tileX: 36.8, tileY: 8.9, altitude: 31, scale: 1.18, phase: 1.7 },
     { tileX: 38.4, tileY: 13.2, altitude: 30, scale: 1.26, phase: 3.1 },
     { tileX: 35.8, tileY: 11.5, altitude: 24, scale: 0.96, phase: 4.4 },
+    { tileX: 36.6, tileY: 22.5, altitude: 27, scale: 1.05, phase: 5.6 },
 ];
 
 class StaticPropSprite {
@@ -1732,7 +1733,7 @@ export class IsometricRenderer {
     }
 
     _isHarborWater(tileX, tileY) {
-        return tileX >= 31 && tileX <= 39 && tileY >= 14 && tileY <= 22;
+        return tileX >= 31 && tileX <= 39 && tileY >= 13 && tileY <= 25;
     }
 
     _isOpenSeaTile(tileX, tileY, openness = null) {
@@ -1741,8 +1742,8 @@ export class IsometricRenderer {
         if (!this.deepWaterTiles.has(key)) return false;
         const open = openness ?? this._waterOpenness(tileX, tileY);
         if (open < 0.62) return false;
-        const rightSea = tileX >= 36 && tileY <= 18;
-        const upperSea = tileX >= 31 && tileY <= 10;
+        const rightSea = tileX >= 34 && tileY <= 25;
+        const upperSea = tileX >= 30 && tileY <= 11;
         return rightSea || upperSea;
     }
 

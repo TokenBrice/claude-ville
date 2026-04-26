@@ -10,7 +10,7 @@ const FINALE_EFFECT_MS = 9000;
 const SCREEN_SUMMARY_MS = 16000;
 const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
 const MAX_LABEL_CHARS = 30;
-const HARBOR_FINALE_TILE = { tileX: 39.2, tileY: 6.4 };
+const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 const HARBOR_SUMMARY_TILE = { tileX: 36.5, tileY: 18.8 };
 
 const BERTHS = [
@@ -26,36 +26,36 @@ const BERTHS = [
 
 const SEA_LANES = [
     [
-        { tileX: 38.6, tileY: 20.7 },
-        { tileX: 39.0, tileY: 18.1 },
-        { tileX: 39.0, tileY: 15.4 },
-        { tileX: 38.4, tileY: 12.8 },
-        { tileX: 39.3, tileY: 9.6 },
-        { tileX: 39.4, tileY: 6.2 },
+        { tileX: 38.4, tileY: 20.5 },
+        { tileX: 38.2, tileY: 18.4 },
+        { tileX: 38.0, tileY: 15.7 },
+        { tileX: 37.6, tileY: 12.8 },
+        { tileX: 38.1, tileY: 9.4 },
+        { tileX: 38.2, tileY: 6.6 },
     ],
     [
-        { tileX: 39.0, tileY: 19.6 },
-        { tileX: 38.8, tileY: 17.3 },
-        { tileX: 38.4, tileY: 14.7 },
-        { tileX: 37.9, tileY: 12.3 },
-        { tileX: 38.9, tileY: 9.4 },
-        { tileX: 39.0, tileY: 5.6 },
+        { tileX: 38.6, tileY: 19.7 },
+        { tileX: 38.4, tileY: 17.4 },
+        { tileX: 38.1, tileY: 14.7 },
+        { tileX: 37.7, tileY: 12.1 },
+        { tileX: 38.3, tileY: 8.8 },
+        { tileX: 38.5, tileY: 5.8 },
     ],
     [
-        { tileX: 38.2, tileY: 19.1 },
-        { tileX: 38.8, tileY: 16.8 },
-        { tileX: 38.3, tileY: 14.2 },
-        { tileX: 37.7, tileY: 11.9 },
-        { tileX: 38.8, tileY: 8.8 },
-        { tileX: 39.2, tileY: 4.8 },
+        { tileX: 37.8, tileY: 19.2 },
+        { tileX: 38.0, tileY: 16.8 },
+        { tileX: 37.8, tileY: 14.2 },
+        { tileX: 37.3, tileY: 11.8 },
+        { tileX: 38.0, tileY: 8.4 },
+        { tileX: 38.3, tileY: 4.9 },
     ],
     [
-        { tileX: 37.8, tileY: 20.4 },
-        { tileX: 38.7, tileY: 18.2 },
-        { tileX: 39.0, tileY: 15.8 },
-        { tileX: 38.3, tileY: 13.3 },
-        { tileX: 39.2, tileY: 10.1 },
-        { tileX: 39.5, tileY: 7.2 },
+        { tileX: 37.5, tileY: 20.6 },
+        { tileX: 37.9, tileY: 18.2 },
+        { tileX: 38.0, tileY: 15.8 },
+        { tileX: 37.5, tileY: 13.2 },
+        { tileX: 38.1, tileY: 9.9 },
+        { tileX: 38.4, tileY: 7.0 },
     ],
 ];
 
