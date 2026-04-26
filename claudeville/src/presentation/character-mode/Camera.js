@@ -1,4 +1,4 @@
-import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
+import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 
 export class Camera {
     constructor(canvas) {
@@ -27,13 +27,14 @@ export class Camera {
     }
 
     centerOnMap() {
-        const centerTile = MAP_SIZE / 2;
-        const screenCenter = {
-            x: (centerTile - centerTile) * TILE_WIDTH / 2,
-            y: (centerTile + centerTile) * TILE_HEIGHT / 2,
-        };
-        this.x = -screenCenter.x + this.canvas.width / (2 * this.zoom);
-        this.y = -screenCenter.y + this.canvas.height / (2 * this.zoom);
+        // Frame the heart of the village (slightly off-center from Command Center at 18,18)
+        const tx = 20, ty = 20;
+        const screenX = (tx - ty) * (TILE_WIDTH / 2);
+        const screenY = (tx + ty) * (TILE_HEIGHT / 2);
+        this.zoom = 2;
+        if (!this.canvas) return;
+        this.x = -screenX + this.canvas.width / (2 * this.zoom);
+        this.y = -screenY + this.canvas.height / (2 * this.zoom);
     }
 
     attach() {

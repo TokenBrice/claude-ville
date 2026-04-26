@@ -190,6 +190,12 @@ class App {
             this._resizeHandle = null;
         }
 
+        // Tile the deep-sea atmosphere PNG behind the iso world to kill the void.
+        // Native PNG is 128x128; render at 64x64 for denser ripple density.
+        canvas.style.background = "url('/assets/sprites/atmosphere/atmosphere.deep-sea.png') repeat";
+        canvas.style.backgroundSize = "64px 64px";
+        canvas.style.boxShadow = "inset 0 0 200px rgba(0, 0, 0, 0.4)";
+
         const resize = () => {
             const w = container.clientWidth;
             const h = container.clientHeight;
