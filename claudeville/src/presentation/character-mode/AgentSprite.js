@@ -327,18 +327,41 @@ export class AgentSprite {
         // Ensure animState reflects current movement (idle when not moving).
         this.animState = this.moving ? 'walk' : 'idle';
 
+        // Soft drop shadow under feet — gives agents weight against the busy terrain.
+        ctx.save();
+        ctx.fillStyle = 'rgba(15, 22, 30, 0.42)';
+        ctx.beginPath();
+        ctx.ellipse(Math.round(this.x), Math.round(this.y + 2), 14, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+
         const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
         const cellSize = this.spriteSheet?.cellSize || 92;
+        // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
+        const bobY = this.animState === 'idle'
+            ? Math.round(Math.sin(this.frame * 0.4) * 0.6)
+            : 0;
         const dx = Math.round(this.x - cellSize / 2);
-        const dy = Math.round(this.y - (cellSize - 12));   // 12px head clearance, anchor at leg-bottom
+        const dy = Math.round(this.y - (cellSize - 12)) + bobY;   // 12px head clearance, anchor at leg-bottom
         ctx.drawImage(
             this.spriteCanvas,
             cell.sx, cell.sy, cell.sw, cell.sh,
             dx, dy, cell.sw, cell.sh
         );
 
-        // Selection ring (if selected) — drawn at feet level.
-        if (this.selected) this._drawSelectionRing(ctx);
+        // Selection halo (if selected) — outer glow + pulsed ring at feet level.
+        if (this.selected) {
+            ctx.save();
+            ctx.fillStyle = 'rgba(242, 211, 107, 0.18)';
+            ctx.beginPath();
+            ctx.ellipse(Math.round(this.x), Math.round(this.y - 2), 22, 8, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            this._drawSelectionRing(ctx);
+        }
+
+        // Status indicator dot above head — at-a-glance state without reading the name tag.
+        this._drawStatusDot(ctx, cellSize);
 
         // Chat bubble overlay (if chatting).
         // Per-agent floating text bubbles are deferred to Phase 4; the chat
@@ -354,17 +377,43 @@ export class AgentSprite {
         this._drawNameTag(ctx);
     }
 
+    _drawStatusDot(ctx, cellSize) {
+        // Resolve current status. Sprite-level chatting flag overrides domain status
+        // because the chat lifecycle is driven by IsometricRenderer, not the adapter feed.
+        const rawStatus = this.agent?.status;
+        const status = this.chatting
+            ? 'chatting'
+            : (typeof rawStatus === 'string' ? rawStatus : (rawStatus?.value || 'idle'));
+        const statusColor = status === AgentStatus.WORKING ? '#7be3d7'
+            : status === 'chatting' ? '#f2d36b'
+            : status === AgentStatus.IDLE ? 'rgba(155, 155, 155, 0.6)'
+            : null;
+        if (!statusColor) return;
+        ctx.save();
+        ctx.fillStyle = statusColor;
+        ctx.beginPath();
+        ctx.arc(Math.round(this.x), Math.round(this.y - cellSize + 4), 2.5, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
     _drawSelectionRing(ctx) {
         if (!this.assets) return;
+        // Pulse alpha so the ring breathes (0.7 .. 1.0 sinusoidal).
+        const pulseAlpha = 0.7 + 0.3 * Math.sin(this.frame * 0.15);
         const ring = this.assets.get('overlay.status.selected');
         if (ring) {
             const dx = Math.round(this.x - ring.width / 2);
             const dy = Math.round(this.y - 6);     // just under feet
+            ctx.save();
+            ctx.globalAlpha = pulseAlpha;
             ctx.drawImage(ring, dx, dy);
+            ctx.restore();
             return;
         }
         // Fallback: draw a simple ellipse when the overlay asset is not loaded.
         ctx.save();
+        ctx.globalAlpha = pulseAlpha;
         ctx.beginPath();
         ctx.ellipse(this.x, this.y + 21, 28, 10, 0, 0, Math.PI * 2);
         ctx.fillStyle = 'rgba(242, 211, 107, 0.24)';
