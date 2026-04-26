@@ -1,7 +1,7 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 
 const SHIP_SPRITE_ID = 'prop.harborBoat';
-const MAX_VISIBLE_SHIPS = 8;
+const MAX_VISIBLE_SHIPS = 12;
 const DEPARTURE_MS = 48000;
 const EXIT_HOLD_MS = 1800;
 const EXIT_FADE_MS = 4200;
@@ -22,6 +22,10 @@ const BERTHS = [
     { tileX: 37.2, tileY: 16.2 },
     { tileX: 39.1, tileY: 17.5 },
     { tileX: 39.1, tileY: 15.6 },
+    { tileX: 38.6, tileY: 16.6 },
+    { tileX: 39.0, tileY: 22.4 },
+    { tileX: 32.4, tileY: 20.4 },
+    { tileX: 35.5, tileY: 20.4 },
 ];
 
 const SEA_LANES = [
@@ -533,6 +537,7 @@ export class HarborTraffic {
         this.state = cloneState();
         this.motionScale = 1;
         this.frame = 0;
+        if (typeof window !== 'undefined') window.__harbor = this;
     }
 
     setMotionScale(scale) {
@@ -546,6 +551,20 @@ export class HarborTraffic {
             now,
             motionScale: this.motionScale,
         });
+        this._observePeakDensity(now);
+    }
+
+    _observePeakDensity(now) {
+        if (!this._peakWindow) this._peakWindow = { peak: 0, since: now };
+        if (this.state.ships.size > this._peakWindow.peak) {
+            this._peakWindow.peak = this.state.ships.size;
+        }
+        if (now - this._peakWindow.since > 60000) {
+            if (this._peakWindow.peak >= 8) {
+                console.info(`[harbor] peak ships in last minute: ${this._peakWindow.peak}`);
+            }
+            this._peakWindow = { peak: this.state.ships.size, since: now };
+        }
     }
 
     enumerateDrawables(now = Date.now()) {
