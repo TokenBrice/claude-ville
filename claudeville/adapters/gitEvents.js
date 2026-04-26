@@ -35,6 +35,13 @@ const GIT_SUBCOMMAND_FLAGS_WITH_VALUE = new Set([
   '--template',
   '--trailer',
 ]);
+const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
+  '-o',
+  '--exec',
+  '--push-option',
+  '--receive-pack',
+  '--repo',
+]);
 
 function stableHash(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
@@ -235,7 +242,67 @@ function normalizeCommand(command) {
   return String(command || '').trim().replace(/\s+/g, ' ');
 }
 
-function createGitEvent(command, type, dryRun, context) {
+function normalizeRefName(ref) {
+  const text = String(ref || '').trim();
+  if (!text) return null;
+
+  const withoutForce = text.startsWith('+') ? text.slice(1) : text;
+  const target = withoutForce.includes(':')
+    ? withoutForce.slice(withoutForce.lastIndexOf(':') + 1)
+    : withoutForce;
+  if (!target) return null;
+
+  return target
+    .replace(/^refs\/heads\//, '')
+    .replace(/^refs\/tags\//, '');
+}
+
+function pushPositionals(tokens, subcommandIndex) {
+  const positionals = [];
+  let repositoryFromFlag = false;
+
+  for (let i = subcommandIndex + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--') {
+      positionals.push(...tokens.slice(i + 1));
+      break;
+    }
+
+    if (token === '--repo') repositoryFromFlag = true;
+    if (GIT_PUSH_FLAGS_WITH_VALUE.has(token) || GIT_SUBCOMMAND_FLAGS_WITH_VALUE.has(token)) {
+      i++;
+      continue;
+    }
+
+    if (token.startsWith('--repo=')) {
+      repositoryFromFlag = true;
+      continue;
+    }
+    if (token.startsWith('--push-option=') || token.startsWith('--receive-pack=')) continue;
+    if (token.startsWith('-')) continue;
+
+    positionals.push(token);
+  }
+
+  return { positionals, repositoryFromFlag };
+}
+
+function extractTargetRef(type, tokens, subcommandIndex) {
+  if (type !== 'push') return null;
+
+  const { positionals, repositoryFromFlag } = pushPositionals(tokens, subcommandIndex);
+  const refspecs = repositoryFromFlag ? positionals : positionals.slice(1);
+  if (refspecs[0] === 'tag' && refspecs[1]) return normalizeRefName(refspecs[1]);
+
+  for (const refspec of refspecs) {
+    const target = normalizeRefName(refspec);
+    if (target) return target;
+  }
+
+  return null;
+}
+
+function createGitEvent(command, type, dryRun, context, parsed = {}) {
   const normalized = normalizeCommand(command);
   const commandHash = stableHash(normalized);
   const provider = context.provider || 'unknown';
@@ -245,7 +312,7 @@ function createGitEvent(command, type, dryRun, context) {
   const project = context.project || null;
   const identity = [provider, sessionId, sourceId, project, ts, type, commandHash].filter(Boolean).join('|');
 
-  return {
+  const event = {
     id: `git-${type}-${stableHash(identity)}`,
     type,
     command: normalized,
@@ -257,6 +324,14 @@ function createGitEvent(command, type, dryRun, context) {
     commandHash,
     dryRun,
   };
+
+  if (parsed.targetRef) event.targetRef = parsed.targetRef;
+  if (typeof context.success === 'boolean') event.success = context.success;
+  if (Number.isFinite(Number(context.exitCode))) event.exitCode = Number(context.exitCode);
+  const completedAt = parseTimestamp(context.completedAt);
+  if (completedAt) event.completedAt = completedAt;
+
+  return event;
 }
 
 function parseGitEventsFromCommand(command, context = {}, options = {}) {
@@ -274,7 +349,9 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
     const dryRun = isDryRun(match.type, tokens, match.subcommandIndex);
     if (dryRun && ignoreDryRun) continue;
 
-    events.push(createGitEvent(segment, match.type, dryRun, context));
+    events.push(createGitEvent(segment, match.type, dryRun, context, {
+      targetRef: extractTargetRef(match.type, tokens, match.subcommandIndex),
+    }));
   }
 
   return dedupeGitEvents(events);

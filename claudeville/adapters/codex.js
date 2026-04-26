@@ -360,13 +360,107 @@ function getTokenUsage(filePath) {
   return tokenUsage;
 }
 
+function normalizeCommand(command) {
+  return String(command || '').trim().replace(/\s+/g, ' ');
+}
+
+function parseTimestamp(value) {
+  if (value == null) return 0;
+  if (Number.isFinite(Number(value))) return Number(value);
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
+function commandFromExecPayload(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (typeof payload.command === 'string') return payload.command;
+
+  if (Array.isArray(payload.command)) {
+    const shellFlagIndex = payload.command.findIndex(part => part === '-lc' || part === '-ic' || part === '-c');
+    if (shellFlagIndex >= 0 && typeof payload.command[shellFlagIndex + 1] === 'string') {
+      return payload.command[shellFlagIndex + 1];
+    }
+    if (payload.command.every(part => typeof part === 'string')) return payload.command.join(' ');
+  }
+
+  if (Array.isArray(payload.parsed_cmd) && payload.parsed_cmd.length === 1) {
+    const parsed = payload.parsed_cmd[0];
+    if (parsed && typeof parsed.cmd === 'string') return parsed.cmd;
+  }
+
+  return null;
+}
+
+function completionFromExecEvent(entry) {
+  const payload = entry?.payload;
+  if (entry?.type !== 'event_msg' || payload?.type !== 'exec_command_end') return null;
+
+  const rawExitCode = payload.exit_code ?? payload.exitCode ?? payload.code;
+  const exitCode = Number.isFinite(Number(rawExitCode)) ? Number(rawExitCode) : null;
+  const completedAt = parseTimestamp(entry.timestamp || payload.timestamp || payload.completedAt || payload.completed_at);
+  let success = null;
+  if (typeof payload.success === 'boolean') {
+    success = payload.success;
+  } else if (exitCode !== null) {
+    success = exitCode === 0;
+  } else if (payload.status === 'failed' || payload.status === 'error') {
+    success = false;
+  }
+
+  return {
+    callId: payload.call_id || payload.callId || payload.id || null,
+    command: commandFromExecPayload(payload),
+    success,
+    exitCode,
+    completedAt,
+  };
+}
+
+function rememberGitEvents(events, bySourceId, byCommandHash) {
+  for (const event of events) {
+    if (event.sourceId) {
+      if (!bySourceId.has(event.sourceId)) bySourceId.set(event.sourceId, new Map());
+      bySourceId.get(event.sourceId).set(event.id, event);
+    }
+
+    if (event.commandHash) {
+      if (!byCommandHash.has(event.commandHash)) byCommandHash.set(event.commandHash, new Map());
+      byCommandHash.get(event.commandHash).set(event.id, event);
+    }
+  }
+}
+
+function applyCompletionMetadata(eventsById, completion) {
+  if (!eventsById || !completion) return;
+  for (const event of eventsById.values()) {
+    if (typeof completion.success === 'boolean') event.success = completion.success;
+    if (completion.exitCode !== null) event.exitCode = completion.exitCode;
+    if (completion.completedAt) event.completedAt = completion.completedAt;
+  }
+}
+
 function getGitEvents(filePath, context) {
   const events = [];
   try {
     const lines = readLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
     const entries = parseJsonLines(lines);
+    const eventsBySourceId = new Map();
+    const eventsByCommandHash = new Map();
 
     entries.forEach((entry, entryIndex) => {
+      const completion = completionFromExecEvent(entry);
+      if (completion) {
+        if (completion.callId && eventsBySourceId.has(completion.callId)) {
+          applyCompletionMetadata(eventsBySourceId.get(completion.callId), completion);
+          return;
+        }
+
+        const command = normalizeCommand(completion.command);
+        const eventsById = command ? eventsByCommandHash.get(stableHash(command)) : null;
+        if (eventsById && eventsById.size === 1) applyCompletionMetadata(eventsById, completion);
+        return;
+      }
+
       if (entry.type !== 'response_item' || !entry.payload) return;
       const payload = entry.payload;
       if (payload.type !== 'function_call' && payload.type !== 'command_execution') return;
@@ -376,11 +470,13 @@ function getGitEvents(filePath, context) {
       if (payload.arguments) commandSources.push(payload.arguments);
 
       commandSources.forEach((source, sourceIndex) => {
-        events.push(...extractGitEventsFromCommandSource(source, {
+        const parsedEvents = extractGitEventsFromCommandSource(source, {
           ...context,
           ts: entry.timestamp || payload.timestamp || 0,
           sourceId: payload.call_id || payload.id || entry.id || `${stableHash(JSON.stringify(entry))}:${sourceIndex}`,
-        }));
+        });
+        events.push(...parsedEvents);
+        rememberGitEvents(parsedEvents, eventsBySourceId, eventsByCommandHash);
       });
     });
   } catch { /* ignore */ }
