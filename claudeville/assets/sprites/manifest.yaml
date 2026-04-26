@@ -245,7 +245,7 @@ buildings:
         displaySize: 100
       beacon:
         tool: isometric_tile
-        prompt: "warm golden beacon from Pharos lantern crown, soft rotating beam suggestion, transparent background, isometric"
+        prompt: "open brazier fire in the Pharos lantern crown, orange amber flame, warm magical glow, no modern beam, transparent background, isometric"
         size: 64
         anchor: [196, 42]
         animation: pulse
@@ -254,8 +254,9 @@ buildings:
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
     lightSource: [196, 32]
-    lightColor: '#ffe066'
-    lightRadius: 120
+    lightColor: '#ffb347'
+    lightRadius: 96
+    lightOverlay: 'atmosphere.light.fire-glow'
 
   # ── HERO: Research Observatory ──
   - id: building.observatory

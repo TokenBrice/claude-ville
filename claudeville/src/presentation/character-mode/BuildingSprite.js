@@ -726,6 +726,7 @@ export class BuildingSprite {
         const baseAnchor = this.assets.getAnchor(entry.id);
         for (const [name, layer] of Object.entries(entry.layers)) {
             if (name === 'base') continue;
+            if (entry.id === 'building.watchtower' && name === 'beacon') continue;
             const layerId = `${entry.id}.${name}`;
             const layerDims = this.assets.getDims(layerId);
             if (!layerDims) continue;
@@ -840,20 +841,7 @@ export class BuildingSprite {
             }
         } else if (building.type === 'watchtower') {
             const beacon = localPoint(196, 34);
-            const angle = this.frame * 0.018;
-            ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = 0.24 + pulse * 0.12;
-            ctx.fillStyle = '#ffe066';
-            ctx.beginPath();
-            ctx.arc(beacon.x, beacon.y, 13, 0, Math.PI * 2);
-            ctx.fill();
-            ctx.globalAlpha = 0.18 + pulse * 0.08;
-            ctx.beginPath();
-            ctx.moveTo(beacon.x, beacon.y);
-            ctx.lineTo(beacon.x + Math.cos(angle) * 180, beacon.y + Math.sin(angle) * 55);
-            ctx.lineTo(beacon.x + Math.cos(angle + 0.2) * 150, beacon.y + Math.sin(angle + 0.2) * 44);
-            ctx.closePath();
-            ctx.fill();
+            this._drawWatchtowerFire(ctx, beacon, pulse);
         } else if (building.type === 'archive') {
             const window = localPoint(58, 45);
             const leftWing = localPoint(18, 74);
@@ -925,6 +913,61 @@ export class BuildingSprite {
             ctx.stroke();
         }
         ctx.restore();
+    }
+
+    _drawWatchtowerFire(ctx, beacon, pulse) {
+        const flicker = this.motionScale ? Math.sin(this.frame * 0.23) * 2.2 + Math.sin(this.frame * 0.41) * 1.1 : 0.8;
+        const lean = this.motionScale ? Math.sin(this.frame * 0.13) * 2.6 : 1.2;
+
+        ctx.globalCompositeOperation = 'screen';
+        const glow = ctx.createRadialGradient(beacon.x, beacon.y, 1, beacon.x, beacon.y, 30 + pulse * 8);
+        glow.addColorStop(0, 'rgba(255, 236, 150, 0.78)');
+        glow.addColorStop(0.36, 'rgba(255, 142, 51, 0.34)');
+        glow.addColorStop(1, 'rgba(255, 91, 26, 0)');
+        ctx.globalAlpha = 0.62 + pulse * 0.16;
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(beacon.x, beacon.y, 30 + pulse * 7, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = '#6b351c';
+        ctx.strokeStyle = '#2f1d12';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(beacon.x, beacon.y + 7, 13, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.92;
+        ctx.fillStyle = '#ff7a2f';
+        ctx.beginPath();
+        ctx.moveTo(beacon.x - 7, beacon.y + 5);
+        ctx.quadraticCurveTo(beacon.x - 10 + lean, beacon.y - 4 - flicker, beacon.x - 1 + lean, beacon.y - 19 - flicker);
+        ctx.quadraticCurveTo(beacon.x + 11 + lean, beacon.y - 2, beacon.x + 7, beacon.y + 6);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.fillStyle = '#ffe68a';
+        ctx.globalAlpha = 0.95;
+        ctx.beginPath();
+        ctx.moveTo(beacon.x - 3, beacon.y + 4);
+        ctx.quadraticCurveTo(beacon.x - 4 + lean * 0.4, beacon.y - 4 - flicker * 0.5, beacon.x + 2 + lean * 0.3, beacon.y - 12 - flicker * 0.5);
+        ctx.quadraticCurveTo(beacon.x + 6 + lean * 0.2, beacon.y - 1, beacon.x + 3, beacon.y + 5);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.globalAlpha = 0.44 + pulse * 0.18;
+        ctx.strokeStyle = '#ffd66f';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(beacon.x - 18, beacon.y + 2);
+        ctx.lineTo(beacon.x + 18, beacon.y + 2);
+        ctx.moveTo(beacon.x, beacon.y - 16);
+        ctx.lineTo(beacon.x, beacon.y + 18);
+        ctx.stroke();
     }
 
     _spawnEmittersFor(b) {
