@@ -226,12 +226,27 @@ export class IsometricRenderer {
         // Connecting roads between buildings (simple horizontal/vertical)
         if (buildingDefs.length >= 2) {
             for (const bDef of buildingDefs) {
-                const bx = Math.floor(bDef.position.tileX + bDef.width / 2);
-                const by = Math.floor(bDef.position.tileY + bDef.height / 2);
-                this._addTownRoad(plazaHub.x, plazaHub.y, bx, by);
+                const destination = this._buildingRoadDestination(bDef);
+                this._addTownRoad(plazaHub.x, plazaHub.y, destination.x, destination.y);
             }
         }
         this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
+    }
+
+    _buildingRoadDestination(building) {
+        const visit = typeof building.primaryVisitTile === 'function'
+            ? building.primaryVisitTile()
+            : building.entrance;
+        if (visit && Number.isFinite(visit.tileX) && Number.isFinite(visit.tileY)) {
+            return {
+                x: Math.round(visit.tileX),
+                y: Math.round(visit.tileY),
+            };
+        }
+        return {
+            x: Math.floor(building.position.tileX + building.width / 2),
+            y: Math.floor(building.position.tileY + building.height / 2),
+        };
     }
 
     _generateTownSquare(centerX, centerY) {

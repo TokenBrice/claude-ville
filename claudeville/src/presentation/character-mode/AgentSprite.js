@@ -70,6 +70,7 @@ export class AgentSprite {
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._lastBuildingType = null;
         this._targetCycle = 0;
+        this.nameTagSlot = 0;
 
         // Chat system
         this.chatPartner = null;     // Chat partner AgentSprite
@@ -95,6 +96,11 @@ export class AgentSprite {
         this.frameTimer = 0;
         this.spriteCanvas = null;
         this.spriteSheet = null;     // cached SpriteSheet wrapper, set on first draw
+        this._spriteProfileKey = '';
+        this._silhouetteCellCache = new Map();
+        this._cellBoundsCache = new Map();
+        this._nameTagLayoutCacheKey = '';
+        this._nameTagLayoutCache = null;
 
         this._pickTarget();
     }
@@ -134,15 +140,24 @@ export class AgentSprite {
             }
         }
 
-        // Move inside the building (near the building center)
         const seed = Math.abs(this._hash(`${this.agent.id}:${building.type}:${this._targetCycle++}`));
-        const tx = building.x + 0.3 * building.width + this._noise(seed, 11) * 0.4 * building.width;
-        const ty = building.y + 0.3 * building.height + this._noise(seed, 17) * 0.4 * building.height;
-        const target = new Position(tx, ty);
+        const target = new Position(...this._visitTileForBuilding(building, seed));
         const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
         this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
         this.moving = true;
         this.waitTimer = 0;
+    }
+
+    _visitTileForBuilding(building, seed) {
+        const candidates = Array.isArray(building.visitTiles) && building.visitTiles.length
+            ? building.visitTiles
+            : building.entrance
+                ? [building.entrance]
+                : [{ tileX: building.x + Math.floor(building.width / 2), tileY: building.y + building.height }];
+        const chosen = candidates[seed % candidates.length];
+        const jitterX = (this._noise(seed, 11) - 0.5) * 0.34;
+        const jitterY = (this._noise(seed, 17) - 0.5) * 0.34;
+        return [chosen.tileX + jitterX, chosen.tileY + jitterY];
     }
 
     _assignTarget(targetScreenX, targetScreenY, targetTileX, targetTileY) {
@@ -362,8 +377,10 @@ export class AgentSprite {
         // Strong ground language keeps agents readable against dense pixel-art terrain.
         this._drawGrounding(ctx);
 
-        if (!this.selected && zoom <= 1) {
+        if (!this.selected && zoom < 1) {
             this._drawLowZoomImpostor(ctx);
+            this._drawStatus(ctx);
+            this._drawCompactNameStatus(ctx);
             return;
         }
 
@@ -640,31 +657,9 @@ export class AgentSprite {
 
     _drawStatus(ctx) {
         const agent = this.agent;
-        const t = this.statusAnim;
-        const bubble = agent.bubbleText;
         const visual = this._statusVisual();
-
-        if (this.selected && bubble && (agent.status === AgentStatus.WORKING || agent.status === AgentStatus.WAITING)) {
-            this._drawBubble(ctx, bubble, visual.color);
-        } else if (agent.status === AgentStatus.WORKING || agent.status === AgentStatus.WAITING) {
-            this._drawStatusRibbon(ctx, visual);
-        } else if (agent.status === AgentStatus.IDLE) {
-            ctx.save();
-            const s = 1 / (this._zoom || 1); // inverse zoom correction
-            ctx.translate(this.x, this.y);
-            ctx.scale(s, s); // inverse zoom correction
-            ctx.fillStyle = THEME.idle;
-            ctx.textAlign = 'center';
-            const offsetY = Math.sin(t * 1.5) * 4;
-            ctx.globalAlpha = 0.35 + 0.25 * Math.sin(t * 2);
-            ctx.font = 'bold 8px "Press Start 2P", monospace';
-            ctx.fillText('-', 13, -30 + offsetY);
-            ctx.fillText('-', 19, -39 + offsetY);
-            ctx.globalAlpha = 1;
-            ctx.restore();
-        } else if (agent.status === AgentStatus.WAITING) {
-            this._drawStatusRibbon(ctx, visual);
-        }
+        const text = this._activityLabel();
+        this._drawBubble(ctx, text, visual.color);
     }
 
     _drawBubble(ctx, text, accentColor) {
@@ -783,19 +778,24 @@ export class AgentSprite {
     }
 
     _drawNameTag(ctx) {
-        if (!this.selected && this._zoom < 3) {
-            this._drawCompactAgentBadge(ctx);
+        if (!this.selected && this._zoom < 1.5) {
+            this._drawCompactNameStatus(ctx);
+            return;
+        }
+        if (!this.selected && this.nameTagSlot == null) {
+            this._drawCompactNameStatus(ctx);
             return;
         }
         ctx.save();
         const s = 1 / (this._zoom || 1); // inverse zoom correction
         ctx.translate(this.x, this.y);
         ctx.scale(s, s); // fixed size in screen space
-        ctx.translate(0, 38);
+        ctx.translate(0, 38 + this._nameTagSlotYOffset());
         const rawName = String(this.agent.name || this.agent.displayName || '').trim() || this.agent.displayName;
         ctx.font = 'bold 8px "Press Start 2P", monospace';
-        const lines = this._wrapNameTagLines(ctx, rawName);
-        const contentW = Math.max(...lines.map(line => ctx.measureText(line).width));
+        const layout = this._nameTagLayout(ctx, rawName);
+        const lines = layout.lines;
+        const contentW = layout.contentW;
         const w = Math.min(190, contentW + 12);
         ctx.fillStyle = this.selected ? 'rgba(255, 239, 176, 0.98)' : 'rgba(242, 211, 107, 0.90)';
         const h = lines.length > 1 ? 26 : 16;
@@ -827,6 +827,11 @@ export class AgentSprite {
         ctx.restore();
     }
 
+    _nameTagSlotYOffset() {
+        const offsets = [0, -10, 10, -18, 18, -26, 26, -34, 34];
+        return offsets[Math.min(this.nameTagSlot || 0, offsets.length - 1)];
+    }
+
     _drawCompactAgentBadge(ctx) {
         const visual = this._statusVisual();
         const trim = this._providerTrimColor();
@@ -852,6 +857,64 @@ export class AgentSprite {
         ctx.textBaseline = 'middle';
         ctx.fillText(visual?.mark || '.', 0, 0.5);
         ctx.restore();
+    }
+
+    _drawCompactNameStatus(ctx) {
+        const trim = this._providerTrimColor();
+        const rawName = String(this.agent?.name || this.agent?.displayName || '').trim() || 'Agent';
+        const s = 1 / (this._zoom || 1);
+        const slot = this.overlaySlot ?? this.nameTagSlot ?? 0;
+
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        ctx.scale(s, s);
+        ctx.translate(0, 20 + slot * 11);
+        ctx.font = 'bold 6px "Press Start 2P", monospace';
+        const text = this._fitText(ctx, rawName, 72);
+        const w = Math.min(92, Math.max(34, ctx.measureText(text).width + 14));
+        const h = 13;
+
+        ctx.fillStyle = 'rgba(20, 14, 10, 0.90)';
+        ctx.strokeStyle = trim;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (ctx.roundRect) {
+            ctx.roundRect(-w / 2, -h / 2, w, h, 3);
+        } else {
+            ctx.rect(-w / 2, -h / 2, w, h);
+        }
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#f8ead1';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(this._fitText(ctx, text, w - 10), 0, 0.5);
+        ctx.restore();
+    }
+
+    _activityLabel() {
+        const visual = this._statusVisual();
+        const bubbleText = String(this.agent?.bubbleText || '').trim();
+        return bubbleText || visual?.label || 'IDLE';
+    }
+
+    _nameTagLayout(ctx, rawName) {
+        const key = `${rawName}|${ctx.font}`;
+        if (this._nameTagLayoutCacheKey === key && this._nameTagLayoutCache) {
+            return this._nameTagLayoutCache;
+        }
+        const lines = this._wrapNameTagLines(ctx, rawName);
+        const contentW = Math.max(...lines.map(line => ctx.measureText(line).width));
+        const layout = { lines, contentW };
+        this._nameTagLayoutCacheKey = key;
+        this._nameTagLayoutCache = layout;
+        return layout;
+    }
+
+    _snapWorldToScreenPixel(value) {
+        const zoom = this._zoom || 1;
+        return Math.round(value * zoom) / zoom;
     }
 
     _drawLowZoomImpostor(ctx) {
@@ -933,6 +996,16 @@ export class AgentSprite {
 
     _truncateNameTagLine(ctx, text, maxWidth) {
         let out = String(text || '').trim().replace(/- /g, '-');
+        if (ctx.measureText(out).width <= maxWidth) return out;
+        while (out.length > 1 && ctx.measureText(`${out}…`).width > maxWidth) {
+            out = out.slice(0, -1);
+        }
+        return `${out}…`;
+    }
+
+    _fitText(ctx, text, maxWidth) {
+        let out = String(text || '').trim();
+        if (!out) return '';
         if (ctx.measureText(out).width <= maxWidth) return out;
         while (out.length > 1 && ctx.measureText(`${out}…`).width > maxWidth) {
             out = out.slice(0, -1);
