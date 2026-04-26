@@ -38,7 +38,7 @@ const STYLE = [
 
 const BUILDINGS = [
     hero('building.command', 'grand guild command keep, carved stone fortress, blue domed council roof, dragon banners, golden watchfire braziers, ceremonial stair, reads instantly as town command center', 312, 208),
-    hero('building.watchtower', 'Great Lighthouse of Alexandria Pharos, white limestone square podium, tapering stacked tower stages, bronze lantern crown, attached stone quay and narrow causeway, heroic harbor landmark, no crimson roof', 312, 208),
+    hero('building.watchtower', 'monumental Great Lighthouse of Alexandria Pharos, tall white limestone square podium, tapering stacked tower stages, bronze lantern crown, attached stone quay and narrow causeway, heroic harbor landmark, readable from far zoom, no crimson roof', 400, 300, 4, 3),
     hero('building.observatory', 'research observatory tower, copper blue dome, visible telescope and brass astrolabe, star-etched stone, scholarly magical landmark', 312, 208),
     hero('building.portal', 'ancient portal gate, freestanding rune-carved stone arch on small plinth, violet energy vortex in open center, glowing crystals, dramatic arcane landmark, no mountain, narrow readable silhouette', 312, 208),
     standard('building.forge', 'code forge smithy, glowing furnace mouth, tall iron chimney, rune anvil outside, soot-dark stone, amber molten light, unmistakable forge', 112),
@@ -84,8 +84,8 @@ async function main() {
     }
 }
 
-function hero(id, description, width, height) {
-    return { id, kind: 'hero', description, width, height };
+function hero(id, description, width, height, cols = 3, rows = 2) {
+    return { id, kind: 'hero', description, width, height, cols, rows };
 }
 
 function standard(id, description, size) {
@@ -153,10 +153,12 @@ async function generateBuilding(token, spec) {
 
     if (spec.kind === 'hero') {
         const normalized = resizeNearest(png, spec.width, spec.height);
-        const cellW = Math.round(spec.width / 3);
-        const cellH = Math.round(spec.height / 2);
-        for (let r = 0; r < 2; r++) {
-            for (let c = 0; c < 3; c++) {
+        const cols = spec.cols || 3;
+        const rows = spec.rows || 2;
+        const cellW = Math.round(spec.width / cols);
+        const cellH = Math.round(spec.height / rows);
+        for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
                 const tile = crop(normalized, c * cellW, r * cellH, cellW, cellH);
                 writePng(join(spritesRoot, 'buildings', spec.id, `base-${c}-${r}.png`), tile);
             }

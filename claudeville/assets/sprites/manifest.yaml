@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-26-visual-revamp"
+  assetVersion: "2026-04-26-harbor-pharos-v2"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -190,6 +190,7 @@ statusOverlays:
 
 # ─── BUILDINGS ───────────────────────────────────────────────────────────────
 # HERO buildings: composeGrid [3,2] = 3 cols × 2 rows of 104px cells → 312×208 composed.
+# The harbor Pharos uses [4,3] so it reads as a true sea landmark at full-map zoom.
 # STANDARD buildings: single 96-112px isometric tile.
 
 buildings:
@@ -231,26 +232,26 @@ buildings:
 
   # ── HERO: Harbor Lighthouse (watchtower) ──
   - id: building.watchtower
-    composeGrid: [3, 2]
+    composeGrid: [4, 3]
     splitForOcclusion: true
-    horizonY: 130
+    horizonY: 198
     layers:
       base:
         tool: isometric_tile
         prompt: "Great Lighthouse of Alexandria Pharos, white limestone square podium, tapering stacked tower stages, bronze lantern crown, attached stone quay and narrow causeway, heroic isometric harbor landmark, dramatic warm dawn light"
         size: 64
-        displaySize: 104
+        displaySize: 100
       beacon:
         tool: isometric_tile
         prompt: "warm golden beacon from Pharos lantern crown, soft rotating beam suggestion, transparent background, isometric"
         size: 64
-        anchor: [144, 38]
+        anchor: [196, 42]
         animation: pulse
     emitters:
-      torch: [144, 28]
+      torch: [196, 32]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [144, 28]
+    lightSource: [196, 32]
     lightColor: '#ffe066'
     lightRadius: 120
 

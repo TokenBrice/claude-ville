@@ -45,9 +45,7 @@ const COMMAND_CENTER_DECORATION = [
     { type: 'guardpost', localX: 2.5, localY: 2.5 },
 ];
 const AMBIENT_GROUND_PROPS = [
-    // Harbor/lighthouse: docks, cargo, and a boat make the water edge read as a harbor.
-    { tileX: 34.0, tileY: 17.7, type: 'harborPier' },
-    { tileX: 36.0, tileY: 17.7, type: 'harborPier' },
+    // Harbor/lighthouse: keep large piers in authored dock tiles so ships stay legible.
     { tileX: 33.4, tileY: 16.2, type: 'harborCrates' },
     { tileX: 32.5, tileY: 18.3, type: 'harborCrane' },
 
