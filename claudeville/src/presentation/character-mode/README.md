@@ -11,9 +11,37 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `IsometricRenderer.js` | Render loop (`requestAnimationFrame`), terrain/water/road generation, hit testing, click and hover handlers, event-bus subscriptions, minimap mount, selection plumbing. |
 | `Camera.js` | Pan, zoom, `centerOnMap`, `followAgent` / `stopFollow`, `screenToWorld` / `worldToScreen` projections. |
 | `AgentSprite.js` | Per-agent sprite state: tile position, smoothed motion, selection ring, chat animation toward a target sprite, hit testing in world coordinates. |
-| `BuildingRenderer.js` | Building visuals, hover state, building-specific decoration and effects, `hitTest` in world coordinates. |
+| `BuildingSprite.js` | Current building visuals, sprite blits, hover state, building-specific decoration/effects, occlusion split for hero buildings, and `hitTest` in world coordinates. |
+| `BuildingRenderer.legacy.js` | Historical reference/fallback code. Do not add new building behavior here unless intentionally restoring the legacy renderer. |
+| `AssetManager.js` | Loads `manifest.yaml` and `palettes.yaml`, maps manifest IDs to PNG paths, cache-busts with `style.assetVersion`, and supplies placeholder/checker fallbacks. |
+| `SpriteRenderer.js` | Single entry point for PNG sprite blits; keeps pixel-art draws snapped and smoothing disabled. |
+| `SpriteSheet.js` | Character sheet frame lookup and 8-direction velocity mapping. Character sheets are 8 columns × 10 rows of 92px cells. |
+| `Compositor.js` | Palette-swap and accessory overlay composition. |
+| `TerrainTileset.js` | Wang-tile neighbor masks and isometric tile transforms. |
+| `SceneryEngine.js` | Water, shore, bridges, vegetation, boulders, and walkability data. |
+| `Pathfinder.js` | Grid pathfinding over the walkability map. |
+| `HarborTraffic.js` | Harbor/ship motion and git-event-aware harbor activity. |
 | `ParticleSystem.js` | Particle emitters and ambient effects. Honors `prefers-reduced-motion`. |
 | `Minimap.js` | Minimap rendering and click-to-pan; mounted into the canvas's parent node. |
+
+## Data sources and draw order
+
+World mode is driven by four source layers:
+
+- Domain state from `World` (`agents` and `buildings`).
+- Static config from `src/config/constants.js`, `buildings.js`, `townPlan.js`, `scenery.js`, and `theme.js`.
+- Sprite metadata from `claudeville/assets/sprites/manifest.yaml` and `palettes.yaml`.
+- Runtime provider state already normalized into `Agent` objects, including `gitEvents` for harbor activity.
+
+The render loop keeps the scene readable by drawing in broad layers:
+
+1. Background washes, water, terrain cache, roads, shore, bridges, and flat features.
+2. Static props and scenery sorted by world Y where they can overlap agents.
+3. Building bases and occlusion-aware hero building pieces.
+4. Agents, selection/status overlays, chat motion, and current-tool effects.
+5. Building labels/bubbles, particles, atmospheric overlays, and the minimap.
+
+When adding a visual feature, place it in the lowest layer that still communicates the state. Avoid adding per-frame work when it can be cached into terrain or static scenery.
 
 ## Selection lifecycle
 
@@ -28,7 +56,9 @@ canvas click (IsometricRenderer._onClick)
       │
       └── miss → camera.stopFollow()
                  onAgentSelect(null)
-                 (no event emitted; deselection comes from the panel)
+                 App.js does not emit 'agent:deselected' for this path,
+                 so the ActivityPanel stays open until its close button
+                 or the selected agent is removed.
 
 eventBus 'agent:selected' (also emitted from Sidebar / DashboardRenderer)
   → App.js _bindAgentFollow → renderer.selectAgentById(agent.id)
@@ -79,9 +109,9 @@ Selection events (`agent:selected`, `agent:deselected`) are bridged in `App.js:1
 
    Tile coordinates must keep the footprint `(x..x+width-1, y..y+height-1)` within `0..MAP_SIZE-1` and not overlap an existing building or water.
 
-2. If `BuildingRenderer.js` switches on `type` for visuals (icons, roof color, decoration), add a branch for the new `type`. Reuse an existing visual if the role matches.
+2. If `BuildingSprite.js` switches on `type` for visuals, label treatment, decoration, emitters, or building-specific overlays, add a branch for the new `type`. Reuse an existing visual if the role matches.
 
-3. (Optional) If the building needs hover/click behavior beyond the default tooltip, subscribe in `IsometricRenderer.js` near the existing `_onMouseMoveMain` / `_onClick` handlers, or extend `BuildingRenderer.hitTest`.
+3. (Optional) If the building needs hover/click behavior beyond the default tooltip, subscribe in `IsometricRenderer.js` near the existing `_onMouseMoveMain` / `_onClick` handlers, or extend `BuildingSprite.hitTest`.
 
 4. Reload the page. There is no build step — `App.js` adds buildings from `BUILDING_DEFS` on every boot (`App.js:46-49`).
 
