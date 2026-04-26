@@ -64,12 +64,14 @@
 
 - Frontend is vanilla HTML/CSS/JavaScript with ES modules. Do not introduce a framework or build step for small changes.
 - `claudeville/src/presentation/App.js` boots the world, data source, WebSocket client, managers, shared UI, and both render modes.
-- World mode is Canvas 2D isometric rendering. `character-mode/IsometricRenderer.js` owns the render loop, terrain, agent hit tests, minimap, and event subscriptions; `Camera.js`, `AgentSprite.js`, `BuildingRenderer.js`, `ParticleSystem.js`, and `Minimap.js` are helpers.
+- World mode is sprite-based pixel-art Canvas 2D isometric rendering. `character-mode/IsometricRenderer.js` owns render loop orchestration; `Camera.js` manages pan/zoom (clamped to integer steps {1,2,3}), follow behavior; `AgentSprite.js` manages state and animation; `BuildingSprite.js`, `TerrainTileset.js`, `SpriteRenderer.js`, `Compositor.js`, and `SpriteSheet.js` handle sprite blits and asset composition.
 - Dashboard mode is DOM/card rendering in `dashboard-mode/DashboardRenderer.js`.
 - `docs/visual-experience-crafting.md` captures the transferable design logic behind the RPG world metaphor. Read it before doing major visual representation work here or adapting this approach elsewhere.
 - Keep layout inside the existing flex structure: `body` full-height column, `header.topbar` fixed-height top, `.main__body` containing `aside.sidebar`, `.content`, and optional `aside#activityPanel`.
 - `#activityPanel` is 320px wide and shrinks the content area when open. Do not use `position: fixed` for normal panels; modal and toast overlays are the exceptions.
 - World mode canvas should fill the remaining `.content` area. Dashboard mode scrolls vertically.
+- Pixel-art sprites are generated via the pixellab MCP server; the asset manifest at `claudeville/assets/sprites/manifest.yaml` is the single source of truth.
+- `Minimap.js` uses intentionally vector parchment art and is out of scope for the pixel-art migration.
 
 ## Browser Automation
 
@@ -82,6 +84,21 @@ Two browser tools are available. Pick the right one:
 
 - Use English for new or edited UI copy, docs, comments, and agent-facing text.
 - Do not add or expand non-English strings unless the task explicitly requests localization work.
+
+## Sprite Generation
+
+Pixel-art sprites are generated through the [pixellab MCP server](https://mcpservers.org/servers/pixellab-code/pixellab-mcp). The asset manifest at `claudeville/assets/sprites/manifest.yaml` is the single source of truth — every sprite the renderer references must have a corresponding manifest entry, and every PNG on disk must correspond to a manifest entry.
+
+Workflow:
+
+1. User installs the pixellab MCP server with their API token (`claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`).
+2. Claude Code session reads `manifest.yaml`, calls the appropriate MCP tool per entry (`mcp__pixellab__create_character`, `mcp__pixellab__animate_character`, `mcp__pixellab__tileset`, `mcp__pixellab__isometric_tile`).
+3. Resulting PNGs are saved to the manifest-implied path (see `AssetManager._pathFor` for the mapping).
+4. Run `npm run sprites:validate` to confirm every manifest entry resolves to a real PNG and no orphan PNGs exist.
+
+The `style.anchor` field at the top of `manifest.yaml` is concatenated into every prompt at generation time, locking the visual tone across all assets.
+
+For full asset generation steps see `scripts/sprites/generate.md`.
 
 ## Validation Checklist
 
@@ -97,6 +114,9 @@ Two browser tools are available. Pick the right one:
   - Test both World and Dashboard modes.
   - Select/deselect an agent if sessions exist to open/close the right activity panel.
   - Resize the browser and confirm the canvas still fills the content area.
+- Asset validation:
+  - `npm run sprites:validate` — manifest ↔ PNG bidirectional check.
+  - `npm run sprites:visual-diff` — pixelmatch baseline comparison (added in a later task).
 - Widget changes require macOS validation:
   - `npm run widget:build`
   - `npm run widget`

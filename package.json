@@ -8,6 +8,16 @@
   "scripts": {
     "dev": "node claudeville/server.js",
     "widget:build": "cd widget && bash build.sh",
-    "widget": "open widget/ClaudeVilleWidget.app"
+    "widget": "open widget/ClaudeVilleWidget.app",
+    "sprites:validate": "node scripts/sprites/manifest-validator.mjs",
+    "sprites:visual-diff": "node scripts/sprites/visual-diff.mjs",
+    "sprites:capture-baseline": "node scripts/sprites/capture-baseline.mjs",
+    "sprites:capture-fresh": "node scripts/sprites/capture-baseline.mjs --fresh"
+  },
+  "devDependencies": {
+    "js-yaml": "^4.1.1",
+    "pixelmatch": "^7.1.0",
+    "playwright": "^1.59.1",
+    "pngjs": "^7.0.0"
   }
 }

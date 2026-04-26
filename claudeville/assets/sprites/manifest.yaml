@@ -1,0 +1,561 @@
+style:
+  anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
+
+# ─── CHARACTERS ──────────────────────────────────────────────────────────────
+characters:
+  - id: agent.claude.base
+    tool: create_character
+    prompt: "epic high-fantasy mage scholar, warm amber robes with gold trim, glowing rune sigil on chest, hooded silhouette, front 3/4 view"
+    n_directions: 8
+    size: 64
+    animations: [walk, breathing-idle]
+    palette_layer: claude
+    anchor: [32, 56]
+
+  - id: agent.codex.base
+    tool: create_character
+    prompt: "epic arcane engineer, deep teal coat with circuit-glow trim, rogue mask, tool-belt, front 3/4 view"
+    n_directions: 8
+    size: 64
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [32, 56]
+
+  - id: agent.gemini.base
+    tool: create_character
+    prompt: "epic celestial oracle, deep violet vestments with starlight trim, constellation veil, front 3/4 view"
+    n_directions: 8
+    size: 64
+    animations: [walk, breathing-idle]
+    palette_layer: gemini
+    anchor: [32, 56]
+
+# ─── PALETTES ────────────────────────────────────────────────────────────────
+# Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
+# this block for standalone tooling — keep both in sync if you edit either.
+palettes:
+  claude:
+    robe: ['#8f4f21', '#a85f24', '#7b3f1c']
+    pants: ['#3b2418', '#4b2c1a', '#33231a']
+    trim: ['#f2d36b', '#e9b85f', '#ffd98a']
+  codex:
+    robe: ['#116466', '#167d86', '#1f6f8b']
+    pants: ['#102f3a', '#12353b', '#18334a']
+    trim: ['#7be3d7', '#55c7f0', '#8ee88e']
+  gemini:
+    robe: ['#4f46a5', '#5d65c8', '#44528e']
+    pants: ['#201c43', '#27244d', '#1f2d55']
+    trim: ['#b7ccff', '#d6b7ff', '#7bdff2']
+
+# ─── ACCESSORIES ─────────────────────────────────────────────────────────────
+accessories:
+  - id: overlay.accessory.mageHood
+    tool: isometric_tile
+    prompt: "wizard hood, deep amber fabric, drapes over shoulders, rune stitching, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 12]
+
+  - id: overlay.accessory.scholarCap
+    tool: isometric_tile
+    prompt: "wide-brim scholar cap, weathered leather, quill tucked in band, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 12]
+
+  - id: overlay.accessory.goggles
+    tool: isometric_tile
+    prompt: "arcane engineer goggles, brass frame, teal lens glow, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 12]
+
+  - id: overlay.accessory.toolBand
+    tool: isometric_tile
+    prompt: "utility tool-band headband, circuit-glow stripe, micro tools clipped, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 12]
+
+  - id: overlay.accessory.starCrown
+    tool: isometric_tile
+    prompt: "celestial star crown, violet metal, star-shaped gems, faint purple glow, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 12]
+
+  - id: overlay.accessory.oracleVeil
+    tool: isometric_tile
+    prompt: "diaphanous oracle veil, deep violet fabric with constellation pattern, transparent background"
+    size: 32
+    n_directions: 8
+    anchor: [16, 12]
+
+# ─── STATUS OVERLAYS ─────────────────────────────────────────────────────────
+statusOverlays:
+  - id: overlay.status.selected
+    tool: isometric_tile
+    prompt: "magical selection ring at feet, glowing golden runes, faint pulse, transparent background"
+    size: 64
+    animation: pulse
+
+  - id: overlay.status.chat
+    tool: isometric_tile
+    prompt: "speech bubble halo, soft white glow, small floating runes, transparent background"
+    size: 64
+
+  - id: overlay.status.working
+    tool: isometric_tile
+    prompt: "active work aura, faint amber sparks orbiting at feet, concentrated energy, transparent background"
+    size: 64
+
+  - id: overlay.status.idle
+    tool: isometric_tile
+    prompt: "gentle rest aura, soft grey-blue shimmer at feet, slow calming waves, transparent background"
+    size: 64
+
+# ─── BUILDINGS ───────────────────────────────────────────────────────────────
+# HERO buildings: composeGrid [3,2] = 3 cols × 2 rows of 128px cells → 384×256 composed.
+# STANDARD buildings: single 128px isometric tile.
+
+buildings:
+  # ── HERO: Command Center ──
+  - id: building.command
+    composeGrid: [3, 2]
+    splitForOcclusion: true
+    horizonY: 160
+    layers:
+      base:
+        tool: isometric_tile
+        prompt: "epic command center castle keep, grand stone walls with arched gates, dual dragon banners on parapets, golden flame torches, imposing isometric fortress"
+        size: 64
+      watchfire:
+        tool: isometric_tile
+        prompt: "roaring golden watchfire on stone brazier, dancing flame, transparent background, isometric"
+        size: 64
+        anchor: [40, 52]
+        animation: pulse
+      banner:
+        tool: isometric_tile
+        prompt: "dragon war banner swaying in wind, deep crimson with gold sigil, transparent background, isometric"
+        size: 64
+        anchor: [96, 24]
+        animation: pulse
+    emitters:
+      torch: [64, 28]
+      torch2: [176, 28]
+      torch3: [64, 140]
+      torch4: [176, 140]
+      sparkle: [120, 18]
+      sparkle2: [200, 18]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
+    lightSource: [120, 30]
+    lightColor: '#ffcc66'
+    lightRadius: 80
+
+  # ── HERO: Harbor Lighthouse (watchtower) ──
+  - id: building.watchtower
+    composeGrid: [3, 2]
+    splitForOcclusion: true
+    horizonY: 160
+    layers:
+      base:
+        tool: isometric_tile
+        prompt: "epic harbor lighthouse, weathered grey stone tower, crimson conical roof, brass lantern dome, dragon banner, isometric, dramatic"
+        size: 64
+      beacon:
+        tool: isometric_tile
+        prompt: "bright golden lantern dome glow, rotating beam suggestion, transparent background, isometric"
+        size: 64
+        anchor: [144, 38]
+        animation: pulse
+    emitters:
+      torch: [144, 28]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
+    lightSource: [144, 28]
+    lightColor: '#ffe066'
+    lightRadius: 120
+
+  # ── HERO: Research Observatory ──
+  - id: building.observatory
+    composeGrid: [3, 2]
+    splitForOcclusion: true
+    horizonY: 160
+    layers:
+      base:
+        tool: isometric_tile
+        prompt: "epic research observatory, domed copper roof with star etchings, tall arched windows glowing starlight blue, stone turret, isometric"
+        size: 64
+      astrolabe:
+        tool: isometric_tile
+        prompt: "brass astrolabe ring rotating above dome, star sparkle, transparent background, isometric"
+        size: 64
+        anchor: [144, 20]
+        animation: pulse
+    emitters:
+      sparkle: [144, 18]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
+    lightSource: [144, 20]
+    lightColor: '#aaccff'
+    lightRadius: 60
+
+  # ── HERO: Portal Gate ──
+  - id: building.portal
+    composeGrid: [3, 2]
+    splitForOcclusion: true
+    horizonY: 160
+    layers:
+      base:
+        tool: isometric_tile
+        prompt: "epic portal gate archway, ancient stone arch with swirling arcane energy, violet and gold runes, massive scale, isometric"
+        size: 64
+      portalGlow:
+        tool: isometric_tile
+        prompt: "swirling violet portal vortex energy, arcane rune ring, transparent background, isometric"
+        size: 64
+        anchor: [144, 60]
+        animation: pulse
+    emitters:
+      sparkle: [144, 60]
+      sparkle2: [120, 80]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
+    lightSource: [144, 60]
+    lightColor: '#cc99ff'
+    lightRadius: 70
+
+  # ── STANDARD: Code Forge ──
+  - id: building.forge
+    tool: isometric_tile
+    prompt: "epic code forge smithy, glowing forge mouth with molten amber light, iron chimney stack billowing smoke, rune-inscribed anvil visible through arched doorway, isometric"
+    size: 64
+    emitters:
+      smoke: [88, 12]
+      mining: [40, 80]
+      sparkle: [70, 90]
+
+  # ── STANDARD: Token Mine ──
+  - id: building.mine
+    tool: isometric_tile
+    prompt: "epic token mine entrance, reinforced timber pit-head frame, cart tracks leading inside, lantern hung at mouth, veins of glowing ore in stone, isometric"
+    size: 64
+    emitters:
+      sparkle: [60, 70]
+      mining: [80, 92]
+
+  # ── STANDARD: Task Board ──
+  - id: building.taskboard
+    tool: isometric_tile
+    prompt: "epic task board hall, open-sided pavilion with carved stone pillars, scrolls and parchment notices pinned to boards, guild pennant flying, isometric"
+    size: 64
+
+  # ── STANDARD: Chat Hall ──
+  - id: building.chathall
+    tool: isometric_tile
+    prompt: "epic chat hall tavern, timbered walls, warm window glow, chimney smoke, carved speech-rune above arched doorway, isometric"
+    size: 64
+    emitters:
+      sparkle: [88, 24]
+
+  # ── STANDARD: Lore Archive ──
+  - id: building.archive
+    tool: isometric_tile
+    prompt: "epic lore archive library, tall narrow windows of stained glass, shelves of tomes visible inside, carved stone lintel with open book motif, isometric"
+    size: 64
+
+  # ── STANDARD: Prompt Alchemy ──
+  - id: building.alchemy
+    tool: isometric_tile
+    prompt: "epic prompt alchemy workshop, bubbling cauldron visible through round window, strange vapours drifting from vent, arcane ingredient jars stacked outside, isometric"
+    size: 64
+    emitters:
+      sparkle: [64, 80]
+
+  # ── STANDARD: Idle Sanctuary ──
+  - id: building.sanctuary
+    tool: isometric_tile
+    prompt: "epic idle sanctuary chapel, serene stone walls with ivy, glowing peaceful rune above door, soft golden light from within, isometric"
+    size: 64
+
+# ─── PROPS ───────────────────────────────────────────────────────────────────
+# Prop ids match the camelCase `type` field in IsometricRenderer.js
+# AMBIENT_GROUND_PROPS so renderer lookup stays one-to-one.
+props:
+  - id: prop.lantern
+    tool: isometric_tile
+    prompt: "iron street lantern on post, warm amber candlelight glow, isometric"
+    size: 32
+    anchor: [16, 28]
+
+  - id: prop.signpost
+    tool: isometric_tile
+    prompt: "weathered wooden signpost, carved directional arrows, guild rune mark, isometric"
+    size: 32
+    anchor: [16, 28]
+
+  - id: prop.runestone
+    tool: isometric_tile
+    prompt: "ancient runestone monolith, glowing inscribed runes, mossy base, isometric"
+    size: 32
+    anchor: [16, 28]
+
+  - id: prop.scrollCrates
+    tool: isometric_tile
+    prompt: "stack of wooden crates and scroll-tubes, rope-bound, wax sealed, isometric"
+    size: 32
+    anchor: [16, 24]
+
+  - id: prop.oreCart
+    tool: isometric_tile
+    prompt: "mine ore cart on rails, filled with glowing ore chunks, worn iron wheels, isometric"
+    size: 32
+    anchor: [16, 24]
+
+  - id: prop.well
+    tool: isometric_tile
+    prompt: "stone village well, wooden bucket on rope, ivy-covered, isometric"
+    size: 32
+    anchor: [16, 24]
+
+  - id: prop.marketStall
+    tool: isometric_tile
+    prompt: "market stall with striped canvas awning, goods laid out on table, lantern hung at corner, isometric"
+    size: 64
+    anchor: [32, 40]
+
+  - id: prop.flowerCart
+    tool: isometric_tile
+    prompt: "wooden flower cart with bright blooms, painted wheels, isometric"
+    size: 32
+    anchor: [16, 24]
+
+  - id: prop.noticePillar
+    tool: isometric_tile
+    prompt: "carved stone notice pillar, parchment notices pinned all around, topped with iron crown, isometric"
+    size: 32
+    anchor: [16, 30]
+
+  - id: prop.harborPier
+    tool: isometric_tile
+    prompt: "harbor pier section, barnacle-weathered planks, iron mooring rings, rope loops, isometric"
+    size: 64
+    anchor: [32, 32]
+
+  - id: prop.harborBoat
+    tool: isometric_tile
+    prompt: "epic fishing boat, weathered hull, raised lantern, sailcloth furled, isometric"
+    size: 64
+    anchor: [32, 32]
+
+  - id: prop.harborCrates
+    tool: isometric_tile
+    prompt: "harbor cargo crates stacked, stencilled guild marks, rope nets, isometric"
+    size: 32
+    anchor: [16, 24]
+
+  - id: prop.harborCrane
+    tool: isometric_tile
+    prompt: "harbor loading crane, timber A-frame, pulley and rope, iron hook, isometric"
+    size: 64
+    anchor: [32, 56]
+
+# ─── VEGETATION ──────────────────────────────────────────────────────────────
+vegetation:
+  - id: veg.tree.oak.large
+    tool: isometric_tile
+    prompt: "ancient oak tree, dense wide canopy, twisted roots, mossy bark, isometric"
+    size: 64
+    anchor: [32, 80]
+
+  - id: veg.tree.oak.small
+    tool: isometric_tile
+    prompt: "young oak tree, modest canopy, smooth bark, isometric"
+    size: 32
+    anchor: [16, 40]
+
+  - id: veg.tree.pine.large
+    tool: isometric_tile
+    prompt: "tall pine tree, layered conical silhouette, dark green needles, isometric"
+    size: 64
+    anchor: [32, 80]
+
+  - id: veg.tree.pine.small
+    tool: isometric_tile
+    prompt: "small pine tree, compact cone shape, bright needles, isometric"
+    size: 32
+    anchor: [16, 40]
+
+  - id: veg.tree.willow.large
+    tool: isometric_tile
+    prompt: "weeping willow tree, long trailing branches to ground, near water, isometric"
+    size: 64
+    anchor: [32, 80]
+
+  - id: veg.tree.willow.small
+    tool: isometric_tile
+    prompt: "young weeping willow, slender drooping branches, isometric"
+    size: 32
+    anchor: [16, 40]
+
+  - id: veg.boulder.mossy.large
+    tool: isometric_tile
+    prompt: "large mossy granite boulder, lichens and ferns at base, isometric"
+    size: 64
+    anchor: [32, 40]
+
+  - id: veg.boulder.mossy.small
+    tool: isometric_tile
+    prompt: "small mossy stone, patches of lichen, isometric"
+    size: 32
+    anchor: [16, 20]
+
+  - id: veg.boulder.granite.large
+    tool: isometric_tile
+    prompt: "large bare granite boulder, angular cracked surface, dramatic, isometric"
+    size: 64
+    anchor: [32, 40]
+
+  - id: veg.boulder.granite.small
+    tool: isometric_tile
+    prompt: "small bare granite rock, angular facets, isometric"
+    size: 32
+    anchor: [16, 20]
+
+  - id: veg.bush.a
+    tool: isometric_tile
+    prompt: "dense round shrub, dark green leaves, few berries, isometric"
+    size: 32
+    anchor: [16, 20]
+
+  - id: veg.bush.b
+    tool: isometric_tile
+    prompt: "wild briar bush, thorned branches, small red flowers, isometric"
+    size: 32
+    anchor: [16, 20]
+
+  - id: veg.bush.c
+    tool: isometric_tile
+    prompt: "flowering hedge bush, white blossoms, trimmed sides, isometric"
+    size: 32
+    anchor: [16, 20]
+
+  - id: veg.grassTuft.a
+    tool: isometric_tile
+    prompt: "clump of long wild grass, wind-bent tips, bright green, isometric"
+    size: 32
+    anchor: [16, 16]
+
+  - id: veg.grassTuft.b
+    tool: isometric_tile
+    prompt: "sparse dry grass tuft, yellowed at tips, isometric"
+    size: 32
+    anchor: [16, 16]
+
+  - id: veg.reed.a
+    tool: isometric_tile
+    prompt: "cluster of tall river reeds, brown seed-heads, near waterline, isometric"
+    size: 32
+    anchor: [16, 24]
+
+  - id: veg.reed.b
+    tool: isometric_tile
+    prompt: "sparse reeds, slender green stalks, water reflections, isometric"
+    size: 32
+    anchor: [16, 24]
+
+# ─── TERRAIN ─────────────────────────────────────────────────────────────────
+# Wang 4-bit tilesets — each produces 16 adjacency variants.
+terrain:
+  - id: terrain.grass-dirt
+    tool: tileset
+    lower: "ancient forest grass with wildflowers and moss"
+    upper: "rich loam dirt path"
+    size: 32
+
+  - id: terrain.grass-cobble
+    tool: tileset
+    lower: "ancient forest grass with wildflowers and moss"
+    upper: "weathered cobblestone road, carved guild marks"
+    size: 32
+
+  - id: terrain.grass-shore
+    tool: tileset
+    lower: "ancient forest grass with wildflowers and moss"
+    upper: "sandy shore with pebbles and sea foam"
+    size: 32
+
+  - id: terrain.shore-shallow
+    tool: tileset
+    lower: "sandy shore with pebbles and sea foam"
+    upper: "shallow clear water, sandy bed visible, ripples"
+    size: 32
+
+  - id: terrain.shallow-deep
+    tool: tileset
+    lower: "shallow clear water, sandy bed visible, ripples"
+    upper: "deep dark river water, dark currents, painterly"
+    size: 32
+
+  - id: terrain.cobble-square
+    tool: tileset
+    lower: "weathered cobblestone road, carved guild marks"
+    upper: "polished town square flagstone, worn smooth"
+    size: 32
+
+# ─── ATMOSPHERE ──────────────────────────────────────────────────────────────
+atmosphere:
+  - id: atmosphere.deep-sea
+    tool: tileset
+    lower: "abyssal sea, dark currents, painterly"
+    upper: "abyssal sea, dark currents, painterly"
+    size: 64
+
+  - id: atmosphere.light.lighthouse-beam
+    tool: isometric_tile
+    prompt: "warm golden light reflection on water, soft shimmering caustics, transparent background"
+    size: 64
+
+  - id: atmosphere.light.fire-glow
+    tool: isometric_tile
+    prompt: "orange-amber fire glow on ground, flickering radiant light pool, transparent background"
+    size: 64
+
+  - id: atmosphere.light.lantern-glow
+    tool: isometric_tile
+    prompt: "soft warm lantern light pool on stone, gentle amber halo, transparent background"
+    size: 64
+
+  # optional — include for polish pass
+  # - id: atmosphere.aurora
+  #   tool: isometric_tile
+  #   prompt: "northern aurora borealis shimmer, green and violet ribbons, transparent background"
+  #   size: 64
+
+# ─── BRIDGES ─────────────────────────────────────────────────────────────────
+bridges:
+  - id: bridge.ew
+    tool: isometric_tile
+    prompt: "weathered wooden bridge, plank deck, rope rails, east-west orientation, isometric"
+    size: 64
+    anchor: [32, 32]
+
+  - id: bridge.ns
+    tool: isometric_tile
+    prompt: "weathered wooden bridge, plank deck, rope rails, north-south orientation, isometric"
+    size: 64
+    anchor: [32, 32]
+
+  - id: dock.ew
+    tool: isometric_tile
+    prompt: "harbor dock planks, barnacle-weathered boards, iron mooring cleats, east-west orientation, isometric"
+    size: 64
+    anchor: [32, 32]
+
+  - id: dock.ns
+    tool: isometric_tile
+    prompt: "harbor dock planks, barnacle-weathered boards, iron mooring cleats, north-south orientation, isometric"
+    size: 64
+    anchor: [32, 32]

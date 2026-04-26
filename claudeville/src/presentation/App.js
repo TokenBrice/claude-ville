@@ -20,6 +20,8 @@ import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
 import { ActivityPanel } from './shared/ActivityPanel.js';
 
+import { AssetManager } from './character-mode/AssetManager.js';
+
 class App {
     constructor() {
         this.world = null;
@@ -80,7 +82,10 @@ class App {
             // 7. Handle canvas resizing (run before the renderer so the canvas size is set)
             this._bindResize();
 
-            // 8. Dynamically load character renderer
+            // 8. Preload sprite assets, then dynamically load character renderer
+            this.assets = new AssetManager();
+            await this.assets.load();
+            console.log('[App] sprite assets loaded');
             await this._loadRenderer();
 
             // 8-1. Load dashboard renderer
@@ -129,7 +134,7 @@ class App {
                 this.renderer.hide();
             }
 
-            this.renderer = new module.IsometricRenderer(this.world);
+            this.renderer = new module.IsometricRenderer(this.world, { assets: this.assets });
             this.renderer.show(canvas);
 
             requestAnimationFrame(() => {
@@ -201,9 +206,21 @@ class App {
 
             this._resizeHandle = null;
 
-            if (canvas.width === w && canvas.height === h) return;
-            canvas.width = w;
-            canvas.height = h;
+            const cssWidth = w;
+            const cssHeight = h;
+            const dpr = Math.max(1, Math.floor(window.devicePixelRatio || 1));
+            const newW = cssWidth * dpr;
+            const newH = cssHeight * dpr;
+            if (canvas.width === newW && canvas.height === newH) return;
+            canvas.width = newW;
+            canvas.height = newH;
+            canvas.style.width = `${cssWidth}px`;
+            canvas.style.height = `${cssHeight}px`;
+            const ctx = canvas.getContext('2d');
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+            ctx.imageSmoothingEnabled = false;
+            ctx.mozImageSmoothingEnabled = false;
+            ctx.webkitImageSmoothingEnabled = false;
             if (this.renderer && this.renderer.camera) {
                 this.renderer.camera.centerOnMap();
             }

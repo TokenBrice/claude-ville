@@ -5,7 +5,7 @@ export class Camera {
         this.canvas = canvas;
         this.x = 0;
         this.y = 0;
-        this.zoom = 1.05;
+        this.zoom = 1;
         this.minZoom = 0.5;
         this.maxZoom = 3;
         this.dragging = false;
@@ -99,17 +99,9 @@ export class Camera {
         const worldBeforeX = (mouseX / this.zoom) - this.x;
         const worldBeforeY = (mouseY / this.zoom) - this.y;
 
-        // deltaMode normalize (0=px, 1=line, 2=page)
-        let rawDelta = e.deltaY;
-        if (e.deltaMode === 1) rawDelta *= 16;
-        if (e.deltaMode === 2) rawDelta *= 100;
-
-        // Clamp: Mac trackpads(many small values) / Windows wheels(fewer large values) handle both
-        const clamped = Math.max(-60, Math.min(60, rawDelta));
-        const zoomSpeed = 0.003;
-        const factor = 1 - clamped * zoomSpeed;
-
-        this.zoom = Math.max(this.minZoom, Math.min(this.maxZoom, this.zoom * factor));
+        // Discrete zoom stepping: {1, 2, 3}
+        const direction = e.deltaY < 0 ? 1 : -1;
+        this.zoom = Math.max(1, Math.min(3, this.zoom + direction));
 
         this.x = (mouseX / this.zoom) - worldBeforeX;
         this.y = (mouseY / this.zoom) - worldBeforeY;
@@ -137,6 +129,6 @@ export class Camera {
     }
 
     applyTransform(ctx) {
-        ctx.setTransform(this.zoom, 0, 0, this.zoom, this.x * this.zoom, this.y * this.zoom);
+        ctx.setTransform(this.zoom, 0, 0, this.zoom, Math.round(this.x * this.zoom), Math.round(this.y * this.zoom));
     }
 }
