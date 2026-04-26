@@ -6,6 +6,9 @@ import {
     HARBOR_DOCK_TILES,
     TREE_CLUSTERS,
     BOULDERS,
+    VEGETATION_DISTRICTS,
+    SHORELINE_VEGETATION,
+    SCENERY_CLEARINGS,
     BUSH_DENSITY,
     GRASS_TUFT_DENSITY,
 } from '../../config/scenery.js';
@@ -171,6 +174,87 @@ export class SceneryEngine {
         }
     }
 
+    _isBlockedForScenery(key, pathTiles, bridgeTiles) {
+        return this.waterTiles.has(key)
+            || pathTiles.has(key)
+            || bridgeTiles.has(key)
+            || this._buildingFootprints.has(key);
+    }
+
+    _distanceToWater(tileX, tileY) {
+        const maxDistance = SHORELINE_VEGETATION.maxWaterDistance ?? 1;
+        for (let distance = 1; distance <= maxDistance; distance++) {
+            for (let dy = -distance; dy <= distance; dy++) {
+                for (let dx = -distance; dx <= distance; dx++) {
+                    if (Math.abs(dx) + Math.abs(dy) !== distance) continue;
+                    if (this.waterTiles.has(`${tileX + dx},${tileY + dy}`)) {
+                        return distance;
+                    }
+                }
+            }
+        }
+        return Infinity;
+    }
+
+    _districtBias(tileX, tileY, field) {
+        let bias = 0;
+        for (const district of VEGETATION_DISTRICTS) {
+            const dx = tileX + 0.5 - district.centerX;
+            const dy = tileY + 0.5 - district.centerY;
+            const distance = Math.hypot(dx, dy);
+            if (distance > district.radius) continue;
+            const falloff = 1 - distance / district.radius;
+            bias += (district[field] ?? 0) * falloff;
+        }
+        return bias;
+    }
+
+    _shorelineBias(tileX, tileY, field) {
+        if (this._distanceToWater(tileX, tileY) === Infinity) return 0;
+        return SHORELINE_VEGETATION[field] ?? 0;
+    }
+
+    _clearingBias(tileX, tileY) {
+        let bias = 0;
+        for (const clearing of SCENERY_CLEARINGS) {
+            const dx = tileX + 0.5 - clearing.centerX;
+            const dy = tileY + 0.5 - clearing.centerY;
+            const distance = Math.hypot(dx, dy);
+            if (distance > clearing.radius) continue;
+            const falloff = 1 - distance / clearing.radius;
+            bias += (clearing.strength ?? 0) * falloff;
+        }
+        return bias;
+    }
+
+    _nearPathNegativeSpace(tileX, tileY, pathTiles, bridgeTiles) {
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const key = `${tileX + dx},${tileY + dy}`;
+                if (bridgeTiles.has(key)) return 0.24;
+                if (pathTiles.has(key)) return 0.08;
+            }
+        }
+        return 0;
+    }
+
+    _passesFlatPropSpacing(tileX, tileY, kind) {
+        const stride = kind === 'bush' ? 3 : 2;
+        const cellX = Math.floor(tileX / stride);
+        const cellY = Math.floor(tileY / stride);
+        return this.tileNoise(cellX + (kind === 'bush' ? 401 : 503), cellY + 607) > 0.24;
+    }
+
+    _passesTreeSpacing(tileX, tileY) {
+        for (const tree of this.treeProps) {
+            const dx = tree.tileX - (tileX + 0.5);
+            const dy = tree.tileY - (tileY + 0.5);
+            if ((dx * dx + dy * dy) < 1.45) return false;
+        }
+        return true;
+    }
+
     generateBridges(pathTiles) {
         // 1. Authored hints — always placed if the tile is water.
         for (const hint of BRIDGE_HINTS) {
@@ -262,17 +346,22 @@ export class SceneryEngine {
         for (let y = 0; y < MAP_SIZE; y++) {
             for (let x = 0; x < MAP_SIZE; x++) {
                 const key = `${x},${y}`;
-                if (this.waterTiles.has(key)) continue;
-                if (this.shoreTiles.has(key)) continue;
-                if (pathTiles.has(key)) continue;
-                if (bridgeTiles.has(key)) continue;
-                if (this._buildingFootprints.has(key)) continue;
+                if (this._isBlockedForScenery(key, pathTiles, bridgeTiles)) continue;
 
                 const noise = this.tileNoise(x + 109, y + 67);
-                if (noise >= BUSH_DENSITY.min && noise < BUSH_DENSITY.max) {
+                const clearing = this._clearingBias(x, y) + this._nearPathNegativeSpace(x, y, pathTiles, bridgeTiles);
+                const bushMax = Math.min(0.42, BUSH_DENSITY.max
+                    + this._districtBias(x, y, 'bushBoost')
+                    + this._shorelineBias(x, y, 'bushBoost')
+                    - clearing);
+                const grassMax = Math.min(0.58, GRASS_TUFT_DENSITY.max
+                    + this._districtBias(x, y, 'grassBoost')
+                    + this._shorelineBias(x, y, 'grassBoost')
+                    - clearing * 0.7);
+                if (noise >= BUSH_DENSITY.min && noise < bushMax && this._passesFlatPropSpacing(x, y, 'bush')) {
                     const variant = Math.floor(this.tileNoise(x + 7, y + 13) * 3);
                     this.bushTiles.set(key, { variant });
-                } else if (noise >= GRASS_TUFT_DENSITY.min && noise < GRASS_TUFT_DENSITY.max) {
+                } else if (noise >= GRASS_TUFT_DENSITY.min && noise < grassMax && this._passesFlatPropSpacing(x, y, 'grass')) {
                     this.grassTuftTiles.set(key, { variant: Math.floor(this.tileNoise(x + 21, y + 5) * 2) });
                 }
             }
@@ -281,24 +370,25 @@ export class SceneryEngine {
 
     generateTrees(pathTiles, bridgeTiles) {
         for (const cluster of TREE_CLUSTERS) {
-            const r = cluster.radius;
-            const r2 = r * r;
-            for (let dy = -Math.ceil(r); dy <= Math.ceil(r); dy++) {
-                for (let dx = -Math.ceil(r); dx <= Math.ceil(r); dx++) {
+            const rx = cluster.radiusX ?? cluster.radius;
+            const ry = cluster.radiusY ?? cluster.radius;
+            for (let dy = -Math.ceil(ry); dy <= Math.ceil(ry); dy++) {
+                for (let dx = -Math.ceil(rx); dx <= Math.ceil(rx); dx++) {
                     const tx = cluster.centerX + dx;
                     const ty = cluster.centerY + dy;
                     if (tx < 0 || tx >= MAP_SIZE || ty < 0 || ty >= MAP_SIZE) continue;
-                    if (dx * dx + dy * dy > r2) continue;
+                    if (((dx * dx) / (rx * rx)) + ((dy * dy) / (ry * ry)) > 1) continue;
                     const key = `${tx},${ty}`;
-                    if (this.waterTiles.has(key)) continue;
-                    if (this.shoreTiles.has(key)) continue;
-                    if (pathTiles.has(key)) continue;
-                    if (bridgeTiles.has(key)) continue;
-                    if (this._buildingFootprints.has(key)) continue;
+                    if (this._isBlockedForScenery(key, pathTiles, bridgeTiles)) continue;
                     if (this.bushTiles.has(key)) continue;
+                    if (!this._passesTreeSpacing(tx, ty)) continue;
 
                     const noise = this.tileNoise(tx + 251, ty + 137);
-                    if (noise > 1 - cluster.density) {
+                    const districtBoost = this._districtBias(tx, ty, 'treeBoost');
+                    const shorelineBoost = this._shorelineBias(tx, ty, 'treeBoost');
+                    const clearing = this._clearingBias(tx, ty) + this._nearPathNegativeSpace(tx, ty, pathTiles, bridgeTiles);
+                    const density = Math.min(0.78, Math.max(0.05, cluster.density + districtBoost + shorelineBoost - clearing));
+                    if (noise > 1 - density) {
                         const jx = (this.tileNoise(tx + 11, ty + 3) - 0.5) * 0.6;
                         const jy = (this.tileNoise(tx + 5, ty + 19) - 0.5) * 0.6;
                         const variant = Math.floor(this.tileNoise(tx + 41, ty + 91) * 3);

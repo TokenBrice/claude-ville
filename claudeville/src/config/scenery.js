@@ -10,17 +10,17 @@ export const WATER_POLYLINES = [
     // destination instead of a defensive moat around the map edge.
     {
         kind: 'moat',
-        width: 4.5,
+        width: 5.2,
         points: [[24, 0], [30, 1], [36, 3], [39, 5]],
     },
     {
         kind: 'moat',
-        width: 3.8,
+        width: 4.4,
         points: [[39, 4], [38, 9], [38, 14], [36, 18]],
     },
     {
         kind: 'moat',
-        width: 2.6,
+        width: 3.1,
         points: [[36, 18], [39, 19]],
     },
     // Main river through the village. It enters from the lower-left edge,
@@ -30,7 +30,7 @@ export const WATER_POLYLINES = [
     // Prompt Alchemy.
     {
         kind: 'river',
-        width: 1.35,
+        width: 1.55,
         points: [[0, 29], [7, 28], [13, 27], [18, 24], [23, 22], [27, 20], [30, 18], [31, 14], [33, 9], [36, 6], [39, 5]],
     },
 ];
@@ -40,27 +40,27 @@ export const WATER_POLYLINES = [
 export const WATER_BASINS = [
     {
         kind: 'moat',
-        centerX: 43.5,
-        centerY: 20,
-        radiusX: 13.2,
-        radiusY: 27,
-        edgeNoise: 0.12,
+        centerX: 43,
+        centerY: 20.5,
+        radiusX: 15,
+        radiusY: 29,
+        edgeNoise: 0.1,
     },
     {
         kind: 'moat',
-        centerX: 37.5,
-        centerY: 3,
-        radiusX: 12,
-        radiusY: 8,
-        edgeNoise: 0.16,
+        centerX: 38,
+        centerY: 3.5,
+        radiusX: 13.5,
+        radiusY: 9.5,
+        edgeNoise: 0.14,
     },
     {
         kind: 'moat',
-        centerX: 35.5,
-        centerY: 17.2,
-        radiusX: 5.8,
-        radiusY: 4.1,
-        edgeNoise: 0.22,
+        centerX: 35.2,
+        centerY: 17.5,
+        radiusX: 6.8,
+        radiusY: 5,
+        edgeNoise: 0.2,
     },
 ];
 
@@ -107,17 +107,19 @@ export const HARBOR_DOCK_TILES = [
 // (4,4) and (36,36) intentionally extend past map edges to thicken the
 // fringe forest.
 export const TREE_CLUSTERS = [
-    { centerX: 4, centerY: 4, radius: 5.5, density: 0.62 },
-    { centerX: 4, centerY: 35, radius: 5, density: 0.58 },
-    { centerX: 35, centerY: 4, radius: 5, density: 0.62 },
-    { centerX: 36, centerY: 36, radius: 5.5, density: 0.6 },
+    { centerX: 3, centerY: 4, radiusX: 7.4, radiusY: 5.5, density: 0.70 },
+    { centerX: 4, centerY: 35, radiusX: 7.2, radiusY: 5.2, density: 0.66 },
+    { centerX: 35, centerY: 4, radiusX: 5.8, radiusY: 6.6, density: 0.64 },
+    { centerX: 36, centerY: 36, radiusX: 7, radiusY: 5.8, density: 0.68 },
     // Abundant but path-safe woodland around the settlement.
-    { centerX: 10, centerY: 30, radius: 4, density: 0.48 },
-    { centerX: 18, centerY: 31, radius: 3.5, density: 0.42 },
-    { centerX: 28, centerY: 31, radius: 4, density: 0.46 },
-    { centerX: 33, centerY: 20, radius: 3.2, density: 0.38 },
-    { centerX: 14, centerY: 9, radius: 3.5, density: 0.4 },
-    { centerX: 27, centerY: 7, radius: 3.2, density: 0.36 },
+    { centerX: 9, centerY: 30, radiusX: 6.4, radiusY: 4.2, density: 0.58 },
+    { centerX: 17, centerY: 32, radiusX: 5.8, radiusY: 3.6, density: 0.52 },
+    { centerX: 28, centerY: 32, radiusX: 6.2, radiusY: 3.8, density: 0.56 },
+    { centerX: 33, centerY: 21, radiusX: 3.2, radiusY: 4.5, density: 0.42 },
+    { centerX: 14, centerY: 9, radiusX: 5.4, radiusY: 3.8, density: 0.50 },
+    { centerX: 26, centerY: 7, radiusX: 4.8, radiusY: 3.5, density: 0.44 },
+    { centerX: 6, centerY: 19, radiusX: 3.2, radiusY: 4.1, density: 0.36 },
+    { centerX: 23, centerY: 13, radiusX: 3.8, radiusY: 2.8, density: 0.32 },
 ];
 
 // Static large boulders. Drawn Y-sorted (occlude behind agents).
@@ -130,11 +132,49 @@ export const BOULDERS = [
     { tileX: 33.4, tileY: 21.5, scale: 1.0, variant: 'b' },
     { tileX: 9.1, tileY: 11.5, scale: 0.85, variant: 'a' },
     { tileX: 30.3, tileY: 36.2, scale: 1.0, variant: 'b' },
+    { tileX: 4.8, tileY: 27.4, scale: 0.95, variant: 'a' },
+    { tileX: 6.2, tileY: 30.6, scale: 1.1, variant: 'b' },
+    { tileX: 15.4, tileY: 34.3, scale: 0.9, variant: 'a' },
+    { tileX: 27.9, tileY: 33.6, scale: 1.05, variant: 'b' },
+    { tileX: 32.8, tileY: 6.5, scale: 0.9, variant: 'a' },
+];
+
+// District biases make the authored map read in larger masses instead of
+// uniformly sprinkling props. Radius is radial falloff in tiles; the engine
+// clamps blocked/path/water/building tiles after applying these weights.
+export const VEGETATION_DISTRICTS = [
+    { name: 'north-sacred-grove', centerX: 12, centerY: 7, radius: 8.5, bushBoost: 0.03, grassBoost: 0.07, treeBoost: 0.08 },
+    { name: 'west-archive-brake', centerX: 6, centerY: 22, radius: 7, bushBoost: 0.05, grassBoost: 0.03, treeBoost: 0.04 },
+    { name: 'south-wildwood', centerX: 19, centerY: 34, radius: 13, bushBoost: 0.05, grassBoost: 0.06, treeBoost: 0.10 },
+    { name: 'harbor-windbreak', centerX: 33, centerY: 20, radius: 5.5, bushBoost: 0.04, grassBoost: 0.02, treeBoost: 0.03 },
+    { name: 'alchemy-heath', centerX: 25, centerY: 10, radius: 5, bushBoost: 0.04, grassBoost: 0.04, treeBoost: 0.02 },
+];
+
+// Shoreline accents are deterministic bands near water. They add readable
+// riverbanks without turning the whole shore into dense trees.
+export const SHORELINE_VEGETATION = {
+    bushBoost: 0.04,
+    grassBoost: 0.09,
+    treeBoost: 0.015,
+    maxWaterDistance: 1,
+};
+
+// Negative-space pockets keep key silhouettes and crossings readable after
+// district density boosts. Strength is subtracted from generated scenery
+// density with radial falloff.
+export const SCENERY_CLEARINGS = [
+    { name: 'command-plaza', centerX: 20.5, centerY: 20.5, radius: 6.5, strength: 0.18 },
+    { name: 'harbor-stage', centerX: 34.5, centerY: 18.5, radius: 5.5, strength: 0.20 },
+    { name: 'forge-yard', centerX: 30, centerY: 16.5, radius: 4.5, strength: 0.12 },
+    { name: 'sanctuary-lawn', centerX: 10.5, centerY: 8.5, radius: 4.8, strength: 0.14 },
+    { name: 'west-bridge', centerX: 13, centerY: 27, radius: 3.2, strength: 0.20 },
+    { name: 'central-bridge', centerX: 20, centerY: 23, radius: 3.5, strength: 0.22 },
+    { name: 'harbor-bridge', centerX: 30, centerY: 18, radius: 3.4, strength: 0.20 },
 ];
 
 // Density thresholds for noise-driven flat features.
 // `BUSH_DENSITY` and `GRASS_TUFT_DENSITY` are noise thresholds in [0, 1] —
 // a tile becomes a bush/tuft when its noise value falls in the band.
 // Tuned to roughly match the existing 'flowers'/'mushrooms' densities.
-export const BUSH_DENSITY = { min: 0.05, max: 0.16 };
-export const GRASS_TUFT_DENSITY = { min: 0.18, max: 0.39 };
+export const BUSH_DENSITY = { min: 0.05, max: 0.13 };
+export const GRASS_TUFT_DENSITY = { min: 0.18, max: 0.30 };
