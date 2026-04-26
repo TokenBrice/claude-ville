@@ -113,6 +113,8 @@ export const HARBOR_DOCK_TILES = [
 
     // Harbor mouth decking: explicit docks avoid the bridge-span slab that
     // would otherwise cover the bay.
+    { tileX: 28, tileY: 22, orientation: 'EW' },
+    { tileX: 29, tileY: 21, orientation: 'EW' },
     { tileX: 29, tileY: 20, orientation: 'EW' },
     { tileX: 30, tileY: 20, orientation: 'EW' },
     { tileX: 31, tileY: 20, orientation: 'EW' },
@@ -174,7 +176,7 @@ export const BOULDERS = [
 // uniformly sprinkling props. Radius is radial falloff in tiles; the engine
 // clamps blocked/path/water/building tiles after applying these weights.
 export const VEGETATION_DISTRICTS = [
-    { name: 'north-grove', centerX: 14, centerY: 14, radius: 6.8, bushBoost: 0.025, grassBoost: 0.06, treeBoost: 0.05 },
+    { name: 'north-grove', centerX: 13, centerY: 15, radius: 6.8, bushBoost: 0.025, grassBoost: 0.06, treeBoost: 0.05 },
     { name: 'west-wilderness-frame', centerX: 7, centerY: 22, radius: 7.0, bushBoost: 0.04, grassBoost: 0.045, treeBoost: 0.07 },
     { name: 'portal-grove', centerX: 15.5, centerY: 26.5, radius: 4.5, bushBoost: 0.035, grassBoost: 0.025, treeBoost: 0.02 },
     { name: 'south-wildwood', centerX: 19, centerY: 35, radius: 12, bushBoost: 0.04, grassBoost: 0.05, treeBoost: 0.08 },
@@ -201,7 +203,7 @@ export const SCENERY_CLEARINGS = [
     { name: 'mine-yard', centerX: 20, centerY: 28, radius: 3.8, strength: 0.14 },
     { name: 'civic-bridge', centerX: 17, centerY: 24, radius: 3.5, strength: 0.22 },
     { name: 'command-bridge', centerX: 22, centerY: 23, radius: 3.5, strength: 0.22 },
-    { name: 'harbor-bridge', centerX: 31, centerY: 21, radius: 3.4, strength: 0.20 },
+    { name: 'harbor-bridge', centerX: 31, centerY: 21, radius: 3.8, strength: 0.22 },
 ];
 
 // Density thresholds for noise-driven flat features.

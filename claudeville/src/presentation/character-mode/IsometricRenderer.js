@@ -24,7 +24,7 @@ const DISTRICT_WASHES = [
     { x: 20, y: 23, radiusX: 12, radiusY: 8, color: '#5f3e21', alpha: 0.11 },
     { x: 35, y: 20, radiusX: 10, radiusY: 8, color: '#1e5b61', alpha: 0.14 },
     { x: 15, y: 26, radiusX: 7, radiusY: 5, color: '#62471f', alpha: 0.10 },
-    { x: 15, y: 16, radiusX: 8, radiusY: 6, color: '#1f4e2a', alpha: 0.12 },
+    { x: 14, y: 16, radiusX: 8, radiusY: 6, color: '#1f4e2a', alpha: 0.12 },
     { x: 29, y: 31, radiusX: 10, radiusY: 8, color: '#243d29', alpha: 0.12 },
 ];
 const ANCIENT_RUINS = [
@@ -70,10 +70,10 @@ const AMBIENT_GROUND_PROPS = [
 
     // Research edges: fewer, quieter accents near knowledge landmarks.
     { tileX: 15.5, tileY: 17.4, type: 'lantern' },
-    { tileX: 26.4, tileY: 17.0, type: 'noticePillar' },
-    { tileX: 29.6, tileY: 19.8, type: 'scrollCrates' },
-    { tileX: 31.7, tileY: 17.9, type: 'runestone' },
-    { tileX: 28.3, tileY: 15.6, type: 'lantern' },
+    { tileX: 24.4, tileY: 16.0, type: 'noticePillar' },
+    { tileX: 27.6, tileY: 18.8, type: 'scrollCrates' },
+    { tileX: 29.7, tileY: 16.9, type: 'runestone' },
+    { tileX: 26.3, tileY: 14.6, type: 'lantern' },
     { tileX: 11.2, tileY: 24.0, type: 'runestone' },
     { tileX: 15.7, tileY: 23.2, type: 'runestone' },
     { tileX: 15.8, tileY: 26.6, type: 'lantern' },
@@ -524,7 +524,7 @@ export class IsometricRenderer {
             { tileX: 30.8, tileY: 27.6, particleType: 'forgeEmber', chance: 0.02 },
             { tileX: 15.0, tileY: 25.8, particleType: 'portalRune', chance: 0.022 },
             { tileX: 24.6, tileY: 24.6, particleType: 'questPing', chance: 0.014 },
-            { tileX: 27.3, tileY: 18.3, particleType: 'archiveMote', chance: 0.022 },
+            { tileX: 25.3, tileY: 17.3, particleType: 'archiveMote', chance: 0.022 },
             { tileX: 35.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
         ];
