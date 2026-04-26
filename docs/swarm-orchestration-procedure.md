@@ -11,21 +11,49 @@ Do not use this SOP when the user forbids subagents or asks for a quick direct c
 | Single-file, low-risk edit | Direct execution; no subagents unless requested. |
 | Multi-file but one tightly coupled implementation | Orchestrator implements; optional reviewer if risky. |
 | Tightly coupled security or data-correctness implementation | Orchestrator implements; reviewer required. |
-| Independent research, code, docs, or validation slices | Swarm workflow. |
-| Broad refactor with independent slices | Swarm workflow with reviewer required. |
-| Multi-slice security/data investigation with separable research or validation tracks | Swarm workflow with reviewer required. |
-| User explicitly asks for subagents/swarm | Swarm workflow, within concurrency limits. |
+| Independent read-only research, inventory, ranking, or validation slices | Light swarm. |
+| Independent low-risk docs or code slices with no overlapping writes | Light swarm by default; full swarm if ownership or integration risk is non-trivial. |
+| Broad refactor with independent slices | Full swarm with reviewer required. |
+| Multi-slice security/data investigation with separable research or validation tracks | Full swarm with reviewer required. |
+| User explicitly asks for subagents/swarm | Light or full swarm based on risk, within concurrency limits. |
 
 If sensitive work is tightly coupled, keep implementation with the orchestrator and use an independent reviewer.
+
+## Workflow Modes
+
+### Direct Execution
+
+Use direct execution for quick, low-risk, tightly scoped work. The orchestrator reads, edits, validates, and reports without spawning subagents.
+
+### Light Swarm
+
+Use light swarm when parallel subagents can accelerate discovery, comparison, ranking, or narrow validation without creating meaningful integration risk.
+
+- Typical shape: 1-3 read-only or notes-only subagents.
+- Good fits: codebase inventory, bug-cause research, option ranking, docs review, validation checks, sprite or asset audits, and separable performance investigation.
+- Reviewer is optional. Add one only if findings affect security, data correctness, broad architecture, or a risky implementation decision.
+- Handover agent is usually skipped. The orchestrator writes the final summary.
+- Assignment baseline can be brief: current `HEAD`, current `git status --short`, paths to read, no-edit instruction, expected output, and stop conditions.
+- If a light-swarm task discovers that writes are needed, the orchestrator either performs the writes directly or upgrades the task to full swarm before delegating edits.
+
+### Full Swarm
+
+Use full swarm when multiple agents may produce implementation patches, when edits cross ownership boundaries, or when correctness risk justifies explicit review gates.
+
+- Typical shape: scoped workers, a reviewer for non-trivial/risky work, and optionally a handover agent.
+- Required for broad refactors, multi-slice security/data work, shared-interface changes, overlapping domains, or any work where subagent edits need integration.
+- Assignment baselines, ownership checks, reviewer gates, validation mapping, and commit/push gates are mandatory.
+- Actual writes should remain ordered when the target is stateful or externally constrained, even if discovery was parallelized.
 
 ## SUBAGENTS ORCHESTRATION GUIDELINE
 
 1. Up to 5 `gpt-5.5` subagents can be active at once, with appropriate effort level (`low`, `medium`, or `high`). `gpt-5.3-codex-spark` xhigh can also be used for quick, well-scoped tasks.
 2. Spawn subagents to research, perform, and execute tasks needed throughout the mission.
-3. Spawn a specialized high-effort reviewer subagent to review other agent tasks, return commit-ready recommendations, and identify in-scope optimization, maintainability, and de-duplication opportunities. The reviewer may commit or directly implement only when explicitly delegated for a specific slice, with owned paths and commit authority stated in the assignment packet.
-4. Spawn one medium-effort handover subagent for broad enhancement research and handover-note writing on multi-slice/risky swarm work, broad enhancement work, or when requested. Otherwise the orchestrator writes the final handoff.
-5. Reuse or close previous subagent sessions **that you spawned** as needed, except the reviewer or handover agents while their standing roles are still active.
-6. Do not close subagent sessions spawned by other agents.
+3. For light swarm, skip standing reviewer and handover roles unless risk appears. Keep assignments short, read-only or notes-only by default, and let the orchestrator synthesize the result.
+4. For full swarm, spawn a specialized high-effort reviewer subagent to review other agent tasks, return commit-ready recommendations, and identify in-scope optimization, maintainability, and de-duplication opportunities. The reviewer may commit or directly implement only when explicitly delegated for a specific slice, with owned paths and commit authority stated in the assignment packet.
+5. Spawn one medium-effort handover subagent for broad enhancement research and handover-note writing on multi-slice/risky swarm work, broad enhancement work, or when requested. Otherwise the orchestrator writes the final handoff.
+6. Reuse or close previous subagent sessions **that you spawned** as needed, except the reviewer or handover agents while their standing roles are still active.
+7. Do not close subagent sessions spawned by other agents.
 
 ## Standard Role Set
 
@@ -38,9 +66,11 @@ If sensitive work is tightly coupled, keep implementation with the orchestrator 
   - Reviews worker output and confirms correctness, risk, and scope boundaries.
   - Defaults to notes-only recommendations.
   - Commits or edits only when explicitly delegated per slice.
+  - Required for full swarm when work is non-trivial or risky; optional for light swarm.
 - **Medium-effort handover subagent**
   - Produces notes-only broad enhancement research and a final handover note.
   - Does not expand implementation scope unless explicitly assigned.
+  - Usually skipped for light swarm.
 
 ## Model and Effort Selection
 
@@ -57,7 +87,7 @@ If a named model is unavailable, use the closest available model with the same r
 
 - Keep total active subagents to **five or fewer**.
 - Spawn workers in parallel only where outputs are independent.
-- Use dedicated reviewer/handover on multi-slice work or tasks marked non-trivial/risky.
+- Use dedicated reviewer/handover on full-swarm multi-slice work or tasks marked non-trivial/risky.
 - For small, single-file, low-risk edits, skip reviewer/handover unless requested.
 - Reuse reviewer/handover agents across slices where possible.
 - Close unused subagent sessions you spawned as soon as their scope is complete.
@@ -68,6 +98,26 @@ If a named model is unavailable, use the closest available model with the same r
 An immediate blocking task is the next step that must complete before any other slice can proceed. The orchestrator handles those directly. Examples: repo-state checks, failing setup commands, branch decisions, and shared interface decisions. Independent research, validation, or isolated implementation can be delegated.
 
 ## Core Workflow
+
+Use the light workflow unless the activation matrix or discovered risk requires the full workflow.
+
+### Light Swarm Workflow
+
+1. **Scope split**
+   - Identify independent read-only, notes-only, or low-risk slices.
+   - Keep immediate blockers with the orchestrator.
+2. **Brief assignment**
+   - Include cwd, current `HEAD`, current `git status --short`, read-only paths, no-edit instruction unless explicitly allowed, expected output, and stop conditions.
+3. **Parallel discovery**
+   - Spawn only the agents needed for the independent slices.
+   - Do not assign overlapping writes. Prefer findings, patch suggestions, or validation notes.
+4. **Orchestrator synthesis**
+   - Compare outputs, make the implementation decision, and perform any small writes directly unless full swarm is now warranted.
+   - If subagent findings imply broader or riskier edits, upgrade to full swarm before delegating implementation.
+5. **Handoff**
+   - Report what was learned, what changed if anything, validation run, residual risks, and the next practical task boundary.
+
+### Full Swarm Workflow
 
 1. **Scope split**
    - Separate the request into clear tasks with minimal overlap.
@@ -93,7 +143,14 @@ An immediate blocking task is the next step that must complete before any other 
 
 ## Assignment Baseline
 
-Before assigning a worker or reviewer any owned paths, record:
+For light-swarm read-only or notes-only tasks, record a brief baseline:
+
+- Current `HEAD`.
+- Current `git status --short`.
+- Read-only path list.
+- No-edit instruction and stop conditions.
+
+Before assigning a full-swarm worker or reviewer any owned paths, record:
 
 - Current `HEAD`.
 - Current `git status --short`.
