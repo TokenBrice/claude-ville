@@ -20,19 +20,30 @@ const adapters = [
 
 `isAvailable()` is checked on every aggregation pass, so machines without a provider installed are silently skipped.
 
+## Adapter registry behavior
+
+`adapters/index.js` is the aggregation layer used by `server.js`; the server does not read provider files directly.
+
+- `getAllSessions(activeThresholdMs)` skips unavailable adapters, isolates per-adapter failures, merges results, sorts by `lastActivity` descending, and caches the full list briefly.
+- `getSessionDetailByProvider(provider, sessionId, project)` dispatches to the matching adapter, caches successful detail payloads briefly, and returns stale cached details after an adapter error when possible.
+- `getAllWatchPaths()` merges active adapter watch paths and ignores adapter watch-path errors.
+- `getActiveProviders()` surfaces provider display names and home directories for `/api/providers`.
+
+The short caches are intentional. The browser, activity panel, dashboard mode, WebSocket loop, and widget all poll near-live state, so the registry absorbs repeated identical reads without making the UI feel stale.
+
 ## Contract
 
 Each adapter class must expose the following getters and methods. Getters are JS class getters (no parentheses), not methods.
 
 | Member | Kind | Returns | Consumer |
 | --- | --- | --- | --- |
-| `name` | getter | display string (e.g. `'Claude Code'`) | `getActiveProviders()` in `adapters/index.js:65-71`, surfaced via `/api/providers` |
-| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'`) | `adapters/index.js:36`, included in every session object |
+| `name` | getter | display string (e.g. `'Claude Code'`) | `getActiveProviders()`, surfaced via `/api/providers` |
+| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'`) | Adapter dispatch and every session object |
 | `homeDir` | getter | absolute path to the provider's source dir | `getActiveProviders()` |
-| `isAvailable()` | method | `boolean` | `adapters/index.js:21,53,66` — gates every iteration |
-| `getActiveSessions(activeThresholdMs)` | method | `Session[]` (see below) | `adapters/index.js:18-30`, called from `server.js` per request and per polling tick |
-| `getSessionDetail(sessionId, project)` | method | `{ toolHistory, messages, tokenUsage?, sessionId }` | `adapters/index.js:35-44`, served at `/api/session-detail` |
-| `getWatchPaths()` | method | `WatchPath[]` (see below) | `adapters/index.js:49-60`, consumed by `server.js:475-490` |
+| `isAvailable()` | method | `boolean` | Gates every registry iteration |
+| `getActiveSessions(activeThresholdMs)` | method | `Session[]` (see below) | Called from `server.js` per request and per polling tick |
+| `getSessionDetail(sessionId, project)` | method | `{ toolHistory, messages, tokenUsage?, sessionId }` | Served at `/api/session-detail` |
+| `getWatchPaths()` | method | `WatchPath[]` (see below) | Consumed by `server.js` in `startFileWatcher()` |
 
 ### Claude-only optional methods
 
@@ -66,7 +77,19 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | `tokenUsage` | object \| null | See "Token normalization" below. Some adapters omit this. |
 | `parentSessionId` | string \| null | Set on subagent / spawned-thread sessions. |
 | `reasoningEffort` | string \| null | Codex-only. Pulled from `turn_context` / `event_msg`. |
-| `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Dry-run events are omitted. |
+| `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Dry-run events are omitted. Events include `id`, `type`, `project`, `provider`, `sessionId`, `sourceId`, `ts`, and `commandHash`; `command`, `targetRef`, `success`, `exitCode`, and `completedAt` are optional metadata when the adapter can derive them. |
+
+### Git event extraction
+
+`gitEvents.js` extracts only high-signal repository events from raw tool commands:
+
+- `git commit` and `git push` commands are included.
+- Dry-runs are omitted.
+- Push `targetRef` is inferred when a refspec is visible.
+- Codex can sometimes attach completion metadata from command-end events (`success`, `exitCode`, `completedAt`).
+- Parsing is best-effort and command-string based; do not treat events as an authoritative audit log.
+
+Adapters attach `gitEvents` to active session objects. `/api/session-detail` currently focuses on tool history, messages, and tokens, so consumers that need git events should read them from the session list data.
 
 ### Token normalization
 
@@ -93,14 +116,14 @@ Returns an array of:
 { type: 'file' | 'directory', path: string, recursive?: boolean, filter?: string }
 ```
 
-`server.js:475-490` consumes the array as follows:
+`server.js` consumes the array in `startFileWatcher()` as follows:
 
 - `type === 'file'`: `fs.watch(path)` is attached; any `change` event triggers a debounced broadcast.
 - `type === 'directory'`: `fs.watch(path, { recursive })` is attached; `filter` (if provided) requires the changed filename to end with that suffix (e.g. `.jsonl`, `.json`).
 - Missing paths are silently skipped (`fs.existsSync` guard).
 - Watch errors are swallowed so a single broken path does not prevent other watchers from registering.
 
-The 2-second polling interval in `startFileWatcher` is independent of these watches and runs even if no path could be attached; the broadcast itself no-ops when `wsClients.size === 0` (`server.js:450`).
+The 2-second polling interval in `startFileWatcher` is independent of these watches and runs even if no path could be attached; the broadcast itself no-ops when no WebSocket clients are connected.
 
 ## How to add a provider
 
