@@ -3,45 +3,51 @@
 // settlement shape: district masses and the roads that connect them.
 
 export const TOWN_DISTRICTS = Object.freeze([
-    { id: 'civic', label: 'Civic Plaza', center: [20, 21], radius: 6 },
-    { id: 'knowledge', label: 'Scholars Quarter', center: [10, 15], radius: 6 },
-    { id: 'workshop', label: 'Forge Row', center: [29, 21], radius: 5 },
-    { id: 'resource', label: 'Mine Yard', center: [9, 28], radius: 5 },
-    { id: 'arcane', label: 'Rune Gate', center: [28, 29], radius: 6 },
+    { id: 'civic', label: 'City Center', center: [20, 20], radius: 7 },
+    { id: 'knowledge', label: 'Upper Periphery', center: [12, 10], radius: 6 },
+    { id: 'workshop', label: 'Forge Row', center: [30, 26], radius: 5 },
+    { id: 'resource', label: 'Mine Yard', center: [7, 31], radius: 5 },
+    { id: 'arcane', label: 'Portal Periphery', center: [10, 27], radius: 6 },
     { id: 'harbor', label: 'Harbor Quay', center: [36, 19], radius: 5 },
-    { id: 'quiet', label: 'Sanctuary Grove', center: [9, 8], radius: 5 },
+    { id: 'quiet', label: 'Sanctuary Grove', center: [6, 7], radius: 5 },
 ]);
 
 export const TOWN_ROAD_ROUTES = Object.freeze([
     {
-        id: 'civic-spine',
+        id: 'city-center-spine',
         material: 'avenue',
         width: 2,
-        points: [[20, 22], [20, 21], [23, 21], [23, 19]],
+        points: [[17, 19], [20, 19], [23, 19], [25, 20], [25, 25]],
     },
     {
-        id: 'civic-ring-west',
+        id: 'city-center-south-bridge',
         material: 'avenue',
         width: 2,
-        points: [[20, 23], [18, 23], [13, 23], [10, 21]],
+        points: [[20, 19], [21, 21], [22, 21], [25, 22]],
     },
     {
-        id: 'scholar-road',
+        id: 'city-hall-bridge',
+        material: 'avenue',
+        width: 1,
+        points: [[15, 19], [16, 22], [18, 23], [22, 24]],
+    },
+    {
+        id: 'observatory-road',
         material: 'dirt',
         width: 1,
-        points: [[10, 21], [10, 17], [12, 15], [14, 15]],
+        points: [[17, 19], [15, 15], [13, 12], [11, 11]],
+    },
+    {
+        id: 'alchemy-road',
+        material: 'dirt',
+        width: 1,
+        points: [[17, 19], [17, 15], [17, 10]],
     },
     {
         id: 'sanctuary-path',
         material: 'dirt',
         width: 1,
-        points: [[14, 15], [11, 14], [10, 11], [10, 9]],
-    },
-    {
-        id: 'workshop-causeway',
-        material: 'avenue',
-        width: 2,
-        points: [[22, 22], [26, 22], [29, 23], [30, 23]],
+        points: [[11, 11], [8, 9], [6, 8]],
     },
     {
         id: 'harbor-quay',
@@ -56,15 +62,21 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         points: [[37, 14], [37, 19], [39, 19], [39, 21]],
     },
     {
+        id: 'portal-road',
+        material: 'dirt',
+        width: 1,
+        points: [[16, 22], [13, 24], [10, 26]],
+    },
+    {
         id: 'mine-road',
         material: 'dirt',
         width: 1,
-        points: [[17, 23], [15, 25], [12, 30], [10, 30]],
+        points: [[10, 26], [9, 29], [7, 30]],
     },
     {
-        id: 'arcane-road',
+        id: 'forge-road',
         material: 'dirt',
         width: 1,
-        points: [[22, 26], [24, 28], [26, 29], [27, 31], [29, 31]],
+        points: [[25, 25], [29, 26], [31, 24]],
     },
 ]);

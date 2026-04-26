@@ -20,11 +20,11 @@ const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const DISTRICT_WASHES = [
-    { x: 20, y: 18, radiusX: 13, radiusY: 9, color: '#5f3e21', alpha: 0.11 },
-    { x: 30, y: 18, radiusX: 10, radiusY: 7, color: '#1e5b61', alpha: 0.13 },
-    { x: 11, y: 24, radiusX: 11, radiusY: 8, color: '#62471f', alpha: 0.10 },
-    { x: 7, y: 8, radiusX: 9, radiusY: 8, color: '#1f4e2a', alpha: 0.12 },
-    { x: 32, y: 31, radiusX: 11, radiusY: 8, color: '#243d29', alpha: 0.13 },
+    { x: 20, y: 20, radiusX: 12, radiusY: 8, color: '#5f3e21', alpha: 0.11 },
+    { x: 34, y: 19, radiusX: 9, radiusY: 7, color: '#1e5b61', alpha: 0.13 },
+    { x: 9, y: 25, radiusX: 9, radiusY: 8, color: '#62471f', alpha: 0.10 },
+    { x: 8, y: 8, radiusX: 10, radiusY: 8, color: '#1f4e2a', alpha: 0.12 },
+    { x: 30, y: 28, radiusX: 10, radiusY: 8, color: '#243d29', alpha: 0.12 },
 ];
 const ANCIENT_RUINS = [
     { tileX: 37, tileY: 3, scale: 1.05 },
@@ -52,23 +52,23 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 40.2, tileY: 19.2, type: 'harborCrane' },
 
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
-    { tileX: 27.7, tileY: 16.2, type: 'oreCart' },
-    { tileX: 29.9, tileY: 14.2, type: 'lantern' },
-    { tileX: 11.2, tileY: 24.0, type: 'oreCart' },
-    { tileX: 12.8, tileY: 22.8, type: 'lantern' },
-    { tileX: 10.4, tileY: 25.4, type: 'runestone' },
+    { tileX: 30.0, tileY: 24.0, type: 'oreCart' },
+    { tileX: 33.4, tileY: 25.0, type: 'lantern' },
+    { tileX: 6.6, tileY: 30.2, type: 'oreCart' },
+    { tileX: 4.2, tileY: 32.8, type: 'lantern' },
+    { tileX: 9.0, tileY: 29.4, type: 'runestone' },
 
     // Civic core: utility props around the square, not scattered through the woods.
-    { tileX: 20.5, tileY: 24.4, type: 'well' },
-    { tileX: 17.6, tileY: 24.0, type: 'marketStall' },
-    { tileX: 24.2, tileY: 24.6, type: 'signpost' },
-    { tileX: 21.8, tileY: 16.2, type: 'noticePillar' },
-    { tileX: 8.5, tileY: 20.5, type: 'scrollCrates' },
+    { tileX: 20.4, tileY: 19.6, type: 'well' },
+    { tileX: 17.4, tileY: 19.6, type: 'marketStall' },
+    { tileX: 25.4, tileY: 21.2, type: 'signpost' },
+    { tileX: 21.8, tileY: 14.8, type: 'noticePillar' },
+    { tileX: 23.0, tileY: 19.6, type: 'scrollCrates' },
 
     // Sacred/research edges: fewer, quieter accents near magical buildings.
-    { tileX: 13.2, tileY: 13.8, type: 'lantern' },
-    { tileX: 24.2, tileY: 10.8, type: 'runestone' },
-    { tileX: 10.8, tileY: 8.5, type: 'flowerCart' },
+    { tileX: 12.8, tileY: 10.8, type: 'lantern' },
+    { tileX: 18.8, tileY: 9.6, type: 'runestone' },
+    { tileX: 6.8, tileY: 8.5, type: 'flowerCart' },
 ];
 
 class StaticPropSprite {
