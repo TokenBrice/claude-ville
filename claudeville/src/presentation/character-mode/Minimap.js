@@ -13,8 +13,6 @@ const BUILDING_COLORS = {
     observatory: '#c9903f',
     archive: '#d8b96d',
     portal: '#76d8ff',
-    alchemy: '#c9f26b',
-    sanctuary: '#9fb66a',
     watchtower: '#ffd36a',
 };
 

@@ -14,7 +14,7 @@ const LANDMARK_LABEL_TYPES = new Set(
         .filter((b) => b.labelPriority === 'landmark')
         .map((b) => b.type),
 );
-const LABEL_VISIBLE_ZOOM = 2;
+const LABEL_VISIBLE_ZOOM = 1;
 const LABEL_DETAIL_ZOOM = 3;
 const LABEL_OVERLAP_TOLERANCE = 0.45;
 const LABEL_COMPACT_OVERLAP_TOLERANCE = 0.62;
@@ -33,8 +33,6 @@ const LANDMARK_LABEL_ACCENTS = {
     taskboard: '#8bd7ff',
     chathall: '#ffeb8f',
     archive: '#b3d68c',
-    alchemy: '#d6a5ff',
-    sanctuary: '#95e0d2',
 };
 
 export class BuildingSprite {
@@ -139,7 +137,6 @@ export class BuildingSprite {
             if (!dims) continue;
             const isHovered = this.hovered === b;
             const isLandmark = b.labelPriority === 'landmark' || LANDMARK_LABEL_TYPES.has(b.type);
-            if (!isHovered && !isLandmark && zoom < LABEL_VISIBLE_ZOOM) continue;
             const localLabelDensity = this._estimateLocalLabelDensity(occupied, center.x, center.y);
 
             ctx.save();
@@ -707,7 +704,7 @@ export class BuildingSprite {
 
     _labelTextFor(building, zoom, isHovered) {
         const label = this._resolveBuildingLabelText(building);
-        if (isHovered || zoom >= LABEL_DETAIL_ZOOM) return label;
+        if (zoom >= LABEL_DETAIL_ZOOM) return label;
         const short = LABEL_SHORT_TEXT[building.type];
         if (short) return short;
         const words = label.split(/\s+/).filter(Boolean);

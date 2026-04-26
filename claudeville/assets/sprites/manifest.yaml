@@ -352,22 +352,6 @@ buildings:
     size: 64
     displaySize: 112
 
-  # ── STANDARD: Prompt Alchemy ──
-  - id: building.alchemy
-    tool: isometric_tile
-    prompt: "epic prompt alchemy workshop, bubbling cauldron visible through round window, strange vapours drifting from vent, arcane ingredient jars stacked outside, isometric"
-    size: 64
-    displaySize: 96
-    emitters:
-      sparkle: [64, 80]
-
-  # ── STANDARD: Idle Sanctuary ──
-  - id: building.sanctuary
-    tool: isometric_tile
-    prompt: "epic idle sanctuary chapel, serene stone walls with ivy, glowing peaceful rune above door, soft golden light from within, isometric"
-    size: 64
-    displaySize: 96
-
 # ─── PROPS ───────────────────────────────────────────────────────────────────
 # Prop ids match the camelCase `type` field in IsometricRenderer.js
 # AMBIENT_GROUND_PROPS so renderer lookup stays one-to-one.

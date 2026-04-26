@@ -26,8 +26,8 @@ const DIRECT_TOOL_BUILDINGS = {
     apply_patch: 'forge',
     'functions.apply_patch': 'forge',
 
-    NotebookEdit: 'alchemy',
-    'image_gen.imagegen': 'alchemy',
+    NotebookEdit: 'forge',
+    'image_gen.imagegen': 'forge',
 
     'mcp__playwright__browser_navigate': 'portal',
     'mcp__playwright__browser_take_screenshot': 'portal',
@@ -205,7 +205,7 @@ export class Agent {
         const tool = String(toolName).toLowerCase();
         if (tool.includes('playwright') || tool.includes('browser') || tool.includes('chrome')) return 'portal';
         if (tool.includes('web') || tool.includes('fetch')) return 'observatory';
-        if (tool.includes('image') || tool.includes('prompt') || tool.includes('notebook')) return 'alchemy';
+        if (tool.includes('image') || tool.includes('prompt') || tool.includes('notebook')) return 'forge';
         if (tool.includes('github') || tool.includes('pull_request') || tool.includes(' pr_')) return 'watchtower';
         if (tool.includes('apply_patch') || tool.includes('edit') || tool.includes('write') || tool.includes('update_file') || tool.includes('create_file') || tool.includes('delete_file')) return 'forge';
         if (tool.includes('spawn_agent') || tool.includes('send_input') || tool.includes('team') || tool.includes('parallel')) return 'command';

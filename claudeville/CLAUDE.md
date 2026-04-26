@@ -146,7 +146,7 @@ Key files:
 - `Pathfinder.js`: grid pathfinding over the walkability map.
 - `HarborTraffic.js`: ship/harbor motion and git-event-aware harbor activity.
 
-Buildings from `src/config/buildings.js` (eleven total):
+Buildings from `src/config/buildings.js` (nine total):
 
 - Command Center: team status.
 - Code Forge: code work.
@@ -156,9 +156,7 @@ Buildings from `src/config/buildings.js` (eleven total):
 - Research Observatory: external research.
 - Lore Archive: reading and search.
 - Portal Gate: browser and remote tools.
-- Prompt Alchemy: notebook and prompt work.
-- Idle Sanctuary: resting agents.
-- Sky Watchtower: monitoring and status.
+- Pharos Commit Harbor: commit and push activity.
 
 Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears renderer selection and stops follow, but the activity panel closes through its own close action or when the selected agent is removed. Agents using `SendMessage` can move toward a matched recipient and show chat state.
 

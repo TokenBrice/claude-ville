@@ -14,6 +14,7 @@ import { SpriteRenderer } from './SpriteRenderer.js';
 import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
+import { LandmarkActivity } from './LandmarkActivity.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -65,10 +66,8 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 21.8, tileY: 14.8, type: 'noticePillar' },
     { tileX: 23.0, tileY: 19.6, type: 'scrollCrates' },
 
-    // Sacred/research edges: fewer, quieter accents near magical buildings.
+    // Research edges: fewer, quieter accents near knowledge landmarks.
     { tileX: 12.8, tileY: 10.8, type: 'lantern' },
-    { tileX: 18.8, tileY: 9.6, type: 'runestone' },
-    { tileX: 6.8, tileY: 8.5, type: 'flowerCart' },
 ];
 
 class StaticPropSprite {
@@ -99,6 +98,7 @@ export class IsometricRenderer {
             ? new BuildingSprite(this.assets, this.sprites, this.particleSystem)
             : null;
         this.harborTraffic = new HarborTraffic({ sprites: this.sprites });
+        this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.minimap = new Minimap();
         this.agentSprites = new Map();
         this._sortedSprites = [];
@@ -662,6 +662,7 @@ export class IsometricRenderer {
         this.motionScale = scale;
         this.buildingRenderer?.setMotionScale(scale);
         this.harborTraffic?.setMotionScale(scale);
+        this.landmarkActivity?.setMotionScale(scale);
         this.particleSystem.setMotionEnabled(scale > 0);
         for (const sprite of this.agentSprites.values()) {
             sprite.setMotionScale(scale);
@@ -812,10 +813,12 @@ export class IsometricRenderer {
         if (shouldResort) {
             this._markSpritesDirty();
         }
+        const sortedSnapshot = this._snapshotSortedSprites();
         this.harborTraffic?.update(this.world.agents.values(), dt);
+        this.landmarkActivity?.update(this.world.agents.values(), sortedSnapshot, dt);
 
         // Update building renderer (pass agent sprite positions)
-        this.buildingRenderer?.setAgentSprites(this._snapshotSortedSprites());
+        this.buildingRenderer?.setAgentSprites(sortedSnapshot);
         this.buildingRenderer?.update(dt);
         this._updateAmbientEffects();
 
@@ -904,6 +907,7 @@ export class IsometricRenderer {
         const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
         const sortedSprites = this._snapshotSortedSprites();
         const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
+        const landmarkDrawables = this.landmarkActivity?.enumerateDrawables() ?? [];
         const zoom = this.camera.zoom;
         this._assignAgentOverlaySlots(sortedSprites, zoom);
 
@@ -911,6 +915,7 @@ export class IsometricRenderer {
         for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
         for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
         for (const d of harborDrawables) drawables.push({ kind: 'harbor-traffic', sortY: d.sortY, payload: d });
+        for (const d of landmarkDrawables) drawables.push({ kind: 'landmark-activity', sortY: d.sortY, payload: d });
         drawables.sort((a, b) => a.sortY - b.sortY);
 
         for (const item of drawables) {
@@ -918,6 +923,8 @@ export class IsometricRenderer {
                 item.payload.draw(ctx, zoom);
             } else if (item.kind === 'harbor-traffic') {
                 this.harborTraffic.draw(ctx, item.payload, zoom);
+            } else if (item.kind === 'landmark-activity') {
+                this.landmarkActivity.draw(ctx, item.payload, zoom);
             } else {
                 this.buildingRenderer.drawDrawable(ctx, item.payload);
             }

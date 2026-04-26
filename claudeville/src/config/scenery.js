@@ -158,11 +158,10 @@ export const BOULDERS = [
 // uniformly sprinkling props. Radius is radial falloff in tiles; the engine
 // clamps blocked/path/water/building tiles after applying these weights.
 export const VEGETATION_DISTRICTS = [
-    { name: 'north-sacred-grove', centerX: 9, centerY: 7, radius: 8.5, bushBoost: 0.03, grassBoost: 0.07, treeBoost: 0.08 },
+    { name: 'north-grove', centerX: 9, centerY: 7, radius: 8.5, bushBoost: 0.03, grassBoost: 0.07, treeBoost: 0.08 },
     { name: 'west-portal-brake', centerX: 8, centerY: 24, radius: 7, bushBoost: 0.05, grassBoost: 0.03, treeBoost: 0.04 },
     { name: 'south-wildwood', centerX: 19, centerY: 34, radius: 13, bushBoost: 0.05, grassBoost: 0.06, treeBoost: 0.10 },
     { name: 'harbor-windbreak', centerX: 33, centerY: 21, radius: 5.5, bushBoost: 0.035, grassBoost: 0.02, treeBoost: 0.02 },
-    { name: 'alchemy-heath', centerX: 17, centerY: 9, radius: 5, bushBoost: 0.04, grassBoost: 0.04, treeBoost: 0.02 },
 ];
 
 // Shoreline accents are deterministic bands near water. They add readable
@@ -181,7 +180,6 @@ export const SCENERY_CLEARINGS = [
     { name: 'city-center', centerX: 20.5, centerY: 20.5, radius: 7.0, strength: 0.20 },
     { name: 'harbor-stage', centerX: 36.5, centerY: 19.5, radius: 6.0, strength: 0.24 },
     { name: 'forge-yard', centerX: 31, centerY: 25, radius: 4.5, strength: 0.12 },
-    { name: 'sanctuary-lawn', centerX: 6.5, centerY: 7.5, radius: 4.8, strength: 0.14 },
     { name: 'west-bridge', centerX: 7, centerY: 20, radius: 3.2, strength: 0.20 },
     { name: 'city-hall-bridge', centerX: 16, centerY: 22, radius: 3.5, strength: 0.22 },
     { name: 'command-bridge', centerX: 22, centerY: 21, radius: 3.5, strength: 0.22 },

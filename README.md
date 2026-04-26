@@ -149,9 +149,7 @@ World mode is the current RPG visual direction. It renders an isometric pixel vi
 - Research Observatory: external research.
 - Lore Archive: reading and search.
 - Portal Gate: browser and remote tools.
-- Prompt Alchemy: notebook and prompt work.
-- Idle Sanctuary: resting agents.
-- Sky Watchtower: monitoring and status.
+- Pharos Commit Harbor: commit and push activity.
 
 See `claudeville/src/config/buildings.js` for the source of truth.
 

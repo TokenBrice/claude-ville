@@ -200,7 +200,7 @@ export class AgentSprite {
             return this.agent.targetBuildingType || 'command';
         }
         if (this.agent.status === AgentStatus.WAITING) return this.agent.targetBuildingType || 'taskboard';
-        if (this.agent.status === AgentStatus.IDLE) return 'sanctuary';
+        if (this.agent.status === AgentStatus.IDLE) return null;
         return null;
     }
 
