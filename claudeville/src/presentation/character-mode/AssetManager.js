@@ -67,7 +67,13 @@ export class AssetManager {
         const img = await this._loadImage(path);
         this.bitmaps.set(entry.id, img);
         this.dimensions.set(entry.id, { w: img.width, h: img.height });
-        if (entry.anchor) this.anchors.set(entry.id, entry.anchor);
+        if (entry.anchor) {
+            this.anchors.set(entry.id, entry.anchor);
+        } else if (entry.id.startsWith('building.')) {
+            // Standard single-tile buildings: anchor at bottom-center so the iso
+            // footprint sits at the building screen center.
+            this.anchors.set(entry.id, [Math.floor(img.width / 2), Math.floor(img.height * 7 / 8)]);
+        }
         const mask = this._buildAlphaMask(img);
         this.alphaMasks.set(entry.id, mask);
         this.outlines.set(entry.id, this._bakeOutline(img.width, img.height, mask));
@@ -102,7 +108,14 @@ export class AssetManager {
         }
         this.bitmaps.set(entry.id, canvas);
         this.dimensions.set(entry.id, { w: canvas.width, h: canvas.height });
-        if (entry.anchor) this.anchors.set(entry.id, entry.anchor);
+        // Composed hero buildings without an explicit manifest anchor land their
+        // bottom-of-footprint near the iso tile center: bottom-center horizontally,
+        // 7/8 down vertically (lower band ≈ ground footprint, upper band ≈ tower).
+        if (entry.anchor) {
+            this.anchors.set(entry.id, entry.anchor);
+        } else {
+            this.anchors.set(entry.id, [Math.floor(canvas.width / 2), Math.floor(canvas.height * 7 / 8)]);
+        }
         const mask = this._buildAlphaMaskFromCanvas(canvas);
         this.alphaMasks.set(entry.id, mask);
         this.outlines.set(entry.id, this._bakeOutline(canvas.width, canvas.height, mask));
