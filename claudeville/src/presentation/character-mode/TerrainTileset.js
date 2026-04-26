@@ -26,8 +26,20 @@ export class TerrainTileset {
         const sy = Math.floor(mask / TILESET_GRID_COLS) * this.cell;
         const screenX = (tileX - tileY) * (TILE_WIDTH / 2);
         const screenY = (tileX + tileY) * (TILE_HEIGHT / 2);
-        const dx = Math.round(screenX - this.cell / 2);
-        const dy = Math.round(screenY - this.cell / 2);
-        ctx.drawImage(sheet, sx, sy, this.cell, this.cell, dx, dy, this.cell, this.cell);
+        // Stretch the 32x32 source cell into the 64x32 iso slot, anchored on
+        // the diamond center, then clip to the diamond so corners don't bleed
+        // into neighbours and create a patchwork seam.
+        const dx = Math.round(screenX - TILE_WIDTH / 2);
+        const dy = Math.round(screenY - TILE_HEIGHT / 2);
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(screenX, screenY - TILE_HEIGHT / 2);
+        ctx.lineTo(screenX + TILE_WIDTH / 2, screenY);
+        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
+        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
+        ctx.closePath();
+        ctx.clip();
+        ctx.drawImage(sheet, sx, sy, this.cell, this.cell, dx, dy, TILE_WIDTH, TILE_HEIGHT);
+        ctx.restore();
     }
 }
