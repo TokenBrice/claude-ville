@@ -23,8 +23,8 @@ export const WATER_POLYLINES = [
         width: 2.6,
         points: [[31, 22], [34, 22], [37, 22], [39, 23]],
     },
-    // Main river through City Center. It separates the north civic landmarks
-    // from the task-board/forge side, then drains into the harbor sea.
+    // Main moat through City Center. It separates the north civic landmarks
+    // from the production row, then drains into the harbor sea.
     {
         kind: 'moat',
         width: 2.15,

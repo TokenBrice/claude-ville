@@ -139,19 +139,16 @@ Only active adapters are used. Claude-only concepts such as teams and tasks are 
 
 ### World Mode
 
-World mode is the current RPG visual direction. It renders an isometric pixel village on Canvas 2D with terrain, roads, a small pond, buildings, particles, a minimap, and agent sprites. Current buildings are:
+World mode is the current RPG visual direction. It renders an isometric pixel village on Canvas 2D with terrain, roads, a small pond, buildings, particles, a minimap, and agent sprites. Current buildings (source of truth: `claudeville/src/config/buildings.js`):
 
 - Command Center: team status.
+- Task Board: task status.
 - Code Forge: code work.
 - Token Mine: token usage.
-- Task Board: task status.
-- Chat Hall: messages.
+- Grand Lore Archive: reading and search.
 - Research Observatory: external research.
-- Lore Archive: reading and search.
 - Portal Gate: browser and remote tools.
-- Pharos Commit Harbor: commit and push activity.
-
-See `claudeville/src/config/buildings.js` for the source of truth.
+- Pharos Lighthouse: GitHub and deploy sea watch.
 
 Agents can be selected on the canvas. Selection opens the activity panel and makes the camera follow the selected sprite until the selection clears or the user drags the camera. Agents using `SendMessage` can move toward a matched recipient and show chat animation state.
 

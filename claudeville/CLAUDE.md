@@ -146,17 +146,16 @@ Key files:
 - `Pathfinder.js`: grid pathfinding over the walkability map.
 - `HarborTraffic.js`: ship/harbor motion and git-event-aware harbor activity.
 
-Buildings from `src/config/buildings.js` (nine total):
+Buildings from `src/config/buildings.js` (eight total):
 
 - Command Center: team status.
+- Task Board: task status.
 - Code Forge: code work.
 - Token Mine: token usage.
-- Task Board: task status.
-- Chat Hall: messages.
+- Grand Lore Archive: reading and search.
 - Research Observatory: external research.
-- Lore Archive: reading and search.
 - Portal Gate: browser and remote tools.
-- Pharos Commit Harbor: commit and push activity.
+- Pharos Lighthouse: GitHub and deploy sea watch.
 
 Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears renderer selection and stops follow, but the activity panel closes through its own close action or when the selected agent is removed. Agents using `SendMessage` can move toward a matched recipient and show chat state.
 
