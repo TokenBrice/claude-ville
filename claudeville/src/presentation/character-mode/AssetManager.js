@@ -16,6 +16,7 @@ export class AssetManager {
         this.anchors = new Map();      // id → [cx, cy] in sprite-local px
         this.outlines = new Map();     // id → HTMLCanvasElement (1-px gold edge)
         this._entriesCache = null;
+        this.assetVersion = null;
     }
 
     async load() {
@@ -30,6 +31,7 @@ export class AssetManager {
             throw new Error(`[AssetManager] failed to parse YAML: ${err.message}`);
         }
 
+        this.assetVersion = this.manifest?.style?.assetVersion || null;
         const entries = this._flattenManifest(this.manifest);
         this._entriesCache = entries;
         await Promise.all(entries.map(e => this._loadEntry(e)));
@@ -64,7 +66,8 @@ export class AssetManager {
         }
         // Standard single-PNG entry.
         const path = this._pathFor(entry);
-        const img = await this._loadImage(path);
+        const loadedImg = await this._loadImage(path);
+        const img = this._normalizeImageToManifestSize(entry, loadedImg);
         this.bitmaps.set(entry.id, img);
         this.dimensions.set(entry.id, { w: img.width, h: img.height });
         if (entry.anchor) {
@@ -83,7 +86,8 @@ export class AssetManager {
                 if (name === 'base') continue;
                 const layerId = `${entry.id}.${name}`;
                 const layerPath = this._pathFor({ id: layerId, ...layer });
-                const layerImg = await this._loadImage(layerPath);
+                const loadedLayerImg = await this._loadImage(layerPath);
+                const layerImg = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedLayerImg);
                 this.bitmaps.set(layerId, layerImg);
                 this.dimensions.set(layerId, { w: layerImg.width, h: layerImg.height });
                 if (layer.anchor) this.anchors.set(layerId, layer.anchor);
@@ -93,7 +97,8 @@ export class AssetManager {
 
     async _loadComposedBuilding(entry) {
         const [cols, rows] = entry.composeGrid;
-        const cellSize = entry.layers.base.size || 64;
+        const sourceCellSize = entry.layers.base.size || 64;
+        const cellSize = entry.layers.base.displaySize || sourceCellSize * 2;
         const canvas = document.createElement('canvas');
         canvas.width = cols * cellSize;
         canvas.height = rows * cellSize;
@@ -103,7 +108,7 @@ export class AssetManager {
             for (let c = 0; c < cols; c++) {
                 const cellPath = `assets/sprites/buildings/${entry.id}/base-${c}-${r}.png`;
                 const img = await this._loadImage(cellPath);
-                ctx.drawImage(img, c * cellSize, r * cellSize);
+                ctx.drawImage(img, c * cellSize, r * cellSize, cellSize, cellSize);
             }
         }
         this.bitmaps.set(entry.id, canvas);
@@ -125,7 +130,8 @@ export class AssetManager {
                 if (name === 'base') continue;
                 const layerId = `${entry.id}.${name}`;
                 const layerPath = `assets/sprites/buildings/${entry.id}/${name}.png`;
-                const img = await this._loadImage(layerPath);
+                const loadedImg = await this._loadImage(layerPath);
+                const img = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedImg);
                 this.bitmaps.set(layerId, img);
                 this.dimensions.set(layerId, { w: img.width, h: img.height });
                 if (layer.anchor) this.anchors.set(layerId, layer.anchor);
@@ -156,10 +162,33 @@ export class AssetManager {
                 const ph = new Image();
                 ph.onload = () => resolve(ph);
                 ph.onerror = () => resolve(img);   // give up and resolve with the empty image
-                ph.src = PLACEHOLDER_PATH;
+                ph.src = this._versionedPath(PLACEHOLDER_PATH);
             };
-            img.src = path;
+            img.src = this._versionedPath(path);
         });
+    }
+
+    _versionedPath(path) {
+        if (!this.assetVersion || path.startsWith('data:')) return path;
+        const separator = path.includes('?') ? '&' : '?';
+        return `${path}${separator}v=${encodeURIComponent(this.assetVersion)}`;
+    }
+
+    _normalizeImageToManifestSize(entry, img) {
+        if (!entry?.size || !img?.width || !img?.height) return img;
+        if (entry.id?.startsWith('agent.') || entry.id?.startsWith('terrain.') || entry.id?.startsWith('atmosphere.')) {
+            return img;
+        }
+        const target = entry.displaySize || entry.size;
+        if (img.width === target && img.height === target) return img;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = target;
+        canvas.height = target;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0, target, target);
+        return canvas;
     }
 
     _buildAlphaMask(img) {

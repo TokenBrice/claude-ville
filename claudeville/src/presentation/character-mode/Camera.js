@@ -6,7 +6,7 @@ export class Camera {
         this.x = 0;
         this.y = 0;
         this.zoom = 1;
-        this.minZoom = 0.5;
+        this.minZoom = 1;
         this.maxZoom = 3;
         this.dragging = false;
         this.dragStartX = 0;
@@ -31,10 +31,10 @@ export class Camera {
         const tx = 20, ty = 20;
         const screenX = (tx - ty) * (TILE_WIDTH / 2);
         const screenY = (tx + ty) * (TILE_HEIGHT / 2);
-        this.zoom = 2;
+        this.zoom = 1;
         if (!this.canvas) return;
-        this.x = -screenX + this.canvas.width / (2 * this.zoom);
-        this.y = -screenY + this.canvas.height / (2 * this.zoom);
+        this.x = -screenX + this._viewportWidth() / (2 * this.zoom);
+        this.y = -screenY + this._viewportHeight() / (2 * this.zoom);
     }
 
     attach() {
@@ -61,8 +61,8 @@ export class Camera {
 
     updateFollow() {
         if (!this.followTarget) return;
-        const targetX = -this.followTarget.x + this.canvas.width / (2 * this.zoom);
-        const targetY = -this.followTarget.y + this.canvas.height / (2 * this.zoom);
+        const targetX = -this.followTarget.x + this._viewportWidth() / (2 * this.zoom);
+        const targetY = -this.followTarget.y + this._viewportHeight() / (2 * this.zoom);
         this.x += (targetX - this.x) * this.followSmoothing;
         this.y += (targetY - this.y) * this.followSmoothing;
     }
@@ -100,9 +100,14 @@ export class Camera {
         const worldBeforeX = (mouseX / this.zoom) - this.x;
         const worldBeforeY = (mouseY / this.zoom) - this.y;
 
-        // Discrete zoom stepping: {1, 2, 3}
+        // Discrete zoom stepping follows the canvas contract: {1, 2, 3}.
         const direction = e.deltaY < 0 ? 1 : -1;
-        this.zoom = Math.max(1, Math.min(3, this.zoom + direction));
+        const steps = [this.minZoom, 2, this.maxZoom];
+        const currentIndex = steps.reduce((bestIndex, step, index) => (
+            Math.abs(step - this.zoom) < Math.abs(steps[bestIndex] - this.zoom) ? index : bestIndex
+        ), 0);
+        const nextIndex = Math.max(0, Math.min(steps.length - 1, currentIndex + direction));
+        this.zoom = steps[nextIndex];
 
         this.x = (mouseX / this.zoom) - worldBeforeX;
         this.y = (mouseY / this.zoom) - worldBeforeY;
@@ -131,5 +136,13 @@ export class Camera {
 
     applyTransform(ctx) {
         ctx.setTransform(this.zoom, 0, 0, this.zoom, Math.round(this.x * this.zoom), Math.round(this.y * this.zoom));
+    }
+
+    _viewportWidth() {
+        return this.canvas?.clientWidth || this.canvas?.width || 0;
+    }
+
+    _viewportHeight() {
+        return this.canvas?.clientHeight || this.canvas?.height || 0;
     }
 }

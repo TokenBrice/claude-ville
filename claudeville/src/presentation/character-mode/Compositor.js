@@ -1,7 +1,10 @@
+import { DEFAULT_CELL, DIRECTIONS, WALK_FRAMES, IDLE_FRAMES } from './SpriteSheet.js';
+
 // Compositor produces per-agent character bitmaps by:
-// 1. palette-swapping a base sheet using palettes.yaml,
-// 2. compositing a chosen accessory overlay over the head pixels.
-// Result is cached per (provider, paletteVariant, accessory) tuple.
+// 1. selecting a model/provider base sheet,
+// 2. palette-swapping it using palettes.yaml,
+// 3. compositing an effort/accessory overlay over the head pixels.
+// Result is cached per (base sprite, paletteVariant, accessory) tuple.
 
 const cache = new Map();
 
@@ -10,13 +13,17 @@ export class Compositor {
         this.assets = assetManager;
     }
 
-    spriteFor(provider, paletteVariant, accessory) {
-        const key = `${provider}|${paletteVariant}|${accessory ?? '_'}`;
+    spriteFor(baseSpriteId, paletteKey, paletteVariant, accessory) {
+        const baseId = baseSpriteId?.startsWith('agent.')
+            ? baseSpriteId
+            : `agent.${baseSpriteId || 'claude'}.base`;
+        const palette = paletteKey || baseId.split('.')[1] || 'claude';
+        const key = `${baseId}|${palette}|${paletteVariant}|${accessory ?? '_'}`;
         if (cache.has(key)) return cache.get(key);
 
-        const baseImg = this.assets.get(`agent.${provider}.base`);
+        const baseImg = this.assets.get(baseId);
         if (!baseImg) return null;
-        const dims = this.assets.getDims(`agent.${provider}.base`);
+        const dims = this.assets.getDims(baseId);
         const canvas = document.createElement('canvas');
         canvas.width = dims.w;
         canvas.height = dims.h;
@@ -24,8 +31,8 @@ export class Compositor {
         ctx.imageSmoothingEnabled = false;
 
         ctx.drawImage(baseImg, 0, 0);
-        this._applyPaletteSwap(ctx, canvas.width, canvas.height, provider, paletteVariant);
-        if (accessory) this._compositeAccessory(ctx, provider, accessory);
+        this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant);
+        if (accessory) this._compositeAccessory(ctx, baseId, accessory);
 
         cache.set(key, canvas);
         return canvas;
@@ -67,23 +74,30 @@ export class Compositor {
         ctx.putImageData(img, 0, 0);
     }
 
-    _compositeAccessory(ctx, provider, accessory) {
-        const overlayId = `overlay.accessory.${accessory}`;
+    _compositeAccessory(ctx, baseId, accessory) {
+        const overlayId = accessory.startsWith?.('overlay.')
+            ? accessory
+            : `overlay.accessory.${accessory}`;
         const overlayImg = this.assets.get(overlayId);
         if (!overlayImg) return;
-        const dims = this.assets.getDims(`agent.${provider}.base`);
-        const cellSize = 64;
-        const cols = dims.w / cellSize;
-        const rows = dims.h / cellSize;
+        const dims = this.assets.getDims(baseId);
+        const cellSize = dims.w / DIRECTIONS.length || DEFAULT_CELL;
+        const rows = WALK_FRAMES + IDLE_FRAMES;
+        const cols = DIRECTIONS.length;
+        if (!Number.isInteger(cellSize) || dims.h < rows * cellSize) return;
+
         const overlayDims = this.assets.getDims(overlayId);
-        const overlayCellW = overlayDims.w / cols;
         const [ax, ay] = this.assets.getAnchor(overlayId);
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
+                const headAnchorX = c * cellSize + Math.floor(cellSize / 2);
+                const headAnchorY = r * cellSize + Math.floor(cellSize * 0.22);
                 ctx.drawImage(
                     overlayImg,
-                    c * overlayCellW, 0, overlayCellW, overlayDims.h,
-                    c * cellSize + ax, r * cellSize + ay, overlayCellW, overlayDims.h
+                    Math.round(headAnchorX - ax),
+                    Math.round(headAnchorY - ay),
+                    overlayDims.w,
+                    overlayDims.h
                 );
             }
         }
