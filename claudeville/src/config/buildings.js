@@ -92,8 +92,8 @@ export const BUILDING_DEFS = [
         district: 'knowledge',
         visualTier: 'hero',
         labelPriority: 'landmark',
-        entrance: { tileX: 7, tileY: 23 },
-        visitTiles: [{ tileX: 7, tileY: 23 }, { tileX: 3, tileY: 24 }, { tileX: 7, tileY: 21 }],
+        entrance: { tileX: 7, tileY: 22 },
+        visitTiles: [{ tileX: 7, tileY: 22 }, { tileX: 7, tileY: 21 }, { tileX: 8, tileY: 22 }],
     },
     {
         type: 'portal',
@@ -124,8 +124,8 @@ export const BUILDING_DEFS = [
         district: 'harbor',
         visualTier: 'hero',
         labelPriority: 'landmark',
-        entrance: { tileX: 29, tileY: 13 },
-        visitTiles: [{ tileX: 29, tileY: 13 }, { tileX: 30, tileY: 12 }, { tileX: 28, tileY: 13 }],
+        entrance: { tileX: 28, tileY: 13 },
+        visitTiles: [{ tileX: 28, tileY: 13 }, { tileX: 28, tileY: 14 }, { tileX: 27, tileY: 14 }],
     },
     {
         type: 'harbor',
@@ -140,7 +140,7 @@ export const BUILDING_DEFS = [
         district: 'harbor',
         visualTier: 'major',
         labelPriority: 'landmark',
-        entrance: { tileX: 34, tileY: 22 },
-        visitTiles: [{ tileX: 34, tileY: 22 }, { tileX: 32, tileY: 22 }, { tileX: 36, tileY: 22 }, { tileX: 37, tileY: 20 }],
+        entrance: { tileX: 28, tileY: 20 },
+        visitTiles: [{ tileX: 28, tileY: 20 }, { tileX: 28, tileY: 19 }, { tileX: 27, tileY: 20 }],
     },
 ];

@@ -3,7 +3,6 @@ import {
     WATER_POLYLINES,
     WATER_BASINS,
     BRIDGE_HINTS,
-    HARBOR_DOCK_TILES,
     TREE_CLUSTERS,
     BOULDERS,
     VEGETATION_DISTRICTS,
@@ -255,39 +254,13 @@ export class SceneryEngine {
         return true;
     }
 
-    generateBridges(pathTiles) {
-        // 1. Authored hints — always placed if the tile is water.
+    generateBridges() {
+        // Authored crossings only. These are the two intentional river bridges
+        // in the town plan; other water/path overlaps stay non-walkable.
         for (const hint of BRIDGE_HINTS) {
             const key = `${hint.tileX},${hint.tileY}`;
             if (!this.waterTiles.has(key)) continue;
             this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation);
-        }
-        this._addHarborDocks();
-
-        // 2. Auto-place where any path tile lies on water and has no authored bridge.
-        for (const key of pathTiles) {
-            if (!this.waterTiles.has(key)) continue;
-            if (this.bridgeTiles.has(key)) continue;
-            const comma = key.indexOf(',');
-            const tileX = Number(key.slice(0, comma));
-            const tileY = Number(key.slice(comma + 1));
-            this.bridgeTiles.set(key, {
-                orientation: this._inferOrientation(tileX, tileY),
-                kind: 'auto-crossing',
-            });
-        }
-    }
-
-    _addHarborDocks() {
-        for (const dock of HARBOR_DOCK_TILES) {
-            const key = `${dock.tileX},${dock.tileY}`;
-            if (!this.waterTiles.has(key)) continue;
-            if (this._buildingFootprints.has(key)) continue;
-            this.bridgeTiles.set(key, {
-                orientation: dock.orientation || this._inferOrientation(dock.tileX, dock.tileY),
-                kind: 'dock',
-                style: dock.style || 'plank',
-            });
         }
     }
 

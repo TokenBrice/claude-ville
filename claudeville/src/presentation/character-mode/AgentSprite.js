@@ -42,6 +42,9 @@ const PROVIDER_TRIM = {
     gemini: '#7fc7ff',
     default: '#f2d36b',
 };
+const TARGET_AGENT_CONTENT_HEIGHT = 92;
+const MIN_AGENT_DRAW_SCALE = 1;
+const MAX_AGENT_DRAW_SCALE = 1.25;
 const PROCESSED_SPRITE_CACHE = new Map();
 
 export class AgentSprite {
@@ -481,6 +484,7 @@ export class AgentSprite {
         const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(cell);
+        const drawScale = this._spriteDrawScale(bounds);
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
         const bobY = this.animState === 'idle'
             ? Math.round(Math.sin(this.frame * 0.4) * 0.6)
@@ -488,16 +492,17 @@ export class AgentSprite {
         const drawX = this._snapWorldToScreenPixel(this.x);
         const drawY = this._snapWorldToScreenPixel(this.y);
         const contentCenterX = (bounds.minX + bounds.maxX) / 2;
-        const dx = drawX - contentCenterX;
-        const dy = drawY - bounds.maxY + 2 + bobY;
-        const contentTopY = dy + bounds.minY;
-        this._drawSpriteSilhouette(ctx, cell, dx, dy);
+        const dx = drawX - contentCenterX * drawScale;
+        const dy = drawY - bounds.maxY * drawScale + 2 + bobY;
+        const contentTopY = dy + bounds.minY * drawScale;
+        this._drawCodexEffortWeapon(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'back');
+        this._drawSpriteSilhouette(ctx, cell, dx, dy, drawScale);
         ctx.drawImage(
             this.spriteCanvas,
             cell.sx, cell.sy, cell.sw, cell.sh,
-            dx, dy, cell.sw, cell.sh
+            dx, dy, cell.sw * drawScale, cell.sh * drawScale
         );
-        this._drawCodexEffortWeapon(ctx, identity, { dx, dy, bounds, cellSize });
+        this._drawCodexEffortWeapon(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'front');
 
         // Effort floor ring — always visible, identity-driven (under feet, under selection halo).
         if (this.assets) {
@@ -692,10 +697,41 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _drawSpriteSilhouette(ctx, cell, dx, dy) {
+    // X-ray pass: blits the current animation cell with alpha so a selected
+    // agent stays visible behind a building's front-half. Avoids the full-
+    // sprite-sheet blit that drawing via SpriteRenderer.drawSilhouette would
+    // produce against multi-direction agent sheets.
+    drawXraySilhouette(ctx) {
+        if (!this.spriteCanvas || !this.spriteSheet) return;
+        const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
+        const bounds = this._getCellContentBounds(cell);
+        const drawScale = this._spriteDrawScale(bounds);
+        const drawX = this._snapWorldToScreenPixel(this.x);
+        const drawY = this._snapWorldToScreenPixel(this.y);
+        const contentCenterX = (bounds.minX + bounds.maxX) / 2;
+        const dx = drawX - contentCenterX * drawScale;
+        const dy = drawY - bounds.maxY * drawScale + 2;
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.globalAlpha = 0.4;
+        ctx.drawImage(
+            this.spriteCanvas,
+            cell.sx, cell.sy, cell.sw, cell.sh,
+            dx, dy, cell.sw * drawScale, cell.sh * drawScale
+        );
+        ctx.restore();
+    }
+
+    _drawSpriteSilhouette(ctx, cell, dx, dy, drawScale = 1) {
         const silhouette = this._getSilhouetteCell(cell);
         if (!silhouette) return;
-        ctx.drawImage(silhouette, dx - 2, dy - 2);
+        ctx.drawImage(
+            silhouette,
+            dx - 2 * drawScale,
+            dy - 2 * drawScale,
+            silhouette.width * drawScale,
+            silhouette.height * drawScale
+        );
     }
 
     _getSilhouetteCell(cell) {
@@ -762,6 +798,12 @@ export class AgentSprite {
             : { minX: 24, minY: 12, maxX: cell.sw - 24, maxY: cell.sh - 18 };
         this._cellBoundsCache.set(key, bounds);
         return bounds;
+    }
+
+    _spriteDrawScale(bounds) {
+        const height = Math.max(1, bounds.maxY - bounds.minY + 1);
+        const scale = TARGET_AGENT_CONTENT_HEIGHT / height;
+        return Math.max(MIN_AGENT_DRAW_SCALE, Math.min(MAX_AGENT_DRAW_SCALE, scale));
     }
 
     _statusVisual() {
@@ -838,95 +880,227 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _drawCodexEffortWeapon(ctx, identity, frameGeometry) {
+    _drawCodexEffortWeapon(ctx, identity, frameGeometry, layer = 'front') {
         const weapon = identity?.effortWeapon;
         if (!weapon) return;
 
-        const { dx, dy, bounds, cellSize } = frameGeometry;
         const directionKey = DIRECTIONS[this.direction] || 's';
-        const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
-        const centerX = dx + (bounds.minX + bounds.maxX) / 2;
-        const torsoY = dy + bounds.minY + (bounds.maxY - bounds.minY) * 0.56;
-        const facingLeft = directionKey.includes('w') || directionKey === 'n';
-        const offsets = {
-            s: [contentWidth * 0.18, 2],
-            se: [contentWidth * 0.24, 0],
-            e: [contentWidth * 0.20, -2],
-            ne: [contentWidth * 0.14, -8],
-            n: [contentWidth * -0.14, -8],
-            nw: [contentWidth * -0.20, -8],
-            w: [contentWidth * -0.18, -2],
-            sw: [contentWidth * -0.24, 0],
-        };
-        const [offsetX, offsetY] = offsets[directionKey] || offsets.s;
-        const handX = Math.round(centerX + offsetX);
-        const handY = Math.round(torsoY + offsetY);
-        const lean = this._weaponLeanForDirection(directionKey);
+        const geometry = this._codexWeaponGeometry(frameGeometry, directionKey);
 
-        ctx.save();
-        ctx.imageSmoothingEnabled = false;
-        ctx.translate(handX, handY);
-        ctx.scale(facingLeft ? -1 : 1, 1);
-        ctx.rotate(lean);
-        if (weapon === 'dagger') this._drawCodexDagger(ctx);
-        else if (weapon === 'swordShield') this._drawCodexSwordAndShield(ctx);
-        else if (weapon === 'greatsword') this._drawCodexGreatsword(ctx);
-        else if (weapon === 'polearm') this._drawCodexPolearm(ctx);
-        else if (weapon === 'sledgehammer') this._drawCodexSledgehammer(ctx);
-        else {
-            ctx.restore();
+        if (weapon === 'greatsword' && this._weaponBackCarryDirection(directionKey)) {
+            if (layer === 'back') {
+                this._drawWeaponAt(ctx, geometry.backCarry, geometry.drawScale, () => this._drawCodexBackGreatsword(ctx));
+            }
             return;
         }
-        this._drawWeaponGripHand(ctx);
+
+        if (weapon === 'polearm') {
+            if (layer !== 'front') return;
+            this._drawWeaponAt(ctx, geometry.polearm, geometry.drawScale, () => {
+                this._drawCodexPolearm(ctx);
+                this._drawWeaponGripHand(ctx);
+            });
+            return;
+        }
+
+        if (layer !== 'front') return;
+
+        if (weapon === 'dagger') {
+            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
+                this._drawCodexDagger(ctx);
+                this._drawWeaponGripHand(ctx);
+            });
+        } else if (weapon === 'swordShield') {
+            this._drawWeaponAt(ctx, geometry.shield, geometry.drawScale, () => this._drawCodexShield(ctx, geometry.shieldSlim));
+            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
+                this._drawCodexKnightSword(ctx);
+                this._drawWeaponGripHand(ctx);
+            });
+        } else if (weapon === 'greatsword') {
+            this._drawWeaponAt(ctx, geometry.greatsword, geometry.drawScale, () => {
+                this._drawCodexGreatsword(ctx);
+                this._drawWeaponGripHand(ctx);
+            });
+        } else if (weapon === 'sledgehammer') {
+            this._drawWeaponAt(ctx, geometry.polearm, geometry.drawScale, () => this._drawCodexSledgehammer(ctx));
+        }
+    }
+
+    _codexWeaponGeometry({ dx, dy, bounds, drawScale = 1 }, directionKey) {
+        const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
+        const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
+        const centerX = dx + (bounds.minX + bounds.maxX) * drawScale / 2;
+        const shoulderY = dy + (bounds.minY + contentHeight * 0.36) * drawScale;
+        const torsoY = dy + (bounds.minY + contentHeight * 0.56) * drawScale;
+        const hipY = dy + (bounds.minY + contentHeight * 0.72) * drawScale;
+        const bodyWidth = Math.max(22, Math.min(42, contentWidth));
+        const sideSign = ['sw', 'w', 'nw', 'n'].includes(directionKey) ? -1 : 1;
+        const handYOffset = {
+            s: 4, se: 1, e: -2, ne: -7,
+            n: -8, nw: -7, w: -2, sw: 1,
+        }[directionKey] ?? 0;
+        const rightHand = {
+            x: centerX + sideSign * bodyWidth * 0.32 * drawScale,
+            y: torsoY + handYOffset * drawScale,
+            flipX: sideSign < 0,
+            angle: this._heldWeaponLeanForDirection(directionKey),
+            scale: 0.96,
+        };
+        const greatsword = {
+            ...rightHand,
+            x: rightHand.x + sideSign * 2 * drawScale,
+            y: rightHand.y + 1 * drawScale,
+            angle: this._greatswordLeanForDirection(directionKey),
+            scale: 0.98,
+        };
+        const shield = {
+            x: centerX - sideSign * bodyWidth * 0.34 * drawScale,
+            y: torsoY + (directionKey === 'n' ? -3 : 5) * drawScale,
+            flipX: sideSign < 0,
+            angle: sideSign * (directionKey === 'e' || directionKey === 'w' ? -0.08 : 0.04),
+            scale: directionKey === 'e' || directionKey === 'w' ? 0.86 : 0.94,
+        };
+        const polearm = {
+            x: centerX + sideSign * bodyWidth * 0.42 * drawScale,
+            y: hipY - 1 * drawScale,
+            flipX: sideSign < 0,
+            angle: this._polearmLeanForDirection(directionKey),
+            scale: 1.02,
+        };
+        const backCarry = {
+            x: centerX,
+            y: shoulderY + 3 * drawScale,
+            flipX: sideSign < 0,
+            angle: directionKey === 'n' ? -0.06 : 0.04,
+            scale: 0.96,
+        };
+        return {
+            drawScale,
+            rightHand,
+            greatsword,
+            shield,
+            polearm,
+            backCarry,
+            shieldSlim: ['e', 'w', 'ne', 'nw'].includes(directionKey),
+        };
+    }
+
+    _drawWeaponAt(ctx, pose, drawScale, drawFn) {
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.translate(Math.round(pose.x), Math.round(pose.y));
+        ctx.scale(pose.flipX ? -1 : 1, 1);
+        ctx.scale(drawScale * (pose.scale || 1), drawScale * (pose.scale || 1));
+        ctx.rotate(pose.angle || 0);
+        drawFn();
         ctx.restore();
     }
 
-    _weaponLeanForDirection(directionKey) {
-        if (directionKey === 'e' || directionKey === 'w') return -0.18;
+    _weaponBackCarryDirection(directionKey) {
+        return directionKey === 'n' || directionKey === 'ne' || directionKey === 'nw';
+    }
+
+    _heldWeaponLeanForDirection(directionKey) {
+        if (directionKey === 'e' || directionKey === 'w') return -0.20;
         if (directionKey === 'ne' || directionKey === 'nw') return -0.34;
-        if (directionKey === 'n') return -0.42;
-        if (directionKey === 'se' || directionKey === 'sw') return 0.04;
-        return 0.14;
+        if (directionKey === 'n') return -0.38;
+        if (directionKey === 'se' || directionKey === 'sw') return -0.04;
+        return 0.08;
+    }
+
+    _greatswordLeanForDirection(directionKey) {
+        if (directionKey === 'e' || directionKey === 'w') return -0.30;
+        if (directionKey === 'se' || directionKey === 'sw') return -0.12;
+        return 0.03;
+    }
+
+    _polearmLeanForDirection(directionKey) {
+        if (directionKey === 'e' || directionKey === 'w') return -0.30;
+        if (directionKey === 'ne' || directionKey === 'nw') return -0.44;
+        if (directionKey === 'n') return -0.36;
+        if (directionKey === 'se' || directionKey === 'sw') return -0.18;
+        return -0.10;
     }
 
     _drawCodexDagger(ctx) {
-        this._drawWeaponStroke(ctx, '#102f3a', 4, [[0, 1], [7, -13]]);
-        this._drawWeaponStroke(ctx, '#e9fdff', 2, [[1, 0], [7, -13]]);
-        this._drawWeaponStroke(ctx, '#6ee7d8', 1, [[3, -1], [9, -11]]);
-        this._drawWeaponStroke(ctx, '#f8c45f', 3, [[-5, 1], [5, 4]]);
+        this._drawTaperedBlade(ctx, 0, -1, 9, -15, 3.2, 0.8);
+        this._drawWeaponStroke(ctx, '#f8c45f', 3, [[-6, 3], [6, 5]]);
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(-2, 4, 4, 8);
+        ctx.fillStyle = '#b47a35';
+        ctx.fillRect(-1, 4, 2, 7);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-3, 11, 6, 3);
     }
 
-    _drawCodexSwordAndShield(ctx) {
-        this._drawWeaponStroke(ctx, '#102f3a', 4, [[0, 2], [10, -22]]);
-        this._drawWeaponStroke(ctx, '#dffcff', 2, [[1, 0], [10, -22]]);
-        this._drawWeaponStroke(ctx, '#55c7f0', 1, [[5, -2], [12, -19]]);
-        this._drawWeaponStroke(ctx, '#f8c45f', 3, [[-7, 1], [6, 5]]);
-
-        ctx.fillStyle = '#102f3a';
-        ctx.fillRect(-17, -5, 12, 13);
-        ctx.fillStyle = '#8bd6ff';
-        ctx.fillRect(-16, -4, 10, 11);
-        ctx.fillStyle = '#116466';
-        ctx.fillRect(-14, -2, 6, 7);
+    _drawCodexKnightSword(ctx) {
+        this._drawTaperedBlade(ctx, 0, -2, 10, -27, 3.6, 0.9);
+        this._drawWeaponStroke(ctx, '#0b2430', 5, [[-8, 4], [8, 7]]);
+        this._drawWeaponStroke(ctx, '#f8c45f', 3, [[-8, 4], [8, 7]]);
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(-2, 5, 5, 11);
+        ctx.fillStyle = '#b47a35';
+        ctx.fillRect(-1, 6, 3, 9);
         ctx.fillStyle = '#f8c45f';
-        ctx.fillRect(-12, 0, 2, 3);
+        ctx.fillRect(-4, 15, 8, 3);
+    }
+
+    _drawCodexShield(ctx, slim = false) {
+        const outline = slim
+            ? [[-6, -14], [8, -10], [7, 7], [1, 16], [-6, 8]]
+            : [[-12, -15], [11, -11], [9, 8], [0, 17], [-10, 8]];
+        const face = slim
+            ? [[-4, -12], [6, -8], [5, 6], [1, 13], [-4, 6]]
+            : [[-9, -12], [8, -9], [7, 6], [0, 14], [-8, 6]];
+        ctx.fillStyle = '#0b2430';
+        this._fillWeaponPolygon(ctx, outline);
+        ctx.fillStyle = '#7f8f9b';
+        this._fillWeaponPolygon(ctx, face);
+        ctx.fillStyle = '#214b5a';
+        this._fillWeaponPolygon(ctx, face.map(([x, y]) => [x + (slim ? 1 : 2), y + 2]));
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(slim ? 0 : -1, -7, 3, 12);
+        ctx.fillRect(slim ? -3 : -5, -2, slim ? 9 : 12, 3);
+        ctx.fillStyle = 'rgba(223, 252, 255, 0.75)';
+        ctx.fillRect(slim ? -3 : -7, -10, slim ? 3 : 4, 2);
     }
 
     _drawCodexGreatsword(ctx) {
-        this._drawWeaponStroke(ctx, '#0b2430', 7, [[0, 5], [22, -42]]);
-        this._drawWeaponStroke(ctx, '#f0ffff', 4, [[1, 2], [22, -42]]);
-        this._drawWeaponStroke(ctx, '#7be3d7', 2, [[6, 0], [25, -37]]);
-        this._drawWeaponStroke(ctx, '#f8c45f', 5, [[-11, 1], [8, 7]]);
+        this._drawTaperedBlade(ctx, 0, -3, 13, -39, 5.2, 1.1);
+        ctx.fillStyle = '#102f3a';
+        ctx.fillRect(-12, 3, 23, 6);
         ctx.fillStyle = '#f8c45f';
-        ctx.fillRect(-4, 4, 6, 8);
+        ctx.fillRect(-10, 4, 19, 3);
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(-3, 7, 7, 15);
+        ctx.fillStyle = '#b47a35';
+        ctx.fillRect(-1, 8, 3, 12);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-5, 20, 10, 4);
+    }
+
+    _drawCodexBackGreatsword(ctx) {
+        this._drawTaperedBlade(ctx, -13, 23, 16, -31, 4.2, 1.0);
+        this._drawWeaponStroke(ctx, '#0b2430', 5, [[8, -28], [24, -20]]);
+        this._drawWeaponStroke(ctx, '#f8c45f', 3, [[8, -28], [24, -20]]);
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(20, -27, 5, 12);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(19, -17, 7, 3);
     }
 
     _drawCodexPolearm(ctx) {
-        this._drawWeaponStroke(ctx, '#0b2430', 6, [[-3, 20], [22, -40]]);
-        this._drawWeaponStroke(ctx, '#b47a35', 3, [[-3, 20], [22, -40]]);
-        this._drawWeaponStroke(ctx, '#e9fdff', 5, [[20, -40], [34, -27]]);
-        this._drawWeaponStroke(ctx, '#55c7f0', 2, [[23, -36], [35, -26]]);
-        this._drawWeaponStroke(ctx, '#f8c45f', 4, [[14, -29], [27, -24]]);
+        this._drawWeaponStroke(ctx, '#0b2430', 6, [[-7, 30], [17, -48]]);
+        this._drawWeaponStroke(ctx, '#8a5a2a', 3, [[-7, 30], [17, -48]]);
+        this._drawWeaponStroke(ctx, '#d7a456', 1, [[-4, 19], [16, -45]]);
+        ctx.fillStyle = '#0b2430';
+        this._fillWeaponPolygon(ctx, [[15, -52], [33, -37], [22, -28], [13, -38]]);
+        ctx.fillStyle = '#dce8ec';
+        this._fillWeaponPolygon(ctx, [[17, -48], [29, -37], [22, -32], [15, -39]]);
+        ctx.fillStyle = '#7be3d7';
+        this._fillWeaponPolygon(ctx, [[24, -40], [31, -36], [23, -34]]);
+        this._drawWeaponStroke(ctx, '#0b2430', 5, [[9, -31], [25, -25]]);
+        this._drawWeaponStroke(ctx, '#f8c45f', 3, [[10, -32], [24, -26]]);
     }
 
     _drawCodexSledgehammer(ctx) {
@@ -961,6 +1135,53 @@ export class AgentSprite {
             ctx.lineTo(Math.round(points[i][0]), Math.round(points[i][1]));
         }
         ctx.stroke();
+    }
+
+    _drawTaperedBlade(ctx, x0, y0, x1, y1, baseHalfWidth, tipHalfWidth) {
+        const dx = x1 - x0;
+        const dy = y1 - y0;
+        const length = Math.hypot(dx, dy) || 1;
+        const px = -dy / length;
+        const py = dx / length;
+        const outline = this._bladePolygon(x0, y0, x1, y1, baseHalfWidth + 1.8, tipHalfWidth + 1.2, px, py);
+        const blade = this._bladePolygon(x0, y0, x1, y1, baseHalfWidth, tipHalfWidth, px, py);
+
+        ctx.fillStyle = '#0b2430';
+        this._fillWeaponPolygon(ctx, outline);
+        ctx.fillStyle = '#dce8ec';
+        this._fillWeaponPolygon(ctx, blade);
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x0 + px * baseHalfWidth * 0.35), Math.round(y0 + py * baseHalfWidth * 0.35));
+        ctx.lineTo(Math.round(x1 - dx * 0.12), Math.round(y1 - dy * 0.12));
+        ctx.stroke();
+        ctx.strokeStyle = '#55c7f0';
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x0 - px * baseHalfWidth * 0.55), Math.round(y0 - py * baseHalfWidth * 0.55));
+        ctx.lineTo(Math.round(x1 - dx * 0.22), Math.round(y1 - dy * 0.22));
+        ctx.stroke();
+    }
+
+    _bladePolygon(x0, y0, x1, y1, baseHalfWidth, tipHalfWidth, px, py) {
+        return [
+            [x0 + px * baseHalfWidth, y0 + py * baseHalfWidth],
+            [x1 + px * tipHalfWidth, y1 + py * tipHalfWidth],
+            [x1, y1],
+            [x1 - px * tipHalfWidth, y1 - py * tipHalfWidth],
+            [x0 - px * baseHalfWidth, y0 - py * baseHalfWidth],
+        ];
+    }
+
+    _fillWeaponPolygon(ctx, points) {
+        if (!points.length) return;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(points[0][0]), Math.round(points[0][1]));
+        for (let i = 1; i < points.length; i++) {
+            ctx.lineTo(Math.round(points[i][0]), Math.round(points[i][1]));
+        }
+        ctx.closePath();
+        ctx.fill();
     }
 
     // --- Variant and accessory helpers (used by draw to select sprite) ---

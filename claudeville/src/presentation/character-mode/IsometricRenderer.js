@@ -159,8 +159,8 @@ export class IsometricRenderer {
         this.deepWaterTiles = this.scenery.getDeepWaterTiles();
         this.harborWaterApronTiles = this._buildHarborWaterApronTiles();
 
-        // Bridges (Task 5): authored hints + auto-place where roads cross water.
-        this.scenery.generateBridges(this.pathTiles);
+        // Bridges (Task 5): two authored river crossings only.
+        this.scenery.generateBridges();
         this.bridgeTiles = this.scenery.getBridgeTiles();
         this.bridgeSpans = this._buildBridgeSpans();
         for (const key of this.bridgeTiles.keys()) {
@@ -536,8 +536,9 @@ export class IsometricRenderer {
             const toY = Math.max(y1, y2);
             for (let y = fromY; y <= toY; y++) {
                 this._markCommandRoadTile(x2, y);
-                this.pathTiles.add(`${x2},${y}`);
-                this.mainAvenueTiles.add(`${x2},${y}`);
+                const key = `${x2},${y}`;
+                this.pathTiles.add(key);
+                this.mainAvenueTiles.add(key);
             }
             return;
         }
@@ -547,8 +548,9 @@ export class IsometricRenderer {
             const toX = Math.max(x1, x2);
             for (let x = fromX; x <= toX; x++) {
                 this._markCommandRoadTile(x, y1);
-                this.pathTiles.add(`${x},${y1}`);
-                this.mainAvenueTiles.add(`${x},${y1}`);
+                const key = `${x},${y1}`;
+                this.pathTiles.add(key);
+                this.mainAvenueTiles.add(key);
             }
             return;
         }
@@ -560,8 +562,9 @@ export class IsometricRenderer {
             const x = Math.round(x1 + (x2 - x1) * t);
             const y = Math.round(y1 + (y2 - y1) * t);
             this._markCommandRoadTile(x, y);
-            this.pathTiles.add(`${x},${y}`);
-            this.mainAvenueTiles.add(`${x},${y}`);
+            const key = `${x},${y}`;
+            this.pathTiles.add(key);
+            this.mainAvenueTiles.add(key);
         }
     }
 
@@ -912,10 +915,19 @@ export class IsometricRenderer {
                 const overlap = (SEP_RADIUS - dist) / SEP_RADIUS;
                 const nx = dx / dist;
                 const ny = dy / dist;
-                a.x += nx * overlap * SEP_STRENGTH;
-                a.y += ny * overlap * SEP_STRENGTH;
-                b.x -= nx * overlap * SEP_STRENGTH;
-                b.y -= ny * overlap * SEP_STRENGTH;
+                const nextAx = a.x + nx * overlap * SEP_STRENGTH;
+                const nextAy = a.y + ny * overlap * SEP_STRENGTH;
+                const nextBx = b.x - nx * overlap * SEP_STRENGTH;
+                const nextBy = b.y - ny * overlap * SEP_STRENGTH;
+
+                if (this._isSpritePositionWalkable(a, nextAx, nextAy)) {
+                    a.x = nextAx;
+                    a.y = nextAy;
+                }
+                if (this._isSpritePositionWalkable(b, nextBx, nextBy)) {
+                    b.x = nextBx;
+                    b.y = nextBy;
+                }
             }
         }
 
@@ -930,6 +942,12 @@ export class IsometricRenderer {
 
         // Update particles
         this.particleSystem.update();
+    }
+
+    _isSpritePositionWalkable(sprite, x, y) {
+        if (!this.pathfinder || typeof sprite?._screenToTile !== 'function') return true;
+        const tile = sprite._screenToTile(x, y);
+        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
     }
 
     _updateAmbientEffects() {
@@ -1061,9 +1079,11 @@ export class IsometricRenderer {
                         && sprite.y >= top
                         && sprite.y <= bottom + 12;
                     if (withinSpriteBounds && sprite.y >= backY && sprite.y < frontY) {
-                        // Sprite is behind the building's front-half — draw tinted silhouette atop.
-                        const spriteId = `agent.${sprite.agent.provider || 'claude'}.base`;
-                        this.sprites.drawSilhouette(ctx, spriteId, sprite.x, sprite.y);
+                        // Sprite is behind the building's front-half — draw the current
+                        // animation frame at low alpha. SpriteRenderer.drawSilhouette
+                        // would blit the full multi-direction agent sheet here, since
+                        // agent.<provider>.base is a 736x920 spritesheet, not one icon.
+                        sprite.drawXraySilhouette(ctx);
                     }
                 }
             }
