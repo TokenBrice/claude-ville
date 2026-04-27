@@ -35,6 +35,7 @@ export class Pathfinder {
                 const sub = this.findPath({ tileX: nx, tileY: ny }, to, bridgeTiles);
                 if (sub.length > 0) return [{ tileX: nx, tileY: ny }, ...sub];
             }
+            console.warn('[Pathfinder] stuck: no walkable cardinal neighbor at', fx, fy);
             return [];
         }
 
