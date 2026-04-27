@@ -55,7 +55,7 @@
 
 - [ ] **Step 2: Replace Block A in `_pickTarget`**
 
-  Replace the entire Block A with the following — the change routes chat-partner movement through `_assignTarget` which calls the pathfinder:
+  Replace the entire Block A with the following. Critical: reset `_lastPathTileKey` to `null` first so the pathfinder always computes a fresh route on chat entry — without it, the cache could retain the stale pre-chat tile key and silently skip BFS.
 
   ```js
   if (this.chatPartner) {
@@ -63,6 +63,7 @@
       const chatTargetX = this.chatPartner.x + offsetX;
       const chatTargetY = this.chatPartner.y;
       const targetTile = this._screenToTile(chatTargetX, chatTargetY);
+      this._lastPathTileKey = null; // force fresh path on every chat entry
       this._assignTarget(chatTargetX, chatTargetY, targetTile.tileX, targetTile.tileY);
       this.moving = true;
       this.waitTimer = 0;
@@ -223,14 +224,17 @@
               const nx = fx + dx;
               const ny = fy + dy;
               if (this.pathfinder.isWalkable(nx, ny)) {
-                  this.x = (nx - ny) * TILE_WIDTH / 2;
-                  this.y = (nx + ny) * TILE_HEIGHT / 2;
+                  const nudged = new Position(nx, ny).toScreen(TILE_WIDTH, TILE_HEIGHT);
+                  this.x = nudged.x;
+                  this.y = nudged.y;
                   break;
               }
           }
       }
   }
   ```
+
+  `Position` is already imported at line 1 of AgentSprite.js.
 
 - [ ] **Step 3: Syntax check**
 
@@ -294,7 +298,7 @@
   git commit -m "fix: log warning when pathfinder finds no walkable escape from stuck-start tile"
   ```
 
-  **Note:** The BFS-failure case (`foundIdx === -1`) is instrumented inside Task 5, which replaces the BFS block wholesale. Do not patch that line here — Task 5 covers it.
+  **Note:** Task 4 instruments line 38 (recursion stuck-start, no walkable cardinal neighbor). Task 5 instruments the BFS no-path return (`foundIdx === -1`, a different line). Both tasks patch non-overlapping code paths and **both should be applied**.
 
 ---
 
@@ -373,12 +377,12 @@
       }
   }
   if (foundIdx === -1) {
-      console.warn('[Pathfinder] no path from', fy * N + fx, 'to nearest of', targetCandidates.length, 'candidates (closest:', targetCandidates[0], ')');
+      console.warn('[Pathfinder] no path from', fx, fy, 'to nearest of', targetCandidates.length, 'candidates; closest:', JSON.stringify(targetCandidates[0]));
       return [];
   }
   ```
 
-  **Note:** This replaces the BFS block including the `if (foundIdx === -1) return [];` line that was instrumented in Task 4. The instrumented warn is included inline here — do not apply Task 4's `if (foundIdx === -1)` patch separately if doing both tasks in one pass.
+  **Note:** Task 5 instruments the BFS no-path case (`foundIdx === -1`) here. Task 4 instruments the stuck-start recursion exhaustion at line 38 — a different code path. Both tasks patch non-overlapping lines and **both should be applied**.
 
 - [ ] **Step 3: Syntax check**
 
@@ -403,7 +407,7 @@
   git commit -m "perf: replace queue.shift() with index pointer and use integer target set in BFS"
   ```
 
-  *(Skip the separate Task 4 commit if both tasks are applied together.)*
+  *(Task 4's commit — stuck-start warn at line 38 — should also be applied; it patches a different code path.)*
 
 ---
 
@@ -573,3 +577,17 @@
   - Agents navigate around the central moat, crossing only at the two authored bridge tiles (near `x=14,y=25` and `x=22,y=25`) or harbor docks.
   - When two agents enter chat state (yellow CHAT bubble), the approaching agent walks around, not through, the river.
   - No `[Pathfinder] stuck` or `[Pathfinder] no path` warnings appear in the browser console during normal play (they should be rare; their presence indicates a map/spawn edge case worth investigating).
+
+  **Task 3 verification:** To explicitly verify the spawn nudge, temporarily change `Agent.js` line 127 to `new Position(22, 23)` (a moat tile), confirm the agent spawns on land and walks normally with no `[Pathfinder] stuck` warning, then revert the change.
+
+---
+
+## Deferred / Out-of-Scope Items
+
+These issues were identified during the exploration but are deliberately excluded from this plan. They should be addressed in follow-up work:
+
+- **`bridgeTiles` is a `Map` while `waterTiles`/`pathTiles` are `Set`s** — `Minimap.js` already special-cases this mismatch. A separate cleanup task should normalize all grid-layer collections to `Map<string, metadata>` or add a `WorldGrid` abstraction.
+- **String `"x,y"` keys throughout `SceneryEngine.js`** — all render/draw callers loop over string-keyed sets. Switching to integer-indexed `Uint8Array` layers would eliminate per-iteration string parsing. Low-priority perf cleanup.
+- **`_simplify` does not force waypoints at bridge entry/exit land tiles** — only bridge deck tiles themselves are forced as waypoints. A screen-space interpolation between the last land waypoint and the first bridge waypoint could notionally drift over a water-edge tile if the bridge is entered at an angle. Verify empirically before treating as a bug.
+- **Recursive `findPath` for stuck-start can chain beyond depth 1** — if a cardinal neighbor of an unwalkable start is itself unwalkable, the recursion descends again. In theory, a chain of mutually-unwalkable tiles could stack. The spawn nudge (Task 3) reduces the frequency; Task 4's warn makes it visible.
+- **`_pickTarget` random ground target does not consult the walkability grid** — random `(10..30, 10..30)` tile-space targets can land on water; `_walkableCandidates` in the pathfinder recovers (5-tile radius search), but adds unnecessary BFS overhead. Fix: sample from a pre-built list of walkable tiles at startup.
