@@ -896,6 +896,29 @@ export class IsometricRenderer {
         if (shouldResort) {
             this._markSpritesDirty();
         }
+
+        // Steering separation: push moving agents apart when they overlap in screen space.
+        const SEP_RADIUS = 28;   // px — slightly wider than sprite half-width (24)
+        const SEP_STRENGTH = 0.8; // px per frame — small enough to never push across a tile
+        const movingSprites = Array.from(this.agentSprites.values()).filter(s => s.moving && !s.chatting);
+        for (let i = 0; i < movingSprites.length; i++) {
+            for (let j = i + 1; j < movingSprites.length; j++) {
+                const a = movingSprites[i];
+                const b = movingSprites[j];
+                const dx = a.x - b.x;
+                const dy = a.y - b.y;
+                const dist = Math.sqrt(dx * dx + dy * dy);
+                if (dist >= SEP_RADIUS || dist === 0) continue;
+                const overlap = (SEP_RADIUS - dist) / SEP_RADIUS;
+                const nx = dx / dist;
+                const ny = dy / dist;
+                a.x += nx * overlap * SEP_STRENGTH;
+                a.y += ny * overlap * SEP_STRENGTH;
+                b.x -= nx * overlap * SEP_STRENGTH;
+                b.y -= ny * overlap * SEP_STRENGTH;
+            }
+        }
+
         const sortedSnapshot = this._snapshotSortedSprites();
         this.harborTraffic?.update(this.world.agents.values(), dt);
         this.landmarkActivity?.update(this.world.agents.values(), sortedSnapshot, dt);
