@@ -1,213 +1,361 @@
 # ClaudeVille Visual Rendering — World Enhancement Plan
 
-Generated: 2026-04-27  
-Source: parallel subagent audit across 5 rendering domains (terrain/water, buildings/props, agent animation, sky/atmosphere, camera/UI).
+Generated: 2026-04-27 · Revised: 2026-04-27 (multi-model review pass: haiku/sonnet/opus).
+
+Source: parallel subagent audit across 5 rendering domains (terrain/water, buildings/props, agent animation, sky/atmosphere, camera/UI), then a three-model review that surfaced misdiagnoses, mis-tiered correctness bugs, and missing architectural prerequisites. Tier 0 below was added in the revision; several Tier-1 items were re-categorized.
 
 ---
 
 ## How to read this document
 
-Each item lists: domain, the code location, effort (S < 1 day / M 1–3 days / L > 3 days), and visual impact. Items are ranked by impact-to-effort ratio within each tier.
+Each item lists: domain · code location · effort (S < 1 day / M 1–3 days / L > 3 days) · visual impact. Items are ranked by impact-to-effort ratio within each tier.
+
+**Tier 0** lists architectural prerequisites that should land before Tier-1 work — they collapse multiple downstream items into shared infrastructure and prevent rework.
+
+Status tags: **NEW** added in revision · **DONE** already implemented in current code · **REVISED** description corrected after review · **MOVED** re-tiered.
+
+---
+
+## Tier 0 — Architectural prerequisites (NEW)
+
+These collapse downstream items, fix scope, and eliminate per-item rework. Land them first; most Tier-1 and Tier-2 items get smaller as a result.
+
+### T0.1 Cache the per-light radial-gradient loop in `_drawAtmosphere`
+**Domain:** Atmosphere · **File:** `IsometricRenderer.js:3641–3654` · **Effort:** S · **Impact:** High
+
+The atmosphere pass builds a fresh `createRadialGradient` per `getLightSources()` entry every frame. The vignette itself is already cached at lines 3660–3668 keyed on `(width, height, atmosphere.cacheKey)` (bucketed to ~96 time slices, ~100 light slices) — that part is fine. The actual hot spot is the inner per-light loop. Cache each emitter's gradient on `(x, y, radius, color, phaseBucket)`. Prerequisite for #17 (more emitters), #16 (shadows in same pass), and #4 (visitor-driven intensity).
+
+### T0.2 Unified `LightingState` per-frame snapshot
+**Domain:** Atmosphere · **File:** new module derived from `AtmosphereState.js` · **Effort:** M · **Impact:** High
+
+`AtmosphereState` already produces `phase`, `phaseProgress`, `dayProgress`, sun `xFrac`/`yFrac`. Promote into one struct consumed by every lighting-aware subsystem:
+
+```text
+LightingState {
+  sunDirIso,        // 2D vector in iso space
+  sunWarmth,        // 0..1, used for tinting
+  ambientTint,      // RGB applied to terrain/buildings
+  shadowAngleRad,   // for #16
+  shadowLength,
+  shadowAlpha,
+  lightWarmth,      // for emitters (#17)
+  lightBoost,       // night dimming/strengthening
+  beaconIntensity,  // for #24
+}
+```
+
+Without this, items #16, #18, #19, #23 each invent their own time-of-day lerp duplicating logic across files. With it, those collapse into one place.
+
+### T0.3 Formal `LightSourceRegistry`
+**Domain:** Atmosphere/Buildings · **File:** promoted from `BuildingSprite.getLightSources()`, consumers in `IsometricRenderer.js:1217, 3641` and `BuildingSprite.js:86–90` · **Effort:** M · **Impact:** Medium–High
+
+Promote `getLightSources()` (already iterated 2× per frame) into a typed registry every glow-emitting subsystem reads from: forge hearth, brazier, lantern, watchtower beacon, lighthouse beam, portal gate, mine mouth. Each entry carries origin, color, radius, kind, modulation hooks, visitor-driven intensity, day/night gating. Resolves the `splitPass === 'back'` early-return at `BuildingSprite.js:861` that silently skips manifest light layers on the back pass of split buildings (root cause behind #5). Land before #5, #17, #24.
+
+### T0.4 HiDPI / `devicePixelRatio` threading
+**Domain:** Camera · **File:** `App.js:213–219`, `Camera.js`, `IsometricRenderer.js:799, 1174–1175` · **Effort:** M · **Impact:** High
+
+Canvas is sized at CSS pixels. On Retina/4K every sprite and label renders blurry. Thread `dpr` through canvas sizing (`width = css * dpr`, top-level `ctx.scale(dpr, dpr)`) and audit every coordinate path that maps event coordinates to world coords:
+
+- `Camera._onMouseMove:84` (mouse drag)
+- `Camera._onWheel:97` (scroll/zoom)
+- `IsometricRenderer._onClick:846` (selection hit-test)
+
+Also gates every offscreen cache that allocates at `canvas.width × canvas.height`: `_getAtmosphereVignette:3666`, `SkyRenderer._getCachedBackground:113`. Land *before* T0.1 and any new offscreen cache (#14, #15, #29, #34) — otherwise those caches re-allocate later. Single highest perceived-quality change available.
+
+### T0.5 Camera bounds + viewport tile-rect contract
+**Domain:** Camera · **File:** `Camera.js:82–88`, consumers in `IsometricRenderer.js:840–841` · **Effort:** S · **Impact:** Medium
+
+Add min/max clamp to `Camera._onMouseMove` (the actual cause of the black-void state — minimap clicks emit valid coordinates; drag is unbounded). Publish `Camera.getViewportTileBounds()` consumed by minimap (#20), future culling, and any zoom-range work (#21). Gates #8, #20, #21.
+
+### T0.6 Motion-budget policy + reduced-motion gate-list
+**Domain:** All · **Effort:** S · **Impact:** Medium (accessibility + perf)
+
+`prefers-reduced-motion` is already honored by `ParticleSystem`, `SkyRenderer.driftEnabled`, water shimmer, and `motionScale` is threaded through `IsometricRenderer.js:1581/1852/1915/3105`. Codify a rule before adding motion: every new motion-bearing item must check `this.motionScale` *before allocating* its motion resource (ripple pool, harmonic phases, run-cycle frame timer, foam offset), not just before drawing. Also: declare which motion bands carry meaning (selection pulse, status pulse, recent-event flash, status indicator drift) so new motion items don't compete for the same band.
 
 ---
 
 ## Tier 1 — Quick Wins (S effort, Medium–High impact)
 
-### 1. Cache vignette/atmosphere overlay
-**Domain:** Camera · **File:** `IsometricRenderer.js:3661–3734` · **Effort:** S · **Impact:** High
+### 1. ~~Cache vignette/atmosphere overlay~~ — **REVISED**
+**Status:** Superseded by T0.1.
 
-The `_drawAtmosphere` pass calls `createLinearGradient` and `createRadialGradient` on every frame despite having a cacheKey check. Pre-render to an offscreen canvas keyed on (width, height, phase) and blit it. Directly frees GPU/CPU budget for everything else.
+The original premise was incorrect. The vignette IS already cached at `IsometricRenderer.js:3660–3668` keyed on `(width, height, atmosphere.cacheKey)`. The actual per-frame cost is the per-light radial-gradient loop in `_drawAtmosphere:3641–3654`, which T0.1 addresses.
 
 ### 2. Shoreline reflection shimmer
 **Domain:** Terrain · **File:** `IsometricRenderer.js:1730–1742` · **Effort:** S · **Impact:** Medium
 
-Shore tiles adjacent to water could emit a secondary shimmer layer driven by `waterFrame` to suggest shallow light reflection at the waterline. No new sprites needed — additive alpha overlay on existing edge mask.
+Shore tiles adjacent to water emit a secondary shimmer layer driven by `waterFrame` to suggest shallow light reflection at the waterline. No new sprites — additive alpha overlay on existing edge mask. Note: the existing four water sub-passes (`_drawStaticOpenSeaStructure`, `_drawOpenWaterDepthWash`, `_drawAnimatedCurrentBands`, `_drawDynamicWaterHighlights`) already iterate every visible water tile; measure fill-rate cost before adding a fifth pass on integrated GPUs. Reduced-motion: emit static shimmer at fixed `waterFrame=0`.
 
-### 3. Name label distance fade
-**Domain:** Agents · **File:** `AgentSprite.js:1365–1413` · **Effort:** S · **Impact:** Medium
+### 3. Name label distance fade — **REVISED**
+**Domain:** Agents · **File:** `AgentSprite.js:1365–1413`, slot pipeline at `IsometricRenderer.js:1245, 1317` · **Effort:** S · **Impact:** Medium
 
-Labels are fully opaque regardless of zoom or local agent density. Blend alpha down based on agent count in a screen zone, or lerp toward 0 beyond a configurable screen-space radius from camera focus. The compact badge fallback already exists (`AgentSprite.js:1447–1479`).
+Labels are fully opaque regardless of zoom or local agent density. The compact badge fallback already exists (`AgentSprite.js:1447–1479`). Original fix (alpha by density/distance) stands; pair with #38 (semantic priority in `_assignAgentOverlaySlots`) for the deeper improvement.
 
 ### 4. Hearth / forge glow driven by activity state
-**Domain:** Buildings · **File:** `BuildingSprite.js:1211–1216` · **Effort:** S · **Impact:** Medium
+**Domain:** Buildings · **File:** `BuildingSprite.js:1211–1216`, visitor count at `1648/1661` · **Effort:** S · **Impact:** Medium
 
-Forge hearth pulsing glow is decoupled from whether any agent is actually active at the building. Wire glow intensity to `visitorCount` so an idle forge dims and an occupied forge blazes.
+Forge hearth pulsing glow is decoupled from whether any agent is at the building. Wire glow intensity to `_visitorCountByType` so an idle forge dims and an occupied forge blazes.
 
-### 5. Lantern-glow overlay for all torch props
-**Domain:** Buildings · **File:** `BuildingSprite.js:843–850`, `manifest.yaml:86–90` · **Effort:** S · **Impact:** Medium
+**Caveat:** `_visitorCountByType` is keyed by `building.type`, not building instance — two forges of the same type share one count. Acceptable for the current 9-building world; document the assumption when implementing.
 
-The `atmosphere.light.lantern-glow` overlay is declared in the manifest but the activation check in `BuildingSprite` gating on `splitPass` may silently skip non-split prop types. Audit the condition and ensure all torch/brazier props receive the glow compositing pass.
+### 5. Lantern-glow overlay for all torch props — **REVISED**
+**Domain:** Buildings · **File:** `BuildingSprite.js:861` (split-pass return), `manifest.yaml:86–90` (declaration) · **Effort:** S · **Impact:** Medium · **Depends on:** T0.3
+
+Manifest declares `atmosphere.light.lantern-glow` but the activation never fires consistently. Real cause: `BuildingSprite.js:861` early-returns on `splitPass === 'back'`, which skips manifest light layers on the back pass of split buildings. Resolve via T0.3 (LightSourceRegistry); standalone fix is to re-enter the manifest-layer loop after the split early-return.
 
 ### 6. Sky gradient perceptual stop redistribution
 **Domain:** Sky · **File:** `SkyRenderer.js:130–134` · **Effort:** S · **Impact:** Medium
 
-Current stops (0.00, 0.42, 0.76, 1.00) produce uneven perceptual spacing and a visible mid-sky band. Redistribute to (0.00, 0.30, 0.65, 1.00) or add a fifth stop for richer depth. Pure arithmetic change — no asset work.
+Current stops (0.00, 0.42, 0.76, 1.00) produce uneven perceptual spacing and a visible mid-sky band. Redistribute to (0.00, 0.30, 0.65, 1.00) or add a fifth stop. Pure arithmetic. Cache adopts new stops on next miss (phase transition or resize). **Ship in same sprint as #19** — gradient changes without sun-warmth changes produce incoherent dusk visuals.
 
 ### 7. Cloud parallax wind-drift decoupling
 **Domain:** Sky · **File:** `SkyRenderer.js:294–296` · **Effort:** S · **Impact:** Medium
 
-Camera parallax and wind drift share a single phase (`clockDrift * driftMul`). Separate into a wind vector (constant lateral push) and a camera-coupled parallax component so clouds feel atmospheric rather than glued to the viewport.
+Camera parallax and wind drift share a single phase. Separate into a wind vector (constant lateral push) and a camera-coupled parallax component. Reduced-motion: drop wind to zero, retain parallax (camera input only).
 
 ### 8. Zoom easing
-**Domain:** Camera · **File:** `Camera.js:95–114` · **Effort:** S · **Impact:** Medium
+**Domain:** Camera · **File:** `Camera.js:95–114` · **Effort:** S · **Impact:** Medium · **Pair with #21**
 
-Wheel zoom snaps instantly between integer steps. Interpolate over ~150 ms with an ease-out curve. Self-contained within `Camera._onWheel` — no renderer changes needed.
+Wheel zoom snaps instantly between integer steps. Interpolate over ~150 ms with an ease-out curve. **Conflict with pixel-perfect premise:** during the easing window sprites blit at fractional scale and may appear blurry even with smoothing off. Either commit to fractional-zoom rendering quality (pair with #21 and accept sub-pixel artifacts at all in-between zooms) or skip easing under reduced-motion. Recommended: ship paired with #21 as a single decision.
 
 ### 9. Camera bounds clamping
-**Domain:** Camera · **File:** `Camera.js:29–88` · **Effort:** S · **Impact:** Medium
+**Status:** Folded into T0.5.
 
-Drag panning has no world-edge limit. Add min/max clamp in `_applyPan` derived from world tile dimensions × tile size, accounting for current zoom. Prevents the black-void state that currently breaks minimap click navigation.
-
-### 10. Activate breathing-idle sprite frames
-**Domain:** Agents · **File:** `SpriteSheet.js:19–20`, `AgentSprite.js:390–402` · **Effort:** S · **Impact:** Low–Medium
-
-All character sprites already have 4 breathing-idle frames generated (rows 6–9 of the sheet) but `SpriteSheet.js` collapses idle to a single cell. Change the idle cell lookup to cycle through frames 0–3 at the existing 500 ms cadence. Zero Pixellab generation required.
+### 10. ~~Activate breathing-idle sprite frames~~ — **DONE**
+**Status:** Already implemented. `SpriteSheet.js:19–20` does `(this.frame % IDLE_FRAMES)` with `IDLE_FRAMES = 4` and rows 6–9 reserved for idle. `AgentSprite.js:390–402` advances at the existing 500 ms cadence. The plan's claim that idle "collapses to a single cell" was outdated. Remove from sequence.
 
 ### 11. Harbor water distinguishing tint
-**Domain:** Terrain · **File:** `IsometricRenderer.js:1638–1661` · **Effort:** S · **Impact:** Low
+**Domain:** Terrain · **File:** `IsometricRenderer.js:1638–1661`, harbor polygon in `claudeville/src/config/scenery.js` · **Effort:** S · **Impact:** Low
 
-Harbor and open-ocean water share the same color palette. Apply a subtle green-hued tint to sheltered harbor tiles (the enclosed polygon defined in `scenery.js`) to visually separate near-shore from deep water.
+Harbor and open-ocean water share the same color palette. Apply a subtle green-hued tint to sheltered harbor tiles (the enclosed polygon defined in `scenery.js`).
 
 ### 12. Remove dead `_drawStatusRibbon` code
 **Domain:** Agents · **File:** `AgentSprite.js:822–858` · **Effort:** S · **Impact:** Low (cleanup)
 
-36-line method that draws a floating ribbon label above agents' heads. No call site exists — status is rendered via `_drawStatus()`/`_drawBubble()` instead. Either resurrect it as a configurable display mode or delete it.
+37-line method with no callers (verified). Delete; if a configurable display mode is wanted later, restore from git history.
+
+### 33. Prop occlusion respect split-horizon — **MOVED FROM TIER 4**
+**Domain:** Buildings · **File:** `BuildingSprite.js:813–850` · **Effort:** M · **Impact:** High (correctness, not polish)
+
+Re-tiered: this is a depth-sort correctness bug, not an ambitious feature. Currently agents can sort behind a tree that's behind a building (`visual-experience-crafting.md §11` "poor depth rules: sprites appear in front of objects they should be behind"). Include large props in the split-drawables sort. Promotes into the same correctness band as T0.5.
 
 ---
 
 ## Tier 2 — High Impact Investments (M effort, High impact)
 
 ### 13. HiDPI / devicePixelRatio canvas scaling
-**Domain:** Camera · **File:** `IsometricRenderer.js:799, 1174–1175` · **Effort:** M · **Impact:** High
-
-Canvas is created at CSS pixel size (1:1), so on Retina and 4K displays every sprite and text label renders blurry. Thread `devicePixelRatio` through canvas sizing (`width = css * dpr`, `height = css * dpr`), add a top-level `ctx.scale(dpr, dpr)`, and adjust Camera coordinate math. Most visible quality improvement possible — affects every pixel on screen.
+**Status:** Promoted to T0.4. Land before any item that allocates an offscreen canvas (#14, #15, #29, #34, plus existing vignette/sky caches).
 
 ### 14. Water depth color gradation
-**Domain:** Terrain · **File:** `IsometricRenderer.js:1655–1705` · **Effort:** M · **Impact:** High
+**Domain:** Terrain · **File:** `IsometricRenderer.js:1655–1705`, depth map needs new module · **Effort:** M · **Impact:** High · **Depends on:** T0.4
 
-Water currently uses a flat color with shimmer modulation but no depth progression. Add a shallow-to-deep gradient (turquoise → teal → navy) keyed on distance from the nearest shore tile (pre-computed once into a depth map). Dramatically improves the harbor bay's sense of volume.
+Water currently uses a flat color with shimmer modulation but no depth progression. Add a shallow-to-deep gradient (turquoise → teal → navy) keyed on distance from the nearest shore tile (pre-computed once into a depth map). Depth-map cache must allocate at DPR-scaled canvas size — ship after T0.4.
 
 ### 15. Shore foam animation
-**Domain:** Terrain · **File:** `IsometricRenderer.js:1675–1705` · **Effort:** M · **Impact:** High
+**Domain:** Terrain · **File:** `IsometricRenderer.js:1675–1705` · **Effort:** M · **Impact:** High · **Depends on:** T0.6
 
-Shore tiles use static deterministic noise for foam/spray. Drive foam opacity and offset by `waterFrame` so the coastline breathes with each water tick. Could layer 2–3 foam bands at different phases for realism.
+Shore tiles use static deterministic noise for foam/spray. Drive foam opacity and offset by `waterFrame`. Could layer 2–3 foam bands at different phases. Reduced-motion: hold foam at fixed `waterFrame=0`; do not allocate per-frame offset state.
 
 ### 16. Directional building shadows
-**Domain:** Buildings · **File:** `BuildingSprite.js:150–151` · **Effort:** M · **Impact:** High
+**Domain:** Buildings · **File:** `BuildingSprite.js:150–151` · **Effort:** M · **Impact:** High · **Depends on:** T0.2
 
-All buildings receive the same uniform ellipse shadow. Introduce a time-of-day sun angle (from `AtmosphereState` phase) to offset and elongate shadows at dawn/dusk and shorten them at noon. Landmark buildings could cast longer, more dramatic shadows than standard ones.
+All buildings receive a uniform ellipse shadow. Read `shadowAngleRad`, `shadowLength`, `shadowAlpha` from `LightingState` to offset and elongate shadows at dawn/dusk and shorten them at noon. Without T0.2 this duplicates time-of-day lerp logic with #18, #19, #23.
 
-### 17. Light bloom / halo around torches and braziers
-**Domain:** Buildings · **File:** `BuildingSprite.js:86–90`, `scenery.js:284–285` · **Effort:** M · **Impact:** High
+### 17. Light bloom / halo around torches and braziers — **REVISED**
+**Domain:** Buildings · **File:** `IsometricRenderer.js:3641–3654`, `BuildingSprite.js:86–90` · **Effort:** S after prerequisites (was M) · **Impact:** High · **Depends on:** T0.1, T0.3
 
-Torch and brazier props have emission coordinates in the manifest but no radial bloom is composited into the scene. Add a post-process pass that draws a soft additive radial gradient at each light emission point. At night this becomes the primary atmosphere driver.
+A radial halo IS already drawn per emitter every frame at lines 3641–3654 with `globalCompositeOperation = 'source-over'`. The plan's original claim that "no radial bloom is composited" was incorrect. Two changes give the visible bloom effect:
+
+1. Switch to `'screen'` (or `'lighter'`) for additive composition.
+2. Modulate radius and alpha by `LightingState.lightBoost` so emitters dim during day, brighten at dusk.
+
+After T0.1 caches the gradient and T0.3 supplies a unified emitter list, this item shrinks from M to S.
 
 ### 18. Horizon wash depth layering
-**Domain:** Sky · **File:** `SkyRenderer.js:144–151` · **Effort:** M · **Impact:** High
+**Domain:** Sky · **File:** `SkyRenderer.js:144–151` · **Effort:** M · **Impact:** High · **Depends on:** T0.2
 
-The horizon glow is a single radial gradient at a fixed y-fraction (0.86). Replace with two or three concentric wash layers at different radii and alphas to create genuine atmospheric perspective depth. The far layer should shift color toward the ambient (orange at dusk, blue at midnight).
+Replace single radial gradient with two or three concentric wash layers at different radii and alphas. Far layer reads `LightingState.ambientTint` so it shifts color toward ambient at dusk/midnight.
 
 ### 19. Sun glow day-to-dusk modulation
-**Domain:** Sky · **File:** `SkyRenderer.js:205–222` · **Effort:** M · **Impact:** High
+**Domain:** Sky · **File:** `SkyRenderer.js:205–222` · **Effort:** S with T0.2 (M without) · **Impact:** High · **Depends on:** T0.2
 
-Sun glow uses hardcoded radius (4.5×) and RGBA stops regardless of `AtmosphereState` phase. Read current phase and lerp radius, warmth (R/B channel balance), and bloom intensity. Dawn: wide, rose-gold. Noon: tight, white. Dusk: very wide, amber-red. This alone makes the sky feel cinematic.
+Sun glow uses hardcoded radius (4.5×) and RGBA stops regardless of phase. Read `sunWarmth`, `lightBoost` from `LightingState` and lerp radius, R/B balance, bloom intensity. Dawn: wide rose-gold. Noon: tight white. Dusk: very wide amber-red. **Acts as the canary item for T0.2.** Ship with #6 — gradient changes without sun-warmth changes produce incoherent dusk.
 
 ### 20. Minimap viewport overlay
-**Domain:** Camera · **File:** `Minimap.js:19–60` · **Effort:** M · **Impact:** Medium
+**Domain:** Camera · **File:** `Minimap.js:19–60` · **Effort:** S with T0.5 (M without) · **Impact:** Medium · **Depends on:** T0.5
 
-The parchment minimap renders buildings but gives no indication of current camera position or zoom. Draw a translucent isometric-diamond frustum rect representing the visible viewport. Update on every camera pan/zoom.
+Draw a translucent isometric-diamond frustum rect representing the visible viewport. Update on every camera pan/zoom. Use `Camera.getViewportTileBounds()` from T0.5; do not duplicate clamp logic.
 
 ### 21. Fractional zoom sub-steps
-**Domain:** Camera · **File:** `Camera.js:103–110` · **Effort:** M · **Impact:** Medium
+**Domain:** Camera · **File:** `Camera.js:103–110` · **Effort:** M · **Impact:** Medium · **Depends on:** T0.4, T0.5; **Pair with #8**
 
-Current steps {1, 2, 3} produce a coarse jump that disorients. Expand to {1.0, 1.5, 2.0, 2.5, 3.0} or a continuous 5-step wheel. Requires proportional label-size adjustments in `AgentSprite` zoom thresholds.
+Expand integer steps {1, 2, 3} to {1.0, 1.5, 2.0, 2.5, 3.0}. At fractional scale, sprites blit at sub-pixel positions; without HiDPI threading the artifacts are visible even with smoothing off. Also revisit `AgentSprite._zoom < 1.5` threshold at line 1366. Ship with #8 — easing through fractional values requires committing to fractional-zoom quality.
 
 ### 22. Star temporal variance
-**Domain:** Sky · **File:** `SkyRenderer.js:179–196` · **Effort:** M · **Impact:** Medium
+**Domain:** Sky · **File:** `SkyRenderer.js:179–196` · **Effort:** M · **Impact:** Medium · **Depends on:** T0.6
 
-Stars use flat LCG seeding with a single drift formula. Group stars into magnitude classes (bright / mid / faint) and give each class a different twinkle rate, drift amplitude, and brightness oscillation. Bright stars could pulse slightly; faint stars drift more.
+Group stars into magnitude classes (bright/mid/faint), each with a different twinkle rate, drift amplitude, brightness oscillation. Reduced-motion: skip allocation of per-star phase offsets; render flat brightness.
 
 ### 23. Moon corona articulation
-**Domain:** Sky · **File:** `SkyRenderer.js:247–256` · **Effort:** M · **Impact:** Medium
+**Domain:** Sky · **File:** `SkyRenderer.js:247–256` · **Effort:** M · **Impact:** Medium · **Depends on:** T0.2
 
-The moon glow is a single blunt radial stop. Add a faint outer corona ring at ~1.4× the sprite radius and a chromatic haze (cool blue shifting to neutral) that strengthens during full-moon phases.
+Add a faint outer corona ring at ~1.4× sprite radius and a chromatic haze (cool blue → neutral) that strengthens during full-moon phases. Read modulation from `LightingState.beaconIntensity` or a new `moonPhase` derived from atmosphere.
 
 ### 24. Lighthouse beam geometry
-**Domain:** Buildings · **File:** `BuildingSprite.js:1574–1579` · **Effort:** M · **Impact:** Medium
+**Domain:** Buildings · **File:** `BuildingSprite.js:1574–1579` · **Effort:** M · **Impact:** Medium · **Depends on:** T0.3, T0.6
 
-The pharos lighthouse currently renders a basic radial gradient glow. Add a rotating beam geometry: two thin triangle wedges opposite each other, rotating slowly, with soft edge falloff and a subtle fog scatter where the beam meets atmosphere. Animate via `buildingAnim` phase.
+Two thin triangle wedges opposite each other, rotating slowly, with soft edge falloff and subtle fog scatter where the beam meets atmosphere. Animate via `buildingAnim` phase. Register the beam as a `LightSourceRegistry` entry with `kind: 'beam'`. Reduced-motion: hold beam at a fixed angle.
 
 ### 25. Water crest harmonic layering
-**Domain:** Terrain · **File:** `IsometricRenderer.js:1755–1771` · **Effort:** M · **Impact:** Medium
+**Domain:** Terrain · **File:** `IsometricRenderer.js:1755–1771` · **Effort:** M · **Impact:** Medium · **Depends on:** T0.6
 
-Only one sine-wave crest is applied to water tiles. Add a second harmonic at a different frequency and direction to produce interference patterns, making the water surface feel less mechanical.
+Add a second harmonic at a different frequency and direction to produce interference patterns. Reduced-motion: drop both harmonics to amplitude 0.
 
 ### 26. Agent crowd bump visual feedback
 **Domain:** Agents · **File:** `IsometricRenderer.js:1071–1095` · **Effort:** M · **Impact:** Medium
 
-When the separation steering pushes agents apart, the motion is silent. Emit a brief particle puff (3–4 small circles expanding + fading) or flash the ground ring for one frame. Communicates intentionality rather than glitch.
+Emit a brief particle puff (3–4 small circles expanding + fading) or flash the ground ring when separation steering pushes agents apart. Communicates intentionality vs. glitch. Reduced-motion: flash the ground ring only; skip particles.
 
 ### 27. Chat partner facing lock
 **Domain:** Agents · **File:** `AgentSprite.js:266–298` · **Effort:** M · **Impact:** Medium
 
-Chat partners derive facing from velocity during approach but lock in place once stationary. After arrival, continuously set each agent's facing direction to point toward their partner's current tile center. Small quaternion-style 8-direction snap per frame.
+After arrival, continuously snap each chat-partner sprite's facing direction to point toward partner's current tile center. 8-direction snap per frame.
 
-### 28. Status glow prominence in crowds
-**Domain:** Agents · **File:** `AgentSprite.js:643–681` · **Effort:** M · **Impact:** Medium
+### 28. Status glow prominence in crowds — **REVISED**
+**Domain:** Agents · **File:** `AgentSprite.js:643–681` · **Effort:** M · **Impact:** Medium · **Depends on:** #36
 
-Ground ring max opacity is 0.42 (0.26 + 0.16 pulse), which disappears in dense scenes. Increase base to 0.38 and pulse ceiling to 0.62 for WORKING agents. Non-selected IDLE agents could dim further to create contrast hierarchy.
+Original tweak (0.42 → 0.62 ceiling for WORKING; idle dim) is fine in isolation. But pulse currently means six different things across the renderer (selection, status, hearth, building light, watchtower fire, brazier overlay). Land #36 (pulse-cue ownership) first so this item has a band to claim.
 
 ---
 
 ## Tier 3 — Solid Improvements (M effort, Low–Medium impact)
 
 ### 29. Terrain edge wear at path–grass borders
-**Domain:** Terrain · **File:** `IsometricRenderer.js` terrain cache · **Effort:** M · **Impact:** Medium
+**Domain:** Terrain · **File:** `IsometricRenderer.js` terrain cache · **Effort:** M · **Impact:** Medium · **Depends on:** T0.4
 
-Paths meet grass/forest in hard tile edges. Add a 2–4 pixel procedural erosion band at transition tiles (deterministic noise keyed on tile coords) to soften the boundary.
+Procedural erosion band (2–4 px) at transition tiles. Pre-bake into `terrainCache`; do not redraw per frame.
 
 ### 30. Terrain wetness tint bordering water
 **Domain:** Terrain · **File:** `IsometricRenderer.js` (FOREST_FLOOR_REGIONS rendering) · **Effort:** M · **Impact:** Medium
 
-Forest floor and grass tiles immediately bordering water could receive a saturation/darkening overlay to simulate wet soil. Pre-classify "water-adjacent" tiles once at world init and apply a multiplicative tint during render.
+Pre-classify "water-adjacent" tiles once at world init; multiplicative tint during render.
 
 ### 31. Fish school animation trails
-**Domain:** Buildings/Scenery · **File:** `scenery.js:295–298` · **Effort:** M · **Impact:** Low
+**Domain:** Buildings/Scenery · **File:** `claudeville/src/config/scenery.js:295–298` · **Effort:** M · **Impact:** Low · **Depends on:** T0.6
 
-Fish schools have phase and radius parameters but render as static icons. Add a short tail of fading copies offset along the school's heading to suggest motion without additional sprites.
+Short tail of fading copies offset along heading. Reduced-motion: render single frame.
 
 ---
 
-## Tier 4 — Ambitious (L effort, High–Medium impact)
+## Tier 4 — Ambitious (L effort)
+
+(#33 moved to Tier 1 in this revision.)
 
 ### 32. Animated concentric water ripples
-**Domain:** Terrain · **File:** `IsometricRenderer.js:1588–1650` · **Effort:** L · **Impact:** High
+**Domain:** Terrain · **File:** `IsometricRenderer.js:1588–1650` · **Effort:** L · **Impact:** High · **Depends on:** T0.6
 
-Propagating concentric ring ripples from randomised drop origins scattered across the water surface. Each ring expands outward over ~60 frames, fades, and is replaced. Requires a ripple pool data structure ticked each frame and a clip-to-water-tile render pass.
-
-### 33. Prop occlusion respect split-horizon
-**Domain:** Buildings · **File:** `BuildingSprite.js:813–850` · **Effort:** L · **Impact:** Medium
-
-Props (trees, lanterns, etc.) are drawn as a single drawImage call with no respect for a nearby building's `horizonY` split. Agents can appear in front of a building but behind a tree that should itself be behind the building. Correct by including large props in the split-drawables sort.
+Ripple pool ticked each frame; clip-to-water-tile render pass. Reduced-motion: do not allocate the ripple pool at all.
 
 ### 34. Canopy horizon soft-fade
-**Domain:** Sky · **File:** `SkyRenderer.js:54–69` · **Effort:** L · **Impact:** Medium
+**Domain:** Sky · **File:** `SkyRenderer.js:54–69` · **Effort:** L · **Impact:** Medium · **Depends on:** T0.4
 
-Sky clipping uses a hard `rect(0, 0, w, 0.52h)` with no feathering. Replace with a gradient-masked soft clip (canvas `globalCompositeOperation: destination-in` with a vertical linear gradient) so stars and moon dissolve into the horizon haze rather than cutting sharply.
+Replace hard clip with `globalCompositeOperation: destination-in` masked by a vertical linear gradient. Mask canvas allocates at DPR-scaled size.
 
 ### 35. Run / sprint animation state
-**Domain:** Agents · **File:** `AgentSprite.js` · **Effort:** L · **Impact:** Medium
+**Domain:** Agents · **File:** `AgentSprite.js`, sprite sheets · **Effort:** L · **Impact:** Medium · **Depends on:** T0.6
 
-WORKING-state agents move faster but use the same 6-frame walk cycle. A dedicated 8-frame run cycle (leaning forward, larger stride) would visually communicate urgency. Requires Pixellab generation for all 9 character × 8 directions × 8 frames = 576 new cells.
+Dedicated 8-frame run cycle, 9 chars × 8 directions × 8 frames = 576 new cells via Pixellab. Reduced-motion: WORKING-state agents continue using the existing 6-frame walk cycle; do not advance to run frames.
 
 ---
 
-## Recommended starting sequence
+## Gap-analysis additions (NEW, from architectural review)
 
-Three items that compose well and can ship independently:
+### 36. Pulse-cue ownership policy
+**Domain:** All · **Effort:** S · **Impact:** Medium
 
-1. **#1 — Cache vignette overlay** — frees framerate headroom before adding any new effects.
-2. **#17 — Torch/brazier light bloom** — highest visible night-time improvement, self-contained compositing pass.
-3. **#19 — Sun glow dusk modulation** — transforms the existing sky system from static to cinematic with no new assets.
+`visual-experience-crafting.md §4`: "do not overload one cue. If pulsing means waiting, do not also use it for success." Pulse currently signals six unrelated things. Assign one canonical owner per pulse rate band:
 
-After those three land, the natural next cluster is **#13 (HiDPI)** + **#14/#15 (water depth + foam)** as a water quality sprint, and **#16/#18 (shadows + horizon wash)** as a lighting atmosphere sprint.
+- **Slow (>1 s):** selection ring (already there).
+- **Medium (~600 ms):** working status glow.
+- **Fast (<300 ms):** notification / recent-event flash.
+- **Static (no pulse):** idle, building light, hearth — replace with steady alpha or smooth `LightingState`-driven modulation.
+
+Without this, every Tier-1/2 item that adds another pulse muddies the visual grammar. Land before #28.
+
+### 37. Empty-state world visual
+**Domain:** All · **Effort:** S–M · **Impact:** High (first-load UX)
+
+`visual-experience-crafting.md §11`: "no empty state: the world looks broken when there is simply no data." Zero-agent and one-agent are the dominant first-load states for new users; the original plan had no items for them. Options (any one or a combination):
+
+- Ambient background activity always visible: fish school traffic, harbor ship loop, smoke plumes from "idle" buildings, lighthouse beam.
+- A small caretaker NPC near the Command Center.
+- A subtle "watching for sessions…" hint near the topbar.
+
+Belongs in Tier 1 — high first-impression leverage.
+
+### 38. Label clutter — semantic priority in `_assignAgentOverlaySlots`
+**Domain:** Agents · **File:** `IsometricRenderer.js:1245, 1317` · **Effort:** M · **Impact:** Medium
+
+Existing `occupiedBoxes` machinery resolves label collisions but treats all labels equally. Slot-assign priority order: selected → working-with-recent-event → recently-spawned → working → idle. Idle labels yield first; selected always wins. Pairs with #3.
+
+---
+
+## Revised recommended starting sequence
+
+The original sequence (#1 → #17 → #19) was unsound: #1 was a no-op (already cached) and #17 piled onto the same un-batched gradient loop without addressing it.
+
+### Sprint A — pipeline validation (zero risk, immediate visible)
+1. **#6** — Sky gradient stops (pure arithmetic, no cache invalidation).
+2. **#19** — Sun glow dusk modulation (canary for T0.2).
+3. **#12** — Remove dead `_drawStatusRibbon` (cleanup; builds review confidence).
+
+(#10 is DONE — removed from sequence.)
+
+### Sprint B — architectural prerequisites
+4. **T0.4** — HiDPI threading (single biggest perceived-quality change; gates every offscreen cache).
+5. **T0.5** — Camera bounds + viewport rect (fixes void state; unblocks #20/#21).
+6. **T0.6** — Motion-budget policy (codifies the rule before adding motion items).
+7. **T0.1** — Cache `_drawAtmosphere` per-light loop.
+8. **T0.2 + T0.3** — `LightingState` + `LightSourceRegistry` (collapses #4/#5/#16/#17/#18/#19/#23/#24).
+
+### Sprint C — correctness + grammar
+9. **#33** (now Tier-1) — Prop split-horizon (depth-sort correctness).
+10. **#36** — Pulse-cue ownership (visual grammar before #28).
+11. **#37** — Empty-state visuals (first-load UX).
+12. **#38** — Label priority (pairs with #3).
+
+### Sprint D — visual atmosphere (after prerequisites)
+13. **#16, #18, #23** — Shadows, horizon wash, moon corona — all consume `LightingState`.
+14. **#17** — Torch bloom (now S effort post-T0.1+T0.3).
+15. **#14, #15, #25** — Water depth, foam, harmonics.
+
+### Sprint E — camera quality
+16. **#8 + #21 paired** — Zoom easing + fractional steps (ship together).
+17. **#20** — Minimap viewport overlay (uses T0.5 contract).
+
+Tier-4 items (#32, #34, #35) follow only after the cumulative cost of Sprints A–E has been measured.
+
+---
+
+## Cumulative cost note
+
+If Sprints A–D ship as written, per-frame additions vs. today:
+
+- ~6 cached radial gradients (T0.1) — **net negative** cost (was N × 60 fps uncached).
+- 1 `LightingState` calc per frame (T0.2) — trivial.
+- 1 horizon-wash + sun-glow re-draw per cache miss (#6/#18/#19) — bucketed, low.
+- 1 shadow draw per visible building per frame (#16) — moderate.
+- 1 foam offset + 1 depth lookup per visible water tile (#14/#15) — depends on visible tile count; profile at zoom 1.0 with full canvas before approving.
+- N agents × ground-ring + label (already exists; #3/#28/#38 modulate, do not add new draws).
+
+Pre-Sprint E this should fit comfortably at 60 fps on integrated GPU at 1080p. Tier-4 items #32 (concentric ripples) and #35 (run cycle, +576 cells × decode cost) require explicit measurement before commit.
+
+---
+
+## Review provenance
+
+This plan was revised on 2026-04-27 after a multi-model review pass:
+
+- **haiku** (surface-check): flagged #1 and #10 as already implemented; confirmed #5/#12/#33 as real findings.
+- **sonnet** (technical depth): produced the per-item feasibility analysis, hidden-coupling pairs, and the alternate Sprint A ordering.
+- **opus** (architectural): supplied Tier 0, the gap-analysis items (#36/#37/#38), and the cumulative-cost discipline.
