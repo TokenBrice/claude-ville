@@ -190,7 +190,6 @@ class App {
             this._resizeHandle = null;
         }
 
-        canvas.style.background = "linear-gradient(180deg, #071622 0%, #04101c 55%, #02070d 100%)";
         canvas.style.boxShadow = "inset 0 0 200px rgba(0, 0, 0, 0.4)";
 
         const resize = () => {

@@ -20,6 +20,7 @@ import { Minimap } from './Minimap.js';
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
+import { SkyRenderer } from './SkyRenderer.js';
 import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
@@ -267,6 +268,7 @@ export class IsometricRenderer {
             ? new BuildingSprite(this.assets, this.sprites, this.particleSystem)
             : null;
         this.harborTraffic = new HarborTraffic({ sprites: this.sprites });
+        this.skyRenderer = new SkyRenderer({ assets: this.assets });
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.minimap = new Minimap();
         this.agentSprites = new Map();
@@ -970,7 +972,7 @@ export class IsometricRenderer {
         const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
         this._lastFrameTime = now;
         this._update(dt);
-        this._render();
+        this._render(dt);
         this.frameId = requestAnimationFrame(() => this._loop());
     }
 
@@ -1142,7 +1144,7 @@ export class IsometricRenderer {
         return 0.65;
     }
 
-    _render() {
+    _render(dt = 16) {
         const ctx = this.ctx;
         const canvas = this.canvas;
         if (!ctx || !canvas) return;
@@ -1152,8 +1154,7 @@ export class IsometricRenderer {
         // Clear
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         SpriteRenderer.disableSmoothing(ctx);
-        ctx.fillStyle = THEME.bg;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        this.skyRenderer.draw(ctx, this.camera, canvas, dt, this.motionScale);
 
         // Apply camera
         this.camera.applyTransform(ctx);
