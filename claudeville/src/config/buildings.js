@@ -26,7 +26,7 @@ export const BUILDING_DEFS = [
         icon: 'B',
         description: 'Task status',
         district: 'civic',
-        visualTier: 'major',
+        visualTier: 'hero',
         labelPriority: 'landmark',
         entrance: { tileX: 22, tileY: 33 },
         visitTiles: [{ tileX: 22, tileY: 33 }, { tileX: 20, tileY: 33 }, { tileX: 24, tileY: 33 }],

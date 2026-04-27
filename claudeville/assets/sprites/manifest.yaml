@@ -358,12 +358,32 @@ buildings:
       sparkle: [84, 94]
       mining: [102, 124]
 
-  # ── STANDARD: Task Board ──
+  # ── HERO: Task Board (Arcane Rune Chronicle Court) ──
   - id: building.taskboard
-    tool: isometric_tile
-    prompt: "epic task board hall, open-sided pavilion with carved stone pillars, scrolls and parchment notices pinned to boards, guild pennant flying, isometric"
-    size: 64
-    displaySize: 112
+    composeGrid: [3, 2]
+    splitForOcclusion: true
+    horizonY: 130
+    layers:
+      base:
+        tool: isometric_tile
+        prompt: "epic arcane rune chronicle court, twin ancient crenellated stone watchtowers with amber torch sconces flanking a massive central inscribed tablet, rune-carved stone face with horizontal amber glowing inscription lines, burnished gold arcane seal at top center, stone plinth base with guild relief, warm golden firelight, heroic isometric RPG landmark"
+        size: 64
+        displaySize: 104
+      runeGlow:
+        tool: isometric_tile
+        prompt: "pulsing warm amber rune glow radiating from carved stone tablet surface, horizontal glowing inscription lines, burnished gold arcane energy, transparent background, isometric"
+        size: 64
+        anchor: [156, 80]
+        animation: pulse
+    emitters:
+      torch:  [52, 148]
+      torch2: [260, 148]
+      sparkle:  [156, 74]
+      sparkle2: [156, 30]
+    lightSource: [156, 80]
+    lightColor: '#ffb347'
+    lightRadius: 80
+    lightOverlay: 'atmosphere.light.fire-glow'
 
   # ── STANDARD: Lore Archive ──
   - id: building.archive
