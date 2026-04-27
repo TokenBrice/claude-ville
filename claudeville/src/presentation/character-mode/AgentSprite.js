@@ -699,6 +699,7 @@ export class AgentSprite {
 
     _drawSelectionRing(ctx) {
         if (!this.assets) return;
+        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
         // Pulse alpha so the ring breathes (0.7 .. 1.0 sinusoidal).
         const pulseAlpha = 0.7 + 0.3 * Math.sin(this.frame * 0.15);
         const ring = this.assets.get('overlay.status.selected');
@@ -710,6 +711,20 @@ export class AgentSprite {
             ctx.drawImage(ring, dx, dy);
             ctx.restore();
             return;
+        }
+        const effortRingId = identity.effortFloorRing;
+        if (effortRingId) {
+            const effortRing = this.assets.get(effortRingId);
+            if (effortRing) {
+                const dims = this.assets.getDims(effortRingId);
+                ctx.drawImage(
+                    effortRing,
+                    Math.round(this.x - dims.w / 2),
+                    Math.round(this.y - dims.h / 2),
+                    dims.w,
+                    dims.h
+                );
+            }
         }
         // Fallback: draw a simple ellipse when the overlay asset is not loaded.
         ctx.save();
