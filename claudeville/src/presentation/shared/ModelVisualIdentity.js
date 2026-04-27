@@ -52,14 +52,6 @@ const DEFAULT_EFFORT_RENDERING = Object.freeze({
     allowRuntimeEffortWeapon: true,
 });
 
-const BAKED_EFFORT_RENDERING = Object.freeze({
-    effortBakedIntoSprite: true,
-    showDashboardEffortCrest: false,
-    allowRuntimeEffortAccessory: false,
-    allowRuntimeEffortFloorRing: false,
-    allowRuntimeEffortWeapon: false,
-});
-
 function codexEquipment(effortTier) {
     const effortWeapon = CODEX_EFFORT_WEAPONS[effortTier] || null;
     return {
@@ -173,14 +165,6 @@ export function getModelVisualIdentity(model, effort, provider = '') {
 
     if (normalizedModel.includes('gpt-5-5')) {
         const equipment = codexEquipment(effortTier);
-        const bakedEquipmentSpriteId = effortTier === 'high'
-            ? 'agent.codex.gpt55.high'
-            : (effortTier === 'xhigh' || effortTier === 'max')
-                ? 'agent.codex.gpt55.xhigh'
-                : null;
-        const effortRendering = bakedEquipmentSpriteId
-            ? BAKED_EFFORT_RENDERING
-            : DEFAULT_EFFORT_RENDERING;
         return {
             family: 'codex',
             modelClass: 'gpt55',
@@ -188,13 +172,10 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.5',
             shortLabel: '5.5',
             effortTier,
-            ...effortRendering,
+            ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
-            effortWeapon: bakedEquipmentSpriteId ? null : equipment.effortWeapon,
-            effortFloorRing: bakedEquipmentSpriteId ? null : equipment.effortFloorRing,
-            effortAccessory: bakedEquipmentSpriteId ? null : equipment.effortAccessory,
-            suppressBakedWeapon: bakedEquipmentSpriteId ? false : equipment.suppressBakedWeapon,
-            spriteId: bakedEquipmentSpriteId || 'agent.codex.gpt55',
+            suppressBakedWeapon: true,
+            spriteId: 'agent.codex.gpt55',
             paletteKey: 'codex',
             trim: ['#fff1b8', '#7be3d7', '#f8c45f'],
             accent: ['#ffffff', '#bff7ee', '#ffd98a'],
