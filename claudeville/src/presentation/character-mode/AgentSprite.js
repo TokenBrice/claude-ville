@@ -946,8 +946,8 @@ export class AgentSprite {
         ctx.scale(s, s);
         ctx.translate(0, 20 + slot * 11);
         ctx.font = 'bold 6px "Press Start 2P", monospace';
-        const text = this._fitText(ctx, rawName, 72);
-        const w = Math.min(92, Math.max(34, ctx.measureText(text).width + 14));
+        const text = this._fitText(ctx, rawName, 144);
+        const w = Math.min(184, Math.max(34, ctx.measureText(text).width + 14));
         const h = 13;
 
         ctx.fillStyle = 'rgba(20, 14, 10, 0.90)';
