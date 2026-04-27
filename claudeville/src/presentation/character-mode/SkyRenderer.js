@@ -21,6 +21,15 @@ const HALO_POSITIONS = [
 const STAR_COUNT = 80;
 const STAR_CEILING_FRAC = 0.58;
 
+const CLOUD_LAYERS = [
+    { id: 'atmosphere.cloud.cumulus', fy: 0.16, parallax: 0.04, driftMul: 0.4, alpha: 0.85, count: 4 },
+    { id: 'atmosphere.cloud.wisp',    fy: 0.30, parallax: 0.08, driftMul: 0.7, alpha: 0.55, count: 5 },
+];
+
+const CLOUD_DRIFT_PX_PER_MS = 0.004;
+const MOON_FX = 0.78;
+const MOON_FY = 0.10;
+
 export class SkyRenderer {
     constructor({ assets } = {}) {
         this.assets = assets || null;
@@ -29,10 +38,12 @@ export class SkyRenderer {
         this._cloudOffset = 0;
     }
 
-    draw(ctx, camera, canvas) {
+    draw(ctx, camera, canvas, dt = 16, motionScale = 1) {
         const cached = this._getCachedBackground(canvas);
         ctx.drawImage(cached, 0, 0);
-        // Cloud + moon overlays added in Task 6.
+        this._cloudOffset = (this._cloudOffset + dt * CLOUD_DRIFT_PX_PER_MS * motionScale) % canvas.width;
+        this._drawClouds(ctx, camera, canvas);
+        this._drawMoon(ctx, canvas);
     }
 
     _getCachedBackground(canvas) {
@@ -88,5 +99,42 @@ export class SkyRenderer {
             ctx.fillStyle = hot ? PALETTE.starHot : PALETTE.starWarm;
             ctx.fillRect(x, y, size, size);
         }
+    }
+
+    _drawClouds(ctx, camera, canvas) {
+        if (!this.assets) return;
+        const camX = camera?.x || 0;
+        for (const layer of CLOUD_LAYERS) {
+            const img = this.assets.get(layer.id);
+            if (!img) continue;
+            const dims = this.assets.getDims(layer.id);
+            const w = dims?.w ?? img.width ?? 64;
+            const spacing = canvas.width / layer.count;
+            // Tile period is `spacing`, not canvas.width — wrap the offset into
+            // [0, spacing) so neighbouring clouds always abut without a gap.
+            const rawOffset = -camX * layer.parallax + this._cloudOffset * layer.driftMul;
+            const baseOffset = ((rawOffset % spacing) + spacing) % spacing;
+            const y = layer.fy * canvas.height;
+            ctx.save();
+            ctx.globalAlpha = layer.alpha;
+            // Draw count + 2 instances (one leading off-screen each side) so a
+            // sprite is always feeding in as another walks out.
+            for (let i = -1; i <= layer.count; i++) {
+                const x = i * spacing + baseOffset - w / 2;
+                ctx.drawImage(img, Math.round(x), Math.round(y));
+            }
+            ctx.restore();
+        }
+    }
+
+    _drawMoon(ctx, canvas) {
+        if (!this.assets) return;
+        const moon = this.assets.get('atmosphere.moon.crescent');
+        if (!moon) return;
+        const dims = this.assets.getDims('atmosphere.moon.crescent');
+        const w = dims?.w ?? moon.width ?? 64;
+        const x = canvas.width * MOON_FX - w / 2;
+        const y = canvas.height * MOON_FY;
+        ctx.drawImage(moon, Math.round(x), Math.round(y));
     }
 }
