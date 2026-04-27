@@ -50,11 +50,12 @@ export class Building {
     }
 
     containsVisitPoint(tileX, tileY) {
-        const roundedX = Math.round(tileX);
-        const roundedY = Math.round(tileY);
+        const x = Number(tileX);
+        const y = Number(tileY);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
         return this.visitTiles.some((tile) => (
-            Math.round(tile.tileX) === roundedX &&
-            Math.round(tile.tileY) === roundedY
+            Math.abs(tile.tileX - x) <= 0.72 &&
+            Math.abs(tile.tileY - y) <= 0.72
         ));
     }
 
