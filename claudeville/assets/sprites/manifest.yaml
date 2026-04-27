@@ -6,11 +6,14 @@ style:
 # Character sheets are 8 direction columns by 10 animation rows:
 # 6 walk rows followed by 4 breathing-idle rows, with 92px square cells.
 characters:
+  # NOTE: regenerate via pixellab create_character with size=76 (canvas ~108) to
+  # avoid wide-brim hat clipping the 92-px engine cell. The manifest `size: 92`
+  # below is the engine cell size, not the generation hint.
   - id: agent.claude.opus
     tool: create_character
     prompt: "Claude Opus 4.7 master archmage, tall pointed wizard hat with narrow brim and star sigil at apex, full-length floor-dragging ivory and amber robe, broad gold rune mantle, high collar, glowing tome held in one hand, tall ornate runed staff in the other, regal commanding silhouette, 8-direction pixel art"
     n_directions: 8
-    size: 76
+    size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
     anchor: [46, 80]
