@@ -80,6 +80,27 @@ export class AgentSprite {
         this.waypoints = [];
         this._lastPathTileKey = null;
 
+        // Guard: if the agent spawns on a non-walkable tile (e.g. water), nudge to
+        // the nearest walkable tile so _pickTarget can compute a valid first path.
+        if (this.pathfinder) {
+            const startTile = this._screenToTile(this.x, this.y);
+            const fx = Math.round(startTile.tileX);
+            const fy = Math.round(startTile.tileY);
+            if (!this.pathfinder.isWalkable(fx, fy)) {
+                const neighbors = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
+                for (const [dx, dy] of neighbors) {
+                    const nx = fx + dx;
+                    const ny = fy + dy;
+                    if (this.pathfinder.isWalkable(nx, ny)) {
+                        const nudged = new Position(nx, ny).toScreen(TILE_WIDTH, TILE_HEIGHT);
+                        this.x = nudged.x;
+                        this.y = nudged.y;
+                        break;
+                    }
+                }
+            }
+        }
+
         // Sprite rendering fields
         this.assets = assets;
         this.compositor = compositor;
