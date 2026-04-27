@@ -27,6 +27,11 @@ import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
 import { LandmarkActivity } from './LandmarkActivity.js';
 import { DebugOverlay } from './DebugOverlay.js';
+import { AgentEventStream } from './AgentEventStream.js';
+import { RelationshipState } from './RelationshipState.js';
+import { RitualConductor } from './RitualConductor.js';
+import { getPulsePriority } from './PulsePolicy.js';
+import { lightSourceCacheKey } from './LightSourceRegistry.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -319,6 +324,10 @@ export class IsometricRenderer {
         this.skyRenderer = new SkyRenderer({ assets: this.assets });
         this.weatherRenderer = new WeatherRenderer();
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
+        this.agentEventStream = null;
+        this.relationshipState = null;
+        this.ritualConductor = null;
+        this.pulsePriority = getPulsePriority();
         this.minimap = new Minimap();
         this.agentSprites = new Map();
         this._sortedSprites = [];
@@ -334,6 +343,7 @@ export class IsometricRenderer {
         this.openSeaFlockBirds = this._buildOpenSeaFlockBirds();
         this.motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
+        this.ritualConductor = new RitualConductor({ motionScale: this.motionScale });
         this.particleSystem.setMotionEnabled(this.motionScale > 0);
         this._onMotionPreferenceChange = (event) => this._setMotionScale(event.matches ? 0 : 1);
         this._motionPreferenceBound = false;
@@ -346,6 +356,7 @@ export class IsometricRenderer {
         this.onAgentSelect = null;
         this._chatMatchAccumulator = 250;
         this._crowdBumpCooldowns = new Map();
+        this._chroniclerPauseUntil = 0;
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
         for (let y = 0; y < MAP_SIZE; y++) {
@@ -867,7 +878,19 @@ export class IsometricRenderer {
         this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
         this.atmosphereState?.installDebugHelper?.();
 
+        if (!this.ritualConductor) {
+            this.ritualConductor = new RitualConductor({ motionScale: this.motionScale });
+        }
+        this.agentEventStream?.dispose?.();
+        this.relationshipState?.dispose?.();
+        this.agentEventStream = new AgentEventStream(this.world);
+        this.relationshipState = new RelationshipState(this.world);
+        if (typeof window !== 'undefined') {
+            window.__relationshipState = () => this.relationshipState?.getSnapshot?.();
+        }
+
         this.buildingRenderer?.setBuildings(this.world.buildings);
+        this.buildingRenderer?.setRitualConductor?.(this.ritualConductor);
 
         // Create sprites for existing agents
         for (const agent of this.world.agents.values()) {
@@ -946,6 +969,15 @@ export class IsometricRenderer {
         this._spritesNeedSort = true;
         this.agentSprites.clear();
         this.particleSystem.clear();
+        this.agentEventStream?.dispose?.();
+        this.relationshipState?.dispose?.();
+        this.ritualConductor?.dispose?.();
+        this.agentEventStream = null;
+        this.relationshipState = null;
+        this.ritualConductor = null;
+        if (typeof window !== 'undefined' && window.__relationshipState) {
+            delete window.__relationshipState;
+        }
         this.fantasyForestTreeCache.clear();
         this.weatherRenderer?.dispose?.();
         this.skyRenderer?.dispose?.();
@@ -1008,6 +1040,7 @@ export class IsometricRenderer {
     _setMotionScale(scale) {
         this.motionScale = scale;
         this.buildingRenderer?.setMotionScale(scale);
+        this.ritualConductor?.setMotionScale(scale);
         this.harborTraffic?.setMotionScale(scale);
         this.landmarkActivity?.setMotionScale(scale);
         this.camera?.setReducedMotion?.(scale <= 0);
@@ -1184,7 +1217,10 @@ export class IsometricRenderer {
         if (this._chatMatchAccumulator >= 250) {
             this._chatMatchAccumulator = 0;
             this._updateChatMatching();
+            this.agentEventStream?.reconcileChatPairs?.(this.agentSprites);
         }
+        this.relationshipState?.update?.({ agentSprites: this.agentSprites, now: performance.now() });
+        this.ritualConductor?.update?.(dt);
 
         // Update agent sprites
         let shouldResort = false;
@@ -3903,28 +3939,107 @@ export class IsometricRenderer {
     }
 
     _drawEmptyStateWorldCue(ctx) {
-        if (this.agentSprites.size > 1) return;
         const command = this._getCommandBuilding();
         if (!command) return;
-        const tileX = command.position.tileX + command.width / 2;
-        const tileY = command.position.tileY + command.height + 0.8;
-        const x = (tileX - tileY) * TILE_WIDTH / 2;
-        const y = (tileX + tileY) * TILE_HEIGHT / 2;
-        const pulse = this.motionScale ? (Math.sin(this.waterFrame * 1.15) + 1) / 2 : 0.45;
+        const archive = this.world?.buildings?.get?.('archive') || command;
+        const portal = this.world?.buildings?.get?.('portal') || command;
+        const plaza = {
+            tileX: command.position.tileX + command.width / 2,
+            tileY: command.position.tileY + command.height + 0.8,
+        };
+        const archiveDoor = {
+            tileX: archive.position.tileX + archive.width / 2,
+            tileY: archive.position.tileY + archive.height + 0.4,
+        };
+        const portalGate = {
+            tileX: portal.position.tileX + portal.width / 2,
+            tileY: portal.position.tileY + portal.height / 2,
+        };
 
         ctx.save();
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.20 + pulse * 0.10;
-        ctx.strokeStyle = '#f6da82';
-        ctx.lineWidth = 1.2;
+        if (this.agentSprites.size === 0) {
+            const start = this._tileToWorld(plaza.tileX, plaza.tileY);
+            const end = this._tileToWorld(portalGate.tileX, portalGate.tileY);
+            const midX = (start.x + end.x) / 2;
+            const midY = (start.y + end.y) / 2 - 44;
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.10;
+            ctx.strokeStyle = '#8bd7ff';
+            ctx.lineWidth = 1.2;
+            ctx.setLineDash([5, 7]);
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y - 8);
+            ctx.quadraticCurveTo(midX, midY, end.x, end.y - 8);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+
+        const chronicler = this._chroniclerWorldPosition(archiveDoor, plaza);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.82;
+        this._drawChroniclerScaffold(ctx, chronicler.x, chronicler.y, chronicler.facing);
+        ctx.restore();
+    }
+
+    _tileToWorld(tileX, tileY) {
+        return {
+            x: (tileX - tileY) * TILE_WIDTH / 2,
+            y: (tileX + tileY) * TILE_HEIGHT / 2,
+        };
+    }
+
+    _chroniclerWorldPosition(a, b) {
+        if (!this.motionScale) {
+            const point = this._tileToWorld(a.tileX, a.tileY);
+            return { ...point, facing: 1 };
+        }
+        const loopMs = 16000;
+        const pauseMs = 6000;
+        const movingMs = (loopMs - pauseMs * 2) / 2;
+        const t = (performance.now() % loopMs);
+        let progress = 0;
+        let from = a;
+        let to = b;
+        if (t < pauseMs) {
+            progress = 0;
+        } else if (t < pauseMs + movingMs) {
+            progress = (t - pauseMs) / movingMs;
+        } else if (t < pauseMs + movingMs + pauseMs) {
+            progress = 1;
+        } else {
+            from = b;
+            to = a;
+            progress = (t - pauseMs - movingMs - pauseMs) / movingMs;
+        }
+        const ease = progress * progress * (3 - 2 * progress);
+        const tileX = from.tileX + (to.tileX - from.tileX) * ease;
+        const tileY = from.tileY + (to.tileY - from.tileY) * ease;
+        const point = this._tileToWorld(tileX, tileY);
+        return {
+            ...point,
+            facing: to.tileX >= from.tileX ? 1 : -1,
+        };
+    }
+
+    _drawChroniclerScaffold(ctx, x, y, facing = 1) {
+        const bob = this.motionScale ? Math.sin(this.waterFrame * 2.1) * 1.2 : 0;
+        ctx.save();
+        ctx.translate(Math.round(x), Math.round(y + bob));
+        ctx.scale(facing >= 0 ? 1 : -1, 1);
+        ctx.fillStyle = 'rgba(16, 22, 32, 0.24)';
         ctx.beginPath();
-        ctx.ellipse(x, y + 1, 28 + pulse * 5, 9 + pulse * 2, 0, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.globalAlpha = 0.16;
-        ctx.fillStyle = '#8bd7ff';
-        ctx.beginPath();
-        ctx.ellipse(x, y - 9, 9, 17, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 5, 11, 4, 0, 0, Math.PI * 2);
         ctx.fill();
+        ctx.fillStyle = '#c9b27a';
+        ctx.fillRect(-5, -22, 10, 21);
+        ctx.fillStyle = '#f3dfb1';
+        ctx.fillRect(-4, -31, 8, 8);
+        ctx.fillStyle = '#5f4a2f';
+        ctx.fillRect(-7, -25, 4, 18);
+        ctx.fillRect(3, -25, 4, 18);
+        ctx.fillStyle = '#8bd7ff';
+        ctx.globalAlpha = 0.42;
+        ctx.fillRect(5, -19, 5, 7);
         ctx.restore();
     }
 
@@ -3952,7 +4067,7 @@ export class IsometricRenderer {
             const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
             ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.12 : 0.18) * glowScale);
             for (const light of this.buildingRenderer.getLightSources(atmosphere?.lighting)) {
-                if (light.kind && light.kind !== 'point') continue;
+                if (light.kind && !['point', 'spark', 'orbit'].includes(light.kind)) continue;
                 const p = this.camera.worldToScreen(light.x, light.y);
                 if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
                 const radius = light.radius * this.camera.zoom;
@@ -3969,11 +4084,10 @@ export class IsometricRenderer {
         const dpr = this._screenDpr();
         const phaseBucket = atmosphere?.cacheKey || 'fallback';
         const key = [
+            lightSourceCacheKey(light, phaseBucket),
             Math.round(radius),
-            light.color,
             this._quantizedAlpha(glowScale),
             dpr,
-            phaseBucket,
         ].join('|');
         const cached = this.lightGradientCache.get(key);
         if (cached) return cached;
