@@ -1,7 +1,15 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 import { TOWN_ROAD_ROUTES } from '../../config/townPlan.js';
-import { FOREST_FLOOR_REGIONS, TROPICAL_BROADLEAF_TREES, TROPICAL_PALMS, TROPICAL_WATERFALLS } from '../../config/scenery.js';
+import {
+    DISTRICT_PROPS,
+    FOREST_FLOOR_REGIONS,
+    MARINE_FISH_SCHOOLS,
+    OPEN_SEA_BIRDS,
+    TROPICAL_BROADLEAF_TREES,
+    TROPICAL_PALMS,
+    TROPICAL_WATERFALLS,
+} from '../../config/scenery.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
@@ -73,14 +81,6 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 5.6, tileY: 25.8, type: 'runestone' },
     { tileX: 15.0, tileY: 22.2, type: 'runestone' },
 ];
-const OPEN_SEA_GULLS = [
-    { tileX: 37.2, tileY: 5.4, altitude: 36, scale: 1.15, phase: 0.2 },
-    { tileX: 36.8, tileY: 8.9, altitude: 31, scale: 1.18, phase: 1.7 },
-    { tileX: 38.4, tileY: 13.2, altitude: 30, scale: 1.26, phase: 3.1 },
-    { tileX: 35.8, tileY: 11.5, altitude: 24, scale: 0.96, phase: 4.4 },
-    { tileX: 36.6, tileY: 22.5, altitude: 27, scale: 1.05, phase: 5.6 },
-];
-
 class StaticPropSprite {
     constructor({ tileX, tileY, drawFn }) {
         this.tileX = tileX;
@@ -241,6 +241,7 @@ export class IsometricRenderer {
                 drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
             });
         });
+        this.districtPropSprites = this._buildDistrictPropSprites();
 
         // Walkability grid + Pathfinder (Task 11)
         this.walkabilityGrid = this.scenery.getWalkabilityGrid();
@@ -987,6 +988,7 @@ export class IsometricRenderer {
 
         // 1. Terrain
         this._drawTerrain(ctx);
+        this._drawFishSchools(ctx);
         this._drawTropicalWaterfalls(ctx);
         this._drawOpenSeaGulls(ctx);
 
@@ -1026,6 +1028,7 @@ export class IsometricRenderer {
         // 3. Buildings + 4. Agents — interleaved by sortY for proper occlusion
         const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
         const sortedSprites = this._snapshotSortedSprites();
+        const districtPropSprites = this.districtPropSprites || [];
         const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
         const harborPendingRepos = this.harborTraffic?.getPendingRepoSummaries?.() ?? [];
         const landmarkDrawables = this.landmarkActivity?.enumerateDrawables() ?? [];
@@ -1035,12 +1038,15 @@ export class IsometricRenderer {
         const drawables = [];
         for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
         for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
+        for (const sprite of districtPropSprites) drawables.push({ kind: 'district-prop', sortY: sprite.y, payload: sprite });
         for (const d of harborDrawables) drawables.push({ kind: 'harbor-traffic', sortY: d.sortY, payload: d });
         for (const d of landmarkDrawables) drawables.push({ kind: 'landmark-activity', sortY: d.sortY, payload: d });
         drawables.sort((a, b) => a.sortY - b.sortY);
 
         for (const item of drawables) {
             if (item.kind === 'agent') {
+                item.payload.draw(ctx, zoom);
+            } else if (item.kind === 'district-prop') {
                 item.payload.draw(ctx, zoom);
             } else if (item.kind === 'harbor-traffic') {
                 this.harborTraffic.draw(ctx, item.payload, zoom);
@@ -1329,6 +1335,18 @@ export class IsometricRenderer {
         this.terrainCacheBounds = bounds;
         this.terrainCacheKey = key;
         return { canvas, bounds };
+    }
+
+    _buildDistrictPropSprites() {
+        if (!this.sprites) return [];
+        return DISTRICT_PROPS
+            .filter((prop) => prop.layer === 'sorted')
+            .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.pathTiles, this.bridgeTiles))
+            .map((prop) => new StaticPropSprite({
+                tileX: prop.tileX,
+                tileY: prop.tileY,
+                drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, prop.id, x, y),
+            }));
     }
 
     _terrainCacheBounds() {
@@ -2678,12 +2696,56 @@ export class IsometricRenderer {
         ctx.stroke();
     }
 
+    _drawFishSchools(ctx) {
+        if (!this.motionScale || !this.sprites || !MARINE_FISH_SCHOOLS.length) return;
+        const visible = this._getVisibleTileBounds(2);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const fish of MARINE_FISH_SCHOOLS.slice(0, 12)) {
+            const baseX = Math.floor(fish.tileX);
+            const baseY = Math.floor(fish.tileY);
+            if (baseX < visible.startX || baseX > visible.endX || baseY < visible.startY || baseY > visible.endY) continue;
+            const key = `${baseX},${baseY}`;
+            if (!this.waterTiles.has(key) || this.deepWaterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+            if (this._isHarborLabelZone(baseX, baseY)) continue;
+
+            const swim = Math.sin(this.waterFrame * 1.4 + fish.phase) * (fish.radius ?? 0.25);
+            const drift = Math.cos(this.waterFrame * 0.9 + fish.phase) * 0.12;
+            const tileX = fish.tileX + swim;
+            const tileY = fish.tileY + drift;
+            const x = (tileX - tileY) * TILE_WIDTH / 2;
+            const y = (tileX + tileY) * TILE_HEIGHT / 2;
+            this.sprites.drawSprite(ctx, fish.id, x, y, { alpha: 0.48 });
+        }
+        ctx.restore();
+    }
+
+    _isHarborLabelZone(tileX, tileY) {
+        return tileX >= 31 && tileX <= 38 && tileY >= 18 && tileY <= 23;
+    }
+
     _drawOpenSeaGulls(ctx) {
-        if (!OPEN_SEA_GULLS.length) return;
+        if (!OPEN_SEA_BIRDS.length) return;
+        if (this.sprites) {
+            ctx.save();
+            for (const gull of OPEN_SEA_BIRDS.slice(0, 6)) {
+                const tileX = Math.floor(gull.tileX);
+                const tileY = Math.floor(gull.tileY);
+                if (!this._isOpenSeaTile(tileX, tileY)) continue;
+                if (this._isHarborLabelZone(tileX, tileY)) continue;
+                const x = (gull.tileX - gull.tileY) * TILE_WIDTH / 2;
+                const waterY = (gull.tileX + gull.tileY) * TILE_HEIGHT / 2;
+                const y = waterY - gull.altitude + (this.motionScale ? Math.sin(this.waterFrame * 0.75 + gull.phase) * 2 : 0);
+                this.sprites.drawSprite(ctx, 'prop.gullFlight', x, y, { alpha: 0.9 });
+            }
+            ctx.restore();
+            return;
+        }
+
         ctx.save();
         ctx.lineCap = 'square';
         ctx.lineJoin = 'miter';
-        for (const gull of OPEN_SEA_GULLS) {
+        for (const gull of OPEN_SEA_BIRDS) {
             const tileX = Math.floor(gull.tileX);
             const tileY = Math.floor(gull.tileY);
             if (!this._isOpenSeaTile(tileX, tileY)) continue;
@@ -2693,9 +2755,9 @@ export class IsometricRenderer {
                 ? Math.sin(this.waterFrame * 2.4 + gull.phase) * 1.5
                 : 0.6;
             const y = baseY + (this.motionScale ? Math.sin(this.waterFrame * 0.75 + gull.phase) * 2 : 0);
-            const span = 9 * gull.scale;
-            const lift = 4.2 * gull.scale + wing;
-            ctx.globalAlpha = 0.62 + gull.scale * 0.10;
+            const span = 9;
+            const lift = 4.2 + wing;
+            ctx.globalAlpha = 0.72;
             ctx.strokeStyle = 'rgba(22, 34, 44, 0.36)';
             ctx.lineWidth = 2.4;
             ctx.beginPath();
@@ -2703,7 +2765,7 @@ export class IsometricRenderer {
             ctx.lineTo(x, y - lift + 1);
             ctx.lineTo(x + span, y + 1);
             ctx.stroke();
-            ctx.globalAlpha = 0.74 + gull.scale * 0.08;
+            ctx.globalAlpha = 0.82;
             ctx.strokeStyle = 'rgba(235, 244, 232, 0.88)';
             ctx.lineWidth = 1.5;
             ctx.beginPath();
@@ -2969,6 +3031,12 @@ export class IsometricRenderer {
                 const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
                 const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
                 this.sprites.drawSprite(ctx, `prop.${prop.type}`, x, y);
+            }
+            for (const prop of DISTRICT_PROPS) {
+                if (prop.layer !== 'cache') continue;
+                const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
+                const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
+                this.sprites.drawSprite(ctx, prop.id, x, y);
             }
         }
 

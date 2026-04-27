@@ -271,6 +271,27 @@ export const TROPICAL_WATERFALLS = [
     { tileX: 24.6, tileY: 6.2, height: 30, width: 28, poolTileX: 24.8, poolTileY: 7.8, scale: 0.78, phase: 1.9 },
 ];
 
+export const DISTRICT_PROPS = [
+    { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
+    { tileX: 18.8, tileY: 21.1, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
+    { tileX: 2.2, tileY: 14.4, id: 'veg.root.arch', layer: 'sorted', district: 'elderwood' },
+];
+
+export const MARINE_FISH_SCHOOLS = [
+    { tileX: 30.8, tileY: 23.1, id: 'prop.fishSchoolTeal', radius: 0.34, phase: 0.1 },
+    { tileX: 35.4, tileY: 14.5, id: 'prop.fishSchoolTeal', radius: 0.32, phase: 2.1 },
+    { tileX: 18.2, tileY: 10.4, id: 'prop.fishSchoolTeal', radius: 0.22, phase: 3.6 },
+    { tileX: 36.6, tileY: 24.0, id: 'prop.fishSchoolTeal', radius: 0.26, phase: 5.2 },
+];
+
+export const OPEN_SEA_BIRDS = [
+    { tileX: 37.2, tileY: 5.4, altitude: 36, phase: 0.2 },
+    { tileX: 36.8, tileY: 8.9, altitude: 31, phase: 1.7 },
+    { tileX: 38.4, tileY: 13.2, altitude: 30, phase: 3.1 },
+    { tileX: 35.8, tileY: 11.5, altitude: 24, phase: 4.4 },
+    { tileX: 36.6, tileY: 22.5, altitude: 27, phase: 5.6 },
+];
+
 // Density thresholds for noise-driven flat features.
 // `BUSH_DENSITY` and `GRASS_TUFT_DENSITY` are noise thresholds in [0, 1] —
 // a tile becomes a bush/tuft when its noise value falls in the band.

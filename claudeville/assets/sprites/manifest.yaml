@@ -504,8 +504,32 @@ props:
     size: 64
     anchor: [32, 56]
 
+  - id: prop.runeBrazier
+    tool: isometric_tile
+    prompt: "ancient stone rune brazier, blue-gold magical flame, carved dragon feet, heroic fantasy RPG prop, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 38]
+
+  - id: prop.fishSchoolTeal
+    tool: isometric_tile
+    prompt: "small school of bright teal fish silhouettes just below clear tropical water surface, subtle sparkle, transparent background only, no water tile, no square base, empty transparent corners"
+    size: 32
+    anchor: [16, 18]
+
+  - id: prop.gullFlight
+    tool: isometric_tile
+    prompt: "white sea gull in mid flight, wings spread, tiny readable fantasy pixel art silhouette, transparent background only, no sky tile, no square base, empty transparent corners"
+    size: 32
+    anchor: [16, 18]
+
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
+  - id: veg.root.arch
+    tool: isometric_tile
+    prompt: "ancient twisted tree-root arch, moss, hanging amber charms, readable elderwood fantasy silhouette, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 64
+    anchor: [32, 58]
+
   - id: veg.tree.oak.large
     tool: isometric_tile
     prompt: "ancient oak tree, dense wide canopy, twisted roots, mossy bark, isometric"
