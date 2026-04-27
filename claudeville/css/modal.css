@@ -200,6 +200,10 @@
     gap: 12px;
 }
 
+.settings-row--toggle {
+    cursor: pointer;
+}
+
 .settings-label {
     font-size: 11px;
     color: #e8d44d;
@@ -232,4 +236,11 @@
     color: #0a0a0f;
     background: #e8d44d;
     border-color: #e8d44d;
+}
+
+.settings-toggle {
+    width: 16px;
+    height: 16px;
+    accent-color: #e8d44d;
+    cursor: pointer;
 }

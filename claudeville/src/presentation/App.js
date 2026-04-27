@@ -8,11 +8,13 @@ import { Agent } from '../domain/entities/Agent.js';
 
 import { ClaudeDataSource } from '../infrastructure/ClaudeDataSource.js';
 import { WebSocketClient } from '../infrastructure/WebSocketClient.js';
+import { ChronicleStore } from '../infrastructure/ChronicleStore.js';
 
 import { AgentManager } from '../application/AgentManager.js';
 import { ModeManager } from '../application/ModeManager.js';
 import { SessionWatcher } from '../application/SessionWatcher.js';
 import { NotificationService } from '../application/NotificationService.js';
+import { Settings } from '../application/Settings.js';
 
 import { TopBar } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
@@ -38,6 +40,8 @@ class App {
         this.renderer = null;
         this.dashboardRenderer = null;
         this.activityPanel = null;
+        this.chronicleStore = null;
+        this._chroniclePruneInterval = null;
     }
 
     async boot() {
@@ -53,6 +57,18 @@ class App {
             // 2. Initialize infrastructure
             this.dataSource = new ClaudeDataSource();
             this.wsClient = new WebSocketClient();
+            this.chronicleStore = new ChronicleStore();
+            this.chronicleStore.open()
+                .then(() => {
+                    window.__chronicle = this.chronicleStore;
+                    return this.chronicleStore.prune();
+                })
+                .catch((err) => console.warn('[App] ChronicleStore unavailable:', err.message));
+            this._chroniclePruneInterval = window.setInterval(() => {
+                this.chronicleStore?.prune?.().catch((err) => {
+                    console.warn('[App] ChronicleStore prune failed:', err.message);
+                });
+            }, 5 * 60 * 1000);
 
             // 3. Initialize UI components
             this.toast = new Toast();
@@ -251,6 +267,7 @@ class App {
 
         btn.addEventListener('click', () => {
             const currentLang = i18n.lang;
+            const privacyRedaction = Settings.privacyRedaction;
             this.modal.open(i18n.t('settingsTitle'), `
                 <div class="settings-form">
                     <div class="settings-row">
@@ -260,6 +277,10 @@ class App {
                             <button class="settings-lang-btn ${currentLang === 'en' ? 'settings-lang-btn--active' : ''}" data-lang="en">${i18n.t('langEn')}</button>
                         </div>
                     </div>
+                    <label class="settings-row settings-row--toggle">
+                        <span class="settings-label">Privacy redaction</span>
+                        <input id="settingPrivacyRedaction" class="settings-toggle" type="checkbox" ${privacyRedaction ? 'checked' : ''}>
+                    </label>
                 </div>
             `);
 
@@ -280,6 +301,11 @@ class App {
                         this.toast.show(i18n.t('langChanged'), 'success');
                     }
                 });
+            });
+
+            const privacyInput = document.getElementById('settingPrivacyRedaction');
+            privacyInput?.addEventListener('change', () => {
+                Settings.privacyRedaction = privacyInput.checked;
             });
         });
     }
