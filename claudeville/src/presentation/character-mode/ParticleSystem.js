@@ -149,6 +149,14 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'up',
     },
+    crowdBump: {
+        colors: ['#c7b98a', '#9f8f66', '#efe1ad'],
+        size: [1, 2.2],
+        life: [10, 18],
+        speed: [0.16, 0.42],
+        gravity: false,
+        direction: 'random',
+    },
 };
 
 function rand(min, max) {

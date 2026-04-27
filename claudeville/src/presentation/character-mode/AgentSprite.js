@@ -42,6 +42,22 @@ const PROVIDER_TRIM = {
     gemini: '#7fc7ff',
     default: '#f2d36b',
 };
+const AMBIENT_BUILDING_SEQUENCE = [
+    'command',
+    'taskboard',
+    'forge',
+    'mine',
+    'portal',
+    'observatory',
+    'harbor',
+    'archive',
+    'watchtower',
+];
+const PROVIDER_HOME_BUILDINGS = {
+    claude: 'command',
+    codex: 'forge',
+    gemini: 'observatory',
+};
 const TARGET_AGENT_CONTENT_HEIGHT = 92;
 const MIN_AGENT_DRAW_SCALE = 1;
 const MAX_AGENT_DRAW_SCALE = 1.25;
@@ -68,6 +84,8 @@ export class AgentSprite {
         this._lastBuildingType = null;
         this._targetCycle = 0;
         this.nameTagSlot = 0;
+        this.labelAlpha = 1;
+        this.bumpFlash = 0;
 
         // Chat system
         this.chatPartner = null;     // Chat partner AgentSprite
@@ -132,29 +150,43 @@ export class AgentSprite {
         }
 
         if (!building) {
-            const seed = Math.abs(this._hash(`${this.agent.id}:target:${this._targetCycle++}`));
-            // If an active tool has no mapping, choose a stable building 70% of the time and empty ground 30% of the time.
-            if (this.agent.status === AgentStatus.WORKING && (seed % 10) < 7) {
-                building = BUILDING_DEFS[seed % BUILDING_DEFS.length];
-            } else {
-                const tile = this.pathfinder
-                    ? this.pathfinder.sampleWalkable(this._noise(seed, 3))
-                    : { tileX: 10 + this._noise(seed, 3) * 20, tileY: 10 + this._noise(seed, 7) * 20 };
-                const target = new Position(tile.tileX, tile.tileY);
-                const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
-                this._assignTarget(screen.x, screen.y, tile.tileX, tile.tileY);
-                this.moving = true;
-                this.waitTimer = 0;
-                return;
-            }
+            building = this._fallbackBuildingForState();
         }
 
         const seed = Math.abs(this._hash(`${this.agent.id}:${building.type}:${this._targetCycle++}`));
         const target = new Position(...this._visitTileForBuilding(building, seed));
         const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
+        this._lastBuildingType = building.type;
         this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
         this.moving = true;
         this.waitTimer = 0;
+    }
+
+    _fallbackBuildingForState() {
+        const preferred = this._ambientBuildingTypeForState();
+        return BUILDING_DEFS.find((b) => b.type === preferred) || BUILDING_DEFS[0];
+    }
+
+    _ambientBuildingTypeForState() {
+        const seed = Math.abs(this._hash(`${this.agent.id}:ambient:${this._targetCycle}`));
+        const lastKnown = this.agent.lastKnownBuildingType || null;
+
+        if (this.agent.status === AgentStatus.WORKING) {
+            return lastKnown || 'command';
+        }
+        if (this.agent.status === AgentStatus.WAITING) {
+            return lastKnown || 'taskboard';
+        }
+
+        if (lastKnown && (seed % 10) < 3) return lastKnown;
+        if (this.agent.isSubagent && (seed % 6) < 2) return 'command';
+        const totalTokens = (this.agent.tokens?.input || 0) + (this.agent.tokens?.output || 0);
+        if (totalTokens > 0 && seed % 8 === 0) return 'mine';
+
+        const providerHome = PROVIDER_HOME_BUILDINGS[this._providerKey()];
+        if (providerHome && seed % 7 === 0) return providerHome;
+
+        return AMBIENT_BUILDING_SEQUENCE[seed % AMBIENT_BUILDING_SEQUENCE.length];
     }
 
     _visitTileForBuilding(building, seed) {
@@ -164,8 +196,9 @@ export class AgentSprite {
                 ? [building.entrance]
                 : [{ tileX: building.x + Math.floor(building.width / 2), tileY: building.y + building.height }];
         const chosen = candidates[seed % candidates.length];
-        const jitterX = (this._noise(seed, 11) - 0.5) * 0.34;
-        const jitterY = (this._noise(seed, 17) - 0.5) * 0.34;
+        const jitterScale = this.agent.status === AgentStatus.WORKING ? 0.64 : 0.78;
+        const jitterX = (this._noise(seed, 11) - 0.5) * jitterScale;
+        const jitterY = (this._noise(seed, 17) - 0.5) * jitterScale;
         return [chosen.tileX + jitterX, chosen.tileY + jitterY];
     }
 
@@ -200,9 +233,24 @@ export class AgentSprite {
             x: (t.tileX - t.tileY) * TILE_WIDTH / 2,
             y: (t.tileX + t.tileY) * TILE_HEIGHT / 2,
         }));
+        const finalTile = tilePath[tilePath.length - 1];
+        if (
+            finalTile &&
+            Math.abs(finalTile.tileX - Math.round(targetTileX)) <= 1 &&
+            Math.abs(finalTile.tileY - Math.round(targetTileY)) <= 1 &&
+            this._isScreenPointWalkable(targetScreenX, targetScreenY)
+        ) {
+            this.waypoints[this.waypoints.length - 1] = { x: targetScreenX, y: targetScreenY };
+        }
         const head = this.waypoints[0];
         this.targetX = head.x;
         this.targetY = head.y;
+    }
+
+    _isScreenPointWalkable(x, y) {
+        if (!this.pathfinder) return true;
+        const tile = this._screenToTile(x, y);
+        return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
     }
 
     _screenToTile(x, y) {
@@ -233,10 +281,10 @@ export class AgentSprite {
 
     _targetBuildingTypeForState() {
         if (this.agent.status === AgentStatus.WORKING) {
-            return this.agent.targetBuildingType || 'command';
+            return this.agent.targetBuildingType || this.agent.lastKnownBuildingType || 'command';
         }
-        if (this.agent.status === AgentStatus.WAITING) return this.agent.targetBuildingType || 'taskboard';
-        if (this.agent.status === AgentStatus.IDLE) return null;
+        if (this.agent.status === AgentStatus.WAITING) return this.agent.targetBuildingType || this.agent.lastKnownBuildingType || 'taskboard';
+        if (this.agent.status === AgentStatus.IDLE) return this._ambientBuildingTypeForState();
         return null;
     }
 
@@ -262,9 +310,11 @@ export class AgentSprite {
     update(particleSystem, dt = 16) {
         const frameScale = Math.max(0, Math.min(3, dt / 16));
         this.statusAnim += 0.05 * this.motionScale * frameScale;
+        this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
 
         // Handle chatting state
         if (this.chatting) {
+            this._faceChatPartner();
             this.chatBubbleAnim += 0.06 * frameScale;
             this._advanceIdleAnimation(dt);
             return; // Do not move while chatting
@@ -274,6 +324,7 @@ export class AgentSprite {
         if (this.chatPartner) {
             const cpDx = this.chatPartner.x - this.x;
             const cpDy = this.chatPartner.y - this.y;
+            this._faceChatPartner();
             const cpDist = Math.sqrt(cpDx * cpDx + cpDy * cpDy);
             if (cpDist < 35) {
                 this.chatting = true;
@@ -306,7 +357,9 @@ export class AgentSprite {
 
         // Reroute immediately when status or fresh tool changes the intended building.
         if (!this.chatPartner) {
-            const curBuilding = this._targetBuildingTypeForState();
+            const curBuilding = this.agent.status === AgentStatus.IDLE
+                ? this._lastBuildingType
+                : this._targetBuildingTypeForState();
             if (curBuilding !== this._lastBuildingType) {
                 this._lastBuildingType = curBuilding;
                 this._pickTarget();
@@ -419,6 +472,12 @@ export class AgentSprite {
             this._candidateDirection = null;
             this._candidateDirectionMs = 0;
         }
+    }
+
+    _faceChatPartner() {
+        if (!this.chatPartner) return;
+        const dir = dirFromVelocity(this.chatPartner.x - this.x, this.chatPartner.y - this.y);
+        if (dir != null) this.direction = dir;
     }
 
     _resetWalkCycle() {
@@ -664,7 +723,16 @@ export class AgentSprite {
         ctx.fill();
 
         if (visual) {
-            ctx.globalAlpha = this.selected ? 0.95 : 0.26 + 0.16 * pulse;
+            const isWorking = this.agent?.status === AgentStatus.WORKING;
+            const isWaiting = this.agent?.status === AgentStatus.WAITING;
+            const flash = this.bumpFlash ? this.bumpFlash * 0.26 : 0;
+            ctx.globalAlpha = this.selected
+                ? 0.95
+                : isWorking
+                    ? 0.30 + 0.22 * pulse + flash
+                    : isWaiting
+                        ? 0.30 + flash
+                        : 0.18 + flash;
             ctx.strokeStyle = visual.color;
             ctx.lineWidth = this.selected ? 2 : 1.2;
             ctx.beginPath();
@@ -817,44 +885,6 @@ export class AgentSprite {
         const rawStatus = this.agent?.status;
         const status = typeof rawStatus === 'string' ? rawStatus : (rawStatus?.value || AgentStatus.IDLE);
         return STATUS_VISUALS[status] || STATUS_VISUALS[AgentStatus.IDLE];
-    }
-
-    _drawStatusRibbon(ctx, visual) {
-        const s = 1 / (this._zoom || 1);
-        ctx.save();
-        ctx.translate(this.x, this.y);
-        ctx.scale(s, s);
-        ctx.translate(0, -49);
-        const w = visual.label.length * 8 + 13;
-        const h = 15;
-        const pulse = 0.75 + 0.25 * Math.sin(this.statusAnim * 2.4);
-
-        ctx.fillStyle = 'rgba(24, 18, 14, 0.94)';
-        ctx.strokeStyle = visual.color;
-        ctx.lineWidth = 1.5;
-        ctx.shadowColor = visual.color;
-        ctx.shadowBlur = 4 * pulse;
-        ctx.beginPath();
-        ctx.moveTo(-w / 2 + 5, -h / 2);
-        ctx.lineTo(w / 2 - 5, -h / 2);
-        ctx.quadraticCurveTo(w / 2, -h / 2, w / 2, -h / 2 + 5);
-        ctx.lineTo(w / 2, h / 2 - 5);
-        ctx.quadraticCurveTo(w / 2, h / 2, w / 2 - 5, h / 2);
-        ctx.lineTo(-w / 2 + 5, h / 2);
-        ctx.quadraticCurveTo(-w / 2, h / 2, -w / 2, h / 2 - 5);
-        ctx.lineTo(-w / 2, -h / 2 + 5);
-        ctx.quadraticCurveTo(-w / 2, -h / 2, -w / 2 + 5, -h / 2);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.shadowBlur = 0;
-        ctx.fillStyle = '#f8ead1';
-        ctx.font = 'bold 7px "Press Start 2P", monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(visual.label, 0, 1);
-        ctx.restore();
     }
 
     _drawSelectionRing(ctx) {
@@ -1372,6 +1402,7 @@ export class AgentSprite {
             return;
         }
         ctx.save();
+        ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
         const s = 1 / (this._zoom || 1); // inverse zoom correction
         ctx.translate(this.x, this.y);
         ctx.scale(s, s); // fixed size in screen space
@@ -1422,6 +1453,7 @@ export class AgentSprite {
         const trim = this._providerTrimColor();
         const s = 1 / (this._zoom || 1);
         ctx.save();
+        ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
         ctx.translate(this.x, this.y);
         ctx.scale(s, s);
         ctx.translate(0, 16 + (this.overlaySlot || 0) * 9);
@@ -1451,6 +1483,7 @@ export class AgentSprite {
         const slot = this.overlaySlot ?? this.nameTagSlot ?? 0;
 
         ctx.save();
+        ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
         ctx.translate(this.x, this.y);
         ctx.scale(s, s);
         ctx.translate(0, 20 + slot * 11);
