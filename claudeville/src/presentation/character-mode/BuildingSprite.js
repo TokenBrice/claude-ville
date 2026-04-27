@@ -89,6 +89,16 @@ const BUILDING_LIGHT_FALLBACKS = {
     archive: { at: [168, 88], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
     harbor: { at: [48, 42], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };
+const OBSERVATORY_CLOCK_FACE = Object.freeze({
+    // Calibrated against the generated 312x208 clock observatory base.
+    center: [133, 73],
+    radius: 23,
+    sourceSize: 28,
+    sourceCenter: 14,
+    sourceRadius: 13,
+    hourHandLength: 7,
+    minuteHandLength: 10,
+});
 
 export class BuildingSprite {
     constructor(assets, spriteRenderer, particleSystem) {
@@ -103,6 +113,8 @@ export class BuildingSprite {
         this._lightSourcesCache = null;
         this._labelMetricsCache = new Map();
         this._visitorCountByType = new Map();
+        this._clockCanvas = null;
+        this._clockCanvasKey = '';
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -778,7 +790,7 @@ export class BuildingSprite {
         const id = d.entry.id;
         if (d.kind === 'building') {
             this.sprites.drawSprite(ctx, id, d.wx, d.wy);
-            this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building);
+            this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'whole');
         } else {
             const dims = this.assets.getDims(id);
             const [ax, ay] = this.assets.getAnchor(id);
@@ -788,21 +800,22 @@ export class BuildingSprite {
             if (!img) return;
             if (d.kind === 'building-back') {
                 ctx.drawImage(img, 0, 0, dims.w, d.horizonY, dx, dy, dims.w, d.horizonY);
+                this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'back', d.horizonY);
             } else {
                 ctx.drawImage(img, 0, d.horizonY, dims.w, dims.h - d.horizonY,
                                    dx, dy + d.horizonY, dims.w, dims.h - d.horizonY);
-                this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building);
+                this._drawAnimatedOverlays(ctx, d.entry, d.wx, d.wy, d.building, 'front', d.horizonY);
             }
         }
         if (this.hovered === d.building) this.sprites.drawOutline(ctx, id, d.wx, d.wy);
     }
 
-    _drawAnimatedOverlays(ctx, entry, wx, wy, building = null) {
-        if (entry.layers) {
+    _drawAnimatedOverlays(ctx, entry, wx, wy, building = null, splitPass = 'whole', horizonY = null) {
+        if (entry.layers && splitPass !== 'back') {
             this._drawManifestLayers(ctx, entry, wx, wy);
         }
         if (building) {
-            this._drawFunctionalOverlay(ctx, building, entry, wx, wy);
+            this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY);
         }
     }
 
@@ -827,12 +840,28 @@ export class BuildingSprite {
         }
     }
 
-    _drawFunctionalOverlay(ctx, building, entry, wx, wy) {
+    _drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
         const baseAnchor = this.assets.getAnchor(entry.id);
         const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
         const pulse = this.motionScale ? (Math.sin(this.frame * 0.1) + 1) / 2 : 0.55;
+        const shouldDrawLocalY = (localY) => (
+            splitPass === 'whole'
+            || !Number.isFinite(horizonY)
+            || (splitPass === 'back' ? localY < horizonY : localY >= horizonY)
+        );
 
         ctx.save();
+        if (building.type === 'observatory') {
+            if (shouldDrawLocalY(OBSERVATORY_CLOCK_FACE.center[1])) {
+                this._drawObservatoryClock(ctx, localPoint);
+            }
+            ctx.restore();
+            return;
+        }
+        if (splitPass === 'back') {
+            ctx.restore();
+            return;
+        }
         if (building.type === 'forge') {
             this._drawForgeEnhancement(ctx, localPoint, pulse);
         } else if (building.type === 'mine') {
@@ -882,6 +911,114 @@ export class BuildingSprite {
             this._drawArchiveEnhancement(ctx, localPoint, pulse);
         }
         ctx.restore();
+    }
+
+    _drawObservatoryClock(ctx, localPoint) {
+        const config = OBSERVATORY_CLOCK_FACE;
+        const [cx, cy] = config.center;
+        const face = localPoint(cx, cy);
+        const time = this._clockTime();
+        const hourAngle = (((time.hour % 12) + time.minute / 60) / 12) * Math.PI * 2 - Math.PI / 2;
+        const minuteAngle = (time.minute / 60) * Math.PI * 2 - Math.PI / 2;
+        const source = this._clockSourceCanvas(config, hourAngle, minuteAngle, `${time.hour}:${time.minute}`);
+        const size = config.radius * 2;
+        const left = Math.round(face.x - size / 2);
+        const top = Math.round(face.y - size / 2);
+        const previousSmoothing = ctx.imageSmoothingEnabled;
+
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(source, left, top, size, size);
+        ctx.imageSmoothingEnabled = previousSmoothing;
+    }
+
+    _clockSourceCanvas(config, hourAngle, minuteAngle, cacheKey) {
+        if (!this._clockCanvas) {
+            this._clockCanvas = document.createElement('canvas');
+        }
+        const canvas = this._clockCanvas;
+        if (canvas.width !== config.sourceSize || canvas.height !== config.sourceSize) {
+            canvas.width = config.sourceSize;
+            canvas.height = config.sourceSize;
+            this._clockCanvasKey = '';
+        }
+        if (this._clockCanvasKey === cacheKey) return canvas;
+
+        const ctx = canvas.getContext('2d');
+        const c = config.sourceCenter;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.imageSmoothingEnabled = false;
+
+        ctx.fillStyle = 'rgba(19, 21, 30, 0.56)';
+        this._fillPixelCircle(ctx, c, c, config.sourceRadius);
+        ctx.fillStyle = 'rgba(229, 218, 170, 0.72)';
+        this._strokePixelCircle(ctx, c, c, config.sourceRadius);
+        ctx.fillStyle = 'rgba(255, 241, 190, 0.88)';
+        const tickMin = c - config.sourceRadius + 1;
+        const tickMax = c + config.sourceRadius - 1;
+        for (const [tx, ty] of [[c, tickMin], [c, tickMax], [tickMin, c], [tickMax, c]]) {
+            ctx.fillRect(tx - 1, ty - 1, 2, 2);
+        }
+
+        this._drawClockHand(ctx, c, c, hourAngle, config.hourHandLength, 2, '#21170f');
+        this._drawClockHand(ctx, c, c, hourAngle, config.hourHandLength - 1, 1, '#f4d47b');
+        this._drawClockHand(ctx, c, c, minuteAngle, config.minuteHandLength, 1, '#fff0a8');
+        ctx.fillStyle = '#21170f';
+        ctx.fillRect(c - 1, c - 1, 3, 3);
+        ctx.fillStyle = '#ffe6a0';
+        ctx.fillRect(c, c, 1, 1);
+
+        this._clockCanvasKey = cacheKey;
+        return canvas;
+    }
+
+    _clockTime() {
+        const now = new Date();
+        return { hour: now.getHours(), minute: now.getMinutes() };
+    }
+
+    _drawClockHand(ctx, cx, cy, angle, length, width, color) {
+        const x1 = Math.round(cx + Math.cos(angle) * length);
+        const y1 = Math.round(cy + Math.sin(angle) * length);
+        this._drawBlockLine(ctx, cx, cy, x1, y1, width, color);
+    }
+
+    _drawBlockLine(ctx, x0, y0, x1, y1, width, color) {
+        let dx = Math.abs(x1 - x0);
+        let dy = Math.abs(y1 - y0);
+        const sx = x0 < x1 ? 1 : -1;
+        const sy = y0 < y1 ? 1 : -1;
+        let err = dx - dy;
+        const half = Math.floor(width / 2);
+
+        ctx.fillStyle = color;
+        while (true) {
+            ctx.fillRect(x0 - half, y0 - half, width, width);
+            if (x0 === x1 && y0 === y1) break;
+            const e2 = err * 2;
+            if (e2 > -dy) {
+                err -= dy;
+                x0 += sx;
+            }
+            if (e2 < dx) {
+                err += dx;
+                y0 += sy;
+            }
+        }
+    }
+
+    _fillPixelCircle(ctx, cx, cy, radius) {
+        for (let y = -radius; y <= radius; y++) {
+            const halfWidth = Math.floor(Math.sqrt(radius * radius - y * y));
+            ctx.fillRect(cx - halfWidth, cy + y, halfWidth * 2 + 1, 1);
+        }
+    }
+
+    _strokePixelCircle(ctx, cx, cy, radius) {
+        for (let angle = 0; angle < Math.PI * 2; angle += Math.PI / 24) {
+            const x = Math.round(cx + Math.cos(angle) * radius);
+            const y = Math.round(cy + Math.sin(angle) * radius);
+            ctx.fillRect(x, y, 1, 1);
+        }
     }
 
     _drawHarborMasterOffice(ctx, localPoint, pulse) {
@@ -1589,21 +1726,46 @@ export class BuildingSprite {
     }
 
     _buildingFrontSortY(building, fallbackY) {
-        const visitY = this._primaryVisitSortY(building);
-        return Number.isFinite(visitY) ? Math.max(fallbackY, visitY - 0.5) : fallbackY;
+        const anchorY = this._anchorSortY(building);
+        return Number.isFinite(anchorY) ? Math.max(fallbackY, anchorY - 0.5) : fallbackY;
     }
 
     _buildingWholeSortY(building, fallbackY) {
-        const visitY = this._primaryVisitSortY(building);
-        return Number.isFinite(visitY) ? visitY - 0.5 : fallbackY;
+        const anchorY = this._anchorSortY(building);
+        return Number.isFinite(anchorY) ? anchorY - 0.5 : fallbackY;
     }
 
-    _primaryVisitSortY(building) {
-        const visit = typeof building?.primaryVisitTile === 'function'
-            ? building.primaryVisitTile()
-            : building?.entrance;
-        if (!visit || !Number.isFinite(visit.tileX) || !Number.isFinite(visit.tileY)) return null;
-        return this._tileToScreen(visit.tileX, visit.tileY).y;
+    // Depth anchor for building drawables. The minimum visit-tile screen-y
+    // ensures every declared visit tile draws in front; clamping by the
+    // southeast footprint corner restores standard isometric occlusion when
+    // visit tiles sit south of the corner (mine, taskboard, portal, etc.) so
+    // characters at the SE edge are no longer covered by the building.
+    _anchorSortY(building) {
+        const tiles = Array.isArray(building?.visitTiles) ? building.visitTiles : [];
+        let minY = Infinity;
+        for (const tile of tiles) {
+            if (!Number.isFinite(tile?.tileX) || !Number.isFinite(tile?.tileY)) continue;
+            const y = this._tileToScreen(tile.tileX, tile.tileY).y;
+            if (y < minY) minY = y;
+        }
+        if (!Number.isFinite(minY) && building?.entrance) {
+            const { tileX, tileY } = building.entrance;
+            if (Number.isFinite(tileX) && Number.isFinite(tileY)) {
+                minY = this._tileToScreen(tileX, tileY).y;
+            }
+        }
+        if (!Number.isFinite(minY)) return null;
+        const pos = building?.position;
+        if (pos
+            && Number.isFinite(pos.tileX)
+            && Number.isFinite(pos.tileY)
+            && Number.isFinite(building.width)
+            && Number.isFinite(building.height)) {
+            const seX = pos.tileX + building.width - 1;
+            const seY = pos.tileY + building.height - 1;
+            return Math.min(minY, this._tileToScreen(seX, seY).y);
+        }
+        return minY;
     }
 
     _tileToScreen(tileX, tileY) {

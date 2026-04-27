@@ -20,6 +20,8 @@ import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
+import { AtmosphereState } from './AtmosphereState.js';
+import { WeatherRenderer } from './WeatherRenderer.js';
 import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
@@ -267,7 +269,9 @@ export class IsometricRenderer {
             ? new BuildingSprite(this.assets, this.sprites, this.particleSystem)
             : null;
         this.harborTraffic = new HarborTraffic({ sprites: this.sprites });
+        this.atmosphereState = new AtmosphereState();
         this.skyRenderer = new SkyRenderer({ assets: this.assets });
+        this.weatherRenderer = new WeatherRenderer();
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.minimap = new Minimap();
         this.agentSprites = new Map();
@@ -286,11 +290,8 @@ export class IsometricRenderer {
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
         this.particleSystem.setMotionEnabled(this.motionScale > 0);
         this._onMotionPreferenceChange = (event) => this._setMotionScale(event.matches ? 0 : 1);
-        if (this.motionQuery?.addEventListener) {
-            this.motionQuery.addEventListener('change', this._onMotionPreferenceChange);
-        } else if (this.motionQuery?.addListener) {
-            this.motionQuery.addListener(this._onMotionPreferenceChange);
-        }
+        this._motionPreferenceBound = false;
+        this._bindMotionPreference();
         this.atmosphereVignetteCache = null;
         this.atmosphereVignetteCacheKey = '';
         this.lightFadeColorCache = new Map();
@@ -802,7 +803,9 @@ export class IsometricRenderer {
         }
         this.camera = new Camera(canvas);
         this.camera.attach();
+        this._bindMotionPreference();
         this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
+        this.atmosphereState?.installDebugHelper?.();
 
         this.buildingRenderer?.setBuildings(this.world.buildings);
 
@@ -873,11 +876,7 @@ export class IsometricRenderer {
         if (this.camera) {
             this.camera.detach();
         }
-        if (this.motionQuery?.removeEventListener) {
-            this.motionQuery.removeEventListener('change', this._onMotionPreferenceChange);
-        } else if (this.motionQuery?.removeListener) {
-            this.motionQuery.removeListener(this._onMotionPreferenceChange);
-        }
+        this._unbindMotionPreference();
         this.minimap.detach();
         for (const unsub of this._unsubscribers) {
             unsub();
@@ -893,7 +892,9 @@ export class IsometricRenderer {
         this.agentSprites.clear();
         this.particleSystem.clear();
         this.fantasyForestTreeCache.clear();
+        this.weatherRenderer?.dispose?.();
         this.skyRenderer?.dispose?.();
+        this.atmosphereState?.dispose?.();
     }
 
     _markSpritesDirty() {
@@ -909,6 +910,28 @@ export class IsometricRenderer {
         this._sortedSprites.sort((a, b) => a.y - b.y);
         this._spritesNeedSort = false;
         return this._sortedSprites;
+    }
+
+    _bindMotionPreference() {
+        if (this._motionPreferenceBound || !this.motionQuery || !this._onMotionPreferenceChange) return;
+        if (this.motionQuery.addEventListener) {
+            this.motionQuery.addEventListener('change', this._onMotionPreferenceChange);
+        } else if (this.motionQuery.addListener) {
+            this.motionQuery.addListener(this._onMotionPreferenceChange);
+        } else {
+            return;
+        }
+        this._motionPreferenceBound = true;
+    }
+
+    _unbindMotionPreference() {
+        if (!this._motionPreferenceBound || !this.motionQuery || !this._onMotionPreferenceChange) return;
+        if (this.motionQuery.removeEventListener) {
+            this.motionQuery.removeEventListener('change', this._onMotionPreferenceChange);
+        } else if (this.motionQuery.removeListener) {
+            this.motionQuery.removeListener(this._onMotionPreferenceChange);
+        }
+        this._motionPreferenceBound = false;
     }
 
     _setMotionScale(scale) {
@@ -1150,17 +1173,29 @@ export class IsometricRenderer {
         if (!ctx || !canvas) return;
         if (!canvas.width || !canvas.height) return;
         const renderNow = Date.now();
+        const atmosphere = this.atmosphereState.update({
+            now: new Date(renderNow),
+            motionScale: this.motionScale,
+        });
 
         // Clear
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         SpriteRenderer.disableSmoothing(ctx);
-        this.skyRenderer.draw(ctx, this.camera, canvas, dt, this.motionScale);
+        this.skyRenderer.draw(ctx, {
+            canvas,
+            camera: this.camera,
+            dt,
+            atmosphere,
+            motionScale: this.motionScale,
+        });
 
         // Apply camera
         this.camera.applyTransform(ctx);
 
         // 1. Terrain
         this._drawTerrain(ctx);
+        this._drawSkyCanopy(ctx, atmosphere, dt);
+        this.camera.applyTransform(ctx);
         this._drawFishSchools(ctx);
         this._drawTropicalWaterfalls(ctx);
         this._drawOpenSeaGulls(ctx);
@@ -1174,7 +1209,8 @@ export class IsometricRenderer {
         // beam when the field is omitted.
         if (this.buildingRenderer && this.assets) {
             const lights = this.buildingRenderer.getLightSources();
-            const pulse = 0.10 + 0.05 * Math.sin((this.waterFrame || 0) * 1.27);
+            const glowScale = atmosphere?.grade?.buildingGlowScale ?? 1;
+            const pulse = (0.10 + 0.05 * Math.sin((this.waterFrame || 0) * 1.27)) * glowScale;
             ctx.save();
             ctx.globalCompositeOperation = 'screen';
             ctx.globalAlpha = pulse;
@@ -1269,7 +1305,7 @@ export class IsometricRenderer {
         // diorama mood without lowering final contrast on labels or status badges.
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         SpriteRenderer.disableSmoothing(ctx);
-        this._drawAtmosphere(ctx);
+        this._drawAtmosphere(ctx, atmosphere, dt);
         this.camera.applyTransform(ctx);
 
         // 7. Building bubbles (on top)
@@ -1300,6 +1336,8 @@ export class IsometricRenderer {
                 boulderProps: this.boulderPropSprites,
             });
             ctx.setTransform(1, 0, 0, 1, 0, 0);
+            SpriteRenderer.disableSmoothing(ctx);
+            this._drawAtmosphereDebug(ctx, atmosphere);
         }
 
         // Minimap
@@ -3567,15 +3605,29 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawAtmosphere(ctx) {
+    _drawSkyCanopy(ctx, atmosphere = null, dt = 16) {
+        const canvas = this.canvas;
+        if (!canvas || !this.skyRenderer) return;
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        SpriteRenderer.disableSmoothing(ctx);
+        this.skyRenderer.drawCanopy(ctx, { canvas, camera: this.camera, atmosphere, dt });
+        ctx.restore();
+    }
+
+    _drawAtmosphere(ctx, atmosphere = null, dt = 16) {
         const canvas = this.canvas;
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
         const zoom = this.camera?.zoom || 1;
-        ctx.globalAlpha = Math.max(0.32, Math.min(0.72, (3.1 - zoom) / 2.6));
-        ctx.drawImage(this._getAtmosphereVignette(canvas), 0, 0);
+        const grade = atmosphere?.grade || {};
+        const zoomAlpha = Math.max(0.16, Math.min(0.46, (3.1 - zoom) / 3.2));
+        ctx.globalAlpha = this._quantizedAlpha(Math.min(0.72, zoomAlpha + (grade.overlayAlpha || 0)));
+        ctx.drawImage(this._getAtmosphereVignette(canvas, atmosphere), 0, 0);
         ctx.globalAlpha = 1;
+
+        this.weatherRenderer?.drawForeground(ctx, { canvas, atmosphere, dt });
 
         // Building light glows: a gentle radial halo, not a saturated disc. The
         // earlier mix paired full-alpha hex colors with a thin edge fade, which
@@ -3584,14 +3636,15 @@ export class IsometricRenderer {
         // hint without washing out the sprite underneath.
         if (this.buildingRenderer) {
             ctx.save();
-            ctx.globalAlpha = zoom < 1 ? 0.12 : 0.18;
+            const glowScale = atmosphere?.grade?.buildingGlowScale ?? 1;
+            ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.12 : 0.18) * glowScale);
             for (const light of this.buildingRenderer.getLightSources()) {
                 const p = this.camera.worldToScreen(light.x, light.y);
                 if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
                 const radius = light.radius * this.camera.zoom;
                 const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
-                glow.addColorStop(0, this._withAlpha(light.color, 0.55));
-                glow.addColorStop(0.42, this._withAlpha(light.color, 0.18));
+                glow.addColorStop(0, this._withAlpha(light.color, this._quantizedAlpha(0.55 * glowScale)));
+                glow.addColorStop(0.42, this._withAlpha(light.color, this._quantizedAlpha(0.18 * glowScale)));
                 glow.addColorStop(1, this._withAlpha(light.color, 0));
                 ctx.fillStyle = glow;
                 ctx.beginPath();
@@ -3604,8 +3657,8 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _getAtmosphereVignette(canvas) {
-        const cacheKey = `${canvas.width}x${canvas.height}`;
+    _getAtmosphereVignette(canvas, atmosphere = null) {
+        const cacheKey = `${canvas.width}x${canvas.height}|${atmosphere?.cacheKey || 'fallback'}`;
         if (this.atmosphereVignetteCache && this.atmosphereVignetteCacheKey === cacheKey) {
             return this.atmosphereVignetteCache;
         }
@@ -3614,14 +3667,34 @@ export class IsometricRenderer {
         overlay.width = canvas.width;
         overlay.height = canvas.height;
         const overlayCtx = overlay.getContext('2d');
+        const grade = atmosphere?.grade || {};
+        const phase = atmosphere?.phase || 'day';
+
+        overlayCtx.fillStyle = grade.worldTint || 'rgba(160, 215, 245, 0.05)';
+        overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
+
         const skyWash = overlayCtx.createLinearGradient(0, 0, 0, canvas.height);
-        skyWash.addColorStop(0, 'rgba(78, 93, 45, 0.14)');
-        skyWash.addColorStop(0.42, 'rgba(58, 34, 12, 0)');
-        skyWash.addColorStop(1, 'rgba(39, 20, 6, 0.28)');
+        if (phase === 'night') {
+            skyWash.addColorStop(0, 'rgba(44, 78, 126, 0.18)');
+            skyWash.addColorStop(0.46, 'rgba(20, 39, 74, 0.04)');
+            skyWash.addColorStop(1, 'rgba(3, 8, 19, 0.34)');
+        } else if (phase === 'dawn') {
+            skyWash.addColorStop(0, 'rgba(85, 132, 178, 0.12)');
+            skyWash.addColorStop(0.45, 'rgba(226, 187, 160, 0.04)');
+            skyWash.addColorStop(1, 'rgba(85, 111, 137, 0.18)');
+        } else if (phase === 'dusk') {
+            skyWash.addColorStop(0, 'rgba(73, 89, 139, 0.14)');
+            skyWash.addColorStop(0.45, 'rgba(179, 139, 160, 0.05)');
+            skyWash.addColorStop(1, 'rgba(32, 31, 63, 0.26)');
+        } else {
+            skyWash.addColorStop(0, 'rgba(175, 222, 248, 0.06)');
+            skyWash.addColorStop(0.42, 'rgba(92, 159, 209, 0)');
+            skyWash.addColorStop(1, 'rgba(60, 111, 150, 0.08)');
+        }
         overlayCtx.fillStyle = skyWash;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
-        const warmCore = overlayCtx.createRadialGradient(
+        const atmosphericCore = overlayCtx.createRadialGradient(
             canvas.width * 0.5,
             canvas.height * 0.46,
             0,
@@ -3629,10 +3702,16 @@ export class IsometricRenderer {
             canvas.height * 0.50,
             Math.max(canvas.width, canvas.height) * 0.58,
         );
-        warmCore.addColorStop(0, 'rgba(255, 199, 90, 0.090)');
-        warmCore.addColorStop(0.5, 'rgba(128, 76, 22, 0.040)');
-        warmCore.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        overlayCtx.fillStyle = warmCore;
+        atmosphericCore.addColorStop(0, phase === 'day'
+            ? 'rgba(220, 245, 255, 0.050)'
+            : phase === 'night'
+                ? 'rgba(90, 134, 190, 0.060)'
+                : 'rgba(199, 195, 220, 0.055)');
+        atmosphericCore.addColorStop(0.55, phase === 'night'
+            ? 'rgba(28, 56, 98, 0.035)'
+            : 'rgba(88, 135, 178, 0.025)');
+        atmosphericCore.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        overlayCtx.fillStyle = atmosphericCore;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
         const vignette = overlayCtx.createRadialGradient(
@@ -3643,15 +3722,45 @@ export class IsometricRenderer {
             canvas.height * 0.5,
             Math.max(canvas.width, canvas.height) * 0.72,
         );
+        const vignetteAlpha = this._quantizedAlpha(grade.vignetteAlpha ?? 0.18);
         vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        vignette.addColorStop(0.62, 'rgba(33, 18, 7, 0.055)');
-        vignette.addColorStop(1, 'rgba(23, 11, 4, 0.40)');
+        vignette.addColorStop(0.62, phase === 'night'
+            ? `rgba(4, 12, 26, ${vignetteAlpha * 0.20})`
+            : `rgba(19, 45, 66, ${vignetteAlpha * 0.12})`);
+        vignette.addColorStop(1, phase === 'night'
+            ? `rgba(2, 6, 14, ${vignetteAlpha})`
+            : `rgba(18, 36, 52, ${vignetteAlpha * 0.62})`);
         overlayCtx.fillStyle = vignette;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
         this.atmosphereVignetteCache = overlay;
         this.atmosphereVignetteCacheKey = cacheKey;
         return overlay;
+    }
+
+    _drawAtmosphereDebug(ctx, atmosphere) {
+        if (!atmosphere) return;
+        const lines = [
+            `ATM ${atmosphere.phase} ${(atmosphere.phaseProgress || 0).toFixed(2)}`,
+            `TIME ${atmosphere.clock?.label || '--:--'}  WX ${atmosphere.weather?.type || 'clear'} ${(atmosphere.weather?.intensity || 0).toFixed(2)}`,
+            `SKY ${atmosphere.cacheKey}`,
+        ];
+        ctx.save();
+        ctx.font = '10px "Press Start 2P", monospace';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = 'rgba(4, 10, 18, 0.72)';
+        ctx.fillRect(12, 58, 420, 48);
+        ctx.strokeStyle = 'rgba(142, 204, 255, 0.48)';
+        ctx.strokeRect(12.5, 58.5, 420, 48);
+        ctx.fillStyle = '#cce9ff';
+        for (let i = 0; i < lines.length; i++) {
+            ctx.fillText(lines[i], 20, 66 + i * 14);
+        }
+        ctx.restore();
+    }
+
+    _quantizedAlpha(value) {
+        return Math.max(0, Math.min(1, Math.round((Number(value) || 0) * 1000) / 1000));
     }
 
     // Cache `color` → rgba(r,g,b,a) strings keyed by `${color}|${alpha}` so the
