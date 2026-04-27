@@ -153,6 +153,11 @@ export function getModelVisualIdentity(model, effort, provider = '') {
 
     if (normalizedModel.includes('gpt-5-5')) {
         const equipment = codexEquipment(effortTier);
+        const bakedEquipmentSpriteId = effortTier === 'high'
+            ? 'agent.codex.gpt55.high'
+            : (effortTier === 'xhigh' || effortTier === 'max')
+                ? 'agent.codex.gpt55.xhigh'
+                : null;
         return {
             family: 'codex',
             modelClass: 'gpt55',
@@ -161,7 +166,9 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             shortLabel: '5.5',
             effortTier,
             ...equipment,
-            spriteId: 'agent.codex.gpt55',
+            effortWeapon: bakedEquipmentSpriteId ? null : equipment.effortWeapon,
+            suppressBakedWeapon: bakedEquipmentSpriteId ? false : equipment.suppressBakedWeapon,
+            spriteId: bakedEquipmentSpriteId || 'agent.codex.gpt55',
             paletteKey: 'codex',
             trim: ['#fff1b8', '#7be3d7', '#f8c45f'],
             accent: ['#ffffff', '#bff7ee', '#ffd98a'],

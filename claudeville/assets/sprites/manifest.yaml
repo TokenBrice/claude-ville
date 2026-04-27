@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-opus-mystic-hood-v1"
+  assetVersion: "2026-04-27-codex-weapons-sonnet-scout-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -20,7 +20,7 @@ characters:
 
   - id: agent.claude.sonnet
     tool: create_character
-    prompt: "Claude Sonnet 4.6 journeyman scholar, flat scholar mortarboard cap with single feather, knee-length amber scholar cloak with belt sash and inkpot pouches, silver quill in one hand, floating illuminated scroll trailing behind shoulder, no tome, nimble balanced silhouette, 8-direction pixel art"
+    prompt: "Claude Sonnet 4.6 light-equipped medieval fantasy scout-ranger, warm amber hooded travel cloak over fitted leather armor, small feathered scout cap under hood, compact recurved bow held close to body, quiver of arrows across back, slim satchel and scroll tube on belt, nimble balanced silhouette, practical boots, harmonious with Claude Opus and Codex village sprites, no mortarboard, no floating scroll, no tome, no staff, no platform, no grass base, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -39,6 +39,24 @@ characters:
   - id: agent.codex.gpt55
     tool: create_character
     prompt: "Codex GPT-5.5 heroic techno-paladin warrior captain, navy and gold plate armor, peaked captain helm, bright teal energy core on breastplate, shoulder pauldrons, empty visible hands held close to body, compact brass tool belt, commanding upright stance, distinctly martial not a mage, no robe, no staff, no handheld weapon, no sword, no blade, no hammer, no shield, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+
+  - id: agent.codex.gpt55.high
+    tool: create_character
+    prompt: "Codex GPT-5.5 high-effort techno-paladin warrior captain, navy and gold plate armor, bright teal energy core on breastplate, shoulder pauldrons, wielding an oversized legendary greatsword integrated naturally into both hands and pose, huge ornate silver-white fantasy blade, gold guard, cyan rune inlays, heroic RPG relic silhouette, readable at 92px cell size, no shield, no polearm, no extra floating weapons, no platform, no grass base, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+
+  - id: agent.codex.gpt55.xhigh
+    tool: create_character
+    prompt: "Codex GPT-5.5 xhigh techno-paladin warrior captain, navy and gold plate armor, bright teal energy core on breastplate, shoulder pauldrons, holding an oversized legendary polearm integrated naturally into both hands and pose, long dark wrapped shaft, gold collars, sweeping crescent glaive blade, cyan rune glow, sharp mythic RPG relic silhouette, readable at 92px cell size, no shield, no extra floating weapons, no platform, no grass base, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
