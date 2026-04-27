@@ -540,6 +540,18 @@ props:
     size: 32
     anchor: [16, 28]
 
+  - id: prop.bridgeLanternPost
+    tool: map_object
+    prompt: "epic fantasy RPG bridge lantern post, carved dark wood and mossy stone base, tiny blue rune lantern glow, transparent background only, isolated pixel art sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
+    size: 32
+    anchor: [16, 28]
+
+  - id: prop.bridgeBannerRune
+    tool: map_object
+    prompt: "small epic fantasy bridge banner pennant on short carved post, deep red cloth with gold rune trim, weathered wood, transparent background only, isolated pixel art sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
+    size: 32
+    anchor: [16, 28]
+
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
   - id: veg.root.arch
@@ -726,6 +738,18 @@ atmosphere:
 
 # ─── BRIDGES ─────────────────────────────────────────────────────────────────
 bridges:
+  - id: bridge.landmark.elderwood.ns
+    tool: map_object
+    prompt: "epic fantasy RPG north-south isometric bridge spanning a river, diagonal from upper right to lower left, mossy elderwood planks over carved grey stone arches, root-wrapped rail posts, rope rails, small green rune glows, transparent background only, isolated bridge sprite, no water tile, no ground tile, no square base, no baked shadow, empty transparent corners"
+    size: 128
+    anchor: [64, 74]
+
+  - id: bridge.landmark.civic.ns
+    tool: map_object
+    prompt: "epic fantasy RPG north-south isometric town bridge spanning a river, diagonal from upper right to lower left, warm timber planks over carved civic stone abutments, rope and brass rail posts, small blue lantern runes and red command pennants, transparent background only, isolated bridge sprite, no water tile, no ground tile, no square base, no baked shadow, empty transparent corners"
+    size: 128
+    anchor: [64, 74]
+
   - id: bridge.ew
     tool: isometric_tile
     prompt: "weathered wooden bridge, plank deck, rope rails, east-west orientation, isometric"

@@ -128,8 +128,17 @@ export const WATER_BASINS = [
 // `orientation` is optional; when omitted the engine derives it from neighbor
 // water tiles.
 export const BRIDGE_HINTS = [
-    { tileX: 14, tileY: 25, orientation: 'NS' }, // Portal/Mine bridge across the production river
-    { tileX: 22, tileY: 25, orientation: 'NS' }, // Command/Tasks bridge into the production row
+    { id: 'portal-mine-bridge', tileX: 14, tileY: 25, orientation: 'NS', style: 'elderwood' }, // Portal/Mine bridge across the production river
+    { id: 'command-task-bridge', tileX: 22, tileY: 25, orientation: 'NS', style: 'civic' }, // Command/Tasks bridge into the production row
+];
+
+export const BRIDGE_ACCENT_PROPS = [
+    { bridgeId: 'portal-mine-bridge', id: 'prop.bridgeLanternPost', t: 0.18, side: -1 },
+    { bridgeId: 'portal-mine-bridge', id: 'prop.bridgeLanternPost', t: 0.82, side: 1 },
+    { bridgeId: 'portal-mine-bridge', id: 'prop.bridgeBannerRune', t: 0.50, side: -1 },
+    { bridgeId: 'command-task-bridge', id: 'prop.bridgeLanternPost', t: 0.18, side: 1 },
+    { bridgeId: 'command-task-bridge', id: 'prop.bridgeLanternPost', t: 0.82, side: -1 },
+    { bridgeId: 'command-task-bridge', id: 'prop.bridgeBannerRune', t: 0.50, side: 1 },
 ];
 
 // Small authored Harbor Master causeway. This is intentionally separate from

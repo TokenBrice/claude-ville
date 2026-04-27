@@ -2,6 +2,7 @@ import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 import { TOWN_ROAD_ROUTES } from '../../config/townPlan.js';
 import {
+    BRIDGE_ACCENT_PROPS,
     DISTRICT_PROPS,
     FOREST_FLOOR_REGIONS,
     MARINE_FISH_SCHOOLS,
@@ -30,6 +31,10 @@ const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
+const BRIDGE_SPRITE_GLOW = {
+    civic: 'rgba(85, 195, 255, 0.24)',
+    elderwood: 'rgba(112, 207, 102, 0.22)',
+};
 const DISTRICT_WASHES = [
     { x: 16, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
     { x: 36, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
@@ -1717,9 +1722,11 @@ export class IsometricRenderer {
         const spans = [];
         const visited = new Set();
         const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-        const isBridgeDeck = (key, orientation) => {
+        const isBridgeDeck = (key, bridgeInfo) => {
             const info = this.bridgeTiles.get(key);
-            return info?.kind === 'landmark' && (!orientation || info.orientation === orientation);
+            return info?.kind === 'landmark'
+                && info.orientation === bridgeInfo.orientation
+                && (info.bridgeId || null) === (bridgeInfo.bridgeId || null);
         };
 
         for (const [key, info] of this.bridgeTiles.entries()) {
@@ -1739,21 +1746,21 @@ export class IsometricRenderer {
 
                 for (const [dx, dy] of directions) {
                     const next = `${x + dx},${y + dy}`;
-                    if (visited.has(next) || !isBridgeDeck(next, orientation)) continue;
+                    if (visited.has(next) || !isBridgeDeck(next, info)) continue;
                     visited.add(next);
                     queue.push(next);
                 }
             }
 
             if (tiles.length) {
-                spans.push(this._bridgeSpanFromTiles(tiles, orientation));
+                spans.push(this._bridgeSpanFromTiles(tiles, orientation, info));
             }
         }
 
         return spans.sort((a, b) => a.depth - b.depth);
     }
 
-    _bridgeSpanFromTiles(tiles, orientation) {
+    _bridgeSpanFromTiles(tiles, orientation, info = {}) {
         let minX = Infinity;
         let maxX = -Infinity;
         let minY = Infinity;
@@ -1787,6 +1794,8 @@ export class IsometricRenderer {
         const crossTiles = isEastWest ? maxY - minY + 1 : maxX - minX + 1;
 
         return {
+            id: info.bridgeId || null,
+            style: info.style || 'civic',
             orientation,
             start: this._tileToScreen(startTile.x, startTile.y),
             end: this._tileToScreen(endTile.x, endTile.y),
@@ -1847,7 +1856,53 @@ export class IsometricRenderer {
         ctx.stroke();
     }
 
+
+    _bridgeSpriteId(span) {
+        const orientation = (span.orientation || 'EW').toLowerCase();
+        const style = span.style || 'civic';
+        return `bridge.landmark.${style}.${orientation}`;
+    }
+
+    _drawBridgeAccentSprites(ctx, span) {
+        if (!this.sprites || !span.id) return;
+        const accents = BRIDGE_ACCENT_PROPS.filter((accent) => accent.bridgeId === span.id);
+        for (const accent of accents) {
+            const t = Math.max(0.04, Math.min(0.96, accent.t));
+            const side = accent.side < 0 ? -1 : 1;
+            const p = this._bridgePoint(span, t, side * (span.halfWidth + 16), 20, -2);
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = BRIDGE_SPRITE_GLOW[span.style] || BRIDGE_SPRITE_GLOW.civic;
+            ctx.beginPath();
+            ctx.ellipse(p.x, p.y - 16, 13, 17, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            this.sprites.drawSprite(ctx, accent.id, p.x, p.y);
+        }
+    }
+
+    _drawGeneratedBridgeSpan(ctx, span) {
+        if (!this.sprites || !this.assets) return false;
+        const spriteId = this._bridgeSpriteId(span);
+        if (!this.assets.get(spriteId)) return false;
+
+        const center = this._bridgePoint(span, 0.5, 0, 0, 7);
+        this._traceBridgeRibbon(
+            ctx,
+            this._bridgeSidePoints(span, -span.halfWidth - 10, 0, 16, 10),
+            this._bridgeSidePoints(span, span.halfWidth + 10, 0, 16, 10)
+        );
+        ctx.fillStyle = 'rgba(20, 7, 5, 0.32)';
+        ctx.fill();
+
+        this.sprites.drawSprite(ctx, spriteId, center.x, center.y);
+        this._drawBridgeAccentSprites(ctx, span);
+        return true;
+    }
+
     _drawLandmarkBridgeSpan(ctx, span) {
+        if (this._drawGeneratedBridgeSpan(ctx, span)) return;
+
         const leftDeck = this._bridgeSidePoints(span, -span.halfWidth);
         const rightDeck = this._bridgeSidePoints(span, span.halfWidth);
         const shadowLeft = this._bridgeSidePoints(span, -span.halfWidth - 7, 0, 15, 10);

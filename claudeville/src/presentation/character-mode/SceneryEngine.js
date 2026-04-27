@@ -328,16 +328,16 @@ export class SceneryEngine {
         for (const hint of BRIDGE_HINTS) {
             const key = `${hint.tileX},${hint.tileY}`;
             if (!this.waterTiles.has(key)) continue;
-            this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation);
+            this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation, hint);
         }
         this._addHarborDocks();
     }
 
-    _addBridgeSpan(tileX, tileY, forcedOrientation) {
+    _addBridgeSpan(tileX, tileY, forcedOrientation, meta = {}) {
         const orientation = forcedOrientation || this._inferOrientation(tileX, tileY);
         const spanAxis = orientation === 'EW' ? [1, 0] : [0, 1];
         const bridgeLine = [[tileX, tileY]];
-        this._addBridgeTile(tileX, tileY, orientation);
+        this._addBridgeTile(tileX, tileY, orientation, meta);
 
         for (const direction of [-1, 1]) {
             for (let step = 1; step <= 4; step++) {
@@ -347,7 +347,7 @@ export class SceneryEngine {
                 const key = `${nx},${ny}`;
                 if (this._buildingFootprints.has(key)) break;
                 if (!this.waterTiles.has(key)) break;
-                this._addBridgeTile(nx, ny, orientation);
+                this._addBridgeTile(nx, ny, orientation, meta);
                 bridgeLine.push([nx, ny]);
             }
         }
@@ -364,14 +364,19 @@ export class SceneryEngine {
                 const key = `${nx},${ny}`;
                 if (this._buildingFootprints.has(key)) continue;
                 if (!this.waterTiles.has(key)) continue;
-                this._addBridgeTile(nx, ny, orientation);
+                this._addBridgeTile(nx, ny, orientation, meta);
             }
         }
     }
 
-    _addBridgeTile(tileX, tileY, orientation) {
+    _addBridgeTile(tileX, tileY, orientation, meta = {}) {
         const key = `${tileX},${tileY}`;
-        this.bridgeTiles.set(key, { orientation, kind: 'landmark' });
+        this.bridgeTiles.set(key, {
+            orientation,
+            kind: 'landmark',
+            bridgeId: meta.id || null,
+            style: meta.style || 'civic',
+        });
     }
 
     _addHarborDocks() {
