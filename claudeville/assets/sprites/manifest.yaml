@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-gull-flocks-harbor-taskboard-seaward-v1"
+  assetVersion: "2026-04-27-living-twilight-sky-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -752,6 +752,21 @@ atmosphere:
   - id: atmosphere.light.lantern-glow
     tool: isometric_tile
     prompt: "soft warm lantern light pool on stone, gentle amber halo, transparent background"
+    size: 64
+
+  - id: atmosphere.cloud.cumulus
+    tool: isometric_tile
+    prompt: "low-poly pixel-art fantasy cloud silhouette, warm rust and burnt-umber tones edged with amber rim light, fluffy stratocumulus shape, painterly RPG sky, transparent background"
+    size: 64
+
+  - id: atmosphere.cloud.wisp
+    tool: isometric_tile
+    prompt: "thin pixel-art cirrus wisp, pale ember and dusky rose, drawn-out streak shape, warm twilight sky, transparent background"
+    size: 64
+
+  - id: atmosphere.moon.crescent
+    tool: isometric_tile
+    prompt: "pixel-art crescent moon, warm gold rim with darker amber inner shadow, no face, painterly RPG night sky, transparent background"
     size: 64
 
   # optional — include for polish pass
