@@ -242,7 +242,6 @@ export const TROPICAL_PALMS = [
     { tileX: 13.4, tileY: 3.8, scale: 1.32, seed: 0.51 },
     { tileX: 15.2, tileY: 8.9, scale: 1.20, seed: 0.69 },
     { tileX: 11.5, tileY: 22.3, scale: 1.22, seed: 0.18 },
-    { tileX: 28.9, tileY: 20.8, scale: 1.20, seed: 0.54 },
     { tileX: 34.0, tileY: 14.8, scale: 1.18, seed: 0.44 },
     { tileX: 36.3, tileY: 17.8, scale: 1.14, seed: 0.66 },
     { tileX: 12.2, tileY: 30.1, scale: 1.20, seed: 0.78 },

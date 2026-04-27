@@ -22,11 +22,11 @@ const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const DISTRICT_WASHES = [
-    { x: 20, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
-    { x: 37, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
-    { x: 10, y: 28, radiusX: 7, radiusY: 5, color: '#7d4b25', alpha: 0.10 },
-    { x: 18, y: 18, radiusX: 12, radiusY: 6, color: '#476b2c', alpha: 0.11 },
-    { x: 22, y: 30, radiusX: 15, radiusY: 6, color: '#5b5228', alpha: 0.11 },
+    { x: 16, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
+    { x: 36, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
+    { x: 7, y: 28, radiusX: 7, radiusY: 5, color: '#7d4b25', alpha: 0.10 },
+    { x: 14, y: 16, radiusX: 12, radiusY: 6, color: '#476b2c', alpha: 0.11 },
+    { x: 20, y: 28, radiusX: 15, radiusY: 6, color: '#5b5228', alpha: 0.11 },
 ];
 const ANCIENT_RUINS = [
     { tileX: 37, tileY: 3, scale: 1.05 },
@@ -49,35 +49,35 @@ const COMMAND_CENTER_DECORATION = [
 const AMBIENT_GROUND_PROPS = [
     // Harbor/lighthouse: authored dock props keep commit ships tied to the
     // Harbor Master while the lighthouse reads as a separate sea beacon.
-    { tileX: 34.2, tileY: 21.3, type: 'harborCrates' },
-    { tileX: 37.2, tileY: 21.8, type: 'harborCrates' },
-    { tileX: 33.2, tileY: 20.6, type: 'harborCrane' },
-    { tileX: 38.6, tileY: 20.6, type: 'harborCrane' },
+    { tileX: 33.2, tileY: 21.3, type: 'harborCrates' },
+    { tileX: 36.2, tileY: 21.8, type: 'harborCrates' },
+    { tileX: 32.2, tileY: 20.6, type: 'harborCrane' },
+    { tileX: 37.6, tileY: 20.6, type: 'harborCrane' },
 
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
-    { tileX: 29.4, tileY: 30.7, type: 'oreCart' },
-    { tileX: 30.4, tileY: 30.6, type: 'lantern' },
-    { tileX: 18.3, tileY: 34.7, type: 'oreCart' },
-    { tileX: 12.0, tileY: 33.8, type: 'lantern' },
-    { tileX: 20.5, tileY: 34.4, type: 'runestone' },
-    { tileX: 26.5, tileY: 32.6, type: 'noticePillar' },
+    { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
+    { tileX: 25.4, tileY: 29.6, type: 'lantern' },
+    { tileX: 13.3, tileY: 34.7, type: 'oreCart' },
+    { tileX: 9.0, tileY: 33.8, type: 'lantern' },
+    { tileX: 15.5, tileY: 34.4, type: 'runestone' },
+    { tileX: 22.5, tileY: 33.6, type: 'noticePillar' },
 
     // Civic core: utility props around the square, not scattered through the woods.
-    { tileX: 20.3, tileY: 22.4, type: 'well' },
-    { tileX: 17.1, tileY: 22.0, type: 'marketStall' },
-    { tileX: 22.8, tileY: 21.4, type: 'signpost' },
-    { tileX: 23.2, tileY: 19.0, type: 'scrollCrates' },
-    { tileX: 27.6, tileY: 19.8, type: 'noticePillar' },
+    { tileX: 15.3, tileY: 20.4, type: 'well' },
+    { tileX: 12.1, tileY: 20.0, type: 'marketStall' },
+    { tileX: 17.8, tileY: 19.4, type: 'signpost' },
+    { tileX: 19.2, tileY: 16.0, type: 'scrollCrates' },
+    { tileX: 23.6, tileY: 16.8, type: 'noticePillar' },
 
     // Research edges: fewer, quieter accents near knowledge landmarks.
-    { tileX: 8.1, tileY: 21.2, type: 'lantern' },
-    { tileX: 11.8, tileY: 20.6, type: 'runestone' },
-    { tileX: 26.5, tileY: 18.5, type: 'noticePillar' },
-    { tileX: 27.6, tileY: 18.8, type: 'scrollCrates' },
-    { tileX: 25.8, tileY: 16.4, type: 'runestone' },
-    { tileX: 28.4, tileY: 14.0, type: 'lantern' },
-    { tileX: 10.6, tileY: 22.8, type: 'runestone' },
-    { tileX: 16.0, tileY: 22.2, type: 'runestone' },
+    { tileX: 3.1, tileY: 24.2, type: 'lantern' },
+    { tileX: 6.8, tileY: 23.6, type: 'runestone' },
+    { tileX: 22.5, tileY: 15.5, type: 'noticePillar' },
+    { tileX: 23.6, tileY: 15.8, type: 'scrollCrates' },
+    { tileX: 21.8, tileY: 13.4, type: 'runestone' },
+    { tileX: 27.4, tileY: 14.0, type: 'lantern' },
+    { tileX: 5.6, tileY: 25.8, type: 'runestone' },
+    { tileX: 15.0, tileY: 22.2, type: 'runestone' },
 ];
 const OPEN_SEA_GULLS = [
     { tileX: 37.2, tileY: 5.4, altitude: 36, scale: 1.15, phase: 0.2 },
@@ -208,7 +208,9 @@ export class IsometricRenderer {
             tropical: true,
             canopy: true,
         }));
-        this.treePropSprites = [...generatedTrees, ...authoredPalms, ...authoredBroadleafTrees].map((t) => {
+        this.treePropSprites = [...generatedTrees, ...authoredPalms, ...authoredBroadleafTrees]
+            .filter((t) => this._clearsArchiveSightline(t))
+            .map((t) => {
             if (t.canopy || t.tropical) {
                 return new StaticPropSprite({
                     tileX: t.tileX,
@@ -493,6 +495,18 @@ export class IsometricRenderer {
         return tileX >= 0 && tileX <= MAP_SIZE - 1 && tileY >= 0 && tileY <= MAP_SIZE - 1;
     }
 
+    _clearsArchiveSightline(tree) {
+        const archive = this.world?.buildings?.get('archive');
+        if (!archive) return true;
+        const ax = archive.position.tileX;
+        const ay = archive.position.tileY;
+        const minX = ax - 1.8;
+        const maxX = ax + archive.width + 3.6;
+        const minY = ay - 7.2;
+        const maxY = ay + archive.height + 1.8;
+        return !(tree.tileX >= minX && tree.tileX <= maxX && tree.tileY >= minY && tree.tileY <= maxY);
+    }
+
     _getCommandBuilding() {
         return this.world.buildings.get('command');
     }
@@ -545,18 +559,18 @@ export class IsometricRenderer {
 
     _generateAmbientEmitters() {
         const emitters = [
-            { tileX: 9.8, tileY: 17.4, particleType: 'sparkle', chance: 0.018 },
-            { tileX: 10.8, tileY: 18.2, particleType: 'sparkle', chance: 0.012 },
-            { tileX: 33.0, tileY: 30.2, particleType: 'sparkle', chance: 0.016 },
+            { tileX: 4.8, tileY: 20.4, particleType: 'sparkle', chance: 0.018 },
+            { tileX: 5.8, tileY: 21.2, particleType: 'sparkle', chance: 0.012 },
+            { tileX: 28.0, tileY: 29.2, particleType: 'sparkle', chance: 0.016 },
             { tileX: 8.5, tileY: 12.0, particleType: 'sparkle', chance: 0.01 },
-            { tileX: 34.0, tileY: 19.5, particleType: 'smoke', chance: 0.012 },
-            { tileX: 18.4, tileY: 34.3, particleType: 'mineDust', chance: 0.016 },
-            { tileX: 18.4, tileY: 34.0, particleType: 'firefly', chance: 0.014 },
-            { tileX: 32.8, tileY: 30.2, particleType: 'forgeEmber', chance: 0.02 },
-            { tileX: 10.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
-            { tileX: 26.4, tileY: 32.1, particleType: 'questPing', chance: 0.014 },
-            { tileX: 28.3, tileY: 17.3, particleType: 'archiveMote', chance: 0.022 },
-            { tileX: 33.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
+            { tileX: 33.0, tileY: 19.5, particleType: 'smoke', chance: 0.012 },
+            { tileX: 13.4, tileY: 34.3, particleType: 'mineDust', chance: 0.016 },
+            { tileX: 13.4, tileY: 34.0, particleType: 'firefly', chance: 0.014 },
+            { tileX: 27.8, tileY: 29.2, particleType: 'forgeEmber', chance: 0.02 },
+            { tileX: 7.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
+            { tileX: 22.4, tileY: 33.1, particleType: 'questPing', chance: 0.014 },
+            { tileX: 24.3, tileY: 14.3, particleType: 'archiveMote', chance: 0.022 },
+            { tileX: 32.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
         ];
 

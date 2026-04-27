@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-epic-mine-v3"
+  assetVersion: "2026-04-27-harbor-openai-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -260,17 +260,17 @@ buildings:
 
   # ── STANDARD: Harbor Master (commit ships / push departures) ──
   - id: building.harbor
-    assetPath: assets/sprites/props/prop.harborPier.png
     tool: isometric_tile
-    prompt: "medieval harbor master quay, stone waterfront deck, timber office with red roof, signal flags, crane, barrels, awnings, mooring posts, cargo ledger desk, isometric"
-    size: 64
-    displaySize: 128
-    anchor: [64, 112]
+    prompt: "epic medieval fantasy harbor master compound, stone quay platform, red-roof timber office with glowing windows, signal mast with flags, tall cargo crane, stacked barrels and crates, market awning, mooring posts, wooden dock fingers, turquoise water edge, bold readable isometric RPG landmark, no large ship"
+    anchor: [176, 196]
+    splitForOcclusion: true
+    horizonY: 142
     emitters:
-      torch: [48, 42]
-    lightSource: [48, 42]
+      torch: [171, 96]
+      signal: [74, 37]
+    lightSource: [171, 96]
     lightColor: '#ffd37a'
-    lightRadius: 58
+    lightRadius: 96
     lightOverlay: 'atmosphere.light.lantern-glow'
 
   # ── HERO: Research Observatory ──
@@ -355,16 +355,17 @@ buildings:
   # ── STANDARD: Lore Archive ──
   - id: building.archive
     tool: isometric_tile
-    prompt: "epic old-school RPG grand lore archive, tall stone-walled library chamber with steep copper roof, arched stained-glass window, visible bookshelves, open-book crest, stair and desk details, glowing green magic lamps, heroic isometric fantasy landmark"
+    prompt: "monumental old-school RPG grand lore archive, fortress-library built into an open book, crenellated stone facade, tall side buttresses, huge arched stained-glass window, visible colorful bookshelves, scholar lectern, oversized open tome, parchment maps, glowing green magic lamps, bold heroic isometric fantasy landmark"
+    anchor: [168, 196]
     splitForOcclusion: true
-    horizonY: 132
+    horizonY: 145
     emitters:
-      sparkle: [154, 82]
-      sparkle2: [61, 149]
-      sparkle3: [246, 141]
-    lightSource: [154, 96]
+      sparkle: [215, 118]
+      sparkle2: [68, 104]
+      sparkle3: [268, 104]
+    lightSource: [215, 118]
     lightColor: '#b3d68c'
-    lightRadius: 96
+    lightRadius: 108
     lightOverlay: 'atmosphere.light.lantern-glow'
 
 # ─── PROPS ───────────────────────────────────────────────────────────────────
