@@ -12,6 +12,7 @@ const FADE_DELAY_MS = 3200;
 const FINALE_EFFECT_MS = 9000;
 const SCREEN_SUMMARY_MS = 16000;
 const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
+const HARBOR_CRATE_TTL_MS = 30000;
 const MAX_LABEL_CHARS = 30;
 const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
@@ -109,6 +110,11 @@ const PUSH_STATUS_STYLE = {
         glow: 'rgba(246, 207, 96, 0.52)',
     },
 };
+
+function isHarborCrateTool(agent) {
+    const text = `${agent?.currentTool || ''} ${agent?.currentToolInput || ''} ${agent?.lastToolInput || ''}`.toLowerCase();
+    return /\bgit\s+(status|diff|show)\b/.test(text);
+}
 
 function toWorld(tileX, tileY) {
     return {
@@ -718,6 +724,7 @@ export class HarborTraffic {
         this.sprites = sprites || null;
         this.state = cloneState();
         this._pendingRepoSummaries = [];
+        this.harborCrates = new Map();
         this.motionScale = 1;
         this.frame = 0;
         if (typeof window !== 'undefined') window.__harbor = this;
@@ -735,6 +742,7 @@ export class HarborTraffic {
             now,
             motionScale: this.motionScale,
         });
+        this._observeHarborCrates(agents, events, now);
         this._observePeakDensity(now);
     }
 
@@ -805,6 +813,7 @@ export class HarborTraffic {
                     drawable.payload.y = marker.y + REPO_DOCK_SHIP_Y_OFFSET + row * 38;
                     drawable.sortY = drawable.payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
                 }
+                drawable.payload.harborCrate = this.harborCrates.get(key) || null;
                 visible.push(drawable);
             });
         }
@@ -823,6 +832,34 @@ export class HarborTraffic {
         const trimmed = visible.slice(-MAX_VISIBLE_SHIPS);
 
         return trimmed.sort((a, b) => a.sortY - b.sortY);
+    }
+
+    _observeHarborCrates(agents, events, now) {
+        for (const event of events || []) {
+            if (event?.type !== 'push') continue;
+            const key = repoProfile(event.project).key;
+            this.harborCrates.delete(key);
+        }
+
+        for (const agent of agents || []) {
+            if (!agent?.projectPath && !agent?.project) continue;
+            if (!isHarborCrateTool(agent)) continue;
+            if (agent.targetBuildingType !== 'harbor' && agent.lastKnownBuildingType !== 'harbor') continue;
+            const project = agent.projectPath || agent.project || agent.teamName || 'unknown';
+            const profile = repoProfile(project);
+            this.harborCrates.set(profile.key, {
+                project,
+                profile,
+                agentId: agent.id,
+                label: /git\s+diff\b/i.test(`${agent.currentToolInput || ''} ${agent.lastToolInput || ''}`) ? 'DIFF' : 'STAT',
+                createdAt: now,
+                expiresAt: now + HARBOR_CRATE_TTL_MS,
+            });
+        }
+
+        for (const [key, crate] of this.harborCrates) {
+            if ((crate.expiresAt || 0) <= now) this.harborCrates.delete(key);
+        }
     }
 
     _repoDockSummaries() {
@@ -1107,7 +1144,31 @@ export class HarborTraffic {
         if (ship.status === 'docked' && ship.pushStatus === 'failed') {
             this._drawFailedPushMark(ctx, ship, zoom);
         }
+        if (ship.harborCrate) {
+            this._drawHarborCrate(ctx, ship, zoom, alpha, profile);
+        }
         this._drawCommitPennant(ctx, ship, zoom, alpha, profile);
+    }
+
+    _drawHarborCrate(ctx, ship, zoom, alpha = 1, profile = repoProfile(ship.project)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const bob = this.motionScale > 0 ? Math.sin(this.frame * 0.08 + ship.berthIndex) * 1.2 : 0;
+        const x = Math.round(ship.x - 18 * s);
+        const y = Math.round(ship.y - (19 + bob) * s);
+        ctx.save();
+        ctx.globalAlpha = 0.94 * alpha;
+        if (this.sprites) {
+            this.sprites.drawSprite(ctx, 'prop.harborCrates', x, y + 11 * s, { alpha: 0.96 * alpha });
+        } else {
+            ctx.fillStyle = '#8a5530';
+            ctx.strokeStyle = '#2d1c12';
+            ctx.lineWidth = Math.max(1, Math.round(1.5 * s));
+            ctx.fillRect(x - 9 * s, y - 7 * s, 18 * s, 14 * s);
+            ctx.strokeRect(x - 9 * s + 0.5, y - 7 * s + 0.5, 18 * s - 1, 14 * s - 1);
+        }
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(Math.round(x - 7 * s), Math.round(y - 1 * s), Math.max(1, Math.round(14 * s)), Math.max(1, Math.round(2 * s)));
+        ctx.restore();
     }
 
     _departureAlpha(ship) {

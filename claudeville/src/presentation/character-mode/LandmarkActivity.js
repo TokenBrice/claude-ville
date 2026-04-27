@@ -1,10 +1,12 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const MAX_ITEMS_PER_KIND = 10;
 const SNAPSHOT_TTL_MS = 18000;
 const FORGE_HANDOFF_WINDOW_MS = 45000;
 const TOKEN_ITEM_TTL_MS = 22000;
 const COMMAND_ITEM_TTL_MS = 16000;
+const RITUAL_TOKEN_DELTA_THRESHOLD = 256;
 
 const BUILDING_OFFSETS = {
     command: [
@@ -184,6 +186,15 @@ export class LandmarkActivity {
         if (previous == null || current <= previous) return;
         const delta = current - previous;
         if (delta < 128) return;
+        if (delta >= RITUAL_TOKEN_DELTA_THRESHOLD) {
+            eventBus.emit('tool:invoked', {
+                agentId: agent.id,
+                tool: '__token_delta',
+                input: delta,
+                building: 'mine',
+                ts: now,
+            });
+        }
         const id = `token:${agent.id}:${agent.lastSessionActivity || now}:${Math.round(current / 128)}`;
         if (this.items.has(id)) return;
         this.items.set(id, {

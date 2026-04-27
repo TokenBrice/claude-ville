@@ -113,6 +113,10 @@ const EMITTER_LIGHTS = {
 };
 const OBSERVATORY_CLOCK_FACE = Object.freeze({
     // Calibrated against the generated 312x208 clock observatory base.
+    // Composite reference is asserted at first draw so a regenerated sprite
+    // with different dimensions logs a visible warning instead of silently
+    // misplacing the clock hands.
+    compositeRef: Object.freeze({ w: 312, h: 208 }),
     center: [133, 73],
     radius: 30,
     sourceSize: 40,
@@ -121,6 +125,40 @@ const OBSERVATORY_CLOCK_FACE = Object.freeze({
     hourHandLength: 10,
     minuteHandLength: 15,
 });
+const MINE_SEAM_COLORS = ['#ffc15a', '#ff8a33', '#ff4528'];
+
+function clamp01(value) {
+    return Math.max(0, Math.min(1, Number(value) || 0));
+}
+
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
+
+function hexToRgb(hex) {
+    const text = String(hex || '').replace('#', '');
+    const normalized = text.length === 3
+        ? text.split('').map(char => char + char).join('')
+        : text.padEnd(6, '0').slice(0, 6);
+    const value = parseInt(normalized, 16);
+    return {
+        r: (value >> 16) & 255,
+        g: (value >> 8) & 255,
+        b: value & 255,
+    };
+}
+
+function mixHex(a, b, t) {
+    const from = hexToRgb(a);
+    const to = hexToRgb(b);
+    return `rgb(${Math.round(lerp(from.r, to.r, t))}, ${Math.round(lerp(from.g, to.g, t))}, ${Math.round(lerp(from.b, to.b, t))})`;
+}
+
+function compactRitualLabel(value, fallback = '') {
+    const text = String(value || fallback || '').replace(/\s+/g, ' ').trim();
+    if (!text) return fallback;
+    return text.length > 10 ? `${text.slice(0, 8)}..` : text;
+}
 
 export class BuildingSprite {
     constructor(assets, spriteRenderer, particleSystem) {
@@ -139,6 +177,7 @@ export class BuildingSprite {
         this._clockCanvasKey = '';
         this.lightingState = null;
         this.ritualConductor = null;
+        this.quotaState = null;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -157,6 +196,10 @@ export class BuildingSprite {
 
     setRitualConductor(conductor) {
         this.ritualConductor = conductor || null;
+    }
+
+    setQuotaState(state) {
+        this.quotaState = state || null;
     }
 
     setBuildings(map) {
@@ -755,7 +798,7 @@ export class BuildingSprite {
     getLightSources(lightingState = this.lightingState) {
         const lightBoost = lightingState?.lightBoost ?? 1;
         const staticSources = this._staticLightSources();
-        return staticSources.map(source => {
+        const out = staticSources.map(source => {
             const visitors = source.building ? this._visitorCountFor(source.building) : 0;
             const activity = source.buildingType === 'forge'
                 ? (visitors > 0 ? 1.35 : 0.58)
@@ -771,6 +814,8 @@ export class BuildingSprite {
                 building: source.building,
             });
         });
+        for (const source of this._ritualLightSources(lightBoost)) out.push(source);
+        return out;
     }
 
     _staticLightSources() {
@@ -960,8 +1005,10 @@ export class BuildingSprite {
 
         ctx.save();
         if (building.type === 'observatory') {
+            this._assertObservatoryClockDims(entry);
             if (shouldDrawLocalY(OBSERVATORY_CLOCK_FACE.center[1])) {
                 this._drawObservatoryClock(ctx, localPoint);
+                this._drawObservatoryRitual(ctx, localPoint, building);
             }
             ctx.restore();
             return;
@@ -974,9 +1021,11 @@ export class BuildingSprite {
                 return;
             }
             const mouth = localPoint(73, 95);
+            const seamColor = this._mineSeamColor();
+            const mineRitual = this._latestRitual('mine');
             ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = 0.16 + pulse * 0.12;
-            ctx.fillStyle = '#ffc15a';
+            ctx.globalAlpha = 0.16 + pulse * 0.12 + (mineRitual ? 0.12 : 0);
+            ctx.fillStyle = seamColor;
             ctx.beginPath();
             ctx.ellipse(mouth.x, mouth.y - 1, 28, 13, -0.22, 0, Math.PI * 2);
             ctx.fill();
@@ -990,6 +1039,7 @@ export class BuildingSprite {
             ctx.moveTo(mouth.x - 18, mouth.y + 29);
             ctx.lineTo(mouth.x + 30, mouth.y + 14);
             ctx.stroke();
+            this._drawMineRitual(ctx, mouth, mineRitual);
         } else if (building.type === 'portal') {
             if (!shouldDrawLocalY(60)) {
                 ctx.restore();
@@ -997,13 +1047,16 @@ export class BuildingSprite {
             }
             const gate = localPoint(144, 60);
             const visitors = this._visitorCountFor(building);
+            const portalRitual = this._latestRitual('portal');
             const activeBoost = visitors > 0 ? 0.28 : 0;
+            const ritualBoost = portalRitual ? 0.24 : 0;
             ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = 0.28 + pulse * 0.22 + activeBoost;
+            ctx.globalAlpha = 0.28 + pulse * 0.22 + activeBoost + ritualBoost;
             ctx.strokeStyle = '#8feaff';
             ctx.lineWidth = 2;
             for (let i = 0; i < 3; i++) {
-                const r = 19 + i * 8 + Math.sin(this.frame * 0.06 + i) * 2;
+                const motion = this.motionScale ? Math.sin(this.frame * 0.06 + i) * 2 : 0;
+                const r = 19 + i * 8 + motion + ritualBoost * 10;
                 ctx.beginPath();
                 ctx.ellipse(gate.x, gate.y, r, r * 0.58, this.frame * 0.012 + i * 0.8, 0, Math.PI * 2);
                 ctx.stroke();
@@ -1014,17 +1067,121 @@ export class BuildingSprite {
                 ctx.ellipse(gate.x, gate.y + 4, 34, 17, 0, 0, Math.PI * 2);
                 ctx.fill();
             }
+            this._drawPortalRitual(ctx, gate, portalRitual);
         } else if (building.type === 'watchtower') {
             if (!entry.layers?.beacon && shouldDrawLocalY(34)) {
                 const beacon = localPoint(196, 34);
                 this._drawWatchtowerFire(ctx, beacon, pulse);
+                this._drawWatchtowerRitual(ctx, beacon);
             }
         } else if (building.type === 'harbor') {
             if (splitPass !== 'back') this._drawHarborMasterOffice(ctx, localPoint, pulse);
         } else if (building.type === 'archive') {
             if (splitPass !== 'back') this._drawArchiveEnhancement(ctx, localPoint, pulse);
+        } else if (building.type === 'taskboard') {
+            if (splitPass !== 'back') this._drawTaskboardRitual(ctx, localPoint, building);
+        } else if (building.type === 'command') {
+            if (splitPass !== 'back') this._drawCommandRitual(ctx, localPoint, building);
         }
         ctx.restore();
+    }
+
+    _ritualsFor(type) {
+        return this.ritualConductor?.getActiveRitualsForBuilding?.(type) || [];
+    }
+
+    _latestRitual(type, predicate = null) {
+        const rituals = this._ritualsFor(type)
+            .filter((ritual) => !predicate || predicate(ritual))
+            .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+        return rituals[0] || null;
+    }
+
+    _ritualProgress(ritual) {
+        if (!ritual) return 0;
+        return clamp01((ritual.elapsedMs || 0) / Math.max(1, ritual.durationMs || 1));
+    }
+
+    _ritualFade(ritual) {
+        if (!ritual) return 0;
+        const duration = Math.max(1, ritual.durationMs || 1);
+        const age = Math.max(0, ritual.elapsedMs || 0);
+        const inAlpha = ritual.motionEnabled === false ? 1 : Math.min(1, age / 180);
+        const outAlpha = Math.min(1, Math.max(0, (duration - age) / 420));
+        return clamp01(inAlpha * outAlpha);
+    }
+
+    _ritualLightSources(lightBoost = 1) {
+        const sources = [];
+        for (const building of this.buildings) {
+            const rituals = this._ritualsFor(building.type);
+            if (!rituals.length) continue;
+            const entry = this.assets.getEntry(`building.${building.type}`);
+            const center = this._buildingScreenCenter(building);
+            const baseAnchor = this.assets.getAnchor(entry?.id || `building.${building.type}`);
+            const toOrigin = ([lx, ly]) => ({
+                x: center.x - baseAnchor[0] + lx,
+                y: center.y - baseAnchor[1] + ly,
+            });
+            for (const ritual of rituals) {
+                const fade = this._ritualFade(ritual);
+                if (fade <= 0.03) continue;
+                if (building.type === 'forge') {
+                    sources.push(normalizeLightSource({
+                        id: `ritual:${ritual.id}:spark`,
+                        kind: 'spark',
+                        origin: toOrigin([26, 76]),
+                        color: '#ffcf6a',
+                        radius: 24 + this._ritualProgress(ritual) * 34,
+                        alpha: fade * 0.5 * lightBoost,
+                        overlay: 'atmosphere.light.fire-glow',
+                        buildingType: building.type,
+                        building,
+                    }));
+                } else if (building.type === 'mine') {
+                    sources.push(normalizeLightSource({
+                        id: `ritual:${ritual.id}:ore`,
+                        kind: 'spark',
+                        origin: toOrigin([73, 95]),
+                        color: this._mineSeamColor(),
+                        radius: 44 + fade * 24,
+                        alpha: fade * 0.3 * lightBoost,
+                        overlay: 'atmosphere.light.lantern-glow',
+                        buildingType: building.type,
+                        building,
+                    }));
+                } else if (building.type === 'portal') {
+                    sources.push(normalizeLightSource({
+                        id: `ritual:${ritual.id}:portal`,
+                        kind: 'orbit',
+                        origin: toOrigin([144, 60]),
+                        color: '#8feaff',
+                        radius: 58,
+                        alpha: fade * 0.26 * lightBoost,
+                        overlay: 'atmosphere.light.lantern-glow',
+                        buildingType: building.type,
+                        building,
+                    }));
+                }
+            }
+        }
+        return sources;
+    }
+
+    _assertObservatoryClockDims(entry) {
+        // Warn once per session if the observatory sprite drifts away from the
+        // composite size that OBSERVATORY_CLOCK_FACE.center / .radius were
+        // calibrated against. Silent drift would misplace the clock hands.
+        if (this._observatoryDimsChecked) return;
+        this._observatoryDimsChecked = true;
+        const dims = entry?.id ? this.assets?.getDims?.(entry.id) : null;
+        if (!dims) return;
+        const ref = OBSERVATORY_CLOCK_FACE.compositeRef;
+        if (dims.w !== ref.w || dims.h !== ref.h) {
+            console.warn(
+                `[BuildingSprite] observatory sprite is ${dims.w}x${dims.h}; clock-face calibration assumes ${ref.w}x${ref.h}. Hand placement may be off — recalibrate OBSERVATORY_CLOCK_FACE.center / .radius.`
+            );
+        }
     }
 
     _drawObservatoryClock(ctx, localPoint) {
@@ -1188,14 +1345,15 @@ export class BuildingSprite {
         const doorway = localPoint(168, 130);
         const leftLamp = localPoint(142, 128);
         const rightLamp = localPoint(194, 128);
+        const ritual = this._latestRitual('archive');
 
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.14 + pulse * 0.12;
+        ctx.globalAlpha = 0.20;
         ctx.fillStyle = '#b3d68c';
         ctx.beginPath();
         ctx.ellipse(crest.x, crest.y, 26, 18, -0.12, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = 0.16 + pulse * 0.18;
+        ctx.globalAlpha = 0.24 + (ritual ? this._ritualFade(ritual) * 0.16 : 0);
         ctx.fillStyle = '#ffd36a';
         ctx.beginPath();
         ctx.ellipse(doorway.x, doorway.y, 32, 20, -0.08, 0, Math.PI * 2);
@@ -1206,7 +1364,7 @@ export class BuildingSprite {
         ctx.strokeStyle = '#e9ffd2';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.ellipse(crest.x, crest.y, 17 + pulse * 3, 10 + pulse * 2, this.frame * 0.018, 0, Math.PI * 2);
+        ctx.ellipse(crest.x, crest.y, 18, 11, 0.16, 0, Math.PI * 2);
         ctx.moveTo(crest.x - 18, crest.y);
         ctx.lineTo(crest.x + 18, crest.y);
         ctx.stroke();
@@ -1220,6 +1378,7 @@ export class BuildingSprite {
             ctx.fill();
         }
         ctx.globalCompositeOperation = 'source-over';
+        this._drawArchiveRitual(ctx, doorway, ritual);
     }
 
     _drawForgeEnhancement(ctx, localPoint, pulse, building = null) {
@@ -1608,7 +1767,7 @@ export class BuildingSprite {
         ctx.fill();
         ctx.stroke();
 
-        this._drawForgeAnvil(ctx, anvil, pulse);
+        this._drawForgeAnvil(ctx, anvil, pulse, this._latestRitual('forge'));
 
         ctx.globalAlpha = 0.86;
         ctx.fillStyle = '#2b2521';
@@ -1641,8 +1800,14 @@ export class BuildingSprite {
         }
     }
 
-    _drawForgeAnvil(ctx, anvil, pulse) {
-        const hammer = Math.sin(this.frame * 0.18) * 0.75 - 0.25;
+    _drawForgeAnvil(ctx, anvil, pulse, ritual = null) {
+        const progress = this._ritualProgress(ritual);
+        const burst = ritual
+            ? (ritual.motionEnabled === false
+                ? 0.82
+                : Math.max(0, Math.sin(Math.min(1, progress / 0.42) * Math.PI * 6)))
+            : 0;
+        const hammer = ritual ? -0.95 + burst * 1.55 : -0.82;
         ctx.globalAlpha = 0.95;
         ctx.strokeStyle = '#1d1510';
         ctx.fillStyle = '#c8a066';
@@ -1661,11 +1826,12 @@ export class BuildingSprite {
         ctx.fillRect(anvil.x - 13, anvil.y + 16, 24, 4);
 
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.28 + pulse * 0.18;
+        ctx.globalAlpha = 0.24 + (ritual ? this._ritualFade(ritual) * 0.38 : pulse * 0.08);
         ctx.fillStyle = '#ffd66f';
         ctx.beginPath();
         ctx.ellipse(anvil.x + 2, anvil.y - 2, 18, 7, -0.22, 0, Math.PI * 2);
         ctx.fill();
+        if (ritual) this._drawForgeSparkRing(ctx, anvil, ritual);
         ctx.globalCompositeOperation = 'source-over';
 
         ctx.save();
@@ -1679,6 +1845,311 @@ export class BuildingSprite {
         ctx.fillRect(-10, -24, 20, 7);
         ctx.strokeRect(-10, -24, 20, 7);
         ctx.restore();
+    }
+
+    _drawForgeSparkRing(ctx, anvil, ritual) {
+        const progress = this._ritualProgress(ritual);
+        const local = clamp01(progress / 0.22);
+        const radius = ritual.motionEnabled === false ? 24 : 14 + local * 28;
+        const alpha = ritual.motionEnabled === false ? 0.42 : Math.max(0, 0.62 * (1 - local));
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = '#ffe08a';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.ellipse(anvil.x + 2, anvil.y - 1, radius, radius * 0.42, -0.2, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#fff0a6';
+        for (let i = 0; i < 5; i++) {
+            const angle = -Math.PI * 0.9 + i * Math.PI * 0.34;
+            const distance = radius * (0.55 + i * 0.05);
+            ctx.fillRect(
+                Math.round(anvil.x + Math.cos(angle) * distance),
+                Math.round(anvil.y - 2 + Math.sin(angle) * distance * 0.44),
+                2,
+                2
+            );
+        }
+        ctx.restore();
+    }
+
+    _drawArchiveRitual(ctx, doorway, ritual) {
+        if (!ritual) return;
+        const progress = this._ritualProgress(ritual);
+        const fade = this._ritualFade(ritual);
+        const flip = ritual.motionEnabled === false
+            ? 0.5
+            : Math.abs(Math.sin(Math.min(1, progress / 0.42) * Math.PI));
+        const pageWidth = 18 * (1 - flip * 0.72);
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = '#5e3c25';
+        ctx.strokeStyle = '#2f1d12';
+        ctx.lineWidth = 1;
+        ctx.fillRect(Math.round(doorway.x - 19), Math.round(doorway.y - 22), 38, 24);
+        ctx.strokeRect(Math.round(doorway.x - 19) + 0.5, Math.round(doorway.y - 22) + 0.5, 38, 24);
+        ctx.fillStyle = '#e9d7a7';
+        ctx.fillRect(Math.round(doorway.x - 16), Math.round(doorway.y - 19), 15, 18);
+        ctx.fillStyle = '#f6e8bd';
+        ctx.fillRect(Math.round(doorway.x + 2), Math.round(doorway.y - 19), Math.max(2, Math.round(pageWidth)), 18);
+        ctx.strokeStyle = 'rgba(78, 51, 30, 0.52)';
+        for (let i = 0; i < 3; i++) {
+            ctx.beginPath();
+            ctx.moveTo(doorway.x - 12, doorway.y - 15 + i * 5);
+            ctx.lineTo(doorway.x - 3, doorway.y - 15 + i * 5);
+            ctx.moveTo(doorway.x + 5, doorway.y - 15 + i * 5);
+            ctx.lineTo(doorway.x + pageWidth - 2, doorway.y - 15 + i * 5);
+            ctx.stroke();
+        }
+        if (ritual.label) this._drawRitualLabel(ctx, doorway.x, doorway.y - 38, ritual.label, '#b3d68c', fade);
+        ctx.restore();
+    }
+
+    _drawMineRitual(ctx, mouth, ritual) {
+        if (!ritual) return;
+        const progress = this._ritualProgress(ritual);
+        const fade = this._ritualFade(ritual);
+        const swing = ritual.motionEnabled === false
+            ? -0.45
+            : -0.95 + Math.sin(Math.min(1, progress / 0.62) * Math.PI * 2) * 0.9;
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.translate(mouth.x - 4, mouth.y + 2);
+        ctx.rotate(swing);
+        ctx.strokeStyle = '#3a2819';
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(0, -21);
+        ctx.lineTo(0, 5);
+        ctx.stroke();
+        ctx.strokeStyle = '#d7a45c';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-10, -23);
+        ctx.lineTo(12, -18);
+        ctx.stroke();
+        ctx.restore();
+
+        const oreProgress = ritual.motionEnabled === false ? 0.5 : clamp01((progress - 0.18) / 0.58);
+        if (oreProgress > 0 && oreProgress < 1) {
+            const ox = mouth.x - 8 + oreProgress * 44;
+            const oy = mouth.y + 12 - Math.sin(oreProgress * Math.PI) * 28;
+            ctx.save();
+            ctx.globalAlpha = fade;
+            ctx.fillStyle = this._mineSeamColor();
+            ctx.strokeStyle = '#4a2f1c';
+            ctx.beginPath();
+            ctx.moveTo(ox - 5, oy);
+            ctx.lineTo(ox + 1, oy - 5);
+            ctx.lineTo(ox + 7, oy - 1);
+            ctx.lineTo(ox + 3, oy + 5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    _drawObservatoryRitual(ctx, localPoint, building) {
+        const ritual = this._latestRitual('observatory');
+        if (!ritual) return;
+        const dome = localPoint(133, 54);
+        const progress = this._ritualProgress(ritual);
+        const fade = this._ritualFade(ritual);
+        const target = ritual.angle || -0.7;
+        const angle = ritual.motionEnabled === false ? target : lerp(-1.2, target, Math.min(1, progress / 0.5));
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.translate(dome.x, dome.y);
+        ctx.rotate(angle);
+        ctx.fillStyle = '#6e7585';
+        ctx.strokeStyle = '#252532';
+        ctx.lineWidth = 1;
+        ctx.fillRect(0, -4, 28, 8);
+        ctx.strokeRect(0.5, -3.5, 27, 7);
+        ctx.fillStyle = '#bda7ff';
+        ctx.fillRect(23, -3, 5, 6);
+        ctx.restore();
+
+        if (ritual.motionEnabled !== false && progress > 0.48 && progress < 0.86) {
+            ctx.save();
+            ctx.globalAlpha = fade * 0.72;
+            ctx.strokeStyle = '#d9c7ff';
+            ctx.setLineDash([3, 5]);
+            ctx.beginPath();
+            ctx.arc(dome.x, dome.y, 34, -1.2, angle);
+            ctx.stroke();
+            ctx.setLineDash([]);
+            ctx.fillStyle = '#fff1a8';
+            for (let i = 0; i < 6; i++) {
+                const a = -1.2 + (angle + 1.2) * (i / 5);
+                ctx.fillRect(Math.round(dome.x + Math.cos(a) * 34), Math.round(dome.y + Math.sin(a) * 34), 2, 2);
+            }
+            ctx.restore();
+        }
+        if (ritual.label) this._drawRitualLabel(ctx, dome.x, dome.y + 54, ritual.label, '#bda7ff', fade);
+    }
+
+    _drawPortalRitual(ctx, gate, ritual) {
+        if (!ritual) return;
+        const fade = this._ritualFade(ritual);
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = 'rgba(22, 35, 48, 0.86)';
+        ctx.strokeStyle = '#8feaff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect?.(gate.x - 42, gate.y - 58, 84, 24, 4);
+        if (!ctx.roundRect) ctx.rect(gate.x - 42, gate.y - 58, 84, 24);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#d9fbff';
+        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(compactRitualLabel(ritual.label, 'PORTAL'), gate.x, gate.y - 46);
+        ctx.restore();
+    }
+
+    _drawTaskboardRitual(ctx, localPoint) {
+        const rituals = this._ritualsFor('taskboard').slice(-4);
+        if (!rituals.length) return;
+        const board = localPoint(56, 58);
+        rituals.forEach((ritual, index) => {
+            const progress = this._ritualProgress(ritual);
+            const fade = this._ritualFade(ritual);
+            const col = index % 2;
+            const row = Math.floor(index / 2);
+            const fall = ritual.action === 'complete'
+                ? (ritual.motionEnabled === false ? 8 : Math.max(0, progress - 0.22) * 42)
+                : 0;
+            const x = board.x - 24 + col * 24;
+            const y = board.y - 28 + row * 18 + fall;
+            ctx.save();
+            ctx.globalAlpha = fade;
+            ctx.fillStyle = '#e8cf91';
+            ctx.strokeStyle = '#4a3420';
+            ctx.lineWidth = 1;
+            ctx.fillRect(Math.round(x), Math.round(y), 20, 15);
+            ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, 19, 14);
+            ctx.fillStyle = '#785332';
+            ctx.fillRect(Math.round(x + 9), Math.round(y - 2), 3, 4);
+            if (ritual.action === 'complete') {
+                ctx.strokeStyle = '#2d6b47';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(x + 3, y + 8);
+                ctx.lineTo(x + 17, y + 5);
+                ctx.stroke();
+            }
+            ctx.restore();
+        });
+    }
+
+    _drawCommandRitual(ctx, localPoint) {
+        const rituals = this._ritualsFor('command');
+        if (!rituals.length) return;
+        const keep = localPoint(155, 34);
+        for (const ritual of rituals) {
+            const fade = this._ritualFade(ritual);
+            if (ritual.action === 'message') {
+                this._drawCarrierBird(ctx, keep, ritual, fade);
+                continue;
+            }
+            ctx.save();
+            ctx.globalAlpha = fade;
+            ctx.fillStyle = '#201814';
+            ctx.fillRect(Math.round(keep.x), Math.round(keep.y - 38), 2, 34);
+            ctx.fillStyle = '#f2d36b';
+            ctx.strokeStyle = '#3a2614';
+            ctx.beginPath();
+            ctx.moveTo(keep.x + 2, keep.y - 38);
+            ctx.lineTo(keep.x + 28, keep.y - 31);
+            ctx.lineTo(keep.x + 2, keep.y - 24);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    _drawCarrierBird(ctx, source, ritual, fade) {
+        const target = this._chatTargetForRitual(ritual) || { x: source.x + 52, y: source.y + 2 };
+        const progress = ritual.motionEnabled === false ? 1 : clamp01(this._ritualProgress(ritual) / 0.72);
+        const control = { x: (source.x + target.x) / 2, y: Math.min(source.y, target.y) - 70 };
+        const inv = 1 - progress;
+        const x = inv * inv * source.x + 2 * inv * progress * control.x + progress * progress * target.x;
+        const y = inv * inv * (source.y - 24) + 2 * inv * progress * control.y + progress * progress * (target.y - 42);
+        if (ritual.motionEnabled === false) {
+            this._drawRitualLabel(ctx, source.x, source.y - 54, 'MSG', '#f2d36b', fade);
+            return;
+        }
+        ctx.save();
+        ctx.globalAlpha = fade;
+        ctx.fillStyle = '#f1ead0';
+        ctx.strokeStyle = '#45311c';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.ellipse(x, y, 7, 4, -0.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.strokeStyle = '#f2d36b';
+        ctx.beginPath();
+        ctx.moveTo(x - 2, y);
+        ctx.quadraticCurveTo(x - 10, y - 8, x - 15, y - 2);
+        ctx.moveTo(x + 2, y);
+        ctx.quadraticCurveTo(x + 10, y - 8, x + 15, y - 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawWatchtowerRitual(ctx, beacon) {
+        const active = this.agentSprites.filter(sprite => sprite?.agent?.status === 'WORKING').length;
+        if (active <= 1) return;
+        const intensity = Math.min(1, active / 5);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.08 + intensity * 0.16;
+        ctx.strokeStyle = '#ffd36a';
+        ctx.lineWidth = 5 + intensity * 4;
+        const angle = this.motionScale ? this.frame * 0.025 * (1 + Math.min(1.4, active / 5)) : -0.35;
+        ctx.beginPath();
+        ctx.moveTo(beacon.x, beacon.y);
+        ctx.lineTo(beacon.x + Math.cos(angle) * 120, beacon.y + Math.sin(angle) * 54);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawRitualLabel(ctx, x, y, label, color, alpha = 1) {
+        const text = compactRitualLabel(label);
+        if (!text) return;
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        const width = Math.max(28, ctx.measureText(text).width + 10);
+        ctx.fillStyle = 'rgba(30, 24, 18, 0.82)';
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.fillRect(Math.round(x - width / 2), Math.round(y - 7), Math.round(width), 14);
+        ctx.strokeRect(Math.round(x - width / 2) + 0.5, Math.round(y - 7) + 0.5, Math.round(width) - 1, 13);
+        ctx.fillStyle = '#fff0c4';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(text, Math.round(x), Math.round(y));
+        ctx.restore();
+    }
+
+    _chatTargetForRitual(ritual) {
+        const source = this.agentSprites.find(sprite => sprite?.agent?.id === ritual.agentId);
+        return source?.chatPartner || null;
+    }
+
+    _mineSeamColor() {
+        const ratio = clamp01(this.quotaState?.fiveHour ?? this.quotaState?.fiveHourRatio ?? 0);
+        if (ratio <= 0.5) return MINE_SEAM_COLORS[0];
+        if (ratio <= 0.8) return mixHex(MINE_SEAM_COLORS[0], MINE_SEAM_COLORS[1], (ratio - 0.5) / 0.3);
+        return mixHex(MINE_SEAM_COLORS[1], MINE_SEAM_COLORS[2], (ratio - 0.8) / 0.2);
     }
 
     _drawWatchtowerFire(ctx, beacon, pulse) {
