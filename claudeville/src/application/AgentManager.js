@@ -87,9 +87,11 @@ export class AgentManager {
         const activityAgeMs = lastSessionActivity ? Math.max(0, Date.now() - lastSessionActivity) : null;
         const hasFreshTool = status === AgentStatus.WORKING && !!session.lastTool;
 
-        // Team name: get it from teamInfo or extract it from the project path
+        // Team name is an explicit provider field. Do not infer it from project
+        // paths; Codex/Gemini intentionally degrade to null.
         const teamName = teamInfo?.teamName
-            || (session.project ? session.project.split('/').filter(Boolean).pop() : null);
+            || session.teamName
+            || null;
 
         const agentData = {
             agentId: session.agentId || null,

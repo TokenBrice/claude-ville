@@ -64,6 +64,46 @@ function readClaudeSessionNames() {
   return names;
 }
 
+function readClaudeTeamMembership() {
+  const members = new Map();
+  if (!fs.existsSync(TEAMS_DIR)) return members;
+  try {
+    const teamDirs = fs.readdirSync(TEAMS_DIR, { withFileTypes: true })
+      .filter(dir => dir.isDirectory())
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const collisions = new Map();
+
+    for (const teamDir of teamDirs) {
+      const inboxDir = path.join(TEAMS_DIR, teamDir.name, 'inboxes');
+      if (!fs.existsSync(inboxDir)) continue;
+      let inboxFiles;
+      try {
+        inboxFiles = fs.readdirSync(inboxDir)
+          .filter(file => file.endsWith('.json') && !file.startsWith('.'))
+          .sort();
+      } catch {
+        continue;
+      }
+      for (const file of inboxFiles) {
+        const agentName = path.basename(file, '.json');
+        if (!agentName) continue;
+        const previous = members.get(agentName);
+        if (previous && previous !== teamDir.name) {
+          const list = collisions.get(agentName) || [previous];
+          list.push(teamDir.name);
+          collisions.set(agentName, list);
+        }
+        members.set(agentName, teamDir.name);
+      }
+    }
+
+    for (const [agentName, teams] of collisions.entries()) {
+      console.warn(`[claude adapter] agentName "${agentName}" appears in multiple teams: ${teams.join(', ')}; using ${members.get(agentName)}`);
+    }
+  } catch { /* ignore */ }
+  return members;
+}
+
 function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {}) {
   if (!input) return null;
 
@@ -346,6 +386,7 @@ class ClaudeAdapter {
     const projectPathMap = new Map(); // Encoded directory name to real path
     const activeSessionIdsByProject = new Map();
     const sessionNames = readClaudeSessionNames();
+    const teamMembership = readClaudeTeamMembership();
 
     const HISTORY_SCAN_MS = 10 * 60 * 1000;
     for (const entry of entries) {
@@ -392,10 +433,12 @@ class ClaudeAdapter {
       const detail = getSessionDetail(session.sessionId, session.project);
       const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
       const sessionName = sessionNames.get(session.sessionId) || null;
+      const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
       mainSessions.push({
         ...session,
         name: sessionName,
         agentName: sessionName,
+        teamName,
         model: detail.model || session.model,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
@@ -419,7 +462,7 @@ class ClaudeAdapter {
       ...Array.from(sessionsMap.keys()),
       ...subAgents.map(s => s.sessionId.replace('subagent-', '')),
     ]);
-    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, knownIds, sessionNames);
+    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, knownIds, sessionNames, teamMembership);
 
     return [...mainSessions, ...subAgents, ...orphans];
   }
@@ -495,7 +538,7 @@ class ClaudeAdapter {
     return results;
   }
 
-  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), sessionNames = new Map()) {
+  _getOrphanSessions(activeThresholdMs, projectPathMap = new Map(), knownIds = new Set(), sessionNames = new Map(), teamMembership = new Map()) {
     const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (!fs.existsSync(projectsDir)) return [];
 
@@ -528,6 +571,7 @@ class ClaudeAdapter {
           const detail = getSubAgentDetail(filePath);
           const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name);
           const sessionName = sessionNames.get(sessionId) || null;
+          const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
 
           results.push({
             sessionId,
@@ -535,6 +579,7 @@ class ClaudeAdapter {
             agentId: sessionId,
             name: sessionName,
             agentName: sessionName,
+            teamName,
             agentType: 'team-member',
             model: detail.model || 'unknown',
             status: 'active',
