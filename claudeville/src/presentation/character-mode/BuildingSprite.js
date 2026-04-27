@@ -43,13 +43,13 @@ const PARTICLE_ALIASES = {
 };
 const BUILDING_EMITTER_FALLBACKS = {
     forge: [
-        { type: 'forgeEmber', at: [66, 76], chance: 0.06, count: 1 },
-        { type: 'forgeSpark', at: [48, 83], chance: 0.032, count: 1 },
-        { type: 'smoke', at: [88, 13], chance: 0.035, count: 1 },
+        { type: 'forgeEmber', at: [51, 66], chance: 0.06, count: 1 },
+        { type: 'forgeSpark', at: [50, 70], chance: 0.032, count: 1 },
+        { type: 'smoke', at: [39, 8], chance: 0.035, count: 1 },
     ],
     mine: [
-        { type: 'mineDust', at: [82, 98], chance: 0.035, count: 1 },
-        { type: 'mining', at: [102, 124], chance: 0.026, count: 1 },
+        { type: 'mineDust', at: [73, 95], chance: 0.035, count: 1 },
+        { type: 'mining', at: [78, 122], chance: 0.026, count: 1 },
     ],
     portal: [
         { type: 'portalRune', at: [144, 60], chance: 0.05, count: 1 },
@@ -66,16 +66,16 @@ const BUILDING_EMITTER_FALLBACKS = {
         { type: 'questPing', at: [56, 58], chance: 0.024, count: 1 },
     ],
     archive: [
-        { type: 'archiveMote', at: [154, 82], chance: 0.034, count: 1 },
-        { type: 'archiveMote', at: [61, 149], chance: 0.018, count: 1 },
-        { type: 'archiveMote', at: [246, 141], chance: 0.018, count: 1 },
+        { type: 'archiveMote', at: [168, 82], chance: 0.034, count: 1 },
+        { type: 'archiveMote', at: [142, 128], chance: 0.018, count: 1 },
+        { type: 'archiveMote', at: [194, 128], chance: 0.018, count: 1 },
     ],
 };
 const BUILDING_LIGHT_FALLBACKS = {
-    forge: { at: [64, 78], color: '#ff8a33', radius: 62, overlay: 'atmosphere.light.fire-glow' },
-    mine: { at: [84, 98], color: '#ffb84d', radius: 68, overlay: 'atmosphere.light.lantern-glow' },
+    forge: { at: [51, 66], color: '#ff8a33', radius: 62, overlay: 'atmosphere.light.fire-glow' },
+    mine: { at: [73, 95], color: '#ffb84d', radius: 68, overlay: 'atmosphere.light.lantern-glow' },
     taskboard: { at: [56, 58], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
-    archive: { at: [154, 96], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
+    archive: { at: [168, 88], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
     harbor: { at: [48, 42], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };
 
@@ -758,45 +758,22 @@ export class BuildingSprite {
         if (building.type === 'forge') {
             this._drawForgeEnhancement(ctx, localPoint, pulse);
         } else if (building.type === 'mine') {
-            const mouth = localPoint(84, 98);
+            const mouth = localPoint(73, 95);
             ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = 0.24 + pulse * 0.18;
+            ctx.globalAlpha = 0.16 + pulse * 0.12;
             ctx.fillStyle = '#ffc15a';
             ctx.beginPath();
-            ctx.ellipse(mouth.x, mouth.y - 1, 31, 13, -0.22, 0, Math.PI * 2);
+            ctx.ellipse(mouth.x, mouth.y - 1, 28, 13, -0.22, 0, Math.PI * 2);
             ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
-            ctx.globalAlpha = 0.75;
+            ctx.globalAlpha = 0.42;
             ctx.strokeStyle = '#8f6a3d';
-            ctx.lineWidth = 2;
+            ctx.lineWidth = 1.4;
             ctx.beginPath();
-            ctx.moveTo(mouth.x - 34, mouth.y + 14);
-            ctx.lineTo(mouth.x + 37, mouth.y - 6);
             ctx.moveTo(mouth.x - 26, mouth.y + 23);
-            ctx.lineTo(mouth.x + 44, mouth.y + 3);
-            ctx.stroke();
-        } else if (building.type === 'taskboard') {
-            const board = localPoint(56, 60);
-            const swing = this.motionScale ? Math.sin(this.frame * 0.08) * 1.5 : 0;
-            ctx.globalAlpha = 0.94;
-            ctx.fillStyle = 'rgba(58, 38, 22, 0.88)';
-            ctx.strokeStyle = '#8bd7ff';
-            ctx.lineWidth = 1.5;
-            ctx.fillRect(board.x - 23, board.y - 22 + swing, 46, 30);
-            ctx.strokeRect(board.x - 23.5, board.y - 22.5 + swing, 47, 31);
-            const notes = [
-                [-16, -15, '#f2d36b'], [-2, -16, '#e2c48a'], [12, -14, '#f5e4b7'],
-                [-12, -2, '#f5e4b7'], [5, -1, '#f2d36b'],
-            ];
-            for (const [dx, dy, color] of notes) {
-                ctx.fillStyle = color;
-                ctx.fillRect(board.x + dx, board.y + dy + swing, 9, 8);
-            }
-            ctx.strokeStyle = '#2c6b45';
-            ctx.beginPath();
-            ctx.moveTo(board.x + 14, board.y + 5 + swing);
-            ctx.lineTo(board.x + 18, board.y + 9 + swing);
-            ctx.lineTo(board.x + 25, board.y + 0 + swing);
+            ctx.lineTo(mouth.x + 23, mouth.y + 8);
+            ctx.moveTo(mouth.x - 18, mouth.y + 29);
+            ctx.lineTo(mouth.x + 30, mouth.y + 14);
             ctx.stroke();
         } else if (building.type === 'portal') {
             const gate = localPoint(144, 60);
@@ -879,34 +856,31 @@ export class BuildingSprite {
     }
 
     _drawArchiveEnhancement(ctx, localPoint, pulse) {
-        const focus = localPoint(215, 118);
-        const window = localPoint(168, 68);
-        const leftLamp = localPoint(68, 104);
-        const rightLamp = localPoint(268, 104);
+        const crest = localPoint(168, 82);
+        const doorway = localPoint(168, 130);
+        const leftLamp = localPoint(142, 128);
+        const rightLamp = localPoint(194, 128);
 
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.08 + pulse * 0.08;
+        ctx.globalAlpha = 0.14 + pulse * 0.12;
         ctx.fillStyle = '#b3d68c';
         ctx.beginPath();
-        ctx.ellipse(window.x, window.y, 34, 18, -0.12, 0, Math.PI * 2);
+        ctx.ellipse(crest.x, crest.y, 26, 18, -0.12, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = 0.26 + pulse * 0.3;
-        ctx.fillStyle = '#b3d68c';
+        ctx.globalAlpha = 0.16 + pulse * 0.18;
+        ctx.fillStyle = '#ffd36a';
         ctx.beginPath();
-        ctx.ellipse(focus.x, focus.y, 37, 29, -0.08, 0, Math.PI * 2);
+        ctx.ellipse(doorway.x, doorway.y, 32, 20, -0.08, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
 
-        ctx.globalAlpha = 0.9;
+        ctx.globalAlpha = 0.75;
         ctx.strokeStyle = '#e9ffd2';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.ellipse(focus.x, focus.y, 22 + pulse * 5, 13 + pulse * 3, this.frame * 0.018, 0, Math.PI * 2);
-        ctx.ellipse(focus.x, focus.y, 30 + pulse * 4, 17 + pulse * 2, -this.frame * 0.014, 0, Math.PI * 2);
-        ctx.moveTo(focus.x - 28, focus.y);
-        ctx.lineTo(focus.x + 28, focus.y);
-        ctx.moveTo(focus.x, focus.y - 25);
-        ctx.lineTo(focus.x, focus.y + 25);
+        ctx.ellipse(crest.x, crest.y, 17 + pulse * 3, 10 + pulse * 2, this.frame * 0.018, 0, Math.PI * 2);
+        ctx.moveTo(crest.x - 18, crest.y);
+        ctx.lineTo(crest.x + 18, crest.y);
         ctx.stroke();
 
         ctx.globalCompositeOperation = 'screen';
@@ -921,23 +895,25 @@ export class BuildingSprite {
     }
 
     _drawForgeEnhancement(ctx, localPoint, pulse) {
-        const hearth = localPoint(64, 78);
-        const chimney = localPoint(85, 19);
-        const anvil = localPoint(44, 84);
-        const workbench = localPoint(82, 86);
-        const coal = localPoint(31, 90);
-        const trough = localPoint(63, 101);
-        const flicker = this.motionScale
-            ? Math.sin(this.frame * 0.25) * 1.8 + Math.sin(this.frame * 0.43) * 1.1
-            : 0.8;
-
-        this._drawForgeStoneApron(ctx, hearth, trough);
+        const hearth = localPoint(51, 66);
+        const chimney = localPoint(39, 8);
+        const anvil = localPoint(26, 76);
         this._drawForgeHeatBloom(ctx, hearth, pulse);
-        this._drawForgeSmithyMass(ctx, hearth);
-        this._drawForgeRoofAndStack(ctx, chimney, hearth, flicker, pulse);
-        this._drawForgeMouth(ctx, hearth, flicker, pulse);
-        this._drawForgeMoltenTrough(ctx, trough, pulse, flicker);
-        this._drawForgeYardTools(ctx, anvil, workbench, coal, pulse);
+
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.12 + pulse * 0.08;
+        ctx.fillStyle = '#9a8d7f';
+        ctx.beginPath();
+        ctx.ellipse(chimney.x, chimney.y - 4, 17, 9, -0.22, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = 0.16 + pulse * 0.14;
+        ctx.fillStyle = '#ffd36a';
+        ctx.beginPath();
+        ctx.ellipse(anvil.x, anvil.y, 22, 12, -0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
     }
 
     _drawForgeStoneApron(ctx, hearth, trough) {
