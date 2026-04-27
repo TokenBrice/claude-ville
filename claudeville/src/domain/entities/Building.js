@@ -16,6 +16,7 @@ export class Building {
         visualTier,
         entrance,
         visitTiles,
+        walkExclusion,
         scenery,
     }) {
         this.type = type;
@@ -33,6 +34,7 @@ export class Building {
         this.visitTiles = Array.isArray(visitTiles)
             ? visitTiles.map((tile) => ({ tileX: tile.tileX, tileY: tile.tileY }))
             : [];
+        this.walkExclusion = this._normalizeWalkExclusions(walkExclusion);
         this.scenery = scenery ? {
             excludePadding: scenery.excludePadding ? { ...scenery.excludePadding } : null,
             sightline: scenery.sightline ? { ...scenery.sightline } : null,
@@ -53,6 +55,38 @@ export class Building {
         return this.visitTiles.some((tile) => (
             Math.round(tile.tileX) === roundedX &&
             Math.round(tile.tileY) === roundedY
+        ));
+    }
+
+    _normalizeWalkExclusions(walkExclusion) {
+        if (!Array.isArray(walkExclusion)) return [];
+        return walkExclusion.map((rect) => {
+            const x0 = Number.isFinite(rect.x)
+                ? rect.x
+                : this.position.tileX + (rect.dx || 0);
+            const y0 = Number.isFinite(rect.y)
+                ? rect.y
+                : this.position.tileY + (rect.dy || 0);
+            const width = Math.max(1, Math.floor(rect.width || 1));
+            const height = Math.max(1, Math.floor(rect.height || 1));
+            return {
+                x0: Math.floor(x0),
+                y0: Math.floor(y0),
+                x1: Math.floor(x0) + width - 1,
+                y1: Math.floor(y0) + height - 1,
+            };
+        });
+    }
+
+    walkExclusionRects() {
+        return this.walkExclusion.map((rect) => ({ ...rect }));
+    }
+
+    blocksWalkTile(tileX, tileY) {
+        const x = Math.round(tileX);
+        const y = Math.round(tileY);
+        return this.containsPoint(x, y) || this.walkExclusion.some((rect) => (
+            x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1
         ));
     }
 

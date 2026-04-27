@@ -32,6 +32,7 @@ export class SceneryEngine {
         this.boulderProps = [];        // { tileX, tileY, variant, scale }
 
         this._buildingFootprints = this._collectBuildingFootprints();
+        this._buildingWalkBlocks = this._collectBuildingWalkBlocks();
         this._buildingSceneryZones = this._collectBuildingSceneryZones();
 
         this._generateWater();
@@ -61,6 +62,24 @@ export class SceneryEngine {
             for (let dx = 0; dx < b.width; dx++) {
                 for (let dy = 0; dy < b.height; dy++) {
                     set.add(`${x0 + dx},${y0 + dy}`);
+                }
+            }
+        }
+        return set;
+    }
+
+    _collectBuildingWalkBlocks() {
+        const set = new Set(this._buildingFootprints);
+        if (!this.world?.buildings) return set;
+        for (const b of this.world.buildings.values()) {
+            const rects = typeof b.walkExclusionRects === 'function'
+                ? b.walkExclusionRects()
+                : [];
+            for (const rect of rects) {
+                for (let x = rect.x0; x <= rect.x1; x++) {
+                    for (let y = rect.y0; y <= rect.y1; y++) {
+                        set.add(`${x},${y}`);
+                    }
                 }
             }
         }
@@ -214,7 +233,7 @@ export class SceneryEngine {
         return this.waterTiles.has(key)
             || pathTiles.has(key)
             || bridgeTiles.has(key)
-            || this._buildingFootprints.has(key);
+            || this._buildingWalkBlocks.has(key);
     }
 
     isBlockedForTallScenery(tileX, tileY, pathTiles, bridgeTiles) {
@@ -507,7 +526,7 @@ export class SceneryEngine {
             for (let x = 0; x < MAP_SIZE; x++) {
                 const key = `${x},${y}`;
                 const idx = y * MAP_SIZE + x;
-                if (this._buildingFootprints.has(key)) continue; // 0
+                if (this._buildingWalkBlocks.has(key)) continue; // 0
                 if (this.waterTiles.has(key) && !this.bridgeTiles.has(key)) continue; // 0
                 grid[idx] = 1;
             }

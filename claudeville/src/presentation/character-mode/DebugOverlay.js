@@ -40,6 +40,19 @@ export class DebugOverlay {
                     x1: building.position.tileX + building.width,
                     y1: building.position.tileY + building.height,
                 });
+                const rects = typeof building.walkExclusionRects === 'function'
+                    ? building.walkExclusionRects()
+                    : [];
+                ctx.strokeStyle = 'rgba(255, 193, 7, 0.95)';
+                for (const rect of rects) {
+                    this._strokeTileRect(ctx, {
+                        x0: rect.x0,
+                        y0: rect.y0,
+                        x1: rect.x1 + 1,
+                        y1: rect.y1 + 1,
+                    });
+                }
+                ctx.strokeStyle = '#ff9800';
             }
         }
         if (Array.isArray(sceneryZones)) {
