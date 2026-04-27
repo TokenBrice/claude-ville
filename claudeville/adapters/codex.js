@@ -22,6 +22,7 @@ const MAX_HEAD_BYTES = 64 * 1024;
 const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const GIT_EVENT_SCAN_LINES = 5000;
+const MAX_CURRENT_TOOL_INPUT_CHARS = 500;
 
 function readHeadLines(filePath, count) {
   const fd = fs.openSync(filePath, 'r');
@@ -131,7 +132,8 @@ function parseRollout(filePath) {
   const lastLines = readLines(filePath, { from: 'end', count: 50 });
   const entries = parseJsonLines(lastLines);
 
-  for (const entry of entries) {
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
     const payload = entry.payload;
     if (!payload) continue;
 
@@ -143,9 +145,9 @@ function parseRollout(filePath) {
         if (payload.arguments) {
           detail.lastToolInput = (typeof payload.arguments === 'string'
             ? payload.arguments : JSON.stringify(payload.arguments)
-          ).substring(0, 60);
+          ).substring(0, MAX_CURRENT_TOOL_INPUT_CHARS);
         } else if (payload.command) {
-          detail.lastToolInput = payload.command.substring(0, 60);
+          detail.lastToolInput = payload.command.substring(0, MAX_CURRENT_TOOL_INPUT_CHARS);
         }
       }
 

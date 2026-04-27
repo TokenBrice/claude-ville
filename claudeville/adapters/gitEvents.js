@@ -382,6 +382,61 @@ function runGit(project, args) {
   }).trim();
 }
 
+function tryRunGit(project, args) {
+  try {
+    return runGit(project, args);
+  } catch {
+    return '';
+  }
+}
+
+function refExists(project, ref) {
+  if (!ref) return false;
+  return !!tryRunGit(project, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+}
+
+function currentBranch(project) {
+  return tryRunGit(project, ['branch', '--show-current']);
+}
+
+function unpushedComparison(project) {
+  const branch = currentBranch(project);
+  const upstream = tryRunGit(project, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+  if (upstream) {
+    return {
+      branch,
+      baseRef: upstream,
+      upstream,
+      hasUpstream: true,
+    };
+  }
+
+  const candidates = [
+    'main',
+    'master',
+    'origin/HEAD',
+    'origin/main',
+    'origin/master',
+  ].filter((ref) => ref && ref !== branch);
+
+  for (const baseRef of candidates) {
+    if (!refExists(project, baseRef)) continue;
+    return {
+      branch,
+      baseRef,
+      upstream: null,
+      hasUpstream: false,
+    };
+  }
+
+  return {
+    branch,
+    baseRef: null,
+    upstream: null,
+    hasUpstream: false,
+  };
+}
+
 function readPushState(project) {
   const now = Date.now();
   const cached = _gitStatusCache.get(project);
@@ -453,14 +508,14 @@ function readUnpushedCommitEvents(project, context = {}) {
 
   try {
     if (runGit(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') return [];
-    const upstream = runGit(project, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
-    if (!upstream) return [];
+    const comparison = unpushedComparison(project);
+    if (!comparison.baseRef) return [];
 
     const output = runGit(project, [
       'log',
       '--reverse',
       '--format=%H%x1f%ct%x1f%s',
-      `${upstream}..HEAD`,
+      `${comparison.baseRef}..HEAD`,
     ]);
     if (!output) return [];
 
@@ -470,7 +525,7 @@ function readUnpushedCommitEvents(project, context = {}) {
         const [sha, timestampSeconds, subject] = line.split('\x1f');
         if (!sha) return null;
         const ts = Number(timestampSeconds) * 1000;
-        const id = `git-unpushed-${stableHash(`${project}:${sha}`)}`;
+        const id = `git-unpushed-${stableHash(`${project}:${comparison.branch || 'HEAD'}:${sha}`)}`;
         return {
           id,
           type: 'commit',
@@ -488,7 +543,11 @@ function readUnpushedCommitEvents(project, context = {}) {
           sha,
           label: subject || sha.slice(0, 10),
           inferred: true,
-          upstream,
+          branch: comparison.branch || null,
+          targetRef: comparison.branch || comparison.baseRef,
+          upstream: comparison.upstream,
+          comparisonRef: comparison.baseRef,
+          hasUpstream: comparison.hasUpstream,
         };
       })
       .filter(Boolean);
