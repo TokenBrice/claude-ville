@@ -1551,13 +1551,13 @@ export class IsometricRenderer {
     }
 
     _drawHarborCausewayTile(ctx, screenX, screenY, orientation = 'EW', seed = 0) {
-        const halfW = TILE_WIDTH * 0.46;
-        const halfH = TILE_HEIGHT * 0.31;
+        const halfW = TILE_WIDTH * 0.50;
+        const halfH = TILE_HEIGHT * 0.35;
         const lift = 2;
         ctx.save();
         ctx.translate(screenX, screenY - lift);
 
-        ctx.globalAlpha = 0.72;
+        ctx.globalAlpha = 0.78;
         ctx.fillStyle = 'rgba(29, 20, 14, 0.52)';
         ctx.beginPath();
         ctx.moveTo(0, -halfH + 4);
@@ -1567,10 +1567,10 @@ export class IsometricRenderer {
         ctx.closePath();
         ctx.fill();
 
-        ctx.globalAlpha = 0.95;
-        ctx.fillStyle = '#8f7754';
-        ctx.strokeStyle = '#2d2118';
-        ctx.lineWidth = 1.4;
+        ctx.globalAlpha = 0.98;
+        ctx.fillStyle = '#aa8859';
+        ctx.strokeStyle = '#2b1b12';
+        ctx.lineWidth = 1.6;
         ctx.beginPath();
         ctx.moveTo(0, -halfH);
         ctx.lineTo(halfW, 0);
@@ -1580,8 +1580,8 @@ export class IsometricRenderer {
         ctx.fill();
         ctx.stroke();
 
-        ctx.globalAlpha = 0.72;
-        ctx.strokeStyle = '#c9b78b';
+        ctx.globalAlpha = 0.8;
+        ctx.strokeStyle = '#e0c488';
         ctx.lineWidth = 1;
         const cross = orientation === 'NS'
             ? [[-17, -8, 15, 8], [-10, -13, 22, 3], [-22, -2, 10, 14]]
@@ -1590,6 +1590,16 @@ export class IsometricRenderer {
             ctx.beginPath();
             ctx.moveTo(x1, y1);
             ctx.lineTo(x2, y2);
+            ctx.stroke();
+        }
+
+        ctx.globalAlpha = 0.48;
+        ctx.strokeStyle = '#5f3d22';
+        ctx.lineWidth = 1.2;
+        for (const side of [-1, 1]) {
+            ctx.beginPath();
+            ctx.moveTo(-halfW + 8, side * 2);
+            ctx.lineTo(halfW - 8, side * -2);
             ctx.stroke();
         }
 
