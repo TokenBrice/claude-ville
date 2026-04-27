@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-living-twilight-sky-v1"
+  assetVersion: "2026-04-27-weather-clock-valkyrie-opus-haiku-sonnet-mages-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -14,7 +14,7 @@ characters:
   # below is the engine cell size, not the generation hint.
   - id: agent.claude.opus
     tool: create_character
-    prompt: "Claude Opus 4.7 ancient hooded archmage, oversized deep umber cowl, black shadow face with two glowing golden eyes, layered dark mantle, gold rune collar, full-length ivory and amber robe under a heavy cloak, hidden hands, small glowing grimoire, regal mystic silhouette, no pointed hat, no staff, no grass base, no platform, 8-direction pixel art"
+    prompt: "Claude Opus valkyrie battle-seraph sprite imported from valkyrie.png, pale blonde hair, pink ivory armor, crimson bat-like wings, compact chibi RPG silhouette, standing and walking frames mapped into the ClaudeVille 8-direction sheet contract"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -23,7 +23,7 @@ characters:
 
   - id: agent.claude.sonnet
     tool: create_character
-    prompt: "Claude Sonnet 4.6 light-equipped medieval fantasy scout-ranger, warm amber hooded travel cloak over fitted leather armor, small feathered scout cap under hood, compact recurved bow held close to body, quiver of arrows across back, slim satchel and scroll tube on belt, nimble balanced silhouette, practical boots, harmonious with Claude Opus and Codex village sprites, no mortarboard, no floating scroll, no tome, no staff, no platform, no grass base, 8-direction pixel art"
+    prompt: "Claude Sonnet true wizard archmage, regal blue-violet robes with silver and gold rune trim, tall pointed wizard hat, flowing star-lined cloak, glowing crystal staff held close to body, chained spellbook at belt, bright runes around hands, powerful old-school RPG wizard silhouette, no wings, no angel armor, no warrior plate armor"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -32,7 +32,7 @@ characters:
 
   - id: agent.claude.haiku
     tool: create_character
-    prompt: "Claude Haiku 4.5 apprentice scribe-mage, small hooded cap (no brim), simple amber tunic with rolled sleeves over a short open mage robe, leather satchel of scrolls, short carved walking stick, compact youthful slim silhouette, visible leather boots, 8-direction pixel art"
+    prompt: "Claude Haiku apprentice mage, small compact chibi silhouette, oversized amber pointed hood and short apprentice robe, bronze rune clasp, leather satchel of scrolls, tiny spellbook at belt, short wooden wand held close to body, warm novice magic spark, humble old-school RPG apprentice silhouette, no wings, no crown, no heavy armor"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -289,30 +289,24 @@ buildings:
     lightRadius: 96
     lightOverlay: 'atmosphere.light.lantern-glow'
 
-  # ── HERO: Research Observatory ──
+  # ── HERO: Clock Observatory ──
   - id: building.observatory
     composeGrid: [3, 2]
     splitForOcclusion: true
     horizonY: 130
     layers:
       base:
-        tool: isometric_tile
-        prompt: "epic research observatory, domed copper roof with star etchings, tall arched windows glowing starlight blue, stone turret, isometric"
+        tool: map_object
+        prompt: "scholarly stone clock tower observatory for a fantasy village, blue slate roof, copper-blue scholarly accents, large circular clock face on the front, no text, no logo, transparent background, low top-down isometric"
         size: 64
         displaySize: 104
-      astrolabe:
-        tool: isometric_tile
-        prompt: "brass astrolabe ring rotating above dome, star sparkle, transparent background, isometric"
-        size: 64
-        anchor: [144, 20]
-        animation: pulse
     emitters:
-      sparkle: [144, 18]
+      sparkle: [126, 62]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [144, 20]
-    lightColor: '#aaccff'
-    lightRadius: 60
+    lightSource: [126, 62]
+    lightColor: '#9fd1ff'
+    lightRadius: 58
 
   # ── HERO: Portal Gate ──
   - id: building.portal
@@ -752,6 +746,26 @@ atmosphere:
   - id: atmosphere.moon.crescent
     tool: map_object
     prompt: "pixel-art crescent moon, warm gold rim with darker amber inner shadow, no face, painterly RPG night sky, transparent background"
+    size: 64
+
+  - id: atmosphere.cloud.cumulus.day
+    tool: map_object
+    prompt: "soft white daytime cumulus cloud, cool pale blue shadow, subtle sunlit rim, fluffy readable silhouette, transparent background, pixel art"
+    size: 64
+
+  - id: atmosphere.cloud.wisp.day
+    tool: map_object
+    prompt: "thin pale daytime cloud wisp, cool blue underside, long airy horizontal shape, transparent background, pixel art"
+    size: 64
+
+  - id: atmosphere.cloud.overcast-bank
+    tool: map_object
+    prompt: "broad overcast gray-blue cloud bank, layered storm cloud silhouette, soft underside shadow, transparent background, pixel art"
+    size: 96
+
+  - id: atmosphere.moon.crescent.cool
+    tool: map_object
+    prompt: "cool silver crescent moon, pale blue rim light, dark navy inner shadow, no face, transparent background, pixel art"
     size: 64
 
   # optional — include for polish pass
