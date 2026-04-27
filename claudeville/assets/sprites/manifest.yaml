@@ -740,17 +740,17 @@ atmosphere:
 bridges:
   - id: bridge.landmark.elderwood.ns
     tool: map_object
-    prompt: "epic fantasy RPG long isometric bridge, same direction as a left-to-right screen bridge, deck runs horizontally across the image with slight isometric diagonal, mossy elderwood timber planks, grey stone abutments at both ends, root-wrapped rail posts, green rune lamps, transparent background only, isolated bridge sprite, no water, no ground tile, no square base, empty transparent corners"
-    width: 160
-    height: 128
-    anchor: [80, 80]
+    prompt: "single cohesive epic fantasy RPG bridge crossing asset, wide wooden onramp on the left, raised central bridge deck, wide wooden offramp on the right, all one continuous structure in the same style, left-to-right screen direction with slight isometric diagonal, mossy elderwood timber planks, carved grey stone abutments and side rails, green rune lantern posts, broad enough for two characters to pass, transparent background only, isolated sprite, no water, no ground tile, no square base, empty transparent corners"
+    width: 256
+    height: 192
+    anchor: [128, 112]
 
   - id: bridge.landmark.civic.ns
     tool: map_object
-    prompt: "epic fantasy RPG long isometric town bridge, same direction as a left-to-right screen bridge, deck runs horizontally across the image with slight isometric diagonal, warm timber plank deck, carved grey civic stone abutments at both ends, brass rail posts, rope rails, small blue lantern runes and subtle red pennants, transparent background only, isolated bridge sprite, no water, no ground tile, no square base, empty transparent corners"
-    width: 160
-    height: 128
-    anchor: [80, 80]
+    prompt: "single cohesive epic fantasy RPG town bridge crossing asset, wide wooden onramp on the left, raised central bridge deck, wide wooden offramp on the right, all one continuous structure in the same style, left-to-right screen direction with slight isometric diagonal, warm timber planks, carved civic stone abutments, brass rail posts, blue rune lanterns and subtle red pennants, broad enough for two characters to pass, transparent background only, isolated sprite, no water, no ground tile, no square base, empty transparent corners"
+    width: 256
+    height: 192
+    anchor: [128, 112]
 
   - id: bridge.ew
     tool: isometric_tile
