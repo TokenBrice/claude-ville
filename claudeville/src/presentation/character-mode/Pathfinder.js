@@ -100,8 +100,13 @@ export class Pathfinder {
         // Fast path: if a tile-step line from `from` to `to` never crosses a blocked tile,
         // skip BFS entirely.
         for (const target of targetCandidates) {
-            if (this._lineWalkable(fx, fy, target.tileX, target.tileY)) {
-                const fastResult = [{ tileX: target.tileX, tileY: target.tileY }];
+            const lineTiles = this._lineWalkableTiles(fx, fy, target.tileX, target.tileY);
+            if (lineTiles) {
+                const fastTiles = lineTiles.slice(1);
+                const crossesBridge = fastTiles.some((t) => bridgeTiles?.has(`${t.tileX},${t.tileY}`));
+                const fastResult = crossesBridge
+                    ? this._lookahead(this._simplify(fastTiles, bridgeTiles), bridgeTiles)
+                    : [{ tileX: target.tileX, tileY: target.tileY }];
                 this._cacheResult(cacheKey, fastResult);
                 return fastResult;
             }
@@ -158,7 +163,7 @@ export class Pathfinder {
 
     _walkableCandidates(tileX, tileY) {
         const candidates = [];
-        if (this.isWalkable(tileX, tileY)) candidates.push({ tileX, tileY });
+        if (this.isWalkable(tileX, tileY)) return [{ tileX, tileY }];
 
         for (let radius = 1; radius <= 5; radius++) {
             for (let dy = -radius; dy <= radius; dy++) {
@@ -174,6 +179,10 @@ export class Pathfinder {
     }
 
     _lineWalkable(x0, y0, x1, y1) {
+        return !!this._lineWalkableTiles(x0, y0, x1, y1);
+    }
+
+    _lineWalkableTiles(x0, y0, x1, y1) {
         const dx = Math.abs(x1 - x0);
         const dy = Math.abs(y1 - y0);
         const sx = x0 < x1 ? 1 : -1;
@@ -181,13 +190,15 @@ export class Pathfinder {
         let err = dx - dy;
         let cx = x0;
         let cy = y0;
+        const tiles = [];
         while (true) {
-            if (!this.isWalkable(cx, cy)) return false;
-            if (cx === x1 && cy === y1) return true;
+            if (!this.isWalkable(cx, cy)) return null;
+            tiles.push({ tileX: cx, tileY: cy });
+            if (cx === x1 && cy === y1) return tiles;
             const e2 = 2 * err;
             if (e2 > -dy && e2 < dx) {
                 // Diagonal step — check both corner tiles to prevent corner-cutting.
-                if (!this.isWalkable(cx + sx, cy) || !this.isWalkable(cx, cy + sy)) return false;
+                if (!this.isWalkable(cx + sx, cy) || !this.isWalkable(cx, cy + sy)) return null;
                 err -= dy; cx += sx;
                 err += dx; cy += sy;
             } else {

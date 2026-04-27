@@ -342,8 +342,7 @@ export class SceneryEngine {
     }
 
     generateBridges() {
-        // Authored crossings only. These are the two intentional river bridges
-        // in the town plan; other water/path overlaps stay non-walkable.
+        // Authored crossings only. Other water/path overlaps stay non-walkable.
         for (const hint of BRIDGE_HINTS) {
             const key = `${hint.tileX},${hint.tileY}`;
             if (!this.waterTiles.has(key)) continue;
@@ -375,15 +374,21 @@ export class SceneryEngine {
         // single-file planks. Only widen over existing water so land, building
         // footprints, and authored shore shapes keep control.
         const crossAxis = orientation === 'EW' ? [0, 1] : [1, 0];
+        const widthRadius = Math.max(0, Math.floor(meta.widthRadius ?? 1));
+        const walkableRadius = Math.max(0, Math.min(widthRadius, Math.floor(meta.walkableRadius ?? widthRadius)));
         for (const [bx, by] of bridgeLine) {
-            for (const direction of [-1, 1]) {
-                const nx = bx + crossAxis[0] * direction;
-                const ny = by + crossAxis[1] * direction;
+            for (let offset = -widthRadius; offset <= widthRadius; offset++) {
+                if (offset === 0) continue;
+                const nx = bx + crossAxis[0] * offset;
+                const ny = by + crossAxis[1] * offset;
                 if (nx < 0 || nx >= MAP_SIZE || ny < 0 || ny >= MAP_SIZE) continue;
                 const key = `${nx},${ny}`;
                 if (this._buildingFootprints.has(key)) continue;
                 if (!this.waterTiles.has(key)) continue;
-                this._addBridgeTile(nx, ny, orientation, meta);
+                this._addBridgeTile(nx, ny, orientation, {
+                    ...meta,
+                    walkable: Math.abs(offset) <= walkableRadius,
+                });
             }
         }
     }
@@ -395,6 +400,7 @@ export class SceneryEngine {
             kind: 'landmark',
             bridgeId: meta.id || null,
             style: meta.style || 'civic',
+            walkable: meta.walkable !== false,
         });
     }
 
@@ -527,7 +533,8 @@ export class SceneryEngine {
                 const key = `${x},${y}`;
                 const idx = y * MAP_SIZE + x;
                 if (this._buildingWalkBlocks.has(key)) continue; // 0
-                if (this.waterTiles.has(key) && !this.bridgeTiles.has(key)) continue; // 0
+                const bridge = this.bridgeTiles.get(key);
+                if (this.waterTiles.has(key) && (!bridge || bridge.walkable === false)) continue; // 0
                 grid[idx] = 1;
             }
         }
