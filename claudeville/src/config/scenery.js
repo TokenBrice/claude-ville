@@ -128,17 +128,21 @@ export const WATER_BASINS = [
 // `orientation` is optional; when omitted the engine derives it from neighbor
 // water tiles.
 export const BRIDGE_HINTS = [
-    { id: 'portal-mine-bridge', tileX: 14, tileY: 25, orientation: 'NS', style: 'elderwood' }, // Portal/Mine bridge across the production river
-    { id: 'command-task-bridge', tileX: 22, tileY: 25, orientation: 'NS', style: 'civic' }, // Command/Tasks bridge into the production row
+    {
+        id: 'central-river-bridge',
+        tileX: 18,
+        tileY: 25,
+        orientation: 'NS',
+        style: 'elderwood',
+        widthRadius: 2,
+        walkableRadius: 0,
+    },
 ];
 
 export const BRIDGE_ACCENT_PROPS = [
-    { bridgeId: 'portal-mine-bridge', id: 'prop.bridgeLanternPost', t: 0.18, side: -1 },
-    { bridgeId: 'portal-mine-bridge', id: 'prop.bridgeLanternPost', t: 0.82, side: 1 },
-    { bridgeId: 'portal-mine-bridge', id: 'prop.bridgeBannerRune', t: 0.50, side: -1 },
-    { bridgeId: 'command-task-bridge', id: 'prop.bridgeLanternPost', t: 0.18, side: 1 },
-    { bridgeId: 'command-task-bridge', id: 'prop.bridgeLanternPost', t: 0.82, side: -1 },
-    { bridgeId: 'command-task-bridge', id: 'prop.bridgeBannerRune', t: 0.50, side: 1 },
+    { bridgeId: 'central-river-bridge', id: 'prop.bridgeLanternPost', t: 0.16, side: -1 },
+    { bridgeId: 'central-river-bridge', id: 'prop.bridgeLanternPost', t: 0.84, side: 1 },
+    { bridgeId: 'central-river-bridge', id: 'prop.bridgeBannerRune', t: 0.50, side: -1 },
 ];
 
 // Small authored Harbor Master causeway. This is intentionally separate from
@@ -157,8 +161,8 @@ export const HARBOR_DOCK_TILES = [
 export const FOREST_FLOOR_REGIONS = [
     { name: 'northwest-elderwood', centerX: 7.5, centerY: 7.5, radiusX: 9.8, radiusY: 7.2, base: '#2d5a2b', accent: '#5c8b3f', strength: 0.90 },
     { name: 'northern-canopy', centerX: 17.5, centerY: 6.2, radiusX: 13.2, radiusY: 6.4, base: '#28562e', accent: '#659644', strength: 1.00 },
-    { name: 'archive-greenwood', centerX: 27.8, centerY: 8.2, radiusX: 9.8, radiusY: 6.6, base: '#2e5835', accent: '#6c9648', strength: 0.80 },
-    { name: 'observatory-grove', centerX: 10.5, centerY: 14.2, radiusX: 6.2, radiusY: 4.8, base: '#315f32', accent: '#729948', strength: 0.68 },
+    { name: 'clock-greenwood', centerX: 27.8, centerY: 8.2, radiusX: 9.8, radiusY: 6.6, base: '#2e5835', accent: '#6c9648', strength: 0.80 },
+    { name: 'archive-grove', centerX: 8.2, centerY: 14.8, radiusX: 6.2, radiusY: 4.8, base: '#315f32', accent: '#729948', strength: 0.68 },
     { name: 'lighthouse-windbreak', centerX: 30.2, centerY: 10.8, radiusX: 5.8, radiusY: 6.2, base: '#315a36', accent: '#73924c', strength: 0.58 },
 ];
 
@@ -260,17 +264,16 @@ export const SHORELINE_VEGETATION = {
 // density with radial falloff.
 export const SCENERY_CLEARINGS = [
     { name: 'elderwood-glade', centerX: 16.8, centerY: 10.5, radius: 3.6, strength: 0.18 },
-    { name: 'archive-skybreak', centerX: 28.4, centerY: 14.0, radius: 5.8, strength: 0.95 },
-    { name: 'observatory-approach', centerX: 11.2, centerY: 16.8, radius: 3.9, strength: 0.24 },
+    { name: 'clock-skybreak', centerX: 27.2, centerY: 14.0, radius: 5.8, strength: 0.95 },
+    { name: 'archive-approach', centerX: 9.0, centerY: 17.0, radius: 4.2, strength: 0.36 },
     { name: 'command-skyline', centerX: 20.4, centerY: 16.0, radius: 4.4, strength: 0.22 },
     { name: 'lighthouse-beacon-skybreak', centerX: 31.0, centerY: 12.6, radius: 3.8, strength: 0.24 },
     { name: 'north-bank-civic', centerX: 20, centerY: 22, radius: 6.4, strength: 0.23 },
-    { name: 'observatory-terrace', centerX: 10, centerY: 19, radius: 4.8, strength: 0.20 },
-    { name: 'archive-terrace', centerX: 28, centerY: 18, radius: 5.2, strength: 0.36 },
+    { name: 'archive-terrace', centerX: 8, centerY: 19, radius: 4.8, strength: 0.26 },
+    { name: 'clock-terrace', centerX: 27, centerY: 18, radius: 5.2, strength: 0.32 },
     { name: 'production-row', centerX: 22, centerY: 29.5, radius: 12.0, strength: 0.21 },
     { name: 'harbor-stage', centerX: 37, centerY: 20.5, radius: 7.5, strength: 0.28 },
-    { name: 'portal-mine-bridge', centerX: 14, centerY: 24, radius: 3.5, strength: 0.24 },
-    { name: 'command-task-bridge', centerX: 22, centerY: 24, radius: 3.6, strength: 0.25 },
+    { name: 'central-river-bridge', centerX: 18, centerY: 24, radius: 5.4, strength: 0.30 },
     { name: 'harbor-mouth', centerX: 32, centerY: 21, radius: 4.0, strength: 0.24 },
 ];
 
