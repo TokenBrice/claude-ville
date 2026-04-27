@@ -447,7 +447,7 @@ export class AgentSprite {
         const variant = this._hashVariant();
         const spriteId = identity.spriteId || `agent.${provider}.base`;
         const paletteKey = identity.paletteKey || provider;
-        const accessory = null;
+        const accessory = identity.effortAccessory ?? null;
         const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}`;
 
         if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
