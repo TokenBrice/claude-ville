@@ -4,7 +4,7 @@ const DEFAULT_CODEX_IDENTITY = Object.freeze({
     modelTier: null,
     label: 'Codex',
     shortLabel: 'Codex',
-    spriteId: 'agent.codex.base',
+    spriteId: 'agent.codex.gpt54',
     paletteKey: 'codex',
     trim: ['#7be3d7', '#55c7f0', '#8ee88e'],
     accent: ['#bff7ee', '#6ee7d8', '#5ad6ff'],
@@ -34,6 +34,22 @@ const EFFORT_FLOOR_RINGS = Object.freeze({
     medium: 'overlay.status.effortMedium',
     high: 'overlay.status.effortHigh',
 });
+
+const CODEX_EFFORT_WEAPONS = Object.freeze({
+    high: 'greatsword',
+    xhigh: 'polearm',
+    max: 'sledgehammer',
+});
+
+function codexEquipment(effortTier) {
+    const effortWeapon = CODEX_EFFORT_WEAPONS[effortTier] || null;
+    return {
+        effortAccessory: null,
+        effortFloorRing: effortWeapon ? null : EFFORT_FLOOR_RINGS[effortTier] || null,
+        effortWeapon,
+        suppressBakedWeapon: !!effortWeapon,
+    };
+}
 
 function normalizeModel(model) {
     return String(model || '')
@@ -115,6 +131,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedModel.includes('gpt-5-3-codex-spark')) {
+        const equipment = codexEquipment(effortTier);
         return {
             family: 'codex',
             modelClass: 'spark',
@@ -122,8 +139,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.3 Codex Spark',
             shortLabel: '5.3 Spark',
             effortTier,
-            effortAccessory: effortTier === 'max' ? EFFORT_ACCESSORIES.xhigh : effortAccessory,
-            effortFloorRing,
+            ...equipment,
             spriteId: 'agent.codex.gpt53spark',
             paletteKey: 'codex',
             trim: ['#f8e36f', '#87f7ff', '#c5ff72'],
@@ -133,6 +149,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedModel.includes('gpt-5-5')) {
+        const equipment = codexEquipment(effortTier);
         return {
             family: 'codex',
             modelClass: 'gpt55',
@@ -140,8 +157,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.5',
             shortLabel: '5.5',
             effortTier,
-            effortAccessory: effortTier === 'max' ? EFFORT_ACCESSORIES.xhigh : effortAccessory,
-            effortFloorRing,
+            ...equipment,
             spriteId: 'agent.codex.gpt55',
             paletteKey: 'codex',
             trim: ['#fff1b8', '#7be3d7', '#f8c45f'],
@@ -151,6 +167,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedModel.includes('gpt-5-4') || normalizedModel.includes('gpt-5.4')) {
+        const equipment = codexEquipment(effortTier);
         return {
             family: 'codex',
             modelClass: 'gpt54',
@@ -158,8 +175,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.4',
             shortLabel: '5.4',
             effortTier,
-            effortAccessory: effortTier === 'max' ? EFFORT_ACCESSORIES.xhigh : effortAccessory,
-            effortFloorRing,
+            ...equipment,
             spriteId: 'agent.codex.gpt54',
             paletteKey: 'codex',
             trim: ['#8bd6ff', '#7be3d7', '#a9b7ff'],
@@ -169,11 +185,11 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
+        const equipment = codexEquipment(effortTier);
         return {
             ...DEFAULT_CODEX_IDENTITY,
             effortTier,
-            effortAccessory: effortTier === 'max' ? EFFORT_ACCESSORIES.xhigh : effortAccessory,
-            effortFloorRing,
+            ...equipment,
         };
     }
 

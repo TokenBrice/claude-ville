@@ -4,7 +4,7 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
-import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES } from './SpriteSheet.js';
+import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
 
 // Hit-test geometry (unchanged from vector version).
@@ -42,6 +42,7 @@ const PROVIDER_TRIM = {
     gemini: '#7fc7ff',
     default: '#f2d36b',
 };
+const PROCESSED_SPRITE_CACHE = new Map();
 
 export class AgentSprite {
     constructor(agent, {
@@ -448,10 +449,13 @@ export class AgentSprite {
         const spriteId = identity.spriteId || `agent.${provider}.base`;
         const paletteKey = identity.paletteKey || provider;
         const accessory = identity.effortAccessory ?? null;
-        const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}`;
+        const equipmentKey = identity.effortWeapon || '_';
+        const cleanupKey = identity.suppressBakedWeapon ? 'clean' : 'raw';
+        const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}|${equipmentKey}|${cleanupKey}`;
 
         if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
-            this.spriteCanvas = this.compositor.spriteFor(spriteId, paletteKey, variant, accessory);
+            const baseCanvas = this.compositor.spriteFor(spriteId, paletteKey, variant, accessory);
+            this.spriteCanvas = this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
             if (this.spriteCanvas) {
                 this.spriteSheet = new SpriteSheet(this.spriteCanvas);
                 this._spriteProfileKey = profileKey;
@@ -493,6 +497,7 @@ export class AgentSprite {
             cell.sx, cell.sy, cell.sw, cell.sh,
             dx, dy, cell.sw, cell.sh
         );
+        this._drawCodexEffortWeapon(ctx, identity, { dx, dy, bounds, cellSize });
 
         // Effort floor ring — always visible, identity-driven (under feet, under selection halo).
         if (this.assets) {
@@ -534,6 +539,96 @@ export class AgentSprite {
             this._drawStatus(ctx, contentTopY);
         }
         this._drawNameTag(ctx);
+    }
+
+    _prepareSpriteCanvas(baseCanvas, identity, cacheKey) {
+        if (!baseCanvas || !identity?.suppressBakedWeapon) return baseCanvas;
+        if (PROCESSED_SPRITE_CACHE.has(cacheKey)) return PROCESSED_SPRITE_CACHE.get(cacheKey);
+
+        const canvas = document.createElement('canvas');
+        canvas.width = baseCanvas.width;
+        canvas.height = baseCanvas.height;
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(baseCanvas, 0, 0);
+        this._clearBakedCodexSidearmPixels(ctx, canvas.width, canvas.height);
+        PROCESSED_SPRITE_CACHE.set(cacheKey, canvas);
+        return canvas;
+    }
+
+    _clearBakedCodexSidearmPixels(ctx, width, height) {
+        const cellSize = Math.round(width / DIRECTIONS.length) || 92;
+        const rows = Math.floor(height / cellSize);
+        if (!Number.isFinite(cellSize) || cellSize <= 0 || rows <= 0) return;
+
+        const image = ctx.getImageData(0, 0, width, height);
+        const data = image.data;
+        const marks = new Uint8Array(width * height);
+        for (let row = 0; row < rows; row++) {
+            for (let col = 0; col < DIRECTIONS.length; col++) {
+                const zones = this._bakedWeaponMaskZones(DIRECTIONS[col], cellSize);
+                for (const zone of zones) {
+                    this._markBakedWeaponPixels(data, marks, width, col * cellSize, row * cellSize, zone);
+                }
+            }
+        }
+
+        const expanded = new Uint8Array(marks.length);
+        for (let y = 1; y < height - 1; y++) {
+            for (let x = 1; x < width - 1; x++) {
+                const idx = y * width + x;
+                if (!marks[idx]) continue;
+                for (let oy = -1; oy <= 1; oy++) {
+                    for (let ox = -1; ox <= 1; ox++) expanded[(y + oy) * width + x + ox] = 1;
+                }
+            }
+        }
+        for (let i = 0; i < expanded.length; i++) {
+            if (!expanded[i]) continue;
+            data[i * 4 + 3] = 0;
+        }
+        ctx.putImageData(image, 0, 0);
+    }
+
+    _bakedWeaponMaskZones(directionKey, cellSize) {
+        const z = (x1, y1, x2, y2) => ({
+            x1: Math.round(x1 * cellSize),
+            y1: Math.round(y1 * cellSize),
+            x2: Math.round(x2 * cellSize),
+            y2: Math.round(y2 * cellSize),
+        });
+        return {
+            s: [z(0.08, 0.46, 0.40, 0.98), z(0.62, 0.46, 0.92, 0.98)],
+            se: [z(0.42, 0.43, 0.96, 0.96)],
+            e: [z(0.46, 0.40, 0.98, 0.90)],
+            ne: [z(0.46, 0.36, 0.98, 0.88)],
+            n: [z(0.08, 0.46, 0.38, 0.96), z(0.62, 0.46, 0.92, 0.96)],
+            nw: [z(0.02, 0.36, 0.54, 0.88)],
+            w: [z(0.02, 0.40, 0.54, 0.90)],
+            sw: [z(0.04, 0.43, 0.58, 0.96)],
+        }[directionKey] || [];
+    }
+
+    _markBakedWeaponPixels(data, marks, width, originX, originY, zone) {
+        const x1 = Math.max(0, originX + zone.x1);
+        const y1 = Math.max(0, originY + zone.y1);
+        const x2 = Math.min(width - 1, originX + zone.x2);
+        const y2 = Math.min(Math.floor(data.length / 4 / width) - 1, originY + zone.y2);
+        for (let y = y1; y <= y2; y++) {
+            for (let x = x1; x <= x2; x++) {
+                const p = (y * width + x) * 4;
+                const a = data[p + 3];
+                if (a < 16) continue;
+                const r = data[p];
+                const g = data[p + 1];
+                const b = data[p + 2];
+                const brightBlade = r > 168 && g > 168 && b > 152;
+                const cyanBlade = g > 150 && b > 150 && Math.abs(g - b) < 56 && r < 170;
+                const greyMetal = r > 78 && g > 78 && b > 78 && Math.max(r, g, b) - Math.min(r, g, b) < 42;
+                const goldHilt = r > 150 && g > 95 && g < 190 && b < 95;
+                if (brightBlade || cyanBlade || greyMetal || goldHilt) marks[y * width + x] = 1;
+            }
+        }
     }
 
     _drawGrounding(ctx) {
@@ -741,6 +836,131 @@ export class AgentSprite {
         ctx.lineWidth = 1.4;
         ctx.stroke();
         ctx.restore();
+    }
+
+    _drawCodexEffortWeapon(ctx, identity, frameGeometry) {
+        const weapon = identity?.effortWeapon;
+        if (!weapon) return;
+
+        const { dx, dy, bounds, cellSize } = frameGeometry;
+        const directionKey = DIRECTIONS[this.direction] || 's';
+        const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
+        const centerX = dx + (bounds.minX + bounds.maxX) / 2;
+        const torsoY = dy + bounds.minY + (bounds.maxY - bounds.minY) * 0.56;
+        const facingLeft = directionKey.includes('w') || directionKey === 'n';
+        const offsets = {
+            s: [contentWidth * 0.18, 2],
+            se: [contentWidth * 0.24, 0],
+            e: [contentWidth * 0.20, -2],
+            ne: [contentWidth * 0.14, -8],
+            n: [contentWidth * -0.14, -8],
+            nw: [contentWidth * -0.20, -8],
+            w: [contentWidth * -0.18, -2],
+            sw: [contentWidth * -0.24, 0],
+        };
+        const [offsetX, offsetY] = offsets[directionKey] || offsets.s;
+        const handX = Math.round(centerX + offsetX);
+        const handY = Math.round(torsoY + offsetY);
+        const lean = this._weaponLeanForDirection(directionKey);
+
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.translate(handX, handY);
+        ctx.scale(facingLeft ? -1 : 1, 1);
+        ctx.rotate(lean);
+        if (weapon === 'dagger') this._drawCodexDagger(ctx);
+        else if (weapon === 'swordShield') this._drawCodexSwordAndShield(ctx);
+        else if (weapon === 'greatsword') this._drawCodexGreatsword(ctx);
+        else if (weapon === 'polearm') this._drawCodexPolearm(ctx);
+        else if (weapon === 'sledgehammer') this._drawCodexSledgehammer(ctx);
+        else {
+            ctx.restore();
+            return;
+        }
+        this._drawWeaponGripHand(ctx);
+        ctx.restore();
+    }
+
+    _weaponLeanForDirection(directionKey) {
+        if (directionKey === 'e' || directionKey === 'w') return -0.18;
+        if (directionKey === 'ne' || directionKey === 'nw') return -0.34;
+        if (directionKey === 'n') return -0.42;
+        if (directionKey === 'se' || directionKey === 'sw') return 0.04;
+        return 0.14;
+    }
+
+    _drawCodexDagger(ctx) {
+        this._drawWeaponStroke(ctx, '#102f3a', 4, [[0, 1], [7, -13]]);
+        this._drawWeaponStroke(ctx, '#e9fdff', 2, [[1, 0], [7, -13]]);
+        this._drawWeaponStroke(ctx, '#6ee7d8', 1, [[3, -1], [9, -11]]);
+        this._drawWeaponStroke(ctx, '#f8c45f', 3, [[-5, 1], [5, 4]]);
+    }
+
+    _drawCodexSwordAndShield(ctx) {
+        this._drawWeaponStroke(ctx, '#102f3a', 4, [[0, 2], [10, -22]]);
+        this._drawWeaponStroke(ctx, '#dffcff', 2, [[1, 0], [10, -22]]);
+        this._drawWeaponStroke(ctx, '#55c7f0', 1, [[5, -2], [12, -19]]);
+        this._drawWeaponStroke(ctx, '#f8c45f', 3, [[-7, 1], [6, 5]]);
+
+        ctx.fillStyle = '#102f3a';
+        ctx.fillRect(-17, -5, 12, 13);
+        ctx.fillStyle = '#8bd6ff';
+        ctx.fillRect(-16, -4, 10, 11);
+        ctx.fillStyle = '#116466';
+        ctx.fillRect(-14, -2, 6, 7);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-12, 0, 2, 3);
+    }
+
+    _drawCodexGreatsword(ctx) {
+        this._drawWeaponStroke(ctx, '#0b2430', 7, [[0, 5], [22, -42]]);
+        this._drawWeaponStroke(ctx, '#f0ffff', 4, [[1, 2], [22, -42]]);
+        this._drawWeaponStroke(ctx, '#7be3d7', 2, [[6, 0], [25, -37]]);
+        this._drawWeaponStroke(ctx, '#f8c45f', 5, [[-11, 1], [8, 7]]);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-4, 4, 6, 8);
+    }
+
+    _drawCodexPolearm(ctx) {
+        this._drawWeaponStroke(ctx, '#0b2430', 6, [[-3, 20], [22, -40]]);
+        this._drawWeaponStroke(ctx, '#b47a35', 3, [[-3, 20], [22, -40]]);
+        this._drawWeaponStroke(ctx, '#e9fdff', 5, [[20, -40], [34, -27]]);
+        this._drawWeaponStroke(ctx, '#55c7f0', 2, [[23, -36], [35, -26]]);
+        this._drawWeaponStroke(ctx, '#f8c45f', 4, [[14, -29], [27, -24]]);
+    }
+
+    _drawCodexSledgehammer(ctx) {
+        this._drawWeaponStroke(ctx, '#0b2430', 7, [[-3, 19], [21, -34]]);
+        this._drawWeaponStroke(ctx, '#b47a35', 4, [[-3, 19], [21, -34]]);
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(13, -43, 28, 16);
+        ctx.fillStyle = '#7be3d7';
+        ctx.fillRect(16, -40, 22, 10);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(21, -37, 12, 5);
+    }
+
+    _drawWeaponGripHand(ctx) {
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(-4, -2, 8, 7);
+        ctx.fillStyle = '#7be3d7';
+        ctx.fillRect(-3, -1, 6, 5);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-1, 0, 3, 3);
+    }
+
+    _drawWeaponStroke(ctx, color, width, points) {
+        if (!points.length) return;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = width;
+        ctx.lineCap = 'square';
+        ctx.lineJoin = 'miter';
+        ctx.beginPath();
+        ctx.moveTo(Math.round(points[0][0]), Math.round(points[0][1]));
+        for (let i = 1; i < points.length; i++) {
+            ctx.lineTo(Math.round(points[i][0]), Math.round(points[i][1]));
+        }
+        ctx.stroke();
     }
 
     // --- Variant and accessory helpers (used by draw to select sprite) ---
