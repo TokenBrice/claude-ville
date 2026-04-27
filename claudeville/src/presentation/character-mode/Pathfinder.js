@@ -50,22 +50,23 @@ export class Pathfinder {
             }
         }
 
-        // BFS.
+        // BFS — index-pointer queue (O(n)) and integer target set (no string allocation).
         const N = MAP_SIZE;
         const visited = new Uint8Array(N * N);
         const parent = new Int32Array(N * N).fill(-1);
-        const targetSet = new Set(targetCandidates.map(({ tileX, tileY }) => `${tileX},${tileY}`));
+        const targetSet = new Set(targetCandidates.map(({ tileX, tileY }) => tileY * N + tileX));
         const queue = [fy * N + fx];
+        let head = 0;
         visited[fy * N + fx] = 1;
         let foundIdx = -1;
-        while (queue.length) {
-            const cur = queue.shift();
-            const cx = cur % N;
-            const cy = (cur - cx) / N;
-            if (targetSet.has(`${cx},${cy}`)) {
+        while (head < queue.length) {
+            const cur = queue[head++];
+            if (targetSet.has(cur)) {
                 foundIdx = cur;
                 break;
             }
+            const cx = cur % N;
+            const cy = (cur - cx) / N;
             for (const [dx, dy] of DIRS) {
                 const nx = cx + dx;
                 const ny = cy + dy;
@@ -78,7 +79,10 @@ export class Pathfinder {
                 queue.push(idx);
             }
         }
-        if (foundIdx === -1) return [];
+        if (foundIdx === -1) {
+            console.warn('[Pathfinder] no path from', fx, fy, 'to nearest of', targetCandidates.length, 'candidates; closest:', JSON.stringify(targetCandidates[0]));
+            return [];
+        }
 
         // Reconstruct path from to -> from.
         const tiles = [];
