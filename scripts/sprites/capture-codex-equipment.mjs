@@ -40,7 +40,7 @@ const captureIndividual = flags.has('individual');
 const viewport = { width: 1440, height: 1000 };
 
 const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
-const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
+const EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh'];
 const POSES = [
   { key: 'idle0', label: 'idle 0', moving: false, motionScale: 0, frame: 0 },
   { key: 'walk0', label: 'walk 0', moving: true, motionScale: 1, frame: 0 },

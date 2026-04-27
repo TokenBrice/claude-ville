@@ -66,7 +66,7 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     codex: 'wrench',
     spark: 'multitool',
     gpt54: 'wrench',
-    gpt55: 'swordShield',
+    gpt55: 'sword',
 });
 
 export class AgentSprite {
@@ -976,9 +976,18 @@ export class AgentSprite {
 
         const directionKey = DIRECTIONS[this.direction] || 's';
         const geometry = this._codexWeaponGeometry(frameGeometry, directionKey);
+        const heavyArmor = equipment === 'greatsword' || equipment === 'warlord';
+        const warlord = equipment === 'warlord';
 
-        if (equipment === 'wrench' && this._weaponBackCarryDirection(directionKey)) {
-            if (layer === 'back') {
+        if (layer === 'back') {
+            if (heavyArmor) {
+                this._drawGearAt(ctx, geometry.torso, geometry.drawScale, () => {
+                    this._drawCodexCape(ctx, warlord, directionKey);
+                    if (warlord) this._drawCodexBackArsenal(ctx, directionKey);
+                });
+            }
+
+            if (equipment === 'wrench' && this._weaponBackCarryDirection(directionKey)) {
                 this._drawWeaponAt(ctx, geometry.backCarry, geometry.drawScale, () => this._drawCodexBackWrench(ctx));
             }
             return;
@@ -986,9 +995,19 @@ export class AgentSprite {
 
         if (layer !== 'front') return;
 
+        if (heavyArmor) {
+            this._drawGearAt(ctx, geometry.torso, geometry.drawScale, () => this._drawCodexHeavyArmor(ctx, warlord, directionKey));
+            this._drawGearAt(ctx, geometry.head, geometry.drawScale, () => this._drawCodexHeavyHelmet(ctx, warlord, directionKey));
+        }
+
         if (equipment === 'multitool') {
             this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
                 this._drawCodexMultitool(ctx);
+                this._drawWeaponGripHand(ctx);
+            });
+        } else if (equipment === 'sword') {
+            this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
+                this._drawCodexRuneblade(ctx);
                 this._drawWeaponGripHand(ctx);
             });
         } else if (equipment === 'swordShield') {
@@ -996,6 +1015,16 @@ export class AgentSprite {
             this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
                 this._drawCodexRuneblade(ctx);
                 this._drawWeaponGripHand(ctx);
+            });
+        } else if (equipment === 'greatsword') {
+            this._drawWeaponAt(ctx, geometry.twoHanded, geometry.drawScale, () => {
+                this._drawCodexGreatsword(ctx);
+                this._drawWeaponGripHands(ctx);
+            });
+        } else if (equipment === 'warlord') {
+            this._drawWeaponAt(ctx, geometry.twoHanded, geometry.drawScale, () => {
+                this._drawCodexGreatsword(ctx, true);
+                this._drawWeaponGripHands(ctx);
             });
         } else if (equipment === 'wrench') {
             this._drawWeaponAt(ctx, geometry.shoulderRest, geometry.drawScale, () => {
@@ -1029,6 +1058,7 @@ export class AgentSprite {
         const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
         const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
         const centerX = dx + (bounds.minX + bounds.maxX) * drawScale / 2;
+        const headY = dy + (bounds.minY + contentHeight * 0.19) * drawScale;
         const shoulderY = dy + (bounds.minY + contentHeight * 0.36) * drawScale;
         const torsoY = dy + (bounds.minY + contentHeight * 0.56) * drawScale;
         const bodyWidth = Math.max(22, Math.min(42, contentWidth));
@@ -1044,6 +1074,13 @@ export class AgentSprite {
             angle: this._heldWeaponLeanForDirection(directionKey),
             scale: 0.96,
         };
+        const twoHanded = {
+            x: centerX + sideSign * bodyWidth * 0.13 * drawScale,
+            y: torsoY + (handYOffset - 2) * drawScale,
+            flipX: sideSign < 0,
+            angle: this._greatswordLeanForDirection(directionKey),
+            scale: 1.06,
+        };
         const shoulderRest = {
             x: centerX + sideSign * bodyWidth * 0.30 * drawScale,
             y: shoulderY,
@@ -1051,12 +1088,21 @@ export class AgentSprite {
             angle: this._wrenchShoulderLeanForDirection(directionKey),
             scale: 0.94,
         };
+        const shieldYOffset = {
+            s: -8, se: -10, e: -11, ne: -14,
+            n: -14, nw: -14, w: -11, sw: -10,
+        }[directionKey] ?? -8;
+        const shieldOutset = (directionKey === 'e' || directionKey === 'w')
+            ? 0.56
+            : ['ne', 'nw', 'se', 'sw'].includes(directionKey)
+                ? 0.58
+                : 0.62;
         const shield = {
-            x: centerX - sideSign * bodyWidth * 0.34 * drawScale,
-            y: torsoY + (directionKey === 'n' ? -3 : 5) * drawScale,
+            x: centerX - sideSign * bodyWidth * shieldOutset * drawScale,
+            y: torsoY + shieldYOffset * drawScale,
             flipX: sideSign < 0,
-            angle: sideSign * (directionKey === 'e' || directionKey === 'w' ? -0.08 : 0.04),
-            scale: directionKey === 'e' || directionKey === 'w' ? 0.86 : 0.94,
+            angle: sideSign * (directionKey === 'e' || directionKey === 'w' ? -0.16 : -0.06),
+            scale: directionKey === 'e' || directionKey === 'w' ? 0.80 : 0.88,
         };
         const backCarry = {
             x: centerX + sideSign * bodyWidth * 0.10 * drawScale,
@@ -1065,9 +1111,26 @@ export class AgentSprite {
             angle: directionKey === 'n' ? -0.06 : 0.04,
             scale: 0.96,
         };
+        const torso = {
+            x: centerX,
+            y: shoulderY + 2 * drawScale,
+            flipX: false,
+            angle: 0,
+            scale: 1,
+        };
+        const head = {
+            x: centerX,
+            y: headY,
+            flipX: false,
+            angle: 0,
+            scale: 1,
+        };
         return {
             drawScale,
+            head,
+            torso,
             rightHand,
+            twoHanded,
             shoulderRest,
             shield,
             backCarry,
@@ -1076,6 +1139,17 @@ export class AgentSprite {
     }
 
     _drawWeaponAt(ctx, pose, drawScale, drawFn) {
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.translate(Math.round(pose.x), Math.round(pose.y));
+        ctx.scale(pose.flipX ? -1 : 1, 1);
+        ctx.scale(drawScale * (pose.scale || 1), drawScale * (pose.scale || 1));
+        ctx.rotate(pose.angle || 0);
+        drawFn();
+        ctx.restore();
+    }
+
+    _drawGearAt(ctx, pose, drawScale, drawFn) {
         ctx.save();
         ctx.imageSmoothingEnabled = false;
         ctx.translate(Math.round(pose.x), Math.round(pose.y));
@@ -1103,6 +1177,14 @@ export class AgentSprite {
         if (directionKey === 'se' || directionKey === 'sw') return -0.20;
         if (directionKey === 's') return -0.05;
         return -0.30;
+    }
+
+    _greatswordLeanForDirection(directionKey) {
+        if (directionKey === 'e' || directionKey === 'w') return -0.24;
+        if (directionKey === 'ne' || directionKey === 'nw') return -0.42;
+        if (directionKey === 'n') return -0.46;
+        if (directionKey === 'se' || directionKey === 'sw') return -0.08;
+        return 0.02;
     }
 
     _drawCodexMultitool(ctx) {
@@ -1145,24 +1227,229 @@ export class AgentSprite {
         ctx.fillRect(-4, 15, 8, 3);
     }
 
-    _drawCodexShield(ctx, slim = false) {
+    _drawCodexGreatsword(ctx, ornate = false) {
+        this._drawTaperedBlade(ctx, 0, 2, 14, ornate ? -54 : -48, ornate ? 6.6 : 5.7, 0.9);
+        ctx.strokeStyle = ornate ? '#bff7ee' : '#7be3d7';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(2, -4);
+        ctx.lineTo(12, ornate ? -43 : -38);
+        ctx.stroke();
+        if (ornate) {
+            ctx.fillStyle = '#7be3d7';
+            ctx.fillRect(7, -34, 3, 3);
+            ctx.fillRect(10, -24, 2, 2);
+        }
+        this._drawWeaponStroke(ctx, '#0b2430', 6, [[-11, 7], [11, 10]]);
+        this._drawWeaponStroke(ctx, '#f8c45f', 4, [[-11, 7], [11, 10]]);
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(-3, 8, 7, 19);
+        ctx.fillStyle = '#8a5a2a';
+        ctx.fillRect(-2, 9, 5, 17);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-5, 25, 11, 4);
+        if (ornate) {
+            ctx.fillStyle = '#fff1b8';
+            ctx.fillRect(-1, 11, 3, 12);
+        }
+    }
+
+    _drawCodexShield(ctx, slim = false, ornate = false) {
         const outline = slim
-            ? [[-6, -14], [8, -10], [7, 7], [1, 16], [-6, 8]]
-            : [[-12, -15], [11, -11], [9, 8], [0, 17], [-10, 8]];
+            ? [[-7, -15], [9, -11], [8, 8], [1, 18], [-7, 9]]
+            : [[-13, -17], [12, -12], [10, 9], [0, 19], [-11, 9]];
         const face = slim
-            ? [[-4, -12], [6, -8], [5, 6], [1, 13], [-4, 6]]
-            : [[-9, -12], [8, -9], [7, 6], [0, 14], [-8, 6]];
+            ? [[-5, -13], [7, -9], [6, 7], [1, 15], [-5, 7]]
+            : [[-10, -14], [9, -10], [8, 7], [0, 16], [-9, 7]];
         ctx.fillStyle = '#0b2430';
         this._fillWeaponPolygon(ctx, outline);
-        ctx.fillStyle = '#7f8f9b';
+        ctx.fillStyle = ornate ? '#a6b2b8' : '#7f8f9b';
         this._fillWeaponPolygon(ctx, face);
-        ctx.fillStyle = '#214b5a';
+        ctx.fillStyle = ornate ? '#2e5360' : '#214b5a';
         this._fillWeaponPolygon(ctx, face.map(([x, y]) => [x + (slim ? 1 : 2), y + 2]));
         ctx.fillStyle = '#f8c45f';
         ctx.fillRect(slim ? 0 : -1, -7, 3, 12);
         ctx.fillRect(slim ? -3 : -5, -2, slim ? 9 : 12, 3);
+        if (ornate) {
+            ctx.fillStyle = '#7be3d7';
+            ctx.fillRect(slim ? 1 : 0, -11, 2, 4);
+            ctx.fillRect(slim ? 1 : 0, 7, 2, 3);
+            ctx.fillStyle = '#fff1b8';
+            ctx.fillRect(slim ? -4 : -6, -1, slim ? 11 : 14, 1);
+        }
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(slim ? 3 : 5, -5, slim ? 5 : 6, 9);
+        ctx.fillStyle = '#7be3d7';
+        ctx.fillRect(slim ? 4 : 6, -4, slim ? 3 : 4, 7);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(slim ? 3 : 5, -1, slim ? 6 : 8, 2);
         ctx.fillStyle = 'rgba(223, 252, 255, 0.75)';
         ctx.fillRect(slim ? -3 : -7, -10, slim ? 3 : 4, 2);
+    }
+
+    _drawCodexCape(ctx, majestic = false, directionKey = 's') {
+        const sideBias = ['e', 'ne', 'se'].includes(directionKey)
+            ? -3
+            : ['w', 'nw', 'sw'].includes(directionKey)
+                ? 3
+                : 0;
+        const topHalf = majestic ? 22 : 17;
+        const bottomHalf = majestic ? 25 : 19;
+        const length = majestic ? 56 : 46;
+        const lift = directionKey === 'n' ? -4 : 0;
+        const cape = [
+            [-topHalf + sideBias, -3 + lift],
+            [topHalf + sideBias, -3 + lift],
+            [bottomHalf + sideBias + 5, length],
+            [0 + sideBias, length + (majestic ? 8 : 4)],
+            [-bottomHalf + sideBias - 5, length],
+        ];
+        ctx.fillStyle = '#0b1118';
+        this._fillWeaponPolygon(ctx, cape.map(([x, y]) => [x, y + 2]));
+        ctx.fillStyle = majestic ? '#3e183f' : '#26364c';
+        this._fillWeaponPolygon(ctx, cape);
+        ctx.fillStyle = majestic ? '#64305f' : '#38536b';
+        this._fillWeaponPolygon(ctx, [
+            [-7 + sideBias, 0 + lift],
+            [topHalf - 2 + sideBias, 0 + lift],
+            [bottomHalf - 5 + sideBias, length - 2],
+            [1 + sideBias, length + (majestic ? 5 : 2)],
+        ]);
+        ctx.strokeStyle = majestic ? '#f8c45f' : '#7be3d7';
+        ctx.lineWidth = majestic ? 2 : 1;
+        ctx.beginPath();
+        ctx.moveTo(-topHalf + sideBias, -1 + lift);
+        ctx.lineTo(-bottomHalf + sideBias - 3, length - 1);
+        ctx.moveTo(topHalf + sideBias, -1 + lift);
+        ctx.lineTo(bottomHalf + sideBias + 3, length - 1);
+        ctx.stroke();
+        ctx.strokeStyle = 'rgba(255, 241, 184, 0.62)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(sideBias, 4 + lift);
+        ctx.lineTo(sideBias - 4, length - 6);
+        ctx.moveTo(sideBias + 10, 7 + lift);
+        ctx.lineTo(sideBias + 7, length - 13);
+        ctx.stroke();
+    }
+
+    _drawCodexHeavyArmor(ctx, warlord = false, directionKey = 's') {
+        const sideView = directionKey === 'e' || directionKey === 'w';
+        const shoulderW = warlord ? 18 : 14;
+        const torsoW = sideView ? 14 : (warlord ? 22 : 18);
+        const armorTop = -4;
+        ctx.fillStyle = '#081218';
+        ctx.fillRect(-torsoW / 2 - 3, armorTop - 1, torsoW + 6, 32);
+        ctx.fillStyle = warlord ? '#233340' : '#263a43';
+        this._fillWeaponPolygon(ctx, [
+            [-torsoW / 2, armorTop],
+            [torsoW / 2, armorTop],
+            [torsoW / 2 - 3, 26],
+            [0, 32],
+            [-torsoW / 2 + 3, 26],
+        ]);
+        ctx.fillStyle = warlord ? '#526878' : '#415862';
+        this._fillWeaponPolygon(ctx, [
+            [-torsoW / 2 + 3, 1],
+            [torsoW / 2 - 2, 0],
+            [torsoW / 2 - 5, 13],
+            [0, 18],
+            [-torsoW / 2 + 4, 13],
+        ]);
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(-torsoW / 2 - 2, 15, torsoW + 4, 3);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-torsoW / 2 + 1, 16, torsoW - 2, 1);
+        ctx.fillRect(-2, 1, 4, 16);
+        ctx.fillStyle = '#7be3d7';
+        ctx.fillRect(-2, 7, 4, 4);
+
+        const pauldronY = warlord ? -3 : 0;
+        ctx.fillStyle = '#071015';
+        ctx.beginPath();
+        ctx.ellipse(-torsoW / 2 - 5, pauldronY + 2, shoulderW, warlord ? 10 : 8, -0.18, 0, Math.PI * 2);
+        ctx.ellipse(torsoW / 2 + 5, pauldronY + 2, shoulderW, warlord ? 10 : 8, 0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = warlord ? '#657682' : '#4d626b';
+        ctx.beginPath();
+        ctx.ellipse(-torsoW / 2 - 5, pauldronY + 1, shoulderW - 2, warlord ? 8 : 6, -0.18, 0, Math.PI * 2);
+        ctx.ellipse(torsoW / 2 + 5, pauldronY + 1, shoulderW - 2, warlord ? 8 : 6, 0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-torsoW / 2 - shoulderW + 4, pauldronY, shoulderW - 4, 2);
+        ctx.fillRect(torsoW / 2, pauldronY, shoulderW - 4, 2);
+        if (warlord) {
+            ctx.fillStyle = '#fff1b8';
+            ctx.fillRect(-torsoW / 2 - 17, pauldronY - 3, 8, 2);
+            ctx.fillRect(torsoW / 2 + 9, pauldronY - 3, 8, 2);
+            ctx.fillStyle = '#7be3d7';
+            ctx.fillRect(-torsoW / 2 - 9, 8, 2, 2);
+            ctx.fillRect(torsoW / 2 + 7, 8, 2, 2);
+        }
+    }
+
+    _drawCodexHeavyHelmet(ctx, warlord = false, directionKey = 's') {
+        const visorHidden = directionKey === 'n' || directionKey === 'nw' || directionKey === 'ne';
+        ctx.fillStyle = '#071015';
+        this._fillWeaponPolygon(ctx, [
+            [-12, -7],
+            [-9, -14],
+            [0, -18],
+            [9, -14],
+            [12, -7],
+            [9, 7],
+            [-9, 7],
+        ]);
+        ctx.fillStyle = warlord ? '#61717b' : '#4b6068';
+        this._fillWeaponPolygon(ctx, [
+            [-9, -7],
+            [-7, -12],
+            [0, -15],
+            [7, -12],
+            [9, -7],
+            [7, 5],
+            [-7, 5],
+        ]);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-8, -7, 16, 2);
+        ctx.fillRect(-1, -14, 3, 20);
+        if (!visorHidden) {
+            ctx.fillStyle = '#091015';
+            ctx.fillRect(-6, -4, 12, 4);
+            ctx.fillStyle = '#7be3d7';
+            ctx.fillRect(-5, -3, 10, 1);
+        }
+        ctx.fillStyle = '#26343c';
+        ctx.fillRect(-10, -2, 3, 10);
+        ctx.fillRect(7, -2, 3, 10);
+        if (warlord) {
+            ctx.fillStyle = '#0b1118';
+            this._fillWeaponPolygon(ctx, [[-5, -15], [0, -26], [5, -15]]);
+            ctx.fillStyle = '#f8c45f';
+            this._fillWeaponPolygon(ctx, [[-3, -14], [0, -22], [3, -14]]);
+            ctx.fillStyle = '#7be3d7';
+            ctx.fillRect(-1, -19, 3, 4);
+            ctx.fillStyle = '#fff1b8';
+            ctx.fillRect(-12, -10, 4, 2);
+            ctx.fillRect(8, -10, 4, 2);
+        }
+    }
+
+    _drawCodexBackArsenal(ctx, directionKey = 's') {
+        const lean = directionKey === 'e' || directionKey === 'ne' || directionKey === 'se' ? 2
+            : directionKey === 'w' || directionKey === 'nw' || directionKey === 'sw' ? -2
+                : 0;
+        this._drawWeaponStroke(ctx, '#081015', 5, [[-22 + lean, 36], [-5 + lean, -18]]);
+        this._drawWeaponStroke(ctx, '#7f8f9b', 2, [[-22 + lean, 36], [-5 + lean, -18]]);
+        this._drawTaperedBlade(ctx, -5 + lean, -16, -2 + lean, -33, 3.2, 0.6);
+        this._drawWeaponStroke(ctx, '#081015', 5, [[23 + lean, 37], [6 + lean, -15]]);
+        this._drawWeaponStroke(ctx, '#8a5a2a', 2, [[23 + lean, 37], [6 + lean, -15]]);
+        ctx.fillStyle = '#081015';
+        ctx.fillRect(2 + lean, -24, 12, 8);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(4 + lean, -22, 8, 4);
+        ctx.fillStyle = '#7be3d7';
+        ctx.fillRect(7 + lean, -21, 2, 2);
     }
 
     _drawCodexShoulderWrench(ctx) {
@@ -1204,6 +1491,18 @@ export class AgentSprite {
         ctx.fillRect(-3, -1, 6, 5);
         ctx.fillStyle = '#f8c45f';
         ctx.fillRect(-1, 0, 3, 3);
+    }
+
+    _drawWeaponGripHands(ctx) {
+        ctx.fillStyle = '#0b2430';
+        ctx.fillRect(-5, -2, 10, 6);
+        ctx.fillRect(-5, 9, 10, 6);
+        ctx.fillStyle = '#7be3d7';
+        ctx.fillRect(-4, -1, 8, 4);
+        ctx.fillRect(-4, 10, 8, 4);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-1, 0, 3, 3);
+        ctx.fillRect(-1, 11, 3, 3);
     }
 
     _drawWeaponStroke(ctx, color, width, points) {

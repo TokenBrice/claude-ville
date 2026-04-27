@@ -39,7 +39,15 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     codex: 'wrench',
     spark: 'multitool',
     gpt54: 'wrench',
-    gpt55: 'swordShield',
+    gpt55: 'sword',
+});
+
+const CODEX_GPT55_EQUIPMENT_BY_EFFORT = Object.freeze({
+    none: 'sword',
+    low: 'sword',
+    medium: 'sword',
+    high: 'greatsword',
+    xhigh: 'warlord',
 });
 
 const DEFAULT_EFFORT_RENDERING = Object.freeze({
@@ -51,7 +59,9 @@ const DEFAULT_EFFORT_RENDERING = Object.freeze({
 });
 
 function codexEquipment(effortTier, modelClass) {
-    const equipment = CODEX_EQUIPMENT_BY_CLASS[modelClass] || null;
+    const equipment = modelClass === 'gpt55'
+        ? CODEX_GPT55_EQUIPMENT_BY_EFFORT[effortTier || 'none'] || CODEX_EQUIPMENT_BY_CLASS.gpt55
+        : CODEX_EQUIPMENT_BY_CLASS[modelClass] || null;
     return {
         effortAccessory: EFFORT_ACCESSORIES[effortTier] || null,
         effortFloorRing: EFFORT_FLOOR_RINGS[effortTier] || null,
@@ -59,6 +69,10 @@ function codexEquipment(effortTier, modelClass) {
         effortWeapon: equipment,
         suppressBakedWeapon: true,
     };
+}
+
+function normalizeCodexEffortTier(effortTier) {
+    return effortTier === 'max' ? 'xhigh' : effortTier;
 }
 
 function normalizeModel(model) {
@@ -74,6 +88,7 @@ export function normalizeReasoningEffort(effort) {
     if (normalized === 'max' || normalized.includes('maximum')) return 'max';
     if (normalized.includes('xhigh') || normalized.includes('extra')) return 'xhigh';
     if (normalized.includes('high')) return 'high';
+    if (normalized.includes('mid')) return 'medium';
     if (normalized.includes('medium')) return 'medium';
     if (normalized.includes('low')) return 'low';
     return normalized;
@@ -145,14 +160,15 @@ export function getModelVisualIdentity(model, effort, provider = '') {
 
     if (normalizedModel.includes('gpt-5-3-codex-spark')) {
         const modelClass = 'spark';
-        const equipment = codexEquipment(effortTier, modelClass);
+        const codexEffortTier = normalizeCodexEffortTier(effortTier);
+        const equipment = codexEquipment(codexEffortTier, modelClass);
         return {
             family: 'codex',
             modelClass,
             modelTier: 'swift',
             label: 'GPT-5.3 Codex Spark',
             shortLabel: '5.3 Spark',
-            effortTier,
+            effortTier: codexEffortTier,
             ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
             spriteId: 'agent.codex.gpt53spark',
@@ -165,14 +181,15 @@ export function getModelVisualIdentity(model, effort, provider = '') {
 
     if (normalizedModel.includes('gpt-5-5')) {
         const modelClass = 'gpt55';
-        const equipment = codexEquipment(effortTier, modelClass);
+        const codexEffortTier = normalizeCodexEffortTier(effortTier);
+        const equipment = codexEquipment(codexEffortTier, modelClass);
         return {
             family: 'codex',
             modelClass,
             modelTier: 'apex',
             label: 'GPT-5.5',
             shortLabel: '5.5',
-            effortTier,
+            effortTier: codexEffortTier,
             ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
             spriteId: 'agent.codex.gpt55',
@@ -185,14 +202,15 @@ export function getModelVisualIdentity(model, effort, provider = '') {
 
     if (normalizedModel.includes('gpt-5-4') || normalizedModel.includes('gpt-5.4')) {
         const modelClass = 'gpt54';
-        const equipment = codexEquipment(effortTier, modelClass);
+        const codexEffortTier = normalizeCodexEffortTier(effortTier);
+        const equipment = codexEquipment(codexEffortTier, modelClass);
         return {
             family: 'codex',
             modelClass,
             modelTier: 'senior',
             label: 'GPT-5.4',
             shortLabel: '5.4',
-            effortTier,
+            effortTier: codexEffortTier,
             ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
             spriteId: 'agent.codex.gpt54',
@@ -204,10 +222,11 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
-        const equipment = codexEquipment(effortTier, DEFAULT_CODEX_IDENTITY.modelClass);
+        const codexEffortTier = normalizeCodexEffortTier(effortTier);
+        const equipment = codexEquipment(codexEffortTier, DEFAULT_CODEX_IDENTITY.modelClass);
         return {
             ...DEFAULT_CODEX_IDENTITY,
-            effortTier,
+            effortTier: codexEffortTier,
             ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
         };

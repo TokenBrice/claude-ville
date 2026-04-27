@@ -44,7 +44,7 @@ characters:
 
   - id: agent.codex.gpt55
     tool: create_character
-    prompt: "Codex GPT-5.5 techno-paladin captain, navy plate armor with gold trim, peaked captain helm with crest, teal energy core on breastplate, shoulder pauldrons, palms loose at sides fingers visible, sheathed longsword on hip belt visible at rest, commanding upright stance, 8-direction pixel art"
+    prompt: "Codex GPT-5.5 apex techno-paladin base, navy under-armor with gold trim, simple commander helm, teal energy core on breastplate, compact shoulder pauldrons, palms loose at sides fingers visible, no held weapon, no shield, no cape, commanding upright stance, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
