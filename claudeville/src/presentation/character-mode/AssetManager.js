@@ -17,6 +17,9 @@ export class AssetManager {
         this.outlines = new Map();     // id → HTMLCanvasElement (1-px gold edge)
         this._entriesCache = null;
         this.assetVersion = null;
+        // IDs that resolved to the placeholder checker (404 or load error).
+        // has(id) returns false for these so callers can skip drawing them.
+        this.missing = new Set();
     }
 
     async load() {
@@ -66,7 +69,8 @@ export class AssetManager {
         }
         // Standard single-PNG entry.
         const path = this._pathFor(entry);
-        const loadedImg = await this._loadImage(path);
+        const { img: loadedImg, ok } = await this._loadImage(path);
+        if (!ok) this.missing.add(entry.id);
         const img = this._normalizeImageToManifestSize(entry, loadedImg);
         this.bitmaps.set(entry.id, img);
         this.dimensions.set(entry.id, { w: img.width, h: img.height });
@@ -86,7 +90,8 @@ export class AssetManager {
                 if (name === 'base') continue;
                 const layerId = `${entry.id}.${name}`;
                 const layerPath = this._pathFor({ id: layerId, ...layer });
-                const loadedLayerImg = await this._loadImage(layerPath);
+                const { img: loadedLayerImg, ok: layerOk } = await this._loadImage(layerPath);
+                if (!layerOk) this.missing.add(layerId);
                 const layerImg = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedLayerImg);
                 this.bitmaps.set(layerId, layerImg);
                 this.dimensions.set(layerId, { w: layerImg.width, h: layerImg.height });
@@ -107,7 +112,7 @@ export class AssetManager {
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
                 const cellPath = `assets/sprites/buildings/${entry.id}/base-${c}-${r}.png`;
-                const img = await this._loadImage(cellPath);
+                const { img } = await this._loadImage(cellPath);
                 ctx.drawImage(img, c * cellSize, r * cellSize, cellSize, cellSize);
             }
         }
@@ -130,7 +135,8 @@ export class AssetManager {
                 if (name === 'base') continue;
                 const layerId = `${entry.id}.${name}`;
                 const layerPath = `assets/sprites/buildings/${entry.id}/${name}.png`;
-                const loadedImg = await this._loadImage(layerPath);
+                const { img: loadedImg, ok: layerOk } = await this._loadImage(layerPath);
+                if (!layerOk) this.missing.add(layerId);
                 const img = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedImg);
                 this.bitmaps.set(layerId, img);
                 this.dimensions.set(layerId, { w: img.width, h: img.height });
@@ -154,15 +160,17 @@ export class AssetManager {
         return PLACEHOLDER_PATH;
     }
 
+    // Resolves with { img, ok } where ok=false means the real PNG failed and
+    // img is the placeholder checker instead.
     _loadImage(path) {
         return new Promise((resolve) => {
             const img = new Image();
-            img.onload = () => resolve(img);
+            img.onload = () => resolve({ img, ok: true });
             img.onerror = () => {
                 console.warn(`[AssetManager] missing asset: ${path} — using placeholder`);
                 const ph = new Image();
-                ph.onload = () => resolve(ph);
-                ph.onerror = () => resolve(img);   // give up and resolve with the empty image
+                ph.onload = () => resolve({ img: ph, ok: false });
+                ph.onerror = () => resolve({ img, ok: false });   // give up
                 ph.src = this._versionedPath(PLACEHOLDER_PATH);
             };
             img.src = this._versionedPath(path);
@@ -232,6 +240,8 @@ export class AssetManager {
     }
 
     get(id) { return this.bitmaps.get(id); }
+    // Returns true only when the real PNG loaded successfully (not a placeholder).
+    has(id) { return this.bitmaps.has(id) && !this.missing.has(id); }
     getMask(id) { return this.alphaMasks.get(id); }
     getDims(id) { return this.dimensions.get(id); }
     getAnchor(id) { return this.anchors.get(id) ?? [0, 0]; }

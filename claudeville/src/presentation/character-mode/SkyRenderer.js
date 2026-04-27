@@ -22,8 +22,8 @@ const STAR_COUNT = 80;
 const STAR_CEILING_FRAC = 0.58;
 
 const CLOUD_LAYERS = [
-    { id: 'atmosphere.cloud.cumulus', fy: 0.16, parallax: 0.04, driftMul: 0.4, alpha: 0.85, count: 4 },
-    { id: 'atmosphere.cloud.wisp',    fy: 0.30, parallax: 0.08, driftMul: 0.7, alpha: 0.55, count: 5 },
+    { id: 'atmosphere.cloud.cumulus', fy: 0.24, parallax: 0.04, driftMul: 0.4, alpha: 0.55, count: 4 },
+    { id: 'atmosphere.cloud.wisp',    fy: 0.30, parallax: 0.08, driftMul: 0.7, alpha: 0.30, count: 3 },
 ];
 
 const CLOUD_DRIFT_PX_PER_MS = 0.004;
@@ -105,8 +105,8 @@ export class SkyRenderer {
         if (!this.assets) return;
         const camX = camera?.x || 0;
         for (const layer of CLOUD_LAYERS) {
+            if (!this.assets.has(layer.id)) continue;
             const img = this.assets.get(layer.id);
-            if (!img) continue;
             const w = this.assets.getDims(layer.id).w;
             const spacing = canvas.width / layer.count;
             // Tile period is `spacing`, not canvas.width — wrap the offset into
@@ -128,11 +128,17 @@ export class SkyRenderer {
 
     _drawMoon(ctx, canvas) {
         if (!this.assets) return;
+        if (!this.assets.has('atmosphere.moon.crescent')) return;
         const moon = this.assets.get('atmosphere.moon.crescent');
-        if (!moon) return;
-        const w = this.assets.getDims('atmosphere.moon.crescent').w;
-        const x = canvas.width * MOON_FX - w / 2;
-        const y = canvas.height * MOON_FY;
+        const dims = this.assets.getDims('atmosphere.moon.crescent');
+        const x = canvas.width * MOON_FX - dims.w / 2;
+        const y = canvas.height * MOON_FY - dims.h / 2;
         ctx.drawImage(moon, Math.round(x), Math.round(y));
+    }
+
+    dispose() {
+        this.cache = null;
+        this.cacheKey = '';
+        this._cloudOffset = 0;
     }
 }
