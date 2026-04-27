@@ -19,6 +19,8 @@ const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
 // ─── Utilities ─────────────────────────────────────────────
 
 const MAX_HEAD_BYTES = 64 * 1024;
+const MAX_METADATA_BYTES = 512 * 1024;
+const MAX_METADATA_LINES = 24;
 const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const GIT_EVENT_SCAN_LINES = 5000;
@@ -34,6 +36,21 @@ function readHeadLines(filePath, count) {
     const buffer = Buffer.allocUnsafe(bytesToRead);
     const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
     return buffer.toString('utf-8', 0, bytesRead).split('\n').slice(0, count);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function readHeadText(filePath, maxBytes = MAX_METADATA_BYTES) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    if (stat.size === 0) return '';
+
+    const bytesToRead = Math.min(stat.size, maxBytes);
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
+    return buffer.toString('utf-8', 0, bytesRead);
   } finally {
     fs.closeSync(fd);
   }
@@ -94,6 +111,112 @@ function parseJsonLines(lines) {
 
 // ─── Rollout parsing ──────────────────────────────────────
 
+function extractJsonString(text, key) {
+  const match = text.match(new RegExp(`"${key}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`));
+  if (!match) return null;
+  try {
+    return JSON.parse(`"${match[1]}"`);
+  } catch {
+    return match[1];
+  }
+}
+
+function extractSessionMetadataFromText(line) {
+  const metadataPrefix = line.split('"base_instructions"')[0];
+  const agentId = extractJsonString(metadataPrefix, 'id');
+  const agentName = extractJsonString(metadataPrefix, 'agent_nickname');
+  const agentRole = extractJsonString(metadataPrefix, 'agent_role');
+  const parentThreadId = extractJsonString(metadataPrefix, 'parent_thread_id');
+  const model = extractJsonString(metadataPrefix, 'model');
+  const project = extractJsonString(metadataPrefix, 'cwd');
+
+  return {
+    agentId,
+    agentName,
+    agentType: agentRole || null,
+    parentThreadId,
+    model,
+    project,
+  };
+}
+
+function extractTurnMetadataFromPayload(payload) {
+  if (!payload) return { model: null, reasoningEffort: null, project: null };
+  return {
+    model: payload.model || payload.collaboration_mode?.settings?.model || null,
+    reasoningEffort: payload.effort
+      || payload.reasoning_effort
+      || payload.collaboration_mode?.settings?.reasoning_effort
+      || null,
+    project: payload.cwd || null,
+  };
+}
+
+function extractTurnMetadataFromText(line) {
+  const metadataPrefix = line.split('"user_instructions"')[0];
+  return {
+    model: extractJsonString(metadataPrefix, 'model'),
+    reasoningEffort: extractJsonString(metadataPrefix, 'effort') || extractJsonString(metadataPrefix, 'reasoning_effort'),
+    project: extractJsonString(metadataPrefix, 'cwd'),
+  };
+}
+
+function applySessionMetadata(detail, metadata) {
+  if (!metadata) return;
+  if (!detail.agentId && metadata.agentId) detail.agentId = metadata.agentId;
+  if (!detail.agentName && metadata.agentName) detail.agentName = metadata.agentName;
+  if ((detail.agentType === 'main' || !detail.agentType) && metadata.agentType) detail.agentType = metadata.agentType;
+  if (!detail.parentThreadId && metadata.parentThreadId) detail.parentThreadId = metadata.parentThreadId;
+  if (!detail.model && metadata.model) detail.model = metadata.model;
+  if (!detail.project && metadata.project) detail.project = metadata.project;
+}
+
+function applyTurnMetadata(detail, metadata) {
+  if (!metadata) return;
+  if (!detail.model && metadata.model) detail.model = metadata.model;
+  if (!detail.reasoningEffort && metadata.reasoningEffort) detail.reasoningEffort = metadata.reasoningEffort;
+  if (!detail.project && metadata.project) detail.project = metadata.project;
+}
+
+function parseEarlyMetadata(filePath, detail) {
+  let headText = '';
+  try {
+    headText = readHeadText(filePath);
+  } catch {
+    return;
+  }
+
+  const lines = headText.split('\n').slice(0, MAX_METADATA_LINES);
+  for (const line of lines) {
+    if (!line.trim()) continue;
+
+    let entry = null;
+    try { entry = JSON.parse(line); } catch { /* oversized early records may be truncated */ }
+
+    if (entry?.type === 'session_meta' && entry.payload) {
+      const subagent = entry.payload.source?.subagent?.thread_spawn;
+      applySessionMetadata(detail, {
+        agentId: entry.payload.id || null,
+        agentName: entry.payload.agent_nickname || subagent?.agent_nickname || null,
+        agentType: entry.payload.agent_role || subagent?.agent_role || 'main',
+        parentThreadId: subagent?.parent_thread_id || null,
+        model: entry.payload.model || null,
+        project: entry.payload.cwd || null,
+      });
+    } else if (line.includes('"type":"session_meta"') || line.includes('"type": "session_meta"')) {
+      applySessionMetadata(detail, extractSessionMetadataFromText(line));
+    }
+
+    if (entry?.type === 'turn_context') {
+      applyTurnMetadata(detail, extractTurnMetadataFromPayload(entry.payload));
+    } else if (line.includes('"type":"turn_context"') || line.includes('"type": "turn_context"')) {
+      applyTurnMetadata(detail, extractTurnMetadataFromText(line));
+    }
+
+    if (detail.agentId && detail.project && detail.model && detail.reasoningEffort) break;
+  }
+}
+
 /**
  * Extract session metadata/tools/messages from Codex rollout JSONL
  * Actual format: all data is inside entry.payload
@@ -112,21 +235,7 @@ function parseRollout(filePath) {
     lastMessage: null,
   };
 
-  // session_meta is on the first line, so read it first
-  const firstLines = readLines(filePath, { from: 'start', count: 5 });
-  const firstEntries = parseJsonLines(firstLines);
-  for (const entry of firstEntries) {
-    if (entry.type === 'session_meta' && entry.payload) {
-      const subagent = entry.payload.source?.subagent?.thread_spawn;
-      detail.agentId = entry.payload.id || null;
-      detail.agentName = entry.payload.agent_nickname || subagent?.agent_nickname || null;
-      detail.agentType = entry.payload.agent_role || subagent?.agent_role || 'main';
-      detail.parentThreadId = subagent?.parent_thread_id || null;
-      detail.model = entry.payload.model || null;
-      detail.project = entry.payload.cwd || null;
-      break;
-    }
-  }
+  parseEarlyMetadata(filePath, detail);
 
   // Read recent tools/messages from the end of the file
   const lastLines = readLines(filePath, { from: 'end', count: 50 });
@@ -172,12 +281,7 @@ function parseRollout(filePath) {
     }
 
     // If model is missing, try extracting it from turn_context or event_msg
-    if (!detail.model && entry.type === 'turn_context' && payload.model) {
-      detail.model = payload.model;
-    }
-    if (!detail.reasoningEffort && entry.type === 'turn_context') {
-      detail.reasoningEffort = payload.effort || payload.reasoning_effort || payload.collaboration_mode?.settings?.reasoning_effort || null;
-    }
+    if (entry.type === 'turn_context') applyTurnMetadata(detail, extractTurnMetadataFromPayload(payload));
     if (!detail.model && entry.type === 'event_msg' && payload.model) {
       detail.model = payload.model;
     }
