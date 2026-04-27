@@ -27,7 +27,8 @@ const EFFORT_ACCESSORIES = Object.freeze({
     max: 'effortMax',
 });
 
-// Floor rings (anchored at feet). Used for low/medium/high tiers.
+// Floor rings (anchored at feet). Used for low/medium/high tiers when a
+// provider does not replace the tier with readable equipment.
 // Overlay IDs map to overlay.status.effortLow / effortMedium / effortHigh.
 const EFFORT_FLOOR_RINGS = Object.freeze({
     low: 'overlay.status.effortLow',
@@ -36,9 +37,11 @@ const EFFORT_FLOOR_RINGS = Object.freeze({
 });
 
 const CODEX_EFFORT_WEAPONS = Object.freeze({
+    low: 'dagger',
+    medium: 'swordShield',
     high: 'greatsword',
     xhigh: 'polearm',
-    max: 'sledgehammer',
+    max: 'polearm',
 });
 
 function codexEquipment(effortTier) {
