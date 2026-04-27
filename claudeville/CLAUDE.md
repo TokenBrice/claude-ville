@@ -177,6 +177,7 @@ The `style.anchor` field at the top of `manifest.yaml` is concatenated into ever
 The `palettes` block in `manifest.yaml` is mirrored in `claudeville/assets/sprites/palettes.yaml`; keep both in sync if editing either.
 
 For full asset generation steps see `scripts/sprites/generate.md`.
+For pixellab tool selection, parameter enums, animation templates, async lifecycle, and pitfalls, see [`../docs/pixellab-reference.md`](../docs/pixellab-reference.md).
 
 ## Dashboard Mode
 

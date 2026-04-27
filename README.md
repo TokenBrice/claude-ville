@@ -239,6 +239,7 @@ For widget changes, run `npm run widget:build`, then `npm run widget`, and confi
 | `docs/troubleshooting.md` | Operators and agents | Common first-hour failures and diagnosis paths. |
 | `docs/visual-experience-crafting.md` | Visual/UX work | Transferable design method behind the RPG world model. |
 | `scripts/sprites/generate.md` | Sprite work | Manifest-first Pixellab generation and asset validation runbook. |
+| `docs/pixellab-reference.md` | Sprite work | Pixellab tool catalog, parameter enums, animation templates, async lifecycle, and pitfalls. |
 
 ## License
 

@@ -133,6 +133,8 @@ Workflow:
 The `style.anchor` field at the top of `manifest.yaml` is concatenated into every prompt at generation time, locking the visual tone across all assets.
 The `style.assetVersion` field is used as a cache-busting query string by `AssetManager`; bump it when changing sprite PNGs that browsers may cache.
 
+For pixellab tool selection, parameter enums, animation templates, async lifecycle, and pitfalls, see [`docs/pixellab-reference.md`](docs/pixellab-reference.md).
+
 For full asset generation steps see `scripts/sprites/generate.md`.
 
 ## Validation Checklist

@@ -2,6 +2,8 @@
 
 This runbook covers the current manifest-first sprite workflow for ClaudeVille. It replaces older fixed asset-count plans: always trust `claudeville/assets/sprites/manifest.yaml` over hardcoded IDs in old notes.
 
+For tool selection, parameter enums, animation templates, async lifecycle, and pitfalls, see [`docs/pixellab-reference.md`](../../docs/pixellab-reference.md).
+
 ## Sources Of Truth
 
 | File | Purpose |
