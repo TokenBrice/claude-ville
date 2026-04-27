@@ -23,6 +23,7 @@ export class SceneryEngine {
 
         this.waterTiles = new Set();
         this.deepWaterTiles = new Set();
+        this.lagoonWaterTiles = new Set(); // river-kind basin/polyline water tiles
         this.shoreTiles = new Set();
         this.bridgeTiles = new Map(); // key -> { orientation: 'NS' | 'EW' }
         this.bushTiles = new Map();    // key -> { variant: 0..2 }
@@ -44,6 +45,7 @@ export class SceneryEngine {
 
     getWaterTiles() { return this.waterTiles; }
     getDeepWaterTiles() { return this.deepWaterTiles; }
+    getLagoonWaterTiles() { return this.lagoonWaterTiles; }
     getShoreTiles() { return this.shoreTiles; }
     getBridgeTiles() { return this.bridgeTiles; }
     getBushTiles() { return this.bushTiles; }
@@ -127,7 +129,7 @@ export class SceneryEngine {
 
     _rasterizePolyline({ kind, width, points }) {
         if (!points || points.length < 2) return;
-        const deepRatio = kind === 'moat' ? 0.5 : 0;
+        const deepRatio = kind === 'moat' ? 0.5 : kind === 'river' ? 0.32 : 0;
 
         // Bounding box (inclusive), padded by width.
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -153,6 +155,7 @@ export class SceneryEngine {
                 const localWidth = width + (noise - 0.5) * 0.45;
                 if (d <= localWidth) {
                     this.waterTiles.add(key);
+                    if (kind === 'river') this.lagoonWaterTiles.add(key);
                     if (deepRatio && d <= localWidth * deepRatio) {
                         this.deepWaterTiles.add(key);
                     }
@@ -183,7 +186,7 @@ export class SceneryEngine {
     }
 
     _rasterizeBasin({ kind, centerX, centerY, radiusX, radiusY, edgeNoise = 0.15 }) {
-        const deepRatio = kind === 'moat' ? 0.64 : 0;
+        const deepRatio = kind === 'moat' ? 0.64 : kind === 'river' ? 0.40 : 0;
         const x0 = Math.max(0, Math.floor(centerX - radiusX - 1));
         const x1 = Math.min(MAP_SIZE - 1, Math.ceil(centerX + radiusX + 1));
         const y0 = Math.max(0, Math.floor(centerY - radiusY - 1));
@@ -199,6 +202,7 @@ export class SceneryEngine {
                 const noise = (this.tileNoise(tx + 313, ty + 197) - 0.5) * edgeNoise;
                 if (d <= 1 + noise) {
                     this.waterTiles.add(key);
+                    if (kind === 'river') this.lagoonWaterTiles.add(key);
                     if (deepRatio && d <= deepRatio + noise * 0.35) {
                         this.deepWaterTiles.add(key);
                     }
