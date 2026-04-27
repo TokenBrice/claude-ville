@@ -1094,12 +1094,16 @@ export class IsometricRenderer {
         SpriteRenderer.disableSmoothing(ctx);
         this.harborTraffic?.drawScreenSummary(ctx, canvas, this.camera, renderNow);
 
-        // Debug overlay (Shift+D to toggle).
-        this.debugOverlay?.draw(ctx, {
-            walkabilityGrid: this.walkabilityGrid,
-            bridgeTiles: this.bridgeTiles,
-            agentSprites: this.agentSprites,
-        });
+        // Debug overlay (Shift+D to toggle) — must run in world space with camera transform.
+        if (this.debugOverlay?.enabled) {
+            this.camera.applyTransform(ctx);
+            this.debugOverlay.draw(ctx, {
+                walkabilityGrid: this.walkabilityGrid,
+                bridgeTiles: this.bridgeTiles,
+                agentSprites: this.agentSprites,
+            });
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
 
         // Minimap
         this.minimap.draw(this.world, this.camera, canvas, {

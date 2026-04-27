@@ -50,7 +50,7 @@ export class Pathfinder {
 
         // Guard: if the start tile is unwalkable (e.g., agent currently
         // straddling a shore tile due to floating-point drift), search the
-        // 4 cardinal neighbors for a walkable foothold and recurse from
+        // 8 cardinal and diagonal neighbors for a walkable foothold and recurse from
         // there. Prevents agents from getting permanently stuck.
         if (!this.isWalkable(fx, fy)) {
             for (const [dx, dy] of DIRS) {
