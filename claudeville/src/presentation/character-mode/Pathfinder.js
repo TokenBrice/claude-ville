@@ -1,6 +1,6 @@
 import { MAP_SIZE } from '../../config/constants.js';
 
-const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
 
 export class Pathfinder {
     constructor(grid) {
@@ -71,6 +71,8 @@ export class Pathfinder {
                 const nx = cx + dx;
                 const ny = cy + dy;
                 if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
+                // Corner-cut guard: diagonal step requires both axis-aligned neighbors walkable.
+                if (dx !== 0 && dy !== 0 && (!this.isWalkable(cx + dx, cy) || !this.isWalkable(cx, cy + dy))) continue;
                 const idx = ny * N + nx;
                 if (visited[idx]) continue;
                 if (!this.isWalkable(nx, ny)) continue;
