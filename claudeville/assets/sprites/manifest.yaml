@@ -755,17 +755,17 @@ atmosphere:
     size: 64
 
   - id: atmosphere.cloud.cumulus
-    tool: isometric_tile
+    tool: map_object
     prompt: "low-poly pixel-art fantasy cloud silhouette, warm rust and burnt-umber tones edged with amber rim light, fluffy stratocumulus shape, painterly RPG sky, transparent background"
     size: 64
 
   - id: atmosphere.cloud.wisp
-    tool: isometric_tile
+    tool: map_object
     prompt: "thin pixel-art cirrus wisp, pale ember and dusky rose, drawn-out streak shape, warm twilight sky, transparent background"
     size: 64
 
   - id: atmosphere.moon.crescent
-    tool: isometric_tile
+    tool: map_object
     prompt: "pixel-art crescent moon, warm gold rim with darker amber inner shadow, no face, painterly RPG night sky, transparent background"
     size: 64
 
