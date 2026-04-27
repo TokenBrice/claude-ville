@@ -286,6 +286,11 @@ export class IsometricRenderer {
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
         this.particleSystem.setMotionEnabled(this.motionScale > 0);
         this._onMotionPreferenceChange = (event) => this._setMotionScale(event.matches ? 0 : 1);
+        if (this.motionQuery?.addEventListener) {
+            this.motionQuery.addEventListener('change', this._onMotionPreferenceChange);
+        } else if (this.motionQuery?.addListener) {
+            this.motionQuery.addListener(this._onMotionPreferenceChange);
+        }
         this.atmosphereVignetteCache = null;
         this.atmosphereVignetteCacheKey = '';
         this.lightFadeColorCache = new Map();
@@ -798,11 +803,6 @@ export class IsometricRenderer {
         this.camera = new Camera(canvas);
         this.camera.attach();
         this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
-        if (this.motionQuery?.addEventListener) {
-            this.motionQuery.addEventListener('change', this._onMotionPreferenceChange);
-        } else if (this.motionQuery?.addListener) {
-            this.motionQuery.addListener(this._onMotionPreferenceChange);
-        }
 
         this.buildingRenderer?.setBuildings(this.world.buildings);
 
@@ -893,6 +893,7 @@ export class IsometricRenderer {
         this.agentSprites.clear();
         this.particleSystem.clear();
         this.fantasyForestTreeCache.clear();
+        this.skyRenderer?.dispose?.();
     }
 
     _markSpritesDirty() {
