@@ -34,6 +34,17 @@ const LANDMARK_LABEL_ACCENTS = {
     taskboard: '#8bd7ff',
     archive: '#b3d68c',
 };
+const LANDMARK_LABEL_EMBLEMS = {
+    command: 'crown',
+    forge: 'hammer',
+    portal: 'rune',
+    watchtower: 'flame',
+    harbor: 'anchor',
+    observatory: 'star',
+    mine: 'pick',
+    taskboard: 'scroll',
+    archive: 'book',
+};
 const PARTICLE_ALIASES = {
     sparkle2: 'sparkle',
     sparkle3: 'sparkle',
@@ -169,7 +180,7 @@ export class BuildingSprite {
     drawLabels(ctx, { zoom = 1, occupiedBoxes = [], harborPendingRepos = [] } = {}) {
         const occupied = [];
         const normalizedOccupiedBoxes = this._normalizeBoxes(occupiedBoxes);
-        const harborSign = this._harborLedgerText(harborPendingRepos);
+        const harborLedgerRows = this._harborLedgerRows(harborPendingRepos);
         const buildingList = [...this.buildings].sort((a, b) => {
             const ac = this._buildingScreenCenter(a);
             const bc = this._buildingScreenCenter(b);
@@ -198,7 +209,7 @@ export class BuildingSprite {
                 isLandmark,
                 zoom,
                 localLabelDensity,
-                harborSign,
+                harborLedgerRows,
             });
             let chosen = null;
 
@@ -213,8 +224,23 @@ export class BuildingSprite {
                     isLandmark,
                 });
                 let displaySubText = '';
+                let displaySubRows = [];
                 let subTw = 0;
-                if (attempt.subText) {
+                if (Array.isArray(attempt.subRows) && attempt.subRows.length) {
+                    ctx.font = attempt.subFont || attempt.labelFont;
+                    displaySubRows = attempt.subRows.map((row) => {
+                        const subMetrics = this._labelMetrics(ctx, b, {
+                            text: row.label,
+                            labelFont: attempt.subFont || attempt.labelFont,
+                            maxTextWidth: attempt.subMaxTextWidth || attempt.maxTextWidth,
+                            zoom,
+                            isHovered,
+                            isLandmark,
+                        });
+                        subTw = Math.max(subTw, subMetrics.width);
+                        return { ...row, label: subMetrics.displayText };
+                    });
+                } else if (attempt.subText) {
                     ctx.font = attempt.subFont || attempt.labelFont;
                     const subMetrics = this._labelMetrics(ctx, b, {
                         text: attempt.subText,
@@ -264,6 +290,7 @@ export class BuildingSprite {
                     ...attempt,
                     displayText,
                     displaySubText,
+                    displaySubRows,
                     tagW,
                     tagH,
                     bx,
@@ -282,6 +309,7 @@ export class BuildingSprite {
             const {
                 displayText,
                 displaySubText,
+                displaySubRows = [],
                 tagW,
                 tagH,
                 bx,
@@ -311,11 +339,11 @@ export class BuildingSprite {
             }
 
             const notch = isHovered || isLandmark ? 6 : 4;
-            const isHarborLedger = b.type === 'harbor' && displaySubText;
+            const isHarborLedger = b.type === 'harbor' && (displaySubText || displaySubRows.length);
             const poleTop = tagTop + tagH - 1;
             const poleBottom = Math.min(center.y - dims.h * 0.52, tagTop + tagH + (isHovered ? 18 : isLandmark ? 14 : 7));
 
-            ctx.globalAlpha = isHovered ? 1 : degraded ? labelAlpha : isLandmark ? 0.92 : 0.78;
+            ctx.globalAlpha = isHovered ? 1 : degraded ? labelAlpha : isLandmark ? 0.96 : 0.78;
             ctx.strokeStyle = isHovered ? 'rgba(255, 242, 197, 0.9)' : isHarborLedger ? 'rgba(113, 73, 31, 0.92)' : isLandmark ? 'rgba(242, 211, 107, 0.72)' : 'rgba(215, 185, 121, 0.62)';
             ctx.lineWidth = isHovered ? 2 : 1;
             ctx.beginPath();
@@ -336,6 +364,16 @@ export class BuildingSprite {
             ctx.fill();
             ctx.stroke();
 
+            if (isLandmark || isHovered) {
+                ctx.fillStyle = 'rgba(255, 225, 139, 0.13)';
+                ctx.fillRect(tagLeft + 8, tagTop + 6, tagW - 16, 1);
+                ctx.fillStyle = 'rgba(25, 15, 9, 0.22)';
+                ctx.fillRect(tagLeft + 7, tagTop + tagH - 5, tagW - 14, 1);
+                ctx.fillStyle = 'rgba(185, 123, 54, 0.5)';
+                ctx.fillRect(tagLeft + 4, by - 1, 3, 3);
+                ctx.fillRect(tagLeft + tagW - 7, by - 1, 3, 3);
+            }
+
             if (isHovered || isLandmark) {
                 ctx.fillStyle = accent;
                 ctx.globalAlpha = isHovered ? 0.95 : glowAlpha;
@@ -347,22 +385,15 @@ export class BuildingSprite {
                 ctx.globalAlpha = isHovered ? 1 : glowAlpha;
             }
 
-            // Identity badge: gold circle with the building's icon glyph.
+            // Identity badge: hand-drawn guild emblem, not a plain letter token.
             if (b.icon) {
                 const iconCx = tagLeft + padX + iconSize / 2 + (isLandmark ? 2 : 0);
                 const iconCy = by;
-                ctx.fillStyle = isHovered ? 'rgba(255, 226, 127, 0.96)' : isLandmark ? accent : 'rgba(214, 169, 81, 0.78)';
-                ctx.beginPath();
-                ctx.arc(iconCx, iconCy, iconSize / 2, 0, Math.PI * 2);
-                ctx.fill();
-                ctx.strokeStyle = 'rgba(43, 28, 17, 0.8)';
-                ctx.lineWidth = 1;
-                ctx.stroke();
-                ctx.fillStyle = '#2a1c11';
-                ctx.font = `bold ${chosen.iconFont || 9}px "Press Start 2P", monospace`;
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(b.icon, iconCx, iconCy + 0.5);
+                this._drawLabelEmblem(ctx, b, iconCx, iconCy, iconSize, {
+                    accent,
+                    isHovered,
+                    isLandmark,
+                });
             }
 
             // Label text.
@@ -375,7 +406,14 @@ export class BuildingSprite {
             ctx.shadowBlur = 4;
             ctx.shadowOffsetY = 1;
             const textX = tagLeft + padX + iconSize + iconGap + (isLandmark ? 2 : 0);
-            if (displaySubText) {
+            if (displaySubRows.length) {
+                ctx.fillText(displayText, textX, by - 5);
+                ctx.font = subFont || chosenFont;
+                displaySubRows.forEach((row, index) => {
+                    ctx.fillStyle = row.color || '#f6d384';
+                    ctx.fillText(row.label, textX, by + 6 + index * 8);
+                });
+            } else if (displaySubText) {
                 ctx.fillText(displayText, textX, by - 5);
                 ctx.fillStyle = isHarborLedger ? '#f6d384' : textColor;
                 ctx.font = subFont || chosenFont;
@@ -422,7 +460,7 @@ export class BuildingSprite {
         ];
     }
 
-    _labelRenderAttempts(building, { isHovered, isLandmark, zoom, localLabelDensity = 0, harborSign = '' }) {
+    _labelRenderAttempts(building, { isHovered, isLandmark, zoom, localLabelDensity = 0, harborLedgerRows = [] }) {
         const baseText = this._labelTextFor(building, zoom, isHovered);
         const compactText = this._labelTextFor(building, LABEL_VISIBLE_ZOOM, false);
         const tinyText = this._labelTinyTextFor(building, compactText);
@@ -430,23 +468,23 @@ export class BuildingSprite {
         const widthScale = densityPacked ? 0.86 : 1;
         const scale = densityPacked ? 0.92 : 1;
         const overlapScale = densityPacked ? 1.2 : 1;
-        const isHarborLedger = building.type === 'harbor' && !!harborSign;
+        const isHarborLedger = building.type === 'harbor' && harborLedgerRows.length > 0;
         const labelFont = isHovered || isLandmark
-            ? 'bold 8px "Press Start 2P", monospace'
+            ? 'bold 9px "Press Start 2P", monospace'
             : '7px "Press Start 2P", monospace';
         const attempts = [
             {
                 text: isHarborLedger ? compactText : baseText,
-                subText: isHarborLedger ? harborSign : '',
-                subFont: '6px "Press Start 2P", monospace',
+                subRows: isHarborLedger ? harborLedgerRows : [],
+                subFont: '7px "Press Start 2P", monospace',
                 subMaxTextWidth: Math.round((isHovered ? 158 : 132) * widthScale),
                 labelFont,
                 maxTextWidth: Math.round((isHovered ? 190 : isLandmark ? 132 : 96) * widthScale),
-                iconSize: building.icon ? (isHovered || isLandmark ? 16 : 13) * scale : 0,
-                iconGap: building.icon ? 5 * scale : 0,
-                padX: isHovered || isLandmark ? 8 : 6,
+                iconSize: building.icon ? (isHovered || isLandmark ? 22 : 16) * scale : 0,
+                iconGap: building.icon ? 7 * scale : 0,
+                padX: isHovered || isLandmark ? 11 : 7,
                 iconFont: isHovered || isLandmark ? 9 : 8,
-                tagH: Math.round((isHarborLedger ? (isHovered ? 30 : 26) : isHovered ? 20 : isLandmark ? 18 : 14) * scale),
+                tagH: Math.round((isHarborLedger ? (isHovered ? 44 : 40) : isHovered ? 28 : isLandmark ? 24 : 16) * scale),
                 overlapTolerance: isHovered || isLandmark ? Math.min(0.92, LABEL_OVERLAP_TOLERANCE * overlapScale) : 0.3,
                 blockAgents: true,
                 degraded: false,
@@ -454,18 +492,18 @@ export class BuildingSprite {
         ];
 
         const compactFont = isHovered || isLandmark
-            ? 'bold 7px "Press Start 2P", monospace'
+            ? 'bold 8px "Press Start 2P", monospace'
             : '6px "Press Start 2P", monospace';
         if (compactText && compactText !== baseText) {
             attempts.push({
                 text: compactText,
                 labelFont: compactFont,
                 maxTextWidth: Math.round((isLandmark ? 92 : 76) * widthScale),
-                iconSize: building.icon ? (isHovered || isLandmark ? 14 : 11) * scale : 0,
-                iconGap: building.icon ? 4 * scale : 0,
-                padX: isHovered || isLandmark ? 7 : 5,
+                iconSize: building.icon ? (isHovered || isLandmark ? 19 : 13) * scale : 0,
+                iconGap: building.icon ? 6 * scale : 0,
+                padX: isHovered || isLandmark ? 10 : 6,
                 iconFont: isHovered || isLandmark ? 8 : 7,
-                tagH: Math.round((isHovered ? 18 : isLandmark ? 16 : 12) * scale),
+                tagH: Math.round((isHovered ? 24 : isLandmark ? 21 : 13) * scale),
                 overlapTolerance: isHovered || isLandmark ? Math.min(0.95, LABEL_COMPACT_OVERLAP_TOLERANCE * overlapScale) : 0.38,
                 blockAgents: true,
                 degraded: false,
@@ -477,11 +515,11 @@ export class BuildingSprite {
                 text: tinyText,
                 labelFont: '6px "Press Start 2P", monospace',
                 maxTextWidth: Math.round((isLandmark ? 64 : 58) * widthScale),
-                iconSize: building.icon ? (isHovered || isLandmark ? 13 : 10) * scale : 0,
-                iconGap: building.icon ? 3 * scale : 0,
-                padX: isHovered || isLandmark ? 6 : 4,
+                iconSize: building.icon ? (isHovered || isLandmark ? 17 : 11) * scale : 0,
+                iconGap: building.icon ? 5 * scale : 0,
+                padX: isHovered || isLandmark ? 8 : 5,
                 iconFont: isHovered || isLandmark ? 8 : 7,
-                tagH: Math.round((isHovered ? 16 : isLandmark ? 14 : 10) * scale),
+                tagH: Math.round((isHovered ? 21 : isLandmark ? 18 : 11) * scale),
                 overlapTolerance: isHovered || isLandmark ? Math.min(0.97, 0.78 * overlapScale) : 0.55,
                 blockAgents: true,
                 degraded: false,
@@ -1500,20 +1538,125 @@ export class BuildingSprite {
         };
     }
 
-    _harborLedgerText(repos = []) {
+    _harborLedgerRows(repos = []) {
         const active = (Array.isArray(repos) ? repos : [])
             .filter((repo) => Number(repo?.pendingCommits) > 0)
             .sort((a, b) => (Number(b.pendingCommits) - Number(a.pendingCommits))
                 || String(a.repoName || a.shortName || '').localeCompare(String(b.repoName || b.shortName || '')));
-        if (!active.length) return '';
+        if (!active.length) return [];
         const visible = active.slice(0, 2).map((repo) => {
             const name = String(repo.shortName || repo.repoName || repo.project || 'Repo')
                 .replace(/[-_]+/g, ' ')
                 .replace(/\b\w/g, (char) => char.toUpperCase());
-            return `${name} (${Number(repo.pendingCommits)})`;
+            return {
+                label: `${name} (${Number(repo.pendingCommits)})`,
+                color: repo.profile?.accent || '#f6d384',
+            };
         });
         const remaining = active.length - visible.length;
-        return remaining > 0 ? `${visible.join('  ')} +${remaining}` : visible.join('  ');
+        if (remaining > 0 && visible.length) {
+            visible[visible.length - 1] = {
+                ...visible[visible.length - 1],
+                label: `${visible[visible.length - 1].label} +${remaining}`,
+            };
+        }
+        return visible;
+    }
+
+    _drawLabelEmblem(ctx, building, cx, cy, size, { accent, isHovered, isLandmark } = {}) {
+        const r = size / 2;
+        const emblem = LANDMARK_LABEL_EMBLEMS[building.type] || 'mark';
+        ctx.save();
+        ctx.fillStyle = isHovered ? 'rgba(255, 230, 148, 0.98)' : isLandmark ? accent : 'rgba(214, 169, 81, 0.82)';
+        ctx.strokeStyle = 'rgba(43, 28, 17, 0.88)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - r);
+        ctx.lineTo(cx + r * 0.78, cy - r * 0.52);
+        ctx.lineTo(cx + r * 0.66, cy + r * 0.45);
+        ctx.lineTo(cx, cy + r * 0.9);
+        ctx.lineTo(cx - r * 0.66, cy + r * 0.45);
+        ctx.lineTo(cx - r * 0.78, cy - r * 0.52);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.strokeStyle = '#2a1c11';
+        ctx.fillStyle = '#2a1c11';
+        ctx.lineWidth = Math.max(1.2, size * 0.09);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        const drawLine = (...points) => {
+            ctx.beginPath();
+            points.forEach((point, index) => {
+                if (index === 0) ctx.moveTo(cx + point[0] * r, cy + point[1] * r);
+                else ctx.lineTo(cx + point[0] * r, cy + point[1] * r);
+            });
+            ctx.stroke();
+        };
+
+        if (emblem === 'anchor') {
+            drawLine([0, -0.55], [0, 0.42]);
+            drawLine([-0.32, -0.2], [0.32, -0.2]);
+            ctx.beginPath();
+            ctx.arc(cx, cy - r * 0.62, r * 0.16, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(cx, cy + r * 0.18, r * 0.42, 0.18 * Math.PI, 0.82 * Math.PI);
+            ctx.stroke();
+            drawLine([-0.45, 0.15], [-0.62, 0.02]);
+            drawLine([0.45, 0.15], [0.62, 0.02]);
+        } else if (emblem === 'book') {
+            ctx.strokeRect(cx - r * 0.5, cy - r * 0.45, r * 0.43, r * 0.8);
+            ctx.strokeRect(cx + r * 0.07, cy - r * 0.45, r * 0.43, r * 0.8);
+            drawLine([0, -0.43], [0, 0.42]);
+            drawLine([-0.36, -0.16], [-0.16, -0.16]);
+            drawLine([0.17, -0.16], [0.36, -0.16]);
+        } else if (emblem === 'hammer') {
+            drawLine([-0.38, 0.42], [0.34, -0.3]);
+            drawLine([0.08, -0.55], [0.55, -0.08]);
+            drawLine([0.23, -0.66], [0.66, -0.23]);
+        } else if (emblem === 'crown') {
+            ctx.beginPath();
+            ctx.moveTo(cx - r * 0.52, cy + r * 0.18);
+            ctx.lineTo(cx - r * 0.38, cy - r * 0.36);
+            ctx.lineTo(cx - r * 0.08, cy + r * 0.02);
+            ctx.lineTo(cx + r * 0.2, cy - r * 0.45);
+            ctx.lineTo(cx + r * 0.48, cy + r * 0.18);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            drawLine([-0.45, 0.36], [0.48, 0.36]);
+        } else if (emblem === 'star') {
+            drawLine([0, -0.58], [0.12, -0.12], [0.58, -0.08], [0.2, 0.16], [0.32, 0.58], [0, 0.28], [-0.32, 0.58], [-0.2, 0.16], [-0.58, -0.08], [-0.12, -0.12], [0, -0.58]);
+        } else if (emblem === 'rune') {
+            drawLine([0, -0.58], [0.46, 0], [0, 0.58], [-0.46, 0], [0, -0.58]);
+            drawLine([-0.2, 0], [0.2, 0]);
+        } else if (emblem === 'pick') {
+            drawLine([-0.32, 0.5], [0.32, -0.42]);
+            drawLine([-0.48, -0.3], [-0.04, -0.52], [0.5, -0.34]);
+        } else if (emblem === 'scroll') {
+            ctx.strokeRect(cx - r * 0.42, cy - r * 0.38, r * 0.84, r * 0.62);
+            ctx.beginPath();
+            ctx.arc(cx - r * 0.43, cy - r * 0.07, r * 0.16, Math.PI * 0.5, Math.PI * 1.5);
+            ctx.stroke();
+            drawLine([-0.22, -0.15], [0.28, -0.15]);
+            drawLine([-0.22, 0.08], [0.18, 0.08]);
+        } else if (emblem === 'flame') {
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - r * 0.56);
+            ctx.bezierCurveTo(cx + r * 0.48, cy - r * 0.05, cx + r * 0.22, cy + r * 0.5, cx, cy + r * 0.52);
+            ctx.bezierCurveTo(cx - r * 0.42, cy + r * 0.25, cx - r * 0.24, cy - r * 0.16, cx, cy - r * 0.56);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            ctx.font = `bold ${Math.max(7, Math.round(size * 0.42))}px "Press Start 2P", monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(building.icon || '?', cx, cy + 0.5);
+        }
+        ctx.restore();
     }
 
     _labelTextFor(building, zoom, isHovered) {

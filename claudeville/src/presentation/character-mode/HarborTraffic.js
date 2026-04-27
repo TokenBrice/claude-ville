@@ -822,8 +822,7 @@ export class HarborTraffic {
         });
         const trimmed = visible.slice(-MAX_VISIBLE_SHIPS);
 
-        return [...trimmed, ...markers]
-            .sort((a, b) => a.sortY - b.sortY);
+        return trimmed.sort((a, b) => a.sortY - b.sortY);
     }
 
     _repoDockSummaries() {
