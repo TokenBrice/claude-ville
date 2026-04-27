@@ -92,12 +92,12 @@ const BUILDING_LIGHT_FALLBACKS = {
 const OBSERVATORY_CLOCK_FACE = Object.freeze({
     // Calibrated against the generated 312x208 clock observatory base.
     center: [133, 73],
-    radius: 23,
-    sourceSize: 28,
-    sourceCenter: 14,
-    sourceRadius: 13,
-    hourHandLength: 7,
-    minuteHandLength: 10,
+    radius: 30,
+    sourceSize: 40,
+    sourceCenter: 20,
+    sourceRadius: 18,
+    hourHandLength: 10,
+    minuteHandLength: 15,
 });
 
 export class BuildingSprite {
@@ -115,6 +115,7 @@ export class BuildingSprite {
         this._visitorCountByType = new Map();
         this._clockCanvas = null;
         this._clockCanvasKey = '';
+        this.lightingState = null;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -126,6 +127,10 @@ export class BuildingSprite {
     }
 
     setMotionScale(s) { this.motionScale = s; }
+
+    setLightingState(state) {
+        this.lightingState = state || null;
+    }
 
     setBuildings(map) {
         // Accepts a Map (preferred — matches world.buildings) or an Array.
@@ -151,6 +156,12 @@ export class BuildingSprite {
     // composed sprite width so the shadow tracks the actual visible footprint
     // rather than the much-smaller tile rect.
     drawShadows(ctx) {
+        const lighting = this.lightingState || {};
+        const shadowLength = lighting.shadowLength ?? 1;
+        const shadowAlpha = lighting.shadowAlpha ?? 0.22;
+        const shadowAngle = lighting.shadowAngleRad ?? 0.28;
+        const offsetX = Math.cos(shadowAngle) * 12 * shadowLength;
+        const offsetY = Math.sin(shadowAngle) * 7 * shadowLength;
         for (const b of this.buildings) {
             const c = this._buildingScreenCenter(b);
             const tileHalfW = (b.width + b.height) * TILE_WIDTH / 4;
@@ -160,9 +171,17 @@ export class BuildingSprite {
             const isLandmark = LANDMARK_LABEL_TYPES.has(b.type);
             const isHovered = this.hovered === b;
             ctx.save();
-            ctx.fillStyle = 'rgba(15, 22, 30, 0.22)';
+            ctx.fillStyle = `rgba(15, 22, 30, ${shadowAlpha})`;
             ctx.beginPath();
-            ctx.ellipse(Math.round(c.x), Math.round(c.y + 4), halfW, halfW * 0.32, 0, 0, Math.PI * 2);
+            ctx.ellipse(
+                Math.round(c.x + offsetX),
+                Math.round(c.y + 4 + offsetY),
+                halfW * (0.92 + shadowLength * 0.16),
+                halfW * (0.27 + shadowLength * 0.08),
+                shadowAngle * 0.22,
+                0,
+                Math.PI * 2
+            );
             ctx.fill();
             this._drawFootprintContactPad(ctx, b, { isLandmark, isHovered });
             if (isLandmark || isHovered) {
@@ -706,7 +725,23 @@ export class BuildingSprite {
     // Light sources for water/wall additive light passes (Phase 2.5.5).
     // `overlay` is the atmosphere sprite id used for the additive reflection;
     // defaults to the lighthouse beam when the manifest entry omits it.
-    getLightSources() {
+    getLightSources(lightingState = this.lightingState) {
+        const lightBoost = lightingState?.lightBoost ?? 1;
+        const staticSources = this._staticLightSources();
+        return staticSources.map(source => {
+            const visitors = source.building ? this._visitorCountFor(source.building) : 0;
+            const activity = source.buildingType === 'forge'
+                ? (visitors > 0 ? 1.35 : 0.58)
+                : visitors > 0 ? 1.12 : 1;
+            return {
+                ...source,
+                intensity: activity,
+                radius: source.radius * Math.min(1.55, 0.72 + lightBoost * 0.28 + (activity - 1) * 0.18),
+            };
+        });
+    }
+
+    _staticLightSources() {
         if (this._lightSourcesCache) return this._lightSourcesCache;
         const out = [];
         for (const b of this.buildings) {
@@ -722,6 +757,8 @@ export class BuildingSprite {
                     radius: entry.lightRadius || 64,
                     overlay: entry.lightOverlay || 'atmosphere.light.lighthouse-beam',
                     buildingType: b.type,
+                    kind: 'point',
+                    building: b,
                 });
                 continue;
             }
@@ -736,6 +773,8 @@ export class BuildingSprite {
                     radius: fallback.radius,
                     overlay: fallback.overlay,
                     buildingType: b.type,
+                    kind: 'point',
+                    building: b,
                 });
             }
         }
@@ -863,7 +902,7 @@ export class BuildingSprite {
             return;
         }
         if (building.type === 'forge') {
-            this._drawForgeEnhancement(ctx, localPoint, pulse);
+            this._drawForgeEnhancement(ctx, localPoint, pulse, building);
         } else if (building.type === 'mine') {
             const mouth = localPoint(73, 95);
             ctx.globalCompositeOperation = 'screen';
@@ -959,9 +998,8 @@ export class BuildingSprite {
             ctx.fillRect(tx - 1, ty - 1, 2, 2);
         }
 
-        this._drawClockHand(ctx, c, c, hourAngle, config.hourHandLength, 2, '#21170f');
-        this._drawClockHand(ctx, c, c, hourAngle, config.hourHandLength - 1, 1, '#f4d47b');
-        this._drawClockHand(ctx, c, c, minuteAngle, config.minuteHandLength, 1, '#fff0a8');
+        this._drawClockHand(ctx, c, c, hourAngle, config.hourHandLength, 3, '#1a1712');
+        this._drawClockHand(ctx, c, c, minuteAngle, config.minuteHandLength, 2, '#f7de91');
         ctx.fillStyle = '#21170f';
         ctx.fillRect(c - 1, c - 1, 3, 3);
         ctx.fillStyle = '#ffe6a0';
@@ -1109,20 +1147,21 @@ export class BuildingSprite {
         ctx.globalCompositeOperation = 'source-over';
     }
 
-    _drawForgeEnhancement(ctx, localPoint, pulse) {
+    _drawForgeEnhancement(ctx, localPoint, pulse, building = null) {
         const hearth = localPoint(51, 66);
         const chimney = localPoint(39, 8);
         const anvil = localPoint(26, 76);
-        this._drawForgeHeatBloom(ctx, hearth, pulse);
+        const activityIntensity = this._visitorCountFor(building) > 0 ? 1.0 : 0.42;
+        this._drawForgeHeatBloom(ctx, hearth, pulse, activityIntensity);
 
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.12 + pulse * 0.08;
+        ctx.globalAlpha = (0.09 + pulse * 0.05) * (0.7 + activityIntensity * 0.3);
         ctx.fillStyle = '#9a8d7f';
         ctx.beginPath();
         ctx.ellipse(chimney.x, chimney.y - 4, 17, 9, -0.22, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.globalAlpha = 0.16 + pulse * 0.14;
+        ctx.globalAlpha = (0.12 + pulse * 0.10) * (0.55 + activityIntensity * 0.45);
         ctx.fillStyle = '#ffd36a';
         ctx.beginPath();
         ctx.ellipse(anvil.x, anvil.y, 22, 12, -0.18, 0, Math.PI * 2);
@@ -1206,13 +1245,14 @@ export class BuildingSprite {
         ctx.globalAlpha = 1;
     }
 
-    _drawForgeHeatBloom(ctx, hearth, pulse) {
+    _drawForgeHeatBloom(ctx, hearth, pulse, activityIntensity = 1) {
         ctx.globalCompositeOperation = 'screen';
-        const glow = ctx.createRadialGradient(hearth.x, hearth.y, 1, hearth.x, hearth.y, 52 + pulse * 13);
-        glow.addColorStop(0, 'rgba(255, 239, 154, 0.74)');
-        glow.addColorStop(0.35, 'rgba(255, 126, 39, 0.34)');
+        const steady = this.motionScale ? pulse : 0.45;
+        const glow = ctx.createRadialGradient(hearth.x, hearth.y, 1, hearth.x, hearth.y, 42 + activityIntensity * 20 + steady * 6);
+        glow.addColorStop(0, `rgba(255, 239, 154, ${0.34 + activityIntensity * 0.40})`);
+        glow.addColorStop(0.35, `rgba(255, 126, 39, ${0.16 + activityIntensity * 0.18})`);
         glow.addColorStop(1, 'rgba(255, 75, 24, 0)');
-        ctx.globalAlpha = 0.58 + pulse * 0.26;
+        ctx.globalAlpha = 0.32 + activityIntensity * 0.42 + steady * 0.08;
         ctx.fillStyle = glow;
         ctx.beginPath();
         ctx.ellipse(hearth.x + 2, hearth.y - 1, 55, 32, -0.24, 0, Math.PI * 2);

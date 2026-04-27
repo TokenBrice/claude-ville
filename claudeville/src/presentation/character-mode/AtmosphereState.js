@@ -309,6 +309,44 @@ function buildGrade(phase, phaseProgress, weather) {
     };
 }
 
+function buildLighting(phase, phaseProgress, weather) {
+    const light = phaseLight(phase, phaseProgress);
+    const dark = 1 - light;
+    const dawnWarmth = phase === 'dawn' ? 1 - smoothstep(phaseProgress) : 0;
+    const duskWarmth = phase === 'dusk' ? smoothstep(phaseProgress) : 0;
+    const sunWarmth = clamp(Math.max(dawnWarmth * 0.75, duskWarmth));
+    const weatherDim = weather.type === 'rain' || weather.type === 'overcast'
+        ? weather.intensity * 0.35
+        : weather.type === 'fog'
+            ? weather.intensity * 0.20
+            : 0;
+    const shadowAngleRad = (phase === 'dawn' ? -0.68 : phase === 'dusk' ? 0.72 : 0.28);
+    const shadowLength = clamp(0.72 + dark * 1.10 + sunWarmth * 0.72 + weatherDim * 0.28, 0.62, 2.35);
+
+    return {
+        sunDirIso: {
+            x: Math.cos(shadowAngleRad + Math.PI),
+            y: Math.sin(shadowAngleRad + Math.PI),
+        },
+        sunWarmth,
+        ambientLight: clamp(light - weatherDim * 0.45),
+        ambientTint: phase === 'night'
+            ? '86, 139, 180'
+            : phase === 'dusk'
+                ? '215, 169, 142'
+                : phase === 'dawn'
+                    ? '234, 185, 159'
+                    : '196, 235, 255',
+        shadowAngleRad,
+        shadowLength,
+        shadowAlpha: clamp(0.18 + light * 0.10 + sunWarmth * 0.18 - weatherDim * 0.08, 0.12, 0.42),
+        lightWarmth: clamp(0.72 + sunWarmth * 0.32),
+        lightBoost: clamp(0.75 + dark * 0.85 + sunWarmth * 0.35 + weatherDim * 0.35, 0.65, 1.8),
+        sunBloomScale: clamp(0.85 + sunWarmth * 0.95 - weatherDim * 0.35, 0.65, 1.85),
+        beaconIntensity: clamp(dark * 0.9 + sunWarmth * 0.25 + weatherDim * 0.25, 0, 1),
+    };
+}
+
 function buildClock(date, minute) {
     const hours = date.getHours();
     const minutes = date.getMinutes();
@@ -363,6 +401,7 @@ export function createAtmosphereSnapshot({
             cloudDensity,
         },
         grade: buildGrade(phase, phaseProgress, weather),
+        lighting: buildLighting(phase, phaseProgress, weather),
         motion: {
             driftEnabled,
             particleEnabled: effectiveMotionScale > 0,

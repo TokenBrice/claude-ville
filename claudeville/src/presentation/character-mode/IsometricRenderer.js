@@ -188,8 +188,8 @@ const BRIDGE_STYLE_PALETTES = {
         moss: 'rgba(92, 151, 70, 0.54)',
     },
 };
-const BRIDGE_SPRITE_MIN_WIDTH = 330;
-const BRIDGE_SPRITE_MAX_WIDTH = 420;
+const BRIDGE_SPRITE_MIN_WIDTH = 390;
+const BRIDGE_SPRITE_MAX_WIDTH = 500;
 const DISTRICT_WASHES = [
     { x: 16, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
     { x: 36, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
@@ -229,15 +229,15 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 12.1, tileY: 20.0, type: 'marketStall' },
     { tileX: 17.8, tileY: 19.4, type: 'signpost' },
     { tileX: 19.2, tileY: 16.0, type: 'scrollCrates' },
-    { tileX: 23.6, tileY: 16.8, type: 'noticePillar' },
+    { tileX: 24.8, tileY: 18.6, type: 'noticePillar' },
 
     // Research edges: fewer, quieter accents near knowledge landmarks.
-    { tileX: 3.1, tileY: 24.2, type: 'lantern' },
-    { tileX: 6.8, tileY: 23.6, type: 'runestone' },
-    { tileX: 22.5, tileY: 15.5, type: 'noticePillar' },
-    { tileX: 23.6, tileY: 15.8, type: 'scrollCrates' },
-    { tileX: 21.8, tileY: 13.4, type: 'runestone' },
-    { tileX: 27.4, tileY: 14.0, type: 'lantern' },
+    { tileX: 5.8, tileY: 18.9, type: 'lantern' },
+    { tileX: 8.9, tileY: 16.1, type: 'scrollCrates' },
+    { tileX: 9.3, tileY: 18.5, type: 'noticePillar' },
+    { tileX: 22.5, tileY: 18.5, type: 'runestone' },
+    { tileX: 24.5, tileY: 18.9, type: 'lantern' },
+    { tileX: 26.4, tileY: 15.2, type: 'runestone' },
     { tileX: 5.6, tileY: 25.8, type: 'runestone' },
     { tileX: 15.0, tileY: 22.2, type: 'runestone' },
 ];
@@ -294,10 +294,12 @@ export class IsometricRenderer {
         this._bindMotionPreference();
         this.atmosphereVignetteCache = null;
         this.atmosphereVignetteCacheKey = '';
+        this.lightGradientCache = new Map();
         this.lightFadeColorCache = new Map();
         this.selectedAgent = null;
         this.onAgentSelect = null;
         this._chatMatchAccumulator = 250;
+        this._crowdBumpCooldowns = new Map();
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
         for (let y = 0; y < MAP_SIZE; y++) {
@@ -758,7 +760,8 @@ export class IsometricRenderer {
             { tileX: 27.8, tileY: 29.2, particleType: 'forgeEmber', chance: 0.02 },
             { tileX: 7.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
             { tileX: 22.4, tileY: 33.1, particleType: 'questPing', chance: 0.014 },
-            { tileX: 24.3, tileY: 14.3, particleType: 'archiveMote', chance: 0.022 },
+            { tileX: 8.5, tileY: 16.8, particleType: 'archiveMote', chance: 0.022 },
+            { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
             { tileX: 32.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
         ];
@@ -833,12 +836,7 @@ export class IsometricRenderer {
         // Minimap
         this.minimap.attach(canvas.parentNode);
         this.minimap.onNavigate = (tileX, tileY) => {
-            const screenPos = {
-                x: (tileX - tileY) * TILE_WIDTH / 2,
-                y: (tileX + tileY) * TILE_HEIGHT / 2,
-            };
-            this.camera.x = -screenPos.x + canvas.width / (2 * this.camera.zoom);
-            this.camera.y = -screenPos.y + canvas.height / (2 * this.camera.zoom);
+            this.camera.centerOnTile(tileX, tileY);
         };
 
         // Click handler for agent selection
@@ -939,10 +937,44 @@ export class IsometricRenderer {
         this.buildingRenderer?.setMotionScale(scale);
         this.harborTraffic?.setMotionScale(scale);
         this.landmarkActivity?.setMotionScale(scale);
+        this.camera?.setReducedMotion?.(scale <= 0);
         this.particleSystem.setMotionEnabled(scale > 0);
         for (const sprite of this.agentSprites.values()) {
             sprite.setMotionScale(scale);
         }
+    }
+
+    invalidateViewportCaches() {
+        this.atmosphereVignetteCache = null;
+        this.atmosphereVignetteCacheKey = '';
+        this.lightGradientCache?.clear?.();
+        this.skyRenderer?.dispose?.();
+    }
+
+    _screenDpr() {
+        return this.canvas?._claudeVilleDpr || 1;
+    }
+
+    _screenWidth() {
+        return this.canvas?._claudeVilleCssWidth || this.canvas?.clientWidth || this.canvas?.width || 0;
+    }
+
+    _screenHeight() {
+        return this.canvas?._claudeVilleCssHeight || this.canvas?.clientHeight || this.canvas?.height || 0;
+    }
+
+    _screenViewport() {
+        return {
+            width: this._screenWidth(),
+            height: this._screenHeight(),
+            _claudeVilleDpr: this._screenDpr(),
+        };
+    }
+
+    _resetScreenTransform(ctx) {
+        const dpr = this._screenDpr();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        SpriteRenderer.disableSmoothing(ctx);
     }
 
     _addAgentSprite(agent) {
@@ -954,6 +986,7 @@ export class IsometricRenderer {
                 compositor: this.compositor,
             });
             sprite.setMotionScale(this.motionScale);
+            sprite.addedAt = performance.now();
             this.agentSprites.set(agent.id, sprite);
             this._markSpritesDirty();
         }
@@ -1068,7 +1101,10 @@ export class IsometricRenderer {
         this.waterFrame += WATER_FRAME_STEP * this.motionScale;
 
         // Update camera follow
-        if (this.camera) this.camera.updateFollow();
+        if (this.camera) {
+            this.camera.update(dt);
+            this.camera.updateFollow();
+        }
 
         // Chat matching only depends on session/tool state, not frame-perfect motion.
         this._chatMatchAccumulator += dt;
@@ -1110,14 +1146,18 @@ export class IsometricRenderer {
                 const nextBx = b.x - nx * overlap * SEP_STRENGTH;
                 const nextBy = b.y - ny * overlap * SEP_STRENGTH;
 
+                let moved = false;
                 if (this._isSpritePositionWalkable(a, nextAx, nextAy)) {
                     a.x = nextAx;
                     a.y = nextAy;
+                    moved = true;
                 }
                 if (this._isSpritePositionWalkable(b, nextBx, nextBy)) {
                     b.x = nextBx;
                     b.y = nextBy;
+                    moved = true;
                 }
+                if (moved) this._emitCrowdBumpFeedback(a, b, overlap);
             }
         }
 
@@ -1138,6 +1178,18 @@ export class IsometricRenderer {
         if (!this.pathfinder || typeof sprite?._screenToTile !== 'function') return true;
         const tile = sprite._screenToTile(x, y);
         return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
+    }
+
+    _emitCrowdBumpFeedback(a, b, overlap = 0) {
+        const now = performance.now();
+        const key = [a.agent?.id || a.x, b.agent?.id || b.x].sort().join('|');
+        if ((this._crowdBumpCooldowns.get(key) || 0) > now) return;
+        this._crowdBumpCooldowns.set(key, now + 650);
+        a.bumpFlash = Math.max(a.bumpFlash || 0, Math.min(1, 0.4 + overlap));
+        b.bumpFlash = Math.max(b.bumpFlash || 0, Math.min(1, 0.4 + overlap));
+        if (this.motionScale > 0) {
+            this.particleSystem.spawn('crowdBump', (a.x + b.x) / 2, (a.y + b.y) / 2 + 6, 2);
+        }
     }
 
     _updateAmbientEffects() {
@@ -1177,12 +1229,14 @@ export class IsometricRenderer {
             now: new Date(renderNow),
             motionScale: this.motionScale,
         });
+        this.buildingRenderer?.setLightingState(atmosphere?.lighting);
+        const viewport = this._screenViewport();
 
         // Clear
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        SpriteRenderer.disableSmoothing(ctx);
+        this._resetScreenTransform(ctx);
+        ctx.clearRect(0, 0, viewport.width, viewport.height);
         this.skyRenderer.draw(ctx, {
-            canvas,
+            canvas: viewport,
             camera: this.camera,
             dt,
             atmosphere,
@@ -1208,19 +1262,18 @@ export class IsometricRenderer {
         // (manifest `lightOverlay`); BuildingSprite falls back to the lighthouse
         // beam when the field is omitted.
         if (this.buildingRenderer && this.assets) {
-            const lights = this.buildingRenderer.getLightSources();
-            const glowScale = atmosphere?.grade?.buildingGlowScale ?? 1;
-            const pulse = (0.10 + 0.05 * Math.sin((this.waterFrame || 0) * 1.27)) * glowScale;
+            const lights = this.buildingRenderer.getLightSources(atmosphere?.lighting);
+            const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
+            const alphaBase = 0.10 * glowScale;
             ctx.save();
             ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = pulse;
             for (const light of lights) {
                 const overlayId = light.overlay || 'atmosphere.light.lighthouse-beam';
                 const overlayImg = this.assets.get(overlayId);
                 if (!overlayImg) continue;
                 const dims = this.assets.getDims(overlayId);
                 if (!dims) continue;
-                const alpha = light.buildingType === 'watchtower' ? pulse * 1.55 : pulse;
+                const alpha = alphaBase * (light.intensity || 1) * (light.buildingType === 'watchtower' ? 1.55 : 1);
                 ctx.globalAlpha = alpha;
                 ctx.drawImage(
                     overlayImg,
@@ -1299,12 +1352,12 @@ export class IsometricRenderer {
 
         // 5. Particles
         this.particleSystem.draw(ctx);
+        this._drawEmptyStateWorldCue(ctx);
         this.harborTraffic?.drawFinaleEffects(ctx, renderNow);
 
         // 6. Screen-space atmosphere, before text overlays. This preserves the
         // diorama mood without lowering final contrast on labels or status badges.
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        SpriteRenderer.disableSmoothing(ctx);
+        this._resetScreenTransform(ctx);
         this._drawAtmosphere(ctx, atmosphere, dt);
         this.camera.applyTransform(ctx);
 
@@ -1319,9 +1372,8 @@ export class IsometricRenderer {
         });
 
         // Reset transform for UI
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        SpriteRenderer.disableSmoothing(ctx);
-        this.harborTraffic?.drawScreenSummary(ctx, canvas, this.camera, renderNow);
+        this._resetScreenTransform(ctx);
+        this.harborTraffic?.drawScreenSummary(ctx, viewport, this.camera, renderNow);
 
         // Debug overlay (Shift+D to toggle) — must run in world space with camera transform.
         if (this.debugOverlay?.enabled) {
@@ -1335,8 +1387,7 @@ export class IsometricRenderer {
                 treeProps: this.treePropSprites,
                 boulderProps: this.boulderPropSprites,
             });
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-            SpriteRenderer.disableSmoothing(ctx);
+            this._resetScreenTransform(ctx);
             this._drawAtmosphereDebug(ctx, atmosphere);
         }
 
@@ -1352,11 +1403,16 @@ export class IsometricRenderer {
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1) {
         const compactOccupied = [];
         const nameOccupied = [];
-        for (const sprite of sprites) {
+        const prioritized = sprites
+            .filter((sprite) => sprite.agent)
+            .sort((a, b) => this._agentLabelPriority(b) - this._agentLabelPriority(a));
+
+        for (const sprite of prioritized) {
             if (!sprite.agent) continue;
 
             sprite.overlaySlot = null;
             sprite.nameTagSlot = null;
+            sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
 
             if (sprite.selected) {
                 compactOccupied.push(this._agentCompactSlotRect(sprite, 0));
@@ -1394,6 +1450,28 @@ export class IsometricRenderer {
                 nameOccupied.push(this._agentNameSlotRect(sprite, nameSlot));
             }
         }
+    }
+
+    _agentLabelPriority(sprite) {
+        if (sprite.selected) return 1000;
+        const status = sprite.agent?.status;
+        const age = performance.now() - (sprite.addedAt || 0);
+        const recentSpawn = age >= 0 && age < 12000;
+        if (status === AgentStatus.WORKING && recentSpawn) return 760;
+        if (recentSpawn) return 620;
+        if (status === AgentStatus.WORKING) return 520;
+        if (status === AgentStatus.WAITING) return 360;
+        return 120;
+    }
+
+    _agentLabelAlpha(sprite, zoom) {
+        if (sprite.selected) return 1;
+        const status = sprite.agent?.status;
+        const priority = this._agentLabelPriority(sprite);
+        const zoomFade = Math.max(0.36, Math.min(1, (zoom - 0.85) / 1.4));
+        const statusFade = status === AgentStatus.WORKING ? 1 : status === AgentStatus.WAITING ? 0.82 : 0.62;
+        const priorityFade = priority >= 600 ? 1 : 0.84;
+        return Math.max(0.28, Math.min(0.92, zoomFade * statusFade * priorityFade));
     }
 
     _collectAgentLabelHitRects(sprites) {
@@ -1485,40 +1563,29 @@ export class IsometricRenderer {
         SpriteRenderer.disableSmoothing(ctx);
         const cached = this._getTerrainCache();
         if (cached) {
-            ctx.drawImage(cached.canvas, cached.bounds.x, cached.bounds.y);
+            ctx.drawImage(cached.canvas, cached.bounds.x, cached.bounds.y, cached.bounds.w, cached.bounds.h);
         }
         this._drawDynamicWaterHighlights(ctx);
     }
 
     _getVisibleTileBounds(margin = 5) {
-        const w = this.canvas.width;
-        const h = this.canvas.height;
-        const c1 = this.camera.screenToTile(0, 0);
-        const c2 = this.camera.screenToTile(w, 0);
-        const c3 = this.camera.screenToTile(0, h);
-        const c4 = this.camera.screenToTile(w, h);
-
-        return {
-            startX: Math.max(0, Math.min(c1.tileX, c2.tileX, c3.tileX, c4.tileX) - margin),
-            endX: Math.min(MAP_SIZE - 1, Math.max(c1.tileX, c2.tileX, c3.tileX, c4.tileX) + margin),
-            startY: Math.max(0, Math.min(c1.tileY, c2.tileY, c3.tileY, c4.tileY) - margin),
-            endY: Math.min(MAP_SIZE - 1, Math.max(c1.tileY, c2.tileY, c3.tileY, c4.tileY) + margin),
-        };
+        return this.camera.getViewportTileBounds(margin);
     }
 
     _getTerrainCache() {
         const bounds = this._terrainCacheBounds();
-        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}|${this.assets ? 'assets' : 'fallback'}`;
+        const dpr = this._screenDpr();
+        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}`;
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
 
         const canvas = document.createElement('canvas');
-        canvas.width = bounds.w;
-        canvas.height = bounds.h;
+        canvas.width = Math.max(1, Math.round(bounds.w * dpr));
+        canvas.height = Math.max(1, Math.round(bounds.h * dpr));
         const cacheCtx = canvas.getContext('2d');
         SpriteRenderer.disableSmoothing(cacheCtx);
-        cacheCtx.setTransform(1, 0, 0, 1, -bounds.x, -bounds.y);
+        cacheCtx.setTransform(dpr, 0, 0, dpr, -bounds.x * dpr, -bounds.y * dpr);
 
         const previousMotionScale = this.motionScale;
         this.motionScale = 0;
@@ -1600,7 +1667,28 @@ export class IsometricRenderer {
                 ctx.stroke();
             }
         }
+        this._drawShorelineReflectionShimmer(ctx, startX, endX, startY, endY);
         ctx.restore();
+    }
+
+    _drawShorelineReflectionShimmer(ctx, startX, endX, startY, endY) {
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.shoreTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+                const edge = this._shoreWaterEdgeMask(x, y);
+                if (edge === 0) continue;
+                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
+                if (seed < 0.32) continue;
+                const frame = this.motionScale ? this.waterFrame : 0;
+                const alpha = 0.05 + Math.max(0, Math.sin(frame * 1.9 + seed * 6.28)) * 0.08;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                ctx.strokeStyle = `rgba(197, 252, 236, ${alpha})`;
+                ctx.lineWidth = 1;
+                this._strokeInsetDiamondEdges(ctx, screenX, screenY, edge, 9);
+            }
+        }
     }
 
     _drawOpenWaterDepthWash(ctx, startX, endX, startY, endY) {
@@ -1758,7 +1846,9 @@ export class IsometricRenderer {
                 const openSea = this._isOpenSeaTile(x, y, openness);
                 if (openness < 0.56 && !harbor && !openSea) continue;
                 const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                const crest = (Math.sin(this.waterFrame * 0.82 + x * 0.42 - y * 0.28 + seed * 2.6) + 1) / 2;
+                const primary = Math.sin(this.waterFrame * 0.82 + x * 0.42 - y * 0.28 + seed * 2.6);
+                const secondary = Math.sin(this.waterFrame * 1.17 - x * 0.24 - y * 0.36 + seed * 5.1);
+                const crest = ((primary * 0.72 + secondary * 0.28) + 1) / 2;
                 const threshold = openSea ? 0.73 : 0.76;
                 if (crest < threshold) continue;
                 const isDeep = this.deepWaterTiles.has(key);
@@ -2574,6 +2664,15 @@ export class IsometricRenderer {
         if (!this.waterTiles.has(`${tileX + 1},${tileY}`)) mask |= 2;
         if (!this.waterTiles.has(`${tileX},${tileY + 1}`)) mask |= 4;
         if (!this.waterTiles.has(`${tileX - 1},${tileY}`)) mask |= 8;
+        return mask;
+    }
+
+    _shoreWaterEdgeMask(tileX, tileY) {
+        let mask = 0;
+        if (this._isOpenWaterTile(tileX, tileY - 1)) mask |= 1;
+        if (this._isOpenWaterTile(tileX + 1, tileY)) mask |= 2;
+        if (this._isOpenWaterTile(tileX, tileY + 1)) mask |= 4;
+        if (this._isOpenWaterTile(tileX - 1, tileY)) mask |= 8;
         return mask;
     }
 
@@ -3606,17 +3705,42 @@ export class IsometricRenderer {
     }
 
     _drawSkyCanopy(ctx, atmosphere = null, dt = 16) {
-        const canvas = this.canvas;
+        const canvas = this._screenViewport();
         if (!canvas || !this.skyRenderer) return;
         ctx.save();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        SpriteRenderer.disableSmoothing(ctx);
+        this._resetScreenTransform(ctx);
         this.skyRenderer.drawCanopy(ctx, { canvas, camera: this.camera, atmosphere, dt });
         ctx.restore();
     }
 
+    _drawEmptyStateWorldCue(ctx) {
+        if (this.agentSprites.size > 1) return;
+        const command = this._getCommandBuilding();
+        if (!command) return;
+        const tileX = command.position.tileX + command.width / 2;
+        const tileY = command.position.tileY + command.height + 0.8;
+        const x = (tileX - tileY) * TILE_WIDTH / 2;
+        const y = (tileX + tileY) * TILE_HEIGHT / 2;
+        const pulse = this.motionScale ? (Math.sin(this.waterFrame * 1.15) + 1) / 2 : 0.45;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.20 + pulse * 0.10;
+        ctx.strokeStyle = '#f6da82';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.ellipse(x, y + 1, 28 + pulse * 5, 9 + pulse * 2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 0.16;
+        ctx.fillStyle = '#8bd7ff';
+        ctx.beginPath();
+        ctx.ellipse(x, y - 9, 9, 17, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
     _drawAtmosphere(ctx, atmosphere = null, dt = 16) {
-        const canvas = this.canvas;
+        const canvas = this._screenViewport();
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
@@ -3624,7 +3748,7 @@ export class IsometricRenderer {
         const grade = atmosphere?.grade || {};
         const zoomAlpha = Math.max(0.16, Math.min(0.46, (3.1 - zoom) / 3.2));
         ctx.globalAlpha = this._quantizedAlpha(Math.min(0.72, zoomAlpha + (grade.overlayAlpha || 0)));
-        ctx.drawImage(this._getAtmosphereVignette(canvas, atmosphere), 0, 0);
+        ctx.drawImage(this._getAtmosphereVignette(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
         ctx.globalAlpha = 1;
 
         this.weatherRenderer?.drawForeground(ctx, { canvas, atmosphere, dt });
@@ -3636,20 +3760,14 @@ export class IsometricRenderer {
         // hint without washing out the sprite underneath.
         if (this.buildingRenderer) {
             ctx.save();
-            const glowScale = atmosphere?.grade?.buildingGlowScale ?? 1;
+            const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
             ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.12 : 0.18) * glowScale);
-            for (const light of this.buildingRenderer.getLightSources()) {
+            for (const light of this.buildingRenderer.getLightSources(atmosphere?.lighting)) {
                 const p = this.camera.worldToScreen(light.x, light.y);
                 if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
                 const radius = light.radius * this.camera.zoom;
-                const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, radius);
-                glow.addColorStop(0, this._withAlpha(light.color, this._quantizedAlpha(0.55 * glowScale)));
-                glow.addColorStop(0.42, this._withAlpha(light.color, this._quantizedAlpha(0.18 * glowScale)));
-                glow.addColorStop(1, this._withAlpha(light.color, 0));
-                ctx.fillStyle = glow;
-                ctx.beginPath();
-                ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
-                ctx.fill();
+                const stamp = this._getLightGlowStamp(light, radius, glowScale * (light.intensity || 1), atmosphere);
+                ctx.drawImage(stamp, p.x - radius, p.y - radius, radius * 2, radius * 2);
             }
             ctx.restore();
         }
@@ -3657,16 +3775,50 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
+    _getLightGlowStamp(light, radius, glowScale = 1, atmosphere = null) {
+        const dpr = this._screenDpr();
+        const phaseBucket = atmosphere?.cacheKey || 'fallback';
+        const key = [
+            Math.round(radius),
+            light.color,
+            this._quantizedAlpha(glowScale),
+            dpr,
+            phaseBucket,
+        ].join('|');
+        const cached = this.lightGradientCache.get(key);
+        if (cached) return cached;
+        if (this.lightGradientCache.size > 240) this.lightGradientCache.clear();
+
+        const size = Math.max(2, Math.ceil(radius * 2));
+        const stamp = document.createElement('canvas');
+        stamp.width = Math.max(1, Math.round(size * dpr));
+        stamp.height = Math.max(1, Math.round(size * dpr));
+        const stampCtx = stamp.getContext('2d');
+        stampCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        const glow = stampCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);
+        glow.addColorStop(0, this._withAlpha(light.color, this._quantizedAlpha(0.55 * glowScale)));
+        glow.addColorStop(0.42, this._withAlpha(light.color, this._quantizedAlpha(0.18 * glowScale)));
+        glow.addColorStop(1, this._withAlpha(light.color, 0));
+        stampCtx.fillStyle = glow;
+        stampCtx.beginPath();
+        stampCtx.arc(radius, radius, radius, 0, Math.PI * 2);
+        stampCtx.fill();
+        this.lightGradientCache.set(key, stamp);
+        return stamp;
+    }
+
     _getAtmosphereVignette(canvas, atmosphere = null) {
-        const cacheKey = `${canvas.width}x${canvas.height}|${atmosphere?.cacheKey || 'fallback'}`;
+        const dpr = this._screenDpr();
+        const cacheKey = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere?.cacheKey || 'fallback'}`;
         if (this.atmosphereVignetteCache && this.atmosphereVignetteCacheKey === cacheKey) {
             return this.atmosphereVignetteCache;
         }
 
         const overlay = document.createElement('canvas');
-        overlay.width = canvas.width;
-        overlay.height = canvas.height;
+        overlay.width = Math.max(1, Math.round(canvas.width * dpr));
+        overlay.height = Math.max(1, Math.round(canvas.height * dpr));
         const overlayCtx = overlay.getContext('2d');
+        overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
         const grade = atmosphere?.grade || {};
         const phase = atmosphere?.phase || 'day';
 

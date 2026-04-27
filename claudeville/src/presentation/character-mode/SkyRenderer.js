@@ -34,7 +34,7 @@ export class SkyRenderer {
         if (!canvas) return;
         const snapshot = atmosphere || this._getFallbackAtmosphere(motionScale);
         const cached = this._getCachedBackground(canvas, snapshot);
-        ctx.drawImage(cached, 0, 0);
+        ctx.drawImage(cached, 0, 0, canvas.width, canvas.height);
 
         if (snapshot.motion?.driftEnabled) {
             this._decorativeCloudOffset = (this._decorativeCloudOffset + dt * CLOUD_DRIFT_PX_PER_MS) % Math.max(1, canvas.width);
@@ -111,12 +111,14 @@ export class SkyRenderer {
     }
 
     _getCachedBackground(canvas, atmosphere) {
-        const key = `${canvas.width}x${canvas.height}|${atmosphere.cacheKey}`;
+        const dpr = canvas._claudeVilleDpr || 1;
+        const key = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere.cacheKey}`;
         if (this.cache && this.cacheKey === key) return this.cache;
         const off = document.createElement('canvas');
-        off.width = canvas.width;
-        off.height = canvas.height;
+        off.width = Math.max(1, Math.round(canvas.width * dpr));
+        off.height = Math.max(1, Math.round(canvas.height * dpr));
         const o = off.getContext('2d');
+        o.setTransform(dpr, 0, 0, dpr, 0, 0);
         this._paintGradient(o, canvas, atmosphere);
         this._paintHorizonWash(o, canvas, atmosphere);
         this._paintStaticWeatherPlate(o, canvas, atmosphere);
@@ -129,8 +131,8 @@ export class SkyRenderer {
         const palette = atmosphere.sky?.palette || {};
         const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
         g.addColorStop(0.00, palette.zenith || '#236eb8');
-        g.addColorStop(0.42, palette.upperBand || '#4aa0dd');
-        g.addColorStop(0.76, palette.midBand || '#86cdf0');
+        g.addColorStop(0.30, palette.upperBand || '#4aa0dd');
+        g.addColorStop(0.65, palette.midBand || '#86cdf0');
         g.addColorStop(1.00, palette.horizon || '#d5f3ff');
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -140,19 +142,27 @@ export class SkyRenderer {
         const palette = atmosphere.sky?.palette || {};
         const alpha = atmosphere.grade?.horizonWash ?? 0.12;
         const horizonGlow = palette.horizonGlow || '196, 235, 255';
-        const y = canvas.height * 0.86;
-        const grad = ctx.createRadialGradient(
-            canvas.width * 0.5,
-            y,
-            0,
-            canvas.width * 0.5,
-            y,
-            Math.max(canvas.width, canvas.height) * 0.72,
-        );
-        grad.addColorStop(0, `rgba(${horizonGlow}, ${alpha})`);
-        grad.addColorStop(1, `rgba(${horizonGlow}, 0)`);
-        ctx.fillStyle = grad;
-        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const farGlow = atmosphere.lighting?.ambientTint || horizonGlow;
+        const layers = [
+            { yFrac: 0.89, radius: 0.86, color: farGlow, alpha: alpha * 0.45 },
+            { yFrac: 0.84, radius: 0.62, color: horizonGlow, alpha: alpha * 0.76 },
+            { yFrac: 0.79, radius: 0.36, color: horizonGlow, alpha: alpha * 0.30 },
+        ];
+        for (const layer of layers) {
+            const y = canvas.height * layer.yFrac;
+            const grad = ctx.createRadialGradient(
+                canvas.width * 0.5,
+                y,
+                0,
+                canvas.width * 0.5,
+                y,
+                Math.max(canvas.width, canvas.height) * layer.radius,
+            );
+            grad.addColorStop(0, `rgba(${layer.color}, ${layer.alpha})`);
+            grad.addColorStop(1, `rgba(${layer.color}, 0)`);
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
     }
 
     _paintStaticWeatherPlate(ctx, canvas, atmosphere) {
@@ -203,19 +213,27 @@ export class SkyRenderer {
         const x = canvas.width * sun.xFrac;
         const y = canvas.height * sun.yFrac;
         const radius = Math.max(18, Math.min(canvas.width, canvas.height) * 0.035);
-        const glowRadius = radius * 4.5;
+        const lighting = atmosphere.lighting || {};
+        const warmth = lighting.sunWarmth ?? 0;
+        const bloomScale = lighting.sunBloomScale ?? 1;
+        const glowRadius = radius * (3.6 + warmth * 3.0) * bloomScale;
+        const warmG = Math.round(232 - warmth * 42);
+        const warmB = Math.round(170 - warmth * 58);
+        const hazeG = Math.round(156 - warmth * 34);
 
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
         const glow = ctx.createRadialGradient(x, y, 0, x, y, glowRadius);
-        glow.addColorStop(0, `rgba(255, 244, 186, ${0.34 * sun.alpha})`);
-        glow.addColorStop(0.34, `rgba(206, 232, 255, ${0.15 * sun.alpha})`);
+        glow.addColorStop(0, `rgba(255, ${warmth ? warmG : 244}, ${warmth ? warmB : 186}, ${0.34 * sun.alpha})`);
+        glow.addColorStop(0.38, warmth
+            ? `rgba(255, ${hazeG}, 108, ${0.18 * sun.alpha * bloomScale})`
+            : `rgba(206, 232, 255, ${0.15 * sun.alpha})`);
         glow.addColorStop(1, 'rgba(206, 232, 255, 0)');
         ctx.fillStyle = glow;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
         ctx.globalAlpha = sun.alpha;
-        ctx.fillStyle = '#fff1a8';
+        ctx.fillStyle = warmth > 0.05 ? '#ffd28f' : '#fff1a8';
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fill();
@@ -236,32 +254,35 @@ export class SkyRenderer {
             const y = canvas.height * moon.yFrac - dims.h / 2;
             ctx.save();
             ctx.globalAlpha = moon.alpha;
-            this._drawMoonGlow(ctx, canvas, moon);
+            this._drawMoonGlow(ctx, canvas, moon, atmosphere);
             ctx.drawImage(img, Math.round(x), Math.round(y));
             ctx.restore();
             return;
         }
-        this._drawCodeMoon(ctx, canvas, moon);
+        this._drawCodeMoon(ctx, canvas, moon, atmosphere);
     }
 
-    _drawMoonGlow(ctx, canvas, moon) {
+    _drawMoonGlow(ctx, canvas, moon, atmosphere = null) {
         const x = canvas.width * moon.xFrac;
         const y = canvas.height * moon.yFrac;
         const radius = Math.max(42, Math.min(canvas.width, canvas.height) * 0.10);
-        const glow = ctx.createRadialGradient(x, y, 0, x, y, radius);
-        glow.addColorStop(0, `rgba(166, 205, 255, ${0.20 * moon.alpha})`);
+        const corona = atmosphere?.lighting?.beaconIntensity ?? 0.5;
+        const glow = ctx.createRadialGradient(x, y, 0, x, y, radius * 1.42);
+        glow.addColorStop(0, `rgba(166, 205, 255, ${0.18 * moon.alpha})`);
+        glow.addColorStop(0.56, `rgba(190, 218, 255, ${0.08 * moon.alpha * corona})`);
+        glow.addColorStop(0.74, `rgba(230, 238, 255, ${0.045 * moon.alpha * corona})`);
         glow.addColorStop(1, 'rgba(166, 205, 255, 0)');
         ctx.fillStyle = glow;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
     }
 
-    _drawCodeMoon(ctx, canvas, moon) {
+    _drawCodeMoon(ctx, canvas, moon, atmosphere = null) {
         const x = canvas.width * moon.xFrac;
         const y = canvas.height * moon.yFrac;
         const r = Math.max(14, Math.min(canvas.width, canvas.height) * 0.026);
         ctx.save();
         ctx.globalAlpha = moon.alpha;
-        this._drawMoonGlow(ctx, canvas, moon);
+        this._drawMoonGlow(ctx, canvas, moon, atmosphere);
         ctx.fillStyle = '#cfe4ff';
         ctx.beginPath();
         ctx.arc(x, y, r, 0, Math.PI * 2);
