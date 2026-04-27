@@ -150,11 +150,12 @@ export class AgentSprite {
             if (this.agent.status === AgentStatus.WORKING && (seed % 10) < 7) {
                 building = BUILDING_DEFS[seed % BUILDING_DEFS.length];
             } else {
-                const tx = 10 + this._noise(seed, 3) * 20;
-                const ty = 10 + this._noise(seed, 7) * 20;
-                const target = new Position(tx, ty);
+                const tile = this.pathfinder
+                    ? this.pathfinder.sampleWalkable(this._noise(seed, 3))
+                    : { tileX: 10 + this._noise(seed, 3) * 20, tileY: 10 + this._noise(seed, 7) * 20 };
+                const target = new Position(tile.tileX, tile.tileY);
                 const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
-                this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
+                this._assignTarget(screen.x, screen.y, tile.tileX, tile.tileY);
                 this.moving = true;
                 this.waitTimer = 0;
                 return;

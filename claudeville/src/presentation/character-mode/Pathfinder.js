@@ -4,11 +4,27 @@ const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -
 
 export class Pathfinder {
     constructor(grid) {
-        this.grid = grid; // Uint8Array, 1 = walkable
+        this.grid = grid;
+        this.walkableTiles = this._buildWalkableList(grid);
+    }
+
+    _buildWalkableList(grid) {
+        const tiles = [];
+        for (let y = 0; y < MAP_SIZE; y++) {
+            for (let x = 0; x < MAP_SIZE; x++) {
+                if (grid[y * MAP_SIZE + x] === 1) tiles.push({ tileX: x, tileY: y });
+            }
+        }
+        return tiles;
+    }
+
+    sampleWalkable(rng) {
+        return this.walkableTiles[Math.min(this.walkableTiles.length - 1, Math.floor(rng * this.walkableTiles.length))];
     }
 
     setGrid(grid) {
         this.grid = grid;
+        this.walkableTiles = this._buildWalkableList(grid);
     }
 
     isWalkable(tileX, tileY) {
