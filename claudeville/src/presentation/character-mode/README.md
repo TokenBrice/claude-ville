@@ -22,6 +22,9 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `Pathfinder.js` | Grid pathfinding over the walkability map. |
 | `HarborTraffic.js` | Harbor/ship motion and git-event-aware harbor activity. |
 | `LandmarkActivity.js` | Harbor/landmark event extraction and activity state updates tied to git-event streams. |
+| `AgentEventStream.js` | Shared observer that derives tool, subagent, team, and chat semantic events from `agent:*` updates. |
+| `RelationshipState.js` | Debounced relationship snapshot for parent/child, team, arrival/departure, and chat-pair consumers. |
+| `RitualConductor.js` | Capped, reduced-motion-aware scheduler for future tool ritual visuals. |
 | `ParticleSystem.js` | Particle emitters and ambient effects. Honors `prefers-reduced-motion`. |
 | `Minimap.js` | Minimap rendering and click-to-pan; mounted into the canvas's parent node. |
 
@@ -123,3 +126,4 @@ Selection events (`agent:selected`, `agent:deselected`) are bridged in `App.js:1
 - The terrain is precomputed into `terrainSeed` and a `terrainCache` canvas; only water/agents/effects redraw per frame. Adding terrain variation should extend the cache, not the per-frame path.
 - Event-bus subscriptions (`agent:added`, `agent:updated`, `agent:removed`) are stored in `_unsubscribers` and torn down in `hide()`. New subscriptions in this directory should follow the same pattern to avoid leaks across mode toggles.
 - `ParticleSystem.setMotionEnabled(false)` is set when `(prefers-reduced-motion: reduce)` matches; respect this when adding new effects.
+- New motion-bearing features must follow [`../../../../docs/motion-budget.md`](../../../../docs/motion-budget.md): check `motionScale` before allocating animation resources, declare a pulse band, and ship a static reduced-motion fallback.

@@ -145,6 +145,9 @@ Key files:
 - `SceneryEngine.js`: authored and generated water, shore, bridges, vegetation, boulders, and walkability.
 - `Pathfinder.js`: grid pathfinding over the walkability map.
 - `HarborTraffic.js`: ship/harbor motion and git-event-aware harbor activity.
+- `AgentEventStream.js`: shared presentation observer that derives tool, subagent, team, and chat semantic events from `agent:*` updates.
+- `RelationshipState.js`: debounced relationship snapshot for parent/child, team, arrival/departure, and chat-pair consumers.
+- `RitualConductor.js`: capped, reduced-motion-aware scheduler for future tool ritual visuals.
 
 Buildings from `src/config/buildings.js` (nine total):
 
@@ -159,6 +162,8 @@ Buildings from `src/config/buildings.js` (nine total):
 - Harbor Master: commit ships and push departures.
 
 Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears renderer selection and stops follow, but the activity panel closes through its own close action or when the selected agent is removed. Agents using `SendMessage` can move toward a matched recipient and show chat state.
+
+Motion-bearing World mode work must follow [`../docs/motion-budget.md`](../docs/motion-budget.md): check `motionScale` before allocating animation resources, declare a pulse band, and ship a static reduced-motion fallback.
 
 ## Sprite Generation
 

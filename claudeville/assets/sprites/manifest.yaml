@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-codex-engineer-and-north-lagoon-v1"
+  assetVersion: "2026-04-28-codex-engineer-north-lagoon-claude-sorcerers-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -14,30 +14,33 @@ characters:
   # below is the engine cell size, not the generation hint.
   - id: agent.claude.opus
     tool: create_character
-    prompt: "Claude Opus final-form white-haired elven archmage, long flowing silver-white hair, deep ivory and midnight-blue ceremonial robe, ornate gold and copper trim, wide sleeves, rune-embroidered mantle, luminous blue eyes, small golden crescent lantern wand or short crystal staff held close to body, regal old-school RPG wizard silhouette, no wings, no horns, no tail, no demon, no succubus, no revealing outfit"
+    prompt: "Claude Opus female accomplished arcane master, long silver-white hair, ivory and midnight-blue ceremonial robe, ornate gold and copper arcane trim, rune-embroidered mantle, wide celestial archmage hat, crystal-topped staff held close to body, subtle luminous aura and floating motes near shoulders, regal old-school RPG master sorceress silhouette, no wings, no horns, no tail, no demon, no succubus, no revealing outfit"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
     anchor: [46, 80]
+    mode: pro
 
   - id: agent.claude.sonnet
     tool: create_character
-    prompt: "Claude Sonnet true wizard archmage, regal blue-violet robes with silver and gold rune trim, tall pointed wizard hat, flowing star-lined cloak, glowing crystal staff held close to body, chained spellbook at belt, bright runes around hands, powerful old-school RPG wizard silhouette, no wings, no angel armor, no warrior plate armor"
+    prompt: "Claude Sonnet female mid-tier wizard, deep violet and cobalt robes with silver rune trim, pointed wizard hat, star-lined cloak, crystal-topped staff held close to body, chained spellbook at belt, controlled blue-violet hand runes, elegant seasoned mage stance, no wings, no angel armor, no warrior plate armor, no revealing outfit"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
     anchor: [46, 80]
+    mode: pro
 
   - id: agent.claude.haiku
     tool: create_character
-    prompt: "Claude Haiku apprentice mage, small compact chibi silhouette, oversized amber pointed hood and short apprentice robe, bronze rune clasp, leather satchel of scrolls, tiny spellbook at belt, short wooden wand held close to body, warm novice magic spark, humble old-school RPG apprentice silhouette, no wings, no crown, no heavy armor"
+    prompt: "Claude Haiku female lightest model magician apprentice, green dominant palette with moss green hood, emerald short apprentice robe, pale mint scarf, bronze rune clasp, leather satchel of scrolls, tiny spellbook at belt, short wooden wand held close to body with small green magic spark, compact humble novice sorcerer silhouette, no wings, no crown, no heavy armor, no revealing outfit"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
     anchor: [46, 80]
+    mode: pro
 
   - id: agent.codex.gpt55
     tool: create_character
