@@ -4,7 +4,22 @@
  */
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 
-const SPRITE_ASSET_VERSION = '2026-04-26-visual-revamp';
+let SPRITE_ASSET_VERSION_PROMISE = null;
+async function getSpriteAssetVersion() {
+    if (!SPRITE_ASSET_VERSION_PROMISE) {
+        SPRITE_ASSET_VERSION_PROMISE = fetch('assets/sprites/manifest.yaml')
+            .then(r => r.text())
+            .then(text => {
+                const m = text.match(/^\s*assetVersion:\s*"([^"]+)"/m);
+                return m ? m[1] : 'unknown';
+            })
+            .catch(() => 'unknown');
+    }
+    return SPRITE_ASSET_VERSION_PROMISE;
+}
+
+let SPRITE_ASSET_VERSION = '2026-04-26-visual-revamp'; // overwritten asynchronously on first load
+getSpriteAssetVersion().then(v => { SPRITE_ASSET_VERSION = v; });
 
 export class AvatarCanvas {
     constructor(agent) {
@@ -302,6 +317,17 @@ export class AvatarCanvas {
             return;
         }
 
+        if (identity.modelClass === 'haiku') {
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.moveTo(-3, 4);
+            ctx.lineTo(3, 4);
+            ctx.lineTo(0, 8);
+            ctx.closePath();
+            ctx.fill();
+            return;
+        }
+
         if (identity.modelClass === 'spark') {
             ctx.fillStyle = accent;
             ctx.beginPath();
@@ -364,6 +390,20 @@ export class AvatarCanvas {
         } else if (identity.effortTier === 'low') {
             ctx.fillStyle = trim;
             ctx.fillRect(-2, -13, 4, 2);
+        }
+
+        if (identity.modelClass === 'haiku') {
+            // small hooded cap, no brim — apprentice tier
+            ctx.fillStyle = trim;
+            ctx.beginPath();
+            ctx.moveTo(-4, -10);
+            ctx.lineTo(0, -13);
+            ctx.lineTo(4, -10);
+            ctx.lineTo(2, -7);
+            ctx.lineTo(-2, -7);
+            ctx.closePath();
+            ctx.fill();
+            return;
         }
 
         if (identity.family === 'claude') {
