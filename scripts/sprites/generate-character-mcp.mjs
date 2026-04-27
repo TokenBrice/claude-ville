@@ -2,7 +2,7 @@
 // Assemble a ClaudeVille character sheet (8 dirs × 10 rows × 92px = 736×920)
 // from a pixellab MCP character ZIP.
 //
-// Pixellab ZIP layout (verified 2026-04-28):
+// Pixellab ZIP layout (verified 2026-04-27):
 //   metadata.json
 //   rotations/<dir>.png                                          (S × S, S = source canvas)
 //   animations/animating-<uuid>/<dir>/frame_NNN.png              (S × S each)

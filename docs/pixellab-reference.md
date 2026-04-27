@@ -11,7 +11,7 @@ For tactical "how do I run the validation script" questions, stay in `scripts/sp
 
 ## Tier-3 budget
 
-ClaudeVille is on **Tier 3 (Pixel Architect)**: 10,000 generations per month, resets near the 25th. Recent utilization runs around 3%, so headroom is generous. Spend deliberately on quality, not volume — do not over-engineer caching to save twenty generations.
+As of 2026-04-27, ClaudeVille is believed to be on **Tier 3 (Pixel Architect)**: 10,000 generations per month, resets near the 25th. Recent utilization was around 3%, so headroom was generous at the time this was written. Before a broad asset bake, verify the current plan and remaining generations with `GET https://api.pixellab.ai/v2/balance` or the PixelLab account page. Spend deliberately on quality, not volume — do not over-engineer caching to save twenty generations.
 
 Approximate cost per asset family (so an agent can sanity-check before kicking off a bulk bake):
 
@@ -136,12 +136,18 @@ You need to bake or edit X. Use this branching:
 
 ## Async / job lifecycle
 
-All MCP creation tools and their REST equivalents at `v2/*` return **202 Accepted** with a job, character, or tile ID. Only sync exception: REST `create-image-pixflux` / `pixen` / `bitforge` return 200 with image data inline.
+Most MCP creation tools and several REST `v2/*` endpoints are asynchronous, but response status and wrapper shape vary by endpoint. Treat the official endpoint docs as the source of truth: some async endpoints return `202 Accepted`, others return `200` with a queued job ID, and some image endpoints return `200` with image data inline.
+
+Common patterns:
+
+- REST `create-image-pixflux` / `pixen` / `bitforge`: usually `200` with image data inline.
+- Character creation and animation: persistent character or animation records; poll `get_character`, and use the ZIP export when all required animations are complete.
+- MCP isometric tiles, map objects, tilesets, and tiles-pro: usually return an ID or job handle; poll the matching `get_*` tool until the image payload is ready.
 
 Status codes:
 
 - **200** — ready, payload available
-- **202** — accepted, processing
+- **202** — accepted, processing; poll the returned ID/job
 - **423** — locked, still processing → poll again
 - **429** — too many concurrent jobs → back off and retry
 - **402** — insufficient credits (rare on Tier 3 but possible)
@@ -153,7 +159,7 @@ Poll cadence:
 - Characters and full animation rigs: every 60s; full bake takes 5–10 min.
 - Isometric tiles, map objects, single-image jobs: every 10–15s.
 
-Character ZIP layout (verified 2026-04-28 in `scripts/sprites/generate-character-mcp.mjs`):
+Character ZIP layout (verified 2026-04-27 in `scripts/sprites/generate-character-mcp.mjs`):
 
 ```
 metadata.json
@@ -205,7 +211,9 @@ Known `template_animation_id` values, confirmed across docs and repo as of 2026-
 
 ## Style anchor and prompt building
 
-The `manifest.yaml` `style.anchor` field is concatenated into every generation prompt at call time (handled by `scripts/sprites/generate-pixellab-revamp.mjs:27` for REST and equivalent code on the MCP path). It locks the visual tone; do not duplicate its content into per-asset prompts.
+The `manifest.yaml` `style.anchor` field is the intended source of truth for generation prompt tone. Use it when making MCP calls manually or writing new generators, and do not duplicate its content into per-asset prompts.
+
+Current implementation caveat: `scripts/sprites/generate-pixellab-revamp.mjs` still uses a hardcoded `STYLE` constant rather than reading `manifest.yaml`. If you update the manifest style anchor and rely on the REST revamp script, either update that constant too or factor style-anchor loading into shared code first.
 
 **Encode in the prompt (description):**
 
@@ -236,7 +244,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 7. **`isometric_tile_shape` defaults to `block`.** That gives ~50% canvas height of "depth" and clips small icons. For overlays and floor rings, pass `thin tile` explicitly.
 8. **Direction set must match across `create_character` and `animate_character`.** If create was 8-directional, animate must request the same 8 directions, or the sheet is incomplete.
 9. **Cache busting.** When PNGs change, bump `style.assetVersion` in `manifest.yaml`. Browsers cache aggressively; agents should never claim "the change is live" without confirming the version bump.
-10. **Response wrapper shape varies.** The API standard wrapper is `{ success, data, error, usage }` and image data lands at `data.image` or `data.images[0]` depending on endpoint. `generate-pixellab-revamp.mjs:320` reads `json?.image || json?.data?.image || json?.images?.[0] || json?.data?.images?.[0]` to handle all variants. Re-use that fallback chain for new REST callers.
+10. **Response wrapper shape varies.** The API standard wrapper is `{ success, data, error, usage }`, but some endpoints return image data at top level while others put it under `data`. `generate-pixellab-revamp.mjs` handles common variants in `pixflux()` with the fallback chain `json?.image || json?.data?.image || json?.images?.[0] || json?.data?.images?.[0]`. Re-use that pattern for new REST callers.
 
 ## Existing repo scripts
 
@@ -333,4 +341,4 @@ For the full revamp script that handles edge-color cleanup and grid composition,
 - **Dual-grid 15-tileset** — alternative tileset packing exposed by `create-tileset`.
 - **Oblique projection** — non-isometric angled projection (Tibia-style); not used in ClaudeVille.
 - **Isometric (PixelLab semantics)** — true isometric (120° axes); set `view: 'low top-down', isometric: true` for the ClaudeVille look.
-- **Tier-3 / Pixel Architect** — current subscription. 10,000 generations/month.
+- **Tier-3 / Pixel Architect** — subscription tier believed current as of 2026-04-27. Verify with `/v2/balance` or the PixelLab account page before large batches.
