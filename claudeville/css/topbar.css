@@ -366,3 +366,80 @@
         inset 0 1px 0 rgba(255, 226, 138, 0.1),
         inset 0 -1px 0 rgba(0, 0, 0, 0.35);
 }
+
+@media (max-width: 700px) {
+    .topbar {
+        height: auto;
+        min-height: 54px;
+        flex-wrap: wrap;
+        align-content: center;
+        row-gap: 6px;
+        padding: 6px 8px;
+        overflow: visible;
+    }
+
+    .topbar__left {
+        flex: 1 1 auto;
+        min-width: 0;
+    }
+
+    .topbar__right {
+        flex: 0 0 auto;
+        margin-left: auto;
+    }
+
+    .topbar__center {
+        order: 3;
+        width: 100%;
+        gap: 8px;
+        overflow-x: auto;
+        padding-bottom: 2px;
+        scrollbar-width: none;
+    }
+
+    .topbar__center::-webkit-scrollbar {
+        display: none;
+    }
+
+    .topbar__stat {
+        min-width: 52px;
+        padding: 4px 6px;
+    }
+
+    .topbar__badges {
+        gap: 6px;
+    }
+
+    .topbar__badge {
+        padding: 4px 6px;
+    }
+
+    .topbar__divider,
+    .topbar__account,
+    .topbar__quota {
+        flex: 0 0 auto;
+    }
+}
+
+@media (max-width: 520px) {
+    .topbar__logo {
+        font-size: 10px;
+        letter-spacing: 1px;
+    }
+
+    .topbar__version {
+        display: none;
+    }
+
+    .topbar__mode-btn {
+        font-size: 7px;
+        padding: 6px 8px;
+    }
+
+    .topbar__settings-btn {
+        width: 30px;
+        height: 30px;
+        margin-left: 2px;
+        font-size: 14px;
+    }
+}
