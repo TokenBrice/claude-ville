@@ -104,9 +104,12 @@ export class AgentSprite {
     _pickTarget() {
         // Move to the partner position when there is a chat partner
         if (this.chatPartner) {
-            this.targetX = this.chatPartner.x + (this.x < this.chatPartner.x ? -25 : 25);
-            this.targetY = this.chatPartner.y;
-            this.waypoints = [];
+            const offsetX = this.x < this.chatPartner.x ? -25 : 25;
+            const chatTargetX = this.chatPartner.x + offsetX;
+            const chatTargetY = this.chatPartner.y;
+            const targetTile = this._screenToTile(chatTargetX, chatTargetY);
+            this._lastPathTileKey = null; // force fresh path on every chat entry
+            this._assignTarget(chatTargetX, chatTargetY, targetTile.tileX, targetTile.tileY);
             this.moving = true;
             this.waitTimer = 0;
             return;
@@ -260,10 +263,12 @@ export class AgentSprite {
                 }
                 return;
             }
-            // Refresh target when the partner position changes
-            this.targetX = this.chatPartner.x + (this.x < this.chatPartner.x ? -25 : 25);
-            this.targetY = this.chatPartner.y;
-            this.waypoints = [];
+            // Refresh target when the partner position changes — route via pathfinder.
+            const offsetX = this.x < this.chatPartner.x ? -25 : 25;
+            const chatTargetX = this.chatPartner.x + offsetX;
+            const chatTargetY = this.chatPartner.y;
+            const chatTargetTile = this._screenToTile(chatTargetX, chatTargetY);
+            this._assignTarget(chatTargetX, chatTargetY, chatTargetTile.tileX, chatTargetTile.tileY);
         }
 
         // Reroute immediately when status or fresh tool changes the intended building.
