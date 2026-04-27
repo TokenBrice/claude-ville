@@ -79,6 +79,7 @@ export class AgentSprite {
         this.bridgeTiles = bridgeTiles;
         this.waypoints = [];
         this._lastPathTileKey = null;
+        this._pathAgeFrames = 0;
 
         // Guard: if the agent spawns on a non-walkable tile (e.g. water), nudge to
         // the nearest walkable tile so _pickTarget can compute a valid first path.
@@ -189,9 +190,11 @@ export class AgentSprite {
         }
         const fromTile = this._screenToTile(this.x, this.y);
         const tileKey = `${Math.round(targetTileX)},${Math.round(targetTileY)}`;
-        if (tileKey === this._lastPathTileKey && this.waypoints.length > 0) {
+        if (tileKey === this._lastPathTileKey && this.waypoints.length > 0 && this._pathAgeFrames < 30) {
+            this._pathAgeFrames++;
             return;
         }
+        this._pathAgeFrames = 0;
         this._lastPathTileKey = tileKey;
         const tilePath = this.pathfinder.findPath(
             fromTile,
