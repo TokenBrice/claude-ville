@@ -859,7 +859,7 @@ These issues were identified during the exploration but are deliberately exclude
   }
 
   sampleWalkable(rng) {
-      return this.walkableTiles[Math.floor(rng * this.walkableTiles.length)];
+      return this.walkableTiles[Math.min(this.walkableTiles.length - 1, Math.floor(rng * this.walkableTiles.length))];
   }
   ```
 
@@ -882,7 +882,9 @@ These issues were identified during the exploration but are deliberately exclude
 
 - [ ] **Step 4: Update `_pickTarget` in `AgentSprite` to use `sampleWalkable`**
 
-  The current random ground branch (lines 127–135) reads:
+  **Note:** Line numbers in this plan are approximate — use the literal code blocks below as authoritative anchors, not the line numbers.
+
+  The current random ground branch (find it by searching for the literal text) reads:
   ```js
   const tx = 10 + this._noise(seed, 3) * 20;
   const ty = 10 + this._noise(seed, 7) * 20;
@@ -1081,14 +1083,20 @@ These issues were identified during the exploration but are deliberately exclude
   import { DebugOverlay } from './DebugOverlay.js';
   ```
 
-- [ ] **Step 3: Instantiate and wire keypress in `IsometricRenderer` constructor**
+- [ ] **Step 3: Instantiate `DebugOverlay` in the constructor and wire keypress in `show()`**
 
   In the constructor, after `this._unsubscribers = [];` (the last line before the closing brace of the constructor), add:
   ```js
   this.debugOverlay = new DebugOverlay();
-  this._onKeyDown = (e) => { if (e.key === 'd' && e.shiftKey) this.debugOverlay.toggle(); };
+  ```
+
+  Then in `show()`, after the `canvas.addEventListener('mousemove', this._onMouseMoveMain);` line (around line 669), add the keypress listener:
+  ```js
+  this._onKeyDown = (e) => { if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle(); };
   window.addEventListener('keydown', this._onKeyDown);
   ```
+
+  Note: `e.code === 'KeyD'` is used instead of `e.key` because `Shift+D` produces `e.key === 'D'` (uppercase) on most platforms, while `e.code` is always the physical key regardless of modifiers.
 
 - [ ] **Step 4: Call `debugOverlay.draw` at the end of `_render`**
 
