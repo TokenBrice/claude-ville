@@ -47,13 +47,6 @@ const COMMAND_CENTER_DECORATION = [
     { type: 'guardpost', localX: 2.5, localY: 2.5 },
 ];
 const AMBIENT_GROUND_PROPS = [
-    // Harbor/lighthouse: authored dock props keep commit ships tied to the
-    // Harbor Master while the lighthouse reads as a separate sea beacon.
-    { tileX: 33.2, tileY: 21.3, type: 'harborCrates' },
-    { tileX: 36.2, tileY: 21.8, type: 'harborCrates' },
-    { tileX: 32.2, tileY: 20.6, type: 'harborCrane' },
-    { tileX: 37.6, tileY: 20.6, type: 'harborCrane' },
-
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
     { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
     { tileX: 25.4, tileY: 29.6, type: 'lantern' },
@@ -1543,14 +1536,75 @@ export class IsometricRenderer {
             const bInfo = this.bridgeTiles.get(key);
             const isDoc = bInfo?.kind === 'dock';
             if (isDoc) {
-                const orientation = (bInfo?.orientation || 'EW').toLowerCase();
-                if (this.sprites) this.sprites.drawSprite(ctx, `dock.${orientation}`, screenX, screenY);
+                if (bInfo?.style === 'causeway') {
+                    this._drawHarborCausewayTile(ctx, screenX, screenY, bInfo.orientation || 'EW', seed);
+                } else {
+                    const orientation = (bInfo?.orientation || 'EW').toLowerCase();
+                    if (this.sprites) this.sprites.drawSprite(ctx, `dock.${orientation}`, screenX, screenY);
+                }
             }
         } else if (this.waterTiles.has(key) && !this.terrain) {
             const shimmer = this.motionScale ? Math.sin(this.waterFrame * 2 + tileX * 0.5 + tileY * 0.3) * 0.055 + 0.055 : STATIC_WATER_SHIMMER;
             ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
             ctx.fill();
         }
+    }
+
+    _drawHarborCausewayTile(ctx, screenX, screenY, orientation = 'EW', seed = 0) {
+        const halfW = TILE_WIDTH * 0.46;
+        const halfH = TILE_HEIGHT * 0.31;
+        const lift = 2;
+        ctx.save();
+        ctx.translate(screenX, screenY - lift);
+
+        ctx.globalAlpha = 0.72;
+        ctx.fillStyle = 'rgba(29, 20, 14, 0.52)';
+        ctx.beginPath();
+        ctx.moveTo(0, -halfH + 4);
+        ctx.lineTo(halfW + 5, 2);
+        ctx.lineTo(0, halfH + 7);
+        ctx.lineTo(-halfW - 5, 2);
+        ctx.closePath();
+        ctx.fill();
+
+        ctx.globalAlpha = 0.95;
+        ctx.fillStyle = '#8f7754';
+        ctx.strokeStyle = '#2d2118';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(0, -halfH);
+        ctx.lineTo(halfW, 0);
+        ctx.lineTo(0, halfH);
+        ctx.lineTo(-halfW, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.globalAlpha = 0.72;
+        ctx.strokeStyle = '#c9b78b';
+        ctx.lineWidth = 1;
+        const cross = orientation === 'NS'
+            ? [[-17, -8, 15, 8], [-10, -13, 22, 3], [-22, -2, 10, 14]]
+            : [[-19, 6, 13, -10], [-9, 12, 23, -4], [-24, -2, 7, -16]];
+        for (const [x1, y1, x2, y2] of cross) {
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            ctx.lineTo(x2, y2);
+            ctx.stroke();
+        }
+
+        ctx.globalAlpha = 0.86;
+        ctx.strokeStyle = '#46311f';
+        ctx.lineWidth = 1.2;
+        for (const side of [-1, 1]) {
+            const bob = this.motionScale ? Math.sin(this.waterFrame * 1.8 + seed * 8 + side) * 0.5 : 0;
+            ctx.beginPath();
+            ctx.moveTo(side * (halfW - 4), -1 + bob);
+            ctx.lineTo(side * (halfW - 7), -14 + bob);
+            ctx.stroke();
+        }
+
+        ctx.restore();
     }
 
     _buildBridgeSpans() {

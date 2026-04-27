@@ -132,66 +132,14 @@ export const BRIDGE_HINTS = [
     { tileX: 22, tileY: 25, orientation: 'NS' }, // Command/Tasks bridge into the production row
 ];
 
-// Harbor decks are water tiles with dock planks. They are intentionally
-// separate from BRIDGE_HINTS so river crossings and harbor decking stay distinct.
+// The generated Harbor Master sprite now carries the quay, pier fingers, and
+// visual dock surface. Keep authored dock tiles out of the bay so the runtime
+// commit ships can gather around the sprite without a second grid of planks.
 export const HARBOR_DOCK_TILES = [
-    // Harbor causeway: a narrow bridge from the archive bank to the harbor
-    // docks, separate from the wider south river crossings.
-    { tileX: 29, tileY: 19, orientation: 'EW' },
-    { tileX: 30, tileY: 19, orientation: 'EW' },
-    { tileX: 31, tileY: 19, orientation: 'EW' },
-    { tileX: 32, tileY: 19, orientation: 'EW' },
-    { tileX: 33, tileY: 19, orientation: 'EW' },
-    { tileX: 34, tileY: 19, orientation: 'EW' },
-    { tileX: 35, tileY: 19, orientation: 'EW' },
-    { tileX: 36, tileY: 19, orientation: 'EW' },
-    { tileX: 37, tileY: 19, orientation: 'EW' },
-    { tileX: 38, tileY: 19, orientation: 'EW' },
-    { tileX: 39, tileY: 19, orientation: 'EW' },
-
-    // North beacon approach plus two berth fingers on the open-sea side.
-    { tileX: 33, tileY: 13, orientation: 'NS' },
-    { tileX: 33, tileY: 14, orientation: 'NS' },
-    { tileX: 33, tileY: 15, orientation: 'NS' },
-    { tileX: 33, tileY: 16, orientation: 'NS' },
-    { tileX: 34, tileY: 12, orientation: 'EW' },
-    { tileX: 34, tileY: 13, orientation: 'EW' },
-    { tileX: 34, tileY: 14, orientation: 'NS' },
-    { tileX: 34, tileY: 17, orientation: 'NS' },
-    { tileX: 37, tileY: 14, orientation: 'NS' },
-    { tileX: 37, tileY: 15, orientation: 'NS' },
-    { tileX: 37, tileY: 16, orientation: 'NS' },
-    { tileX: 37, tileY: 17, orientation: 'NS' },
-    { tileX: 37, tileY: 18, orientation: 'NS' },
-    { tileX: 38, tileY: 17, orientation: 'EW' },
-    { tileX: 39, tileY: 15, orientation: 'NS' },
-    { tileX: 39, tileY: 16, orientation: 'NS' },
-    { tileX: 39, tileY: 17, orientation: 'NS' },
-    { tileX: 39, tileY: 18, orientation: 'NS' },
-    { tileX: 38, tileY: 20, orientation: 'EW' },
-    { tileX: 39, tileY: 20, orientation: 'NS' },
-    { tileX: 39, tileY: 21, orientation: 'NS' },
-    { tileX: 39, tileY: 22, orientation: 'NS' },
-
-    // Harbor mouth decking: explicit docks avoid the bridge-span slab that
-    // would otherwise cover the bay.
-    { tileX: 32, tileY: 20, orientation: 'EW' },
-    { tileX: 33, tileY: 20, orientation: 'EW' },
-    { tileX: 34, tileY: 20, orientation: 'EW' },
-    { tileX: 35, tileY: 20, orientation: 'EW' },
-    { tileX: 32, tileY: 21, orientation: 'EW' },
-    { tileX: 33, tileY: 21, orientation: 'EW' },
-    { tileX: 34, tileY: 21, orientation: 'EW' },
-    { tileX: 35, tileY: 21, orientation: 'EW' },
-
-    // Outer lower berth for boats entering from the river mouth.
-    { tileX: 36, tileY: 21, orientation: 'EW' },
-    { tileX: 37, tileY: 21, orientation: 'EW' },
-    { tileX: 38, tileY: 21, orientation: 'EW' },
-    { tileX: 36, tileY: 22, orientation: 'EW' },
-    { tileX: 37, tileY: 22, orientation: 'EW' },
-    { tileX: 38, tileY: 22, orientation: 'EW' },
-    { tileX: 39, tileY: 22, orientation: 'EW' },
+    { tileX: 29, tileY: 19, orientation: 'EW', style: 'causeway' },
+    { tileX: 30, tileY: 19, orientation: 'EW', style: 'causeway' },
+    { tileX: 31, tileY: 19, orientation: 'EW', style: 'causeway' },
+    { tileX: 31, tileY: 20, orientation: 'NS', style: 'causeway' },
 ];
 
 // Large authored forest-floor masses. These sit under the sprite trees and

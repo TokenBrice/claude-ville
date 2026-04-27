@@ -286,6 +286,7 @@ export class SceneryEngine {
             this.bridgeTiles.set(key, {
                 orientation: dock.orientation || this._inferOrientation(dock.tileX, dock.tileY),
                 kind: 'dock',
+                style: dock.style || 'plank',
             });
         }
     }
