@@ -522,6 +522,24 @@ props:
     size: 32
     anchor: [16, 18]
 
+  - id: prop.runeFountain
+    tool: isometric_tile
+    prompt: "small ancient stone fountain basin, glowing blue rune water, mossy carved rim, heroic fantasy RPG town prop, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 64
+    anchor: [32, 48]
+
+  - id: prop.harborBeaconBuoy
+    tool: isometric_tile
+    prompt: "fantasy harbor beacon buoy, brass cage lantern, red pennant, rope knots, barnacled float, transparent background only, isolated sprite, no water tile, no square base, no baked shadow, empty transparent corners"
+    size: 32
+    anchor: [16, 24]
+
+  - id: prop.netRack
+    tool: isometric_tile
+    prompt: "shore fishing net rack with cork floats, rope bundles, weathered posts, fantasy harbor prop, transparent background only, isolated sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
+    size: 32
+    anchor: [16, 28]
+
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
   - id: veg.root.arch
@@ -529,6 +547,12 @@ vegetation:
     prompt: "ancient twisted tree-root arch, moss, hanging amber charms, readable elderwood fantasy silhouette, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
     size: 64
     anchor: [32, 58]
+
+  - id: veg.standingStone.mossy
+    tool: isometric_tile
+    prompt: "mossy standing stone menhir, carved faint blue runes, small ferns at base, ancient elderwood fantasy prop, transparent background only, isolated sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 40]
 
   - id: veg.tree.oak.large
     tool: isometric_tile

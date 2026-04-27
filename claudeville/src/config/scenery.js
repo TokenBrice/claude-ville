@@ -274,7 +274,12 @@ export const TROPICAL_WATERFALLS = [
 export const DISTRICT_PROPS = [
     { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 18.8, tileY: 21.1, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
+    { tileX: 16.2, tileY: 22.0, id: 'prop.runeFountain', layer: 'cache', district: 'civic' },
     { tileX: 2.2, tileY: 14.4, id: 'veg.root.arch', layer: 'sorted', district: 'elderwood' },
+    { tileX: 6.2, tileY: 26.5, id: 'veg.standingStone.mossy', layer: 'cache', district: 'elderwood' },
+    { tileX: 32.3, tileY: 19.6, id: 'prop.netRack', layer: 'cache', district: 'harbor' },
+    { tileX: 33.2, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
+    { tileX: 37.1, tileY: 22.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
 ];
 
 export const MARINE_FISH_SCHOOLS = [
