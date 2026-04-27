@@ -20,12 +20,6 @@ const DIRECT_TOOL_BUILDINGS = {
     WebFetch: 'observatory',
     'web.run': 'observatory',
 
-    Edit: 'forge',
-    MultiEdit: 'forge',
-    Write: 'forge',
-    apply_patch: 'forge',
-    'functions.apply_patch': 'forge',
-
     NotebookEdit: 'forge',
     'image_gen.imagegen': 'forge',
 
@@ -36,11 +30,9 @@ const DIRECT_TOOL_BUILDINGS = {
     'mcp__playwright__browser_snapshot': 'portal',
     'mcp__playwright__browser_resize': 'portal',
 
-    Task: 'portal',
+    Task: 'taskboard',
     TeamCreate: 'command',
     SendMessage: 'command',
-    multi_tool_use: 'command',
-    'multi_tool_use.parallel': 'command',
     'functions.spawn_agent': 'portal',
     'functions.send_input': 'portal',
     'functions.wait_agent': 'portal',
@@ -55,6 +47,19 @@ const DIRECT_TOOL_BUILDINGS = {
     'functions.request_user_input': 'taskboard',
 };
 
+const FILE_MUTATION_TOOLS = new Set([
+    'Edit',
+    'MultiEdit',
+    'Write',
+    'apply_patch',
+    'functions.apply_patch',
+]);
+
+const MULTI_TOOL_NAMES = new Set([
+    'multi_tool_use',
+    'multi_tool_use.parallel',
+]);
+
 const SHELL_TOOL_NAMES = new Set([
     'Bash',
     'shell',
@@ -67,11 +72,14 @@ const SHELL_TOOL_NAMES = new Set([
 const TOOL_PATTERNS = [
     { building: 'harbor', pattern: /\b(git\s+(commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/ },
     { building: 'taskboard', pattern: /\b(npm\s+(test|run\s+(test|check|lint|build|sprites:validate|sprites:visual-diff))|node\s+--check|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/ },
+    { building: 'archive', pattern: /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/ },
     { building: 'archive', pattern: /\b(rg|grep|find|fd|ls|cat|sed|head|tail|nl|wc|git\s+(status|diff|show|log|branch|rev-list|fetch)|jq)\b/ },
     { building: 'portal', pattern: /\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/ },
     { building: 'observatory', pattern: /\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/ },
     { building: 'forge', pattern: /\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/ },
 ];
+
+const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'archive', 'portal', 'observatory', 'forge', 'command', 'mine'];
 
 export class Agent {
     constructor({
@@ -195,11 +203,21 @@ export class Agent {
         const toolName = this.currentTool;
         if (!toolName) return null;
 
+        if (MULTI_TOOL_NAMES.has(toolName)) {
+            return Agent._buildingForMultiToolInput(this.currentToolInput || this.lastToolInput) || 'command';
+        }
+
+        if (FILE_MUTATION_TOOLS.has(toolName)) {
+            return Agent._isDocumentationInput(this.currentToolInput || this.lastToolInput)
+                ? 'archive'
+                : 'forge';
+        }
+
         const mapped = DIRECT_TOOL_BUILDINGS[toolName];
         if (mapped) return mapped;
 
         if (SHELL_TOOL_NAMES.has(toolName)) {
-            return Agent._buildingForShellInput(this.currentToolInput || this.lastToolInput) || 'mine';
+            return Agent._buildingForShellInput(this.currentToolInput || this.lastToolInput) || null;
         }
 
         const tool = String(toolName).toLowerCase();
@@ -222,15 +240,115 @@ export class Agent {
         return matched ? matched.building : null;
     }
 
+    static _buildingForToolName(toolName, input) {
+        if (!toolName) return null;
+        if (MULTI_TOOL_NAMES.has(toolName)) {
+            return Agent._buildingForMultiToolInput(input);
+        }
+        if (FILE_MUTATION_TOOLS.has(toolName)) {
+            return Agent._isDocumentationInput(input) ? 'archive' : 'forge';
+        }
+        const mapped = DIRECT_TOOL_BUILDINGS[toolName];
+        if (mapped) return mapped;
+        if (SHELL_TOOL_NAMES.has(toolName)) {
+            return Agent._buildingForShellInput(input);
+        }
+
+        const tool = String(toolName).toLowerCase();
+        const text = Agent._normalizeToolInput(input);
+        if (tool.includes('playwright') || tool.includes('browser') || tool.includes('chrome')) return 'portal';
+        if (tool.includes('web') || tool.includes('fetch')) return 'observatory';
+        if (tool.includes('image') || tool.includes('prompt') || tool.includes('notebook')) return 'forge';
+        if (tool.includes('github') || tool.includes('pull_request') || tool.includes(' pr_')) return 'harbor';
+        if (tool.includes('apply_patch') || tool.includes('edit') || tool.includes('write') || tool.includes('update_file') || tool.includes('create_file') || tool.includes('delete_file')) {
+            return Agent._isDocumentationInput(input) ? 'archive' : 'forge';
+        }
+        if (tool.includes('spawn_agent') || tool.includes('send_input') || tool.includes('wait_agent') || tool.includes('resume_agent') || tool.includes('close_agent')) return 'portal';
+        if (tool.includes('team') || tool.includes('parallel')) return 'command';
+        if (tool.includes('task') || tool.includes('todo') || tool.includes('plan')) return 'taskboard';
+        if (tool.includes('read') || tool.includes('grep') || tool.includes('glob') || tool.includes('find') || tool.includes('search')) return 'archive';
+        if (text) return Agent._buildingForShellInput(text);
+        return null;
+    }
+
+    static _buildingForMultiToolInput(input) {
+        const calls = Agent._extractToolCalls(input);
+        const weights = new Map();
+
+        for (const call of calls) {
+            const building = Agent._buildingForToolName(call.tool, call.input);
+            if (!building) continue;
+            weights.set(building, (weights.get(building) || 0) + 1);
+        }
+
+        if (weights.size > 0) {
+            return MULTI_TOOL_PRIORITY
+                .filter((building) => weights.has(building))
+                .sort((a, b) => {
+                    const delta = weights.get(b) - weights.get(a);
+                    if (delta !== 0) return delta;
+                    return MULTI_TOOL_PRIORITY.indexOf(a) - MULTI_TOOL_PRIORITY.indexOf(b);
+                })[0];
+        }
+
+        return Agent._buildingForShellInput(input);
+    }
+
+    static _extractToolCalls(input) {
+        const parsed = Agent._tryParseToolInput(input);
+        const calls = [];
+        const collect = (value) => {
+            if (!value || typeof value !== 'object') return;
+            if (Array.isArray(value)) {
+                value.forEach(collect);
+                return;
+            }
+
+            const tool = value.recipient_name || value.tool || value.name || value.function || value.type;
+            const parameters = value.parameters || value.arguments || value.input || value.args || value;
+            if (tool && tool !== 'multi_tool_use' && tool !== 'multi_tool_use.parallel') {
+                calls.push({ tool, input: parameters });
+            }
+
+            if (Array.isArray(value.tool_uses)) value.tool_uses.forEach(collect);
+            if (Array.isArray(value.calls)) value.calls.forEach(collect);
+            if (Array.isArray(value.tools)) value.tools.forEach(collect);
+        };
+
+        collect(parsed);
+        if (calls.length) return calls;
+
+        const text = Agent._normalizeToolInput(input);
+        const found = [...text.matchAll(/(?:recipient_name|tool|name)["']?\s*[:=]\s*["']([^"']+)["']/g)]
+            .map((match) => ({ tool: match[1], input: text }));
+        return found.length ? found : [{ tool: null, input: text }];
+    }
+
+    static _tryParseToolInput(input) {
+        if (!input || typeof input !== 'string') return input;
+        const text = input.trim();
+        if (!text || !/^[\[{]/.test(text)) return input;
+        try {
+            return JSON.parse(text);
+        } catch {
+            return input;
+        }
+    }
+
+    static _isDocumentationInput(input) {
+        const text = Agent._normalizeToolInput(input);
+        return /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/.test(text);
+    }
+
     static _normalizeToolInput(input) {
         if (input == null) return '';
         if (typeof input === 'string') return input.toLowerCase();
         if (typeof input === 'object') {
-            const fields = ['cmd', 'command', 'script', 'args', 'url', 'path'];
+            const fields = ['cmd', 'command', 'script', 'args', 'arguments', 'url', 'path', 'file_path', 'cwd', 'pattern', 'query', 'prompt', 'description', 'recipient_name'];
             const parts = [];
             for (const field of fields) {
                 if (input[field] != null) {
-                    parts.push(String(input[field]));
+                    parts.push(typeof input[field] === 'object' ? JSON.stringify(input[field]) : String(input[field]));
                 }
             }
             if (parts.length) return parts.join(' ').toLowerCase();
