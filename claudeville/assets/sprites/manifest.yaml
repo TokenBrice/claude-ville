@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-harbor-dock-cleanup-v1"
+  assetVersion: "2026-04-28-character-revamp-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -8,16 +8,25 @@ style:
 characters:
   - id: agent.claude.opus
     tool: create_character
-    prompt: "epic high-fantasy Claude Opus archmage scholar, ivory and amber robes, broad gold rune mantle, high collar, glowing tome, short staff, strong readable RPG silhouette, 8-direction pixel art"
+    prompt: "Claude Opus 4.7 master archmage, tall pointed wizard hat with narrow brim and star sigil at apex, full-length floor-dragging ivory and amber robe, broad gold rune mantle, high collar, glowing tome held in one hand, tall ornate runed staff in the other, regal commanding silhouette, 8-direction pixel art"
     n_directions: 8
-    size: 92
+    size: 76
     animations: [walk, breathing-idle]
     palette_layer: claude
     anchor: [46, 80]
 
   - id: agent.claude.sonnet
     tool: create_character
-    prompt: "epic high-fantasy Claude Sonnet scribe mage, amber scholar cloak, silver quill, open tome, nimble readable RPG silhouette, 8-direction pixel art"
+    prompt: "Claude Sonnet 4.6 journeyman scholar, flat scholar mortarboard cap with single feather, knee-length amber scholar cloak with belt sash and inkpot pouches, silver quill in one hand, floating illuminated scroll trailing behind shoulder, no tome, nimble balanced silhouette, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: claude
+    anchor: [46, 80]
+
+  - id: agent.claude.haiku
+    tool: create_character
+    prompt: "Claude Haiku 4.5 apprentice scribe-mage, small hooded cap (no brim), simple amber tunic with rolled sleeves over a short open mage robe, leather satchel of scrolls, short carved walking stick, compact youthful slim silhouette, visible leather boots, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -26,7 +35,7 @@ characters:
 
   - id: agent.codex.gpt55
     tool: create_character
-    prompt: "epic high-fantasy Codex GPT-5.5 master artificer, teal engineer coat, gold arcane lens, luminous chest core, tool belt, heroic readable RPG silhouette, 8-direction pixel art"
+    prompt: "Codex GPT-5.5 captain artificer, peaked navy captain cap with gold band, long bright teal officer coat with prominent shoulder epaulettes and gold rune trim, luminous chest core, ornate brass tool belt, commanding tall posture, master engineer leader silhouette, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -35,7 +44,7 @@ characters:
 
   - id: agent.codex.gpt54
     tool: create_character
-    prompt: "epic high-fantasy Codex GPT-5.4 senior engineer, blue teal coat, brass goggles, gear pauldron, blueprint scroll, sturdy readable RPG silhouette, 8-direction pixel art"
+    prompt: "Codex GPT-5.4 senior engineer artificer, flat brass-trimmed engineer cap, brass goggles down over the eyes, deep rust-and-bronze coat distinct from the captain's bright teal, large prominent left-arm gauntlet with exposed gear teeth, backpack toolkit silhouette over right shoulder, sturdy practical artificer silhouette, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -44,7 +53,7 @@ characters:
 
   - id: agent.codex.gpt53spark
     tool: create_character
-    prompt: "epic high-fantasy Codex GPT-5.3 Spark scout artificer, yellow cyan lightning sash, light runner coat, compact fast readable RPG silhouette, 8-direction pixel art"
+    prompt: "Codex GPT-5.3 Spark scout artificer mechanic, backwards visor cap with cyan lens, short open vest with rolled-up sleeves over yellow lightning sash, light short trousers tucked into runner boots, neutral upright stance with ready hands, swift scout engineer silhouette, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -97,33 +106,19 @@ palettes:
 
 # ─── ACCESSORIES ─────────────────────────────────────────────────────────────
 accessories:
-  - id: overlay.accessory.effortLow
+  - id: overlay.accessory.effortXhigh
     tool: isometric_tile
-    prompt: "small bronze focus pin for low reasoning effort, readable pixel art, transparent background"
-    size: 32
-    n_directions: 8
-    anchor: [16, 12]
-
-  - id: overlay.accessory.effortMedium
-    tool: isometric_tile
-    prompt: "standard silver focus band for medium reasoning effort, readable pixel art, transparent background"
-    size: 32
-    n_directions: 8
-    anchor: [16, 12]
-
-  - id: overlay.accessory.effortHigh
-    tool: isometric_tile
-    prompt: "tall gold reasoning crest for high reasoning effort, readable pixel art, transparent background"
+    prompt: "tall gold reasoning crest with single ring crown, Claude apex tier, transparent background"
     size: 32
     n_directions: 8
     anchor: [16, 13]
 
-  - id: overlay.accessory.effortXhigh
+  - id: overlay.accessory.effortMax
     tool: isometric_tile
-    prompt: "radiant arcane halo crown for extra high reasoning effort, readable pixel art, transparent background"
+    prompt: "vertical triple-pillar gold star crown rising above head, three stacked star points with laurel wreath base, distinct vertical pillar shape clearly different from any ring or halo, Claude maximum tier, transparent background"
     size: 32
     n_directions: 8
-    anchor: [16, 14]
+    anchor: [16, 16]
 
   - id: overlay.accessory.mageHood
     tool: isometric_tile
@@ -188,6 +183,21 @@ statusOverlays:
   - id: overlay.status.idle
     tool: isometric_tile
     prompt: "gentle rest aura, soft grey-blue shimmer at feet, slow calming waves, transparent background"
+    size: 64
+
+  - id: overlay.status.effortLow
+    tool: isometric_tile
+    prompt: "soft single-band bronze floor ring at agent feet, faint glow, low effort tier marker, transparent background"
+    size: 64
+
+  - id: overlay.status.effortMedium
+    tool: isometric_tile
+    prompt: "double-band silver floor ring at agent feet, gentle pulse glow, medium effort tier marker, transparent background"
+    size: 64
+
+  - id: overlay.status.effortHigh
+    tool: isometric_tile
+    prompt: "triple-band gold floor ring with rune sparks at agent feet, vivid pulse, high effort tier marker, transparent background"
     size: 64
 
 # ─── BUILDINGS ───────────────────────────────────────────────────────────────
