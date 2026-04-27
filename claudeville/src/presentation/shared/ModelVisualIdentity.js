@@ -17,13 +17,22 @@ const EFFORT_LABELS = Object.freeze({
     medium: 'med',
     high: 'high',
     xhigh: 'xhigh',
+    max: 'max',
 });
 
+// Head overlays (anchored above hat). Only the apex tiers — low/med/high
+// moved to floor rings to avoid stacking conflicts with tall headgear.
 const EFFORT_ACCESSORIES = Object.freeze({
-    low: 'effortLow',
-    medium: 'effortMedium',
-    high: 'effortHigh',
     xhigh: 'effortXhigh',
+    max: 'effortMax',
+});
+
+// Floor rings (anchored at feet). Used for low/medium/high tiers.
+// Overlay IDs map to overlay.status.effortLow / effortMedium / effortHigh.
+const EFFORT_FLOOR_RINGS = Object.freeze({
+    low: 'overlay.status.effortLow',
+    medium: 'overlay.status.effortMedium',
+    high: 'overlay.status.effortHigh',
 });
 
 function normalizeModel(model) {
@@ -36,6 +45,7 @@ function normalizeModel(model) {
 export function normalizeReasoningEffort(effort) {
     const normalized = String(effort || '').toLowerCase();
     if (!normalized || normalized === 'none') return normalized ? 'none' : null;
+    if (normalized === 'max' || normalized.includes('maximum')) return 'max';
     if (normalized.includes('xhigh') || normalized.includes('extra')) return 'xhigh';
     if (normalized.includes('high')) return 'high';
     if (normalized.includes('medium')) return 'medium';
@@ -48,6 +58,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     const normalizedProvider = String(provider || '').toLowerCase();
     const effortTier = normalizeReasoningEffort(effort);
     const effortAccessory = EFFORT_ACCESSORIES[effortTier] || null;
+    const effortFloorRing = EFFORT_FLOOR_RINGS[effortTier] || null;
 
     if (normalizedModel.includes('opus')) {
         return {
@@ -58,11 +69,30 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             shortLabel: 'Opus',
             effortTier,
             effortAccessory,
+            effortFloorRing,
             spriteId: 'agent.claude.opus',
             paletteKey: 'claude',
             trim: ['#ffe7a8', '#c8a3ff', '#f4b15f'],
             accent: ['#fff4cf', '#d8bcff', '#ffca7a'],
             minimapColor: '#ffe7a8',
+        };
+    }
+
+    if (normalizedModel.includes('haiku')) {
+        return {
+            family: 'claude',
+            modelClass: 'haiku',
+            modelTier: 'light',
+            label: 'Claude Haiku',
+            shortLabel: 'Haiku',
+            effortTier,
+            effortAccessory,
+            effortFloorRing,
+            spriteId: 'agent.claude.haiku',
+            paletteKey: 'claude',
+            trim: ['#ffd47a', '#ffe39a', '#f6c25c'],
+            accent: ['#fff1c2', '#ffe39a', '#ffcc7a'],
+            minimapColor: '#ffd47a',
         };
     }
 
@@ -75,6 +105,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             shortLabel: normalizedModel.includes('sonnet') ? 'Sonnet' : 'Claude',
             effortTier,
             effortAccessory,
+            effortFloorRing,
             spriteId: 'agent.claude.sonnet',
             paletteKey: 'claude',
             trim: ['#f2d36b', '#b7ccff', '#e9b85f'],
@@ -91,7 +122,8 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.3 Codex Spark',
             shortLabel: '5.3 Spark',
             effortTier,
-            effortAccessory,
+            effortAccessory: effortTier === 'max' ? EFFORT_ACCESSORIES.xhigh : effortAccessory,
+            effortFloorRing,
             spriteId: 'agent.codex.gpt53spark',
             paletteKey: 'codex',
             trim: ['#f8e36f', '#87f7ff', '#c5ff72'],
@@ -108,7 +140,8 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.5',
             shortLabel: '5.5',
             effortTier,
-            effortAccessory,
+            effortAccessory: effortTier === 'max' ? EFFORT_ACCESSORIES.xhigh : effortAccessory,
+            effortFloorRing,
             spriteId: 'agent.codex.gpt55',
             paletteKey: 'codex',
             trim: ['#fff1b8', '#7be3d7', '#f8c45f'],
@@ -125,7 +158,8 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.4',
             shortLabel: '5.4',
             effortTier,
-            effortAccessory,
+            effortAccessory: effortTier === 'max' ? EFFORT_ACCESSORIES.xhigh : effortAccessory,
+            effortFloorRing,
             spriteId: 'agent.codex.gpt54',
             paletteKey: 'codex',
             trim: ['#8bd6ff', '#7be3d7', '#a9b7ff'],
@@ -138,7 +172,8 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         return {
             ...DEFAULT_CODEX_IDENTITY,
             effortTier,
-            effortAccessory,
+            effortAccessory: effortTier === 'max' ? EFFORT_ACCESSORIES.xhigh : effortAccessory,
+            effortFloorRing,
         };
     }
 
@@ -150,6 +185,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         shortLabel: String(model || ''),
         effortTier,
         effortAccessory,
+        effortFloorRing,
         spriteId: null,
         paletteKey: null,
         trim: null,
