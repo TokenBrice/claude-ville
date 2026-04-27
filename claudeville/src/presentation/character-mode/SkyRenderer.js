@@ -107,8 +107,7 @@ export class SkyRenderer {
         for (const layer of CLOUD_LAYERS) {
             const img = this.assets.get(layer.id);
             if (!img) continue;
-            const dims = this.assets.getDims(layer.id);
-            const w = dims?.w ?? img.width ?? 64;
+            const w = this.assets.getDims(layer.id).w;
             const spacing = canvas.width / layer.count;
             // Tile period is `spacing`, not canvas.width — wrap the offset into
             // [0, spacing) so neighbouring clouds always abut without a gap.
@@ -131,8 +130,7 @@ export class SkyRenderer {
         if (!this.assets) return;
         const moon = this.assets.get('atmosphere.moon.crescent');
         if (!moon) return;
-        const dims = this.assets.getDims('atmosphere.moon.crescent');
-        const w = dims?.w ?? moon.width ?? 64;
+        const w = this.assets.getDims('atmosphere.moon.crescent').w;
         const x = canvas.width * MOON_FX - w / 2;
         const y = canvas.height * MOON_FY;
         ctx.drawImage(moon, Math.round(x), Math.round(y));
