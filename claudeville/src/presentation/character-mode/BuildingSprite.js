@@ -148,10 +148,11 @@ export class BuildingSprite {
             const isLandmark = LANDMARK_LABEL_TYPES.has(b.type);
             const isHovered = this.hovered === b;
             ctx.save();
-            ctx.fillStyle = 'rgba(15, 22, 30, 0.32)';
+            ctx.fillStyle = 'rgba(15, 22, 30, 0.22)';
             ctx.beginPath();
             ctx.ellipse(Math.round(c.x), Math.round(c.y + 4), halfW, halfW * 0.32, 0, 0, Math.PI * 2);
             ctx.fill();
+            this._drawFootprintContactPad(ctx, b, { isLandmark, isHovered });
             if (isLandmark || isHovered) {
                 ctx.globalAlpha = isHovered ? 0.82 : 0.46;
                 ctx.strokeStyle = isHovered ? 'rgba(255, 232, 166, 0.75)' : 'rgba(213, 169, 88, 0.38)';
@@ -764,9 +765,9 @@ export class BuildingSprite {
                 const rawHorizon = entry.horizonY ?? Math.floor(dims.h / 2);
                 const horizonY = Math.max(1, Math.min(rawHorizon, dims.h - 1));
                 out.push({ kind: 'building-back', building: b, entry, wx, wy, horizonY, sortY: wy - dims.h / 2 });
-                out.push({ kind: 'building-front', building: b, entry, wx, wy, horizonY, sortY: wy });
+                out.push({ kind: 'building-front', building: b, entry, wx, wy, horizonY, sortY: this._buildingFrontSortY(b, wy) });
             } else {
-                out.push({ kind: 'building', building: b, entry, wx, wy, sortY: wy });
+                out.push({ kind: 'building', building: b, entry, wx, wy, sortY: this._buildingWholeSortY(b, wy) });
             }
         }
         this._drawablesCache = out;
@@ -1527,6 +1528,89 @@ export class BuildingSprite {
 
     _visitorCountFor(building) {
         return this._visitorCountByType.get(building?.type) || 0;
+    }
+
+    _drawFootprintContactPad(ctx, building, { isLandmark = false, isHovered = false } = {}) {
+        const corners = this._buildingFootprintCorners(building);
+        ctx.save();
+        ctx.globalAlpha = isHovered ? 0.86 : isLandmark ? 0.66 : 0.54;
+        ctx.fillStyle = isLandmark ? 'rgba(69, 55, 33, 0.34)' : 'rgba(34, 29, 23, 0.30)';
+        this._traceFootprint(ctx, corners);
+        ctx.fill();
+
+        ctx.globalAlpha = isHovered ? 0.72 : 0.44;
+        ctx.strokeStyle = isHovered ? 'rgba(255, 230, 156, 0.78)' : 'rgba(25, 18, 13, 0.58)';
+        ctx.lineWidth = isHovered ? 2 : 1.25;
+        this._traceFootprint(ctx, corners);
+        ctx.stroke();
+
+        ctx.globalAlpha = isHovered ? 0.52 : 0.34;
+        ctx.strokeStyle = 'rgba(8, 10, 12, 0.72)';
+        ctx.lineWidth = isHovered ? 5 : 4;
+        ctx.lineJoin = 'round';
+        ctx.beginPath();
+        ctx.moveTo(corners.ne.x, corners.ne.y);
+        ctx.lineTo(corners.se.x, corners.se.y);
+        ctx.lineTo(corners.sw.x, corners.sw.y);
+        ctx.stroke();
+
+        ctx.globalAlpha = isHovered ? 0.42 : 0.24;
+        ctx.strokeStyle = 'rgba(230, 200, 126, 0.48)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(corners.nw.x, corners.nw.y);
+        ctx.lineTo(corners.ne.x, corners.ne.y);
+        ctx.moveTo(corners.nw.x, corners.nw.y);
+        ctx.lineTo(corners.sw.x, corners.sw.y);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _buildingFootprintCorners(building) {
+        const x0 = building.position.tileX;
+        const y0 = building.position.tileY;
+        const x1 = x0 + building.width;
+        const y1 = y0 + building.height;
+        return {
+            nw: this._tileToScreen(x0, y0),
+            ne: this._tileToScreen(x1, y0),
+            se: this._tileToScreen(x1, y1),
+            sw: this._tileToScreen(x0, y1),
+        };
+    }
+
+    _traceFootprint(ctx, corners) {
+        ctx.beginPath();
+        ctx.moveTo(corners.nw.x, corners.nw.y);
+        ctx.lineTo(corners.ne.x, corners.ne.y);
+        ctx.lineTo(corners.se.x, corners.se.y);
+        ctx.lineTo(corners.sw.x, corners.sw.y);
+        ctx.closePath();
+    }
+
+    _buildingFrontSortY(building, fallbackY) {
+        const visitY = this._primaryVisitSortY(building);
+        return Number.isFinite(visitY) ? Math.max(fallbackY, visitY - 0.5) : fallbackY;
+    }
+
+    _buildingWholeSortY(building, fallbackY) {
+        const visitY = this._primaryVisitSortY(building);
+        return Number.isFinite(visitY) ? visitY - 0.5 : fallbackY;
+    }
+
+    _primaryVisitSortY(building) {
+        const visit = typeof building?.primaryVisitTile === 'function'
+            ? building.primaryVisitTile()
+            : building?.entrance;
+        if (!visit || !Number.isFinite(visit.tileX) || !Number.isFinite(visit.tileY)) return null;
+        return this._tileToScreen(visit.tileX, visit.tileY).y;
+    }
+
+    _tileToScreen(tileX, tileY) {
+        return {
+            x: (tileX - tileY) * TILE_WIDTH / 2,
+            y: (tileX + tileY) * TILE_HEIGHT / 2,
+        };
     }
 
     _buildingScreenCenter(b) {
