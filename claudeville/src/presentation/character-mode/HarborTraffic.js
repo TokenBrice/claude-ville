@@ -14,18 +14,16 @@ const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
 
 const BERTHS = [
-    { tileX: 33.2, tileY: 20.8 },
-    { tileX: 34.5, tileY: 21.4 },
-    { tileX: 36.4, tileY: 21.6 },
-    { tileX: 38.4, tileY: 21.5 },
-    { tileX: 37.2, tileY: 18.2 },
-    { tileX: 37.2, tileY: 16.2 },
-    { tileX: 39.1, tileY: 17.5 },
-    { tileX: 39.1, tileY: 15.6 },
-    { tileX: 38.6, tileY: 16.6 },
-    { tileX: 39.0, tileY: 22.4 },
-    { tileX: 32.4, tileY: 20.4 },
-    { tileX: 35.5, tileY: 20.4 },
+    { tileX: 32.9, tileY: 21.3 },
+    { tileX: 33.6, tileY: 21.7 },
+    { tileX: 34.4, tileY: 21.9 },
+    { tileX: 35.3, tileY: 21.8 },
+    { tileX: 36.0, tileY: 21.5 },
+    { tileX: 36.6, tileY: 21.0 },
+    { tileX: 36.2, tileY: 20.3 },
+    { tileX: 35.4, tileY: 20.0 },
+    { tileX: 34.5, tileY: 20.0 },
+    { tileX: 33.6, tileY: 20.3 },
 ];
 
 const SEA_LANES = [

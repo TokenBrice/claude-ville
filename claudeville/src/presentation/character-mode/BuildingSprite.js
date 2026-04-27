@@ -833,32 +833,25 @@ export class BuildingSprite {
         const signal = localPoint(74, 37);
         const lantern = localPoint(171, 96);
         const quayLight = localPoint(102, 151);
-        const water = localPoint(198, 205);
         const pier = localPoint(256, 184);
         const flagLift = this.motionScale ? Math.sin(this.frame * 0.08) * 1.8 : 0;
 
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.12 + pulse * 0.12;
-        ctx.fillStyle = '#5ad9dc';
-        ctx.beginPath();
-        ctx.ellipse(water.x, water.y, 118, 27, -0.08, 0, Math.PI * 2);
-        ctx.fill();
-
-        ctx.globalAlpha = 0.18 + pulse * 0.18;
+        ctx.globalAlpha = 0.14 + pulse * 0.14;
         ctx.fillStyle = '#ffd37a';
         for (const point of [signal, lantern, quayLight]) {
             ctx.beginPath();
-            ctx.ellipse(point.x, point.y, 30, 16, -0.12, 0, Math.PI * 2);
+            ctx.ellipse(point.x, point.y, 24, 13, -0.12, 0, Math.PI * 2);
             ctx.fill();
         }
 
         ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 0.78;
-        ctx.strokeStyle = '#7ee6ea';
-        ctx.lineWidth = 1.35;
-        for (const [dx, dy, rx] of [[-54, -2, 27], [-5, 9, 36], [42, -7, 25], [76, 7, 19]]) {
+        ctx.globalAlpha = 0.46;
+        ctx.strokeStyle = 'rgba(229, 235, 203, 0.72)';
+        ctx.lineWidth = 1.1;
+        for (const [dx, dy, rx] of [[-27, 2, 21], [8, 7, 27], [34, -3, 18]]) {
             ctx.beginPath();
-            ctx.ellipse(water.x + dx, water.y + dy, rx, 4.5, -0.18, 0, Math.PI);
+            ctx.ellipse(pier.x + dx, pier.y + dy, rx, 3.5, -0.18, 0, Math.PI);
             ctx.stroke();
         }
 
@@ -877,10 +870,10 @@ export class BuildingSprite {
         }
 
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.16 + pulse * 0.18;
+        ctx.globalAlpha = 0.10 + pulse * 0.12;
         ctx.fillStyle = '#f5c964';
         ctx.beginPath();
-        ctx.ellipse(pier.x, pier.y, 45, 14, -0.2, 0, Math.PI * 2);
+        ctx.ellipse(pier.x, pier.y, 32, 10, -0.2, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
     }
