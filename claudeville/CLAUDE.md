@@ -146,7 +146,7 @@ Key files:
 - `Pathfinder.js`: grid pathfinding over the walkability map.
 - `HarborTraffic.js`: ship/harbor motion and git-event-aware harbor activity.
 
-Buildings from `src/config/buildings.js` (eight total):
+Buildings from `src/config/buildings.js` (nine total):
 
 - Command Center: team status.
 - Task Board: task status.
@@ -155,7 +155,8 @@ Buildings from `src/config/buildings.js` (eight total):
 - Grand Lore Archive: reading and search.
 - Research Observatory: external research.
 - Portal Gate: browser and remote tools.
-- Pharos Lighthouse: GitHub and deploy sea watch.
+- Pharos Lighthouse: sea watch and beacon.
+- Harbor Master: commit ships and push departures.
 
 Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears renderer selection and stops follow, but the activity panel closes through its own close action or when the selected agent is removed. Agents using `SendMessage` can move toward a matched recipient and show chat state.
 
@@ -168,7 +169,7 @@ Pixel-art sprites are generated through the [pixellab MCP server](https://mcpser
 Workflow:
 
 1. User installs the pixellab MCP server with their API token (`claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`).
-2. Claude Code session reads `manifest.yaml`, calls the appropriate MCP tool per entry (`mcp__pixellab__create_character`, `mcp__pixellab__animate_character`, `mcp__pixellab__tileset`, `mcp__pixellab__isometric_tile`).
+2. Claude Code session reads `manifest.yaml`, calls the appropriate MCP tool per entry (`mcp__pixellab__create_character`, `mcp__pixellab__animate_character`, `mcp__pixellab__create_topdown_tileset`, `mcp__pixellab__create_isometric_tile`).
 3. Resulting PNGs are saved to the manifest-implied path (see `AssetManager._pathFor` for the mapping).
 4. Run `npm run sprites:validate` to confirm every manifest entry resolves to a real PNG and no orphan PNGs exist.
 

@@ -21,6 +21,7 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `SceneryEngine.js` | Water, shore, bridges, vegetation, boulders, and walkability data. |
 | `Pathfinder.js` | Grid pathfinding over the walkability map. |
 | `HarborTraffic.js` | Harbor/ship motion and git-event-aware harbor activity. |
+| `LandmarkActivity.js` | Harbor/landmark event extraction and activity state updates tied to git-event streams. |
 | `ParticleSystem.js` | Particle emitters and ambient effects. Honors `prefers-reduced-motion`. |
 | `Minimap.js` | Minimap rendering and click-to-pan; mounted into the canvas's parent node. |
 

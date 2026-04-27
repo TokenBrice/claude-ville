@@ -130,7 +130,7 @@ If installing dependencies is out of scope, fall back to:
 
 ## Agent display name keeps changing
 
-Names are deterministic from the agent ID hash via `Agent.generateNameForLang` (`claudeville/src/domain/entities/Agent.js:122-130`). Switching the UI language regenerates the displayed name from the same hash. Names assigned by a team are preserved because `_customName` is set when the agent is constructed with an explicit name (`claudeville/src/domain/entities/Agent.js:15`, honored in `claudeville/src/presentation/App.js:233` and `claudeville/src/application/AgentManager.js:100`).
+Names are deterministic from the agent ID hash via `Agent.generateNameForLang` (`claudeville/src/domain/entities/Agent.js:284`). Switching the UI language regenerates the displayed name from the same hash. Names assigned by a team are preserved because `_customName` is set when the agent is constructed with an explicit name (`claudeville/src/domain/entities/Agent.js:103`, honored in `claudeville/src/presentation/App.js:290` and `claudeville/src/application/AgentManager.js:114`).
 
 If you renamed an agent in code and the rename was overwritten, check that the constructor received `name` and `_customName` is true on that instance.
 

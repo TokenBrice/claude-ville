@@ -64,8 +64,8 @@ If a price changes, update `TokenUsage.js` and validate both `agent.cost` and Ac
 
 Different providers report cache hits differently. The adapters normalize them into `cacheRead` and `cacheCreate` fields:
 
-- Claude adapter (`claudeville/adapters/claude.js:215-242`) reads `cache_read_input_tokens` and `cache_creation_input_tokens` from each turn's `usage` and sums them.
-- Codex adapter (`claudeville/adapters/codex.js:228-296`) reads `cache_read_input_tokens` / `cacheReadInputTokens` and `cache_creation_input_tokens`. Codex has no separate cache-create concept in some payloads, so `cacheCreate` is set to 0 in those branches.
+- Claude adapter (`claudeville/adapters/claude.js:253-254`) reads `cache_read_input_tokens` and `cache_creation_input_tokens` from each turn's `usage` and sums them.
+- Codex adapter (`claudeville/adapters/codex.js:317-349`) reads `cache_read_input_tokens` / `cacheReadInputTokens` and `cache_creation_input_tokens`. Codex has no separate cache-create concept in some payloads, so `cacheCreate` is set to 0 in those branches.
 - Gemini does not currently report cache tokens; the field is left at 0.
 
 If a provider format changes, update only the relevant adapter. The frontend keeps using the normalized shape.
@@ -113,7 +113,7 @@ If you add a Linux or Windows widget, expect a parallel implementation under `wi
 ## Polling cadence: 2s server, 2s panel, 3s widget
 
 - Server broadcast: every 2 seconds when clients are connected.
-- Activity panel detail fetch: every 2 seconds for the selected agent (`claudeville/src/presentation/shared/ActivityPanel.js:99`).
+- Activity panel detail fetch: every 2 seconds for the selected agent (`claudeville/src/presentation/shared/ActivityPanel.js:150`).
 - Widget HTTP poll: every 3 seconds.
 
 Server and panel match because both serve the live dashboard. The widget is a glance surface, so it polls less often to save battery and CPU.
