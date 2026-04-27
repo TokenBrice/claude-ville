@@ -42,6 +42,7 @@ const PROVIDER_TRIM = {
     gemini: '#7fc7ff',
     default: '#f2d36b',
 };
+const MAX_VISIBLE_FAMILIAR_MOTES = 3;
 const AMBIENT_BUILDING_SEQUENCE = [
     'command',
     'taskboard',
@@ -92,6 +93,8 @@ export class AgentSprite {
         this.nameTagSlot = 0;
         this.labelAlpha = 1;
         this.bumpFlash = 0;
+        this.teamPlazaPreference = false;
+        this._arrivalState = 'visible';
 
         // Chat system
         this.chatPartner = null;     // Chat partner AgentSprite
@@ -185,6 +188,7 @@ export class AgentSprite {
         }
 
         if (lastKnown && (seed % 10) < 3) return lastKnown;
+        if (this.teamPlazaPreference && this.agent.teamName && (seed % 6) < 4) return 'command';
         if (this.agent.isSubagent && (seed % 6) < 2) return 'command';
         const totalTokens = (this.agent.tokens?.input || 0) + (this.agent.tokens?.output || 0);
         if (totalTokens > 0 && seed % 8 === 0) return 'mine';
@@ -313,7 +317,59 @@ export class AgentSprite {
         this.motionScale = scale;
     }
 
+    setArrivalState(state) {
+        this._arrivalState = state === 'pending' ? 'pending' : 'visible';
+        if (this._arrivalState === 'pending') {
+            this.moving = false;
+            this.waitTimer = 0;
+            this.waypoints = [];
+            this._lastPathTileKey = null;
+        }
+    }
+
+    isArrivalPending() {
+        return this._arrivalState === 'pending';
+    }
+
+    setTeamPlazaPreference(enabled) {
+        this.teamPlazaPreference = !!enabled;
+    }
+
+    setTilePosition(tileX, tileY) {
+        const screen = new Position(tileX, tileY).toScreen(TILE_WIDTH, TILE_HEIGHT);
+        this.x = screen.x;
+        this.y = screen.y;
+        this.targetX = screen.x;
+        this.targetY = screen.y;
+        this.moving = false;
+        this.waitTimer = 0;
+        this.waypoints = [];
+        this._lastPathTileKey = null;
+        this._resetWalkCycle();
+    }
+
+    walkToTile(tileX, tileY) {
+        const target = new Position(tileX, tileY);
+        const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
+        this.chatPartner = null;
+        this.chatting = false;
+        this.chatBubbleAnim = 0;
+        this.setArrivalState('visible');
+        this._lastPathTileKey = null;
+        this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
+        this.moving = true;
+        this.waitTimer = 0;
+    }
+
+    hasReachedTarget(tolerance = 6) {
+        return Math.hypot(this.targetX - this.x, this.targetY - this.y) <= tolerance;
+    }
+
     update(particleSystem, dt = 16) {
+        if (this.isArrivalPending()) {
+            this._advanceIdleAnimation(dt);
+            return;
+        }
         const frameScale = Math.max(0, Math.min(3, dt / 16));
         this.statusAnim += 0.05 * this.motionScale * frameScale;
         this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
@@ -515,6 +571,7 @@ export class AgentSprite {
     draw(ctx, zoom = 1) {
         this._zoom = zoom;
 
+        if (this.isArrivalPending()) return;
         if (!this.compositor) return;       // defensive: no compositor → render nothing
 
         const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
@@ -1966,8 +2023,104 @@ export class AgentSprite {
     }
 
     hitTest(screenX, screenY) {
+        if (this.isArrivalPending()) return false;
         const dx = screenX - this.x;
         const dy = screenY - this.y;
         return Math.abs(dx) < SPRITE_HIT_HALF_WIDTH && dy > SPRITE_HIT_TOP && dy < SPRITE_HIT_BOTTOM;
     }
+}
+
+function providerMoteColor(agent) {
+    const provider = String(agent?.provider || '').toLowerCase();
+    return PROVIDER_TRIM[provider] || PROVIDER_TRIM.default;
+}
+
+function hashPhase(value) {
+    const text = String(value || '');
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+        hash = Math.imul(hash ^ text.charCodeAt(i), 16777619);
+    }
+    return (hash >>> 0) / 4294967295;
+}
+
+export function drawFamiliarMotes(ctx, {
+    parentSprite,
+    childSprites = [],
+    childAgents = [],
+    zoom = 1,
+    now = performance.now(),
+    motionScale = 1,
+    lighting = null,
+    maxVisible = MAX_VISIBLE_FAMILIAR_MOTES,
+} = {}) {
+    if (!ctx || !parentSprite) return;
+    const children = [...childSprites, ...childAgents]
+        .filter(Boolean)
+        .slice(0, Math.max(0, maxVisible));
+    const hiddenCount = Math.max(0, childSprites.length + childAgents.length - children.length);
+    if (!children.length && hiddenCount <= 0) return;
+
+    const lightBoost = lighting?.lightBoost ?? 1;
+    const selectedBoost = parentSprite.selected ? 1.4 : 1;
+    const scale = 1 / (zoom || 1);
+    const motion = motionScale === 0 ? 0 : 1;
+
+    ctx.save();
+    ctx.translate(parentSprite.x, parentSprite.y);
+    ctx.scale(scale, scale);
+
+    for (let i = 0; i < children.length; i++) {
+        const child = children[i];
+        const agent = child.agent || child;
+        const base = hashPhase(agent?.id || i);
+        const staticAngle = (Math.PI * 2 * i) / Math.max(1, children.length);
+        const angle = motion
+            ? staticAngle + base * Math.PI * 2 + (now / 900) * (i % 2 ? -1 : 1)
+            : staticAngle;
+        const orbitX = Math.cos(angle) * 18;
+        const orbitY = -50 + Math.sin(angle) * 7;
+        const radius = 4 + i * 0.6;
+        const alpha = Math.min(1, 0.58 * lightBoost * selectedBoost);
+        const color = providerMoteColor(agent);
+
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = parentSprite._rgba?.(color, 0.30) || color;
+        ctx.beginPath();
+        ctx.arc(orbitX, orbitY, radius + 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = Math.min(1, alpha + 0.18);
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(orbitX, orbitY, radius, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = Math.min(1, alpha + 0.30);
+        ctx.fillStyle = '#fff3bf';
+        ctx.fillRect(Math.round(orbitX - 1), Math.round(orbitY - radius + 1), 2, 2);
+    }
+
+    if (hiddenCount > 0) {
+        ctx.globalAlpha = parentSprite.selected ? 0.98 : 0.82;
+        ctx.fillStyle = 'rgba(20, 14, 10, 0.88)';
+        ctx.strokeStyle = '#f6cf60';
+        ctx.lineWidth = 1;
+        const x = 18;
+        const y = -38;
+        if (ctx.roundRect) {
+            ctx.beginPath();
+            ctx.roundRect(x - 9, y - 7, 18, 12, 3);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            ctx.fillRect(x - 9, y - 7, 18, 12);
+            ctx.strokeRect(x - 9, y - 7, 18, 12);
+        }
+        ctx.fillStyle = '#f8ead1';
+        ctx.font = 'bold 6px "Press Start 2P", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`+${hiddenCount}`, x, y);
+    }
+
+    ctx.restore();
 }

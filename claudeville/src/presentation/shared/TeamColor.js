@@ -42,6 +42,10 @@ export function getTeamColor(teamName) {
     };
 }
 
+export function resolveTeamColor(teamName) {
+    return getTeamColor(teamName);
+}
+
 export function shortTeamName(teamName) {
     const text = String(teamName || '').trim();
     if (!text) return '';

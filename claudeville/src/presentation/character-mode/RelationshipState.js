@@ -2,6 +2,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const ARRIVAL_WINDOW_MS = 8000;
 const DEPARTURE_WINDOW_MS = 12000;
+const MAX_RECENT_DEPARTURES = 6;
 
 function pairKey(aId, bId) {
     return [aId, bId].sort().join('|');
@@ -16,6 +17,7 @@ export class RelationshipState {
         this.recentArrivals = [];
         this.recentDepartures = [];
         this.chatPairs = [];
+        this._lastSpriteTiles = new Map();
         this._dirty = true;
         this._snapshot = null;
         this.unsubscribers = [
@@ -25,8 +27,22 @@ export class RelationshipState {
             }),
             eventBus.on('agent:updated', () => { this._dirty = true; }),
             eventBus.on('agent:removed', (agent) => {
-                const lastTile = agent.position ? { tileX: agent.position.x, tileY: agent.position.y } : null;
-                this.recentDepartures.push({ lastTile, at: performance.now() });
+                const lastTile = this._lastSpriteTiles.get(agent.id) || (
+                    agent.position ? { tileX: agent.position.x, tileY: agent.position.y } : null
+                );
+                this.recentDepartures.push({
+                    agentId: agent.id,
+                    name: agent.name || agent.displayName || null,
+                    provider: agent.provider || null,
+                    parentSessionId: agent.parentSessionId || null,
+                    teamName: agent.teamName || null,
+                    lastTile,
+                    at: performance.now(),
+                });
+                if (this.recentDepartures.length > MAX_RECENT_DEPARTURES) {
+                    this.recentDepartures.splice(0, this.recentDepartures.length - MAX_RECENT_DEPARTURES);
+                }
+                this._lastSpriteTiles.delete(agent.id);
                 this._dirty = true;
             }),
         ];
@@ -35,10 +51,12 @@ export class RelationshipState {
     dispose() {
         for (const unsubscribe of this.unsubscribers) unsubscribe();
         this.unsubscribers = [];
+        this._lastSpriteTiles.clear();
     }
 
     update({ agentSprites = null, now = performance.now() } = {}) {
         this._prune(now);
+        this._rememberSpriteTiles(agentSprites);
         if (this._dirty) {
             this._rebuildMembership();
             this._dirty = false;
@@ -48,8 +66,8 @@ export class RelationshipState {
             parentToChildren: this._cloneSetMap(this.parentToChildren),
             childToParent: new Map(this.childToParent),
             teamToMembers: new Map(Array.from(this.teamToMembers, ([team, members]) => [team, [...members]])),
-            recentArrivals: this.recentArrivals.map(item => ({ agentId: item.agentId, sinceMs: now - item.at })),
-            recentDepartures: this.recentDepartures.map(item => ({ lastTile: item.lastTile, sinceMs: now - item.at })),
+            recentArrivals: this.recentArrivals.map(item => ({ ...item, sinceMs: now - item.at })),
+            recentDepartures: this.recentDepartures.map(item => ({ ...item, sinceMs: now - item.at })),
             chatPairs: this.chatPairs.map(pair => ({ ...pair })),
         };
         return this._snapshot;
@@ -93,6 +111,22 @@ export class RelationshipState {
             out.push({ aId, bId });
         }
         this.chatPairs = out;
+    }
+
+    _rememberSpriteTiles(agentSprites) {
+        const sprites = agentSprites?.values ? Array.from(agentSprites.values()) : [];
+        for (const sprite of sprites) {
+            const id = sprite.agent?.id;
+            if (!id) continue;
+            this._lastSpriteTiles.set(id, this._screenToTile(sprite.x, sprite.y));
+        }
+    }
+
+    _screenToTile(x, y) {
+        return {
+            tileX: (x / 32 + y / 16) / 2,
+            tileY: (y / 16 - x / 32) / 2,
+        };
     }
 
     _prune(now) {

@@ -1,6 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
+import { getTeamColor, shortTeamName } from './TeamColor.js';
 
 // Per-project color palette
 const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G', git: '#' };
@@ -75,11 +76,14 @@ export class Sidebar {
             for (const agent of groupAgents) {
                 const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
                 const providerColor = identity.minimapColor || PROVIDER_COLORS[agent.provider] || '#8b8b9e';
+                const team = agent.teamName ? getTeamColor(agent.teamName) : null;
+                const teamLabel = agent.teamName ? `Team ${shortTeamName(agent.teamName)}` : '';
+                const teamDot = team ? `<span title="${this._escape(teamLabel)}" aria-label="${this._escape(teamLabel)}" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${team.accent};box-shadow:0 0 6px ${team.glow};margin-right:4px;vertical-align:middle"></span>` : '';
                 html += `<div class="sidebar__agent ${agent.id === this.selectedId ? 'sidebar__agent--selected' : ''}"
                      data-agent-id="${agent.id}">
                     <span class="sidebar__agent-dot sidebar__agent-dot--${agent.status}"></span>
                     <div class="sidebar__agent-info">
-                        <span class="sidebar__agent-name">${this._escape(agent.name)}</span>
+                        <span class="sidebar__agent-name">${teamDot}${this._escape(agent.name)}</span>
                         <span class="sidebar__agent-model"><span style="color:${providerColor};font-weight:bold">${PROVIDER_ICONS[agent.provider] || '?'}</span> ${this._escape(this._shortModel(agent.model, agent.effort, agent.provider))}</span>
                     </div>
                 </div>`;
