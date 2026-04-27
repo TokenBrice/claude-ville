@@ -263,9 +263,8 @@ export class SceneryEngine {
             this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation);
         }
         this._addHarborDocks();
-        if (this.bridgeTiles.size > 0) return;
 
-        // 2. Auto-place where any path tile lies on water.
+        // 2. Auto-place where any path tile lies on water and has no authored bridge.
         for (const key of pathTiles) {
             if (!this.waterTiles.has(key)) continue;
             if (this.bridgeTiles.has(key)) continue;
