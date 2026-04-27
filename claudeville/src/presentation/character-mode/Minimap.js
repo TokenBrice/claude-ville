@@ -85,7 +85,12 @@ export class Minimap {
                 agent.provider === 'claude' ? '#f2d36b' :
                     agent.provider === 'gemini' ? '#b7ccff' :
                         statusColor);
-            if (identity.modelClass === 'spark') {
+            if (identity.modelClass === 'haiku') {
+                ctx.fillStyle = identity.minimapColor || '#ffd47a';
+                ctx.beginPath();
+                ctx.arc(x, y, 1.5, 0, Math.PI * 2);
+                ctx.fill();
+            } else if (identity.modelClass === 'spark') {
                 ctx.beginPath();
                 ctx.moveTo(x, y - radius - 1);
                 ctx.lineTo(x + radius, y);
