@@ -208,21 +208,32 @@ class App {
 
             this._resizeHandle = null;
 
-            const cssWidth = w;
-            const cssHeight = h;
-            const newW = Math.round(cssWidth);
-            const newH = Math.round(cssHeight);
-            if (canvas.width === newW && canvas.height === newH) return;
+            const cssWidth = Math.round(w);
+            const cssHeight = Math.round(h);
+            const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+            const newW = Math.round(cssWidth * dpr);
+            const newH = Math.round(cssHeight * dpr);
+            if (
+                canvas.width === newW &&
+                canvas.height === newH &&
+                canvas._claudeVilleDpr === dpr
+            ) return;
             canvas.width = newW;
             canvas.height = newH;
+            canvas._claudeVilleDpr = dpr;
+            canvas._claudeVilleCssWidth = cssWidth;
+            canvas._claudeVilleCssHeight = cssHeight;
             canvas.style.width = `${cssWidth}px`;
             canvas.style.height = `${cssHeight}px`;
             const ctx = canvas.getContext('2d');
             ctx.imageSmoothingEnabled = false;
             ctx.mozImageSmoothingEnabled = false;
             ctx.webkitImageSmoothingEnabled = false;
+            if (this.renderer?.invalidateViewportCaches) {
+                this.renderer.invalidateViewportCaches();
+            }
             if (this.renderer && this.renderer.camera) {
-                this.renderer.camera.centerOnMap();
+                this.renderer.camera.onViewportResize();
             }
         };
 

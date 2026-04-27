@@ -1,4 +1,4 @@
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 
 export class Camera {
     constructor(canvas) {
@@ -8,6 +8,14 @@ export class Camera {
         this.zoom = 1;
         this.minZoom = 1;
         this.maxZoom = 3;
+        this.zoomSteps = [1, 1.5, 2, 2.5, 3];
+        this._zoomAnimation = null;
+        this._reducedMotion = false;
+        try {
+            this._reducedMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches || false;
+        } catch {
+            this._reducedMotion = false;
+        }
         this.dragging = false;
         this.dragStartX = 0;
         this.dragStartY = 0;
@@ -35,6 +43,11 @@ export class Camera {
         if (!this.canvas) return;
         this.x = -screenX + this._viewportWidth() / (2 * this.zoom);
         this.y = -screenY + this._viewportHeight() / (2 * this.zoom);
+        this._clampToBounds();
+    }
+
+    onViewportResize() {
+        this._clampToBounds();
     }
 
     attach() {
@@ -59,12 +72,36 @@ export class Camera {
         this.followTarget = null;
     }
 
+    setReducedMotion(enabled) {
+        this._reducedMotion = Boolean(enabled);
+        if (this._reducedMotion) this._zoomAnimation = null;
+    }
+
     updateFollow() {
         if (!this.followTarget) return;
         const targetX = -this.followTarget.x + this._viewportWidth() / (2 * this.zoom);
         const targetY = -this.followTarget.y + this._viewportHeight() / (2 * this.zoom);
         this.x += (targetX - this.x) * this.followSmoothing;
         this.y += (targetY - this.y) * this.followSmoothing;
+        this._clampToBounds();
+    }
+
+    update(dt = 16) {
+        if (!this._zoomAnimation) return;
+        const anim = this._zoomAnimation;
+        anim.elapsed += dt;
+        const t = Math.min(1, anim.elapsed / anim.duration);
+        const eased = 1 - Math.pow(1 - t, 3);
+        this.zoom = anim.fromZoom + (anim.toZoom - anim.fromZoom) * eased;
+        this.x = (anim.mouseX / this.zoom) - anim.worldBeforeX;
+        this.y = (anim.mouseY / this.zoom) - anim.worldBeforeY;
+        if (t >= 1) {
+            this.zoom = anim.toZoom;
+            this.x = (anim.mouseX / this.zoom) - anim.worldBeforeX;
+            this.y = (anim.mouseY / this.zoom) - anim.worldBeforeY;
+            this._zoomAnimation = null;
+        }
+        this._clampToBounds();
     }
 
     _onMouseDown(e) {
@@ -85,6 +122,7 @@ export class Camera {
         const dy = (e.clientY - this.dragStartY) / this.zoom;
         this.x = this.camStartX + dx;
         this.y = this.camStartY + dy;
+        this._clampToBounds();
     }
 
     _onMouseUp() {
@@ -94,23 +132,40 @@ export class Camera {
 
     _onWheel(e) {
         e.preventDefault();
-        const mouseX = e.offsetX;
-        const mouseY = e.offsetY;
+        const rect = this.canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
 
         const worldBeforeX = (mouseX / this.zoom) - this.x;
         const worldBeforeY = (mouseY / this.zoom) - this.y;
 
-        // Discrete zoom stepping follows the canvas contract: {1, 2, 3}.
         const direction = e.deltaY < 0 ? 1 : -1;
-        const steps = [this.minZoom, 2, this.maxZoom];
+        const steps = this.zoomSteps;
         const currentIndex = steps.reduce((bestIndex, step, index) => (
             Math.abs(step - this.zoom) < Math.abs(steps[bestIndex] - this.zoom) ? index : bestIndex
         ), 0);
         const nextIndex = Math.max(0, Math.min(steps.length - 1, currentIndex + direction));
-        this.zoom = steps[nextIndex];
+        const targetZoom = steps[nextIndex];
+        if (targetZoom === this.zoom) return;
 
-        this.x = (mouseX / this.zoom) - worldBeforeX;
-        this.y = (mouseY / this.zoom) - worldBeforeY;
+        if (this._reducedMotion) {
+            this.zoom = targetZoom;
+            this.x = (mouseX / this.zoom) - worldBeforeX;
+            this.y = (mouseY / this.zoom) - worldBeforeY;
+            this._clampToBounds();
+            return;
+        }
+
+        this._zoomAnimation = {
+            fromZoom: this.zoom,
+            toZoom: targetZoom,
+            mouseX,
+            mouseY,
+            worldBeforeX,
+            worldBeforeY,
+            elapsed: 0,
+            duration: 150,
+        };
     }
 
     worldToScreen(worldX, worldY) {
@@ -134,15 +189,80 @@ export class Camera {
         return { tileX: Math.floor(tileX), tileY: Math.floor(tileY) };
     }
 
+    getViewportTileBounds(margin = 0) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        const corners = [
+            this.screenToTile(0, 0),
+            this.screenToTile(w, 0),
+            this.screenToTile(w, h),
+            this.screenToTile(0, h),
+        ];
+        const xs = corners.map(c => c.tileX);
+        const ys = corners.map(c => c.tileY);
+        return {
+            startX: Math.max(0, Math.min(...xs) - margin),
+            endX: Math.min(MAP_SIZE - 1, Math.max(...xs) + margin),
+            startY: Math.max(0, Math.min(...ys) - margin),
+            endY: Math.min(MAP_SIZE - 1, Math.max(...ys) + margin),
+            corners,
+        };
+    }
+
+    centerOnTile(tileX, tileY) {
+        const screenX = (tileX - tileY) * (TILE_WIDTH / 2);
+        const screenY = (tileX + tileY) * (TILE_HEIGHT / 2);
+        this.x = -screenX + this._viewportWidth() / (2 * this.zoom);
+        this.y = -screenY + this._viewportHeight() / (2 * this.zoom);
+        this._clampToBounds();
+    }
+
     applyTransform(ctx) {
-        ctx.setTransform(this.zoom, 0, 0, this.zoom, Math.round(this.x * this.zoom), Math.round(this.y * this.zoom));
+        const dpr = this._dpr();
+        ctx.setTransform(
+            this.zoom * dpr,
+            0,
+            0,
+            this.zoom * dpr,
+            Math.round(this.x * this.zoom * dpr),
+            Math.round(this.y * this.zoom * dpr)
+        );
     }
 
     _viewportWidth() {
-        return this.canvas?.clientWidth || this.canvas?.width || 0;
+        return this.canvas?._claudeVilleCssWidth || this.canvas?.clientWidth || this.canvas?.width || 0;
     }
 
     _viewportHeight() {
-        return this.canvas?.clientHeight || this.canvas?.height || 0;
+        return this.canvas?._claudeVilleCssHeight || this.canvas?.clientHeight || this.canvas?.height || 0;
+    }
+
+    _dpr() {
+        return this.canvas?._claudeVilleDpr || 1;
+    }
+
+    _clampToBounds() {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (!w || !h || !Number.isFinite(this.zoom) || this.zoom <= 0) return;
+        const maxTile = MAP_SIZE - 1;
+        const worldCorners = [
+            { x: 0, y: 0 },
+            { x: maxTile * TILE_WIDTH / 2, y: maxTile * TILE_HEIGHT / 2 },
+            { x: -maxTile * TILE_WIDTH / 2, y: maxTile * TILE_HEIGHT / 2 },
+            { x: 0, y: maxTile * TILE_HEIGHT },
+        ];
+        const padX = Math.max(220, w / (this.zoom * 2.2));
+        const padY = Math.max(160, h / (this.zoom * 2.2));
+        const minX = Math.min(...worldCorners.map(p => p.x)) - padX;
+        const maxX = Math.max(...worldCorners.map(p => p.x)) + padX;
+        const minY = Math.min(...worldCorners.map(p => p.y)) - padY;
+        const maxY = Math.max(...worldCorners.map(p => p.y)) + padY;
+        const centerWorldX = w / (2 * this.zoom) - this.x;
+        const centerWorldY = h / (2 * this.zoom) - this.y;
+        const clampedX = Math.max(minX, Math.min(maxX, centerWorldX));
+        const clampedY = Math.max(minY, Math.min(maxY, centerWorldY));
+        this.x = w / (2 * this.zoom) - clampedX;
+        this.y = h / (2 * this.zoom) - clampedY;
     }
 }

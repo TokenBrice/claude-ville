@@ -127,13 +127,14 @@ export class Minimap {
 
         // Viewport polygon
         if (camera && mainCanvas) {
-            const corners = [
+            const corners = camera.getViewportTileBounds?.(0)?.corners || [
                 camera.screenToTile(0, 0),
-                camera.screenToTile(mainCanvas.width, 0),
-                camera.screenToTile(mainCanvas.width, mainCanvas.height),
-                camera.screenToTile(0, mainCanvas.height),
+                camera.screenToTile(mainCanvas.clientWidth || mainCanvas.width, 0),
+                camera.screenToTile(mainCanvas.clientWidth || mainCanvas.width, mainCanvas.clientHeight || mainCanvas.height),
+                camera.screenToTile(0, mainCanvas.clientHeight || mainCanvas.height),
             ];
-            ctx.strokeStyle = '#ff4c3a';
+            ctx.fillStyle = 'rgba(255, 229, 158, 0.13)';
+            ctx.strokeStyle = '#ffe59e';
             ctx.lineWidth = 1.5;
             ctx.beginPath();
             corners.forEach((corner, index) => {
@@ -143,6 +144,7 @@ export class Minimap {
                 else ctx.lineTo(x, y);
             });
             ctx.closePath();
+            ctx.fill();
             ctx.stroke();
         }
 
