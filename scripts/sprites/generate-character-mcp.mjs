@@ -1,20 +1,24 @@
 #!/usr/bin/env node
 // Assemble a ClaudeVille character sheet (8 dirs × 10 rows × 92px = 736×920)
-// from pixellab MCP outputs cached on disk.
+// from a pixellab MCP character ZIP.
+//
+// Pixellab ZIP layout (verified 2026-04-28):
+//   metadata.json
+//   rotations/<dir>.png                                          (S × S, S = source canvas)
+//   animations/animating-<uuid>/<dir>/frame_NNN.png              (S × S each)
+//
+// We map the two animations by FRAME COUNT:
+//   6 frames per direction → walk
+//   4 frames per direction → breathing-idle
 //
 // Usage:
-//   node scripts/sprites/generate-character-mcp.mjs --id=<sprite-id> [--source-size=132]
-//
-// Cache layout (operator must populate before running):
-//   output/character-mcp-cache/<id>/rotations/<dir>.png       (S × S, where S = source size, default 132)
-//   output/character-mcp-cache/<id>/walk/<dir>.png            (S × (S × 6) — 6-frame strip)
-//   output/character-mcp-cache/<id>/breathing-idle/<dir>.png  (S × (S × 4) — 4-frame strip)
-//
-// Output: claudeville/assets/sprites/characters/<id>/sheet.png  (736×920)
+//   node scripts/sprites/generate-character-mcp.mjs --id=<sprite-id> --zip=<path-to-zip>
+//   (or omit --zip and the script looks for output/character-mcp-cache/<id>.zip)
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
 import { PNG } from 'pngjs';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
@@ -35,23 +39,30 @@ function arg(name, fallback) {
 
 const id = arg('id', null);
 if (!id) { console.error('Missing --id=<sprite-id>'); process.exit(1); }
-const SOURCE = parseInt(arg('source-size', '132'), 10);
-if (Number.isNaN(SOURCE) || SOURCE < CELL) { console.error(`--source-size must be ≥ ${CELL}`); process.exit(1); }
+const zipPath = arg('zip', join(cacheRoot, `${id}.zip`));
 
 main().catch((err) => { console.error(err.stack || err.message); process.exit(1); });
 
 async function main() {
-    const cacheDir = join(cacheRoot, id);
-    if (!existsSync(cacheDir)) throw new Error(`Cache not found: ${cacheDir}`);
+    if (!existsSync(zipPath)) throw new Error(`ZIP not found: ${zipPath}`);
+    const extractDir = join(cacheRoot, `${id}-extracted`);
+    mkdirSync(extractDir, { recursive: true });
+    execSync(`unzip -o -q "${zipPath}" -d "${extractDir}"`);
 
-    // Pre-flight: 24 files must exist
-    let count = 0;
-    for (const sub of ['rotations', 'walk', 'breathing-idle']) {
-        for (const dir of DIRECTIONS) {
-            if (existsSync(join(cacheDir, sub, `${dir}.png`))) count++;
-        }
+    const meta = JSON.parse(readFileSync(join(extractDir, 'metadata.json'), 'utf8'));
+    const SOURCE = meta.character.size.width;
+    if (SOURCE < CELL) throw new Error(`Source canvas ${SOURCE} smaller than cell ${CELL}`);
+
+    // Identify walk vs idle animation by frame count.
+    let walkAnim = null;
+    let idleAnim = null;
+    for (const [animId, dirs] of Object.entries(meta.frames.animations)) {
+        const frameCount = dirs.south?.length ?? 0;
+        if (frameCount === WALK_FRAMES) walkAnim = animId;
+        else if (frameCount === IDLE_FRAMES) idleAnim = animId;
     }
-    if (count !== 24) throw new Error(`Cache for ${id} has ${count}/24 PNGs — re-run download step.`);
+    if (!walkAnim) throw new Error(`No ${WALK_FRAMES}-frame walk animation found in metadata`);
+    if (!idleAnim) throw new Error(`No ${IDLE_FRAMES}-frame idle animation found in metadata`);
 
     const sheet = new PNG({ width: CELL * COLS, height: CELL * ROWS });
     sheet.data.fill(0);
@@ -59,29 +70,33 @@ async function main() {
     for (let col = 0; col < COLS; col++) {
         const dir = DIRECTIONS[col];
 
-        const walkStrip = readPng(join(cacheDir, 'walk', `${dir}.png`));
-        if (walkStrip.height !== SOURCE || walkStrip.width !== SOURCE * WALK_FRAMES) {
-            throw new Error(`walk/${dir}.png: expected ${SOURCE * WALK_FRAMES}×${SOURCE}, got ${walkStrip.width}×${walkStrip.height}. Use --source-size=<actual height> if pixellab returned a different canvas.`);
+        // Walk rows 0..5
+        const walkFrames = meta.frames.animations[walkAnim][dir];
+        if (!walkFrames || walkFrames.length !== WALK_FRAMES) {
+            throw new Error(`walk animation missing direction ${dir} or wrong frame count`);
         }
         for (let f = 0; f < WALK_FRAMES; f++) {
-            const frame = cropCenter(walkStrip, f * SOURCE, 0);
-            blit(frame, sheet, col * CELL, f * CELL);
+            const frame = readPng(join(extractDir, walkFrames[f]));
+            const cropped = cropCenter(frame, SOURCE);
+            blit(cropped, sheet, col * CELL, f * CELL);
         }
 
-        const idleStrip = readPng(join(cacheDir, 'breathing-idle', `${dir}.png`));
-        if (idleStrip.height !== SOURCE || idleStrip.width !== SOURCE * IDLE_FRAMES) {
-            throw new Error(`breathing-idle/${dir}.png: expected ${SOURCE * IDLE_FRAMES}×${SOURCE}, got ${idleStrip.width}×${idleStrip.height}.`);
+        // Idle rows 6..9
+        const idleFrames = meta.frames.animations[idleAnim][dir];
+        if (!idleFrames || idleFrames.length !== IDLE_FRAMES) {
+            throw new Error(`idle animation missing direction ${dir} or wrong frame count`);
         }
         for (let f = 0; f < IDLE_FRAMES; f++) {
-            const frame = cropCenter(idleStrip, f * SOURCE, 0);
-            blit(frame, sheet, col * CELL, (WALK_FRAMES + f) * CELL);
+            const frame = readPng(join(extractDir, idleFrames[f]));
+            const cropped = cropCenter(frame, SOURCE);
+            blit(cropped, sheet, col * CELL, (WALK_FRAMES + f) * CELL);
         }
     }
 
     const outPath = join(spritesRoot, id, 'sheet.png');
     mkdirSync(dirname(outPath), { recursive: true });
     writeFileSync(outPath, PNG.sync.write(sheet));
-    console.log(`wrote ${outPath} (${CELL * COLS}×${CELL * ROWS})`);
+    console.log(`wrote ${outPath} (${CELL * COLS}×${CELL * ROWS}, source=${SOURCE})`);
 }
 
 function readPng(p) {
@@ -89,16 +104,18 @@ function readPng(p) {
     return PNG.sync.read(readFileSync(p));
 }
 
-// Center-crop CELL×CELL from a SOURCE×SOURCE region of src starting at (sx, sy).
-function cropCenter(src, sx, sy) {
-    const off = Math.floor((SOURCE - CELL) / 2);
+// Center-crop a CELL×CELL window from a SOURCE×SOURCE frame.
+function cropCenter(src, source) {
+    if (src.width !== source || src.height !== source) {
+        throw new Error(`expected ${source}×${source}, got ${src.width}×${src.height}`);
+    }
+    const off = Math.floor((source - CELL) / 2);
     const out = new PNG({ width: CELL, height: CELL });
     out.data.fill(0);
     for (let y = 0; y < CELL; y++) {
         for (let x = 0; x < CELL; x++) {
-            const sxx = sx + off + x;
-            const syy = sy + off + y;
-            if (sxx < 0 || syy < 0 || sxx >= src.width || syy >= src.height) continue;
+            const sxx = off + x;
+            const syy = off + y;
             const si = (src.width * syy + sxx) << 2;
             const di = (CELL * y + x) << 2;
             out.data[di] = src.data[si];
