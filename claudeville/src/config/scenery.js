@@ -132,9 +132,9 @@ export const BRIDGE_HINTS = [
     { tileX: 22, tileY: 25, orientation: 'NS' }, // Command/Tasks bridge into the production row
 ];
 
-// The generated Harbor Master sprite now carries the quay, pier fingers, and
-// visual dock surface. Keep authored dock tiles out of the bay so the runtime
-// commit ships can gather around the sprite without a second grid of planks.
+// Small authored Harbor Master causeway. This is intentionally separate from
+// the two landmark river bridges so agents can reach the harbor without
+// creating extra town-wide crossings.
 export const HARBOR_DOCK_TILES = [
     { tileX: 29, tileY: 19, orientation: 'EW', style: 'causeway' },
     { tileX: 30, tileY: 19, orientation: 'EW', style: 'causeway' },

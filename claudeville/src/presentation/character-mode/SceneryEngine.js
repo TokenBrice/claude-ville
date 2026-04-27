@@ -3,6 +3,7 @@ import {
     WATER_POLYLINES,
     WATER_BASINS,
     BRIDGE_HINTS,
+    HARBOR_DOCK_TILES,
     TREE_CLUSTERS,
     BOULDERS,
     VEGETATION_DISTRICTS,
@@ -262,6 +263,7 @@ export class SceneryEngine {
             if (!this.waterTiles.has(key)) continue;
             this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation);
         }
+        this._addHarborDocks();
     }
 
     _addBridgeSpan(tileX, tileY, forcedOrientation) {
@@ -303,6 +305,17 @@ export class SceneryEngine {
     _addBridgeTile(tileX, tileY, orientation) {
         const key = `${tileX},${tileY}`;
         this.bridgeTiles.set(key, { orientation, kind: 'landmark' });
+    }
+
+    _addHarborDocks() {
+        for (const dock of HARBOR_DOCK_TILES) {
+            const { tileX, tileY, orientation = 'EW', style = 'causeway' } = dock;
+            if (tileX < 0 || tileX >= MAP_SIZE || tileY < 0 || tileY >= MAP_SIZE) continue;
+            const key = `${tileX},${tileY}`;
+            if (this._buildingFootprints.has(key)) continue;
+            if (!this.waterTiles.has(key)) continue;
+            this.bridgeTiles.set(key, { orientation, kind: 'dock', style });
+        }
     }
 
     _inferOrientation(tileX, tileY) {

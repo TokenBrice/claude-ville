@@ -140,7 +140,7 @@ export const BUILDING_DEFS = [
         district: 'harbor',
         visualTier: 'major',
         labelPriority: 'landmark',
-        entrance: { tileX: 28, tileY: 20 },
-        visitTiles: [{ tileX: 28, tileY: 20 }, { tileX: 28, tileY: 19 }, { tileX: 27, tileY: 20 }],
+        entrance: { tileX: 31, tileY: 20 },
+        visitTiles: [{ tileX: 31, tileY: 20 }, { tileX: 31, tileY: 19 }, { tileX: 30, tileY: 19 }],
     },
 ];

@@ -2,6 +2,9 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 
 const SHIP_SPRITE_ID = 'prop.harborBoat';
 const MAX_VISIBLE_SHIPS = 12;
+const MAX_DOCKED_SHIPS_PER_REPO = 3;
+const MAX_DEPARTING_SHIPS = 5;
+const HARBOR_LOG_TILE = { tileX: 34.8, tileY: 17.2 };
 const DEPARTURE_MS = 48000;
 const EXIT_HOLD_MS = 1800;
 const EXIT_FADE_MS = 4200;
@@ -137,12 +140,19 @@ function projectName(project) {
     return shortenLabel(parts.at(-1) || text || 'unknown', 26);
 }
 
+function displayRepoName(project) {
+    const name = projectName(project);
+    return name
+        .replace(/[-_]+/g, ' ')
+        .replace(/\b\w/g, char => char.toUpperCase());
+}
+
 function repoProfile(project) {
     const name = projectName(project);
     const hash = stableHash(String(project || name || 'unknown'));
     const palette = REPO_PALETTES[hash % REPO_PALETTES.length];
     return {
-        key: String(project || 'unknown'),
+        key: name.toLowerCase(),
         name,
         shortName: shortenLabel(name, 16),
         hash,
@@ -356,6 +366,12 @@ function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
     const latestPush = latestPushTimes.get(event.project) || 0;
     if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
     return Math.max(0, now - latestPush) > RECENT_PUSH_REPLAY_MS;
+}
+
+function visibleDockedShipsForRepo(count) {
+    const value = Math.max(1, Number(count || 1));
+    if (value >= 20) return MAX_DOCKED_SHIPS_PER_REPO;
+    return Math.min(value, MAX_DOCKED_SHIPS_PER_REPO);
 }
 
 export function snapshotHarborTrafficState(state) {
@@ -704,44 +720,77 @@ export class HarborTraffic {
     }
 
     enumerateDrawables(now = Date.now()) {
-        const candidates = [];
+        const repoSummaries = this._repoDockSummaries();
+        const markers = this._repoQuayDrawables(repoSummaries);
+        const markerByRepo = new Map();
+        for (const marker of markers) {
+            const key = repoProfile(marker.payload?.project).key;
+            if (key) markerByRepo.set(key, marker.payload);
+        }
+        const dockedByRepo = new Map();
+        const departing = [];
+
         for (const ship of this.state.ships.values()) {
             const drawable = this._shipDrawable(ship, now);
-            if (drawable) candidates.push(drawable);
+            if (!drawable) continue;
+            if (drawable.payload.status === 'docked') {
+                const key = repoProfile(drawable.payload.project).key;
+                const list = dockedByRepo.get(key) || [];
+                list.push(drawable);
+                dockedByRepo.set(key, list);
+            } else {
+                departing.push(drawable);
+            }
         }
 
-        candidates.sort((a, b) => {
-            if (a.payload.status !== b.payload.status) {
-                return a.payload.status === 'departing' ? 1 : -1;
-            }
-            return (a.payload.eventTime - b.payload.eventTime) || a.payload.id.localeCompare(b.payload.id);
-        });
-
-        const visible = candidates.slice(-MAX_VISIBLE_SHIPS);
-        const hiddenCount = candidates.length - visible.length;
-        if (hiddenCount > 0) {
-            const berth = BERTHS[(this.state.nextSequence + 1) % BERTHS.length];
-            const pos = toWorld(berth.tileX, berth.tileY);
-            visible.push({
-                kind: 'harbor-traffic',
-                sortY: pos.y + 2,
-                payload: {
-                    type: 'cluster',
-                    count: hiddenCount,
-                    x: pos.x,
-                    y: pos.y,
-                },
+        const visible = [];
+        for (const [key, list] of dockedByRepo.entries()) {
+            list.sort((a, b) => {
+                const aFailed = a.payload.pushStatus === 'failed' ? 1 : 0;
+                const bFailed = b.payload.pushStatus === 'failed' ? 1 : 0;
+                return (bFailed - aFailed)
+                    || ((b.payload.eventTime || 0) - (a.payload.eventTime || 0))
+                    || a.payload.id.localeCompare(b.payload.id);
+            });
+            const summary = repoSummaries.get(key);
+            const repoCount = summary?.count || list.length;
+            const limit = visibleDockedShipsForRepo(repoCount);
+            const representatives = list.slice(0, limit);
+            representatives.forEach((drawable, index) => {
+                drawable.payload.repoDockCount = repoCount;
+                drawable.payload.repoDockIndex = index;
+                drawable.payload.repoDockVisibleCount = representatives.length;
+                const marker = markerByRepo.get(key);
+                if (marker) {
+                    const col = index % 2;
+                    const row = Math.floor(index / 2);
+                    const repoLane = Number(marker.repoLogIndex || 0) % 2;
+                    drawable.payload.x = marker.x + (repoLane === 0 ? -74 : 74) + (col === 0 ? -36 : 36);
+                    drawable.payload.y = marker.y + 116 + row * 38;
+                    drawable.sortY = drawable.payload.y;
+                }
+                visible.push(drawable);
             });
         }
 
-        for (const marker of this._repoQuayDrawables()) {
-            visible.push(marker);
+        departing.sort((a, b) => ((b.payload.eventTime || 0) - (a.payload.eventTime || 0)) || a.payload.id.localeCompare(b.payload.id));
+        for (const drawable of departing.slice(0, MAX_DEPARTING_SHIPS)) {
+            visible.push(drawable);
         }
 
-        return visible.sort((a, b) => a.sortY - b.sortY);
+        visible.sort((a, b) => {
+            if (a.payload.status !== b.payload.status) {
+                return a.payload.status === 'departing' ? 1 : -1;
+            }
+            return ((a.payload.eventTime || 0) - (b.payload.eventTime || 0)) || a.payload.id.localeCompare(b.payload.id);
+        });
+        const trimmed = visible.slice(-MAX_VISIBLE_SHIPS);
+
+        return [...trimmed, ...markers]
+            .sort((a, b) => a.sortY - b.sortY);
     }
 
-    _repoQuayDrawables() {
+    _repoDockSummaries() {
         const summaries = new Map();
         for (const ship of this.state.ships.values()) {
             if (ship.status !== 'docked') continue;
@@ -766,40 +815,35 @@ export class HarborTraffic {
             summary.latestEventTime = Math.max(summary.latestEventTime, ship.eventTime || 0);
             summaries.set(profile.key, summary);
         }
+        return summaries;
+    }
 
-        const byQuay = new Map();
-        for (const summary of summaries.values()) {
-            const list = byQuay.get(summary.quayIndex) || [];
-            list.push(summary);
-            byQuay.set(summary.quayIndex, list);
-        }
-
+    _repoQuayDrawables(summaries = this._repoDockSummaries()) {
+        const ordered = [...summaries.values()]
+            .sort((a, b) => (a.quayIndex - b.quayIndex)
+                || (b.count - a.count)
+                || (b.latestEventTime - a.latestEventTime)
+                || a.profile.name.localeCompare(b.profile.name));
+        const anchor = toWorld(HARBOR_LOG_TILE.tileX, HARBOR_LOG_TILE.tileY);
         const drawables = [];
-        for (const [quayIndex, list] of byQuay.entries()) {
-            list.sort((a, b) => (b.count - a.count) || (b.latestEventTime - a.latestEventTime) || a.profile.name.localeCompare(b.profile.name));
-            const spread = Math.min(58, Math.max(34, 128 / Math.max(1, list.length)));
-            list.forEach((summary, index) => {
-                const pos = {
-                    x: summary.x / summary.count,
-                    y: summary.y / summary.count,
-                };
-                const rankOffset = index - (list.length - 1) / 2;
-                drawables.push({
-                    kind: 'harbor-traffic',
-                    sortY: pos.y + 9 + index,
-                    payload: {
-                        type: 'repo-quay',
-                        project: summary.project,
-                        profile: summary.profile,
-                        quayName: QUAY_GROUPS[quayIndex]?.name || 'Quay',
-                        count: summary.count,
-                        failedCount: summary.failedCount,
-                        x: pos.x + rankOffset * spread,
-                        y: pos.y - 58 - (index % 2) * 8,
-                    },
-                });
+        ordered.forEach((summary, index) => {
+            const quayIndex = Number.isFinite(Number(summary.quayIndex)) ? Number(summary.quayIndex) : 0;
+            drawables.push({
+                kind: 'harbor-traffic',
+                sortY: anchor.y - 190 + index,
+                payload: {
+                    type: 'repo-quay',
+                    project: summary.project,
+                    profile: summary.profile,
+                    quayName: QUAY_GROUPS[quayIndex]?.name || 'Quay',
+                    count: summary.count,
+                    failedCount: summary.failedCount,
+                    repoLogIndex: index,
+                    x: anchor.x,
+                    y: anchor.y - 192 + index * 16,
+                },
             });
-        }
+        });
 
         return drawables;
     }
@@ -1143,10 +1187,13 @@ export class HarborTraffic {
         const s = 1 / Math.max(1, zoom || 1);
         const label = shortenLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS);
         const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
+        const repoIndex = Math.max(0, Number(ship.repoDockIndex || 0));
+        const repoCount = Math.max(1, Number(ship.repoDockVisibleCount || 1));
+        const lane = repoCount > 1 ? repoIndex - (repoCount - 1) / 2 : 0;
         const textSize = Math.max(7, Math.round(8 * s));
         const width = Math.max(42 * s, Math.min(142 * s, label.length * textSize * 0.62 + 12 * s));
-        const x = Math.round(ship.x - width / 2);
-        const y = Math.round(ship.y - 44 * s);
+        const x = Math.round(ship.x - width / 2 + lane * 22 * s);
+        const y = Math.round(ship.y - (44 + repoIndex * 14) * s);
         const height = 12 * s;
         ctx.save();
         ctx.globalAlpha = 0.94 * alpha;
@@ -1156,7 +1203,7 @@ export class HarborTraffic {
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
         ctx.fillStyle = profile.accent;
         ctx.fillRect(x, y, Math.max(2, Math.round(4 * s)), Math.round(height));
-        ctx.fillStyle = ship.pushStatus ? style.accent : '#f6cf60';
+        ctx.fillStyle = ship.pushStatus ? style.accent : profile.accent;
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -1258,9 +1305,10 @@ export class HarborTraffic {
         const s = 1 / Math.max(1, zoom || 1);
         const profile = payload.profile || repoProfile(payload.project);
         const count = Math.max(1, Number(payload.count || 1));
-        const label = `${shortenLabel(profile.shortName || profile.name, count >= 10 ? 10 : 12)} x${count}`;
+        const name = shortenLabel(displayRepoName(payload.project), count >= 100 ? 18 : 20);
+        const label = `${name} (${count})`;
         const textSize = Math.max(7, Math.round(9 * s));
-        const width = Math.max(58 * s, Math.min(122 * s, label.length * textSize * 0.58 + 18 * s));
+        const width = Math.max(92 * s, Math.min(172 * s, label.length * textSize * 0.58 + 18 * s));
         const height = 16 * s;
         const x = Math.round(payload.x - width / 2);
         const y = Math.round(payload.y - height / 2);
@@ -1268,7 +1316,7 @@ export class HarborTraffic {
 
         ctx.save();
         ctx.globalAlpha = 0.94;
-        ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.9)';
+        ctx.fillStyle = 'rgba(20, 30, 34, 0.88)';
         ctx.fillRect(x, y, Math.round(width), Math.round(height));
         ctx.strokeStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
         ctx.lineWidth = 1;
@@ -1276,19 +1324,12 @@ export class HarborTraffic {
         ctx.fillStyle = profile.accent;
         ctx.fillRect(x, y, Math.max(3, Math.round(5 * s)), Math.round(height));
 
-        ctx.globalAlpha = 0.46;
-        ctx.strokeStyle = profile.accent;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(payload.x), Math.round(y + height));
-        ctx.lineTo(Math.round(payload.x), Math.round(payload.y + 28 * s));
-        ctx.stroke();
-
         ctx.globalAlpha = 1;
         ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : '#f5e8be';
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        ctx.textAlign = 'center';
+        ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(label, Math.round(payload.x + 2 * s), Math.round(y + height / 2 + 0.5));
+        ctx.fillText(label, Math.round(x + 10 * s), Math.round(y + height / 2 + 0.5));
         ctx.restore();
     }
 
