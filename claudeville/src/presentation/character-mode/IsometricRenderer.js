@@ -16,6 +16,7 @@ import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
 import { LandmarkActivity } from './LandmarkActivity.js';
+import { DebugOverlay } from './DebugOverlay.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -156,6 +157,7 @@ export class IsometricRenderer {
         this.waterTiles = this.scenery.getWaterTiles();
         this.shoreTiles = this.scenery.getShoreTiles();
         this.deepWaterTiles = this.scenery.getDeepWaterTiles();
+        this.harborWaterApronTiles = this._buildHarborWaterApronTiles();
 
         // Bridges (Task 5): authored hints + auto-place where roads cross water.
         this.scenery.generateBridges(this.pathTiles);
@@ -247,6 +249,7 @@ export class IsometricRenderer {
 
         // Event subscriptions
         this._unsubscribers = [];
+        this.debugOverlay = new DebugOverlay();
     }
 
     _generatePaths() {
@@ -275,6 +278,24 @@ export class IsometricRenderer {
             }
         }
         this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
+    }
+
+    _buildHarborWaterApronTiles() {
+        const set = new Set();
+        const harbor = this.world.buildings.get('harbor');
+        if (!harbor) return set;
+        const x0 = Math.floor(harbor.position.tileX);
+        const y0 = Math.floor(harbor.position.tileY);
+        for (let x = x0; x < x0 + harbor.width; x++) {
+            for (let y = y0; y < y0 + harbor.height; y++) {
+                set.add(`${x},${y}`);
+            }
+        }
+        return set;
+    }
+
+    _isVisualWaterTile(tileX, tileY, key = `${tileX},${tileY}`) {
+        return this.waterTiles.has(key) || this.harborWaterApronTiles?.has(key);
     }
 
     _generatePlannedRoads() {
@@ -667,6 +688,8 @@ export class IsometricRenderer {
             this.buildingRenderer?.setHovered(this.buildingRenderer.hitTest(worldPos.x, worldPos.y) ?? null);
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
+        this._onKeyDown = (e) => { if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle(); };
+        window.addEventListener('keydown', this._onKeyDown);
 
         this.running = true;
         this._loop();
@@ -695,6 +718,7 @@ export class IsometricRenderer {
             this.canvas.removeEventListener('click', this._onClick);
             this.canvas.removeEventListener('mousemove', this._onMouseMoveMain);
         }
+        if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
         this._sortedSprites = [];
         this._spritesNeedSort = true;
         this.agentSprites.clear();
@@ -1046,6 +1070,13 @@ export class IsometricRenderer {
         ctx.setTransform(1, 0, 0, 1, 0, 0);
         SpriteRenderer.disableSmoothing(ctx);
         this.harborTraffic?.drawScreenSummary(ctx, canvas, this.camera, renderNow);
+
+        // Debug overlay (Shift+D to toggle).
+        this.debugOverlay?.draw(ctx, {
+            walkabilityGrid: this.walkabilityGrid,
+            bridgeTiles: this.bridgeTiles,
+            agentSprites: this.agentSprites,
+        });
 
         // Minimap
         this.minimap.draw(this.world, this.camera, canvas, {
@@ -2208,6 +2239,7 @@ export class IsometricRenderer {
     _drawTerrainTone(ctx, screenX, screenY, key, seed, tileX, tileY) {
         let fill = null;
         let alpha = 0;
+        const visualWater = this._isVisualWaterTile(tileX, tileY, key);
 
         if (this.deepWaterTiles.has(key)) {
             const openSea = this._isOpenSeaTile(tileX, tileY);
@@ -2215,9 +2247,9 @@ export class IsometricRenderer {
                 ? (seed > 0.5 ? '#03244a' : '#074276')
                 : (seed > 0.5 ? '#075274' : '#0b6c8d');
             alpha = openSea ? 0.58 : 0.48;
-        } else if (this.waterTiles.has(key)) {
-            fill = seed > 0.5 ? '#0c98a6' : '#18b7bc';
-            alpha = 0.42;
+        } else if (visualWater) {
+            fill = seed > 0.5 ? '#0a8192' : '#0e9aa5';
+            alpha = this.waterTiles.has(key) ? 0.42 : 0.54;
         } else if (this.shoreTiles.has(key)) {
             fill = seed > 0.45 ? '#c29a55' : '#ad8346';
             alpha = 0.15;
@@ -2251,7 +2283,7 @@ export class IsometricRenderer {
         this._drawDiamond(ctx, screenX, screenY);
         ctx.fill();
 
-        const allowRegionTint = !this.waterTiles.has(key) && !this.shoreTiles.has(key);
+        const allowRegionTint = !visualWater && !this.shoreTiles.has(key);
         const regionTone = allowRegionTint ? this._terrainRegionTint(fill, tileX, tileY, seed) : null;
         if (regionTone && regionTone !== fill) {
             const regionAlpha = Math.min(0.08, alpha * 0.45);
@@ -2265,7 +2297,7 @@ export class IsometricRenderer {
             this._drawForestFloorTexture(ctx, screenX, screenY, seed, forestFloor);
         }
 
-        if (this.waterTiles.has(key) && this.motionScale && seed > 0.72) {
+        if (visualWater && this.motionScale && seed > 0.72) {
             const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
             ctx.strokeStyle = `rgba(188, 253, 246, ${shimmer})`;
             ctx.lineWidth = 1;
@@ -2274,7 +2306,7 @@ export class IsometricRenderer {
             ctx.lineTo(screenX + 10, screenY - 6);
             ctx.stroke();
         }
-        if (this.waterTiles.has(key)) {
+        if (visualWater) {
             this._drawWaterDepthAccent(ctx, screenX, screenY, seed, tileX, tileY);
         } else if (this.shoreTiles.has(key)) {
             this._drawShoreCrest(ctx, screenX, screenY, seed, tileX, tileY);
@@ -2652,7 +2684,7 @@ export class IsometricRenderer {
     _terrainSheetIdAt(x, y) {
         const key = `${x},${y}`;
         if (this.deepWaterTiles.has(key)) return 'terrain.shallow-deep';
-        if (this.waterTiles.has(key)) return 'terrain.shore-shallow';
+        if (this._isVisualWaterTile(x, y, key)) return 'terrain.shore-shallow';
         if (this.shoreTiles.has(key)) return 'terrain.grass-shore';
         if (this.townSquareTiles.has(key)) return 'terrain.cobble-square';
         if (this.mainAvenueTiles?.has(key)) return 'terrain.grass-cobble';
@@ -2667,7 +2699,7 @@ export class IsometricRenderer {
         const id = this._terrainSheetIdAt(originX, originY);
         const tkey = `${tx},${ty}`;
         if (id === 'terrain.shallow-deep') return this.deepWaterTiles.has(tkey);
-        if (id === 'terrain.shore-shallow') return this.waterTiles.has(tkey) && !this.deepWaterTiles.has(tkey);
+        if (id === 'terrain.shore-shallow') return this._isVisualWaterTile(tx, ty, tkey) && !this.deepWaterTiles.has(tkey);
         if (id === 'terrain.grass-shore') return this.shoreTiles.has(tkey);
         if (id === 'terrain.cobble-square') return this.townSquareTiles.has(tkey);
         if (id === 'terrain.grass-cobble') return this.mainAvenueTiles?.has(tkey);
