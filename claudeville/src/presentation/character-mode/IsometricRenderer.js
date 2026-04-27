@@ -242,15 +242,45 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 15.0, tileY: 22.2, type: 'runestone' },
 ];
 class StaticPropSprite {
-    constructor({ tileX, tileY, drawFn }) {
+    constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false }) {
         this.tileX = tileX;
         this.tileY = tileY;
         this.x = (tileX - tileY) * TILE_WIDTH / 2;
         this.y = (tileX + tileY) * TILE_HEIGHT / 2;
         this.drawFn = drawFn;
+        this.id = id;
+        this.bounds = bounds || { left: -32, right: 32, top: -64, bottom: 12, splitY: -18 };
+        this.splitForOcclusion = splitForOcclusion;
     }
     draw(ctx, zoom) {
         this.drawFn(ctx, this.x, this.y, zoom);
+    }
+    drawPart(ctx, part, zoom) {
+        if (!this.splitForOcclusion || part === 'whole') {
+            this.draw(ctx, zoom);
+            return;
+        }
+        const { left, right, top, bottom, splitY } = this.bounds;
+        const clipTop = part === 'back' ? top : splitY;
+        const clipBottom = part === 'back' ? splitY : bottom;
+        if (clipBottom <= clipTop) return;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(
+            Math.floor(this.x + left) - 2,
+            Math.floor(this.y + clipTop) - 2,
+            Math.ceil(right - left) + 4,
+            Math.ceil(clipBottom - clipTop) + 4
+        );
+        ctx.clip();
+        this.draw(ctx, zoom);
+        ctx.restore();
+    }
+    propBackSortY() {
+        return this.y + Math.min(-8, this.bounds.splitY);
+    }
+    propFrontSortY() {
+        return this.y + Math.max(0, this.bounds.bottom * 0.25);
     }
 }
 
@@ -380,9 +410,13 @@ export class IsometricRenderer {
             .filter((t) => !this._isInBridgeTreeExclusion(t.tileX, t.tileY))
             .map((t) => {
             if (t.canopy || t.tropical) {
+                const bounds = this._fantasyTreePropBounds(t);
                 return new StaticPropSprite({
                     tileX: t.tileX,
                     tileY: t.tileY,
+                    id: 'fantasy.tree',
+                    bounds,
+                    splitForOcclusion: true,
                     drawFn: (ctx, x, y) => this._drawFantasyForestTree(ctx, x, y, t),
                 });
             }
@@ -393,6 +427,9 @@ export class IsometricRenderer {
             return new StaticPropSprite({
                 tileX: t.tileX,
                 tileY: t.tileY,
+                id,
+                bounds: this._assetPropBounds(id),
+                splitForOcclusion: true,
                 drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
             });
         });
@@ -407,6 +444,9 @@ export class IsometricRenderer {
             return new StaticPropSprite({
                 tileX: b.tileX,
                 tileY: b.tileY,
+                id,
+                bounds: this._assetPropBounds(id, 0.62),
+                splitForOcclusion: size === 'large',
                 drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
             });
         });
@@ -902,12 +942,28 @@ export class IsometricRenderer {
     _snapshotSortedSprites() {
         if (!this._spritesNeedSort) return this._sortedSprites;
         const agents = Array.from(this.agentSprites.values());
-        const trees = this.treePropSprites || [];
-        const boulders = this.boulderPropSprites || [];
-        this._sortedSprites = [...agents, ...trees, ...boulders];
+        this._sortedSprites = agents;
         this._sortedSprites.sort((a, b) => a.y - b.y);
         this._spritesNeedSort = false;
         return this._sortedSprites;
+    }
+
+    _enumeratePropDrawables() {
+        const sprites = [
+            ...(this.treePropSprites || []),
+            ...(this.boulderPropSprites || []),
+            ...(this.districtPropSprites || []),
+        ];
+        const drawables = [];
+        for (const sprite of sprites) {
+            if (sprite.splitForOcclusion) {
+                drawables.push({ kind: 'prop-back', sortY: sprite.propBackSortY(), payload: sprite });
+                drawables.push({ kind: 'prop-front', sortY: sprite.propFrontSortY(), payload: sprite });
+            } else {
+                drawables.push({ kind: 'prop', sortY: sprite.y, payload: sprite });
+            }
+        }
+        return drawables;
     }
 
     _bindMotionPreference() {
@@ -1268,6 +1324,10 @@ export class IsometricRenderer {
             ctx.save();
             ctx.globalCompositeOperation = 'screen';
             for (const light of lights) {
+                if (light.kind === 'beam') {
+                    this._drawLighthouseBeam(ctx, light, atmosphere);
+                    continue;
+                }
                 const overlayId = light.overlay || 'atmosphere.light.lighthouse-beam';
                 const overlayImg = this.assets.get(overlayId);
                 if (!overlayImg) continue;
@@ -1290,7 +1350,7 @@ export class IsometricRenderer {
         // 3. Buildings + 4. Agents — interleaved by sortY for proper occlusion
         const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
         const sortedSprites = this._snapshotSortedSprites();
-        const districtPropSprites = this.districtPropSprites || [];
+        const propDrawables = this._enumeratePropDrawables();
         const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
         const harborPendingRepos = this.harborTraffic?.getPendingRepoSummaries?.() ?? [];
         const landmarkDrawables = this.landmarkActivity?.enumerateDrawables() ?? [];
@@ -1299,8 +1359,8 @@ export class IsometricRenderer {
 
         const drawables = [];
         for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
+        for (const d of propDrawables) drawables.push(d);
         for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
-        for (const sprite of districtPropSprites) drawables.push({ kind: 'district-prop', sortY: sprite.y, payload: sprite });
         for (const d of harborDrawables) drawables.push({ kind: 'harbor-traffic', sortY: d.sortY, payload: d });
         for (const d of landmarkDrawables) drawables.push({ kind: 'landmark-activity', sortY: d.sortY, payload: d });
         drawables.sort((a, b) => a.sortY - b.sortY);
@@ -1308,8 +1368,12 @@ export class IsometricRenderer {
         for (const item of drawables) {
             if (item.kind === 'agent') {
                 item.payload.draw(ctx, zoom);
-            } else if (item.kind === 'district-prop') {
-                item.payload.draw(ctx, zoom);
+            } else if (item.kind === 'prop') {
+                item.payload.drawPart(ctx, 'whole', zoom);
+            } else if (item.kind === 'prop-back') {
+                item.payload.drawPart(ctx, 'back', zoom);
+            } else if (item.kind === 'prop-front') {
+                item.payload.drawPart(ctx, 'front', zoom);
             } else if (item.kind === 'harbor-traffic') {
                 this.harborTraffic.draw(ctx, item.payload, zoom);
             } else if (item.kind === 'landmark-activity') {
@@ -1620,11 +1684,41 @@ export class IsometricRenderer {
         return DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted')
             .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.pathTiles, this.bridgeTiles))
-            .map((prop) => new StaticPropSprite({
-                tileX: prop.tileX,
-                tileY: prop.tileY,
-                drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, prop.id, x, y),
-            }));
+            .map((prop) => {
+                const dims = this.assets?.getDims?.(prop.id);
+                return new StaticPropSprite({
+                    tileX: prop.tileX,
+                    tileY: prop.tileY,
+                    id: prop.id,
+                    bounds: this._assetPropBounds(prop.id),
+                    splitForOcclusion: Boolean(dims && dims.h >= 56),
+                    drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, prop.id, x, y),
+                });
+            });
+    }
+
+    _assetPropBounds(id, splitRatio = 0.58) {
+        const dims = this.assets?.getDims?.(id);
+        if (!dims) return { left: -32, right: 32, top: -64, bottom: 12, splitY: -18 };
+        const [ax, ay] = this.assets?.getAnchor?.(id) || [Math.round(dims.w / 2), dims.h];
+        return {
+            left: -ax,
+            right: dims.w - ax,
+            top: -ay,
+            bottom: dims.h - ay,
+            splitY: -ay + Math.round(dims.h * splitRatio),
+        };
+    }
+
+    _fantasyTreePropBounds(tree) {
+        const cached = this._getFantasyForestTreeCache(tree);
+        return {
+            left: -cached.anchorX,
+            right: cached.canvas.width - cached.anchorX,
+            top: -cached.anchorY,
+            bottom: cached.canvas.height - cached.anchorY,
+            splitY: -cached.anchorY + Math.round(cached.canvas.height * 0.58),
+        };
     }
 
     _terrainCacheBounds() {
@@ -3763,6 +3857,7 @@ export class IsometricRenderer {
             const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
             ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.12 : 0.18) * glowScale);
             for (const light of this.buildingRenderer.getLightSources(atmosphere?.lighting)) {
+                if (light.kind && light.kind !== 'point') continue;
                 const p = this.camera.worldToScreen(light.x, light.y);
                 if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
                 const radius = light.radius * this.camera.zoom;
@@ -3805,6 +3900,55 @@ export class IsometricRenderer {
         stampCtx.fill();
         this.lightGradientCache.set(key, stamp);
         return stamp;
+    }
+
+    _drawLighthouseBeam(ctx, light, atmosphere = null) {
+        const beaconIntensity = atmosphere?.lighting?.beaconIntensity ?? 0.5;
+        const phase = this.motionScale ? this.waterFrame * 0.11 : 0.65;
+        const sweep = Math.sin(phase) * 0.28;
+        const alpha = (light.alpha ?? 0.12) * (0.45 + beaconIntensity * 0.85) * (light.intensity || 1);
+        const length = light.length || 360;
+        const farWidth = light.width || 92;
+        const nearWidth = Math.max(8, farWidth * 0.13);
+        const angles = [-0.34 + sweep, Math.PI - 0.34 + sweep];
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 1;
+        this._drawBeamWedge(ctx, light.x, light.y, angles[0], length, nearWidth, farWidth, light.color, alpha);
+        this._drawBeamWedge(ctx, light.x, light.y, angles[1], length * 0.72, nearWidth, farWidth * 0.72, light.color, alpha * 0.55);
+        ctx.restore();
+    }
+
+    _drawBeamWedge(ctx, x, y, angle, length, nearWidth, farWidth, color, alpha) {
+        if (alpha <= 0) return;
+        const dx = Math.cos(angle);
+        const dy = Math.sin(angle);
+        const px = -dy;
+        const py = dx;
+        const farX = x + dx * length;
+        const farY = y + dy * length;
+        const gradient = ctx.createLinearGradient(x, y, farX, farY);
+        gradient.addColorStop(0, this._withAlpha(color, this._quantizedAlpha(alpha * 0.35)));
+        gradient.addColorStop(0.58, this._withAlpha(color, this._quantizedAlpha(alpha)));
+        gradient.addColorStop(1, this._withAlpha(color, 0));
+
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(x + px * nearWidth * 0.5, y + py * nearWidth * 0.5);
+        ctx.lineTo(farX + px * farWidth * 0.5, farY + py * farWidth * 0.5);
+        ctx.lineTo(farX - px * farWidth * 0.5, farY - py * farWidth * 0.5);
+        ctx.lineTo(x - px * nearWidth * 0.5, y - py * nearWidth * 0.5);
+        ctx.closePath();
+        ctx.fill();
+
+        const bloom = ctx.createRadialGradient(farX, farY, 0, farX, farY, farWidth * 0.75);
+        bloom.addColorStop(0, this._withAlpha(color, this._quantizedAlpha(alpha * 0.28)));
+        bloom.addColorStop(1, this._withAlpha(color, 0));
+        ctx.fillStyle = bloom;
+        ctx.beginPath();
+        ctx.ellipse(farX, farY, farWidth * 0.72, farWidth * 0.22, angle, 0, Math.PI * 2);
+        ctx.fill();
     }
 
     _getAtmosphereVignette(canvas, atmosphere = null) {

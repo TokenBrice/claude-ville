@@ -89,6 +89,26 @@ const BUILDING_LIGHT_FALLBACKS = {
     archive: { at: [168, 88], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
     harbor: { at: [48, 42], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };
+const LIGHT_SOURCE_REGISTRY = {
+    watchtower: [
+        {
+            kind: 'beam',
+            at: [196, 32],
+            color: '#ffd36a',
+            radius: 132,
+            length: 390,
+            width: 96,
+            alpha: 0.12,
+            overlay: 'atmosphere.light.lighthouse-beam',
+        },
+    ],
+};
+const EMITTER_LIGHTS = {
+    torch: { color: '#ffbc62', radius: 42, overlay: 'atmosphere.light.fire-glow' },
+    signal: { color: '#ffd37a', radius: 48, overlay: 'atmosphere.light.lantern-glow' },
+    forgeEmber: { color: '#ff8a33', radius: 42, overlay: 'atmosphere.light.fire-glow' },
+    forgeSpark: { color: '#ff9f3f', radius: 34, overlay: 'atmosphere.light.fire-glow' },
+};
 const OBSERVATORY_CLOCK_FACE = Object.freeze({
     // Calibrated against the generated 312x208 clock observatory base.
     center: [133, 73],
@@ -747,35 +767,53 @@ export class BuildingSprite {
         for (const b of this.buildings) {
             const entry = this.assets.getEntry(`building.${b.type}`);
             const c = this._buildingScreenCenter(b);
-            if (entry?.lightSource) {
-                const baseAnchor = this.assets.getAnchor(entry.id);
-                const [lx, ly] = entry.lightSource;
+            const seen = new Set();
+            const pushSource = (source) => {
+                if (!source?.at) return;
+                const baseAnchor = this.assets.getAnchor(entry?.id || `building.${b.type}`);
+                const [lx, ly] = source.at;
+                const key = `${source.kind || 'point'}|${Math.round(lx)},${Math.round(ly)}|${source.overlay || ''}`;
+                if (seen.has(key)) return;
+                seen.add(key);
                 out.push({
                     x: c.x - baseAnchor[0] + lx,
                     y: c.y - baseAnchor[1] + ly,
+                    color: source.color || entry?.lightColor || '#ffcc66',
+                    radius: source.radius || entry?.lightRadius || 64,
+                    overlay: source.overlay || entry?.lightOverlay || 'atmosphere.light.lighthouse-beam',
+                    buildingType: b.type,
+                    kind: source.kind || 'point',
+                    building: b,
+                    length: source.length,
+                    width: source.width,
+                    alpha: source.alpha,
+                });
+            };
+
+            if (Array.isArray(entry?.lightSources)) {
+                for (const source of entry.lightSources) pushSource(source);
+            }
+            if (entry?.lightSource) {
+                pushSource({
+                    at: entry.lightSource,
                     color: entry.lightColor || 'rgba(255,210,140,0.4)',
                     radius: entry.lightRadius || 64,
                     overlay: entry.lightOverlay || 'atmosphere.light.lighthouse-beam',
-                    buildingType: b.type,
-                    kind: 'point',
-                    building: b,
                 });
-                continue;
+            }
+            for (const source of LIGHT_SOURCE_REGISTRY[b.type] || []) {
+                pushSource(source);
+            }
+            if (entry?.emitters) {
+                for (const [name, at] of Object.entries(entry.emitters)) {
+                    const baseName = name.replace(/\d+$/, '');
+                    const light = EMITTER_LIGHTS[baseName] || EMITTER_LIGHTS[name];
+                    if (light) pushSource({ ...light, at });
+                }
             }
             const fallback = BUILDING_LIGHT_FALLBACKS[b.type];
             if (fallback) {
-                const baseAnchor = this.assets.getAnchor(`building.${b.type}`);
-                const [lx, ly] = fallback.at;
-                out.push({
-                    x: c.x - baseAnchor[0] + lx,
-                    y: c.y - baseAnchor[1] + ly,
-                    color: fallback.color,
-                    radius: fallback.radius,
-                    overlay: fallback.overlay,
-                    buildingType: b.type,
-                    kind: 'point',
-                    building: b,
-                });
+                pushSource(fallback);
             }
         }
         this._lightSourcesCache = out;
@@ -850,19 +888,26 @@ export class BuildingSprite {
     }
 
     _drawAnimatedOverlays(ctx, entry, wx, wy, building = null, splitPass = 'whole', horizonY = null) {
-        if (entry.layers && splitPass !== 'back') {
-            this._drawManifestLayers(ctx, entry, wx, wy);
+        if (entry.layers) {
+            this._drawManifestLayers(ctx, entry, wx, wy, splitPass, horizonY);
         }
         if (building) {
             this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY);
         }
     }
 
-    _drawManifestLayers(ctx, entry, wx, wy) {
+    _drawManifestLayers(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null) {
         const baseAnchor = this.assets.getAnchor(entry.id);
         for (const [name, layer] of Object.entries(entry.layers)) {
             if (name === 'base') continue;
-            if (entry.id === 'building.watchtower' && name === 'beacon') continue;
+            const localY = Array.isArray(layer.anchor) ? layer.anchor[1] : 0;
+            if (
+                splitPass !== 'whole' &&
+                Number.isFinite(horizonY) &&
+                (splitPass === 'back' ? localY >= horizonY : localY < horizonY)
+            ) {
+                continue;
+            }
             const layerId = `${entry.id}.${name}`;
             const layerDims = this.assets.getDims(layerId);
             if (!layerDims) continue;
@@ -897,13 +942,13 @@ export class BuildingSprite {
             ctx.restore();
             return;
         }
-        if (splitPass === 'back') {
-            ctx.restore();
-            return;
-        }
         if (building.type === 'forge') {
-            this._drawForgeEnhancement(ctx, localPoint, pulse, building);
+            if (shouldDrawLocalY(66)) this._drawForgeEnhancement(ctx, localPoint, pulse, building);
         } else if (building.type === 'mine') {
+            if (!shouldDrawLocalY(95)) {
+                ctx.restore();
+                return;
+            }
             const mouth = localPoint(73, 95);
             ctx.globalCompositeOperation = 'screen';
             ctx.globalAlpha = 0.16 + pulse * 0.12;
@@ -922,6 +967,10 @@ export class BuildingSprite {
             ctx.lineTo(mouth.x + 30, mouth.y + 14);
             ctx.stroke();
         } else if (building.type === 'portal') {
+            if (!shouldDrawLocalY(60)) {
+                ctx.restore();
+                return;
+            }
             const gate = localPoint(144, 60);
             const visitors = this._visitorCountFor(building);
             const activeBoost = visitors > 0 ? 0.28 : 0;
@@ -942,12 +991,14 @@ export class BuildingSprite {
                 ctx.fill();
             }
         } else if (building.type === 'watchtower') {
-            const beacon = localPoint(196, 34);
-            this._drawWatchtowerFire(ctx, beacon, pulse);
+            if (!entry.layers?.beacon && shouldDrawLocalY(34)) {
+                const beacon = localPoint(196, 34);
+                this._drawWatchtowerFire(ctx, beacon, pulse);
+            }
         } else if (building.type === 'harbor') {
-            this._drawHarborMasterOffice(ctx, localPoint, pulse);
+            if (splitPass !== 'back') this._drawHarborMasterOffice(ctx, localPoint, pulse);
         } else if (building.type === 'archive') {
-            this._drawArchiveEnhancement(ctx, localPoint, pulse);
+            if (splitPass !== 'back') this._drawArchiveEnhancement(ctx, localPoint, pulse);
         }
         ctx.restore();
     }
