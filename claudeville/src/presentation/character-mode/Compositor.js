@@ -3,8 +3,8 @@ import { DEFAULT_CELL, DIRECTIONS, WALK_FRAMES, IDLE_FRAMES } from './SpriteShee
 // Compositor produces per-agent character bitmaps by:
 // 1. selecting a model/provider base sheet,
 // 2. palette-swapping it using palettes.yaml,
-// 3. compositing an effort/accessory overlay over the head pixels.
-// Result is cached per (base sprite, paletteVariant, accessory) tuple.
+// 3. compositing an allowed runtime effort/accessory overlay over the head pixels.
+// Result is cached per (base sprite, paletteVariant, runtimeAccessory) tuple.
 
 const cache = new Map();
 
@@ -13,12 +13,12 @@ export class Compositor {
         this.assets = assetManager;
     }
 
-    spriteFor(baseSpriteId, paletteKey, paletteVariant, accessory) {
+    spriteFor(baseSpriteId, paletteKey, paletteVariant, runtimeAccessory) {
         const baseId = baseSpriteId?.startsWith('agent.')
             ? baseSpriteId
             : `agent.${baseSpriteId || 'claude'}.base`;
         const palette = paletteKey || baseId.split('.')[1] || 'claude';
-        const key = `${baseId}|${palette}|${paletteVariant}|${accessory ?? '_'}`;
+        const key = `${baseId}|${palette}|${paletteVariant}|${runtimeAccessory ?? '_'}`;
         if (cache.has(key)) return cache.get(key);
 
         const baseImg = this.assets.get(baseId);
@@ -32,7 +32,7 @@ export class Compositor {
 
         ctx.drawImage(baseImg, 0, 0);
         this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant);
-        if (accessory) this._compositeAccessory(ctx, baseId, accessory);
+        if (runtimeAccessory) this._compositeAccessory(ctx, baseId, runtimeAccessory);
 
         cache.set(key, canvas);
         return canvas;

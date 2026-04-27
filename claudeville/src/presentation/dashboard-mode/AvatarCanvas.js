@@ -255,6 +255,7 @@ export class AvatarCanvas {
     }
 
     _drawEffortCrest(ctx, identity, accent) {
+        if (identity.showDashboardEffortCrest === false) return;
         if (!identity.effortTier || identity.effortTier === 'none') return;
         const cx = this.canvas.width - 9;
         const cy = 10;

@@ -44,13 +44,29 @@ const CODEX_EFFORT_WEAPONS = Object.freeze({
     max: 'polearm',
 });
 
+const DEFAULT_EFFORT_RENDERING = Object.freeze({
+    effortBakedIntoSprite: false,
+    showDashboardEffortCrest: true,
+    allowRuntimeEffortAccessory: true,
+    allowRuntimeEffortFloorRing: true,
+    allowRuntimeEffortWeapon: true,
+});
+
+const BAKED_EFFORT_RENDERING = Object.freeze({
+    effortBakedIntoSprite: true,
+    showDashboardEffortCrest: false,
+    allowRuntimeEffortAccessory: false,
+    allowRuntimeEffortFloorRing: false,
+    allowRuntimeEffortWeapon: false,
+});
+
 function codexEquipment(effortTier) {
     const effortWeapon = CODEX_EFFORT_WEAPONS[effortTier] || null;
     return {
         effortAccessory: null,
         effortFloorRing: effortWeapon ? null : EFFORT_FLOOR_RINGS[effortTier] || null,
         effortWeapon,
-        suppressBakedWeapon: !!effortWeapon,
+        suppressBakedWeapon: false,
     };
 }
 
@@ -87,6 +103,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'Claude Opus',
             shortLabel: 'Opus',
             effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
             effortAccessory,
             effortFloorRing,
             spriteId: 'agent.claude.opus',
@@ -105,6 +122,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'Claude Haiku',
             shortLabel: 'Haiku',
             effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
             effortAccessory,
             effortFloorRing,
             spriteId: 'agent.claude.haiku',
@@ -123,6 +141,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'Claude Sonnet',
             shortLabel: normalizedModel.includes('sonnet') ? 'Sonnet' : 'Claude',
             effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
             effortAccessory,
             effortFloorRing,
             spriteId: 'agent.claude.sonnet',
@@ -142,6 +161,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.3 Codex Spark',
             shortLabel: '5.3 Spark',
             effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
             spriteId: 'agent.codex.gpt53spark',
             paletteKey: 'codex',
@@ -158,6 +178,9 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             : (effortTier === 'xhigh' || effortTier === 'max')
                 ? 'agent.codex.gpt55.xhigh'
                 : null;
+        const effortRendering = bakedEquipmentSpriteId
+            ? BAKED_EFFORT_RENDERING
+            : DEFAULT_EFFORT_RENDERING;
         return {
             family: 'codex',
             modelClass: 'gpt55',
@@ -165,8 +188,11 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.5',
             shortLabel: '5.5',
             effortTier,
+            ...effortRendering,
             ...equipment,
             effortWeapon: bakedEquipmentSpriteId ? null : equipment.effortWeapon,
+            effortFloorRing: bakedEquipmentSpriteId ? null : equipment.effortFloorRing,
+            effortAccessory: bakedEquipmentSpriteId ? null : equipment.effortAccessory,
             suppressBakedWeapon: bakedEquipmentSpriteId ? false : equipment.suppressBakedWeapon,
             spriteId: bakedEquipmentSpriteId || 'agent.codex.gpt55',
             paletteKey: 'codex',
@@ -185,6 +211,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             label: 'GPT-5.4',
             shortLabel: '5.4',
             effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
             spriteId: 'agent.codex.gpt54',
             paletteKey: 'codex',
@@ -199,6 +226,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         return {
             ...DEFAULT_CODEX_IDENTITY,
             effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
         };
     }
@@ -210,6 +238,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         label: String(model || ''),
         shortLabel: String(model || ''),
         effortTier,
+        ...DEFAULT_EFFORT_RENDERING,
         effortAccessory,
         effortFloorRing,
         spriteId: null,

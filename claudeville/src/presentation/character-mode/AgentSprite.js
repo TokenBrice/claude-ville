@@ -457,8 +457,8 @@ export class AgentSprite {
         const variant = this._hashVariant();
         const spriteId = identity.spriteId || `agent.${provider}.base`;
         const paletteKey = identity.paletteKey || provider;
-        const accessory = identity.effortAccessory ?? null;
-        const equipmentKey = identity.effortWeapon || '_';
+        const accessory = this._runtimeEffortAccessory(identity);
+        const equipmentKey = this._runtimeEffortWeapon(identity) || '_';
         const cleanupKey = identity.suppressBakedWeapon ? 'clean' : 'raw';
         const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}|${equipmentKey}|${cleanupKey}`;
 
@@ -480,6 +480,7 @@ export class AgentSprite {
 
         // Strong ground language keeps agents readable against dense pixel-art terrain.
         this._drawGrounding(ctx);
+        this._drawEffortFloorRing(ctx, identity);
 
         if (!this.selected && zoom < 1) {
             this._drawLowZoomImpostor(ctx);
@@ -509,25 +510,6 @@ export class AgentSprite {
             dx, dy, cell.sw * drawScale, cell.sh * drawScale
         );
         this._drawCodexEffortWeapon(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'front');
-
-        // Effort floor ring — always visible, identity-driven (under feet, under selection halo).
-        if (this.assets) {
-            const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
-            const effortRingId = identity.effortFloorRing;
-            if (effortRingId) {
-                const effortRing = this.assets.get(effortRingId);
-                if (effortRing) {
-                    const dims = this.assets.getDims(effortRingId);
-                    ctx.drawImage(
-                        effortRing,
-                        Math.round(this.x - dims.w / 2),
-                        Math.round(this.y - dims.h / 2),
-                        dims.w,
-                        dims.h
-                    );
-                }
-            }
-        }
 
         // Selection halo (if selected) — outer glow + pulsed ring at feet level.
         if (this.selected) {
@@ -640,6 +622,22 @@ export class AgentSprite {
                 if (brightBlade || cyanBlade || greyMetal || goldHilt) marks[y * width + x] = 1;
             }
         }
+    }
+
+    _drawEffortFloorRing(ctx, identity) {
+        if (!this.assets) return;
+        const effortRingId = this._runtimeEffortFloorRing(identity);
+        if (!effortRingId) return;
+        const effortRing = this.assets.get(effortRingId);
+        if (!effortRing) return;
+        const dims = this.assets.getDims(effortRingId);
+        ctx.drawImage(
+            effortRing,
+            Math.round(this.x - dims.w / 2),
+            Math.round(this.y - dims.h / 2),
+            dims.w,
+            dims.h
+        );
     }
 
     _drawGrounding(ctx) {
@@ -887,7 +885,7 @@ export class AgentSprite {
     }
 
     _drawCodexEffortWeapon(ctx, identity, frameGeometry, layer = 'front') {
-        const weapon = identity?.effortWeapon;
+        const weapon = this._runtimeEffortWeapon(identity);
         if (!weapon) return;
 
         const directionKey = DIRECTIONS[this.direction] || 's';
@@ -930,6 +928,21 @@ export class AgentSprite {
         } else if (weapon === 'sledgehammer') {
             this._drawWeaponAt(ctx, geometry.polearm, geometry.drawScale, () => this._drawCodexSledgehammer(ctx));
         }
+    }
+
+    _runtimeEffortAccessory(identity) {
+        if (identity?.allowRuntimeEffortAccessory === false) return null;
+        return identity?.effortAccessory ?? null;
+    }
+
+    _runtimeEffortFloorRing(identity) {
+        if (identity?.allowRuntimeEffortFloorRing === false) return null;
+        return identity?.effortFloorRing ?? null;
+    }
+
+    _runtimeEffortWeapon(identity) {
+        if (identity?.allowRuntimeEffortWeapon === false) return null;
+        return identity?.effortWeapon ?? null;
     }
 
     _codexWeaponGeometry({ dx, dy, bounds, drawScale = 1 }, directionKey) {
