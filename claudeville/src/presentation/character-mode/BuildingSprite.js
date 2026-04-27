@@ -166,9 +166,10 @@ export class BuildingSprite {
     // icon glyph so similar-looking sprites stay distinguishable. Drawn as a top overlay
     // (called from IsometricRenderer._render after drawBubbles) so labels stay readable
     // regardless of depth-sort occlusion.
-    drawLabels(ctx, { zoom = 1, occupiedBoxes = [] } = {}) {
+    drawLabels(ctx, { zoom = 1, occupiedBoxes = [], harborPendingRepos = [] } = {}) {
         const occupied = [];
         const normalizedOccupiedBoxes = this._normalizeBoxes(occupiedBoxes);
+        const harborSign = this._harborLedgerText(harborPendingRepos);
         const buildingList = [...this.buildings].sort((a, b) => {
             const ac = this._buildingScreenCenter(a);
             const bc = this._buildingScreenCenter(b);
@@ -197,6 +198,7 @@ export class BuildingSprite {
                 isLandmark,
                 zoom,
                 localLabelDensity,
+                harborSign,
             });
             let chosen = null;
 
@@ -210,7 +212,22 @@ export class BuildingSprite {
                     isHovered,
                     isLandmark,
                 });
-                const tagW = Math.ceil(tw + attempt.iconSize + attempt.iconGap + attempt.padX * 2 + (isLandmark ? 8 : 0));
+                let displaySubText = '';
+                let subTw = 0;
+                if (attempt.subText) {
+                    ctx.font = attempt.subFont || attempt.labelFont;
+                    const subMetrics = this._labelMetrics(ctx, b, {
+                        text: attempt.subText,
+                        labelFont: attempt.subFont || attempt.labelFont,
+                        maxTextWidth: attempt.subMaxTextWidth || attempt.maxTextWidth,
+                        zoom,
+                        isHovered,
+                        isLandmark,
+                    });
+                    displaySubText = subMetrics.displayText;
+                    subTw = subMetrics.width;
+                }
+                const tagW = Math.ceil(Math.max(tw, subTw) + attempt.iconSize + attempt.iconGap + attempt.padX * 2 + (isLandmark ? 8 : 0));
                 const tagH = attempt.tagH;
                 const layout = this._resolveLabelLayout({
                     candidates: this._labelLayoutCandidates(isLandmark, isHovered),
@@ -246,6 +263,7 @@ export class BuildingSprite {
                 chosen = {
                     ...attempt,
                     displayText,
+                    displaySubText,
                     tagW,
                     tagH,
                     bx,
@@ -263,6 +281,7 @@ export class BuildingSprite {
             }
             const {
                 displayText,
+                displaySubText,
                 tagW,
                 tagH,
                 bx,
@@ -275,6 +294,7 @@ export class BuildingSprite {
                 padX,
                 degraded = false,
                 labelFont: chosenFont,
+                subFont,
             } = chosen;
             occupied.push(labelBox);
             const labelAlpha = degraded ? 0.52 : 1;
@@ -291,11 +311,12 @@ export class BuildingSprite {
             }
 
             const notch = isHovered || isLandmark ? 6 : 4;
+            const isHarborLedger = b.type === 'harbor' && displaySubText;
             const poleTop = tagTop + tagH - 1;
             const poleBottom = Math.min(center.y - dims.h * 0.52, tagTop + tagH + (isHovered ? 18 : isLandmark ? 14 : 7));
 
             ctx.globalAlpha = isHovered ? 1 : degraded ? labelAlpha : isLandmark ? 0.92 : 0.78;
-            ctx.strokeStyle = isHovered ? 'rgba(255, 242, 197, 0.9)' : isLandmark ? 'rgba(242, 211, 107, 0.72)' : 'rgba(215, 185, 121, 0.62)';
+            ctx.strokeStyle = isHovered ? 'rgba(255, 242, 197, 0.9)' : isHarborLedger ? 'rgba(113, 73, 31, 0.92)' : isLandmark ? 'rgba(242, 211, 107, 0.72)' : 'rgba(215, 185, 121, 0.62)';
             ctx.lineWidth = isHovered ? 2 : 1;
             ctx.beginPath();
             ctx.moveTo(tagLeft + notch, tagTop);
@@ -305,11 +326,13 @@ export class BuildingSprite {
             ctx.lineTo(tagLeft + notch, tagTop + tagH);
             ctx.lineTo(tagLeft, by);
             ctx.closePath();
-            ctx.fillStyle = isHovered
-                ? 'rgba(70, 42, 22, 0.97)'
-                : isLandmark
-                    ? 'rgba(58, 36, 21, 0.93)'
-                    : 'rgba(42, 28, 18, 0.88)';
+            ctx.fillStyle = isHarborLedger
+                ? (isHovered ? 'rgba(99, 62, 29, 0.98)' : 'rgba(72, 45, 24, 0.95)')
+                : isHovered
+                    ? 'rgba(70, 42, 22, 0.97)'
+                    : isLandmark
+                        ? 'rgba(58, 36, 21, 0.93)'
+                        : 'rgba(42, 28, 18, 0.88)';
             ctx.fill();
             ctx.stroke();
 
@@ -317,6 +340,10 @@ export class BuildingSprite {
                 ctx.fillStyle = accent;
                 ctx.globalAlpha = isHovered ? 0.95 : glowAlpha;
                 ctx.fillRect(tagLeft + 5, tagTop + 3, tagW - 10, 2);
+                if (isHarborLedger) {
+                    ctx.fillStyle = 'rgba(35, 21, 12, 0.6)';
+                    ctx.fillRect(tagLeft + padX + iconSize + iconGap, by + 1, tagW - padX * 2 - iconSize - iconGap - 4, 1);
+                }
                 ctx.globalAlpha = isHovered ? 1 : glowAlpha;
             }
 
@@ -347,7 +374,15 @@ export class BuildingSprite {
             ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
             ctx.shadowBlur = 4;
             ctx.shadowOffsetY = 1;
-            ctx.fillText(displayText, tagLeft + padX + iconSize + iconGap + (isLandmark ? 2 : 0), by + 0.5);
+            const textX = tagLeft + padX + iconSize + iconGap + (isLandmark ? 2 : 0);
+            if (displaySubText) {
+                ctx.fillText(displayText, textX, by - 5);
+                ctx.fillStyle = isHarborLedger ? '#f6d384' : textColor;
+                ctx.font = subFont || chosenFont;
+                ctx.fillText(displaySubText, textX, by + 6);
+            } else {
+                ctx.fillText(displayText, textX, by + 0.5);
+            }
             ctx.restore();
 
             ctx.strokeStyle = isHovered ? 'rgba(255, 242, 197, 0.72)' : isLandmark ? 'rgba(242, 211, 107, 0.5)' : 'rgba(215, 185, 121, 0.26)';
@@ -387,7 +422,7 @@ export class BuildingSprite {
         ];
     }
 
-    _labelRenderAttempts(building, { isHovered, isLandmark, zoom, localLabelDensity = 0 }) {
+    _labelRenderAttempts(building, { isHovered, isLandmark, zoom, localLabelDensity = 0, harborSign = '' }) {
         const baseText = this._labelTextFor(building, zoom, isHovered);
         const compactText = this._labelTextFor(building, LABEL_VISIBLE_ZOOM, false);
         const tinyText = this._labelTinyTextFor(building, compactText);
@@ -395,19 +430,23 @@ export class BuildingSprite {
         const widthScale = densityPacked ? 0.86 : 1;
         const scale = densityPacked ? 0.92 : 1;
         const overlapScale = densityPacked ? 1.2 : 1;
+        const isHarborLedger = building.type === 'harbor' && !!harborSign;
         const labelFont = isHovered || isLandmark
             ? 'bold 8px "Press Start 2P", monospace'
             : '7px "Press Start 2P", monospace';
         const attempts = [
             {
-                text: baseText,
+                text: isHarborLedger ? compactText : baseText,
+                subText: isHarborLedger ? harborSign : '',
+                subFont: '6px "Press Start 2P", monospace',
+                subMaxTextWidth: Math.round((isHovered ? 158 : 132) * widthScale),
                 labelFont,
                 maxTextWidth: Math.round((isHovered ? 190 : isLandmark ? 132 : 96) * widthScale),
                 iconSize: building.icon ? (isHovered || isLandmark ? 16 : 13) * scale : 0,
                 iconGap: building.icon ? 5 * scale : 0,
                 padX: isHovered || isLandmark ? 8 : 6,
                 iconFont: isHovered || isLandmark ? 9 : 8,
-                tagH: Math.round((isHovered ? 20 : isLandmark ? 18 : 14) * scale),
+                tagH: Math.round((isHarborLedger ? (isHovered ? 30 : 26) : isHovered ? 20 : isLandmark ? 18 : 14) * scale),
                 overlapTolerance: isHovered || isLandmark ? Math.min(0.92, LABEL_OVERLAP_TOLERANCE * overlapScale) : 0.3,
                 blockAgents: true,
                 degraded: false,
@@ -1459,6 +1498,22 @@ export class BuildingSprite {
             x: (cx - cy) * TILE_WIDTH / 2,
             y: (cx + cy) * TILE_HEIGHT / 2,
         };
+    }
+
+    _harborLedgerText(repos = []) {
+        const active = (Array.isArray(repos) ? repos : [])
+            .filter((repo) => Number(repo?.pendingCommits) > 0)
+            .sort((a, b) => (Number(b.pendingCommits) - Number(a.pendingCommits))
+                || String(a.repoName || a.shortName || '').localeCompare(String(b.repoName || b.shortName || '')));
+        if (!active.length) return '';
+        const visible = active.slice(0, 2).map((repo) => {
+            const name = String(repo.shortName || repo.repoName || repo.project || 'Repo')
+                .replace(/[-_]+/g, ' ')
+                .replace(/\b\w/g, (char) => char.toUpperCase());
+            return `${name} (${Number(repo.pendingCommits)})`;
+        });
+        const remaining = active.length - visible.length;
+        return remaining > 0 ? `${visible.join('  ')} +${remaining}` : visible.join('  ');
     }
 
     _labelTextFor(building, zoom, isHovered) {

@@ -15,6 +15,8 @@ const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
 const MAX_LABEL_CHARS = 30;
 const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
+const REPO_DOCK_SHIP_Y_OFFSET = 236;
+const REPO_DOCK_SHIP_SORT_OFFSET = 8;
 
 const BERTHS = [
     { tileX: 32.8, tileY: 21.2 },
@@ -518,6 +520,34 @@ export function collectGitEventsFromAgents(agents) {
     return events;
 }
 
+function pendingRepoSummariesFromEvents(events) {
+    const summaries = new Map();
+    for (const event of events || []) {
+        if (event?.type !== 'commit' || !event.project) continue;
+        const profile = repoProfile(event.project);
+        const eventKey = event.sha || event.id || `${event.project}:${event.label}:${event.timestamp}`;
+        const summary = summaries.get(profile.key) || {
+            project: event.project,
+            repoName: displayRepoName(event.project),
+            shortName: profile.shortName,
+            profile,
+            pendingCommits: 0,
+            latestEventTime: 0,
+            _seen: new Set(),
+        };
+        if (summary._seen.has(eventKey)) continue;
+        summary._seen.add(eventKey);
+        summary.pendingCommits += 1;
+        summary.latestEventTime = Math.max(summary.latestEventTime, event.timestamp || 0);
+        summaries.set(profile.key, summary);
+    }
+    return [...summaries.values()]
+        .map(({ _seen, ...summary }) => summary)
+        .sort((a, b) => (b.pendingCommits - a.pendingCommits)
+            || (b.latestEventTime - a.latestEventTime)
+            || a.repoName.localeCompare(b.repoName));
+}
+
 export function reduceHarborTrafficState(previous, events, options = {}) {
     const state = cloneState(previous);
     const now = Number.isFinite(options.now) ? options.now : Date.now();
@@ -687,6 +717,7 @@ export class HarborTraffic {
     constructor({ sprites } = {}) {
         this.sprites = sprites || null;
         this.state = cloneState();
+        this._pendingRepoSummaries = [];
         this.motionScale = 1;
         this.frame = 0;
         if (typeof window !== 'undefined') window.__harbor = this;
@@ -699,11 +730,16 @@ export class HarborTraffic {
     update(agents, dt = 16, now = Date.now()) {
         this.frame += (dt / 16) * this.motionScale;
         const events = collectGitEventsFromAgents(agents);
+        this._pendingRepoSummaries = pendingRepoSummariesFromEvents(events);
         this.state = reduceHarborTrafficState(this.state, events, {
             now,
             motionScale: this.motionScale,
         });
         this._observePeakDensity(now);
+    }
+
+    getPendingRepoSummaries() {
+        return this._pendingRepoSummaries || [];
     }
 
     _observePeakDensity(now) {
@@ -766,8 +802,8 @@ export class HarborTraffic {
                     const row = Math.floor(index / 2);
                     const repoLane = Number(marker.repoLogIndex || 0) % 2;
                     drawable.payload.x = marker.x + (repoLane === 0 ? -74 : 74) + (col === 0 ? -36 : 36);
-                    drawable.payload.y = marker.y + 116 + row * 38;
-                    drawable.sortY = drawable.payload.y;
+                    drawable.payload.y = marker.y + REPO_DOCK_SHIP_Y_OFFSET + row * 38;
+                    drawable.sortY = drawable.payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
                 }
                 visible.push(drawable);
             });

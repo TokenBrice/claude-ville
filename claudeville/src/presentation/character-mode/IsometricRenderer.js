@@ -1035,6 +1035,7 @@ export class IsometricRenderer {
         const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
         const sortedSprites = this._snapshotSortedSprites();
         const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
+        const harborPendingRepos = this.harborTraffic?.getPendingRepoSummaries?.() ?? [];
         const landmarkDrawables = this.landmarkActivity?.enumerateDrawables() ?? [];
         const zoom = this.camera.zoom;
         this._assignAgentOverlaySlots(sortedSprites, zoom);
@@ -1107,6 +1108,7 @@ export class IsometricRenderer {
         this.buildingRenderer?.drawLabels(ctx, {
             zoom,
             occupiedBoxes: this._collectAgentLabelHitRects(sortedSprites),
+            harborPendingRepos,
         });
 
         // Reset transform for UI
