@@ -9,7 +9,7 @@ export class DebugOverlay {
         this.enabled = !this.enabled;
     }
 
-    draw(ctx, { walkabilityGrid, bridgeTiles, agentSprites }) {
+    draw(ctx, { walkabilityGrid, bridgeTiles, agentSprites, buildings, sceneryZones, treeProps, boulderProps }) {
         if (!this.enabled) return;
 
         // Walkability tint: green = walkable, red = blocked, yellow = bridge.
@@ -27,6 +27,42 @@ export class DebugOverlay {
         }
         ctx.restore();
 
+        // Building footprints and tall-scenery sightline exclusions.
+        ctx.save();
+        ctx.lineWidth = 1.4;
+        ctx.globalAlpha = 0.9;
+        if (buildings) {
+            ctx.strokeStyle = '#ff9800';
+            for (const building of buildings.values()) {
+                this._strokeTileRect(ctx, {
+                    x0: building.position.tileX,
+                    y0: building.position.tileY,
+                    x1: building.position.tileX + building.width,
+                    y1: building.position.tileY + building.height,
+                });
+            }
+        }
+        if (Array.isArray(sceneryZones)) {
+            for (const zone of sceneryZones) {
+                ctx.strokeStyle = 'rgba(255, 64, 129, 0.92)';
+                this._strokeTileRect(ctx, zone.padded);
+                if (zone.sightline) {
+                    ctx.strokeStyle = 'rgba(171, 71, 188, 0.82)';
+                    this._strokeTileRect(ctx, zone.sightline);
+                }
+            }
+        }
+        ctx.restore();
+
+        // Tall prop anchors.
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = '#00e676';
+        for (const prop of treeProps || []) this._drawAnchor(ctx, prop.tileX, prop.tileY, 2.5);
+        ctx.fillStyle = '#b0bec5';
+        for (const prop of boulderProps || []) this._drawAnchor(ctx, prop.tileX, prop.tileY, 2);
+        ctx.restore();
+
         // Per-agent waypoint polylines.
         ctx.save();
         ctx.strokeStyle = '#00e5ff';
@@ -40,5 +76,33 @@ export class DebugOverlay {
             ctx.stroke();
         }
         ctx.restore();
+    }
+
+    _tileToScreen(tileX, tileY) {
+        return {
+            x: (tileX - tileY) * TILE_WIDTH / 2,
+            y: (tileX + tileY) * TILE_HEIGHT / 2,
+        };
+    }
+
+    _strokeTileRect(ctx, rect) {
+        const nw = this._tileToScreen(rect.x0, rect.y0);
+        const ne = this._tileToScreen(rect.x1, rect.y0);
+        const se = this._tileToScreen(rect.x1, rect.y1);
+        const sw = this._tileToScreen(rect.x0, rect.y1);
+        ctx.beginPath();
+        ctx.moveTo(nw.x, nw.y);
+        ctx.lineTo(ne.x, ne.y);
+        ctx.lineTo(se.x, se.y);
+        ctx.lineTo(sw.x, sw.y);
+        ctx.closePath();
+        ctx.stroke();
+    }
+
+    _drawAnchor(ctx, tileX, tileY, radius) {
+        const p = this._tileToScreen(tileX, tileY);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
+        ctx.fill();
     }
 }

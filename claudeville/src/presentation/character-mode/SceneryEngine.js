@@ -32,6 +32,7 @@ export class SceneryEngine {
         this.boulderProps = [];        // { tileX, tileY, variant, scale }
 
         this._buildingFootprints = this._collectBuildingFootprints();
+        this._buildingSceneryZones = this._collectBuildingSceneryZones();
 
         this._generateWater();
         this._generateShorelines();
@@ -64,6 +65,36 @@ export class SceneryEngine {
             }
         }
         return set;
+    }
+
+    _collectBuildingSceneryZones() {
+        const zones = [];
+        if (!this.world?.buildings) return zones;
+        for (const b of this.world.buildings.values()) {
+            const x0 = b.position.tileX;
+            const y0 = b.position.tileY;
+            const padding = b.scenery?.excludePadding || {};
+            const clearance = b.scenery?.tallPropClearance ?? 0;
+            const padX = Math.max(padding.x ?? 0, clearance);
+            const padY = Math.max(padding.y ?? 0, clearance);
+            zones.push({
+                type: b.type,
+                footprint: {
+                    x0,
+                    y0,
+                    x1: x0 + b.width,
+                    y1: y0 + b.height,
+                },
+                padded: {
+                    x0: x0 - padX,
+                    y0: y0 - padY,
+                    x1: x0 + b.width + padX,
+                    y1: y0 + b.height + padY,
+                },
+                sightline: b.scenery?.sightline || null,
+            });
+        }
+        return zones;
     }
 
     _generateWater() {
@@ -174,11 +205,47 @@ export class SceneryEngine {
         }
     }
 
-    _isBlockedForScenery(key, pathTiles, bridgeTiles) {
+    _keyFor(tileX, tileY) {
+        return `${Math.floor(tileX)},${Math.floor(tileY)}`;
+    }
+
+    isBlockedForFlatScenery(tileX, tileY, pathTiles, bridgeTiles) {
+        const key = this._keyFor(tileX, tileY);
         return this.waterTiles.has(key)
             || pathTiles.has(key)
             || bridgeTiles.has(key)
             || this._buildingFootprints.has(key);
+    }
+
+    isBlockedForTallScenery(tileX, tileY, pathTiles, bridgeTiles) {
+        if (tileX < 0 || tileX >= MAP_SIZE || tileY < 0 || tileY >= MAP_SIZE) return true;
+        if (this.isBlockedForFlatScenery(tileX, tileY, pathTiles, bridgeTiles)) return true;
+        return !this.clearsBuildingSightlines(tileX, tileY);
+    }
+
+    clearsBuildingSightlines(tileX, tileY) {
+        const x = Number.isInteger(tileX) ? tileX + 0.5 : tileX;
+        const y = Number.isInteger(tileY) ? tileY + 0.5 : tileY;
+        for (const zone of this._buildingSceneryZones) {
+            if (this._pointInRect(x, y, zone.padded)) return false;
+            if (zone.sightline && this._pointInRect(x, y, zone.sightline)) return false;
+        }
+        return true;
+    }
+
+    getBuildingSceneryZones() {
+        return this._buildingSceneryZones;
+    }
+
+    _pointInRect(x, y, rect) {
+        return x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1;
+    }
+
+    _isBlockedForScenery(key, pathTiles, bridgeTiles) {
+        const comma = key.indexOf(',');
+        const x = Number(key.slice(0, comma));
+        const y = Number(key.slice(comma + 1));
+        return this.isBlockedForFlatScenery(x, y, pathTiles, bridgeTiles);
     }
 
     _distanceToWater(tileX, tileY) {
@@ -366,7 +433,7 @@ export class SceneryEngine {
                     if (tx < 0 || tx >= MAP_SIZE || ty < 0 || ty >= MAP_SIZE) continue;
                     if (((dx * dx) / (rx * rx)) + ((dy * dy) / (ry * ry)) > 1) continue;
                     const key = `${tx},${ty}`;
-                    if (this._isBlockedForScenery(key, pathTiles, bridgeTiles)) continue;
+                    if (this.isBlockedForTallScenery(tx, ty, pathTiles, bridgeTiles)) continue;
                     if (this.bushTiles.has(key)) continue;
                     if (!this._passesTreeSpacing(tx, ty)) continue;
 
@@ -380,6 +447,7 @@ export class SceneryEngine {
                     if (noise > 1 - density) {
                         const jx = (this.tileNoise(tx + 11, ty + 3) - 0.5) * 0.6;
                         const jy = (this.tileNoise(tx + 5, ty + 19) - 0.5) * 0.6;
+                        if (this.isBlockedForTallScenery(tx + 0.5 + jx, ty + 0.5 + jy, pathTiles, bridgeTiles)) continue;
                         const variantNoise = this.tileNoise(tx + 41, ty + 91);
                         const palmNoise = this.tileNoise(tx + 73, ty + 211);
                         const northernCanopy = ty <= 13;
@@ -419,13 +487,11 @@ export class SceneryEngine {
 
     generateBoulders(pathTiles, bridgeTiles) {
         for (const b of BOULDERS) {
-            const tx = Math.floor(b.tileX);
-            const ty = Math.floor(b.tileY);
-            const key = `${tx},${ty}`;
-            if (this.waterTiles.has(key)) continue;
-            if (pathTiles.has(key)) continue;
-            if (bridgeTiles.has(key)) continue;
-            if (this._buildingFootprints.has(key)) continue;
+            const large = (b.scale ?? 1) >= 1;
+            const blocked = large
+                ? this.isBlockedForTallScenery(b.tileX, b.tileY, pathTiles, bridgeTiles)
+                : this.isBlockedForFlatScenery(b.tileX, b.tileY, pathTiles, bridgeTiles);
+            if (blocked) continue;
             this.boulderProps.push({ ...b });
         }
     }

@@ -16,6 +16,7 @@ export class Building {
         visualTier,
         entrance,
         visitTiles,
+        scenery,
     }) {
         this.type = type;
         this.position = new Position(x, y);
@@ -32,6 +33,11 @@ export class Building {
         this.visitTiles = Array.isArray(visitTiles)
             ? visitTiles.map((tile) => ({ tileX: tile.tileX, tileY: tile.tileY }))
             : [];
+        this.scenery = scenery ? {
+            excludePadding: scenery.excludePadding ? { ...scenery.excludePadding } : null,
+            sightline: scenery.sightline ? { ...scenery.sightline } : null,
+            tallPropClearance: scenery.tallPropClearance ?? null,
+        } : null;
     }
 
     containsPoint(tileX, tileY) {

@@ -191,7 +191,12 @@ export class IsometricRenderer {
         // Trees (Y-sorted props)
         this.scenery.generateTrees(this.pathTiles, this.bridgeTiles);
         const generatedTrees = this.scenery.getTreeProps();
-        const canPlaceAuthoredTree = (p) => !this.waterTiles.has(`${Math.floor(p.tileX)},${Math.floor(p.tileY)}`);
+        const canPlaceAuthoredTree = (p) => !this.scenery.isBlockedForTallScenery(
+            p.tileX,
+            p.tileY,
+            this.pathTiles,
+            this.bridgeTiles,
+        );
         const authoredPalms = TROPICAL_PALMS.filter(canPlaceAuthoredTree).map((p) => ({
             ...p,
             variant: 2,
@@ -204,7 +209,6 @@ export class IsometricRenderer {
             canopy: true,
         }));
         this.treePropSprites = [...generatedTrees, ...authoredPalms, ...authoredBroadleafTrees]
-            .filter((t) => this._clearsArchiveSightline(t))
             .map((t) => {
             if (t.canopy || t.tropical) {
                 return new StaticPropSprite({
@@ -507,18 +511,6 @@ export class IsometricRenderer {
 
     _inMapBounds(tileX, tileY) {
         return tileX >= 0 && tileX <= MAP_SIZE - 1 && tileY >= 0 && tileY <= MAP_SIZE - 1;
-    }
-
-    _clearsArchiveSightline(tree) {
-        const archive = this.world?.buildings?.get('archive');
-        if (!archive) return true;
-        const ax = archive.position.tileX;
-        const ay = archive.position.tileY;
-        const minX = ax - 1.8;
-        const maxX = ax + archive.width + 3.6;
-        const minY = ay - 7.2;
-        const maxY = ay + archive.height + 1.8;
-        return !(tree.tileX >= minX && tree.tileX <= maxX && tree.tileY >= minY && tree.tileY <= maxY);
     }
 
     _getCommandBuilding() {
@@ -1123,6 +1115,10 @@ export class IsometricRenderer {
                 walkabilityGrid: this.walkabilityGrid,
                 bridgeTiles: this.bridgeTiles,
                 agentSprites: this.agentSprites,
+                buildings: this.world?.buildings,
+                sceneryZones: this.scenery?.getBuildingSceneryZones?.() || [],
+                treeProps: this.treePropSprites,
+                boulderProps: this.boulderPropSprites,
             });
             ctx.setTransform(1, 0, 0, 1, 0, 0);
         }

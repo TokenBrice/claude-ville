@@ -14,6 +14,11 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 16, tileY: 20 },
         visitTiles: [{ tileX: 16, tileY: 20 }, { tileX: 12, tileY: 20 }, { tileX: 18, tileY: 20 }],
+        scenery: {
+            excludePadding: { x: 2, y: 2 },
+            sightline: { x0: 10.5, y0: 12.5, x1: 20.5, y1: 22.5 },
+            tallPropClearance: 2,
+        },
     },
     {
         type: 'taskboard',
@@ -30,6 +35,11 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 22, tileY: 33 },
         visitTiles: [{ tileX: 22, tileY: 33 }, { tileX: 20, tileY: 33 }, { tileX: 24, tileY: 33 }],
+        scenery: {
+            excludePadding: { x: 1, y: 1 },
+            sightline: { x0: 18.5, y0: 27.5, x1: 25.5, y1: 34.5 },
+            tallPropClearance: 1,
+        },
     },
     {
         type: 'forge',
@@ -46,6 +56,11 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 25, tileY: 29 },
         visitTiles: [{ tileX: 25, tileY: 29 }, { tileX: 24, tileY: 29 }, { tileX: 23, tileY: 29 }],
+        scenery: {
+            excludePadding: { x: 1, y: 1 },
+            sightline: { x0: 23.5, y0: 24.5, x1: 31.5, y1: 30.5 },
+            tallPropClearance: 1,
+        },
     },
     {
         type: 'mine',
@@ -62,6 +77,11 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 13, tileY: 34 },
         visitTiles: [{ tileX: 13, tileY: 34 }, { tileX: 11, tileY: 34 }, { tileX: 15, tileY: 34 }],
+        scenery: {
+            excludePadding: { x: 1, y: 1 },
+            sightline: { x0: 9.5, y0: 29.5, x1: 16.5, y1: 35.5 },
+            tallPropClearance: 1,
+        },
     },
     {
         type: 'archive',
@@ -78,6 +98,11 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 23, tileY: 17 },
         visitTiles: [{ tileX: 23, tileY: 17 }, { tileX: 21, tileY: 17 }, { tileX: 25, tileY: 17 }],
+        scenery: {
+            excludePadding: { x: 2, y: 2 },
+            sightline: { x0: 19.2, y0: 6.8, x1: 29.6, y1: 18.8 },
+            tallPropClearance: 2,
+        },
     },
     {
         type: 'observatory',
@@ -94,6 +119,11 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 7, tileY: 22 },
         visitTiles: [{ tileX: 7, tileY: 22 }, { tileX: 7, tileY: 21 }, { tileX: 8, tileY: 22 }],
+        scenery: {
+            excludePadding: { x: 2, y: 1 },
+            sightline: { x0: 1.0, y0: 16.0, x1: 9.5, y1: 25.5 },
+            tallPropClearance: 2,
+        },
     },
     {
         type: 'portal',
@@ -110,6 +140,11 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 9, tileY: 33 },
         visitTiles: [{ tileX: 9, tileY: 33 }, { tileX: 5, tileY: 33 }, { tileX: 8, tileY: 33 }],
+        scenery: {
+            excludePadding: { x: 1, y: 1 },
+            sightline: { x0: 3.5, y0: 27.0, x1: 10.5, y1: 34.5 },
+            tallPropClearance: 1,
+        },
     },
     {
         type: 'watchtower',
@@ -126,6 +161,11 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 28, tileY: 13 },
         visitTiles: [{ tileX: 28, tileY: 13 }, { tileX: 28, tileY: 14 }, { tileX: 27, tileY: 14 }],
+        scenery: {
+            excludePadding: { x: 2, y: 2 },
+            sightline: { x0: 24.5, y0: 4.5, x1: 32.0, y1: 15.5 },
+            tallPropClearance: 2,
+        },
     },
     {
         type: 'harbor',
@@ -142,5 +182,10 @@ export const BUILDING_DEFS = [
         labelPriority: 'landmark',
         entrance: { tileX: 31, tileY: 20 },
         visitTiles: [{ tileX: 31, tileY: 20 }, { tileX: 31, tileY: 19 }, { tileX: 30, tileY: 19 }],
+        scenery: {
+            excludePadding: { x: 2, y: 1 },
+            sightline: { x0: 30.5, y0: 15.5, x1: 38.5, y1: 22.5 },
+            tallPropClearance: 2,
+        },
     },
 ];
