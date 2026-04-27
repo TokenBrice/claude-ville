@@ -298,6 +298,11 @@ Belongs in Tier 1 — high first-impression leverage.
 
 Existing `occupiedBoxes` machinery resolves label collisions but treats all labels equally. Slot-assign priority order: selected → working-with-recent-event → recently-spawned → working → idle. Idle labels yield first; selected always wins. Pairs with #3.
 
+### 39. Codex equipment coherence — revised class grammar
+**Status:** Implemented 2026-04-28.
+
+Codex equipment now follows model class rather than reasoning effort: Spark uses a multitool, GPT-5.4 uses an engineer wrench, and GPT-5.5 uses runeblade plus shield. Reasoning effort is carried by floor rings and crown accessories. Runtime scrubber tuning and regenerated Codex sheets remove the previous baked-plus-overlay weapon stacking.
+
 ---
 
 ## Revised recommended starting sequence
@@ -323,15 +328,16 @@ The original sequence (#1 → #17 → #19) was unsound: #1 was a no-op (already 
 10. **#36** — Pulse-cue ownership (visual grammar before #28).
 11. **#37** — Empty-state visuals (first-load UX).
 12. **#38** — Label priority (pairs with #3).
+13. **#39** — Codex equipment coherence (implemented class grammar).
 
 ### Sprint D — visual atmosphere (after prerequisites)
-13. **#16, #18, #23** — Shadows, horizon wash, moon corona — all consume `LightingState`.
-14. **#17** — Torch bloom (now S effort post-T0.1+T0.3).
-15. **#14, #15, #25** — Water depth, foam, harmonics.
+14. **#16, #18, #23** — Shadows, horizon wash, moon corona — all consume `LightingState`.
+15. **#17** — Torch bloom (now S effort post-T0.1+T0.3).
+16. **#14, #15, #25** — Water depth, foam, harmonics.
 
 ### Sprint E — camera quality
-16. **#8 + #21 paired** — Zoom easing + fractional steps (ship together).
-17. **#20** — Minimap viewport overlay (uses T0.5 contract).
+17. **#8 + #21 paired** — Zoom easing + fractional steps (ship together).
+18. **#20** — Minimap viewport overlay (uses T0.5 contract).
 
 Tier-4 items (#32, #34, #35) follow only after the cumulative cost of Sprints A–E has been measured.
 
