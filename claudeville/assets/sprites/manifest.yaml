@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-mine-forge-refresh-v1"
+  assetVersion: "2026-04-27-opus-mystic-hood-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -7,11 +7,11 @@ style:
 # 6 walk rows followed by 4 breathing-idle rows, with 92px square cells.
 characters:
   # NOTE: regenerate via pixellab create_character with size=76 (canvas ~108) to
-  # avoid wide-brim hat clipping the 92-px engine cell. The manifest `size: 92`
+  # keep the tall hood silhouette inside the 92-px engine cell. The manifest `size: 92`
   # below is the engine cell size, not the generation hint.
   - id: agent.claude.opus
     tool: create_character
-    prompt: "Claude Opus 4.7 master archmage, tall pointed wizard hat with narrow brim and star sigil at apex, full-length floor-dragging ivory and amber robe, broad gold rune mantle, high collar, glowing tome held in one hand, tall ornate runed staff in the other, regal commanding silhouette, 8-direction pixel art"
+    prompt: "Claude Opus 4.7 ancient hooded archmage, oversized deep umber cowl, black shadow face with two glowing golden eyes, layered dark mantle, gold rune collar, full-length ivory and amber robe under a heavy cloak, hidden hands, small glowing grimoire, regal mystic silhouette, no pointed hat, no staff, no grass base, no platform, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
