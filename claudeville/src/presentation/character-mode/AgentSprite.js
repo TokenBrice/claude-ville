@@ -85,26 +85,9 @@ export class AgentSprite {
         this._lastPathTileKey = null;
         this._pathAgeFrames = 0;
 
-        // Guard: if the agent spawns on a non-walkable tile (e.g. water), nudge to
-        // the nearest walkable tile so _pickTarget can compute a valid first path.
-        if (this.pathfinder) {
-            const startTile = this._screenToTile(this.x, this.y);
-            const fx = Math.round(startTile.tileX);
-            const fy = Math.round(startTile.tileY);
-            if (!this.pathfinder.isWalkable(fx, fy)) {
-                const neighbors = [[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,1],[1,-1],[-1,-1]];
-                for (const [dx, dy] of neighbors) {
-                    const nx = fx + dx;
-                    const ny = fy + dy;
-                    if (this.pathfinder.isWalkable(nx, ny)) {
-                        const nudged = new Position(nx, ny).toScreen(TILE_WIDTH, TILE_HEIGHT);
-                        this.x = nudged.x;
-                        this.y = nudged.y;
-                        break;
-                    }
-                }
-            }
-        }
+        // Guard: agents spawn from a broad random band that can overlap rivers.
+        // Snap to dry walkable ground before the first target is assigned.
+        this._snapToNearestWalkable();
 
         // Sprite rendering fields
         this.assets = assets;
@@ -193,6 +176,7 @@ export class AgentSprite {
             this.waypoints = [];
             return;
         }
+        this._snapToNearestWalkable();
         const fromTile = this._screenToTile(this.x, this.y);
         const tileKey = `${Math.round(targetTileX)},${Math.round(targetTileY)}`;
         if (tileKey === this._lastPathTileKey && this.waypoints.length > 0 && this._pathAgeFrames < 30) {
@@ -225,6 +209,26 @@ export class AgentSprite {
         const tileX = (x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) / 2;
         const tileY = (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) / 2;
         return { tileX, tileY };
+    }
+
+    _snapToNearestWalkable(maxRadius = 8) {
+        if (!this.pathfinder || typeof this.pathfinder.nearestWalkable !== 'function') return false;
+        const tile = this._screenToTile(this.x, this.y);
+        const tileX = Math.round(tile.tileX);
+        const tileY = Math.round(tile.tileY);
+        if (this.pathfinder.isWalkable(tileX, tileY)) return false;
+
+        const nearest = this.pathfinder.nearestWalkable(tileX, tileY, maxRadius);
+        if (!nearest) return false;
+
+        const screen = new Position(nearest.tileX, nearest.tileY).toScreen(TILE_WIDTH, TILE_HEIGHT);
+        this.x = screen.x;
+        this.y = screen.y;
+        this.targetX = screen.x;
+        this.targetY = screen.y;
+        this.waypoints = [];
+        this._lastPathTileKey = null;
+        return true;
     }
 
     _targetBuildingTypeForState() {
@@ -319,6 +323,7 @@ export class AgentSprite {
         }
 
         if (!this.moving) {
+            this._snapToNearestWalkable();
             this._advanceIdleAnimation(dt);
             this._pickTarget();
             return;
