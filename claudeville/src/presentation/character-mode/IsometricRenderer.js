@@ -1,5 +1,4 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
-import { THEME } from '../../config/theme.js';
 import { TOWN_ROAD_ROUTES } from '../../config/townPlan.js';
 import {
     BRIDGE_ACCENT_PROPS,
