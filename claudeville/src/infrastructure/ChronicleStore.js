@@ -1,5 +1,5 @@
 const DB_NAME = 'claudeville-chronicle';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const LEASE_KEY = 'claudeville.chronicle.captureLease';
 const DEFAULT_LEASE_TTL_MS = 7000;
 
@@ -34,6 +34,16 @@ function nowMs() {
     return Date.now();
 }
 
+function storeConfig(name) {
+    return {
+        manifests: { keyPath: 'id', indexes: ['project', 'ts', 'pinned'] },
+        monuments: { keyPath: 'id', indexes: ['district', 'plantedAt', 'ts', 'dedupKey'] },
+        trailSamples: { keyPath: 'id', indexes: ['agentId', 'ts'] },
+        auroraLog: { keyPath: 'localDate', indexes: ['ts'] },
+        meta: { keyPath: 'key', indexes: [] },
+    }[name];
+}
+
 export class ChronicleStore {
     constructor({ dbName = DB_NAME } = {}) {
         this.dbName = dbName;
@@ -59,11 +69,10 @@ export class ChronicleStore {
         request.onupgradeneeded = () => {
             const db = request.result;
             const tx = request.transaction;
-            this._ensureStore(db, tx, 'manifests', 'id', ['ts', 'pinned']);
-            this._ensureStore(db, tx, 'monuments', 'id', ['ts', 'district', 'dedupKey']);
-            this._ensureStore(db, tx, 'trailSamples', 'id', ['ts', 'agentId']);
-            this._ensureStore(db, tx, 'auroraLog', 'id', ['ts']);
-            this._ensureStore(db, tx, 'meta', 'key', []);
+            for (const name of ['manifests', 'monuments', 'trailSamples', 'auroraLog', 'meta']) {
+                const config = storeConfig(name);
+                this._ensureStore(db, tx, name, config.keyPath, config.indexes);
+            }
         };
         this.db = await requestToPromise(request);
         return this;
@@ -105,7 +114,17 @@ export class ChronicleStore {
         await txDone(tx);
     }
 
-    async queryRange(storeName, { index = 'ts', lower = null, upper = null, limit = Infinity } = {}) {
+    async queryRange(storeName, indexOrOptions = 'ts', lowerArg = null, upperArg = null, optsArg = {}) {
+        const options = typeof indexOrOptions === 'object'
+            ? indexOrOptions
+            : { index: indexOrOptions, lower: lowerArg, upper: upperArg, ...optsArg };
+        const {
+            index = 'ts',
+            lower = null,
+            upper = null,
+            limit = Infinity,
+            direction = 'next',
+        } = options;
         await this.open();
         const tx = this.db.transaction(storeName, 'readonly');
         const store = tx.objectStore(storeName);
@@ -113,7 +132,7 @@ export class ChronicleStore {
         const range = this._range(lower, upper);
         const out = [];
         await new Promise((resolve, reject) => {
-            const request = source.openCursor(range);
+            const request = source.openCursor(range, direction);
             request.onerror = () => reject(request.error);
             request.onsuccess = () => {
                 const cursor = request.result;
@@ -153,10 +172,12 @@ export class ChronicleStore {
         return deleted;
     }
 
-    async count(storeName) {
+    async count(storeName, indexName = null, range = null) {
         await this.open();
         const tx = this.db.transaction(storeName, 'readonly');
-        return requestToPromise(tx.objectStore(storeName).count());
+        const store = tx.objectStore(storeName);
+        const source = indexName && store.indexNames.contains(indexName) ? store.index(indexName) : store;
+        return requestToPromise(source.count(range));
     }
 
     async prune(now = nowMs()) {
@@ -168,11 +189,20 @@ export class ChronicleStore {
             manifests: await this._deleteWhere('manifests', record => (
                 Number(record.ts || 0) < (record.pinned ? pinnedCutoff : manifestCutoff)
             )),
-            monuments: await this.deleteRange('monuments', { upper: monumentCutoff }),
+            monuments: await this.deleteRange('monuments', { index: 'plantedAt', upper: monumentCutoff }),
             trailSamples: await this.deleteRange('trailSamples', { upper: trailCutoff }),
         };
         await this.put('meta', { key: 'lastPruneAt', value: now });
         return deleted;
+    }
+
+    async getMeta(key, fallback = null) {
+        const row = await this.get('meta', key);
+        return row ? row.value : fallback;
+    }
+
+    async setMeta(key, value) {
+        return this.put('meta', { key, value, ts: nowMs() });
     }
 
     acquireCaptureLease({ ttlMs = DEFAULT_LEASE_TTL_MS } = {}) {
@@ -207,9 +237,16 @@ export class ChronicleStore {
     }
 
     _ensureStore(db, tx, name, keyPath, indexes) {
-        const store = db.objectStoreNames.contains(name)
-            ? tx.objectStore(name)
-            : db.createObjectStore(name, { keyPath });
+        let store;
+        if (db.objectStoreNames.contains(name)) {
+            store = tx.objectStore(name);
+            if (store.keyPath !== keyPath) {
+                db.deleteObjectStore(name);
+                store = db.createObjectStore(name, { keyPath });
+            }
+        } else {
+            store = db.createObjectStore(name, { keyPath });
+        }
         for (const indexName of indexes) {
             if (!store.indexNames.contains(indexName)) store.createIndex(indexName, indexName, { unique: false });
         }
@@ -284,3 +321,5 @@ export class ChronicleStore {
         return true;
     }
 }
+
+export { DB_NAME, DB_VERSION, RETENTION_MS };

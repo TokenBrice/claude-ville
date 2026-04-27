@@ -166,7 +166,8 @@ export class Minimap {
         const waterSize = layers.waterTiles?.size || 0;
         const pathSize = layers.pathTiles?.size || 0;
         const bridgeSize = layers.bridgeTiles?.size || 0;
-        const key = `${waterSize}|${pathSize}|${bridgeSize}|${buildingsSignature}`;
+        const monumentSignature = this._snapshotMonuments(layers.chronicleMonuments);
+        const key = `${waterSize}|${pathSize}|${bridgeSize}|${buildingsSignature}|${monumentSignature}`;
         if (this._staticLayer && this._staticLayerKey === key) return;
 
         this._staticLayer = document.createElement('canvas');
@@ -228,7 +229,29 @@ export class Minimap {
             staticCtx.stroke();
         }
 
+        this._drawMonumentDots(staticCtx, layers.chronicleMonuments);
+
         this._staticLayerKey = key;
+    }
+
+    _snapshotMonuments(monuments) {
+        const list = Array.isArray(monuments) ? monuments : [];
+        return list
+            .map(monument => `${monument.kind || ''}|${monument.tileX}|${monument.tileY}`)
+            .sort()
+            .join(',');
+    }
+
+    _drawMonumentDots(ctx, monuments) {
+        const list = Array.isArray(monuments) ? monuments : [];
+        for (const monument of list) {
+            const x = monument.tileX * this.scale;
+            const y = monument.tileY * this.scale;
+            ctx.fillStyle = monument.color || '#f7f0a3';
+            ctx.fillRect(Math.round(x), Math.round(y), 2, 2);
+            ctx.fillStyle = 'rgba(20, 16, 10, 0.7)';
+            ctx.fillRect(Math.round(x) + 1, Math.round(y) + 1, 1, 1);
+        }
     }
 
     _snapshotBuildings(world) {

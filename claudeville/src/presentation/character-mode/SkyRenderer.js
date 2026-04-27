@@ -13,6 +13,9 @@ const CLOUD_DRIFT_PX_PER_MS = 0.0012;
 const CANOPY_HEIGHT_FRAC = 0.52;
 const CANOPY_MIN_HEIGHT = 240;
 const CANOPY_MAX_HEIGHT = 520;
+const AURORA_DURATION_MS = 12000;
+const AURORA_FADE_IN_MS = 2000;
+const AURORA_HOLD_MS = 6000;
 
 const CLOUD_LAYER_DEFAULTS = [
     { fy: 0.20, parallax: 0.03, driftMul: 0.55, alphaMul: 0.72 },
@@ -27,6 +30,7 @@ export class SkyRenderer {
         this.cacheKey = '';
         this._decorativeCloudOffset = 0;
         this._fallbackAtmosphere = null;
+        this._auroraStartedAt = 0;
     }
 
     draw(ctx, arg1 = {}, arg2 = null, arg3 = 16, arg4 = 1) {
@@ -44,7 +48,12 @@ export class SkyRenderer {
         this._drawSun(ctx, canvas, snapshot);
         this._drawMoon(ctx, canvas, snapshot);
         this._drawClouds(ctx, camera, canvas, snapshot);
+        this._drawAurora(ctx, canvas, snapshot, motionScale);
         this._drawBackgroundWeather(ctx, canvas, snapshot);
+    }
+
+    triggerAurora(now = Date.now()) {
+        this._auroraStartedAt = now;
     }
 
     drawCanopy(ctx, { canvas, camera = null, dt = 16, atmosphere = null, motionScale = 1 } = {}) {
@@ -328,6 +337,54 @@ export class SkyRenderer {
         });
     }
 
+    _drawAurora(ctx, canvas, atmosphere, motionScale = 1) {
+        if (!this._auroraStartedAt) return;
+        const elapsed = Date.now() - this._auroraStartedAt;
+        if (elapsed > AURORA_DURATION_MS) {
+            this._auroraStartedAt = 0;
+            return;
+        }
+        const alpha = this._auroraAlpha(elapsed, motionScale);
+        if (alpha <= 0.005) return;
+        const beacon = atmosphere?.lighting?.beaconIntensity ?? 0.65;
+        const yBase = canvas.height * 0.23;
+        const width = canvas.width;
+        const time = motionScale === 0 ? 0.75 : elapsed / 1000;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = Math.min(0.22, alpha * (0.78 + beacon * 0.35));
+        for (let band = 0; band < 3; band++) {
+            const yOffset = band * 18;
+            const hue = band === 0 ? '102, 255, 196' : band === 1 ? '104, 190, 255' : '196, 126, 255';
+            const grad = ctx.createLinearGradient(0, yBase - 42 + yOffset, 0, yBase + 64 + yOffset);
+            grad.addColorStop(0, `rgba(${hue}, 0)`);
+            grad.addColorStop(0.42, `rgba(${hue}, ${0.38 - band * 0.07})`);
+            grad.addColorStop(1, `rgba(${hue}, 0)`);
+            ctx.strokeStyle = grad;
+            ctx.lineWidth = 22 - band * 4;
+            ctx.beginPath();
+            for (let x = -20; x <= width + 20; x += 28) {
+                const t = x / Math.max(1, width);
+                const y = yBase + yOffset
+                    + Math.cos(t * Math.PI * 2.1 + band * 0.85 + time * 0.45) * (18 + band * 5)
+                    + Math.cos(t * Math.PI * 5.2 - time * 0.25) * 5;
+                if (x === -20) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    _auroraAlpha(elapsed, motionScale) {
+        if (motionScale === 0) return 1;
+        if (elapsed < AURORA_FADE_IN_MS) return elapsed / AURORA_FADE_IN_MS;
+        if (elapsed < AURORA_FADE_IN_MS + AURORA_HOLD_MS) return 1;
+        const fadeElapsed = elapsed - AURORA_FADE_IN_MS - AURORA_HOLD_MS;
+        return Math.max(0, 1 - fadeElapsed / (AURORA_DURATION_MS - AURORA_FADE_IN_MS - AURORA_HOLD_MS));
+    }
+
     _drawBackgroundWeather(ctx, canvas, atmosphere) {
         const weather = atmosphere.weather;
         if (!weather) return;
@@ -393,6 +450,7 @@ export class SkyRenderer {
         this.cache = null;
         this.cacheKey = '';
         this._decorativeCloudOffset = 0;
+        this._auroraStartedAt = 0;
         this._fallbackAtmosphere?.dispose?.();
         this._fallbackAtmosphere = null;
     }
