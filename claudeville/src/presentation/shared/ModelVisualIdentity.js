@@ -27,8 +27,7 @@ const EFFORT_ACCESSORIES = Object.freeze({
     max: 'effortMax',
 });
 
-// Floor rings (anchored at feet). Used for low/medium/high tiers when a
-// provider does not replace the tier with readable equipment.
+// Floor rings (anchored at feet). Used for low/medium/high reasoning tiers.
 // Overlay IDs map to overlay.status.effortLow / effortMedium / effortHigh.
 const EFFORT_FLOOR_RINGS = Object.freeze({
     low: 'overlay.status.effortLow',
@@ -36,12 +35,11 @@ const EFFORT_FLOOR_RINGS = Object.freeze({
     high: 'overlay.status.effortHigh',
 });
 
-const CODEX_EFFORT_WEAPONS = Object.freeze({
-    low: 'dagger',
-    medium: 'swordShield',
-    high: 'greatsword',
-    xhigh: 'polearm',
-    max: 'polearm',
+const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
+    codex: 'wrench',
+    spark: 'multitool',
+    gpt54: 'wrench',
+    gpt55: 'swordShield',
 });
 
 const DEFAULT_EFFORT_RENDERING = Object.freeze({
@@ -52,13 +50,14 @@ const DEFAULT_EFFORT_RENDERING = Object.freeze({
     allowRuntimeEffortWeapon: true,
 });
 
-function codexEquipment(effortTier) {
-    const effortWeapon = CODEX_EFFORT_WEAPONS[effortTier] || null;
+function codexEquipment(effortTier, modelClass) {
+    const equipment = CODEX_EQUIPMENT_BY_CLASS[modelClass] || null;
     return {
-        effortAccessory: null,
-        effortFloorRing: effortWeapon ? null : EFFORT_FLOOR_RINGS[effortTier] || null,
-        effortWeapon,
-        suppressBakedWeapon: false,
+        effortAccessory: EFFORT_ACCESSORIES[effortTier] || null,
+        effortFloorRing: EFFORT_FLOOR_RINGS[effortTier] || null,
+        equipment,
+        effortWeapon: equipment,
+        suppressBakedWeapon: true,
     };
 }
 
@@ -145,10 +144,11 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedModel.includes('gpt-5-3-codex-spark')) {
-        const equipment = codexEquipment(effortTier);
+        const modelClass = 'spark';
+        const equipment = codexEquipment(effortTier, modelClass);
         return {
             family: 'codex',
-            modelClass: 'spark',
+            modelClass,
             modelTier: 'swift',
             label: 'GPT-5.3 Codex Spark',
             shortLabel: '5.3 Spark',
@@ -164,17 +164,17 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedModel.includes('gpt-5-5')) {
-        const equipment = codexEquipment(effortTier);
+        const modelClass = 'gpt55';
+        const equipment = codexEquipment(effortTier, modelClass);
         return {
             family: 'codex',
-            modelClass: 'gpt55',
+            modelClass,
             modelTier: 'apex',
             label: 'GPT-5.5',
             shortLabel: '5.5',
             effortTier,
             ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
-            suppressBakedWeapon: true,
             spriteId: 'agent.codex.gpt55',
             paletteKey: 'codex',
             trim: ['#fff1b8', '#7be3d7', '#f8c45f'],
@@ -184,10 +184,11 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedModel.includes('gpt-5-4') || normalizedModel.includes('gpt-5.4')) {
-        const equipment = codexEquipment(effortTier);
+        const modelClass = 'gpt54';
+        const equipment = codexEquipment(effortTier, modelClass);
         return {
             family: 'codex',
-            modelClass: 'gpt54',
+            modelClass,
             modelTier: 'senior',
             label: 'GPT-5.4',
             shortLabel: '5.4',
@@ -203,7 +204,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     }
 
     if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
-        const equipment = codexEquipment(effortTier);
+        const equipment = codexEquipment(effortTier, DEFAULT_CODEX_IDENTITY.modelClass);
         return {
             ...DEFAULT_CODEX_IDENTITY,
             effortTier,
