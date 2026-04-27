@@ -4,7 +4,7 @@
 // transform — viewport-fixed.
 
 const PALETTE = {
-    zenith: '#1e0f08',
+    zenith: '#241410',
     upperBand: '#3d1c0c',
     midBand: '#7a3a14',
     horizon: '#c85a18',
