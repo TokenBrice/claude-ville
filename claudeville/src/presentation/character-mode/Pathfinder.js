@@ -6,6 +6,7 @@ export class Pathfinder {
     constructor(grid) {
         this.grid = grid;
         this.walkableTiles = this._buildWalkableList(grid);
+        this._pathCache = new Map();
     }
 
     _buildWalkableList(grid) {
@@ -22,9 +23,17 @@ export class Pathfinder {
         return this.walkableTiles[Math.min(this.walkableTiles.length - 1, Math.floor(rng * this.walkableTiles.length))];
     }
 
+    _cacheResult(key, value) {
+        if (this._pathCache.size >= 256) {
+            this._pathCache.delete(this._pathCache.keys().next().value);
+        }
+        this._pathCache.set(key, value);
+    }
+
     setGrid(grid) {
         this.grid = grid;
         this.walkableTiles = this._buildWalkableList(grid);
+        this._pathCache.clear();
     }
 
     isWalkable(tileX, tileY) {
@@ -58,11 +67,17 @@ export class Pathfinder {
         const targetCandidates = this._walkableCandidates(Math.round(to.tileX), Math.round(to.tileY));
         if (targetCandidates.length === 0) return [];
 
+        const cacheKey = `${fx},${fy}|${Math.round(to.tileX)},${Math.round(to.tileY)}`;
+        const cached = this._pathCache.get(cacheKey);
+        if (cached) return cached;
+
         // Fast path: if a tile-step line from `from` to `to` never crosses a blocked tile,
         // skip BFS entirely.
         for (const target of targetCandidates) {
             if (this._lineWalkable(fx, fy, target.tileX, target.tileY)) {
-                return [{ tileX: target.tileX, tileY: target.tileY }];
+                const fastResult = [{ tileX: target.tileX, tileY: target.tileY }];
+                this._cacheResult(cacheKey, fastResult);
+                return fastResult;
             }
         }
 
@@ -110,7 +125,9 @@ export class Pathfinder {
             cur = parent[cur];
         }
         tiles.reverse();
-        return this._lookahead(this._simplify(tiles, bridgeTiles), bridgeTiles);
+        const result = this._lookahead(this._simplify(tiles, bridgeTiles), bridgeTiles);
+        this._cacheResult(cacheKey, result);
+        return result;
     }
 
     _walkableCandidates(tileX, tileY) {
