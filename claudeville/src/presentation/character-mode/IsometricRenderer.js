@@ -248,6 +248,7 @@ export class IsometricRenderer {
             canopy: true,
         }));
         this.treePropSprites = [...generatedTrees, ...authoredPalms, ...authoredBroadleafTrees]
+            .filter((t) => !this._isInBridgeTreeExclusion(t.tileX, t.tileY))
             .map((t) => {
             if (t.canopy || t.tropical) {
                 return new StaticPropSprite({
@@ -1865,6 +1866,24 @@ export class IsometricRenderer {
         const x = span.start.x + (span.end.x - span.start.x) * t + span.crossUnit.x * crossOffset;
         const y = span.start.y + (span.end.y - span.start.y) * t + span.crossUnit.y * crossOffset - arch * span.rise - verticalLift + drop;
         return { x, y };
+    }
+
+    _isInBridgeTreeExclusion(tileX, tileY) {
+        if (!this.bridgeSpans?.length) return false;
+        const p = this._tileToScreen(tileX, tileY);
+        for (const span of this.bridgeSpans) {
+            const dx = p.x - span.start.x;
+            const dy = p.y - span.start.y;
+            const axisLength = Math.hypot(span.end.x - span.start.x, span.end.y - span.start.y) || 1;
+            const along = dx * span.axisUnit.x + dy * span.axisUnit.y;
+            const cross = Math.abs(dx * span.crossUnit.x + dy * span.crossUnit.y);
+            const rampPad = 96;
+            const crossPad = span.halfWidth + 72;
+            if (along >= -rampPad && along <= axisLength + rampPad && cross <= crossPad) {
+                return true;
+            }
+        }
+        return false;
     }
 
     _bridgeSidePoints(span, crossOffset, verticalLift = 0, drop = 0, steps = 14) {
