@@ -141,6 +141,6 @@ export const BUILDING_DEFS = [
         visualTier: 'major',
         labelPriority: 'landmark',
         entrance: { tileX: 34, tileY: 22 },
-        visitTiles: [{ tileX: 34, tileY: 22 }, { tileX: 32, tileY: 21 }, { tileX: 36, tileY: 21 }, { tileX: 35, tileY: 20 }],
+        visitTiles: [{ tileX: 34, tileY: 22 }, { tileX: 32, tileY: 22 }, { tileX: 36, tileY: 22 }, { tileX: 37, tileY: 20 }],
     },
 ];

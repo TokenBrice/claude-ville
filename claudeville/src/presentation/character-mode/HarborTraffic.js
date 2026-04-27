@@ -14,16 +14,36 @@ const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
 
 const BERTHS = [
-    { tileX: 32.9, tileY: 21.3 },
-    { tileX: 33.6, tileY: 21.7 },
-    { tileX: 34.4, tileY: 21.9 },
-    { tileX: 35.3, tileY: 21.8 },
-    { tileX: 36.0, tileY: 21.5 },
-    { tileX: 36.6, tileY: 21.0 },
-    { tileX: 36.2, tileY: 20.3 },
+    { tileX: 32.8, tileY: 21.2 },
+    { tileX: 33.4, tileY: 21.7 },
+    { tileX: 33.6, tileY: 20.5 },
+    { tileX: 34.2, tileY: 21.9 },
+    { tileX: 35.0, tileY: 21.8 },
+    { tileX: 34.7, tileY: 20.3 },
+    { tileX: 35.8, tileY: 21.6 },
+    { tileX: 36.5, tileY: 21.0 },
+    { tileX: 36.1, tileY: 20.2 },
+    { tileX: 37.0, tileY: 21.5 },
+    { tileX: 36.8, tileY: 20.5 },
     { tileX: 35.4, tileY: 20.0 },
-    { tileX: 34.5, tileY: 20.0 },
-    { tileX: 33.6, tileY: 20.3 },
+];
+
+const QUAY_GROUPS = [
+    { name: 'West Quay', berthIndexes: [0, 1, 2] },
+    { name: 'Market Quay', berthIndexes: [3, 4, 5] },
+    { name: 'Beacon Quay', berthIndexes: [6, 7, 8] },
+    { name: 'Outer Quay', berthIndexes: [9, 10, 11] },
+];
+
+const REPO_PALETTES = [
+    { accent: '#6cdb94', glow: 'rgba(108, 219, 148, 0.34)', panel: 'rgba(20, 54, 42, 0.9)' },
+    { accent: '#63c7f2', glow: 'rgba(99, 199, 242, 0.33)', panel: 'rgba(21, 47, 60, 0.9)' },
+    { accent: '#f2b84b', glow: 'rgba(242, 184, 75, 0.35)', panel: 'rgba(60, 45, 20, 0.9)' },
+    { accent: '#ef7b6d', glow: 'rgba(239, 123, 109, 0.33)', panel: 'rgba(62, 34, 31, 0.9)' },
+    { accent: '#b58cff', glow: 'rgba(181, 140, 255, 0.32)', panel: 'rgba(43, 34, 63, 0.9)' },
+    { accent: '#f08fd4', glow: 'rgba(240, 143, 212, 0.3)', panel: 'rgba(59, 32, 52, 0.9)' },
+    { accent: '#9ed760', glow: 'rgba(158, 215, 96, 0.32)', panel: 'rgba(42, 55, 25, 0.9)' },
+    { accent: '#f6cf60', glow: 'rgba(246, 207, 96, 0.33)', panel: 'rgba(58, 48, 27, 0.9)' },
 ];
 
 const SEA_LANES = [
@@ -117,6 +137,28 @@ function projectName(project) {
     return shortenLabel(parts.at(-1) || text || 'unknown', 26);
 }
 
+function repoProfile(project) {
+    const name = projectName(project);
+    const hash = stableHash(String(project || name || 'unknown'));
+    const palette = REPO_PALETTES[hash % REPO_PALETTES.length];
+    return {
+        key: String(project || 'unknown'),
+        name,
+        shortName: shortenLabel(name, 16),
+        hash,
+        accent: palette.accent,
+        glow: palette.glow,
+        panel: palette.panel,
+    };
+}
+
+function rotateIndexes(indexes, offset) {
+    const list = Array.isArray(indexes) ? indexes : [];
+    if (list.length <= 1) return [...list];
+    const start = Math.abs(offset || 0) % list.length;
+    return [...list.slice(start), ...list.slice(0, start)];
+}
+
 function shortenLabel(value, maxChars = MAX_LABEL_CHARS) {
     const text = String(value || '').replace(/\s+/g, ' ').trim();
     if (!text) return '';
@@ -183,13 +225,87 @@ function cloneState(previous = {}) {
     for (const [id, pushEvent] of sourcePushEvents) {
         pushEvents.set(id, { ...pushEvent });
     }
+    const sourceRepoQuays = previous.repoQuays instanceof Map
+        ? previous.repoQuays.entries()
+        : Object.entries(previous.repoQuays || {});
+    const repoQuays = new Map();
+    for (const [project, quayIndex] of sourceRepoQuays) {
+        repoQuays.set(project, Number.isFinite(Number(quayIndex)) ? Number(quayIndex) : 0);
+    }
     return {
         seenEventIds,
         ships,
         batches,
         pushEvents,
+        repoQuays,
         nextSequence: Number.isFinite(previous.nextSequence) ? previous.nextSequence : ships.size,
         nextBatchSequence: Number.isFinite(previous.nextBatchSequence) ? previous.nextBatchSequence : batches.size,
+    };
+}
+
+function assignedQuayIndex(state, project) {
+    const key = String(project || 'unknown');
+    const existing = state.repoQuays.get(key);
+    if (Number.isFinite(existing)) return existing;
+
+    const preferred = stableHash(key) % QUAY_GROUPS.length;
+    const loads = QUAY_GROUPS.map((_, index) => {
+        let load = 0;
+        for (const ship of state.ships.values()) {
+            if (ship.quayIndex === index && ship.status === 'docked') load += 1;
+        }
+        for (const [project, quayIndex] of state.repoQuays.entries()) {
+            if (String(project || 'unknown') === key) continue;
+            if (quayIndex === index) load += 0.35;
+        }
+        return load;
+    });
+
+    let chosen = preferred;
+    for (let i = 1; i < QUAY_GROUPS.length; i++) {
+        const candidate = (preferred + i) % QUAY_GROUPS.length;
+        if (loads[candidate] < loads[chosen]) chosen = candidate;
+    }
+    state.repoQuays.set(key, chosen);
+    return chosen;
+}
+
+function chooseBerthIndex(state, project) {
+    const quayIndex = assignedQuayIndex(state, project);
+    const key = String(project || 'unknown');
+    const occupied = new Set();
+    for (const ship of state.ships.values()) {
+        if (Number.isFinite(Number(ship.berthIndex))) occupied.add(Number(ship.berthIndex));
+    }
+    const otherRepoQuays = new Set();
+    for (const [assignedProject, assignedQuay] of state.repoQuays.entries()) {
+        if (String(assignedProject || 'unknown') !== key) otherRepoQuays.add(assignedQuay);
+    }
+
+    const preferredGroup = QUAY_GROUPS[quayIndex] || QUAY_GROUPS[0];
+    for (const berthIndex of rotateIndexes(preferredGroup.berthIndexes, state.nextSequence)) {
+        if (!occupied.has(berthIndex)) return { berthIndex, quayIndex };
+    }
+
+    for (let offset = 1; offset < QUAY_GROUPS.length; offset++) {
+        const nextQuayIndex = (quayIndex + offset) % QUAY_GROUPS.length;
+        if (otherRepoQuays.has(nextQuayIndex)) continue;
+        const group = QUAY_GROUPS[nextQuayIndex];
+        for (const berthIndex of rotateIndexes(group.berthIndexes, state.nextSequence)) {
+            if (!occupied.has(berthIndex)) return { berthIndex, quayIndex };
+        }
+    }
+
+    for (let offset = 1; offset < QUAY_GROUPS.length; offset++) {
+        const group = QUAY_GROUPS[(quayIndex + offset) % QUAY_GROUPS.length];
+        for (const berthIndex of rotateIndexes(group.berthIndexes, state.nextSequence)) {
+            if (!occupied.has(berthIndex)) return { berthIndex, quayIndex };
+        }
+    }
+
+    return {
+        berthIndex: state.nextSequence % BERTHS.length,
+        quayIndex,
     };
 }
 
@@ -251,6 +367,8 @@ export function snapshotHarborTrafficState(state) {
             .map(ship => ({
                 id: ship.id,
                 project: ship.project,
+                quayIndex: ship.quayIndex ?? null,
+                repoName: ship.repoName || '',
                 sha: ship.sha || '',
                 label: ship.label || '',
                 status: ship.status,
@@ -263,10 +381,15 @@ export function snapshotHarborTrafficState(state) {
                 departStartedAt: ship.departStartedAt || null,
             }))
             .sort((a, b) => (a.eventTime - b.eventTime) || a.id.localeCompare(b.id)),
+        repoQuays: [...cloned.repoQuays.entries()]
+            .map(([project, quayIndex]) => ({ project, quayIndex }))
+            .sort((a, b) => a.project.localeCompare(b.project)),
         batches: [...cloned.batches.values()]
             .map(batch => ({
                 id: batch.id,
                 project: batch.project,
+                quayIndex: batch.quayIndex ?? null,
+                repoName: batch.repoName || '',
                 label: batch.label || '',
                 status: batch.status || 'unknown',
                 targetRef: batch.targetRef || '',
@@ -388,6 +511,16 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         .filter(event => event?.id && event?.type && event?.project)
         .sort((a, b) => (a.timestamp - b.timestamp) || a.id.localeCompare(b.id));
     const latestPushTimes = latestPushTimesByProject(sorted);
+    const relevantProjects = new Set(sorted.map(event => String(event.project || 'unknown')));
+    for (const ship of state.ships.values()) {
+        if (ship.project) relevantProjects.add(String(ship.project));
+    }
+    for (const [project] of state.repoQuays.entries()) {
+        if (!relevantProjects.has(String(project || 'unknown'))) state.repoQuays.delete(project);
+    }
+    for (const project of relevantProjects) {
+        assignedQuayIndex(state, project);
+    }
 
     for (const event of sorted) {
         if (event.type !== 'push') {
@@ -397,12 +530,15 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
 
         if (event.type === 'commit') {
             if (isHistoricalCommittedBeforePush(event, latestPushTimes, now)) continue;
-            const berthIndex = state.nextSequence % BERTHS.length;
+            const { berthIndex, quayIndex } = chooseBerthIndex(state, event.project);
             const laneIndex = stableHash(`${event.project}:${event.id}`) % SEA_LANES.length;
+            const profile = repoProfile(event.project);
             state.nextSequence++;
             state.ships.set(event.id, {
                 id: event.id,
                 project: event.project,
+                repoName: profile.shortName,
+                quayIndex,
                 sha: event.sha,
                 label: event.label,
                 status: 'docked',
@@ -463,6 +599,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ...(existingBatch || {}),
                 id: batchId,
                 project: event.project,
+                quayIndex: assignedQuayIndex(state, event.project),
+                repoName: repoProfile(event.project).shortName,
                 label: event.label || existingBatch?.label || '',
                 targetRef: event.targetRef || existingBatch?.targetRef || '',
                 status,
@@ -596,7 +734,74 @@ export class HarborTraffic {
             });
         }
 
+        for (const marker of this._repoQuayDrawables()) {
+            visible.push(marker);
+        }
+
         return visible.sort((a, b) => a.sortY - b.sortY);
+    }
+
+    _repoQuayDrawables() {
+        const summaries = new Map();
+        for (const ship of this.state.ships.values()) {
+            if (ship.status !== 'docked') continue;
+            const profile = repoProfile(ship.project);
+            const berth = BERTHS[ship.berthIndex % BERTHS.length];
+            if (!berth) continue;
+            const pos = toWorld(berth.tileX, berth.tileY);
+            const summary = summaries.get(profile.key) || {
+                project: ship.project,
+                profile,
+                quayIndex: Number.isFinite(Number(ship.quayIndex)) ? Number(ship.quayIndex) : assignedQuayIndex(this.state, ship.project),
+                count: 0,
+                failedCount: 0,
+                x: 0,
+                y: 0,
+                latestEventTime: 0,
+            };
+            summary.count += 1;
+            if (ship.pushStatus === 'failed') summary.failedCount += 1;
+            summary.x += pos.x;
+            summary.y += pos.y;
+            summary.latestEventTime = Math.max(summary.latestEventTime, ship.eventTime || 0);
+            summaries.set(profile.key, summary);
+        }
+
+        const byQuay = new Map();
+        for (const summary of summaries.values()) {
+            const list = byQuay.get(summary.quayIndex) || [];
+            list.push(summary);
+            byQuay.set(summary.quayIndex, list);
+        }
+
+        const drawables = [];
+        for (const [quayIndex, list] of byQuay.entries()) {
+            list.sort((a, b) => (b.count - a.count) || (b.latestEventTime - a.latestEventTime) || a.profile.name.localeCompare(b.profile.name));
+            const spread = Math.min(58, Math.max(34, 128 / Math.max(1, list.length)));
+            list.forEach((summary, index) => {
+                const pos = {
+                    x: summary.x / summary.count,
+                    y: summary.y / summary.count,
+                };
+                const rankOffset = index - (list.length - 1) / 2;
+                drawables.push({
+                    kind: 'harbor-traffic',
+                    sortY: pos.y + 9 + index,
+                    payload: {
+                        type: 'repo-quay',
+                        project: summary.project,
+                        profile: summary.profile,
+                        quayName: QUAY_GROUPS[quayIndex]?.name || 'Quay',
+                        count: summary.count,
+                        failedCount: summary.failedCount,
+                        x: pos.x + rankOffset * spread,
+                        y: pos.y - 58 - (index % 2) * 8,
+                    },
+                });
+            });
+        }
+
+        return drawables;
     }
 
     activeFinaleEffects(now = Date.now()) {
@@ -680,6 +885,10 @@ export class HarborTraffic {
             this._drawClusterTag(ctx, drawable.payload, zoom);
             return;
         }
+        if (drawable.payload.type === 'repo-quay') {
+            this._drawRepoQuayMarker(ctx, drawable.payload, zoom);
+            return;
+        }
         this._drawShip(ctx, drawable.payload, zoom);
     }
 
@@ -693,6 +902,7 @@ export class HarborTraffic {
         const summary = this.latestScreenSummary(now);
         if (!summary || !canvas) return;
         const style = PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown;
+        const profile = repoProfile(summary.project);
         const age = this._batchSummaryAge(summary, now);
         const fade = this.motionScale === 0
             ? 1
@@ -734,6 +944,8 @@ export class HarborTraffic {
         ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
         ctx.fillStyle = style.accent;
         ctx.fillRect(x, y, 4, height);
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(x + 5, y, 3, height);
 
         ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
         ctx.textAlign = 'left';
@@ -793,9 +1005,10 @@ export class HarborTraffic {
             ? this._departureAlpha(ship)
             : 1;
         if (alpha <= 0.02) return;
+        const profile = repoProfile(ship.project);
 
         if (ship.status === 'docked') {
-            this._drawDockedShipWake(ctx, ship, zoom);
+            this._drawDockedShipWake(ctx, ship, zoom, profile);
         }
 
         if (ship.status === 'departing' && this.motionScale > 0 && ship.progress < 0.94) {
@@ -807,14 +1020,15 @@ export class HarborTraffic {
         } else {
             this._drawFallbackBoat(ctx, ship.x, ship.y, alpha);
         }
+        this._drawRepoFlag(ctx, ship, zoom, alpha, profile);
 
         if (ship.status === 'docked') {
-            this._drawMooringTick(ctx, ship, zoom);
+            this._drawMooringTick(ctx, ship, zoom, profile);
         }
         if (ship.status === 'docked' && ship.pushStatus === 'failed') {
             this._drawFailedPushMark(ctx, ship, zoom);
         }
-        this._drawCommitPennant(ctx, ship, zoom, alpha);
+        this._drawCommitPennant(ctx, ship, zoom, alpha, profile);
     }
 
     _departureAlpha(ship) {
@@ -824,20 +1038,20 @@ export class HarborTraffic {
         return Math.max(0, Math.min(1, 1 - (elapsed - fadeStart) / EXIT_FADE_MS));
     }
 
-    _drawDockedShipWake(ctx, ship, zoom) {
+    _drawDockedShipWake(ctx, ship, zoom, profile = repoProfile(ship.project)) {
         const s = 1 / Math.max(1, zoom || 1);
         const pulse = this.motionScale > 0
             ? 0.55 + 0.25 * Math.sin(this.frame * 0.08 + ship.berthIndex)
             : 0.62;
         ctx.save();
         ctx.globalAlpha = pulse;
-        ctx.strokeStyle = 'rgba(249, 214, 105, 0.72)';
+        ctx.strokeStyle = profile.accent;
         ctx.lineWidth = Math.max(1, Math.round(2 * s));
         ctx.beginPath();
         ctx.ellipse(Math.round(ship.x), Math.round(ship.y + 4 * s), 30 * s, 16 * s, -0.18, 0, Math.PI * 2);
         ctx.stroke();
         ctx.globalAlpha = 0.45;
-        ctx.fillStyle = 'rgba(255, 232, 132, 0.16)';
+        ctx.fillStyle = profile.glow;
         ctx.beginPath();
         ctx.ellipse(Math.round(ship.x), Math.round(ship.y + 5 * s), 26 * s, 13 * s, -0.18, 0, Math.PI * 2);
         ctx.fill();
@@ -875,11 +1089,11 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawMooringTick(ctx, ship, zoom) {
+    _drawMooringTick(ctx, ship, zoom, profile = repoProfile(ship.project)) {
         const s = 1 / Math.max(1, zoom || 1);
         const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
         ctx.save();
-        ctx.fillStyle = ship.pushStatus ? style.accent : 'rgba(251, 224, 141, 0.82)';
+        ctx.fillStyle = ship.pushStatus ? style.accent : profile.accent;
         ctx.fillRect(Math.round(ship.x + 17 * s), Math.round(ship.y - 23 * s), Math.max(1, Math.round(2 * s)), Math.max(1, Math.round(5 * s)));
         ctx.restore();
     }
@@ -907,7 +1121,25 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawCommitPennant(ctx, ship, zoom, alpha = 1) {
+    _drawRepoFlag(ctx, ship, zoom, alpha = 1, profile = repoProfile(ship.project)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = Math.round(ship.x + 13 * s);
+        const y = Math.round(ship.y - 31 * s);
+        ctx.save();
+        ctx.globalAlpha = 0.92 * alpha;
+        ctx.fillStyle = 'rgba(17, 26, 30, 0.82)';
+        ctx.fillRect(x, y, Math.max(1, Math.round(2 * s)), Math.max(1, Math.round(14 * s)));
+        ctx.fillStyle = profile.accent;
+        ctx.beginPath();
+        ctx.moveTo(x + 2 * s, y + 1 * s);
+        ctx.lineTo(x + 13 * s, y + 5 * s);
+        ctx.lineTo(x + 2 * s, y + 9 * s);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawCommitPennant(ctx, ship, zoom, alpha = 1, profile = repoProfile(ship.project)) {
         const s = 1 / Math.max(1, zoom || 1);
         const label = shortenLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS);
         const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
@@ -920,14 +1152,16 @@ export class HarborTraffic {
         ctx.globalAlpha = 0.94 * alpha;
         ctx.fillStyle = 'rgba(24, 42, 39, 0.9)';
         ctx.fillRect(x, y, Math.round(width), Math.round(height));
-        ctx.strokeStyle = ship.pushStatus ? style.accent : 'rgba(246, 207, 96, 0.9)';
+        ctx.strokeStyle = ship.pushStatus ? style.accent : profile.accent;
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(x, y, Math.max(2, Math.round(4 * s)), Math.round(height));
         ctx.fillStyle = ship.pushStatus ? style.accent : '#f6cf60';
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(label, Math.round(ship.x), Math.round(y + height / 2 + 0.5));
-        ctx.fillStyle = ship.pushStatus ? style.accent : 'rgba(108, 219, 148, 0.9)';
+        ctx.fillText(label, Math.round(ship.x + 2 * s), Math.round(y + height / 2 + 0.5));
+        ctx.fillStyle = ship.pushStatus ? style.accent : profile.accent;
         ctx.fillRect(Math.round(ship.x - 22 * s), Math.round(ship.y - 31 * s), Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
         ctx.restore();
     }
@@ -1017,6 +1251,44 @@ export class HarborTraffic {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, Math.round(payload.x), Math.round(y + height / 2));
+        ctx.restore();
+    }
+
+    _drawRepoQuayMarker(ctx, payload, zoom) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const profile = payload.profile || repoProfile(payload.project);
+        const count = Math.max(1, Number(payload.count || 1));
+        const label = `${shortenLabel(profile.shortName || profile.name, count >= 10 ? 10 : 12)} x${count}`;
+        const textSize = Math.max(7, Math.round(9 * s));
+        const width = Math.max(58 * s, Math.min(122 * s, label.length * textSize * 0.58 + 18 * s));
+        const height = 16 * s;
+        const x = Math.round(payload.x - width / 2);
+        const y = Math.round(payload.y - height / 2);
+        const failed = Number(payload.failedCount || 0) > 0;
+
+        ctx.save();
+        ctx.globalAlpha = 0.94;
+        ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.9)';
+        ctx.fillRect(x, y, Math.round(width), Math.round(height));
+        ctx.strokeStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(x, y, Math.max(3, Math.round(5 * s)), Math.round(height));
+
+        ctx.globalAlpha = 0.46;
+        ctx.strokeStyle = profile.accent;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(payload.x), Math.round(y + height));
+        ctx.lineTo(Math.round(payload.x), Math.round(payload.y + 28 * s));
+        ctx.stroke();
+
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : '#f5e8be';
+        ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(label, Math.round(payload.x + 2 * s), Math.round(y + height / 2 + 0.5));
         ctx.restore();
     }
 
