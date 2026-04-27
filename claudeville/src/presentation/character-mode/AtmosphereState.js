@@ -323,7 +323,7 @@ function buildLighting(phase, phaseProgress, weather) {
     const shadowAngleRad = (phase === 'dawn' ? -0.68 : phase === 'dusk' ? 0.72 : 0.28);
     const shadowLength = clamp(0.72 + dark * 1.10 + sunWarmth * 0.72 + weatherDim * 0.28, 0.62, 2.35);
 
-    return {
+    return normalizeLightingState({
         sunDirIso: {
             x: Math.cos(shadowAngleRad + Math.PI),
             y: Math.sin(shadowAngleRad + Math.PI),
@@ -344,6 +344,22 @@ function buildLighting(phase, phaseProgress, weather) {
         lightBoost: clamp(0.75 + dark * 0.85 + sunWarmth * 0.35 + weatherDim * 0.35, 0.65, 1.8),
         sunBloomScale: clamp(0.85 + sunWarmth * 0.95 - weatherDim * 0.35, 0.65, 1.85),
         beaconIntensity: clamp(dark * 0.9 + sunWarmth * 0.25 + weatherDim * 0.25, 0, 1),
+    });
+}
+
+export function normalizeLightingState(state = {}) {
+    return {
+        sunDirIso: state.sunDirIso || { x: -0.96, y: -0.28 },
+        sunWarmth: clamp(state.sunWarmth ?? 0),
+        ambientLight: clamp(state.ambientLight ?? 1),
+        ambientTint: state.ambientTint || '196, 235, 255',
+        shadowAngleRad: Number.isFinite(state.shadowAngleRad) ? state.shadowAngleRad : 0.28,
+        shadowLength: Number.isFinite(state.shadowLength) ? state.shadowLength : 1,
+        shadowAlpha: clamp(state.shadowAlpha ?? 0.22, 0, 1),
+        lightWarmth: clamp(state.lightWarmth ?? 1, 0, 2),
+        lightBoost: clamp(state.lightBoost ?? 1, 0, 2),
+        sunBloomScale: clamp(state.sunBloomScale ?? 1, 0, 2),
+        beaconIntensity: clamp(state.beaconIntensity ?? 0, 0, 1),
     };
 }
 

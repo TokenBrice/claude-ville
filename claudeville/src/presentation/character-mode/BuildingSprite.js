@@ -8,6 +8,8 @@
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
+import { normalizeLightSource } from './LightSourceRegistry.js';
+import { normalizeLightingState } from './AtmosphereState.js';
 
 const LANDMARK_LABEL_TYPES = new Set(
     BUILDING_DEFS
@@ -136,6 +138,7 @@ export class BuildingSprite {
         this._clockCanvas = null;
         this._clockCanvasKey = '';
         this.lightingState = null;
+        this.ritualConductor = null;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -149,7 +152,11 @@ export class BuildingSprite {
     setMotionScale(s) { this.motionScale = s; }
 
     setLightingState(state) {
-        this.lightingState = state || null;
+        this.lightingState = state ? normalizeLightingState(state) : null;
+    }
+
+    setRitualConductor(conductor) {
+        this.ritualConductor = conductor || null;
     }
 
     setBuildings(map) {
@@ -753,11 +760,16 @@ export class BuildingSprite {
             const activity = source.buildingType === 'forge'
                 ? (visitors > 0 ? 1.35 : 0.58)
                 : visitors > 0 ? 1.12 : 1;
-            return {
+            const radius = source.radius * Math.min(1.55, 0.72 + lightBoost * 0.28 + (activity - 1) * 0.18);
+            return normalizeLightSource({
                 ...source,
                 intensity: activity,
-                radius: source.radius * Math.min(1.55, 0.72 + lightBoost * 0.28 + (activity - 1) * 0.18),
-            };
+                radius,
+                origin: source.origin || { x: source.x, y: source.y },
+            }, {
+                buildingType: source.buildingType,
+                building: source.building,
+            });
         });
     }
 
@@ -775,9 +787,13 @@ export class BuildingSprite {
                 const key = `${source.kind || 'point'}|${Math.round(lx)},${Math.round(ly)}|${source.overlay || ''}`;
                 if (seen.has(key)) return;
                 seen.add(key);
-                out.push({
+                const origin = {
                     x: c.x - baseAnchor[0] + lx,
                     y: c.y - baseAnchor[1] + ly,
+                };
+                out.push(normalizeLightSource({
+                    id: source.id || `building.${b.type}.${source.kind || 'point'}.${Math.round(lx)}.${Math.round(ly)}`,
+                    origin,
                     color: source.color || entry?.lightColor || '#ffcc66',
                     radius: source.radius || entry?.lightRadius || 64,
                     overlay: source.overlay || entry?.lightOverlay || 'atmosphere.light.lighthouse-beam',
@@ -787,7 +803,15 @@ export class BuildingSprite {
                     length: source.length,
                     width: source.width,
                     alpha: source.alpha,
-                });
+                    ttl: source.ttl,
+                    createdAt: source.createdAt,
+                    endpoints: source.endpoints,
+                    controlPoint: source.controlPoint,
+                    parent: source.parent,
+                }, {
+                    buildingType: b.type,
+                    building: b,
+                }));
             };
 
             if (Array.isArray(entry?.lightSources)) {
