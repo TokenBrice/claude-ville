@@ -273,6 +273,7 @@ export class SceneryEngine {
             const tileY = Number(key.slice(comma + 1));
             this.bridgeTiles.set(key, {
                 orientation: this._inferOrientation(tileX, tileY),
+                kind: 'auto-crossing',
             });
         }
     }
@@ -328,7 +329,7 @@ export class SceneryEngine {
 
     _addBridgeTile(tileX, tileY, orientation) {
         const key = `${tileX},${tileY}`;
-        this.bridgeTiles.set(key, { orientation });
+        this.bridgeTiles.set(key, { orientation, kind: 'landmark' });
     }
 
     _inferOrientation(tileX, tileY) {
@@ -443,7 +444,7 @@ export class SceneryEngine {
         }
     }
 
-    getWalkabilityGrid(pathTiles) {
+    getWalkabilityGrid() {
         const grid = new Uint8Array(MAP_SIZE * MAP_SIZE);
         for (let y = 0; y < MAP_SIZE; y++) {
             for (let x = 0; x < MAP_SIZE; x++) {

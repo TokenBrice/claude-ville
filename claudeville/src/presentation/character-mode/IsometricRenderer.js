@@ -239,7 +239,7 @@ export class IsometricRenderer {
         });
 
         // Walkability grid + Pathfinder (Task 11)
-        this.walkabilityGrid = this.scenery.getWalkabilityGrid(this.pathTiles);
+        this.walkabilityGrid = this.scenery.getWalkabilityGrid();
         this.pathfinder = new Pathfinder(this.walkabilityGrid);
 
         this.commandCenterGroundProps = [];
@@ -1656,11 +1656,11 @@ export class IsometricRenderer {
         const directions = [[1, 0], [-1, 0], [0, 1], [0, -1]];
         const isBridgeDeck = (key, orientation) => {
             const info = this.bridgeTiles.get(key);
-            return info && info.kind !== 'dock' && (!orientation || info.orientation === orientation);
+            return info?.kind === 'landmark' && (!orientation || info.orientation === orientation);
         };
 
         for (const [key, info] of this.bridgeTiles.entries()) {
-            if (visited.has(key) || info?.kind === 'dock') continue;
+            if (visited.has(key) || info?.kind !== 'landmark') continue;
 
             const orientation = info?.orientation || 'EW';
             const queue = [key];
