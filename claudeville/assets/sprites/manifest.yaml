@@ -5,6 +5,9 @@ style:
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
 # Character sheets are 8 direction columns by 10 animation rows:
 # 6 walk rows followed by 4 breathing-idle rows, with 92px square cells.
+# Optional `required_equipment` entries are validated in every walk and idle
+# cell for baked-equipment characters. Prefer runtime equipment overlays when
+# pose consistency matters across generated animation frames.
 characters:
   # NOTE: regenerate via pixellab create_character with size=76 (canvas ~108) to
   # keep the tall hood silhouette inside the 92-px engine cell. The manifest `size: 92`
@@ -39,24 +42,6 @@ characters:
   - id: agent.codex.gpt55
     tool: create_character
     prompt: "Codex GPT-5.5 heroic techno-paladin warrior captain, navy and gold plate armor, peaked captain helm, bright teal energy core on breastplate, shoulder pauldrons, empty visible hands held close to body, compact brass tool belt, commanding upright stance, distinctly martial not a mage, no robe, no staff, no handheld weapon, no sword, no blade, no hammer, no shield, 8-direction pixel art"
-    n_directions: 8
-    size: 92
-    animations: [walk, breathing-idle]
-    palette_layer: codex
-    anchor: [46, 80]
-
-  - id: agent.codex.gpt55.high
-    tool: create_character
-    prompt: "Codex GPT-5.5 high-effort techno-paladin warrior captain, navy and gold plate armor, bright teal energy core on breastplate, shoulder pauldrons, wielding an oversized legendary greatsword integrated naturally into both hands and pose, huge ornate silver-white fantasy blade, gold guard, cyan rune inlays, heroic RPG relic silhouette, readable at 92px cell size, no shield, no polearm, no extra floating weapons, no platform, no grass base, 8-direction pixel art"
-    n_directions: 8
-    size: 92
-    animations: [walk, breathing-idle]
-    palette_layer: codex
-    anchor: [46, 80]
-
-  - id: agent.codex.gpt55.xhigh
-    tool: create_character
-    prompt: "Codex GPT-5.5 xhigh techno-paladin warrior captain, navy and gold plate armor, bright teal energy core on breastplate, shoulder pauldrons, holding an oversized legendary polearm integrated naturally into both hands and pose, long dark wrapped shaft, gold collars, sweeping crescent glaive blade, cyan rune glow, sharp mythic RPG relic silhouette, readable at 92px cell size, no shield, no extra floating weapons, no platform, no grass base, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]

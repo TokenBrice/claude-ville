@@ -17,11 +17,21 @@ const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
 const expected = new Set();
 const characterEntries = [];
 const CHARACTER_DIRECTIONS = 8;
+const CHARACTER_DIRECTION_KEYS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
 const CHARACTER_WALK_FRAMES = 6;
 const CHARACTER_IDLE_FRAMES = 4;
+const CHARACTER_ROWS = CHARACTER_WALK_FRAMES + CHARACTER_IDLE_FRAMES;
 const CHARACTER_CELL = 92;
 const ALPHA_THRESHOLD = 16;
 const MIN_NORMALIZED_WALK_DELTA = 32;
+const REQUIRED_EQUIPMENT_MIN_PIXELS = Object.freeze({
+    dagger: 8,
+    sword: 12,
+    greatsword: 18,
+    polearm: 16,
+    shield: 24,
+    swordShield: 32,
+});
 
 function pathFor(entry) {
     if (entry.assetPath) return String(entry.assetPath).replace(/^assets\/sprites\//, '');
@@ -135,7 +145,139 @@ function validateCharacterSheet(entry) {
         console.error(`INVALID CHARACTER: ${rel} walk frames look like a bobbed duplicate pose; regenerate real gait frames`);
         errors++;
     }
+    errors += validateRequiredEquipment(entry, png, cell, rel);
     return errors;
+}
+
+function validateRequiredEquipment(entry, png, cell, rel) {
+    const required = requiredEquipmentList(entry);
+    if (!required.length) return 0;
+
+    let errors = 0;
+    for (const equipment of required) {
+        const minPixels = equipment.minPixels ?? REQUIRED_EQUIPMENT_MIN_PIXELS[equipment.kind];
+        if (!Number.isFinite(minPixels)) {
+            console.error(`INVALID CHARACTER: ${entry.id} has unsupported required_equipment "${equipment.kind}"`);
+            errors++;
+            continue;
+        }
+
+        const missing = [];
+        for (let row = 0; row < CHARACTER_ROWS; row++) {
+            for (let direction = 0; direction < CHARACTER_DIRECTIONS; direction++) {
+                const count = equipmentPixelCount(png, direction, row, cell, equipment.kind);
+                if (count < minPixels) missing.push(`${animationRowLabel(row)}:${CHARACTER_DIRECTION_KEYS[direction]}`);
+            }
+        }
+        if (missing.length) {
+            const sample = missing.slice(0, 16).join(', ');
+            const suffix = missing.length > 16 ? `, ... +${missing.length - 16} more` : '';
+            console.error(`INVALID CHARACTER: ${rel} required_equipment "${equipment.kind}" is missing or too faint in ${sample}${suffix}`);
+            errors++;
+        }
+    }
+    return errors;
+}
+
+function requiredEquipmentList(entry) {
+    const raw = entry.required_equipment ?? entry.requiredEquipment;
+    if (!raw) return [];
+
+    const values = Array.isArray(raw) ? raw : [raw];
+    const result = [];
+    for (const value of values) {
+        if (typeof value === 'string') {
+            result.push({ kind: normalizeEquipmentKind(value) });
+            continue;
+        }
+        if (!value || typeof value !== 'object') continue;
+        const kind = normalizeEquipmentKind(value.kind || value.type || value.name);
+        if (!kind) continue;
+        const minPixels = Number(value.min_pixels ?? value.minPixels);
+        result.push({
+            kind,
+            minPixels: Number.isFinite(minPixels) && minPixels > 0 ? minPixels : undefined,
+        });
+    }
+    return result;
+}
+
+function normalizeEquipmentKind(kind) {
+    const normalized = String(kind || '').trim().toLowerCase().replace(/[-_\s]+/g, '');
+    const aliases = {
+        dagger: 'dagger',
+        sword: 'sword',
+        greatsword: 'greatsword',
+        polearm: 'polearm',
+        shield: 'shield',
+        swordshield: 'swordShield',
+    };
+    return aliases[normalized] || normalized;
+}
+
+function equipmentPixelCount(png, direction, row, cell, kind) {
+    const x0 = direction * cell;
+    const y0 = row * cell;
+    const bbox = alphaBounds(png, x0, y0, cell);
+    if (!bbox) return 0;
+
+    const contentWidth = bbox.maxX - bbox.minX + 1;
+    const contentHeight = bbox.maxY - bbox.minY + 1;
+    const centerX = (bbox.minX + bbox.maxX) / 2;
+    const coreHalfWidth = Math.max(10, contentWidth * 0.23);
+    const coreTop = bbox.minY + contentHeight * 0.18;
+    const coreBottom = bbox.minY + contentHeight * 0.88;
+
+    let count = 0;
+    for (let y = bbox.minY; y <= bbox.maxY; y++) {
+        for (let x = bbox.minX; x <= bbox.maxX; x++) {
+            const absoluteX = x0 + x;
+            const absoluteY = y0 + y;
+            const p = (png.width * absoluteY + absoluteX) * 4;
+            const a = png.data[p + 3];
+            if (a <= ALPHA_THRESHOLD) continue;
+
+            const inBodyCore = Math.abs(x - centerX) <= coreHalfWidth && y >= coreTop && y <= coreBottom;
+            if (inBodyCore && kind !== 'shield' && kind !== 'swordShield') continue;
+
+            const r = png.data[p];
+            const g = png.data[p + 1];
+            const b = png.data[p + 2];
+            if (isEquipmentPixel(kind, r, g, b, a)) count++;
+        }
+    }
+    return count;
+}
+
+function isEquipmentPixel(kind, r, g, b, a) {
+    if (a <= ALPHA_THRESHOLD) return false;
+    const spread = Math.max(r, g, b) - Math.min(r, g, b);
+    const brightSteel = r > 172 && g > 172 && b > 156 && spread < 96;
+    const coolSteel = r > 92 && g > 112 && b > 128 && b >= r && spread < 110;
+    const cyanRune = r < 135 && g > 135 && b > 145 && Math.abs(g - b) < 72;
+    const goldFitting = r > 158 && g > 98 && g < 205 && b < 112;
+    const darkShaft = r > 36 && r < 132 && g > 24 && g < 112 && b < 96;
+    const shieldFace = r > 70 && g > 82 && b > 86 && spread < 88;
+
+    if (kind === 'dagger' || kind === 'sword' || kind === 'greatsword') {
+        return brightSteel || coolSteel || cyanRune || goldFitting;
+    }
+    if (kind === 'polearm') {
+        return brightSteel || coolSteel || cyanRune || goldFitting || darkShaft;
+    }
+    if (kind === 'shield') {
+        return shieldFace || goldFitting || cyanRune;
+    }
+    if (kind === 'swordShield') {
+        return brightSteel || coolSteel || cyanRune || goldFitting || shieldFace;
+    }
+    return false;
+}
+
+function animationRowLabel(row) {
+    return row < CHARACTER_WALK_FRAMES
+        ? `walk${row}`
+        : `idle${row - CHARACTER_WALK_FRAMES}`;
 }
 
 function hasRealWalkMotion(png, cell) {
