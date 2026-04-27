@@ -53,16 +53,17 @@ async function main() {
     const SOURCE = meta.character.size.width;
     if (SOURCE < CELL) throw new Error(`Source canvas ${SOURCE} smaller than cell ${CELL}`);
 
-    // Identify walk vs idle animation by frame count.
-    let walkAnim = null;
-    let idleAnim = null;
-    for (const [animId, dirs] of Object.entries(meta.frames.animations)) {
-        const frameCount = dirs.south?.length ?? 0;
-        if (frameCount === WALK_FRAMES) walkAnim = animId;
-        else if (frameCount === IDLE_FRAMES) idleAnim = animId;
+    // Merge all animations by frame count: a single template (walk/idle) may be
+    // split across multiple animation IDs if some directions failed and were
+    // re-queued separately. Build per-direction frame lists by union.
+    const walkByDir = {};
+    const idleByDir = {};
+    for (const [, dirs] of Object.entries(meta.frames.animations)) {
+        for (const [dir, frames] of Object.entries(dirs)) {
+            if (frames.length === WALK_FRAMES && !walkByDir[dir]) walkByDir[dir] = frames;
+            else if (frames.length === IDLE_FRAMES && !idleByDir[dir]) idleByDir[dir] = frames;
+        }
     }
-    if (!walkAnim) throw new Error(`No ${WALK_FRAMES}-frame walk animation found in metadata`);
-    if (!idleAnim) throw new Error(`No ${IDLE_FRAMES}-frame idle animation found in metadata`);
 
     const sheet = new PNG({ width: CELL * COLS, height: CELL * ROWS });
     sheet.data.fill(0);
@@ -71,7 +72,7 @@ async function main() {
         const dir = DIRECTIONS[col];
 
         // Walk rows 0..5
-        const walkFrames = meta.frames.animations[walkAnim][dir];
+        const walkFrames = walkByDir[dir];
         if (!walkFrames || walkFrames.length !== WALK_FRAMES) {
             throw new Error(`walk animation missing direction ${dir} or wrong frame count`);
         }
@@ -82,7 +83,7 @@ async function main() {
         }
 
         // Idle rows 6..9
-        const idleFrames = meta.frames.animations[idleAnim][dir];
+        const idleFrames = idleByDir[dir];
         if (!idleFrames || idleFrames.length !== IDLE_FRAMES) {
             throw new Error(`idle animation missing direction ${dir} or wrong frame count`);
         }
