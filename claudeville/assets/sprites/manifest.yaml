@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-codex-weapons-sonnet-scout-v1"
+  assetVersion: "2026-04-27-gull-flocks-harbor-taskboard-seaward-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -292,7 +292,7 @@ buildings:
   # ── STANDARD: Harbor Master (commit ships / push departures) ──
   - id: building.harbor
     tool: isometric_tile
-    prompt: "epic medieval fantasy harbor master compound, stone quay platform, red-roof timber office with glowing windows, signal mast with flags, tall cargo crane, stacked barrels and crates, market awning, mooring posts, wooden dock fingers, turquoise water edge, bold readable isometric RPG landmark, no large ship"
+    prompt: "fantasy RPG wooden harbor dock landmark, weathered timber quay deck, angled dock fingers, stout mooring posts with rope coils, compact blue-roof harbor master's shack with warm glowing window, signal mast, timber loading crane with pulley, low crates and barrels, lanterns, nautical guild style, bold readable isometric RPG landmark, no large ship"
     anchor: [176, 196]
     splitForOcclusion: true
     horizonY: 142
@@ -386,11 +386,11 @@ buildings:
     lightRadius: 68
     lightOverlay: 'atmosphere.light.lantern-glow'
 
-  # ── HERO: Task Board (Arcane Rune Chronicle Court) ──
+  # ── HERO: Task Board (Town Quest Board) ──
   - id: building.taskboard
-    tool: isometric_tile
-    prompt: "old school RPG isometric pixel art transparent sprite: arcane task board court shaped like a small castle facade. Two narrow tall stone towers left and right, each taller than the middle, crenellated battlements and orange torch flames. Between towers is a large upright glowing quest tablet / notice board with amber rune text lines. One connected landmark building on a stone base, no tiled grid, no duplicate blocks, no flat top platform."
-    size: 64
+    tool: map_object
+    prompt: "fantasy RPG town task board landmark rotated toward the harbor sea, wooden quest notice board and signpost, broad timber board covered with parchment quest notes and colored wax seals on the seaward-facing side, crossed beams, blue slate roof cap, hanging lanterns, small guild pennants, arrow signposts, rope ties, stout posts on cobblestone-and-dirt base, cozy village square job board, bold readable isometric RPG landmark, no castle facade, no door, no large stone towers"
+    size: 176
     displaySize: 176
     splitForOcclusion: true
     horizonY: 94
@@ -517,8 +517,32 @@ props:
     anchor: [16, 18]
 
   - id: prop.gullFlight
-    tool: isometric_tile
-    prompt: "white sea gull in mid flight, wings spread, tiny readable fantasy pixel art silhouette, transparent background only, no sky tile, no square base, empty transparent corners"
+    tool: map_object
+    prompt: "tiny white seagull in flight, wings level fully spread gliding pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
+    size: 32
+    anchor: [16, 18]
+
+  - id: prop.gullFlight.up
+    tool: map_object
+    prompt: "tiny white seagull in flight, wings raised high upward flap pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
+    size: 32
+    anchor: [16, 18]
+
+  - id: prop.gullFlight.level
+    tool: map_object
+    prompt: "tiny white seagull in flight, wings level fully spread gliding pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
+    size: 32
+    anchor: [16, 18]
+
+  - id: prop.gullFlight.down
+    tool: map_object
+    prompt: "tiny white seagull in flight, wings swept downward flap pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
+    size: 32
+    anchor: [16, 18]
+
+  - id: prop.gullFlight.bank
+    tool: map_object
+    prompt: "tiny white seagull banking turn in flight, one wing high one wing low, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
     size: 32
     anchor: [16, 18]
 
