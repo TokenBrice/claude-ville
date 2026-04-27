@@ -26,6 +26,7 @@ export class ActivityPanel {
             panelModel: document.getElementById('panelModel'),
             panelProvider: document.getElementById('panelProvider'),
             panelRole: document.getElementById('panelRole'),
+            panelLevel: document.getElementById('panelLevel'),
             panelTeam: document.getElementById('panelTeam'),
             panelCurrentTool: document.getElementById('panelCurrentTool'),
             panelToolHistory: document.getElementById('panelToolHistory'),
@@ -114,7 +115,21 @@ export class ActivityPanel {
         this.dom.panelModel.title = identity.label || agent.model || '';
         this.dom.panelProvider.textContent = agent.provider || 'claude';
         this.dom.panelRole.textContent = agent.role || 'general';
+        this.dom.panelLevel.textContent = this._formatAgentLevel(identity);
+        this.dom.panelLevel.style.color = identity.accent?.[1] || identity.accent?.[0] || '';
         this.dom.panelTeam.textContent = agent.teamName || '-';
+    }
+
+    _formatAgentLevel(identity) {
+        const tier = identity?.effortTier;
+        if (!tier || tier === 'none') return '-';
+        return {
+            low: 'Low',
+            medium: 'Medium',
+            high: 'High',
+            xhigh: 'Extra High',
+            max: 'Max',
+        }[tier] || tier;
     }
 
     _updateCurrentTool(agent) {

@@ -88,8 +88,11 @@
             <!-- Sidebar -->
             <aside id="sidebar" class="sidebar">
                 <div class="sidebar__header">
-                    <span data-i18n="agents" class="sidebar__title">AGENTS</span>
-                    <span id="agentCount" class="sidebar__count">0</span>
+                    <div class="sidebar__heading">
+                        <span data-i18n="agents" class="sidebar__title">AGENTS</span>
+                        <span id="agentCount" class="sidebar__count">0</span>
+                    </div>
+                    <button id="sidebarToggle" class="sidebar__toggle" type="button" aria-label="Collapse agent sidebar" aria-expanded="true" title="Collapse sidebar">&lt;</button>
                 </div>
                 <div id="agentList" class="sidebar__list">
                     <!-- Agent items are added dynamically -->
@@ -137,6 +140,10 @@
                     <div class="activity-panel__meta-row">
                         <span class="activity-panel__label" data-i18n="role">ROLE</span>
                         <span id="panelRole" class="activity-panel__value"></span>
+                    </div>
+                    <div class="activity-panel__meta-row">
+                        <span class="activity-panel__label">LEVEL</span>
+                        <span id="panelLevel" class="activity-panel__value"></span>
                     </div>
                     <div class="activity-panel__meta-row">
                         <span class="activity-panel__label" data-i18n="team">TEAM</span>

@@ -14,9 +14,12 @@ const PROJECT_COLORS = [
 export class Sidebar {
     constructor(world) {
         this.world = world;
+        this.sidebarEl = document.getElementById('sidebar');
         this.listEl = document.getElementById('agentList');
         this.countEl = document.getElementById('agentCount');
+        this.toggleEl = document.getElementById('sidebarToggle');
         this.selectedId = null;
+        this.isCollapsed = localStorage.getItem('claudeville.sidebarCollapsed') === 'true';
         this._projectColorMap = new Map();
 
         this._onUpdate = () => this.render();
@@ -24,7 +27,31 @@ export class Sidebar {
         eventBus.on('agent:updated', this._onUpdate);
         eventBus.on('agent:removed', this._onUpdate);
 
+        this._bindToggle();
+        this._applyCollapsedState();
         this.render();
+    }
+
+    _bindToggle() {
+        if (!this.toggleEl) return;
+        this.toggleEl.addEventListener('click', () => {
+            this.isCollapsed = !this.isCollapsed;
+            localStorage.setItem('claudeville.sidebarCollapsed', String(this.isCollapsed));
+            this._applyCollapsedState();
+        });
+    }
+
+    _applyCollapsedState() {
+        if (!this.sidebarEl) return;
+        this.sidebarEl.classList.toggle('sidebar--collapsed', this.isCollapsed);
+
+        if (this.toggleEl) {
+            const label = this.isCollapsed ? 'Expand agent sidebar' : 'Collapse agent sidebar';
+            this.toggleEl.textContent = this.isCollapsed ? '>' : '<';
+            this.toggleEl.setAttribute('aria-label', label);
+            this.toggleEl.setAttribute('aria-expanded', String(!this.isCollapsed));
+            this.toggleEl.title = this.isCollapsed ? 'Expand sidebar' : 'Collapse sidebar';
+        }
     }
 
     render() {
