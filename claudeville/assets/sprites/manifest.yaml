@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-white-archmage-opus-haiku-sonnet-mages-v1"
+  assetVersion: "2026-04-28-codex-engineer-tools-claude-model-sprites-v2"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -41,30 +41,33 @@ characters:
 
   - id: agent.codex.gpt55
     tool: create_character
-    prompt: "Codex GPT-5.5 heroic techno-paladin warrior captain, navy and gold plate armor, peaked captain helm, bright teal energy core on breastplate, shoulder pauldrons, empty visible hands held close to body, compact brass tool belt, commanding upright stance, distinctly martial not a mage, no robe, no staff, no handheld weapon, no sword, no blade, no hammer, no shield, 8-direction pixel art"
+    prompt: "Codex GPT-5.5 techno-paladin captain, navy plate armor with gold trim, peaked captain helm with crest, teal energy core on breastplate, shoulder pauldrons, palms loose at sides fingers visible, sheathed longsword on hip belt visible at rest, commanding upright stance, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
     anchor: [46, 80]
+    mode: pro
 
   - id: agent.codex.gpt54
     tool: create_character
-    prompt: "Codex GPT-5.4 senior battle-engineer warrior, deep teal and bronze half-plate armor, brass goggles on helmet, heavy mechanical left gauntlet held near torso, empty visible hands held close to body, utility belt and small backpack toolkit, sturdy grounded fighter stance, distinctly martial not a mage, no robe, no staff, no handheld weapon, no sword, no blade, no hammer, no shield, 8-direction pixel art"
+    prompt: "Codex GPT-5.4 senior battle-engineer, deep teal half-plate with brass utility belt, brass goggles on helmet, mechanical bronze gauntlet on left forearm, palms loose fingers visible, small backpack toolkit with antenna, sturdy grounded stance, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
     anchor: [46, 80]
+    mode: pro
 
   - id: agent.codex.gpt53spark
     tool: create_character
-    prompt: "Codex GPT-5.3 Spark scout-duelist warrior, yellow lightning sash over light teal leather armor, backwards visor helm with cyan lens, empty visible hands held close to body, runner boots, agile fighter silhouette, distinctly martial not a mage, no robe, no staff, no handheld weapon, no sword, no blade, no hammer, no shield, 8-direction pixel art"
+    prompt: "Codex GPT-5.3 Spark scout-duelist, light teal leather armor with yellow lightning sash, backwards visor helm with cyan lens, runner boots, palms loose fingers visible, folded multitool clipped to hip belt, agile alert stance, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
     anchor: [46, 80]
+    mode: pro
 
   - id: agent.claude.base
     tool: create_character

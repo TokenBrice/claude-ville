@@ -16,6 +16,7 @@ const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
 
 const expected = new Set();
 const characterEntries = [];
+const manifestEntries = [];
 const CHARACTER_DIRECTIONS = 8;
 const CHARACTER_DIRECTION_KEYS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
 const CHARACTER_WALK_FRAMES = 6;
@@ -26,12 +27,20 @@ const ALPHA_THRESHOLD = 16;
 const MIN_NORMALIZED_WALK_DELTA = 32;
 const REQUIRED_EQUIPMENT_MIN_PIXELS = Object.freeze({
     dagger: 8,
+    multitool: 10,
     sword: 12,
     greatsword: 18,
+    wrench: 18,
     polearm: 16,
     shield: 24,
     swordShield: 32,
 });
+const CHARACTER_GENERATION_MODES = new Set(['standard', 'pro']);
+const REQUIRED_PRO_CHARACTER_IDS = new Set([
+    'agent.codex.gpt53spark',
+    'agent.codex.gpt54',
+    'agent.codex.gpt55',
+]);
 
 function pathFor(entry) {
     if (entry.assetPath) return String(entry.assetPath).replace(/^assets\/sprites\//, '');
@@ -49,6 +58,7 @@ function pathFor(entry) {
 function collect(group) {
     if (!group) return;
     for (const e of group) {
+        manifestEntries.push(e);
         if (e.id?.startsWith('agent.')) characterEntries.push(e);
         if (e.composeGrid && e.layers?.base) {
             const [cols, rows] = e.composeGrid;
@@ -76,6 +86,11 @@ function collect(group) {
 
 ['characters', 'accessories', 'statusOverlays', 'buildings', 'props',
  'vegetation', 'terrain', 'bridges', 'atmosphere'].forEach(k => collect(manifest[k]));
+
+let invalidManifest = 0;
+for (const entry of manifestEntries) {
+    invalidManifest += validateManifestEntry(entry);
+}
 
 let missing = 0;
 for (const rel of expected) {
@@ -110,8 +125,28 @@ for (const entry of characterEntries) {
     invalidCharacters += validateCharacterSheet(entry);
 }
 
-console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  invalid character sheets: ${invalidCharacters}`);
-process.exit(missing > 0 || invalidCharacters > 0 ? 1 : 0);
+console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  invalid manifest entries: ${invalidManifest}  invalid character sheets: ${invalidCharacters}`);
+process.exit(missing > 0 || invalidManifest > 0 || invalidCharacters > 0 ? 1 : 0);
+
+function validateManifestEntry(entry) {
+    if (!entry?.id) return 0;
+
+    let errors = 0;
+    if (entry.id.startsWith('agent.') && entry.mode !== undefined) {
+        const mode = String(entry.mode);
+        if (!CHARACTER_GENERATION_MODES.has(mode)) {
+            console.error(`INVALID MANIFEST: ${entry.id} has unsupported mode "${entry.mode}"`);
+            errors++;
+        }
+    }
+
+    if (REQUIRED_PRO_CHARACTER_IDS.has(entry.id) && entry.mode !== 'pro') {
+        console.error(`INVALID MANIFEST: ${entry.id} must set mode: pro for Codex equipment coherence bakes`);
+        errors++;
+    }
+
+    return errors;
+}
 
 function validateCharacterSheet(entry) {
     const rel = pathFor(entry);
@@ -206,8 +241,10 @@ function normalizeEquipmentKind(kind) {
     const normalized = String(kind || '').trim().toLowerCase().replace(/[-_\s]+/g, '');
     const aliases = {
         dagger: 'dagger',
+        multitool: 'multitool',
         sword: 'sword',
         greatsword: 'greatsword',
+        wrench: 'wrench',
         polearm: 'polearm',
         shield: 'shield',
         swordshield: 'swordShield',
@@ -259,8 +296,11 @@ function isEquipmentPixel(kind, r, g, b, a) {
     const darkShaft = r > 36 && r < 132 && g > 24 && g < 112 && b < 96;
     const shieldFace = r > 70 && g > 82 && b > 86 && spread < 88;
 
-    if (kind === 'dagger' || kind === 'sword' || kind === 'greatsword') {
+    if (kind === 'dagger' || kind === 'multitool' || kind === 'sword' || kind === 'greatsword') {
         return brightSteel || coolSteel || cyanRune || goldFitting;
+    }
+    if (kind === 'wrench') {
+        return coolSteel || cyanRune || goldFitting || darkShaft;
     }
     if (kind === 'polearm') {
         return brightSteel || coolSteel || cyanRune || goldFitting || darkShaft;
