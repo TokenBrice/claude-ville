@@ -314,6 +314,7 @@ export class AgentSprite {
         }
 
         if (this.waitTimer > 0) {
+            if (!this.moving) this._snapToNearestWalkable();
             this.waitTimer -= frameScale;
             if (this.waitTimer <= 0) {
                 this._pickTarget();
