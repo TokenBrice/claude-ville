@@ -6,7 +6,6 @@ import {
     DISTRICT_PROPS,
     FOREST_FLOOR_REGIONS,
     MARINE_FISH_SCHOOLS,
-    OPEN_SEA_BIRDS,
     TROPICAL_BROADLEAF_TREES,
     TROPICAL_PALMS,
     TROPICAL_WATERFALLS,
@@ -31,6 +30,126 @@ const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
+const GULL_FLIGHT_FRAMES = [
+    'prop.gullFlight.up',
+    'prop.gullFlight.level',
+    'prop.gullFlight.down',
+    'prop.gullFlight.level',
+];
+const GULL_BANK_FRAME = 'prop.gullFlight.bank';
+const GULL_ROUTE_SPEED_SCALE = 0.52;
+const GULL_LIGHTHOUSE_HOTSPOT = { tileX: 31.4, tileY: 12.2 };
+const GULL_OFFMAP_GATEWAYS = [
+    { tileX: -4.8, tileY: 24.8 },
+    { tileX: 7.2, tileY: -4.6 },
+    { tileX: 22.8, tileY: -5.2 },
+    { tileX: 43.8, tileY: 4.8 },
+    { tileX: 45.2, tileY: 17.6 },
+    { tileX: 43.6, tileY: 34.4 },
+    { tileX: 28.2, tileY: 44.6 },
+    { tileX: 3.8, tileY: 43.8 },
+];
+const GULL_STAGING_WAYPOINTS = [
+    { tileX: 10.8, tileY: 7.8 },
+    { tileX: 19.8, tileY: 9.8 },
+    { tileX: 27.4, tileY: 8.2 },
+    { tileX: 36.0, tileY: 10.4 },
+    { tileX: 35.8, tileY: 23.8 },
+    { tileX: 23.4, tileY: 24.8 },
+    { tileX: 9.8, tileY: 24.8 },
+    { tileX: 34.0, tileY: 29.4 },
+];
+const OPEN_SEA_FLOCK_FORMATION = [
+    { side: 0.00, trail: 0.00 },
+    { side: -0.42, trail: 0.36 },
+    { side: 0.42, trail: 0.36 },
+    { side: -0.82, trail: 0.78 },
+    { side: 0.82, trail: 0.78 },
+    { side: -1.18, trail: 1.22 },
+    { side: 1.18, trail: 1.22 },
+    { side: -0.30, trail: 1.58 },
+    { side: 0.30, trail: 1.58 },
+    { side: 0.00, trail: 1.92 },
+];
+const OPEN_SEA_FLOCK_ROUTES = [
+    {
+        size: 8,
+        altitude: 38,
+        phase: 0.02,
+        speed: 0.032,
+        wingRate: 3.6,
+        route: [
+            { tileX: 37.2, tileY: 5.4 },
+            { tileX: 33.2, tileY: 2.8 },
+            { tileX: 28.7, tileY: 4.8 },
+            { tileX: 31.8, tileY: 8.8 },
+            { tileX: 37.6, tileY: 9.4 },
+        ],
+    },
+    {
+        size: 9,
+        altitude: 31,
+        phase: 0.24,
+        speed: 0.026,
+        wingRate: 3.1,
+        route: [
+            { tileX: 38.4, tileY: 6.2 },
+            { tileX: 35.6, tileY: 12.6 },
+            { tileX: 37.6, tileY: 17.4 },
+            { tileX: 35.2, tileY: 24.8 },
+            { tileX: 37.5, tileY: 31.4 },
+            { tileX: 39.1, tileY: 20.8 },
+        ],
+    },
+    {
+        size: 7,
+        altitude: 27,
+        phase: 0.47,
+        speed: 0.038,
+        wingRate: 4.0,
+        route: [
+            { tileX: 31.6, tileY: 24.7 },
+            { tileX: 35.6, tileY: 25.6 },
+            { tileX: 38.2, tileY: 28.6 },
+            { tileX: 36.0, tileY: 32.6 },
+            { tileX: 33.0, tileY: 27.4 },
+        ],
+    },
+    {
+        size: 8,
+        altitude: 24,
+        phase: 0.69,
+        speed: 0.021,
+        wingRate: 2.9,
+        route: [
+            { tileX: 2.4, tileY: 25.0 },
+            { tileX: 9.0, tileY: 24.8 },
+            { tileX: 17.2, tileY: 25.2 },
+            { tileX: 25.8, tileY: 24.4 },
+            { tileX: 32.8, tileY: 24.4 },
+            { tileX: 37.8, tileY: 25.8 },
+        ],
+    },
+    {
+        size: 6,
+        altitude: 34,
+        phase: 0.86,
+        speed: 0.024,
+        wingRate: 3.4,
+        route: [
+            { tileX: 7.6, tileY: 8.4 },
+            { tileX: 12.3, tileY: 5.4 },
+            { tileX: 17.4, tileY: 9.8 },
+            { tileX: 24.8, tileY: 7.5 },
+            { tileX: 31.0, tileY: 5.0 },
+            { tileX: 36.8, tileY: 8.2 },
+        ],
+    },
+];
+const GULL_BASE_POPULATION = OPEN_SEA_FLOCK_ROUTES.reduce((sum, flock) => sum + flock.size, 0);
+const GULL_MAX_POPULATION = GULL_BASE_POPULATION * 3;
+const GULL_MIN_ACTIVE_TARGET = Math.max(1, Math.floor(GULL_BASE_POPULATION / 4));
+const GULL_MAX_ACTIVE_TARGET = Math.max(GULL_MIN_ACTIVE_TARGET, Math.floor(GULL_MAX_POPULATION / 2));
 const BRIDGE_STYLE_PALETTES = {
     civic: {
         shadow: 'rgba(19, 7, 5, 0.36)',
@@ -161,6 +280,7 @@ export class IsometricRenderer {
         this.fantasyForestTreeCache = new Map();
         this.terrainSeed = [];
         this.waterFrame = 0;
+        this.openSeaFlockBirds = this._buildOpenSeaFlockBirds();
         this.motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
         this.particleSystem.setMotionEnabled(this.motionScale > 0);
@@ -310,6 +430,11 @@ export class IsometricRenderer {
                     }
                 }
             }
+            for (const tile of this._buildingApproachTiles(b)) {
+                if (this._inMapBounds(tile.tileX, tile.tileY)) {
+                    this.pathTiles.add(`${Math.round(tile.tileX)},${Math.round(tile.tileY)}`);
+                }
+            }
         }
         this._generateTownSquare(plazaHub.x, plazaHub.y);
         this._generatePlannedRoads();
@@ -323,6 +448,13 @@ export class IsometricRenderer {
             }
         }
         this._classifyRoadMaterials(plazaHub.x, plazaHub.y);
+    }
+
+    _buildingApproachTiles(building) {
+        const out = [];
+        if (building?.entrance) out.push(building.entrance);
+        if (Array.isArray(building?.visitTiles)) out.push(...building.visitTiles);
+        return out;
     }
 
     _buildHarborWaterApronTiles() {
@@ -1909,7 +2041,6 @@ export class IsometricRenderer {
         ctx.stroke();
     }
 
-
     _bridgePalette(span) {
         return BRIDGE_STYLE_PALETTES[span.style] || BRIDGE_STYLE_PALETTES.civic;
     }
@@ -2959,19 +3090,336 @@ export class IsometricRenderer {
         return tileX >= 31 && tileX <= 38 && tileY >= 18 && tileY <= 23;
     }
 
+    _buildOpenSeaFlockBirds() {
+        const birds = [];
+
+        const waveCount = Math.max(1, Math.ceil(GULL_MAX_POPULATION / GULL_BASE_POPULATION));
+        for (let wave = 0; wave < waveCount; wave++) {
+            OPEN_SEA_FLOCK_ROUTES.forEach((flock, flockIndex) => {
+                const route = this._normalizeGullRoute(flock.route);
+                const count = Math.max(1, flock.size || OPEN_SEA_FLOCK_FORMATION.length);
+                for (let member = 0; member < count; member++) {
+                    const formation = OPEN_SEA_FLOCK_FORMATION[member % OPEN_SEA_FLOCK_FORMATION.length];
+                    const seed = (wave + 1) * 31.41 + (flockIndex + 1) * 23.17 + member * 8.31;
+                    const activeSpan = 0.70 + ((Math.sin(seed * 1.37) + 1) / 2) * 0.18;
+                    birds.push({
+                        route,
+                        wave,
+                        flockIndex,
+                        altitude: flock.altitude + ((member + wave) % 4) * 2.8 + wave * 1.4,
+                        phase: flock.phase + member * 0.011,
+                        memberPhase: seed,
+                        sideOffset: formation.side + Math.sin(seed) * 0.10,
+                        trailOffset: formation.trail + Math.cos(seed * 0.73) * 0.08,
+                        speed: flock.speed * GULL_ROUTE_SPEED_SCALE * (0.82 + wave * 0.07 + (member % 3) * 0.018),
+                        wingRate: flock.wingRate * (0.92 + (member % 4) * 0.045),
+                        alpha: 0.66 + (member % 3) * 0.08,
+                        activeSpan,
+                        cycleOffset: ((seed * 0.61803398875) % 1 + 1) % 1,
+                        entryIndex: (flockIndex + member + wave * 2) % GULL_OFFMAP_GATEWAYS.length,
+                        exitIndex: (flockIndex * 3 + member * 2 + wave) % GULL_OFFMAP_GATEWAYS.length,
+                        waypointIndex: (flockIndex + member + wave) % GULL_STAGING_WAYPOINTS.length,
+                        orbitRadiusX: 1.55 + ((Math.sin(seed * 0.43) + 1) / 2) * 1.10,
+                        orbitRadiusY: 1.05 + ((Math.cos(seed * 0.61) + 1) / 2) * 0.75,
+                        orbitStart: seed * 0.27,
+                        orbitTurns: 0.72 + ((member + wave) % 3) * 0.22,
+                        orbitDirection: (member + flockIndex + wave) % 2 === 0 ? 1 : -1,
+                    });
+                }
+            });
+        }
+
+        return birds;
+    }
+
+    _normalizeGullRoute(points = []) {
+        const routePoints = points.map((point) => ({
+            tileX: point.tileX,
+            tileY: point.tileY,
+        }));
+        const cumulative = [0];
+        let totalLength = 0;
+
+        for (let i = 0; i < routePoints.length; i++) {
+            const from = routePoints[i];
+            const to = routePoints[(i + 1) % routePoints.length];
+            const length = Math.max(0.001, Math.hypot(to.tileX - from.tileX, to.tileY - from.tileY));
+            totalLength += length;
+            cumulative.push(totalLength);
+        }
+
+        return {
+            points: routePoints,
+            cumulative,
+            totalLength: Math.max(0.001, totalLength),
+        };
+    }
+
+    _pointOnGullRoute(route, progress) {
+        const normalized = ((progress % 1) + 1) % 1;
+        const distance = normalized * route.totalLength;
+        let segmentIndex = 0;
+        for (let i = 0; i < route.points.length; i++) {
+            if (distance >= route.cumulative[i] && distance <= route.cumulative[i + 1]) {
+                segmentIndex = i;
+                break;
+            }
+        }
+
+        const from = route.points[segmentIndex];
+        const to = route.points[(segmentIndex + 1) % route.points.length];
+        const startDistance = route.cumulative[segmentIndex];
+        const segmentLength = Math.max(0.001, route.cumulative[segmentIndex + 1] - startDistance);
+        const t = (distance - startDistance) / segmentLength;
+        const dx = to.tileX - from.tileX;
+        const dy = to.tileY - from.tileY;
+        const length = Math.max(0.001, Math.hypot(dx, dy));
+
+        return {
+            tileX: from.tileX + dx * t,
+            tileY: from.tileY + dy * t,
+            tangentX: dx / length,
+            tangentY: dy / length,
+        };
+    }
+
+    _loopingPick(list, index) {
+        return list[((index % list.length) + list.length) % list.length];
+    }
+
+    _gullUnitNoise(seed) {
+        const value = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+        return value - Math.floor(value);
+    }
+
+    _gullActiveTarget(cycleIndex) {
+        const range = GULL_MAX_ACTIVE_TARGET - GULL_MIN_ACTIVE_TARGET;
+        return GULL_MIN_ACTIVE_TARGET + Math.floor(this._gullUnitNoise(cycleIndex + 19.37) * (range + 1));
+    }
+
+    _isGullCycleEnabled(gull, cycleIndex) {
+        const target = this._gullActiveTarget(cycleIndex);
+        const rank = this._gullUnitNoise(gull.memberPhase + cycleIndex * 7.31 + gull.wave * 13.7);
+        return rank <= Math.min(1, target / (GULL_MAX_POPULATION * 0.72));
+    }
+
+    _gullVisitsLighthouse(gull, cycleIndex) {
+        return this._gullUnitNoise(gull.memberPhase + cycleIndex * 5.17 + gull.flockIndex * 2.11) < 0.58;
+    }
+
+    _lerpPoint(from, to, t) {
+        return {
+            tileX: from.tileX + (to.tileX - from.tileX) * t,
+            tileY: from.tileY + (to.tileY - from.tileY) * t,
+        };
+    }
+
+    _quadraticPoint(from, control, to, t) {
+        const a = this._lerpPoint(from, control, t);
+        const b = this._lerpPoint(control, to, t);
+        return this._lerpPoint(a, b, t);
+    }
+
+    _gullGateway(gull, cycleIndex, kind) {
+        const bias = kind === 'exit' ? 3 : 0;
+        const baseIndex = kind === 'exit' ? gull.exitIndex : gull.entryIndex;
+        return this._loopingPick(GULL_OFFMAP_GATEWAYS, baseIndex + cycleIndex * (kind === 'exit' ? 3 : 2) + bias);
+    }
+
+    _gullStagingPoint(gull, cycleIndex, kind) {
+        const waypoint = this._loopingPick(
+            GULL_STAGING_WAYPOINTS,
+            gull.waypointIndex + cycleIndex * (kind === 'exit' ? 2 : 1)
+        );
+        const routePoint = this._pointOnGullRoute(
+            gull.route,
+            ((gull.phase + cycleIndex * 0.19 + (kind === 'exit' ? 0.37 : 0)) % 1 + 1) % 1
+        );
+        const mix = kind === 'exit' ? 0.42 : 0.58;
+        return {
+            tileX: waypoint.tileX * mix + routePoint.tileX * (1 - mix),
+            tileY: waypoint.tileY * mix + routePoint.tileY * (1 - mix),
+        };
+    }
+
+    _gullOrbitPoint(gull, travelT) {
+        const angle = gull.orbitStart + travelT * Math.PI * 2 * gull.orbitTurns * gull.orbitDirection;
+        const wobble = Math.sin(angle * 1.7 + gull.memberPhase) * 0.18;
+        return {
+            tileX: GULL_LIGHTHOUSE_HOTSPOT.tileX + Math.cos(angle) * (gull.orbitRadiusX + wobble),
+            tileY: GULL_LIGHTHOUSE_HOTSPOT.tileY + Math.sin(angle) * (gull.orbitRadiusY + wobble * 0.65),
+        };
+    }
+
+    _gullJourneyPoint(gull, cycleIndex, t) {
+        const entry = this._gullGateway(gull, cycleIndex, 'entry');
+        const exit = this._gullGateway(gull, cycleIndex, 'exit');
+        const inbound = this._gullStagingPoint(gull, cycleIndex, 'entry');
+        const outbound = this._gullStagingPoint(gull, cycleIndex, 'exit');
+        const openWaterMid = this._pointOnGullRoute(
+            gull.route,
+            ((gull.phase + cycleIndex * 0.23 + 0.18) % 1 + 1) % 1
+        );
+        if (!this._gullVisitsLighthouse(gull, cycleIndex)) {
+            if (t < 0.32) {
+                return this._quadraticPoint(entry, inbound, inbound, t / 0.32);
+            }
+            if (t < 0.68) {
+                return this._quadraticPoint(inbound, openWaterMid, outbound, (t - 0.32) / 0.36);
+            }
+            return this._quadraticPoint(outbound, outbound, exit, (t - 0.68) / 0.32);
+        }
+
+        const orbitStart = this._gullOrbitPoint(gull, 0);
+        const orbitEnd = this._gullOrbitPoint(gull, 1);
+
+        if (t < 0.28) {
+            return this._quadraticPoint(entry, inbound, inbound, t / 0.28);
+        }
+        if (t < 0.44) {
+            return this._quadraticPoint(inbound, this._lerpPoint(inbound, orbitStart, 0.55), orbitStart, (t - 0.28) / 0.16);
+        }
+        if (t < 0.60) {
+            return this._gullOrbitPoint(gull, (t - 0.44) / 0.16);
+        }
+        return this._quadraticPoint(orbitEnd, outbound, exit, (t - 0.60) / 0.40);
+    }
+
+    _openSeaGullPositions() {
+        const time = this.motionScale ? this.waterFrame : 0;
+        return this.openSeaFlockBirds.map((gull) => {
+            const rawCycle = time * gull.speed + gull.cycleOffset;
+            const cycleIndex = Math.floor(rawCycle);
+            const cyclePhase = rawCycle - cycleIndex;
+            if (!this._isGullCycleEnabled(gull, cycleIndex)) return null;
+            if (cyclePhase > gull.activeSpan) return null;
+
+            const journeyT = cyclePhase / gull.activeSpan;
+            const routePoint = this._gullJourneyPoint(gull, cycleIndex, journeyT);
+            const turnProbe = this._gullJourneyPoint(gull, cycleIndex, Math.min(1, journeyT + 0.006));
+            const dx = turnProbe.tileX - routePoint.tileX;
+            const dy = turnProbe.tileY - routePoint.tileY;
+            const tangentLength = Math.max(0.001, Math.hypot(dx, dy));
+            const tangentX = dx / tangentLength;
+            const tangentY = dy / tangentLength;
+            const sideX = -tangentY;
+            const sideY = tangentX;
+            const spread = 1 + (this.motionScale ? Math.sin(time * 0.9 + gull.memberPhase) * 0.10 : 0);
+            const wander = this.motionScale ? Math.sin(time * 0.72 + gull.memberPhase) * 0.08 : 0;
+            const tileX = routePoint.tileX + sideX * gull.sideOffset * spread + tangentX * wander;
+            const tileY = routePoint.tileY + sideY * gull.sideOffset * spread + tangentY * wander;
+            const waterY = (tileX + tileY) * TILE_HEIGHT / 2;
+            const bob = this.motionScale ? Math.sin(time * 1.1 + gull.memberPhase) * 2.4 : 0;
+            const screenVx = (dx - dy) * TILE_WIDTH / 2;
+            const screenVy = (dx + dy) * TILE_HEIGHT / 2;
+            const orbiting = this._gullVisitsLighthouse(gull, cycleIndex)
+                && journeyT >= 0.44
+                && journeyT <= 0.60;
+            const turn = orbiting
+                ? gull.orbitDirection * 0.6
+                : sideX * dx + sideY * dy;
+            const flapFrame = this.motionScale
+                ? Math.floor(time * gull.wingRate + gull.memberPhase) % GULL_FLIGHT_FRAMES.length
+                : 1;
+            const banking = this.motionScale
+                && Math.abs(turn + Math.sin(time * 0.55 + gull.memberPhase) * 0.42) > 0.36
+                && flapFrame === 1;
+
+            return {
+                ...gull,
+                tileX,
+                tileY,
+                x: (tileX - tileY) * TILE_WIDTH / 2,
+                y: waterY - gull.altitude + bob,
+                waterY,
+                wing: this.motionScale ? Math.sin(time * 3.2 + gull.memberPhase) * 1.7 : 0.6,
+                frameId: banking ? GULL_BANK_FRAME : GULL_FLIGHT_FRAMES[flapFrame],
+                fallbackFrameId: 'prop.gullFlight',
+                facing: screenVx < 0 ? -1 : 1,
+                screenSpeed: Math.hypot(screenVx, screenVy),
+            };
+        }).filter(Boolean);
+    }
+
+    _isGullFlightTile(tileX, tileY) {
+        if (tileX < 0 || tileX >= MAP_SIZE || tileY < 0 || tileY >= MAP_SIZE) {
+            return tileX >= -6 && tileX <= MAP_SIZE + 5 && tileY >= -6 && tileY <= MAP_SIZE + 5;
+        }
+
+        const lighthouseDx = (tileX - GULL_LIGHTHOUSE_HOTSPOT.tileX) / 4.2;
+        const lighthouseDy = (tileY - GULL_LIGHTHOUSE_HOTSPOT.tileY) / 3.0;
+        if ((lighthouseDx * lighthouseDx + lighthouseDy * lighthouseDy) <= 1) return true;
+
+        const key = `${tileX},${tileY}`;
+        if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) return false;
+        if (this._isHarborLabelZone(tileX, tileY)) return false;
+        const openness = this._waterOpenness(tileX, tileY);
+        if (this._isOpenSeaTile(tileX, tileY, openness)) return true;
+        const eastSea = tileX >= 31 && tileY <= 34;
+        const crossMapWater = tileY >= 22 && tileY <= 27;
+        const northLagoonRun = tileY <= 11 && tileX >= 6;
+        const broadLightWater = tileX >= 5 && tileX <= 35 && tileY <= 18;
+        if (openness >= 0.38 && (eastSea || crossMapWater || northLagoonRun || broadLightWater)) return true;
+        return this.deepWaterTiles.has(key) && openness >= 0.50;
+    }
+
+    _isGullInVisibleBounds(gull, bounds) {
+        const tileX = Math.floor(gull.tileX);
+        const tileY = Math.floor(gull.tileY);
+        return tileX >= bounds.startX - 6
+            && tileX <= bounds.endX + 6
+            && tileY >= bounds.startY - 6
+            && tileY <= bounds.endY + 6;
+    }
+
+    _drawGullShadow(ctx, gull) {
+        const altitudeFade = Math.max(0.035, 0.18 - gull.altitude * 0.0032);
+        const shadowWidth = Math.max(5, 15 - gull.altitude * 0.12);
+        const shadowHeight = Math.max(2, 5 - gull.altitude * 0.035);
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.globalAlpha = altitudeFade * gull.alpha;
+        ctx.fillStyle = 'rgba(7, 18, 30, 0.32)';
+        ctx.beginPath();
+        ctx.ellipse(Math.round(gull.x), Math.round(gull.waterY - 2), shadowWidth, shadowHeight, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawGullSprite(ctx, gull) {
+        const frameId = this.assets?.get(gull.frameId) ? gull.frameId : gull.fallbackFrameId;
+        const img = this.assets?.get(frameId);
+        if (!img) return false;
+        const [anchorX, anchorY] = this.assets.getAnchor(frameId);
+        ctx.save();
+        ctx.globalAlpha *= gull.alpha;
+        ctx.translate(Math.round(gull.x), Math.round(gull.y));
+        ctx.scale(gull.facing, 1);
+        ctx.drawImage(img, Math.round(-anchorX), Math.round(-anchorY));
+        ctx.restore();
+        return true;
+    }
+
     _drawOpenSeaGulls(ctx) {
-        if (!OPEN_SEA_BIRDS.length) return;
+        if (!this.openSeaFlockBirds.length) return;
+        const gulls = this._openSeaGullPositions();
+        const visible = this._getVisibleTileBounds(5);
+        const visibleGulls = gulls.filter((gull) => {
+            const tileX = Math.floor(gull.tileX);
+            const tileY = Math.floor(gull.tileY);
+            return this._isGullInVisibleBounds(gull, visible)
+                && this._isGullFlightTile(tileX, tileY);
+        });
+
         if (this.sprites) {
             ctx.save();
-            for (const gull of OPEN_SEA_BIRDS.slice(0, 6)) {
-                const tileX = Math.floor(gull.tileX);
-                const tileY = Math.floor(gull.tileY);
-                if (!this._isOpenSeaTile(tileX, tileY)) continue;
-                if (this._isHarborLabelZone(tileX, tileY)) continue;
-                const x = (gull.tileX - gull.tileY) * TILE_WIDTH / 2;
-                const waterY = (gull.tileX + gull.tileY) * TILE_HEIGHT / 2;
-                const y = waterY - gull.altitude + (this.motionScale ? Math.sin(this.waterFrame * 0.75 + gull.phase) * 2 : 0);
-                this.sprites.drawSprite(ctx, 'prop.gullFlight', x, y, { alpha: 0.9 });
+            for (const gull of visibleGulls) {
+                this._drawGullShadow(ctx, gull);
+            }
+            for (const gull of visibleGulls) {
+                if (!this._drawGullSprite(ctx, gull)) {
+                    this.sprites.drawSprite(ctx, 'prop.gullFlight', gull.x, gull.y, { alpha: gull.alpha });
+                }
             }
             ctx.restore();
             return;
@@ -2980,33 +3428,24 @@ export class IsometricRenderer {
         ctx.save();
         ctx.lineCap = 'square';
         ctx.lineJoin = 'miter';
-        for (const gull of OPEN_SEA_BIRDS) {
-            const tileX = Math.floor(gull.tileX);
-            const tileY = Math.floor(gull.tileY);
-            if (!this._isOpenSeaTile(tileX, tileY)) continue;
-            const x = (gull.tileX - gull.tileY) * TILE_WIDTH / 2;
-            const baseY = (gull.tileX + gull.tileY) * TILE_HEIGHT / 2 - gull.altitude;
-            const wing = this.motionScale
-                ? Math.sin(this.waterFrame * 2.4 + gull.phase) * 1.5
-                : 0.6;
-            const y = baseY + (this.motionScale ? Math.sin(this.waterFrame * 0.75 + gull.phase) * 2 : 0);
+        for (const gull of visibleGulls) {
             const span = 9;
-            const lift = 4.2 + wing;
+            const lift = 4.2 + gull.wing;
             ctx.globalAlpha = 0.72;
             ctx.strokeStyle = 'rgba(22, 34, 44, 0.36)';
             ctx.lineWidth = 2.4;
             ctx.beginPath();
-            ctx.moveTo(x - span, y + 1);
-            ctx.lineTo(x, y - lift + 1);
-            ctx.lineTo(x + span, y + 1);
+            ctx.moveTo(gull.x - span, gull.y + 1);
+            ctx.lineTo(gull.x, gull.y - lift + 1);
+            ctx.lineTo(gull.x + span, gull.y + 1);
             ctx.stroke();
             ctx.globalAlpha = 0.82;
             ctx.strokeStyle = 'rgba(235, 244, 232, 0.88)';
             ctx.lineWidth = 1.5;
             ctx.beginPath();
-            ctx.moveTo(x - span, y);
-            ctx.lineTo(x, y - lift);
-            ctx.lineTo(x + span, y);
+            ctx.moveTo(gull.x - span, gull.y);
+            ctx.lineTo(gull.x, gull.y - lift);
+            ctx.lineTo(gull.x + span, gull.y);
             ctx.stroke();
         }
         ctx.restore();
