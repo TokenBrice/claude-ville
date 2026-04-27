@@ -94,7 +94,7 @@ export class Pathfinder {
             cur = parent[cur];
         }
         tiles.reverse();
-        return this._simplify(tiles, bridgeTiles);
+        return this._lookahead(this._simplify(tiles, bridgeTiles), bridgeTiles);
     }
 
     _walkableCandidates(tileX, tileY) {
@@ -155,6 +155,30 @@ export class Pathfinder {
                 out.push(t);
             }
             prevDir = dir;
+        }
+        return out;
+    }
+
+    _lookahead(tiles, bridgeTiles) {
+        if (tiles.length <= 2) return tiles;
+        const out = [tiles[0]];
+        let i = 0;
+        while (i < tiles.length - 1) {
+            // Find the furthest waypoint reachable via a clear straight line from tiles[i].
+            let j = tiles.length - 1;
+            while (j > i + 1) {
+                // Never skip over bridge tiles — they must remain explicit waypoints.
+                const hasBridge = tiles.slice(i + 1, j).some(
+                    t => bridgeTiles?.has(`${t.tileX},${t.tileY}`)
+                );
+                if (!hasBridge && this._lineWalkable(
+                    tiles[i].tileX, tiles[i].tileY,
+                    tiles[j].tileX, tiles[j].tileY,
+                )) break;
+                j--;
+            }
+            out.push(tiles[j]);
+            i = j;
         }
         return out;
     }
