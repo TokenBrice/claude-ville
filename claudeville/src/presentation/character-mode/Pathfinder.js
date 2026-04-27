@@ -23,6 +23,34 @@ export class Pathfinder {
         return this.walkableTiles[Math.min(this.walkableTiles.length - 1, Math.floor(rng * this.walkableTiles.length))];
     }
 
+    nearestWalkable(tileX, tileY, maxRadius = 8) {
+        const originX = Math.round(tileX);
+        const originY = Math.round(tileY);
+        if (this.isWalkable(originX, originY)) return { tileX: originX, tileY: originY };
+
+        let best = null;
+        let bestDistance = Infinity;
+        const radiusLimit = Math.max(1, Math.floor(maxRadius));
+        for (let radius = 1; radius <= radiusLimit; radius++) {
+            for (let dy = -radius; dy <= radius; dy++) {
+                for (let dx = -radius; dx <= radius; dx++) {
+                    if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
+                    const nx = originX + dx;
+                    const ny = originY + dy;
+                    if (!this.isWalkable(nx, ny)) continue;
+                    const distance = dx * dx + dy * dy;
+                    if (distance < bestDistance) {
+                        best = { tileX: nx, tileY: ny };
+                        bestDistance = distance;
+                    }
+                }
+            }
+            if (best) return best;
+        }
+
+        return null;
+    }
+
     _cacheResult(key, value) {
         if (this._pathCache.size >= 256) {
             this._pathCache.delete(this._pathCache.keys().next().value);
@@ -53,14 +81,12 @@ export class Pathfinder {
         // 8 cardinal and diagonal neighbors for a walkable foothold and recurse from
         // there. Prevents agents from getting permanently stuck.
         if (!this.isWalkable(fx, fy)) {
-            for (const [dx, dy] of DIRS) {
-                const nx = fx + dx;
-                const ny = fy + dy;
-                if (!this.isWalkable(nx, ny)) continue;
-                const sub = this.findPath({ tileX: nx, tileY: ny }, to, bridgeTiles);
-                if (sub.length > 0) return [{ tileX: nx, tileY: ny }, ...sub];
+            const nearest = this.nearestWalkable(fx, fy, 8);
+            if (nearest) {
+                const sub = this.findPath(nearest, to, bridgeTiles);
+                if (sub.length > 0) return [nearest, ...sub];
             }
-            console.warn('[Pathfinder] stuck: no walkable cardinal neighbor at', fx, fy);
+            console.warn('[Pathfinder] stuck: no walkable tile near', fx, fy);
             return [];
         }
 
