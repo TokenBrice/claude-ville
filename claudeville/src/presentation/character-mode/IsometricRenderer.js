@@ -60,6 +60,8 @@ const GULL_STAGING_WAYPOINTS = [
     { tileX: 23.4, tileY: 24.8 },
     { tileX: 9.8, tileY: 24.8 },
     { tileX: 34.0, tileY: 29.4 },
+    { tileX: 7.4, tileY: 8.6 },
+    { tileX: 14.0, tileY: 9.6 },
 ];
 const OPEN_SEA_FLOCK_FORMATION = [
     { side: 0.00, trail: 0.00 },
@@ -145,6 +147,20 @@ const OPEN_SEA_FLOCK_ROUTES = [
             { tileX: 24.8, tileY: 7.5 },
             { tileX: 31.0, tileY: 5.0 },
             { tileX: 36.8, tileY: 8.2 },
+        ],
+    },
+    {
+        size: 5,
+        altitude: 22,
+        phase: 0.13,
+        speed: 0.024,
+        wingRate: 3.4,
+        route: [
+            { tileX: 6.4, tileY: 9.6 },
+            { tileX: 11.2, tileY: 7.2 },
+            { tileX: 16.4, tileY: 9.0 },
+            { tileX: 13.0, tileY: 11.4 },
+            { tileX: 8.0, tileY: 11.2 },
         ],
     },
 ];
@@ -355,6 +371,7 @@ export class IsometricRenderer {
         this.waterTiles = this.scenery.getWaterTiles();
         this.shoreTiles = this.scenery.getShoreTiles();
         this.deepWaterTiles = this.scenery.getDeepWaterTiles();
+        this.lagoonWaterTiles = this.scenery.getLagoonWaterTiles();
         this.harborWaterApronTiles = this._buildHarborWaterApronTiles();
 
         // Bridges (Task 5): two authored river crossings only.
@@ -1285,6 +1302,12 @@ export class IsometricRenderer {
             now: new Date(renderNow),
             motionScale: this.motionScale,
         });
+        // Cache weather state for lagoon palette B7 — consumed in _drawTerrainTone and
+        // _drawDynamicWaterHighlights without threading atmosphere through every call.
+        const wx = atmosphere?.weather;
+        this._stormIntensity = (wx?.type === 'overcast' || wx?.type === 'rain') && wx.intensity > 0.4
+            ? wx.intensity
+            : 0;
         this.buildingRenderer?.setLightingState(atmosphere?.lighting);
         const viewport = this._screenViewport();
 
@@ -1752,8 +1775,17 @@ export class IsometricRenderer {
                 if (seed <= 0.82) continue;
                 const screenX = (x - y) * TILE_WIDTH / 2;
                 const screenY = (x + y) * TILE_HEIGHT / 2;
-                const shimmer = 0.035 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.045;
-                ctx.strokeStyle = `rgba(132, 211, 240, ${shimmer})`;
+                const isLagoonShimmer = this.lagoonWaterTiles?.has(key);
+                // B7: in storms, increase shimmer t frequency for lagoon tiles.
+                const stormFreqMult = isLagoonShimmer && this._stormIntensity
+                    ? 1 + 0.5 * this._stormIntensity
+                    : 1;
+                const shimmerT = this.waterFrame * 2.2 * stormFreqMult + seed * 10;
+                const shimmer = 0.035 + Math.max(0, Math.sin(shimmerT)) * 0.045;
+                // A3: warm tropical teal for lagoon, cool blue for harbor sea.
+                ctx.strokeStyle = isLagoonShimmer
+                    ? `rgba(120, 230, 200, ${shimmer})`
+                    : `rgba(132, 211, 240, ${shimmer})`;
                 ctx.lineWidth = 1;
                 ctx.beginPath();
                 ctx.moveTo(screenX - 12, screenY - 2);
@@ -2872,6 +2904,28 @@ export class IsometricRenderer {
             || this.waterTiles.has(`${tileX + 1},${tileY}`)
             || this.waterTiles.has(`${tileX},${tileY + 1}`)
             || this.waterTiles.has(`${tileX - 1},${tileY}`);
+
+        // B1: foam wash only where the adjacent water is lagoon-kind.
+        if (adjacentWater) {
+            const adjacentLagoon = this.lagoonWaterTiles?.has(`${tileX},${tileY - 1}`)
+                || this.lagoonWaterTiles?.has(`${tileX + 1},${tileY}`)
+                || this.lagoonWaterTiles?.has(`${tileX},${tileY + 1}`)
+                || this.lagoonWaterTiles?.has(`${tileX - 1},${tileY}`);
+            if (adjacentLagoon) {
+                ctx.save();
+                ctx.globalCompositeOperation = 'lighter';
+                const foamRadius = TILE_WIDTH * 0.7;
+                const foamGrad = ctx.createRadialGradient(screenX, screenY, 0, screenX, screenY, foamRadius);
+                foamGrad.addColorStop(0, 'rgba(220, 240, 250, 0.22)');
+                foamGrad.addColorStop(1, 'rgba(220, 240, 250, 0)');
+                ctx.fillStyle = foamGrad;
+                ctx.beginPath();
+                ctx.arc(screenX, screenY, foamRadius, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            }
+        }
+
         ctx.fillStyle = adjacentWater
             ? `rgba(226, 190, 102, ${0.08 + seed * 0.06})`
             : `rgba(87, 70, 36, ${0.07 + seed * 0.04})`;
@@ -2902,14 +2956,36 @@ export class IsometricRenderer {
         let alpha = 0;
         const visualWater = this._isVisualWaterTile(tileX, tileY, key);
 
+        const isLagoon = this.lagoonWaterTiles?.has(key);
         if (this.deepWaterTiles.has(key)) {
             const openSea = this._isOpenSeaTile(tileX, tileY);
-            fill = openSea
-                ? (seed > 0.5 ? '#03244a' : '#074276')
-                : (seed > 0.5 ? '#075274' : '#0b6c8d');
-            alpha = openSea ? 0.58 : 0.48;
+            if (isLagoon) {
+                // A3: lagoon deep — warm tropical teal; B7: storm lerps toward grey-teal.
+                const si = this._stormIntensity || 0;
+                const lerpF = 0.4 * si;
+                const r = Math.round(22 + (70 - 22) * lerpF);
+                const g = Math.round(152 + (110 - 152) * lerpF);
+                const b = Math.round(160 + (120 - 160) * lerpF);
+                fill = `rgb(${r},${g},${b})`;
+                alpha = 0.48;
+            } else {
+                fill = openSea
+                    ? (seed > 0.5 ? '#03244a' : '#074276')
+                    : (seed > 0.5 ? '#075274' : '#0b6c8d');
+                alpha = openSea ? 0.58 : 0.48;
+            }
         } else if (visualWater) {
-            fill = seed > 0.5 ? '#0a8192' : '#0e9aa5';
+            if (isLagoon) {
+                // A3: lagoon shallow — warm tropical teal tone; B7: storm shift.
+                const si = this._stormIntensity || 0;
+                const lerpF = 0.4 * si;
+                const r = Math.round(10 + (70 - 10) * lerpF);
+                const g = Math.round(180 + (110 - 180) * lerpF);
+                const b = Math.round(190 + (120 - 190) * lerpF);
+                fill = `rgb(${r},${g},${b})`;
+            } else {
+                fill = seed > 0.5 ? '#0a8192' : '#0e9aa5';
+            }
             alpha = this.waterTiles.has(key) ? 0.42 : 0.54;
         } else if (this.shoreTiles.has(key)) {
             fill = seed > 0.45 ? '#c29a55' : '#ad8346';
@@ -2960,7 +3036,10 @@ export class IsometricRenderer {
 
         if (visualWater && this.motionScale && seed > 0.72) {
             const shimmer = 0.05 + Math.max(0, Math.sin(this.waterFrame * 2.2 + seed * 10)) * 0.06;
-            ctx.strokeStyle = `rgba(188, 253, 246, ${shimmer})`;
+            // A3: warm tropical teal shimmer for lagoon, cool blue-white for sea.
+            ctx.strokeStyle = isLagoon
+                ? `rgba(120, 230, 200, ${shimmer})`
+                : `rgba(188, 253, 246, ${shimmer})`;
             ctx.lineWidth = 1;
             ctx.beginPath();
             ctx.moveTo(screenX - 12, screenY - 2);
@@ -3304,7 +3383,8 @@ export class IsometricRenderer {
             const baseY = Math.floor(fish.tileY);
             if (baseX < visible.startX || baseX > visible.endX || baseY < visible.startY || baseY > visible.endY) continue;
             const key = `${baseX},${baseY}`;
-            if (!this.waterTiles.has(key) || this.deepWaterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+            const isLagoon = this.lagoonWaterTiles?.has(key);
+            if (!this.waterTiles.has(key) || (this.deepWaterTiles.has(key) && !isLagoon) || this.bridgeTiles?.has(key)) continue;
             if (this._isHarborLabelZone(baseX, baseY)) continue;
 
             const swim = Math.sin(this.waterFrame * 1.4 + fish.phase) * (fish.radius ?? 0.25);
@@ -3789,6 +3869,21 @@ export class IsometricRenderer {
                 ctx.stroke();
             }
 
+            // A2: animated expanding ripple ring in the pool.
+            if (this.motionScale) {
+                const poolBaseRadius = fall.width * 0.46;
+                const t = (this.waterFrame % 60) / 60;
+                const ringR = t * poolBaseRadius * 1.25;
+                const ringAlpha = 0.45 * (1 - t);
+                ctx.save();
+                ctx.strokeStyle = `rgba(226, 255, 246, ${ringAlpha})`;
+                ctx.lineWidth = 1.5;
+                ctx.beginPath();
+                ctx.ellipse(0, 7, ringR, ringR * (8 / (fall.width * 0.46)), 0, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.restore();
+            }
+            // Static pool fill.
             ctx.fillStyle = 'rgba(226, 255, 246, 0.48)';
             ctx.beginPath();
             ctx.ellipse(0, 7, fall.width * 0.46, 8, 0, 0, Math.PI * 2);

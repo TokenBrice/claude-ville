@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-codex-engineer-tools-claude-model-sprites-v2"
+  assetVersion: "2026-04-28-codex-engineer-and-north-lagoon-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -558,6 +558,30 @@ props:
     size: 32
     anchor: [16, 28]
 
+  - id: prop.lakeShrine
+    tool: map_object
+    prompt: "weathered fantasy stone shrine on a small mossy mid-lake island, a low altar with a small offering bowl, a glowing carved rune at its base, two short standing stones beside it, soft amber lantern glow, no platform, no large base, transparent background, isometric"
+    size: 64
+    anchor: [32, 56]
+
+  - id: prop.mangroveRoot.twisted
+    tool: map_object
+    prompt: "tropical mangrove tree exposed root cluster, dark twisted woody fingers rising from shallow water at the shore, wet bark highlights, small barnacles, transparent background, no water tile, no platform, isometric"
+    size: 32
+    anchor: [16, 26]
+
+  - id: prop.mangroveRoot.arch
+    tool: map_object
+    prompt: "tropical mangrove archway shoreline root, twin twisted woody arches rising from shallow water with hanging vines, wet bark, glistening highlights, transparent background, no water tile, no platform, isometric"
+    size: 48
+    anchor: [24, 40]
+
+  - id: prop.driftwood.log
+    tool: map_object
+    prompt: "weathered driftwood log washed up at lagoon shore, bleached pale wood with cracked bark, half-submerged in shallow water, small barnacles and a single small green sprout growing from one end, transparent background, no water tile, no platform, isometric"
+    size: 48
+    anchor: [24, 30]
+
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
   - id: veg.root.arch
@@ -673,6 +697,12 @@ vegetation:
     prompt: "sparse reeds, slender green stalks, water reflections, isometric"
     size: 32
     anchor: [16, 24]
+
+  - id: veg.lilypad
+    tool: map_object
+    prompt: "small floating lily pad cluster, three round flat dark green pads on calm water, one with a tiny pink lotus bud, transparent background, no water tile, no square base, soft pixel art shadow on the underside"
+    size: 32
+    anchor: [16, 18]
 
 # ─── TERRAIN ─────────────────────────────────────────────────────────────────
 # Wang 4-bit tilesets — each produces 16 adjacency variants.

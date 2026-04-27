@@ -292,6 +292,21 @@ export const DISTRICT_PROPS = [
     { tileX: 32.3, tileY: 19.6, id: 'prop.netRack', layer: 'cache', district: 'harbor' },
     { tileX: 33.2, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
     { tileX: 37.1, tileY: 22.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
+    { tileX: 6.0, tileY: 8.0, id: 'prop.netRack', layer: 'cache', district: 'lagoon' },
+    { tileX: 14.0, tileY: 5.5, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'lagoon' },
+    { tileX: 20.0, tileY: 11.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'lagoon' },
+    // Lagoon lilypads: calm interior water surface, east lagoon basin.
+    { tileX: 13.4, tileY: 7.6, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    { tileX: 15.2, tileY: 8.4, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    { tileX: 14.0, tileY: 9.2, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    { tileX: 12.6, tileY: 8.2, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    // Mangrove roots: west shore shallow water.
+    { tileX: 6.6, tileY: 7.8, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'lagoon' },
+    { tileX: 7.4, tileY: 9.6, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'lagoon' },
+    { tileX: 6.2, tileY: 8.8, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'lagoon' },
+    // Driftwood logs: west shore shallows.
+    { tileX: 7.2, tileY: 10.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
+    { tileX: 8.6, tileY: 9.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
 ];
 
 export const MARINE_FISH_SCHOOLS = [
@@ -299,14 +314,6 @@ export const MARINE_FISH_SCHOOLS = [
     { tileX: 35.4, tileY: 14.5, id: 'prop.fishSchoolTeal', radius: 0.32, phase: 2.1 },
     { tileX: 18.2, tileY: 10.4, id: 'prop.fishSchoolTeal', radius: 0.22, phase: 3.6 },
     { tileX: 36.6, tileY: 24.0, id: 'prop.fishSchoolTeal', radius: 0.26, phase: 5.2 },
-];
-
-export const OPEN_SEA_BIRDS = [
-    { tileX: 37.2, tileY: 5.4, altitude: 36, phase: 0.2 },
-    { tileX: 36.8, tileY: 8.9, altitude: 31, phase: 1.7 },
-    { tileX: 38.4, tileY: 13.2, altitude: 30, phase: 3.1 },
-    { tileX: 35.8, tileY: 11.5, altitude: 24, phase: 4.4 },
-    { tileX: 36.6, tileY: 22.5, altitude: 27, phase: 5.6 },
 ];
 
 // Density thresholds for noise-driven flat features.
