@@ -1,10 +1,10 @@
-# Pathfinding Fixes Implementation Plan
+# Pathfinding Fixes + Upgrades Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Eliminate all confirmed and potential cases where agents walk through river/moat water tiles instead of routing via bridges, and streamline the pathfinding code.
+**Goal:** Eliminate all confirmed and potential cases where agents walk through river/moat water tiles instead of routing via bridges, streamline the pathfinding code, and ship seven targeted quality-of-life upgrades (8-connected movement, path smoothing, repathing throttle, guaranteed-walkable random targets, shared BFS cache, debug overlay, and agent steering separation).
 
-**Architecture:** Two confirmed bugs exist — chat-partner movement bypasses the pathfinder entirely (agents beeline through water when approaching a chat partner), and the Bresenham fast-path can corner-cut thin diagonal water fingers. Additionally a spawn-on-water issue can freeze agents, the BFS queue uses O(n²) `Array.shift()`, and a dead parameter pollutes the API. All fixes are surgical edits to three files: `Pathfinder.js`, `AgentSprite.js`, and `SceneryEngine.js`.
+**Architecture:** Bug fixes are surgical edits to `Pathfinder.js`, `AgentSprite.js`, and `SceneryEngine.js`. Upgrades extend `Pathfinder.js` with diagonal support, look-ahead smoothing, a walkable-tile sample list, and a path cache; extend `AgentSprite.js` with repathing throttle and the walkable-tile sampler; add a new `DebugOverlay.js`; and add a steering pass to `IsometricRenderer.js`.
 
 **Tech Stack:** Vanilla ES2022 modules, no transpiler, no test runner. Validation is `node --check` + manual browser observation at `http://localhost:4000`. Server starts with `npm run dev`.
 
@@ -14,10 +14,27 @@
 
 | File | Role | What changes |
 |---|---|---|
-| `claudeville/src/presentation/character-mode/AgentSprite.js` | Per-agent movement and rendering | Tasks 1, 3 |
-| `claudeville/src/presentation/character-mode/Pathfinder.js` | BFS pathfinding algorithm | Tasks 2, 4, 5 |
+| `claudeville/src/presentation/character-mode/AgentSprite.js` | Per-agent movement and rendering | Tasks 1, 3, 10, 11 |
+| `claudeville/src/presentation/character-mode/Pathfinder.js` | BFS pathfinding algorithm | Tasks 2, 4, 5, 8, 9, 11, 12 |
 | `claudeville/src/presentation/character-mode/SceneryEngine.js` | Walkability grid + bridge placement | Tasks 6, 7 |
-| `claudeville/src/presentation/character-mode/IsometricRenderer.js` | Wires walkability grid to pathfinder | Task 7 (call-site only) |
+| `claudeville/src/presentation/character-mode/IsometricRenderer.js` | Renderer, update loop | Tasks 7, 13, 14 |
+| `claudeville/src/presentation/character-mode/DebugOverlay.js` | **New** — toggle-able debug canvas layer | Task 13 |
+
+## Parallelization Guide
+
+Tasks on the same file must be applied sequentially. Tasks on different files are independent and can be dispatched in parallel by a subagent orchestrator.
+
+| Sequential chain | Parallel with |
+|---|---|
+| **Pathfinder.js** Tasks 2 → 4 → 5 → 8 → 9 → 11 → 12 | Task 6, 10, 13, 14 |
+| **AgentSprite.js** Tasks 1 → 3 → 10 → 11 | Task 6, 8, 13, 14 |
+| **SceneryEngine.js + IsometricRenderer.js** Tasks 6 → 7 | All Pathfinder + AgentSprite tasks |
+| **IsometricRenderer.js** Tasks 13 → 14 | All Pathfinder + AgentSprite + SceneryEngine tasks |
+
+Natural parallel batches for a subagent orchestrator:
+- **Batch A** (all independent of each other): Tasks 6, 10, 13
+- **Batch B** (after Batch A): Tasks 7, 14
+- **All Pathfinder tasks** must run as a single sequential chain.
 
 ---
 
@@ -540,15 +557,16 @@
 
 ---
 
-## Final Integration Smoke Test
+## Final Integration Smoke Test (all tasks)
 
-- [ ] **Step 1: Full syntax pass over all modified files**
+- [ ] **Step 1: Full syntax pass over all modified and new files**
 
   ```bash
   node --check claudeville/src/presentation/character-mode/Pathfinder.js
   node --check claudeville/src/presentation/character-mode/AgentSprite.js
   node --check claudeville/src/presentation/character-mode/SceneryEngine.js
   node --check claudeville/src/presentation/character-mode/IsometricRenderer.js
+  node --check claudeville/src/presentation/character-mode/DebugOverlay.js
   ```
 
   All expected to produce no output.
@@ -579,6 +597,10 @@
   - No `[Pathfinder] stuck` or `[Pathfinder] no path` warnings appear in the browser console during normal play (they should be rare; their presence indicates a map/spawn edge case worth investigating).
 
   **Task 3 verification:** To explicitly verify the spawn nudge, temporarily change `Agent.js` line 127 to `new Position(22, 23)` (a moat tile), confirm the agent spawns on land and walks normally with no `[Pathfinder] stuck` warning, then revert the change.
+  - Agents take noticeably more diagonal paths across open ground (Task 8).
+  - Press `Shift+D` — debug overlay appears with correct walkability tint and cyan waypoint lines (Task 13).
+  - Agents at the same building entrance spread apart rather than overlapping (Task 14).
+  - Open the browser console and confirm no `[Pathfinder] stuck` or `[Pathfinder] no path` warnings during normal operation.
 
 ---
 
@@ -590,4 +612,612 @@ These issues were identified during the exploration but are deliberately exclude
 - **String `"x,y"` keys throughout `SceneryEngine.js`** — all render/draw callers loop over string-keyed sets. Switching to integer-indexed `Uint8Array` layers would eliminate per-iteration string parsing. Low-priority perf cleanup.
 - **`_simplify` does not force waypoints at bridge entry/exit land tiles** — only bridge deck tiles themselves are forced as waypoints. A screen-space interpolation between the last land waypoint and the first bridge waypoint could notionally drift over a water-edge tile if the bridge is entered at an angle. Verify empirically before treating as a bug.
 - **Recursive `findPath` for stuck-start can chain beyond depth 1** — if a cardinal neighbor of an unwalkable start is itself unwalkable, the recursion descends again. In theory, a chain of mutually-unwalkable tiles could stack. The spawn nudge (Task 3) reduces the frequency; Task 4's warn makes it visible.
-- **`_pickTarget` random ground target does not consult the walkability grid** — random `(10..30, 10..30)` tile-space targets can land on water; `_walkableCandidates` in the pathfinder recovers (5-tile radius search), but adds unnecessary BFS overhead. Fix: sample from a pre-built list of walkable tiles at startup.
+- **`_pickTarget` random ground target** — addressed by Task 11 (pre-built walkable tile sample list).
+
+---
+
+## Task 8: Add 8-connected BFS with diagonal corner-cut guard
+
+**Why:** Current BFS is 4-connected, forcing agents to take L-shaped detours across open ground. Adding 4 diagonal directions produces shorter, more natural paths with a minimal code change. The corner-cut guard (both axis-aligned neighbors must be walkable) prevents diagonal steps from slipping through a thin water or building edge.
+
+**Prerequisite:** Task 5 must already be applied (this task modifies the same BFS neighbor-expansion block).
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/Pathfinder.js:3` (DIRS constant)
+- Modify: `claudeville/src/presentation/character-mode/Pathfinder.js` (BFS neighbor loop from Task 5)
+
+- [ ] **Step 1: Expand DIRS to include diagonals**
+
+  Line 3 currently reads:
+  ```js
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+  ```
+
+  Replace with:
+  ```js
+  const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+  ```
+
+- [ ] **Step 2: Add corner-cut guard to the BFS neighbor expansion loop**
+
+  Find the BFS neighbor loop inside `findPath` (placed there by Task 5). It currently reads:
+  ```js
+  for (const [dx, dy] of DIRS) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
+      const idx = ny * N + nx;
+      if (visited[idx]) continue;
+      if (!this.isWalkable(nx, ny)) continue;
+      visited[idx] = 1;
+      parent[idx] = cur;
+      queue.push(idx);
+  }
+  ```
+
+  Replace with:
+  ```js
+  for (const [dx, dy] of DIRS) {
+      const nx = cx + dx;
+      const ny = cy + dy;
+      if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
+      // Corner-cut guard: diagonal step requires both axis-aligned neighbors walkable.
+      if (dx !== 0 && dy !== 0 && (!this.isWalkable(cx + dx, cy) || !this.isWalkable(cx, cy + dy))) continue;
+      const idx = ny * N + nx;
+      if (visited[idx]) continue;
+      if (!this.isWalkable(nx, ny)) continue;
+      visited[idx] = 1;
+      parent[idx] = cur;
+      queue.push(idx);
+  }
+  ```
+
+  Note: `_simplify` already handles diagonal directions correctly — it uses `Math.sign(next.tileX - t.tileX)` and `Math.sign(next.tileY - t.tileY)` to build direction keys, which covers all 8 directions naturally.
+
+- [ ] **Step 3: Syntax check**
+
+  ```bash
+  node --check claudeville/src/presentation/character-mode/Pathfinder.js
+  ```
+
+  Expected: no output.
+
+- [ ] **Step 4: Commit**
+
+  ```bash
+  git add claudeville/src/presentation/character-mode/Pathfinder.js
+  git commit -m "feat: add 8-connected BFS with diagonal corner-cut guard for more direct agent paths"
+  ```
+
+---
+
+## Task 9: Add waypoint look-ahead smoothing pass
+
+**Why:** After BFS + `_simplify`, agents still walk through intermediate waypoints they could skip. A second pass using the existing `_lineWalkable` check greedily removes collinear or near-collinear waypoints, reducing the total turn count and producing visually smoother trajectories with zero new geometry risk (the line check is already water-safe after Task 2).
+
+**Prerequisite:** Task 8 must be applied (look-ahead operates on 8-connected BFS output). Task 2 must be applied (relies on the fixed `_lineWalkable`).
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/Pathfinder.js` (add method + update `findPath` return)
+
+- [ ] **Step 1: Add `_lookahead` method to `Pathfinder`**
+
+  Insert this method after `_simplify` (before the closing `}` of the class):
+
+  ```js
+  _lookahead(tiles, bridgeTiles) {
+      if (tiles.length <= 2) return tiles;
+      const out = [tiles[0]];
+      let i = 0;
+      while (i < tiles.length - 1) {
+          // Find the furthest waypoint reachable via a clear straight line from tiles[i].
+          let j = tiles.length - 1;
+          while (j > i + 1) {
+              // Never skip over bridge tiles — they must remain explicit waypoints.
+              const hasBridge = tiles.slice(i + 1, j).some(
+                  t => bridgeTiles?.has(`${t.tileX},${t.tileY}`)
+              );
+              if (!hasBridge && this._lineWalkable(
+                  tiles[i].tileX, tiles[i].tileY,
+                  tiles[j].tileX, tiles[j].tileY,
+              )) break;
+              j--;
+          }
+          out.push(tiles[j]);
+          i = j;
+      }
+      return out;
+  }
+  ```
+
+- [ ] **Step 2: Update `findPath` to call `_lookahead` after `_simplify`**
+
+  In `findPath`, the reconstruction currently ends with:
+  ```js
+  tiles.reverse();
+  return this._simplify(tiles, bridgeTiles);
+  ```
+
+  Replace with:
+  ```js
+  tiles.reverse();
+  return this._lookahead(this._simplify(tiles, bridgeTiles), bridgeTiles);
+  ```
+
+- [ ] **Step 3: Syntax check**
+
+  ```bash
+  node --check claudeville/src/presentation/character-mode/Pathfinder.js
+  ```
+
+  Expected: no output.
+
+- [ ] **Step 4: Commit**
+
+  ```bash
+  git add claudeville/src/presentation/character-mode/Pathfinder.js
+  git commit -m "feat: add waypoint look-ahead pass to reduce redundant turns in agent paths"
+  ```
+
+---
+
+## Task 10: Throttle chat-partner repathing to tile-boundary changes only
+
+**Why:** After Task 1, Block B in `update()` calls `_assignTarget` every frame while approaching a chat partner. `_assignTarget`'s cache guard short-circuits when the tile key is unchanged, but the guard itself still runs on every frame. Adding an explicit frame-age counter makes the intent explicit, bounds repathing cadence, and prevents a failed-path tileKey from permanently blocking retries.
+
+**Prerequisite:** Task 1 must be applied (adds the Block B `_assignTarget` call this throttle governs).
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/AgentSprite.js` (constructor + `_assignTarget`)
+
+- [ ] **Step 1: Add `_pathAgeFrames` to the constructor**
+
+  In the constructor, after `this._lastPathTileKey = null;` (line 81), add:
+  ```js
+  this._pathAgeFrames = 0;
+  ```
+
+- [ ] **Step 2: Update the cache guard in `_assignTarget`**
+
+  The current guard at lines 168–170 reads:
+  ```js
+  if (tileKey === this._lastPathTileKey && this.waypoints.length > 0) {
+      return;
+  }
+  this._lastPathTileKey = tileKey;
+  ```
+
+  Replace with:
+  ```js
+  if (tileKey === this._lastPathTileKey && this.waypoints.length > 0 && this._pathAgeFrames < 30) {
+      this._pathAgeFrames++;
+      return;
+  }
+  this._pathAgeFrames = 0;
+  this._lastPathTileKey = tileKey;
+  ```
+
+  This allows a stale path to be re-evaluated after 30 frames (~500 ms at 60 fps) even if the target tile hasn't changed, preventing silent freeze from a previously cached failed path.
+
+- [ ] **Step 3: Syntax check**
+
+  ```bash
+  node --check claudeville/src/presentation/character-mode/AgentSprite.js
+  ```
+
+  Expected: no output.
+
+- [ ] **Step 4: Commit**
+
+  ```bash
+  git add claudeville/src/presentation/character-mode/AgentSprite.js
+  git commit -m "feat: throttle agent repathing to tile-boundary crossings with 30-frame stale limit"
+  ```
+
+---
+
+## Task 11: Pre-built walkable tile list for guaranteed-walkable random targets
+
+**Why:** `_pickTarget` currently samples random ground targets from `[10..30, 10..30]` tile-space without consulting the walkability grid. When the target lands on water, `_walkableCandidates` silently shifts the destination by up to 5 tiles. A pre-built `walkableTiles[]` built once at grid construction eliminates this mismatch entirely.
+
+**Prerequisite:** None for the Pathfinder side. Task 10 must be applied before touching AgentSprite (same file).
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/Pathfinder.js` (constructor, `setGrid`, new method)
+- Modify: `claudeville/src/presentation/character-mode/AgentSprite.js:127-135` (`_pickTarget` random branch)
+
+- [ ] **Step 1: Add `walkableTiles` build to `Pathfinder` constructor**
+
+  The current constructor is:
+  ```js
+  constructor(grid) {
+      this.grid = grid; // Uint8Array, 1 = walkable
+  }
+  ```
+
+  Replace with:
+  ```js
+  constructor(grid) {
+      this.grid = grid;
+      this.walkableTiles = this._buildWalkableList(grid);
+  }
+  ```
+
+- [ ] **Step 2: Add `_buildWalkableList` and `sampleWalkable` methods**
+
+  Insert after the constructor:
+
+  ```js
+  _buildWalkableList(grid) {
+      const tiles = [];
+      for (let y = 0; y < MAP_SIZE; y++) {
+          for (let x = 0; x < MAP_SIZE; x++) {
+              if (grid[y * MAP_SIZE + x] === 1) tiles.push({ tileX: x, tileY: y });
+          }
+      }
+      return tiles;
+  }
+
+  sampleWalkable(rng) {
+      return this.walkableTiles[Math.floor(rng * this.walkableTiles.length)];
+  }
+  ```
+
+- [ ] **Step 3: Update `setGrid` to rebuild the list**
+
+  The current `setGrid` is:
+  ```js
+  setGrid(grid) {
+      this.grid = grid;
+  }
+  ```
+
+  Replace with:
+  ```js
+  setGrid(grid) {
+      this.grid = grid;
+      this.walkableTiles = this._buildWalkableList(grid);
+  }
+  ```
+
+- [ ] **Step 4: Update `_pickTarget` in `AgentSprite` to use `sampleWalkable`**
+
+  The current random ground branch (lines 127–135) reads:
+  ```js
+  const tx = 10 + this._noise(seed, 3) * 20;
+  const ty = 10 + this._noise(seed, 7) * 20;
+  const target = new Position(tx, ty);
+  const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
+  this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
+  this.moving = true;
+  this.waitTimer = 0;
+  return;
+  ```
+
+  Replace with:
+  ```js
+  const tile = this.pathfinder
+      ? this.pathfinder.sampleWalkable(this._noise(seed, 3))
+      : { tileX: 10 + this._noise(seed, 3) * 20, tileY: 10 + this._noise(seed, 7) * 20 };
+  const target = new Position(tile.tileX, tile.tileY);
+  const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
+  this._assignTarget(screen.x, screen.y, tile.tileX, tile.tileY);
+  this.moving = true;
+  this.waitTimer = 0;
+  return;
+  ```
+
+- [ ] **Step 5: Syntax check both files**
+
+  ```bash
+  node --check claudeville/src/presentation/character-mode/Pathfinder.js
+  node --check claudeville/src/presentation/character-mode/AgentSprite.js
+  ```
+
+  Expected: no output from either.
+
+- [ ] **Step 6: Commit**
+
+  ```bash
+  git add claudeville/src/presentation/character-mode/Pathfinder.js \
+          claudeville/src/presentation/character-mode/AgentSprite.js
+  git commit -m "feat: pre-build walkable tile list so random targets always land on walkable ground"
+  ```
+
+---
+
+## Task 12: Shared per-from/to path cache with FIFO eviction
+
+**Why:** Multiple agents heading to the same building (a common pattern with 9 shared buildings) each independently run BFS from nearby tiles. A 256-entry cache keyed on `from,to` rounded tile coords lets the second agent reuse the first's result instantly.
+
+**Prerequisite:** Tasks 9 and 11 must be applied (Task 12 extends the constructor and `setGrid` already touched by Task 11, and references the `_lookahead` return from Task 9).
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/Pathfinder.js` (constructor, `setGrid`, `findPath`, new helpers)
+
+- [ ] **Step 1: Add `_pathCache` to the constructor**
+
+  After `this.walkableTiles = this._buildWalkableList(grid);` in the constructor (placed by Task 11), add:
+  ```js
+  this._pathCache = new Map();
+  ```
+
+- [ ] **Step 2: Clear the cache in `setGrid`**
+
+  After `this.walkableTiles = this._buildWalkableList(grid);` in `setGrid` (placed by Task 11), add:
+  ```js
+  this._pathCache.clear();
+  ```
+
+- [ ] **Step 3: Add `_cacheResult` helper method**
+
+  Insert after `sampleWalkable`:
+  ```js
+  _cacheResult(key, value) {
+      if (this._pathCache.size >= 256) {
+          this._pathCache.delete(this._pathCache.keys().next().value);
+      }
+      this._pathCache.set(key, value);
+  }
+  ```
+
+- [ ] **Step 4: Add cache lookup before the fast path**
+
+  In `findPath`, after the `targetCandidates.length === 0` guard and before the fast-path `for` loop, insert:
+  ```js
+  const cacheKey = `${fx},${fy}|${Math.round(to.tileX)},${Math.round(to.tileY)}`;
+  const cached = this._pathCache.get(cacheKey);
+  if (cached) return cached;
+  ```
+
+- [ ] **Step 5: Cache the fast-path result**
+
+  The fast-path return currently reads:
+  ```js
+  return [{ tileX: target.tileX, tileY: target.tileY }];
+  ```
+
+  Replace with:
+  ```js
+  const fastResult = [{ tileX: target.tileX, tileY: target.tileY }];
+  this._cacheResult(cacheKey, fastResult);
+  return fastResult;
+  ```
+
+- [ ] **Step 6: Cache the BFS result**
+
+  The final reconstruction return currently reads (after Task 9):
+  ```js
+  return this._lookahead(this._simplify(tiles, bridgeTiles), bridgeTiles);
+  ```
+
+  Replace with:
+  ```js
+  const result = this._lookahead(this._simplify(tiles, bridgeTiles), bridgeTiles);
+  this._cacheResult(cacheKey, result);
+  return result;
+  ```
+
+- [ ] **Step 7: Syntax check**
+
+  ```bash
+  node --check claudeville/src/presentation/character-mode/Pathfinder.js
+  ```
+
+  Expected: no output.
+
+- [ ] **Step 8: Commit**
+
+  ```bash
+  git add claudeville/src/presentation/character-mode/Pathfinder.js
+  git commit -m "feat: add 256-entry shared path cache with FIFO eviction to Pathfinder"
+  ```
+
+---
+
+## Task 13: Toggle-able debug visualization overlay
+
+**Why:** A keyboard-triggered canvas overlay showing the walkability grid, per-agent waypoint paths, and bridge tiles pays for itself the first time a future pathfinding or scenery bug needs debugging. Zero impact on gameplay when off.
+
+**Files:**
+- Create: `claudeville/src/presentation/character-mode/DebugOverlay.js`
+- Modify: `claudeville/src/presentation/character-mode/IsometricRenderer.js` (import + instantiate + wire keypress + call in `_render`)
+
+- [ ] **Step 1: Create `DebugOverlay.js`**
+
+  Create the file at `claudeville/src/presentation/character-mode/DebugOverlay.js` with this content:
+
+  ```js
+  import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+
+  export class DebugOverlay {
+      constructor() {
+          this.enabled = false;
+      }
+
+      toggle() {
+          this.enabled = !this.enabled;
+      }
+
+      draw(ctx, { walkabilityGrid, bridgeTiles, agentSprites }) {
+          if (!this.enabled) return;
+
+          // Walkability tint: green = walkable, red = blocked, yellow = bridge.
+          ctx.save();
+          for (let y = 0; y < MAP_SIZE; y++) {
+              for (let x = 0; x < MAP_SIZE; x++) {
+                  const wx = (x - y) * TILE_WIDTH / 2;
+                  const wy = (x + y) * TILE_HEIGHT / 2;
+                  const walkable = walkabilityGrid[y * MAP_SIZE + x] === 1;
+                  const isBridge = bridgeTiles?.has(`${x},${y}`);
+                  ctx.globalAlpha = 0.28;
+                  ctx.fillStyle = isBridge ? '#f2d36b' : walkable ? '#4caf50' : '#f44336';
+                  ctx.fillRect(wx - TILE_WIDTH / 4, wy - TILE_HEIGHT / 4, TILE_WIDTH / 2, TILE_HEIGHT / 2);
+              }
+          }
+          ctx.restore();
+
+          // Per-agent waypoint polylines.
+          ctx.save();
+          ctx.strokeStyle = '#00e5ff';
+          ctx.lineWidth = 1.5;
+          ctx.globalAlpha = 0.75;
+          for (const sprite of agentSprites.values()) {
+              if (!sprite.waypoints?.length) continue;
+              ctx.beginPath();
+              ctx.moveTo(sprite.x, sprite.y);
+              for (const wp of sprite.waypoints) ctx.lineTo(wp.x, wp.y);
+              ctx.stroke();
+          }
+          ctx.restore();
+      }
+  }
+  ```
+
+- [ ] **Step 2: Import `DebugOverlay` in `IsometricRenderer.js`**
+
+  After the last existing import (line 18: `import { LandmarkActivity } from './LandmarkActivity.js';`), add:
+  ```js
+  import { DebugOverlay } from './DebugOverlay.js';
+  ```
+
+- [ ] **Step 3: Instantiate and wire keypress in `IsometricRenderer` constructor**
+
+  In the constructor, after `this._unsubscribers = [];` (the last line before the closing brace of the constructor), add:
+  ```js
+  this.debugOverlay = new DebugOverlay();
+  this._onKeyDown = (e) => { if (e.key === 'd' && e.shiftKey) this.debugOverlay.toggle(); };
+  window.addEventListener('keydown', this._onKeyDown);
+  ```
+
+- [ ] **Step 4: Call `debugOverlay.draw` at the end of `_render`**
+
+  In `_render`, just before the minimap call (the `this.minimap.draw(...)` call near the end of `_render`), insert:
+  ```js
+  // Debug overlay (Shift+D to toggle).
+  this.debugOverlay?.draw(ctx, {
+      walkabilityGrid: this.walkabilityGrid,
+      bridgeTiles: this.bridgeTiles,
+      agentSprites: this.agentSprites,
+  });
+  ```
+
+- [ ] **Step 5: Clean up the keypress listener on `hide()`**
+
+  Find the `hide()` method in `IsometricRenderer.js`. After any existing cleanup in it, add:
+  ```js
+  if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
+  ```
+
+- [ ] **Step 6: Syntax check both files**
+
+  ```bash
+  node --check claudeville/src/presentation/character-mode/DebugOverlay.js
+  node --check claudeville/src/presentation/character-mode/IsometricRenderer.js
+  ```
+
+  Expected: no output from either.
+
+- [ ] **Step 7: Manual smoke test**
+
+  Start the server: `npm run dev`  
+  Open `http://localhost:4000`.  
+  Press `Shift+D`. Confirm:  
+  - A green/red tint covers every tile (green = walkable, red = water/building).  
+  - Bridge tiles show yellow.  
+  - Moving agents show a cyan waypoint polyline in front of them.  
+  Press `Shift+D` again. Confirm the overlay disappears.  
+  Stop the server.
+
+- [ ] **Step 8: Commit**
+
+  ```bash
+  git add claudeville/src/presentation/character-mode/DebugOverlay.js \
+          claudeville/src/presentation/character-mode/IsometricRenderer.js
+  git commit -m "feat: add Shift+D debug overlay showing walkability grid and agent waypoints"
+  ```
+
+---
+
+## Task 14: Agent steering separation
+
+**Why:** Agents currently walk through each other at popular building entrances. A lightweight per-frame repulsion pass in the renderer's update loop pushes moving agents apart when their screen distance falls below a threshold, making the world feel meaningfully more alive.
+
+**Prerequisite:** Task 13 must be applied if it modifies the same region of `IsometricRenderer.js`; otherwise independent.
+
+**Files:**
+- Modify: `claudeville/src/presentation/character-mode/IsometricRenderer.js` (agent update loop in `_update`)
+
+- [ ] **Step 1: Locate the agent update loop in `_update`**
+
+  Find the block in `_update` that reads:
+  ```js
+  // Update agent sprites
+  let shouldResort = false;
+  for (const sprite of this.agentSprites.values()) {
+      sprite.update(this.particleSystem, dt);
+      if (sprite._lastSortedY !== sprite.y) {
+          shouldResort = true;
+          sprite._lastSortedY = sprite.y;
+      }
+  }
+  if (shouldResort) {
+      this._markSpritesDirty();
+  }
+  ```
+
+- [ ] **Step 2: Add the separation pass after the agent update loop**
+
+  Immediately after `this._markSpritesDirty();` (still before the `const sortedSnapshot` line), insert:
+
+  ```js
+  // Steering separation: push moving agents apart when they overlap in screen space.
+  const SEP_RADIUS = 28;   // px — slightly wider than sprite half-width (24)
+  const SEP_STRENGTH = 0.8; // px per frame — small enough to never push across a tile
+  const movingSprites = Array.from(this.agentSprites.values()).filter(s => s.moving && !s.chatting);
+  for (let i = 0; i < movingSprites.length; i++) {
+      for (let j = i + 1; j < movingSprites.length; j++) {
+          const a = movingSprites[i];
+          const b = movingSprites[j];
+          const dx = a.x - b.x;
+          const dy = a.y - b.y;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (dist >= SEP_RADIUS || dist === 0) continue;
+          const overlap = (SEP_RADIUS - dist) / SEP_RADIUS;
+          const nx = dx / dist;
+          const ny = dy / dist;
+          a.x += nx * overlap * SEP_STRENGTH;
+          a.y += ny * overlap * SEP_STRENGTH;
+          b.x -= nx * overlap * SEP_STRENGTH;
+          b.y -= ny * overlap * SEP_STRENGTH;
+      }
+  }
+  ```
+
+  `SEP_STRENGTH = 0.8` is intentionally sub-pixel relative to one tile width (64 px) so the displacement never exceeds 1 tile even after many frames of maximum overlap, making water-crossing from separation physically impossible on a 2+ tile wide river.
+
+- [ ] **Step 3: Syntax check**
+
+  ```bash
+  node --check claudeville/src/presentation/character-mode/IsometricRenderer.js
+  ```
+
+  Expected: no output.
+
+- [ ] **Step 4: Manual smoke test**
+
+  Start the server: `npm run dev`  
+  Open `http://localhost:4000`.  
+  Observe two agents converging on the same building entrance. Confirm they spread apart slightly rather than fully overlapping. Confirm no agent crosses water as a result of the separation force.  
+  Stop the server.
+
+- [ ] **Step 5: Commit**
+
+  ```bash
+  git add claudeville/src/presentation/character-mode/IsometricRenderer.js
+  git commit -m "feat: add steering separation pass to prevent agents overlapping at building entrances"
+  ```
+
+---
+
+## Final Integration Smoke Test (all tasks)
