@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-character-revamp-v1"
+  assetVersion: "2026-04-27-taskboard-hero-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -376,10 +376,12 @@ buildings:
         anchor: [156, 80]
         animation: pulse
     emitters:
-      torch:  [52, 148]
+      torch: [52, 148]
       torch2: [260, 148]
-      sparkle:  [156, 74]
+      sparkle: [156, 74]
       sparkle2: [156, 30]
+    # Phase 2.5.5: light-reflection compositing reads these to additively
+    # tint nearby water tiles. Anchor is sprite-local pixels.
     lightSource: [156, 80]
     lightColor: '#ffb347'
     lightRadius: 80
