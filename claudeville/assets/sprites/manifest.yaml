@@ -740,15 +740,17 @@ atmosphere:
 bridges:
   - id: bridge.landmark.elderwood.ns
     tool: map_object
-    prompt: "epic fantasy RPG north-south isometric bridge spanning a river, diagonal from upper right to lower left, mossy elderwood planks over carved grey stone arches, root-wrapped rail posts, rope rails, small green rune glows, transparent background only, isolated bridge sprite, no water tile, no ground tile, no square base, no baked shadow, empty transparent corners"
-    size: 128
-    anchor: [64, 74]
+    prompt: "epic fantasy RPG long isometric bridge, same direction as a left-to-right screen bridge, deck runs horizontally across the image with slight isometric diagonal, mossy elderwood timber planks, grey stone abutments at both ends, root-wrapped rail posts, green rune lamps, transparent background only, isolated bridge sprite, no water, no ground tile, no square base, empty transparent corners"
+    width: 160
+    height: 128
+    anchor: [80, 80]
 
   - id: bridge.landmark.civic.ns
     tool: map_object
-    prompt: "epic fantasy RPG north-south isometric town bridge spanning a river, diagonal from upper right to lower left, warm timber planks over carved civic stone abutments, rope and brass rail posts, small blue lantern runes and red command pennants, transparent background only, isolated bridge sprite, no water tile, no ground tile, no square base, no baked shadow, empty transparent corners"
-    size: 128
-    anchor: [64, 74]
+    prompt: "epic fantasy RPG long isometric town bridge, same direction as a left-to-right screen bridge, deck runs horizontally across the image with slight isometric diagonal, warm timber plank deck, carved grey civic stone abutments at both ends, brass rail posts, rope rails, small blue lantern runes and subtle red pennants, transparent background only, isolated bridge sprite, no water, no ground tile, no square base, empty transparent corners"
+    width: 160
+    height: 128
+    anchor: [80, 80]
 
   - id: bridge.ew
     tool: isometric_tile

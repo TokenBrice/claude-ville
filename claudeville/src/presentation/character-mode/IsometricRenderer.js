@@ -67,6 +67,8 @@ const BRIDGE_STYLE_PALETTES = {
         moss: 'rgba(92, 151, 70, 0.54)',
     },
 };
+const BRIDGE_SPRITE_MIN_WIDTH = 196;
+const BRIDGE_SPRITE_MAX_WIDTH = 232;
 const DISTRICT_WASHES = [
     { x: 16, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
     { x: 36, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
@@ -2021,23 +2023,44 @@ export class IsometricRenderer {
         return `bridge.landmark.${style}.${orientation}`;
     }
 
+    _bridgeSpriteTargetWidth(span, dims) {
+        const spanLength = Math.hypot(span.end.x - span.start.x, span.end.y - span.start.y);
+        const footprintWidth = spanLength + span.halfWidth * 0.72;
+        return Math.round(Math.max(
+            BRIDGE_SPRITE_MIN_WIDTH,
+            Math.min(BRIDGE_SPRITE_MAX_WIDTH, footprintWidth, dims.w * 1.55)
+        ));
+    }
+
     _drawGeneratedBridgeSpan(ctx, span, palette) {
         if (!this.sprites || !this.assets) return false;
         const spriteId = this._bridgeSpriteId(span);
-        if (!this.assets.get(spriteId)) return false;
+        const img = this.assets.get(spriteId);
+        if (!img) return false;
+        const dims = this.assets.getDims(spriteId) || { w: img.width, h: img.height };
+        const [anchorX, anchorY] = this.assets.getAnchor(spriteId);
+        const targetWidth = this._bridgeSpriteTargetWidth(span, dims);
+        const scale = targetWidth / dims.w;
+        const targetHeight = Math.round(dims.h * scale);
 
-        const center = this._bridgePoint(span, 0.5, 0, 0, 7);
+        const center = this._bridgePoint(span, 0.5, 0, 0, 11);
         ctx.save();
         this._traceBridgeRibbon(
             ctx,
-            this._bridgeSidePoints(span, -span.halfWidth - 10, 0, 16, 10),
-            this._bridgeSidePoints(span, span.halfWidth + 10, 0, 16, 10)
+            this._bridgeSidePoints(span, -span.halfWidth - 18, 0, 18, 10),
+            this._bridgeSidePoints(span, span.halfWidth + 18, 0, 18, 10)
         );
         ctx.fillStyle = palette.shadow;
         ctx.fill();
         ctx.restore();
 
-        this.sprites.drawSprite(ctx, spriteId, center.x, center.y);
+        ctx.drawImage(
+            img,
+            Math.round(center.x - anchorX * scale),
+            Math.round(center.y - anchorY * scale),
+            targetWidth,
+            targetHeight
+        );
         this._drawBridgeAccentSprites(ctx, span, palette);
         return true;
     }
