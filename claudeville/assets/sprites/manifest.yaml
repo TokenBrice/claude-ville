@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-27-taskboard-hero-v1"
+  assetVersion: "2026-04-27-mine-forge-refresh-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ characters:
 
   - id: agent.codex.gpt55
     tool: create_character
-    prompt: "Codex GPT-5.5 captain artificer, peaked navy captain cap with gold band, long bright teal officer coat with prominent shoulder epaulettes and gold rune trim, luminous chest core, ornate brass tool belt, commanding tall posture, master engineer leader silhouette, 8-direction pixel art"
+    prompt: "Codex GPT-5.5 heroic techno-paladin warrior captain, navy and gold plate armor, peaked captain helm, bright teal energy core on breastplate, shoulder pauldrons, empty visible hands held close to body, compact brass tool belt, commanding upright stance, distinctly martial not a mage, no robe, no staff, no handheld weapon, no sword, no blade, no hammer, no shield, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -47,7 +47,7 @@ characters:
 
   - id: agent.codex.gpt54
     tool: create_character
-    prompt: "Codex GPT-5.4 senior engineer artificer, flat brass-trimmed engineer cap, brass goggles down over the eyes, deep rust-and-bronze coat distinct from the captain's bright teal, large prominent left-arm gauntlet with exposed gear teeth, backpack toolkit silhouette over right shoulder, sturdy practical artificer silhouette, 8-direction pixel art"
+    prompt: "Codex GPT-5.4 senior battle-engineer warrior, deep teal and bronze half-plate armor, brass goggles on helmet, heavy mechanical left gauntlet held near torso, empty visible hands held close to body, utility belt and small backpack toolkit, sturdy grounded fighter stance, distinctly martial not a mage, no robe, no staff, no handheld weapon, no sword, no blade, no hammer, no shield, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -56,7 +56,7 @@ characters:
 
   - id: agent.codex.gpt53spark
     tool: create_character
-    prompt: "Codex GPT-5.3 Spark scout artificer mechanic, backwards visor cap with cyan lens, short open vest with rolled-up sleeves over yellow lightning sash, light short trousers tucked into runner boots, neutral upright stance with ready hands, swift scout engineer silhouette, 8-direction pixel art"
+    prompt: "Codex GPT-5.3 Spark scout-duelist warrior, yellow lightning sash over light teal leather armor, backwards visor helm with cyan lens, empty visible hands held close to body, runner boots, agile fighter silhouette, distinctly martial not a mage, no robe, no staff, no handheld weapon, no sword, no blade, no hammer, no shield, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -340,49 +340,50 @@ buildings:
   # ── STANDARD: Code Forge ──
   - id: building.forge
     tool: isometric_tile
-    prompt: "epic fantasy code forge smithy, oversized stone furnace arch, orange tiled timber canopy roof, tall soot-black chimney with iron crown, molten trough, rune-inscribed anvil, bellows and tool racks, amber firelight, heroic isometric RPG landmark"
+    prompt: "old-school 16-bit fantasy RPG isometric code forge landmark, compact soot-dark stone smithy with oversized glowing orange arched furnace mouth, tall black iron chimney with crown, red-orange timber canopy roof, rune anvil and forge tools outside, molten sparks, warm firelight, transparent background, strong readable silhouette, no sci-fi reactor, no generic house"
     size: 64
     displaySize: 112
     emitters:
-      smoke: [88, 12]
-      mining: [40, 80]
-      sparkle: [70, 90]
+      smoke: [39, 8]
+      forgeEmber: [51, 66]
+      forgeSpark: [50, 70]
+      sparkle: [26, 76]
+    lightSource: [51, 66]
+    lightColor: '#ff8a33'
+    lightRadius: 62
+    lightOverlay: 'atmosphere.light.fire-glow'
 
   # ── STANDARD: Token Mine ──
   - id: building.mine
     tool: isometric_tile
-    prompt: "large epic old-school RPG token mine landmark, craggy stone mountain entrance, oversized heavy timber pit-head frame and pulley lift, dark arched cave mouth glowing with amber torchlight, mine cart rails leading out, blue magical ore veins and crystals, lanterns, rubble, moss, bold heroic isometric fantasy silhouette"
+    prompt: "old-school 16-bit fantasy RPG isometric token mine landmark, dark craggy mountain gate with heavy timber headframe and pulley wheel, amber-lit arched cave mouth, mine cart rails and small cart emerging, glowing blue token ore veins and crystal clusters, lanterns, rubble, moss, bold readable silhouette, transparent background, no sci-fi pod, no generic ruin"
     size: 64
     displaySize: 160
     emitters:
-      sparkle: [84, 94]
-      mining: [102, 124]
+      sparkle: [94, 47]
+      sparkle2: [34, 86]
+      mining: [78, 122]
+    lightSource: [73, 95]
+    lightColor: '#ffb84d'
+    lightRadius: 68
+    lightOverlay: 'atmosphere.light.lantern-glow'
 
   # ── HERO: Task Board (Arcane Rune Chronicle Court) ──
   - id: building.taskboard
-    composeGrid: [3, 2]
+    tool: isometric_tile
+    prompt: "old school RPG isometric pixel art transparent sprite: arcane task board court shaped like a small castle facade. Two narrow tall stone towers left and right, each taller than the middle, crenellated battlements and orange torch flames. Between towers is a large upright glowing quest tablet / notice board with amber rune text lines. One connected landmark building on a stone base, no tiled grid, no duplicate blocks, no flat top platform."
+    size: 64
+    displaySize: 176
     splitForOcclusion: true
-    horizonY: 130
-    layers:
-      base:
-        tool: isometric_tile
-        prompt: "epic arcane rune chronicle court, twin ancient crenellated stone watchtowers with amber torch sconces flanking a massive central inscribed tablet, rune-carved stone face with horizontal amber glowing inscription lines, burnished gold arcane seal at top center, stone plinth base with guild relief, warm golden firelight, heroic isometric RPG landmark"
-        size: 64
-        displaySize: 104
-      runeGlow:
-        tool: isometric_tile
-        prompt: "pulsing warm amber rune glow radiating from carved stone tablet surface, horizontal glowing inscription lines, burnished gold arcane energy, transparent background, isometric"
-        size: 64
-        anchor: [156, 80]
-        animation: pulse
+    horizonY: 94
     emitters:
-      torch: [52, 148]
-      torch2: [260, 148]
-      sparkle: [156, 74]
-      sparkle2: [156, 30]
+      torch: [48, 105]
+      torch2: [128, 105]
+      sparkle: [88, 74]
+      sparkle2: [88, 48]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [156, 80]
+    lightSource: [88, 74]
     lightColor: '#ffb347'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'
@@ -390,15 +391,15 @@ buildings:
   # ── STANDARD: Lore Archive ──
   - id: building.archive
     tool: isometric_tile
-    prompt: "monumental old-school RPG grand lore archive, fortress-library built into an open book, crenellated stone facade, tall side buttresses, huge arched stained-glass window, visible colorful bookshelves, scholar lectern, oversized open tome, parchment maps, glowing green magic lamps, bold heroic isometric fantasy landmark"
+    prompt: "old-school 16-bit fantasy RPG grand lore archive exterior, monumental stone fortress-library keep with two short bookend towers, tall central stained-glass arched window glowing gold-green, blue slate roof, carved open-book crest above entrance, scroll banners, broad stone steps, side buttresses, exterior scholarly castle landmark, no exposed interior wall, no giant bookshelf cutaway"
     anchor: [168, 196]
     splitForOcclusion: true
     horizonY: 145
     emitters:
-      sparkle: [215, 118]
-      sparkle2: [68, 104]
-      sparkle3: [268, 104]
-    lightSource: [215, 118]
+      sparkle: [168, 82]
+      sparkle2: [142, 128]
+      sparkle3: [194, 128]
+    lightSource: [168, 88]
     lightColor: '#b3d68c'
     lightRadius: 108
     lightOverlay: 'atmosphere.light.lantern-glow'
