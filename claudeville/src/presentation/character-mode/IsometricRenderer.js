@@ -31,9 +31,41 @@ const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
-const BRIDGE_SPRITE_GLOW = {
-    civic: 'rgba(85, 195, 255, 0.24)',
-    elderwood: 'rgba(112, 207, 102, 0.22)',
+const BRIDGE_STYLE_PALETTES = {
+    civic: {
+        shadow: 'rgba(19, 7, 5, 0.36)',
+        underStone: '#4c4a42',
+        underStoneDark: '#27241f',
+        underStoneLight: '#80745e',
+        deckDark: '#3d1b13',
+        deckEdge: '#4a2015',
+        deckA: '#774326',
+        deckB: '#c17a42',
+        deckC: '#e1a05d',
+        railDark: '#2a0f09',
+        railMid: '#8e4528',
+        rope: '#d3a45e',
+        rune: 'rgba(104, 204, 255, 0.72)',
+        glow: 'rgba(85, 195, 255, 0.24)',
+        moss: 'rgba(86, 126, 60, 0.45)',
+    },
+    elderwood: {
+        shadow: 'rgba(14, 10, 6, 0.38)',
+        underStone: '#3f4a3d',
+        underStoneDark: '#20281f',
+        underStoneLight: '#71805c',
+        deckDark: '#332015',
+        deckEdge: '#49301c',
+        deckA: '#684b29',
+        deckB: '#a26c35',
+        deckC: '#d0914f',
+        railDark: '#26180f',
+        railMid: '#7d542b',
+        rope: '#c7a35e',
+        rune: 'rgba(149, 226, 133, 0.70)',
+        glow: 'rgba(112, 207, 102, 0.22)',
+        moss: 'rgba(92, 151, 70, 0.54)',
+    },
 };
 const DISTRICT_WASHES = [
     { x: 16, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
@@ -1857,13 +1889,115 @@ export class IsometricRenderer {
     }
 
 
-    _bridgeSpriteId(span) {
-        const orientation = (span.orientation || 'EW').toLowerCase();
-        const style = span.style || 'civic';
-        return `bridge.landmark.${style}.${orientation}`;
+    _bridgePalette(span) {
+        return BRIDGE_STYLE_PALETTES[span.style] || BRIDGE_STYLE_PALETTES.civic;
     }
 
-    _drawBridgeAccentSprites(ctx, span) {
+    _drawBridgeMasonryCap(ctx, span, t, palette) {
+        const left = this._bridgePoint(span, t, -span.halfWidth - 12, 0, 8);
+        const right = this._bridgePoint(span, t, span.halfWidth + 12, 0, 8);
+
+        ctx.lineCap = 'round';
+        ctx.strokeStyle = palette.underStoneDark;
+        ctx.lineWidth = 13;
+        ctx.beginPath();
+        ctx.moveTo(left.x, left.y);
+        ctx.lineTo(right.x, right.y);
+        ctx.stroke();
+
+        ctx.strokeStyle = palette.underStone;
+        ctx.lineWidth = 9;
+        ctx.beginPath();
+        ctx.moveTo(left.x, left.y - 2);
+        ctx.lineTo(right.x, right.y - 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = palette.underStoneLight;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(left.x + span.axisUnit.x * 3, left.y - 7);
+        ctx.lineTo(right.x + span.axisUnit.x * 3, right.y - 7);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(28, 22, 17, 0.42)';
+        ctx.lineWidth = 1.5;
+        for (const offset of [-span.halfWidth * 0.55, 0, span.halfWidth * 0.55]) {
+            const p = this._bridgePoint(span, t, offset, 0, 2);
+            ctx.beginPath();
+            ctx.moveTo(p.x - span.axisUnit.x * 5, p.y - span.axisUnit.y * 5);
+            ctx.lineTo(p.x + span.axisUnit.x * 5, p.y + span.axisUnit.y * 5);
+            ctx.stroke();
+        }
+    }
+
+    _drawBridgePier(ctx, span, t, palette) {
+        for (const offset of [-span.halfWidth * 0.62, span.halfWidth * 0.62]) {
+            const top = this._bridgePoint(span, t, offset, 4, 8);
+            const foot = { x: top.x - span.axisUnit.x * 2, y: top.y + 35 };
+            ctx.strokeStyle = palette.underStoneDark;
+            ctx.lineWidth = 9;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(top.x, top.y);
+            ctx.lineTo(foot.x, foot.y);
+            ctx.stroke();
+
+            ctx.strokeStyle = palette.underStone;
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.moveTo(top.x - 1, top.y - 2);
+            ctx.lineTo(foot.x - 1, foot.y - 2);
+            ctx.stroke();
+
+            ctx.strokeStyle = palette.underStoneLight;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(top.x - 3, top.y + 2);
+            ctx.lineTo(foot.x - 3, foot.y + 18);
+            ctx.stroke();
+        }
+    }
+
+    _drawBridgeRopeRuns(ctx, span, palette) {
+        ctx.strokeStyle = palette.rope;
+        ctx.globalAlpha = 0.78;
+        ctx.lineWidth = 1.5;
+        ctx.lineCap = 'round';
+        for (const side of [-1, 1]) {
+            this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, side * (span.halfWidth + 5), 19, 8, 18));
+            this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, side * (span.halfWidth + 5), 12, 12, 18));
+        }
+        ctx.globalAlpha = 1;
+    }
+
+    _drawBridgeRuneBands(ctx, span, palette) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.strokeStyle = palette.rune;
+        ctx.lineWidth = 2;
+        ctx.lineCap = 'round';
+        for (const t of [0.32, 0.50, 0.68]) {
+            const left = this._bridgePoint(span, t, -span.halfWidth + 15, 2);
+            const right = this._bridgePoint(span, t, span.halfWidth - 15, 2);
+            ctx.beginPath();
+            ctx.moveTo(left.x, left.y);
+            ctx.lineTo(right.x, right.y);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    _drawBridgeMoss(ctx, span, palette) {
+        ctx.fillStyle = palette.moss;
+        for (let i = 0; i < 18; i++) {
+            const t = (i + 0.5) / 18;
+            const side = i % 2 === 0 ? -1 : 1;
+            const p = this._bridgePoint(span, t, side * (span.halfWidth - 8), 0, 1);
+            ctx.fillRect(Math.round(p.x - 2), Math.round(p.y - 1), 4, 2);
+        }
+    }
+
+    _drawBridgeAccentSprites(ctx, span, palette) {
         if (!this.sprites || !span.id) return;
         const accents = BRIDGE_ACCENT_PROPS.filter((accent) => accent.bridgeId === span.id);
         for (const accent of accents) {
@@ -1872,7 +2006,7 @@ export class IsometricRenderer {
             const p = this._bridgePoint(span, t, side * (span.halfWidth + 16), 20, -2);
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
-            ctx.fillStyle = BRIDGE_SPRITE_GLOW[span.style] || BRIDGE_SPRITE_GLOW.civic;
+            ctx.fillStyle = palette.glow;
             ctx.beginPath();
             ctx.ellipse(p.x, p.y - 16, 13, 17, 0, 0, Math.PI * 2);
             ctx.fill();
@@ -1881,27 +2015,36 @@ export class IsometricRenderer {
         }
     }
 
-    _drawGeneratedBridgeSpan(ctx, span) {
+    _bridgeSpriteId(span) {
+        const orientation = (span.orientation || 'EW').toLowerCase();
+        const style = span.style || 'civic';
+        return `bridge.landmark.${style}.${orientation}`;
+    }
+
+    _drawGeneratedBridgeSpan(ctx, span, palette) {
         if (!this.sprites || !this.assets) return false;
         const spriteId = this._bridgeSpriteId(span);
         if (!this.assets.get(spriteId)) return false;
 
         const center = this._bridgePoint(span, 0.5, 0, 0, 7);
+        ctx.save();
         this._traceBridgeRibbon(
             ctx,
             this._bridgeSidePoints(span, -span.halfWidth - 10, 0, 16, 10),
             this._bridgeSidePoints(span, span.halfWidth + 10, 0, 16, 10)
         );
-        ctx.fillStyle = 'rgba(20, 7, 5, 0.32)';
+        ctx.fillStyle = palette.shadow;
         ctx.fill();
+        ctx.restore();
 
         this.sprites.drawSprite(ctx, spriteId, center.x, center.y);
-        this._drawBridgeAccentSprites(ctx, span);
+        this._drawBridgeAccentSprites(ctx, span, palette);
         return true;
     }
 
     _drawLandmarkBridgeSpan(ctx, span) {
-        if (this._drawGeneratedBridgeSpan(ctx, span)) return;
+        const palette = this._bridgePalette(span);
+        if (this._drawGeneratedBridgeSpan(ctx, span, palette)) return;
 
         const leftDeck = this._bridgeSidePoints(span, -span.halfWidth);
         const rightDeck = this._bridgeSidePoints(span, span.halfWidth);
@@ -1914,36 +2057,25 @@ export class IsometricRenderer {
         ctx.save();
 
         this._traceBridgeRibbon(ctx, shadowLeft, shadowRight);
-        ctx.fillStyle = 'rgba(20, 7, 5, 0.32)';
+        ctx.fillStyle = palette.shadow;
         ctx.fill();
 
         for (const t of [0, 1]) {
-            const capLeft = this._bridgePoint(span, t, -span.halfWidth - 9, 0, 7);
-            const capRight = this._bridgePoint(span, t, span.halfWidth + 9, 0, 7);
-            ctx.strokeStyle = 'rgba(54, 36, 27, 0.72)';
-            ctx.lineWidth = 7;
-            ctx.lineCap = 'round';
-            ctx.beginPath();
-            ctx.moveTo(capLeft.x, capLeft.y);
-            ctx.lineTo(capRight.x, capRight.y);
-            ctx.stroke();
-            ctx.strokeStyle = 'rgba(185, 132, 78, 0.8)';
-            ctx.lineWidth = 3;
-            ctx.beginPath();
-            ctx.moveTo(capLeft.x, capLeft.y - 2);
-            ctx.lineTo(capRight.x, capRight.y - 2);
-            ctx.stroke();
+            this._drawBridgeMasonryCap(ctx, span, t, palette);
         }
+
+        this._drawBridgePier(ctx, span, 0.38, palette);
+        this._drawBridgePier(ctx, span, 0.62, palette);
 
         this._traceBridgeRibbon(ctx, leftDeck, rightDeck);
         const deckGradient = ctx.createLinearGradient(span.start.x, span.start.y - span.rise, span.end.x, span.end.y);
-        deckGradient.addColorStop(0, '#7d3f27');
-        deckGradient.addColorStop(0.22, '#b46236');
-        deckGradient.addColorStop(0.55, '#d48a52');
-        deckGradient.addColorStop(1, '#8d4729');
+        deckGradient.addColorStop(0, palette.deckA);
+        deckGradient.addColorStop(0.24, palette.deckB);
+        deckGradient.addColorStop(0.55, palette.deckC);
+        deckGradient.addColorStop(1, palette.deckA);
         ctx.fillStyle = deckGradient;
         ctx.fill();
-        ctx.strokeStyle = '#3d1b13';
+        ctx.strokeStyle = palette.deckDark;
         ctx.lineWidth = 4;
         ctx.lineJoin = 'round';
         ctx.stroke();
@@ -1958,7 +2090,7 @@ export class IsometricRenderer {
         ctx.fill();
         ctx.globalAlpha = 1;
 
-        ctx.strokeStyle = 'rgba(74, 31, 18, 0.74)';
+        ctx.strokeStyle = 'rgba(52, 25, 15, 0.74)';
         ctx.lineWidth = 2;
         for (let i = 1; i <= span.lengthTiles + 2; i++) {
             const t = i / (span.lengthTiles + 3);
@@ -1970,7 +2102,10 @@ export class IsometricRenderer {
             ctx.stroke();
         }
 
-        ctx.strokeStyle = '#4a2015';
+        this._drawBridgeRuneBands(ctx, span, palette);
+        this._drawBridgeMoss(ctx, span, palette);
+
+        ctx.strokeStyle = palette.deckEdge;
         ctx.lineWidth = 3;
         this._strokeBridgeCurve(ctx, centerSeam);
         this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, -span.halfWidth + 4));
@@ -1983,14 +2118,14 @@ export class IsometricRenderer {
             for (const side of [-1, 1]) {
                 const deck = this._bridgePoint(span, t, side * (span.halfWidth - 1), 0);
                 const rail = this._bridgePoint(span, t, side * (span.halfWidth + 4), postLift);
-                ctx.strokeStyle = '#2f120c';
+                ctx.strokeStyle = palette.railDark;
                 ctx.lineWidth = i === 0 || i === postCount ? 5 : 4;
                 ctx.lineCap = 'round';
                 ctx.beginPath();
                 ctx.moveTo(deck.x, deck.y + 4);
                 ctx.lineTo(rail.x, rail.y);
                 ctx.stroke();
-                ctx.strokeStyle = '#8e4528';
+                ctx.strokeStyle = palette.railMid;
                 ctx.lineWidth = 2;
                 ctx.beginPath();
                 ctx.moveTo(deck.x - span.axisUnit.x * 1.5, deck.y + 2);
@@ -1999,12 +2134,14 @@ export class IsometricRenderer {
             }
         }
 
-        ctx.strokeStyle = '#2a0f09';
+        this._drawBridgeRopeRuns(ctx, span, palette);
+
+        ctx.strokeStyle = palette.railDark;
         ctx.lineWidth = 5;
         ctx.lineCap = 'round';
         this._strokeBridgeCurve(ctx, railLeft);
         this._strokeBridgeCurve(ctx, railRight);
-        ctx.strokeStyle = '#a75a32';
+        ctx.strokeStyle = palette.railMid;
         ctx.lineWidth = 2;
         this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, -span.halfWidth - 4, 27, 0, 14));
         this._strokeBridgeCurve(ctx, this._bridgeSidePoints(span, span.halfWidth + 2, 27, 0, 14));
@@ -2012,17 +2149,18 @@ export class IsometricRenderer {
         for (const t of [0, 1]) {
             for (const side of [-1, 1]) {
                 const base = this._bridgePoint(span, t, side * (span.halfWidth + 7), 0, 5);
-                ctx.fillStyle = '#2f120c';
+                ctx.fillStyle = palette.railDark;
                 ctx.beginPath();
                 ctx.arc(base.x, base.y - 14, 5, 0, Math.PI * 2);
                 ctx.fill();
-                ctx.fillStyle = '#c0713d';
+                ctx.fillStyle = palette.deckC;
                 ctx.beginPath();
                 ctx.arc(base.x - 1, base.y - 16, 2, 0, Math.PI * 2);
                 ctx.fill();
             }
         }
 
+        this._drawBridgeAccentSprites(ctx, span, palette);
         ctx.restore();
     }
 
