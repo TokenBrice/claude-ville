@@ -187,6 +187,7 @@ export class BuildingSprite {
         this._clockCanvasKey = '';
         this.clockState = null;
         this.lightingState = null;
+        this.atmosphereState = null;
         this.ritualConductor = null;
         this.quotaState = null;
         this.harborStatus = { failedPushActive: false, activeWorkingCount: null };
@@ -211,6 +212,10 @@ export class BuildingSprite {
 
     setClockState(clock) {
         this.clockState = clock || null;
+    }
+
+    setAtmosphereState(atmosphere) {
+        this.atmosphereState = atmosphere || null;
     }
 
     setRitualConductor(conductor) {
@@ -435,6 +440,7 @@ export class BuildingSprite {
             }
 
             if (!chosen) {
+                ctx.restore();
                 continue;
             }
             const {
@@ -842,6 +848,7 @@ export class BuildingSprite {
     // defaults to the lighthouse beam when the manifest entry omits it.
     getLightSources(lightingState = this.lightingState) {
         const lightBoost = lightingState?.lightBoost ?? 1;
+        const windowWarmth = this.atmosphereState?.reactions?.windowWarmth || 0;
         const staticSources = this._staticLightSources();
         const out = staticSources.map(source => {
             const visitors = source.building ? this._visitorCountFor(source.building) : 0;
@@ -856,11 +863,12 @@ export class BuildingSprite {
                 if (alpha != null) alpha *= 1 + watchIntensity * 0.65;
                 if (this.harborStatus?.failedPushActive) color = '#ff755d';
             }
-            const radius = source.radius * Math.min(1.55, 0.72 + lightBoost * 0.28 + (activity - 1) * 0.18);
+            const warmthBoost = source.kind === 'beam' ? 0 : windowWarmth * 0.16;
+            const radius = source.radius * Math.min(1.68, 0.72 + lightBoost * 0.28 + warmthBoost + (activity - 1) * 0.18);
             return normalizeLightSource({
                 ...source,
                 color,
-                intensity: activity,
+                intensity: activity + warmthBoost,
                 radius,
                 alpha,
                 origin: source.origin || { x: source.x, y: source.y },
@@ -1017,7 +1025,94 @@ export class BuildingSprite {
         }
         if (building) {
             this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY);
+            this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass, horizonY);
         }
+    }
+
+    _drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+        const reactions = this.atmosphereState?.reactions || {};
+        const windowWarmth = reactions.windowWarmth || 0;
+        const roofGlint = reactions.roofGlintAlpha || 0;
+        if (windowWarmth <= 0.035 && roofGlint <= 0.025) return;
+        const baseAnchor = this.assets.getAnchor(entry.id);
+        const dims = this.assets.getDims(entry.id);
+        if (!dims) return;
+        const localPoint = (lx, ly) => ({ x: Math.round(wx - baseAnchor[0] + lx), y: Math.round(wy - baseAnchor[1] + ly) });
+        const shouldDrawLocalY = (localY) => (
+            splitPass === 'whole'
+            || !Number.isFinite(horizonY)
+            || (splitPass === 'back' ? localY < horizonY : localY >= horizonY)
+        );
+        const seed = hashText(`${building.type}|${building.position?.tileX ?? 0}|${building.position?.tileY ?? 0}`);
+        const pulse = this.motionScale ? (Math.sin(this.frame * 0.045 + seed * 0.011) + 1) / 2 : 0.56;
+
+        ctx.save();
+        if (splitPass !== 'whole' && Number.isFinite(horizonY)) {
+            const dx = Math.round(wx - baseAnchor[0]);
+            const dy = Math.round(wy - baseAnchor[1]);
+            ctx.beginPath();
+            if (splitPass === 'back') {
+                ctx.rect(dx - 2, dy - 2, dims.w + 4, horizonY + 4);
+            } else {
+                ctx.rect(dx - 2, dy + horizonY - 2, dims.w + 4, dims.h - horizonY + 4);
+            }
+            ctx.clip();
+        }
+        ctx.globalCompositeOperation = 'screen';
+        if (windowWarmth > 0.035) {
+            const warmthAlpha = Math.min(0.28, windowWarmth * (0.12 + pulse * 0.05));
+            const lightPoints = this._buildingReactionLightPoints(building, entry, dims);
+            for (const point of lightPoints) {
+                if (!shouldDrawLocalY(point.y)) continue;
+                const p = localPoint(point.x, point.y);
+                const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, point.r || 18);
+                grad.addColorStop(0, `rgba(255, 206, 116, ${warmthAlpha})`);
+                grad.addColorStop(0.58, `rgba(255, 162, 78, ${warmthAlpha * 0.34})`);
+                grad.addColorStop(1, 'rgba(255, 162, 78, 0)');
+                ctx.fillStyle = grad;
+                ctx.beginPath();
+                ctx.ellipse(p.x, p.y, point.r || 18, (point.r || 18) * 0.48, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+
+        if (roofGlint > 0.025) {
+            const count = roofGlint > 0.16 ? 2 : 1;
+            ctx.strokeStyle = `rgba(255, 231, 166, ${Math.min(0.22, roofGlint * (0.48 + pulse * 0.34))})`;
+            ctx.lineWidth = 1;
+            for (let i = 0; i < count; i++) {
+                const lx = dims.w * (0.28 + ((seed >> (i * 5)) % 42) / 100);
+                const ly = dims.h * (0.22 + ((seed >> (i * 7 + 3)) % 18) / 100);
+                if (!shouldDrawLocalY(ly)) continue;
+                const p = localPoint(lx, ly);
+                ctx.beginPath();
+                ctx.moveTo(p.x - 7, p.y + 1);
+                ctx.lineTo(p.x + 7, p.y - 3);
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
+    }
+
+    _buildingReactionLightPoints(building, entry, dims) {
+        const points = [];
+        const push = (at, radius = 18) => {
+            if (!Array.isArray(at) || !Number.isFinite(Number(at[0])) || !Number.isFinite(Number(at[1]))) return;
+            points.push({ x: Number(at[0]), y: Number(at[1]), r: radius });
+        };
+        if (Array.isArray(entry?.lightSources)) {
+            for (const source of entry.lightSources.slice(0, 3)) push(source.at, Math.min(28, Math.max(14, (source.radius || 42) * 0.28)));
+        }
+        if (entry?.lightSource) push(entry.lightSource, 20);
+        if (entry?.emitters) {
+            for (const at of Object.values(entry.emitters).slice(0, 3)) push(at, 16);
+        }
+        const fallback = BUILDING_LIGHT_FALLBACKS[building.type];
+        if (fallback) push(fallback.at, 20);
+        if (!points.length) {
+            points.push({ x: dims.w * 0.48, y: dims.h * 0.58, r: 18 });
+        }
+        return points.slice(0, 4);
     }
 
     _drawManifestLayers(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null) {
