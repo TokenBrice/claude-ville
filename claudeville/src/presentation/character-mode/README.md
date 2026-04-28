@@ -15,7 +15,6 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `AgentBehaviorState.js` | Per-agent behavior and destination state used by movement/visit systems. |
 | `VisitIntentManager.js`, `VisitTileAllocator.js` | Building capacity, visit reservations, and destination assignment. |
 | `BuildingSprite.js` | Current building visuals, sprite blits, hover state, building-specific decoration/effects, occlusion split for hero buildings, and `hitTest` in world coordinates. |
-| `BuildingRenderer.legacy.js` | Historical reference/fallback code. Do not add new building behavior here unless intentionally restoring the legacy renderer. |
 | `AssetManager.js` | Loads `manifest.yaml` and `palettes.yaml`, maps manifest IDs to PNG paths, cache-busts with `style.assetVersion`, and supplies placeholder/checker fallbacks. |
 | `SpriteRenderer.js` | Single entry point for PNG sprite blits; keeps pixel-art draws snapped and smoothing disabled. |
 | `SpriteSheet.js` | Character sheet frame lookup and 8-direction velocity mapping. Character sheets are 8 columns × 10 rows of 92px cells. |

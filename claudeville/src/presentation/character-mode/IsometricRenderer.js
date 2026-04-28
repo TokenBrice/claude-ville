@@ -44,7 +44,9 @@ import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
+import { appendDepthSortedDrawables, drawDepthSortedDrawables } from './DrawablePass.js';
 import { tileToWorld } from './Projection.js';
+import { buildStaticPropDrawables } from './StaticPropDrawables.js';
 import {
     CANVAS_BUDGET,
     canvasMapPixelCount,
@@ -1370,21 +1372,11 @@ export class IsometricRenderer {
     }
 
     _buildStaticPropDrawables() {
-        const sprites = [
-            ...(this.treePropSprites || []),
-            ...(this.boulderPropSprites || []),
-            ...(this.districtPropSprites || []),
-        ];
-        const drawables = [];
-        for (const sprite of sprites) {
-            if (sprite.splitForOcclusion) {
-                drawables.push({ kind: 'prop-back', sortY: sprite.propBackSortY(), payload: sprite });
-                drawables.push({ kind: 'prop-front', sortY: sprite.propFrontSortY(), payload: sprite });
-            } else {
-                drawables.push({ kind: 'prop', sortY: sprite.sortY ?? sprite.y, payload: sprite });
-            }
-        }
-        return drawables;
+        return buildStaticPropDrawables(
+            this.treePropSprites,
+            this.boulderPropSprites,
+            this.districtPropSprites
+        );
     }
 
     _bindMotionPreference() {
@@ -2289,36 +2281,24 @@ export class IsometricRenderer {
 
         const drawables = this._drawables;
         drawables.length = 0;
-        for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
-        for (const d of propDrawables) drawables.push(d);
-        for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
-        for (const d of harborDrawables) drawables.push({ kind: 'harbor-traffic', sortY: d.sortY, payload: d });
-        for (const d of landmarkDrawables) drawables.push({ kind: 'landmark-activity', sortY: d.sortY, payload: d });
-        for (const d of chronicleMonumentDrawables) drawables.push(d);
-        for (const d of chroniclerDrawables) drawables.push(d);
-        drawables.sort((a, b) => a.sortY - b.sortY);
-
-        for (const item of drawables) {
-            if (item.kind === 'agent') {
-                item.payload.draw(ctx, zoom);
-            } else if (item.kind === 'prop') {
-                item.payload.drawPart(ctx, 'whole', zoom);
-            } else if (item.kind === 'prop-back') {
-                item.payload.drawPart(ctx, 'back', zoom);
-            } else if (item.kind === 'prop-front') {
-                item.payload.drawPart(ctx, 'front', zoom);
-            } else if (item.kind === 'harbor-traffic') {
-                this.harborTraffic.draw(ctx, item.payload, zoom);
-            } else if (item.kind === 'landmark-activity') {
-                this.landmarkActivity.draw(ctx, item.payload, zoom);
-            } else if (item.kind === 'chronicle-monument') {
-                this.chronicleMonuments.draw(ctx, item.payload, zoom, renderNow);
-            } else if (item.kind === 'chronicler') {
-                this.chronicler.draw(ctx, item.payload, zoom);
-            } else {
-                this.buildingRenderer.drawDrawable(ctx, item.payload);
-            }
-        }
+        appendDepthSortedDrawables(drawables, {
+            buildingDrawables,
+            propDrawables,
+            agentSprites: sortedSprites,
+            harborDrawables,
+            landmarkDrawables,
+            chronicleMonumentDrawables,
+            chroniclerDrawables,
+        });
+        drawDepthSortedDrawables(ctx, drawables, {
+            zoom,
+            renderNow,
+            buildingRenderer: this.buildingRenderer,
+            harborTraffic: this.harborTraffic,
+            landmarkActivity: this.landmarkActivity,
+            chronicleMonuments: this.chronicleMonuments,
+            chronicler: this.chronicler,
+        });
         this._drawFamiliarMotesForFamilies(ctx, sortedSprites, atmosphere, renderNow);
         drawTalkArcs(ctx, {
             relationship: this.relationshipState,

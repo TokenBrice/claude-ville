@@ -139,7 +139,6 @@ Key files:
 - `AgentSprite.js`: state and animation only; drawing delegated to `SpriteRenderer`, `Compositor`, and `SpriteSheet`.
 - `AgentBehaviorState.js`, `VisitIntentManager.js`, `VisitTileAllocator.js`: visit intent, building capacity, and agent destination allocation.
 - `BuildingSprite.js`: building sprite blits with occlusion split for hero buildings; replaces the legacy building renderer.
-- `BuildingRenderer.legacy.js`: historical reference/fallback code, not the current render path.
 - `ParticleSystem.js`: particles and ambient effects; emitter hooks now driven by manifest-declared coordinates.
 - `Minimap.js`: intentionally vector parchment art, out of scope for the pixel-art migration.
 - `AssetManager.js`: manifest loader, PNG cache, alpha mask + outline cache.

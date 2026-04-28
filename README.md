@@ -156,7 +156,7 @@ World mode is the current RPG visual direction. It renders an isometric pixel vi
 
 Agents can be selected on the canvas. Selection opens the activity panel and makes the camera follow the selected sprite until the selection clears or the user drags the camera. Agents using `SendMessage` can move toward a matched recipient and show chat animation state.
 
-Rendering is sprite-first. `IsometricRenderer.js` orchestrates the draw loop and data flow; `SceneryEngine.js`, `TerrainTileset.js`, `BuildingSprite.js`, `HarborTraffic.js`, `AgentSprite.js`, `SpriteRenderer.js`, `Compositor.js`, `SpriteSheet.js`, and `AssetManager.js` do the specialized work. `BuildingRenderer.legacy.js` is historical fallback/reference code, not the current building renderer.
+Rendering is sprite-first. `IsometricRenderer.js` orchestrates the draw loop and data flow; `SceneryEngine.js`, `TerrainTileset.js`, `BuildingSprite.js`, `HarborTraffic.js`, `AgentSprite.js`, `SpriteRenderer.js`, `Compositor.js`, `SpriteSheet.js`, and `AssetManager.js` do the specialized work.
 
 ### Dashboard Mode
 
