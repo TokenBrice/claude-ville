@@ -3,9 +3,11 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
+import yaml from 'js-yaml';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const spritesRoot = join(repoRoot, 'claudeville', 'assets', 'sprites');
+const manifestPath = join(spritesRoot, 'manifest.yaml');
 const cacheRoot = join(repoRoot, 'output', 'pixellab-cache');
 const API_BASE = 'https://api.pixellab.ai/v2';
 const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
@@ -16,6 +18,8 @@ const IDLE_ROWS = 4;
 const args = new Set(process.argv.slice(2));
 const force = args.has('--force');
 const skipApi = args.has('--skip-api');
+const dryRun = args.has('--dry-run');
+const allowUnmanifested = args.has('--allow-unmanifested');
 const onlyMap = args.has('--map-only');
 const onlyBuildings = args.has('--buildings-only');
 const onlyCharacters = args.has('--characters-only');
@@ -64,8 +68,16 @@ main().catch((err) => {
 });
 
 async function main() {
+    const plannedIds = plannedSpriteIds();
+    assertManifested(plannedIds);
+    if (dryRun) {
+        console.log(`[pixellab-revamp] dry run: ${plannedIds.length} manifest-backed sprite IDs selected`);
+        for (const id of plannedIds) console.log(`[pixellab-revamp] ${id}`);
+        return;
+    }
+
     mkdirSync(cacheRoot, { recursive: true });
-    const token = readToken();
+    const token = skipApi ? null : readToken();
 
     if (!onlyBuildings && !onlyCharacters && !idFilter) {
         await generateMapConcept(token);
@@ -94,6 +106,40 @@ function standard(id, description, size) {
 
 function character(id, description) {
     return { id, kind: 'character', description, width: CELL, height: CELL };
+}
+
+function plannedSpriteIds() {
+    const ids = [];
+    if (!onlyMap && !onlyCharacters) {
+        ids.push(...BUILDINGS.filter((spec) => !idFilter || idFilter.has(spec.id)).map((spec) => spec.id));
+    }
+    if (!onlyMap && !onlyBuildings) {
+        ids.push(...CHARACTERS.filter((spec) => !idFilter || idFilter.has(spec.id)).map((spec) => spec.id));
+    }
+    return ids;
+}
+
+function assertManifested(ids) {
+    const manifestIds = collectManifestIds();
+    const unmanifested = ids.filter((id) => !manifestIds.has(id));
+    if (!unmanifested.length) return;
+
+    const message = `unmanifested sprite IDs: ${unmanifested.join(', ')}`;
+    if (!allowUnmanifested) {
+        throw new Error(`${message}; pass --allow-unmanifested only for scratch assets`);
+    }
+    console.warn(`[pixellab-revamp] WARNING: ${message}`);
+}
+
+function collectManifestIds() {
+    const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
+    const ids = new Set();
+    for (const key of ['characters', 'accessories', 'statusOverlays', 'buildings', 'props', 'vegetation', 'terrain', 'bridges', 'atmosphere']) {
+        for (const entry of manifest[key] || []) {
+            if (entry?.id) ids.add(entry.id);
+        }
+    }
+    return ids;
 }
 
 function readToken() {

@@ -11,8 +11,18 @@ import { PNG } from 'pngjs';
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const spritesRoot = join(repoRoot, 'claudeville', 'assets', 'sprites');
 const manifestPath = join(spritesRoot, 'manifest.yaml');
+const palettesPath = join(spritesRoot, 'palettes.yaml');
+const args = process.argv.slice(2);
+const orphanAllowlist = new Set([
+    ...args
+        .filter((arg) => arg.startsWith('--allow-orphan='))
+        .flatMap((arg) => arg.slice('--allow-orphan='.length).split(','))
+        .map((rel) => rel.trim())
+        .filter(Boolean),
+]);
 
 const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
+const palettes = yaml.load(readFileSync(palettesPath, 'utf8'));
 
 const expected = new Set();
 const characterEntries = [];
@@ -113,10 +123,16 @@ function walk(dir) {
 walk(spritesRoot);
 
 let orphans = 0;
+let allowlistedOrphans = 0;
 for (const f of found) {
     if (!expected.has(f)) {
-        console.warn(`ORPHAN: ${f}`);
-        orphans++;
+        if (orphanAllowlist.has(f)) {
+            console.warn(`ORPHAN ALLOWLISTED: ${f}`);
+            allowlistedOrphans++;
+        } else {
+            console.error(`ORPHAN: ${f}`);
+            orphans++;
+        }
     }
 }
 
@@ -130,8 +146,10 @@ for (const entry of manifest.atmosphere || []) {
     invalidAtmosphere += validateAtmospherePng(entry);
 }
 
-console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  invalid manifest entries: ${invalidManifest}  invalid character sheets: ${invalidCharacters}  invalid atmosphere PNGs: ${invalidAtmosphere}`);
-process.exit(missing > 0 || invalidManifest > 0 || invalidCharacters > 0 || invalidAtmosphere > 0 ? 1 : 0);
+const invalidPalettes = validatePaletteParity();
+
+console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid atmosphere PNGs: ${invalidAtmosphere}`);
+process.exit(missing > 0 || orphans > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidAtmosphere > 0 ? 1 : 0);
 
 function validateManifestEntry(entry) {
     if (!entry?.id) return 0;
@@ -151,6 +169,28 @@ function validateManifestEntry(entry) {
     }
 
     return errors;
+}
+
+function validatePaletteParity() {
+    if (!deepEqualCanonical(manifest.palettes || {}, palettes || {})) {
+        console.error(`INVALID PALETTES: palettes.yaml must exactly mirror the palettes block in manifest.yaml`);
+        return 1;
+    }
+    return 0;
+}
+
+function deepEqualCanonical(left, right) {
+    return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
+}
+
+function canonicalize(value) {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(
+        Object.keys(value)
+            .sort()
+            .map((key) => [key, canonicalize(value[key])])
+    );
 }
 
 function validateCharacterSheet(entry) {

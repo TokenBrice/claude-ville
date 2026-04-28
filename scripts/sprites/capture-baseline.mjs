@@ -12,17 +12,17 @@
  * in App.js. For now, poses are captured with consistent positioning for diff comparison.
  *
  * Usage:
- *   npm run sprites:capture-baseline      # Capture baselines to 2026-04-25-pixel-art-baseline/{pose}.png
- *   npm run sprites:capture-fresh         # Capture fresh versions to {pose}-fresh.png (for diffs)
+ *   npm run sprites:capture-baseline      # Capture baselines to scripts/sprites/baselines/{pose}.png
+ *   npm run sprites:capture-fresh         # Capture fresh versions to scripts/sprites/baselines/{pose}-fresh.png
  */
 
 import { chromium } from 'playwright';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
-const outDir = join(repoRoot, 'docs', 'superpowers', 'specs', '2026-04-25-pixel-art-baseline');
+const outDir = join(repoRoot, 'scripts', 'sprites', 'baselines');
 mkdirSync(outDir, { recursive: true });
 
 const fresh = process.argv.includes('--fresh');

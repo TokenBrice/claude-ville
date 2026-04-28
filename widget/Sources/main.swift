@@ -277,6 +277,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                           tier: String = "", activity: String = "",
                           quotaAvailable: Bool = false,
                           fiveHourPct: Int = 0, sevenDayPct: Int = 0) -> String {
+        // Runtime popover surface. widget/Resources remains bundled for the static WebSocket surface and smoke checks.
         let sorted = agents.sorted { a, b in
             let order: [String: Int] = ["working": 0, "waiting": 1, "idle": 2]
             return (order[a.status] ?? 9) < (order[b.status] ?? 9)
@@ -723,6 +724,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let config = WKWebViewConfiguration()
         let handler = MessageHandler(delegate: self)
         config.userContentController.add(handler, name: "openDashboard")
+        config.userContentController.add(handler, name: "badge")
 
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 420), configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
@@ -748,7 +750,15 @@ class MessageHandler: NSObject, WKScriptMessageHandler {
     weak var delegate: AppDelegate?
     init(delegate: AppDelegate) { self.delegate = delegate }
     func userContentController(_ uc: WKUserContentController, didReceive msg: WKScriptMessage) {
-        if msg.name == "openDashboard" { delegate?.openDashboard() }
+        if msg.name == "openDashboard" {
+            delegate?.openDashboard()
+            return
+        }
+        if msg.name == "badge",
+           let body = msg.body as? [String: Any],
+           let working = AppDelegate.toDouble(body["working"]) {
+            delegate?.updateBadge(working: AppDelegate.toInt(working))
+        }
     }
 }
 

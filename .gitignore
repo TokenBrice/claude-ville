@@ -4,6 +4,11 @@ node_modules/
 docs/plans/
 output/
 smoke-*.png
+/*.png
+widget/ClaudeVilleWidget
+widget/ClaudeVilleWidget.app/
+scripts/sprites/baselines/*.png
+!scripts/sprites/baselines/.gitkeep
 .playwright-cli/
 .playwright-mcp/
 .worktrees/

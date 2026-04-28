@@ -18,12 +18,14 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { spawnSync } from 'node:child_process';
 import { PNG } from 'pngjs';
+import yaml from 'js-yaml';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const cacheRoot = join(repoRoot, 'output', 'character-mcp-cache');
 const spritesRoot = join(repoRoot, 'claudeville', 'assets', 'sprites', 'characters');
+const manifestPath = join(repoRoot, 'claudeville', 'assets', 'sprites', 'manifest.yaml');
 
 const DIRECTIONS = ['south', 'south-east', 'east', 'north-east', 'north', 'north-west', 'west', 'south-west'];
 const CELL = 92;
@@ -31,6 +33,9 @@ const WALK_FRAMES = 6;
 const IDLE_FRAMES = 4;
 const COLS = DIRECTIONS.length;
 const ROWS = WALK_FRAMES + IDLE_FRAMES;
+const args = new Set(process.argv.slice(2));
+const allowUnmanifested = args.has('--allow-unmanifested');
+const dryRun = args.has('--dry-run');
 
 function arg(name, fallback) {
     const found = process.argv.find((a) => a.startsWith(`--${name}=`));
@@ -44,10 +49,17 @@ const zipPath = arg('zip', join(cacheRoot, `${id}.zip`));
 main().catch((err) => { console.error(err.stack || err.message); process.exit(1); });
 
 async function main() {
+    assertManifested(id);
     if (!existsSync(zipPath)) throw new Error(`ZIP not found: ${zipPath}`);
+    if (dryRun) {
+        console.log(`[character-mcp] dry run: ${id} is manifest-backed; ZIP exists at ${zipPath}`);
+        return;
+    }
     const extractDir = join(cacheRoot, `${id}-extracted`);
     mkdirSync(extractDir, { recursive: true });
-    execSync(`unzip -o -q "${zipPath}" -d "${extractDir}"`);
+    const unzip = spawnSync('unzip', ['-o', '-q', zipPath, '-d', extractDir], { stdio: 'inherit' });
+    if (unzip.error) throw unzip.error;
+    if (unzip.status !== 0) throw new Error(`unzip failed with exit code ${unzip.status}`);
 
     const meta = JSON.parse(readFileSync(join(extractDir, 'metadata.json'), 'utf8'));
     const SOURCE = meta.character.size.width;
@@ -103,6 +115,18 @@ async function main() {
 function readPng(p) {
     if (!existsSync(p)) throw new Error(`missing ${p}`);
     return PNG.sync.read(readFileSync(p));
+}
+
+function assertManifested(spriteId) {
+    const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
+    const ids = new Set((manifest.characters || []).map((entry) => entry?.id).filter(Boolean));
+    if (ids.has(spriteId)) return;
+
+    const message = `unmanifested character ID: ${spriteId}`;
+    if (!allowUnmanifested) {
+        throw new Error(`${message}; pass --allow-unmanifested only for scratch assets`);
+    }
+    console.warn(`[character-mcp] WARNING: ${message}`);
 }
 
 // Center-crop a CELL×CELL window from a SOURCE×SOURCE frame.

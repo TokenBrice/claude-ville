@@ -1,11 +1,13 @@
 #!/usr/bin/env node
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { PNG } from 'pngjs';
+import yaml from 'js-yaml';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const spritesRoot = join(repoRoot, 'claudeville', 'assets', 'sprites');
+const manifestPath = join(spritesRoot, 'manifest.yaml');
 const CELL = 92;
 const DIRECTIONS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
 const WALK_FRAMES = 6;
@@ -13,6 +15,8 @@ const IDLE_FRAMES = 4;
 const args = new Set(process.argv.slice(2));
 const onlyCharacters = args.has('--characters-only');
 const onlyOverlays = args.has('--overlays-only');
+const allowUnmanifested = args.has('--allow-unmanifested');
+const dryRun = args.has('--dry-run');
 const idsArg = process.argv.slice(2).find((arg) => arg.startsWith('--ids='));
 const idFilter = idsArg
     ? new Set(idsArg.slice('--ids='.length).split(',').map((id) => id.trim()).filter(Boolean))
@@ -118,11 +122,22 @@ const SPECS = [
 ];
 
 const EFFORTS = [
-    { id: 'overlay.accessory.effortLow', kind: 'low', color: '#b98948', glow: '#f2d36b' },
-    { id: 'overlay.accessory.effortMedium', kind: 'medium', color: '#b7ccff', glow: '#7be3d7' },
-    { id: 'overlay.accessory.effortHigh', kind: 'high', color: '#f2d36b', glow: '#fff1b8' },
+    { id: 'overlay.status.effortLow', kind: 'low', color: '#b98948', glow: '#f2d36b' },
+    { id: 'overlay.status.effortMedium', kind: 'medium', color: '#b7ccff', glow: '#7be3d7' },
+    { id: 'overlay.status.effortHigh', kind: 'high', color: '#f2d36b', glow: '#fff1b8' },
     { id: 'overlay.accessory.effortXhigh', kind: 'xhigh', color: '#fff1b8', glow: '#c8a3ff' },
 ];
+
+const plannedIds = [
+    ...(!onlyOverlays ? SPECS.map((spec) => spec.id) : []),
+    ...(!onlyCharacters ? EFFORTS.map((effort) => effort.id) : []),
+].filter((id) => !idFilter || idFilter.has(id));
+assertManifested(plannedIds);
+if (dryRun) {
+    console.log(`[baseline] dry run: ${plannedIds.length} manifest-backed sprite IDs selected`);
+    for (const id of plannedIds) console.log(`[baseline] ${id}`);
+    process.exit(0);
+}
 
 if (!onlyOverlays) {
     for (const spec of SPECS) {
@@ -175,6 +190,29 @@ function drawCharacter(png, x0, y0, spec, direction, walking, frame) {
     if (spec.family === 'claude') drawClaudeBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob);
     else if (spec.family === 'gemini') drawGeminiBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob);
     else drawCodexBody(png, cx, y0, feetY, headY, spec, front, back, side, sideSign, step, bob);
+}
+
+function assertManifested(ids) {
+    const manifestIds = collectManifestIds();
+    const unmanifested = ids.filter((id) => !manifestIds.has(id));
+    if (!unmanifested.length) return;
+
+    const message = `unmanifested sprite IDs: ${unmanifested.join(', ')}`;
+    if (!allowUnmanifested) {
+        throw new Error(`${message}; pass --allow-unmanifested only for scratch assets`);
+    }
+    console.warn(`[baseline] WARNING: ${message}`);
+}
+
+function collectManifestIds() {
+    const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
+    const ids = new Set();
+    for (const key of ['characters', 'accessories', 'statusOverlays', 'buildings', 'props', 'vegetation', 'terrain', 'bridges', 'atmosphere']) {
+        for (const entry of manifest[key] || []) {
+            if (entry?.id) ids.add(entry.id);
+        }
+    }
+    return ids;
 }
 
 function drawClaudeBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob) {

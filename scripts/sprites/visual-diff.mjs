@@ -9,20 +9,27 @@ import { PNG } from 'pngjs';
 import pixelmatch from 'pixelmatch';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
-const baselineDir = join(repoRoot, 'docs', 'superpowers', 'specs',
-                          '2026-04-25-pixel-art-baseline');
+const baselineDir = join(repoRoot, 'scripts', 'sprites', 'baselines');
 const POSES = ['overview', 'command', 'harbor', 'mine', 'fringe'];
 const THRESHOLD_PCT = 0.5;     // fail if > 0.5% pixels differ
 const PIXELMATCH_THRESHOLD = 0.1;
+const allowMissingBaselines = process.argv.includes('--allow-missing-baselines')
+    || process.argv.includes('--allow-missing-baseline');
 
 if (!existsSync(baselineDir)) {
-    console.warn(`[visual-diff] baseline directory not found at ${baselineDir} — nothing to compare yet`);
-    console.warn('[visual-diff] run Task 4.6 to capture baselines first');
-    process.exit(0);
+    const message = `[visual-diff] baseline directory not found at ${baselineDir}`;
+    if (allowMissingBaselines) {
+        console.warn(`${message}; allowed by --allow-missing-baselines`);
+        process.exit(0);
+    }
+    console.error(`${message}. Run npm run sprites:capture-baseline first, or pass --allow-missing-baselines.`);
+    process.exit(1);
 }
 
 let failed = 0;
 let skipped = 0;
+let compared = 0;
+let passed = 0;
 
 for (const pose of POSES) {
     const basePath = join(baselineDir, `${pose}.png`);
@@ -30,13 +37,19 @@ for (const pose of POSES) {
     const diffPath = join(baselineDir, `${pose}-diff.png`);
 
     if (!existsSync(basePath)) {
-        console.warn(`[visual-diff] skip ${pose}: no baseline at ${basePath}`);
-        skipped++;
+        const message = `[visual-diff] missing ${pose} baseline at ${basePath}`;
+        if (allowMissingBaselines) {
+            console.warn(`${message}; skipped by --allow-missing-baselines`);
+            skipped++;
+            continue;
+        }
+        console.error(`${message}. Run npm run sprites:capture-baseline first.`);
+        failed++;
         continue;
     }
     if (!existsSync(freshPath)) {
-        console.warn(`[visual-diff] skip ${pose}: no fresh capture at ${freshPath}`);
-        skipped++;
+        console.error(`[visual-diff] missing ${pose} fresh capture at ${freshPath}. Run npm run sprites:capture-fresh first.`);
+        failed++;
         continue;
     }
 
@@ -58,8 +71,18 @@ for (const pose of POSES) {
     writeFileSync(diffPath, PNG.sync.write(diff));
     const verdict = pct > THRESHOLD_PCT ? 'FAIL' : 'OK';
     console.log(`[visual-diff] ${verdict} ${pose}: ${mismatched}/${total} px (${pct.toFixed(3)}%)`);
-    if (pct > THRESHOLD_PCT) failed++;
+    compared++;
+    if (pct > THRESHOLD_PCT) {
+        failed++;
+    } else {
+        passed++;
+    }
 }
 
-console.log(`[visual-diff] summary: ${POSES.length - skipped - failed}/${POSES.length} passing, ${failed} failed, ${skipped} skipped`);
+if (compared === 0 && failed === 0 && !allowMissingBaselines) {
+    console.error('[visual-diff] no sprite comparisons were run');
+    failed++;
+}
+
+console.log(`[visual-diff] summary: ${passed}/${POSES.length} passing, ${failed} failed, ${skipped} skipped`);
 process.exit(failed > 0 ? 1 : 0);
