@@ -55,21 +55,22 @@ export class WeatherRenderer {
 
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
+        const washBudget = Math.min(1, 0.72 + (1 - fog) * 0.18);
 
         if (weather.type === 'overcast' || cloudCover > 0.72) {
-            this._drawOvercast(ctx, canvas, Math.max(weather.intensity * 0.72, cloudCover * 0.54));
+            this._drawOvercast(ctx, canvas, Math.max(weather.intensity * 0.72, cloudCover * 0.54) * washBudget);
         }
 
         if (fog > 0.04 || weather.type === 'fog') {
             const fogIntensity = Math.max(fog, weather.type === 'fog' ? weather.intensity : 0);
-            this._drawFogWash(ctx, canvas, fogIntensity);
+            this._drawFogWash(ctx, canvas, fogIntensity * washBudget);
             this._drawFogBands(ctx, canvas, fogIntensity, phaseMs, seed, particleEnabled);
         }
 
         if (RAIN_TYPES.has(weather.type) || precipitation > 0.02) {
             const storm = weather.type === 'storm';
             const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72));
-            this._drawOvercast(ctx, canvas, Math.min(1, Math.max(cloudCover, weather.intensity) * (storm ? 0.62 : 0.48)));
+            this._drawOvercast(ctx, canvas, Math.min(1, Math.max(cloudCover, weather.intensity) * (storm ? 0.56 : 0.42)));
             this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             if (storm && particleEnabled) {
                 this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation), seed);
@@ -192,7 +193,8 @@ export class WeatherRenderer {
         for (let i = 0; i < count; i++) {
             const bandSeed = i * 97;
             const bandHeight = 18 + random01(seed, bandSeed + 11) * 42;
-            const yBase = canvas.height * (0.38 + random01(seed, bandSeed + 23) * 0.56);
+            const lowerBias = Math.pow(random01(seed, bandSeed + 23), 0.56);
+            const yBase = canvas.height * (0.42 + lowerBias * 0.52);
             const y = Math.round(yBase + Math.sin(i * 1.7 + phaseMs * 0.0008) * (particleEnabled ? 5 : 0));
             const width = canvas.width * (0.58 + random01(seed, bandSeed + 37) * 0.56);
             const xDrift = drift * (0.32 + random01(seed, bandSeed + 41) * 0.52);
@@ -201,7 +203,8 @@ export class WeatherRenderer {
                 -width,
                 canvas.width,
             );
-            const alpha = alphaBase * (0.45 + random01(seed, bandSeed + 67) * 0.55);
+            const labelZoneGuard = y < canvas.height * 0.34 ? 0.36 : y < canvas.height * 0.48 ? 0.68 : 1;
+            const alpha = alphaBase * labelZoneGuard * (0.45 + random01(seed, bandSeed + 67) * 0.55);
 
             this._drawFogBand(ctx, x, y, width, bandHeight, alpha);
             if (x + width < canvas.width) {
