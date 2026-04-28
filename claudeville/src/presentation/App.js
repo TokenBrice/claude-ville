@@ -24,6 +24,7 @@ import { Modal } from './shared/Modal.js';
 import { ActivityPanel } from './shared/ActivityPanel.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
+import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 
 class App {
     constructor() {
@@ -45,6 +46,10 @@ class App {
         this.auroraGate = null;
         this.latestUsage = null;
         this._chroniclePruneInterval = null;
+        this._resizeWorldCanvas = null;
+        this._onWorldContextLost = null;
+        this._onWorldContextRestored = null;
+        this._onVisibilityChange = null;
     }
 
     async boot() {
@@ -165,6 +170,7 @@ class App {
             });
             this.renderer.show(canvas);
             if (this.latestUsage) this.renderer.setQuotaState?.(this.latestUsage);
+            this._installPerfDebugHelper();
 
             requestAnimationFrame(() => {
                 if (this.renderer && this.renderer.camera) {
@@ -247,9 +253,7 @@ class App {
             this._resizeHandle = null;
         }
 
-        canvas.style.boxShadow = "inset 0 0 200px rgba(0, 0, 0, 0.4)";
-
-        const resize = () => {
+        const resize = ({ force = false } = {}) => {
             const w = container.clientWidth;
             const h = container.clientHeight;
 
@@ -267,10 +271,11 @@ class App {
 
             const cssWidth = Math.round(w);
             const cssHeight = Math.round(h);
-            const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 2));
+            const dpr = effectiveCanvasDpr(cssWidth, cssHeight, window.devicePixelRatio || 1);
             const newW = Math.round(cssWidth * dpr);
             const newH = Math.round(cssHeight * dpr);
             if (
+                !force &&
                 canvas.width === newW &&
                 canvas.height === newH &&
                 canvas._claudeVilleDpr === dpr
@@ -298,8 +303,50 @@ class App {
         this._resizeObserver = new ResizeObserver(() => resize());
         this._resizeObserver.observe(container);
 
-        window.addEventListener('resize', resize);
+        window.addEventListener('resize', () => resize());
+        this._resizeWorldCanvas = resize;
+        this._bindGraphicsRecovery(canvas, resize);
         resize();
+    }
+
+    _bindGraphicsRecovery(canvas, resize) {
+        if (this._onWorldContextLost) {
+            canvas.removeEventListener('contextlost', this._onWorldContextLost);
+            canvas.removeEventListener('contextrestored', this._onWorldContextRestored);
+        }
+        this._onWorldContextLost = (event) => {
+            event.preventDefault?.();
+            this.renderer?.handleContextLost?.();
+        };
+        this._onWorldContextRestored = () => {
+            resize({ force: true });
+            this.renderer?.handleContextRestored?.();
+        };
+        canvas.addEventListener('contextlost', this._onWorldContextLost, false);
+        canvas.addEventListener('contextrestored', this._onWorldContextRestored, false);
+
+        if (this._onVisibilityChange) {
+            document.removeEventListener('visibilitychange', this._onVisibilityChange);
+        }
+        this._onVisibilityChange = () => {
+            if (document.visibilityState === 'hidden') {
+                this.renderer?.pauseForVisibility?.();
+                return;
+            }
+            resize({ force: true });
+            const worldVisible = this.modeManager?.getCurrentMode?.() !== 'dashboard';
+            this.renderer?.resumeFromVisibility?.({ active: worldVisible });
+        };
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
+    }
+
+    _installPerfDebugHelper() {
+        if (typeof window === 'undefined') return;
+        const existing = window.__claudeVillePerf || {};
+        window.__claudeVillePerf = {
+            ...existing,
+            canvasBudget: () => this.renderer?.getCanvasBudget?.() || null,
+        };
     }
 
     _bindSettings() {

@@ -44,6 +44,13 @@ import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
+import {
+    CANVAS_BUDGET,
+    canvasMapPixelCount,
+    canvasPixelCount,
+    releaseCanvasBackingStore,
+    releaseCanvasMap,
+} from './CanvasBudget.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -457,6 +464,10 @@ export class IsometricRenderer {
         this.gateTransits = new Map();
         this._sortedSprites = [];
         this._spritesNeedSort = true;
+        this._staticPropDrawables = [];
+        this._drawables = [];
+        this._harborPendingSignature = '';
+        this._contextLost = false;
         this.running = false;
         this.frameId = null;
         this.terrainCache = null;
@@ -629,6 +640,7 @@ export class IsometricRenderer {
             });
         });
         this.districtPropSprites = this._buildDistrictPropSprites();
+        this._staticPropDrawables = this._buildStaticPropDrawables();
 
         // Walkability grid + Pathfinder (Task 11)
         this.walkabilityGrid = this.scenery.getWalkabilityGrid();
@@ -1072,6 +1084,7 @@ export class IsometricRenderer {
             return;
         }
         this._ensureTrailRenderer();
+        this._contextLost = false;
         this.camera = new Camera(canvas);
         this.camera.attach();
         this._bindMotionPreference();
@@ -1163,22 +1176,16 @@ export class IsometricRenderer {
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
         this._onKeyDown = (e) => { if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle(); };
         window.addEventListener('keydown', this._onKeyDown);
-        this._onModeChanged = (mode) => {
-            this._worldModeActive = mode !== 'dashboard';
-            this._lastFrameTime = performance.now();
-        };
+        this._onModeChanged = (mode) => this.setWorldModeActive(mode !== 'dashboard');
         eventBus.on('mode:changed', this._onModeChanged);
 
         this.running = true;
-        this._loop();
+        this._startLoop();
     }
 
     hide() {
         this.running = false;
-        if (this.frameId) {
-            cancelAnimationFrame(this.frameId);
-            this.frameId = null;
-        }
+        this._stopLoop();
         if (this.camera) {
             this.camera.detach();
         }
@@ -1205,6 +1212,7 @@ export class IsometricRenderer {
         this.agentSprites.clear();
         this.gateTransits.clear();
         this.particleSystem.clear();
+        this.releaseVolatileCaches();
         this.trailRenderer?.dispose?.();
         this.trailRenderer = null;
         this.agentEventStream?.dispose?.();
@@ -1231,6 +1239,75 @@ export class IsometricRenderer {
         this.atmosphereState?.dispose?.();
     }
 
+    _startLoop() {
+        if (!this.running || this.frameId !== null || !this._worldModeActive || this._contextLost) return;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+        this.frameId = requestAnimationFrame(() => this._loop());
+    }
+
+    _stopLoop() {
+        if (this.frameId !== null) {
+            cancelAnimationFrame(this.frameId);
+            this.frameId = null;
+        }
+    }
+
+    setWorldModeActive(active) {
+        const nextActive = Boolean(active);
+        if (this._worldModeActive === nextActive) return;
+        this._worldModeActive = nextActive;
+        this._lastFrameTime = performance.now();
+        if (nextActive) {
+            this.invalidateViewportCaches();
+            this._startLoop();
+        } else {
+            this._stopLoop();
+            this.releaseVolatileCaches();
+        }
+    }
+
+    pauseForVisibility() {
+        this._stopLoop();
+        this.releaseVolatileCaches();
+    }
+
+    resumeFromVisibility({ active = true } = {}) {
+        this._worldModeActive = Boolean(active);
+        this._lastFrameTime = performance.now();
+        if (this._worldModeActive) this._startLoop();
+    }
+
+    handleContextLost() {
+        this._contextLost = true;
+        this._stopLoop();
+        this.releaseVolatileCaches();
+    }
+
+    handleContextRestored() {
+        this.ctx = this.canvas?.getContext?.('2d') || null;
+        this._contextLost = false;
+        this.invalidateViewportCaches();
+        this.camera?.onViewportResize?.();
+        this._lastFrameTime = performance.now();
+        this._startLoop();
+    }
+
+    releaseVolatileCaches() {
+        releaseCanvasBackingStore(this.terrainCache);
+        this.terrainCache = null;
+        this.terrainCacheKey = '';
+        this.terrainCacheBounds = null;
+        releaseCanvasBackingStore(this.atmosphereVignetteCache);
+        this.atmosphereVignetteCache = null;
+        this.atmosphereVignetteCacheKey = '';
+        releaseCanvasMap(this.lightGradientCache);
+        this.lightFadeColorCache?.clear?.();
+        this.skyRenderer?.dispose?.();
+        this.trailRenderer?.releaseCache?.();
+        this.weatherRenderer?.dispose?.();
+        this.minimap?.releaseStaticLayer?.();
+    }
+
     _ensureTrailRenderer() {
         if (this.trailRenderer) return;
         this.trailRenderer = new TrailRenderer({
@@ -1254,6 +1331,10 @@ export class IsometricRenderer {
     }
 
     _enumeratePropDrawables() {
+        return this._staticPropDrawables;
+    }
+
+    _buildStaticPropDrawables() {
         const sprites = [
             ...(this.treePropSprites || []),
             ...(this.boulderPropSprites || []),
@@ -1463,10 +1544,12 @@ export class IsometricRenderer {
     }
 
     invalidateViewportCaches() {
+        releaseCanvasBackingStore(this.atmosphereVignetteCache);
         this.atmosphereVignetteCache = null;
         this.atmosphereVignetteCacheKey = '';
-        this.lightGradientCache?.clear?.();
+        releaseCanvasMap(this.lightGradientCache);
         this.skyRenderer?.dispose?.();
+        this.trailRenderer?.releaseCache?.();
     }
 
     _screenDpr() {
@@ -1698,16 +1781,15 @@ export class IsometricRenderer {
 
     _loop() {
         if (!this.running) return;
+        this.frameId = null;
+        if (!this._worldModeActive || this._contextLost) return;
+        if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
         const now = performance.now();
         const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
         this._lastFrameTime = now;
-        if (!this._worldModeActive) {
-            this.frameId = requestAnimationFrame(() => this._loop());
-            return;
-        }
         this._update(dt);
         this._render(dt);
-        this.frameId = requestAnimationFrame(() => this._loop());
+        this._startLoop();
     }
 
     _updateChatMatching() {
@@ -2111,14 +2193,19 @@ export class IsometricRenderer {
         const propDrawables = this._enumeratePropDrawables();
         const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
         const harborPendingRepos = this.harborTraffic?.getPendingRepoSummaries?.() ?? [];
-        eventBus.emit('harbor:updated', harborPendingRepos);
+        const harborSignature = this._harborPendingReposSignature(harborPendingRepos);
+        if (harborSignature !== this._harborPendingSignature) {
+            this._harborPendingSignature = harborSignature;
+            eventBus.emit('harbor:updated', harborPendingRepos);
+        }
         const landmarkDrawables = this.landmarkActivity?.enumerateDrawables() ?? [];
         const chronicleMonumentDrawables = this.chronicleMonuments?.enumerateDrawables?.(renderNow, this.camera) ?? [];
         const chroniclerDrawables = this.chronicler?.enumerateDrawables?.() ?? [];
         const zoom = this.camera.zoom;
         this._assignAgentOverlaySlots(sortedSprites, zoom);
 
-        const drawables = [];
+        const drawables = this._drawables;
+        drawables.length = 0;
         for (const d of buildingDrawables) drawables.push({ kind: d.kind, sortY: d.sortY, payload: d });
         for (const d of propDrawables) drawables.push(d);
         for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
@@ -2256,6 +2343,14 @@ export class IsometricRenderer {
             selectedAgent: this.selectedAgent,
             chronicleMonuments: this.chronicleMonuments?.minimapMarkers?.() || [],
         });
+    }
+
+    _harborPendingReposSignature(repos = []) {
+        if (!Array.isArray(repos) || repos.length === 0) return '';
+        return repos
+            .map(repo => `${repo.path || repo.projectPath || repo.name || ''}:${repo.count || repo.pending || repo.status || ''}`)
+            .sort()
+            .join('|');
     }
 
     _drawFamiliarMotesForFamilies(ctx, _sortedSprites, atmosphere = null) {
@@ -2462,12 +2557,13 @@ export class IsometricRenderer {
 
     _getTerrainCache() {
         const bounds = this._terrainCacheBounds();
-        const dpr = this._screenDpr();
+        const dpr = 1;
         const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}`;
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
 
+        releaseCanvasBackingStore(this.terrainCache);
         const canvas = document.createElement('canvas');
         canvas.width = Math.max(1, Math.round(bounds.w * dpr));
         canvas.height = Math.max(1, Math.round(bounds.h * dpr));
@@ -5947,6 +6043,7 @@ export class IsometricRenderer {
             return this.atmosphereVignetteCache;
         }
 
+        releaseCanvasBackingStore(this.atmosphereVignetteCache);
         const overlay = document.createElement('canvas');
         overlay.width = Math.max(1, Math.round(canvas.width * dpr));
         overlay.height = Math.max(1, Math.round(canvas.height * dpr));
@@ -6021,6 +6118,37 @@ export class IsometricRenderer {
         this.atmosphereVignetteCache = overlay;
         this.atmosphereVignetteCacheKey = cacheKey;
         return overlay;
+    }
+
+    getCanvasBudget() {
+        const sky = this.skyRenderer?.getCanvasBudget?.() || {};
+        const trail = this.trailRenderer?.getCanvasBudget?.() || {};
+        const minimap = this.minimap?.getCanvasBudget?.() || {};
+        const volatile = {
+            terrain: canvasPixelCount(this.terrainCache),
+            sky: sky.volatilePixels || 0,
+            trail: trail.volatilePixels || 0,
+            atmosphere: canvasPixelCount(this.atmosphereVignetteCache),
+            lightGradients: canvasMapPixelCount(this.lightGradientCache),
+            minimapStatic: minimap.volatilePixels || 0,
+        };
+        const volatilePixels = Object.values(volatile).reduce((sum, value) => sum + value, 0);
+        return {
+            budgets: CANVAS_BUDGET,
+            dpr: this._screenDpr(),
+            running: this.running,
+            worldModeActive: this._worldModeActive,
+            rafPending: this.frameId !== null,
+            visibleCanvasPixels: canvasPixelCount(this.canvas),
+            volatile,
+            volatilePixels,
+            retainedAssetPixels: canvasMapPixelCount(this.fantasyForestTreeCache),
+            domCanvasPixels: minimap.domPixels || 0,
+            cacheCounts: {
+                lightGradients: this.lightGradientCache?.size || 0,
+                fantasyForestTrees: this.fantasyForestTreeCache?.size || 0,
+            },
+        };
     }
 
     _drawAtmosphereDebug(ctx, atmosphere) {

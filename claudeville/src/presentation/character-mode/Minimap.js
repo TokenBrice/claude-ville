@@ -1,6 +1,7 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
+import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 
 const MINIMAP_SIZE = 150;
 
@@ -45,8 +46,21 @@ export class Minimap {
         if (this.canvas.parentNode) {
             this.canvas.parentNode.removeChild(this.canvas);
         }
+        this.releaseStaticLayer();
+    }
+
+    releaseStaticLayer() {
+        releaseCanvasBackingStore(this._staticLayer);
         this._staticLayer = null;
         this._staticLayerKey = '';
+    }
+
+    getCanvasBudget() {
+        return {
+            domPixels: canvasPixelCount(this.canvas),
+            volatilePixels: canvasPixelCount(this._staticLayer),
+            staticLayerKey: this._staticLayerKey,
+        };
     }
 
     _onClick(e) {

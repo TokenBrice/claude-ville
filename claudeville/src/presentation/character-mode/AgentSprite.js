@@ -152,6 +152,10 @@ export class AgentSprite {
         this._cellBoundsCache = new Map();
         this._nameTagLayoutCacheKey = '';
         this._nameTagLayoutCache = null;
+        this._bubbleLayoutCacheKey = '';
+        this._bubbleLayoutCache = null;
+        this._compactNameStatusCacheKey = '';
+        this._compactNameStatusCache = null;
 
         this._pickTarget();
     }
@@ -1849,15 +1853,9 @@ export class AgentSprite {
         const anchored = Number.isFinite(contentTopY);
         ctx.font = `bold ${anchored ? 7 : 10}px "Press Start 2P", monospace`;
         const maxWidth = anchored ? 116 : 180;
-        let displayText = text;
-        // Truncate by actual pixel width instead of character count
-        while (displayText.length > 0 && ctx.measureText(displayText).width > maxWidth) {
-            displayText = displayText.substring(0, displayText.length - 1);
-        }
-        if (displayText.length < text.length) {
-            displayText = displayText.substring(0, displayText.length - 1) + '…';
-        }
-        const textWidth = ctx.measureText(displayText).width;
+        const layout = this._bubbleLayout(ctx, text, maxWidth, anchored);
+        const displayText = layout.displayText;
+        const textWidth = layout.textWidth;
         const bubbleW = textWidth + (anchored ? 14 : 20);
         const bubbleH = anchored ? 18 : 24;
         const radius = anchored ? 5 : 6;
@@ -2050,8 +2048,9 @@ export class AgentSprite {
         ctx.scale(s, s);
         ctx.translate(0, 20 + slot * 11);
         ctx.font = 'bold 6px "Press Start 2P", monospace';
-        const text = this._fitText(ctx, rawName, 144);
-        const w = Math.min(184, Math.max(34, ctx.measureText(text).width + 14));
+        const layout = this._compactNameStatusLayout(ctx, rawName);
+        const text = layout.text;
+        const w = layout.width;
         const h = 13;
 
         ctx.fillStyle = 'rgba(20, 14, 10, 0.90)';
@@ -2069,7 +2068,7 @@ export class AgentSprite {
         ctx.fillStyle = '#f8ead1';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(this._fitText(ctx, text, w - 10), 0, 0.5);
+        ctx.fillText(text, 0, 0.5);
         ctx.restore();
     }
 
@@ -2089,6 +2088,39 @@ export class AgentSprite {
         const layout = { lines, contentW };
         this._nameTagLayoutCacheKey = key;
         this._nameTagLayoutCache = layout;
+        return layout;
+    }
+
+    _bubbleLayout(ctx, text, maxWidth, anchored) {
+        const source = String(text || '');
+        const key = `${source}|${maxWidth}|${ctx.font}|${anchored ? 1 : 0}`;
+        if (this._bubbleLayoutCacheKey === key && this._bubbleLayoutCache) return this._bubbleLayoutCache;
+        let displayText = source;
+        while (displayText.length > 0 && ctx.measureText(displayText).width > maxWidth) {
+            displayText = displayText.substring(0, displayText.length - 1);
+        }
+        if (displayText.length < source.length) {
+            displayText = displayText.substring(0, displayText.length - 1) + '…';
+        }
+        const layout = {
+            displayText,
+            textWidth: ctx.measureText(displayText).width,
+        };
+        this._bubbleLayoutCacheKey = key;
+        this._bubbleLayoutCache = layout;
+        return layout;
+    }
+
+    _compactNameStatusLayout(ctx, rawName) {
+        const key = `${rawName}|${ctx.font}|144`;
+        if (this._compactNameStatusCacheKey === key && this._compactNameStatusCache) {
+            return this._compactNameStatusCache;
+        }
+        const text = this._fitText(ctx, rawName, 144);
+        const width = Math.min(184, Math.max(34, ctx.measureText(text).width + 14));
+        const layout = { text, width };
+        this._compactNameStatusCacheKey = key;
+        this._compactNameStatusCache = layout;
         return layout;
     }
 

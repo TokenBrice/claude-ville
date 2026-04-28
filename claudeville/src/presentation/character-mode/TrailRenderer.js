@@ -1,5 +1,6 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 
 const CAPTURE_INTERVAL_MS = 1000;
 const FLUSH_INTERVAL_MS = 30000;
@@ -156,7 +157,21 @@ export class TrailRenderer {
         this.lease = null;
         for (const off of this._unsubscribers) off?.();
         this._unsubscribers = [];
+        this.releaseCache();
+    }
+
+    releaseCache() {
+        releaseCanvasBackingStore(this.cache);
         this.cache = null;
+        this.cacheKey = '';
+        this._needsRepaint = true;
+    }
+
+    getCanvasBudget() {
+        return {
+            volatilePixels: canvasPixelCount(this.cache),
+            cacheKey: this.cacheKey,
+        };
     }
 
     _addSample(sample, pending) {

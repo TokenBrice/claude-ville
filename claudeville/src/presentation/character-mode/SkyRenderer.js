@@ -4,6 +4,7 @@
 // transform — viewport-fixed.
 
 import { AtmosphereState } from './AtmosphereState.js';
+import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 
 const STAR_COUNT = 90;
 const STAR_CEILING_FRAC = 0.60;
@@ -157,6 +158,7 @@ export class SkyRenderer {
         const dpr = canvas._claudeVilleDpr || 1;
         const key = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere.cacheKey}`;
         if (this.cache && this.cacheKey === key) return this.cache;
+        releaseCanvasBackingStore(this.cache);
         const off = document.createElement('canvas');
         off.width = Math.max(1, Math.round(canvas.width * dpr));
         off.height = Math.max(1, Math.round(canvas.height * dpr));
@@ -677,12 +679,20 @@ export class SkyRenderer {
     }
 
     dispose() {
+        releaseCanvasBackingStore(this.cache);
         this.cache = null;
         this.cacheKey = '';
         this._decorativeCloudOffset = 0;
         this._auroraStartedAt = 0;
         this._fallbackAtmosphere?.dispose?.();
         this._fallbackAtmosphere = null;
+    }
+
+    getCanvasBudget() {
+        return {
+            volatilePixels: canvasPixelCount(this.cache),
+            cacheKey: this.cacheKey,
+        };
     }
 }
 
