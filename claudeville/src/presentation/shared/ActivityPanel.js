@@ -16,6 +16,25 @@ const TOOL_ICONS = {
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
 
+function hashRows(rows, fields) {
+    let hash = 2166136261;
+    for (const row of rows || []) {
+        for (const field of fields) {
+            const value = typeof field === 'function' ? field(row) : row?.[field];
+            const str = String(value ?? '');
+            for (let i = 0; i < str.length; i++) {
+                hash ^= str.charCodeAt(i);
+                hash = Math.imul(hash, 16777619);
+            }
+            hash ^= 31;
+            hash = Math.imul(hash, 16777619);
+        }
+        hash ^= 124;
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+}
+
 export class ActivityPanel {
     constructor() {
         this.panelEl = document.getElementById('activityPanel');
@@ -56,26 +75,28 @@ export class ActivityPanel {
     }
 
     _bind() {
-        this.closeBtn.addEventListener('click', () => this.hide());
-
-        eventBus.on('agent:selected', (agent) => {
+        this._onCloseClick = () => this.hide();
+        this._onAgentSelected = (agent) => {
             if (agent) this.show(agent);
-        });
-
-        eventBus.on('agent:updated', (agent) => {
+        };
+        this._onAgentUpdated = (agent) => {
             if (this.currentAgent && agent.id === this.currentAgent.id) {
                 this.currentAgent = agent;
                 this._updateInfo(agent);
                 this._updateCurrentTool(agent);
             }
-        });
-
-        eventBus.on('agent:removed', (agent) => {
+        };
+        this._onAgentRemoved = (agent) => {
             sessionDetailsService.deleteForAgent(agent);
             if (this.currentAgent && agent.id === this.currentAgent.id) {
                 this.hide();
             }
-        });
+        };
+
+        this.closeBtn.addEventListener('click', this._onCloseClick);
+        eventBus.on('agent:selected', this._onAgentSelected);
+        eventBus.on('agent:updated', this._onAgentUpdated);
+        eventBus.on('agent:removed', this._onAgentRemoved);
     }
 
     show(agent) {
@@ -189,9 +210,11 @@ export class ActivityPanel {
 
     _renderToolHistory(tools) {
         const limited = (tools || []).slice(-PANEL_TOOL_LIMIT);
-        const newest = limited.at(-1) || {};
-        const oldest = limited[0] || {};
-        const signature = `${limited.length}|${oldest.ts || 0}|${newest.ts || 0}|${newest.tool || ''}|${(newest.detail || '').slice(0, 45)}`;
+        const signature = `${limited.length}|${hashRows(limited, [
+            row => row?.ts || 0,
+            row => row?.tool || '',
+            row => (row?.detail || '').slice(0, 45),
+        ])}`;
         if (signature === this._renderSignatures.toolHistory) return;
         this._renderSignatures.toolHistory = signature;
 
@@ -215,9 +238,11 @@ export class ActivityPanel {
 
     _renderMessages(messages) {
         const limited = (messages || []).slice(-PANEL_MESSAGE_LIMIT);
-        const newest = limited.at(-1) || {};
-        const oldest = limited[0] || {};
-        const signature = `${limited.length}|${oldest.ts || 0}|${newest.ts || 0}|${newest.role || ''}|${(newest.text || '').slice(0, 60)}`;
+        const signature = `${limited.length}|${hashRows(limited, [
+            row => row?.ts || 0,
+            row => row?.role || '',
+            row => (row?.text || '').slice(0, 60),
+        ])}`;
         if (signature === this._renderSignatures.messages) return;
         this._renderSignatures.messages = signature;
 
@@ -322,5 +347,9 @@ export class ActivityPanel {
 
     destroy() {
         this._stopPolling();
+        this.closeBtn.removeEventListener('click', this._onCloseClick);
+        eventBus.off('agent:selected', this._onAgentSelected);
+        eventBus.off('agent:updated', this._onAgentUpdated);
+        eventBus.off('agent:removed', this._onAgentRemoved);
     }
 }

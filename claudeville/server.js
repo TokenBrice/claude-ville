@@ -518,22 +518,24 @@ function wsSend(socket, data) {
 function wsBroadcast(data) {
   const frame = createWebSocketFrame(JSON.stringify(data));
   for (const socket of wsClients) {
-    writeWebSocketFrame(socket, frame);
+    writeWebSocketFrame(socket, frame, { queueLatest: true });
   }
 }
 
-function writeWebSocketFrame(socket, frame) {
+function writeWebSocketFrame(socket, frame, { queueLatest = false } = {}) {
   if (!socket || socket.destroyed || !socket.writable) {
     wsClients.delete(socket);
     return false;
   }
   if ((socket.writableLength || 0) > WS_BACKPRESSURE_BYTES) {
+    serverPerf.skippedWrites++;
     try { socket.end(createWebSocketFrame('', 0x8)); } catch { socket.destroy(); }
     wsClients.delete(socket);
     return false;
   }
   if (socket._cvDraining) {
     serverPerf.skippedWrites++;
+    if (queueLatest) socket._cvPendingFrame = frame;
     return false;
   }
   try {
@@ -542,6 +544,9 @@ function writeWebSocketFrame(socket, frame) {
       socket._cvDraining = true;
       socket.once('drain', () => {
         socket._cvDraining = false;
+        const pendingFrame = socket._cvPendingFrame;
+        socket._cvPendingFrame = null;
+        if (pendingFrame) writeWebSocketFrame(socket, pendingFrame, { queueLatest: true });
       });
     }
     return ok;
@@ -587,6 +592,7 @@ function sendInitialData(socket) {
 }
 
 let watchDebounce = null;
+let watchRefreshDebounce = null;
 let lastBroadcastSignature = null;
 let providerDataDirty = true;
 let lastFullDiscoveryAt = 0;
@@ -693,10 +699,36 @@ function debouncedBroadcast() {
   watchDebounce = setTimeout(() => broadcastUpdate({ reason: 'watch' }), BROADCAST_DEBOUNCE_MS);
 }
 
+function debouncedWatchRefresh() {
+  if (watchRefreshDebounce) clearTimeout(watchRefreshDebounce);
+  watchRefreshDebounce = setTimeout(() => {
+    watchRefreshDebounce = null;
+    refreshWatchPaths();
+  }, BROADCAST_DEBOUNCE_MS);
+}
+
 // ─── File watching (multi-provider) ────────────────────────
 
 function watchKey(wp) {
   return `${wp.type}:${wp.path}:${wp.filter || ''}:${wp.recursive ? 1 : 0}`;
+}
+
+function handleWatchEvent(wp, key, eventType, filename) {
+  const isRelevant = wp.type === 'directory' || eventType === 'change' || eventType === 'rename';
+  if (!isRelevant) return;
+  if (wp.type === 'directory' && wp.filter && filename && !filename.endsWith(wp.filter)) return;
+
+  if (wp.type === 'file' && eventType === 'rename') {
+    const watcher = activeWatchers.get(key);
+    if (watcher) {
+      try { watcher.close(); } catch { /* ignore */ }
+      activeWatchers.delete(key);
+    }
+    debouncedWatchRefresh();
+  }
+
+  markProviderDataDirty(`${wp.type}:${path.basename(wp.path)}`);
+  debouncedBroadcast();
 }
 
 function refreshWatchPaths(initialWatchPaths = null) {
@@ -712,19 +744,10 @@ function refreshWatchPaths(initialWatchPaths = null) {
       let watcher = null;
       if (wp.type === 'file') {
         if (!fs.existsSync(wp.path)) continue;
-        watcher = fs.watch(wp.path, (eventType) => {
-          if (eventType === 'change' || eventType === 'rename') {
-            markProviderDataDirty(`file:${path.basename(wp.path)}`);
-            debouncedBroadcast();
-          }
-        });
+        watcher = fs.watch(wp.path, (eventType, filename) => handleWatchEvent(wp, key, eventType, filename));
       } else if (wp.type === 'directory') {
         if (!fs.existsSync(wp.path)) continue;
-        watcher = fs.watch(wp.path, { recursive: wp.recursive || false }, (eventType, filename) => {
-          if (wp.filter && filename && !filename.endsWith(wp.filter)) return;
-          markProviderDataDirty(`dir:${path.basename(wp.path)}`);
-          debouncedBroadcast();
-        });
+        watcher = fs.watch(wp.path, { recursive: wp.recursive || false }, (eventType, filename) => handleWatchEvent(wp, key, eventType, filename));
       }
       if (!watcher) continue;
       watcher.on?.('error', () => {

@@ -30,6 +30,25 @@ const PROVIDER_BADGES = {
 const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const DETAIL_FETCH_LIMIT = 48;
 
+function hashRows(rows, fields) {
+    let hash = 2166136261;
+    for (const row of rows || []) {
+        for (const field of fields) {
+            const value = typeof field === 'function' ? field(row) : row?.[field];
+            const str = String(value ?? '');
+            for (let i = 0; i < str.length; i++) {
+                hash ^= str.charCodeAt(i);
+                hash = Math.imul(hash, 16777619);
+            }
+            hash ^= 31;
+            hash = Math.imul(hash, 16777619);
+        }
+        hash ^= 124;
+        hash = Math.imul(hash, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+}
+
 export class DashboardRenderer {
     constructor(world) {
         this.world = world;
@@ -60,17 +79,14 @@ export class DashboardRenderer {
             sessionDetailsService.deleteForAgent(agent);
             if (this.active) this.render();
         };
-        eventBus.on('agent:added', this._onAgentAdded);
-        eventBus.on('agent:updated', this._onAgentUpdated);
-        eventBus.on('agent:removed', this._onAgentRemoved);
-        eventBus.on('agent:selected', (agent) => {
+        this._onAgentSelected = (agent) => {
             this._selectedAgentId = agent?.id || null;
             if (this.active) void this._fetchAllDetails();
-        });
-        eventBus.on('agent:deselected', () => {
+        };
+        this._onAgentDeselected = () => {
             this._selectedAgentId = null;
-        });
-        eventBus.on('mode:changed', (mode) => {
+        };
+        this._onModeChanged = (mode) => {
             this.active = mode === 'dashboard';
             if (this.active) {
                 this.render();
@@ -78,7 +94,13 @@ export class DashboardRenderer {
             } else {
                 this._stopDetailFetching();
             }
-        });
+        };
+        eventBus.on('agent:added', this._onAgentAdded);
+        eventBus.on('agent:updated', this._onAgentUpdated);
+        eventBus.on('agent:removed', this._onAgentRemoved);
+        eventBus.on('agent:selected', this._onAgentSelected);
+        eventBus.on('agent:deselected', this._onAgentDeselected);
+        eventBus.on('mode:changed', this._onModeChanged);
     }
 
     render() {
@@ -151,6 +173,7 @@ export class DashboardRenderer {
         // Remove missing agent cards
         for (const [id, cardEl] of this.cards) {
             if (!existingIds.has(id)) {
+                this._observer?.unobserve?.(cardEl);
                 cardEl.remove();
                 this.cards.delete(id);
                 this.toolHistories.delete(id);
@@ -409,9 +432,11 @@ export class DashboardRenderer {
         const listEl = cardEl._elements.toolList;
         const limited = (tools || []).slice(-DASHBOARD_TOOL_HISTORY_LIMIT);
 
-        const newest = limited.at(-1) || {};
-        const oldest = limited[0] || {};
-        const signature = `${limited.length}|${oldest.ts || 0}|${newest.ts || 0}|${newest.tool || ''}|${(newest.detail || '').slice(0, 60)}`;
+        const signature = `${limited.length}|${hashRows(limited, [
+            row => row?.ts || 0,
+            row => row?.tool || '',
+            row => (row?.detail || '').slice(0, 60),
+        ])}`;
 
         if (this.toolHistoryRenderSignatures.get(agentId) === signature) return;
         this.toolHistoryRenderSignatures.set(agentId, signature);
@@ -545,9 +570,13 @@ export class DashboardRenderer {
 
     destroy() {
         this._stopDetailFetching();
+        for (const cardEl of this.cards.values()) this._observer?.unobserve?.(cardEl);
         this._observer?.disconnect?.();
         eventBus.off('agent:added', this._onAgentAdded);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);
+        eventBus.off('agent:selected', this._onAgentSelected);
+        eventBus.off('agent:deselected', this._onAgentDeselected);
+        eventBus.off('mode:changed', this._onModeChanged);
     }
 }

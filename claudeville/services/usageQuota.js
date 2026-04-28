@@ -37,7 +37,7 @@ function readTailLines(filePath, maxBytes = HISTORY_MAX_TAIL_BYTES) {
   const fd = fs.openSync(filePath, 'r');
   try {
     const stat = fs.fstatSync(fd);
-    if (stat.size === 0) return [];
+    if (stat.size === 0) return { lines: [], truncated: false };
     const chunks = [];
     let position = stat.size;
     let bytesCollected = 0;
@@ -50,10 +50,51 @@ function readTailLines(filePath, maxBytes = HISTORY_MAX_TAIL_BYTES) {
       chunks.unshift(buffer.toString('utf-8', 0, bytesRead));
       bytesCollected += bytesRead;
     }
-    return chunks.join('').trim().split('\n');
+    const text = chunks.join('').trim();
+    return {
+      lines: text ? text.split('\n') : [],
+      truncated: position > 0,
+    };
   } finally {
     fs.closeSync(fd);
   }
+}
+
+function aggregateHistoryLines(lines, todayStart, weekStart) {
+  let todayMsgs = 0, weekMsgs = 0;
+  let sawBeforeWeek = false;
+  const todaySessions = new Set();
+  const weekSessions = new Set();
+
+  for (let i = lines.length - 1; i >= 0; i--) {
+    try {
+      const entry = JSON.parse(lines[i]);
+      const ts = entry.timestamp;
+      if (!ts) continue;
+
+      // Stop when entries are older than this week.
+      if (ts < weekStart) {
+        sawBeforeWeek = true;
+        break;
+      }
+
+      weekMsgs++;
+      if (entry.sessionId) weekSessions.add(entry.sessionId);
+
+      if (ts >= todayStart) {
+        todayMsgs++;
+        if (entry.sessionId) todaySessions.add(entry.sessionId);
+      }
+    } catch { /* ignore lines that fail to parse */ }
+  }
+
+  return {
+    sawBeforeWeek,
+    result: {
+      today: { messages: todayMsgs, sessions: todaySessions.size },
+      thisWeek: { messages: weekMsgs, sessions: weekSessions.size },
+    },
+  };
 }
 
 // ─── Credentials (extract subscription information only) ────────────────────────────
@@ -149,35 +190,16 @@ function readHistoryLive() {
     const weekStart = monday.getTime();
 
     // Read a bounded tail from the end (newest data is at the end).
-    const lines = readTailLines(HISTORY_PATH);
+    const tail = readTailLines(HISTORY_PATH);
+    let aggregate = aggregateHistoryLines(tail.lines, todayStart, weekStart);
 
-    let todayMsgs = 0, weekMsgs = 0;
-    const todaySessions = new Set();
-    const weekSessions = new Set();
-
-    for (let i = lines.length - 1; i >= 0; i--) {
-      try {
-        const entry = JSON.parse(lines[i]);
-        const ts = entry.timestamp;
-        if (!ts) continue;
-
-        // Stop when entries are older than this week
-        if (ts < weekStart) break;
-
-        weekMsgs++;
-        if (entry.sessionId) weekSessions.add(entry.sessionId);
-
-        if (ts >= todayStart) {
-          todayMsgs++;
-          if (entry.sessionId) todaySessions.add(entry.sessionId);
-        }
-      } catch { /* ignore lines that fail to parse */ }
+    if (tail.truncated && !aggregate.sawBeforeWeek) {
+      const raw = fs.readFileSync(HISTORY_PATH, 'utf-8').trim();
+      const fullLines = raw ? raw.split('\n') : [];
+      aggregate = aggregateHistoryLines(fullLines, todayStart, weekStart);
     }
 
-    return {
-      today: { messages: todayMsgs, sessions: todaySessions.size },
-      thisWeek: { messages: weekMsgs, sessions: weekSessions.size },
-    };
+    return aggregate.result;
   } catch {
     return empty;
   }

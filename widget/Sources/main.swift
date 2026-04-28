@@ -576,7 +576,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         serverProcess = proc
         ownsServer = true
-        return waitForServerReady(timeout: 8.0)
+        let ready = waitForServerReady(timeout: 8.0)
+        if !ready {
+            if proc.isRunning { proc.terminate() }
+            serverProcess = nil
+            ownsServer = false
+        }
+        return ready
     }
 
     func stopServer() {

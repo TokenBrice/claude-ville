@@ -14,7 +14,7 @@ const TASKS_DIR = path.join(CLAUDE_DIR, 'tasks');
 const SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions');
 const GIT_EVENT_SCAN_LINES = 5000;
 const TAIL_CHUNK_BYTES = 64 * 1024;
-const MAX_TAIL_BYTES = 8 * 1024 * 1024;
+const MAX_TAIL_BYTES = 64 * 1024 * 1024;
 const MAX_HEAD_BYTES = 512 * 1024;
 const SESSION_ENTRY_CACHE_MAX = 256;
 

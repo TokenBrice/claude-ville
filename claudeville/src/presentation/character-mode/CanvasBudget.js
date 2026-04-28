@@ -1,3 +1,4 @@
+const MIN_BACKING_DPR = 0.5;
 const MAX_DEVICE_DPR = 2;
 const SCREEN_SURFACE_COUNT = 4; // visible canvas, sky cache, trail cache, atmosphere cache
 const WORLD_CACHE_PIXEL_RESERVE = 7_000_000;
@@ -13,14 +14,14 @@ export function effectiveCanvasDpr(cssWidth, cssHeight, requestedDpr = 1) {
     const width = Math.max(1, Number(cssWidth) || 1);
     const height = Math.max(1, Number(cssHeight) || 1);
     const cssPixels = width * height;
-    const requested = Math.max(1, Math.min(Number(requestedDpr) || 1, MAX_DEVICE_DPR));
+    const requested = Math.max(MIN_BACKING_DPR, Math.min(Number(requestedDpr) || 1, MAX_DEVICE_DPR));
     const mainCapDpr = Math.sqrt(CANVAS_BUDGET.maxMainCanvasPixels / cssPixels);
     const screenBudget = Math.max(
         CANVAS_BUDGET.maxScreenCachePixels,
         CANVAS_BUDGET.maxRendererCanvasPixels - CANVAS_BUDGET.maxWorldCachePixels,
     );
     const combinedCapDpr = Math.sqrt(screenBudget / (cssPixels * SCREEN_SURFACE_COUNT));
-    return Math.max(1, Math.min(requested, mainCapDpr, combinedCapDpr));
+    return Math.max(MIN_BACKING_DPR, Math.min(requested, mainCapDpr, combinedCapDpr));
 }
 
 export function releaseCanvasBackingStore(canvas) {

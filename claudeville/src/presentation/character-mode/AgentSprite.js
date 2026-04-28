@@ -2079,7 +2079,8 @@ export class AgentSprite {
     }
 
     _nameTagLayout(ctx, rawName) {
-        const key = `${rawName}|${ctx.font}`;
+        const fontStatus = typeof document !== 'undefined' ? document.fonts?.status || 'unknown' : 'unknown';
+        const key = `${rawName}|${ctx.font}|${fontStatus}`;
         if (this._nameTagLayoutCacheKey === key && this._nameTagLayoutCache) {
             return this._nameTagLayoutCache;
         }
@@ -2093,7 +2094,8 @@ export class AgentSprite {
 
     _bubbleLayout(ctx, text, maxWidth, anchored) {
         const source = String(text || '');
-        const key = `${source}|${maxWidth}|${ctx.font}|${anchored ? 1 : 0}`;
+        const fontStatus = typeof document !== 'undefined' ? document.fonts?.status || 'unknown' : 'unknown';
+        const key = `${source}|${maxWidth}|${ctx.font}|${anchored ? 1 : 0}|${fontStatus}`;
         if (this._bubbleLayoutCacheKey === key && this._bubbleLayoutCache) return this._bubbleLayoutCache;
         let displayText = source;
         while (displayText.length > 0 && ctx.measureText(displayText).width > maxWidth) {
@@ -2112,7 +2114,8 @@ export class AgentSprite {
     }
 
     _compactNameStatusLayout(ctx, rawName) {
-        const key = `${rawName}|${ctx.font}|144`;
+        const fontStatus = typeof document !== 'undefined' ? document.fonts?.status || 'unknown' : 'unknown';
+        const key = `${rawName}|${ctx.font}|144|${fontStatus}`;
         if (this._compactNameStatusCacheKey === key && this._compactNameStatusCache) {
             return this._compactNameStatusCache;
         }

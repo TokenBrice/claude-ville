@@ -54,6 +54,7 @@ import {
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
+const MAX_LIGHT_GRADIENT_CACHE_PIXELS = Math.floor(CANVAS_BUDGET.maxScreenCachePixels / 4);
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const VISIT_OVERFLOW_TILES = Object.freeze({
@@ -1303,7 +1304,7 @@ export class IsometricRenderer {
         releaseCanvasMap(this.lightGradientCache);
         this.lightFadeColorCache?.clear?.();
         this.skyRenderer?.dispose?.();
-        this.trailRenderer?.releaseCache?.();
+        this.trailRenderer?.pause?.();
         this.weatherRenderer?.dispose?.();
         this.minimap?.releaseStaticLayer?.();
     }
@@ -5967,12 +5968,18 @@ export class IsometricRenderer {
         ].join('|');
         const cached = this.lightGradientCache.get(key);
         if (cached) return cached;
-        if (this.lightGradientCache.size > 240) this.lightGradientCache.clear();
 
         const size = Math.max(2, Math.ceil(radius * 2));
         const stamp = document.createElement('canvas');
         stamp.width = Math.max(1, Math.round(size * dpr));
         stamp.height = Math.max(1, Math.round(size * dpr));
+        const stampPixels = canvasPixelCount(stamp);
+        if (
+            this.lightGradientCache.size > 240 ||
+            canvasMapPixelCount(this.lightGradientCache) + stampPixels > MAX_LIGHT_GRADIENT_CACHE_PIXELS
+        ) {
+            releaseCanvasMap(this.lightGradientCache);
+        }
         const stampCtx = stamp.getContext('2d');
         stampCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
         const glow = stampCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);

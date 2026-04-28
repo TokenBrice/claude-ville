@@ -83,8 +83,7 @@ export class TrailRenderer {
         await this.hydrate(now);
         const visible = pageIsVisible();
         if (!visible && this.lease) {
-            this.lease.release?.();
-            this.lease = null;
+            this.releaseLease();
         }
         if (visible && !this.lease && this.store) {
             try {
@@ -153,11 +152,20 @@ export class TrailRenderer {
 
     dispose() {
         void this.flush();
-        this.lease?.release?.();
-        this.lease = null;
+        this.releaseLease();
         for (const off of this._unsubscribers) off?.();
         this._unsubscribers = [];
         this.releaseCache();
+    }
+
+    pause() {
+        this.releaseLease();
+        this.releaseCache();
+    }
+
+    releaseLease() {
+        this.lease?.release?.();
+        this.lease = null;
     }
 
     releaseCache() {

@@ -48,20 +48,22 @@ export class Sidebar {
             this.harborRepos = nextRepos;
             this.renderHarbor();
         };
+        this._onAgentSelected = (agent) => {
+            const previous = this.selectedId;
+            this.selectedId = agent?.id || null;
+            this._syncSelection(previous, this.selectedId);
+        };
+        this._onAgentDeselected = () => {
+            const previous = this.selectedId;
+            this.selectedId = null;
+            this._syncSelection(previous, null);
+        };
         eventBus.on('agent:added', this._onUpdate);
         eventBus.on('agent:updated', this._onUpdate);
         eventBus.on('agent:removed', this._onUpdate);
         eventBus.on('harbor:updated', this._onHarborUpdate);
-        eventBus.on('agent:selected', (agent) => {
-            const previous = this.selectedId;
-            this.selectedId = agent?.id || null;
-            this._syncSelection(previous, this.selectedId);
-        });
-        eventBus.on('agent:deselected', () => {
-            const previous = this.selectedId;
-            this.selectedId = null;
-            this._syncSelection(previous, null);
-        });
+        eventBus.on('agent:selected', this._onAgentSelected);
+        eventBus.on('agent:deselected', this._onAgentDeselected);
 
         this._bindToggle();
         this._bindListClick();
@@ -249,5 +251,7 @@ export class Sidebar {
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('harbor:updated', this._onHarborUpdate);
+        eventBus.off('agent:selected', this._onAgentSelected);
+        eventBus.off('agent:deselected', this._onAgentDeselected);
     }
 }
