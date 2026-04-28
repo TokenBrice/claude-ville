@@ -26,6 +26,8 @@ const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const GIT_EVENT_SCAN_LINES = 5000;
 const MAX_CURRENT_TOOL_INPUT_CHARS = 500;
 
+const _rolloutFileBySessionId = new Map();
+
 function readHeadLines(filePath, count) {
   const fd = fs.openSync(filePath, 'r');
   try {
@@ -672,6 +674,7 @@ class CodexAdapter {
       // Extract session ID from the filename: rollout-2025-01-22T10-30-00-abc123.jsonl
       const sessionId = fileName.replace('rollout-', '').replace('.jsonl', '');
       const fullSessionId = `codex-${sessionId}`;
+      _rolloutFileBySessionId.set(fullSessionId, filePath);
       const threadId = detail.agentId || sessionId;
       sessionIdByThreadId.set(threadId, fullSessionId);
       parsedRollouts.push({ filePath, mtime, detail, sessionId, fullSessionId, threadId });
@@ -711,11 +714,22 @@ class CodexAdapter {
   getSessionDetail(sessionId, project) {
     // sessionIdto find the file
     const cleanId = sessionId.replace('codex-', '');
+    const indexedPath = _rolloutFileBySessionId.get(sessionId);
+    if (indexedPath && fs.existsSync(indexedPath)) {
+      return {
+        toolHistory: getToolHistory(indexedPath),
+        messages: getRecentMessages(indexedPath),
+        tokenUsage: getTokenUsage(indexedPath),
+        sessionId,
+      };
+    }
+
     const rollouts = scanRecentRollouts(30 * 60 * 1000); // expand to a 30-minute range
 
     for (const { filePath, fileName } of rollouts) {
       const fileId = fileName.replace('rollout-', '').replace('.jsonl', '');
       if (fileId === cleanId) {
+        _rolloutFileBySessionId.set(sessionId, filePath);
         return {
           toolHistory: getToolHistory(filePath),
           messages: getRecentMessages(filePath),
@@ -734,6 +748,10 @@ class CodexAdapter {
       paths.push({ type: 'directory', path: SESSIONS_DIR, recursive: true, filter: '.jsonl' });
     }
     return paths;
+  }
+
+  invalidateCaches() {
+    _rolloutFileBySessionId.clear();
   }
 }
 

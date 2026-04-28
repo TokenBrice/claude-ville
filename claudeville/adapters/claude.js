@@ -13,15 +13,65 @@ const TEAMS_DIR = path.join(CLAUDE_DIR, 'teams');
 const TASKS_DIR = path.join(CLAUDE_DIR, 'tasks');
 const SESSIONS_DIR = path.join(CLAUDE_DIR, 'sessions');
 const GIT_EVENT_SCAN_LINES = 5000;
+const TAIL_CHUNK_BYTES = 64 * 1024;
+const MAX_TAIL_BYTES = 8 * 1024 * 1024;
+const MAX_HEAD_BYTES = 512 * 1024;
+const SESSION_ENTRY_CACHE_MAX = 256;
+
+const _sessionEntryCache = new Map();
+const _sessionNamesCache = { signature: '', value: new Map() };
+const _teamMembershipCache = { signature: '', value: new Map() };
+const _teamsCache = { signature: '', value: [] };
 
 // ─── Utilities ─────────────────────────────────────────────
 
 function readLastLines(filePath, lineCount) {
   try {
     if (!fs.existsSync(filePath)) return [];
-    const content = fs.readFileSync(filePath, 'utf-8');
-    const lines = content.trim().split('\n');
-    return lines.slice(-lineCount);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const stat = fs.fstatSync(fd);
+      if (stat.size === 0) return [];
+      const chunks = [];
+      let position = stat.size;
+      let bytesCollected = 0;
+      let newlineCount = 0;
+      while (position > 0 && newlineCount <= lineCount && bytesCollected < MAX_TAIL_BYTES) {
+        const bytesToRead = Math.min(TAIL_CHUNK_BYTES, position, MAX_TAIL_BYTES - bytesCollected);
+        position -= bytesToRead;
+        const buffer = Buffer.allocUnsafe(bytesToRead);
+        const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
+        if (bytesRead <= 0) break;
+        const chunk = buffer.toString('utf-8', 0, bytesRead);
+        chunks.unshift(chunk);
+        bytesCollected += bytesRead;
+        for (let i = 0; i < chunk.length; i++) {
+          if (chunk.charCodeAt(i) === 10) newlineCount++;
+        }
+      }
+      return chunks.join('').trim().split('\n').slice(-lineCount);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return [];
+  }
+}
+
+function readFirstLines(filePath, lineCount) {
+  try {
+    if (!fs.existsSync(filePath)) return [];
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const stat = fs.fstatSync(fd);
+      if (stat.size === 0) return [];
+      const bytesToRead = Math.min(stat.size, MAX_HEAD_BYTES);
+      const buffer = Buffer.allocUnsafe(bytesToRead);
+      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
+      return buffer.toString('utf-8', 0, bytesRead).split('\n').slice(0, lineCount);
+    } finally {
+      fs.closeSync(fd);
+    }
   } catch {
     return [];
   }
@@ -36,16 +86,19 @@ function parseJsonLines(lines) {
   return results;
 }
 
-function readJsonLines(filePath) {
+function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } = {}) {
   try {
     if (!fs.existsSync(filePath)) return [];
-    return parseJsonLines(fs.readFileSync(filePath, 'utf-8').trim().split('\n'));
+    const lines = from === 'start' ? readFirstLines(filePath, count) : readLastLines(filePath, count);
+    return parseJsonLines(lines);
   } catch {
     return [];
   }
 }
 
 function readClaudeSessionNames() {
+  const signature = directorySignature(SESSIONS_DIR, { extension: '.json' });
+  if (_sessionNamesCache.signature === signature) return _sessionNamesCache.value;
   const names = new Map();
   try {
     if (!fs.existsSync(SESSIONS_DIR)) return names;
@@ -61,10 +114,14 @@ function readClaudeSessionNames() {
       } catch { /* ignore malformed session metadata */ }
     }
   } catch { /* ignore */ }
+  _sessionNamesCache.signature = signature;
+  _sessionNamesCache.value = names;
   return names;
 }
 
 function readClaudeTeamMembership() {
+  const signature = directorySignature(TEAMS_DIR, { recursive: true, extension: '.json' });
+  if (_teamMembershipCache.signature === signature) return _teamMembershipCache.value;
   const members = new Map();
   if (!fs.existsSync(TEAMS_DIR)) return members;
   try {
@@ -101,7 +158,65 @@ function readClaudeTeamMembership() {
       console.warn(`[claude adapter] agentName "${agentName}" appears in multiple teams: ${teams.join(', ')}; using ${members.get(agentName)}`);
     }
   } catch { /* ignore */ }
+  _teamMembershipCache.signature = signature;
+  _teamMembershipCache.value = members;
   return members;
+}
+
+function directorySignature(dirPath, { recursive = false, extension = '' } = {}) {
+  try {
+    if (!fs.existsSync(dirPath)) return 'missing';
+    const parts = [];
+    const walk = (current, depth = 0) => {
+      const entries = fs.readdirSync(current, { withFileTypes: true })
+        .filter(entry => !entry.name.startsWith('.'))
+        .sort((a, b) => a.name.localeCompare(b.name));
+      for (const entry of entries) {
+        const fullPath = path.join(current, entry.name);
+        if (entry.isDirectory()) {
+          if (recursive && depth < 4) walk(fullPath, depth + 1);
+          continue;
+        }
+        if (extension && !entry.name.endsWith(extension)) continue;
+        try {
+          const stat = fs.statSync(fullPath);
+          parts.push(`${fullPath}:${stat.size}:${Math.round(stat.mtimeMs)}`);
+        } catch { /* ignore */ }
+      }
+    };
+    walk(dirPath);
+    return parts.join('|');
+  } catch {
+    return 'error';
+  }
+}
+
+function getSessionEntries(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    const cacheKey = `${filePath}:${stat.size}:${Math.round(stat.mtimeMs)}`;
+    const cached = _sessionEntryCache.get(filePath);
+    if (cached?.key === cacheKey) {
+      _sessionEntryCache.delete(filePath);
+      _sessionEntryCache.set(filePath, cached);
+      return cached.entries;
+    }
+    const entries = readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
+    _sessionEntryCache.set(filePath, { key: cacheKey, entries });
+    while (_sessionEntryCache.size > SESSION_ENTRY_CACHE_MAX) {
+      const oldest = _sessionEntryCache.keys().next().value;
+      if (oldest === undefined) break;
+      _sessionEntryCache.delete(oldest);
+    }
+    return entries;
+  } catch {
+    return [];
+  }
+}
+
+function tailEntries(filePath, count) {
+  const entries = getSessionEntries(filePath);
+  return entries.slice(-count);
 }
 
 function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {}) {
@@ -121,7 +236,7 @@ function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {})
 }
 
 function getFirstUserPrompt(filePath) {
-  const entries = readJsonLines(filePath);
+  const entries = readJsonLines(filePath, { from: 'start', count: 200 });
   for (const entry of entries) {
     if (entry.message?.role !== 'user') continue;
     const content = entry.message.content;
@@ -136,7 +251,7 @@ function getFirstUserPrompt(filePath) {
 
 function getAgentLaunches(sessionFilePath) {
   const launches = [];
-  const entries = readJsonLines(sessionFilePath);
+  const entries = getSessionEntries(sessionFilePath);
 
   for (const entry of entries) {
     const msg = entry.message;
@@ -166,8 +281,7 @@ function getSessionDetail(sessionId, projectPath) {
   if (!fs.existsSync(sessionFile)) return detail;
 
   try {
-    const lines = readLastLines(sessionFile, 30);
-    const entries = parseJsonLines(lines);
+    const entries = tailEntries(sessionFile, 30);
 
     for (let i = entries.length - 1; i >= 0; i--) {
       const msg = entries[i].message;
@@ -198,8 +312,7 @@ function getSessionDetail(sessionId, projectPath) {
 function getSubAgentDetail(filePath) {
   const detail = { model: null, lastTool: null, lastMessage: null, lastToolInput: null };
   try {
-    const lines = readLastLines(filePath, 20);
-    const entries = parseJsonLines(lines);
+    const entries = tailEntries(filePath, 20);
 
     for (let i = entries.length - 1; i >= 0; i--) {
       const msg = entries[i].message;
@@ -228,8 +341,7 @@ function getSubAgentDetail(filePath) {
 function getToolHistory(sessionFilePath, maxItems = 15) {
   const tools = [];
   try {
-    const lines = readLastLines(sessionFilePath, 100);
-    const entries = parseJsonLines(lines);
+    const entries = tailEntries(sessionFilePath, 100);
 
     for (const entry of entries) {
       const msg = entry.message;
@@ -250,8 +362,7 @@ function getToolHistory(sessionFilePath, maxItems = 15) {
 function getRecentMessages(sessionFilePath, maxItems = 5) {
   const messages = [];
   try {
-    const lines = readLastLines(sessionFilePath, 60);
-    const entries = parseJsonLines(lines);
+    const entries = tailEntries(sessionFilePath, 60);
 
     for (const entry of entries) {
       const msg = entry.message;
@@ -280,8 +391,7 @@ function getTokenUsage(sessionFilePath) {
     turnCount: 0,
   };
   try {
-    const lines = readLastLines(sessionFilePath, 200);
-    const entries = parseJsonLines(lines);
+    const entries = tailEntries(sessionFilePath, 200);
 
     let lastUsage = null;
     for (const entry of entries) {
@@ -310,8 +420,7 @@ function getTokenUsage(sessionFilePath) {
 function getGitEvents(sessionFilePath, context) {
   const events = [];
   try {
-    const lines = readLastLines(sessionFilePath, GIT_EVENT_SCAN_LINES);
-    const entries = parseJsonLines(lines);
+    const entries = getSessionEntries(sessionFilePath);
 
     entries.forEach((entry, entryIndex) => {
       const msg = entry.message;
@@ -658,6 +767,8 @@ class ClaudeAdapter {
   // ─── Teams/tasks (Claude-only) ──────────────────────
 
   getTeams() {
+    const signature = directorySignature(TEAMS_DIR, { recursive: true, extension: '.json' });
+    if (_teamsCache.signature === signature) return _teamsCache.value;
     if (!fs.existsSync(TEAMS_DIR)) return [];
     const teams = [];
     try {
@@ -675,6 +786,8 @@ class ClaudeAdapter {
         }
       }
     } catch { /* ignore */ }
+    _teamsCache.signature = signature;
+    _teamsCache.value = teams;
     return teams;
   }
 
@@ -703,6 +816,16 @@ class ClaudeAdapter {
       }
     } catch { /* ignore */ }
     return taskGroups;
+  }
+
+  invalidateCaches() {
+    _sessionEntryCache.clear();
+    _sessionNamesCache.signature = '';
+    _sessionNamesCache.value = new Map();
+    _teamMembershipCache.signature = '';
+    _teamMembershipCache.value = new Map();
+    _teamsCache.signature = '';
+    _teamsCache.value = [];
   }
 }
 

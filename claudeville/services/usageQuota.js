@@ -22,6 +22,8 @@ const HISTORY_PATH = path.join(CLAUDE_HOME, 'history.jsonl');
 const CREDENTIALS_TTL = 30_000;   // 30 seconds
 const STATS_TTL = 30_000;         // 30 seconds
 const QUOTA_API_TTL = 5 * 60_000; // 5 minutes
+const HISTORY_TAIL_CHUNK_BYTES = 64 * 1024;
+const HISTORY_MAX_TAIL_BYTES = 4 * 1024 * 1024;
 
 // Cache store
 const cache = {
@@ -30,6 +32,29 @@ const cache = {
   email: null,
   quota: { data: null, ts: 0, available: false },
 };
+
+function readTailLines(filePath, maxBytes = HISTORY_MAX_TAIL_BYTES) {
+  const fd = fs.openSync(filePath, 'r');
+  try {
+    const stat = fs.fstatSync(fd);
+    if (stat.size === 0) return [];
+    const chunks = [];
+    let position = stat.size;
+    let bytesCollected = 0;
+    while (position > 0 && bytesCollected < maxBytes) {
+      const bytesToRead = Math.min(HISTORY_TAIL_CHUNK_BYTES, position, maxBytes - bytesCollected);
+      position -= bytesToRead;
+      const buffer = Buffer.allocUnsafe(bytesToRead);
+      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
+      if (bytesRead <= 0) break;
+      chunks.unshift(buffer.toString('utf-8', 0, bytesRead));
+      bytesCollected += bytesRead;
+    }
+    return chunks.join('').trim().split('\n');
+  } finally {
+    fs.closeSync(fd);
+  }
+}
 
 // ─── Credentials (extract subscription information only) ────────────────────────────
 
@@ -123,9 +148,8 @@ function readHistoryLive() {
     monday.setHours(0, 0, 0, 0);
     const weekStart = monday.getTime();
 
-    // Read the file from the end (newest data is at the end)
-    const content = fs.readFileSync(HISTORY_PATH, 'utf-8');
-    const lines = content.trim().split('\n');
+    // Read a bounded tail from the end (newest data is at the end).
+    const lines = readTailLines(HISTORY_PATH);
 
     let todayMsgs = 0, weekMsgs = 0;
     const todaySessions = new Set();

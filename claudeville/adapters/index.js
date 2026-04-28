@@ -18,8 +18,8 @@ const adapters = [
 ];
 
 const ADAPTER_BY_PROVIDER = Object.fromEntries(adapters.map((adapter) => [adapter.provider, adapter]));
-const SESSION_LIST_CACHE_TTL_MS = 500;
-const SESSION_DETAIL_CACHE_TTL_MS = 1250;
+const SESSION_LIST_CACHE_TTL_MS = 5000;
+const SESSION_DETAIL_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_MAX_CACHE = 256;
 const REPOSITORY_SCAN_CACHE_TTL_MS = 5000;
 
@@ -65,9 +65,9 @@ function getRepositoryScanProjects() {
 /**
  * Collect sessions from all active adapters
  */
-function getAllSessions(activeThresholdMs) {
+function getAllSessions(activeThresholdMs, { force = false } = {}) {
   const now = Date.now();
-  if (_sessionListCache.threshold === activeThresholdMs && (now - _sessionListCache.at) < SESSION_LIST_CACHE_TTL_MS) {
+  if (!force && _sessionListCache.threshold === activeThresholdMs && (now - _sessionListCache.at) < SESSION_LIST_CACHE_TTL_MS) {
     return _sessionListCache.sessions;
   }
 
@@ -95,12 +95,12 @@ function getAllSessions(activeThresholdMs) {
 /**
  * Fetch session details for a specific provider
  */
-function getSessionDetailByProvider(provider, sessionId, project) {
+function getSessionDetailByProvider(provider, sessionId, project, { force = false } = {}) {
   const now = Date.now();
   const key = `${provider}::${sessionId}::${project || ''}`;
   const cached = _sessionDetailCache.get(key);
 
-  if (cached && (now - cached.at) < SESSION_DETAIL_CACHE_TTL_MS) {
+  if (!force && cached && (now - cached.at) < SESSION_DETAIL_CACHE_TTL_MS) {
     _sessionDetailCache.delete(key);
     _sessionDetailCache.set(key, cached);
     return cached.value;
@@ -117,6 +117,33 @@ function getSessionDetailByProvider(provider, sessionId, project) {
   } catch (err) {
     console.error(`[${adapter.name}] Failed to fetch session details:`, err.message);
     return cached?.value || { toolHistory: [], messages: [] };
+  }
+}
+
+function getSessionDetailsBatch(items = [], { force = false } = {}) {
+  const results = {};
+  for (const item of items) {
+    const provider = String(item?.provider || 'claude').toLowerCase();
+    const sessionId = String(item?.sessionId || '');
+    const project = String(item?.project || '');
+    if (!sessionId || !ADAPTER_BY_PROVIDER[provider]) continue;
+    const key = item.key || `${provider}::${sessionId}::${project}`;
+    results[key] = getSessionDetailByProvider(provider, sessionId, project, { force });
+  }
+  return results;
+}
+
+function invalidateSessionCaches({ details = true } = {}) {
+  _sessionListCache.at = 0;
+  _sessionListCache.threshold = null;
+  _sessionListCache.sessions = [];
+  if (details) _sessionDetailCache.clear();
+  for (const adapter of adapters) {
+    try {
+      adapter.invalidateCaches?.();
+    } catch {
+      // Adapter-local cache invalidation is best effort.
+    }
   }
 }
 
@@ -161,6 +188,8 @@ module.exports = {
   adapters,
   getAllSessions,
   getSessionDetailByProvider,
+  getSessionDetailsBatch,
   getAllWatchPaths,
   getActiveProviders,
+  invalidateSessionCaches,
 };

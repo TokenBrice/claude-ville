@@ -7,8 +7,10 @@ const crypto = require('crypto');
 const {
   getAllSessions,
   getSessionDetailByProvider,
+  getSessionDetailsBatch,
   getAllWatchPaths,
   getActiveProviders,
+  invalidateSessionCaches,
   adapters,
 } = require('./adapters');
 
@@ -25,6 +27,7 @@ const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 const ALLOWED_SESSION_PROVIDERS = Object.freeze(new Set(['claude', 'codex', 'gemini', 'git']));
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
+const JSON_BODY_LIMIT_BYTES = 256 * 1024;
 
 // ─── MIME type mapping ─────────────────────────────────────
 const MIME_TYPES = {
@@ -46,6 +49,9 @@ const MIME_TYPES = {
 
 // ─── WebSocket client management ──────────────────────────
 const wsClients = new Set();
+const WS_BACKPRESSURE_BYTES = 1024 * 1024;
+const WS_HEARTBEAT_INTERVAL_MS = 30_000;
+const WS_STALE_AFTER_MS = 90_000;
 
 // ─── Utility functions ──────────────────────────────────────
 
@@ -63,6 +69,25 @@ function sendJson(res, statusCode, data) {
 
 function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
+}
+
+function readJsonBody(req, callback) {
+  let body = '';
+  req.on('data', (chunk) => {
+    body += chunk;
+    if (body.length > JSON_BODY_LIMIT_BYTES) {
+      req.destroy();
+    }
+  });
+  req.on('end', () => {
+    if (!body) return callback(null, {});
+    try {
+      callback(null, JSON.parse(body));
+    } catch (err) {
+      callback(err);
+    }
+  });
+  req.on('error', callback);
 }
 
 function cacheControlFor(reqPath) {
@@ -139,7 +164,7 @@ function printStartupStats(providers) {
  */
 function handleGetSessions(req, res) {
   try {
-    const sessions = getAllSessions(ACTIVE_THRESHOLD_MS);
+    const sessions = getAllSessions(ACTIVE_THRESHOLD_MS, { force: true });
     sendJson(res, 200, { sessions, count: sessions.length, timestamp: Date.now() });
   } catch (err) {
     console.error('Failed to fetch sessions:', err.message);
@@ -195,6 +220,36 @@ function handleGetSessionDetail(req, res) {
     console.error('Failed to fetch session details:', err.message);
     sendError(res, 500, 'Unable to load session details.');
   }
+}
+
+/**
+ * POST /api/session-details
+ * Batch-fetch details for visible/selected sessions.
+ */
+function handlePostSessionDetails(req, res) {
+  readJsonBody(req, (err, body = {}) => {
+    if (err) return sendError(res, 400, 'invalid JSON body');
+    const items = Array.isArray(body.items) ? body.items.slice(0, 100) : [];
+    const valid = [];
+    for (const item of items) {
+      const provider = String(item?.provider || 'claude').toLowerCase();
+      const sessionId = String(item?.sessionId || '');
+      if (!sessionId || !ALLOWED_SESSION_PROVIDERS.has(provider)) continue;
+      valid.push({
+        key: item.key,
+        provider,
+        sessionId,
+        project: String(item?.project || ''),
+      });
+    }
+    try {
+      const details = getSessionDetailsBatch(valid);
+      sendJson(res, 200, { details, count: Object.keys(details).length, timestamp: Date.now() });
+    } catch (fetchErr) {
+      console.error('Failed to fetch batch session details:', fetchErr.message);
+      sendError(res, 500, 'Unable to load session details.');
+    }
+  });
 }
 
 /**
@@ -318,6 +373,8 @@ function handleWebSocketUpgrade(req, socket) {
     '\r\n';
 
   socket.write(responseStr, () => {
+    socket._cvLastSeen = Date.now();
+    socket._cvDraining = false;
     wsClients.add(socket);
     setTimeout(() => {
       if (!socket.destroyed && socket.writable && wsClients.has(socket)) {
@@ -345,6 +402,7 @@ function handleWebSocketUpgrade(req, socket) {
 
 function handleWebSocketFrame(socket, buffer) {
   if (buffer.length < 2) return;
+  socket._cvLastSeen = Date.now();
 
   const firstByte = buffer[0];
   const secondByte = buffer[1];
@@ -392,6 +450,7 @@ function handleWebSocketFrame(socket, buffer) {
       socket.write(createWebSocketFrame(payload, 0xa));
       break;
     case 0xa:
+      socket._cvLastSeen = Date.now();
       break;
   }
 }
@@ -432,9 +491,7 @@ function createWebSocketFrame(data, opcode = 0x1) {
 
 function wsSend(socket, data) {
   try {
-    if (!socket.destroyed && socket.writable) {
-      socket.write(createWebSocketFrame(JSON.stringify(data)));
-    }
+    writeWebSocketFrame(socket, createWebSocketFrame(JSON.stringify(data)));
   } catch (err) {
     if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
       // Ignore send errors.
@@ -446,16 +503,53 @@ function wsSend(socket, data) {
 function wsBroadcast(data) {
   const frame = createWebSocketFrame(JSON.stringify(data));
   for (const socket of wsClients) {
-    try {
-      if (socket.writable) {
-        socket.write(frame);
-      } else {
-        wsClients.delete(socket);
-      }
-    } catch {
-      wsClients.delete(socket);
-    }
+    writeWebSocketFrame(socket, frame);
   }
+}
+
+function writeWebSocketFrame(socket, frame) {
+  if (!socket || socket.destroyed || !socket.writable) {
+    wsClients.delete(socket);
+    return false;
+  }
+  if ((socket.writableLength || 0) > WS_BACKPRESSURE_BYTES) {
+    try { socket.end(createWebSocketFrame('', 0x8)); } catch { socket.destroy(); }
+    wsClients.delete(socket);
+    return false;
+  }
+  if (socket._cvDraining) return false;
+  try {
+    const ok = socket.write(frame);
+    if (!ok) {
+      socket._cvDraining = true;
+      socket.once('drain', () => {
+        socket._cvDraining = false;
+      });
+    }
+    return ok;
+  } catch {
+    wsClients.delete(socket);
+    return false;
+  }
+}
+
+function startWebSocketHeartbeat() {
+  setInterval(() => {
+    const now = Date.now();
+    const pingFrame = createWebSocketFrame(String(now), 0x9);
+    for (const socket of wsClients) {
+      if (!socket || socket.destroyed) {
+        wsClients.delete(socket);
+        continue;
+      }
+      if (now - (socket._cvLastSeen || now) > WS_STALE_AFTER_MS) {
+        try { socket.end(createWebSocketFrame('', 0x8)); } catch { socket.destroy(); }
+        wsClients.delete(socket);
+        continue;
+      }
+      writeWebSocketFrame(socket, pingFrame);
+    }
+  }, WS_HEARTBEAT_INTERVAL_MS);
 }
 
 // ─── Data broadcast ────────────────────────────────
@@ -464,8 +558,8 @@ function sendInitialData(socket) {
   try {
     wsSend(socket, {
       type: 'init',
-      sessions: getAllSessions(ACTIVE_THRESHOLD_MS),
-      teams: claudeAdapter ? claudeAdapter.getTeams() : [],
+      sessions: getAllSessions(ACTIVE_THRESHOLD_MS, { force: true }),
+      teams: getTeamsCached({ force: true }),
       usage: usageQuota.fetchUsage(),
       timestamp: Date.now(),
     });
@@ -476,20 +570,74 @@ function sendInitialData(socket) {
 
 let watchDebounce = null;
 let lastBroadcastSignature = null;
+let providerDataDirty = true;
+let lastFullDiscoveryAt = 0;
+let lastFullBroadcastAt = 0;
+const activeWatchers = new Map();
+const serverPerf = {
+  broadcasts: [],
+  skippedWrites: 0,
+  lastBroadcast: null,
+  activeWatchPaths: 0,
+};
+const teamsCache = {
+  at: 0,
+  signature: '',
+  teams: [],
+};
 
 const BROADCAST_POLL_INTERVAL = 2000;
 const BROADCAST_DEBOUNCE_MS = 100;
+const BROADCAST_FULL_DISCOVERY_INTERVAL = 20_000;
+const TEAMS_CACHE_TTL_MS = 5000;
 
-function broadcastUpdate() {
+function markProviderDataDirty(reason = 'watch') {
+  providerDataDirty = true;
+  invalidateSessionCaches();
+  if (process.env.DEBUG_WATCH) console.log(`[Watch] dirty: ${reason}`);
+}
+
+function getTeamsCached({ force = false } = {}) {
+  if (!claudeAdapter) return [];
+  const now = Date.now();
+  if (!force && !providerDataDirty && now - teamsCache.at < TEAMS_CACHE_TTL_MS) {
+    return teamsCache.teams;
+  }
+  const teams = claudeAdapter.getTeams();
+  teamsCache.at = now;
+  teamsCache.teams = teams;
+  teamsCache.signature = crypto.createHash('sha1').update(JSON.stringify(teams)).digest('hex');
+  return teams;
+}
+
+function collectBroadcastPayload({ force = false } = {}) {
+  const stages = {};
+  const stage = (label, fn) => {
+    const start = Date.now();
+    const value = fn();
+    stages[label] = Date.now() - start;
+    return value;
+  };
+  const payload = {
+    type: 'update',
+    sessions: stage('sessions', () => getAllSessions(ACTIVE_THRESHOLD_MS, { force })),
+    teams: stage('teams', () => getTeamsCached({ force })),
+    usage: stage('usage', () => usageQuota.fetchUsage()),
+    timestamp: Date.now(),
+  };
+  return { payload, stages };
+}
+
+function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
   if (wsClients.size === 0) return;
+  const now = Date.now();
+  const heartbeatDue = now - lastFullBroadcastAt >= BROADCAST_FULL_DISCOVERY_INTERVAL;
+  if (!force && !providerDataDirty && !heartbeatDue) return;
+
   try {
-    const payload = {
-      type: 'update',
-      sessions: getAllSessions(ACTIVE_THRESHOLD_MS),
-      teams: claudeAdapter ? claudeAdapter.getTeams() : [],
-      usage: usageQuota.fetchUsage(),
-      timestamp: Date.now(),
-    };
+    if (heartbeatDue) refreshWatchPaths();
+    const collectStart = Date.now();
+    const { payload, stages } = collectBroadcastPayload({ force: force || heartbeatDue });
 
     const signature = crypto
       .createHash('sha1')
@@ -501,11 +649,22 @@ function broadcastUpdate() {
       .digest('hex');
 
     if (signature === lastBroadcastSignature) {
+      providerDataDirty = false;
+      lastFullBroadcastAt = now;
       return;
     }
 
     lastBroadcastSignature = signature;
     wsBroadcast(payload);
+    providerDataDirty = false;
+    lastFullBroadcastAt = now;
+    const elapsed = Date.now() - collectStart;
+    serverPerf.lastBroadcast = { elapsed, stages, reason, sessions: payload.sessions.length, clients: wsClients.size, ts: now };
+    serverPerf.broadcasts.push(serverPerf.lastBroadcast);
+    while (serverPerf.broadcasts.length > 25) serverPerf.broadcasts.shift();
+    for (const [stage, ms] of Object.entries(stages)) {
+      if (ms >= 500) console.log(`[Perf] broadcast ${stage} took ${ms}ms`);
+    }
   } catch (err) {
     console.error('[Watch] Failed to process data:', err.message);
   }
@@ -513,43 +672,77 @@ function broadcastUpdate() {
 
 function debouncedBroadcast() {
   if (watchDebounce) clearTimeout(watchDebounce);
-  watchDebounce = setTimeout(broadcastUpdate, BROADCAST_DEBOUNCE_MS);
+  watchDebounce = setTimeout(() => broadcastUpdate({ reason: 'watch' }), BROADCAST_DEBOUNCE_MS);
 }
 
 // ─── File watching (multi-provider) ────────────────────────
 
-function startFileWatcher(initialWatchPaths = null) {
+function watchKey(wp) {
+  return `${wp.type}:${wp.path}:${wp.filter || ''}:${wp.recursive ? 1 : 0}`;
+}
+
+function refreshWatchPaths(initialWatchPaths = null) {
   const watchPaths = Array.isArray(initialWatchPaths) ? initialWatchPaths : safeCollect('getAllWatchPaths', getAllWatchPaths, []);
-  let watchCount = 0;
+  const nextKeys = new Set();
+  let added = 0;
 
   for (const wp of watchPaths) {
+    const key = watchKey(wp);
+    nextKeys.add(key);
+    if (activeWatchers.has(key)) continue;
     try {
+      let watcher = null;
       if (wp.type === 'file') {
         if (!fs.existsSync(wp.path)) continue;
-        fs.watch(wp.path, (eventType) => {
-          if (eventType === 'change') debouncedBroadcast();
+        watcher = fs.watch(wp.path, (eventType) => {
+          if (eventType === 'change' || eventType === 'rename') {
+            markProviderDataDirty(`file:${path.basename(wp.path)}`);
+            debouncedBroadcast();
+          }
         });
-        watchCount++;
       } else if (wp.type === 'directory') {
         if (!fs.existsSync(wp.path)) continue;
-        fs.watch(wp.path, { recursive: wp.recursive || false }, (eventType, filename) => {
+        watcher = fs.watch(wp.path, { recursive: wp.recursive || false }, (eventType, filename) => {
           if (wp.filter && filename && !filename.endsWith(wp.filter)) return;
+          markProviderDataDirty(`dir:${path.basename(wp.path)}`);
           debouncedBroadcast();
         });
-        watchCount++;
       }
+      if (!watcher) continue;
+      watcher.on?.('error', () => {
+        activeWatchers.delete(key);
+      });
+      activeWatchers.set(key, watcher);
+      added++;
     } catch {
       // Ignore paths that cannot be watched.
     }
   }
 
-  console.log(`[Watch] ${watchCount} paths are now being watched`);
+  for (const [key, watcher] of activeWatchers) {
+    if (nextKeys.has(key)) continue;
+    try { watcher.close(); } catch { /* ignore */ }
+    activeWatchers.delete(key);
+  }
 
+  if (added > 0 || serverPerf.activeWatchPaths !== activeWatchers.size) {
+    console.log(`[Watch] ${activeWatchers.size} paths are now being watched`);
+    markProviderDataDirty('watch-refresh');
+  }
+  serverPerf.activeWatchPaths = activeWatchers.size;
+  lastFullDiscoveryAt = Date.now();
+}
+
+function startFileWatcher(initialWatchPaths = null) {
+  refreshWatchPaths(initialWatchPaths);
   // Periodic polling (2 seconds) to catch missed changes
   setInterval(() => {
-    if (wsClients.size > 0) broadcastUpdate();
+    if (Date.now() - lastFullDiscoveryAt >= BROADCAST_FULL_DISCOVERY_INTERVAL) {
+      refreshWatchPaths();
+    }
+    if (wsClients.size > 0) broadcastUpdate({ reason: 'interval' });
   }, BROADCAST_POLL_INTERVAL);
-  console.log('[Watch] Started 2-second polling');
+  console.log('[Watch] Started dirty-driven 2-second scheduler');
 }
 
 // ─── HTTP server ──────────────────────────────────────────
@@ -579,6 +772,13 @@ const server = http.createServer((req, res) => {
         return handleGetProviders(req, res);
       case '/api/usage':
         return handleGetUsage(req, res);
+    }
+  }
+
+  if (req.method === 'POST') {
+    switch (pathname) {
+      case '/api/session-details':
+        return handlePostSessionDetails(req, res);
     }
   }
 
@@ -651,6 +851,7 @@ server.listen(PORT, () => {
     // Initialize the usage quota service
     usageQuota.init();
     startFileWatcher(startupStats.watchPaths);
+    startWebSocketHeartbeat();
   }, STARTUP_BOOTSTRAP_DELAY_MS);
 });
 
