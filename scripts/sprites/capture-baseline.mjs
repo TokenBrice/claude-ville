@@ -22,6 +22,7 @@ const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const outDir = join(repoRoot, 'scripts', 'sprites', 'baselines');
 mkdirSync(outDir, { recursive: true });
 
+const baseUrl = process.env.CLAUDEVILLE_URL || 'http://localhost:4000';
 const fresh = process.argv.includes('--fresh');
 const suffix = fresh ? '-fresh' : '';
 
@@ -35,14 +36,25 @@ const POSES = {
 };
 
 const browser = await chromium.launch();
-const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+const context = await browser.newContext({
+  viewport: { width: 1280, height: 800 },
+  reducedMotion: 'reduce',
+});
 const page = await context.newPage();
 
 try {
-  await page.goto('http://localhost:4000', { waitUntil: 'networkidle' });
+  await page.goto(baseUrl, { waitUntil: 'networkidle' });
   // Allow renderer to mount + assets to load
   await page.waitForTimeout(2000);
   await page.waitForFunction(() => typeof window.cameraSet === 'function', null, { timeout: 5000 });
+  await page.evaluate(() => {
+    const atmosphere = window.__claudeVilleAtmosphere;
+    atmosphere?.setTimelineMode?.('fixed');
+    atmosphere?.setHour?.(10);
+    atmosphere?.setWeather?.({ type: 'clear', intensity: 0, windX: 0, seed: 4242 });
+    atmosphere?.setSeed?.(4242);
+    atmosphere?.freeze?.();
+  });
 
   for (const [name, pose] of Object.entries(POSES)) {
     const result = await page.evaluate((nextPose) => window.cameraSet(nextPose), pose);

@@ -7,7 +7,8 @@ smoke-*.png
 /*.png
 widget/ClaudeVilleWidget
 widget/ClaudeVilleWidget.app/
-scripts/sprites/baselines/*.png
+scripts/sprites/baselines/*-diff.png
+scripts/sprites/baselines/*-fresh.png
 !scripts/sprites/baselines/.gitkeep
 .playwright-cli/
 .playwright-mcp/
