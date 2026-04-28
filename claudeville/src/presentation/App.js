@@ -22,6 +22,7 @@ import { Sidebar } from './shared/Sidebar.js';
 import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
 import { ActivityPanel } from './shared/ActivityPanel.js';
+import { el, replaceChildren } from './shared/DomSafe.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
@@ -419,15 +420,32 @@ class App {
     }
 
     _showBootError(err) {
-        document.body.innerHTML = `
-            <div style="display:flex;align-items:center;justify-content:center;height:100vh;
-                        font-family:'Press Start 2P',monospace;color:#ef4444;font-size:10px;
-                        flex-direction:column;gap:16px;background:#0a0a0f;">
-                <div>BOOT FAILED</div>
-                <div style="color:#8b8b9e;font-size:7px;">${err.message}</div>
-                <div style="color:#8b8b9e;font-size:7px;">Check console for details</div>
-            </div>
-        `;
+        replaceChildren(document.body, [
+            el('div', {
+                style: {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    height: '100vh',
+                    fontFamily: "'Press Start 2P',monospace",
+                    color: '#ef4444',
+                    fontSize: '10px',
+                    flexDirection: 'column',
+                    gap: '16px',
+                    background: '#0a0a0f',
+                },
+            }, [
+                el('div', { text: 'BOOT FAILED' }),
+                el('div', {
+                    text: err?.message || 'Unknown boot error',
+                    style: { color: '#8b8b9e', fontSize: '7px' },
+                }),
+                el('div', {
+                    text: 'Check console for details',
+                    style: { color: '#8b8b9e', fontSize: '7px' },
+                }),
+            ]),
+        ]);
     }
 }
 

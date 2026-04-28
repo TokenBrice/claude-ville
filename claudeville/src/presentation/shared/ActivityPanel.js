@@ -3,37 +3,11 @@ import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
-
-const TOOL_ICONS = {
-    Read: '\u{1F4D6}', Edit: '\u270F\uFE0F', Write: '\u{1F4DD}',
-    Grep: '\u{1F50D}', Glob: '\u{1F4C1}', Bash: '\u26A1',
-    Task: '\u{1F4CB}', TaskCreate: '\u{1F4CB}', TaskUpdate: '\u{1F4CB}', TaskList: '\u{1F4CB}',
-    WebSearch: '\u{1F310}', WebFetch: '\u{1F310}',
-    SendMessage: '\u{1F4AC}', TeamCreate: '\u{1F465}',
-    EnterPlanMode: '\u{1F4D0}', ExitPlanMode: '\u{1F4D0}',
-    AskUserQuestion: '\u2753',
-};
+import { el, replaceChildren } from './DomSafe.js';
+import { formatCost, formatTokens, hashRows, normalizeStatus, truncateText } from './Formatters.js';
+import { shortToolName, toolIcon } from '../../domain/services/ToolIdentity.js';
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
-
-function hashRows(rows, fields) {
-    let hash = 2166136261;
-    for (const row of rows || []) {
-        for (const field of fields) {
-            const value = typeof field === 'function' ? field(row) : row?.[field];
-            const str = String(value ?? '');
-            for (let i = 0; i < str.length; i++) {
-                hash ^= str.charCodeAt(i);
-                hash = Math.imul(hash, 16777619);
-            }
-            hash ^= 31;
-            hash = Math.imul(hash, 16777619);
-        }
-        hash ^= 124;
-        hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0).toString(36);
-}
 
 export class ActivityPanel {
     constructor() {
@@ -125,7 +99,7 @@ export class ActivityPanel {
     }
 
     _updateInfo(agent) {
-        const status = this._normalizeStatus(agent.status);
+        const status = normalizeStatus(agent.status);
         this.dom.panelAgentName.textContent = agent.name;
         const statusEl = this.dom.panelAgentStatus;
         statusEl.textContent = status.toUpperCase();
@@ -161,11 +135,11 @@ export class ActivityPanel {
         const iconEl = this._toolEls.icon;
         const nameEl = this._toolEls.name;
         const inputEl = this._toolEls.input;
-        const status = this._normalizeStatus(agent.status);
+        const status = normalizeStatus(agent.status);
 
         if (agent.currentTool) {
             container.classList.remove('activity-panel__current-tool--idle');
-            iconEl.textContent = this._icon(agent.currentTool);
+            iconEl.textContent = toolIcon(agent.currentTool);
             nameEl.textContent = agent.currentTool;
             inputEl.textContent = agent.currentToolInput || '';
         } else {
@@ -174,11 +148,6 @@ export class ActivityPanel {
             nameEl.textContent = status === 'idle' ? 'Idle' : 'Waiting...';
             inputEl.textContent = '';
         }
-    }
-
-    _normalizeStatus(status) {
-        const normalized = String(status || 'idle').toLowerCase();
-        return normalized === 'active' ? 'working' : normalized;
     }
 
     // ─── Live polling ────────────────────────────────
@@ -218,22 +187,24 @@ export class ActivityPanel {
         if (signature === this._renderSignatures.toolHistory) return;
         this._renderSignatures.toolHistory = signature;
 
-        const el = this.dom.panelToolHistory;
+        const container = this.dom.panelToolHistory;
         if (!limited.length) {
-            el.innerHTML = '<div class="activity-panel__empty">No tool usage</div>';
+            replaceChildren(container, [
+                this._emptyState('No tool usage'),
+            ]);
             return;
         }
         const reversed = [...limited].reverse();
-        el.innerHTML = reversed.map(t => {
-            const icon = this._icon(t.tool);
-            const name = this._shortTool(t.tool);
-            const detail = t.detail ? this._esc(this._trunc(t.detail, 45)) : '';
-            return `<div class="activity-panel__tool-item">
-                <span class="activity-panel__tool-item-icon">${icon}</span>
-                <span class="activity-panel__tool-item-name">${this._esc(name)}</span>
-                <span class="activity-panel__tool-item-detail">${detail}</span>
-            </div>`;
-        }).join('');
+        replaceChildren(container, reversed.map(t => {
+            const icon = toolIcon(t.tool);
+            const name = shortToolName(t.tool);
+            const detail = t.detail ? truncateText(t.detail, 45) : '';
+            return el('div', { className: 'activity-panel__tool-item' }, [
+                el('span', { className: 'activity-panel__tool-item-icon', text: icon }),
+                el('span', { className: 'activity-panel__tool-item-name', text: name }),
+                el('span', { className: 'activity-panel__tool-item-detail', text: detail }),
+            ]);
+        }));
     }
 
     _renderMessages(messages) {
@@ -246,19 +217,23 @@ export class ActivityPanel {
         if (signature === this._renderSignatures.messages) return;
         this._renderSignatures.messages = signature;
 
-        const el = this.dom.panelMessages;
+        const container = this.dom.panelMessages;
         if (!limited.length) {
-            el.innerHTML = '<div class="activity-panel__empty">No messages</div>';
+            replaceChildren(container, [
+                this._emptyState('No messages'),
+            ]);
             return;
         }
         const reversed = [...limited].reverse();
-        el.innerHTML = reversed.map(m => {
+        replaceChildren(container, reversed.map(m => {
             const cls = m.role === 'assistant' ? 'assistant' : 'user';
-            return `<div class="activity-panel__msg activity-panel__msg--${cls}">
-                <div class="activity-panel__msg-role">${m.role}</div>
-                <div>${this._esc(this._trunc(m.text || '', 60))}</div>
-            </div>`;
-        }).join('');
+            return el('div', {
+                className: ['activity-panel__msg', `activity-panel__msg--${cls}`],
+            }, [
+                el('div', { className: 'activity-panel__msg-role', text: m.role || '' }),
+                el('div', { text: truncateText(m.text || '', 60) }),
+            ]);
+        }));
     }
 
     _renderTokenUsage(usage) {
@@ -274,7 +249,7 @@ export class ActivityPanel {
 
         // Context size (human-readable form)
         this.dom.panelContextSize.textContent =
-            this._formatTokens(normalizedUsage.contextWindow) + ` / ${this._formatTokens(MAX_CONTEXT)}`;
+            formatTokens(normalizedUsage.contextWindow) + ` / ${formatTokens(MAX_CONTEXT)}`;
 
         // Context bar
         const bar = this.dom.panelContextBar;
@@ -285,11 +260,11 @@ export class ActivityPanel {
 
         // Token cells
         this.dom.panelInputTokens.textContent =
-            this._formatTokens(normalizedUsage.totalInput);
+            formatTokens(normalizedUsage.totalInput);
         this.dom.panelOutputTokens.textContent =
-            this._formatTokens(normalizedUsage.totalOutput);
+            formatTokens(normalizedUsage.totalOutput);
         this.dom.panelCacheRead.textContent =
-            this._formatTokens(normalizedUsage.cacheRead);
+            formatTokens(normalizedUsage.cacheRead);
         this.dom.panelTurnCount.textContent =
             normalizedUsage.turnCount.toLocaleString();
 
@@ -298,13 +273,7 @@ export class ActivityPanel {
             this.currentAgent?.model,
             this.currentAgent?.provider,
         );
-        this.dom.panelEstCost.textContent = this._formatCost(cost);
-    }
-
-    _formatTokens(n) {
-        if (n >= 1000000) return (n / 1000000).toFixed(1) + 'M';
-        if (n >= 1000) return (n / 1000).toFixed(1) + 'K';
-        return String(n);
+        this.dom.panelEstCost.textContent = formatCost(cost);
     }
 
     _contextLimitFor(agent) {
@@ -313,36 +282,8 @@ export class ActivityPanel {
         return 200000;
     }
 
-    _formatCost(cost) {
-        if (!Number.isFinite(cost) || cost <= 0) return '$0.0000';
-        if (cost < 0.0001) return '<$0.0001';
-        if (cost >= 10) return `$${cost.toFixed(2)}`;
-        return `$${cost.toFixed(4)}`;
-    }
-
-    // ─── Utilities ───────────────────────────────────────
-
-    _icon(tool) {
-        if (!tool) return '\u2753';
-        if (tool.startsWith('mcp__playwright__')) return '\u{1F3AD}';
-        if (tool.startsWith('mcp__')) return '\u{1F50C}';
-        return TOOL_ICONS[tool] || '\u{1F527}';
-    }
-
-    _shortTool(name) {
-        if (!name) return '';
-        return name.replace('mcp__playwright__', 'pw:').replace('mcp__', '');
-    }
-
-    _trunc(s, max) {
-        return s.length > max ? s.substring(0, max - 1) + '...' : s;
-    }
-
-    _esc(s) {
-        if (!s) return '';
-        const d = document.createElement('div');
-        d.textContent = s;
-        return d.innerHTML;
+    _emptyState(text) {
+        return el('div', { className: 'activity-panel__empty', text });
     }
 
     destroy() {

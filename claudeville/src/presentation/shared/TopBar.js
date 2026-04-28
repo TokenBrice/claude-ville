@@ -1,5 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { Settings } from '../../application/Settings.js';
+import { formatCost, formatNumber } from './Formatters.js';
 
 export class TopBar {
     constructor(world) {
@@ -40,15 +41,18 @@ export class TopBar {
     render() {
         const stats = this.world.getStats();
 
-        this.els.tokens.textContent = this._formatNumber(stats.totalTokens);
-        this.els.cost.textContent = this._formatCost(stats.totalCost);
+        this.els.tokens.textContent = formatNumber(stats.totalTokens);
+        this.els.cost.textContent = formatCost(stats.totalCost);
         this.els.working.textContent = stats.working;
         this.els.idle.textContent = stats.idle;
         this.els.waiting.textContent = stats.waiting;
     }
 
     renderQuota(usage) {
-        if (!usage) return;
+        if (!usage) {
+            this._hideQuotaBars();
+            return;
+        }
 
         // Subscription information
         if (usage.account) {
@@ -59,7 +63,7 @@ export class TopBar {
         // Today's activity
         if (usage.activity?.today) {
             const t = usage.activity.today;
-            this.els.accountActivity.textContent = `${this._formatNumber(t.messages)} msgs`;
+            this.els.accountActivity.textContent = `${formatNumber(t.messages)} msgs`;
         }
 
         // Quota bar (shown only when the API succeeds)
@@ -67,11 +71,16 @@ export class TopBar {
             this.els.quotaSection.style.display = 'flex';
             this._updateQuotaBar(this.els.quota5hBar, this.els.quota5hPct, usage.quota.fiveHour);
             this._updateQuotaBar(this.els.quota7dBar, this.els.quota7dPct, usage.quota.sevenDay);
+        } else {
+            this._hideQuotaBars();
         }
     }
 
     _updateQuotaBar(barEl, pctEl, value) {
-        if (value == null) return;
+        if (value == null) {
+            this._resetQuotaBar(barEl, pctEl);
+            return;
+        }
         const pct = Math.round(value * 100);
         barEl.style.width = `${pct}%`;
         pctEl.textContent = `${pct}%`;
@@ -83,6 +92,20 @@ export class TopBar {
         } else if (pct >= 50) {
             barEl.classList.add('topbar__quota-fill--warn');
         }
+    }
+
+    _hideQuotaBars() {
+        this.els.quotaSection.style.display = 'none';
+        this._resetQuotaBar(this.els.quota5hBar, this.els.quota5hPct);
+        this._resetQuotaBar(this.els.quota7dBar, this.els.quota7dPct);
+    }
+
+    _resetQuotaBar(barEl, pctEl) {
+        if (barEl) {
+            barEl.style.width = '0%';
+            barEl.classList.remove('topbar__quota-fill--warn', 'topbar__quota-fill--danger');
+        }
+        if (pctEl) pctEl.textContent = '--';
     }
 
     _formatTier(rateLimitTier, subscriptionType) {
@@ -105,19 +128,6 @@ export class TopBar {
             const s = String(seconds % 60).padStart(2, '0');
             this.els.time.textContent = `${h}:${m}:${s}`;
         }, 1000);
-    }
-
-    _formatNumber(num) {
-        if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-        if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
-        return String(num);
-    }
-
-    _formatCost(cost) {
-        if (!Number.isFinite(cost) || cost <= 0) return '$0.0000';
-        if (cost < 0.0001) return '<$0.0001';
-        if (cost >= 10) return `$${cost.toFixed(2)}`;
-        return `$${cost.toFixed(4)}`;
     }
 
     _renderSettingsState() {

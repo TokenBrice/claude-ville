@@ -3,83 +3,13 @@ import { Position } from '../value-objects/Position.js';
 import { Appearance } from '../value-objects/Appearance.js';
 import { i18n } from '../../config/i18n.js';
 import { TokenUsage } from '../value-objects/TokenUsage.js';
+import { buildingForTool, compactToolInput, toolActionLabel } from '../services/ToolIdentity.js';
 
 const AGENT_NAMES_EN = [
     'Atlas', 'Nova', 'Cipher', 'Pixel', 'Spark',
     'Bolt', 'Echo', 'Flux', 'Helix', 'Onyx',
     'Prism', 'Qubit', 'Rune', 'Sage', 'Vex',
 ];
-
-const DIRECT_TOOL_BUILDINGS = {
-    Read: 'archive',
-    Grep: 'archive',
-    Glob: 'archive',
-    LS: 'archive',
-
-    WebSearch: 'observatory',
-    WebFetch: 'observatory',
-    'web.run': 'observatory',
-
-    NotebookEdit: 'forge',
-    'image_gen.imagegen': 'forge',
-
-    'mcp__playwright__browser_navigate': 'portal',
-    'mcp__playwright__browser_take_screenshot': 'portal',
-    'mcp__playwright__browser_click': 'portal',
-    'mcp__playwright__browser_type': 'portal',
-    'mcp__playwright__browser_snapshot': 'portal',
-    'mcp__playwright__browser_resize': 'portal',
-
-    Task: 'command',
-    TeamCreate: 'command',
-    SendMessage: 'command',
-    'functions.spawn_agent': 'command',
-    'functions.send_input': 'command',
-    'functions.wait_agent': 'command',
-    'functions.close_agent': 'command',
-    'functions.resume_agent': 'command',
-
-    TaskCreate: 'taskboard',
-    TaskUpdate: 'taskboard',
-    TaskList: 'taskboard',
-    TodoWrite: 'taskboard',
-    'functions.update_plan': 'taskboard',
-    'functions.request_user_input': 'taskboard',
-};
-
-const FILE_MUTATION_TOOLS = new Set([
-    'Edit',
-    'MultiEdit',
-    'Write',
-    'apply_patch',
-    'functions.apply_patch',
-]);
-
-const MULTI_TOOL_NAMES = new Set([
-    'multi_tool_use',
-    'multi_tool_use.parallel',
-]);
-
-const SHELL_TOOL_NAMES = new Set([
-    'Bash',
-    'shell',
-    'exec_command',
-    'functions.exec_command',
-    'functions.write_stdin',
-    'command_execution',
-]);
-
-const TOOL_PATTERNS = [
-    { building: 'harbor', pattern: /\b(git\s+(status|diff|show|log|branch|rev-list|fetch|pull|merge|rebase|commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/ },
-    { building: 'taskboard', pattern: /\b(npm\s+(test|run\s+(test|check|lint|build|sprites:validate|sprites:visual-diff))|node\s+--check|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/ },
-    { building: 'archive', pattern: /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/ },
-    { building: 'archive', pattern: /\b(rg|grep|find|fd|ls|cat|sed|head|tail|nl|wc|jq)\b/ },
-    { building: 'portal', pattern: /\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/ },
-    { building: 'observatory', pattern: /\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/ },
-    { building: 'forge', pattern: /\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/ },
-];
-
-const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'command', 'forge', 'archive', 'portal', 'observatory', 'mine'];
 
 export class Agent {
     constructor({
@@ -202,164 +132,13 @@ export class Agent {
     get targetBuildingType() {
         const toolName = this.currentTool;
         if (!toolName) return null;
-        return Agent._buildingForToolName(toolName, this.currentToolInput || this.lastToolInput) || null;
+        return buildingForTool(toolName, this.currentToolInput || this.lastToolInput);
     }
 
     get lastKnownBuildingType() {
         return this.targetBuildingType
-            || Agent._buildingForToolName(this.lastTool, this.lastToolInput || this.currentToolInput)
+            || buildingForTool(this.lastTool, this.lastToolInput || this.currentToolInput)
             || null;
-    }
-
-    static _buildingForShellInput(input) {
-        const text = Agent._normalizeToolInput(input);
-        if (!text) return null;
-        if (/\b(git\s+(status|diff|show|log|branch|rev-list|fetch|pull|merge|rebase|commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/.test(text)) {
-            return 'harbor';
-        }
-        if (/\b(npm\s+(test|run\s+(test|check|lint|build|sprites:validate|sprites:visual-diff))|node\s+--check|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/.test(text)) {
-            return 'taskboard';
-        }
-        if (/\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/.test(text)) {
-            return 'portal';
-        }
-        if (/\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/.test(text)) {
-            return 'observatory';
-        }
-        if (/\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/.test(text)) {
-            return Agent._isDocumentationInput(input) ? 'archive' : 'forge';
-        }
-        if (/\b(rg|grep|find|fd|ls|cat|sed|head|tail|nl|wc|jq)\b/.test(text)) {
-            if (Agent._isCodeInput(input)) return 'forge';
-            return 'archive';
-        }
-        const matched = TOOL_PATTERNS.find(({ pattern }) => pattern.test(text));
-        return matched ? matched.building : null;
-    }
-
-    static _buildingForToolName(toolName, input) {
-        if (!toolName) return null;
-        if (MULTI_TOOL_NAMES.has(toolName)) {
-            return Agent._buildingForMultiToolInput(input);
-        }
-        if (FILE_MUTATION_TOOLS.has(toolName)) {
-            return Agent._isDocumentationInput(input) ? 'archive' : 'forge';
-        }
-        const mapped = DIRECT_TOOL_BUILDINGS[toolName];
-        if (mapped) {
-            if (['Read', 'Grep', 'Glob', 'LS'].includes(toolName) && Agent._isCodeInput(input)) return 'forge';
-            return mapped;
-        }
-        if (SHELL_TOOL_NAMES.has(toolName)) {
-            return Agent._buildingForShellInput(input);
-        }
-
-        const tool = String(toolName).toLowerCase();
-        const text = Agent._normalizeToolInput(input);
-        if (tool.includes('playwright') || tool.includes('browser') || tool.includes('chrome')) return 'portal';
-        if (tool.includes('github') || tool.includes('pull_request') || tool.includes(' pr_')) return 'harbor';
-        if (tool.includes('web') || tool.includes('fetch')) return 'observatory';
-        if (tool.includes('image') || tool.includes('prompt') || tool.includes('notebook')) return 'forge';
-        if (tool.includes('apply_patch') || tool.includes('edit') || tool.includes('write') || tool.includes('update_file') || tool.includes('create_file') || tool.includes('delete_file')) {
-            return Agent._isDocumentationInput(input) ? 'archive' : 'forge';
-        }
-        if (tool.includes('spawn_agent') || tool.includes('send_input') || tool.includes('wait_agent') || tool.includes('resume_agent') || tool.includes('close_agent')) return 'command';
-        if (tool.includes('team') || tool.includes('parallel')) return 'command';
-        if (tool.includes('task') || tool.includes('todo') || tool.includes('plan')) return 'taskboard';
-        if (tool.includes('read') || tool.includes('grep') || tool.includes('glob') || tool.includes('find') || tool.includes('search')) return 'archive';
-        if (text) return Agent._buildingForShellInput(text);
-        return null;
-    }
-
-    static _buildingForMultiToolInput(input) {
-        const calls = Agent._extractToolCalls(input);
-        const weights = new Map();
-
-        for (const call of calls) {
-            const building = Agent._buildingForToolName(call.tool, call.input);
-            if (!building) continue;
-            weights.set(building, (weights.get(building) || 0) + 1);
-        }
-
-        if (weights.size > 0) {
-            return MULTI_TOOL_PRIORITY
-                .filter((building) => weights.has(building))
-                .sort((a, b) => {
-                    const delta = weights.get(b) - weights.get(a);
-                    if (delta !== 0) return delta;
-                    return MULTI_TOOL_PRIORITY.indexOf(a) - MULTI_TOOL_PRIORITY.indexOf(b);
-                })[0];
-        }
-
-        return Agent._buildingForShellInput(input);
-    }
-
-    static _extractToolCalls(input) {
-        const parsed = Agent._tryParseToolInput(input);
-        const calls = [];
-        const collect = (value) => {
-            if (!value || typeof value !== 'object') return;
-            if (Array.isArray(value)) {
-                value.forEach(collect);
-                return;
-            }
-
-            const tool = value.recipient_name || value.tool || value.name || value.function || value.type;
-            const parameters = value.parameters || value.arguments || value.input || value.args || value;
-            if (tool && tool !== 'multi_tool_use' && tool !== 'multi_tool_use.parallel') {
-                calls.push({ tool, input: parameters });
-            }
-
-            if (Array.isArray(value.tool_uses)) value.tool_uses.forEach(collect);
-            if (Array.isArray(value.calls)) value.calls.forEach(collect);
-            if (Array.isArray(value.tools)) value.tools.forEach(collect);
-        };
-
-        collect(parsed);
-        if (calls.length) return calls;
-
-        const text = Agent._normalizeToolInput(input);
-        const found = [...text.matchAll(/(?:recipient_name|tool|name)["']?\s*[:=]\s*["']([^"']+)["']/g)]
-            .map((match) => ({ tool: match[1], input: text }));
-        return found.length ? found : [{ tool: null, input: text }];
-    }
-
-    static _tryParseToolInput(input) {
-        if (!input || typeof input !== 'string') return input;
-        const text = input.trim();
-        if (!text || !/^[\[{]/.test(text)) return input;
-        try {
-            return JSON.parse(text);
-        } catch {
-            return input;
-        }
-    }
-
-    static _isDocumentationInput(input) {
-        const text = Agent._normalizeToolInput(input);
-        return /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/.test(text);
-    }
-
-    static _isCodeInput(input) {
-        const text = Agent._normalizeToolInput(input);
-        return /\b(src|server\.js|adapters|services|widget|claudeville\/src|claudeville\/server\.js)\b|\.([cm]?js|ts|tsx|jsx|css|html|json|yaml|yml)\b/.test(text)
-            && !Agent._isDocumentationInput(input);
-    }
-
-    static _normalizeToolInput(input) {
-        if (input == null) return '';
-        if (typeof input === 'string') return input.toLowerCase();
-        if (typeof input === 'object') {
-            const fields = ['cmd', 'command', 'script', 'args', 'arguments', 'url', 'path', 'file_path', 'cwd', 'pattern', 'query', 'prompt', 'description', 'recipient_name'];
-            const parts = [];
-            for (const field of fields) {
-                if (input[field] != null) {
-                    parts.push(typeof input[field] === 'object' ? JSON.stringify(input[field]) : String(input[field]));
-                }
-            }
-            if (parts.length) return parts.join(' ').toLowerCase();
-        }
-        return String(input).toLowerCase();
     }
 
     /**
@@ -368,30 +147,13 @@ export class Agent {
     get bubbleText() {
         const CAP = 24;
         if (this.currentTool) {
-            const toolLabel = {
-                'Read': 'Reading', 'Edit': 'Editing', 'Write': 'Writing',
-                'Bash': 'Running', 'Grep': 'Searching', 'Glob': 'Finding',
-                'Task': 'Delegating', 'TaskCreate': 'Planning',
-                'WebSearch': 'Researching', 'WebFetch': 'Fetching',
-                'SendMessage': 'Messaging',
-            }[this.currentTool] || this.currentTool;
-            const detail = Agent._compactInput(this.currentToolInput);
+            const toolLabel = toolActionLabel(this.currentTool);
+            const detail = compactToolInput(this.currentToolInput, 18);
             const full = detail ? `${toolLabel} ${detail}` : toolLabel;
             return Agent._truncate(full, CAP);
         }
         if (this._lastMessage) return Agent._truncate(this._lastMessage, CAP);
         return null;
-    }
-
-    static _compactInput(input) {
-        if (input == null) return '';
-        const raw = String(input).trim();
-        if (!raw) return '';
-        const lastSlash = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
-        const base = (lastSlash >= 0 ? raw.slice(lastSlash + 1) : raw).split(/\s+/)[0] || '';
-        // Drop hash-like inputs (long single token, hex/uuid/base32-ish)
-        if (base.length > 8 && /^[a-z0-9-]+$/i.test(base) && !/[aeiou]/i.test(base)) return '';
-        return base;
     }
 
     static _truncate(s, cap) {

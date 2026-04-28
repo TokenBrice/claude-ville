@@ -5,21 +5,9 @@ import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { formatModelLabel, getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
-
-const TOOL_ICONS = {
-    Read: '📖', Edit: '✏️', Write: '📝', Grep: '🔍', Glob: '📁',
-    Bash: '⚡', Task: '📋', TaskCreate: '📋', TaskUpdate: '📋', TaskList: '📋',
-    WebSearch: '🌐', WebFetch: '🌐', SendMessage: '💬', TeamCreate: '👥',
-    NotebookEdit: '📓',
-};
-
-const TOOL_CATEGORIES = {
-    Read: 'read', Grep: 'search', Glob: 'search', WebSearch: 'search', WebFetch: 'search',
-    Edit: 'write', Write: 'write', NotebookEdit: 'write',
-    Bash: 'exec',
-    Task: 'task', TaskCreate: 'task', TaskUpdate: 'task', TaskList: 'task',
-    SendMessage: 'task', TeamCreate: 'task',
-};
+import { el, replaceChildren } from '../shared/DomSafe.js';
+import { hashRows, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
+import { shortToolName, toolCategory, toolIcon } from '../../domain/services/ToolIdentity.js';
 
 const PROVIDER_BADGES = {
     claude: { label: 'Claude', color: '#a78bfa', bg: 'rgba(167,139,250,0.15)' },
@@ -29,25 +17,6 @@ const PROVIDER_BADGES = {
 };
 const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const DETAIL_FETCH_LIMIT = 48;
-
-function hashRows(rows, fields) {
-    let hash = 2166136261;
-    for (const row of rows || []) {
-        for (const field of fields) {
-            const value = typeof field === 'function' ? field(row) : row?.[field];
-            const str = String(value ?? '');
-            for (let i = 0; i < str.length; i++) {
-                hash ^= str.charCodeAt(i);
-                hash = Math.imul(hash, 16777619);
-            }
-            hash ^= 31;
-            hash = Math.imul(hash, 16777619);
-        }
-        hash ^= 124;
-        hash = Math.imul(hash, 16777619);
-    }
-    return (hash >>> 0).toString(36);
-}
 
 export class DashboardRenderer {
     constructor(world) {
@@ -65,7 +34,6 @@ export class DashboardRenderer {
         this._detailFetchGeneration = 0;
         this._sectionEls = new Map(); // projectPath → section element
         this._sectionRefs = new Map(); // projectPath → cached section refs
-        this._sectionSignatures = new Map();
         this._observer = this._createVisibilityObserver();
 
         this._onAgentAdded = () => { if (this.active) this.render(); };
@@ -131,8 +99,8 @@ export class DashboardRenderer {
         for (const [projectPath, groupAgents] of groups) {
             existingSections.add(projectPath);
             groupAgents.sort((a, b) => {
-                const statusA = this._normalizeStatus(a.status);
-                const statusB = this._normalizeStatus(b.status);
+                const statusA = normalizeStatus(a.status);
+                const statusB = normalizeStatus(b.status);
                 return (order[statusA] ?? 3) - (order[statusB] ?? 3);
             });
 
@@ -171,13 +139,13 @@ export class DashboardRenderer {
 
                 this._updateCard(cardEl, agent);
             }
-            this._sectionSignatures.set(projectPath, groupAgents.map(agent => `${agent.id}:${this._normalizeStatus(agent.status)}`).join('|'));
         }
 
         // Remove missing agent cards
         for (const [id, cardEl] of this.cards) {
             if (!existingIds.has(id)) {
                 this._observer?.unobserve?.(cardEl);
+                cardEl._avatarCanvas?.destroy?.();
                 cardEl.remove();
                 this.cards.delete(id);
                 this.toolHistories.delete(id);
@@ -193,7 +161,6 @@ export class DashboardRenderer {
                 sectionEl.remove();
                 this._sectionEls.delete(path);
                 this._sectionRefs.delete(path);
-                this._sectionSignatures.delete(path);
             }
         }
         sessionDetailsService.sweep(agents);
@@ -215,7 +182,7 @@ export class DashboardRenderer {
     _renderAgentUpdate(agent) {
         const cardEl = this.cards.get(agent.id);
         const projectPath = agent.projectPath || '_unknown';
-        const status = this._normalizeStatus(agent.status);
+        const status = normalizeStatus(agent.status);
         if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status) {
             this.render();
             return;
@@ -236,15 +203,6 @@ export class DashboardRenderer {
     _projectColor(projectPath) {
         if (!projectPath || projectPath === '_unknown') return '#8b8b9e';
         return repoProfile(projectPath).accent;
-    }
-
-    _shortProjectName(path) {
-        if (!path || path === '_unknown') return i18n.t('unknownProject');
-        const parts = path.replace(/\/+$/, '').split('/').filter(Boolean);
-        const last = parts[parts.length - 1] || path;
-        // When this is the home directory itself (for example, /Users/username) → ~ display as
-        if (parts.length <= 2 && parts[0] === 'Users') return '~';
-        return last;
     }
 
     _createSection(projectPath) {
@@ -272,27 +230,13 @@ export class DashboardRenderer {
             count: sectionEl.querySelector('.dashboard__section-count'),
         };
         sectionEl._sectionRefs = refs;
-        const name = this._shortProjectName(projectPath);
+        const name = shortProjectName(projectPath, i18n.t('unknownProject'));
         refs.name.textContent = name;
         refs.count.textContent = i18n.t('nAgents')(agents.length);
 
         // Display shortened path
-        const shortPath = projectPath === '_unknown' ? '' : this._truncatePath(projectPath);
+        const shortPath = projectPath === '_unknown' ? '' : shortenHomePath(projectPath);
         refs.path.textContent = shortPath;
-    }
-
-    _truncatePath(path) {
-        if (!path) return '';
-        // Shorten to start with ~/
-        const home = '/Users/';
-        if (path.startsWith(home)) {
-            const afterHome = path.substring(home.length);
-            const slashIdx = afterHome.indexOf('/');
-            if (slashIdx >= 0) {
-                return '~' + afterHome.substring(slashIdx);
-            }
-        }
-        return path;
     }
 
     _createCard(agent) {
@@ -369,7 +313,7 @@ export class DashboardRenderer {
 
     _updateCard(cardEl, agent) {
         const refs = cardEl._elements;
-        const status = this._normalizeStatus(agent.status);
+        const status = normalizeStatus(agent.status);
         const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
         const signature = [
             agent.name || '',
@@ -410,7 +354,7 @@ export class DashboardRenderer {
 
             if (agent.currentTool) {
                 refs.currentTool.classList.remove('dash-card__current-tool--idle');
-                this._setText(refs.toolIcon, this._getToolIcon(agent.currentTool));
+                this._setText(refs.toolIcon, toolIcon(agent.currentTool));
                 this._setText(refs.toolName, agent.currentTool);
                 this._setText(refs.toolDetail, agent.currentToolInput || '');
             } else {
@@ -455,23 +399,27 @@ export class DashboardRenderer {
         this.toolHistoryRenderSignatures.set(agentId, signature);
 
         if (!limited.length) {
-            listEl.innerHTML = `<div class="dash-card__loading" style="color:#666">${i18n.t('noToolUsage')}</div>`;
+            replaceChildren(listEl, [
+                el('div', {
+                    className: 'dash-card__loading',
+                    text: i18n.t('noToolUsage'),
+                    style: { color: '#666' },
+                }),
+            ]);
             return;
         }
 
         // Newest first
         const reversed = [...limited].reverse();
-        listEl.innerHTML = reversed.map(t => {
-            const cat = this._getToolCategory(t.tool);
-            const icon = this._getToolIcon(t.tool);
-            const shortName = t.tool.replace('mcp__playwright__', 'pw:').replace('mcp__', '');
-            const detail = t.detail ? this._truncate(t.detail, 60) : '';
-            return `<div class="dash-card__tool-item">
-                <span class="dash-card__tool-item-icon tool-cat--${cat}">${icon}</span>
-                <span class="dash-card__tool-item-name tool-cat--${cat}">${this._escapeHtml(shortName)}</span>
-                <span class="dash-card__tool-item-detail">${this._escapeHtml(detail)}</span>
-            </div>`;
-        }).join('');
+        replaceChildren(listEl, reversed.map(t => {
+            const cat = toolCategory(t.tool);
+            const detail = t.detail ? truncateText(t.detail, 60) : '';
+            return el('div', { className: 'dash-card__tool-item' }, [
+                el('span', { className: ['dash-card__tool-item-icon', `tool-cat--${cat}`], text: toolIcon(t.tool) }),
+                el('span', { className: ['dash-card__tool-item-name', `tool-cat--${cat}`], text: shortToolName(t.tool) }),
+                el('span', { className: 'dash-card__tool-item-detail', text: detail }),
+            ]);
+        }));
     }
 
     _startDetailFetching() {
@@ -515,6 +463,7 @@ export class DashboardRenderer {
     _clearAllCardsAndSections() {
         for (const [id, cardEl] of this.cards) {
             this._observer?.unobserve?.(cardEl);
+            cardEl._avatarCanvas?.destroy?.();
             cardEl.remove();
             this.cards.delete(id);
         }
@@ -526,16 +475,16 @@ export class DashboardRenderer {
         for (const [, sectionEl] of this._sectionEls) sectionEl.remove();
         this._sectionEls.clear();
         this._sectionRefs.clear();
-        this._sectionSignatures.clear();
     }
 
     _detailCandidates(agents) {
+        this._syncVisibleAgentIdsFromLayout();
         const selected = [];
         const active = [];
         const visible = [];
         for (const agent of agents) {
             if (agent.id === this._selectedAgentId) selected.push(agent);
-            else if (['working', 'waiting'].includes(this._normalizeStatus(agent.status))) active.push(agent);
+            else if (['working', 'waiting'].includes(normalizeStatus(agent.status))) active.push(agent);
             else if (!this._observer || this._visibleAgentIds.has(agent.id)) visible.push(agent);
         }
         const seen = new Set();
@@ -549,47 +498,31 @@ export class DashboardRenderer {
         return out;
     }
 
-    async _fetchDetail(agent) {
-        const data = await sessionDetailsService.fetchSessionDetail(agent);
-        if (!data || !data.toolHistory) return;
-        this.toolHistories.set(agent.id, data.toolHistory);
-        const cardEl = this.cards.get(agent.id);
-        if (cardEl) this._renderToolHistory(cardEl, agent.id, data.toolHistory);
-    }
+    _syncVisibleAgentIdsFromLayout() {
+        if (!this._observer || !this.active || this.cards.size === 0) return;
+        const root = document.getElementById('dashboardMode') || this.gridEl;
+        const rootRect = root?.getBoundingClientRect?.();
+        if (!rootRect || rootRect.width <= 0 || rootRect.height <= 0) return;
 
-    _normalizeStatus(status) {
-        const normalized = String(status || 'idle').toLowerCase();
-        return normalized === 'active' ? 'working' : normalized;
-    }
-
-    _getToolIcon(tool) {
-        if (!tool) return '❓';
-        // MCP tools
-        if (tool.startsWith('mcp__playwright__')) return '🎭';
-        if (tool.startsWith('mcp__')) return '🔌';
-        return TOOL_ICONS[tool] || '🔧';
-    }
-
-    _getToolCategory(tool) {
-        if (!tool) return 'other';
-        if (tool.startsWith('mcp__')) return 'exec';
-        return TOOL_CATEGORIES[tool] || 'other';
+        const top = rootRect.top - 160;
+        const bottom = rootRect.bottom + 160;
+        for (const [id, cardEl] of this.cards) {
+            if (!cardEl.isConnected) {
+                this._visibleAgentIds.delete(id);
+                continue;
+            }
+            const rect = cardEl.getBoundingClientRect();
+            if (rect.bottom >= top && rect.top <= bottom && rect.right >= rootRect.left && rect.left <= rootRect.right) {
+                this._visibleAgentIds.add(id);
+            } else {
+                this._visibleAgentIds.delete(id);
+            }
+        }
     }
 
     _shortModel(model, effort, provider) {
         if (!model) return '';
         return formatModelLabel(model, effort, provider);
-    }
-
-    _truncate(str, max) {
-        return str.length > max ? str.substring(0, max - 1) + '...' : str;
-    }
-
-    _escapeHtml(str) {
-        if (!str) return '';
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
     }
 
     _setText(el, value) {
@@ -603,7 +536,10 @@ export class DashboardRenderer {
 
     destroy() {
         this._stopDetailFetching();
-        for (const cardEl of this.cards.values()) this._observer?.unobserve?.(cardEl);
+        for (const cardEl of this.cards.values()) {
+            this._observer?.unobserve?.(cardEl);
+            cardEl._avatarCanvas?.destroy?.();
+        }
         this._observer?.disconnect?.();
         eventBus.off('agent:added', this._onAgentAdded);
         eventBus.off('agent:updated', this._onAgentUpdated);

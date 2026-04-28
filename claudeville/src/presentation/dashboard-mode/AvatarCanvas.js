@@ -5,6 +5,9 @@
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 
 let SPRITE_ASSET_VERSION_PROMISE = null;
+let SPRITE_ASSET_VERSION = '2026-04-26-visual-revamp'; // overwritten asynchronously on first load
+const AVATAR_CANVASES = new Set();
+
 async function getSpriteAssetVersion() {
     if (!SPRITE_ASSET_VERSION_PROMISE) {
         SPRITE_ASSET_VERSION_PROMISE = fetch('assets/sprites/manifest.yaml')
@@ -18,8 +21,12 @@ async function getSpriteAssetVersion() {
     return SPRITE_ASSET_VERSION_PROMISE;
 }
 
-let SPRITE_ASSET_VERSION = '2026-04-26-visual-revamp'; // overwritten asynchronously on first load
-getSpriteAssetVersion().then(v => { SPRITE_ASSET_VERSION = v; });
+getSpriteAssetVersion().then(v => {
+    const previous = SPRITE_ASSET_VERSION;
+    SPRITE_ASSET_VERSION = v;
+    if (previous === v) return;
+    for (const avatar of AVATAR_CANVASES) avatar._onSpriteAssetVersionChanged(previous, v);
+});
 
 const SPRITE_IMAGE_CACHE = new Map();
 const SPRITE_BOUNDS_CACHE = new Map();
@@ -62,7 +69,9 @@ export class AvatarCanvas {
         this.canvas.style.imageRendering = 'pixelated';
         this.spriteImage = null;
         this.spriteId = null;
+        this.spriteAssetVersion = null;
         this.spriteFailed = false;
+        AVATAR_CANVASES.add(this);
         this.draw();
     }
 
@@ -233,8 +242,9 @@ export class AvatarCanvas {
     }
 
     _ensureSpriteImage(spriteId) {
-        if (this.spriteImage && this.spriteId === spriteId) return true;
+        if (this.spriteImage && this.spriteId === spriteId && this.spriteAssetVersion === SPRITE_ASSET_VERSION) return true;
         this.spriteId = spriteId;
+        this.spriteAssetVersion = SPRITE_ASSET_VERSION;
         this.spriteFailed = false;
         const record = loadSpriteImage(spriteId);
         this.spriteImage = record.image;
@@ -245,6 +255,13 @@ export class AvatarCanvas {
         if (record.loaded || (record.image.complete && record.image.naturalWidth)) return true;
         record.promise.then(() => this.draw());
         return false;
+    }
+
+    _onSpriteAssetVersionChanged() {
+        if (!this.spriteId || this.spriteAssetVersion === SPRITE_ASSET_VERSION) return;
+        this.spriteImage = null;
+        this.spriteFailed = false;
+        this.draw();
     }
 
     _spriteFrameBounds(cellSize, sourceRow) {
@@ -475,5 +492,9 @@ export class AvatarCanvas {
                 ctx.fillRect(-3, -16, 6, 4);
                 break;
         }
+    }
+
+    destroy() {
+        AVATAR_CANVASES.delete(this);
     }
 }

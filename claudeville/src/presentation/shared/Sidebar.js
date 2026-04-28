@@ -3,6 +3,8 @@ import { i18n } from '../../config/i18n.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { getTeamColor, shortTeamName } from './TeamColor.js';
 import { repoProfile } from './RepoColor.js';
+import { el, replaceChildren } from './DomSafe.js';
+import { hashRows, shortProjectName, statusClass } from './Formatters.js';
 
 const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G', git: '#' };
 const PROVIDER_COLORS = { claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa', git: '#f6cf60' };
@@ -40,9 +42,12 @@ export class Sidebar {
         this._onUpdate = () => this.render();
         this._onHarborUpdate = (repos = []) => {
             const nextRepos = Array.isArray(repos) ? repos : [];
-            const signature = nextRepos
-                .map(repo => `${repo.project || ''}|${Number(repo.pendingCommits ?? repo.count) || 0}|${Number(repo.failedPushes) || 0}|${Math.floor((Number(repo.latestEventTime) || 0) / 1000)}`)
-                .join('\n');
+            const signature = hashRows(nextRepos, [
+                repo => repo.project || '',
+                repo => Number(repo.pendingCommits ?? repo.count) || 0,
+                repo => Number(repo.failedPushes) || 0,
+                repo => Math.floor((Number(repo.latestEventTime) || 0) / 1000),
+            ]);
             if (signature === this._harborSignature) return;
             this._harborSignature = signature;
             this.harborRepos = nextRepos;
@@ -136,37 +141,76 @@ export class Sidebar {
         // Group by project
         const groups = this._groupByProject(agents);
 
-        let html = '';
+        const nodes = [];
         for (const [projectPath, groupAgents] of groups) {
-            const projectName = this._shortProjectName(projectPath);
+            const projectName = shortProjectName(projectPath, i18n.t('unknownProject'));
             const color = projectPath === '_unknown'
                 ? '#8b8b9e'
                 : repoProfile(projectPath).accent;
-            html += `<div class="sidebar__project-group">
-                <div class="sidebar__project-header" style="border-left-color: ${color}">
-                    <span class="sidebar__project-dot" style="background: ${color}"></span>
-                    <span class="sidebar__project-name">${this._escape(projectName)}</span>
-                    <span class="sidebar__project-count">${groupAgents.length}</span>
-                </div>`;
+            const groupEl = el('div', { className: 'sidebar__project-group' });
+            groupEl.append(el('div', {
+                className: 'sidebar__project-header',
+                style: { borderLeftColor: color },
+            }, [
+                el('span', {
+                    className: 'sidebar__project-dot',
+                    style: { background: color },
+                }),
+                el('span', { className: 'sidebar__project-name', text: projectName }),
+                el('span', { className: 'sidebar__project-count', text: groupAgents.length }),
+            ]));
             for (const agent of groupAgents) {
                 const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
                 const providerColor = identity.minimapColor || PROVIDER_COLORS[agent.provider] || '#8b8b9e';
                 const team = agent.teamName ? getTeamColor(agent.teamName) : null;
                 const teamLabel = agent.teamName ? `Team ${shortTeamName(agent.teamName)}` : '';
-                const teamDot = team ? `<span title="${this._escape(teamLabel)}" aria-label="${this._escape(teamLabel)}" style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${team.accent};box-shadow:0 0 6px ${team.glow};margin-right:4px;vertical-align:middle"></span>` : '';
-                html += `<div class="sidebar__agent ${agent.id === this.selectedId ? 'sidebar__agent--selected' : ''}"
-                     data-agent-id="${agent.id}">
-                    <span class="sidebar__agent-dot sidebar__agent-dot--${agent.status}"></span>
-                    <div class="sidebar__agent-info">
-                        <span class="sidebar__agent-name">${teamDot}${this._escape(agent.name)}</span>
-                        <span class="sidebar__agent-model"><span style="color:${providerColor};font-weight:bold">${PROVIDER_ICONS[agent.provider] || '?'}</span> ${this._escape(this._shortModel(agent.model, agent.effort, agent.provider))}</span>
-                    </div>
-                </div>`;
+                const agentClasses = ['sidebar__agent'];
+                if (agent.id === this.selectedId) agentClasses.push('sidebar__agent--selected');
+                const nameChildren = [];
+                if (team) {
+                    nameChildren.push(el('span', {
+                        title: teamLabel,
+                        ariaLabel: teamLabel,
+                        style: {
+                            display: 'inline-block',
+                            width: '7px',
+                            height: '7px',
+                            borderRadius: '50%',
+                            background: team.accent,
+                            boxShadow: `0 0 6px ${team.glow}`,
+                            marginRight: '4px',
+                            verticalAlign: 'middle',
+                        },
+                    }));
+                }
+                nameChildren.push(agent.name || '');
+
+                const providerIcon = el('span', {
+                    text: PROVIDER_ICONS[agent.provider] || '?',
+                    style: { color: providerColor, fontWeight: 'bold' },
+                });
+                const modelEl = el('span', { className: 'sidebar__agent-model' }, [
+                    providerIcon,
+                    ` ${this._shortModel(agent.model, agent.effort, agent.provider)}`,
+                ]);
+
+                groupEl.append(el('div', {
+                    className: agentClasses,
+                    dataset: { agentId: agent.id },
+                }, [
+                    el('span', {
+                        className: ['sidebar__agent-dot', `sidebar__agent-dot--${statusClass(agent.status)}`],
+                    }),
+                    el('div', { className: 'sidebar__agent-info' }, [
+                        el('span', { className: 'sidebar__agent-name' }, nameChildren),
+                        modelEl,
+                    ]),
+                ]));
             }
-            html += '</div>';
+            nodes.push(groupEl);
         }
 
-        this.listEl.innerHTML = html;
+        replaceChildren(this.listEl, nodes);
         this._syncSelection(null, this.selectedId);
     }
 
@@ -196,25 +240,44 @@ export class Sidebar {
         this.harborCountEl.textContent = total;
 
         if (repos.length === 0) {
-            this.harborListEl.innerHTML = '<div class="sidebar__agent sidebar__harbor-empty">No pending commits</div>';
+            replaceChildren(this.harborListEl, [
+                el('div', { className: ['sidebar__agent', 'sidebar__harbor-empty'], text: 'No pending commits' }),
+            ]);
             return;
         }
 
         const now = Date.now();
-        this.harborListEl.innerHTML = repos.map(repo => {
+        const nodes = repos.map(repo => {
             const profile = repo.profile || repoProfile(repo.project);
             const name = repo.repoName || repo.shortName || profile.shortName || profile.name || 'unknown';
             const count = Number(repo.pendingCommits ?? repo.count) || 0;
             const rel = formatRelative(Number(repo.latestEventTime) || 0, now);
-            return `<div class="sidebar__agent sidebar__harbor-row" title="${this._escape(repo.project || '')}">
-                <span class="sidebar__agent-dot sidebar__harbor-dot" style="background:${profile.accent};box-shadow:0 0 6px ${profile.glow}"></span>
-                <div class="sidebar__agent-info">
-                    <span class="sidebar__agent-name">${this._escape(name)}</span>
-                    ${rel ? `<span class="sidebar__agent-model">${this._escape(rel)}</span>` : ''}
-                </div>
-                <span class="sidebar__project-count sidebar__harbor-count" style="color:${profile.accent}">${count}</span>
-            </div>`;
-        }).join('');
+            const infoChildren = [
+                el('span', { className: 'sidebar__agent-name', text: name }),
+            ];
+            if (rel) {
+                infoChildren.push(el('span', { className: 'sidebar__agent-model', text: rel }));
+            }
+            return el('div', {
+                className: ['sidebar__agent', 'sidebar__harbor-row'],
+                title: repo.project || '',
+            }, [
+                el('span', {
+                    className: ['sidebar__agent-dot', 'sidebar__harbor-dot'],
+                    style: {
+                        background: profile.accent,
+                        boxShadow: `0 0 6px ${profile.glow}`,
+                    },
+                }),
+                el('div', { className: 'sidebar__agent-info' }, infoChildren),
+                el('span', {
+                    className: ['sidebar__project-count', 'sidebar__harbor-count'],
+                    text: count,
+                    style: { color: profile.accent },
+                }),
+            ]);
+        });
+        replaceChildren(this.harborListEl, nodes);
     }
 
     _groupByProject(agents) {
@@ -225,22 +288,6 @@ export class Sidebar {
             groups.get(key).push(agent);
         }
         return groups;
-    }
-
-    _shortProjectName(path) {
-        if (!path || path === '_unknown') return i18n.t('unknownProject');
-        const parts = path.replace(/\/+$/, '').split('/').filter(Boolean);
-        const last = parts[parts.length - 1] || path;
-        // When this is the home directory itself (for example, /Users/username) → ~ display as
-        if (parts.length <= 2 && parts[0] === 'Users') return '~';
-        return last;
-    }
-
-    _escape(str) {
-        if (!str) return '';
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
     }
 
     _shortModel(model, effort, provider) {
