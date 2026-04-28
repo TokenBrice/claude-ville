@@ -12,7 +12,6 @@
     flex-direction: column;
     flex-shrink: 0;
     overflow: hidden;
-    transition: width 0.18s ease;
 }
 
 .sidebar__header {
@@ -119,6 +118,7 @@
     transition: background 0.15s;
     border-left: 3px solid transparent;
     border-bottom: 1px solid rgba(214, 169, 81, 0.07);
+    contain: layout style;
 }
 
 .sidebar__agent:hover {

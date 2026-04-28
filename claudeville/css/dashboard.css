@@ -20,6 +20,9 @@
         inset 0 0 0 1px rgba(0, 0, 0, 0.32),
         0 8px 22px rgba(0, 0, 0, 0.2);
     overflow: hidden;
+    contain: layout style;
+    content-visibility: auto;
+    contain-intrinsic-size: 420px;
 }
 
 .dashboard__section-header {
@@ -119,6 +122,7 @@
         inset 0 0 0 1px rgba(0, 0, 0, 0.34),
         0 6px 16px rgba(0, 0, 0, 0.18);
     overflow: hidden;
+    contain: layout style;
     transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 

@@ -27,6 +27,8 @@ const PROVIDER_BADGES = {
     gemini: { label: 'Gemini', color: '#60a5fa', bg: 'rgba(96,165,250,0.15)' },
     git:    { label: 'Git',    color: '#f6cf60', bg: 'rgba(246,207,96,0.15)' },
 };
+const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
+const DETAIL_FETCH_LIMIT = 48;
 
 export class DashboardRenderer {
     constructor(world) {
@@ -36,16 +38,38 @@ export class DashboardRenderer {
         this.cards = new Map();
         this.toolHistories = new Map();
         this.toolHistoryRenderSignatures = new Map();
+        this._cardRenderSignatures = new Map();
+        this._visibleAgentIds = new Set();
+        this._selectedAgentId = null;
         this.active = false;
-        this._fetchTimers = new Map();
         this._isFetchingDetails = false;
         this._sectionEls = new Map(); // projectPath → section element
         this._sectionRefs = new Map(); // projectPath → cached section refs
+        this._sectionSignatures = new Map();
+        this._observer = this._createVisibilityObserver();
 
-        this._onAgentChanged = () => { if (this.active) this.render(); };
-        eventBus.on('agent:added', this._onAgentChanged);
-        eventBus.on('agent:updated', this._onAgentChanged);
-        eventBus.on('agent:removed', this._onAgentChanged);
+        this._onAgentAdded = () => { if (this.active) this.render(); };
+        this._onAgentUpdated = (agent) => {
+            if (this.active) this._renderAgentUpdate(agent);
+        };
+        this._onAgentRemoved = (agent) => {
+            this.toolHistories.delete(agent.id);
+            this.toolHistoryRenderSignatures.delete(agent.id);
+            this._cardRenderSignatures.delete(agent.id);
+            this._visibleAgentIds.delete(agent.id);
+            sessionDetailsService.deleteForAgent(agent);
+            if (this.active) this.render();
+        };
+        eventBus.on('agent:added', this._onAgentAdded);
+        eventBus.on('agent:updated', this._onAgentUpdated);
+        eventBus.on('agent:removed', this._onAgentRemoved);
+        eventBus.on('agent:selected', (agent) => {
+            this._selectedAgentId = agent?.id || null;
+            if (this.active) void this._fetchAllDetails();
+        });
+        eventBus.on('agent:deselected', () => {
+            this._selectedAgentId = null;
+        });
         eventBus.on('mode:changed', (mode) => {
             this.active = mode === 'dashboard';
             if (this.active) {
@@ -111,6 +135,7 @@ export class DashboardRenderer {
                 if (!cardEl) {
                     cardEl = this._createCard(agent);
                     this.cards.set(agent.id, cardEl);
+                    this._observer?.observe(cardEl);
                 }
 
                 // Move the card if it is not in this section
@@ -120,6 +145,7 @@ export class DashboardRenderer {
 
                 this._updateCard(cardEl, agent);
             }
+            this._sectionSignatures.set(projectPath, groupAgents.map(agent => `${agent.id}:${this._normalizeStatus(agent.status)}`).join('|'));
         }
 
         // Remove missing agent cards
@@ -129,6 +155,8 @@ export class DashboardRenderer {
                 this.cards.delete(id);
                 this.toolHistories.delete(id);
                 this.toolHistoryRenderSignatures.delete(id);
+                this._cardRenderSignatures.delete(id);
+                this._visibleAgentIds.delete(id);
             }
         }
 
@@ -138,8 +166,34 @@ export class DashboardRenderer {
                 sectionEl.remove();
                 this._sectionEls.delete(path);
                 this._sectionRefs.delete(path);
+                this._sectionSignatures.delete(path);
             }
         }
+        sessionDetailsService.sweep(agents);
+    }
+
+    _createVisibilityObserver() {
+        if (typeof IntersectionObserver === 'undefined') return null;
+        const root = document.getElementById('dashboardMode') || null;
+        return new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+                const id = entry.target?.dataset?.agentId;
+                if (!id) continue;
+                if (entry.isIntersecting) this._visibleAgentIds.add(id);
+                else this._visibleAgentIds.delete(id);
+            }
+        }, { root, rootMargin: '160px 0px', threshold: 0.01 });
+    }
+
+    _renderAgentUpdate(agent) {
+        const cardEl = this.cards.get(agent.id);
+        const projectPath = agent.projectPath || '_unknown';
+        const status = this._normalizeStatus(agent.status);
+        if (!cardEl || cardEl._projectPath !== projectPath || cardEl._status !== status) {
+            this.render();
+            return;
+        }
+        this._updateCard(cardEl, agent);
     }
 
     _groupByProject(agents) {
@@ -262,7 +316,8 @@ export class DashboardRenderer {
 
         // Click to select agent
         card.addEventListener('click', () => {
-            eventBus.emit('agent:selected', agent);
+            const current = this.world.agents.get(card.dataset.agentId);
+            if (current) eventBus.emit('agent:selected', current);
         });
 
         card._elements = {
@@ -286,47 +341,61 @@ export class DashboardRenderer {
     _updateCard(cardEl, agent) {
         const refs = cardEl._elements;
         const status = this._normalizeStatus(agent.status);
-
-        // Status class
-        cardEl.className = `dash-card dash-card--${status}`;
-
-        // Header
-        refs.name.textContent = agent.name;
         const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
-        refs.model.textContent = this._shortModel(agent.model, agent.effort, agent.provider);
-        refs.model.style.color = identity.accent?.[0] || '';
-        refs.model.title = identity.label || agent.model || '';
-        refs.role.textContent = agent.role || '';
+        const signature = [
+            agent.name || '',
+            agent.model || '',
+            agent.effort || '',
+            agent.provider || '',
+            agent.role || '',
+            status,
+            agent.currentTool || '',
+            agent.currentToolInput || '',
+            agent.lastMessage || '',
+        ].join('|');
 
-        // Provider badge
-        const badge = PROVIDER_BADGES[agent.provider] || PROVIDER_BADGES.claude;
-        refs.providerBadge.textContent = badge.label;
-        refs.providerBadge.style.color = badge.color;
-        refs.providerBadge.style.background = badge.bg;
+        cardEl._projectPath = agent.projectPath || '_unknown';
+        cardEl._status = status;
+        if (this._cardRenderSignatures.get(agent.id) !== signature) {
+            this._cardRenderSignatures.set(agent.id, signature);
 
-        refs.status.className = `dash-card__status dash-card__status--${status}`;
-        const statusKey = { working: 'statusWorking', idle: 'statusIdle', waiting: 'statusWaiting' };
-        refs.statusLabel.textContent = i18n.t(statusKey[status] || status);
+            const nextClass = `dash-card dash-card--${status}`;
+            if (cardEl.className !== nextClass) cardEl.className = nextClass;
 
-        // Current tool
-        if (agent.currentTool) {
-            refs.currentTool.classList.remove('dash-card__current-tool--idle');
-            refs.toolIcon.textContent = this._getToolIcon(agent.currentTool);
-            refs.toolName.textContent = agent.currentTool;
-            refs.toolDetail.textContent = agent.currentToolInput || '';
-        } else {
-            refs.currentTool.classList.add('dash-card__current-tool--idle');
-            refs.toolIcon.textContent = status === 'idle' ? '💤' : '⏳';
-            refs.toolName.textContent = status === 'idle' ? i18n.t('statusIdle') : i18n.t('statusWaiting') + '...';
-            refs.toolDetail.textContent = '';
-        }
+            this._setText(refs.name, agent.name);
+            this._setText(refs.model, this._shortModel(agent.model, agent.effort, agent.provider));
+            this._setStyle(refs.model, 'color', identity.accent?.[0] || '');
+            refs.model.title = identity.label || agent.model || '';
+            this._setText(refs.role, agent.role || '');
 
-        // Messages
-        if (agent.lastMessage) {
-            refs.message.textContent = `"${agent.lastMessage}"`;
-            refs.message.style.display = '';
-        } else {
-            refs.message.style.display = 'none';
+            const badge = PROVIDER_BADGES[agent.provider] || PROVIDER_BADGES.claude;
+            this._setText(refs.providerBadge, badge.label);
+            this._setStyle(refs.providerBadge, 'color', badge.color);
+            this._setStyle(refs.providerBadge, 'background', badge.bg);
+
+            const nextStatusClass = `dash-card__status dash-card__status--${status}`;
+            if (refs.status.className !== nextStatusClass) refs.status.className = nextStatusClass;
+            const statusKey = { working: 'statusWorking', idle: 'statusIdle', waiting: 'statusWaiting' };
+            this._setText(refs.statusLabel, i18n.t(statusKey[status] || status));
+
+            if (agent.currentTool) {
+                refs.currentTool.classList.remove('dash-card__current-tool--idle');
+                this._setText(refs.toolIcon, this._getToolIcon(agent.currentTool));
+                this._setText(refs.toolName, agent.currentTool);
+                this._setText(refs.toolDetail, agent.currentToolInput || '');
+            } else {
+                refs.currentTool.classList.add('dash-card__current-tool--idle');
+                this._setText(refs.toolIcon, status === 'idle' ? '💤' : '⏳');
+                this._setText(refs.toolName, status === 'idle' ? i18n.t('statusIdle') : i18n.t('statusWaiting') + '...');
+                this._setText(refs.toolDetail, '');
+            }
+
+            if (agent.lastMessage) {
+                this._setText(refs.message, `"${agent.lastMessage}"`);
+                this._setStyle(refs.message, 'display', '');
+            } else {
+                this._setStyle(refs.message, 'display', 'none');
+            }
         }
 
         // Render tool history
@@ -338,23 +407,22 @@ export class DashboardRenderer {
 
     _renderToolHistory(cardEl, agentId, tools) {
         const listEl = cardEl._elements.toolList;
+        const limited = (tools || []).slice(-DASHBOARD_TOOL_HISTORY_LIMIT);
 
-        const signature = JSON.stringify((tools || []).map((tool) => ({
-            tool: tool.tool || '',
-            detail: (tool.detail || '').slice(0, 60),
-            ts: tool.ts || 0,
-        })));
+        const newest = limited.at(-1) || {};
+        const oldest = limited[0] || {};
+        const signature = `${limited.length}|${oldest.ts || 0}|${newest.ts || 0}|${newest.tool || ''}|${(newest.detail || '').slice(0, 60)}`;
 
         if (this.toolHistoryRenderSignatures.get(agentId) === signature) return;
         this.toolHistoryRenderSignatures.set(agentId, signature);
 
-        if (!tools || tools.length === 0) {
+        if (!limited.length) {
             listEl.innerHTML = `<div class="dash-card__loading" style="color:#666">${i18n.t('noToolUsage')}</div>`;
             return;
         }
 
         // Newest first
-        const reversed = [...tools].reverse();
+        const reversed = [...limited].reverse();
         listEl.innerHTML = reversed.map(t => {
             const cat = this._getToolCategory(t.tool);
             const icon = this._getToolIcon(t.tool);
@@ -389,10 +457,38 @@ export class DashboardRenderer {
 
         const agents = Array.from(this.world.agents.values());
         try {
-            await Promise.allSettled(agents.map(agent => this._fetchDetail(agent)));
+            const candidates = this._detailCandidates(agents);
+            const detailsByAgentId = await sessionDetailsService.fetchSessionDetailsBatch(candidates);
+            for (const agent of candidates) {
+                const data = detailsByAgentId.get(agent.id);
+                if (!data || !data.toolHistory) continue;
+                this.toolHistories.set(agent.id, data.toolHistory.slice(-DASHBOARD_TOOL_HISTORY_LIMIT));
+                const cardEl = this.cards.get(agent.id);
+                if (cardEl) this._renderToolHistory(cardEl, agent.id, data.toolHistory);
+            }
         } finally {
             this._isFetchingDetails = false;
         }
+    }
+
+    _detailCandidates(agents) {
+        const selected = [];
+        const active = [];
+        const visible = [];
+        for (const agent of agents) {
+            if (agent.id === this._selectedAgentId) selected.push(agent);
+            else if (['working', 'waiting'].includes(this._normalizeStatus(agent.status))) active.push(agent);
+            else if (!this._observer || this._visibleAgentIds.has(agent.id)) visible.push(agent);
+        }
+        const seen = new Set();
+        const out = [];
+        for (const agent of [...selected, ...active, ...visible]) {
+            if (seen.has(agent.id)) continue;
+            seen.add(agent.id);
+            out.push(agent);
+            if (out.length >= DETAIL_FETCH_LIMIT) break;
+        }
+        return out;
     }
 
     async _fetchDetail(agent) {
@@ -438,10 +534,20 @@ export class DashboardRenderer {
         return div.innerHTML;
     }
 
+    _setText(el, value) {
+        const next = value == null ? '' : String(value);
+        if (el && el.textContent !== next) el.textContent = next;
+    }
+
+    _setStyle(el, prop, value) {
+        if (el && el.style[prop] !== value) el.style[prop] = value;
+    }
+
     destroy() {
         this._stopDetailFetching();
-        eventBus.off('agent:added', this._onAgentChanged);
-        eventBus.off('agent:updated', this._onAgentChanged);
-        eventBus.off('agent:removed', this._onAgentChanged);
+        this._observer?.disconnect?.();
+        eventBus.off('agent:added', this._onAgentAdded);
+        eventBus.off('agent:updated', this._onAgentUpdated);
+        eventBus.off('agent:removed', this._onAgentRemoved);
     }
 }

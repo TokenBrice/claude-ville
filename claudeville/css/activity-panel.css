@@ -15,12 +15,12 @@
     flex-direction: column;
     overflow: hidden;
     font-family: 'Press Start 2P', monospace;
-    animation: ap-slide-in 0.2s ease;
+    animation: ap-fade-in 0.16s ease;
 }
 
-@keyframes ap-slide-in {
-    from { width: 0; opacity: 0; }
-    to { width: 320px; opacity: 1; }
+@keyframes ap-fade-in {
+    from { opacity: 0; transform: translateX(12px); }
+    to { opacity: 1; transform: translateX(0); }
 }
 
 /* ─── Header ─────────────────────────────────────── */
@@ -205,6 +205,7 @@
     border-radius: 2px;
     background: rgba(45, 31, 20, 0.52);
     border: 1px solid rgba(214, 169, 81, 0.08);
+    contain: layout style;
 }
 
 .activity-panel__tool-item:first-child {
@@ -259,6 +260,7 @@
     line-height: 1.6;
     border-left: 2px solid transparent;
     border-top: 1px solid rgba(199, 157, 76, 0.06);
+    contain: layout style;
 }
 
 .activity-panel__msg--assistant {

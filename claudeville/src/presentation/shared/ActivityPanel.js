@@ -13,6 +13,8 @@ const TOOL_ICONS = {
     EnterPlanMode: '\u{1F4D0}', ExitPlanMode: '\u{1F4D0}',
     AskUserQuestion: '\u2753',
 };
+const PANEL_TOOL_LIMIT = 30;
+const PANEL_MESSAGE_LIMIT = 12;
 
 export class ActivityPanel {
     constructor() {
@@ -69,6 +71,7 @@ export class ActivityPanel {
         });
 
         eventBus.on('agent:removed', (agent) => {
+            sessionDetailsService.deleteForAgent(agent);
             if (this.currentAgent && agent.id === this.currentAgent.id) {
                 this.hide();
             }
@@ -185,20 +188,19 @@ export class ActivityPanel {
     // ─── Rendering ─────────────────────────────────────
 
     _renderToolHistory(tools) {
-        const signature = JSON.stringify((tools || []).map((tool) => ({
-            tool: tool.tool || '',
-            detail: (tool.detail || '').slice(0, 45),
-            ts: tool.ts || 0,
-        })));
+        const limited = (tools || []).slice(-PANEL_TOOL_LIMIT);
+        const newest = limited.at(-1) || {};
+        const oldest = limited[0] || {};
+        const signature = `${limited.length}|${oldest.ts || 0}|${newest.ts || 0}|${newest.tool || ''}|${(newest.detail || '').slice(0, 45)}`;
         if (signature === this._renderSignatures.toolHistory) return;
         this._renderSignatures.toolHistory = signature;
 
         const el = this.dom.panelToolHistory;
-        if (!tools.length) {
+        if (!limited.length) {
             el.innerHTML = '<div class="activity-panel__empty">No tool usage</div>';
             return;
         }
-        const reversed = [...tools].reverse();
+        const reversed = [...limited].reverse();
         el.innerHTML = reversed.map(t => {
             const icon = this._icon(t.tool);
             const name = this._shortTool(t.tool);
@@ -212,20 +214,19 @@ export class ActivityPanel {
     }
 
     _renderMessages(messages) {
-        const signature = JSON.stringify((messages || []).map((message) => ({
-            role: message.role || '',
-            text: (message.text || '').slice(0, 60),
-            ts: message.ts || 0,
-        })));
+        const limited = (messages || []).slice(-PANEL_MESSAGE_LIMIT);
+        const newest = limited.at(-1) || {};
+        const oldest = limited[0] || {};
+        const signature = `${limited.length}|${oldest.ts || 0}|${newest.ts || 0}|${newest.role || ''}|${(newest.text || '').slice(0, 60)}`;
         if (signature === this._renderSignatures.messages) return;
         this._renderSignatures.messages = signature;
 
         const el = this.dom.panelMessages;
-        if (!messages.length) {
+        if (!limited.length) {
             el.innerHTML = '<div class="activity-panel__empty">No messages</div>';
             return;
         }
-        const reversed = [...messages].reverse();
+        const reversed = [...limited].reverse();
         el.innerHTML = reversed.map(m => {
             const cls = m.role === 'assistant' ? 'assistant' : 'user';
             return `<div class="activity-panel__msg activity-panel__msg--${cls}">

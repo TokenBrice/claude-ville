@@ -21,6 +21,36 @@ async function getSpriteAssetVersion() {
 let SPRITE_ASSET_VERSION = '2026-04-26-visual-revamp'; // overwritten asynchronously on first load
 getSpriteAssetVersion().then(v => { SPRITE_ASSET_VERSION = v; });
 
+const SPRITE_IMAGE_CACHE = new Map();
+const SPRITE_BOUNDS_CACHE = new Map();
+
+function loadSpriteImage(spriteId) {
+    const key = `${spriteId}|${SPRITE_ASSET_VERSION}`;
+    const cached = SPRITE_IMAGE_CACHE.get(key);
+    if (cached) return cached;
+
+    const image = new Image();
+    const record = {
+        image,
+        loaded: false,
+        failed: false,
+        promise: null,
+    };
+    record.promise = new Promise((resolve) => {
+        image.onload = () => {
+            record.loaded = true;
+            resolve(record);
+        };
+        image.onerror = () => {
+            record.failed = true;
+            resolve(record);
+        };
+    });
+    image.src = `assets/sprites/characters/${spriteId}/sheet.png?v=${SPRITE_ASSET_VERSION}`;
+    SPRITE_IMAGE_CACHE.set(key, record);
+    return record;
+}
+
 export class AvatarCanvas {
     constructor(agent) {
         this.agent = agent;
@@ -33,7 +63,6 @@ export class AvatarCanvas {
         this.spriteImage = null;
         this.spriteId = null;
         this.spriteFailed = false;
-        this.spriteBounds = null;
         this.draw();
     }
 
@@ -207,19 +236,22 @@ export class AvatarCanvas {
         if (this.spriteImage && this.spriteId === spriteId) return true;
         this.spriteId = spriteId;
         this.spriteFailed = false;
-        this.spriteBounds = null;
-        this.spriteImage = new Image();
-        this.spriteImage.onload = () => this.draw();
-        this.spriteImage.onerror = () => {
+        const record = loadSpriteImage(spriteId);
+        this.spriteImage = record.image;
+        if (record.failed) {
             this.spriteFailed = true;
-            this.draw();
-        };
-        this.spriteImage.src = `assets/sprites/characters/${spriteId}/sheet.png?v=${SPRITE_ASSET_VERSION}`;
+            return false;
+        }
+        if (record.loaded || (record.image.complete && record.image.naturalWidth)) return true;
+        record.promise.then(() => this.draw());
         return false;
     }
 
     _spriteFrameBounds(cellSize, sourceRow) {
-        if (this.spriteBounds) return this.spriteBounds;
+        const key = `${this.spriteId}|${SPRITE_ASSET_VERSION}|${cellSize}|${sourceRow}`;
+        const cached = SPRITE_BOUNDS_CACHE.get(key);
+        if (cached) return cached;
+
         const scratch = document.createElement('canvas');
         scratch.width = cellSize;
         scratch.height = cellSize;
@@ -242,16 +274,16 @@ export class AvatarCanvas {
             }
         }
         if (minX > maxX || minY > maxY) {
-            this.spriteBounds = { minX: 0, minY: 0, maxX: cellSize - 1, maxY: cellSize - 1 };
+            SPRITE_BOUNDS_CACHE.set(key, { minX: 0, minY: 0, maxX: cellSize - 1, maxY: cellSize - 1 });
         } else {
-            this.spriteBounds = {
+            SPRITE_BOUNDS_CACHE.set(key, {
                 minX: Math.max(0, minX - 2),
                 minY: Math.max(0, minY - 2),
                 maxX: Math.min(cellSize - 1, maxX + 2),
                 maxY: Math.min(cellSize - 1, maxY + 1),
-            };
+            });
         }
-        return this.spriteBounds;
+        return SPRITE_BOUNDS_CACHE.get(key);
     }
 
     _drawEffortCrest(ctx, identity, accent) {

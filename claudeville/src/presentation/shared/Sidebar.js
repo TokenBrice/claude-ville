@@ -34,6 +34,7 @@ export class Sidebar {
         this.selectedId = null;
         this.harborRepos = [];
         this._harborSignature = '';
+        this._renderSignature = '';
         this.isCollapsed = localStorage.getItem('claudeville.sidebarCollapsed') === 'true';
 
         this._onUpdate = () => this.render();
@@ -51,10 +52,22 @@ export class Sidebar {
         eventBus.on('agent:updated', this._onUpdate);
         eventBus.on('agent:removed', this._onUpdate);
         eventBus.on('harbor:updated', this._onHarborUpdate);
+        eventBus.on('agent:selected', (agent) => {
+            const previous = this.selectedId;
+            this.selectedId = agent?.id || null;
+            this._syncSelection(previous, this.selectedId);
+        });
+        eventBus.on('agent:deselected', () => {
+            const previous = this.selectedId;
+            this.selectedId = null;
+            this._syncSelection(previous, null);
+        });
 
         this._bindToggle();
+        this._bindListClick();
         this._applyCollapsedState();
         this.render();
+        this.renderHarbor();
     }
 
     _bindToggle() {
@@ -63,6 +76,22 @@ export class Sidebar {
             this.isCollapsed = !this.isCollapsed;
             localStorage.setItem('claudeville.sidebarCollapsed', String(this.isCollapsed));
             this._applyCollapsedState();
+        });
+    }
+
+    _bindListClick() {
+        if (!this.listEl) return;
+        this.listEl.addEventListener('click', (event) => {
+            const row = event.target.closest('.sidebar__agent[data-agent-id]');
+            if (!row || !this.listEl.contains(row)) return;
+            const id = row.dataset.agentId;
+            const agent = this.world.agents.get(id);
+            if (!agent) return;
+            if (this.selectedId === id) {
+                eventBus.emit('agent:deselected');
+                return;
+            }
+            eventBus.emit('agent:selected', agent);
         });
     }
 
@@ -82,6 +111,23 @@ export class Sidebar {
     render() {
         const agents = Array.from(this.world.agents.values());
         this.countEl.textContent = agents.length;
+        const signature = agents
+            .map(agent => [
+                agent.id,
+                agent.name,
+                agent.status,
+                agent.model,
+                agent.effort,
+                agent.provider,
+                agent.projectPath,
+                agent.teamName,
+            ].join('|'))
+            .join('\n');
+        if (signature === this._renderSignature) {
+            this._syncSelection(null, this.selectedId);
+            return;
+        }
+        this._renderSignature = signature;
 
         // Group by project
         const groups = this._groupByProject(agents);
@@ -117,20 +163,21 @@ export class Sidebar {
         }
 
         this.listEl.innerHTML = html;
-        this.renderHarbor();
+        this._syncSelection(null, this.selectedId);
+    }
 
-        // Bind click events
-        this.listEl.querySelectorAll('.sidebar__agent').forEach(el => {
-            el.addEventListener('click', () => {
-                const id = el.dataset.agentId;
-                this.selectedId = this.selectedId === id ? null : id;
-                const agent = this.world.agents.get(id);
-                if (agent) {
-                    eventBus.emit('agent:selected', agent);
-                }
-                this.render();
-            });
-        });
+    _syncSelection(previousId, nextId) {
+        const ids = new Set([previousId, nextId].filter(Boolean));
+        if (ids.size === 0 && nextId === null) {
+            this.listEl?.querySelectorAll('.sidebar__agent--selected')
+                .forEach(row => row.classList.remove('sidebar__agent--selected'));
+            return;
+        }
+        for (const id of ids) {
+            const selector = `.sidebar__agent[data-agent-id="${CSS.escape(id)}"]`;
+            const row = this.listEl?.querySelector(selector);
+            row?.classList.toggle('sidebar__agent--selected', id === nextId);
+        }
     }
 
     renderHarbor() {
