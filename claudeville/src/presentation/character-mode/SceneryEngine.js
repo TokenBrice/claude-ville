@@ -24,6 +24,7 @@ export class SceneryEngine {
         this.waterTiles = new Set();
         this.deepWaterTiles = new Set();
         this.lagoonWaterTiles = new Set(); // river-kind basin/polyline water tiles
+        this.waterMeta = new Map(); // key -> { source, kind, region, depth, surface, weatherProfile }
         this.shoreTiles = new Set();
         this.bridgeTiles = new Map(); // key -> { orientation: 'NS' | 'EW' }
         this.bushTiles = new Map();    // key -> { variant: 0..2 }
@@ -46,6 +47,7 @@ export class SceneryEngine {
     getWaterTiles() { return this.waterTiles; }
     getDeepWaterTiles() { return this.deepWaterTiles; }
     getLagoonWaterTiles() { return this.lagoonWaterTiles; }
+    getWaterMeta() { return this.waterMeta; }
     getShoreTiles() { return this.shoreTiles; }
     getBridgeTiles() { return this.bridgeTiles; }
     getBushTiles() { return this.bushTiles; }
@@ -127,7 +129,7 @@ export class SceneryEngine {
         }
     }
 
-    _rasterizePolyline({ kind, width, points }) {
+    _rasterizePolyline({ kind, width, points, region = null, surface = null, weatherProfile = null }) {
         if (!points || points.length < 2) return;
         const deepRatio = kind === 'moat' ? 0.5 : kind === 'river' ? 0.32 : 0;
 
@@ -154,10 +156,18 @@ export class SceneryEngine {
                 const noise = this.tileNoise(tx + 53, ty + 19);
                 const localWidth = width + (noise - 0.5) * 0.45;
                 if (d <= localWidth) {
-                    this.waterTiles.add(key);
+                    this._markWaterTile(key, {
+                        source: 'polyline',
+                        kind,
+                        region: region || this._defaultWaterRegion(kind),
+                        depth: 'shallow',
+                        surface: surface || this._defaultWaterSurface(kind),
+                        weatherProfile: weatherProfile || this._defaultWaterWeatherProfile(kind),
+                    });
                     if (kind === 'river') this.lagoonWaterTiles.add(key);
                     if (deepRatio && d <= localWidth * deepRatio) {
                         this.deepWaterTiles.add(key);
+                        this._markWaterTile(key, { depth: 'deep' });
                     }
                 }
             }
@@ -185,7 +195,7 @@ export class SceneryEngine {
         return Math.hypot(x - cx, y - cy);
     }
 
-    _rasterizeBasin({ kind, centerX, centerY, radiusX, radiusY, edgeNoise = 0.15 }) {
+    _rasterizeBasin({ kind, centerX, centerY, radiusX, radiusY, edgeNoise = 0.15, region = null, surface = null, weatherProfile = null }) {
         const deepRatio = kind === 'moat' ? 0.64 : kind === 'river' ? 0.40 : 0;
         const x0 = Math.max(0, Math.floor(centerX - radiusX - 1));
         const x1 = Math.min(MAP_SIZE - 1, Math.ceil(centerX + radiusX + 1));
@@ -201,14 +211,49 @@ export class SceneryEngine {
                 const d = nx * nx + ny * ny;
                 const noise = (this.tileNoise(tx + 313, ty + 197) - 0.5) * edgeNoise;
                 if (d <= 1 + noise) {
-                    this.waterTiles.add(key);
+                    this._markWaterTile(key, {
+                        source: 'basin',
+                        kind,
+                        region: region || this._defaultWaterRegion(kind),
+                        depth: 'shallow',
+                        surface: surface || this._defaultWaterSurface(kind),
+                        weatherProfile: weatherProfile || this._defaultWaterWeatherProfile(kind),
+                    });
                     if (kind === 'river') this.lagoonWaterTiles.add(key);
                     if (deepRatio && d <= deepRatio + noise * 0.35) {
                         this.deepWaterTiles.add(key);
+                        this._markWaterTile(key, { depth: 'deep' });
                     }
                 }
             }
         }
+    }
+
+    _markWaterTile(key, meta = {}) {
+        this.waterTiles.add(key);
+        const current = this.waterMeta.get(key) || {};
+        this.waterMeta.set(key, {
+            ...current,
+            ...meta,
+        });
+    }
+
+    _defaultWaterRegion(kind) {
+        if (kind === 'river') return 'lagoon';
+        if (kind === 'moat') return 'moat';
+        return kind || 'water';
+    }
+
+    _defaultWaterSurface(kind) {
+        if (kind === 'river') return 'current';
+        if (kind === 'moat') return 'surf';
+        return 'calm';
+    }
+
+    _defaultWaterWeatherProfile(kind) {
+        if (kind === 'river') return 'lagoon';
+        if (kind === 'moat') return 'openSea';
+        return 'water';
     }
 
     _generateShorelines() {
