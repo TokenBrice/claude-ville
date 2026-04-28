@@ -30,14 +30,14 @@ const DIRECT_TOOL_BUILDINGS = {
     'mcp__playwright__browser_snapshot': 'portal',
     'mcp__playwright__browser_resize': 'portal',
 
-    Task: 'taskboard',
+    Task: 'command',
     TeamCreate: 'command',
     SendMessage: 'command',
-    'functions.spawn_agent': 'portal',
-    'functions.send_input': 'portal',
-    'functions.wait_agent': 'portal',
-    'functions.close_agent': 'portal',
-    'functions.resume_agent': 'portal',
+    'functions.spawn_agent': 'command',
+    'functions.send_input': 'command',
+    'functions.wait_agent': 'command',
+    'functions.close_agent': 'command',
+    'functions.resume_agent': 'command',
 
     TaskCreate: 'taskboard',
     TaskUpdate: 'taskboard',
@@ -79,7 +79,7 @@ const TOOL_PATTERNS = [
     { building: 'forge', pattern: /\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/ },
 ];
 
-const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'archive', 'portal', 'observatory', 'forge', 'command', 'mine'];
+const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'command', 'forge', 'archive', 'portal', 'observatory', 'mine'];
 
 export class Agent {
     constructor({
@@ -214,6 +214,25 @@ export class Agent {
     static _buildingForShellInput(input) {
         const text = Agent._normalizeToolInput(input);
         if (!text) return null;
+        if (/\b(git\s+(status|diff|show|log|branch|rev-list|fetch|pull|merge|rebase|commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/.test(text)) {
+            return 'harbor';
+        }
+        if (/\b(npm\s+(test|run\s+(test|check|lint|build|sprites:validate|sprites:visual-diff))|node\s+--check|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/.test(text)) {
+            return 'taskboard';
+        }
+        if (/\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/.test(text)) {
+            return 'portal';
+        }
+        if (/\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/.test(text)) {
+            return 'observatory';
+        }
+        if (/\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/.test(text)) {
+            return Agent._isDocumentationInput(input) ? 'archive' : 'forge';
+        }
+        if (/\b(rg|grep|find|fd|ls|cat|sed|head|tail|nl|wc|jq)\b/.test(text)) {
+            if (Agent._isCodeInput(input)) return 'forge';
+            return 'archive';
+        }
         const matched = TOOL_PATTERNS.find(({ pattern }) => pattern.test(text));
         return matched ? matched.building : null;
     }
@@ -227,7 +246,10 @@ export class Agent {
             return Agent._isDocumentationInput(input) ? 'archive' : 'forge';
         }
         const mapped = DIRECT_TOOL_BUILDINGS[toolName];
-        if (mapped) return mapped;
+        if (mapped) {
+            if (['Read', 'Grep', 'Glob', 'LS'].includes(toolName) && Agent._isCodeInput(input)) return 'forge';
+            return mapped;
+        }
         if (SHELL_TOOL_NAMES.has(toolName)) {
             return Agent._buildingForShellInput(input);
         }
@@ -235,13 +257,13 @@ export class Agent {
         const tool = String(toolName).toLowerCase();
         const text = Agent._normalizeToolInput(input);
         if (tool.includes('playwright') || tool.includes('browser') || tool.includes('chrome')) return 'portal';
+        if (tool.includes('github') || tool.includes('pull_request') || tool.includes(' pr_')) return 'harbor';
         if (tool.includes('web') || tool.includes('fetch')) return 'observatory';
         if (tool.includes('image') || tool.includes('prompt') || tool.includes('notebook')) return 'forge';
-        if (tool.includes('github') || tool.includes('pull_request') || tool.includes(' pr_')) return 'harbor';
         if (tool.includes('apply_patch') || tool.includes('edit') || tool.includes('write') || tool.includes('update_file') || tool.includes('create_file') || tool.includes('delete_file')) {
             return Agent._isDocumentationInput(input) ? 'archive' : 'forge';
         }
-        if (tool.includes('spawn_agent') || tool.includes('send_input') || tool.includes('wait_agent') || tool.includes('resume_agent') || tool.includes('close_agent')) return 'portal';
+        if (tool.includes('spawn_agent') || tool.includes('send_input') || tool.includes('wait_agent') || tool.includes('resume_agent') || tool.includes('close_agent')) return 'command';
         if (tool.includes('team') || tool.includes('parallel')) return 'command';
         if (tool.includes('task') || tool.includes('todo') || tool.includes('plan')) return 'taskboard';
         if (tool.includes('read') || tool.includes('grep') || tool.includes('glob') || tool.includes('find') || tool.includes('search')) return 'archive';
@@ -316,6 +338,12 @@ export class Agent {
     static _isDocumentationInput(input) {
         const text = Agent._normalizeToolInput(input);
         return /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/.test(text);
+    }
+
+    static _isCodeInput(input) {
+        const text = Agent._normalizeToolInput(input);
+        return /\b(src|server\.js|adapters|services|widget|claudeville\/src|claudeville\/server\.js)\b|\.([cm]?js|ts|tsx|jsx|css|html|json|yaml|yml)\b/.test(text)
+            && !Agent._isDocumentationInput(input);
     }
 
     static _normalizeToolInput(input) {

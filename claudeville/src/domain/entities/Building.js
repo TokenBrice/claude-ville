@@ -14,6 +14,8 @@ export class Building {
         shortLabel,
         district,
         visualTier,
+        capacity,
+        visitCapacity,
         entrance,
         visitTiles,
         walkExclusion,
@@ -30,9 +32,11 @@ export class Building {
         this.labelPriority = labelPriority || 'normal';
         this.district = district || 'village';
         this.visualTier = visualTier || 'major';
+        this.capacity = capacity && typeof capacity === 'object' ? { ...capacity } : capacity;
+        this.visitCapacity = visitCapacity ?? null;
         this.entrance = entrance ? { tileX: entrance.tileX, tileY: entrance.tileY } : null;
         this.visitTiles = Array.isArray(visitTiles)
-            ? visitTiles.map((tile) => ({ tileX: tile.tileX, tileY: tile.tileY }))
+            ? visitTiles.map((tile) => ({ ...tile, tileX: tile.tileX, tileY: tile.tileY }))
             : [];
         this.walkExclusion = this._normalizeWalkExclusions(walkExclusion);
         this.scenery = scenery ? {
