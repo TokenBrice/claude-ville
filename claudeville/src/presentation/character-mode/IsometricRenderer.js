@@ -2725,155 +2725,210 @@ export class IsometricRenderer {
     }
 
     _drawVillageGateTower(ctx, x, y, side = 1) {
-        const palette = VILLAGE_WOOD_PALETTE;
+        const wood = VILLAGE_WOOD_PALETTE;
+        const stone = VILLAGE_STONE_PALETTE;
         const w = 64;
-        const h = 106;
-        const roofH = 42;
+        const hStone = 64;
+        const hWood = 42;
+        const roofH = 36;
         const outward = side >= 0 ? 1 : -1;
         ctx.save();
         SpriteRenderer.disableSmoothing(ctx);
 
-        ctx.globalAlpha = 0.26;
-        ctx.fillStyle = palette.shadow;
+        // Foot shadow (single ellipse, integrated with threshold)
+        ctx.globalAlpha = 0.32;
+        ctx.fillStyle = stone.outline;
         ctx.beginPath();
-        ctx.moveTo(Math.round(x - w / 2 - 18), Math.round(y + 16));
-        ctx.lineTo(Math.round(x + w / 2 + 18), Math.round(y + 26));
-        ctx.lineTo(Math.round(x + w / 2 + 8), Math.round(y + 38));
-        ctx.lineTo(Math.round(x - w / 2 - 24), Math.round(y + 27));
-        ctx.closePath();
+        ctx.ellipse(Math.round(x), Math.round(y + 14), w / 2 + 14, 12, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
 
-        const front = {
-            lt: { x: x - w / 2, y: y - h + 7 },
-            rt: { x: x + w / 2, y: y - h - 5 },
-            rb: { x: x + w / 2, y },
-            lb: { x: x - w / 2, y: y + 8 },
-        };
-        const sideDepth = 16 * outward;
-        const sideDrop = 9;
+        // Side face peek (3D depth on outward side, stone material)
+        const sideDepth = 14 * outward;
+        const sideDrop = 8;
+        const stoneTop = y - hStone;
         const trace = (...points) => {
             ctx.beginPath();
             ctx.moveTo(Math.round(points[0].x), Math.round(points[0].y));
-            for (const point of points.slice(1)) {
-                ctx.lineTo(Math.round(point.x), Math.round(point.y));
-            }
+            for (const p of points.slice(1)) ctx.lineTo(Math.round(p.x), Math.round(p.y));
             ctx.closePath();
         };
 
         if (outward > 0) {
             trace(
-                front.rt,
-                { x: front.rt.x + sideDepth, y: front.rt.y + sideDrop },
-                { x: front.rb.x + sideDepth, y: front.rb.y + sideDrop },
-                front.rb,
+                { x: x + w / 2, y: stoneTop },
+                { x: x + w / 2 + sideDepth, y: stoneTop + sideDrop },
+                { x: x + w / 2 + sideDepth, y: y + sideDrop },
+                { x: x + w / 2, y },
             );
         } else {
             trace(
-                { x: front.lt.x + sideDepth, y: front.lt.y + sideDrop },
-                front.lt,
-                front.lb,
-                { x: front.lb.x + sideDepth, y: front.lb.y + sideDrop },
+                { x: x - w / 2 + sideDepth, y: stoneTop + sideDrop },
+                { x: x - w / 2, y: stoneTop },
+                { x: x - w / 2, y },
+                { x: x - w / 2 + sideDepth, y: y + sideDrop },
             );
         }
-        ctx.fillStyle = palette.dark;
+        ctx.fillStyle = stone.shadow;
         ctx.fill();
-        ctx.strokeStyle = palette.outline;
+        ctx.strokeStyle = stone.outline;
         ctx.lineWidth = 2;
         ctx.stroke();
 
-        const wallGrad = ctx.createLinearGradient(0, y - h, 0, y);
-        wallGrad.addColorStop(0, palette.light);
-        wallGrad.addColorStop(0.34, palette.mid);
-        wallGrad.addColorStop(1, palette.deep);
-        trace(front.lt, front.rt, front.rb, front.lb);
-        ctx.fillStyle = wallGrad;
-        ctx.fill();
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 3;
-        ctx.stroke();
+        // Stone foundation front face — solid base with mortared courses
+        const stoneLeft = x - w / 2;
+        const stoneRight = x + w / 2;
+        ctx.fillStyle = stone.mid;
+        ctx.fillRect(Math.round(stoneLeft), Math.round(stoneTop), w, hStone);
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(Math.round(stoneLeft), Math.round(stoneTop), w, hStone);
 
-        ctx.strokeStyle = '#2f1a0c';
+        // Mottled stone blocks (light/mid alternation)
+        const courseH = 16;
+        for (let row = 0; row < 4; row++) {
+            const rowY = stoneTop + row * courseH;
+            const offset = row % 2 ? 12 : 0;
+            for (let col = -offset; col < w; col += 24) {
+                const sx = stoneLeft + col;
+                const ex = Math.min(stoneLeft + col + 24, stoneRight);
+                if (ex <= stoneLeft) continue;
+                const seed = this._tileNoise(row * 13 + 7, col + side * 31);
+                ctx.fillStyle = seed > 0.55 ? stone.light : stone.shadow;
+                ctx.fillRect(Math.round(Math.max(stoneLeft, sx)), Math.round(rowY),
+                             Math.round(ex - Math.max(stoneLeft, sx)), courseH);
+            }
+        }
+
+        // Mortar lines (horizontal courses)
+        ctx.strokeStyle = stone.mortar;
         ctx.lineWidth = 1;
-        for (let row = y - h + 18; row < y - 8; row += 24) {
+        for (let row = 1; row < 4; row++) {
+            const rowY = stoneTop + row * courseH;
             ctx.beginPath();
-            ctx.moveTo(Math.round(x - w / 2 + 5), Math.round(row + 4));
-            ctx.lineTo(Math.round(x + w / 2 - 5), Math.round(row - 5));
+            ctx.moveTo(Math.round(stoneLeft), Math.round(rowY));
+            ctx.lineTo(Math.round(stoneRight), Math.round(rowY));
             ctx.stroke();
-        }
-        for (let col = x - w / 2 + 8 + (side > 0 ? 4 : 0); col < x + w / 2 - 4; col += 11) {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(col), Math.round(y - h + 8));
-            ctx.lineTo(Math.round(col), Math.round(y - 6));
-            ctx.stroke();
-            ctx.strokeStyle = 'rgba(214, 151, 78, 0.45)';
-            ctx.beginPath();
-            ctx.moveTo(Math.round(col + 2), Math.round(y - h + 10));
-            ctx.lineTo(Math.round(col + 2), Math.round(y - 10));
-            ctx.stroke();
-            ctx.strokeStyle = '#2f1a0c';
         }
 
-        ctx.strokeStyle = palette.dark;
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(x - w / 2 + 7), Math.round(y - h + 28));
-        ctx.lineTo(Math.round(x + w / 2 - 7), Math.round(y - 18));
-        ctx.moveTo(Math.round(x + w / 2 - 7), Math.round(y - h + 28));
-        ctx.lineTo(Math.round(x - w / 2 + 7), Math.round(y - 18));
-        ctx.stroke();
-        ctx.strokeStyle = palette.rope;
+        // Mortar verticals (offset per course for brick-like pattern)
+        for (let row = 0; row < 4; row++) {
+            const rowY1 = stoneTop + row * courseH;
+            const rowY2 = rowY1 + courseH;
+            const offset = row % 2 ? 12 : 0;
+            for (let col = 24 - offset; col < w; col += 24) {
+                const cx = stoneLeft + col;
+                ctx.beginPath();
+                ctx.moveTo(Math.round(cx), Math.round(rowY1));
+                ctx.lineTo(Math.round(cx), Math.round(rowY2));
+                ctx.stroke();
+            }
+        }
+
+        // Re-stroke perimeter to keep outline crisp
+        ctx.strokeStyle = stone.outline;
         ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(x - w / 2 + 8), Math.round(y - 37));
-        ctx.lineTo(Math.round(x + w / 2 - 8), Math.round(y - 37));
-        ctx.moveTo(Math.round(x - w / 2 + 8), Math.round(y - 64));
-        ctx.lineTo(Math.round(x + w / 2 - 8), Math.round(y - 64));
-        ctx.stroke();
+        ctx.strokeRect(Math.round(stoneLeft), Math.round(stoneTop), w, hStone);
 
+        // Archer slit centered on stone front
+        ctx.fillStyle = stone.outline;
+        ctx.fillRect(Math.round(x - 4), Math.round(stoneTop + hStone / 2 - 11), 8, 22);
+
+        // Moss tuft at base
+        ctx.fillStyle = stone.moss;
+        ctx.fillRect(Math.round(stoneRight - 18), Math.round(y - 4), 14, 4);
+        ctx.fillRect(Math.round(stoneLeft + 4), Math.round(y - 4), 10, 3);
+
+        // Floor band — visible structural transition between stone and wood
+        const woodTop = stoneTop - hWood;
+        const bandH = 6;
+        ctx.fillStyle = wood.deep;
+        ctx.fillRect(Math.round(stoneLeft - 2), Math.round(stoneTop - bandH), w + 4, bandH);
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(Math.round(stoneLeft - 2), Math.round(stoneTop - bandH), w + 4, bandH);
+
+        // Wood-frame upper — vertical planks matching wall plank rule
+        ctx.fillStyle = wood.mid;
+        ctx.fillRect(Math.round(stoneLeft), Math.round(woodTop), w, hWood - bandH);
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(Math.round(stoneLeft), Math.round(woodTop), w, hWood - bandH);
+
+        // Plank lines (vertical)
+        ctx.strokeStyle = '#2c190d';
+        ctx.lineWidth = 1;
+        for (let plank = stoneLeft + 8; plank < stoneRight; plank += 12) {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(plank), Math.round(woodTop + 4));
+            ctx.lineTo(Math.round(plank), Math.round(stoneTop - bandH - 2));
+            ctx.stroke();
+        }
+
+        // Highlight planks (subtle warm streaks)
+        ctx.strokeStyle = 'rgba(214, 151, 78, 0.4)';
+        for (let plank = stoneLeft + 14; plank < stoneRight; plank += 24) {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(plank), Math.round(woodTop + 4));
+            ctx.lineTo(Math.round(plank), Math.round(stoneTop - bandH - 2));
+            ctx.stroke();
+        }
+
+        // Narrow window slit in wood
+        ctx.fillStyle = stone.outline;
+        ctx.fillRect(Math.round(x - 4), Math.round(woodTop + 10), 8, 16);
+
+        // Eave shadow under roof
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
+        ctx.fillRect(Math.round(stoneLeft), Math.round(woodTop), w, 3);
+
+        // Teal pitched roof — front gable
+        const roofLeft = stoneLeft - 8;
+        const roofRight = stoneRight + 8;
+        const ridgeY = woodTop - roofH;
         trace(
-            { x: x - w / 2 - 8, y: y - h - 6 },
-            { x: x + w / 2 + 8, y: y - h - 17 },
-            { x: x + w / 2 + 11, y: y - h - 7 },
-            { x: x - w / 2 - 5, y: y - h + 4 },
+            { x: roofLeft, y: woodTop },
+            { x: x, y: ridgeY },
+            { x: roofRight, y: woodTop },
         );
-        ctx.fillStyle = palette.tealDark;
+        ctx.fillStyle = wood.teal;
         ctx.fill();
-        ctx.strokeStyle = palette.outline;
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 2;
         ctx.stroke();
 
-        const roofLeft = { x: x - w / 2 - 11, y: y - h - 8 };
-        const roofRight = { x: x + w / 2 + 11, y: y - h - 19 };
-        const roofRidge = { x: x, y: y - h - roofH };
-        trace(roofLeft, roofRidge, roofRight, { x: roofRight.x + outward * 11, y: roofRight.y + 7 }, { x: x + outward * 11, y: roofRidge.y + 7 });
-        ctx.fillStyle = palette.teal;
-        ctx.fill();
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 3;
-        ctx.stroke();
-        trace(roofLeft, { x: x + outward * 11, y: roofRidge.y + 7 }, { x: roofRight.x + outward * 11, y: roofRight.y + 7 }, roofRidge);
+        // Roof shadow side (the half away from the light)
+        const lightSide = outward > 0 ? -1 : 1; // light comes from the inward side
+        if (lightSide < 0) {
+            trace(
+                { x: roofLeft, y: woodTop },
+                { x: x, y: ridgeY },
+                { x: x, y: woodTop },
+            );
+        } else {
+            trace(
+                { x: x, y: ridgeY },
+                { x: roofRight, y: woodTop },
+                { x: x, y: woodTop },
+            );
+        }
         ctx.fillStyle = 'rgba(20, 63, 67, 0.46)';
         ctx.fill();
-        ctx.strokeStyle = palette.tealLight;
+
+        // Ridge highlight
+        ctx.strokeStyle = wood.tealLight;
         ctx.lineWidth = 1;
         for (let i = -2; i <= 2; i++) {
             ctx.beginPath();
-            ctx.moveTo(Math.round(x), Math.round(y - h - roofH + 5));
-            ctx.lineTo(Math.round(x + i * 9), Math.round(y - h - 10));
+            ctx.moveTo(Math.round(x), Math.round(ridgeY + 2));
+            ctx.lineTo(Math.round(x + i * 8), Math.round(woodTop - 4));
             ctx.stroke();
         }
 
-        ctx.fillStyle = palette.lantern;
-        ctx.fillRect(Math.round(x - 5), Math.round(y - 58), 10, 9);
-        ctx.fillStyle = palette.glow;
-        ctx.fillRect(Math.round(x - 12), Math.round(y - 63), 24, 19);
-        ctx.fillStyle = palette.lantern;
-        ctx.fillRect(Math.round(x + outward * 19 - 3), Math.round(y - 38), 7, 7);
-        ctx.fillStyle = palette.glow;
-        ctx.fillRect(Math.round(x + outward * 19 - 8), Math.round(y - 42), 16, 14);
-        ctx.fillStyle = palette.moss;
-        ctx.fillRect(Math.round(x - w / 2 + 4), Math.round(y - 12), 11, 3);
-        ctx.fillRect(Math.round(x + w / 2 - 16), Math.round(y - 27), 9, 3);
+        // Ridge cap accent
+        ctx.fillStyle = stone.outline;
+        ctx.fillRect(Math.round(x - 2), Math.round(ridgeY - 4), 4, 6);
+
         ctx.restore();
     }
 
