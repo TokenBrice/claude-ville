@@ -31,14 +31,15 @@ src/
 
 ### 2. No Framework Dependencies
 
-Verify the project uses pure HTML/CSS/JS with no npm dependencies:
+Verify the project uses pure HTML/CSS/JS at runtime with no runtime npm dependencies:
 
-- `package.json` should only have `scripts`, no `dependencies` or `devDependencies`
-- No `node_modules/` directory
+- `package.json` should not have runtime `dependencies`
+- `devDependencies` are allowed for sprite validation, visual diffs, and Playwright capture scripts
 - All imports use relative paths or ES modules
 
-- **PASS**: No external dependencies
-- **FAIL**: npm dependencies found
+- **PASS**: No runtime dependencies
+- **WARN**: Dev dependencies changed; confirm they are still development-only
+- **FAIL**: Runtime dependencies added without updating README and design decisions
 
 ### 3. Adapter Pattern Compliance
 

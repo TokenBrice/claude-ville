@@ -1,5 +1,7 @@
 # Living Twilight Sky Implementation Plan
 
+Status: historical/superseded plan. The sky feature has moved on; verify current atmosphere entries, tool names, and `style.assetVersion` in `claudeville/assets/sprites/manifest.yaml` before reusing any manifest snippets below.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the dark void around the isometric world with a painted Festival-Lantern-Night sky — warm plum-to-ember gradient, sparse warm stars, demoted star-cluster halos, a crescent moon, and 2 layers of slow-drifting pixel-art clouds.

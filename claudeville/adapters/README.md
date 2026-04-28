@@ -38,7 +38,7 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | Member | Kind | Returns | Consumer |
 | --- | --- | --- | --- |
 | `name` | getter | display string (e.g. `'Claude Code'`) | `getActiveProviders()`, surfaced via `/api/providers` |
-| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'`) | Adapter dispatch and every session object |
+| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'`) | Adapter dispatch and adapter-backed session objects |
 | `homeDir` | getter | absolute path to the provider's source dir | `getActiveProviders()` |
 | `isAvailable()` | method | `boolean` | Gates every registry iteration |
 | `getActiveSessions(activeThresholdMs)` | method | `Session[]` (see below) | Called from `server.js` per request and per polling tick |
@@ -62,8 +62,8 @@ Each adapter class must expose the following getters and methods. Getters are JS
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `sessionId` | string | Unique across providers. Codex and Gemini prefix with `codex-` / `gemini-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. |
-| `provider` | `'claude' \| 'codex' \| 'gemini'` | Used for adapter dispatch in `getSessionDetailByProvider`. |
+| `sessionId` | string | Unique across providers. Codex and Gemini prefix with `codex-` / `gemini-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
+| `provider` | `'claude' \| 'codex' \| 'gemini' \| 'git'` | Adapter-backed sessions use `claude`, `codex`, or `gemini`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
 | `agentId` | string \| null | Provider-specific agent thread id; nullable for Gemini. |
 | `agentType` | `'main' \| 'sub-agent' \| 'team-member'` | Drives sprite/card grouping. Default `'main'`. |
 | `agentName` | string \| null | Human label when the provider exposes one (Codex `agent_nickname`, Claude team launch name). |
@@ -89,7 +89,7 @@ Each adapter class must expose the following getters and methods. Getters are JS
 - Codex can sometimes attach completion metadata from command-end events (`success`, `exitCode`, `completedAt`).
 - Parsing is best-effort and command-string based; do not treat events as an authoritative audit log.
 
-Adapters attach `gitEvents` to active session objects. `/api/session-detail` currently focuses on tool history, messages, and tokens, so consumers that need git events should read them from the session list data.
+Adapters attach `gitEvents` to active session objects. `/api/session-detail` and `POST /api/session-details` currently focus on tool history, messages, and tokens, so consumers that need git events should read them from the session list data.
 
 ### Token normalization
 

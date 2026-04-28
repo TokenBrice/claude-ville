@@ -32,9 +32,9 @@ Clicking a card emits `agent:selected`, the same event used by the sidebar and W
 
 ## Session Details
 
-Dashboard detail fetches flow through `shared/SessionDetailsService.js`, not direct `fetch()` calls. That service dedupes in-flight requests, caches fresh responses briefly, serves stale data while a background refresh is running, and times out slow fetches.
+Dashboard detail fetches flow through `shared/SessionDetailsService.js`, not direct `fetch()` calls. Dashboard uses `fetchSessionDetailsBatch()` and the server's `POST /api/session-details` route for its active-card refresh path; singular detail fetches remain available for one-agent surfaces such as the Activity Panel. The service dedupes in-flight requests, caches fresh responses briefly, serves stale data while a background refresh is running, and times out slow fetches.
 
-Use `SESSION_DETAIL_REFRESH_INTERVAL` from `src/config/constants.js` for Dashboard polling cadence. Do not add another independent timer without considering the Activity Panel and adapter-registry caches.
+Use `SESSION_DETAIL_REFRESH_INTERVAL` from `src/config/constants.js` for Dashboard polling cadence. The candidate policy prioritizes the selected agent, then working/waiting agents, then visible cards, and caps each pass at `DETAIL_FETCH_LIMIT = 48`. Do not add another independent timer without considering the Activity Panel and adapter-registry caches.
 
 ## Validation
 

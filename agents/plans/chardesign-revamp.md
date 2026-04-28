@@ -1,5 +1,7 @@
 # Character Design Revamp Implementation Plan (v2)
 
+Status: historical/completed plan. Retain for implementation history only; current sprite IDs, manifest fields, and `style.assetVersion` must be verified against `claudeville/assets/sprites/manifest.yaml`, `scripts/sprites/generate.md`, and `docs/pixellab-reference.md` before reuse.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to execute this plan. The plan is structured as four waves; each wave dispatches independent subagents in parallel. Sequential steps within a track are checkbox-tracked.
 
 > **Pixellab reference:** This plan was written before the canonical pixellab guide existed. For up-to-date tool selection, parameter enums, animation templates, async lifecycle, and pitfalls, see [`../../docs/pixellab-reference.md`](../../docs/pixellab-reference.md). Apparent disagreements between this plan and that reference should defer to the reference.

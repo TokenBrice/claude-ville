@@ -1,7 +1,7 @@
 # ClaudeVille Atmosphere Epic Ramp-Up
 
 Date: 2026-04-27
-Status: execution-ready plan, updated after specialist and reviewer feedback
+Status: partially executed/historical plan, updated after specialist and reviewer feedback. Several asset IDs below were proposals and are not present in the current manifest; reconcile against `claudeville/assets/sprites/manifest.yaml` before treating any slice as execution-ready.
 Scope: world-mode decoration, vegetation, marine life, overlap prevention, sprite-generation workflow
 
 ## Baseline

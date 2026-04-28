@@ -1,7 +1,7 @@
 # ClaudeVille Atmosphere Enhancement Roadmap
 
 Date: 2026-04-28
-Status: research plan, implementation not started
+Status: active research plan. Refresh the baseline and reconcile proposed asset IDs against the current manifest before assigning implementation work.
 Scope: World mode atmosphere, weather, day/night, sky visualization, lighting, water response, debug QA
 
 ## Purpose
@@ -31,8 +31,7 @@ It complements, but does not replace, broader world-building plans such as:
 
 Implementation baseline:
 
-- `HEAD`: `48e7c33c54fad9f56c45810a74c27c7a98604f77`
-- Current worktree has pre-existing local modifications. Implementation agents must refresh `git status --short` and owned-path diffs before editing.
+- Planning baseline in this document is stale as of the documentation audit at `e55ebbecdccb6b12fc06afe5aa1ad27a83860494`. Implementation agents must refresh `git status --short` and owned-path diffs before editing.
 
 Observed dirty paths at plan time:
 
@@ -669,8 +668,7 @@ Candidate assets:
 - `atmosphere.cloud.cumulus.large.day`
 - `atmosphere.cloud.cumulus.small.day`
 - `atmosphere.cloud.wisp.high`
-- `atmosphere.cloud.overcast.shelf`
-- `atmosphere.cloud.storm.shelf`
+- Proposed overcast/storm IDs must be reconciled with current manifest naming before implementation. Current related IDs include `atmosphere.cloud.overcast-bank` and `atmosphere.cloud.storm-shelf`.
 - `atmosphere.moon.half.cool`
 - `atmosphere.moon.gibbous.cool`
 - `atmosphere.rain.splash`
@@ -821,4 +819,3 @@ Deliverables:
 7. Phase 8: asset-backed polish.
 
 Do not start with assets. The renderer/state contracts should be stable first, or generated sprite work will be harder to evaluate.
-

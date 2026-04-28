@@ -38,7 +38,7 @@ If you change this, update: every adapter under `claudeville/adapters/`, `claude
 
 ## 2-second polling on top of `fs.watch`
 
-`claudeville/server.js` runs `setInterval(broadcastUpdate, 2000)` while WebSocket clients are connected. The broadcast no-ops when there are no WebSocket clients.
+`claudeville/server.js` runs a dirty-driven 2-second scheduler. The scheduler attempts a broadcast when WebSocket clients are connected, but `broadcastUpdate` can no-op when no provider data is dirty and no heartbeat is due.
 
 `fs.watch` events are unreliable across platforms (missing events, coalesced events, or no events at all on some filesystems). Polling is the backstop. Two seconds is short enough to feel live and long enough to avoid unnecessary work when the page is open but idle.
 
@@ -54,11 +54,11 @@ If you change this, update: `docs/troubleshooting.md` (the empty-sessions diagno
 
 ## Static pricing in TokenUsage
 
-Pricing lives in `claudeville/src/domain/value-objects/TokenUsage.js`. `Agent` and `ActivityPanel` call `TokenUsage.estimateCost(...)` rather than carrying separate pricing tables. The rates are static lookups keyed by a substring match on the model name.
+Browser-side pricing lives in `claudeville/src/domain/value-objects/TokenUsage.js`. `Agent` and `ActivityPanel` call `TokenUsage.estimateCost(...)` rather than carrying separate browser pricing tables. The rates are static lookups keyed by a substring match on the model name. The native Swift widget and static widget resource also carry local pricing tables for their standalone cost display.
 
 The dashboard does not have a billing API key or an authoritative price feed. Hardcoded estimates are good enough for the "is this run getting expensive?" question this UI answers. Prices change rarely.
 
-If a price changes, update `TokenUsage.js` and validate both `agent.cost` and Activity Panel rendering.
+If a price changes, update `TokenUsage.js`, `widget/Sources/main.swift`, and `widget/Resources/widget.html`; then validate `agent.cost`, Activity Panel rendering, and widget cost rendering.
 
 ## Cache token normalization
 
@@ -72,10 +72,10 @@ If a provider format changes, update only the relevant adapter. The frontend kee
 
 ## English-only documentation and UI
 
-The user-facing app exposes a language setting, but project policy keeps documentation and UI strings English. `claudeville/CLAUDE.md:198` defines the validation:
+The user-facing app exposes a language setting, but project policy keeps documentation and UI strings English. `claudeville/CLAUDE.md` defines the validation:
 
 ```bash
-rg -n -P "\\p{Hangul}" README.md claudeville/CLAUDE.md
+rg -n -P "\\p{Hangul}" $(rg --files -g '*.md' --glob '!node_modules')
 ```
 
 The Hangul scan exists because earlier revisions of the codebase mixed Korean and English. The rule is now uniform English. Run the scan after edits that touch user-visible copy.
@@ -110,13 +110,14 @@ A status-bar app is the most native, lowest-friction surface for "is the dashboa
 
 If you add a Linux or Windows widget, expect a parallel implementation under `widget-linux/` or similar; do not couple it to the Swift code.
 
-## Polling cadence: 2s server, 2s panel, 3s widget
+## Polling cadence: 2s server scheduler, 2s panel, 5s widget
 
-- Server broadcast: every 2 seconds when clients are connected.
+- Server scheduler: every 2 seconds; actual broadcasts are dirty-driven and no-op when there are no WebSocket clients.
 - Activity panel detail fetch: every 2 seconds for the selected agent (`claudeville/src/presentation/shared/ActivityPanel.js:150`).
-- Widget HTTP poll: every 3 seconds.
+- Native widget HTTP poll: every 5 seconds.
+- Static `widget/Resources/widget.html`: WebSocket client with a 3-second reconnect interval.
 
-Server and panel match because both serve the live dashboard. The widget is a glance surface, so it polls less often to save battery and CPU.
+Server and panel stay near-live because both serve the active dashboard. The native widget is a glance surface, so it polls less often to save battery and CPU.
 
 If you change any of these, also revisit `ACTIVE_THRESHOLD_MS` (the active-session window must stay strictly larger than the slowest poll, or sessions will visibly flicker in and out).
 

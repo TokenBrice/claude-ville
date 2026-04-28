@@ -10,7 +10,10 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | --- | --- |
 | `IsometricRenderer.js` | Render loop (`requestAnimationFrame`), terrain/water/road generation, hit testing, click and hover handlers, event-bus subscriptions, minimap mount, selection plumbing. |
 | `Camera.js` | Pan, zoom, `centerOnMap`, `followAgent` / `stopFollow`, `screenToWorld` / `worldToScreen` projections. |
+| `CanvasBudget.js` | Effective DPR selection and backing-store guardrails for large desktop canvases. |
 | `AgentSprite.js` | Per-agent sprite state: tile position, smoothed motion, selection ring, chat animation toward a target sprite, hit testing in world coordinates. |
+| `AgentBehaviorState.js` | Per-agent behavior and destination state used by movement/visit systems. |
+| `VisitIntentManager.js`, `VisitTileAllocator.js` | Building capacity, visit reservations, and destination assignment. |
 | `BuildingSprite.js` | Current building visuals, sprite blits, hover state, building-specific decoration/effects, occlusion split for hero buildings, and `hitTest` in world coordinates. |
 | `BuildingRenderer.legacy.js` | Historical reference/fallback code. Do not add new building behavior here unless intentionally restoring the legacy renderer. |
 | `AssetManager.js` | Loads `manifest.yaml` and `palettes.yaml`, maps manifest IDs to PNG paths, cache-busts with `style.assetVersion`, and supplies placeholder/checker fallbacks. |
@@ -20,10 +23,17 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `TerrainTileset.js` | Wang-tile neighbor masks and isometric tile transforms. |
 | `SceneryEngine.js` | Water, shore, bridges, vegetation, boulders, and walkability data. |
 | `Pathfinder.js` | Grid pathfinding over the walkability map. |
+| `AtmosphereState.js`, `SkyRenderer.js`, `WeatherRenderer.js` | Time/weather snapshots, sky rendering, and foreground weather effects. |
+| `LightSourceRegistry.js` | Shared light-source records consumed by world grading and effects. |
 | `HarborTraffic.js` | Harbor/ship motion and git-event-aware harbor activity. |
 | `LandmarkActivity.js` | Harbor/landmark event extraction and activity state updates tied to git-event streams. |
 | `AgentEventStream.js` | Shared observer that derives tool, subagent, team, and chat semantic events from `agent:*` updates. |
 | `RelationshipState.js` | Debounced relationship snapshot for parent/child, team, arrival/departure, and chat-pair consumers. |
+| `ArrivalDeparture.js`, `TrailRenderer.js` | Relationship arrival/departure cues and movement trails. |
+| `Chronicler.js`, `ChronicleEvents.js`, `ChronicleMonuments.js` | Chronicle event capture and monument rendering. |
+| `CouncilRing.js` | Team/council ring visuals around related agents. |
+| `PulsePolicy.js` | Shared pulse-priority parser and defaults. |
+| `DebugOverlay.js` | Shift-D debug overlay for renderer diagnostics. |
 | `RitualConductor.js` | Capped, reduced-motion-aware scheduler for future tool ritual visuals. |
 | `ParticleSystem.js` | Particle emitters and ambient effects. Honors `prefers-reduced-motion`. |
 | `Minimap.js` | Minimap rendering and click-to-pan; mounted into the canvas's parent node. |
@@ -73,7 +83,7 @@ ActivityPanel close button or eventBus 'agent:removed' for current agent
   → App.js → renderer.selectAgentById(null) → camera.stopFollow()
 ```
 
-`onAgentSelect` is wired in `App.js:118-120`. The renderer keeps a single `selectedAgent` reference; clearing it deselects every sprite and stops camera follow.
+`onAgentSelect` is wired in `App.js` after the renderer is created. The renderer keeps a single `selectedAgent` reference; clearing it deselects every sprite and stops camera follow.
 
 ## Map constants
 
@@ -90,7 +100,7 @@ The grid is `40 × 40` tiles. World-space origin is `(0, 0)` at the top corner o
 
 ## Event-bus integration
 
-`IsometricRenderer.show()` subscribes to three domain events (see `IsometricRenderer.js:354-361`) and stashes the unsubscribe functions in `_unsubscribers` for teardown:
+`IsometricRenderer.show()` subscribes to domain events and stashes the unsubscribe functions in `_unsubscribers` for teardown:
 
 | Event | Effect on the renderer |
 | --- | --- |
@@ -98,9 +108,9 @@ The grid is `40 × 40` tiles. World-space origin is `(0, 0)` at the top corner o
 | `agent:removed` | Drops the entry from `agentSprites`. |
 | `agent:updated` | Replaces `sprite.agent` so the sprite reads the latest status, tool, model. |
 
-Selection events (`agent:selected`, `agent:deselected`) are bridged in `App.js:140-154`, not subscribed here directly. The renderer exposes `selectAgentById(id)` for that bridge to call.
+Selection events (`agent:selected`, `agent:deselected`) are bridged in `App.js`, not subscribed here directly. The renderer exposes `selectAgentById(id)` for that bridge to call.
 
-`mode:changed` is not consumed by this directory. `ModeManager` toggles `#characterMode` and `#dashboardMode` via `display: none` (`ModeManager.js:19-29`); the renderer keeps running while hidden. Stop or pause logic should be added explicitly if frame cost becomes a concern.
+`mode:changed` is consumed by `IsometricRenderer` to call `setWorldModeActive(mode !== 'dashboard')`. When Dashboard mode is active, the World render loop stops and volatile renderer caches are released; when World mode becomes active again, dirty sprite state is reconciled and the loop restarts. Browser visibility and canvas context loss/restoration also pause, resume, and rebuild canvas-owned caches.
 
 ## Adding a building
 

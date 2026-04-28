@@ -71,7 +71,7 @@ The pixellab MCP server (configured via `claude mcp add --transport http pixella
 - Maps: `create-map`, `create-map-new`, `extend-map`, `extend-map-v2`, `create-large-image`, `create-texture`
 - Other: `create-instant-character`, `create-ui-elements`, `create-ui-elements-pro`, `create-sl-image-pro`, `create-character-with-4-directions`, `create-character-with-8-directions` (the MCP `create_character` wraps these last two)
 
-**Why ClaudeVille uses both:** MCP `create_isometric_tile` caps at 64 px. Hero buildings such as `building.watchtower` (400×300) need REST `create-image-pixflux`. `scripts/sprites/generate-pixellab-revamp.mjs` calls REST directly and reads `PIXELLAB_API_TOKEN` from `.dev.vars`.
+**Why ClaudeVille uses both:** MCP `create_isometric_tile` caps at 64 px. Hero buildings such as `building.watchtower` (400×300) need REST `create-image-pixflux`. `scripts/sprites/generate-pixellab-revamp.mjs` calls REST directly and reads `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` from `.dev.vars`, but its baked inventory is legacy/static. Run it only with an explicit, reviewed `--ids` list until it is made manifest-driven.
 
 ## Tool catalog
 
@@ -250,7 +250,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 
 | Script | Path used | Authentication | When to invoke |
 | --- | --- | --- | --- |
-| `scripts/sprites/generate-pixellab-revamp.mjs` | REST `/v2/create-image-pixflux` | `.dev.vars` → `PIXELLAB_API_TOKEN` | Hero buildings (>64 px any side), map concept, character sheets when MCP is unavailable. |
+| `scripts/sprites/generate-pixellab-revamp.mjs` | REST `/v2/create-image-pixflux` | `.dev.vars` → `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` | Legacy/static-inventory helper. Use only with explicit reviewed `--ids`; do not run broadly until it reads current `manifest.yaml`. |
 | `scripts/sprites/generate-character-mcp.mjs` | MCP ZIP assembly only (you call MCP first) | Inherits from MCP server (token in MCP config) | After `mcp__pixellab__create_character` + `animate_character` complete, to assemble into the 736×920 sheet. |
 | `scripts/sprites/manifest-validator.mjs` | None (filesystem) | n/a | After any sprite change. `npm run sprites:validate`. |
 

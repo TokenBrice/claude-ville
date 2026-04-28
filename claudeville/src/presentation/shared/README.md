@@ -9,8 +9,10 @@ This directory contains UI components used by both World and Dashboard mode. Com
 | `TopBar.js` | Global status, usage display, mode/settings affordances. |
 | `Sidebar.js` | Agent list and sidebar-driven `agent:selected` events. |
 | `ActivityPanel.js` | Right-side 320px detail panel for the selected agent. |
-| `SessionDetailsService.js` | Shared `/api/session-detail` fetch dedupe, cache, stale fallback, and timeout handling. |
+| `SessionDetailsService.js` | Shared `/api/session-detail` and `/api/session-details` fetch dedupe, cache, stale fallback, and timeout handling. |
 | `ModelVisualIdentity.js` | Provider/model/effort labels, sprite IDs, palette keys, colors, and minimap accents. |
+| `RepoColor.js` | Deterministic project/repository color assignment. |
+| `TeamColor.js` | Deterministic team color assignment. |
 | `Modal.js` | Shared modal primitive. |
 | `Toast.js` | Shared toast primitive. |
 
@@ -20,17 +22,17 @@ This directory contains UI components used by both World and Dashboard mode. Com
 - `ActivityPanel` opens on `agent:selected`, refreshes its selected agent on matching `agent:updated`, and hides when that agent is removed.
 - `ActivityPanel.hide()` emits `agent:deselected`; `App.js` bridges that event back to World mode so camera follow stops.
 - Empty world clicks clear renderer selection/follow but do not close the panel. The panel remains open until its close button or selected-agent removal.
-- `usage:updated`, `ws:connected`, and `ws:disconnected` feed shared status surfaces such as `TopBar`.
+- `usage:updated` feeds shared status surfaces such as `TopBar`. `ws:connected` and `ws:disconnected` are currently consumed by application services.
 
 ## Session Detail Fetching
 
-Use `sessionDetailsService.fetchSessionDetail(agent)` for any UI that needs tools/messages/tokens. Do not add direct `/api/session-detail` fetches in components.
+Use `sessionDetailsService.fetchSessionDetail(agent)` for one-agent surfaces or `sessionDetailsService.fetchSessionDetailsBatch(agents)` for card grids that need tools/messages/tokens. Do not add direct `/api/session-detail` or `/api/session-details` fetches in components.
 
 Service behavior:
 
 - Cache key: `provider::project::sessionId`.
-- Fresh cache TTL: 2500ms.
-- Stale cache TTL: 8000ms while a background refresh is started.
+- Fresh cache TTL: 5000ms.
+- Stale cache TTL: 15000ms while a background refresh is started.
 - Max entries: 128.
 - Fetch timeout: 4000ms.
 - Failed fetches return stale cached data when possible, otherwise `null`.
@@ -55,4 +57,4 @@ After shared component changes, test both modes because these components sit acr
 1. Select an agent from World mode, Dashboard mode, and Sidebar if available.
 2. Close the Activity Panel and confirm World mode follow clears.
 3. Switch modes while the panel is open.
-4. Confirm `/api/session-detail` requests are not duplicated aggressively in the browser network panel.
+4. Confirm `/api/session-detail` and `/api/session-details` requests are not duplicated aggressively in the browser network panel.

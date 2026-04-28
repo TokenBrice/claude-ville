@@ -54,12 +54,14 @@ If the runtime cannot load an image, `AssetManager` falls back to `assets/sprite
 1. Read the current `style.anchor` from `manifest.yaml`.
 2. For entries with `prompt`, prepend the anchor to that prompt.
 3. For tileset entries with `lower` and `upper`, prepend the anchor to both descriptions and pass them as the lower/upper tileset inputs.
-4. Use the entry's `tool`, `size`, `n_directions`, `animations`, `composeGrid`, and `layers` fields.
+4. Use the entry's `tool`, `size` or `width`/`height`, `n_directions`, `animations`, `composeGrid`, and `layers` fields.
 5. Save output to the path contract above.
 6. Bump `style.assetVersion` when changed PNGs may be browser-cached.
 7. If editing palette keys or colors, keep `manifest.yaml` and `palettes.yaml` synchronized.
 
 Use `curl --fail` when downloading direct Pixellab URLs. Pixellab may return non-PNG JSON while a job is still pending; `--fail` prevents accidentally saving that response as an image.
+
+`scripts/sprites/generate-pixellab-revamp.mjs` is a legacy REST helper with a static asset inventory. Run it only with an explicit, reviewed `--ids` list unless it has first been updated to read `manifest.yaml`.
 
 ## Smoke Before Bulk Work
 

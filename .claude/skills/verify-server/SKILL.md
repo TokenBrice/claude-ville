@@ -9,31 +9,31 @@ Verify the ClaudeVille Node.js server operates correctly with all endpoints and 
 
 ## Prerequisites
 
-- Server must NOT be running before test (port 4000 free)
+- Server may already be running on port 4000 in the operator's environment. Do not stop or replace an existing listener unless ownership is clear and the operator approves process cleanup.
 - Node.js available
 
 ## Check Items
 
 ### 1. Server Startup
 
-Start the server and verify it binds to port 4000:
+Start the server only when port 4000 is free, then verify it binds to port 4000:
 
 ```bash
-node claudeville/server.js &
+npm run dev
 sleep 2
 lsof -ti :4000
 ```
 
-- **PASS**: Server starts, port 4000 in use, ASCII logo printed
+- **PASS**: Server starts, port 4000 in use, startup summary printed
 - **FAIL**: Server crashes, port conflict, or startup error
 
 ### 2. Provider Detection
 
 Check server log output for active providers:
 
-- **PASS**: At least Claude Code provider detected (`~/.claude/` exists)
+- **PASS**: At least one provider detected (`~/.claude/`, `~/.codex/`, or `~/.gemini/` exists)
 - **WARN**: Only 1 provider detected
-- **FAIL**: No providers detected
+- **WARN**: No providers detected on a machine with no supported CLI session data
 
 ### 3. REST API - Sessions Endpoint
 
@@ -59,8 +59,8 @@ curl -s http://localhost:4000/api/teams
 curl -s http://localhost:4000/api/providers
 ```
 
-- **PASS**: Returns JSON with `{ providers: [...], count: N }`, count >= 1
-- **FAIL**: Non-200 status or empty providers
+- **PASS**: Returns JSON with `{ providers: [...], count: N }`
+- **FAIL**: Non-200 status or invalid JSON
 
 ### 6. Static File Serving
 
@@ -84,8 +84,4 @@ curl -s -I http://localhost:4000/api/sessions
 
 ## Cleanup
 
-After all checks, kill the server process:
-
-```bash
-kill $(lsof -ti :4000) 2>/dev/null
-```
+If you started the server in a dedicated terminal, stop only that process with Ctrl-C in that terminal. Do not kill arbitrary port-4000 listeners in a shared checkout.

@@ -1,6 +1,7 @@
 # ClaudeVille Fix And Performance Plan
 
 Date: 2026-04-28
+Status: historical/partially implemented performance plan. Verify every recommendation against current code before reuse; several items below have already landed or changed.
 Baseline: `2284e20c708f82279fdd0de074c59abc49578273`
 Initial worktree: clean
 
@@ -234,7 +235,7 @@ Scope:
 Implementation details:
 
 - Add a batch endpoint such as `/api/session-details` that accepts provider/session/project tuples and returns a map.
-- Raise or mtime-key the server detail cache; current 1250ms is shorter than UI polling intervals and causes regular misses.
+- Raise or mtime-key the server detail cache. Historical note: this was 1250ms at plan time; current adapter detail cache is 5 seconds.
 - In Dashboard mode, fetch details only for visible cards, selected agent, and active working/waiting agents. Use `IntersectionObserver` against the dashboard scroll container.
 - Add a small concurrency cap, e.g. 3-5 detail fetches at a time.
 - Cap Dashboard card history to 8-12 visible items; cap ActivityPanel histories to an explicit larger number.

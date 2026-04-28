@@ -6,7 +6,7 @@ The dashboard observes local AI CLI session files. It writes nothing back to tho
 
 ## "No providers detected" / `/api/providers` returns `[]`
 
-At least one of `~/.claude/`, `~/.codex/sessions/`, or `~/.gemini/tmp/` must exist. The adapters in `claudeville/adapters/index.js` register only providers whose home directory is present. A fresh machine with none of these CLIs installed correctly returns an empty list.
+At least one provider home directory must exist: `~/.claude/`, `~/.codex/`, or `~/.gemini/`. The adapters in `claudeville/adapters/index.js` register providers by home-directory presence, not by whether session subdirectories already contain data. A fresh machine with none of these CLIs installed correctly returns an empty list.
 
 Server log on startup will say:
 
@@ -15,7 +15,7 @@ Server log on startup will say:
     One of ~/.claude/, ~/.codex/, or ~/.gemini/ is required
 ```
 
-Fix: install at least one of Claude Code, Codex, or Gemini and run a session so the directory is created. Then restart the server.
+Fix: install at least one of Claude Code, Codex, or Gemini and run a session so the provider home and session files are created. Then restart the server.
 
 ## Providers detected, but `/api/sessions` is empty
 
@@ -82,7 +82,7 @@ Credential and activity sources are cached briefly, and quota checks are best-ef
 
 Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. The shared pricing and token normalization logic lives in `claudeville/src/domain/value-objects/TokenUsage.js`. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`). Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
 
-If a model is missing or its price has changed, update `TokenUsage.js`; `Agent` and `ActivityPanel` both call `TokenUsage.estimateCost(...)`.
+If a model is missing or its price has changed, update `TokenUsage.js`, `widget/Sources/main.swift`, and `widget/Resources/widget.html`; then verify browser and widget cost displays. `Agent` and `ActivityPanel` both call `TokenUsage.estimateCost(...)` in the browser app.
 
 ## Widget shows "offline"
 

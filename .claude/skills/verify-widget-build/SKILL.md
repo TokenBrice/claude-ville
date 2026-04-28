@@ -22,7 +22,7 @@ Run the widget build script and verify it compiles without errors:
 cd widget && bash build.sh
 ```
 
-- **PASS**: Exit code 0, "빌드 완료" message printed
+- **PASS**: Exit code 0, "Build complete: ClaudeVilleWidget.app" message printed
 - **FAIL**: Compilation errors or non-zero exit code
 
 ### 2. App Bundle Structure

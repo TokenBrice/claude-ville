@@ -1,5 +1,7 @@
 # Weather, Atmosphere, And Clock Tower Implementation Plan
 
+Status: historical/superseded plan. It records useful design rationale, but current atmosphere assets and layer names must be verified against `claudeville/assets/sprites/manifest.yaml`, `AtmosphereState.js`, `SkyRenderer.js`, and `WeatherRenderer.js` before reuse.
+
 ## Goal
 
 Replace the current fixed "living twilight" sky with a local-time atmosphere system:

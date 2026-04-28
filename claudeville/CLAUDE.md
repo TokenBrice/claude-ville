@@ -42,10 +42,12 @@ Current API surface:
 | --- | --- |
 | `GET /api/sessions` | Active sessions from every available provider. |
 | `GET /api/session-detail?sessionId=&project=&provider=` | Tool history, messages, and token usage for one session when available. |
+| `POST /api/session-details` | Batch detail fetch for visible or selected sessions. |
 | `GET /api/teams` | Claude Code team metadata. |
 | `GET /api/tasks` | Claude Code task metadata. |
 | `GET /api/providers` | Active provider adapters. |
 | `GET /api/usage` | Account, activity, and quota data from `services/usageQuota.js`. |
+| `GET /api/perf` | Runtime counters for manual performance checks. |
 | `ws://localhost:4000` | Initial payload, update broadcasts, and ping/pong. |
 
 Do not change port `4000` casually. The README, widget, and local workflows assume it.
@@ -78,8 +80,8 @@ Treat all provider session files as read-only inputs.
 
 `adapters/index.js` also protects the live polling path with short TTL caches:
 
-- Session lists are cached for 500ms.
-- Session details are cached for 1250ms with a small LRU-style trim.
+- Session lists are cached for 5 seconds.
+- Session details are cached for 5 seconds with a small LRU-style trim.
 - Detail failures return the stale cached payload when one exists, otherwise `{ toolHistory: [], messages: [] }`.
 
 ## Frontend Boot Path
@@ -131,8 +133,11 @@ World mode is the current RPG visual direction. It is sprite-based pixel-art Can
 Key files:
 
 - `IsometricRenderer.js`: render loop orchestration; routes terrain, buildings, and agents through sprite renderers.
+- `CanvasBudget.js`: effective DPR and canvas backing-store guardrails.
 - `Camera.js`: pan, zoom (clamped to integer steps {1,2,3} for pixel-perfect blits), follow.
+- `AtmosphereState.js`, `SkyRenderer.js`, `WeatherRenderer.js`: phase/weather snapshots, sky layers, and foreground weather.
 - `AgentSprite.js`: state and animation only; drawing delegated to `SpriteRenderer`, `Compositor`, and `SpriteSheet`.
+- `AgentBehaviorState.js`, `VisitIntentManager.js`, `VisitTileAllocator.js`: visit intent, building capacity, and agent destination allocation.
 - `BuildingSprite.js`: building sprite blits with occlusion split for hero buildings; replaces the legacy building renderer.
 - `BuildingRenderer.legacy.js`: historical reference/fallback code, not the current render path.
 - `ParticleSystem.js`: particles and ambient effects; emitter hooks now driven by manifest-declared coordinates.
@@ -145,8 +150,11 @@ Key files:
 - `SceneryEngine.js`: authored and generated water, shore, bridges, vegetation, boulders, and walkability.
 - `Pathfinder.js`: grid pathfinding over the walkability map.
 - `HarborTraffic.js`: ship/harbor motion and git-event-aware harbor activity.
+- `LightSourceRegistry.js`: shared light records for world grading.
 - `AgentEventStream.js`: shared presentation observer that derives tool, subagent, team, and chat semantic events from `agent:*` updates.
 - `RelationshipState.js`: debounced relationship snapshot for parent/child, team, arrival/departure, and chat-pair consumers.
+- `ArrivalDeparture.js`, `TrailRenderer.js`, `Chronicler.js`, `ChronicleEvents.js`, `ChronicleMonuments.js`: relationship arrivals/departures, path trails, and chronicle monument visuals.
+- `CouncilRing.js`, `LandmarkActivity.js`, `PulsePolicy.js`, `DebugOverlay.js`: team rings, landmark activity, pulse priority, and debug overlay helpers.
 - `RitualConductor.js`: capped, reduced-motion-aware scheduler for future tool ritual visuals.
 
 Buildings from `src/config/buildings.js` (nine total):
@@ -209,7 +217,7 @@ The panel shares `SessionDetailsService.js` with Dashboard mode. It renders only
 The optional macOS widget lives outside `claudeville/` in `widget/`.
 
 - `widget/Sources/main.swift` creates an `NSStatusItem` and a `WKWebView` popover.
-- It polls `/api/sessions` and `/api/usage` every 3 seconds.
+- It polls `/api/sessions` and `/api/usage` every 5 seconds.
 - The native menu popover is generated inline in Swift (`buildHTML()` and `loadHTMLString(...)`).
 - `widget/Resources/widget.html` and `widget.css` are static resources served by `server.js` and copied into the app bundle, but editing them does not automatically change the native Swift-generated popover.
 - It can start `claudeville/server.js` using the project path and Node path recorded in the app bundle.
@@ -251,20 +259,20 @@ See `AGENTS.md` § Validation Checklist for the canonical syntax/runtime/widget 
 
 The singleton bus lives at `src/domain/events/DomainEvent.js` and exports `eventBus`. It is a plain in-memory observer with `on/off/emit`; there is no replay or persistence. Modules import the same instance, so subscriptions are global.
 
-| Event | Payload | Emitter (file:line) | Primary subscribers |
+| Event | Payload | Primary emitters | Primary subscribers |
 | --- | --- | --- | --- |
-| `agent:added` | `Agent` | `domain/entities/World.js:12` | `IsometricRenderer.js:355`, `dashboard-mode/DashboardRenderer.js:44`, `shared/Sidebar.js:22`, `shared/TopBar.js:25`, `application/NotificationService.js:40` |
-| `agent:updated` | `Agent` | `domain/entities/World.js:27` | `IsometricRenderer.js:357`, `DashboardRenderer.js:45`, `Sidebar.js:23`, `TopBar.js:26`, `shared/ActivityPanel.js:30` |
-| `agent:removed` | `Agent` | `domain/entities/World.js:19` | `IsometricRenderer.js:356`, `DashboardRenderer.js:46`, `Sidebar.js:24`, `TopBar.js:27`, `ActivityPanel.js:38`, `NotificationService.js:41` |
-| `agent:selected` | `Agent` | `presentation/App.js:119` (canvas hit), `Sidebar.js:69`, `DashboardRenderer.js:250` | `App.js:142` (renderer follow), `ActivityPanel.js:26` (panel open) |
-| `agent:deselected` | none | `ActivityPanel.js:57` (panel close) | `App.js:149` (clear renderer follow) |
-| `mode:changed` | `'character' \| 'dashboard'` | `application/ModeManager.js:31` | `DashboardRenderer.js:47`, `NotificationService.js:44` |
-| `usage:updated` | usage object from `/api/usage` | `App.js:71` (initial fetch), `SessionWatcher.js:71`, `WebSocketClient.js:77,81` | `shared/TopBar.js:30` |
-| `ws:connected` | none | `infrastructure/WebSocketClient.js:27` | `SessionWatcher.js:26`, `NotificationService.js:42` |
-| `ws:disconnected` | none | `WebSocketClient.js:43` | `SessionWatcher.js:25`, `NotificationService.js:43` |
-| `ws:init` | initial server payload (`sessions`, `teams`, `usage`) | `WebSocketClient.js:76` | `SessionWatcher.js:23` |
-| `ws:update` | server update payload | `WebSocketClient.js:80` | `SessionWatcher.js:24` |
-| `ws:message` | unknown WS message | `WebSocketClient.js:86` | (none currently — kept for future hooks) |
+| `agent:added` | `Agent` | `domain/entities/World.js` | World renderer, Dashboard renderer, Sidebar, TopBar, NotificationService |
+| `agent:updated` | `Agent` | `domain/entities/World.js` | World renderer, Dashboard renderer, Sidebar, TopBar, ActivityPanel |
+| `agent:removed` | `Agent` | `domain/entities/World.js` | World renderer, Dashboard renderer, Sidebar, TopBar, ActivityPanel, NotificationService |
+| `agent:selected` | `Agent` | `presentation/App.js`, `shared/Sidebar.js`, `dashboard-mode/DashboardRenderer.js` | `App.js` renderer-follow bridge, ActivityPanel, Dashboard selection state, Sidebar selection state |
+| `agent:deselected` | none | `shared/ActivityPanel.js`, `shared/Sidebar.js` | `App.js` renderer-follow bridge, Dashboard selection state, Sidebar selection state |
+| `mode:changed` | `'character' \| 'dashboard'` | `application/ModeManager.js` | World renderer active-state bridge, Dashboard renderer, NotificationService |
+| `usage:updated` | usage object from `/api/usage` | `App.js`, `SessionWatcher.js`, `WebSocketClient.js` | TopBar, App quota/chronicle bridge |
+| `ws:connected` | none | `infrastructure/WebSocketClient.js` | SessionWatcher, NotificationService |
+| `ws:disconnected` | none | `WebSocketClient.js` | SessionWatcher, NotificationService |
+| `ws:init` | initial server payload (`sessions`, `teams`, `usage`) | `WebSocketClient.js` | SessionWatcher |
+| `ws:update` | server update payload | `WebSocketClient.js` | SessionWatcher |
+| `ws:message` | unknown WS message | `WebSocketClient.js` | none currently; kept for future hooks |
 
 ## Development Constraints
 

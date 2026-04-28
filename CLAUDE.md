@@ -35,16 +35,18 @@ Committed agent outputs go under `/agents/`:
 - `/agents/research/<slug>/` — research notes, proofs, image dumps
 - `/agents/handover/<slug>.md` — handover memos
 
-`docs/plans/` is gitignored personal scratch. `docs/superpowers/` holds artifacts emitted by the superpowers workflow plugin; treat as read-only history. `.claude/skills/` ships repo-specific skills (`verify-server`, `verify-architecture`, `verify-widget-build`, `troubleshooting`) usable from Claude Code.
-
 ## Workflow
 
 - Multi-part work or explicit swarm requests → follow [`docs/swarm-orchestration-procedure.md`](docs/swarm-orchestration-procedure.md) (ownership, baselines, destructive-command and commit/push gates).
 - Single-file / single-owner tasks → direct execution unless swarm is requested.
 
-## Browser Automation
+## Browser Verification
 
-- **`playwright` MCP** — isolated Chromium with proper wait primitives. Use for design loops, screenshots, page-load reliability.
+The operator runs a server on http://localhost:4000/ that can be used to verify output.
+
+## Copy And Locale Policy
+
+Use English for all new/edited UI copy, docs, comments, and agent-facing text. Do not add non-English strings unless the task explicitly requests localization.
 
 ## Validation
 

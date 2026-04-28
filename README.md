@@ -45,10 +45,10 @@ For an unfamiliar agent, read these first:
 - Desktop browser at 1280px wide or larger. Mobile and narrow viewports are out of scope.
 - Node.js 18 or newer.
 - `npm install` only for dev scripts that import packages (`js-yaml`, `pngjs`, `pixelmatch`, `playwright`). The server itself does not need installed packages.
-- At least one local provider directory:
+- At least one local provider home directory:
   - Claude Code: `~/.claude/`
-  - Codex CLI: `~/.codex/sessions/`
-  - Gemini CLI: `~/.gemini/tmp/`
+  - Codex CLI: `~/.codex/` (sessions are read from `~/.codex/sessions/`)
+  - Gemini CLI: `~/.gemini/` (sessions are read from `~/.gemini/tmp/`)
 - Widget only: macOS with the Xcode Command Line Tools available for `swiftc`.
 
 Empty provider lists are normal on machines where no supported CLI has local session files yet.
@@ -110,12 +110,14 @@ The server is hardcoded to port `4000`.
 
 | Endpoint | Description |
 | --- | --- |
-| `GET /api/sessions` | Active sessions from all available providers. |
+| `GET /api/sessions` | Active sessions from all available providers. Accepts `force=1`, `force=true`, or `force=yes` to bypass the session-list cache. |
 | `GET /api/session-detail?sessionId=&project=&provider=` | Tool history, recent messages, token usage where available. |
+| `POST /api/session-details` | Batch detail fetch for visible or selected sessions. Body shape: `{ "items": [{ "key", "sessionId", "project", "provider" }] }`. |
 | `GET /api/teams` | Claude Code team metadata from `~/.claude/teams/`. |
 | `GET /api/tasks` | Claude Code task groups from `~/.claude/tasks/`. |
 | `GET /api/providers` | Detected provider list and home directories. |
 | `GET /api/usage` | Usage, subscription, activity, and quota metadata. |
+| `GET /api/perf` | Lightweight runtime counters for manual performance checks. |
 | `GET /widget.html` | Widget popover HTML from `widget/Resources/`. |
 | `GET /widget.css` | Widget popover CSS from `widget/Resources/`. |
 | `ws://localhost:4000` | Initial session payload, update broadcasts, and ping/pong. |
@@ -134,7 +136,7 @@ Adapters live in `claudeville/adapters/` and are registered in `adapters/index.j
 
 Only active adapters are used. Claude-only concepts such as teams and tasks are optional and return empty arrays when unavailable.
 
-`claudeville/adapters/index.js` owns aggregation and short-lived caches: session lists are cached briefly to protect the 2-second poll path, detail payloads are cached a little longer to dedupe Dashboard and Activity Panel requests, and adapter failures degrade to an empty or stale cached detail response instead of breaking the app.
+`claudeville/adapters/index.js` owns aggregation and short-lived caches: session lists and detail payloads are cached for 5 seconds to protect the 2-second scheduler, detail payloads have an LRU-style trim, and adapter failures degrade to an empty or stale cached detail response instead of breaking the app.
 
 ## UI Modes
 
@@ -150,6 +152,7 @@ World mode is the current RPG visual direction. It renders an isometric pixel vi
 - Research Observatory: external research.
 - Portal Gate: browser and remote tools.
 - Pharos Lighthouse: GitHub and deploy sea watch.
+- Harbor Master: commit ships and push departures.
 
 Agents can be selected on the canvas. Selection opens the activity panel and makes the camera follow the selected sprite until the selection clears or the user drags the camera. Agents using `SendMessage` can move toward a matched recipient and show chat animation state.
 
@@ -163,7 +166,7 @@ Dashboard mode renders DOM cards grouped by project. Cards show provider badge, 
 
 ## macOS Menu Bar Widget
 
-The optional widget is a small Swift `NSStatusItem` app with a `WKWebView` popover. It polls these endpoints every 3 seconds:
+The optional widget is a small Swift `NSStatusItem` app with a `WKWebView` popover. The native Swift widget polls these endpoints every 5 seconds:
 
 - `http://localhost:4000/api/sessions`
 - `http://localhost:4000/api/usage`
@@ -217,6 +220,7 @@ For widget changes, run `npm run widget:build`, then `npm run widget`, and confi
 
 - Keep provider session files read-only. ClaudeVille observes local CLI logs; it should not mutate them.
 - Keep port `4000` unless all dependent docs, widget code, and local workflows are updated together.
+- `DEBUG_STATIC=1` logs static file requests; `DEBUG_WATCH=1` logs watch-path refresh details.
 - Keep small changes within the current vanilla JavaScript and CSS architecture. There is no framework, bundler, transpiler, or app test runner today.
 - Do not edit generated sprite PNGs without also checking `claudeville/assets/sprites/manifest.yaml` and the sprite validation rules.
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.
@@ -238,6 +242,7 @@ For widget changes, run `npm run widget:build`, then `npm run widget`, and confi
 | `docs/swarm-orchestration-procedure.md` | Multi-agent workflows | SOP for splitting work across subagents in a shared checkout. |
 | `docs/design-decisions.md` | Maintainers | Load-bearing constraints and what to update if one changes. |
 | `docs/troubleshooting.md` | Operators and agents | Common first-hour failures and diagnosis paths. |
+| `docs/motion-budget.md` | World mode work | Motion, pulse-band, and reduced-motion policy. |
 | `docs/visual-experience-crafting.md` | Visual/UX work | Transferable design method behind the RPG world model. |
 | `scripts/sprites/generate.md` | Sprite work | Manifest-first Pixellab generation and asset validation runbook. |
 | `docs/pixellab-reference.md` | Sprite work | Pixellab tool catalog, parameter enums, animation templates, async lifecycle, and pitfalls. |
