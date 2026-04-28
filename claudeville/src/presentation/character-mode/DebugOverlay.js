@@ -112,7 +112,7 @@ export class DebugOverlay {
         ctx.restore();
     }
 
-    drawScreen(ctx, { visitIntents, visitReservations, agentSprites, viewport, panelY = 12 } = {}) {
+    drawScreen(ctx, { visitIntents, visitReservations, agentSprites, viewport, panelY = 12, behaviorStats = null } = {}) {
         if (!this.enabled) return;
         const intents = Array.isArray(visitIntents?.intents) ? visitIntents.intents : [];
         const reservations = Array.isArray(visitReservations?.reservations) ? visitReservations.reservations : [];
@@ -121,6 +121,9 @@ export class DebugOverlay {
             `agents: ${agentSprites?.size || 0}`,
             `intents: ${intents.length}`,
             `reservations: ${reservations.length}`,
+            behaviorStats?.metricsScope ? `metrics: ${behaviorStats.metricsScope}` : null,
+            behaviorStats?.behaviorMetrics ? `retarget/scenic/handoff: ${behaviorStats.behaviorMetrics.stationaryRetargets || 0}/${behaviorStats.behaviorMetrics.scenicVisits || 0}/${behaviorStats.behaviorMetrics.handoffIntents || 0}` : null,
+            behaviorStats?.allocatorMetrics ? `alloc/renew/reject: ${behaviorStats.allocatorMetrics.allocations || 0}/${behaviorStats.allocatorMetrics.renewals || 0}/${behaviorStats.allocatorMetrics.rejected || 0}` : null,
             ...Object.entries(buildingStats)
                 .filter(([, stat]) => (stat.occupied || stat.reserved) > 0)
                 .slice(0, 12)
@@ -136,7 +139,7 @@ export class DebugOverlay {
                     return snap ? `${snap.name || snap.agentId}: ${snap.behaviorState}/${snap.building || '?'}` : null;
                 })
                 .filter(Boolean),
-        ];
+        ].filter(Boolean);
         const padding = 8;
         const lineHeight = 14;
         ctx.save();
