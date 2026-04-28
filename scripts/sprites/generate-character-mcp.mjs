@@ -15,7 +15,7 @@
 //   node scripts/sprites/generate-character-mcp.mjs --id=<sprite-id> --zip=<path-to-zip>
 //   (or omit --zip and the script looks for output/character-mcp-cache/<id>.zip)
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -55,11 +55,14 @@ async function main() {
         console.log(`[character-mcp] dry run: ${id} is manifest-backed; ZIP exists at ${zipPath}`);
         return;
     }
-    const extractDir = join(cacheRoot, `${id}-extracted`);
-    mkdirSync(extractDir, { recursive: true });
-    const unzip = spawnSync('unzip', ['-o', '-q', zipPath, '-d', extractDir], { stdio: 'inherit' });
-    if (unzip.error) throw unzip.error;
-    if (unzip.status !== 0) throw new Error(`unzip failed with exit code ${unzip.status}`);
+    let extractDir = zipPath;
+    if (!statSync(zipPath).isDirectory()) {
+        extractDir = join(cacheRoot, `${id}-extracted`);
+        mkdirSync(extractDir, { recursive: true });
+        const unzip = spawnSync('unzip', ['-o', '-q', zipPath, '-d', extractDir], { stdio: 'inherit' });
+        if (unzip.error) throw unzip.error;
+        if (unzip.status !== 0) throw new Error(`unzip failed with exit code ${unzip.status}`);
+    }
 
     const meta = JSON.parse(readFileSync(join(extractDir, 'metadata.json'), 'utf8'));
     const SOURCE = meta.character.size.width;
