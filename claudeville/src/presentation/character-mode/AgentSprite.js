@@ -6,6 +6,7 @@ import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
+import { AgentBehaviorState } from './AgentBehaviorState.js';
 
 // Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
@@ -81,6 +82,7 @@ export class AgentSprite {
         allocateVisitTile = null,
         releaseVisitReservation = null,
         renewVisitReservation = null,
+        getAmbientDestination = null,
     } = {}) {
         this.agent = agent;
         this.x = 0;
@@ -98,9 +100,8 @@ export class AgentSprite {
         this._lastTargetTile = null;
         this._lastReservationId = null;
         this._lastReservationRenewedAt = 0;
-        this._recentBuildings = [];
-        this._behaviorState = 'roaming';
-        this._behaviorReason = 'spawn';
+        this._targetReachable = true;
+        this.behavior = new AgentBehaviorState();
         this._targetCycle = 0;
         this.nameTagSlot = 0;
         this.labelAlpha = 1;
@@ -125,6 +126,7 @@ export class AgentSprite {
         this.allocateVisitTile = typeof allocateVisitTile === 'function' ? allocateVisitTile : null;
         this.releaseVisitReservation = typeof releaseVisitReservation === 'function' ? releaseVisitReservation : null;
         this.renewVisitReservation = typeof renewVisitReservation === 'function' ? renewVisitReservation : null;
+        this.getAmbientDestination = typeof getAmbientDestination === 'function' ? getAmbientDestination : null;
         this.waypoints = [];
         this._lastPathTileKey = null;
         this._pathAgeFrames = 0;
@@ -158,8 +160,7 @@ export class AgentSprite {
         // Move to the partner position when there is a chat partner
         if (this.chatPartner) {
             this._releaseVisitReservation();
-            this._behaviorState = 'chat-approach';
-            this._behaviorReason = 'chat';
+            this.behavior.transition('chat-approach', 'chat');
             const offsetX = this.x < this.chatPartner.x ? -25 : 25;
             const chatTargetX = this.chatPartner.x + offsetX;
             const chatTargetY = this.chatPartner.y;
@@ -172,10 +173,10 @@ export class AgentSprite {
         }
 
         const intent = this._activeVisitIntent();
-        const buildingType = intent?.building || this._targetBuildingTypeForState();
-        let building = null;
+        let buildingType = intent?.building || this._targetBuildingTypeForState();
+        let building = this._ambientDestination(intent);
 
-        if (buildingType) {
+        if (!building && buildingType) {
             building = this._buildingForType(buildingType);
         }
 
@@ -189,11 +190,20 @@ export class AgentSprite {
         this._lastBuildingType = building.type;
         this._lastIntentId = intent?.id || null;
         this._lastTargetTile = { tileX: target.tileX, tileY: target.tileY };
-        this._behaviorState = intent ? 'traveling' : 'roaming';
-        this._behaviorReason = intent?.reason || (this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status');
-        this._recordRecentBuilding(building.type);
+        this.behavior.setRoute({
+            state: intent ? 'traveling' : (building.type?.startsWith('ambient:') ? 'wandering' : 'roaming'),
+            intent,
+            building: building.type,
+            reason: intent?.reason || (building.type?.startsWith('ambient:') ? 'scenic' : (this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status')),
+            targetTile: this._lastTargetTile,
+        });
         this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
-        this.moving = true;
+        this.moving = this._targetReachable;
+        if (!this._targetReachable) {
+            this.behavior.transition('blocked', 'no-route');
+            this.waitTimer = 90;
+            return;
+        }
         this.waitTimer = 0;
     }
 
@@ -242,13 +252,18 @@ export class AgentSprite {
     }
 
     _recentBuildingCount(type) {
-        return this._recentBuildings.filter((entry) => entry === type).length;
+        return this.behavior.recentCount(type);
     }
 
-    _recordRecentBuilding(type) {
-        if (!type) return;
-        this._recentBuildings.push(type);
-        if (this._recentBuildings.length > 4) this._recentBuildings.shift();
+    _ambientDestination(intent = null) {
+        if (intent || this.agent.status !== AgentStatus.IDLE || !this.getAmbientDestination) return null;
+        if ((this._targetCycle % 3) !== 1) return null;
+        return this.getAmbientDestination({
+            agent: this.agent,
+            sprite: this,
+            recentBuildings: this.behavior.recentBuildings,
+            cycle: this._targetCycle,
+        });
     }
 
     _visitTileForBuilding(building, seed, intent = null) {
@@ -309,6 +324,7 @@ export class AgentSprite {
     }
 
     _assignTarget(targetScreenX, targetScreenY, targetTileX, targetTileY) {
+        this._targetReachable = true;
         if (!this.pathfinder) {
             this.targetX = targetScreenX;
             this.targetY = targetScreenY;
@@ -330,6 +346,8 @@ export class AgentSprite {
             this.bridgeTiles,
         );
         if (tilePath.length === 0) {
+            this._targetReachable = false;
+            this._releaseVisitReservation();
             this.waypoints = [];
             this.targetX = this.x;
             this.targetY = this.y;
@@ -417,8 +435,7 @@ export class AgentSprite {
         this._arrivalState = state === 'pending' ? 'pending' : 'visible';
         if (this._arrivalState === 'pending') {
             this._releaseVisitReservation();
-            this._behaviorState = 'departing';
-            this._behaviorReason = 'arrival-state';
+            this.behavior.transition('departing', 'arrival-state');
             this.moving = false;
             this.waitTimer = 0;
             this.waypoints = [];
@@ -457,8 +474,17 @@ export class AgentSprite {
         this.setArrivalState('visible');
         this._lastPathTileKey = null;
         this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
-        this.moving = true;
+        this.moving = this._targetReachable;
         this.waitTimer = 0;
+    }
+
+    retargetVisit() {
+        if (this.chatting || this.chatPartner || this.isArrivalPending()) return false;
+        this._releaseVisitReservation();
+        this._lastPathTileKey = null;
+        this.waitTimer = 0;
+        this._pickTarget();
+        return true;
     }
 
     hasReachedTarget(tolerance = 6) {
@@ -490,8 +516,7 @@ export class AgentSprite {
             const cpDist = Math.sqrt(cpDx * cpDx + cpDy * cpDy);
             if (cpDist < 35) {
                 this.chatting = true;
-                this._behaviorState = 'chatting';
-                this._behaviorReason = 'chat';
+                this.behavior.transition('chatting', 'chat');
                 this.chatBubbleAnim = 0;
                 this.moving = false;
                 this._resetWalkCycle();
@@ -502,8 +527,7 @@ export class AgentSprite {
                 if (!this.chatPartner.chatting) {
                     this.chatPartner.chatPartner = this;
                     this.chatPartner.chatting = true;
-                    this.chatPartner._behaviorState = 'chatting';
-                    this.chatPartner._behaviorReason = 'chat';
+                    this.chatPartner.behavior?.transition?.('chatting', 'chat');
                     this.chatPartner.chatBubbleAnim = 0;
                     this.chatPartner.moving = false;
                     this.chatPartner._resetWalkCycle();
@@ -539,6 +563,13 @@ export class AgentSprite {
             this._renewVisitReservation();
             this.waitTimer -= frameScale;
             if (this.waitTimer <= 0) {
+                if (this.behavior.cooldownUntil > Date.now()) {
+                    this.behavior.transition('cooldown', this.behavior.reason);
+                    this.waitTimer = Math.max(10, Math.ceil((this.behavior.cooldownUntil - Date.now()) / 16));
+                    this._advanceIdleAnimation(dt);
+                    return;
+                }
+                this.behavior.finishVisit();
                 this._pickTarget();
             }
             this._advanceIdleAnimation(dt);
@@ -574,7 +605,10 @@ export class AgentSprite {
                 }
             }
             this.moving = false;
-            this._behaviorState = this._lastIntentId ? 'performing' : 'lingering';
+            this.behavior.arrive({
+                state: this._lastIntentId ? 'performing' : 'lingering',
+                cooldownMs: this._lastIntentId ? 2000 : 0,
+            });
             this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
             this._resetWalkCycle();
             return;
@@ -666,8 +700,7 @@ export class AgentSprite {
     /** Start chat (called from IsometricRenderer) */
     startChat(partnerSprite) {
         this._releaseVisitReservation();
-        this._behaviorState = 'chat-approach';
-        this._behaviorReason = 'chat';
+        this.behavior.transition('chat-approach', 'chat');
         this.chatPartner = partnerSprite;
         this.chatting = false;
         this.chatBubbleAnim = 0;
@@ -680,13 +713,14 @@ export class AgentSprite {
         this.chatPartner = null;
         this.chatting = false;
         this.chatBubbleAnim = 0;
-        this._behaviorState = 'cooldown';
-        this._behaviorReason = 'chat-ended';
+        this.behavior.finishVisit();
+        this.behavior.transition('cooldown', 'chat-ended');
         this._pickTarget(); // resume normal behavior
     }
 
     getBehaviorDebugSnapshot() {
         const tile = this._screenToTile(this.x, this.y);
+        const behavior = this.behavior.snapshot();
         return {
             agentId: this.agent?.id || null,
             name: this.agent?.displayName || this.agent?.name || null,
@@ -694,9 +728,10 @@ export class AgentSprite {
             building: this._lastBuildingType,
             intentId: this._lastIntentId,
             reservationId: this._lastReservationId,
-            behaviorState: this._behaviorState,
-            behaviorReason: this._behaviorReason,
-            recentBuildings: [...this._recentBuildings],
+            behaviorState: behavior.state,
+            behaviorReason: behavior.reason,
+            recentBuildings: behavior.recentBuildings,
+            behavior,
             targetTile: this._lastTargetTile ? { ...this._lastTargetTile } : null,
             tile,
             moving: this.moving,
