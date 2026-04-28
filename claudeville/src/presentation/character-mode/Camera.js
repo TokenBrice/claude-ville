@@ -37,7 +37,7 @@ export class Camera {
 
     centerOnMap() {
         // Frame the village core while keeping the Pharos lighthouse and harbor in the first view.
-        const tx = 27, ty = 21;
+        const tx = 30, ty = 21;
         const screen = tileToWorld(tx, ty);
         this.zoom = 1;
         if (!this.canvas) return;
