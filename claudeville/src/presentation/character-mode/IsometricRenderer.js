@@ -30,6 +30,8 @@ import { DebugOverlay } from './DebugOverlay.js';
 import { AgentEventStream } from './AgentEventStream.js';
 import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
+import { VisitIntentManager } from './VisitIntentManager.js';
+import VisitTileAllocator from './VisitTileAllocator.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { lightSourceCacheKey } from './LightSourceRegistry.js';
 import {
@@ -47,6 +49,28 @@ const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
+const VISIT_OVERFLOW_TILES = Object.freeze({
+    archive: [
+        { tileX: 8, tileY: 19, overflow: true, reason: 'archive-walk' },
+        { tileX: 9, tileY: 16, overflow: true, reason: 'reading-alcove' },
+        { tileX: 9, tileY: 19, overflow: true, reason: 'archive-walk' },
+        { tileX: 10, tileY: 17, overflow: true, reason: 'reading-alcove' },
+        { tileX: 10, tileY: 18, overflow: true, reason: 'archive-walk' },
+    ],
+    command: [
+        { tileX: 15, tileY: 22, overflow: true, reason: 'plaza' },
+        { tileX: 17, tileY: 22, overflow: true, reason: 'plaza' },
+        { tileX: 13, tileY: 22, overflow: true, reason: 'plaza' },
+    ],
+    taskboard: [
+        { tileX: 22, tileY: 34, overflow: true, reason: 'review' },
+        { tileX: 24, tileY: 34, overflow: true, reason: 'review' },
+    ],
+    watchtower: [
+        { tileX: 28, tileY: 15, overflow: true, reason: 'lookout' },
+        { tileX: 27, tileY: 15, overflow: true, reason: 'lookout' },
+    ],
+});
 const WATER_TOKENS = {
     lagoon: {
         shallow: 'rgb(10,180,190)',
@@ -89,6 +113,13 @@ const WATER_TOKENS = {
         wake: '220, 248, 250',
     },
 };
+const ATMOSPHERE_EFFECT_ASSETS = Object.freeze({
+    fogWisp: 'atmosphere.fog.wisp.low',
+    rainSplash: 'atmosphere.rain.splash',
+    rainRipple: 'atmosphere.water.ripple.rain',
+    shoreFoam: 'atmosphere.water.foam.corner',
+    harborWake: 'atmosphere.water.harbor.wake',
+});
 const GULL_FLIGHT_FRAMES = [
     'prop.gullFlight.up',
     'prop.gullFlight.level',
@@ -390,6 +421,8 @@ export class IsometricRenderer {
             ? new BuildingSprite(this.assets, this.sprites, this.particleSystem)
             : null;
         this.harborTraffic = new HarborTraffic({ sprites: this.sprites });
+        this.visitIntentManager = new VisitIntentManager({ world: this.world });
+        this.visitTileAllocator = new VisitTileAllocator();
         this.atmosphereState = new AtmosphereState();
         this.skyRenderer = new SkyRenderer({ assets: this.assets });
         this.weatherRenderer = new WeatherRenderer();
@@ -575,6 +608,11 @@ export class IsometricRenderer {
         // Walkability grid + Pathfinder (Task 11)
         this.walkabilityGrid = this.scenery.getWalkabilityGrid();
         this.pathfinder = new Pathfinder(this.walkabilityGrid);
+        this.visitTileAllocator.updateContext({
+            buildings: this.world?.buildings,
+            agentSprites: this.agentSprites,
+            pathfinder: this.pathfinder,
+        });
 
         this.commandCenterGroundProps = [];
         this._generateCommandCenterAmbience();
@@ -1031,8 +1069,14 @@ export class IsometricRenderer {
         });
         this.relationshipState = new RelationshipState(this.world);
         this._replayActiveToolRituals();
+        this._updateVisitSystems(Date.now());
         if (typeof window !== 'undefined') {
             window.__relationshipState = () => this.relationshipState?.getSnapshot?.();
+            window.__visitIntents = () => this.visitIntentManager?.debugSnapshot?.() || null;
+            window.__visitReservations = () => this.visitTileAllocator?.debug?.() || null;
+            window.__agentBehavior = (agentId) => this.agentSprites.get(agentId)?.getBehaviorDebugSnapshot?.() || null;
+            window.__buildingCrowds = () => this.visitTileAllocator?.snapshot?.()?.buildings || {};
+            window.__agentBehaviorStats = () => this._agentBehaviorStats();
         }
 
         // Subscribe to domain events
@@ -1132,6 +1176,15 @@ export class IsometricRenderer {
         if (typeof window !== 'undefined' && window.__relationshipState) {
             delete window.__relationshipState;
         }
+        if (typeof window !== 'undefined') {
+            delete window.__visitIntents;
+            delete window.__visitReservations;
+            delete window.__agentBehavior;
+            delete window.__buildingCrowds;
+            delete window.__agentBehaviorStats;
+        }
+        this.visitIntentManager?.dispose?.();
+        this.visitTileAllocator?.updateContext?.({ agentSprites: [] });
         this.fantasyForestTreeCache.clear();
         this.weatherRenderer?.dispose?.();
         this.skyRenderer?.dispose?.();
@@ -1235,6 +1288,69 @@ export class IsometricRenderer {
         this.buildingRenderer?.setQuotaState?.(quota);
     }
 
+    _getBuildingByType(type) {
+        const normalized = type === 'lighthouse' ? 'watchtower' : type;
+        return normalized ? this.world?.buildings?.get?.(normalized) || null : null;
+    }
+
+    _visitCandidatesForBuilding(building, intent = null) {
+        if (!building) return null;
+        const canonical = Array.isArray(building.visitTiles) ? building.visitTiles : [];
+        const overflow = VISIT_OVERFLOW_TILES[building.type] || [];
+        if (!overflow.length) return canonical;
+        const intentAwareOverflow = overflow.map((tile, index) => ({
+            ...tile,
+            slotId: tile.slotId || `${building.type}:overflow:${index}`,
+            intentId: intent?.id || null,
+        }));
+        return [...canonical, ...intentAwareOverflow];
+    }
+
+    _allocateVisitTile(request = {}) {
+        const building = request.building || this._getBuildingByType(request.intent?.building);
+        return this.visitTileAllocator?.allocate?.({
+            ...request,
+            building,
+            candidates: this._visitCandidatesForBuilding(building, request.intent),
+        }) || null;
+    }
+
+    _updateVisitSystems(now = Date.now()) {
+        const agents = Array.from(this.world?.agents?.values?.() || []);
+        this.visitIntentManager?.update?.(agents, now);
+        this.visitTileAllocator?.updateContext?.({
+            buildings: this.world?.buildings,
+            agentSprites: this.agentSprites,
+            pathfinder: this.pathfinder,
+        });
+        return agents;
+    }
+
+    _agentBehaviorStats() {
+        const intents = this.visitIntentManager?.snapshot?.()?.intents || [];
+        const reservations = this.visitTileAllocator?.snapshot?.() || {};
+        const byBuilding = {};
+        const byState = {};
+        for (const sprite of this.agentSprites.values()) {
+            const snap = sprite.getBehaviorDebugSnapshot?.();
+            if (!snap) continue;
+            if (snap.building) byBuilding[snap.building] = (byBuilding[snap.building] || 0) + 1;
+            if (snap.behaviorState) byState[snap.behaviorState] = (byState[snap.behaviorState] || 0) + 1;
+        }
+        const intentSources = {};
+        for (const intent of intents) {
+            intentSources[intent.source] = (intentSources[intent.source] || 0) + 1;
+        }
+        return {
+            agentCount: this.agentSprites.size,
+            byBuilding,
+            byState,
+            intentSources,
+            reservationCount: reservations.reservationCount || 0,
+            buildingCrowds: reservations.buildings || {},
+        };
+    }
+
     _syncRitualContext() {
         this.ritualConductor?.setContext?.({
             world: this.world,
@@ -1308,6 +1424,11 @@ export class IsometricRenderer {
                 bridgeTiles: this.bridgeTiles,
                 assets: this.assets,
                 compositor: this.compositor,
+                getIntentForAgent: (agentId) => this.visitIntentManager?.getIntentForAgent?.(agentId) || null,
+                getBuilding: (type) => this._getBuildingByType(type),
+                allocateVisitTile: (request) => this._allocateVisitTile(request),
+                releaseVisitReservation: (agentId) => this.visitTileAllocator?.release?.(agentId),
+                renewVisitReservation: (agentId) => this.visitTileAllocator?.renew?.(agentId),
             });
             sprite.setMotionScale(this.motionScale);
             sprite.addedAt = performance.now();
@@ -1430,6 +1551,7 @@ export class IsometricRenderer {
             this.camera?.stopFollow?.();
         }
         this.gateTransits.delete(agentId);
+        this.visitTileAllocator?.release?.(agentId);
         this.agentSprites.delete(agentId);
         this._markSpritesDirty();
     }
@@ -1566,6 +1688,7 @@ export class IsometricRenderer {
         }
         const now = performance.now();
         const chronicleNow = Date.now();
+        const agents = this._updateVisitSystems(chronicleNow);
         this.relationshipState?.update?.({ agentSprites: this.agentSprites, now });
         applyTeamPlazaPreferences(this.relationshipState, this.agentSprites);
         this.arrivalDeparture?.update?.(now);
@@ -1637,7 +1760,6 @@ export class IsometricRenderer {
         this._replayActiveToolRituals();
         this.ritualConductor?.update?.(dt);
 
-        const agents = Array.from(this.world?.agents?.values?.() || []);
         this.harborTraffic?.update(agents, dt);
         this.landmarkActivity?.update(agents, sortedSnapshot, dt);
         const failedPushState = this.harborTraffic?.getFailedPushState?.(Date.now()) || null;
@@ -1940,6 +2062,8 @@ export class IsometricRenderer {
 
         // Debug overlay (Shift+D to toggle) — must run in world space with camera transform.
         if (this.debugOverlay?.enabled) {
+            const visitIntentDebug = this.visitIntentManager?.debugSnapshot?.() || null;
+            const visitReservationDebug = this.visitTileAllocator?.debug?.() || null;
             this.camera.applyTransform(ctx);
             this.debugOverlay.draw(ctx, {
                 walkabilityGrid: this.walkabilityGrid,
@@ -1949,9 +2073,18 @@ export class IsometricRenderer {
                 sceneryZones: this.scenery?.getBuildingSceneryZones?.() || [],
                 treeProps: this.treePropSprites,
                 boulderProps: this.boulderPropSprites,
+                visitIntents: visitIntentDebug,
+                visitReservations: visitReservationDebug,
             });
             this._resetScreenTransform(ctx);
             this._drawAtmosphereDebug(ctx, atmosphere);
+            this.debugOverlay.drawScreen(ctx, {
+                visitIntents: visitIntentDebug,
+                visitReservations: visitReservationDebug,
+                agentSprites: this.agentSprites,
+                viewport,
+                panelY: 180,
+            });
         }
 
         // Minimap
@@ -2948,9 +3081,50 @@ export class IsometricRenderer {
                     Math.PI * 2,
                 );
                 ctx.fill();
+                if (seed > 0.74) {
+                    this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.rainSplash, {
+                        x: screenX + (seed - 0.5) * 18,
+                        y: screenY - 1 + (seed - 0.5) * 5,
+                        alpha: Math.min(0.22, alphaBase * (0.22 + pulse * 0.18)),
+                        scale: 0.58 + seed * 0.28,
+                        rotation: -0.18 + seed * 0.34,
+                    });
+                }
             }
         }
         ctx.restore();
+    }
+
+    _getAtmosphereEffectSprite(id) {
+        if (!id || !this.assets?.has?.(id)) return null;
+        const img = this.assets.get(id);
+        if (!img) return null;
+        const dims = this.assets.getDims(id) || { w: img.width, h: img.height };
+        return { img, dims };
+    }
+
+    _drawAtmosphereEffectSprite(ctx, id, {
+        x,
+        y,
+        alpha = 1,
+        scale = 1,
+        scaleX = null,
+        scaleY = null,
+        rotation = 0,
+        flipX = false,
+    } = {}) {
+        const sprite = this._getAtmosphereEffectSprite(id);
+        if (!sprite || alpha <= 0.005) return false;
+        const sx = (scaleX ?? scale) * (flipX ? -1 : 1);
+        const sy = scaleY ?? scale;
+        ctx.save();
+        ctx.globalAlpha *= alpha;
+        ctx.translate(Math.round(x), Math.round(y));
+        if (rotation) ctx.rotate(rotation);
+        ctx.scale(sx, sy);
+        ctx.drawImage(sprite.img, Math.round(-sprite.dims.w / 2), Math.round(-sprite.dims.h / 2));
+        ctx.restore();
+        return true;
     }
 
     _waterWeatherState(atmosphere = null) {
@@ -2996,6 +3170,17 @@ export class IsometricRenderer {
                 const nightReflection = reactions.nightReflection || 0;
                 const alpha = (0.030 + rain * 0.078) * (1 - pulse * 0.45) * (profile === 'openSea' ? 0.72 : 1) * (1 + nightReflection * 0.18);
                 const token = this._waterTokenAt(x, y, key);
+                if (this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.rainRipple, {
+                    x: screenX + (seed - 0.5) * 18,
+                    y: screenY - 2 + (seed - 0.5) * 8,
+                    alpha: Math.min(0.28, alpha * 1.9),
+                    scaleX: (0.62 + pulse * 0.38) * profileScale,
+                    scaleY: (0.52 + pulse * 0.20) * profileScale,
+                    rotation: -0.18,
+                    flipX: seed > 0.5,
+                })) {
+                    continue;
+                }
                 ctx.strokeStyle = `rgba(${token.rainRipple}, ${alpha})`;
                 ctx.lineWidth = 1;
                 ctx.beginPath();
@@ -3035,6 +3220,17 @@ export class IsometricRenderer {
                 ctx.strokeStyle = `rgba(${token.fogWash}, ${Math.min(0.20, fogAlpha * profileAlpha * (0.34 + seed * 0.44))})`;
                 ctx.lineWidth = 2;
                 this._strokeInsetDiamondEdges(ctx, screenX, screenY, edge, 3 + seed * 4);
+                if (seed > 0.58) {
+                    this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.fogWisp, {
+                        x: screenX + (seed - 0.5) * 24,
+                        y: screenY - 5 + (seed - 0.5) * 8,
+                        alpha: Math.min(0.22, fogAlpha * profileAlpha * (0.24 + seed * 0.20)),
+                        scaleX: 0.42 + seed * 0.24,
+                        scaleY: 0.34 + seed * 0.12,
+                        rotation: -0.20 + seed * 0.24,
+                        flipX: seed > 0.5,
+                    });
+                }
             }
         }
         ctx.restore();
@@ -3093,12 +3289,23 @@ export class IsometricRenderer {
             const alpha = Math.min(0.22, (wake.alpha ?? 0.12) * (1 + roughness * 0.28));
             if (alpha <= 0.01) continue;
             const token = WATER_TOKENS.harbor;
+            const dx = wake.x - (wake.tailX ?? wake.x - 1);
+            const dy = wake.y - (wake.tailY ?? wake.y);
+            const wakeRotation = wake.type === 'departing' ? Math.atan2(dy, dx) * 0.55 : -0.18;
+            const drewWakeSprite = this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.harborWake, {
+                x: wake.type === 'departing' ? wake.x - dx * 0.42 : wake.x,
+                y: wake.type === 'departing' ? wake.y - dy * 0.42 + 5 : wake.y + 4,
+                alpha: alpha * 0.70,
+                scaleX: wake.type === 'departing' ? 0.54 + (wake.spread || 0) * 0.24 : 0.48,
+                scaleY: wake.type === 'departing' ? 0.44 + (wake.progress || 0) * 0.18 : 0.36,
+                rotation: wakeRotation,
+                flipX: dx < 0,
+            });
+            if (drewWakeSprite) continue;
             ctx.strokeStyle = `rgba(${token.wake}, ${alpha})`;
             ctx.fillStyle = `rgba(${token.wake}, ${alpha * 0.24})`;
             ctx.lineWidth = wake.type === 'departing' ? 1.6 : 1;
             if (wake.type === 'departing') {
-                const dx = wake.x - (wake.tailX ?? wake.x - 1);
-                const dy = wake.y - (wake.tailY ?? wake.y);
                 const len = Math.max(1, Math.hypot(dx, dy));
                 const ux = dx / len;
                 const uy = dy / len;
@@ -4246,14 +4453,25 @@ export class IsometricRenderer {
             if (adjacentLagoon) {
                 ctx.save();
                 ctx.globalCompositeOperation = 'lighter';
-                const foamRadius = TILE_WIDTH * 0.7;
-                const foamGrad = ctx.createRadialGradient(screenX, screenY, 0, screenX, screenY, foamRadius);
-                foamGrad.addColorStop(0, 'rgba(220, 240, 250, 0.22)');
-                foamGrad.addColorStop(1, 'rgba(220, 240, 250, 0)');
-                ctx.fillStyle = foamGrad;
-                ctx.beginPath();
-                ctx.arc(screenX, screenY, foamRadius, 0, Math.PI * 2);
-                ctx.fill();
+                const drewFoamSprite = this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.shoreFoam, {
+                    x: screenX + (seed - 0.5) * 10,
+                    y: screenY - 2 + (seed - 0.5) * 5,
+                    alpha: 0.18 + seed * 0.10,
+                    scaleX: 0.68 + seed * 0.24,
+                    scaleY: 0.58 + seed * 0.18,
+                    rotation: -0.45 + seed * 0.9,
+                    flipX: seed > 0.5,
+                });
+                if (!drewFoamSprite) {
+                    const foamRadius = TILE_WIDTH * 0.7;
+                    const foamGrad = ctx.createRadialGradient(screenX, screenY, 0, screenX, screenY, foamRadius);
+                    foamGrad.addColorStop(0, 'rgba(220, 240, 250, 0.22)');
+                    foamGrad.addColorStop(1, 'rgba(220, 240, 250, 0)');
+                    ctx.fillStyle = foamGrad;
+                    ctx.beginPath();
+                    ctx.arc(screenX, screenY, foamRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
                 ctx.restore();
             }
         }
