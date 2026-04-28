@@ -976,6 +976,45 @@ export class HarborTraffic {
         return visible.sort((a, b) => a.sortY - b.sortY);
     }
 
+    enumerateWakeDescriptors(now = Date.now()) {
+        if (!this.state?.ships?.size) return [];
+        const drawables = this.enumerateDrawables(now);
+        const wakes = [];
+        for (const item of drawables) {
+            const drawable = item.payload;
+            if (!drawable || drawable.type !== 'ship') continue;
+            if (drawable.status === 'docked') {
+                const pulse = this.motionScale > 0
+                    ? 0.55 + 0.25 * Math.sin(this.frame * 0.08 + drawable.berthIndex)
+                    : 0.58;
+                wakes.push({
+                    type: 'docked',
+                    x: drawable.x,
+                    y: drawable.y,
+                    alpha: 0.08 + pulse * 0.045,
+                    radiusX: 26,
+                    radiusY: 12,
+                    projectAccent: repoProfile(drawable.project).accent,
+                });
+                continue;
+            }
+            if (drawable.status === 'departing' && drawable.progress < 0.94) {
+                wakes.push({
+                    type: 'departing',
+                    x: drawable.x,
+                    y: drawable.y,
+                    tailX: drawable.tailX,
+                    tailY: drawable.tailY,
+                    alpha: Math.max(0.05, 0.18 * (1 - drawable.progress)),
+                    spread: 0.35 + drawable.progress * 0.75,
+                    progress: drawable.progress,
+                    projectAccent: repoProfile(drawable.project).accent,
+                });
+            }
+        }
+        return wakes;
+    }
+
     _harborCrateDrawables(markerByRepo, skipKeys = new Set()) {
         const drawables = [];
         let fallbackIndex = 0;
@@ -1303,13 +1342,8 @@ export class HarborTraffic {
         if (alpha <= 0.02) return;
         const profile = repoProfile(ship.project);
 
-        if (ship.status === 'docked') {
-            this._drawDockedShipWake(ctx, ship, zoom, profile);
-        }
-
-        if (ship.status === 'departing' && this.motionScale > 0 && ship.progress < 0.94) {
-            this._drawWake(ctx, ship, alpha);
-        }
+        // Ship wakes are exported through enumerateWakeDescriptors() so the
+        // water layer can render them beneath harbor traffic and buildings.
 
         if (this.sprites) {
             this.sprites.drawSprite(ctx, SHIP_SPRITE_ID, ship.x, ship.y, { alpha });
