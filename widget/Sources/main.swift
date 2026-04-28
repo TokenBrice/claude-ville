@@ -8,6 +8,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var popover: NSPopover!
     var webView: WKWebView!
     var serverProcess: Process?
+    var ownsServer = false
     var dashboardWindow: NSWindow?
     var dashboardWebView: WKWebView?
     var pollTimer: Timer?
@@ -21,9 +22,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusItem()
         setupPopover()
         DispatchQueue.global(qos: .utility).async {
-            self.startServerIfNeeded()
-            Thread.sleep(forTimeInterval: 2.0)
-            DispatchQueue.main.async { self.startPolling() }
+            let ready = self.startServerIfNeeded()
+            DispatchQueue.main.async {
+                if !ready { self.renderOffline() }
+                self.startPolling()
+            }
         }
     }
 
@@ -36,7 +39,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func startPolling() {
         fetchAndRender()
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 3.0, repeats: true) { [weak self] _ in
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [weak self] _ in
             self?.fetchAndRender()
         }
     }
@@ -549,11 +552,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Server Management
 
-    func startServerIfNeeded() {
-        guard let projectPath = readProjectPath() else { return }
+    func startServerIfNeeded() -> Bool {
+        if isClaudeVilleServerReachable(timeout: 1.0) {
+            ownsServer = false
+            return true
+        }
+
+        guard let projectPath = readProjectPath() else { return false }
         let serverScript = projectPath + "/claudeville/server.js"
-        guard FileManager.default.fileExists(atPath: serverScript) else { return }
-        guard let nodePath = readNodePath() ?? findNode() else { return }
+        guard FileManager.default.fileExists(atPath: serverScript) else { return false }
+        guard let nodePath = readNodePath() ?? findNode() else { return false }
 
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: nodePath)
@@ -561,12 +569,55 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         proc.currentDirectoryURL = URL(fileURLWithPath: projectPath)
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
-        try? proc.run()
+        do {
+            try proc.run()
+        } catch {
+            return false
+        }
         serverProcess = proc
+        ownsServer = true
+        return waitForServerReady(timeout: 8.0)
     }
 
     func stopServer() {
-        if let proc = serverProcess, proc.isRunning { proc.terminate(); serverProcess = nil }
+        if ownsServer, let proc = serverProcess, proc.isRunning {
+            proc.terminate()
+        }
+        serverProcess = nil
+        ownsServer = false
+    }
+
+    func waitForServerReady(timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if isClaudeVilleServerReachable(timeout: 0.8) { return true }
+            Thread.sleep(forTimeInterval: 0.35)
+        }
+        return false
+    }
+
+    func isClaudeVilleServerReachable(timeout: TimeInterval) -> Bool {
+        guard let url = URL(string: "\(serverBase)/api/providers") else { return false }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = timeout
+
+        let semaphore = DispatchSemaphore(value: 0)
+        var healthy = false
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            defer { semaphore.signal() }
+            guard error == nil,
+                  let http = response as? HTTPURLResponse,
+                  http.statusCode == 200,
+                  let data = data,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                return
+            }
+            healthy = json["providers"] is [[String: Any]]
+                && json["count"] != nil
+        }.resume()
+
+        let waitResult = semaphore.wait(timeout: .now() + timeout + 0.5)
+        return waitResult == .success && healthy
     }
 
     func findNode() -> String? {

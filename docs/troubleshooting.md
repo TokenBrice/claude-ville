@@ -86,7 +86,7 @@ If a model is missing or its price has changed, update `TokenUsage.js`; `Agent` 
 
 ## Widget shows "offline"
 
-The Swift widget polls `http://localhost:4000/api/sessions` and `/api/usage` every three seconds. It can also auto-launch the server using two paths recorded in the bundle at build time:
+The Swift widget polls `http://localhost:4000/api/sessions` and `/api/usage` every five seconds. It can also auto-launch the server using two paths recorded in the bundle at build time:
 
 - `ClaudeVilleWidget.app/Contents/Resources/project_path`
 - `ClaudeVilleWidget.app/Contents/Resources/node_path`
@@ -100,6 +100,29 @@ npm run widget:build
 `widget/build.sh` recreates `widget/ClaudeVilleWidget.app`, so treat widget builds as generated-output changes in the shared checkout. Do not delete or rebuild the app bundle unless widget validation is in scope.
 
 There are two widget HTML surfaces. The native menu-bar popover is generated inline in `widget/Sources/main.swift`; `widget/Resources/widget.html` is a static resource served by the local server and copied into the bundle. Editing `widget.html` alone may not change the native popover.
+
+Before launching Node, the widget checks `http://localhost:4000/api/providers` and verifies the response looks like ClaudeVille. It only terminates a server process that it started itself.
+
+## Desktop graphics reset or compositor crash while ClaudeVille is open
+
+First distinguish an app crash from a system graphics-stack reset. On Linux/KWin/amdgpu systems, collect recent warning-level evidence:
+
+```bash
+journalctl -b --no-pager -p warning..alert | rg -i 'amdgpu|drm|gpu|reset|GL_CONTEXT|kwin|Xwayland|chrome|chromium|oom|killed process'
+watch -n 1 'free -h; ps -eo pid,comm,%cpu,%mem,rss --sort=-rss | head -n 15'
+```
+
+ClaudeVille exposes lightweight browser/server counters for manual checks:
+
+```js
+window.__claudeVillePerf.canvasBudget()
+```
+
+```bash
+curl http://localhost:4000/api/perf
+```
+
+If the journal shows GPU ring timeouts, compositor `GL_CONTEXT_LOST`, or Xwayland/browser core dumps without OOM-killer entries, treat it as a graphics-stack reset. ClaudeVille should reduce load by pausing World mode in Dashboard, releasing renderer-owned canvas caches, and capping canvas backing-store pixels, but driver/compositor resets can still originate below the app.
 
 ## Widget will not build
 

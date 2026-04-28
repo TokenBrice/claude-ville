@@ -280,6 +280,21 @@ function handleGetUsage(req, res) {
   }
 }
 
+/**
+ * GET /api/perf
+ * Lightweight runtime counters for manual performance checks.
+ */
+function handleGetPerf(req, res) {
+  sendJson(res, 200, {
+    websocketClients: wsClients.size,
+    activeWatchPaths: serverPerf.activeWatchPaths,
+    skippedWrites: serverPerf.skippedWrites,
+    lastBroadcast: serverPerf.lastBroadcast,
+    recentBroadcasts: serverPerf.broadcasts,
+    timestamp: Date.now(),
+  });
+}
+
 // ─── Static file serving ─────────────────────────────────────
 
 function handleStaticFile(req, res) {
@@ -517,7 +532,10 @@ function writeWebSocketFrame(socket, frame) {
     wsClients.delete(socket);
     return false;
   }
-  if (socket._cvDraining) return false;
+  if (socket._cvDraining) {
+    serverPerf.skippedWrites++;
+    return false;
+  }
   try {
     const ok = socket.write(frame);
     if (!ok) {
@@ -772,6 +790,8 @@ const server = http.createServer((req, res) => {
         return handleGetProviders(req, res);
       case '/api/usage':
         return handleGetUsage(req, res);
+      case '/api/perf':
+        return handleGetPerf(req, res);
     }
   }
 
