@@ -1047,17 +1047,7 @@ export class BuildingSprite {
         const pulse = this.motionScale ? (Math.sin(this.frame * 0.045 + seed * 0.011) + 1) / 2 : 0.56;
 
         ctx.save();
-        if (splitPass !== 'whole' && Number.isFinite(horizonY)) {
-            const dx = Math.round(wx - baseAnchor[0]);
-            const dy = Math.round(wy - baseAnchor[1]);
-            ctx.beginPath();
-            if (splitPass === 'back') {
-                ctx.rect(dx - 2, dy - 2, dims.w + 4, horizonY + 4);
-            } else {
-                ctx.rect(dx - 2, dy + horizonY - 2, dims.w + 4, dims.h - horizonY + 4);
-            }
-            ctx.clip();
-        }
+        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, dims, baseAnchor);
         ctx.globalCompositeOperation = 'screen';
         if (windowWarmth > 0.035) {
             const warmthAlpha = Math.min(0.28, windowWarmth * (0.12 + pulse * 0.05));
@@ -1115,6 +1105,22 @@ export class BuildingSprite {
         return points.slice(0, 4);
     }
 
+    _clipToSplitPass(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, dims = null, baseAnchor = null) {
+        if (splitPass === 'whole' || !Number.isFinite(horizonY)) return;
+        const resolvedDims = dims || this.assets.getDims(entry.id);
+        if (!resolvedDims) return;
+        const anchor = baseAnchor || this.assets.getAnchor(entry.id);
+        const dx = Math.round(wx - anchor[0]);
+        const dy = Math.round(wy - anchor[1]);
+        ctx.beginPath();
+        if (splitPass === 'back') {
+            ctx.rect(dx - 2, dy - 2, resolvedDims.w + 4, horizonY + 4);
+        } else {
+            ctx.rect(dx - 2, dy + horizonY - 2, resolvedDims.w + 4, resolvedDims.h - horizonY + 4);
+        }
+        ctx.clip();
+    }
+
     _drawManifestLayers(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null) {
         const baseAnchor = this.assets.getAnchor(entry.id);
         for (const [name, layer] of Object.entries(entry.layers)) {
@@ -1154,6 +1160,7 @@ export class BuildingSprite {
         );
 
         ctx.save();
+        this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, null, baseAnchor);
         if (building.type === 'observatory') {
             this._assertObservatoryClockDims(entry);
             if (shouldDrawLocalY(OBSERVATORY_CLOCK_FACE.center[1])) {
