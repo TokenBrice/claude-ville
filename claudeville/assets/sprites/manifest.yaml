@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-codex-effort-gear-v1"
+  assetVersion: "2026-04-29-harbor-ship-tiers-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -555,6 +555,48 @@ props:
     prompt: "commit cargo boat marker, dark hull, bright white sail with gold branch sigil, glowing sealed cargo crate, transparent background, isometric"
     size: 64
     anchor: [32, 32]
+
+  - id: prop.harborShip.skiff
+    tool: generated
+    prompt: "tiny old-school fantasy harbor skiff, one cream sail, dark wood hull, transparent background"
+    size: 64
+    anchor: [32, 50]
+
+  - id: prop.harborShip.cutter
+    tool: generated
+    prompt: "fantasy cutter ship, larger single mast, cream sail, dark wood hull, transparent background"
+    size: 72
+    anchor: [36, 56]
+
+  - id: prop.harborShip.sloop
+    tool: generated
+    prompt: "old-school sailing sloop, two cream sails, polished wood hull, transparent background"
+    size: 84
+    anchor: [42, 66]
+
+  - id: prop.harborShip.brigantine
+    tool: generated
+    prompt: "fantasy merchant brigantine, multiple cream sails, stern cabin, transparent background"
+    size: 96
+    anchor: [48, 74]
+
+  - id: prop.harborShip.galleon
+    tool: generated
+    prompt: "grand fantasy galleon, ornate hull, many sails, gold trim, transparent background"
+    size: 112
+    anchor: [56, 86]
+
+  - id: prop.harborShip.dreadnought
+    tool: generated
+    prompt: "epic fantasy dreadnought sailing ship, dark hull, many sails, glowing trim, transparent background"
+    size: 128
+    anchor: [64, 98]
+
+  - id: prop.harborShip.flagship
+    tool: generated
+    prompt: "mythic flagship fantasy galleon, colossal sails, ornate prow, magical lanterns, transparent background"
+    size: 144
+    anchor: [72, 110]
 
   - id: prop.harborCrates
     tool: isometric_tile

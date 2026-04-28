@@ -92,6 +92,6 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'harbor-berths',
         material: 'dock',
         width: 1,
-        points: [[32, 21], [34, 22], [36, 21], [38, 21], [38, 18], [37, 17]],
+        points: [[30, 20], [32, 21], [35, 22], [38, 22], [40, 20], [39, 18]],
     },
 ]);
