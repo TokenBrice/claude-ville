@@ -46,11 +46,18 @@ PlasmoidItem {
 
     compactRepresentation: MouseArea {
         id: compact
-        Layout.minimumWidth: Math.max(
+        readonly property int contentWidth: Math.max(
             PlasmaCore.Units.iconSizes.smallMedium,
             (spriteStrip.visible ? spriteStrip.implicitWidth : compactFallback.implicitWidth) + PlasmaCore.Units.smallSpacing * 2
         )
-        Layout.minimumHeight: Math.max(PlasmaCore.Units.iconSizes.smallMedium, root.compactSpriteHeight)
+        readonly property int contentHeight: Math.max(PlasmaCore.Units.iconSizes.smallMedium, root.compactSpriteHeight)
+
+        implicitWidth: contentWidth
+        implicitHeight: contentHeight
+        Layout.minimumWidth: contentWidth
+        Layout.preferredWidth: contentWidth
+        Layout.minimumHeight: contentHeight
+        Layout.preferredHeight: contentHeight
         onClicked: plasmoid.expanded = !plasmoid.expanded
 
         Row {
@@ -76,18 +83,22 @@ PlasmoidItem {
                         color: Qt.rgba(0, 0, 0, 0.28)
                     }
 
+                    Rectangle {
+                        anchors.centerIn: parent
+                        width: Math.max(10, Math.min(parent.width, parent.height) - 6)
+                        height: width
+                        radius: width / 2
+                        color: modelData.spriteAccent
+                        opacity: avatar.status === Image.Ready ? 0 : 1
+                    }
+
                     Image {
+                        id: avatar
                         anchors.horizontalCenter: parent.horizontalCenter
                         anchors.bottom: parent.bottom
                         width: modelData.spritePanelWidth
                         height: root.compactSpriteHeight
                         source: modelData.spriteSource
-                        sourceClipRect: Qt.rect(
-                            modelData.spriteClipX,
-                            modelData.spriteClipY,
-                            modelData.spriteClipWidth,
-                            modelData.spriteClipHeight
-                        )
                         fillMode: Image.PreserveAspectFit
                         smooth: false
                         mipmap: false
@@ -394,27 +405,33 @@ PlasmoidItem {
 
     function spriteFrame(spriteId) {
         var frames = {
-            "agent.claude.base": [19, 559, 63, 83],
-            "agent.claude.haiku": [29, 558, 35, 78],
-            "agent.claude.opus": [26, 562, 46, 67],
-            "agent.claude.sonnet": [29, 564, 39, 63],
-            "agent.codex.base": [19, 568, 63, 74],
-            "agent.codex.gpt53spark": [31, 571, 30, 56],
-            "agent.codex.gpt54": [30, 571, 35, 54],
-            "agent.codex.gpt55": [24, 552, 44, 92],
-            "agent.gemini.base": [19, 564, 64, 78]
+            "agent.claude.base": [63, 83],
+            "agent.claude.haiku": [35, 78],
+            "agent.claude.opus": [46, 67],
+            "agent.claude.sonnet": [39, 63],
+            "agent.codex.base": [63, 74],
+            "agent.codex.gpt53spark": [30, 56],
+            "agent.codex.gpt54": [35, 54],
+            "agent.codex.gpt55": [44, 92],
+            "agent.gemini.base": [64, 78]
         }
         var frame = frames[spriteId] || frames["agent.codex.gpt54"]
         return {
-            x: frame[0],
-            y: frame[1],
-            width: frame[2],
-            height: frame[3]
+            width: frame[0],
+            height: frame[1]
         }
     }
 
     function spriteSource(spriteId) {
-        return root.serverUrl + "/assets/sprites/characters/" + spriteId + "/sheet.png"
+        return Qt.resolvedUrl("../images/" + spriteId + ".png")
+    }
+
+    function spriteAccent(spriteId) {
+        if (spriteId.indexOf("claude") !== -1) return "#f2d36b"
+        if (spriteId.indexOf("gemini") !== -1) return "#9ad7ff"
+        if (spriteId.indexOf("gpt55") !== -1) return "#fff1b8"
+        if (spriteId.indexOf("gpt53spark") !== -1) return "#f8e36f"
+        return "#7be3d7"
     }
 
     function spritePanelWidth(frame) {
@@ -538,10 +555,7 @@ PlasmoidItem {
                 tokens: sessionTokens,
                 spriteId: spriteId,
                 spriteSource: spriteSource(spriteId),
-                spriteClipX: frame.x,
-                spriteClipY: frame.y,
-                spriteClipWidth: frame.width,
-                spriteClipHeight: frame.height,
+                spriteAccent: spriteAccent(spriteId),
                 spritePanelWidth: spritePanelWidth(frame)
             })
         }
