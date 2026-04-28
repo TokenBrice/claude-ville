@@ -252,6 +252,7 @@ export class SceneryEngine {
     }
 
     _finalizeWaterMetadata() {
+        const finalEntries = [];
         for (const key of this.waterTiles) {
             const [x, y] = key.split(',').map(Number);
             const current = this.waterMeta.get(key) || {};
@@ -266,7 +267,7 @@ export class SceneryEngine {
                     : region === 'lagoon'
                         ? 'lagoon'
                         : current.kind || 'water';
-            this.waterMeta.set(key, {
+            const finalMeta = {
                 source: current.source || 'generated',
                 kind: semanticKind,
                 region,
@@ -276,7 +277,18 @@ export class SceneryEngine {
                 weatherProfile,
                 flowX: Number.isFinite(Number(current.flowX)) ? Number(current.flowX) : this._defaultFlowX(surface, region),
                 flowY: Number.isFinite(Number(current.flowY)) ? Number(current.flowY) : this._defaultFlowY(surface, region),
-            });
+            };
+            this.waterMeta.set(key, finalMeta);
+            finalEntries.push([key, finalMeta]);
+        }
+
+        this.deepWaterTiles.clear();
+        this.lagoonWaterTiles.clear();
+        for (const [key, meta] of finalEntries) {
+            if (meta.depth === 'deep') this.deepWaterTiles.add(key);
+            if (meta.kind === 'lagoon' || meta.region === 'lagoon' || meta.weatherProfile === 'lagoon') {
+                this.lagoonWaterTiles.add(key);
+            }
         }
     }
 
