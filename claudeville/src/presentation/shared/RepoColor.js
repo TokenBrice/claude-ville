@@ -2,7 +2,7 @@
 // Both the harbor (canvas, ship markers) and the sidebar (DOM, project groups)
 // must agree on the color for a given repo path.
 
-export const REPO_PALETTES = [
+const REPO_PALETTES = [
     { accent: '#6cdb94', glow: 'rgba(108, 219, 148, 0.34)', panel: 'rgba(20, 54, 42, 0.9)' },
     { accent: '#63c7f2', glow: 'rgba(99, 199, 242, 0.33)', panel: 'rgba(21, 47, 60, 0.9)' },
     { accent: '#f2b84b', glow: 'rgba(242, 184, 75, 0.35)', panel: 'rgba(60, 45, 20, 0.9)' },

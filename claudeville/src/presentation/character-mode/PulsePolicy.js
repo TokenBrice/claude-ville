@@ -18,12 +18,3 @@ export function getPulsePriority() {
         return [...DEFAULT_PULSE_PRIORITY];
     }
 }
-
-export function getPulseBandPolicy() {
-    return {
-        slow: { cadence: '>1s', owner: 'selection' },
-        medium: { cadence: '~600ms', owner: 'working' },
-        fast: { cadence: '<300ms', owner: 'recent' },
-        static: { cadence: 'none', owner: 'intrinsic' },
-    };
-}

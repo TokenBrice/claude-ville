@@ -145,7 +145,7 @@
 .sidebar__agent-dot--working {
     background: #4ade80;
     box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
-    animation: pulse-dot 1.5s ease-in-out infinite;
+    animation: sidebar-pulse-dot 1.5s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--idle {
@@ -156,10 +156,10 @@
 .sidebar__agent-dot--waiting {
     background: #f97316;
     box-shadow: 0 0 4px rgba(249, 115, 22, 0.3);
-    animation: pulse-dot 2s ease-in-out infinite;
+    animation: sidebar-pulse-dot 2s ease-in-out infinite;
 }
 
-@keyframes pulse-dot {
+@keyframes sidebar-pulse-dot {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
 }

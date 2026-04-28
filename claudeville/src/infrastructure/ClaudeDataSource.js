@@ -25,18 +25,6 @@ export class ClaudeDataSource {
         }
     }
 
-    async getTasks() {
-        try {
-            const res = await fetch(`${BASE_URL}/api/tasks`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            return data.taskGroups || [];
-        } catch (err) {
-            console.error('[DataSource] Failed to fetch tasks:', err.message);
-            return [];
-        }
-    }
-
     async getUsage() {
         try {
             const res = await fetch(`${BASE_URL}/api/usage`);
@@ -48,15 +36,4 @@ export class ClaudeDataSource {
         }
     }
 
-    async getHistory(lines = 100) {
-        try {
-            const res = await fetch(`${BASE_URL}/api/history?lines=${lines}`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            return data.entries || [];
-        } catch (err) {
-            console.error('[DataSource] Failed to fetch history:', err.message);
-            return [];
-        }
-    }
 }

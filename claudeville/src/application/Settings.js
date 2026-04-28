@@ -18,10 +18,6 @@ class SettingsStore {
         this.set('privacyRedaction', value);
     }
 
-    get(key) {
-        return this.values[key];
-    }
-
     set(key, value) {
         if (!Object.prototype.hasOwnProperty.call(this.values, key)) return;
         const normalized = Boolean(value);
@@ -38,14 +34,6 @@ class SettingsStore {
 
     snapshot() {
         return { ...this.values };
-    }
-
-    redactCommitLabel(label = '[redacted commit]') {
-        return this.privacyRedaction ? label : null;
-    }
-
-    redactReleaseLabel(label = '[redacted release]') {
-        return this.privacyRedaction ? label : null;
     }
 
     _emit() {

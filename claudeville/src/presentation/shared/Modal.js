@@ -30,10 +30,7 @@ export class Modal {
         document.removeEventListener('keydown', this._onKeydown);
     }
 
-    get isOpen() {
-        return this.overlay.style.display !== 'none';
-    }
-
+    // Public lifecycle hook for callers that mount/unmount shared UI primitives.
     destroy() {
         this.close();
         this.closeBtn.removeEventListener('click', this._onClose);

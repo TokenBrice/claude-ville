@@ -220,13 +220,13 @@
 
 .dash-card__status--working .dash-card__status-dot { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
 .dash-card__status--idle .dash-card__status-dot    { background: #60a5fa; }
-.dash-card__status--waiting .dash-card__status-dot { background: #f97316; animation: pulse-dot 1.5s infinite; }
+.dash-card__status--waiting .dash-card__status-dot { background: #f97316; animation: dashboard-pulse-dot 1.5s infinite; }
 
 .dash-card__status--working { color: #4ade80; }
 .dash-card__status--idle    { color: #60a5fa; }
 .dash-card__status--waiting { color: #f97316; }
 
-@keyframes pulse-dot {
+@keyframes dashboard-pulse-dot {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.3; }
 }

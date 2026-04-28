@@ -33,14 +33,6 @@ export class SpriteRenderer {
         }
     }
 
-    // Draw a sub-rect of a sheet (used for character walk/idle frames + tilesets).
-    drawSheetCell(ctx, image, cell, wx, wy, anchorX = 0, anchorY = 0) {
-        const dx = Math.round(wx - anchorX);
-        const dy = Math.round(wy - anchorY);
-        ctx.drawImage(image, cell.sx, cell.sy, cell.sw, cell.sh, dx, dy, cell.sw, cell.sh);
-        return { dx, dy, w: cell.sw, h: cell.sh };
-    }
-
     // Per-pixel hit test against a cached alpha mask.
     hitTest(id, mx, my, dx, dy) {
         const mask = this.assets.getMask(id);
@@ -63,20 +55,4 @@ export class SpriteRenderer {
         ctx.drawImage(outline, dx, dy);
     }
 
-    // Draw a tinted silhouette at lower opacity (X-ray effect).
-    drawSilhouette(ctx, id, wx, wy, tint = 'rgba(255,210,140,0.35)') {
-        const img = this.assets.get(id);
-        if (!img) return;
-        const [ax, ay] = this.assets.getAnchor(id);
-        const dx = Math.round(wx - ax);
-        const dy = Math.round(wy - ay);
-        ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 0.35;
-        ctx.drawImage(img, dx, dy);
-        ctx.globalCompositeOperation = 'source-atop';
-        ctx.fillStyle = tint;
-        ctx.fillRect(dx, dy, img.width, img.height);
-        ctx.restore();
-    }
 }
