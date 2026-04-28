@@ -26,7 +26,12 @@ class DomainEvent {
         const callbacks = this.listeners.get(event);
         if (callbacks) {
             for (const callback of callbacks) {
-                callback(data);
+                try {
+                    callback(data);
+                } catch (error) {
+                    const message = error?.message || String(error);
+                    console.error(`[DomainEvent] listener failed for "${event}": ${message}`);
+                }
             }
         }
     }

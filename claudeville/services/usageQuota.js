@@ -178,8 +178,9 @@ function readHistoryLive() {
     if (!fs.existsSync(HISTORY_PATH)) return empty;
 
     const nowDate = new Date();
-    const todayStr = nowDate.toISOString().slice(0, 10);
-    const todayStart = new Date(todayStr + 'T00:00:00').getTime();
+    const today = new Date(nowDate);
+    today.setHours(0, 0, 0, 0);
+    const todayStart = today.getTime();
 
     // This Monday at 00:00
     const dayOfWeek = nowDate.getDay();

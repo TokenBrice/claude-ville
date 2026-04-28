@@ -373,6 +373,131 @@ function dedupeGitEvents(events) {
   return unique;
 }
 
+function eventTime(event) {
+  return parseTimestamp(event?.completedAt || event?.completed_at || event?.ts || event?.timestamp || event?.time);
+}
+
+function eventSha(event) {
+  return String(event?.sha || event?.commit || event?.hash || event?.commitSha || event?.revision || '')
+    .trim()
+    .toLowerCase();
+}
+
+function commitSubjectFromCommand(command) {
+  if (!command) return '';
+
+  for (const segment of splitShellCommands(command)) {
+    const tokens = tokenizeShellSegment(segment);
+    const match = findGitCommand(tokens);
+    if (!match || match.type !== 'commit') continue;
+
+    const messages = [];
+    for (let i = match.subcommandIndex + 1; i < tokens.length; i++) {
+      const token = tokens[i];
+      if ((token === '-m' || token === '--message') && tokens[i + 1]) {
+        messages.push(tokens[i + 1]);
+        i++;
+        continue;
+      }
+      if (token.startsWith('--message=')) {
+        messages.push(token.slice('--message='.length));
+        continue;
+      }
+      if (token.startsWith('-m') && token.length > 2) {
+        messages.push(token.slice(2));
+      }
+    }
+    if (messages.length) return messages.join(' ');
+  }
+
+  return '';
+}
+
+function normalizeCommitText(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function commitText(event) {
+  return normalizeCommitText(
+    event?.label || event?.subject || event?.message || commitSubjectFromCommand(event?.command)
+  );
+}
+
+function eventTimesClose(left, right) {
+  if (!left || !right) return false;
+  return Math.abs(left - right) <= 120000;
+}
+
+function commitTextsEquivalent(left, right) {
+  if (!left || !right) return false;
+  if (left === right) return true;
+  if (Math.min(left.length, right.length) < 18) return false;
+  return left.startsWith(right) || right.startsWith(left);
+}
+
+function sameCommitEvent(left, right) {
+  if (!left || !right || left.type !== 'commit' || right.type !== 'commit') return false;
+  if (left.project !== right.project) return false;
+
+  const leftSha = eventSha(left);
+  const rightSha = eventSha(right);
+  if (leftSha && rightSha) return leftSha === rightSha;
+
+  const leftTime = eventTime(left);
+  const rightTime = eventTime(right);
+  const timesClose = eventTimesClose(leftTime, rightTime);
+  if (left.commandHash && right.commandHash && left.commandHash === right.commandHash) {
+    return !leftTime || !rightTime || timesClose;
+  }
+
+  return timesClose && commitTextsEquivalent(commitText(left), commitText(right));
+}
+
+function mergeCommitEvents(observed, inferred) {
+  const merged = {
+    ...inferred,
+    ...observed,
+  };
+  const sha = eventSha(observed) || eventSha(inferred);
+  if (sha) merged.sha = sha;
+  if (!merged.label && inferred.label) merged.label = inferred.label;
+  if (!merged.branch && inferred.branch) merged.branch = inferred.branch;
+  if (!merged.targetRef && inferred.targetRef) merged.targetRef = inferred.targetRef;
+  if (!merged.upstream && inferred.upstream) merged.upstream = inferred.upstream;
+  if (!merged.comparisonRef && inferred.comparisonRef) merged.comparisonRef = inferred.comparisonRef;
+  if (typeof merged.hasUpstream !== 'boolean' && typeof inferred.hasUpstream === 'boolean') {
+    merged.hasUpstream = inferred.hasUpstream;
+  }
+  if (observed.inferred !== true) merged.inferred = false;
+  return merged;
+}
+
+function mergeUnpushedGitEvents(observedEvents, inferredEvents) {
+  const observed = Array.isArray(observedEvents) ? observedEvents : [];
+  const inferred = Array.isArray(inferredEvents) ? inferredEvents : [];
+  if (!inferred.length) return dedupeGitEvents(observed);
+
+  const usedInferred = new Set();
+  const merged = observed.map((event) => {
+    if (event?.type !== 'commit') return event;
+    const index = inferred.findIndex((candidate, candidateIndex) => {
+      return !usedInferred.has(candidateIndex) && sameCommitEvent(event, candidate);
+    });
+    if (index === -1) return event;
+    usedInferred.add(index);
+    return mergeCommitEvents(event, inferred[index]);
+  });
+
+  inferred.forEach((event, index) => {
+    if (!usedInferred.has(index)) merged.push(event);
+  });
+
+  return dedupeGitEvents(merged);
+}
+
 function runGit(project, args) {
   if (!project) return '';
   return execFileSync('git', ['-C', project, ...args], {
@@ -635,10 +760,9 @@ function inferUnpushedGitEventsForSessions(sessions, options = {}) {
     if (!unpushed.length) return session;
 
     const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
-    const nonCommitEvents = ownEvents.filter((event) => event?.type !== 'commit');
     return {
       ...session,
-      gitEvents: dedupeGitEvents([...nonCommitEvents, ...unpushed]),
+      gitEvents: mergeUnpushedGitEvents(ownEvents, unpushed),
     };
   });
 

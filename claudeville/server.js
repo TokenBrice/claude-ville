@@ -23,6 +23,7 @@ const claudeAdapter = adapters.find(a => a.provider === 'claude');
 // ─── Settings ───────────────────────────────────────────────
 const PORT = 4000;
 const STATIC_DIR = __dirname;
+const STATIC_ROOT = path.resolve(STATIC_DIR);
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 const ALLOWED_SESSION_PROVIDERS = Object.freeze(new Set(['claude', 'codex', 'gemini', 'git']));
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
@@ -52,6 +53,11 @@ const wsClients = new Set();
 const WS_BACKPRESSURE_BYTES = 1024 * 1024;
 const WS_HEARTBEAT_INTERVAL_MS = 30_000;
 const WS_STALE_AFTER_MS = 90_000;
+const WS_MAX_PAYLOAD_BYTES = 256 * 1024;
+const WS_MAX_BUFFER_BYTES = WS_MAX_PAYLOAD_BYTES + 32;
+const WATCH_FALLBACK_SCAN_INTERVAL_MS = 2000;
+const WATCH_FALLBACK_MAX_ENTRIES = 2000;
+const WATCH_FALLBACK_MAX_DEPTH = 10;
 
 // ─── Utility functions ──────────────────────────────────────
 
@@ -73,27 +79,44 @@ function sendError(res, statusCode, message) {
 
 function readJsonBody(req, callback) {
   let body = '';
+  let byteLength = 0;
+  let tooLarge = false;
+  let settled = false;
+
+  const finish = (err, data) => {
+    if (settled) return;
+    settled = true;
+    callback(err, data);
+  };
+
   req.on('data', (chunk) => {
-    body += chunk;
-    if (body.length > JSON_BODY_LIMIT_BYTES) {
-      req.destroy();
+    byteLength += chunk.length;
+    if (byteLength > JSON_BODY_LIMIT_BYTES) {
+      tooLarge = true;
+      body = '';
+      return;
     }
+    if (tooLarge) return;
+    body += chunk;
   });
   req.on('end', () => {
-    if (!body) return callback(null, {});
+    if (tooLarge) {
+      const err = new Error('Payload Too Large');
+      err.statusCode = 413;
+      return finish(err);
+    }
+    if (!body) return finish(null, {});
     try {
-      callback(null, JSON.parse(body));
+      finish(null, JSON.parse(body));
     } catch (err) {
-      callback(err);
+      finish(err);
     }
   });
-  req.on('error', callback);
+  req.on('error', finish);
 }
 
-function cacheControlFor(reqPath) {
-  return reqPath.startsWith('/assets/sprites/')
-    ? 'no-cache'
-    : 'no-cache';
+function cacheControlFor() {
+  return 'no-cache';
 }
 
 function formatAge(ms) {
@@ -230,7 +253,11 @@ function handleGetSessionDetail(req, res) {
  */
 function handlePostSessionDetails(req, res) {
   readJsonBody(req, (err, body = {}) => {
-    if (err) return sendError(res, 400, 'invalid JSON body');
+    if (err) {
+      const statusCode = err.statusCode === 413 ? 413 : 400;
+      const message = statusCode === 413 ? 'Payload Too Large' : 'invalid JSON body';
+      return sendError(res, statusCode, message);
+    }
     const items = Array.isArray(body.items) ? body.items.slice(0, 100) : [];
     const valid = [];
     for (const item of items) {
@@ -290,6 +317,18 @@ function handleGetPerf(req, res) {
   sendJson(res, 200, {
     websocketClients: wsClients.size,
     activeWatchPaths: serverPerf.activeWatchPaths,
+    recursiveWatchFallbacks: serverPerf.recursiveWatchFallbacks,
+    recursiveWatchFallbackDetails: Array.from(recursiveWatchFallbacks.values()).map((fallback) => ({
+      path: fallback.wp.path,
+      provider: fallback.wp.provider || null,
+      filter: fallback.wp.filter || null,
+      lastScanAt: fallback.lastScanAt || null,
+      lastError: fallback.lastError || null,
+    })),
+    watchFailures: serverPerf.watchFailures,
+    recentWatchFailures: serverPerf.watchFailureDetails,
+    fallbackScans: serverPerf.fallbackScans,
+    fallbackChanges: serverPerf.fallbackChanges,
     skippedWrites: serverPerf.skippedWrites,
     lastBroadcast: serverPerf.lastBroadcast,
     recentBroadcasts: serverPerf.broadcasts,
@@ -308,7 +347,7 @@ function handleStaticFile(req, res) {
     let filePath = path.join(STATIC_DIR, requestedPath === '/' ? 'index.html' : requestedPath);
 
     const resolvedPath = path.resolve(filePath);
-    if (!resolvedPath.startsWith(STATIC_DIR)) {
+    if (resolvedPath !== STATIC_ROOT && !resolvedPath.startsWith(STATIC_ROOT + path.sep)) {
       return sendError(res, 403, 'Forbidden');
     }
 
@@ -354,7 +393,7 @@ function handleStaticFile(req, res) {
 
       res.writeHead(200, {
         'Content-Type': contentType,
-        'Cache-Control': cacheControlFor(req.url),
+        'Cache-Control': cacheControlFor(),
       });
       res.end(data);
     });
@@ -370,7 +409,7 @@ function handleStaticFile(req, res) {
 
 const WS_MAGIC_STRING = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-function handleWebSocketUpgrade(req, socket) {
+function handleWebSocketUpgrade(req, socket, head = Buffer.alloc(0)) {
   const key = req.headers['sec-websocket-key'];
   if (!key) {
     socket.destroy();
@@ -392,7 +431,11 @@ function handleWebSocketUpgrade(req, socket) {
   socket.write(responseStr, () => {
     socket._cvLastSeen = Date.now();
     socket._cvDraining = false;
+    socket._cvFrameBuffer = Buffer.alloc(0);
     wsClients.add(socket);
+    if (head.length > 0) {
+      processWebSocketData(socket, head);
+    }
     setTimeout(() => {
       if (!socket.destroyed && socket.writable && wsClients.has(socket)) {
         sendInitialData(socket);
@@ -402,9 +445,9 @@ function handleWebSocketUpgrade(req, socket) {
 
   socket.on('data', (buffer) => {
     try {
-      handleWebSocketFrame(socket, buffer);
+      processWebSocketData(socket, buffer);
     } catch (err) {
-      // Ignore frame handling errors.
+      closeWebSocket(socket, 1002);
     }
   });
 
@@ -417,8 +460,30 @@ function handleWebSocketUpgrade(req, socket) {
   });
 }
 
+function processWebSocketData(socket, buffer) {
+  if (!Buffer.isBuffer(buffer) || buffer.length === 0) return;
+  socket._cvFrameBuffer = socket._cvFrameBuffer && socket._cvFrameBuffer.length > 0
+    ? Buffer.concat([socket._cvFrameBuffer, buffer])
+    : buffer;
+
+  if (socket._cvFrameBuffer.length > WS_MAX_BUFFER_BYTES) {
+    closeWebSocket(socket, 1009);
+    return;
+  }
+
+  while (!socket.destroyed && socket._cvFrameBuffer.length > 0) {
+    const consumed = handleWebSocketFrame(socket, socket._cvFrameBuffer);
+    if (consumed === 0) break;
+    if (consumed < 0) {
+      closeWebSocket(socket, 1009);
+      return;
+    }
+    socket._cvFrameBuffer = socket._cvFrameBuffer.slice(consumed);
+  }
+}
+
 function handleWebSocketFrame(socket, buffer) {
-  if (buffer.length < 2) return;
+  if (buffer.length < 2) return 0;
   socket._cvLastSeen = Date.now();
 
   const firstByte = buffer[0];
@@ -430,23 +495,27 @@ function handleWebSocketFrame(socket, buffer) {
   let offset = 2;
 
   if (payloadLength === 126) {
-    if (buffer.length < 4) return;
+    if (buffer.length < 4) return 0;
     payloadLength = buffer.readUInt16BE(2);
     offset = 4;
   } else if (payloadLength === 127) {
-    if (buffer.length < 10) return;
-    payloadLength = Number(buffer.readBigUInt64BE(2));
+    if (buffer.length < 10) return 0;
+    const extendedLength = buffer.readBigUInt64BE(2);
+    if (extendedLength > BigInt(WS_MAX_PAYLOAD_BYTES)) return -1;
+    payloadLength = Number(extendedLength);
     offset = 10;
   }
 
+  if (payloadLength > WS_MAX_PAYLOAD_BYTES) return -1;
+
   let maskKey = null;
   if (isMasked) {
-    if (buffer.length < offset + 4) return;
+    if (buffer.length < offset + 4) return 0;
     maskKey = buffer.slice(offset, offset + 4);
     offset += 4;
   }
 
-  if (buffer.length < offset + payloadLength) return;
+  if (buffer.length < offset + payloadLength) return 0;
 
   const payload = buffer.slice(offset, offset + payloadLength);
   if (isMasked && maskKey) {
@@ -460,7 +529,7 @@ function handleWebSocketFrame(socket, buffer) {
       handleTextMessage(socket, payload.toString('utf-8'));
       break;
     case 0x8:
-      socket.end(createWebSocketFrame('', 0x8));
+      closeWebSocket(socket, 1000);
       wsClients.delete(socket);
       break;
     case 0x9:
@@ -470,6 +539,19 @@ function handleWebSocketFrame(socket, buffer) {
       socket._cvLastSeen = Date.now();
       break;
   }
+  return offset + payloadLength;
+}
+
+function closeWebSocket(socket, code = 1000) {
+  if (!socket || socket.destroyed) return;
+  const payload = Buffer.alloc(2);
+  payload.writeUInt16BE(code, 0);
+  try {
+    socket.end(createWebSocketFrame(payload, 0x8));
+  } catch {
+    socket.destroy();
+  }
+  wsClients.delete(socket);
 }
 
 function handleTextMessage(socket, message) {
@@ -598,18 +680,24 @@ let watchRefreshDebounce = null;
 const watchRetryTimers = new Map();
 let lastBroadcastSignature = null;
 let providerDataDirty = true;
+let teamsDirty = true;
 let lastFullDiscoveryAt = 0;
 let lastFullBroadcastAt = 0;
 const activeWatchers = new Map();
+const recursiveWatchFallbacks = new Map();
 const serverPerf = {
   broadcasts: [],
   skippedWrites: 0,
   lastBroadcast: null,
   activeWatchPaths: 0,
+  recursiveWatchFallbacks: 0,
+  watchFailures: 0,
+  watchFailureDetails: [],
+  fallbackScans: 0,
+  fallbackChanges: 0,
 };
 const teamsCache = {
   at: 0,
-  signature: '',
   teams: [],
 };
 
@@ -618,22 +706,26 @@ const BROADCAST_DEBOUNCE_MS = 100;
 const BROADCAST_FULL_DISCOVERY_INTERVAL = 20_000;
 const TEAMS_CACHE_TTL_MS = 5000;
 
-function markProviderDataDirty(reason = 'watch') {
+function markProviderDataDirty(reason = 'watch', provider = null) {
   providerDataDirty = true;
-  invalidateSessionCaches();
-  if (process.env.DEBUG_WATCH) console.log(`[Watch] dirty: ${reason}`);
+  if (!provider || provider === 'claude') teamsDirty = true;
+  invalidateSessionCaches({ provider });
+  if (process.env.DEBUG_WATCH) {
+    const scope = provider ? ` provider=${provider}` : ' provider=all';
+    console.log(`[Watch] dirty: ${reason}${scope}`);
+  }
 }
 
 function getTeamsCached({ force = false } = {}) {
   if (!claudeAdapter) return [];
   const now = Date.now();
-  if (!force && !providerDataDirty && now - teamsCache.at < TEAMS_CACHE_TTL_MS) {
+  if (!force && !teamsDirty && now - teamsCache.at < TEAMS_CACHE_TTL_MS) {
     return teamsCache.teams;
   }
   const teams = claudeAdapter.getTeams();
   teamsCache.at = now;
   teamsCache.teams = teams;
-  teamsCache.signature = crypto.createHash('sha1').update(JSON.stringify(teams)).digest('hex');
+  teamsDirty = false;
   return teams;
 }
 
@@ -727,10 +819,130 @@ function scheduleWatchRetry(wp, key, attempt = 0) {
   watchRetryTimers.set(key, timer);
 }
 
+function recordWatchFailure(wp, key, err, phase = 'setup') {
+  serverPerf.watchFailures++;
+  const detail = {
+    phase,
+    type: wp.type,
+    path: wp.path,
+    provider: wp.provider || null,
+    recursive: Boolean(wp.recursive),
+    message: err?.message || 'watch failed',
+    ts: Date.now(),
+  };
+  serverPerf.watchFailureDetails.push(detail);
+  while (serverPerf.watchFailureDetails.length > 20) serverPerf.watchFailureDetails.shift();
+  if (process.env.DEBUG_WATCH) {
+    console.log(`[Watch] ${phase} failed for ${key}: ${detail.message}`);
+  }
+}
+
+function addRecursiveWatchFallback(wp, key, err) {
+  if (wp.type !== 'directory' || !wp.recursive) return;
+  if (!recursiveWatchFallbacks.has(key)) {
+    recursiveWatchFallbacks.set(key, {
+      wp,
+      key,
+      signature: null,
+      lastScanAt: 0,
+      lastError: err?.message || null,
+    });
+  } else {
+    const fallback = recursiveWatchFallbacks.get(key);
+    fallback.wp = wp;
+    fallback.lastError = err?.message || fallback.lastError;
+  }
+  serverPerf.recursiveWatchFallbacks = recursiveWatchFallbacks.size;
+}
+
+function getWatchFallbackSignature(wp) {
+  const root = wp.path;
+  const stack = [{ dir: root, depth: 0 }];
+  let entries = 0;
+  let files = 0;
+  let latestMtimeMs = 0;
+  let totalSize = 0;
+  let truncated = false;
+  let errors = 0;
+
+  while (stack.length > 0 && entries < WATCH_FALLBACK_MAX_ENTRIES) {
+    const current = stack.pop();
+    let dirents;
+    try {
+      dirents = fs.readdirSync(current.dir, { withFileTypes: true });
+    } catch {
+      errors++;
+      continue;
+    }
+
+    for (const dirent of dirents) {
+      entries++;
+      if (entries >= WATCH_FALLBACK_MAX_ENTRIES) {
+        truncated = true;
+        break;
+      }
+
+      const entryPath = path.join(current.dir, dirent.name);
+      if (dirent.isDirectory()) {
+        if (current.depth < WATCH_FALLBACK_MAX_DEPTH) {
+          stack.push({ dir: entryPath, depth: current.depth + 1 });
+        }
+        continue;
+      }
+
+      if (!dirent.isFile()) continue;
+      if (wp.filter && !dirent.name.endsWith(wp.filter)) continue;
+
+      try {
+        const stat = fs.statSync(entryPath);
+        files++;
+        latestMtimeMs = Math.max(latestMtimeMs, stat.mtimeMs);
+        totalSize += stat.size;
+      } catch {
+        errors++;
+      }
+    }
+  }
+
+  if (stack.length > 0) truncated = true;
+  return JSON.stringify({ files, latestMtimeMs: Math.round(latestMtimeMs), totalSize, truncated, errors });
+}
+
+function runRecursiveWatchFallbackChecks() {
+  const now = Date.now();
+  for (const fallback of recursiveWatchFallbacks.values()) {
+    if (activeWatchers.has(fallback.key)) {
+      recursiveWatchFallbacks.delete(fallback.key);
+      continue;
+    }
+    if (now - fallback.lastScanAt < WATCH_FALLBACK_SCAN_INTERVAL_MS) continue;
+    fallback.lastScanAt = now;
+    if (!fs.existsSync(fallback.wp.path)) continue;
+
+    try {
+      const signature = getWatchFallbackSignature(fallback.wp);
+      serverPerf.fallbackScans++;
+      if (fallback.signature && signature !== fallback.signature) {
+        serverPerf.fallbackChanges++;
+        markProviderDataDirty(`stat-fallback:${path.basename(fallback.wp.path)}`, fallback.wp.provider || null);
+        debouncedBroadcast();
+      }
+      fallback.signature = signature;
+      fallback.lastError = null;
+    } catch (err) {
+      fallback.lastError = err.message;
+      if (process.env.DEBUG_WATCH) {
+        console.log(`[Watch] fallback scan failed for ${fallback.key}: ${err.message}`);
+      }
+    }
+  }
+  serverPerf.recursiveWatchFallbacks = recursiveWatchFallbacks.size;
+}
+
 // ─── File watching (multi-provider) ────────────────────────
 
 function watchKey(wp) {
-  return `${wp.type}:${wp.path}:${wp.filter || ''}:${wp.recursive ? 1 : 0}`;
+  return `${wp.provider || 'unknown'}:${wp.type}:${wp.path}:${wp.filter || ''}:${wp.recursive ? 1 : 0}`;
 }
 
 function handleWatchEvent(wp, key, eventType, filename) {
@@ -748,7 +960,7 @@ function handleWatchEvent(wp, key, eventType, filename) {
     scheduleWatchRetry(wp, key);
   }
 
-  markProviderDataDirty(`${wp.type}:${path.basename(wp.path)}`);
+  markProviderDataDirty(`${wp.type}:${path.basename(wp.path)}`, wp.provider || null);
   debouncedBroadcast();
 }
 
@@ -773,16 +985,22 @@ function refreshWatchPaths(initialWatchPaths = null) {
       if (!watcher) continue;
       watcher.on?.('error', () => {
         activeWatchers.delete(key);
+        const err = new Error('watcher emitted error');
+        recordWatchFailure(wp, key, err, 'runtime');
+        addRecursiveWatchFallback(wp, key, err);
+        scheduleWatchRetry(wp, key);
       });
       activeWatchers.set(key, watcher);
+      recursiveWatchFallbacks.delete(key);
       const retryTimer = watchRetryTimers.get(key);
       if (retryTimer) {
         clearTimeout(retryTimer);
         watchRetryTimers.delete(key);
       }
       added++;
-    } catch {
-      // Ignore paths that cannot be watched.
+    } catch (err) {
+      recordWatchFailure(wp, key, err, 'setup');
+      addRecursiveWatchFallback(wp, key, err);
     }
   }
 
@@ -792,11 +1010,17 @@ function refreshWatchPaths(initialWatchPaths = null) {
     activeWatchers.delete(key);
   }
 
+  for (const key of recursiveWatchFallbacks.keys()) {
+    if (nextKeys.has(key)) continue;
+    recursiveWatchFallbacks.delete(key);
+  }
+
   if (added > 0 || serverPerf.activeWatchPaths !== activeWatchers.size) {
     console.log(`[Watch] ${activeWatchers.size} paths are now being watched`);
     markProviderDataDirty('watch-refresh');
   }
   serverPerf.activeWatchPaths = activeWatchers.size;
+  serverPerf.recursiveWatchFallbacks = recursiveWatchFallbacks.size;
   lastFullDiscoveryAt = Date.now();
 }
 
@@ -807,6 +1031,7 @@ function startFileWatcher(initialWatchPaths = null) {
     if (Date.now() - lastFullDiscoveryAt >= BROADCAST_FULL_DISCOVERY_INTERVAL) {
       refreshWatchPaths();
     }
+    runRecursiveWatchFallbackChecks();
     if (wsClients.size > 0) broadcastUpdate({ reason: 'interval' });
   }, BROADCAST_POLL_INTERVAL);
   console.log('[Watch] Started dirty-driven 2-second scheduler');
@@ -857,7 +1082,7 @@ const server = http.createServer((req, res) => {
     if (fs.existsSync(widgetFile)) {
       const ext = path.extname(widgetFile).toLowerCase();
       setCorsHeaders(res);
-      res.writeHead(200, { 'Content-Type': MIME_TYPES[ext], 'Cache-Control': cacheControlFor(pathname) });
+      res.writeHead(200, { 'Content-Type': MIME_TYPES[ext], 'Cache-Control': cacheControlFor() });
       fs.createReadStream(widgetFile, { encoding: 'utf-8' }).pipe(res);
       return;
     }
@@ -868,7 +1093,7 @@ const server = http.createServer((req, res) => {
 
 server.on('upgrade', (req, socket, head) => {
   if (req.headers.upgrade && req.headers.upgrade.toLowerCase() === 'websocket') {
-    handleWebSocketUpgrade(req, socket);
+    handleWebSocketUpgrade(req, socket, head);
   } else {
     socket.destroy();
   }

@@ -18,9 +18,11 @@ const MAX_TAIL_BYTES = 64 * 1024 * 1024;
 const MAX_HEAD_BYTES = 512 * 1024;
 const SESSION_ENTRY_CACHE_MAX = 256;
 const AGENT_LAUNCH_CACHE_MAX = 128;
+const TOKEN_USAGE_CACHE_MAX = 128;
 
 const _sessionEntryCache = new Map();
 const _agentLaunchCache = new Map();
+const _tokenUsageCache = new Map();
 const _sessionNamesCache = { signature: '', value: new Map() };
 const _teamMembershipCache = { signature: '', value: new Map() };
 const _teamsCache = { signature: '', value: [] };
@@ -225,6 +227,35 @@ function tailEntries(filePath, count) {
   return entries.slice(-count);
 }
 
+function getFullSessionEntries(filePath) {
+  const stat = fs.statSync(filePath);
+  const cacheKey = statCacheKey(filePath, stat);
+  const cached = _tokenUsageCache.get(filePath);
+  if (cached?.key === cacheKey) {
+    _tokenUsageCache.delete(filePath);
+    _tokenUsageCache.set(filePath, cached);
+    return cached.entries;
+  }
+
+  const raw = fs.readFileSync(filePath, 'utf-8');
+  const entries = parseJsonLines(raw ? raw.split('\n') : []);
+  _tokenUsageCache.set(filePath, { key: cacheKey, entries, usage: null });
+  while (_tokenUsageCache.size > TOKEN_USAGE_CACHE_MAX) {
+    const oldest = _tokenUsageCache.keys().next().value;
+    if (oldest === undefined) break;
+    _tokenUsageCache.delete(oldest);
+  }
+  return entries;
+}
+
+function readUsageNumber(usage, keys) {
+  for (const key of keys) {
+    const value = usage?.[key];
+    if (Number.isFinite(Number(value))) return Number(value);
+  }
+  return 0;
+}
+
 function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {}) {
   if (!input) return null;
 
@@ -408,7 +439,9 @@ function getRecentMessages(sessionFilePath, maxItems = 5) {
 }
 
 function getTokenUsage(sessionFilePath) {
-  const usage = {
+  const emptyUsage = {
+    input: 0,
+    output: 0,
     totalInput: 0,
     totalOutput: 0,
     cacheRead: 0,
@@ -417,30 +450,46 @@ function getTokenUsage(sessionFilePath) {
     turnCount: 0,
   };
   try {
-    const entries = tailEntries(sessionFilePath, 200);
+    const stat = fs.statSync(sessionFilePath);
+    const cacheKey = statCacheKey(sessionFilePath, stat);
+    const cached = _tokenUsageCache.get(sessionFilePath);
+    if (cached?.key === cacheKey && cached.usage) {
+      _tokenUsageCache.delete(sessionFilePath);
+      _tokenUsageCache.set(sessionFilePath, cached);
+      return { ...cached.usage };
+    }
+
+    const usage = { ...emptyUsage };
+    const entries = cached?.key === cacheKey ? cached.entries : getFullSessionEntries(sessionFilePath);
 
     let lastUsage = null;
     for (const entry of entries) {
       const msg = entry.message;
       if (!msg || !msg.usage) continue;
       const u = msg.usage;
-      usage.totalInput += u.input_tokens || 0;
-      usage.totalOutput += u.output_tokens || 0;
-      usage.cacheRead += u.cache_read_input_tokens || 0;
-      usage.cacheCreate += u.cache_creation_input_tokens || 0;
+      usage.totalInput += readUsageNumber(u, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
+      usage.totalOutput += readUsageNumber(u, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
+      usage.cacheRead += readUsageNumber(u, ['cache_read_input_tokens', 'cached_input_tokens', 'cacheReadInputTokens']);
+      usage.cacheCreate += readUsageNumber(u, ['cache_creation_input_tokens', 'cacheCreationInputTokens']);
       usage.turnCount++;
       lastUsage = u;
     }
+    usage.input = usage.totalInput;
+    usage.output = usage.totalOutput;
 
     // Last turn context = input + cache_read + cache_create
     if (lastUsage) {
       usage.contextWindow =
-        (lastUsage.input_tokens || 0) +
-        (lastUsage.cache_read_input_tokens || 0) +
-        (lastUsage.cache_creation_input_tokens || 0);
+        readUsageNumber(lastUsage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']) +
+        readUsageNumber(lastUsage, ['cache_read_input_tokens', 'cached_input_tokens', 'cacheReadInputTokens']) +
+        readUsageNumber(lastUsage, ['cache_creation_input_tokens', 'cacheCreationInputTokens']);
     }
+
+    const latest = _tokenUsageCache.get(sessionFilePath);
+    if (latest?.key === cacheKey) latest.usage = { ...usage };
+    return usage;
   } catch { /* ignore */ }
-  return usage;
+  return emptyUsage;
 }
 
 function getGitEvents(sessionFilePath, context) {
@@ -847,6 +896,7 @@ class ClaudeAdapter {
   invalidateCaches() {
     _sessionEntryCache.clear();
     _agentLaunchCache.clear();
+    _tokenUsageCache.clear();
     _sessionNamesCache.signature = '';
     _sessionNamesCache.value = new Map();
     _teamMembershipCache.signature = '';

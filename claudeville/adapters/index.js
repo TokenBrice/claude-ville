@@ -133,12 +133,32 @@ function getSessionDetailsBatch(items = [], { force = false } = {}) {
   return results;
 }
 
-function invalidateSessionCaches({ details = true } = {}) {
+function invalidateSessionCaches({ details = true, provider = null } = {}) {
+  const normalizedProvider = provider ? String(provider).toLowerCase() : null;
+  const scopedProvider = normalizedProvider && ADAPTER_BY_PROVIDER[normalizedProvider]
+    ? normalizedProvider
+    : null;
   _sessionListCache.at = 0;
   _sessionListCache.threshold = null;
   _sessionListCache.sessions = [];
-  if (details) _sessionDetailCache.clear();
-  for (const adapter of adapters) {
+
+  if (details) {
+    if (scopedProvider) {
+      for (const key of _sessionDetailCache.keys()) {
+        if (key.startsWith(`${scopedProvider}::`)) {
+          _sessionDetailCache.delete(key);
+        }
+      }
+    } else {
+      _sessionDetailCache.clear();
+    }
+  }
+
+  const adaptersToInvalidate = scopedProvider
+    ? [ADAPTER_BY_PROVIDER[scopedProvider]]
+    : adapters;
+
+  for (const adapter of adaptersToInvalidate) {
     try {
       adapter.invalidateCaches?.();
     } catch {
@@ -165,7 +185,10 @@ function getAllWatchPaths() {
   for (const adapter of adapters) {
     if (!adapter.isAvailable()) continue;
     try {
-      paths.push(...adapter.getWatchPaths());
+      paths.push(...adapter.getWatchPaths().map((watchPath) => ({
+        ...watchPath,
+        provider: adapter.provider,
+      })));
     } catch {
       // ignore
     }

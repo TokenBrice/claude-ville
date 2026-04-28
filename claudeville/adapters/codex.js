@@ -25,8 +25,16 @@ const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const GIT_EVENT_SCAN_LINES = 5000;
 const MAX_CURRENT_TOOL_INPUT_CHARS = 500;
+const MAX_ROLLOUT_DAY_DIRS = 8192;
+const MAX_ROLLOUT_FILES = 100000;
+const ROLLOUT_DIR_MTIME_EPSILON_MS = 1;
 
 const _rolloutFileBySessionId = new Map();
+const _rolloutDiscoveryCache = {
+  initialized: false,
+  filesByPath: new Map(),
+  dayDirMtimes: new Map(),
+};
 
 function readHeadLines(filePath, count) {
   const fd = fs.openSync(filePath, 'r');
@@ -592,64 +600,150 @@ function getGitEvents(filePath, context) {
 }
 
 /**
- * Scan rollout files from recent date directories
+ * Scan rollout files by file mtime, not date-directory recency.
+ * Long-running sessions keep appending to their original day folder.
  */
-function scanRecentRollouts(activeThresholdMs) {
-  const results = [];
-  if (!fs.existsSync(SESSIONS_DIR)) return results;
-
-  const now = Date.now();
-
+function readSortedChildDirs(parentDir) {
   try {
-    // YYYY directory traversal
-    const years = fs.readdirSync(SESSIONS_DIR, { withFileTypes: true })
+    return fs.readdirSync(parentDir, { withFileTypes: true })
       .filter(d => d.isDirectory())
       .map(d => d.name)
       .sort()
-      .reverse()
-      .slice(0, 2); // only the last 2 years
+      .reverse();
+  } catch {
+    return [];
+  }
+}
 
+function readRolloutFileNames(dayDir) {
+  try {
+    return fs.readdirSync(dayDir)
+      .filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl'))
+      .sort()
+      .reverse();
+  } catch {
+    return [];
+  }
+}
+
+function statMtimeMs(filePath) {
+  try {
+    return fs.statSync(filePath).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+function rememberRolloutFile(filePath, fileName, mtime, dayDir) {
+  _rolloutDiscoveryCache.filesByPath.set(filePath, { fileName, mtime, dayDir });
+}
+
+function collectCachedActiveRollouts(activeCutoffMs) {
+  const results = [];
+
+  for (const [filePath, cached] of _rolloutDiscoveryCache.filesByPath) {
+    const mtime = statMtimeMs(filePath);
+    if (mtime === null) {
+      _rolloutDiscoveryCache.filesByPath.delete(filePath);
+      continue;
+    }
+
+    cached.mtime = mtime;
+    if (mtime < activeCutoffMs) continue;
+
+    results.push({
+      filePath,
+      mtime,
+      fileName: cached.fileName || path.basename(filePath),
+    });
+  }
+
+  return results;
+}
+
+function scanRolloutDayDir(dayDir, activeCutoffMs, resultsByPath, counters) {
+  const fileNames = readRolloutFileNames(dayDir);
+
+  for (const fileName of fileNames) {
+    if (counters.files >= MAX_ROLLOUT_FILES) {
+      counters.limited = true;
+      return;
+    }
+
+    const filePath = path.join(dayDir, fileName);
+    const mtime = statMtimeMs(filePath);
+    counters.files++;
+    if (mtime === null) continue;
+
+    rememberRolloutFile(filePath, fileName, mtime, dayDir);
+    if (mtime < activeCutoffMs) continue;
+
+    resultsByPath.set(filePath, { filePath, mtime, fileName });
+  }
+}
+
+function scanRecentRollouts(activeThresholdMs) {
+  const activeCutoffMs = Date.now() - activeThresholdMs;
+  const resultsByPath = new Map();
+  const counters = { dayDirs: 0, files: 0, limited: false };
+
+  if (!fs.existsSync(SESSIONS_DIR)) {
+    _rolloutDiscoveryCache.initialized = false;
+    _rolloutDiscoveryCache.filesByPath.clear();
+    _rolloutDiscoveryCache.dayDirMtimes.clear();
+    return [];
+  }
+
+  if (_rolloutDiscoveryCache.initialized) {
+    for (const rollout of collectCachedActiveRollouts(activeCutoffMs)) {
+      resultsByPath.set(rollout.filePath, rollout);
+    }
+  }
+
+  try {
+    const years = readSortedChildDirs(SESSIONS_DIR);
+
+    yearLoop:
     for (const year of years) {
       const yearDir = path.join(SESSIONS_DIR, year);
-      const months = fs.readdirSync(yearDir, { withFileTypes: true })
-        .filter(d => d.isDirectory())
-        .map(d => d.name)
-        .sort()
-        .reverse()
-        .slice(0, 2); // only the last 2 months
+      const months = readSortedChildDirs(yearDir);
 
       for (const month of months) {
         const monthDir = path.join(yearDir, month);
-        const days = fs.readdirSync(monthDir, { withFileTypes: true })
-          .filter(d => d.isDirectory())
-          .map(d => d.name)
-          .sort()
-          .reverse()
-          .slice(0, 3); // only the last 3 days
+        const days = readSortedChildDirs(monthDir);
 
         for (const day of days) {
           const dayDir = path.join(monthDir, day);
-          let rolloutFiles;
-          try {
-            rolloutFiles = fs.readdirSync(dayDir)
-              .filter(f => f.startsWith('rollout-') && f.endsWith('.jsonl'));
-          } catch { continue; }
 
-          for (const file of rolloutFiles) {
-            const filePath = path.join(dayDir, file);
-            let stat;
-            try { stat = fs.statSync(filePath); } catch { continue; }
-
-            if (now - stat.mtimeMs > activeThresholdMs) continue;
-
-            results.push({ filePath, mtime: stat.mtimeMs, fileName: file });
+          if (counters.dayDirs >= MAX_ROLLOUT_DAY_DIRS) {
+            counters.limited = true;
+            break yearLoop;
           }
+
+          const dayDirMtime = statMtimeMs(dayDir);
+          if (dayDirMtime === null) continue;
+
+          counters.dayDirs++;
+          const previousDayDirMtime = _rolloutDiscoveryCache.dayDirMtimes.get(dayDir);
+          _rolloutDiscoveryCache.dayDirMtimes.set(dayDir, dayDirMtime);
+
+          if (
+            _rolloutDiscoveryCache.initialized
+            && previousDayDirMtime !== undefined
+            && Math.abs(dayDirMtime - previousDayDirMtime) <= ROLLOUT_DIR_MTIME_EPSILON_MS
+          ) {
+            continue;
+          }
+
+          scanRolloutDayDir(dayDir, activeCutoffMs, resultsByPath, counters);
+          if (counters.limited) break yearLoop;
         }
       }
     }
   } catch { /* ignore */ }
 
-  return results;
+  _rolloutDiscoveryCache.initialized = true;
+  return Array.from(resultsByPath.values()).sort((a, b) => b.mtime - a.mtime);
 }
 
 // ─── Adapter class ────────────────────────────────────
@@ -752,6 +846,9 @@ class CodexAdapter {
 
   invalidateCaches() {
     _rolloutFileBySessionId.clear();
+    // Keep rollout discovery metadata across ordinary provider invalidations.
+    // Watch events usually mean one file changed; dropping this cache would turn
+    // every active-session refresh back into a full historical scan.
   }
 }
 
