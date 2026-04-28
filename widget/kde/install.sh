@@ -11,10 +11,16 @@ if [ -z "$KPACKAGETOOL" ]; then
   exit 1
 fi
 
-if "$KPACKAGETOOL" --type Plasma/Applet --list 2>/dev/null | grep -Fq "$PLUGIN_ID"; then
+if "$KPACKAGETOOL" --type Plasma/Applet --show "$PLUGIN_ID" >/dev/null 2>&1; then
   "$KPACKAGETOOL" --type Plasma/Applet --upgrade "$PACKAGE_DIR"
 else
   "$KPACKAGETOOL" --type Plasma/Applet --install "$PACKAGE_DIR"
 fi
 
+if ! "$KPACKAGETOOL" --type Plasma/Applet --show "$PLUGIN_ID" >/dev/null 2>&1; then
+  echo "Installed package was not registered as $PLUGIN_ID." >&2
+  exit 1
+fi
+
 echo "ClaudeVille Plasma widget installed. Add it from Plasma's Add Widgets panel."
+echo "If the Add Widgets panel was already open, close and reopen it before searching for ClaudeVille."
