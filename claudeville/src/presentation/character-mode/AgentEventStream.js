@@ -33,12 +33,13 @@ function pairKey(aId, bId) {
 }
 
 export class AgentEventStream {
-    constructor(world, { shouldEmitToolEvent = null } = {}) {
+    constructor(world, { shouldEmitToolEvent = null, shouldEmitEvent = null } = {}) {
         this.world = world;
         this.snapshots = new Map();
         this.chatPairs = new Set();
         this.emittedToolKeys = new Set();
         this.shouldEmitToolEvent = typeof shouldEmitToolEvent === 'function' ? shouldEmitToolEvent : null;
+        this.shouldEmitEvent = typeof shouldEmitEvent === 'function' ? shouldEmitEvent : null;
         this.unsubscribers = [];
 
         for (const agent of this.world?.agents?.values?.() || []) {
@@ -59,10 +60,15 @@ export class AgentEventStream {
         this.chatPairs.clear();
         this.emittedToolKeys.clear();
         this.shouldEmitToolEvent = null;
+        this.shouldEmitEvent = null;
     }
 
     setToolEventGate(shouldEmitToolEvent = null) {
         this.shouldEmitToolEvent = typeof shouldEmitToolEvent === 'function' ? shouldEmitToolEvent : null;
+    }
+
+    _canEmit(eventName, payload, agent) {
+        return typeof this.shouldEmitEvent !== 'function' || this.shouldEmitEvent(eventName, payload, agent) !== false;
     }
 
     emitInitialToolEvents({ force = false, shouldEmit = null } = {}) {
@@ -79,6 +85,7 @@ export class AgentEventStream {
             const event = this._toolEvent(agent, snap, { replay: true });
             if (typeof gate === 'function' && !gate(event, agent)) continue;
 
+            if (!this._canEmit('tool:invoked', event, agent)) continue;
             eventBus.emit('tool:invoked', event);
             this.emittedToolKeys.add(emittedKey);
             emitted += 1;
@@ -90,18 +97,20 @@ export class AgentEventStream {
         const snap = snapshotAgent(agent);
         this.snapshots.set(agent.id, snap);
         if (snap.parentId && this.world?.agents?.has?.(snap.parentId)) {
-            eventBus.emit('subagent:dispatched', {
+            const event = {
                 parentId: snap.parentId,
                 childId: agent.id,
                 ts: Date.now(),
-            });
+            };
+            if (this._canEmit('subagent:dispatched', event, agent)) eventBus.emit('subagent:dispatched', event);
         }
         if (snap.teamName) {
-            eventBus.emit('team:joined', {
+            const event = {
                 agentId: agent.id,
                 teamName: snap.teamName,
                 ts: Date.now(),
-            });
+            };
+            if (this._canEmit('team:joined', event, agent)) eventBus.emit('team:joined', event);
         }
         this._emitToolIfChanged(agent, null, snap);
     }
@@ -112,11 +121,12 @@ export class AgentEventStream {
         this.snapshots.set(agent.id, next);
         this._emitToolIfChanged(agent, previous, next);
         if (!previous?.teamName && next.teamName) {
-            eventBus.emit('team:joined', {
+            const event = {
                 agentId: agent.id,
                 teamName: next.teamName,
                 ts: Date.now(),
-            });
+            };
+            if (this._canEmit('team:joined', event, agent)) eventBus.emit('team:joined', event);
         }
     }
 
@@ -124,12 +134,13 @@ export class AgentEventStream {
         const previous = this.snapshots.get(agent.id) || snapshotAgent(agent);
         this.snapshots.delete(agent.id);
         if (previous.parentId && this.world?.agents?.has?.(previous.parentId)) {
-            eventBus.emit('subagent:completed', {
+            const event = {
                 parentId: previous.parentId,
                 childId: agent.id,
                 lastTile: previous.lastTile,
                 ts: Date.now(),
-            });
+            };
+            if (this._canEmit('subagent:completed', event, agent)) eventBus.emit('subagent:completed', event);
         }
         this._clearChatPairsFor(agent.id);
     }
@@ -139,6 +150,7 @@ export class AgentEventStream {
         if (String(agent.status || '').toLowerCase() !== 'working') return;
         if (previous && previous.toolKey === next.toolKey) return;
         const event = this._toolEvent(agent, next);
+        if (!this._canEmit('tool:invoked', event, agent)) return;
         if (typeof this.shouldEmitToolEvent === 'function' && !this.shouldEmitToolEvent(event, agent)) return;
         eventBus.emit('tool:invoked', event);
         this.emittedToolKeys.add(this._emittedToolKey(agent.id, next.toolKey));

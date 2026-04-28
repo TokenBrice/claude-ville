@@ -108,6 +108,7 @@ export class DashboardRenderer {
         const agents = Array.from(this.world.agents.values());
 
         if (agents.length === 0) {
+            this._detailFetchGeneration++;
             this._clearAllCardsAndSections();
             this.gridEl.style.display = 'none';
             this.emptyEl.classList.add('dashboard__empty--visible');

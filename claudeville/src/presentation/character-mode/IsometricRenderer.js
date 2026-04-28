@@ -1109,6 +1109,7 @@ export class IsometricRenderer {
         this.relationshipState?.dispose?.();
         this.agentEventStream = new AgentEventStream(this.world, {
             shouldEmitToolEvent: (event, agent) => this._canAcceptToolRitual(event, agent),
+            shouldEmitEvent: () => this._worldModeActive,
         });
         this.relationshipState = new RelationshipState(this.world);
         this._replayActiveToolRituals();
@@ -1561,6 +1562,7 @@ export class IsometricRenderer {
     }
 
     _canAcceptToolRitual(event) {
+        if (!this._worldModeActive) return false;
         return this.ritualConductor?.canAccept?.(event) ?? true;
     }
 
@@ -6002,9 +6004,13 @@ export class IsometricRenderer {
         if (cached) return cached;
 
         const size = Math.max(2, Math.ceil(radius * 2));
+        const stampDpr = Math.max(
+            0.1,
+            Math.min(dpr, Math.sqrt(MAX_LIGHT_GRADIENT_CACHE_PIXELS / Math.max(1, size * size))),
+        );
         const stamp = document.createElement('canvas');
-        stamp.width = Math.max(1, Math.round(size * dpr));
-        stamp.height = Math.max(1, Math.round(size * dpr));
+        stamp.width = Math.max(1, Math.round(size * stampDpr));
+        stamp.height = Math.max(1, Math.round(size * stampDpr));
         const stampPixels = canvasPixelCount(stamp);
         const shouldCache = stampPixels <= MAX_LIGHT_GRADIENT_CACHE_PIXELS;
         if (shouldCache && (
@@ -6014,7 +6020,7 @@ export class IsometricRenderer {
             releaseCanvasMap(this.lightGradientCache);
         }
         const stampCtx = stamp.getContext('2d');
-        stampCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        stampCtx.setTransform(stampDpr, 0, 0, stampDpr, 0, 0);
         const glow = stampCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);
         glow.addColorStop(0, this._withAlpha(light.color, this._quantizedAlpha(0.55 * glowScale)));
         glow.addColorStop(0.42, this._withAlpha(light.color, this._quantizedAlpha(0.18 * glowScale)));
