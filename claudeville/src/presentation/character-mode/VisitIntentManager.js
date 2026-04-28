@@ -2,6 +2,7 @@ const DEFAULT_TTLS = Object.freeze({
     chat: { priority: 100, ttlMs: 30000, stickyMs: 30000 },
     alert: { priority: 90, ttlMs: 45000, stickyMs: 10000 },
     git: { priority: 85, ttlMs: 90000, stickyMs: 20000 },
+    handoff: { priority: 82, ttlMs: 45000, stickyMs: 12000 },
     tool: { priority: 80, ttlMs: 30000, stickyMs: 8000 },
     token: { priority: 65, ttlMs: 25000, stickyMs: 8000 },
     team: { priority: 60, ttlMs: 45000, stickyMs: 12000 },
@@ -382,8 +383,8 @@ function normalizeGitEventForIntent(event, agent = {}, index = 0, now = timeNow(
 function intentSort(a, b, now) {
     const aSticky = a.stickyUntil > now ? 1 : 0;
     const bSticky = b.stickyUntil > now ? 1 : 0;
-    if (aSticky !== bSticky) return bSticky - aSticky;
     if (a.priority !== b.priority) return b.priority - a.priority;
+    if (aSticky !== bSticky) return bSticky - aSticky;
     if (a.confidence !== b.confidence) return b.confidence - a.confidence;
     return b.createdAt - a.createdAt;
 }
@@ -395,6 +396,8 @@ export class VisitIntentManager {
         this.intentsByAgent = new Map();
         this.tokenSnapshots = new Map();
         this.seenGitEventIds = new Set();
+        this.lastForgeByAgent = new Map();
+        this.lastToolBuildingByAgent = new Map();
     }
 
     update(agents = null, now = this.now()) {
@@ -407,12 +410,19 @@ export class VisitIntentManager {
             activeIds.add(agent.id);
             this._deriveAgentIntents(agent, currentNow);
         }
+        this._deriveGlobalIntents(activeAgents, currentNow);
 
         for (const agentId of Array.from(this.intentsByAgent.keys())) {
             if (!activeIds.has(agentId)) this.intentsByAgent.delete(agentId);
         }
         for (const agentId of Array.from(this.tokenSnapshots.keys())) {
             if (!activeIds.has(agentId)) this.tokenSnapshots.delete(agentId);
+        }
+        for (const agentId of Array.from(this.lastForgeByAgent.keys())) {
+            if (!activeIds.has(agentId)) this.lastForgeByAgent.delete(agentId);
+        }
+        for (const agentId of Array.from(this.lastToolBuildingByAgent.keys())) {
+            if (!activeIds.has(agentId)) this.lastToolBuildingByAgent.delete(agentId);
         }
 
         this._trimSeenGitEvents();
@@ -442,6 +452,7 @@ export class VisitIntentManager {
             intents,
             tokenSnapshots: [...this.tokenSnapshots.entries()].map(([agentId, total]) => ({ agentId, total })),
             seenGitEvents: this.seenGitEventIds.size,
+            lastForgeAgents: this.lastForgeByAgent.size,
         };
     }
 
@@ -457,6 +468,8 @@ export class VisitIntentManager {
         this.intentsByAgent.clear();
         this.tokenSnapshots.clear();
         this.seenGitEventIds.clear();
+        this.lastForgeByAgent.clear();
+        this.lastToolBuildingByAgent.clear();
     }
 
     _deriveAgentIntents(agent, now) {
@@ -464,13 +477,37 @@ export class VisitIntentManager {
         this._deriveTokenIntents(agent, now);
         this._deriveGitIntents(agent, now);
         this._deriveRelationshipIntents(agent, now);
+        this._deriveLongRunningIntents(agent, now);
     }
 
     _deriveToolIntent(agent, now) {
         const tool = agent.currentTool || null;
         if (!tool) return;
+        if (String(agent.status || '').toLowerCase() !== 'working') return;
         const classified = classifyTool(tool, agent.currentToolInput ?? agent.lastToolInput);
         if (!classified?.building) return;
+        this.lastToolBuildingByAgent.set(agent.id, {
+            building: classified.building,
+            reason: classified.reason,
+            at: now,
+        });
+        if (classified.building === 'forge' && /edit|write|patch|modify|refactor|generate|asset/i.test(classified.reason || '')) {
+            this.lastForgeByAgent.set(agent.id, { at: now, label: classified.label || compactLabel(tool, 'forge') });
+        }
+        if (classified.building === 'taskboard') {
+            const forge = this.lastForgeByAgent.get(agent.id);
+            if (forge && now - forge.at <= 60000) {
+                this._upsertIntent(agent.id, {
+                    source: 'handoff',
+                    sourceKey: `forge-taskboard:${Math.floor(forge.at / 1000)}`,
+                    building: 'taskboard',
+                    reason: 'validate-after-edit',
+                    confidence: 0.9,
+                    label: forge.label || 'forge-check',
+                    payload: { from: 'forge', to: 'taskboard', forgeAt: forge.at },
+                }, now);
+            }
+        }
 
         this._upsertIntent(agent.id, {
             source: 'tool',
@@ -566,14 +603,17 @@ export class VisitIntentManager {
 
     _deriveRelationshipIntents(agent, now) {
         if (agent.parentSessionId) {
+            const parentIntent = this.getIntentForAgent(agent.parentSessionId, now);
+            const parentLast = this.lastToolBuildingByAgent.get(agent.parentSessionId);
+            const parentBuilding = parentIntent?.building || parentLast?.building || 'command';
             this._upsertIntent(agent.id, {
                 source: 'subagent',
-                sourceKey: String(agent.parentSessionId),
-                building: 'command',
-                reason: 'join-parent',
+                sourceKey: `parent:${agent.parentSessionId}:${parentBuilding}`,
+                building: parentBuilding,
+                reason: parentBuilding === 'command' ? 'join-parent' : 'follow-parent-work',
                 confidence: 0.72,
                 label: 'subagent',
-                payload: { parentId: agent.parentSessionId },
+                payload: { parentId: agent.parentSessionId, parentBuilding },
             }, now);
         }
         if (agent.teamName) {
@@ -586,6 +626,78 @@ export class VisitIntentManager {
                 label: compactLabel(agent.teamName, 'team'),
                 payload: { teamName: agent.teamName },
             }, now);
+        }
+    }
+
+    _deriveLongRunningIntents(agent, now) {
+        const status = String(agent?.status || '').toLowerCase();
+        const age = Number(agent?.activityAgeMs);
+        if (status === 'waiting' && Number.isFinite(age) && age > 120000) {
+            this._upsertIntent(agent.id, {
+                source: 'alert',
+                sourceKey: `long-wait:${Math.floor(age / 60000)}`,
+                building: 'watchtower',
+                reason: 'long-wait-watch',
+                confidence: 0.56,
+                label: `${Math.floor(age / 60000)}m wait`,
+                payload: { ageMs: age },
+                priority: 52,
+            }, now);
+        }
+        if (status === 'working' && Number.isFinite(age) && age > 300000) {
+            const last = this.lastToolBuildingByAgent.get(agent.id);
+            this._upsertIntent(agent.id, {
+                source: 'team',
+                sourceKey: `long-work:${last?.building || 'work'}:${Math.floor(age / 300000)}`,
+                building: last?.building || agent.lastKnownBuildingType || 'command',
+                reason: 'long-work-shift',
+                confidence: 0.52,
+                label: `${Math.floor(age / 60000)}m work`,
+                payload: { ageMs: age },
+                priority: 48,
+            }, now);
+        }
+    }
+
+    _deriveGlobalIntents(agents, now) {
+        const working = agents.filter((agent) => String(agent?.status || '').toLowerCase() === 'working');
+        if (working.length >= 4) {
+            const sentries = agents
+                .filter((agent) => agent?.id && String(agent.status || '').toLowerCase() !== 'working')
+                .slice(0, 2);
+            for (const agent of sentries) {
+                this._upsertIntent(agent.id, {
+                    source: 'alert',
+                    sourceKey: `active-count:${working.length}`,
+                    building: 'watchtower',
+                    reason: 'high-activity-watch',
+                    confidence: 0.58,
+                    label: `${working.length} active`,
+                    payload: { activeWorkingCount: working.length },
+                    priority: 54,
+                }, now);
+            }
+        }
+
+        const quotaPressure = agents.some((agent) => contextRatio(agent) >= CONTEXT_PRESSURE_THRESHOLD);
+        if (quotaPressure) {
+            const sentinel = agents.find((agent) => (
+                agent?.id &&
+                contextRatio(agent) < CONTEXT_PRESSURE_THRESHOLD &&
+                ['idle', 'waiting'].includes(String(agent.status || '').toLowerCase())
+            ));
+            if (sentinel) {
+                this._upsertIntent(sentinel.id, {
+                    source: 'quota',
+                    sourceKey: 'quota-sentinel',
+                    building: 'mine',
+                    reason: 'resource-check',
+                    confidence: 0.5,
+                    label: 'quota watch',
+                    payload: { sentinel: true },
+                    priority: 45,
+                }, now);
+            }
         }
     }
 
