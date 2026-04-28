@@ -154,7 +154,7 @@ const SKY_ASSETS = {
         moon: 'atmosphere.moon.crescent.cool',
     },
     storm: {
-        clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
+        clouds: ['atmosphere.cloud.storm-shelf', 'atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
         moon: 'atmosphere.moon.crescent.cool',
     },
     fog: {

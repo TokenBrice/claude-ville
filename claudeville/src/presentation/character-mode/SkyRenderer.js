@@ -9,6 +9,11 @@ const STAR_COUNT = 90;
 const STAR_CEILING_FRAC = 0.60;
 const FALLBACK_CLOUD_IDS = ['atmosphere.cloud.cumulus', 'atmosphere.cloud.wisp'];
 const FALLBACK_MOON_ID = 'atmosphere.moon.crescent';
+const MOON_PHASE_ASSETS = {
+    crescent: 'atmosphere.moon.crescent.cool',
+    half: 'atmosphere.moon.half.cool',
+    gibbous: 'atmosphere.moon.gibbous.cool',
+};
 const CLOUD_DRIFT_PX_PER_MS = 0.0012;
 const CANOPY_HEIGHT_FRAC = 0.52;
 const CANOPY_MIN_HEIGHT = 240;
@@ -364,11 +369,23 @@ export class SkyRenderer {
         if (!moon?.visible || moon.alpha <= 0.01) return;
         const phaseName = moon.phase?.phaseName || 'crescent';
         const illumination = clamp(moon.phase?.illumination ?? 0.24, 0, 1);
+        const authoredPhase = phaseName === 'first-quarter' || phaseName === 'last-quarter'
+            ? 'half'
+            : phaseName === 'waxing-gibbous' || phaseName === 'waning-gibbous' || phaseName === 'full'
+                ? 'gibbous'
+                : phaseName;
+        const authoredPhaseId = MOON_PHASE_ASSETS[authoredPhase];
         const id = this._firstAvailable([
-            atmosphere.sky?.assetIds?.moon,
-            FALLBACK_MOON_ID,
+            authoredPhaseId,
+            phaseName === 'crescent' ? atmosphere.sky?.assetIds?.moon : null,
+            authoredPhase === 'crescent' ? FALLBACK_MOON_ID : null,
         ]);
-        if (id && phaseName === 'crescent' && illumination > 0.10 && illumination < 0.31) {
+        const shouldUseAuthoredMoon = id
+            && (
+                (authoredPhase === 'crescent' && illumination > 0.10 && illumination < 0.31)
+                || ((authoredPhase === 'half' || authoredPhase === 'gibbous') && id === authoredPhaseId)
+            );
+        if (shouldUseAuthoredMoon) {
             const img = this.assets.get(id);
             const dims = this.assets.getDims(id);
             const x = canvas.width * moon.xFrac - dims.w / 2;
