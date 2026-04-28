@@ -32,6 +32,17 @@ export class VisitTileAllocator {
         this.reservations = new Map();
         this.agentReservationIds = new Map();
         this._sequence = 0;
+        this.metrics = {
+            allocations: 0,
+            rejected: 0,
+            releases: 0,
+            renewals: 0,
+            expired: 0,
+            staleReleases: 0,
+            unwalkableSkipped: 0,
+            scenicAllocations: 0,
+            overflowAllocations: 0,
+        };
     }
 
     updateContext({
@@ -58,7 +69,10 @@ export class VisitTileAllocator {
         this.cleanup(now);
 
         const agentId = this._agentId(agent, sprite, intent);
-        if (!agentId) return null;
+        if (!agentId) {
+            this.metrics.rejected++;
+            return null;
+        }
 
         const resolvedBuilding = this._resolveBuilding(building, intent);
         const buildingType = this._buildingType(resolvedBuilding, intent);
@@ -67,7 +81,10 @@ export class VisitTileAllocator {
             buildingType,
             candidates,
         });
-        if (slots.length === 0) return null;
+        if (slots.length === 0) {
+            this.metrics.rejected++;
+            return null;
+        }
 
         const existingReservation = this._reservationForAgent(agentId);
         const sourceTile = this._spriteTile(sprite) || this._agentTile(agent);
@@ -88,13 +105,19 @@ export class VisitTileAllocator {
                 intent,
                 now,
             });
-            if (hasWalkableSlot && !scored.walkable) continue;
+            if (hasWalkableSlot && !scored.walkable) {
+                this.metrics.unwalkableSkipped++;
+                continue;
+            }
             if (!best || scored.score < best.score || (scored.score === best.score && scored.slotId < best.slotId)) {
                 best = scored;
             }
         }
 
-        if (!best) return null;
+        if (!best) {
+            this.metrics.rejected++;
+            return null;
+        }
 
         const previousReservationId = this.agentReservationIds.get(agentId);
         if (previousReservationId) this.reservations.delete(previousReservationId);
@@ -118,6 +141,9 @@ export class VisitTileAllocator {
         };
         this.reservations.set(reservationId, reservation);
         this.agentReservationIds.set(agentId, reservationId);
+        this.metrics.allocations++;
+        if (reservation.scenic) this.metrics.scenicAllocations++;
+        if (reservation.overflow) this.metrics.overflowAllocations++;
 
         return {
             tileX: reservation.tileX,
@@ -139,7 +165,9 @@ export class VisitTileAllocator {
         const reservationId = this.agentReservationIds.get(id);
         if (!reservationId) return false;
         this.agentReservationIds.delete(id);
-        return this.reservations.delete(reservationId);
+        const released = this.reservations.delete(reservationId);
+        if (released) this.metrics.releases++;
+        return released;
     }
 
     releaseReservation(reservationId) {
@@ -151,6 +179,7 @@ export class VisitTileAllocator {
         if (this.agentReservationIds.get(reservation.agentId) === id) {
             this.agentReservationIds.delete(reservation.agentId);
         }
+        this.metrics.releases++;
         return true;
     }
 
@@ -163,6 +192,7 @@ export class VisitTileAllocator {
             ? Math.max(1000, Number(ttlMs))
             : this.reservationTtlMs;
         reservation.expiresAt = Math.max(reservation.expiresAt, Date.now() + ttl);
+        this.metrics.renewals++;
         return true;
     }
 
@@ -174,6 +204,7 @@ export class VisitTileAllocator {
             if (this.agentReservationIds.get(reservation.agentId) === id) {
                 this.agentReservationIds.delete(reservation.agentId);
             }
+            this.metrics.expired++;
         }
         return this;
     }
@@ -216,6 +247,8 @@ export class VisitTileAllocator {
             reservationCount: reservations.length,
             reservations,
             buildings,
+            metrics: { ...this.metrics },
+            metricsScope: 'since allocator start',
         };
     }
 
@@ -519,7 +552,7 @@ export class VisitTileAllocator {
             if (id) active.add(id);
         }
         for (const agentId of this.agentReservationIds.keys()) {
-            if (!active.has(agentId)) this.release(agentId);
+            if (!active.has(agentId) && this.release(agentId)) this.metrics.staleReleases++;
         }
     }
 
