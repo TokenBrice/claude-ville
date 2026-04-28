@@ -221,31 +221,72 @@ export class SkyRenderer {
         if (!sun?.visible || sun.alpha <= 0.01) return;
         const x = canvas.width * sun.xFrac;
         const y = canvas.height * sun.yFrac;
-        const radius = Math.max(18, Math.min(canvas.width, canvas.height) * 0.035);
+        const radius = Math.max(22, Math.min(canvas.width, canvas.height) * 0.042);
         const lighting = atmosphere.lighting || {};
         const warmth = lighting.sunWarmth ?? 0;
         const bloomScale = lighting.sunBloomScale ?? 1;
-        const glowRadius = radius * (3.6 + warmth * 3.0) * bloomScale;
+        const glowRadius = radius * (4.3 + warmth * 3.0) * bloomScale;
         const warmG = Math.round(232 - warmth * 42);
         const warmB = Math.round(170 - warmth * 58);
         const hazeG = Math.round(156 - warmth * 34);
 
         ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalCompositeOperation = 'screen';
         const glow = ctx.createRadialGradient(x, y, 0, x, y, glowRadius);
-        glow.addColorStop(0, `rgba(255, ${warmth ? warmG : 244}, ${warmth ? warmB : 186}, ${0.34 * sun.alpha})`);
+        glow.addColorStop(0, `rgba(255, ${warmth ? warmG : 238}, ${warmth ? warmB : 128}, ${0.46 * sun.alpha})`);
         glow.addColorStop(0.38, warmth
-            ? `rgba(255, ${hazeG}, 108, ${0.18 * sun.alpha * bloomScale})`
-            : `rgba(206, 232, 255, ${0.15 * sun.alpha})`);
-        glow.addColorStop(1, 'rgba(206, 232, 255, 0)');
+            ? `rgba(255, ${hazeG}, 80, ${0.22 * sun.alpha * bloomScale})`
+            : `rgba(255, 222, 92, ${0.18 * sun.alpha})`);
+        glow.addColorStop(1, 'rgba(255, 222, 92, 0)');
         ctx.fillStyle = glow;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
+        const rayAlpha = Math.min(0.26, sun.alpha * (0.16 + bloomScale * 0.08));
+        ctx.strokeStyle = warmth > 0.05
+            ? `rgba(255, 188, 86, ${rayAlpha})`
+            : `rgba(255, 228, 90, ${rayAlpha})`;
+        ctx.lineWidth = Math.max(2, Math.round(radius * 0.08));
+        ctx.lineCap = 'round';
+        for (let i = 0; i < 12; i++) {
+            const angle = (Math.PI * 2 * i) / 12;
+            const inner = radius * (1.48 + (i % 2) * 0.16);
+            const outer = radius * (2.15 + (i % 3) * 0.18);
+            ctx.beginPath();
+            ctx.moveTo(
+                Math.round(x + Math.cos(angle) * inner),
+                Math.round(y + Math.sin(angle) * inner),
+            );
+            ctx.lineTo(
+                Math.round(x + Math.cos(angle) * outer),
+                Math.round(y + Math.sin(angle) * outer),
+            );
+            ctx.stroke();
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = sun.alpha;
-        ctx.fillStyle = warmth > 0.05 ? '#ffd28f' : '#fff1a8';
+        const body = ctx.createRadialGradient(
+            x - radius * 0.28,
+            y - radius * 0.32,
+            radius * 0.12,
+            x,
+            y,
+            radius,
+        );
+        body.addColorStop(0, '#fff9bf');
+        body.addColorStop(0.58, warmth > 0.05 ? '#ffd176' : '#ffe36b');
+        body.addColorStop(1, warmth > 0.05 ? '#f3a14d' : '#ffc842');
+        ctx.fillStyle = body;
         ctx.beginPath();
         ctx.arc(x, y, radius, 0, Math.PI * 2);
         ctx.fill();
+
+        ctx.globalAlpha = sun.alpha * 0.5;
+        ctx.strokeStyle = warmth > 0.05 ? '#ffe0a3' : '#fff0a8';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y, radius - 1, 0, Math.PI * 2);
+        ctx.stroke();
         ctx.restore();
     }
 
