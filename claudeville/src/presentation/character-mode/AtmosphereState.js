@@ -22,7 +22,7 @@
 // widgets, debug overlays) that already destructure `atmosphere.clock`.
 
 const DAY_MINUTES = 24 * 60;
-const WEATHER_BLOCK_MINUTES = 3 * 60;
+const WEATHER_TIMELINE_KNOTS = 6;
 
 const PHASES = [
     { name: 'dawn', start: 5 * 60 + 30, end: 7 * 60 },
@@ -31,7 +31,71 @@ const PHASES = [
     { name: 'night', start: 19 * 60, end: 5 * 60 + 30 },
 ];
 
-const WEATHER_TYPES = new Set(['clear', 'partly-cloudy', 'overcast', 'rain', 'fog']);
+export const WEATHER_TYPES = ['clear', 'partly-cloudy', 'overcast', 'rain', 'fog', 'storm'];
+const WEATHER_TYPE_SET = new Set(WEATHER_TYPES);
+
+export const WEATHER_PRESETS = {
+    clear: {
+        intensity: 0.18,
+        cloudAlpha: 0.12,
+        cloudDensity: 0.16,
+        cloudCover: 0.10,
+        precipitation: 0,
+        fog: 0,
+        starOcclusion: 0,
+        sunOcclusion: 0,
+    },
+    'partly-cloudy': {
+        intensity: 0.48,
+        cloudAlpha: 0.42,
+        cloudDensity: 0.52,
+        cloudCover: 0.42,
+        precipitation: 0,
+        fog: 0.02,
+        starOcclusion: 0.28,
+        sunOcclusion: 0.12,
+    },
+    overcast: {
+        intensity: 0.68,
+        cloudAlpha: 0.70,
+        cloudDensity: 0.88,
+        cloudCover: 0.86,
+        precipitation: 0.04,
+        fog: 0.08,
+        starOcclusion: 0.94,
+        sunOcclusion: 0.58,
+    },
+    rain: {
+        intensity: 0.78,
+        cloudAlpha: 0.76,
+        cloudDensity: 0.96,
+        cloudCover: 0.94,
+        precipitation: 0.68,
+        fog: 0.14,
+        starOcclusion: 0.98,
+        sunOcclusion: 0.68,
+    },
+    fog: {
+        intensity: 0.58,
+        cloudAlpha: 0.38,
+        cloudDensity: 0.62,
+        cloudCover: 0.60,
+        precipitation: 0,
+        fog: 0.78,
+        starOcclusion: 0.72,
+        sunOcclusion: 0.34,
+    },
+    storm: {
+        intensity: 0.88,
+        cloudAlpha: 0.84,
+        cloudDensity: 1,
+        cloudCover: 1,
+        precipitation: 0.92,
+        fog: 0.18,
+        starOcclusion: 1,
+        sunOcclusion: 0.82,
+    },
+};
 
 const PALETTES = {
     dawn: {
@@ -72,44 +136,6 @@ const PALETTES = {
     },
 };
 
-const WEATHER_PRESETS = {
-    clear: {
-        intensity: 0.18,
-        cloudAlpha: 0.12,
-        cloudDensity: 0.16,
-        starOcclusion: 0,
-        sunOcclusion: 0,
-    },
-    'partly-cloudy': {
-        intensity: 0.48,
-        cloudAlpha: 0.42,
-        cloudDensity: 0.52,
-        starOcclusion: 0.28,
-        sunOcclusion: 0.12,
-    },
-    overcast: {
-        intensity: 0.68,
-        cloudAlpha: 0.70,
-        cloudDensity: 0.88,
-        starOcclusion: 0.94,
-        sunOcclusion: 0.58,
-    },
-    rain: {
-        intensity: 0.78,
-        cloudAlpha: 0.76,
-        cloudDensity: 0.96,
-        starOcclusion: 0.98,
-        sunOcclusion: 0.68,
-    },
-    fog: {
-        intensity: 0.58,
-        cloudAlpha: 0.38,
-        cloudDensity: 0.62,
-        starOcclusion: 0.72,
-        sunOcclusion: 0.34,
-    },
-};
-
 const SKY_ASSETS = {
     clear: {
         clouds: ['atmosphere.cloud.wisp.day'],
@@ -124,6 +150,10 @@ const SKY_ASSETS = {
         moon: 'atmosphere.moon.crescent.cool',
     },
     rain: {
+        clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
+        moon: 'atmosphere.moon.crescent.cool',
+    },
+    storm: {
         clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
         moon: 'atmosphere.moon.crescent.cool',
     },
@@ -188,24 +218,133 @@ function seededRandom(seed) {
     };
 }
 
-function deterministicWeather(date) {
-    const minute = minutesSinceMidnight(date);
-    const block = Math.floor(minute / WEATHER_BLOCK_MINUTES);
-    const random = seededRandom(hashString(`${localDateKey(date)}|weather|${block}`));
-    const roll = random();
-    let type = 'clear';
-    if (roll >= 0.50 && roll < 0.78) type = 'partly-cloudy';
-    else if (roll >= 0.78 && roll < 0.90) type = 'overcast';
-    else if (roll >= 0.90 && roll < 0.97) type = 'fog';
-    else if (roll >= 0.97) type = 'rain';
+function weatherTypeFromRoll(roll, minute) {
+    const hour = minute / 60;
+    const fogBias = hour < 7 || hour >= 21 ? 0.08 : 0;
+    const stormBias = hour >= 13 && hour <= 20 ? 0.018 : 0.004;
+    if (roll < 0.42 - fogBias * 0.4) return 'clear';
+    if (roll < 0.72 - fogBias * 0.2) return 'partly-cloudy';
+    if (roll < 0.86) return 'overcast';
+    if (roll < 0.94 + fogBias) return 'fog';
+    if (roll < 0.992 - stormBias) return 'rain';
+    return 'storm';
+}
 
-    const preset = WEATHER_PRESETS[type];
+function buildWeatherKnot(type, minute, random, seed) {
+    const preset = WEATHER_PRESETS[type] || WEATHER_PRESETS.clear;
     const jitter = (random() - 0.5) * 0.18;
+    const intensity = clamp(preset.intensity + jitter, 0, 1);
+    return {
+        minute,
+        type,
+        intensity,
+        cloudCover: clamp(preset.cloudCover + jitter * 0.75, 0, 1),
+        precipitation: clamp(preset.precipitation * (0.82 + random() * 0.36), 0, 1),
+        fog: clamp(preset.fog * (0.78 + random() * 0.44), 0, 1),
+        windX: random() < 0.18 ? -1 : 1,
+        seed,
+    };
+}
+
+export function buildWeatherTimeline(date, seedOverride = null) {
+    const dateKey = localDateKey(date);
+    const seed = Number.isFinite(Number(seedOverride))
+        ? Number(seedOverride) >>> 0
+        : hashString(`${dateKey}|weather-timeline`);
+    const random = seededRandom(seed);
+    const knots = [];
+
+    for (let i = 0; i < WEATHER_TIMELINE_KNOTS; i++) {
+        const baseMinute = Math.round((DAY_MINUTES / WEATHER_TIMELINE_KNOTS) * i);
+        const jitter = i === 0 ? 0 : Math.round((random() - 0.5) * 90);
+        const minute = clamp(baseMinute + jitter, 0, DAY_MINUTES - 1);
+        knots.push(buildWeatherKnot(weatherTypeFromRoll(random(), minute), minute, random, seed + i * 997));
+    }
+
+    knots.sort((a, b) => a.minute - b.minute);
+    knots[0] = { ...knots[0], minute: 0 };
+    return {
+        seed,
+        dateKey,
+        knots,
+    };
+}
+
+function interpolateNumber(from, to, weight) {
+    return from + (to - from) * weight;
+}
+
+export function resolveWeatherAt(minute, timeline) {
+    const knots = timeline?.knots || [];
+    if (!knots.length) return normalizeWeatherOverride({ type: 'clear' }, timeline?.seed);
+
+    let previous = knots[knots.length - 1];
+    let next = knots[0];
+    let adjustedMinute = minute;
+
+    for (let i = 0; i < knots.length; i++) {
+        const current = knots[i];
+        const candidate = knots[(i + 1) % knots.length];
+        const candidateMinute = candidate.minute <= current.minute
+            ? candidate.minute + DAY_MINUTES
+            : candidate.minute;
+        const localMinute = minute < current.minute ? minute + DAY_MINUTES : minute;
+        if (localMinute >= current.minute && localMinute < candidateMinute) {
+            previous = current;
+            next = candidate;
+            adjustedMinute = localMinute;
+            break;
+        }
+    }
+
+    const nextMinute = next.minute <= previous.minute ? next.minute + DAY_MINUTES : next.minute;
+    const rawProgress = clamp((adjustedMinute - previous.minute) / Math.max(1, nextMinute - previous.minute));
+    const transitionProgress = smoothstep(rawProgress);
+    const intensity = clamp(interpolateNumber(previous.intensity, next.intensity, transitionProgress));
+    const cloudCover = clamp(interpolateNumber(previous.cloudCover, next.cloudCover, transitionProgress));
+    const precipitation = clamp(interpolateNumber(previous.precipitation, next.precipitation, transitionProgress));
+    const fog = clamp(interpolateNumber(previous.fog, next.fog, transitionProgress));
+    let type = transitionProgress < 0.5 ? previous.type : next.type;
+    if (previous.type === 'storm' || next.type === 'storm') {
+        if (precipitation > 0.34 && cloudCover > 0.78) type = 'storm';
+    } else if (precipitation > 0.18) {
+        type = 'rain';
+    } else if (fog > 0.24) {
+        type = 'fog';
+    } else if (cloudCover > 0.74) {
+        type = 'overcast';
+    }
+    const windX = transitionProgress < 0.5 ? previous.windX : next.windX;
+
     return {
         type,
-        intensity: clamp(preset.intensity + jitter, 0, 1),
-        windX: random() < 0.16 ? -1 : 1,
+        previousType: previous.type,
+        nextType: next.type,
+        transitionProgress,
+        intensity,
+        cloudCover,
+        precipitation,
+        fog,
+        windX,
+        seed: timeline.seed,
+        timelineMode: 'auto',
+        timeline: knots.map(knot => ({
+            minute: knot.minute,
+            type: knot.type,
+            intensity: Number(knot.intensity.toFixed(3)),
+            windX: knot.windX,
+        })),
     };
+}
+
+function deterministicWeather(date, seedOverride = null) {
+    const minute = minutesSinceMidnight(date);
+    const seed = Number.isFinite(Number(seedOverride))
+        ? Number(seedOverride) >>> 0
+        : hashString(`${localDateKey(date)}|weather|fixed`);
+    const random = seededRandom(seed);
+    const roll = random();
+    return normalizeWeatherOverride(buildWeatherKnot(weatherTypeFromRoll(roll, minute), minute, random, seed), seed);
 }
 
 function resolvePhase(minute) {
@@ -218,6 +357,86 @@ function resolvePhase(minute) {
         }
     }
     return { phase: 'day', phaseProgress: 0 };
+}
+
+function phaseTransition(phase, phaseProgress) {
+    const index = PHASES.findIndex(item => item.name === phase);
+    const previous = PHASES[(index - 1 + PHASES.length) % PHASES.length] || PHASES[PHASES.length - 1];
+    const next = PHASES[(index + 1) % PHASES.length] || PHASES[0];
+    const edgeWindow = phase === 'day' || phase === 'night' ? 0.08 : 0.22;
+    if (phaseProgress < edgeWindow) {
+        return {
+            from: previous.name,
+            to: phase,
+            weight: smoothstep(phaseProgress / edgeWindow),
+            edge: `enter-${phase}`,
+        };
+    }
+    if (phaseProgress > 1 - edgeWindow) {
+        return {
+            from: phase,
+            to: next.name,
+            weight: smoothstep((phaseProgress - (1 - edgeWindow)) / edgeWindow),
+            edge: `exit-${phase}`,
+        };
+    }
+    return {
+        from: phase,
+        to: phase,
+        weight: 1,
+        edge: `in-${phase}`,
+    };
+}
+
+function hexToRgb(hex) {
+    const value = String(hex || '').replace('#', '').trim();
+    if (value.length !== 6) return { r: 255, g: 255, b: 255 };
+    return {
+        r: parseInt(value.slice(0, 2), 16),
+        g: parseInt(value.slice(2, 4), 16),
+        b: parseInt(value.slice(4, 6), 16),
+    };
+}
+
+function rgbStringToRgb(value) {
+    const parts = String(value || '').split(',').map(part => Number(part.trim()));
+    return {
+        r: Number.isFinite(parts[0]) ? parts[0] : 255,
+        g: Number.isFinite(parts[1]) ? parts[1] : 255,
+        b: Number.isFinite(parts[2]) ? parts[2] : 255,
+    };
+}
+
+function blendChannel(from, to, weight) {
+    return Math.round(interpolateNumber(from, to, clamp(weight)));
+}
+
+function rgbToHex({ r, g, b }) {
+    return `#${[r, g, b].map(channel => blendChannel(channel, channel, 0).toString(16).padStart(2, '0')).join('')}`;
+}
+
+function blendRgb(from, to, weight) {
+    return {
+        r: blendChannel(from.r, to.r, weight),
+        g: blendChannel(from.g, to.g, weight),
+        b: blendChannel(from.b, to.b, weight),
+    };
+}
+
+function blendPalette(phase, phaseProgress) {
+    const transition = phaseTransition(phase, phaseProgress);
+    const from = PALETTES[transition.from] || PALETTES[phase] || PALETTES.day;
+    const to = PALETTES[transition.to] || PALETTES[phase] || PALETTES.day;
+    const weight = transition.weight;
+    return {
+        zenith: rgbToHex(blendRgb(hexToRgb(from.zenith), hexToRgb(to.zenith), weight)),
+        upperBand: rgbToHex(blendRgb(hexToRgb(from.upperBand), hexToRgb(to.upperBand), weight)),
+        midBand: rgbToHex(blendRgb(hexToRgb(from.midBand), hexToRgb(to.midBand), weight)),
+        horizon: rgbToHex(blendRgb(hexToRgb(from.horizon), hexToRgb(to.horizon), weight)),
+        horizonGlow: Object.values(blendRgb(rgbStringToRgb(from.horizonGlow), rgbStringToRgb(to.horizonGlow), weight)).join(', '),
+        starWarm: rgbToHex(blendRgb(hexToRgb(from.starWarm), hexToRgb(to.starWarm), weight)),
+        starHot: rgbToHex(blendRgb(hexToRgb(from.starHot), hexToRgb(to.starHot), weight)),
+    };
 }
 
 function applyHourOverride(date, hourNumber) {
@@ -248,17 +467,61 @@ function preferredMotionScale(fallback) {
     }
 }
 
-function resolveWeather(date, override) {
-    if (!override) return deterministicWeather(date);
-    const type = WEATHER_TYPES.has(override.type) ? override.type : 'clear';
+function normalizeWeatherType(type) {
+    const value = String(type || 'clear').trim().toLowerCase().replace(/[\s_]+/g, '-');
+    if (value === 'cloudy') return 'overcast';
+    if (value === 'stormy' || value === 'thunderstorm') return 'storm';
+    if (value === 'partlycloudy') return 'partly-cloudy';
+    return WEATHER_TYPE_SET.has(value) ? value : 'clear';
+}
+
+function isKnownWeatherTypeInput(type) {
+    const value = String(type || '').trim().toLowerCase().replace(/[\s_]+/g, '-');
+    return WEATHER_TYPE_SET.has(value)
+        || value === 'cloudy'
+        || value === 'stormy'
+        || value === 'thunderstorm'
+        || value === 'partlycloudy';
+}
+
+function normalizeWeatherOverride(override, fallbackSeed = null) {
+    const type = normalizeWeatherType(override?.type);
     const base = WEATHER_PRESETS[type];
+    const intensity = Number.isFinite(Number(override?.intensity))
+        ? clamp(Number(override.intensity))
+        : base.intensity;
+    const windValue = Number(override?.windX);
     return {
         type,
-        intensity: Number.isFinite(override.intensity)
-            ? clamp(override.intensity)
-            : base.intensity,
-        windX: Number.isFinite(override.windX) && override.windX < 0 ? -1 : 1,
+        previousType: normalizeWeatherType(override?.previousType || type),
+        nextType: normalizeWeatherType(override?.nextType || type),
+        transitionProgress: Number.isFinite(Number(override?.transitionProgress))
+            ? clamp(Number(override.transitionProgress))
+            : 1,
+        intensity,
+        cloudCover: Number.isFinite(Number(override?.cloudCover))
+            ? clamp(Number(override.cloudCover))
+            : clamp(base.cloudCover * (0.72 + intensity * 0.5)),
+        precipitation: Number.isFinite(Number(override?.precipitation))
+            ? clamp(Number(override.precipitation))
+            : clamp(base.precipitation * (0.72 + intensity * 0.5)),
+        fog: Number.isFinite(Number(override?.fog))
+            ? clamp(Number(override.fog))
+            : clamp(base.fog * (0.72 + intensity * 0.5)),
+        windX: Number.isFinite(windValue) ? clamp(windValue, -1.4, 1.4) : 1,
+        seed: Number.isFinite(Number(override?.seed))
+            ? Number(override.seed) >>> 0
+            : Number.isFinite(Number(fallbackSeed))
+                ? Number(fallbackSeed) >>> 0
+                : hashString(`weather-override|${type}`),
+        timelineMode: 'fixed',
     };
+}
+
+function resolveWeather(date, override, { seedOverride = null, timelineMode = 'auto' } = {}) {
+    if (override) return normalizeWeatherOverride(override, seedOverride);
+    if (timelineMode === 'fixed') return deterministicWeather(date, seedOverride);
+    return resolveWeatherAt(minutesSinceMidnight(date), buildWeatherTimeline(date, seedOverride));
 }
 
 function phaseLight(phase, phaseProgress) {
@@ -308,7 +571,7 @@ function buildMoon(minute, phase, phaseProgress, weather) {
 function buildGrade(phase, phaseProgress, weather) {
     const light = phaseLight(phase, phaseProgress);
     const dark = 1 - light;
-    const weatherWeight = weather.type === 'rain' || weather.type === 'overcast'
+    const weatherWeight = weather.type === 'rain' || weather.type === 'overcast' || weather.type === 'storm'
         ? weather.intensity * 0.24
         : weather.type === 'fog'
             ? weather.intensity * 0.16
@@ -335,7 +598,7 @@ function buildLighting(phase, phaseProgress, weather) {
     const dawnWarmth = phase === 'dawn' ? 1 - smoothstep(phaseProgress) : 0;
     const duskWarmth = phase === 'dusk' ? smoothstep(phaseProgress) : 0;
     const sunWarmth = clamp(Math.max(dawnWarmth * 0.75, duskWarmth));
-    const weatherDim = weather.type === 'rain' || weather.type === 'overcast'
+    const weatherDim = weather.type === 'rain' || weather.type === 'overcast' || weather.type === 'storm'
         ? weather.intensity * 0.35
         : weather.type === 'fog'
             ? weather.intensity * 0.20
@@ -410,19 +673,26 @@ export function createAtmosphereSnapshot({
     motionScale = null,
     weatherOverride = null,
     hourOverride = null,
+    seedOverride = null,
+    timelineMode = 'auto',
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
     const minute = minutesSinceMidnight(effectiveDate);
     const { phase, phaseProgress } = resolvePhase(minute);
     const dayProgress = minute / DAY_MINUTES;
-    const weather = resolveWeather(effectiveDate, weatherOverride);
+    const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode });
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
-    const cloudAlpha = clamp(preset.cloudAlpha * (0.7 + intensity * 0.6));
-    const cloudDensity = clamp(preset.cloudDensity * (0.72 + intensity * 0.5));
+    const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
+    const cloudAlpha = clamp(preset.cloudAlpha * (0.54 + intensity * 0.32 + cloudCover * 0.42));
+    const cloudDensity = clamp(preset.cloudDensity * (0.58 + intensity * 0.28 + cloudCover * 0.52));
+    const transition = phaseTransition(phase, phaseProgress);
     const timeBucket = Math.floor(dayProgress * 96);
     const lightBucket = Math.round(phaseLight(phase, phaseProgress) * 100);
     const intensityBucket = Math.round(intensity * 10);
+    const cloudBucket = Math.round((weather.cloudCover || 0) * 10);
+    const precipitationBucket = Math.round((weather.precipitation || 0) * 10);
+    const fogBucket = Math.round((weather.fog || 0) * 10);
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
     const clockDriftPx = Math.round(dayProgress * 4096) * weather.windX;
@@ -431,16 +701,18 @@ export function createAtmosphereSnapshot({
         phase,
         phaseProgress,
         dayProgress,
-        cacheKey: `${phase}|${weather.type}|i${intensityBucket}|b${timeBucket}|l${lightBucket}`,
+        transition,
+        cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}`,
         weather,
         sky: {
-            palette: PALETTES[phase],
+            palette: blendPalette(phase, phaseProgress),
             assetIds: SKY_ASSETS[weather.type] || SKY_ASSETS.clear,
             sun: buildSun(minute, phase, phaseProgress, weather),
             moon: buildMoon(minute, phase, phaseProgress, weather),
             starsAlpha: starAlpha(phase, phaseProgress, weather),
             cloudAlpha,
             cloudDensity,
+            cloudCover,
         },
         grade: buildGrade(phase, phaseProgress, weather),
         lighting: buildLighting(phase, phaseProgress, weather),
@@ -461,6 +733,8 @@ export class AtmosphereState {
         this._ownerToken = Symbol('claude-ville-atmosphere');
         this._hourOverride = null;
         this._weatherOverride = null;
+        this._seedOverride = null;
+        this._timelineMode = 'auto';
         this._frozenDate = null;
         this._lastSnapshot = null;
         this._previousHelper = null;
@@ -479,6 +753,8 @@ export class AtmosphereState {
             motionScale,
             weatherOverride: this._weatherOverride,
             hourOverride: this._hourOverride,
+            seedOverride: this._seedOverride,
+            timelineMode: this._timelineMode,
         });
         return this._lastSnapshot;
     }
@@ -490,13 +766,37 @@ export class AtmosphereState {
         return this.snapshot();
     }
 
-    setWeather(type, intensity) {
-        const weatherType = String(type || '').trim();
-        if (!WEATHER_TYPES.has(weatherType)) return this.snapshot();
+    setWeather(typeOrObject, intensity, windX) {
+        const source = typeof typeOrObject === 'object' && typeOrObject
+            ? typeOrObject
+            : { type: typeOrObject, intensity, windX };
+        if (!isKnownWeatherTypeInput(source.type)) return this.snapshot();
+        const weatherType = normalizeWeatherType(source.type);
         this._weatherOverride = {
             type: weatherType,
-            intensity: Number.isFinite(Number(intensity)) ? clamp(Number(intensity)) : undefined,
+            intensity: Number.isFinite(Number(source.intensity)) ? clamp(Number(source.intensity)) : undefined,
+            windX: Number.isFinite(Number(source.windX)) ? clamp(Number(source.windX), -1.4, 1.4) : undefined,
+            seed: Number.isFinite(Number(source.seed)) ? Number(source.seed) >>> 0 : undefined,
+            cloudCover: Number.isFinite(Number(source.cloudCover)) ? clamp(Number(source.cloudCover)) : undefined,
+            precipitation: Number.isFinite(Number(source.precipitation)) ? clamp(Number(source.precipitation)) : undefined,
+            fog: Number.isFinite(Number(source.fog)) ? clamp(Number(source.fog)) : undefined,
+            transitionProgress: Number.isFinite(Number(source.transitionProgress))
+                ? clamp(Number(source.transitionProgress))
+                : undefined,
+            previousType: source.previousType,
+            nextType: source.nextType,
         };
+        return this.snapshot();
+    }
+
+    setSeed(seed) {
+        const parsed = Number(seed);
+        this._seedOverride = Number.isFinite(parsed) ? parsed >>> 0 : null;
+        return this.snapshot();
+    }
+
+    setTimelineMode(mode) {
+        this._timelineMode = mode === 'fixed' ? 'fixed' : 'auto';
         return this.snapshot();
     }
 
@@ -509,6 +809,8 @@ export class AtmosphereState {
     clear() {
         this._hourOverride = null;
         this._weatherOverride = null;
+        this._seedOverride = null;
+        this._timelineMode = 'auto';
         this._frozenDate = null;
         return this.snapshot();
     }
@@ -547,7 +849,9 @@ export class AtmosphereState {
         this._previousHelper = window.__claudeVilleAtmosphere || null;
         const helper = {
             setHour: (hourNumber) => this.setHour(hourNumber),
-            setWeather: (type, intensity) => this.setWeather(type, intensity),
+            setWeather: (typeOrObject, intensity, windX) => this.setWeather(typeOrObject, intensity, windX),
+            setSeed: (seed) => this.setSeed(seed),
+            setTimelineMode: (mode) => this.setTimelineMode(mode),
             freeze: () => this.freeze(),
             clear: () => this.clear(),
             snapshot: () => this.snapshot(),
