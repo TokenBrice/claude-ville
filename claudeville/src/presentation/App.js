@@ -348,6 +348,7 @@ class App {
             ...existing,
             canvasBudget: () => this.renderer?.getCanvasBudget?.() || null,
         };
+        window.cameraSet = (pose = {}) => this.renderer?.setCameraPose?.(pose) || false;
     }
 
     _bindSettings() {

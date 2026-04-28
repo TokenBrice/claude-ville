@@ -5,6 +5,7 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import yaml from 'js-yaml';
 import { PNG } from 'pngjs';
 
@@ -19,6 +20,18 @@ const orphanAllowlist = new Set([
         .flatMap((arg) => arg.slice('--allow-orphan='.length).split(','))
         .map((rel) => rel.trim())
         .filter(Boolean),
+]);
+const duplicatePngAllowlist = new Set([
+    duplicateGroupKey([
+        'buildings/building.watchtower/base-0-0.png',
+        'buildings/building.watchtower/base-0-1.png',
+        'buildings/building.watchtower/base-0-2.png',
+        'buildings/building.watchtower/base-3-1.png',
+    ]),
+    duplicateGroupKey([
+        'props/prop.gullFlight.png',
+        'props/prop.gullFlight.level.png',
+    ]),
 ]);
 
 const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
@@ -136,6 +149,8 @@ for (const f of found) {
     }
 }
 
+const { duplicatePngs, allowlistedDuplicatePngGroups } = validateDuplicatePngs(found);
+
 let invalidCharacters = 0;
 for (const entry of characterEntries) {
     invalidCharacters += validateCharacterSheet(entry);
@@ -148,8 +163,46 @@ for (const entry of manifest.atmosphere || []) {
 
 const invalidPalettes = validatePaletteParity();
 
-console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid atmosphere PNGs: ${invalidAtmosphere}`);
-process.exit(missing > 0 || orphans > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidAtmosphere > 0 ? 1 : 0);
+console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid atmosphere PNGs: ${invalidAtmosphere}`);
+process.exit(missing > 0 || orphans > 0 || duplicatePngs > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidAtmosphere > 0 ? 1 : 0);
+
+function duplicateGroupKey(paths) {
+    return [...paths].sort().join('|');
+}
+
+function validateDuplicatePngs(files) {
+    const groups = new Map();
+    let errors = 0;
+    for (const rel of files) {
+        if (!expected.has(rel)) continue;
+        const abs = join(spritesRoot, rel);
+        try {
+            const hash = createHash('sha256').update(readFileSync(abs)).digest('hex');
+            const paths = groups.get(hash) || [];
+            paths.push(rel);
+            groups.set(hash, paths);
+        } catch (err) {
+            console.error(`INVALID PNG: ${rel} cannot be hashed (${err.message})`);
+            errors++;
+        }
+    }
+
+    let duplicates = errors;
+    let allowlisted = 0;
+    for (const [hash, paths] of groups) {
+        if (paths.length < 2) continue;
+        const key = duplicateGroupKey(paths);
+        if (duplicatePngAllowlist.has(key)) {
+            console.warn(`DUPLICATE PNG ALLOWLISTED: ${paths.join(', ')}`);
+            allowlisted++;
+            continue;
+        }
+        console.error(`DUPLICATE PNG: ${paths.join(', ')} share ${hash}`);
+        duplicates++;
+    }
+
+    return { duplicatePngs: duplicates, allowlistedDuplicatePngGroups: allowlisted };
+}
 
 function validateManifestEntry(entry) {
     if (!entry?.id) return 0;

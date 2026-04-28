@@ -1444,6 +1444,39 @@ export class IsometricRenderer {
         this.buildingRenderer?.setQuotaState?.(quota);
     }
 
+    setCameraPose({ x, y, camX, camY, zoom } = {}) {
+        if (!this.camera) return false;
+        const nextZoom = Number(zoom);
+        if (Number.isFinite(nextZoom) && nextZoom > 0) {
+            this.camera.zoom = Math.max(this.camera.minZoom || 1, Math.min(this.camera.maxZoom || 3, nextZoom));
+            this.camera._zoomAnimation = null;
+        }
+
+        const centerX = Number.isFinite(Number(x)) ? Number(x) : Number(camX);
+        const centerY = Number.isFinite(Number(y)) ? Number(y) : Number(camY);
+        if (Number.isFinite(centerX) && Number.isFinite(centerY)) {
+            const viewportWidth = this.camera.canvas?._claudeVilleCssWidth
+                || this.camera.canvas?.clientWidth
+                || this.camera.canvas?.width
+                || 0;
+            const viewportHeight = this.camera.canvas?._claudeVilleCssHeight
+                || this.camera.canvas?.clientHeight
+                || this.camera.canvas?.height
+                || 0;
+            this.camera.stopFollow?.();
+            this.camera.x = -centerX + viewportWidth / (2 * this.camera.zoom);
+            this.camera.y = -centerY + viewportHeight / (2 * this.camera.zoom);
+        }
+
+        this.camera._clampToBounds?.();
+        if (this._worldModeActive) this._startLoop();
+        return {
+            x: this.camera.x,
+            y: this.camera.y,
+            zoom: this.camera.zoom,
+        };
+    }
+
     _getBuildingByType(type) {
         const normalized = type === 'lighthouse' ? 'watchtower' : type;
         return normalized ? this.world?.buildings?.get?.(normalized) || null : null;

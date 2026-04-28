@@ -5,11 +5,8 @@
  *
  * This script captures the 5 baseline poses used by `scripts/sprites/visual-diff.mjs`.
  *
- * LIMITATION: Camera positioning is not yet wired from headless playwright.
- * Currently all 5 poses capture the same viewport (overview). To drive the camera
- * to specific world coordinates (command center, harbor, mine, fringe), the
- * IsometricRenderer and Camera must expose a window.cameraSet({x, y, zoom}) hook
- * in App.js. For now, poses are captured with consistent positioning for diff comparison.
+ * The app exposes window.cameraSet({ x, y, zoom }) in local browser sessions so
+ * each pose captures a distinct world viewport.
  *
  * Usage:
  *   npm run sprites:capture-baseline      # Capture baselines to scripts/sprites/baselines/{pose}.png
@@ -28,14 +25,13 @@ mkdirSync(outDir, { recursive: true });
 const fresh = process.argv.includes('--fresh');
 const suffix = fresh ? '-fresh' : '';
 
-// Camera positions for the 5 baseline poses (worldX, worldY, zoom).
-// These are world-space pixel coords matching the isometric projection.
+// Camera center positions for the 5 baseline poses (worldX, worldY, zoom).
 const POSES = {
-  overview: { camX: 0, camY: 0, zoom: 1 },
-  command: { camX: 360, camY: 240, zoom: 2 },      // near command center tile (18,18)
-  harbor: { camX: 540, camY: 480, zoom: 2 },       // near lighthouse tile (34,10) + harbor docks
-  mine: { camX: 240, camY: 480, zoom: 2 },         // near mine tile (12,24)
-  fringe: { camX: 80, camY: 80, zoom: 1 },         // tree fringe near tile (4,4)
+  overview: { x: 0, y: 0, zoom: 1 },
+  command: { x: 360, y: 240, zoom: 2 },
+  harbor: { x: 540, y: 480, zoom: 2 },
+  mine: { x: 240, y: 480, zoom: 2 },
+  fringe: { x: 80, y: 80, zoom: 1 },
 };
 
 const browser = await chromium.launch();
@@ -46,12 +42,12 @@ try {
   await page.goto('http://localhost:4000', { waitUntil: 'networkidle' });
   // Allow renderer to mount + assets to load
   await page.waitForTimeout(2000);
+  await page.waitForFunction(() => typeof window.cameraSet === 'function', null, { timeout: 5000 });
 
   for (const [name, pose] of Object.entries(POSES)) {
-    // TODO: Once window.cameraSet({x, y, zoom}) is exposed in App.js,
-    // drive the camera here:
-    // await page.evaluate((pose) => window.cameraSet(pose), pose);
-    // await page.waitForTimeout(500);
+    const result = await page.evaluate((nextPose) => window.cameraSet(nextPose), pose);
+    if (!result) throw new Error(`cameraSet failed for ${name}`);
+    await page.waitForTimeout(500);
 
     const path = join(outDir, `${name}${suffix}.png`);
     // Capture the world canvas area (skip topbar at y=60, capture 720px height)
@@ -59,7 +55,7 @@ try {
     console.log(`captured ${path}`);
   }
 
-  console.log(`Done — ${Object.keys(POSES).length} poses written to ${outDir}`);
+  console.log(`Done - ${Object.keys(POSES).length} poses written to ${outDir}`);
 } finally {
   await browser.close();
 }
