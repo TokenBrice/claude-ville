@@ -94,4 +94,10 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         width: 1,
         points: [[30, 20], [32, 21], [35, 22], [38, 22], [40, 20], [39, 18]],
     },
+    {
+        id: 'gate-avenue',
+        material: 'avenue',
+        width: 1,
+        points: [[18, 27], [18, 32], [19, 36], [19, 39]],
+    },
 ]);
