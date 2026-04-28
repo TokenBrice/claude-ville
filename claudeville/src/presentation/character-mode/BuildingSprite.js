@@ -185,6 +185,7 @@ export class BuildingSprite {
         this._visitorCountByType = new Map();
         this._clockCanvas = null;
         this._clockCanvasKey = '';
+        this.clockState = null;
         this.lightingState = null;
         this.ritualConductor = null;
         this.quotaState = null;
@@ -206,6 +207,10 @@ export class BuildingSprite {
 
     setLightingState(state) {
         this.lightingState = state ? normalizeLightingState(state) : null;
+    }
+
+    setClockState(clock) {
+        this.clockState = clock || null;
     }
 
     setRitualConductor(conductor) {
@@ -1417,6 +1422,11 @@ export class BuildingSprite {
     }
 
     _clockTime() {
+        const hour = Number(this.clockState?.hours);
+        const minute = Number(this.clockState?.minutes);
+        if (Number.isFinite(hour) && Number.isFinite(minute)) {
+            return { hour, minute };
+        }
         const now = new Date();
         return { hour: now.getHours(), minute: now.getMinutes() };
     }

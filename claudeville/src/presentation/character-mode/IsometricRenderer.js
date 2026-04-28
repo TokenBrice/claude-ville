@@ -16,7 +16,6 @@ import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
 import { BuildingSprite } from './BuildingSprite.js';
 import { Minimap } from './Minimap.js';
-import { HarborHud } from './HarborHud.js';
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
@@ -251,8 +250,7 @@ const VILLAGE_GATE = Object.freeze({
     id: 'prop.villageGate',
     tileX: 18.9,
     tileY: 39.1,
-    scaleX: 1.65,
-    scaleY: 1.58,
+    widthTiles: 7.4,
     outside: { tileX: 18.1, tileY: 39.15 },
     inside: { tileX: 20.8, tileY: 37.8 },
 });
@@ -260,15 +258,15 @@ const VILLAGE_WALL_ROUTES = Object.freeze([
     {
         id: 'west',
         points: [
-            { tileX: -0.8, tileY: 39.1 },
-            { tileX: 15.0, tileY: 39.1 },
+            { tileX: 1.1, tileY: 39.1 },
+            { tileX: 14.7, tileY: 39.1 },
         ],
     },
     {
         id: 'east',
         points: [
-            { tileX: 22.8, tileY: 39.1 },
-            { tileX: 36.4, tileY: 39.2 },
+            { tileX: 23.2, tileY: 39.1 },
+            { tileX: 32.8, tileY: 39.1 },
         ],
     },
 ]);
@@ -372,7 +370,6 @@ export class IsometricRenderer {
         this.chronicler = null;
         this.pulsePriority = getPulsePriority();
         this.minimap = new Minimap();
-        this.harborHud = new HarborHud();
         this.agentSprites = new Map();
         this.gateTransits = new Map();
         this._sortedSprites = [];
@@ -442,6 +439,7 @@ export class IsometricRenderer {
         this.shoreTiles = this.scenery.getShoreTiles();
         this.deepWaterTiles = this.scenery.getDeepWaterTiles();
         this.lagoonWaterTiles = this.scenery.getLagoonWaterTiles();
+        this.waterMeta = this.scenery.getWaterMeta?.() || new Map();
         this.harborWaterApronTiles = this._buildHarborWaterApronTiles();
 
         // Bridges (Task 5): two authored river crossings only.
@@ -610,6 +608,24 @@ export class IsometricRenderer {
 
     _isVisualWaterTile(tileX, tileY, key = `${tileX},${tileY}`) {
         return this.waterTiles.has(key) || this.harborWaterApronTiles?.has(key);
+    }
+
+    _waterMetaAt(tileX, tileY, key = `${tileX},${tileY}`) {
+        return this.waterMeta?.get?.(key) || null;
+    }
+
+    _waterRegionAt(tileX, tileY, key = `${tileX},${tileY}`) {
+        const meta = this._waterMetaAt(tileX, tileY, key);
+        if (meta?.region) return meta.region;
+        if (this.lagoonWaterTiles?.has(key)) return 'lagoon';
+        if (tileX >= 29 && tileX <= 39 && tileY >= 13 && tileY <= 27) return 'harbor';
+        if (this.deepWaterTiles?.has(key)) return 'sea';
+        return 'water';
+    }
+
+    _isLagoonWaterTile(tileX, tileY, key = `${tileX},${tileY}`) {
+        const meta = this._waterMetaAt(tileX, tileY, key);
+        return meta?.region === 'lagoon' || meta?.weatherProfile === 'lagoon' || this.lagoonWaterTiles?.has(key);
     }
 
     _generatePlannedRoads() {
@@ -995,7 +1011,6 @@ export class IsometricRenderer {
         this.minimap.onNavigate = (tileX, tileY) => {
             this.camera.centerOnTile(tileX, tileY);
         };
-        this.harborHud.attach(canvas.parentNode);
 
         // Click handler for agent selection
         this._onClick = (e) => {
@@ -1042,7 +1057,6 @@ export class IsometricRenderer {
         }
         this._unbindMotionPreference();
         this.minimap.detach();
-        this.harborHud.detach();
         for (const unsub of this._unsubscribers) {
             unsub();
         }
@@ -1683,10 +1697,12 @@ export class IsometricRenderer {
         // Cache weather state for lagoon palette B7 — consumed in _drawTerrainTone and
         // _drawDynamicWaterHighlights without threading atmosphere through every call.
         const wx = atmosphere?.weather;
-        this._stormIntensity = (wx?.type === 'overcast' || wx?.type === 'rain') && wx.intensity > 0.4
+        this._stormIntensity = (wx?.type === 'overcast' || wx?.type === 'rain' || wx?.type === 'storm') && wx.intensity > 0.4
             ? wx.intensity
             : 0;
+        this._waterWeather = this._waterWeatherState(atmosphere);
         this.buildingRenderer?.setLightingState(atmosphere?.lighting);
+        this.buildingRenderer?.setClockState?.(atmosphere?.clock);
         const viewport = this._screenViewport();
 
         // Clear
@@ -1763,7 +1779,7 @@ export class IsometricRenderer {
         const propDrawables = this._enumeratePropDrawables();
         const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
         const harborPendingRepos = this.harborTraffic?.getPendingRepoSummaries?.() ?? [];
-        this.harborHud?.update(harborPendingRepos, renderNow);
+        eventBus.emit('harbor:updated', harborPendingRepos);
         const landmarkDrawables = this.landmarkActivity?.enumerateDrawables() ?? [];
         const chronicleMonumentDrawables = this.chronicleMonuments?.enumerateDrawables?.(renderNow, this.camera) ?? [];
         const chroniclerDrawables = this.chronicler?.enumerateDrawables?.() ?? [];
@@ -2145,14 +2161,13 @@ export class IsometricRenderer {
     _buildDistrictPropSprites() {
         if (!this.sprites) return [];
         const sprites = this._buildVillageWallSprites();
-        const gateDims = this.assets?.getDims?.(VILLAGE_GATE.id);
         sprites.push(new StaticPropSprite({
             tileX: VILLAGE_GATE.tileX,
             tileY: VILLAGE_GATE.tileY,
             id: VILLAGE_GATE.id,
-            bounds: this._scaledAssetPropBounds(VILLAGE_GATE.id, VILLAGE_GATE.scaleX, VILLAGE_GATE.scaleY, 0.54),
-            splitForOcclusion: Boolean(gateDims && gateDims.h >= 56),
-            drawFn: (ctx, x, y) => this._drawScaledSprite(ctx, VILLAGE_GATE.id, x, y, VILLAGE_GATE.scaleX, VILLAGE_GATE.scaleY),
+            bounds: { left: -180, right: 180, top: -136, bottom: 34, splitY: -42 },
+            splitForOcclusion: true,
+            drawFn: (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y),
         }));
         sprites.push(...DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted')
@@ -2247,6 +2262,169 @@ export class IsometricRenderer {
         ctx.translate(Math.round(x), Math.round(y));
         ctx.scale(factorX, factorY);
         ctx.drawImage(img, Math.round(-ax), Math.round(-ay));
+        ctx.restore();
+    }
+
+    _drawVillageGatehouse(ctx, originX, originY) {
+        const centerTileX = VILLAGE_GATE.tileX;
+        const tileY = VILLAGE_GATE.tileY;
+        const halfWidth = VILLAGE_GATE.widthTiles / 2;
+        const openingHalf = 1.55;
+        const center = this._tileToWorld(centerTileX, tileY);
+        const localPoint = (tileX) => {
+            const p = this._tileToWorld(tileX, tileY);
+            return { x: p.x - center.x, y: p.y - center.y };
+        };
+        const leftEnd = localPoint(centerTileX - halfWidth);
+        const leftInner = localPoint(centerTileX - openingHalf);
+        const rightInner = localPoint(centerTileX + openingHalf);
+        const rightEnd = localPoint(centerTileX + halfWidth);
+        const leftTower = localPoint(centerTileX - openingHalf - 0.2);
+        const rightTower = localPoint(centerTileX + openingHalf + 0.2);
+
+        this._drawVillageWallSegment(ctx, originX, originY, leftEnd, leftInner, 0);
+        this._drawVillageWallSegment(ctx, originX, originY, rightInner, rightEnd, 1);
+
+        const leftBase = { x: originX + leftTower.x, y: originY + leftTower.y };
+        const rightBase = { x: originX + rightTower.x, y: originY + rightTower.y };
+        this._drawVillageGateTower(ctx, leftBase.x, leftBase.y, -1);
+        this._drawVillageGateTower(ctx, rightBase.x, rightBase.y, 1);
+        this._drawVillageGateArch(ctx, leftBase, rightBase);
+    }
+
+    _drawVillageGateTower(ctx, x, y, side = 1) {
+        const w = 52;
+        const h = 98;
+        const roofH = 38;
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+
+        ctx.globalAlpha = 0.26;
+        ctx.fillStyle = '#0f171e';
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x - w / 2 - 10), Math.round(y + 14));
+        ctx.lineTo(Math.round(x + w / 2 + 10), Math.round(y + 24));
+        ctx.lineTo(Math.round(x + w / 2 + 3), Math.round(y + 34));
+        ctx.lineTo(Math.round(x - w / 2 - 17), Math.round(y + 24));
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        const wallGrad = ctx.createLinearGradient(0, y - h, 0, y);
+        wallGrad.addColorStop(0, '#7d8da1');
+        wallGrad.addColorStop(0.5, '#59687d');
+        wallGrad.addColorStop(1, '#28374b');
+        ctx.fillStyle = wallGrad;
+        ctx.fillRect(Math.round(x - w / 2), Math.round(y - h), w, h);
+        ctx.strokeStyle = '#101820';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(Math.round(x - w / 2), Math.round(y - h), w, h);
+
+        ctx.strokeStyle = '#2e4056';
+        ctx.lineWidth = 1;
+        for (let row = y - h + 12; row < y - 8; row += 13) {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(x - w / 2 + 3), Math.round(row));
+            ctx.lineTo(Math.round(x + w / 2 - 3), Math.round(row));
+            ctx.stroke();
+        }
+        for (let col = x - w / 2 + 10 + (side > 0 ? 4 : 0); col < x + w / 2 - 4; col += 14) {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(col), Math.round(y - h + 12));
+            ctx.lineTo(Math.round(col), Math.round(y - 8));
+            ctx.stroke();
+        }
+
+        ctx.fillStyle = '#8fb1bd';
+        ctx.fillRect(Math.round(x - w / 2 - 6), Math.round(y - h - 9), w + 12, 9);
+        ctx.strokeStyle = '#142031';
+        ctx.strokeRect(Math.round(x - w / 2 - 6), Math.round(y - h - 9), w + 12, 9);
+
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x - w / 2 - 9), Math.round(y - h - 9));
+        ctx.lineTo(Math.round(x), Math.round(y - h - roofH));
+        ctx.lineTo(Math.round(x + w / 2 + 9), Math.round(y - h - 9));
+        ctx.closePath();
+        ctx.fillStyle = '#3d9da8';
+        ctx.fill();
+        ctx.strokeStyle = '#102332';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+        ctx.strokeStyle = '#8fe4db';
+        ctx.lineWidth = 1;
+        for (let i = -2; i <= 2; i++) {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(x), Math.round(y - h - roofH + 5));
+            ctx.lineTo(Math.round(x + i * 9), Math.round(y - h - 10));
+            ctx.stroke();
+        }
+
+        ctx.fillStyle = '#ffd56a';
+        ctx.fillRect(Math.round(x - 4), Math.round(y - 54), 8, 7);
+        ctx.fillStyle = 'rgba(255, 205, 92, 0.28)';
+        ctx.fillRect(Math.round(x - 8), Math.round(y - 57), 16, 13);
+        ctx.restore();
+    }
+
+    _drawVillageGateArch(ctx, leftBase, rightBase) {
+        const dx = rightBase.x - leftBase.x;
+        const dy = rightBase.y - leftBase.y;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        const ux = dx / length;
+        const uy = dy / length;
+        const start = { x: leftBase.x + ux * 18, y: leftBase.y + uy * 18 - 72 };
+        const end = { x: rightBase.x - ux * 18, y: rightBase.y - uy * 18 - 72 };
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+        ctx.strokeStyle = '#151f2d';
+        ctx.lineWidth = 24;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(start.x), Math.round(start.y));
+        ctx.lineTo(Math.round(end.x), Math.round(end.y));
+        ctx.stroke();
+        ctx.strokeStyle = '#69798d';
+        ctx.lineWidth = 18;
+        ctx.stroke();
+        ctx.strokeStyle = '#9ac1c4';
+        ctx.lineWidth = 5;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(start.x), Math.round(start.y - 5));
+        ctx.lineTo(Math.round(end.x), Math.round(end.y - 5));
+        ctx.stroke();
+
+        ctx.strokeStyle = '#253348';
+        ctx.lineWidth = 6;
+        for (let d = 18; d < length - 18; d += 18) {
+            const px = leftBase.x + ux * d;
+            const py = leftBase.y + uy * d - 84;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(px), Math.round(py));
+            ctx.lineTo(Math.round(px), Math.round(py + 18));
+            ctx.stroke();
+        }
+
+        const postDrop = 52;
+        ctx.strokeStyle = '#202d3f';
+        ctx.lineWidth = 9;
+        for (const p of [start, end]) {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(p.x), Math.round(p.y + 2));
+            ctx.lineTo(Math.round(p.x), Math.round(p.y + postDrop));
+            ctx.stroke();
+        }
+
+        const mid = { x: (leftBase.x + rightBase.x) / 2, y: (leftBase.y + rightBase.y) / 2 };
+        ctx.strokeStyle = '#141f2c';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.arc(Math.round(mid.x), Math.round(mid.y - 28), 24, Math.PI, 0);
+        ctx.stroke();
+
+        ctx.fillStyle = '#f2c95a';
+        const lantern = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 + 14 };
+        ctx.fillRect(Math.round(lantern.x - 4), Math.round(lantern.y - 3), 8, 8);
+        ctx.fillStyle = 'rgba(255, 212, 98, 0.25)';
+        ctx.fillRect(Math.round(lantern.x - 9), Math.round(lantern.y - 7), 18, 16);
         ctx.restore();
     }
 
@@ -2408,6 +2586,7 @@ export class IsometricRenderer {
         if (!this.motionScale) return;
         const { startX, endX, startY, endY } = this._getVisibleTileBounds(3);
         this._drawAnimatedCurrentBands(ctx, startX, endX, startY, endY);
+        this._drawWeatherWaterRipples(ctx, startX, endX, startY, endY);
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         for (let y = startY; y <= endY; y++) {
@@ -2418,7 +2597,7 @@ export class IsometricRenderer {
                 if (seed <= 0.82) continue;
                 const screenX = (x - y) * TILE_WIDTH / 2;
                 const screenY = (x + y) * TILE_HEIGHT / 2;
-                const isLagoonShimmer = this.lagoonWaterTiles?.has(key);
+                const isLagoonShimmer = this._isLagoonWaterTile(x, y, key);
                 // B7: in storms, increase shimmer t frequency for lagoon tiles.
                 const stormFreqMult = isLagoonShimmer && this._stormIntensity
                     ? 1 + 0.5 * this._stormIntensity
@@ -2437,6 +2616,58 @@ export class IsometricRenderer {
             }
         }
         this._drawShorelineReflectionShimmer(ctx, startX, endX, startY, endY);
+        ctx.restore();
+    }
+
+    _waterWeatherState(atmosphere = null) {
+        const wx = atmosphere?.weather || {};
+        const type = wx.type || 'clear';
+        const intensity = Math.max(0, Math.min(1, Number(wx.intensity) || 0));
+        const precipitation = Math.max(0, Math.min(1, Number(wx.precipitation ?? (type === 'rain' || type === 'storm' ? intensity : 0)) || 0));
+        const storm = type === 'storm' || (type === 'rain' && intensity > 0.72);
+        return {
+            rain: precipitation,
+            storm: storm ? intensity : 0,
+            fog: type === 'fog' ? intensity : Math.max(0, Math.min(1, Number(wx.fog) || 0)),
+            windX: Number(wx.windX) || atmosphere?.motion?.windX || 1,
+        };
+    }
+
+    _drawWeatherWaterRipples(ctx, startX, endX, startY, endY) {
+        const weather = this._waterWeather || {};
+        const rain = weather.rain || 0;
+        if (rain <= 0.08) return;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const stride = rain > 0.65 ? 2 : 3;
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
+                if (((x * 3 + y * 5 + Math.floor(seed * 11)) % stride) !== 0) continue;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                const phase = this.waterFrame * (1.8 + rain * 1.3) + seed * 6.28;
+                const pulse = (Math.sin(phase) + 1) / 2;
+                const radius = 4 + pulse * (5 + rain * 5);
+                const alpha = (0.035 + rain * 0.075) * (1 - pulse * 0.45);
+                ctx.strokeStyle = `rgba(210, 245, 255, ${alpha})`;
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.ellipse(
+                    Math.round(screenX + (seed - 0.5) * 18),
+                    Math.round(screenY - 2 + (seed - 0.5) * 8),
+                    radius,
+                    radius * 0.38,
+                    -0.18,
+                    0,
+                    Math.PI * 2,
+                );
+                ctx.stroke();
+            }
+        }
         ctx.restore();
     }
 
@@ -3473,7 +3704,9 @@ export class IsometricRenderer {
     }
 
     _isHarborWater(tileX, tileY) {
-        return tileX >= 29 && tileX <= 39 && tileY >= 13 && tileY <= 27;
+        const key = `${tileX},${tileY}`;
+        const region = this._waterRegionAt(tileX, tileY, key);
+        return region === 'harbor' || (tileX >= 29 && tileX <= 39 && tileY >= 13 && tileY <= 27);
     }
 
     _isOpenSeaTile(tileX, tileY, openness = null) {
@@ -3482,6 +3715,8 @@ export class IsometricRenderer {
         if (!this.deepWaterTiles.has(key)) return false;
         const open = openness ?? this._waterOpenness(tileX, tileY);
         if (open < 0.62) return false;
+        const region = this._waterRegionAt(tileX, tileY, key);
+        if (region === 'openSea' || region === 'sea') return true;
         const rightSea = tileX >= 33 && tileY <= 27;
         const upperSea = tileX >= 30 && tileY <= 11;
         return rightSea || upperSea;
@@ -3550,10 +3785,10 @@ export class IsometricRenderer {
 
         // B1: foam wash only where the adjacent water is lagoon-kind.
         if (adjacentWater) {
-            const adjacentLagoon = this.lagoonWaterTiles?.has(`${tileX},${tileY - 1}`)
-                || this.lagoonWaterTiles?.has(`${tileX + 1},${tileY}`)
-                || this.lagoonWaterTiles?.has(`${tileX},${tileY + 1}`)
-                || this.lagoonWaterTiles?.has(`${tileX - 1},${tileY}`);
+            const adjacentLagoon = this._isLagoonWaterTile(tileX, tileY - 1)
+                || this._isLagoonWaterTile(tileX + 1, tileY)
+                || this._isLagoonWaterTile(tileX, tileY + 1)
+                || this._isLagoonWaterTile(tileX - 1, tileY);
             if (adjacentLagoon) {
                 ctx.save();
                 ctx.globalCompositeOperation = 'lighter';
@@ -3599,17 +3834,12 @@ export class IsometricRenderer {
         let alpha = 0;
         const visualWater = this._isVisualWaterTile(tileX, tileY, key);
 
-        const isLagoon = this.lagoonWaterTiles?.has(key);
+        const isLagoon = this._isLagoonWaterTile(tileX, tileY, key);
         if (this.deepWaterTiles.has(key)) {
             const openSea = this._isOpenSeaTile(tileX, tileY);
             if (isLagoon) {
-                // A3: lagoon deep — warm tropical teal; B7: storm lerps toward grey-teal.
-                const si = this._stormIntensity || 0;
-                const lerpF = 0.4 * si;
-                const r = Math.round(22 + (70 - 22) * lerpF);
-                const g = Math.round(152 + (110 - 152) * lerpF);
-                const b = Math.round(160 + (120 - 160) * lerpF);
-                fill = `rgb(${r},${g},${b})`;
+                // Stable cached base; weather-specific water response lives in dynamic passes.
+                fill = 'rgb(22,152,160)';
                 alpha = 0.48;
             } else {
                 fill = openSea
@@ -3619,13 +3849,8 @@ export class IsometricRenderer {
             }
         } else if (visualWater) {
             if (isLagoon) {
-                // A3: lagoon shallow — warm tropical teal tone; B7: storm shift.
-                const si = this._stormIntensity || 0;
-                const lerpF = 0.4 * si;
-                const r = Math.round(10 + (70 - 10) * lerpF);
-                const g = Math.round(180 + (110 - 180) * lerpF);
-                const b = Math.round(190 + (120 - 190) * lerpF);
-                fill = `rgb(${r},${g},${b})`;
+                // Stable cached base; weather-specific water response lives in dynamic passes.
+                fill = 'rgb(10,180,190)';
             } else {
                 fill = seed > 0.5 ? '#0a8192' : '#0e9aa5';
             }
@@ -4890,18 +5115,25 @@ export class IsometricRenderer {
 
     _drawAtmosphereDebug(ctx, atmosphere) {
         if (!atmosphere) return;
+        const lighting = atmosphere.lighting || {};
+        const motion = atmosphere.motion || {};
+        const clock = atmosphere.clock || {};
         const lines = [
             `ATM ${atmosphere.phase} ${(atmosphere.phaseProgress || 0).toFixed(2)}`,
-            `TIME ${atmosphere.clock?.label || '--:--'}  WX ${atmosphere.weather?.type || 'clear'} ${(atmosphere.weather?.intensity || 0).toFixed(2)}`,
+            `CLOCK ${clock.label || '--:--'}:${String(clock.seconds ?? 0).padStart(2, '0')}  MIN ${Math.floor(clock.minuteOfDay ?? 0)}`,
+            `WX ${atmosphere.weather?.type || 'clear'} ${(atmosphere.weather?.intensity || 0).toFixed(2)}  WIND ${motion.windX ?? 0}`,
+            `LIGHT A${(lighting.ambientLight ?? 1).toFixed(2)} S${(lighting.shadowAlpha ?? 0).toFixed(2)} B${(lighting.lightBoost ?? 1).toFixed(2)}`,
+            `MOTION D${motion.driftEnabled ? 1 : 0} P${motion.particleEnabled ? 1 : 0}`,
             `SKY ${atmosphere.cacheKey}`,
         ];
+        const panelHeight = 16 + lines.length * 14;
         ctx.save();
         ctx.font = '10px "Press Start 2P", monospace';
         ctx.textBaseline = 'top';
         ctx.fillStyle = 'rgba(4, 10, 18, 0.72)';
-        ctx.fillRect(12, 58, 420, 48);
+        ctx.fillRect(12, 58, 520, panelHeight);
         ctx.strokeStyle = 'rgba(142, 204, 255, 0.48)';
-        ctx.strokeRect(12.5, 58.5, 420, 48);
+        ctx.strokeRect(12.5, 58.5, 520, panelHeight);
         ctx.fillStyle = '#cce9ff';
         for (let i = 0; i < lines.length; i++) {
             ctx.fillText(lines[i], 20, 66 + i * 14);
