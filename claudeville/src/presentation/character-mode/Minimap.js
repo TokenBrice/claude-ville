@@ -92,8 +92,9 @@ export class Minimap {
             const statusColor = agent.status === 'working' ? THEME.working :
                 agent.status === 'waiting' ? THEME.waiting : THEME.idle;
             const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
-            const x = agent.position.tileX * this.scale;
-            const y = agent.position.tileY * this.scale;
+            const position = this._agentMinimapPosition(agent, layers.agentSprites);
+            const x = position.tileX * this.scale;
+            const y = position.tileY * this.scale;
             const radius = isSelected ? 3.2 : identity.modelTier === 'apex' ? 2.7 : 2.2;
             ctx.fillStyle = identity.minimapColor || (agent.provider === 'codex' ? '#7be3d7' :
                 agent.provider === 'claude' ? '#f2d36b' :
@@ -266,6 +267,25 @@ export class Minimap {
             ctx.fillStyle = 'rgba(20, 16, 10, 0.7)';
             ctx.fillRect(Math.round(x) + 1, Math.round(y) + 1, 1, 1);
         }
+    }
+
+    _agentMinimapPosition(agent, agentSprites) {
+        const sprite = agentSprites?.get?.(agent.id);
+        if (sprite && Number.isFinite(sprite.x) && Number.isFinite(sprite.y)) {
+            const tileX = (sprite.x / (TILE_WIDTH / 2) + sprite.y / (TILE_HEIGHT / 2)) / 2;
+            const tileY = (sprite.y / (TILE_HEIGHT / 2) - sprite.x / (TILE_WIDTH / 2)) / 2;
+            if (Number.isFinite(tileX) && Number.isFinite(tileY)) {
+                return {
+                    tileX: Math.max(0, Math.min(MAP_SIZE, tileX)),
+                    tileY: Math.max(0, Math.min(MAP_SIZE, tileY)),
+                };
+            }
+        }
+        const position = agent?.position || {};
+        return {
+            tileX: Number.isFinite(position.tileX) ? position.tileX : 0,
+            tileY: Number.isFinite(position.tileY) ? position.tileY : 0,
+        };
     }
 
     _snapshotBuildings(world) {

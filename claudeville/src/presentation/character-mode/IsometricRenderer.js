@@ -44,6 +44,7 @@ import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
+import { tileToWorld } from './Projection.js';
 import {
     CANVAS_BUDGET,
     canvasMapPixelCount,
@@ -390,8 +391,9 @@ class StaticPropSprite {
     constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null }) {
         this.tileX = tileX;
         this.tileY = tileY;
-        this.x = (tileX - tileY) * TILE_WIDTH / 2;
-        this.y = (tileX + tileY) * TILE_HEIGHT / 2;
+        const world = tileToWorld(tileX, tileY);
+        this.x = world.x;
+        this.y = world.y;
         this.sortY = Number.isFinite(Number(sortY)) ? Number(sortY) : this.y;
         this.drawFn = drawFn;
         this.id = id;
@@ -465,6 +467,7 @@ export class IsometricRenderer {
         this.agentSprites = new Map();
         this.gateTransits = new Map();
         this._sortedSprites = [];
+        this._movingSprites = [];
         this._spritesNeedSort = true;
         this._staticPropDrawables = [];
         this._drawables = [];
@@ -502,6 +505,7 @@ export class IsometricRenderer {
         this.atmosphereVignetteCacheKey = '';
         this.lightGradientCache = new Map();
         this.lightFadeColorCache = new Map();
+        this._frameLightSources = null;
         this.selectedAgent = null;
         this.onAgentSelect = null;
         this._chatMatchAccumulator = 250;
@@ -1061,8 +1065,7 @@ export class IsometricRenderer {
 
         this.ambientEmitters = emitters.map(emitter => ({
             ...emitter,
-            x: (emitter.tileX - emitter.tileY) * TILE_WIDTH / 2,
-            y: (emitter.tileX + emitter.tileY) * TILE_HEIGHT / 2,
+            ...tileToWorld(emitter.tileX, emitter.tileY),
         }));
     }
 
@@ -1231,6 +1234,7 @@ export class IsometricRenderer {
         this.agentSprites.clear();
         this.gateTransits.clear();
         this.particleSystem.clear();
+        this.buildingRenderer?.dispose?.();
         this.releaseVolatileCaches();
         this.trailRenderer?.dispose?.();
         this.trailRenderer = null;
@@ -1950,7 +1954,13 @@ export class IsometricRenderer {
         // Steering separation: push moving agents apart when they overlap in screen space.
         const SEP_RADIUS = 28;   // px — slightly wider than sprite half-width (24)
         const SEP_STRENGTH = 0.8; // px per frame — small enough to never push across a tile
-        const movingSprites = Array.from(this.agentSprites.values()).filter(s => s.moving && !s.chatting && !this._isGateTransit(s, 'departure'));
+        const movingSprites = this._movingSprites;
+        movingSprites.length = 0;
+        for (const sprite of this.agentSprites.values()) {
+            if (sprite.moving && !sprite.chatting && !this._isGateTransit(sprite, 'departure')) {
+                movingSprites.push(sprite);
+            }
+        }
         for (let i = 0; i < movingSprites.length; i++) {
             for (let j = i + 1; j < movingSprites.length; j++) {
                 const a = movingSprites[i];
@@ -2003,10 +2013,10 @@ export class IsometricRenderer {
             activeWorkingCount,
         });
         this.buildingRenderer?.update(dt);
-        this._updateAmbientEffects();
+        this._updateAmbientEffects(dt);
 
         // Update particles
-        this.particleSystem.update();
+        this.particleSystem.update(dt);
     }
 
     _updateChronicleSystems(now = Date.now()) {
@@ -2104,7 +2114,7 @@ export class IsometricRenderer {
         }
     }
 
-    _updateAmbientEffects() {
+    _updateAmbientEffects(dt = 16) {
         if (!this.motionScale || this.ambientEmitters.length === 0) return;
 
         const maxParticles = this.particleSystem.maxParticles || 240;
@@ -2116,7 +2126,9 @@ export class IsometricRenderer {
         for (const emitter of this.ambientEmitters) {
             if (spawned >= 1) break;
             const localBudget = this._ambientEmitterBudget(emitter);
-            if (Math.random() < emitter.chance * particleBudget * localBudget) {
+            const frameScale = Math.max(0, Math.min(3, dt / 16));
+            const chance = 1 - Math.pow(1 - Math.max(0, Math.min(1, emitter.chance * particleBudget * localBudget)), frameScale);
+            if (Math.random() < chance) {
                 this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y - 18, 1);
                 spawned++;
             }
@@ -2153,6 +2165,8 @@ export class IsometricRenderer {
         this.buildingRenderer?.setLightingState(atmosphere?.lighting);
         this.buildingRenderer?.setClockState?.(atmosphere?.clock);
         this.buildingRenderer?.setAtmosphereState?.(atmosphere);
+        const perfNow = performance.now();
+        this._frameLightSources = this._computeFrameLightSources(atmosphere, perfNow);
         const viewport = this._screenViewport();
 
         // Clear
@@ -2186,7 +2200,7 @@ export class IsometricRenderer {
         // (manifest `lightOverlay`); BuildingSprite falls back to the lighthouse
         // beam when the field is omitted.
         if (this.buildingRenderer && this.assets) {
-            const lights = this.buildingRenderer.getLightSources(atmosphere?.lighting);
+            const lights = this._frameLightSources?.building || [];
             const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
             const alphaBase = 0.10 * glowScale;
             ctx.save();
@@ -2218,7 +2232,7 @@ export class IsometricRenderer {
             relationship: this.relationshipState,
             agentSprites: this.agentSprites,
             zoom: this.camera.zoom,
-            now: performance.now(),
+            now: perfNow,
             motionScale: this.motionScale,
             lighting: atmosphere?.lighting,
         });
@@ -2277,13 +2291,13 @@ export class IsometricRenderer {
             relationship: this.relationshipState,
             agentSprites: this.agentSprites,
             zoom,
-            now: performance.now(),
+            now: perfNow,
             motionScale: this.motionScale,
             lighting: atmosphere?.lighting,
         });
         this.arrivalDeparture?.draw?.(ctx, {
             zoom,
-            now: performance.now(),
+            now: perfNow,
             lighting: atmosphere?.lighting,
         });
 
@@ -2326,7 +2340,7 @@ export class IsometricRenderer {
         // 6. Screen-space atmosphere, before text overlays. This preserves the
         // diorama mood without lowering final contrast on labels or status badges.
         this._resetScreenTransform(ctx);
-        this._drawAtmosphere(ctx, atmosphere, dt);
+        this._drawAtmosphere(ctx, atmosphere, dt, this._frameLightSources?.ambient || null);
         this.camera.applyTransform(ctx);
 
         // 7. Building bubbles (on top)
@@ -2376,6 +2390,7 @@ export class IsometricRenderer {
             pathTiles: this.pathTiles,
             waterTiles: this.waterTiles,
             bridgeTiles: this.bridgeTiles,
+            agentSprites: this.agentSprites,
             selectedAgent: this.selectedAgent,
             chronicleMonuments: this.chronicleMonuments?.minimapMarkers?.() || [],
         });
@@ -4136,10 +4151,7 @@ export class IsometricRenderer {
     }
 
     _tileToScreen(tileX, tileY) {
-        return {
-            x: (tileX - tileY) * TILE_WIDTH / 2,
-            y: (tileX + tileY) * TILE_HEIGHT / 2,
-        };
+        return tileToWorld(tileX, tileY);
     }
 
     _drawLandmarkBridgeSpans(ctx) {
@@ -5849,10 +5861,7 @@ export class IsometricRenderer {
     }
 
     _tileToWorld(tileX, tileY) {
-        return {
-            x: (tileX - tileY) * TILE_WIDTH / 2,
-            y: (tileX + tileY) * TILE_HEIGHT / 2,
-        };
+        return tileToWorld(tileX, tileY);
     }
 
     _chroniclerWorldPosition(a, b) {
@@ -5940,22 +5949,29 @@ export class IsometricRenderer {
         return sources;
     }
 
-    _ambientLightSources(atmosphere = null) {
+    _computeFrameLightSources(atmosphere = null, now = performance.now()) {
         const lighting = atmosphere?.lighting || null;
-        const sources = this.buildingRenderer?.getLightSources?.(lighting) || [];
-        return [
-            ...sources,
+        const building = this.buildingRenderer?.getLightSources?.(lighting) || [];
+        const ambient = [
+            ...building,
             ...relationshipLightSources({
                 relationship: this.relationshipState,
                 agentSprites: this.agentSprites,
                 lighting,
             }),
             ...this._familiarMoteLightSources(lighting),
-            ...(this.arrivalDeparture?.getLightSources?.({ now: performance.now() }) || []),
+            ...(this.arrivalDeparture?.getLightSources?.({ now }) || []),
         ];
+        return { building, ambient };
     }
 
-    _drawAtmosphere(ctx, atmosphere = null, dt = 16) {
+    _ambientLightSources(atmosphere = null) {
+        if (this._frameLightSources?.ambient) return this._frameLightSources.ambient;
+        const { ambient } = this._computeFrameLightSources(atmosphere);
+        return ambient;
+    }
+
+    _drawAtmosphere(ctx, atmosphere = null, dt = 16, ambientLightSources = null) {
         const canvas = this._screenViewport();
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
@@ -5978,7 +5994,7 @@ export class IsometricRenderer {
             ctx.save();
             const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
             ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.12 : 0.18) * glowScale);
-            for (const light of this._ambientLightSources(atmosphere)) {
+            for (const light of ambientLightSources || this._ambientLightSources(atmosphere)) {
                 if (light.kind && !['point', 'spark', 'orbit', 'arc'].includes(light.kind)) continue;
                 const p = this.camera.worldToScreen(light.x, light.y);
                 if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;

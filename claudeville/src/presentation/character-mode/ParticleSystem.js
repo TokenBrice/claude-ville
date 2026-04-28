@@ -14,13 +14,14 @@ class Particle {
         this.gravity = gravity;
     }
 
-    update() {
-        this.x += this.vx;
-        this.y += this.vy;
+    update(dt = 16) {
+        const frameScale = Math.max(0, Math.min(3, dt / 16));
+        this.x += this.vx * frameScale;
+        this.y += this.vy * frameScale;
         if (this.gravity) {
-            this.vy += PARTICLE_GRAVITY;
+            this.vy += PARTICLE_GRAVITY * frameScale;
         }
-        this.life--;
+        this.life -= frameScale;
     }
 
     get alive() {
@@ -222,11 +223,11 @@ export class ParticleSystem {
         }
     }
 
-    update() {
+    update(dt = 16) {
         let next = 0;
         for (let i = 0; i < this.particles.length; i++) {
             const particle = this.particles[i];
-            particle.update();
+            particle.update(dt);
             if (particle.alive) {
                 this.particles[next++] = particle;
             }

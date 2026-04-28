@@ -1,4 +1,5 @@
-import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
+import { MAP_SIZE } from '../../config/constants.js';
+import { mapWorldCorners, tileToWorld, worldToTile } from './Projection.js';
 
 export class Camera {
     constructor(canvas) {
@@ -37,12 +38,11 @@ export class Camera {
     centerOnMap() {
         // Frame the village core while keeping the Pharos lighthouse and harbor in the first view.
         const tx = 27, ty = 21;
-        const screenX = (tx - ty) * (TILE_WIDTH / 2);
-        const screenY = (tx + ty) * (TILE_HEIGHT / 2);
+        const screen = tileToWorld(tx, ty);
         this.zoom = 1;
         if (!this.canvas) return;
-        this.x = -screenX + this._viewportWidth() / (2 * this.zoom);
-        this.y = -screenY + this._viewportHeight() / (2 * this.zoom);
+        this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
+        this.y = -screen.y + this._viewportHeight() / (2 * this.zoom);
         this._clampToBounds();
     }
 
@@ -184,8 +184,7 @@ export class Camera {
 
     screenToTile(screenX, screenY) {
         const world = this.screenToWorld(screenX, screenY);
-        const tileX = (world.x / (TILE_WIDTH / 2) + world.y / (TILE_HEIGHT / 2)) / 2;
-        const tileY = (world.y / (TILE_HEIGHT / 2) - world.x / (TILE_WIDTH / 2)) / 2;
+        const { tileX, tileY } = worldToTile(world);
         return { tileX: Math.floor(tileX), tileY: Math.floor(tileY) };
     }
 
@@ -210,10 +209,9 @@ export class Camera {
     }
 
     centerOnTile(tileX, tileY) {
-        const screenX = (tileX - tileY) * (TILE_WIDTH / 2);
-        const screenY = (tileX + tileY) * (TILE_HEIGHT / 2);
-        this.x = -screenX + this._viewportWidth() / (2 * this.zoom);
-        this.y = -screenY + this._viewportHeight() / (2 * this.zoom);
+        const screen = tileToWorld(tileX, tileY);
+        this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
+        this.y = -screen.y + this._viewportHeight() / (2 * this.zoom);
         this._clampToBounds();
     }
 
@@ -245,13 +243,7 @@ export class Camera {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
         if (!w || !h || !Number.isFinite(this.zoom) || this.zoom <= 0) return;
-        const maxTile = MAP_SIZE - 1;
-        const worldCorners = [
-            { x: 0, y: 0 },
-            { x: maxTile * TILE_WIDTH / 2, y: maxTile * TILE_HEIGHT / 2 },
-            { x: -maxTile * TILE_WIDTH / 2, y: maxTile * TILE_HEIGHT / 2 },
-            { x: 0, y: maxTile * TILE_HEIGHT },
-        ];
+        const worldCorners = mapWorldCorners(MAP_SIZE);
         const padX = Math.max(220, w / (this.zoom * 2.2));
         const padY = Math.max(160, h / (this.zoom * 2.2));
         const minX = Math.min(...worldCorners.map(p => p.x)) - padX;

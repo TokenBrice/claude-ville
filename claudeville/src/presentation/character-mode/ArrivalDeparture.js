@@ -1,3 +1,5 @@
+import { tileToWorld } from './Projection.js';
+
 const ARRIVAL_MS = 3000;
 const DISPATCH_MS = 600;
 const MERGE_MS = 400;
@@ -35,10 +37,7 @@ function nowMs() {
 }
 
 function tileToScreen(tile) {
-    return {
-        x: (tile.tileX - tile.tileY) * 32,
-        y: (tile.tileX + tile.tileY) * 16,
-    };
+    return tileToWorld(tile);
 }
 
 function providerColor(provider) {

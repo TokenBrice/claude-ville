@@ -1,5 +1,15 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import {
+    cleanCommitSubject,
+    collectGitEventsFromAgents,
+    commitMessageFromCommand,
+    displayRepoName,
+    projectNameFromPath,
+    shortGitLabel,
+} from '../shared/GitEventIdentity.js';
+
+export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
 
 const SHIP_SPRITE_ID = 'prop.harborBoat';
 const MAX_DEPARTING_SHIPS = 5;
@@ -138,16 +148,6 @@ function toWorld(tileX, tileY) {
     };
 }
 
-function parseTime(value, fallback = 0) {
-    if (Number.isFinite(Number(value))) return Number(value);
-    if (value instanceof Date) return value.getTime();
-    if (typeof value === 'string' && value.trim()) {
-        const parsed = Date.parse(value);
-        if (Number.isFinite(parsed)) return parsed;
-    }
-    return fallback;
-}
-
 function stableHash(input) {
     const text = String(input || '');
     let hash = 0;
@@ -158,16 +158,7 @@ function stableHash(input) {
 }
 
 function projectName(project) {
-    const text = String(project || 'unknown').trim();
-    const parts = text.split(/[\\/]/).filter(Boolean);
-    return shortenLabel(parts.at(-1) || text || 'unknown', 26);
-}
-
-function displayRepoName(project) {
-    const name = projectName(project);
-    return name
-        .replace(/[-_]+/g, ' ')
-        .replace(/\b\w/g, char => char.toUpperCase());
+    return shortGitLabel(projectNameFromPath(project), 26, '…');
 }
 
 function rotateIndexes(indexes, offset) {
@@ -175,61 +166,6 @@ function rotateIndexes(indexes, offset) {
     if (list.length <= 1) return [...list];
     const start = Math.abs(offset || 0) % list.length;
     return [...list.slice(start), ...list.slice(0, start)];
-}
-
-function shortenLabel(value, maxChars = MAX_LABEL_CHARS) {
-    const text = String(value || '').replace(/\s+/g, ' ').trim();
-    if (!text) return '';
-    if (text.length <= maxChars) return text;
-    return `${text.slice(0, Math.max(1, maxChars - 1))}…`;
-}
-
-function stripShellQuotes(value = '') {
-    const text = String(value).trim();
-    if (text.length >= 2) {
-        const first = text[0];
-        const last = text[text.length - 1];
-        if ((first === '"' && last === '"') || (first === "'" && last === "'")) {
-            return text.slice(1, -1);
-        }
-    }
-    return text;
-}
-
-function cleanCommitSubject(value = '') {
-    let text = String(value || '').replace(/\s+/g, ' ').trim();
-    if (!text) return '';
-
-    const heredoc = text.match(/\$\(cat\s+<<['"]?([A-Za-z0-9_-]+)['"]?\s+([\s\S]*?)\s+\1\s*\)?/);
-    if (heredoc) text = heredoc[2];
-
-    text = stripShellQuotes(text)
-        .replace(/\s+Co-Authored-By:.*$/i, '')
-        .replace(/\s+Signed-off-by:.*$/i, '')
-        .replace(/\s+EOF\s*\)?\s*$/i, '')
-        .replace(/^\$\(cat\s+<<['"]?[A-Za-z0-9_-]+['"]?\s*/i, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-    return text;
-}
-
-function commitMessageFromCommand(command) {
-    const text = String(command || '');
-    const match = text.match(/(?:^|\s)(?:-m|--message)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/);
-    if (!match) return '';
-    return cleanCommitSubject(match[1] || match[2] || match[3] || '');
-}
-
-function eventLabel(event, type, sha) {
-    const explicit = event.label || event.message || event.subject || event.title || '';
-    if (explicit) return shortenLabel(type === 'commit' ? cleanCommitSubject(explicit) || explicit : explicit);
-    if (type === 'commit') {
-        const commandLabel = commitMessageFromCommand(event.command);
-        if (commandLabel) return shortenLabel(commandLabel);
-    }
-    if (sha) return shortenLabel(sha.slice(0, 10));
-    return shortenLabel(event.commandHash || event.id || type);
 }
 
 function cloneState(previous = {}) {
@@ -543,98 +479,6 @@ export function snapshotHarborTrafficState(state) {
     };
 }
 
-function eventKind(event) {
-    const raw = String(event?.type || event?.kind || event?.action || event?.event || event?.name || '').toLowerCase();
-    if (raw.includes('push')) return 'push';
-    if (raw.includes('commit')) return 'commit';
-    if (event?.pushed === true || Array.isArray(event?.commits)) return 'push';
-    if (event?.sha || event?.commit || event?.hash) return 'commit';
-    return null;
-}
-
-function normalizePushStatus(event) {
-    if (!event || typeof event !== 'object') return 'unknown';
-    if (typeof event.success === 'boolean') return event.success ? 'success' : 'failed';
-    const exitCode = event.exitCode ?? event.exit_code ?? event.code ?? event.returnCode ?? event.return_code;
-    if (Number.isFinite(Number(exitCode))) return Number(exitCode) === 0 ? 'success' : 'failed';
-
-    const raw = event.status
-        ?? event.outcome
-        ?? event.conclusion
-        ?? event.result
-        ?? event.state
-        ?? event.lifecycle
-        ?? '';
-    const text = String(raw).toLowerCase();
-    if (!text) return 'unknown';
-    if (['success', 'succeeded', 'ok', 'passed', 'pass', 'complete', 'completed', 'landed'].includes(text)) return 'success';
-    if (['failed', 'failure', 'fail', 'error', 'errored', 'cancelled', 'canceled', 'timed_out', 'timeout'].includes(text)) return 'failed';
-    return 'unknown';
-}
-
-export function normalizeGitEvent(event, agent = {}, index = 0) {
-    if (!event || typeof event !== 'object') return null;
-
-    const type = eventKind(event);
-    if (!type) return null;
-
-    const project = event.project
-        || event.projectPath
-        || event.repository
-        || event.repo
-        || event.workspace
-        || agent.projectPath
-        || agent.teamName
-        || agent.project
-        || 'unknown';
-    const sha = event.sha || event.commit || event.hash || event.commitSha || event.revision || '';
-    const timestamp = parseTime(
-        event.timestamp || event.time || event.ts || event.date || event.createdAt || event.created_at,
-        parseTime(agent.lastSessionActivity, 0)
-    );
-    const id = event.id
-        || event.eventId
-        || event.uuid
-        || event.key
-        || `${type}:${project}:${sha}:${timestamp}:${index}`;
-
-    return {
-        id: String(id),
-        type,
-        project: String(project),
-        sha: sha ? String(sha) : '',
-        timestamp,
-        label: eventLabel(event, type, sha),
-        command: event.command ? String(event.command) : '',
-        targetRef: event.targetRef || event.ref || event.branch || '',
-        success: typeof event.success === 'boolean' ? event.success : null,
-        exitCode: Number.isFinite(Number(event.exitCode ?? event.exit_code))
-            ? Number(event.exitCode ?? event.exit_code)
-            : null,
-        completedAt: parseTime(event.completedAt || event.completed_at, 0),
-        status: type === 'push' ? normalizePushStatus(event) : null,
-    };
-}
-
-export function collectGitEventsFromAgents(agents) {
-    const events = [];
-    for (const agent of agents || []) {
-        const sources = [
-            agent?.gitEvents,
-            agent?.git?.events,
-            agent?.vcsEvents,
-        ].filter(Array.isArray);
-        for (const source of sources) {
-            source.forEach((event, index) => {
-                const normalized = normalizeGitEvent(event, agent, index);
-                if (normalized) events.push(normalized);
-            });
-        }
-    }
-    events.sort((a, b) => (a.timestamp - b.timestamp) || a.id.localeCompare(b.id));
-    return events;
-}
-
 function pendingRepoSummariesFromDockSummaries(summaries) {
     return [...(summaries?.values?.() || [])]
         .filter(summary => (Number(summary.count) || 0) > 0)
@@ -851,7 +695,10 @@ export class HarborTraffic {
 
     update(agents, dt = 16, now = Date.now()) {
         this.frame += (dt / 16) * this.motionScale;
-        const events = collectGitEventsFromAgents(agents);
+        const events = collectGitEventsFromAgents(agents, {
+            maxLabelChars: MAX_LABEL_CHARS,
+            ellipsis: '…',
+        });
         this.state = reduceHarborTrafficState(this.state, events, {
             now,
             motionScale: this.motionScale,
@@ -1399,10 +1246,10 @@ export class HarborTraffic {
         ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        ctx.fillText(shortenLabel(title, 46), x + 14, y + 10);
+        ctx.fillText(shortGitLabel(title, 46, '…'), x + 14, y + 10);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.92)';
         ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-        ctx.fillText(shortenLabel(detail, 44), x + 14, y + 29);
+        ctx.fillText(shortGitLabel(detail, 44, '…'), x + 14, y + 29);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.58)';
         ctx.fillRect(x + 14, y + 46, Math.max(34, width - 28), 1);
         ctx.restore();
@@ -1609,7 +1456,7 @@ export class HarborTraffic {
 
     _drawCommitPennant(ctx, ship, zoom, alpha = 1, profile = repoProfile(ship.project)) {
         const s = 1 / Math.max(1, zoom || 1);
-        const label = shortenLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS);
+        const label = shortGitLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS, '…');
         const statusStyle = PUSH_STATUS_STYLE[ship.pushStatus] || null;
         const accent = ship.pushStatus === 'failed' && statusStyle ? statusStyle.accent : profile.accent;
         const queueColumn = Number(ship.harborQueueColumn);
@@ -1736,7 +1583,7 @@ export class HarborTraffic {
         const s = 1 / Math.max(1, zoom || 1);
         const profile = payload.profile || repoProfile(payload.project);
         const count = Math.max(1, Number(payload.count || 1));
-        const name = shortenLabel(displayRepoName(payload.project), count >= 100 ? 18 : 20);
+        const name = shortGitLabel(displayRepoName(payload.project), count >= 100 ? 18 : 20, '…');
         const label = `${name} (${count})`;
         const textSize = Math.max(7, Math.round(9 * s));
         const width = Math.max(92 * s, Math.min(172 * s, label.length * textSize * 0.58 + 18 * s));

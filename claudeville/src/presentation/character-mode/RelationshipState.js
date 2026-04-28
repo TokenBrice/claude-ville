@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { worldToTile } from './Projection.js';
 
 const ARRIVAL_WINDOW_MS = 8000;
 const DEPARTURE_WINDOW_MS = 12000;
@@ -123,10 +124,7 @@ export class RelationshipState {
     }
 
     _screenToTile(x, y) {
-        return {
-            tileX: (x / 32 + y / 16) / 2,
-            tileY: (y / 16 - x / 32) / 2,
-        };
+        return worldToTile(x, y);
     }
 
     _prune(now) {

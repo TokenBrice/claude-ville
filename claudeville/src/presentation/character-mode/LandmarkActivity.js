@@ -1,5 +1,6 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { compactToolLabel, isCommandToolName, isTaskCommandInput } from '../../domain/services/ToolIdentity.js';
 
 const MAX_ITEMS_PER_KIND = 10;
 const SNAPSHOT_TTL_MS = 18000;
@@ -63,14 +64,6 @@ function stableHash(input) {
     return Math.abs(hash);
 }
 
-function compactLabel(value, fallback = '') {
-    const text = String(value || fallback || '').replace(/\s+/g, ' ').trim();
-    if (!text) return fallback;
-    const lastSlash = Math.max(text.lastIndexOf('/'), text.lastIndexOf('\\'));
-    const base = (lastSlash >= 0 ? text.slice(lastSlash + 1) : text).split(/\s+/)[0] || text;
-    return base.length > 10 ? `${base.slice(0, 7)}...` : base;
-}
-
 function activityKey(agent, kind) {
     return [
         kind,
@@ -82,26 +75,17 @@ function activityKey(agent, kind) {
 }
 
 function isTaskCommand(agent) {
-    const text = `${agent?.currentTool || ''} ${agent?.currentToolInput || ''} ${agent?.lastToolInput || ''}`.toLowerCase();
-    return /\b(test|check|lint|build|vitest|pytest|playwright\s+test|node\s+--check|sprites:validate)\b/.test(text);
+    return isTaskCommandInput(`${agent?.currentTool || ''} ${agent?.currentToolInput || ''} ${agent?.lastToolInput || ''}`);
 }
 
 function isCommandTool(agent) {
-    const tool = String(agent?.currentTool || '').toLowerCase();
-    return tool.includes('spawn_agent') ||
-        tool.includes('send_input') ||
-        tool.includes('resume_agent') ||
-        tool.includes('close_agent') ||
-        tool.includes('team') ||
-        tool.includes('parallel') ||
-        tool === 'task' ||
-        tool === 'multi_tool_use';
+    return isCommandToolName(agent?.currentTool);
 }
 
 function commandActivityLabel(agent) {
     if (agent?.currentTool === 'SendMessage') return 'MSG';
     if (agent?.currentTool === 'Task') return 'SUMMON';
-    return compactLabel(agent?.currentTool, TOOL_LABELS.command);
+    return compactToolLabel(agent?.currentTool, TOOL_LABELS.command, 10);
 }
 
 export class LandmarkActivity {
@@ -280,7 +264,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + SNAPSHOT_TTL_MS,
             slot,
-            label: compactLabel(agent.currentToolInput, TOOL_LABELS.forge),
+            label: compactToolLabel(agent.currentToolInput, TOOL_LABELS.forge, 10),
             sortOffset: 6,
         });
         this.lastForgeByAgent.set(agent.id, { id, at: now });
@@ -300,7 +284,7 @@ export class LandmarkActivity {
             createdAt: now,
             expiresAt: now + SNAPSHOT_TTL_MS,
             slot,
-            label: isTaskCommand(agent) ? 'VERIFY' : compactLabel(agent.currentTool, TOOL_LABELS.taskboard),
+            label: isTaskCommand(agent) ? 'VERIFY' : compactToolLabel(agent.currentTool, TOOL_LABELS.taskboard, 10),
             isCheck: isTaskCommand(agent),
             sortOffset: 5,
         });

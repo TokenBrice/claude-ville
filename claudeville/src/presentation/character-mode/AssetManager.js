@@ -109,12 +109,20 @@ export class AssetManager {
         canvas.height = rows * cellSize;
         const ctx = canvas.getContext('2d');
         ctx.imageSmoothingEnabled = false;
+        const missingCells = [];
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
                 const cellPath = `assets/sprites/buildings/${entry.id}/base-${c}-${r}.png`;
-                const { img } = await this._loadImage(cellPath);
+                const { img, ok } = await this._loadImage(cellPath);
+                if (!ok) missingCells.push(cellPath);
                 ctx.drawImage(img, c * cellSize, r * cellSize, cellSize, cellSize);
             }
+        }
+        if (missingCells.length > 0) {
+            this.missing.add(entry.id);
+            throw new Error(
+                `[AssetManager] missing required composed cells for ${entry.id}: ${missingCells.join(', ')}`
+            );
         }
         this.bitmaps.set(entry.id, canvas);
         this.dimensions.set(entry.id, { w: canvas.width, h: canvas.height });

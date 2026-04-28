@@ -10,6 +10,7 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState } from './AtmosphereState.js';
+import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 
 const LANDMARK_LABEL_TYPES = new Set(
     BUILDING_DEFS
@@ -170,6 +171,11 @@ function hashText(value) {
     return Math.abs(hash);
 }
 
+function chanceForDt(chancePerFrame, dt = 16) {
+    const frameScale = Math.max(0, Math.min(3, dt / 16));
+    return 1 - Math.pow(1 - clamp01(chancePerFrame), frameScale);
+}
+
 export class BuildingSprite {
     constructor(assets, spriteRenderer, particleSystem) {
         this.assets = assets;
@@ -253,7 +259,7 @@ export class BuildingSprite {
         this._updateVisitorCounts();
         this._syncTaskboardPapers(Date.now());
         this._updateForgeGlow(dt);
-        for (const b of this.buildings) this._spawnEmittersFor(b);
+        for (const b of this.buildings) this._spawnEmittersFor(b, dt);
     }
 
     // Soft drop shadows under each building footprint. Hero buildings use the
@@ -821,10 +827,7 @@ export class BuildingSprite {
 
     _spriteTilePosition(sprite) {
         if (!sprite || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) return null;
-        return {
-            tileX: (sprite.x / (TILE_WIDTH / 2) + sprite.y / (TILE_HEIGHT / 2)) / 2,
-            tileY: (sprite.y / (TILE_HEIGHT / 2) - sprite.x / (TILE_WIDTH / 2)) / 2,
-        };
+        return worldToTile(sprite.x, sprite.y);
     }
 
     _forgeGlowIntensity() {
@@ -2532,7 +2535,7 @@ export class BuildingSprite {
         ctx.stroke();
     }
 
-    _spawnEmittersFor(b) {
+    _spawnEmittersFor(b, dt = 16) {
         const entry = this.assets.getEntry(`building.${b.type}`);
         if (!this.motionScale) return;
         const center = this._buildingScreenCenter(b);
@@ -2540,19 +2543,19 @@ export class BuildingSprite {
         const baseAnchor = this.assets.getAnchor(entryId);
         for (const [particleType, [lx, ly]] of Object.entries(entry?.emitters || {})) {
             const normalizedType = PARTICLE_ALIASES[particleType] || particleType;
-            this._spawnBuildingParticle(normalizedType, center, baseAnchor, [lx, ly], 0.035, 1);
+            this._spawnBuildingParticle(normalizedType, center, baseAnchor, [lx, ly], 0.035, 1, dt);
         }
         for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
             const chanceBoost = b.type === 'forge'
                 ? 0.7 + this._forgeGlowIntensity() * 1.1
                 : this._visitorCountFor(b) > 0 ? 1.6 : 1;
             const chance = emitter.chance * chanceBoost;
-            this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1);
+            this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt);
         }
     }
 
-    _spawnBuildingParticle(type, center, baseAnchor, at, chance, count) {
-        if (Math.random() > chance) return;
+    _spawnBuildingParticle(type, center, baseAnchor, at, chance, count, dt = 16) {
+        if (Math.random() > chanceForDt(chance, dt)) return;
         const [lx, ly] = at;
         const wx = center.x - baseAnchor[0] + lx;
         const wy = center.y - baseAnchor[1] + ly;
@@ -2683,19 +2686,11 @@ export class BuildingSprite {
     }
 
     _tileToScreen(tileX, tileY) {
-        return {
-            x: (tileX - tileY) * TILE_WIDTH / 2,
-            y: (tileX + tileY) * TILE_HEIGHT / 2,
-        };
+        return tileToWorld(tileX, tileY);
     }
 
     _buildingScreenCenter(b) {
-        const cx = b.position.tileX + b.width / 2;
-        const cy = b.position.tileY + b.height / 2;
-        return {
-            x: (cx - cy) * TILE_WIDTH / 2,
-            y: (cx + cy) * TILE_HEIGHT / 2,
-        };
+        return buildingCenterToWorld(b);
     }
 
     _harborLedgerRows(repos = []) {

@@ -1,12 +1,11 @@
-import { Position } from '../../domain/value-objects/Position.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
+import { tileToWorld, worldToTile } from './Projection.js';
 
 // Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
@@ -120,7 +119,7 @@ export class AgentSprite {
         this.chatTimer = 0;          // chat animation timer
         this.chatBubbleAnim = 0;     // speech bubble animation
 
-        const screen = agent.position.toScreen(TILE_WIDTH, TILE_HEIGHT);
+        const screen = tileToWorld(agent.position);
         this.x = screen.x;
         this.y = screen.y;
 
@@ -194,11 +193,11 @@ export class AgentSprite {
         }
 
         const seed = Math.abs(this._hash(`${this.agent.id}:${building.type}:${this._targetCycle++}`));
-        const target = new Position(...this._visitTileForBuilding(building, seed, intent));
-        const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
+        const [targetTileX, targetTileY] = this._visitTileForBuilding(building, seed, intent);
+        const screen = tileToWorld(targetTileX, targetTileY);
         this._lastBuildingType = building.type;
         this._lastIntentId = intent?.id || null;
-        this._lastTargetTile = { tileX: target.tileX, tileY: target.tileY };
+        this._lastTargetTile = { tileX: targetTileX, tileY: targetTileY };
         this.behavior.setRoute({
             state: intent ? 'traveling' : (building.type?.startsWith('ambient:') ? 'wandering' : 'roaming'),
             intent,
@@ -206,7 +205,7 @@ export class AgentSprite {
             reason: intent?.reason || (building.type?.startsWith('ambient:') ? 'scenic' : (this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status')),
             targetTile: this._lastTargetTile,
         });
-        this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
+        this._assignTarget(screen.x, screen.y, targetTileX, targetTileY);
         this.moving = this._targetReachable;
         if (!this._targetReachable) {
             this.behavior.transition('blocked', 'no-route');
@@ -363,8 +362,7 @@ export class AgentSprite {
             return;
         }
         this.waypoints = tilePath.map((t) => ({
-            x: (t.tileX - t.tileY) * TILE_WIDTH / 2,
-            y: (t.tileX + t.tileY) * TILE_HEIGHT / 2,
+            ...tileToWorld(t),
         }));
         const finalTile = tilePath[tilePath.length - 1];
         if (
@@ -387,9 +385,7 @@ export class AgentSprite {
     }
 
     _screenToTile(x, y) {
-        const tileX = (x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) / 2;
-        const tileY = (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) / 2;
-        return { tileX, tileY };
+        return worldToTile(x, y);
     }
 
     _snapToNearestWalkable(maxRadius = 8) {
@@ -402,7 +398,7 @@ export class AgentSprite {
         const nearest = this.pathfinder.nearestWalkable(tileX, tileY, maxRadius);
         if (!nearest) return false;
 
-        const screen = new Position(nearest.tileX, nearest.tileY).toScreen(TILE_WIDTH, TILE_HEIGHT);
+        const screen = tileToWorld(nearest);
         this.x = screen.x;
         this.y = screen.y;
         this.targetX = screen.x;
@@ -461,7 +457,7 @@ export class AgentSprite {
     }
 
     setTilePosition(tileX, tileY) {
-        const screen = new Position(tileX, tileY).toScreen(TILE_WIDTH, TILE_HEIGHT);
+        const screen = tileToWorld(tileX, tileY);
         this.x = screen.x;
         this.y = screen.y;
         this.targetX = screen.x;
@@ -474,15 +470,14 @@ export class AgentSprite {
     }
 
     walkToTile(tileX, tileY) {
-        const target = new Position(tileX, tileY);
-        const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
+        const screen = tileToWorld(tileX, tileY);
         this._releaseVisitReservation();
         this.chatPartner = null;
         this.chatting = false;
         this.chatBubbleAnim = 0;
         this.setArrivalState('visible');
         this._lastPathTileKey = null;
-        this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
+        this._assignTarget(screen.x, screen.y, tileX, tileY);
         this.moving = this._targetReachable;
         this.waitTimer = 0;
     }

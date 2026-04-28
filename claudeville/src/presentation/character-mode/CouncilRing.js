@@ -1,15 +1,13 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { THEME } from '../../config/theme.js';
 import { getTeamColor } from '../shared/TeamColor.js';
+import { tileToWorld } from './Projection.js';
 
 const MAX_TALK_ARCS = 8;
 const COMMAND_PLAZA = { tileX: 16, tileY: 21 };
 
 function tileToScreen(tile) {
-    return {
-        x: (tile.tileX - tile.tileY) * 32,
-        y: (tile.tileX + tile.tileY) * 16,
-    };
+    return tileToWorld(tile);
 }
 
 function relationshipSnapshot(relationship) {
