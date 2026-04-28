@@ -1,17 +1,3 @@
-# Agent Notes
-
-`AGENTS.md` is the canonical agent-context file for this repo, mirrored byte-for-byte (after the heading) by `CLAUDE.md` so Claude Code's auto-loader sees the same content. When the two diverge, `AGENTS.md` wins; edit both together.
-
-## Agent Harness Map
-
-| Harness | Auto-loads | Notes |
-| --- | --- | --- |
-| Codex CLI | `AGENTS.md` (root) | Canonical. Also read `claudeville/CLAUDE.md` for in-app work. |
-| Claude Code | `CLAUDE.md` (root) + nested `claudeville/CLAUDE.md` | Auto-walks the parent CLAUDE.md chain. |
-| Other agents | Start at `AGENTS.md`, then `claudeville/CLAUDE.md`. | |
-
-Treat `AGENTS.md`, `claudeville/CLAUDE.md`, and the per-area READMEs as ground truth before reading code.
-
 ## Scope
 
 - Work from `/home/ahirice/Documents/git/claude-ville`.
@@ -48,17 +34,14 @@ Committed agent outputs go under `/agents/`:
 - `/agents/research/<slug>/` — research notes, proofs, image dumps
 - `/agents/handover/<slug>.md` — handover memos
 
-`docs/plans/` is gitignored personal scratch. `docs/superpowers/` holds artifacts emitted by the superpowers workflow plugin; treat as read-only history. `.claude/skills/` ships repo-specific skills (`verify-server`, `verify-architecture`, `verify-widget-build`, `troubleshooting`) usable from Claude Code.
-
 ## Workflow
 
 - Multi-part work or explicit swarm requests → follow [`docs/swarm-orchestration-procedure.md`](docs/swarm-orchestration-procedure.md) (ownership, baselines, destructive-command and commit/push gates).
 - Single-file / single-owner tasks → direct execution unless swarm is requested.
 
-## Browser Automation
+## Browser Verification
 
-- **`playwright` MCP** — isolated Chromium with proper wait primitives. Use for design loops, screenshots, page-load reliability.
-- **`claude-in-chrome`** — bridges to the user's real Chrome. Use for authenticated sessions or pages already open.
+The operator runs a server on http://localhost:4000/ that can be used to verify output.
 
 ## Copy And Locale Policy
 

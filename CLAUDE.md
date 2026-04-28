@@ -1,17 +1,3 @@
-# Claude Code Notes
-
-`AGENTS.md` is the canonical agent-context file for this repo, mirrored byte-for-byte (after the heading) by `CLAUDE.md` so Claude Code's auto-loader sees the same content. When the two diverge, `AGENTS.md` wins; edit both together.
-
-## Agent Harness Map
-
-| Harness | Auto-loads | Notes |
-| --- | --- | --- |
-| Codex CLI | `AGENTS.md` (root) | Canonical. Also read `claudeville/CLAUDE.md` for in-app work. |
-| Claude Code | `CLAUDE.md` (root) + nested `claudeville/CLAUDE.md` | Auto-walks the parent CLAUDE.md chain. |
-| Other agents | Start at `AGENTS.md`, then `claudeville/CLAUDE.md`. | |
-
-Treat `AGENTS.md`, `claudeville/CLAUDE.md`, and the per-area READMEs as ground truth before reading code.
-
 ## Scope
 
 - Work from `/home/ahirice/Documents/git/claude-ville`.
@@ -58,11 +44,6 @@ Committed agent outputs go under `/agents/`:
 ## Browser Automation
 
 - **`playwright` MCP** — isolated Chromium with proper wait primitives. Use for design loops, screenshots, page-load reliability.
-- **`claude-in-chrome`** — bridges to the user's real Chrome. Use for authenticated sessions or pages already open.
-
-## Copy And Locale Policy
-
-Use English for all new/edited UI copy, docs, comments, and agent-facing text. Do not add non-English strings unless the task explicitly requests localization.
 
 ## Validation
 
