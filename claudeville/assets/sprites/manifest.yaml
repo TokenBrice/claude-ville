@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-village-gate-v3"
+  assetVersion: "2026-04-28-atmosphere-phase8-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -809,10 +809,56 @@ atmosphere:
     prompt: "broad overcast gray-blue cloud bank, layered storm cloud silhouette, soft underside shadow, transparent background, pixel art"
     size: 96
 
+  - id: atmosphere.cloud.storm-shelf
+    tool: map_object
+    prompt: "epic high-fantasy pixel art storm shelf cloud, dramatic layered dark blue gray thunderhead bank with cool cyan underside and faint silver rim light, transparent background"
+    width: 128
+    height: 80
+
   - id: atmosphere.moon.crescent.cool
     tool: map_object
     prompt: "cool silver crescent moon, pale blue rim light, dark navy inner shadow, no face, transparent background, pixel art"
     size: 64
+
+  - id: atmosphere.moon.half.cool
+    tool: map_object
+    prompt: "cool silver half moon, pale blue rim light, dark navy shadow side, no face, transparent background, pixel art"
+    size: 64
+
+  - id: atmosphere.moon.gibbous.cool
+    tool: map_object
+    prompt: "cool silver gibbous moon, mostly illuminated disk with dark navy crescent shadow, pale blue rim light, no face, transparent background, pixel art"
+    size: 64
+
+  - id: atmosphere.fog.wisp.low
+    tool: map_object
+    prompt: "low horizontal fantasy pixel art fog wisp, pale blue white translucent mist ribbon, soft broken edges, water surface haze, transparent background"
+    width: 128
+    height: 48
+
+  - id: atmosphere.rain.splash
+    tool: map_object
+    prompt: "small pixel art rain splash crown, pale blue white droplets and tiny impact ripples, transparent background"
+    width: 48
+    height: 32
+
+  - id: atmosphere.water.ripple.rain
+    tool: map_object
+    prompt: "thin oval pixel art rain ripple on turquoise harbor water, pale cyan ring highlights, transparent background"
+    width: 64
+    height: 32
+
+  - id: atmosphere.water.foam.corner
+    tool: map_object
+    prompt: "diagonal shoreline foam streak pixel art, pale seafoam white and cyan broken wave froth, transparent background"
+    width: 64
+    height: 32
+
+  - id: atmosphere.water.harbor.wake
+    tool: map_object
+    prompt: "V shaped harbor boat wake pixel art, pale cyan and white foam trails with transparent center, low top-down, transparent background"
+    width: 96
+    height: 48
 
   # optional — include for polish pass
   # - id: atmosphere.aurora
