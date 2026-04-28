@@ -38,6 +38,7 @@ export class SceneryEngine {
         this._buildingSceneryZones = this._collectBuildingSceneryZones();
 
         this._generateWater();
+        this._finalizeWaterMetadata();
         this._generateShorelines();
         // Bridges, vegetation, rocks come in later tasks; left empty for now.
     }
@@ -129,9 +130,9 @@ export class SceneryEngine {
         }
     }
 
-    _rasterizePolyline({ kind, width, points, region = null, surface = null, weatherProfile = null }) {
+    _rasterizePolyline({ kind, width, points, region = null, surface = null, weatherProfile = null, flowX = null, flowY = null }) {
         if (!points || points.length < 2) return;
-        const deepRatio = kind === 'moat' ? 0.5 : kind === 'river' ? 0.32 : 0;
+        const deepRatio = this._deepRatioForKind(kind);
 
         // Bounding box (inclusive), padded by width.
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -163,8 +164,10 @@ export class SceneryEngine {
                         depth: 'shallow',
                         surface: surface || this._defaultWaterSurface(kind),
                         weatherProfile: weatherProfile || this._defaultWaterWeatherProfile(kind),
+                        flowX,
+                        flowY,
                     });
-                    if (kind === 'river') this.lagoonWaterTiles.add(key);
+                    if (kind === 'lagoon' || region === 'lagoon' || weatherProfile === 'lagoon') this.lagoonWaterTiles.add(key);
                     if (deepRatio && d <= localWidth * deepRatio) {
                         this.deepWaterTiles.add(key);
                         this._markWaterTile(key, { depth: 'deep' });
@@ -195,8 +198,16 @@ export class SceneryEngine {
         return Math.hypot(x - cx, y - cy);
     }
 
-    _rasterizeBasin({ kind, centerX, centerY, radiusX, radiusY, edgeNoise = 0.15, region = null, surface = null, weatherProfile = null }) {
-        const deepRatio = kind === 'moat' ? 0.64 : kind === 'river' ? 0.40 : 0;
+    _deepRatioForKind(kind, shape = 'polyline') {
+        if (kind === 'sea') return shape === 'basin' ? 0.70 : 0.58;
+        if (kind === 'harbor') return shape === 'basin' ? 0.56 : 0.44;
+        if (kind === 'moat') return shape === 'basin' ? 0.64 : 0.50;
+        if (kind === 'river' || kind === 'lagoon') return shape === 'basin' ? 0.40 : 0.32;
+        return 0;
+    }
+
+    _rasterizeBasin({ kind, centerX, centerY, radiusX, radiusY, edgeNoise = 0.15, region = null, surface = null, weatherProfile = null, flowX = null, flowY = null }) {
+        const deepRatio = this._deepRatioForKind(kind, 'basin');
         const x0 = Math.max(0, Math.floor(centerX - radiusX - 1));
         const x1 = Math.min(MAP_SIZE - 1, Math.ceil(centerX + radiusX + 1));
         const y0 = Math.max(0, Math.floor(centerY - radiusY - 1));
@@ -218,8 +229,10 @@ export class SceneryEngine {
                         depth: 'shallow',
                         surface: surface || this._defaultWaterSurface(kind),
                         weatherProfile: weatherProfile || this._defaultWaterWeatherProfile(kind),
+                        flowX,
+                        flowY,
                     });
-                    if (kind === 'river') this.lagoonWaterTiles.add(key);
+                    if (kind === 'lagoon' || region === 'lagoon' || weatherProfile === 'lagoon') this.lagoonWaterTiles.add(key);
                     if (deepRatio && d <= deepRatio + noise * 0.35) {
                         this.deepWaterTiles.add(key);
                         this._markWaterTile(key, { depth: 'deep' });
@@ -238,20 +251,82 @@ export class SceneryEngine {
         });
     }
 
+    _finalizeWaterMetadata() {
+        for (const key of this.waterTiles) {
+            const [x, y] = key.split(',').map(Number);
+            const current = this.waterMeta.get(key) || {};
+            const openness = this._waterOpenness(x, y);
+            const region = current.region || this._defaultWaterRegion(current.kind);
+            const surface = current.surface || this._defaultWaterSurface(current.kind);
+            const weatherProfile = current.weatherProfile || this._defaultWaterWeatherProfile(current.kind);
+            const semanticKind = region === 'harbor'
+                ? 'harbor'
+                : region === 'sea' || region === 'openSea'
+                    ? 'sea'
+                    : region === 'lagoon'
+                        ? 'lagoon'
+                        : current.kind || 'water';
+            this.waterMeta.set(key, {
+                source: current.source || 'generated',
+                kind: semanticKind,
+                region,
+                depth: current.depth || (this.deepWaterTiles.has(key) ? 'deep' : 'shallow'),
+                openness,
+                surface,
+                weatherProfile,
+                flowX: Number.isFinite(Number(current.flowX)) ? Number(current.flowX) : this._defaultFlowX(surface, region),
+                flowY: Number.isFinite(Number(current.flowY)) ? Number(current.flowY) : this._defaultFlowY(surface, region),
+            });
+        }
+    }
+
+    _waterOpenness(tileX, tileY) {
+        let waterNeighbors = 0;
+        let checks = 0;
+        for (let y = tileY - 1; y <= tileY + 1; y++) {
+            for (let x = tileX - 1; x <= tileX + 1; x++) {
+                if (x === tileX && y === tileY) continue;
+                checks++;
+                if (this.waterTiles.has(`${x},${y}`)) waterNeighbors++;
+            }
+        }
+        return checks ? waterNeighbors / checks : 0;
+    }
+
+    _defaultFlowX(surface, region) {
+        if (surface === 'current' || region === 'river' || region === 'lagoon') return 0.62;
+        if (surface === 'harbor' || region === 'harbor') return 0.18;
+        if (surface === 'surf' || region === 'sea' || region === 'openSea') return -0.22;
+        return 0;
+    }
+
+    _defaultFlowY(surface, region) {
+        if (surface === 'current' || region === 'river' || region === 'lagoon') return 0.34;
+        if (surface === 'harbor' || region === 'harbor') return -0.10;
+        if (surface === 'surf' || region === 'sea' || region === 'openSea') return 0.14;
+        return 0;
+    }
+
     _defaultWaterRegion(kind) {
-        if (kind === 'river') return 'lagoon';
+        if (kind === 'river' || kind === 'lagoon') return 'lagoon';
+        if (kind === 'sea') return 'sea';
+        if (kind === 'harbor') return 'harbor';
         if (kind === 'moat') return 'moat';
         return kind || 'water';
     }
 
     _defaultWaterSurface(kind) {
-        if (kind === 'river') return 'current';
+        if (kind === 'river' || kind === 'lagoon') return 'current';
+        if (kind === 'harbor') return 'harbor';
+        if (kind === 'sea') return 'surf';
         if (kind === 'moat') return 'surf';
         return 'calm';
     }
 
     _defaultWaterWeatherProfile(kind) {
-        if (kind === 'river') return 'lagoon';
+        if (kind === 'river' || kind === 'lagoon') return 'lagoon';
+        if (kind === 'harbor') return 'harbor';
+        if (kind === 'sea') return 'openSea';
         if (kind === 'moat') return 'openSea';
         return 'water';
     }
