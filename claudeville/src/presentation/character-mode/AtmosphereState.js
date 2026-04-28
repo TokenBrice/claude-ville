@@ -22,6 +22,7 @@
 // widgets, debug overlays) that already destructure `atmosphere.clock`.
 
 const DAY_MINUTES = 24 * 60;
+const WEATHER_BLOCK_MINUTES = 3 * 60;
 
 const PHASES = [
     { name: 'dawn', start: 5 * 60 + 30, end: 7 * 60 },
@@ -188,13 +189,15 @@ function seededRandom(seed) {
 }
 
 function deterministicWeather(date) {
-    const random = seededRandom(hashString(localDateKey(date)));
+    const minute = minutesSinceMidnight(date);
+    const block = Math.floor(minute / WEATHER_BLOCK_MINUTES);
+    const random = seededRandom(hashString(`${localDateKey(date)}|weather|${block}`));
     const roll = random();
     let type = 'clear';
-    if (roll >= 0.44 && roll < 0.70) type = 'partly-cloudy';
-    else if (roll >= 0.70 && roll < 0.84) type = 'overcast';
-    else if (roll >= 0.84 && roll < 0.94) type = 'fog';
-    else if (roll >= 0.94) type = 'rain';
+    if (roll >= 0.50 && roll < 0.78) type = 'partly-cloudy';
+    else if (roll >= 0.78 && roll < 0.90) type = 'overcast';
+    else if (roll >= 0.90 && roll < 0.97) type = 'fog';
+    else if (roll >= 0.97) type = 'rain';
 
     const preset = WEATHER_PRESETS[type];
     const jitter = (random() - 0.5) * 0.18;
