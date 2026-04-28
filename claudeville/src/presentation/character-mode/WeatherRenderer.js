@@ -3,8 +3,11 @@
 // Screen-space foreground weather. Intended to run after world sprites and
 // particles, before labels and status badges, with the canvas transform reset.
 
+import { WEATHER_PRESETS, WEATHER_TYPES } from './AtmosphereState.js';
+
 const CLEAR_TYPES = new Set(['clear', 'partly-cloudy']);
 const RAIN_TYPES = new Set(['rain', 'storm']);
+const WEATHER_TYPE_SET = new Set(WEATHER_TYPES);
 
 const LOOP_MS = 60000;
 const MAX_FRAME_DT = 80;
@@ -30,7 +33,14 @@ export class WeatherRenderer {
         if (!ctx || !canvas || !canvas.width || !canvas.height) return;
 
         const weather = normalizeWeather(atmosphere);
-        if (!weather || CLEAR_TYPES.has(weather.type) || weather.intensity <= 0) return;
+        if (!weather) return;
+
+        const precipitation = clamp(weather.precipitation, 0, 1);
+        const fog = clamp(weather.fog, 0, 1);
+        const cloudCover = clamp(weather.cloudCover, 0, 1);
+        const hasForegroundWeather = weather.intensity > 0
+            && (!CLEAR_TYPES.has(weather.type) || precipitation > 0.02 || fog > 0.04 || cloudCover > 0.72);
+        if (!hasForegroundWeather) return;
 
         const particleEnabled = atmosphere?.motion?.particleEnabled !== false;
         if (particleEnabled) {
@@ -46,19 +56,26 @@ export class WeatherRenderer {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
-        if (weather.type === 'overcast') {
-            this._drawOvercast(ctx, canvas, weather.intensity);
-            this._drawFogBands(ctx, canvas, weather.intensity * 0.34, phaseMs, seed, particleEnabled);
-        } else if (weather.type === 'fog') {
-            this._drawFogWash(ctx, canvas, weather.intensity);
-            this._drawFogBands(ctx, canvas, weather.intensity, phaseMs, seed, particleEnabled);
-        } else if (RAIN_TYPES.has(weather.type)) {
+        if (weather.type === 'overcast' || cloudCover > 0.72) {
+            this._drawOvercast(ctx, canvas, Math.max(weather.intensity * 0.72, cloudCover * 0.54));
+        }
+
+        if (fog > 0.04 || weather.type === 'fog') {
+            const fogIntensity = Math.max(fog, weather.type === 'fog' ? weather.intensity : 0);
+            this._drawFogWash(ctx, canvas, fogIntensity);
+            this._drawFogBands(ctx, canvas, fogIntensity, phaseMs, seed, particleEnabled);
+        }
+
+        if (RAIN_TYPES.has(weather.type) || precipitation > 0.02) {
             const storm = weather.type === 'storm';
-            this._drawOvercast(ctx, canvas, Math.min(1, weather.intensity * (storm ? 0.62 : 0.48)));
-            this._drawRain(ctx, canvas, weather, phaseMs, seed, particleEnabled);
+            const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72));
+            this._drawOvercast(ctx, canvas, Math.min(1, Math.max(cloudCover, weather.intensity) * (storm ? 0.62 : 0.48)));
+            this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             if (storm && particleEnabled) {
-                this._drawStormFlash(ctx, canvas, weather.intensity, seed);
+                this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation), seed);
             }
+        } else if (weather.type === 'overcast' && fog <= 0.04) {
+            this._drawFogBands(ctx, canvas, weather.intensity * 0.34, phaseMs, seed, particleEnabled);
         }
 
         ctx.restore();
@@ -248,9 +265,28 @@ function normalizeWeather(atmosphere) {
         0,
         1,
     );
+    const preset = WEATHER_PRESETS[type] || WEATHER_PRESETS.clear;
     const windX = typeof raw === 'object' && raw ? raw.windX : atmosphere?.windX;
+    const cloudCover = typeof raw === 'object' && raw && Number.isFinite(Number(raw.cloudCover))
+        ? Number(raw.cloudCover)
+        : preset.cloudCover;
+    const precipitation = typeof raw === 'object' && raw && Number.isFinite(Number(raw.precipitation))
+        ? Number(raw.precipitation)
+        : preset.precipitation;
+    const fog = typeof raw === 'object' && raw && Number.isFinite(Number(raw.fog))
+        ? Number(raw.fog)
+        : preset.fog;
+    const seed = typeof raw === 'object' && raw ? raw.seed : null;
 
-    return { type, intensity, windX };
+    return {
+        type,
+        intensity,
+        windX,
+        cloudCover: clamp(cloudCover, 0, 1),
+        precipitation: clamp(precipitation, 0, 1),
+        fog: clamp(fog, 0, 1),
+        seed,
+    };
 }
 
 function normalizeType(type) {
@@ -258,13 +294,14 @@ function normalizeType(type) {
     if (value === 'cloudy') return 'overcast';
     if (value === 'stormy' || value === 'thunderstorm') return 'storm';
     if (value === 'partlycloudy') return 'partly-cloudy';
-    if (value === 'partly-cloudy' || value === 'overcast' || value === 'rain' || value === 'fog' || value === 'storm') {
+    if (WEATHER_TYPE_SET.has(value)) {
         return value;
     }
     return 'clear';
 }
 
 function seedFromAtmosphere(atmosphere, weather) {
+    if (Number.isFinite(Number(weather?.seed))) return Number(weather.seed) >>> 0;
     const key = [
         atmosphere?.cacheKey || '',
         atmosphere?.phase || '',

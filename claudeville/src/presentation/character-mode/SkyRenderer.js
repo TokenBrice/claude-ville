@@ -176,11 +176,22 @@ export class SkyRenderer {
 
     _paintStaticWeatherPlate(ctx, canvas, atmosphere) {
         const { weather } = atmosphere;
-        if (!weather || (weather.type !== 'overcast' && weather.type !== 'rain' && weather.type !== 'fog')) return;
-        const alpha = weather.type === 'fog'
-            ? 0.10 + weather.intensity * 0.12
-            : 0.16 + weather.intensity * 0.18;
-        const color = weather.type === 'fog' ? '210, 226, 236' : '72, 92, 118';
+        if (!weather) return;
+        const precipitation = clamp(weather.precipitation ?? 0, 0, 1);
+        const fog = clamp(weather.fog ?? 0, 0, 1);
+        const cloudCover = clamp(weather.cloudCover ?? 0, 0, 1);
+        const active = weather.type === 'overcast'
+            || weather.type === 'rain'
+            || weather.type === 'storm'
+            || weather.type === 'fog'
+            || precipitation > 0.02
+            || fog > 0.05
+            || cloudCover > 0.72;
+        if (!active) return;
+        const alpha = fog > Math.max(precipitation, cloudCover * 0.45)
+            ? 0.10 + Math.max(weather.intensity, fog) * 0.12
+            : 0.12 + Math.max(weather.intensity, cloudCover, precipitation) * 0.18;
+        const color = fog > Math.max(precipitation, cloudCover * 0.45) ? '210, 226, 236' : '72, 92, 118';
         const g = ctx.createLinearGradient(0, 0, 0, canvas.height);
         g.addColorStop(0, `rgba(${color}, ${alpha})`);
         g.addColorStop(0.62, `rgba(${color}, ${alpha * 0.62})`);
@@ -354,6 +365,9 @@ export class SkyRenderer {
         const baseAlpha = atmosphere.sky?.cloudAlpha ?? 0.35;
         const clockDrift = atmosphere.motion?.clockDriftPx || 0;
         const windX = atmosphere.motion?.windX || 1;
+        const seed = Number.isFinite(Number(atmosphere.weather?.seed))
+            ? Number(atmosphere.weather.seed) >>> 0
+            : hashString(`${atmosphere.clock?.localDate || ''}|${atmosphere.weather?.type || 'clear'}`);
 
         cloudIds.forEach((id, index) => {
             const img = this.assets.get(id);
@@ -366,13 +380,25 @@ export class SkyRenderer {
                 + clockDrift * defaults.driftMul
                 + this._decorativeCloudOffset * defaults.driftMul * windX;
             const baseOffset = ((rawOffset % spacing) + spacing) % spacing;
-            const y = (defaults.fy + index * 0.045) * canvas.height;
 
             ctx.save();
             ctx.globalAlpha = Math.min(0.86, baseAlpha * defaults.alphaMul);
             for (let i = -1; i <= count; i++) {
-                const x = i * spacing + baseOffset - dims.w / 2;
-                ctx.drawImage(img, Math.round(x), Math.round(y));
+                const salt = index * 1009 + (i + 3) * 131;
+                const jitter = (random01(seed, salt + 11) - 0.5) * spacing * 0.62;
+                const yJitter = (random01(seed, salt + 23) - 0.5) * canvas.height * 0.055;
+                const scale = 0.82 + random01(seed, salt + 37) * 0.36;
+                const layerAlpha = 0.74 + random01(seed, salt + 41) * 0.34;
+                const y = (defaults.fy + index * 0.045) * canvas.height + yJitter;
+                const x = i * spacing + baseOffset + jitter - (dims.w * scale) / 2;
+                ctx.globalAlpha = Math.min(0.86, baseAlpha * defaults.alphaMul * layerAlpha);
+                ctx.drawImage(
+                    img,
+                    Math.round(x),
+                    Math.round(y),
+                    Math.round(dims.w * scale),
+                    Math.round(dims.h * scale),
+                );
             }
             ctx.restore();
         });
@@ -429,15 +455,18 @@ export class SkyRenderer {
     _drawBackgroundWeather(ctx, canvas, atmosphere) {
         const weather = atmosphere.weather;
         if (!weather) return;
-        if (weather.type === 'fog') {
+        const fog = clamp(weather.fog ?? 0, 0, 1);
+        const precipitation = clamp(weather.precipitation ?? 0, 0, 1);
+        if (weather.type === 'fog' || fog > 0.05) {
             this._drawFog(ctx, canvas, weather);
-        } else if (weather.type === 'rain') {
+        }
+        if (weather.type === 'rain' || weather.type === 'storm' || precipitation > 0.02) {
             this._drawRainVeil(ctx, canvas, atmosphere);
         }
     }
 
     _drawFog(ctx, canvas, weather) {
-        const alpha = Math.min(0.22, 0.08 + weather.intensity * 0.16);
+        const alpha = Math.min(0.22, 0.06 + Math.max(weather.intensity, weather.fog ?? 0) * 0.16);
         ctx.save();
         ctx.globalAlpha = alpha;
         for (let i = 0; i < 4; i++) {
@@ -454,7 +483,7 @@ export class SkyRenderer {
 
     _drawRainVeil(ctx, canvas, atmosphere) {
         if (!atmosphere.motion?.particleEnabled) return;
-        const alpha = Math.min(0.22, 0.08 + atmosphere.weather.intensity * 0.18);
+        const alpha = Math.min(0.22, 0.06 + Math.max(atmosphere.weather.intensity, atmosphere.weather.precipitation ?? 0) * 0.18);
         const spacing = 34;
         const offset = ((atmosphere.motion.clockDriftPx || 0) % spacing + spacing) % spacing;
         ctx.save();
@@ -495,4 +524,25 @@ export class SkyRenderer {
         this._fallbackAtmosphere?.dispose?.();
         this._fallbackAtmosphere = null;
     }
+}
+
+function clamp(value, min = 0, max = 1) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function hashString(value) {
+    let hash = 2166136261;
+    for (let i = 0; i < value.length; i++) {
+        hash ^= value.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return hash >>> 0;
+}
+
+function random01(seed, salt) {
+    let value = (seed + Math.imul(salt + 1, 0x9e3779b1)) >>> 0;
+    value ^= value << 13;
+    value ^= value >>> 17;
+    value ^= value << 5;
+    return (value >>> 0) / 4294967296;
 }
