@@ -75,9 +75,14 @@
     outline-offset: 2px;
 }
 
-.sidebar__list {
+.sidebar__body {
     flex: 1;
     overflow-y: auto;
+    padding: 0 0 14px;
+}
+
+.sidebar__list {
+    overflow: visible;
     padding: 8px 0;
 }
 
@@ -97,7 +102,7 @@
 }
 
 .sidebar--collapsed .sidebar__title,
-.sidebar--collapsed .sidebar__list {
+.sidebar--collapsed .sidebar__body {
     display: none;
 }
 
@@ -225,6 +230,32 @@
     border: 1px solid rgba(199, 157, 76, 0.2);
     padding: 1px 6px;
     border-radius: 2px;
+}
+
+.sidebar__project-group--harbor {
+    margin-top: 16px;
+}
+
+.sidebar__harbor-header {
+    border-left-color: #f6cf60;
+}
+
+.sidebar__harbor-row {
+    cursor: default;
+}
+
+.sidebar__harbor-count {
+    flex: 0 0 auto;
+    margin-left: 6px;
+    font-size: 8px;
+    font-weight: bold;
+}
+
+.sidebar__harbor-empty {
+    cursor: default;
+    color: rgba(168, 148, 118, 0.74);
+    font-size: 8px;
+    font-style: italic;
 }
 
 /* Worker C guild ledger refinement layer */

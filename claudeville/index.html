@@ -94,8 +94,19 @@
                     </div>
                     <button id="sidebarToggle" class="sidebar__toggle" type="button" aria-label="Collapse agent sidebar" aria-expanded="true" title="Collapse sidebar">&lt;</button>
                 </div>
-                <div id="agentList" class="sidebar__list">
-                    <!-- Agent items are added dynamically -->
+                <div class="sidebar__body">
+                    <div id="agentList" class="sidebar__list">
+                        <!-- Agent items are added dynamically -->
+                    </div>
+                    <section class="sidebar__project-group sidebar__project-group--harbor" aria-label="Harbor">
+                        <div class="sidebar__project-header sidebar__harbor-header">
+                            <span class="sidebar__project-name">HARBOR</span>
+                            <span id="harborCount" class="sidebar__project-count">0</span>
+                        </div>
+                        <div id="harborList" class="sidebar__harbor-list">
+                            <div class="sidebar__harbor-empty">No pending commits</div>
+                        </div>
+                    </section>
                 </div>
             </aside>
 

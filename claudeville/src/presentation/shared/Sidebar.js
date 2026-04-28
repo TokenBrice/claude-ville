@@ -6,6 +6,21 @@ import { repoProfile } from './RepoColor.js';
 
 const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G', git: '#' };
 const PROVIDER_COLORS = { claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa', git: '#f6cf60' };
+const RELATIVE_TIME_THRESHOLDS = [
+    [60_000, 'just now'],
+    [60 * 60_000, (ms) => `${Math.floor(ms / 60_000)}m ago`],
+    [24 * 60 * 60_000, (ms) => `${Math.floor(ms / (60 * 60_000))}h ago`],
+    [7 * 24 * 60 * 60_000, (ms) => `${Math.floor(ms / (24 * 60 * 60_000))}d ago`],
+];
+
+function formatRelative(ts, now = Date.now()) {
+    if (!Number.isFinite(ts) || ts <= 0) return '';
+    const ms = Math.max(0, now - ts);
+    for (const [bound, fmt] of RELATIVE_TIME_THRESHOLDS) {
+        if (ms < bound) return typeof fmt === 'function' ? fmt(ms) : fmt;
+    }
+    return `${Math.floor(ms / (7 * 24 * 60 * 60_000))}w ago`;
+}
 
 export class Sidebar {
     constructor(world) {
@@ -13,14 +28,29 @@ export class Sidebar {
         this.sidebarEl = document.getElementById('sidebar');
         this.listEl = document.getElementById('agentList');
         this.countEl = document.getElementById('agentCount');
+        this.harborListEl = document.getElementById('harborList');
+        this.harborCountEl = document.getElementById('harborCount');
         this.toggleEl = document.getElementById('sidebarToggle');
         this.selectedId = null;
+        this.harborRepos = [];
+        this._harborSignature = '';
         this.isCollapsed = localStorage.getItem('claudeville.sidebarCollapsed') === 'true';
 
         this._onUpdate = () => this.render();
+        this._onHarborUpdate = (repos = []) => {
+            const nextRepos = Array.isArray(repos) ? repos : [];
+            const signature = nextRepos
+                .map(repo => `${repo.project || ''}|${Number(repo.pendingCommits ?? repo.count) || 0}|${Number(repo.failedPushes) || 0}|${Math.floor((Number(repo.latestEventTime) || 0) / 1000)}`)
+                .join('\n');
+            if (signature === this._harborSignature) return;
+            this._harborSignature = signature;
+            this.harborRepos = nextRepos;
+            this.renderHarbor();
+        };
         eventBus.on('agent:added', this._onUpdate);
         eventBus.on('agent:updated', this._onUpdate);
         eventBus.on('agent:removed', this._onUpdate);
+        eventBus.on('harbor:updated', this._onHarborUpdate);
 
         this._bindToggle();
         this._applyCollapsedState();
@@ -87,6 +117,7 @@ export class Sidebar {
         }
 
         this.listEl.innerHTML = html;
+        this.renderHarbor();
 
         // Bind click events
         this.listEl.querySelectorAll('.sidebar__agent').forEach(el => {
@@ -100,6 +131,39 @@ export class Sidebar {
                 this.render();
             });
         });
+    }
+
+    renderHarbor() {
+        if (!this.harborListEl || !this.harborCountEl) return;
+
+        const repos = [...this.harborRepos]
+            .filter(repo => (Number(repo.pendingCommits ?? repo.count) || 0) > 0)
+            .sort((a, b) => (b.failedPushes || 0) - (a.failedPushes || 0)
+                || (b.pendingCommits || b.count || 0) - (a.pendingCommits || a.count || 0)
+                || (b.latestEventTime || 0) - (a.latestEventTime || 0));
+        const total = repos.reduce((sum, repo) => sum + (Number(repo.pendingCommits ?? repo.count) || 0), 0);
+        this.harborCountEl.textContent = total;
+
+        if (repos.length === 0) {
+            this.harborListEl.innerHTML = '<div class="sidebar__agent sidebar__harbor-empty">No pending commits</div>';
+            return;
+        }
+
+        const now = Date.now();
+        this.harborListEl.innerHTML = repos.map(repo => {
+            const profile = repo.profile || repoProfile(repo.project);
+            const name = repo.repoName || repo.shortName || profile.shortName || profile.name || 'unknown';
+            const count = Number(repo.pendingCommits ?? repo.count) || 0;
+            const rel = formatRelative(Number(repo.latestEventTime) || 0, now);
+            return `<div class="sidebar__agent sidebar__harbor-row" title="${this._escape(repo.project || '')}">
+                <span class="sidebar__agent-dot sidebar__harbor-dot" style="background:${profile.accent};box-shadow:0 0 6px ${profile.glow}"></span>
+                <div class="sidebar__agent-info">
+                    <span class="sidebar__agent-name">${this._escape(name)}</span>
+                    ${rel ? `<span class="sidebar__agent-model">${this._escape(rel)}</span>` : ''}
+                </div>
+                <span class="sidebar__project-count sidebar__harbor-count" style="color:${profile.accent}">${count}</span>
+            </div>`;
+        }).join('');
     }
 
     _groupByProject(agents) {
@@ -137,5 +201,6 @@ export class Sidebar {
         eventBus.off('agent:added', this._onUpdate);
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
+        eventBus.off('harbor:updated', this._onHarborUpdate);
     }
 }
