@@ -78,6 +78,7 @@ const SHELL_TOOL_NAMES = new Set([
 const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'command', 'forge', 'archive', 'portal', 'observatory', 'mine'];
 const TOKEN_DELTA_THRESHOLD = 128;
 const CONTEXT_PRESSURE_THRESHOLD = 0.82;
+const MAX_SEEN_GIT_EVENTS = 600;
 
 function timeNow() {
     return Date.now();
@@ -260,6 +261,9 @@ function classifyTool(toolName, input) {
         if (['Grep', 'Glob', 'LS', 'Read'].includes(tool)) {
             const split = shellClassification(input);
             if (split && ['forge', 'taskboard', 'harbor'].includes(split.building)) return split;
+            if (isCodePathInput(input)) {
+                return { building: 'forge', reason: 'inspect-code', confidence: 0.78, label: compactLabel(input || tool, 'code') };
+            }
         }
         return { ...base, label: compactLabel(input || tool, tool) };
     }
@@ -275,11 +279,11 @@ function classifyTool(toolName, input) {
     if (lowerTool.includes('playwright') || lowerTool.includes('browser') || lowerTool.includes('chrome')) {
         return { building: 'portal', reason: 'browser-preview', confidence: 0.84, label: compactLabel(tool, 'browser') };
     }
-    if (lowerTool.includes('web') || lowerTool.includes('fetch')) {
-        return { building: 'observatory', reason: 'external-research', confidence: 0.82, label: compactLabel(tool, 'web') };
-    }
     if (lowerTool.includes('github') || lowerTool.includes('pull_request') || lowerTool.includes(' pr_')) {
         return { building: 'harbor', reason: 'github-flow', confidence: 0.84, label: compactLabel(tool, 'git') };
+    }
+    if (lowerTool.includes('web') || lowerTool.includes('fetch')) {
+        return { building: 'observatory', reason: 'external-research', confidence: 0.82, label: compactLabel(tool, 'web') };
     }
     if (lowerTool.includes('apply_patch') || lowerTool.includes('edit') || lowerTool.includes('write') || lowerTool.includes('update_file') || lowerTool.includes('create_file') || lowerTool.includes('delete_file')) {
         return isDocsInput(input)
@@ -411,6 +415,7 @@ export class VisitIntentManager {
             if (!activeIds.has(agentId)) this.tokenSnapshots.delete(agentId);
         }
 
+        this._trimSeenGitEvents();
         this._expireIntents(currentNow);
         return this.snapshot(currentNow);
     }
@@ -527,7 +532,8 @@ export class VisitIntentManager {
                 const normalized = normalizeGitEventForIntent(event, agent, index, now);
                 if (!normalized) return;
                 const sourceKey = `${normalized.sessionId}:${normalized.id}`;
-                const isFresh = !this.seenGitEventIds.has(sourceKey) || Math.max(0, now - normalized.timestamp) < DEFAULT_TTLS.git.ttlMs;
+                const ageMs = Math.max(0, now - normalized.timestamp);
+                const isFresh = ageMs < DEFAULT_TTLS.git.ttlMs && !this.seenGitEventIds.has(sourceKey);
                 if (!isFresh) return;
                 this.seenGitEventIds.add(sourceKey);
 
@@ -581,6 +587,11 @@ export class VisitIntentManager {
                 payload: { teamName: agent.teamName },
             }, now);
         }
+    }
+
+    _trimSeenGitEvents() {
+        if (this.seenGitEventIds.size <= MAX_SEEN_GIT_EVENTS) return;
+        this.seenGitEventIds = new Set([...this.seenGitEventIds].slice(-Math.floor(MAX_SEEN_GIT_EVENTS * 0.75)));
     }
 
     _upsertIntent(agentId, draft, now) {

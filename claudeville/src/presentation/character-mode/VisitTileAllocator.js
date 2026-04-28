@@ -1,4 +1,4 @@
-const DEFAULT_RESERVATION_TTL_MS = 12000;
+const DEFAULT_RESERVATION_TTL_MS = 20000;
 const TILE_OCCUPANCY_RADIUS = 0.78;
 const BUILDING_OCCUPANCY_RADIUS = 1.15;
 const WALKABILITY_PENALTY = 240;
@@ -71,8 +71,9 @@ export class VisitTileAllocator {
 
         const existingReservation = this._reservationForAgent(agentId);
         const sourceTile = this._spriteTile(sprite) || this._agentTile(agent);
-        const buildingCapacity = this._buildingCapacity(resolvedBuilding, buildingType, slots.length);
+        const buildingCapacity = this._buildingCapacity(resolvedBuilding, buildingType, slots.length, intent);
         const buildingOccupancy = this._buildingOccupancy(resolvedBuilding, buildingType, agentId);
+        const hasWalkableSlot = slots.some((slot) => this._isWalkable(slot.tileX, slot.tileY));
 
         let best = null;
         for (const slot of slots) {
@@ -87,6 +88,7 @@ export class VisitTileAllocator {
                 intent,
                 now,
             });
+            if (hasWalkableSlot && !scored.walkable) continue;
             if (!best || scored.score < best.score || (scored.score === best.score && scored.slotId < best.slotId)) {
                 best = scored;
             }
@@ -149,6 +151,18 @@ export class VisitTileAllocator {
         if (this.agentReservationIds.get(reservation.agentId) === id) {
             this.agentReservationIds.delete(reservation.agentId);
         }
+        return true;
+    }
+
+    renew(agentId, ttlMs = null) {
+        const id = String(agentId || '');
+        if (!id) return false;
+        const reservation = this._reservationForAgent(id);
+        if (!reservation) return false;
+        const ttl = Number.isFinite(Number(ttlMs)) && Number(ttlMs) > 0
+            ? Math.max(1000, Number(ttlMs))
+            : this.reservationTtlMs;
+        reservation.expiresAt = Math.max(reservation.expiresAt, Date.now() + ttl);
         return true;
     }
 
@@ -330,11 +344,24 @@ export class VisitTileAllocator {
         return value === 'lighthouse' ? 'watchtower' : value;
     }
 
-    _buildingCapacity(building, buildingType, slotCount) {
-        const explicit = Number(building?.visitCapacity ?? building?.capacity);
+    _buildingCapacity(building, buildingType, slotCount, intent = null) {
+        const explicitCapacity = building?.visitCapacity ?? this._capacityForIntent(building?.capacity, intent);
+        const explicit = Number(explicitCapacity);
         if (Number.isFinite(explicit) && explicit > 0) return Math.max(1, Math.floor(explicit));
         if (BUILDING_CAPACITY_OVERRIDES[buildingType]) return BUILDING_CAPACITY_OVERRIDES[buildingType];
         return Math.max(1, Math.min(Math.max(1, slotCount), 4));
+    }
+
+    _capacityForIntent(capacity, intent = null) {
+        if (!capacity || typeof capacity !== 'object' || Array.isArray(capacity)) return capacity;
+        const source = String(intent?.source || '').toLowerCase();
+        if (source === 'ambient' && capacity.ambient != null) return capacity.ambient;
+        if ((source === 'alert' || String(intent?.building || '') === 'watchtower') && capacity.alert != null) return capacity.alert;
+        if (capacity.overflow != null && capacity.work != null) {
+            return Math.max(Number(capacity.work) || 0, Number(capacity.overflow) || 0) || capacity.work;
+        }
+        if (capacity.work != null) return capacity.work;
+        return capacity.ambient ?? capacity.overflow ?? null;
     }
 
     _buildingOccupancy(building, buildingType, ignoredAgentId) {
