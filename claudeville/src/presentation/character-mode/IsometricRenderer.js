@@ -71,6 +71,20 @@ const VISIT_OVERFLOW_TILES = Object.freeze({
         { tileX: 27, tileY: 15, overflow: true, reason: 'lookout' },
     ],
 });
+const AMBIENT_SCENIC_POINTS = Object.freeze([
+    { id: 'bridge-west', tileX: 14, tileY: 28, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
+    { id: 'bridge-east', tileX: 18, tileY: 30, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
+    { id: 'harbor-rail', tileX: 31, tileY: 23, district: 'harbor', reason: 'harbor-watch', tags: ['water'] },
+    { id: 'harbor-ledger', tileX: 33, tileY: 24, district: 'harbor', reason: 'dock-ledger', tags: ['harbor'] },
+    { id: 'portal-ruins', tileX: 7, tileY: 36, district: 'arcane', reason: 'portal-observe', tags: ['portal'] },
+    { id: 'mine-cart', tileX: 15, tileY: 37, district: 'resource', reason: 'cart-path', tags: ['mine'] },
+    { id: 'forest-edge', tileX: 25, tileY: 11, district: 'knowledge', reason: 'forest-edge', tags: ['quiet'] },
+    { id: 'archive-alcove', tileX: 10, tileY: 18, district: 'knowledge', reason: 'reading-alcove', tags: ['archive'] },
+    { id: 'observatory-view', tileX: 25, tileY: 19, district: 'knowledge', reason: 'skywatch', tags: ['observatory'] },
+    { id: 'lighthouse-shore', tileX: 30, tileY: 15, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
+    { id: 'plaza-corner', tileX: 18, tileY: 23, district: 'civic', reason: 'plaza-pause', tags: ['command'] },
+    { id: 'forge-handoff', tileX: 25, tileY: 32, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
+]);
 const WATER_TOKENS = {
     lagoon: {
         shallow: 'rgb(10,180,190)',
@@ -336,6 +350,10 @@ const VILLAGE_WOOD_PALETTE = Object.freeze({
     lantern: '#ffd56a',
     glow: 'rgba(255, 202, 94, 0.26)',
 });
+const VILLAGE_GATE_SPRITE_ID = 'prop.villageGate';
+const VILLAGE_WALL_SPRITE_ID = 'prop.villageWall';
+const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
+const VILLAGE_WALL_SPRITE_TILE_SPAN = 3.35;
 const AMBIENT_GROUND_PROPS = [
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
     { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
@@ -478,9 +496,19 @@ export class IsometricRenderer {
         this.onAgentSelect = null;
         this._chatMatchAccumulator = 250;
         this._crowdBumpCooldowns = new Map();
+        this._stationaryOverlapAccumulator = 0;
+        this.behaviorMetrics = {
+            stationaryRetargets: 0,
+            stationaryOverlapChecks: 0,
+            scenicVisits: 0,
+            parentCoherentChildren: 0,
+            handoffIntents: 0,
+        };
         this._chroniclerPauseUntil = 0;
         this._chronicleNextUpdateAt = 0;
         this._chronicleUpdating = false;
+        this._worldModeActive = true;
+        this._onModeChanged = null;
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
         for (let y = 0; y < MAP_SIZE; y++) {
@@ -1052,6 +1080,9 @@ export class IsometricRenderer {
         this._bindMotionPreference();
         this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
         this.atmosphereState?.installDebugHelper?.();
+        if (!this.ritualConductor) {
+            this.ritualConductor = new RitualConductor({ motionScale: this.motionScale });
+        }
 
         this.buildingRenderer?.setBuildings(this.world.buildings);
         this.buildingRenderer?.setRitualConductor?.(this.ritualConductor);
@@ -1123,7 +1154,9 @@ export class IsometricRenderer {
             const hoveredBuilding = this.buildingRenderer?.hitTest(worldPos.x, worldPos.y) ?? null;
             this.buildingRenderer?.setHovered(hoveredBuilding);
             const monument = hoveredBuilding ? null : this.chronicleMonuments?.hitTest?.(worldPos.x, worldPos.y, Date.now());
-            canvas.title = monument ? this.chronicleMonuments.tooltipFor(monument, Date.now()) : '';
+            canvas.title = hoveredBuilding
+                ? this._buildingVisitorTooltip(hoveredBuilding)
+                : (monument ? this.chronicleMonuments.tooltipFor(monument, Date.now()) : '');
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
         this._onMouseLeaveMain = () => {
@@ -1133,6 +1166,11 @@ export class IsometricRenderer {
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
         this._onKeyDown = (e) => { if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle(); };
         window.addEventListener('keydown', this._onKeyDown);
+        this._onModeChanged = (mode) => {
+            this._worldModeActive = mode !== 'dashboard';
+            this._lastFrameTime = performance.now();
+        };
+        eventBus.on('mode:changed', this._onModeChanged);
 
         this.running = true;
         this._loop();
@@ -1160,6 +1198,11 @@ export class IsometricRenderer {
             this.canvas.title = '';
         }
         if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
+        this._onKeyDown = null;
+        if (this._onModeChanged) {
+            eventBus.off('mode:changed', this._onModeChanged);
+            this._onModeChanged = null;
+        }
         this._sortedSprites = [];
         this._spritesNeedSort = true;
         this.agentSprites.clear();
@@ -1315,6 +1358,46 @@ export class IsometricRenderer {
         }) || null;
     }
 
+    _getAmbientDestination({ agent, recentBuildings = [], cycle = 0 } = {}) {
+        if (!agent?.id) return null;
+        const seed = Math.abs(Math.floor(this._tileNoise(agent.id.length + cycle * 7, cycle + String(agent.id).charCodeAt(0)) * 100000));
+        const recent = new Set(recentBuildings);
+        const provider = String(agent.provider || '').toLowerCase();
+        const sprite = this.agentSprites.get(agent.id);
+        const sourceTile = sprite?._screenToTile?.(sprite.x, sprite.y) || agent.position || null;
+        const weighted = AMBIENT_SCENIC_POINTS
+            .map((point, index) => {
+                let score = index * 0.1 + ((seed + index * 17) % 37);
+                if (sourceTile) score += Math.hypot((sourceTile.tileX || 0) - point.tileX, (sourceTile.tileY || 0) - point.tileY) * 1.4;
+                if (recent.has(`ambient:${point.id}`)) score += 80;
+                if (provider === 'gemini' && point.tags?.includes('observatory')) score -= 12;
+                if (provider === 'codex' && point.tags?.includes('forge')) score -= 10;
+                if (provider === 'claude' && point.tags?.includes('command')) score -= 8;
+                if (agent.teamName && point.district === 'civic') score -= 6;
+                if (agent.isSubagent && point.tags?.includes('command')) score -= 7;
+                if (this.pathfinder && !this.pathfinder.isWalkable(Math.round(point.tileX), Math.round(point.tileY))) score += 1000;
+                return { point, score };
+            })
+            .sort((a, b) => a.score - b.score);
+        const point = weighted[0]?.point;
+        if (!point || weighted[0].score >= 1000) return null;
+        this.behaviorMetrics.scenicVisits++;
+        return {
+            type: `ambient:${point.id}`,
+            label: point.reason,
+            district: point.district || 'ambient',
+            capacity: { ambient: 1, work: 1 },
+            visitTiles: [{
+                tileX: point.tileX,
+                tileY: point.tileY,
+                slotId: `ambient:${point.id}`,
+                scenic: true,
+                reason: point.reason,
+            }],
+            containsVisitPoint: (tileX, tileY) => Math.hypot(Number(tileX) - point.tileX, Number(tileY) - point.tileY) <= 0.8,
+        };
+    }
+
     _updateVisitSystems(now = Date.now()) {
         const agents = Array.from(this.world?.agents?.values?.() || []);
         this.visitIntentManager?.update?.(agents, now);
@@ -1341,11 +1424,19 @@ export class IsometricRenderer {
         for (const intent of intents) {
             intentSources[intent.source] = (intentSources[intent.source] || 0) + 1;
         }
+        const derivedMetrics = {
+            ...this.behaviorMetrics,
+            parentCoherentChildren: intents.filter((intent) => intent.reason === 'follow-parent-work').length,
+            handoffIntents: intents.filter((intent) => intent.source === 'handoff').length,
+        };
         return {
             agentCount: this.agentSprites.size,
+            metricsScope: 'since renderer start',
             byBuilding,
             byState,
             intentSources,
+            behaviorMetrics: derivedMetrics,
+            allocatorMetrics: reservations.metrics || {},
             reservationCount: reservations.reservationCount || 0,
             buildingCrowds: reservations.buildings || {},
         };
@@ -1429,6 +1520,7 @@ export class IsometricRenderer {
                 allocateVisitTile: (request) => this._allocateVisitTile(request),
                 releaseVisitReservation: (agentId) => this.visitTileAllocator?.release?.(agentId),
                 renewVisitReservation: (agentId) => this.visitTileAllocator?.renew?.(agentId),
+                getAmbientDestination: (request) => this._getAmbientDestination(request),
             });
             sprite.setMotionScale(this.motionScale);
             sprite.addedAt = performance.now();
@@ -1592,11 +1684,30 @@ export class IsometricRenderer {
         }
     }
 
+    _buildingVisitorTooltip(building) {
+        if (!building?.type) return '';
+        const type = building.type;
+        const stats = this.visitTileAllocator?.snapshot?.()?.buildings?.[type] || null;
+        const intents = this.visitIntentManager?.snapshot?.()?.intents
+            ?.filter((intent) => intent.building === type)
+            ?.slice(0, 4) || [];
+        const label = building.shortLabel || building.label || type;
+        const enRoute = stats ? Math.max(0, (stats.reserved || 0) - (stats.occupied || 0)) : intents.length;
+        const count = stats ? `${stats.occupied} visiting, ${enRoute} en route` : `${intents.length} active`;
+        if (!this.debugOverlay?.enabled) return `${label}: ${count}`;
+        const reasons = intents.map((intent) => intent.reason).filter(Boolean);
+        return reasons.length ? `${label}: ${count} - ${reasons.join(', ')}` : `${label}: ${count}`;
+    }
+
     _loop() {
         if (!this.running) return;
         const now = performance.now();
         const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
         this._lastFrameTime = now;
+        if (!this._worldModeActive) {
+            this.frameId = requestAnimationFrame(() => this._loop());
+            return;
+        }
         this._update(dt);
         this._render(dt);
         this.frameId = requestAnimationFrame(() => this._loop());
@@ -1755,6 +1866,11 @@ export class IsometricRenderer {
                 if (moved) this._emitCrowdBumpFeedback(a, b, overlap);
             }
         }
+        this._stationaryOverlapAccumulator += dt;
+        if (this._stationaryOverlapAccumulator >= 420) {
+            this._stationaryOverlapAccumulator = 0;
+            this._resolveStationaryOverlaps();
+        }
 
         const sortedSnapshot = this._snapshotSortedSprites();
         this._replayActiveToolRituals();
@@ -1812,6 +1928,53 @@ export class IsometricRenderer {
         if (!this.pathfinder || typeof sprite?._screenToTile !== 'function') return true;
         const tile = sprite._screenToTile(x, y);
         return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
+    }
+
+    _resolveStationaryOverlaps() {
+        const now = Date.now();
+        const candidates = Array.from(this.agentSprites.values()).filter((sprite) => (
+            sprite &&
+            !sprite.moving &&
+            !sprite.chatting &&
+            !sprite.chatPartner &&
+            !sprite.selected &&
+            !this._isGateTransit(sprite, 'departure') &&
+            !sprite.isArrivalPending?.() &&
+            this._canStationaryRetarget(sprite, now)
+        ));
+        this.behaviorMetrics.stationaryOverlapChecks++;
+        const threshold = 24;
+        const maxRetargets = 2;
+        let retargets = 0;
+        for (let i = 0; i < candidates.length && retargets < maxRetargets; i++) {
+            for (let j = i + 1; j < candidates.length && retargets < maxRetargets; j++) {
+                const a = candidates[i];
+                const b = candidates[j];
+                const dx = a.x - b.x;
+                const dy = a.y - b.y;
+                const dist = Math.hypot(dx, dy);
+                if (dist <= 0 || dist >= threshold) continue;
+                const aSnap = a.getBehaviorDebugSnapshot?.();
+                const bSnap = b.getBehaviorDebugSnapshot?.();
+                const sameBuilding = aSnap?.building && aSnap.building === bSnap?.building;
+                if (!sameBuilding && dist > 14) continue;
+                const loser = (aSnap?.behavior?.lastRerouteAt || 0) <= (bSnap?.behavior?.lastRerouteAt || 0) ? a : b;
+                if (loser.retargetVisit?.()) {
+                    retargets++;
+                    this.behaviorMetrics.stationaryRetargets++;
+                }
+            }
+        }
+    }
+
+    _canStationaryRetarget(sprite, now = Date.now()) {
+        const snap = sprite.getBehaviorDebugSnapshot?.();
+        const state = snap?.behaviorState;
+        if (['performing', 'cooldown', 'chatting', 'chat-approach', 'blocked'].includes(state)) return false;
+        if (String(snap?.building || '').startsWith('ambient:') && state === 'lingering') return false;
+        const arrivedAt = Number(snap?.behavior?.arrivedAt || 0);
+        if (arrivedAt && now - arrivedAt < 2500) return false;
+        return true;
     }
 
     _emitCrowdBumpFeedback(a, b, overlap = 0) {
@@ -2084,6 +2247,7 @@ export class IsometricRenderer {
                 agentSprites: this.agentSprites,
                 viewport,
                 panelY: 180,
+                behaviorStats: this._agentBehaviorStats(),
             });
         }
 
@@ -2345,14 +2509,18 @@ export class IsometricRenderer {
     _buildDistrictPropSprites() {
         if (!this.sprites) return [];
         const sprites = this._buildVillageWallSprites();
+        const hasGateSprite = this.assets?.has?.(VILLAGE_GATE_SPRITE_ID);
         sprites.push(new StaticPropSprite({
             tileX: VILLAGE_GATE.tileX,
             tileY: VILLAGE_GATE.tileY,
-            id: VILLAGE_GATE.id,
-            bounds: VILLAGE_GATE_BOUNDS,
+            id: VILLAGE_GATE_SPRITE_ID,
+            bounds: hasGateSprite ? this._assetPropBounds(VILLAGE_GATE_SPRITE_ID, 0.72) : VILLAGE_GATE_BOUNDS,
             splitForOcclusion: true,
-            drawFn: (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y),
+            drawFn: hasGateSprite
+                ? (ctx, x, y) => this.sprites.drawSprite(ctx, VILLAGE_GATE_SPRITE_ID, x, y)
+                : (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y),
         }));
+        sprites.push(...this._buildVillageWallTerminalSprites());
         sprites.push(...DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted')
             .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.pathTiles, this.bridgeTiles))
@@ -2372,10 +2540,15 @@ export class IsometricRenderer {
 
     _buildVillageWallSprites() {
         const out = [];
+        const hasWallSprite = this.assets?.has?.(VILLAGE_WALL_SPRITE_ID);
         for (const route of VILLAGE_WALL_ROUTES) {
             for (let i = 0; i < route.points.length - 1; i++) {
                 const startTile = route.points[i];
                 const endTile = route.points[i + 1];
+                if (hasWallSprite && this._canUseVillageWallSpriteRun(startTile, endTile)) {
+                    out.push(...this._buildVillageWallSpriteRun(route, i, startTile, endTile));
+                    continue;
+                }
                 const midTile = {
                     tileX: (startTile.tileX + endTile.tileX) / 2,
                     tileY: (startTile.tileY + endTile.tileY) / 2,
@@ -2398,6 +2571,76 @@ export class IsometricRenderer {
             }
         }
         return out;
+    }
+
+    _canUseVillageWallSpriteRun(startTile, endTile) {
+        if (!startTile || !endTile) return false;
+        return Math.abs(Number(startTile.tileY) - Number(endTile.tileY)) < 0.05
+            && Number(endTile.tileX) > Number(startTile.tileX);
+    }
+
+    _buildVillageWallSpriteRun(route, segmentIndex, startTile, endTile) {
+        const out = [];
+        const dx = Number(endTile.tileX) - Number(startTile.tileX);
+        const dy = Number(endTile.tileY) - Number(startTile.tileY);
+        const length = Math.max(0.1, Math.hypot(dx, dy));
+        const count = Math.max(1, Math.ceil(length / VILLAGE_WALL_SPRITE_TILE_SPAN));
+        const bounds = this._assetPropBounds(VILLAGE_WALL_SPRITE_ID, 0.62);
+        for (let i = 0; i < count; i++) {
+            const t = (i + 0.5) / count;
+            const tileX = startTile.tileX + dx * t;
+            const tileY = startTile.tileY + dy * t;
+            const world = this._tileToWorld(tileX, tileY);
+            out.push(new StaticPropSprite({
+                tileX,
+                tileY,
+                id: `village.wall.${route.id}.${segmentIndex}.${i}`,
+                bounds,
+                splitForOcclusion: false,
+                sortY: world.y - 14,
+                drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, VILLAGE_WALL_SPRITE_ID, x, y),
+            }));
+        }
+        return out;
+    }
+
+    _buildVillageWallTerminalSprites() {
+        if (!this.assets?.has?.(VILLAGE_WALL_SEA_TOWER_SPRITE_ID)) return [];
+        const route = VILLAGE_WALL_ROUTES.find((candidate) => candidate.id === 'east');
+        if (!route || route.points.length < 2) return [];
+        const endTile = route.points[route.points.length - 1];
+        const prevTile = route.points[route.points.length - 2];
+        const towerTile = this._villageWallSeaTowerTile(endTile, prevTile);
+        const world = this._tileToWorld(towerTile.tileX, towerTile.tileY);
+        return [new StaticPropSprite({
+            tileX: towerTile.tileX,
+            tileY: towerTile.tileY,
+            id: VILLAGE_WALL_SEA_TOWER_SPRITE_ID,
+            bounds: this._assetPropBounds(VILLAGE_WALL_SEA_TOWER_SPRITE_ID, 0.66),
+            splitForOcclusion: true,
+            sortY: world.y - 8,
+            drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, VILLAGE_WALL_SEA_TOWER_SPRITE_ID, x, y),
+        })];
+    }
+
+    _villageWallSeaTowerTile(endTile, prevTile) {
+        const dx = Number(endTile.tileX) - Number(prevTile.tileX);
+        const dy = Number(endTile.tileY) - Number(prevTile.tileY);
+        const length = Math.max(0.1, Math.hypot(dx, dy));
+        const ux = dx / length;
+        const uy = dy / length;
+        for (const offset of [0.25, 0.55, 0.85, 1.15, 1.45]) {
+            const candidate = {
+                tileX: endTile.tileX - ux * offset,
+                tileY: endTile.tileY - uy * offset,
+            };
+            const key = `${Math.round(candidate.tileX)},${Math.round(candidate.tileY)}`;
+            if (!this.waterTiles?.has?.(key)) return candidate;
+        }
+        return {
+            tileX: endTile.tileX - ux * 1.45,
+            tileY: endTile.tileY - uy * 1.45,
+        };
     }
 
     _villageWallBounds(start, end) {
