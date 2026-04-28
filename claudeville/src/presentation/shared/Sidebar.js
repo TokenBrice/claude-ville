@@ -2,7 +2,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { getTeamColor, shortTeamName } from './TeamColor.js';
-import { repoProfile } from './RepoColor.js';
+import { repoBranchProfile, repoProfile } from './RepoColor.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { hashRows, shortProjectName, statusClass } from './Formatters.js';
 
@@ -44,9 +44,11 @@ export class Sidebar {
             const nextRepos = Array.isArray(repos) ? repos : [];
             const signature = hashRows(nextRepos, [
                 repo => repo.project || '',
+                repo => repo.branch || '',
                 repo => Number(repo.pendingCommits ?? repo.count) || 0,
                 repo => Number(repo.failedPushes) || 0,
                 repo => Math.floor((Number(repo.latestEventTime) || 0) / 1000),
+                repo => repo.profile?.accent || '',
             ]);
             if (signature === this._harborSignature) return;
             this._harborSignature = signature;
@@ -144,20 +146,34 @@ export class Sidebar {
         const nodes = [];
         for (const [projectPath, groupAgents] of groups) {
             const projectName = shortProjectName(projectPath, i18n.t('unknownProject'));
-            const color = projectPath === '_unknown'
-                ? '#8b8b9e'
-                : repoProfile(projectPath).accent;
+            const profile = projectPath === '_unknown'
+                ? { accent: '#8b8b9e', glow: 'rgba(139, 139, 158, 0.3)', panel: 'rgba(28, 28, 36, 0.68)' }
+                : repoProfile(projectPath);
             const groupEl = el('div', { className: 'sidebar__project-group' });
             groupEl.append(el('div', {
                 className: 'sidebar__project-header',
-                style: { borderLeftColor: color },
+                style: {
+                    borderLeftColor: profile.accent,
+                    background: profile.panel,
+                },
             }, [
                 el('span', {
                     className: 'sidebar__project-dot',
-                    style: { background: color },
+                    style: {
+                        background: profile.accent,
+                        boxShadow: `0 0 6px ${profile.glow}`,
+                    },
                 }),
-                el('span', { className: 'sidebar__project-name', text: projectName }),
-                el('span', { className: 'sidebar__project-count', text: groupAgents.length }),
+                el('span', {
+                    className: 'sidebar__project-name',
+                    text: projectName,
+                    style: { color: profile.accent },
+                }),
+                el('span', {
+                    className: 'sidebar__project-count',
+                    text: groupAgents.length,
+                    style: { color: profile.accent },
+                }),
             ]));
             for (const agent of groupAgents) {
                 const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
@@ -248,19 +264,27 @@ export class Sidebar {
 
         const now = Date.now();
         const nodes = repos.map(repo => {
-            const profile = repo.profile || repoProfile(repo.project);
+            const profile = repo.profile || repoBranchProfile(repo.project, repo.branch);
             const name = repo.repoName || repo.shortName || profile.shortName || profile.name || 'unknown';
             const count = Number(repo.pendingCommits ?? repo.count) || 0;
             const rel = formatRelative(Number(repo.latestEventTime) || 0, now);
             const infoChildren = [
-                el('span', { className: 'sidebar__agent-name', text: name }),
+                el('span', {
+                    className: 'sidebar__agent-name',
+                    text: name,
+                    style: { color: profile.accent },
+                }),
             ];
             if (rel) {
                 infoChildren.push(el('span', { className: 'sidebar__agent-model', text: rel }));
             }
             return el('div', {
                 className: ['sidebar__agent', 'sidebar__harbor-row'],
-                title: repo.project || '',
+                title: repo.branch ? `${repo.project || ''} (${repo.branch})` : repo.project || '',
+                style: {
+                    borderLeftColor: profile.accent,
+                    background: profile.panel,
+                },
             }, [
                 el('span', {
                     className: ['sidebar__agent-dot', 'sidebar__harbor-dot'],

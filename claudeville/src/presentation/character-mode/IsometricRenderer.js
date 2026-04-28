@@ -2173,7 +2173,14 @@ export class IsometricRenderer {
     _harborPendingReposSignature(repos = []) {
         if (!Array.isArray(repos) || repos.length === 0) return '';
         return repos
-            .map(repo => `${repo.path || repo.projectPath || repo.name || ''}:${repo.count || repo.pending || repo.status || ''}`)
+            .map(repo => [
+                repo.project || repo.projectPath || repo.path || repo.name || '',
+                repo.branch || '',
+                repo.pendingCommits ?? repo.count ?? repo.pending ?? '',
+                repo.failedPushes ?? '',
+                Math.floor((Number(repo.latestEventTime) || 0) / 1000),
+                repo.profile?.accent || '',
+            ].join(':'))
             .sort()
             .join('|');
     }

@@ -139,6 +139,8 @@ export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
         || agent.project
         || 'unknown';
     const sha = event.sha || event.commit || event.hash || event.commitSha || event.revision || '';
+    const targetRef = event.targetRef || event.ref || event.branch || '';
+    const branch = event.branch || (type === 'commit' ? targetRef : '');
     const timestamp = parseEventTime(
         event.timestamp || event.time || event.ts || event.date || event.createdAt || event.created_at,
         fallbackTimestamp
@@ -159,7 +161,11 @@ export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
         ts: timestamp,
         label: eventLabel(event, type, sha, options),
         command: event.command ? String(event.command) : '',
-        targetRef: event.targetRef || event.ref || event.branch || '',
+        targetRef,
+        branch,
+        upstream: event.upstream || '',
+        comparisonRef: event.comparisonRef || '',
+        inferred: event.inferred === true,
         provider: event.provider || agent.provider || '',
         sessionId: event.sessionId || event.session_id || agent.sessionId || agent.agentId || agent.id || '',
         sourceId: event.sourceId || '',

@@ -200,9 +200,15 @@ export class DashboardRenderer {
         return groups;
     }
 
-    _projectColor(projectPath) {
-        if (!projectPath || projectPath === '_unknown') return '#8b8b9e';
-        return repoProfile(projectPath).accent;
+    _projectProfile(projectPath) {
+        if (!projectPath || projectPath === '_unknown') {
+            return {
+                accent: '#8b8b9e',
+                glow: 'rgba(139, 139, 158, 0.3)',
+                panel: 'rgba(28, 28, 36, 0.72)',
+            };
+        }
+        return repoProfile(projectPath);
     }
 
     _createSection(projectPath) {
@@ -210,13 +216,13 @@ export class DashboardRenderer {
         section.className = 'dashboard__section';
         section.dataset.project = projectPath;
 
-        const color = this._projectColor(projectPath);
+        const profile = this._projectProfile(projectPath);
         section.innerHTML = `
-            <div class="dashboard__section-header" style="border-left-color: ${color}">
-                <span class="dashboard__section-dot" style="background: ${color}"></span>
-                <span class="dashboard__section-name"></span>
+            <div class="dashboard__section-header" style="border-left-color: ${profile.accent}; background: ${profile.panel}">
+                <span class="dashboard__section-dot" style="background: ${profile.accent}; box-shadow: 0 0 8px ${profile.glow}"></span>
+                <span class="dashboard__section-name" style="color: ${profile.accent}"></span>
                 <span class="dashboard__section-path"></span>
-                <span class="dashboard__section-count"></span>
+                <span class="dashboard__section-count" style="color: ${profile.accent}"></span>
             </div>
             <div class="dashboard__section-grid"></div>
         `;

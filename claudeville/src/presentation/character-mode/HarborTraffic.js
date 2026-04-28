@@ -1,11 +1,10 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
-import { repoProfile } from '../shared/RepoColor.js';
+import { normalizeRepoBranch, repoBranchProfile, repoProfile } from '../shared/RepoColor.js';
 import {
     cleanCommitSubject,
     collectGitEventsFromAgents,
     commitMessageFromCommand,
     displayRepoName,
-    projectNameFromPath,
     shortGitLabel,
 } from '../shared/GitEventIdentity.js';
 
@@ -157,8 +156,23 @@ function stableHash(input) {
     return Math.abs(hash);
 }
 
-function projectName(project) {
-    return shortGitLabel(projectNameFromPath(project), 26, '…');
+function eventBranch(event = {}) {
+    return normalizeRepoBranch(event.branch || event.targetRef || '');
+}
+
+function trafficIdentity(project, branch = '') {
+    return `${String(project || 'unknown')}\x1f${normalizeRepoBranch(branch)}`;
+}
+
+function trafficProfile(project, branch = '') {
+    return repoBranchProfile(project, normalizeRepoBranch(branch));
+}
+
+function trafficLabel(project, branch = '', maxChars = 26) {
+    const normalizedBranch = normalizeRepoBranch(branch);
+    const repo = displayRepoName(project, maxChars);
+    if (!normalizedBranch) return repo;
+    return `${repo}/${shortGitLabel(normalizedBranch, 14, '…')}`;
 }
 
 function rotateIndexes(indexes, offset) {
@@ -285,8 +299,9 @@ function latestPushTimesByProject(events) {
     const latest = new Map();
     for (const event of events) {
         if (event?.type !== 'push' || !event.project || !Number.isFinite(event.timestamp) || event.timestamp <= 0) continue;
-        const previous = latest.get(event.project) || 0;
-        if (event.timestamp > previous) latest.set(event.project, event.timestamp);
+        const key = trafficIdentity(event.project, eventBranch(event));
+        const previous = latest.get(key) || 0;
+        if (event.timestamp > previous) latest.set(key, event.timestamp);
     }
     return latest;
 }
@@ -340,13 +355,21 @@ function harborFrontQueuePosition(index, total) {
 }
 
 function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
-    const latestPush = latestPushTimes.get(event.project) || 0;
+    const latestPush = latestPushTimes.get(trafficIdentity(event.project, eventBranch(event))) || 0;
     if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
     return Math.max(0, now - latestPush) > RECENT_PUSH_REPLAY_MS;
 }
 
+function pushEventMatchesShip(event, ship) {
+    if (!ship || ship.project !== event.project) return false;
+    const pushBranch = eventBranch(event);
+    const shipBranch = normalizeRepoBranch(ship.branch || ship.targetRef || '');
+    if (!pushBranch) return !shipBranch;
+    return pushBranch === shipBranch;
+}
+
 function shipEligibleForPush(ship, event, previousPush, now) {
-    if (!ship || ship.project !== event.project || ship.status !== 'docked') return false;
+    if (!ship || ship.status !== 'docked' || !pushEventMatchesShip(event, ship)) return false;
     const pushTime = Number.isFinite(event.timestamp) && event.timestamp > 0 ? event.timestamp : 0;
     if (!pushTime) return true;
     if (Number.isFinite(ship.eventTime) && ship.eventTime <= pushTime) return true;
@@ -367,10 +390,12 @@ function commitCompareText(value = '') {
 
 function commitIdentityParts(event = {}) {
     const project = String(event.project || 'unknown');
+    const branch = normalizeRepoBranch(event.branch || event.targetRef || '');
     const sha = String(event.sha || '').trim().toLowerCase();
     const label = cleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
     return {
         project,
+        branch,
         sha,
         label,
         compareLabel: commitCompareText(label),
@@ -398,6 +423,7 @@ function sameCommitIdentity(a, b) {
     const left = commitIdentityParts(a);
     const right = commitIdentityParts(b);
     if (left.project !== right.project) return false;
+    if (left.branch && right.branch && left.branch !== right.branch && (!left.sha || !right.sha || left.sha !== right.sha)) return false;
     if (left.sha && right.sha) return left.sha === right.sha;
     if (left.sha || right.sha) {
         return commitLabelsEquivalent(left.compareLabel, right.compareLabel, left.timestamp, right.timestamp);
@@ -418,6 +444,8 @@ function mergeCommitIntoShip(ship, event) {
     ship.eventIds = Array.isArray(ship.eventIds) ? ship.eventIds : [ship.id].filter(Boolean);
     if (event.id && !ship.eventIds.includes(event.id)) ship.eventIds.push(event.id);
     if (!ship.sha && event.sha) ship.sha = event.sha;
+    if (!ship.branch && eventBranch(event)) ship.branch = eventBranch(event);
+    if (!ship.targetRef && event.targetRef) ship.targetRef = event.targetRef;
     if (nextLabel && (!currentLabel || currentLabel.startsWith('$(cat') || nextLabel.length < currentLabel.length)) {
         ship.label = nextLabel;
     }
@@ -435,6 +463,7 @@ export function snapshotHarborTrafficState(state) {
             .map(ship => ({
                 id: ship.id,
                 project: ship.project,
+                branch: ship.branch || '',
                 quayIndex: ship.quayIndex ?? null,
                 repoName: ship.repoName || '',
                 sha: ship.sha || '',
@@ -456,6 +485,7 @@ export function snapshotHarborTrafficState(state) {
             .map(batch => ({
                 id: batch.id,
                 project: batch.project,
+                branch: batch.branch || '',
                 quayIndex: batch.quayIndex ?? null,
                 repoName: batch.repoName || '',
                 label: batch.label || '',
@@ -471,6 +501,7 @@ export function snapshotHarborTrafficState(state) {
             .map(push => ({
                 id: push.id,
                 project: push.project || '',
+                branch: push.branch || '',
                 status: push.status || 'unknown',
                 eventTime: push.eventTime || 0,
                 batchId: push.batchId || null,
@@ -484,9 +515,10 @@ function pendingRepoSummariesFromDockSummaries(summaries) {
         .filter(summary => (Number(summary.count) || 0) > 0)
         .map((summary) => ({
             project: summary.project,
-            repoName: displayRepoName(summary.project),
-            shortName: summary.profile?.shortName || projectName(summary.project),
-            profile: summary.profile || repoProfile(summary.project),
+            branch: summary.branch || '',
+            repoName: trafficLabel(summary.project, summary.branch),
+            shortName: summary.profile?.shortName || trafficLabel(summary.project, summary.branch, 18),
+            profile: summary.profile || trafficProfile(summary.project, summary.branch),
             pendingCommits: Number(summary.count) || 0,
             failedPushes: Number(summary.failedCount) || 0,
             latestEventTime: Number(summary.latestEventTime) || 0,
@@ -531,13 +563,16 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 mergeCommitIntoShip(existingShip, event);
                 continue;
             }
+            const branch = eventBranch(event);
             const { berthIndex, quayIndex } = chooseBerthIndex(state, event.project);
-            const laneIndex = stableHash(`${event.project}:${event.id}`) % SEA_LANES.length;
-            const profile = repoProfile(event.project);
+            const laneIndex = stableHash(`${event.project}:${branch}:${event.id}`) % SEA_LANES.length;
+            const profile = trafficProfile(event.project, branch);
             state.nextSequence++;
             state.ships.set(event.id, {
                 id: event.id,
                 project: event.project,
+                branch,
+                targetRef: event.targetRef || '',
                 repoName: profile.shortName,
                 quayIndex,
                 sha: event.sha,
@@ -566,6 +601,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const status = previousStatus && incomingStatus === 'unknown' ? previousStatus : incomingStatus;
             const existingBatch = state.batches.get(batchId);
             const statusChanged = previousStatus && previousStatus !== status;
+            const branch = eventBranch(event);
+            const profile = trafficProfile(event.project, branch);
 
             let selectedShips = [];
             const existingShipIds = new Set(existingBatch?.shipIds || []);
@@ -590,6 +627,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 state.pushEvents.set(event.id, {
                     id: event.id,
                     project: event.project,
+                    branch,
                     status,
                     eventTime: event.timestamp || now,
                     batchId: null,
@@ -609,8 +647,9 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ...(existingBatch || {}),
                 id: batchId,
                 project: event.project,
+                branch,
                 quayIndex: assignedQuayIndex(state, event.project),
-                repoName: repoProfile(event.project).shortName,
+                repoName: profile.shortName,
                 label: event.label || existingBatch?.label || '',
                 targetRef: event.targetRef || existingBatch?.targetRef || '',
                 status,
@@ -625,6 +664,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             state.pushEvents.set(event.id, {
                 id: event.id,
                 project: event.project,
+                branch,
                 status,
                 eventTime: event.timestamp || now,
                 batchId,
@@ -715,10 +755,11 @@ export class HarborTraffic {
     getRepoSummaries() {
         const summaries = new Map();
         for (const summary of this._pendingRepoSummaries || []) {
-            const profile = summary.profile || repoProfile(summary.project);
+            const profile = summary.profile || trafficProfile(summary.project, summary.branch);
             summaries.set(profile.key, {
                 project: summary.project,
-                repoName: summary.repoName || displayRepoName(summary.project),
+                branch: summary.branch || '',
+                repoName: summary.repoName || trafficLabel(summary.project, summary.branch),
                 shortName: summary.shortName || profile.shortName,
                 profile,
                 pendingCommits: Number(summary.pendingCommits) || 0,
@@ -730,7 +771,8 @@ export class HarborTraffic {
         for (const summary of this._repoDockSummaries().values()) {
             const existing = summaries.get(summary.profile.key) || {
                 project: summary.project,
-                repoName: displayRepoName(summary.project),
+                branch: summary.branch || '',
+                repoName: trafficLabel(summary.project, summary.branch),
                 shortName: summary.profile.shortName,
                 profile: summary.profile,
                 pendingCommits: 0,
@@ -758,10 +800,11 @@ export class HarborTraffic {
             if ((batch.status || 'unknown') !== 'failed') continue;
             const age = this._batchSummaryAge(batch, now);
             if (age > SCREEN_SUMMARY_MS + FINALE_EFFECT_MS) continue;
-            const profile = repoProfile(batch.project);
+            const profile = trafficProfile(batch.project, batch.branch);
             const current = repos.get(profile.key) || {
                 project: batch.project,
-                repoName: displayRepoName(batch.project),
+                branch: batch.branch || '',
+                repoName: trafficLabel(batch.project, batch.branch),
                 shortName: profile.shortName,
                 profile,
                 failedPushes: 0,
@@ -774,6 +817,7 @@ export class HarborTraffic {
                 latest = {
                     id: batch.id,
                     project: batch.project,
+                    branch: batch.branch || '',
                     repoName: current.repoName,
                     shortName: current.shortName,
                     targetRef: batch.targetRef || '',
@@ -784,11 +828,12 @@ export class HarborTraffic {
         }
         for (const ship of this.state.ships.values()) {
             if (ship.status !== 'docked' || ship.pushStatus !== 'failed') continue;
-            const profile = repoProfile(ship.project);
+            const profile = trafficProfile(ship.project, ship.branch);
             const eventTime = Math.max(ship.eventTime || 0, ship.failedAt || 0);
             const current = repos.get(profile.key) || {
                 project: ship.project,
-                repoName: displayRepoName(ship.project),
+                branch: ship.branch || '',
+                repoName: trafficLabel(ship.project, ship.branch),
                 shortName: profile.shortName,
                 profile,
                 failedPushes: 0,
@@ -801,6 +846,7 @@ export class HarborTraffic {
                 latest = {
                     id: ship.pushEventId || ship.id,
                     project: ship.project,
+                    branch: ship.branch || '',
                     repoName: current.repoName,
                     shortName: current.shortName,
                     targetRef: '',
@@ -811,10 +857,11 @@ export class HarborTraffic {
         }
         for (const push of this.state.pushEvents.values()) {
             if ((push.status || 'unknown') !== 'failed' || push.batchId || !push.project) continue;
-            const profile = repoProfile(push.project);
+            const profile = trafficProfile(push.project, push.branch);
             const current = repos.get(profile.key) || {
                 project: push.project,
-                repoName: displayRepoName(push.project),
+                branch: push.branch || '',
+                repoName: trafficLabel(push.project, push.branch),
                 shortName: profile.shortName,
                 profile,
                 failedPushes: 0,
@@ -827,6 +874,7 @@ export class HarborTraffic {
                 latest = {
                     id: push.id,
                     project: push.project,
+                    branch: push.branch || '',
                     repoName: current.repoName,
                     shortName: current.shortName,
                     targetRef: '',
@@ -866,8 +914,11 @@ export class HarborTraffic {
         const markers = this._repoQuayDrawables(repoSummaries);
         const markerByRepo = new Map();
         for (const marker of markers) {
-            const key = repoProfile(marker.payload?.project).key;
+            const profile = marker.payload?.profile || trafficProfile(marker.payload?.project, marker.payload?.branch);
+            const key = profile.key;
             if (key) markerByRepo.set(key, marker.payload);
+            const baseKey = repoProfile(marker.payload?.project).key;
+            if (baseKey && !markerByRepo.has(baseKey)) markerByRepo.set(baseKey, marker.payload);
         }
         const dockedByRepo = new Map();
         const departing = [];
@@ -876,7 +927,7 @@ export class HarborTraffic {
             const drawable = this._shipDrawable(ship, now);
             if (!drawable) continue;
             if (drawable.payload.status === 'docked') {
-                const key = repoProfile(drawable.payload.project).key;
+                const key = trafficProfile(drawable.payload.project, drawable.payload.branch).key;
                 const list = dockedByRepo.get(key) || [];
                 list.push(drawable);
                 dockedByRepo.set(key, list);
@@ -955,7 +1006,7 @@ export class HarborTraffic {
                     alpha: 0.08 + pulse * 0.045,
                     radiusX: 26,
                     radiusY: 12,
-                    projectAccent: repoProfile(drawable.project).accent,
+                    projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
                 });
                 continue;
             }
@@ -969,7 +1020,7 @@ export class HarborTraffic {
                     alpha: Math.max(0.05, 0.18 * (1 - drawable.progress)),
                     spread: 0.35 + drawable.progress * 0.75,
                     progress: drawable.progress,
-                    projectAccent: repoProfile(drawable.project).accent,
+                    projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
                 });
             }
         }
@@ -1041,12 +1092,13 @@ export class HarborTraffic {
         const summaries = new Map();
         for (const ship of this.state.ships.values()) {
             if (ship.status !== 'docked') continue;
-            const profile = repoProfile(ship.project);
+            const profile = trafficProfile(ship.project, ship.branch);
             const berth = BERTHS[ship.berthIndex % BERTHS.length];
             if (!berth) continue;
             const pos = toWorld(berth.tileX, berth.tileY);
             const summary = summaries.get(profile.key) || {
                 project: ship.project,
+                branch: ship.branch || '',
                 profile,
                 quayIndex: Number.isFinite(Number(ship.quayIndex)) ? Number(ship.quayIndex) : assignedQuayIndex(this.state, ship.project),
                 count: 0,
@@ -1081,6 +1133,7 @@ export class HarborTraffic {
                 payload: {
                     type: 'repo-quay',
                     project: summary.project,
+                    branch: summary.branch || '',
                     profile: summary.profile,
                     quayName: QUAY_GROUPS[quayIndex]?.name || 'Quay',
                     count: summary.count,
@@ -1198,14 +1251,14 @@ export class HarborTraffic {
         const summary = this.latestScreenSummary(now);
         if (!summary || !canvas) return;
         const style = PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown;
-        const profile = repoProfile(summary.project);
+        const profile = trafficProfile(summary.project, summary.branch);
         const age = this._batchSummaryAge(summary, now);
         const fade = this.motionScale === 0
             ? 1
             : Math.min(1, Math.max(0, (SCREEN_SUMMARY_MS - age) / 1600));
         if (fade <= 0) return;
 
-        const project = projectName(summary.project);
+        const project = trafficLabel(summary.project, summary.branch);
         const count = Number(summary.shipCount || 0);
         const commitLabel = count === 1 ? '1 commit' : `${count} commits`;
         const title = summary.status === 'success'
@@ -1213,7 +1266,9 @@ export class HarborTraffic {
             : summary.status === 'failed'
                 ? 'Push failed'
                 : `${commitLabel} sent to sea`;
-        const target = summary.targetRef ? ` -> ${summary.targetRef}` : '';
+        const target = summary.targetRef && normalizeRepoBranch(summary.targetRef) !== normalizeRepoBranch(summary.branch)
+            ? ` -> ${summary.targetRef}`
+            : '';
         const detail = `${project}${target}`;
         const width = Math.min(350, Math.max(236, Math.max(title.length, detail.length) * 6.4 + 34));
         const height = 58;
@@ -1301,7 +1356,7 @@ export class HarborTraffic {
             ? this._departureAlpha(ship)
             : 1;
         if (alpha <= 0.02) return;
-        const profile = repoProfile(ship.project);
+        const profile = trafficProfile(ship.project, ship.branch);
 
         // Ship wakes are exported through enumerateWakeDescriptors() so the
         // water layer can render them beneath harbor traffic and buildings.
@@ -1325,7 +1380,7 @@ export class HarborTraffic {
         this._drawCommitPennant(ctx, ship, zoom, alpha, profile);
     }
 
-    _drawHarborCrate(ctx, ship, zoom, alpha = 1, profile = repoProfile(ship.project)) {
+    _drawHarborCrate(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch)) {
         const s = 1 / Math.max(1, zoom || 1);
         const bob = this.motionScale > 0 ? Math.sin(this.frame * 0.08 + ship.berthIndex) * 1.2 : 0;
         const x = Math.round(ship.x - 18 * s);
@@ -1353,7 +1408,7 @@ export class HarborTraffic {
         return Math.max(0, Math.min(1, 1 - (elapsed - fadeStart) / EXIT_FADE_MS));
     }
 
-    _drawDockedShipWake(ctx, ship, zoom, profile = repoProfile(ship.project)) {
+    _drawDockedShipWake(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch)) {
         const s = 1 / Math.max(1, zoom || 1);
         const pulse = this.motionScale > 0
             ? 0.55 + 0.25 * Math.sin(this.frame * 0.08 + ship.berthIndex)
@@ -1404,7 +1459,7 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawMooringTick(ctx, ship, zoom, profile = repoProfile(ship.project)) {
+    _drawMooringTick(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch)) {
         const s = 1 / Math.max(1, zoom || 1);
         const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
         ctx.save();
@@ -1436,7 +1491,7 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawRepoFlag(ctx, ship, zoom, alpha = 1, profile = repoProfile(ship.project)) {
+    _drawRepoFlag(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch)) {
         const s = 1 / Math.max(1, zoom || 1);
         const x = Math.round(ship.x + 13 * s);
         const y = Math.round(ship.y - 31 * s);
@@ -1451,10 +1506,14 @@ export class HarborTraffic {
         ctx.lineTo(x + 2 * s, y + 9 * s);
         ctx.closePath();
         ctx.fill();
+        if (profile.isBranchVariant && profile.baseAccent) {
+            ctx.fillStyle = profile.baseAccent;
+            ctx.fillRect(x + 3 * s, y + 6 * s, Math.max(2, Math.round(9 * s)), Math.max(1, Math.round(2 * s)));
+        }
         ctx.restore();
     }
 
-    _drawCommitPennant(ctx, ship, zoom, alpha = 1, profile = repoProfile(ship.project)) {
+    _drawCommitPennant(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch)) {
         const s = 1 / Math.max(1, zoom || 1);
         const label = shortGitLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS, '…');
         const statusStyle = PUSH_STATUS_STYLE[ship.pushStatus] || null;
@@ -1475,17 +1534,21 @@ export class HarborTraffic {
         const height = 12 * s;
         ctx.save();
         ctx.globalAlpha = 0.94 * alpha;
-        ctx.fillStyle = 'rgba(24, 42, 39, 0.9)';
+        ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.9)';
         ctx.fillRect(x, y, Math.round(width), Math.round(height));
         ctx.strokeStyle = accent;
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        if (profile.isBranchVariant && profile.baseAccent) {
+            ctx.fillStyle = profile.baseAccent;
+            ctx.fillRect(x, y, Math.max(1, Math.round(2 * s)), Math.round(height));
+        }
         ctx.fillStyle = profile.accent;
-        ctx.fillRect(x, y, Math.max(2, Math.round(4 * s)), Math.round(height));
+        ctx.fillRect(x + (profile.isBranchVariant ? Math.max(1, Math.round(2 * s)) : 0), y, Math.max(2, Math.round(4 * s)), Math.round(height));
         ctx.fillStyle = accent;
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(label, Math.round(ship.x + 2 * s), Math.round(y + height / 2 + 0.5));
+        ctx.fillText(label, Math.round(x + width / 2 + 1 * s), Math.round(y + height / 2 + 0.5));
         ctx.fillStyle = accent;
         ctx.fillRect(Math.round(ship.x - 22 * s), Math.round(ship.y - 31 * s), Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
         ctx.restore();
@@ -1581,9 +1644,9 @@ export class HarborTraffic {
 
     _drawRepoQuayMarker(ctx, payload, zoom) {
         const s = 1 / Math.max(1, zoom || 1);
-        const profile = payload.profile || repoProfile(payload.project);
+        const profile = payload.profile || trafficProfile(payload.project, payload.branch);
         const count = Math.max(1, Number(payload.count || 1));
-        const name = shortGitLabel(displayRepoName(payload.project), count >= 100 ? 18 : 20, '…');
+        const name = shortGitLabel(trafficLabel(payload.project, payload.branch), count >= 100 ? 18 : 20, '…');
         const label = `${name} (${count})`;
         const textSize = Math.max(7, Math.round(9 * s));
         const width = Math.max(92 * s, Math.min(172 * s, label.length * textSize * 0.58 + 18 * s));
@@ -1594,16 +1657,20 @@ export class HarborTraffic {
 
         ctx.save();
         ctx.globalAlpha = 0.94;
-        ctx.fillStyle = 'rgba(20, 30, 34, 0.88)';
+        ctx.fillStyle = profile.panel || 'rgba(20, 30, 34, 0.88)';
         ctx.fillRect(x, y, Math.round(width), Math.round(height));
         ctx.strokeStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
         ctx.lineWidth = 1;
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        if (profile.isBranchVariant && profile.baseAccent) {
+            ctx.fillStyle = profile.baseAccent;
+            ctx.fillRect(x, y, Math.max(2, Math.round(3 * s)), Math.round(height));
+        }
         ctx.fillStyle = profile.accent;
-        ctx.fillRect(x, y, Math.max(3, Math.round(5 * s)), Math.round(height));
+        ctx.fillRect(x + (profile.isBranchVariant ? Math.max(2, Math.round(3 * s)) : 0), y, Math.max(3, Math.round(5 * s)), Math.round(height));
 
         ctx.globalAlpha = 1;
-        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : '#f5e8be';
+        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';

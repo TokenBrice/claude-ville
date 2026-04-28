@@ -44,7 +44,10 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
   '--repo',
 ]);
 const GIT_STATUS_CACHE_TTL_MS = 5000;
+const MAX_LOCAL_BRANCHES_TO_SCAN = 32;
+const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const _gitStatusCache = new Map();
+const _currentBranchCache = new Map();
 
 function stableHash(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
@@ -329,6 +332,13 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
   };
 
   if (parsed.targetRef) event.targetRef = parsed.targetRef;
+  if (project && type === 'push') {
+    const branch = normalizeRefName(parsed.targetRef) || currentBranch(project);
+    if (branch) {
+      event.branch = branch;
+      if (!event.targetRef) event.targetRef = branch;
+    }
+  }
   if (typeof context.success === 'boolean') event.success = context.success;
   if (Number.isFinite(Number(context.exitCode))) event.exitCode = Number(context.exitCode);
   const completedAt = parseTimestamp(context.completedAt);
@@ -381,6 +391,11 @@ function eventSha(event) {
   return String(event?.sha || event?.commit || event?.hash || event?.commitSha || event?.revision || '')
     .trim()
     .toLowerCase();
+}
+
+function eventBranch(event) {
+  return normalizeLocalBranchName(String(event?.branch || event?.targetRef || '')
+    .replace(/^refs\/remotes\/[^/]+\//, ''));
 }
 
 function commitSubjectFromCommand(command) {
@@ -521,60 +536,151 @@ function refExists(project, ref) {
 }
 
 function currentBranch(project) {
-  return tryRunGit(project, ['branch', '--show-current']);
+  if (!project) return '';
+  const now = Date.now();
+  const cached = _currentBranchCache.get(project);
+  if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) return cached.value;
+  const value = tryRunGit(project, ['branch', '--show-current']);
+  _currentBranchCache.set(project, { at: now, value });
+  return value;
 }
 
-function unpushedComparison(project) {
-  const branch = currentBranch(project);
-  const upstream = tryRunGit(project, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+function normalizeLocalBranchName(branch) {
+  return String(branch || '').trim().replace(/^refs\/heads\//, '');
+}
+
+function branchUpstream(project, branch) {
+  const normalized = normalizeLocalBranchName(branch);
+  if (!normalized) return '';
+  return tryRunGit(project, ['for-each-ref', '--format=%(upstream:short)', `refs/heads/${normalized}`]);
+}
+
+function listLocalBranches(project) {
+  const current = normalizeLocalBranchName(currentBranch(project));
+  const output = tryRunGit(project, [
+    'for-each-ref',
+    '--sort=-committerdate',
+    '--format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)',
+    'refs/heads',
+  ]);
+
+  const byName = new Map();
+  if (output) {
+    for (const line of output.split('\n')) {
+      const [name, upstream, timestampSeconds] = line.split('\0');
+      const branch = normalizeLocalBranchName(name);
+      if (!branch) continue;
+      byName.set(branch, {
+        branch,
+        upstream: upstream || '',
+        timestamp: Number(timestampSeconds) || 0,
+      });
+    }
+  }
+  if (current && !byName.has(current)) {
+    byName.set(current, {
+      branch: current,
+      upstream: branchUpstream(project, current),
+      timestamp: 0,
+    });
+  }
+
+  return [...byName.values()]
+    .sort((a, b) => {
+      if (a.branch === current) return -1;
+      if (b.branch === current) return 1;
+      return (b.timestamp - a.timestamp) || a.branch.localeCompare(b.branch);
+    })
+    .slice(0, MAX_LOCAL_BRANCHES_TO_SCAN);
+}
+
+function defaultComparisonBase(project, branch) {
+  const candidates = [
+    'origin/HEAD',
+    'origin/main',
+    'origin/master',
+    'main',
+    'master',
+  ].filter((ref) => ref && ref !== branch);
+
+  for (const baseRef of candidates) {
+    if (refExists(project, baseRef)) return baseRef;
+  }
+
+  return null;
+}
+
+function branchComparison(project, branch, explicitUpstream = '') {
+  const normalizedBranch = normalizeLocalBranchName(branch || currentBranch(project));
+  const upstream = explicitUpstream || branchUpstream(project, normalizedBranch);
   if (upstream) {
     return {
-      branch,
+      branch: normalizedBranch,
       baseRef: upstream,
       upstream,
       hasUpstream: true,
     };
   }
 
-  const candidates = [
-    'main',
-    'master',
-    'origin/HEAD',
-    'origin/main',
-    'origin/master',
-  ].filter((ref) => ref && ref !== branch);
-
-  for (const baseRef of candidates) {
-    if (!refExists(project, baseRef)) continue;
-    return {
-      branch,
-      baseRef,
-      upstream: null,
-      hasUpstream: false,
-    };
-  }
+  const baseRef = defaultComparisonBase(project, normalizedBranch);
+  if (baseRef) return {
+    branch: normalizedBranch,
+    baseRef,
+    upstream: null,
+    hasUpstream: false,
+  };
 
   return {
-    branch,
+    branch: normalizedBranch,
     baseRef: null,
     upstream: null,
     hasUpstream: false,
   };
 }
 
-function readPushState(project) {
+function unpushedComparison(project) {
+  return branchComparison(project, currentBranch(project));
+}
+
+function unpushedComparisons(project) {
+  const branches = listLocalBranches(project);
+  if (!branches.length) return [unpushedComparison(project)].filter((comparison) => comparison.baseRef);
+
+  const seen = new Set();
+  const comparisons = [];
+  for (const item of branches) {
+    const comparison = branchComparison(project, item.branch, item.upstream);
+    if (!comparison.baseRef || !comparison.branch) continue;
+    const key = `${comparison.branch}:${comparison.baseRef}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    comparisons.push(comparison);
+  }
+  return comparisons;
+}
+
+function readPushState(project, branch = null) {
   const now = Date.now();
-  const cached = _gitStatusCache.get(project);
+  const normalizedBranch = normalizeLocalBranchName(branch);
+  const cacheKey = `${project}::${normalizedBranch || 'HEAD'}`;
+  const cached = _gitStatusCache.get(cacheKey);
   if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) return cached.value;
 
   let value = { pushedToUpstream: false, upstream: null };
   try {
     if (runGit(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
-      _gitStatusCache.set(project, { at: now, value });
+      _gitStatusCache.set(cacheKey, { at: now, value });
       return value;
     }
-    const upstream = runGit(project, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
-    const counts = runGit(project, ['rev-list', '--left-right', '--count', 'HEAD...@{u}'])
+    const effectiveBranch = normalizedBranch || currentBranch(project) || 'HEAD';
+    const upstream = normalizedBranch
+      ? branchUpstream(project, normalizedBranch)
+      : runGit(project, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    if (!upstream) {
+      _gitStatusCache.set(cacheKey, { at: now, value });
+      return value;
+    }
+    const counts = runGit(project, ['rev-list', '--left-right', '--count', `${effectiveBranch}...${upstream}`])
       .split(/\s+/)
       .map((part) => Number(part));
     const ahead = Number.isFinite(counts[0]) ? counts[0] : null;
@@ -586,7 +692,7 @@ function readPushState(project) {
     value = { pushedToUpstream: false, upstream: null };
   }
 
-  _gitStatusCache.set(project, { at: now, value });
+  _gitStatusCache.set(cacheKey, { at: now, value });
   return value;
 }
 
@@ -596,7 +702,8 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
     .sort((a, b) => ((b.completedAt || b.ts || 0) - (a.completedAt || a.ts || 0)));
   if (!commits.length) return null;
 
-  const pushState = readPushState(project);
+  const branch = commits[0].branch || commits[0].targetRef || null;
+  const pushState = readPushState(project, branch);
   if (!pushState.pushedToUpstream) return null;
 
   const latestCommit = commits[0];
@@ -623,9 +730,25 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
     completedAt: now,
     status: 'success',
     targetRef: pushState.upstream,
+    branch: branch || null,
     label: pushState.upstream ? `Pushed to ${pushState.upstream}` : 'Pushed',
     inferred: true,
   };
+}
+
+function syntheticPushesForProject(project, commitEvents, now = Date.now()) {
+  const groups = new Map();
+  for (const event of commitEvents || []) {
+    if (event?.type !== 'commit' || event.project !== project) continue;
+    const branch = eventBranch(event);
+    const events = groups.get(branch) || [];
+    events.push(event);
+    groups.set(branch, events);
+  }
+
+  return [...groups.values()]
+    .map((events) => syntheticPushForProject(project, events, now))
+    .filter(Boolean);
 }
 
 function readUnpushedCommitEvents(project, context = {}) {
@@ -633,25 +756,26 @@ function readUnpushedCommitEvents(project, context = {}) {
 
   try {
     if (runGit(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') return [];
-    const comparison = unpushedComparison(project);
-    if (!comparison.baseRef) return [];
+    const comparisons = unpushedComparisons(project);
+    if (!comparisons.length) return [];
 
-    const output = runGit(project, [
-      'log',
-      '--reverse',
-      '--format=%H%x1f%ct%x1f%s',
-      `${comparison.baseRef}..HEAD`,
-    ]);
-    if (!output) return [];
+    const events = [];
+    for (const comparison of comparisons) {
+      const output = tryRunGit(project, [
+        'log',
+        '--reverse',
+        `--max-count=${MAX_UNPUSHED_COMMITS_PER_BRANCH}`,
+        '--format=%H%x1f%ct%x1f%s',
+        `${comparison.baseRef}..${comparison.branch}`,
+      ]);
+      if (!output) continue;
 
-    return output
-      .split('\n')
-      .map((line) => {
+      for (const line of output.split('\n')) {
         const [sha, timestampSeconds, subject] = line.split('\x1f');
-        if (!sha) return null;
+        if (!sha) continue;
         const ts = Number(timestampSeconds) * 1000;
         const id = `git-unpushed-${stableHash(`${project}:${comparison.branch || 'HEAD'}:${sha}`)}`;
-        return {
+        events.push({
           id,
           type: 'commit',
           command: `git commit ${sha.slice(0, 10)} (${subject || 'unpushed commit'})`,
@@ -673,9 +797,10 @@ function readUnpushedCommitEvents(project, context = {}) {
           upstream: comparison.upstream,
           comparisonRef: comparison.baseRef,
           hasUpstream: comparison.hasUpstream,
-        };
-      })
-      .filter(Boolean);
+        });
+      }
+    }
+    return dedupeGitEvents(events);
   } catch {
     return [];
   }
@@ -684,19 +809,29 @@ function readUnpushedCommitEvents(project, context = {}) {
 function inferPushedGitEvents(events, options = {}) {
   const list = Array.isArray(events) ? events : [];
   const now = Number.isFinite(options.now) ? options.now : Date.now();
-  const projects = new Set(
-    list
-      .filter((event) => event?.type === 'commit' && event.project)
-      .map((event) => event.project)
-  );
-  if (!projects.size) return list;
+  const commitsByProject = new Map();
+  const observedPushBranchesByProject = new Map();
+  for (const event of list) {
+    if (!event?.project) continue;
+    if (event.type === 'commit') {
+      const commits = commitsByProject.get(event.project) || [];
+      commits.push(event);
+      commitsByProject.set(event.project, commits);
+    }
+    if (event.type === 'push') {
+      const branches = observedPushBranchesByProject.get(event.project) || new Set();
+      branches.add(eventBranch(event));
+      observedPushBranchesByProject.set(event.project, branches);
+    }
+  }
+  if (!commitsByProject.size) return list;
 
   const enriched = [...list];
-  for (const project of projects) {
-    const hasObservedPush = list.some((event) => event?.type === 'push' && event.project === project);
-    if (hasObservedPush) continue;
-    const inferred = syntheticPushForProject(project, list, now);
-    if (inferred) enriched.push(inferred);
+  for (const [project, commits] of commitsByProject.entries()) {
+    const observedBranches = observedPushBranchesByProject.get(project) || new Set();
+    const candidates = syntheticPushesForProject(project, commits, now)
+      .filter((event) => !observedBranches.has(eventBranch(event)));
+    enriched.push(...candidates);
   }
   return dedupeGitEvents(enriched);
 }

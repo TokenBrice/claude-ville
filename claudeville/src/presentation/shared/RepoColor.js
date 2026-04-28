@@ -1,17 +1,55 @@
-// Canonical per-repo palette + hash-keyed profile.
+// Canonical per-repo and per-branch hash-keyed color profiles.
 // Both the harbor (canvas, ship markers) and the sidebar (DOM, project groups)
 // must agree on the color for a given repo path.
 
-const REPO_PALETTES = [
-    { accent: '#6cdb94', glow: 'rgba(108, 219, 148, 0.34)', panel: 'rgba(20, 54, 42, 0.9)' },
-    { accent: '#63c7f2', glow: 'rgba(99, 199, 242, 0.33)', panel: 'rgba(21, 47, 60, 0.9)' },
-    { accent: '#f2b84b', glow: 'rgba(242, 184, 75, 0.35)', panel: 'rgba(60, 45, 20, 0.9)' },
-    { accent: '#ef7b6d', glow: 'rgba(239, 123, 109, 0.33)', panel: 'rgba(62, 34, 31, 0.9)' },
-    { accent: '#b58cff', glow: 'rgba(181, 140, 255, 0.32)', panel: 'rgba(43, 34, 63, 0.9)' },
-    { accent: '#f08fd4', glow: 'rgba(240, 143, 212, 0.3)', panel: 'rgba(59, 32, 52, 0.9)' },
-    { accent: '#9ed760', glow: 'rgba(158, 215, 96, 0.32)', panel: 'rgba(42, 55, 25, 0.9)' },
-    { accent: '#f6cf60', glow: 'rgba(246, 207, 96, 0.33)', panel: 'rgba(58, 48, 27, 0.9)' },
-];
+const GOLDEN_ANGLE = 137.508;
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function positiveModulo(value, divisor) {
+    return ((value % divisor) + divisor) % divisor;
+}
+
+function hslColor(hue, saturation, lightness) {
+    return `hsl(${Math.round(hue)}, ${Math.round(saturation)}%, ${Math.round(lightness)}%)`;
+}
+
+function hslaColor(hue, saturation, lightness, alpha) {
+    return `hsla(${Math.round(hue)}, ${Math.round(saturation)}%, ${Math.round(lightness)}%, ${alpha})`;
+}
+
+function colorProfileFromHash(hash, options = {}) {
+    const offset = Number(options.hueOffset) || 0;
+    const hue = positiveModulo((hash % 360) + ((hash >> 7) % 29) * GOLDEN_ANGLE + offset, 360);
+    const saturation = clamp(62 + (hash % 18), 58, 78);
+    const lightness = clamp(54 + ((hash >> 4) % 11), 52, 66);
+    return {
+        hue,
+        saturation,
+        lightness,
+        accent: hslColor(hue, saturation, lightness),
+        glow: hslaColor(hue, saturation, lightness, 0.34),
+        panel: hslaColor(hue, clamp(saturation - 22, 34, 54), 20, 0.9),
+    };
+}
+
+function branchColorProfile(baseProfile, branchHash) {
+    const direction = branchHash % 2 === 0 ? 1 : -1;
+    const shift = 18 + (branchHash % 28);
+    const hue = positiveModulo((baseProfile.hue || 0) + direction * shift, 360);
+    const saturation = clamp((baseProfile.saturation || 66) + ((branchHash >> 5) % 9) - 4, 56, 82);
+    const lightness = clamp((baseProfile.lightness || 58) + ((branchHash >> 9) % 9) - 4, 50, 68);
+    return {
+        hue,
+        saturation,
+        lightness,
+        accent: hslColor(hue, saturation, lightness),
+        glow: hslaColor(hue, saturation, lightness, 0.36),
+        panel: hslaColor(hue, clamp(saturation - 18, 38, 58), 20, 0.92),
+    };
+}
 
 function stableHash(input) {
     const text = String(input || '');
@@ -35,17 +73,48 @@ function projectName(project) {
     return shorten(parts.at(-1) || text || 'unknown', 26);
 }
 
+export function normalizeRepoBranch(branch) {
+    const text = String(branch || '')
+        .replace(/^refs\/heads\//, '')
+        .replace(/^refs\/remotes\/[^/]+\//, '')
+        .trim();
+    if (!text || text === 'HEAD' || text === 'unknown') return '';
+    return text;
+}
+
 export function repoProfile(project) {
     const name = projectName(project);
     const hash = stableHash(String(project || name || 'unknown'));
-    const palette = REPO_PALETTES[hash % REPO_PALETTES.length];
+    const colors = colorProfileFromHash(hash);
     return {
         key: `${name.toLowerCase()}:${hash.toString(36)}`,
         name,
         shortName: shorten(name, 16),
         hash,
-        accent: palette.accent,
-        glow: palette.glow,
-        panel: palette.panel,
+        ...colors,
+    };
+}
+
+export function repoBranchProfile(project, branch) {
+    const normalizedBranch = normalizeRepoBranch(branch);
+    const base = repoProfile(project);
+    if (!normalizedBranch) return base;
+
+    const branchHash = stableHash(`${base.key}:${normalizedBranch}`);
+    const colors = branchColorProfile(base, branchHash);
+    const branchName = shorten(normalizedBranch, 18);
+    return {
+        ...base,
+        key: `${base.key}@${branchHash.toString(36)}`,
+        branch: normalizedBranch,
+        branchName,
+        fullName: `${base.name}/${branchName}`,
+        shortName: `${base.shortName}/${shorten(normalizedBranch, 10)}`,
+        branchHash,
+        baseAccent: base.accent,
+        baseGlow: base.glow,
+        basePanel: base.panel,
+        isBranchVariant: true,
+        ...colors,
     };
 }
