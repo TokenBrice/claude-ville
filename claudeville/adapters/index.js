@@ -207,6 +207,21 @@ function getActiveProviders() {
   }));
 }
 
+function getAdapterPerfStats() {
+  const stats = {};
+  for (const adapter of adapters) {
+    if (typeof adapter.getPerfStats !== 'function') continue;
+    try {
+      stats[adapter.provider] = adapter.getPerfStats();
+    } catch (err) {
+      stats[adapter.provider] = {
+        error: err?.message || 'Unable to collect adapter perf stats',
+      };
+    }
+  }
+  return stats;
+}
+
 module.exports = {
   adapters,
   getAllSessions,
@@ -214,5 +229,6 @@ module.exports = {
   getSessionDetailsBatch,
   getAllWatchPaths,
   getActiveProviders,
+  getAdapterPerfStats,
   invalidateSessionCaches,
 };

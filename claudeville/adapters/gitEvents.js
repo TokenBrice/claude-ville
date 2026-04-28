@@ -826,6 +826,7 @@ module.exports = {
   inferPushedGitEvents,
   inferPushedGitEventsForSessions,
   inferUnpushedGitEventsForSessions,
+  mergeUnpushedGitEvents,
   parseGitEventsFromCommand,
   stableHash,
 };

@@ -35,6 +35,15 @@ const _rolloutDiscoveryCache = {
   filesByPath: new Map(),
   dayDirMtimes: new Map(),
 };
+let _rolloutDiscoveryStats = {
+  at: null,
+  activeThresholdMs: null,
+  dayDirsScanned: 0,
+  rolloutFilesScanned: 0,
+  resultCount: 0,
+  capped: false,
+  warning: null,
+};
 
 function readHeadLines(filePath, count) {
   const fd = fs.openSync(filePath, 'r');
@@ -683,6 +692,7 @@ function scanRolloutDayDir(dayDir, activeCutoffMs, resultsByPath, counters) {
 }
 
 function scanRecentRollouts(activeThresholdMs) {
+  const startedAt = Date.now();
   const activeCutoffMs = Date.now() - activeThresholdMs;
   const resultsByPath = new Map();
   const counters = { dayDirs: 0, files: 0, limited: false };
@@ -691,6 +701,7 @@ function scanRecentRollouts(activeThresholdMs) {
     _rolloutDiscoveryCache.initialized = false;
     _rolloutDiscoveryCache.filesByPath.clear();
     _rolloutDiscoveryCache.dayDirMtimes.clear();
+    recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, 0);
     return [];
   }
 
@@ -743,7 +754,29 @@ function scanRecentRollouts(activeThresholdMs) {
   } catch { /* ignore */ }
 
   _rolloutDiscoveryCache.initialized = true;
-  return Array.from(resultsByPath.values()).sort((a, b) => b.mtime - a.mtime);
+  const rollouts = Array.from(resultsByPath.values()).sort((a, b) => b.mtime - a.mtime);
+  recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, rollouts.length);
+  return rollouts;
+}
+
+function recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, resultCount) {
+  const capped = Boolean(counters.limited);
+  _rolloutDiscoveryStats = {
+    at: Date.now(),
+    durationMs: Date.now() - startedAt,
+    activeThresholdMs,
+    dayDirsScanned: counters.dayDirs,
+    rolloutFilesScanned: counters.files,
+    resultCount,
+    capped,
+    caps: {
+      dayDirs: MAX_ROLLOUT_DAY_DIRS,
+      rolloutFiles: MAX_ROLLOUT_FILES,
+    },
+    warning: capped
+      ? `Codex rollout discovery hit scan cap after ${counters.dayDirs} day directories and ${counters.files} rollout files`
+      : null,
+  };
 }
 
 // ─── Adapter class ────────────────────────────────────
@@ -849,6 +882,12 @@ class CodexAdapter {
     // Keep rollout discovery metadata across ordinary provider invalidations.
     // Watch events usually mean one file changed; dropping this cache would turn
     // every active-session refresh back into a full historical scan.
+  }
+
+  getPerfStats() {
+    return {
+      rolloutDiscovery: _rolloutDiscoveryStats,
+    };
   }
 }
 

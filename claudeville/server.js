@@ -11,6 +11,7 @@ const {
   getAllWatchPaths,
   getActiveProviders,
   invalidateSessionCaches,
+  getAdapterPerfStats,
   adapters,
 } = require('./adapters');
 
@@ -24,6 +25,8 @@ const claudeAdapter = adapters.find(a => a.provider === 'claude');
 const PORT = 4000;
 const STATIC_DIR = __dirname;
 const STATIC_ROOT = path.resolve(STATIC_DIR);
+const realpathSync = fs.realpathSync.native || fs.realpathSync;
+const STATIC_REAL_ROOT = realpathSync(STATIC_ROOT);
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 const ALLOWED_SESSION_PROVIDERS = Object.freeze(new Set(['claude', 'codex', 'gemini', 'git']));
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
@@ -117,6 +120,14 @@ function readJsonBody(req, callback) {
 
 function cacheControlFor() {
   return 'no-cache';
+}
+
+function isContainedPath(root, candidate) {
+  return candidate === root || candidate.startsWith(root + path.sep);
+}
+
+function realpathExistingPath(filePath) {
+  return realpathSync(filePath);
 }
 
 function formatAge(ms) {
@@ -322,9 +333,12 @@ function handleGetPerf(req, res) {
       path: fallback.wp.path,
       provider: fallback.wp.provider || null,
       filter: fallback.wp.filter || null,
+      baselinePending: Boolean(fallback.baselinePending),
       lastScanAt: fallback.lastScanAt || null,
+      lastSignatureAt: fallback.lastSignatureAt || null,
       lastError: fallback.lastError || null,
     })),
+    providers: getAdapterPerfStats(),
     watchFailures: serverPerf.watchFailures,
     recentWatchFailures: serverPerf.watchFailureDetails,
     fallbackScans: serverPerf.fallbackScans,
@@ -343,15 +357,20 @@ function handleStaticFile(req, res) {
     console.log('[Static] request', req.url);
   }
   try {
-    const requestedPath = decodeURIComponent(req.url.split('?')[0] || '/');
-    let filePath = path.join(STATIC_DIR, requestedPath === '/' ? 'index.html' : requestedPath);
-
-    const resolvedPath = path.resolve(filePath);
-    if (resolvedPath !== STATIC_ROOT && !resolvedPath.startsWith(STATIC_ROOT + path.sep)) {
-      return sendError(res, 403, 'Forbidden');
+    let requestedPath;
+    try {
+      requestedPath = decodeURIComponent(req.url.split('?')[0] || '/');
+    } catch {
+      return sendError(res, 400, 'Bad Request');
     }
 
-    filePath = resolvedPath.split('?')[0];
+    const relativePath = requestedPath === '/'
+      ? 'index.html'
+      : requestedPath.replace(/^\/+/, '');
+    let filePath = path.resolve(STATIC_ROOT, relativePath);
+    if (!isContainedPath(STATIC_ROOT, filePath)) {
+      return sendError(res, 403, 'Forbidden');
+    }
 
     if (!fs.existsSync(filePath)) {
       return sendError(res, 404, 'Not Found');
@@ -359,11 +378,20 @@ function handleStaticFile(req, res) {
 
     const stat = fs.statSync(filePath);
     if (stat.isDirectory()) {
-      filePath = path.join(filePath, 'index.html');
+      filePath = path.resolve(filePath, 'index.html');
+      if (!isContainedPath(STATIC_ROOT, filePath)) {
+        return sendError(res, 403, 'Forbidden');
+      }
       if (!fs.existsSync(filePath)) {
         return sendError(res, 404, 'Not Found');
       }
     }
+
+    const realFilePath = realpathExistingPath(filePath);
+    if (!isContainedPath(STATIC_REAL_ROOT, realFilePath)) {
+      return sendError(res, 403, 'Forbidden');
+    }
+    filePath = realFilePath;
 
     const ext = path.extname(filePath).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
@@ -839,14 +867,28 @@ function recordWatchFailure(wp, key, err, phase = 'setup') {
 
 function addRecursiveWatchFallback(wp, key, err) {
   if (wp.type !== 'directory' || !wp.recursive) return;
+  const now = Date.now();
   if (!recursiveWatchFallbacks.has(key)) {
-    recursiveWatchFallbacks.set(key, {
+    const fallback = {
       wp,
       key,
       signature: null,
       lastScanAt: 0,
+      lastSignatureAt: null,
+      baselinePending: true,
       lastError: err?.message || null,
-    });
+    };
+    try {
+      if (fs.existsSync(wp.path)) {
+        fallback.signature = getWatchFallbackSignature(wp);
+        fallback.lastSignatureAt = now;
+        fallback.baselinePending = false;
+        fallback.lastError = err?.message || null;
+      }
+    } catch (baselineErr) {
+      fallback.lastError = baselineErr.message;
+    }
+    recursiveWatchFallbacks.set(key, fallback);
   } else {
     const fallback = recursiveWatchFallbacks.get(key);
     fallback.wp = wp;
@@ -922,12 +964,15 @@ function runRecursiveWatchFallbackChecks() {
     try {
       const signature = getWatchFallbackSignature(fallback.wp);
       serverPerf.fallbackScans++;
-      if (fallback.signature && signature !== fallback.signature) {
+      const shouldMarkDirty = fallback.baselinePending || (fallback.signature && signature !== fallback.signature);
+      if (shouldMarkDirty) {
         serverPerf.fallbackChanges++;
         markProviderDataDirty(`stat-fallback:${path.basename(fallback.wp.path)}`, fallback.wp.provider || null);
         debouncedBroadcast();
       }
       fallback.signature = signature;
+      fallback.lastSignatureAt = now;
+      fallback.baselinePending = false;
       fallback.lastError = null;
     } catch (err) {
       fallback.lastError = err.message;
