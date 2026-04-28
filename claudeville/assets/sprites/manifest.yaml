@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-codex-epic-weapons-v1"
+  assetVersion: "2026-04-28-codex-effort-gear-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ characters:
 
   - id: agent.claude.sonnet
     tool: create_character
-    prompt: "Claude Sonnet female mid-tier wizard, deep violet and cobalt robes with silver rune trim, pointed wizard hat, star-lined cloak, crystal-topped staff held close to body, chained spellbook at belt, controlled blue-violet hand runes, elegant seasoned mage stance, no wings, no angel armor, no warrior plate armor, no revealing outfit"
+    prompt: "Claude Sonnet female mid-tier wizard, deep violet and cobalt robes with silver rune trim, shorter pointed wizard hat below top margin, star-lined cloak, crystal-topped staff held tight inside silhouette, chained spellbook at belt, controlled blue-violet hand runes, robe hem fully visible above bottom margin, no pixels touching canvas edge, no wings, no angel armor, no warrior plate armor, no revealing outfit, elegant seasoned mage stance"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -44,7 +44,27 @@ characters:
 
   - id: agent.codex.gpt55
     tool: create_character
-    prompt: "Codex GPT-5.5 apex techno-paladin base, navy under-armor with gold trim, simple commander helm, teal energy core on breastplate, compact shoulder pauldrons, palms loose at sides fingers visible, no held weapon, no shield, no cape, commanding upright stance, 8-direction pixel art"
+    prompt: "Codex GPT-5.5 apex techno-paladin base, navy under-armor with gold trim, simple consistent commander helm, teal energy core on breastplate, compact shoulder pauldrons, full body centered with clear transparent margin, empty open hands visible near torso, no sword, no blade, no spear, no staff, no sidearm, no shield, no cape, runtime weapon overlay added separately, commanding upright stance, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+    mode: pro
+
+  - id: agent.codex.gpt55.high
+    tool: create_character
+    prompt: "Codex GPT-5.5 high reasoning techno-paladin, navy and steel heavy plate armor baked onto body, broad gold-trimmed shoulder pauldrons, closed angular commander helmet with cyan visor, short dark violet cape behind shoulders, teal energy core on breastplate, empty visible hands held near torso for gripping runtime greatsword, no held weapon, no shield, no polearm, no sword, no staff, heroic old-school RPG pixel art, 8-direction character sprite"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+    mode: pro
+
+  - id: agent.codex.gpt55.xhigh
+    tool: create_character
+    prompt: "Codex GPT-5.5 extra-high reasoning arcane warlord paladin, massive navy and steel rune plate armor baked onto body, oversized gold-trimmed pauldrons, crested angular helmet with cyan visor, dramatic dark violet cape trailing behind, bright teal reactor core on chest, empty visible hands held near torso for gripping runtime polearm, no held weapon, no shield, no polearm, no sword, no staff, apex old-school RPG pixel art, 8-direction character sprite"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -54,7 +74,7 @@ characters:
 
   - id: agent.codex.gpt54
     tool: create_character
-    prompt: "Codex GPT-5.4 senior battle-engineer, deep teal half-plate with brass utility belt, brass goggles on helmet, mechanical bronze gauntlet on left forearm, palms loose fingers visible, small backpack toolkit with antenna, sturdy grounded stance, 8-direction pixel art"
+    prompt: "Codex GPT-5.4 senior battle-engineer, deep teal half-plate with brass utility belt, brass goggles on helmet, mechanical bronze gauntlet on left forearm, sturdy readable body height inside the frame, short backpack nub antenna attached to backpack only, open hands visible, no handheld tool, no staff, no rod, no rifle, no wrench in base sprite, runtime wrench overlay added separately, sturdy grounded stance, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -64,7 +84,7 @@ characters:
 
   - id: agent.codex.gpt53spark
     tool: create_character
-    prompt: "Codex GPT-5.3 Spark scout-duelist, light teal leather armor with yellow lightning sash, backwards visor helm with cyan lens, runner boots, palms loose fingers visible, folded multitool clipped to hip belt, agile alert stance, 8-direction pixel art"
+    prompt: "Codex GPT-5.3 Spark scout technician, light teal leather armor with yellow lightning sash, backwards visor helm with cyan lens, runner boots, readable compact body height, open hands visible, folded belt gadget only, no blade, no weapon, no handheld multitool, no sword, no spear, agile alert stance, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -74,30 +94,33 @@ characters:
 
   - id: agent.claude.base
     tool: create_character
-    prompt: "epic high-fantasy mage scholar, warm amber robes with gold trim, glowing rune sigil on chest, hooded silhouette, readable RPG silhouette, 8-direction pixel art"
+    prompt: "Claude base humanoid mage scholar, warm amber layered robes with gold trim, readable face under amber hood, glowing rune sigil on chest, layered robe folds, small belt satchel and scroll case, compact readable RPG silhouette, no block body, no floating square prop, no staff, no weapon, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
     anchor: [46, 80]
+    mode: pro
 
   - id: agent.codex.base
     tool: create_character
-    prompt: "epic arcane engineer, deep teal coat with circuit-glow trim, rogue mask, tool-belt, readable RPG silhouette, 8-direction pixel art"
+    prompt: "Codex base humanoid arcane engineer, deep teal coat over visible arms and legs, circuit-glow trim, compact rogue mask, visible tool belt only, leather boots, readable RPG silhouette, no staff, no cube body, no handheld weapon, no wrench in hand, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
     anchor: [46, 80]
+    mode: pro
 
   - id: agent.gemini.base
     tool: create_character
-    prompt: "epic celestial oracle, deep violet vestments with starlight trim, constellation veil, readable RPG silhouette, 8-direction pixel art"
+    prompt: "Gemini base humanoid celestial oracle, deep violet robe folds with starlight trim, translucent constellation veil around head and shoulders, readable face silhouette, small star charm at belt, compact readable RPG silhouette, no crown block, no floating cube, no handheld staff, no weapon, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: gemini
     anchor: [46, 80]
+    mode: pro
 
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
@@ -152,56 +175,56 @@ equipment:
 accessories:
   - id: overlay.accessory.effortXhigh
     tool: isometric_tile
-    prompt: "tall gold reasoning crest with single ring crown, Claude apex tier, transparent background"
+    prompt: "small upright gold reasoning crest head accessory, open single crown ring with three short vertical rays, narrow laurel base, cyan crystal, readable at 32 pixels, transparent background, no purple, no wings, no saucer, no floor ring, no pedestal"
     size: 32
     n_directions: 8
-    anchor: [16, 13]
+    anchor: [16, 18]
 
   - id: overlay.accessory.effortMax
     tool: isometric_tile
-    prompt: "vertical triple-pillar gold star crown rising above head, three stacked star points with laurel wreath base, distinct vertical pillar shape clearly different from any ring or halo, Claude maximum tier, transparent background"
+    prompt: "tall narrow gold triple-pillar star crown head accessory, three vertical star-tipped spires rising from a small laurel base, cyan gems, distinct from a halo ring, readable at 32 pixels, transparent background, no altar, no pedestal, no cross, no floor tile"
     size: 32
     n_directions: 8
-    anchor: [16, 16]
+    anchor: [16, 20]
 
   - id: overlay.accessory.mageHood
     tool: isometric_tile
-    prompt: "wizard hood, deep amber fabric, drapes over shoulders, rune stitching, transparent background"
+    prompt: "head-worn icon only, deep amber wizard hood with shoulder drape, rune stitching, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
     size: 32
     n_directions: 8
     anchor: [16, 12]
 
   - id: overlay.accessory.scholarCap
     tool: isometric_tile
-    prompt: "wide-brim scholar cap, weathered leather, quill tucked in band, transparent background"
+    prompt: "head-worn icon only, wide-brim scholar cap, weathered leather, small quill tucked in band, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
     size: 32
     n_directions: 8
     anchor: [16, 12]
 
   - id: overlay.accessory.goggles
     tool: isometric_tile
-    prompt: "arcane engineer goggles, brass frame, teal lens glow, transparent background"
+    prompt: "head-worn icon only, brass engineer goggles with cyan lenses and leather strap, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
     size: 32
     n_directions: 8
     anchor: [16, 12]
 
   - id: overlay.accessory.toolBand
     tool: isometric_tile
-    prompt: "utility tool-band headband, circuit-glow stripe, micro tools clipped, transparent background"
+    prompt: "head-worn icon only, Codex tool-band circlet, dark teal leather band with tiny brass rivets and cyan circuit glow, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
     size: 32
     n_directions: 8
     anchor: [16, 12]
 
   - id: overlay.accessory.starCrown
     tool: isometric_tile
-    prompt: "celestial star crown, violet metal, star-shaped gems, faint purple glow, transparent background"
+    prompt: "head-worn icon only, small gold star crown, five tiny star points with blue gem center, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
     size: 32
     n_directions: 8
     anchor: [16, 12]
 
   - id: overlay.accessory.oracleVeil
     tool: isometric_tile
-    prompt: "diaphanous oracle veil, deep violet fabric with constellation pattern, transparent background"
+    prompt: "head-worn icon only, violet oracle veil circlet, translucent constellation veil draping from silver headband with pale blue star motes, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
     size: 32
     n_directions: 8
     anchor: [16, 12]
@@ -231,18 +254,21 @@ statusOverlays:
 
   - id: overlay.status.effortLow
     tool: isometric_tile
-    prompt: "soft single-band bronze floor ring at agent feet, faint glow, low effort tier marker, transparent background"
+    prompt: "soft hollow single-band bronze elliptical floor ring at agent feet, transparent center, faint amber pixel glow, low reasoning effort marker, no filled coin, no medallion, no platform, no solid disk"
     size: 64
+    anchor: [32, 36]
 
   - id: overlay.status.effortMedium
     tool: isometric_tile
-    prompt: "double-band silver floor ring at agent feet, gentle pulse glow, medium effort tier marker, transparent background"
+    prompt: "hollow double-band silver elliptical floor ring at agent feet, transparent center, gentle pale blue-white pulse, medium reasoning effort marker, no filled coin, no medallion, no platform, no solid disk"
     size: 64
+    anchor: [32, 36]
 
   - id: overlay.status.effortHigh
     tool: isometric_tile
-    prompt: "triple-band gold floor ring with rune sparks at agent feet, vivid pulse, high effort tier marker, transparent background"
+    prompt: "hollow triple-band gold elliptical floor ring at agent feet, transparent center, tiny rune ticks and amber sparks on the bands, high reasoning effort marker, no filled coin, no medallion, no platform, no solid disk"
     size: 64
+    anchor: [32, 36]
 
 # ─── BUILDINGS ───────────────────────────────────────────────────────────────
 # HERO buildings: composeGrid [3,2] = 3 cols × 2 rows of 104px cells → 312×208 composed.

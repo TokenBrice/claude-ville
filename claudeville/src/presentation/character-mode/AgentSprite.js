@@ -1012,22 +1012,26 @@ export class AgentSprite {
     _drawEffortFloorRing(ctx, identity) {
         const effortRingId = this._runtimeEffortFloorRing(identity);
         if (!effortRingId) return;
-        const effortTier = this._effortFloorRingTier(identity, effortRingId);
-        if (effortTier) {
-            this._drawProceduralEffortFloorRing(ctx, effortTier);
+        const effortRing = this.assets?.get(effortRingId);
+        if (!effortRing) {
+            const effortTier = this._effortFloorRingTier(identity, effortRingId);
+            if (effortTier) this._drawProceduralEffortFloorRing(ctx, effortTier);
             return;
         }
-        if (!this.assets) return;
-        const effortRing = this.assets.get(effortRingId);
-        if (!effortRing) return;
         const dims = this.assets.getDims(effortRingId);
+        const [ax, ay] = this.assets.getAnchor(effortRingId);
+        const pulse = 0.76 + 0.24 * Math.sin(this.statusAnim * 1.8);
+        ctx.save();
+        ctx.globalAlpha = pulse;
+        ctx.imageSmoothingEnabled = false;
         ctx.drawImage(
             effortRing,
-            Math.round(this.x - dims.w / 2),
-            Math.round(this.y - dims.h / 2),
+            Math.round(this.x - ax),
+            Math.round(this.y + 4 - ay),
             dims.w,
             dims.h
         );
+        ctx.restore();
     }
 
     _effortFloorRingTier(identity, effortRingId) {
@@ -1298,7 +1302,8 @@ export class AgentSprite {
 
         const directionKey = DIRECTIONS[this.direction] || 's';
         const geometry = this._codexWeaponGeometry(frameGeometry, directionKey);
-        const heavyArmor = equipment === 'greatsword' || equipment === 'polearm';
+        const heavyGearBaked = identity?.codexHeavyGearBaked && this.assets?.has?.(identity.spriteId);
+        const heavyArmor = !heavyGearBaked && (equipment === 'greatsword' || equipment === 'polearm');
         const warlord = equipment === 'polearm';
         const assetDef = CODEX_WEAPON_ASSETS[equipment] || null;
         const assetDrawsBehindBody = assetDef && this._assetWeaponBackLayer(assetDef, directionKey);

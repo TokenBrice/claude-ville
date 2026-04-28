@@ -69,6 +69,13 @@ const REQUIRED_EQUIPMENT_ASSETS = [
   'equipment.codex.polearm',
   'equipment.codex.engineerWrench',
 ];
+const REQUIRED_CHARACTER_ASSETS = [
+  'agent.codex.gpt53spark',
+  'agent.codex.gpt54',
+  'agent.codex.gpt55',
+  'agent.codex.gpt55.high',
+  'agent.codex.gpt55.xhigh',
+];
 
 await assertDevServer(baseUrl);
 mkdirSync(outDir, { recursive: true });
@@ -88,7 +95,7 @@ try {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 10_000 });
   await page.waitForFunction(() => window.jsyaml && document.getElementById('worldCanvas'), null, { timeout: 10_000 });
 
-  const setup = await page.evaluate(async ({ models, efforts, directions, poses, equipmentAssets }) => {
+  const setup = await page.evaluate(async ({ models, efforts, directions, poses, equipmentAssets, characterAssets }) => {
     const [
       { AssetManager },
       { Compositor },
@@ -125,9 +132,7 @@ try {
     const assets = new AssetManager();
     await assets.load();
     const compositor = new Compositor(assets);
-    const missingSprites = models
-      .map((model) => `agent.codex.${model.key}`)
-      .filter((id) => !assets.has(id));
+    const missingSprites = characterAssets.filter((id) => !assets.has(id));
     const missingEquipmentAssets = equipmentAssets.filter((id) => !assets.has(id));
 
     globalThis.drawBackground = (ctx, width, height) => {
@@ -202,7 +207,7 @@ try {
       missingSprites,
       missingEquipmentAssets,
     };
-  }, { models: CODEX_MODELS, efforts: EFFORTS, directions: DIRECTIONS, poses: POSES, equipmentAssets: REQUIRED_EQUIPMENT_ASSETS });
+  }, { models: CODEX_MODELS, efforts: EFFORTS, directions: DIRECTIONS, poses: POSES, equipmentAssets: REQUIRED_EQUIPMENT_ASSETS, characterAssets: REQUIRED_CHARACTER_ASSETS });
 
   if (setup.missingSprites.length) {
     throw new Error(`Missing required Codex sprite assets: ${setup.missingSprites.join(', ')}`);

@@ -49,6 +49,10 @@ const CODEX_GPT55_EQUIPMENT_BY_EFFORT = Object.freeze({
     high: 'greatsword',
     xhigh: 'polearm',
 });
+const CODEX_GPT55_SPRITE_BY_EFFORT = Object.freeze({
+    high: 'agent.codex.gpt55.high',
+    xhigh: 'agent.codex.gpt55.xhigh',
+});
 
 const DEFAULT_EFFORT_RENDERING = Object.freeze({
     effortBakedIntoSprite: false,
@@ -69,6 +73,10 @@ function codexEquipment(effortTier, modelClass) {
         effortWeapon: equipment,
         suppressBakedWeapon: true,
     };
+}
+
+function codexGpt55Sprite(effortTier) {
+    return CODEX_GPT55_SPRITE_BY_EFFORT[effortTier] || 'agent.codex.gpt55';
 }
 
 function normalizeCodexEffortTier(effortTier) {
@@ -192,7 +200,8 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             effortTier: codexEffortTier,
             ...DEFAULT_EFFORT_RENDERING,
             ...equipment,
-            spriteId: 'agent.codex.gpt55',
+            spriteId: codexGpt55Sprite(codexEffortTier),
+            codexHeavyGearBaked: codexEffortTier === 'high' || codexEffortTier === 'xhigh',
             paletteKey: 'codex',
             trim: ['#fff1b8', '#7be3d7', '#f8c45f'],
             accent: ['#ffffff', '#bff7ee', '#ffd98a'],
