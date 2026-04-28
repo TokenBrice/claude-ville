@@ -3,7 +3,10 @@ const DISPATCH_MS = 600;
 const MERGE_MS = 400;
 const DEPARTURE_SIGIL_MS = 12000;
 const REDUCED_SIGIL_MS = 6000;
+const SUBAGENT_COMPLETION_MS = 2200;
+const REDUCED_COMPLETION_MS = 3600;
 const MAX_SIGILS = 6;
+const MAX_COMPLETION_CUES = 8;
 
 const PROVIDER_COLORS = {
     claude: '#a78bfa',
@@ -62,8 +65,23 @@ function pointOnPath(start, end, t, lift = 0) {
     };
 }
 
-function hasHarborActivity(agent) {
+function hasGitActivity(agent) {
     return Array.isArray(agent?.gitEvents) && agent.gitEvents.length > 0;
+}
+
+function hasHarborActivity(agent) {
+    if (!agent) return false;
+    if (hasGitActivity(agent)) return true;
+    return agent.targetBuildingType === 'harbor'
+        || agent.lastKnownBuildingType === 'harbor'
+        || agent.currentBuildingType === 'harbor';
+}
+
+function arrivalModeForAgent(agent) {
+    const provider = String(agent?.provider || '').toLowerCase();
+    if (hasHarborActivity(agent)) return 'boat';
+    if (provider === 'claude' || provider.includes('claude')) return 'carriage';
+    return 'boat';
 }
 
 export class ArrivalDepartureController {
@@ -73,6 +91,7 @@ export class ArrivalDepartureController {
         this.dispatches = new Map();
         this.merges = new Map();
         this.sigils = [];
+        this.completionCues = [];
     }
 
     setMotionScale(scale) {
@@ -86,7 +105,7 @@ export class ArrivalDepartureController {
             return null;
         }
 
-        const mode = hasHarborActivity(agent) ? 'boat' : 'carriage';
+        const mode = arrivalModeForAgent(agent);
         const start = tileToScreen(mode === 'boat' ? HARBOR_APPROACH : COMMAND_APPROACH);
         const end = tileToScreen(mode === 'boat' ? HARBOR_ARRIVAL : COMMAND_ARRIVAL);
         sprite.setArrivalState?.('pending');
@@ -108,14 +127,16 @@ export class ArrivalDepartureController {
 
     beginSubagentDispatch(parentSprite, childSprite, { now = nowMs() } = {}) {
         if (!parentSprite || !childSprite) return null;
+        const childId = childSprite.agent?.id;
+        if (!childId) return null;
         if (this.motionScale === 0) {
             childSprite.setArrivalState?.('visible');
             return null;
         }
 
         childSprite.setArrivalState?.('pending');
-        this.dispatches.set(childSprite.agent.id, {
-            id: childSprite.agent.id,
+        this.dispatches.set(childId, {
+            id: childId,
             parentSprite,
             childSprite,
             start: { x: parentSprite.x, y: parentSprite.y - 34 },
@@ -124,7 +145,7 @@ export class ArrivalDepartureController {
             duration: DISPATCH_MS,
             color: providerColor(childSprite.agent?.provider),
         });
-        return this.dispatches.get(childSprite.agent.id);
+        return this.dispatches.get(childId);
     }
 
     beginSubagentMerge(childAgent, childPoint, parentSprite, { now = nowMs() } = {}) {
@@ -140,6 +161,31 @@ export class ArrivalDepartureController {
             color: providerColor(childAgent.provider),
         });
         return this.merges.get(childAgent.id);
+    }
+
+    recordSubagentCompletion(childAgent, childPoint, parentSprite, { now = nowMs() } = {}) {
+        if (!childAgent || !parentSprite) return null;
+        const anchor = childPoint && Number.isFinite(childPoint.x) && Number.isFinite(childPoint.y)
+            ? { x: childPoint.x, y: childPoint.y - 20 }
+            : { x: parentSprite.x, y: parentSprite.y - 34 };
+        const cue = {
+            id: `${childAgent.id || 'subagent'}:${Math.round(now)}`,
+            agentId: childAgent.id || null,
+            parentId: parentSprite.agent?.id || null,
+            start: anchor,
+            end: { x: parentSprite.x, y: parentSprite.y - 34 },
+            x: parentSprite.x,
+            y: parentSprite.y - 34,
+            startedAt: now,
+            duration: this.motionScale === 0 ? REDUCED_COMPLETION_MS : SUBAGENT_COMPLETION_MS,
+            color: providerColor(childAgent.provider),
+            initial: providerInitial(childAgent.provider),
+        };
+        this.completionCues.push(cue);
+        if (this.completionCues.length > MAX_COMPLETION_CUES) {
+            this.completionCues.splice(0, this.completionCues.length - MAX_COMPLETION_CUES);
+        }
+        return cue;
     }
 
     recordDeparture(agent, lastTile, { now = nowMs(), parentAlive = false } = {}) {
@@ -182,6 +228,7 @@ export class ArrivalDepartureController {
             if ((now - merge.startedAt) / merge.duration >= 1) this.merges.delete(id);
         }
         this.sigils = this.sigils.filter(sigil => now - sigil.startedAt <= sigil.duration);
+        this.completionCues = this.completionCues.filter(cue => now - cue.startedAt <= cue.duration);
     }
 
     draw(ctx, { zoom = 1, now = nowMs(), lighting = null } = {}) {
@@ -190,6 +237,7 @@ export class ArrivalDepartureController {
         for (const dispatch of this.dispatches.values()) this._drawWisp(ctx, dispatch, zoom, now, lighting);
         for (const merge of this.merges.values()) this._drawWisp(ctx, merge, zoom, now, lighting);
         for (const sigil of this.sigils) drawDepartureSigil(ctx, sigil, { zoom, now, motionScale: this.motionScale, lighting });
+        for (const cue of this.completionCues) drawSubagentCompletionCue(ctx, cue, { zoom, now, motionScale: this.motionScale, lighting });
     }
 
     getLightSources({ now = nowMs() } = {}) {
@@ -208,6 +256,12 @@ export class ArrivalDepartureController {
                 intensity: 0.18,
             });
         }
+        for (const dispatch of this.dispatches.values()) {
+            sources.push(wispLightSource(dispatch, `dispatch:${dispatch.id}`, now));
+        }
+        for (const merge of this.merges.values()) {
+            sources.push(wispLightSource(merge, `merge:${merge.id}`, now));
+        }
         for (const sigil of this.sigils) {
             sources.push({
                 id: `departure:${sigil.id}`,
@@ -220,6 +274,22 @@ export class ArrivalDepartureController {
                 intensity: 0.22,
                 ttl: sigil.duration,
                 createdAt: sigil.startedAt,
+            });
+        }
+        for (const cue of this.completionCues) {
+            const progress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - cue.startedAt) / cue.duration));
+            const point = pointOnPath(cue.start, cue.end, progress, 10);
+            sources.push({
+                id: `subagent-complete:${cue.id}`,
+                kind: 'spark',
+                x: point.x,
+                y: point.y,
+                color: cue.color,
+                radius: 34,
+                alpha: this.motionScale === 0 ? 0.26 : 0.26 * (1 - progress * 0.55),
+                intensity: this.motionScale === 0 ? 0.24 : 0.28 * (1 - progress * 0.45),
+                ttl: cue.duration,
+                createdAt: cue.startedAt,
             });
         }
         return sources;
@@ -255,6 +325,66 @@ export class ArrivalDepartureController {
         ctx.stroke();
         ctx.restore();
     }
+}
+
+function wispLightSource(item, id, now) {
+    const progress = Math.max(0, Math.min(1, (now - item.startedAt) / item.duration));
+    const point = pointOnPath(item.start, item.end, progress, 24);
+    return {
+        id,
+        kind: 'spark',
+        x: point.x,
+        y: point.y,
+        color: item.color,
+        radius: 30,
+        alpha: 0.24,
+        intensity: 0.28,
+        ttl: item.duration,
+        createdAt: item.startedAt,
+    };
+}
+
+export function drawSubagentCompletionCue(ctx, cue, {
+    zoom = 1,
+    now = nowMs(),
+    motionScale = 1,
+    lighting = null,
+} = {}) {
+    if (!ctx || !cue) return;
+    const age = now - cue.startedAt;
+    const progress = Math.max(0, Math.min(1, age / cue.duration));
+    const scale = 1 / (zoom || 1);
+    const point = motionScale === 0
+        ? cue.end
+        : pointOnPath(cue.start, cue.end, progress, 10);
+    const lightBoost = lighting?.lightBoost ?? 1;
+    const alpha = motionScale === 0 ? 0.74 : Math.max(0, 0.74 * (1 - progress));
+    if (alpha <= 0) return;
+
+    ctx.save();
+    ctx.translate(point.x, point.y);
+    ctx.scale(scale, scale);
+    ctx.globalAlpha = Math.min(1, alpha * lightBoost);
+    ctx.fillStyle = cue.color;
+    ctx.beginPath();
+    ctx.arc(0, 0, 9, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.globalAlpha = Math.min(1, (alpha + 0.12) * lightBoost);
+    ctx.strokeStyle = '#fff3bf';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(0, -13);
+    ctx.lineTo(10, -2);
+    ctx.lineTo(0, 9);
+    ctx.lineTo(-10, -2);
+    ctx.closePath();
+    ctx.stroke();
+    ctx.fillStyle = '#21160f';
+    ctx.font = 'bold 7px "Press Start 2P", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(cue.initial || '?', 0, -1);
+    ctx.restore();
 }
 
 export function drawDepartureSigil(ctx, sigil, {
@@ -348,4 +478,4 @@ function drawCarriage(ctx, point, color, zoom) {
     ctx.restore();
 }
 
-export { providerColor, providerInitial, tileToScreen };
+export { arrivalModeForAgent, hasHarborActivity, providerColor, providerInitial, tileToScreen };

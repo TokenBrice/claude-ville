@@ -13,9 +13,10 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
 import { ParticleSystem } from './ParticleSystem.js';
-import { AgentSprite, drawFamiliarMotes } from './AgentSprite.js';
+import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
 import { BuildingSprite } from './BuildingSprite.js';
 import { Minimap } from './Minimap.js';
+import { HarborHud } from './HarborHud.js';
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
@@ -39,7 +40,6 @@ import {
     relationshipLightSources,
 } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
-import { ChronicleManifests } from './ChronicleManifests.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
@@ -260,19 +260,15 @@ const VILLAGE_WALL_ROUTES = Object.freeze([
     {
         id: 'west',
         points: [
-            { tileX: -0.6, tileY: 34.3 },
-            { tileX: 5.4, tileY: 35.8 },
-            { tileX: 11.6, tileY: 37.2 },
-            { tileX: 16.7, tileY: 38.5 },
+            { tileX: -0.8, tileY: 34.0 },
+            { tileX: 14.0, tileY: 39.0 },
         ],
     },
     {
         id: 'east',
         points: [
-            { tileX: 20.0, tileY: 38.7 },
-            { tileX: 24.7, tileY: 39.2 },
-            { tileX: 30.4, tileY: 39.6 },
-            { tileX: 35.7, tileY: 39.0 },
+            { tileX: 20.7, tileY: 39.1 },
+            { tileX: 36.4, tileY: 39.2 },
         ],
     },
 ]);
@@ -303,11 +299,12 @@ const AMBIENT_GROUND_PROPS = [
     { tileX: 15.0, tileY: 22.2, type: 'runestone' },
 ];
 class StaticPropSprite {
-    constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false }) {
+    constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null }) {
         this.tileX = tileX;
         this.tileY = tileY;
         this.x = (tileX - tileY) * TILE_WIDTH / 2;
         this.y = (tileX + tileY) * TILE_HEIGHT / 2;
+        this.sortY = Number.isFinite(Number(sortY)) ? Number(sortY) : this.y;
         this.drawFn = drawFn;
         this.id = id;
         this.bounds = bounds || { left: -32, right: 32, top: -64, bottom: 12, splitY: -18 };
@@ -338,10 +335,10 @@ class StaticPropSprite {
         ctx.restore();
     }
     propBackSortY() {
-        return this.y + Math.min(-8, this.bounds.splitY);
+        return this.sortY + Math.min(-8, this.bounds.splitY);
     }
     propFrontSortY() {
-        return this.y + Math.max(0, this.bounds.bottom * 0.25);
+        return this.sortY + Math.max(0, this.bounds.bottom * 0.25);
     }
 }
 
@@ -370,12 +367,12 @@ export class IsometricRenderer {
         this.relationshipState = null;
         this.ritualConductor = null;
         this.arrivalDeparture = null;
-        this.chronicleManifests = null;
         this.chronicleMonuments = null;
         this.trailRenderer = null;
         this.chronicler = null;
         this.pulsePriority = getPulsePriority();
         this.minimap = new Minimap();
+        this.harborHud = new HarborHud();
         this.agentSprites = new Map();
         this.gateTransits = new Map();
         this._sortedSprites = [];
@@ -393,10 +390,6 @@ export class IsometricRenderer {
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
         this.ritualConductor = new RitualConductor({ motionScale: this.motionScale });
         this.arrivalDeparture = new ArrivalDepartureController({ motionScale: this.motionScale });
-        this.chronicleManifests = new ChronicleManifests({
-            store: this.chronicleStore,
-            modal: this.modal,
-        });
         this.chronicleMonuments = new ChronicleMonuments({ store: this.chronicleStore });
         this.trailRenderer = new TrailRenderer({
             store: this.chronicleStore,
@@ -945,23 +938,24 @@ export class IsometricRenderer {
         this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
         this.atmosphereState?.installDebugHelper?.();
 
-        if (!this.ritualConductor) {
-            this.ritualConductor = new RitualConductor({ motionScale: this.motionScale });
-        }
-        this.agentEventStream?.dispose?.();
-        this.relationshipState?.dispose?.();
-        this.agentEventStream = new AgentEventStream(this.world);
-        this.relationshipState = new RelationshipState(this.world);
-        if (typeof window !== 'undefined') {
-            window.__relationshipState = () => this.relationshipState?.getSnapshot?.();
-        }
-
         this.buildingRenderer?.setBuildings(this.world.buildings);
         this.buildingRenderer?.setRitualConductor?.(this.ritualConductor);
 
         // Create sprites for existing agents
         for (const agent of this.world.agents.values()) {
             this._addAgentSprite(agent);
+        }
+        this._syncRitualContext();
+
+        this.agentEventStream?.dispose?.();
+        this.relationshipState?.dispose?.();
+        this.agentEventStream = new AgentEventStream(this.world, {
+            shouldEmitToolEvent: (event, agent) => this._canAcceptToolRitual(event, agent),
+        });
+        this.relationshipState = new RelationshipState(this.world);
+        this._replayActiveToolRituals();
+        if (typeof window !== 'undefined') {
+            window.__relationshipState = () => this.relationshipState?.getSnapshot?.();
         }
 
         // Subscribe to domain events
@@ -988,6 +982,7 @@ export class IsometricRenderer {
         this.minimap.onNavigate = (tileX, tileY) => {
             this.camera.centerOnTile(tileX, tileY);
         };
+        this.harborHud.attach(canvas.parentNode);
 
         // Click handler for agent selection
         this._onClick = (e) => {
@@ -1034,6 +1029,7 @@ export class IsometricRenderer {
         }
         this._unbindMotionPreference();
         this.minimap.detach();
+        this.harborHud.detach();
         for (const unsub of this._unsubscribers) {
             unsub();
         }
@@ -1101,7 +1097,7 @@ export class IsometricRenderer {
                 drawables.push({ kind: 'prop-back', sortY: sprite.propBackSortY(), payload: sprite });
                 drawables.push({ kind: 'prop-front', sortY: sprite.propFrontSortY(), payload: sprite });
             } else {
-                drawables.push({ kind: 'prop', sortY: sprite.y, payload: sprite });
+                drawables.push({ kind: 'prop', sortY: sprite.sortY ?? sprite.y, payload: sprite });
             }
         }
         return drawables;
@@ -1164,6 +1160,29 @@ export class IsometricRenderer {
         this.buildingRenderer?.setQuotaState?.(quota);
     }
 
+    _syncRitualContext() {
+        this.ritualConductor?.setContext?.({
+            world: this.world,
+            agentSprites: this.agentSprites,
+            isAgentVisible: (agentId) => {
+                const sprite = this.agentSprites.get(agentId);
+                return Boolean(sprite && !sprite.isArrivalPending?.() && !this._isGateTransit(sprite, 'departure'));
+            },
+        });
+    }
+
+    _canAcceptToolRitual(event) {
+        return this.ritualConductor?.canAccept?.(event) ?? true;
+    }
+
+    _replayActiveToolRituals({ force = false } = {}) {
+        this._syncRitualContext();
+        return this.agentEventStream?.emitInitialToolEvents?.({
+            force,
+            shouldEmit: (event, agent) => this._canAcceptToolRitual(event, agent),
+        }) || 0;
+    }
+
     invalidateViewportCaches() {
         this.atmosphereVignetteCache = null;
         this.atmosphereVignetteCacheKey = '';
@@ -1223,8 +1242,9 @@ export class IsometricRenderer {
         }
     }
 
-    _parentSpriteFor(agent) {
+    _parentSpriteFor(agent, { requireWorldAgent = false } = {}) {
         const parentId = agent?.parentSessionId || agent?.parentId || agent?.parentAgentId;
+        if (requireWorldAgent && parentId && !this.world?.agents?.has?.(parentId)) return null;
         return parentId ? this.agentSprites.get(parentId) : null;
     }
 
@@ -1245,23 +1265,39 @@ export class IsometricRenderer {
 
     _beginRelationshipDeparture(agent) {
         const sprite = this.agentSprites.get(agent?.id);
-        const parentSprite = this._parentSpriteFor(agent);
+        const parentSprite = this._parentSpriteFor(agent, { requireWorldAgent: true });
         const now = performance.now();
 
-        if (parentSprite && sprite) {
-            this.arrivalDeparture?.beginSubagentMerge?.(
-                agent,
-                { x: sprite.x, y: sprite.y },
-                parentSprite,
-                { now },
-            );
-            this._removeAgentSprite(agent.id);
+        if (parentSprite) {
+            const childPoint = sprite
+                ? { x: sprite.x, y: sprite.y }
+                : { x: parentSprite.x, y: parentSprite.y };
+            const merge = sprite
+                ? this.arrivalDeparture?.beginSubagentMerge?.(
+                    agent,
+                    childPoint,
+                    parentSprite,
+                    { now },
+                )
+                : null;
+            if (!merge) {
+                this.arrivalDeparture?.recordSubagentCompletion?.(
+                    agent,
+                    childPoint,
+                    parentSprite,
+                    { now },
+                );
+            }
+            if (sprite) this._removeAgentSprite(agent.id);
             return true;
         }
 
         const lastTile = sprite && typeof sprite._screenToTile === 'function'
             ? sprite._screenToTile(sprite.x, sprite.y)
-            : (agent?.position ? { tileX: agent.position.tileX, tileY: agent.position.tileY } : null);
+            : (agent?.position ? {
+                tileX: agent.position.tileX ?? agent.position.x,
+                tileY: agent.position.tileY ?? agent.position.y,
+            } : null);
         this.arrivalDeparture?.recordDeparture?.(agent, lastTile, { now, parentAlive: false });
         return false;
     }
@@ -1341,14 +1377,6 @@ export class IsometricRenderer {
             if (sprite.hitTest(worldX, worldY)) {
                 clicked = sprite;
                 break;
-            }
-        }
-
-        if (!clicked) {
-            const manifest = this.chronicleManifests?.hitTest?.(worldX, worldY, Date.now());
-            if (manifest) {
-                this.chronicleManifests.openManifestModal?.(manifest);
-                return;
             }
         }
 
@@ -1466,7 +1494,6 @@ export class IsometricRenderer {
         this.relationshipState?.update?.({ agentSprites: this.agentSprites, now });
         applyTeamPlazaPreferences(this.relationshipState, this.agentSprites);
         this.arrivalDeparture?.update?.(now);
-        this.ritualConductor?.update?.(dt);
         this.chronicler?.update?.(dt, chronicleNow);
         if (chronicleNow >= this._chronicleNextUpdateAt) {
             this._chronicleNextUpdateAt = chronicleNow + 1000;
@@ -1532,11 +1559,21 @@ export class IsometricRenderer {
         }
 
         const sortedSnapshot = this._snapshotSortedSprites();
-        this.harborTraffic?.update(this.world.agents.values(), dt);
-        this.landmarkActivity?.update(this.world.agents.values(), sortedSnapshot, dt);
+        this._replayActiveToolRituals();
+        this.ritualConductor?.update?.(dt);
+
+        const agents = Array.from(this.world?.agents?.values?.() || []);
+        this.harborTraffic?.update(agents, dt);
+        this.landmarkActivity?.update(agents, sortedSnapshot, dt);
+        const failedPushState = this.harborTraffic?.getFailedPushState?.(Date.now()) || null;
+        const activeWorkingCount = agents.filter(agent => agent?.status === AgentStatus.WORKING).length;
 
         // Update building renderer (pass agent sprite positions)
         this.buildingRenderer?.setAgentSprites(sortedSnapshot);
+        this.buildingRenderer?.setHarborStatus?.({
+            failedPushActive: Boolean(failedPushState?.hasFailedPush),
+            activeWorkingCount,
+        });
         this.buildingRenderer?.update(dt);
         this._updateAmbientEffects();
 
@@ -1553,7 +1590,6 @@ export class IsometricRenderer {
             blockedTiles: this._monumentBlockedTiles(),
         };
         Promise.allSettled([
-            this.chronicleManifests?.update?.(agents, now),
             this.chronicleMonuments?.update?.(agents, context, now),
             this.trailRenderer?.update?.(agents, now, this._lastAtmosphere),
         ]).finally(() => {
@@ -1714,8 +1750,8 @@ export class IsometricRenderer {
         const propDrawables = this._enumeratePropDrawables();
         const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
         const harborPendingRepos = this.harborTraffic?.getPendingRepoSummaries?.() ?? [];
+        this.harborHud?.update(harborPendingRepos, renderNow);
         const landmarkDrawables = this.landmarkActivity?.enumerateDrawables() ?? [];
-        const chronicleManifestDrawables = this.chronicleManifests?.enumerateDrawables?.(renderNow, this.camera) ?? [];
         const chronicleMonumentDrawables = this.chronicleMonuments?.enumerateDrawables?.(renderNow, this.camera) ?? [];
         const chroniclerDrawables = this.chronicler?.enumerateDrawables?.() ?? [];
         const zoom = this.camera.zoom;
@@ -1727,7 +1763,6 @@ export class IsometricRenderer {
         for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
         for (const d of harborDrawables) drawables.push({ kind: 'harbor-traffic', sortY: d.sortY, payload: d });
         for (const d of landmarkDrawables) drawables.push({ kind: 'landmark-activity', sortY: d.sortY, payload: d });
-        for (const d of chronicleManifestDrawables) drawables.push(d);
         for (const d of chronicleMonumentDrawables) drawables.push(d);
         for (const d of chroniclerDrawables) drawables.push(d);
         drawables.sort((a, b) => a.sortY - b.sortY);
@@ -1745,8 +1780,6 @@ export class IsometricRenderer {
                 this.harborTraffic.draw(ctx, item.payload, zoom);
             } else if (item.kind === 'landmark-activity') {
                 this.landmarkActivity.draw(ctx, item.payload, zoom);
-            } else if (item.kind === 'chronicle-manifest') {
-                this.chronicleManifests.draw(ctx, item.payload, zoom, renderNow);
             } else if (item.kind === 'chronicle-monument') {
                 this.chronicleMonuments.draw(ctx, item.payload, zoom, renderNow);
             } else if (item.kind === 'chronicler') {
@@ -2145,12 +2178,14 @@ export class IsometricRenderer {
                 const localStart = { x: start.x - mid.x, y: start.y - mid.y };
                 const localEnd = { x: end.x - mid.x, y: end.y - mid.y };
                 const wallBounds = this._villageWallBounds(localStart, localEnd);
+                const gateSort = this._tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY).y - 36;
                 out.push(new StaticPropSprite({
                     tileX: midTile.tileX,
                     tileY: midTile.tileY,
                     id: `village.wall.${route.id}.${i}`,
                     bounds: wallBounds,
                     splitForOcclusion: false,
+                    sortY: gateSort,
                     drawFn: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i),
                 }));
             }
@@ -2160,11 +2195,11 @@ export class IsometricRenderer {
 
     _villageWallBounds(start, end) {
         return {
-            left: Math.min(start.x, end.x) - 20,
-            right: Math.max(start.x, end.x) + 20,
-            top: Math.min(start.y, end.y) - 58,
-            bottom: Math.max(start.y, end.y) + 12,
-            splitY: Math.min(start.y, end.y) - 18,
+            left: Math.min(start.x, end.x) - 72,
+            right: Math.max(start.x, end.x) + 72,
+            top: Math.min(start.y, end.y) - 96,
+            bottom: Math.max(start.y, end.y) + 18,
+            splitY: Math.min(start.y, end.y) - 34,
         };
     }
 
@@ -2208,6 +2243,8 @@ export class IsometricRenderer {
     }
 
     _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0) {
+        const img = this.assets?.get?.('prop.villageWall');
+        if (!img) return;
         const x1 = Math.round(originX + start.x);
         const y1 = Math.round(originY + start.y);
         const x2 = Math.round(originX + end.x);
@@ -2215,117 +2252,28 @@ export class IsometricRenderer {
         const dx = x2 - x1;
         const dy = y2 - y1;
         const length = Math.max(1, Math.hypot(dx, dy));
-        const ux = dx / length;
-        const uy = dy / length;
-        const nx = -uy;
-        const ny = ux;
-        const height = 34;
-        const cap = 9;
-        const mossSide = (phase % 2 === 0) ? 1 : -1;
-
-        const topA = { x: x1, y: y1 - height };
-        const topB = { x: x2, y: y2 - height };
-        const capA = { x: topA.x + nx * cap, y: topA.y + ny * cap };
-        const capB = { x: topB.x + nx * cap, y: topB.y + ny * cap };
+        const angle = Math.atan2(dy, dx);
+        const step = 92;
+        const scale = 1.35;
+        const drawW = img.width * scale;
+        const drawH = img.height * scale;
+        const count = Math.max(1, Math.ceil(length / step));
+        const spacing = length / count;
 
         ctx.save();
-        ctx.lineJoin = 'miter';
-        ctx.lineCap = 'butt';
-
-        // Ground shadow.
-        ctx.fillStyle = 'rgba(13, 18, 22, 0.28)';
-        ctx.beginPath();
-        ctx.moveTo(x1 - nx * 8, y1 - ny * 8 + 5);
-        ctx.lineTo(x2 - nx * 8, y2 - ny * 8 + 5);
-        ctx.lineTo(x2 + nx * 14, y2 + ny * 14 + 7);
-        ctx.lineTo(x1 + nx * 14, y1 + ny * 14 + 7);
-        ctx.closePath();
-        ctx.fill();
-
-        // Main stone face.
-        ctx.fillStyle = '#465564';
-        ctx.strokeStyle = '#17202b';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.lineTo(topB.x, topB.y);
-        ctx.lineTo(topA.x, topA.y);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        // Slightly lighter side planes, so the wall matches the gate towers.
-        ctx.fillStyle = '#5d6d78';
-        ctx.beginPath();
-        ctx.moveTo(topA.x, topA.y);
-        ctx.lineTo(topB.x, topB.y);
-        ctx.lineTo(capB.x, capB.y);
-        ctx.lineTo(capA.x, capA.y);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
-
-        // Dark slate coping.
-        ctx.strokeStyle = '#1b2a35';
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(topA.x + nx * 2, topA.y + ny * 2);
-        ctx.lineTo(topB.x + nx * 2, topB.y + ny * 2);
-        ctx.stroke();
-        ctx.strokeStyle = '#2f7890';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(topA.x + nx * 3, topA.y + ny * 3 - 1);
-        ctx.lineTo(topB.x + nx * 3, topB.y + ny * 3 - 1);
-        ctx.stroke();
-
-        // Block courses and vertical stone joints.
-        ctx.strokeStyle = 'rgba(24, 33, 43, 0.72)';
-        ctx.lineWidth = 1;
-        for (let row = 0; row < 3; row++) {
-            const t = (row + 1) / 4;
-            ctx.beginPath();
-            ctx.moveTo(x1 + (topA.x - x1) * t, y1 + (topA.y - y1) * t);
-            ctx.lineTo(x2 + (topB.x - x2) * t, y2 + (topB.y - y2) * t);
-            ctx.stroke();
+        ctx.translate(x1, y1);
+        ctx.rotate(angle);
+        SpriteRenderer.disableSmoothing(ctx);
+        for (let i = 0; i < count; i++) {
+            const x = i * spacing + spacing / 2;
+            ctx.drawImage(
+                img,
+                Math.round(x - drawW / 2),
+                Math.round(-drawH + 14 + (phase % 2) * 2),
+                Math.round(drawW),
+                Math.round(drawH)
+            );
         }
-        const jointStep = 28;
-        const joints = Math.floor(length / jointStep);
-        for (let i = 1; i <= joints; i++) {
-            const d = (i * jointStep + (phase % 2) * 10) / length;
-            if (d <= 0 || d >= 1) continue;
-            const bx = x1 + dx * d;
-            const by = y1 + dy * d;
-            ctx.beginPath();
-            ctx.moveTo(bx, by - 2);
-            ctx.lineTo(bx, by - height + 4);
-            ctx.stroke();
-        }
-
-        // Crenellations.
-        for (let d = 10 + (phase % 2) * 8; d < length - 8; d += 34) {
-            const bx = x1 + ux * d;
-            const by = y1 + uy * d - height - 2;
-            const w = 12;
-            const h = 12;
-            ctx.fillStyle = '#17202b';
-            ctx.fillRect(Math.round(bx - w / 2 + 1), Math.round(by - h + 2), w, h);
-            ctx.fillStyle = '#60727e';
-            ctx.fillRect(Math.round(bx - w / 2), Math.round(by - h), w, h);
-            ctx.fillStyle = '#86a5ad';
-            ctx.fillRect(Math.round(bx - w / 2 + 2), Math.round(by - h + 2), w - 4, 2);
-        }
-
-        // Small moss clumps on the village side.
-        ctx.fillStyle = 'rgba(99, 145, 83, 0.86)';
-        for (let d = 18 + phase * 9; d < length - 12; d += 64) {
-            const bx = x1 + ux * d + nx * mossSide * 3;
-            const by = y1 + uy * d - 8 + ny * mossSide * 3;
-            ctx.fillRect(Math.round(bx - 4), Math.round(by), 8, 3);
-            ctx.fillRect(Math.round(bx - 1), Math.round(by - 3), 5, 3);
-        }
-
         ctx.restore();
     }
 
@@ -4512,16 +4460,19 @@ export class IsometricRenderer {
         };
 
         ctx.save();
-        if (this.agentSprites.size === 0) {
+        const visibleAgentCount = Array.from(this.agentSprites.values())
+            .filter(sprite => !this._isGateTransit(sprite, 'departure'))
+            .length;
+        if (visibleAgentCount <= 1) {
             const start = this._tileToWorld(plaza.tileX, plaza.tileY);
             const end = this._tileToWorld(portalGate.tileX, portalGate.tileY);
             const midX = (start.x + end.x) / 2;
             const midY = (start.y + end.y) / 2 - 44;
             ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = 0.10;
+            ctx.globalAlpha = visibleAgentCount === 0 ? 0.10 : 0.055;
             ctx.strokeStyle = '#8bd7ff';
             ctx.lineWidth = 1.2;
-            ctx.setLineDash([5, 7]);
+            ctx.setLineDash(visibleAgentCount === 0 ? [5, 7] : [4, 10]);
             ctx.beginPath();
             ctx.moveTo(start.x, start.y - 8);
             ctx.quadraticCurveTo(midX, midY, end.x, end.y - 8);
@@ -4593,6 +4544,36 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
+    _familiarMoteLightSources(lighting = null) {
+        const snapshot = this.relationshipState?.getSnapshot?.();
+        if (!snapshot?.parentToChildren?.size) return [];
+        const sources = [];
+        const now = performance.now();
+        for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
+            const parentSprite = this.agentSprites.get(parentId);
+            if (!parentSprite || parentSprite.isArrivalPending?.()) continue;
+            const childSprites = Array.from(childIds || [])
+                .map(id => this.agentSprites.get(id))
+                .filter(sprite => sprite && !sprite.isArrivalPending?.());
+            const departedChildren = (snapshot.recentDepartures || [])
+                .filter(item => item.parentSessionId === parentId)
+                .map(item => ({
+                    id: item.agentId,
+                    provider: item.provider,
+                    name: item.name,
+                }));
+            sources.push(...familiarMoteLightSources({
+                parentSprite,
+                childSprites,
+                childAgents: departedChildren,
+                now,
+                motionScale: this.motionScale,
+                lighting,
+            }));
+        }
+        return sources;
+    }
+
     _ambientLightSources(atmosphere = null) {
         const lighting = atmosphere?.lighting || null;
         const sources = this.buildingRenderer?.getLightSources?.(lighting) || [];
@@ -4603,6 +4584,7 @@ export class IsometricRenderer {
                 agentSprites: this.agentSprites,
                 lighting,
             }),
+            ...this._familiarMoteLightSources(lighting),
             ...(this.arrivalDeparture?.getLightSources?.({ now: performance.now() }) || []),
         ];
     }

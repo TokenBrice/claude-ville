@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 
 const MAX_CONCURRENT_RITUALS = 6;
 const COALESCE_WINDOW_MS = 250;
@@ -83,6 +84,73 @@ function hashText(value) {
     return Math.abs(hash);
 }
 
+function stableIdentityValue(value) {
+    const text = String(value ?? '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+    return text.length > 64 ? text.slice(0, 64) : text;
+}
+
+function taskItemCompleted(item) {
+    if (!item || typeof item !== 'object') return false;
+    const status = String(item.status || item.state || item.lifecycle || '').toLowerCase();
+    return status === 'completed' || status === 'complete' || status === 'done'
+        || item.completed === true || item.done === true || item.checked === true;
+}
+
+function taskIdentityFromItem(item) {
+    if (item == null) return '';
+    if (typeof item !== 'object') return stableIdentityValue(item);
+    const idKeys = ['id', 'taskId', 'task_id', 'todoId', 'todo_id', 'itemId', 'item_id', 'key'];
+    for (const key of idKeys) {
+        const value = stableIdentityValue(item[key]);
+        if (value) return `id:${value}`;
+    }
+    const textKeys = ['title', 'content', 'task', 'todo', 'description', 'name'];
+    for (const key of textKeys) {
+        const value = stableIdentityValue(item[key]);
+        if (value) return `text:${value.toLowerCase()}`;
+    }
+    return '';
+}
+
+function extractTaskKey(input, { preferCompleted = false } = {}) {
+    const parsed = tryParseInput(input);
+    if (parsed && typeof parsed === 'object') {
+        const direct = taskIdentityFromItem(parsed);
+        if (direct) return direct;
+    }
+
+    const findInValue = (value) => {
+        if (!value || typeof value !== 'object') return '';
+        if (Array.isArray(value)) {
+            const preferred = value.find(item => preferCompleted ? taskItemCompleted(item) : !taskItemCompleted(item));
+            return taskIdentityFromItem(preferred || value[0]);
+        }
+        for (const key of ['todos', 'tasks', 'items', 'checklist', 'subtasks']) {
+            if (Array.isArray(value[key])) {
+                const keyFromList = findInValue(value[key]);
+                if (keyFromList) return keyFromList;
+            }
+        }
+        for (const child of Object.values(value)) {
+            if (child && typeof child === 'object') {
+                const nested = findInValue(child);
+                if (nested) return nested;
+            }
+        }
+        return '';
+    };
+    if (parsed && typeof parsed === 'object') {
+        const nested = findInValue(parsed);
+        if (nested) return nested;
+    }
+
+    const text = inputText(input);
+    const idMatch = text.match(/(?:(?:task|todo|item)[_-]?id|(?:^|["'\s])id)["']?\s*[:=]\s*["']?([A-Za-z0-9_.:-]+)/i);
+    if (idMatch?.[1]) return `id:${stableIdentityValue(idMatch[1])}`;
+    return '';
+}
+
 function ritualMetaFor(event) {
     const building = event?.building;
     const base = RITUAL_META[building];
@@ -97,7 +165,12 @@ function ritualMetaFor(event) {
         return { ...RITUAL_META.mine, kind: 'mine-pick', label: `+${Number(input) || 0}` };
     }
     if (building === 'taskboard') {
-        return { ...base, action: isCompletedTask ? 'complete' : 'pin', label: compactText(tool, 'TASK') };
+        return {
+            ...base,
+            action: isCompletedTask ? 'complete' : 'pin',
+            taskKey: extractTaskKey(input, { preferCompleted: isCompletedTask }) || null,
+            label: compactText(tool, 'TASK'),
+        };
     }
     if (building === 'command') {
         const action = tool === 'SendMessage' ? 'message' : tool === 'TeamCreate' ? 'team' : 'command';
@@ -116,9 +189,46 @@ function ritualMetaFor(event) {
     return { ...base, label };
 }
 
+function screenToTile(x, y) {
+    return {
+        tileX: (x / (TILE_WIDTH / 2) + y / (TILE_HEIGHT / 2)) / 2,
+        tileY: (y / (TILE_HEIGHT / 2) - x / (TILE_WIDTH / 2)) / 2,
+    };
+}
+
+function agentTile(agent) {
+    if (!agent?.position) return null;
+    const tileX = Number(agent.position.tileX);
+    const tileY = Number(agent.position.tileY);
+    if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+    return { tileX, tileY };
+}
+
+function spriteTile(sprite) {
+    const x = Number(sprite?.x);
+    const y = Number(sprite?.y);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    if (typeof sprite._screenToTile === 'function') return sprite._screenToTile(x, y);
+    return screenToTile(x, y);
+}
+
+function buildingContainsTile(building, tile) {
+    if (!building || !tile) return false;
+    if (typeof building.containsPoint === 'function' && building.containsPoint(tile.tileX, tile.tileY)) return true;
+    if (typeof building.containsVisitPoint === 'function' && building.containsVisitPoint(tile.tileX, tile.tileY)) return true;
+    const visitTile = typeof building.primaryVisitTile === 'function' ? building.primaryVisitTile() : null;
+    if (visitTile) return Math.hypot(visitTile.tileX - tile.tileX, visitTile.tileY - tile.tileY) <= 0.85;
+    return false;
+}
+
 export class RitualConductor {
     constructor({ motionScale = 1 } = {}) {
         this.motionScale = motionScale;
+        this.context = {
+            world: null,
+            agentSprites: null,
+            isAgentVisible: null,
+        };
         this.rituals = [];
         this.unsubscribers = [
             eventBus.on('tool:invoked', (event) => this.enqueue(event)),
@@ -129,16 +239,48 @@ export class RitualConductor {
         for (const unsubscribe of this.unsubscribers) unsubscribe();
         this.unsubscribers = [];
         this.rituals = [];
+        this.context = { world: null, agentSprites: null, isAgentVisible: null };
     }
 
     setMotionScale(scale) {
         this.motionScale = Number.isFinite(scale) ? scale : 1;
     }
 
+    setContext({ world, agentSprites, isAgentVisible } = {}) {
+        if (world !== undefined) this.context.world = world || null;
+        if (agentSprites !== undefined) this.context.agentSprites = agentSprites || null;
+        if (isAgentVisible !== undefined) {
+            this.context.isAgentVisible = typeof isAgentVisible === 'function' ? isAgentVisible : null;
+        }
+    }
+
+    canAccept(event) {
+        if (!event?.agentId || !event?.building) return false;
+        const { world, agentSprites, isAgentVisible } = this.context;
+        const hasWorld = !!world?.agents?.get;
+        const hasBuildings = !!world?.buildings?.get;
+        const hasSprites = !!agentSprites?.get;
+        const agent = hasWorld ? world.agents.get(event.agentId) : null;
+        const sprite = hasSprites ? agentSprites.get(event.agentId) : null;
+        const building = hasBuildings ? world.buildings.get(event.building) : null;
+
+        if (hasWorld && !agent) return false;
+        if (hasBuildings && !building) return false;
+        if (hasSprites && !sprite) return false;
+        if (typeof isAgentVisible === 'function' && !isAgentVisible(event.agentId)) return false;
+        if (sprite?.isArrivalPending?.()) return false;
+
+        if (!building) return true;
+        if (sprite) return buildingContainsTile(building, spriteTile(sprite));
+        if (agent && typeof building.isAgentVisiting === 'function') return building.isAgentVisiting(agent);
+        return buildingContainsTile(building, agentTile(agent));
+    }
+
     enqueue(event) {
         if (!event?.tool || !event?.building) return null;
         const meta = ritualMetaFor(event);
         if (!meta) return null;
+        if (!this.canAccept(event)) return null;
         const now = event.ts || Date.now();
         const existing = this.rituals.find(ritual => (
             ritual.building === event.building
@@ -167,6 +309,7 @@ export class RitualConductor {
             building: event.building,
             kind: meta.kind,
             action: meta.action || null,
+            taskKey: meta.taskKey || null,
             label: meta.label || '',
             angle: meta.angle || 0,
             pulseBand: meta.pulseBand || 'static',

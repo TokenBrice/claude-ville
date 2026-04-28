@@ -194,6 +194,7 @@ export class LandmarkActivity {
                 building: 'mine',
                 ts: now,
             });
+            return;
         }
         const id = `token:${agent.id}:${agent.lastSessionActivity || now}:${Math.round(current / 128)}`;
         if (this.items.has(id)) return;

@@ -32,10 +32,12 @@ function pairKey(aId, bId) {
 }
 
 export class AgentEventStream {
-    constructor(world) {
+    constructor(world, { shouldEmitToolEvent = null } = {}) {
         this.world = world;
         this.snapshots = new Map();
         this.chatPairs = new Set();
+        this.emittedToolKeys = new Set();
+        this.shouldEmitToolEvent = typeof shouldEmitToolEvent === 'function' ? shouldEmitToolEvent : null;
         this.unsubscribers = [];
 
         for (const agent of this.world?.agents?.values?.() || []) {
@@ -54,6 +56,33 @@ export class AgentEventStream {
         this.unsubscribers = [];
         this.snapshots.clear();
         this.chatPairs.clear();
+        this.emittedToolKeys.clear();
+        this.shouldEmitToolEvent = null;
+    }
+
+    setToolEventGate(shouldEmitToolEvent = null) {
+        this.shouldEmitToolEvent = typeof shouldEmitToolEvent === 'function' ? shouldEmitToolEvent : null;
+    }
+
+    emitInitialToolEvents({ force = false, shouldEmit = null } = {}) {
+        let emitted = 0;
+        const gate = typeof shouldEmit === 'function' ? shouldEmit : this.shouldEmitToolEvent;
+        for (const agent of this.world?.agents?.values?.() || []) {
+            const snap = snapshotAgent(agent);
+            this.snapshots.set(agent.id, snap);
+            if (!snap.tool) continue;
+
+            const emittedKey = this._emittedToolKey(agent.id, snap.toolKey);
+            if (!force && this.emittedToolKeys.has(emittedKey)) continue;
+
+            const event = this._toolEvent(agent, snap, { replay: true });
+            if (typeof gate === 'function' && !gate(event, agent)) continue;
+
+            eventBus.emit('tool:invoked', event);
+            this.emittedToolKeys.add(emittedKey);
+            emitted += 1;
+        }
+        return emitted;
     }
 
     _onAdded(agent) {
@@ -107,13 +136,25 @@ export class AgentEventStream {
     _emitToolIfChanged(agent, previous, next) {
         if (!next.tool) return;
         if (previous && previous.toolKey === next.toolKey) return;
-        eventBus.emit('tool:invoked', {
+        const event = this._toolEvent(agent, next);
+        if (typeof this.shouldEmitToolEvent === 'function' && !this.shouldEmitToolEvent(event, agent)) return;
+        eventBus.emit('tool:invoked', event);
+        this.emittedToolKeys.add(this._emittedToolKey(agent.id, next.toolKey));
+    }
+
+    _toolEvent(agent, snap, extra = {}) {
+        return {
             agentId: agent.id,
-            tool: next.tool,
-            input: next.input,
+            tool: snap.tool,
+            input: snap.input,
             ts: Date.now(),
             building: agent.targetBuildingType || agent.lastKnownBuildingType || null,
-        });
+            ...extra,
+        };
+    }
+
+    _emittedToolKey(agentId, key) {
+        return `${agentId || ''}\u001f${key || ''}`;
     }
 
     reconcileChatPairs(agentSprites) {

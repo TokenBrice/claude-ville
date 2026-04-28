@@ -2044,6 +2044,73 @@ function hashPhase(value) {
     return (hash >>> 0) / 4294967295;
 }
 
+function familiarMoteEntries({
+    parentSprite,
+    childSprites = [],
+    childAgents = [],
+    now = performance.now(),
+    motionScale = 1,
+    maxVisible = MAX_VISIBLE_FAMILIAR_MOTES,
+} = {}) {
+    if (!parentSprite) return { entries: [], hiddenCount: 0 };
+    const children = [...childSprites, ...childAgents]
+        .filter(Boolean)
+        .slice(0, Math.max(0, maxVisible));
+    const hiddenCount = Math.max(0, childSprites.length + childAgents.length - children.length);
+    const motion = motionScale === 0 ? 0 : 1;
+    const entries = children.map((child, i) => {
+        const agent = child.agent || child;
+        const base = hashPhase(agent?.id || i);
+        const staticAngle = (Math.PI * 2 * i) / Math.max(1, children.length);
+        const angle = motion
+            ? staticAngle + base * Math.PI * 2 + (now / 900) * (i % 2 ? -1 : 1)
+            : staticAngle;
+        const orbitX = Math.cos(angle) * 18;
+        const orbitY = -50 + Math.sin(angle) * 7;
+        return {
+            agent,
+            index: i,
+            x: parentSprite.x + orbitX,
+            y: parentSprite.y + orbitY,
+            orbitX,
+            orbitY,
+            radius: 4 + i * 0.6,
+            color: providerMoteColor(agent),
+        };
+    });
+    return { entries, hiddenCount };
+}
+
+export function familiarMoteLightSources({
+    parentSprite,
+    childSprites = [],
+    childAgents = [],
+    now = performance.now(),
+    motionScale = 1,
+    lighting = null,
+    maxVisible = MAX_VISIBLE_FAMILIAR_MOTES,
+} = {}) {
+    const { entries } = familiarMoteEntries({
+        parentSprite,
+        childSprites,
+        childAgents,
+        now,
+        motionScale,
+        maxVisible,
+    });
+    const boost = lighting?.lightBoost ?? 1;
+    return entries.map(entry => ({
+        id: `familiar:${parentSprite?.agent?.id || 'parent'}:${entry.agent?.id || entry.index}`,
+        kind: 'spark',
+        x: entry.x,
+        y: entry.y,
+        color: entry.color,
+        radius: 24,
+        alpha: 0.18,
+        intensity: 0.18 * boost,
+    }));
+}
+
 export function drawFamiliarMotes(ctx, {
     parentSprite,
     childSprites = [],
@@ -2055,34 +2122,27 @@ export function drawFamiliarMotes(ctx, {
     maxVisible = MAX_VISIBLE_FAMILIAR_MOTES,
 } = {}) {
     if (!ctx || !parentSprite) return;
-    const children = [...childSprites, ...childAgents]
-        .filter(Boolean)
-        .slice(0, Math.max(0, maxVisible));
-    const hiddenCount = Math.max(0, childSprites.length + childAgents.length - children.length);
-    if (!children.length && hiddenCount <= 0) return;
+    const { entries, hiddenCount } = familiarMoteEntries({
+        parentSprite,
+        childSprites,
+        childAgents,
+        now,
+        motionScale,
+        maxVisible,
+    });
+    if (!entries.length && hiddenCount <= 0) return;
 
     const lightBoost = lighting?.lightBoost ?? 1;
     const selectedBoost = parentSprite.selected ? 1.4 : 1;
     const scale = 1 / (zoom || 1);
-    const motion = motionScale === 0 ? 0 : 1;
 
     ctx.save();
     ctx.translate(parentSprite.x, parentSprite.y);
     ctx.scale(scale, scale);
 
-    for (let i = 0; i < children.length; i++) {
-        const child = children[i];
-        const agent = child.agent || child;
-        const base = hashPhase(agent?.id || i);
-        const staticAngle = (Math.PI * 2 * i) / Math.max(1, children.length);
-        const angle = motion
-            ? staticAngle + base * Math.PI * 2 + (now / 900) * (i % 2 ? -1 : 1)
-            : staticAngle;
-        const orbitX = Math.cos(angle) * 18;
-        const orbitY = -50 + Math.sin(angle) * 7;
-        const radius = 4 + i * 0.6;
+    for (const entry of entries) {
+        const { orbitX, orbitY, radius, color } = entry;
         const alpha = Math.min(1, 0.58 * lightBoost * selectedBoost);
-        const color = providerMoteColor(agent);
 
         ctx.globalAlpha = alpha;
         ctx.fillStyle = parentSprite._rgba?.(color, 0.30) || color;

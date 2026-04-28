@@ -2,15 +2,10 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { getTeamColor, shortTeamName } from './TeamColor.js';
+import { repoProfile } from './RepoColor.js';
 
-// Per-project color palette
 const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G', git: '#' };
 const PROVIDER_COLORS = { claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa', git: '#f6cf60' };
-
-const PROJECT_COLORS = [
-    '#e8d44d', '#4ade80', '#60a5fa', '#f97316', '#a78bfa',
-    '#f472b6', '#34d399', '#fb923c', '#818cf8', '#22d3ee',
-];
 
 export class Sidebar {
     constructor(world) {
@@ -21,7 +16,6 @@ export class Sidebar {
         this.toggleEl = document.getElementById('sidebarToggle');
         this.selectedId = null;
         this.isCollapsed = localStorage.getItem('claudeville.sidebarCollapsed') === 'true';
-        this._projectColorMap = new Map();
 
         this._onUpdate = () => this.render();
         eventBus.on('agent:added', this._onUpdate);
@@ -61,12 +55,13 @@ export class Sidebar {
 
         // Group by project
         const groups = this._groupByProject(agents);
-        this._assignProjectColors(groups);
 
         let html = '';
         for (const [projectPath, groupAgents] of groups) {
             const projectName = this._shortProjectName(projectPath);
-            const color = this._projectColorMap.get(projectPath) || '#8b8b9e';
+            const color = projectPath === '_unknown'
+                ? '#8b8b9e'
+                : repoProfile(projectPath).accent;
             html += `<div class="sidebar__project-group">
                 <div class="sidebar__project-header" style="border-left-color: ${color}">
                     <span class="sidebar__project-dot" style="background: ${color}"></span>
@@ -115,16 +110,6 @@ export class Sidebar {
             groups.get(key).push(agent);
         }
         return groups;
-    }
-
-    _assignProjectColors(groups) {
-        let idx = 0;
-        for (const key of groups.keys()) {
-            if (!this._projectColorMap.has(key)) {
-                this._projectColorMap.set(key, PROJECT_COLORS[idx % PROJECT_COLORS.length]);
-            }
-            idx++;
-        }
     }
 
     _shortProjectName(path) {

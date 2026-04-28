@@ -20,6 +20,9 @@ const LABEL_VISIBLE_ZOOM = 1;
 const LABEL_DETAIL_ZOOM = 3;
 const LABEL_OVERLAP_TOLERANCE = 0.45;
 const LABEL_COMPACT_OVERLAP_TOLERANCE = 0.62;
+const MAX_TASKBOARD_PAPERS = 4;
+const FORGE_GLOW_BASELINE = 0.22;
+const FORGE_GLOW_DECAY_PER_SECOND = 0.32;
 const LABEL_SHORT_TEXT = Object.fromEntries(
     BUILDING_DEFS
         .filter((building) => typeof building.shortLabel === 'string' && building.shortLabel.trim())
@@ -160,6 +163,13 @@ function compactRitualLabel(value, fallback = '') {
     return text.length > 10 ? `${text.slice(0, 8)}..` : text;
 }
 
+function hashText(value) {
+    const text = String(value || '');
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    return Math.abs(hash);
+}
+
 export class BuildingSprite {
     constructor(assets, spriteRenderer, particleSystem) {
         this.assets = assets;
@@ -178,6 +188,10 @@ export class BuildingSprite {
         this.lightingState = null;
         this.ritualConductor = null;
         this.quotaState = null;
+        this.harborStatus = { failedPushActive: false, activeWorkingCount: null };
+        this._taskboardPapers = [];
+        this._seenTaskboardRituals = new Set();
+        this._forgeGlow = FORGE_GLOW_BASELINE;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -202,6 +216,14 @@ export class BuildingSprite {
         this.quotaState = state || null;
     }
 
+    setHarborStatus(status = {}) {
+        const count = Number(status.activeWorkingCount);
+        this.harborStatus = {
+            failedPushActive: Boolean(status.failedPushActive),
+            activeWorkingCount: Number.isFinite(count) ? Math.max(0, count) : null,
+        };
+    }
+
     setBuildings(map) {
         // Accepts a Map (preferred — matches world.buildings) or an Array.
         this.buildings = map instanceof Map ? Array.from(map.values()) : Array.from(map);
@@ -219,6 +241,8 @@ export class BuildingSprite {
     update(dt) {
         this.frame += (dt / 16) * (this.motionScale || 0);
         this._updateVisitorCounts();
+        this._syncTaskboardPapers(Date.now());
+        this._updateForgeGlow(dt);
         for (const b of this.buildings) this._spawnEmittersFor(b);
     }
 
@@ -792,6 +816,22 @@ export class BuildingSprite {
         };
     }
 
+    _forgeGlowIntensity() {
+        return clamp01(this._forgeGlow);
+    }
+
+    _watchtowerActiveCount() {
+        const wiredCount = this.harborStatus?.activeWorkingCount;
+        if (Number.isFinite(wiredCount)) return Math.max(0, wiredCount);
+        return this.agentSprites.filter(sprite => sprite?.agent?.status === 'WORKING').length;
+    }
+
+    _watchtowerIntensity() {
+        const active = this._watchtowerActiveCount();
+        const activeBoost = Math.min(1, active / 5);
+        return clamp01(activeBoost + (this.harborStatus?.failedPushActive ? 0.36 : 0));
+    }
+
     // Light sources for water/wall additive light passes (Phase 2.5.5).
     // `overlay` is the atmosphere sprite id used for the additive reflection;
     // defaults to the lighthouse beam when the manifest entry omits it.
@@ -800,14 +840,24 @@ export class BuildingSprite {
         const staticSources = this._staticLightSources();
         const out = staticSources.map(source => {
             const visitors = source.building ? this._visitorCountFor(source.building) : 0;
-            const activity = source.buildingType === 'forge'
-                ? (visitors > 0 ? 1.35 : 0.58)
-                : visitors > 0 ? 1.12 : 1;
+            let activity = visitors > 0 ? 1.12 : 1;
+            let alpha = source.alpha;
+            let color = source.color;
+            if (source.buildingType === 'forge') {
+                activity = 0.58 + this._forgeGlowIntensity() * 0.74;
+            } else if (source.buildingType === 'watchtower') {
+                const watchIntensity = this._watchtowerIntensity();
+                activity = 1 + watchIntensity * 0.48;
+                if (alpha != null) alpha *= 1 + watchIntensity * 0.65;
+                if (this.harborStatus?.failedPushActive) color = '#ff755d';
+            }
             const radius = source.radius * Math.min(1.55, 0.72 + lightBoost * 0.28 + (activity - 1) * 0.18);
             return normalizeLightSource({
                 ...source,
+                color,
                 intensity: activity,
                 radius,
+                alpha,
                 origin: source.origin || { x: source.x, y: source.y },
             }, {
                 buildingType: source.buildingType,
@@ -1111,6 +1161,131 @@ export class BuildingSprite {
         return clamp01(inAlpha * outAlpha);
     }
 
+    _updateForgeGlow(dt = 16) {
+        const rituals = this._ritualsFor('forge');
+        let target = FORGE_GLOW_BASELINE;
+        for (const ritual of rituals) {
+            const fade = this._ritualFade(ritual);
+            if (fade <= 0.03) continue;
+            target = Math.max(target, 0.62 + fade * 0.34);
+        }
+
+        if (target > this._forgeGlow) {
+            this._forgeGlow = target;
+            return;
+        }
+
+        const decay = (Math.max(0, Number(dt) || 0) / 1000) * FORGE_GLOW_DECAY_PER_SECOND;
+        this._forgeGlow = Math.max(FORGE_GLOW_BASELINE, this._forgeGlow - decay);
+    }
+
+    _syncTaskboardPapers(now) {
+        const rituals = this._ritualsFor('taskboard')
+            .slice()
+            .sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+        for (const ritual of rituals) {
+            if (!ritual?.id || this._seenTaskboardRituals.has(ritual.id)) continue;
+            this._seenTaskboardRituals.add(ritual.id);
+            if (ritual.action === 'complete') {
+                this._completeTaskboardPaper(ritual, now);
+            } else {
+                this._pinTaskboardPaper(ritual, now);
+            }
+        }
+        if (this._seenTaskboardRituals.size > 240) {
+            this._seenTaskboardRituals = new Set([...this._seenTaskboardRituals].slice(-160));
+        }
+        this._capTaskboardPapers();
+    }
+
+    _taskboardPaperKey(ritual) {
+        if (ritual.taskKey) return `${ritual.agentId || 'unknown'}|task:${ritual.taskKey}`;
+        let input = '';
+        if (typeof ritual.input === 'string') {
+            input = ritual.input;
+        } else {
+            try {
+                input = JSON.stringify(ritual.input || '');
+            } catch {
+                input = String(ritual.input || '');
+            }
+        }
+        const label = compactRitualLabel(ritual.label, ritual.tool || 'TASK').toUpperCase();
+        const source = input || ritual.tool || label;
+        return `${ritual.agentId || 'unknown'}|${label}|${hashText(source)}`;
+    }
+
+    _pinTaskboardPaper(ritual, now) {
+        const matchKey = this._taskboardPaperKey(ritual);
+        const existing = this._taskboardPapers.find(paper => paper.matchKey === matchKey);
+        if (existing) {
+            existing.status = 'pinned';
+            existing.label = compactRitualLabel(ritual.label, 'TASK').toUpperCase();
+            existing.taskKey = ritual.taskKey || existing.taskKey || null;
+            existing.updatedAt = now;
+            existing.completedAt = 0;
+            return;
+        }
+
+        this._taskboardPapers.push({
+            id: `paper:${matchKey}:${ritual.createdAt || now}`,
+            matchKey,
+            taskKey: ritual.taskKey || null,
+            agentId: ritual.agentId || '',
+            label: compactRitualLabel(ritual.label, 'TASK').toUpperCase(),
+            status: 'pinned',
+            createdAt: now,
+            updatedAt: now,
+            completedAt: 0,
+            slotSeed: hashText(`${matchKey}:${this._taskboardPapers.length}`),
+        });
+    }
+
+    _completeTaskboardPaper(ritual, now) {
+        const matchKey = this._taskboardPaperKey(ritual);
+        const exact = this._taskboardPapers.find(paper => paper.matchKey === matchKey && paper.status !== 'completed');
+        const sameAgent = this._taskboardPapers
+            .filter(paper => paper.agentId === ritual.agentId && paper.status !== 'completed')
+            .sort((a, b) => a.createdAt - b.createdAt)[0];
+        const oldestOpen = this._taskboardPapers
+            .filter(paper => paper.status !== 'completed')
+            .sort((a, b) => a.createdAt - b.createdAt)[0];
+        const paper = exact || sameAgent || oldestOpen;
+
+        if (paper) {
+            paper.status = 'completed';
+            paper.completedAt = now;
+            paper.updatedAt = now;
+            paper.label = compactRitualLabel(ritual.label || paper.label, paper.label).toUpperCase();
+            return;
+        }
+
+        this._taskboardPapers.push({
+            id: `paper:${matchKey}:${ritual.createdAt || now}`,
+            matchKey,
+            taskKey: ritual.taskKey || null,
+            agentId: ritual.agentId || '',
+            label: compactRitualLabel(ritual.label, 'DONE').toUpperCase(),
+            status: 'completed',
+            createdAt: now,
+            updatedAt: now,
+            completedAt: now,
+            slotSeed: hashText(`${matchKey}:complete`),
+        });
+    }
+
+    _capTaskboardPapers() {
+        while (this._taskboardPapers.length > MAX_TASKBOARD_PAPERS) {
+            const completed = this._taskboardPapers
+                .filter(paper => paper.status === 'completed')
+                .sort((a, b) => a.completedAt - b.completedAt)[0];
+            const oldest = completed || this._taskboardPapers
+                .slice()
+                .sort((a, b) => a.createdAt - b.createdAt)[0];
+            this._taskboardPapers = this._taskboardPapers.filter(paper => paper !== oldest);
+        }
+    }
+
     _ritualLightSources(lightBoost = 1) {
         const sources = [];
         for (const building of this.buildings) {
@@ -1385,17 +1560,18 @@ export class BuildingSprite {
         const hearth = localPoint(51, 66);
         const chimney = localPoint(39, 8);
         const anvil = localPoint(26, 76);
-        const activityIntensity = this._visitorCountFor(building) > 0 ? 1.0 : 0.42;
+        const activityIntensity = this._forgeGlowIntensity();
+        const ritual = this._latestRitual('forge');
         this._drawForgeHeatBloom(ctx, hearth, pulse, activityIntensity);
 
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = (0.09 + pulse * 0.05) * (0.7 + activityIntensity * 0.3);
+        ctx.globalAlpha = 0.05 + activityIntensity * 0.10;
         ctx.fillStyle = '#9a8d7f';
         ctx.beginPath();
         ctx.ellipse(chimney.x, chimney.y - 4, 17, 9, -0.22, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.globalAlpha = (0.12 + pulse * 0.10) * (0.55 + activityIntensity * 0.45);
+        ctx.globalAlpha = 0.06 + activityIntensity * 0.18 + (ritual ? this._ritualFade(ritual) * 0.12 : 0);
         ctx.fillStyle = '#ffd36a';
         ctx.beginPath();
         ctx.ellipse(anvil.x, anvil.y, 22, 12, -0.18, 0, Math.PI * 2);
@@ -1481,12 +1657,13 @@ export class BuildingSprite {
 
     _drawForgeHeatBloom(ctx, hearth, pulse, activityIntensity = 1) {
         ctx.globalCompositeOperation = 'screen';
+        const intensity = clamp01(activityIntensity);
         const steady = this.motionScale ? pulse : 0.45;
-        const glow = ctx.createRadialGradient(hearth.x, hearth.y, 1, hearth.x, hearth.y, 42 + activityIntensity * 20 + steady * 6);
-        glow.addColorStop(0, `rgba(255, 239, 154, ${0.34 + activityIntensity * 0.40})`);
-        glow.addColorStop(0.35, `rgba(255, 126, 39, ${0.16 + activityIntensity * 0.18})`);
+        const glow = ctx.createRadialGradient(hearth.x, hearth.y, 1, hearth.x, hearth.y, 38 + intensity * 28 + steady * 3);
+        glow.addColorStop(0, `rgba(255, 239, 154, ${0.22 + intensity * 0.48})`);
+        glow.addColorStop(0.35, `rgba(255, 126, 39, ${0.10 + intensity * 0.24})`);
         glow.addColorStop(1, 'rgba(255, 75, 24, 0)');
-        ctx.globalAlpha = 0.32 + activityIntensity * 0.42 + steady * 0.08;
+        ctx.globalAlpha = 0.18 + intensity * 0.52 + steady * 0.03;
         ctx.fillStyle = glow;
         ctx.beginPath();
         ctx.ellipse(hearth.x + 2, hearth.y - 1, 55, 32, -0.24, 0, Math.PI * 2);
@@ -1826,7 +2003,7 @@ export class BuildingSprite {
         ctx.fillRect(anvil.x - 13, anvil.y + 16, 24, 4);
 
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.24 + (ritual ? this._ritualFade(ritual) * 0.38 : pulse * 0.08);
+        ctx.globalAlpha = ritual ? 0.24 + this._ritualFade(ritual) * 0.38 : 0.11 + this._forgeGlowIntensity() * 0.18;
         ctx.fillStyle = '#ffd66f';
         ctx.beginPath();
         ctx.ellipse(anvil.x + 2, anvil.y - 2, 18, 7, -0.22, 0, Math.PI * 2);
@@ -2013,34 +2190,58 @@ export class BuildingSprite {
     }
 
     _drawTaskboardRitual(ctx, localPoint) {
-        const rituals = this._ritualsFor('taskboard').slice(-4);
-        if (!rituals.length) return;
+        const papers = this._taskboardPapers
+            .slice()
+            .sort((a, b) => a.createdAt - b.createdAt)
+            .slice(-MAX_TASKBOARD_PAPERS);
+        if (!papers.length) return;
         const board = localPoint(56, 58);
-        rituals.forEach((ritual, index) => {
-            const progress = this._ritualProgress(ritual);
-            const fade = this._ritualFade(ritual);
+        const now = Date.now();
+        papers.forEach((paper, index) => {
             const col = index % 2;
             const row = Math.floor(index / 2);
-            const fall = ritual.action === 'complete'
-                ? (ritual.motionEnabled === false ? 8 : Math.max(0, progress - 0.22) * 42)
+            const completed = paper.status === 'completed';
+            const completeAge = completed ? Math.max(0, now - paper.completedAt) : 0;
+            const flutter = completed && this.motionScale
+                ? Math.max(0, 1 - completeAge / 2200)
                 : 0;
+            const drift = flutter ? Math.sin(this.frame * 0.42 + paper.slotSeed) * 3 : 0;
+            const angle = flutter ? Math.sin(this.frame * 0.18 + paper.slotSeed) * 0.08 : 0;
             const x = board.x - 24 + col * 24;
-            const y = board.y - 28 + row * 18 + fall;
+            const y = board.y - 28 + row * 18 + drift;
             ctx.save();
-            ctx.globalAlpha = fade;
-            ctx.fillStyle = '#e8cf91';
-            ctx.strokeStyle = '#4a3420';
+            ctx.translate(Math.round(x + 10), Math.round(y + 7));
+            ctx.rotate(angle);
+            ctx.globalAlpha = completed ? 0.88 : 1;
+            ctx.fillStyle = completed ? '#d7c088' : '#e8cf91';
+            ctx.strokeStyle = completed ? '#3f4e38' : '#4a3420';
             ctx.lineWidth = 1;
-            ctx.fillRect(Math.round(x), Math.round(y), 20, 15);
-            ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, 19, 14);
-            ctx.fillStyle = '#785332';
-            ctx.fillRect(Math.round(x + 9), Math.round(y - 2), 3, 4);
-            if (ritual.action === 'complete') {
+            ctx.fillRect(-10, -7, 20, 15);
+            ctx.strokeRect(-9.5, -6.5, 19, 14);
+            ctx.fillStyle = completed ? '#2d6b47' : '#9e4a35';
+            ctx.fillRect(-1, -9, 3, 4);
+
+            ctx.strokeStyle = completed ? 'rgba(50, 72, 45, 0.62)' : 'rgba(68, 44, 24, 0.55)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 3; i++) {
+                ctx.beginPath();
+                ctx.moveTo(-6, -2 + i * 4);
+                ctx.lineTo(6, -2 + i * 4);
+                ctx.stroke();
+            }
+
+            if (completed) {
                 ctx.strokeStyle = '#2d6b47';
                 ctx.lineWidth = 2;
                 ctx.beginPath();
-                ctx.moveTo(x + 3, y + 8);
-                ctx.lineTo(x + 17, y + 5);
+                ctx.moveTo(-7, 1);
+                ctx.lineTo(7, -2);
+                ctx.stroke();
+                ctx.strokeStyle = 'rgba(58, 41, 26, 0.82)';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(-8, 5);
+                ctx.lineTo(8, 2);
                 ctx.stroke();
             }
             ctx.restore();
@@ -2105,19 +2306,29 @@ export class BuildingSprite {
     }
 
     _drawWatchtowerRitual(ctx, beacon) {
-        const active = this.agentSprites.filter(sprite => sprite?.agent?.status === 'WORKING').length;
-        if (active <= 1) return;
-        const intensity = Math.min(1, active / 5);
+        const active = this._watchtowerActiveCount();
+        const failed = this.harborStatus?.failedPushActive;
+        if (active <= 0 && !failed) return;
+        const intensity = this._watchtowerIntensity();
+        const color = failed ? '#ff6d52' : '#ffd36a';
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.08 + intensity * 0.16;
-        ctx.strokeStyle = '#ffd36a';
-        ctx.lineWidth = 5 + intensity * 4;
-        const angle = this.motionScale ? this.frame * 0.025 * (1 + Math.min(1.4, active / 5)) : -0.35;
+        ctx.globalAlpha = 0.07 + intensity * 0.22;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 4 + intensity * 6;
+        const speed = 0.018 * (1 + Math.min(1.8, active / 4));
+        const angle = this.motionScale ? this.frame * speed : -0.35;
         ctx.beginPath();
         ctx.moveTo(beacon.x, beacon.y);
-        ctx.lineTo(beacon.x + Math.cos(angle) * 120, beacon.y + Math.sin(angle) * 54);
+        ctx.lineTo(beacon.x + Math.cos(angle) * (112 + intensity * 34), beacon.y + Math.sin(angle) * (50 + intensity * 18));
         ctx.stroke();
+        if (failed) {
+            ctx.globalAlpha = 0.16 + intensity * 0.18;
+            ctx.fillStyle = '#ff4d3f';
+            ctx.beginPath();
+            ctx.ellipse(beacon.x, beacon.y, 42, 20, -0.12, 0, Math.PI * 2);
+            ctx.fill();
+        }
         ctx.restore();
     }
 
@@ -2155,13 +2366,15 @@ export class BuildingSprite {
     _drawWatchtowerFire(ctx, beacon, pulse) {
         const flicker = this.motionScale ? Math.sin(this.frame * 0.23) * 2.2 + Math.sin(this.frame * 0.41) * 1.1 : 0.8;
         const lean = this.motionScale ? Math.sin(this.frame * 0.13) * 2.6 : 1.2;
+        const failed = this.harborStatus?.failedPushActive;
+        const intensity = this._watchtowerIntensity();
 
         ctx.globalCompositeOperation = 'screen';
-        const glow = ctx.createRadialGradient(beacon.x, beacon.y, 1, beacon.x, beacon.y, 30 + pulse * 8);
-        glow.addColorStop(0, 'rgba(255, 236, 150, 0.78)');
-        glow.addColorStop(0.36, 'rgba(255, 142, 51, 0.34)');
-        glow.addColorStop(1, 'rgba(255, 91, 26, 0)');
-        ctx.globalAlpha = 0.62 + pulse * 0.16;
+        const glow = ctx.createRadialGradient(beacon.x, beacon.y, 1, beacon.x, beacon.y, 30 + pulse * 6 + intensity * 10);
+        glow.addColorStop(0, failed ? 'rgba(255, 220, 170, 0.84)' : 'rgba(255, 236, 150, 0.78)');
+        glow.addColorStop(0.36, failed ? 'rgba(255, 93, 67, 0.42)' : 'rgba(255, 142, 51, 0.34)');
+        glow.addColorStop(1, failed ? 'rgba(255, 47, 39, 0)' : 'rgba(255, 91, 26, 0)');
+        ctx.globalAlpha = 0.58 + pulse * 0.12 + intensity * 0.14;
         ctx.fillStyle = glow;
         ctx.beginPath();
         ctx.arc(beacon.x, beacon.y, 30 + pulse * 7, 0, Math.PI * 2);
@@ -2179,7 +2392,7 @@ export class BuildingSprite {
 
         ctx.globalCompositeOperation = 'screen';
         ctx.globalAlpha = 0.92;
-        ctx.fillStyle = '#ff7a2f';
+        ctx.fillStyle = failed ? '#ff5d43' : '#ff7a2f';
         ctx.beginPath();
         ctx.moveTo(beacon.x - 7, beacon.y + 5);
         ctx.quadraticCurveTo(beacon.x - 10 + lean, beacon.y - 4 - flicker, beacon.x - 1 + lean, beacon.y - 19 - flicker);
@@ -2187,7 +2400,7 @@ export class BuildingSprite {
         ctx.closePath();
         ctx.fill();
 
-        ctx.fillStyle = '#ffe68a';
+        ctx.fillStyle = failed ? '#ffd08b' : '#ffe68a';
         ctx.globalAlpha = 0.95;
         ctx.beginPath();
         ctx.moveTo(beacon.x - 3, beacon.y + 4);
@@ -2196,8 +2409,8 @@ export class BuildingSprite {
         ctx.closePath();
         ctx.fill();
 
-        ctx.globalAlpha = 0.44 + pulse * 0.18;
-        ctx.strokeStyle = '#ffd66f';
+        ctx.globalAlpha = 0.40 + pulse * 0.14 + intensity * 0.14;
+        ctx.strokeStyle = failed ? '#ff8a6f' : '#ffd66f';
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(beacon.x - 18, beacon.y + 2);
@@ -2218,7 +2431,10 @@ export class BuildingSprite {
             this._spawnBuildingParticle(normalizedType, center, baseAnchor, [lx, ly], 0.035, 1);
         }
         for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
-            const chance = emitter.chance * (this._visitorCountFor(b) > 0 ? 1.6 : 1);
+            const chanceBoost = b.type === 'forge'
+                ? 0.7 + this._forgeGlowIntensity() * 1.1
+                : this._visitorCountFor(b) > 0 ? 1.6 : 1;
+            const chance = emitter.chance * chanceBoost;
             this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1);
         }
     }

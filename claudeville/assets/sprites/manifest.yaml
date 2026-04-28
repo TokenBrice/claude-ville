@@ -422,6 +422,11 @@ props:
     prompt: "obvious old-school RPG village gatehouse for an isometric town spawn entrance, tall open central archway with raised iron portcullis, two stout mossy grey stone towers, blue slate roofs, dark timber crossbeam, warm lanterns flanking the passage, crimson pennants, cobblestone threshold road continuing through the arch, large landmark silhouette, transparent background, no text, no characters"
     anchor: [96, 150]
 
+  - id: prop.villageWall
+    tool: map_object
+    prompt: "plain straight fantasy city wall segment matching blue-roof stone village gatehouse, mossy grey stone block curtain wall, teal-blue slate coping along top, small square crenellations, repeatable straight perimeter wall run, transparent background, no towers, no door, no arch, no text, no characters"
+    anchor: [52, 84]
+
   - id: prop.signpost
     tool: isometric_tile
     prompt: "weathered wooden signpost, carved directional arrows, guild rune mark, isometric"

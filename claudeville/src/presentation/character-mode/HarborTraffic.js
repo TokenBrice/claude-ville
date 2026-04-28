@@ -1,8 +1,7 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { repoProfile } from '../shared/RepoColor.js';
 
 const SHIP_SPRITE_ID = 'prop.harborBoat';
-const MAX_VISIBLE_SHIPS = 12;
-const MAX_DOCKED_SHIPS_PER_REPO = 3;
 const MAX_DEPARTING_SHIPS = 5;
 const HARBOR_LOG_TILE = { tileX: 34.8, tileY: 17.2 };
 const DEPARTURE_MS = 48000;
@@ -18,6 +17,32 @@ const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
 const REPO_DOCK_SHIP_Y_OFFSET = 236;
 const REPO_DOCK_SHIP_SORT_OFFSET = 8;
+const HARBOR_FRONT_QUEUE_TILES = Object.freeze([
+    // Harbor apron, directly in front of the Harbor Master dock.
+    { tileX: 32.2, tileY: 22.4, line: 0, column: 0 },
+    { tileX: 33.3, tileY: 22.8, line: 0, column: 1 },
+    { tileX: 34.4, tileY: 23.0, line: 0, column: 2 },
+    { tileX: 35.5, tileY: 23.0, line: 0, column: 3 },
+    { tileX: 36.6, tileY: 22.8, line: 0, column: 4 },
+    { tileX: 37.7, tileY: 22.4, line: 0, column: 5 },
+    { tileX: 38.7, tileY: 21.8, line: 0, column: 6 },
+    // Outer harbor, following the open-water edge up toward the lighthouse.
+    { tileX: 38.5, tileY: 20.4, line: 1, column: 0 },
+    { tileX: 38.3, tileY: 19.0, line: 1, column: 1 },
+    { tileX: 38.1, tileY: 17.6, line: 1, column: 2 },
+    { tileX: 37.8, tileY: 16.2, line: 1, column: 3 },
+    { tileX: 37.4, tileY: 14.8, line: 1, column: 4 },
+    { tileX: 36.9, tileY: 13.5, line: 1, column: 5 },
+    { tileX: 36.3, tileY: 12.2, line: 1, column: 6 },
+    // Lighthouse approach water. These absorb bursty repos without crossing
+    // the shoreline or the map edge.
+    { tileX: 35.8, tileY: 10.8, line: 2, column: 0 },
+    { tileX: 35.0, tileY: 9.7, line: 2, column: 1 },
+    { tileX: 34.1, tileY: 8.7, line: 2, column: 2 },
+    { tileX: 33.0, tileY: 7.8, line: 2, column: 3 },
+    { tileX: 31.8, tileY: 7.0, line: 2, column: 4 },
+    { tileX: 30.5, tileY: 6.4, line: 2, column: 5 },
+]);
 
 const BERTHS = [
     { tileX: 32.8, tileY: 21.2 },
@@ -39,17 +64,6 @@ const QUAY_GROUPS = [
     { name: 'Market Quay', berthIndexes: [3, 4, 5] },
     { name: 'Beacon Quay', berthIndexes: [6, 7, 8] },
     { name: 'Outer Quay', berthIndexes: [9, 10, 11] },
-];
-
-const REPO_PALETTES = [
-    { accent: '#6cdb94', glow: 'rgba(108, 219, 148, 0.34)', panel: 'rgba(20, 54, 42, 0.9)' },
-    { accent: '#63c7f2', glow: 'rgba(99, 199, 242, 0.33)', panel: 'rgba(21, 47, 60, 0.9)' },
-    { accent: '#f2b84b', glow: 'rgba(242, 184, 75, 0.35)', panel: 'rgba(60, 45, 20, 0.9)' },
-    { accent: '#ef7b6d', glow: 'rgba(239, 123, 109, 0.33)', panel: 'rgba(62, 34, 31, 0.9)' },
-    { accent: '#b58cff', glow: 'rgba(181, 140, 255, 0.32)', panel: 'rgba(43, 34, 63, 0.9)' },
-    { accent: '#f08fd4', glow: 'rgba(240, 143, 212, 0.3)', panel: 'rgba(59, 32, 52, 0.9)' },
-    { accent: '#9ed760', glow: 'rgba(158, 215, 96, 0.32)', panel: 'rgba(42, 55, 25, 0.9)' },
-    { accent: '#f6cf60', glow: 'rgba(246, 207, 96, 0.33)', panel: 'rgba(58, 48, 27, 0.9)' },
 ];
 
 const SEA_LANES = [
@@ -153,21 +167,6 @@ function displayRepoName(project) {
     return name
         .replace(/[-_]+/g, ' ')
         .replace(/\b\w/g, char => char.toUpperCase());
-}
-
-function repoProfile(project) {
-    const name = projectName(project);
-    const hash = stableHash(String(project || name || 'unknown'));
-    const palette = REPO_PALETTES[hash % REPO_PALETTES.length];
-    return {
-        key: name.toLowerCase(),
-        name,
-        shortName: shortenLabel(name, 16),
-        hash,
-        accent: palette.accent,
-        glow: palette.glow,
-        panel: palette.panel,
-    };
 }
 
 function rotateIndexes(indexes, offset) {
@@ -370,16 +369,25 @@ function pointAlongPath(points, progress) {
     return points[points.length - 1];
 }
 
+function harborFrontQueuePosition(index, total) {
+    const slotIndex = index % HARBOR_FRONT_QUEUE_TILES.length;
+    const cycle = Math.floor(index / HARBOR_FRONT_QUEUE_TILES.length);
+    const slot = HARBOR_FRONT_QUEUE_TILES[slotIndex];
+    const lineCount = HARBOR_FRONT_QUEUE_TILES.filter(candidate => candidate.line === slot.line).length;
+    const pos = toWorld(slot.tileX + cycle * 0.16, slot.tileY + cycle * 0.16);
+    return {
+        x: pos.x,
+        y: pos.y,
+        line: slot.line,
+        column: slot.column,
+        lineCount,
+    };
+}
+
 function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
     const latestPush = latestPushTimes.get(event.project) || 0;
     if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
     return Math.max(0, now - latestPush) > RECENT_PUSH_REPLAY_MS;
-}
-
-function visibleDockedShipsForRepo(count) {
-    const value = Math.max(1, Number(count || 1));
-    if (value >= 20) return MAX_DOCKED_SHIPS_PER_REPO;
-    return Math.min(value, MAX_DOCKED_SHIPS_PER_REPO);
 }
 
 export function snapshotHarborTrafficState(state) {
@@ -426,6 +434,7 @@ export function snapshotHarborTrafficState(state) {
         pushEvents: [...cloned.pushEvents.values()]
             .map(push => ({
                 id: push.id,
+                project: push.project || '',
                 status: push.status || 'unknown',
                 eventTime: push.eventTime || 0,
                 batchId: push.batchId || null,
@@ -526,30 +535,20 @@ export function collectGitEventsFromAgents(agents) {
     return events;
 }
 
-function pendingRepoSummariesFromEvents(events) {
-    const summaries = new Map();
-    for (const event of events || []) {
-        if (event?.type !== 'commit' || !event.project) continue;
-        const profile = repoProfile(event.project);
-        const eventKey = event.sha || event.id || `${event.project}:${event.label}:${event.timestamp}`;
-        const summary = summaries.get(profile.key) || {
-            project: event.project,
-            repoName: displayRepoName(event.project),
-            shortName: profile.shortName,
-            profile,
-            pendingCommits: 0,
-            latestEventTime: 0,
-            _seen: new Set(),
-        };
-        if (summary._seen.has(eventKey)) continue;
-        summary._seen.add(eventKey);
-        summary.pendingCommits += 1;
-        summary.latestEventTime = Math.max(summary.latestEventTime, event.timestamp || 0);
-        summaries.set(profile.key, summary);
-    }
-    return [...summaries.values()]
-        .map(({ _seen, ...summary }) => summary)
-        .sort((a, b) => (b.pendingCommits - a.pendingCommits)
+function pendingRepoSummariesFromDockSummaries(summaries) {
+    return [...(summaries?.values?.() || [])]
+        .filter(summary => (Number(summary.count) || 0) > 0)
+        .map((summary) => ({
+            project: summary.project,
+            repoName: displayRepoName(summary.project),
+            shortName: summary.profile?.shortName || projectName(summary.project),
+            profile: summary.profile || repoProfile(summary.project),
+            pendingCommits: Number(summary.count) || 0,
+            failedPushes: Number(summary.failedCount) || 0,
+            latestEventTime: Number(summary.latestEventTime) || 0,
+        }))
+        .sort((a, b) => (b.failedPushes - a.failedPushes)
+            || (b.pendingCommits - a.pendingCommits)
             || (b.latestEventTime - a.latestEventTime)
             || a.repoName.localeCompare(b.repoName));
 }
@@ -634,6 +633,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             if (!existingBatch && selectedShips.length === 0) {
                 state.pushEvents.set(event.id, {
                     id: event.id,
+                    project: event.project,
                     status,
                     eventTime: event.timestamp || now,
                     batchId: null,
@@ -666,6 +666,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             state.batches.set(batchId, batch);
             state.pushEvents.set(event.id, {
                 id: event.id,
+                project: event.project,
                 status,
                 eventTime: event.timestamp || now,
                 batchId,
@@ -737,17 +738,153 @@ export class HarborTraffic {
     update(agents, dt = 16, now = Date.now()) {
         this.frame += (dt / 16) * this.motionScale;
         const events = collectGitEventsFromAgents(agents);
-        this._pendingRepoSummaries = pendingRepoSummariesFromEvents(events);
         this.state = reduceHarborTrafficState(this.state, events, {
             now,
             motionScale: this.motionScale,
         });
+        this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaries());
         this._observeHarborCrates(agents, events, now);
         this._observePeakDensity(now);
     }
 
     getPendingRepoSummaries() {
         return this._pendingRepoSummaries || [];
+    }
+
+    getRepoSummaries() {
+        const summaries = new Map();
+        for (const summary of this._pendingRepoSummaries || []) {
+            const profile = summary.profile || repoProfile(summary.project);
+            summaries.set(profile.key, {
+                project: summary.project,
+                repoName: summary.repoName || displayRepoName(summary.project),
+                shortName: summary.shortName || profile.shortName,
+                profile,
+                pendingCommits: Number(summary.pendingCommits) || 0,
+                dockedCommits: 0,
+                failedPushes: 0,
+                latestEventTime: Number(summary.latestEventTime) || 0,
+            });
+        }
+        for (const summary of this._repoDockSummaries().values()) {
+            const existing = summaries.get(summary.profile.key) || {
+                project: summary.project,
+                repoName: displayRepoName(summary.project),
+                shortName: summary.profile.shortName,
+                profile: summary.profile,
+                pendingCommits: 0,
+                dockedCommits: 0,
+                failedPushes: 0,
+                latestEventTime: 0,
+            };
+            existing.dockedCommits = summary.count;
+            existing.failedPushes = summary.failedCount;
+            existing.latestEventTime = Math.max(existing.latestEventTime, summary.latestEventTime || 0);
+            summaries.set(summary.profile.key, existing);
+        }
+        return [...summaries.values()]
+            .sort((a, b) => (b.failedPushes - a.failedPushes)
+                || (b.dockedCommits - a.dockedCommits)
+                || (b.pendingCommits - a.pendingCommits)
+                || (b.latestEventTime - a.latestEventTime)
+                || a.repoName.localeCompare(b.repoName));
+    }
+
+    getFailedPushState(now = Date.now()) {
+        const repos = new Map();
+        let latest = null;
+        for (const batch of this.state.batches.values()) {
+            if ((batch.status || 'unknown') !== 'failed') continue;
+            const age = this._batchSummaryAge(batch, now);
+            if (age > SCREEN_SUMMARY_MS + FINALE_EFFECT_MS) continue;
+            const profile = repoProfile(batch.project);
+            const current = repos.get(profile.key) || {
+                project: batch.project,
+                repoName: displayRepoName(batch.project),
+                shortName: profile.shortName,
+                profile,
+                failedPushes: 0,
+                latestEventTime: 0,
+            };
+            current.failedPushes += 1;
+            current.latestEventTime = Math.max(current.latestEventTime, batch.eventTime || batch.startedAt || 0);
+            repos.set(profile.key, current);
+            if (!latest || current.latestEventTime > (latest.eventTime || 0)) {
+                latest = {
+                    id: batch.id,
+                    project: batch.project,
+                    repoName: current.repoName,
+                    shortName: current.shortName,
+                    targetRef: batch.targetRef || '',
+                    label: batch.label || '',
+                    eventTime: current.latestEventTime,
+                };
+            }
+        }
+        for (const ship of this.state.ships.values()) {
+            if (ship.status !== 'docked' || ship.pushStatus !== 'failed') continue;
+            const profile = repoProfile(ship.project);
+            const eventTime = Math.max(ship.eventTime || 0, ship.failedAt || 0);
+            const current = repos.get(profile.key) || {
+                project: ship.project,
+                repoName: displayRepoName(ship.project),
+                shortName: profile.shortName,
+                profile,
+                failedPushes: 0,
+                latestEventTime: 0,
+            };
+            current.failedPushes += 1;
+            current.latestEventTime = Math.max(current.latestEventTime, eventTime);
+            repos.set(profile.key, current);
+            if (!latest || eventTime > (latest.eventTime || 0)) {
+                latest = {
+                    id: ship.pushEventId || ship.id,
+                    project: ship.project,
+                    repoName: current.repoName,
+                    shortName: current.shortName,
+                    targetRef: '',
+                    label: ship.label || '',
+                    eventTime,
+                };
+            }
+        }
+        for (const push of this.state.pushEvents.values()) {
+            if ((push.status || 'unknown') !== 'failed' || push.batchId || !push.project) continue;
+            const profile = repoProfile(push.project);
+            const current = repos.get(profile.key) || {
+                project: push.project,
+                repoName: displayRepoName(push.project),
+                shortName: profile.shortName,
+                profile,
+                failedPushes: 0,
+                latestEventTime: 0,
+            };
+            current.failedPushes += 1;
+            current.latestEventTime = Math.max(current.latestEventTime, push.eventTime || 0);
+            repos.set(profile.key, current);
+            if (!latest || (push.eventTime || 0) > (latest.eventTime || 0)) {
+                latest = {
+                    id: push.id,
+                    project: push.project,
+                    repoName: current.repoName,
+                    shortName: current.shortName,
+                    targetRef: '',
+                    label: '',
+                    eventTime: push.eventTime || 0,
+                };
+            }
+        }
+        const list = [...repos.values()]
+            .sort((a, b) => (b.latestEventTime - a.latestEventTime) || a.repoName.localeCompare(b.repoName));
+        return {
+            hasFailedPush: list.length > 0,
+            status: list.length > 0 ? 'failed' : 'ok',
+            accent: PUSH_STATUS_STYLE.failed.accent,
+            glow: PUSH_STATUS_STYLE.failed.glow,
+            intensity: Math.min(1, list.reduce((sum, repo) => sum + repo.failedPushes, 0) / 4),
+            latest,
+            repos: list,
+        };
     }
 
     _observePeakDensity(now) {
@@ -788,7 +925,9 @@ export class HarborTraffic {
         }
 
         const visible = [];
-        for (const [key, list] of dockedByRepo.entries()) {
+        const crateDrawnForKeys = new Set();
+        const dockedEntries = [...dockedByRepo.entries()];
+        for (const [, list] of dockedEntries) {
             list.sort((a, b) => {
                 const aFailed = a.payload.pushStatus === 'failed' ? 1 : 0;
                 const bFailed = b.payload.pushStatus === 'failed' ? 1 : 0;
@@ -796,42 +935,78 @@ export class HarborTraffic {
                     || ((b.payload.eventTime || 0) - (a.payload.eventTime || 0))
                     || a.payload.id.localeCompare(b.payload.id);
             });
+        }
+        // Lay docked ships into a global harbor-front queue so repo bursts do
+        // not stack multiple boats on the same small set of berth pixels.
+        const dockedQueue = [];
+        for (const [key, list] of dockedEntries) {
             const summary = repoSummaries.get(key);
             const repoCount = summary?.count || list.length;
-            const limit = visibleDockedShipsForRepo(repoCount);
-            const representatives = list.slice(0, limit);
-            representatives.forEach((drawable, index) => {
+            list.forEach((drawable, index) => {
                 drawable.payload.repoDockCount = repoCount;
                 drawable.payload.repoDockIndex = index;
-                drawable.payload.repoDockVisibleCount = representatives.length;
-                const marker = markerByRepo.get(key);
-                if (marker) {
-                    const col = index % 2;
-                    const row = Math.floor(index / 2);
-                    const repoLane = Number(marker.repoLogIndex || 0) % 2;
-                    drawable.payload.x = marker.x + (repoLane === 0 ? -74 : 74) + (col === 0 ? -36 : 36);
-                    drawable.payload.y = marker.y + REPO_DOCK_SHIP_Y_OFFSET + row * 38;
-                    drawable.sortY = drawable.payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
-                }
-                drawable.payload.harborCrate = this.harborCrates.get(key) || null;
-                visible.push(drawable);
+                drawable.payload.repoDockVisibleCount = list.length;
+                drawable.payload.harborCrate = !crateDrawnForKeys.has(key)
+                    ? this.harborCrates.get(key) || null
+                    : null;
+                if (drawable.payload.harborCrate) crateDrawnForKeys.add(key);
+                dockedQueue.push(drawable);
             });
         }
+        dockedQueue.forEach((drawable, index) => {
+            const pos = harborFrontQueuePosition(index, dockedQueue.length);
+            drawable.payload.x = pos.x;
+            drawable.payload.y = pos.y;
+            drawable.payload.harborQueueIndex = index;
+            drawable.payload.harborQueueLine = pos.line;
+            drawable.payload.harborQueueColumn = pos.column;
+            drawable.payload.harborQueueLineCount = pos.lineCount;
+            drawable.sortY = drawable.payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
+            visible.push(drawable);
+        });
 
         departing.sort((a, b) => ((b.payload.eventTime || 0) - (a.payload.eventTime || 0)) || a.payload.id.localeCompare(b.payload.id));
         for (const drawable of departing.slice(0, MAX_DEPARTING_SHIPS)) {
             visible.push(drawable);
         }
+        for (const drawable of this._harborCrateDrawables(markerByRepo, crateDrawnForKeys)) {
+            visible.push(drawable);
+        }
 
-        visible.sort((a, b) => {
-            if (a.payload.status !== b.payload.status) {
-                return a.payload.status === 'departing' ? 1 : -1;
-            }
-            return ((a.payload.eventTime || 0) - (b.payload.eventTime || 0)) || a.payload.id.localeCompare(b.payload.id);
-        });
-        const trimmed = visible.slice(-MAX_VISIBLE_SHIPS);
+        return visible.sort((a, b) => a.sortY - b.sortY);
+    }
 
-        return trimmed.sort((a, b) => a.sortY - b.sortY);
+    _harborCrateDrawables(markerByRepo, skipKeys = new Set()) {
+        const drawables = [];
+        let fallbackIndex = 0;
+        for (const [key, crate] of this.harborCrates) {
+            if (skipKeys.has(key)) continue;
+            const marker = markerByRepo.get(key);
+            const quayIndex = assignedQuayIndex(this.state, crate.project);
+            const fallbackBerthIndex = QUAY_GROUPS[quayIndex]?.berthIndexes?.[0] ?? fallbackIndex % BERTHS.length;
+            const fallbackBerth = BERTHS[fallbackBerthIndex] || BERTHS[0];
+            const pos = marker
+                ? {
+                    x: marker.x + (Number(marker.repoLogIndex || 0) % 2 === 0 ? -86 : 86),
+                    y: marker.y + REPO_DOCK_SHIP_Y_OFFSET + 42,
+                }
+                : toWorld(fallbackBerth.tileX, fallbackBerth.tileY);
+            drawables.push({
+                kind: 'harbor-traffic',
+                sortY: pos.y + REPO_DOCK_SHIP_SORT_OFFSET,
+                payload: {
+                    type: 'crate',
+                    project: crate.project,
+                    profile: crate.profile,
+                    harborCrate: crate,
+                    berthIndex: fallbackBerthIndex,
+                    x: pos.x,
+                    y: pos.y,
+                },
+            });
+            fallbackIndex += 1;
+        }
+        return drawables;
     }
 
     _observeHarborCrates(agents, events, now) {
@@ -1003,6 +1178,11 @@ export class HarborTraffic {
         }
         if (drawable.payload.type === 'repo-quay') {
             this._drawRepoQuayMarker(ctx, drawable.payload, zoom);
+            return;
+        }
+        if (drawable.payload.type === 'crate') {
+            const profile = drawable.payload.profile || repoProfile(drawable.payload.project);
+            this._drawHarborCrate(ctx, drawable.payload, zoom, 1, profile);
             return;
         }
         this._drawShip(ctx, drawable.payload, zoom);
@@ -1283,13 +1463,19 @@ export class HarborTraffic {
         const s = 1 / Math.max(1, zoom || 1);
         const label = shortenLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS);
         const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
+        const queueColumn = Number(ship.harborQueueColumn);
+        const inHarborQueue = Number.isFinite(Number(ship.harborQueueIndex));
         const repoIndex = Math.max(0, Number(ship.repoDockIndex || 0));
         const repoCount = Math.max(1, Number(ship.repoDockVisibleCount || 1));
-        const lane = repoCount > 1 ? repoIndex - (repoCount - 1) / 2 : 0;
+        const lane = inHarborQueue
+            ? (queueColumn % 2 === 0 ? -0.34 : 0.34)
+            : repoCount > 1 ? repoIndex - (repoCount - 1) / 2 : 0;
         const textSize = Math.max(7, Math.round(8 * s));
-        const width = Math.max(42 * s, Math.min(142 * s, label.length * textSize * 0.62 + 12 * s));
+        const maxWidth = inHarborQueue ? 96 * s : 142 * s;
+        const width = Math.max(42 * s, Math.min(maxWidth, label.length * textSize * 0.62 + 12 * s));
         const x = Math.round(ship.x - width / 2 + lane * 22 * s);
-        const y = Math.round(ship.y - (44 + repoIndex * 14) * s);
+        const labelTier = inHarborQueue ? queueColumn % 2 : repoIndex;
+        const y = Math.round(ship.y - (44 + labelTier * 11) * s);
         const height = 12 * s;
         ctx.save();
         ctx.globalAlpha = 0.94 * alpha;

@@ -2,7 +2,7 @@ import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { Settings } from '../../application/Settings.js';
 import { MonumentPlanter, MonumentRules } from '../../application/MonumentRules.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { collectCommitEvents } from './ChronicleManifests.js';
+import { collectCommitEvents } from './ChronicleEvents.js';
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const KIND_COLORS = {

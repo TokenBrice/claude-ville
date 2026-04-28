@@ -4,6 +4,7 @@ import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { formatModelLabel, getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
+import { repoProfile } from '../shared/RepoColor.js';
 
 const TOOL_ICONS = {
     Read: '📖', Edit: '✏️', Write: '📝', Grep: '🔍', Glob: '📁',
@@ -27,11 +28,6 @@ const PROVIDER_BADGES = {
     git:    { label: 'Git',    color: '#f6cf60', bg: 'rgba(246,207,96,0.15)' },
 };
 
-const PROJECT_COLORS = [
-    '#e8d44d', '#4ade80', '#60a5fa', '#f97316', '#a78bfa',
-    '#f472b6', '#34d399', '#fb923c', '#818cf8', '#22d3ee',
-];
-
 export class DashboardRenderer {
     constructor(world) {
         this.world = world;
@@ -43,7 +39,6 @@ export class DashboardRenderer {
         this.active = false;
         this._fetchTimers = new Map();
         this._isFetchingDetails = false;
-        this._projectColorMap = new Map();
         this._sectionEls = new Map(); // projectPath → section element
         this._sectionRefs = new Map(); // projectPath → cached section refs
 
@@ -76,7 +71,6 @@ export class DashboardRenderer {
 
         // Group by project
         const groups = this._groupByProject(agents);
-        this._assignProjectColors(groups);
 
         // Status order: working > waiting > idle
         const order = { working: 0, waiting: 1, idle: 2 };
@@ -158,14 +152,9 @@ export class DashboardRenderer {
         return groups;
     }
 
-    _assignProjectColors(groups) {
-        let idx = 0;
-        for (const key of groups.keys()) {
-            if (!this._projectColorMap.has(key)) {
-                this._projectColorMap.set(key, PROJECT_COLORS[idx % PROJECT_COLORS.length]);
-            }
-            idx++;
-        }
+    _projectColor(projectPath) {
+        if (!projectPath || projectPath === '_unknown') return '#8b8b9e';
+        return repoProfile(projectPath).accent;
     }
 
     _shortProjectName(path) {
@@ -182,7 +171,7 @@ export class DashboardRenderer {
         section.className = 'dashboard__section';
         section.dataset.project = projectPath;
 
-        const color = this._projectColorMap.get(projectPath) || '#8b8b9e';
+        const color = this._projectColor(projectPath);
         section.innerHTML = `
             <div class="dashboard__section-header" style="border-left-color: ${color}">
                 <span class="dashboard__section-dot" style="background: ${color}"></span>
