@@ -31,8 +31,9 @@ function pageIsVisible() {
 
 function viewportMetrics(viewport = {}) {
     const dpr = viewport.dpr || viewport._claudeVilleDpr || 1;
-    const width = viewport._claudeVilleCssWidth || viewport.clientWidth || Math.round((viewport.width || 0) / dpr) || viewport.width || 0;
-    const height = viewport._claudeVilleCssHeight || viewport.clientHeight || Math.round((viewport.height || 0) / dpr) || viewport.height || 0;
+    const taggedCssViewport = viewport._claudeVilleDpr && !viewport._claudeVilleCssWidth;
+    const width = viewport._claudeVilleCssWidth || viewport.clientWidth || (taggedCssViewport ? viewport.width : Math.round((viewport.width || 0) / dpr)) || viewport.width || 0;
+    const height = viewport._claudeVilleCssHeight || viewport.clientHeight || (taggedCssViewport ? viewport.height : Math.round((viewport.height || 0) / dpr)) || viewport.height || 0;
     return { dpr, width, height };
 }
 

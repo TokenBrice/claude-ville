@@ -1566,9 +1566,13 @@ export class IsometricRenderer {
     }
 
     _screenViewport() {
+        const width = this._screenWidth();
+        const height = this._screenHeight();
         return {
-            width: this._screenWidth(),
-            height: this._screenHeight(),
+            width,
+            height,
+            _claudeVilleCssWidth: width,
+            _claudeVilleCssHeight: height,
             _claudeVilleDpr: this._screenDpr(),
         };
     }
