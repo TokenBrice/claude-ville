@@ -23,11 +23,12 @@ PlasmoidItem {
     property real totalCost: 0
     property string activityText: ""
 
-    Plasmoid.preferredRepresentation: Plasmoid.compactRepresentation
-    Plasmoid.toolTipMainText: "ClaudeVille"
-    Plasmoid.toolTipSubText: online
+    toolTipMainText: "ClaudeVille"
+    toolTipSubText: online
         ? i18n("%1 working, %2 total", workingCount, sessionRows.length)
         : errorText || i18n("Offline")
+
+    Plasmoid.preferredRepresentation: Plasmoid.compactRepresentation
 
     Layout.minimumWidth: PlasmaCore.Units.gridUnit * 18
     Layout.minimumHeight: PlasmaCore.Units.gridUnit * 14
