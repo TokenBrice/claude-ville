@@ -2631,97 +2631,10 @@ export class IsometricRenderer {
     }
 
     _drawVillageGateThreshold(ctx, leftBase, rightBase) {
-        const palette = VILLAGE_WOOD_PALETTE;
-        const dx = rightBase.x - leftBase.x;
-        const dy = rightBase.y - leftBase.y;
-        const length = Math.max(1, Math.hypot(dx, dy));
-        const ux = dx / length;
-        const uy = dy / length;
-        let nx = -uy;
-        let ny = ux;
-        if (ny < 0) {
-            nx *= -1;
-            ny *= -1;
-        }
-        const mid = { x: (leftBase.x + rightBase.x) / 2, y: (leftBase.y + rightBase.y) / 2 };
-        const pathHalf = Math.min(26, Math.max(20, length * 0.10));
-        const frontDepth = 7;
-        const backDepth = 11;
-        const frontLeft = { x: mid.x - ux * pathHalf + nx * frontDepth, y: mid.y - uy * pathHalf + ny * frontDepth + 4 };
-        const frontRight = { x: mid.x + ux * pathHalf + nx * frontDepth, y: mid.y + uy * pathHalf + ny * frontDepth + 4 };
-        const backRight = { x: mid.x + ux * pathHalf - nx * backDepth, y: mid.y + uy * pathHalf - ny * backDepth - 6 };
-        const backLeft = { x: mid.x - ux * pathHalf - nx * backDepth, y: mid.y - uy * pathHalf - ny * backDepth - 6 };
-
-        const trace = (...points) => {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(points[0].x), Math.round(points[0].y));
-            for (const point of points.slice(1)) {
-                ctx.lineTo(Math.round(point.x), Math.round(point.y));
-            }
-            ctx.closePath();
-        };
-
-        ctx.save();
-        SpriteRenderer.disableSmoothing(ctx);
-
-        for (const base of [leftBase, rightBase]) {
-            ctx.fillStyle = 'rgba(27, 16, 9, 0.36)';
-            trace(
-                { x: base.x - ux * 21 + nx * 24, y: base.y - uy * 21 + ny * 24 + 11 },
-                { x: base.x + ux * 21 + nx * 24, y: base.y + uy * 21 + ny * 24 + 11 },
-                { x: base.x + ux * 16 - nx * 16, y: base.y + uy * 16 - ny * 16 - 5 },
-                { x: base.x - ux * 16 - nx * 16, y: base.y - uy * 16 - ny * 16 - 5 },
-            );
-            ctx.fill();
-        }
-
-        trace(frontLeft, frontRight, backRight, backLeft);
-        ctx.fillStyle = '#4e4b43';
-        ctx.fill();
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 1.5;
-        ctx.stroke();
-
-        ctx.save();
-        trace(frontLeft, frontRight, backRight, backLeft);
-        ctx.clip();
-        for (let d = -pathHalf + 6; d <= pathHalf - 3; d += 14) {
-            const laneShift = Math.floor((d + pathHalf) / 14) % 2 ? 4 : 0;
-            for (let n = -backDepth + laneShift; n <= frontDepth + 2; n += 14) {
-                const seed = this._tileNoise(Math.round(d + 211), Math.round(n + 97));
-                const x = mid.x + ux * d + nx * n;
-                const y = mid.y + uy * d + ny * n + (n > 0 ? 4 : -5);
-                ctx.fillStyle = seed > 0.55 ? '#8c8370' : '#565246';
-                ctx.strokeStyle = '#332d25';
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.ellipse(Math.round(x), Math.round(y), 4.5 + seed * 1.6, 2.4 + seed, Math.atan2(uy, ux), 0, Math.PI * 2);
-                ctx.fill();
-                ctx.stroke();
-            }
-        }
-        ctx.restore();
-
-        ctx.fillStyle = 'rgba(12, 11, 13, 0.54)';
-        ctx.beginPath();
-        ctx.ellipse(
-            Math.round(mid.x - nx * 21),
-            Math.round(mid.y - ny * 21 - 18),
-            pathHalf * 0.90,
-            8,
-            Math.atan2(uy, ux),
-            0,
-            Math.PI * 2,
-        );
-        ctx.fill();
-
-        ctx.strokeStyle = '#b4a17b';
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(frontLeft.x), Math.round(frontLeft.y));
-        ctx.lineTo(Math.round(frontRight.x), Math.round(frontRight.y));
-        ctx.stroke();
-        ctx.restore();
+        // Threshold is now painted by the road tile renderer via the gate-avenue
+        // route in townPlan.js. Tower foot shadows are drawn inside
+        // _drawVillageGateTower. This method is intentionally a no-op; the
+        // call site in _drawVillageGatehouse is kept for future hooks.
     }
 
     _drawVillageGateTower(ctx, x, y, side = 1) {
