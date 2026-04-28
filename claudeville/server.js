@@ -164,7 +164,9 @@ function printStartupStats(providers) {
  */
 function handleGetSessions(req, res) {
   try {
-    const sessions = getAllSessions(ACTIVE_THRESHOLD_MS, { force: true });
+    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const force = ['1', 'true', 'yes'].includes(String(url.searchParams.get('force') || '').toLowerCase());
+    const sessions = getAllSessions(ACTIVE_THRESHOLD_MS, { force });
     sendJson(res, 200, { sessions, count: sessions.length, timestamp: Date.now() });
   } catch (err) {
     console.error('Failed to fetch sessions:', err.message);
@@ -593,6 +595,7 @@ function sendInitialData(socket) {
 
 let watchDebounce = null;
 let watchRefreshDebounce = null;
+const watchRetryTimers = new Map();
 let lastBroadcastSignature = null;
 let providerDataDirty = true;
 let lastFullDiscoveryAt = 0;
@@ -707,6 +710,23 @@ function debouncedWatchRefresh() {
   }, BROADCAST_DEBOUNCE_MS);
 }
 
+function scheduleWatchRetry(wp, key, attempt = 0) {
+  if (activeWatchers.has(key)) return;
+  if (watchRetryTimers.has(key)) return;
+
+  const delay = Math.min(5000, 200 * Math.pow(2, attempt));
+  const timer = setTimeout(() => {
+    watchRetryTimers.delete(key);
+    if (activeWatchers.has(key)) return;
+    if (fs.existsSync(wp.path)) {
+      refreshWatchPaths();
+      if (activeWatchers.has(key)) return;
+    }
+    if (attempt < 7) scheduleWatchRetry(wp, key, attempt + 1);
+  }, delay);
+  watchRetryTimers.set(key, timer);
+}
+
 // ─── File watching (multi-provider) ────────────────────────
 
 function watchKey(wp) {
@@ -725,6 +745,7 @@ function handleWatchEvent(wp, key, eventType, filename) {
       activeWatchers.delete(key);
     }
     debouncedWatchRefresh();
+    scheduleWatchRetry(wp, key);
   }
 
   markProviderDataDirty(`${wp.type}:${path.basename(wp.path)}`);
@@ -754,6 +775,11 @@ function refreshWatchPaths(initialWatchPaths = null) {
         activeWatchers.delete(key);
       });
       activeWatchers.set(key, watcher);
+      const retryTimer = watchRetryTimers.get(key);
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        watchRetryTimers.delete(key);
+      }
       added++;
     } catch {
       // Ignore paths that cannot be watched.

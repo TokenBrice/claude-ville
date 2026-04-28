@@ -126,7 +126,7 @@ function getSessionDetailsBatch(items = [], { force = false } = {}) {
     const provider = String(item?.provider || 'claude').toLowerCase();
     const sessionId = String(item?.sessionId || '');
     const project = String(item?.project || '');
-    if (!sessionId || !ADAPTER_BY_PROVIDER[provider]) continue;
+    if (!sessionId) continue;
     const key = item.key || `${provider}::${sessionId}::${project}`;
     results[key] = getSessionDetailByProvider(provider, sessionId, project, { force });
   }

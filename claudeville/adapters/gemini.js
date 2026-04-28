@@ -104,7 +104,7 @@ function resolveProjectPath(projectHash) {
 function getParsedSession(filePath) {
   try {
     const stat = fs.statSync(filePath);
-    const key = `${filePath}:${stat.size}:${Math.round(stat.mtimeMs)}`;
+    const key = `${filePath}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino || 0}`;
     const cached = _parsedSessionCache.get(filePath);
     if (cached?.key === key) {
       _parsedSessionCache.delete(filePath);

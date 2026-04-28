@@ -81,6 +81,7 @@ class SessionDetailsService {
         const now = Date.now();
         const results = new Map();
         const requests = [];
+        const pendingKeys = [];
 
         for (const agent of agents) {
             if (!agent?.id) continue;
@@ -93,15 +94,35 @@ class SessionDetailsService {
             if (cached && now - cached.at <= this._staleTtlMs) {
                 results.set(agent.id, cached.value);
             }
+            if (this._inFlight.has(key)) {
+                pendingKeys.push({ agentId: agent.id, promise: this._inFlight.get(key), fallback: cached?.value || null });
+                continue;
+            }
             requests.push(this._requestPayloadFor(agent, key));
         }
 
-        if (requests.length === 0) return results;
+        const applyPending = async () => {
+            for (const pending of pendingKeys) {
+                try {
+                    const detail = await pending.promise;
+                    if (detail) results.set(pending.agentId, detail);
+                    else if (pending.fallback) results.set(pending.agentId, pending.fallback);
+                } catch {
+                    if (pending.fallback) results.set(pending.agentId, pending.fallback);
+                }
+            }
+        };
 
-        const requestKey = requests.map(item => item.key).sort().join('\n');
+        if (requests.length === 0) {
+            await applyPending();
+            return results;
+        }
+
+        const requestKey = `batch::${requests.map(item => item.key).sort().join('\n')}`;
         if (this._inFlight.has(requestKey)) {
             const fetched = await this._inFlight.get(requestKey);
             for (const [agentId, detail] of fetched) results.set(agentId, detail);
+            await applyPending();
             return results;
         }
 
@@ -134,9 +155,20 @@ class SessionDetailsService {
             return fetched;
         })();
 
-        this._inFlight.set(requestKey, fetchPromise.finally(() => this._inFlight.delete(requestKey)));
-        const fetched = await fetchPromise;
+        const trackedBatch = fetchPromise.finally(() => this._inFlight.delete(requestKey));
+        this._inFlight.set(requestKey, trackedBatch);
+        for (const request of requests) {
+            let perKeyPromise = null;
+            perKeyPromise = trackedBatch
+                .then(fetched => fetched.get(request.sessionId) || this._cache.get(request.key)?.value || null)
+                .finally(() => {
+                    if (this._inFlight.get(request.key) === perKeyPromise) this._inFlight.delete(request.key);
+                });
+            this._inFlight.set(request.key, perKeyPromise);
+        }
+        const fetched = await trackedBatch;
         for (const [agentId, detail] of fetched) results.set(agentId, detail);
+        await applyPending();
         return results;
     }
 

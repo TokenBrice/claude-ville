@@ -62,6 +62,7 @@ export class DashboardRenderer {
         this._selectedAgentId = null;
         this.active = false;
         this._isFetchingDetails = false;
+        this._detailFetchGeneration = 0;
         this._sectionEls = new Map(); // projectPath → section element
         this._sectionRefs = new Map(); // projectPath → cached section refs
         this._sectionSignatures = new Map();
@@ -107,8 +108,10 @@ export class DashboardRenderer {
         const agents = Array.from(this.world.agents.values());
 
         if (agents.length === 0) {
+            this._clearAllCardsAndSections();
             this.gridEl.style.display = 'none';
             this.emptyEl.classList.add('dashboard__empty--visible');
+            sessionDetailsService.sweep([]);
             return;
         }
 
@@ -336,6 +339,8 @@ export class DashboardRenderer {
         const avatarContainer = card.querySelector('.dash-card__avatar');
         const avatarCanvas = new AvatarCanvas(agent);
         avatarContainer.appendChild(avatarCanvas.canvas);
+        card._avatarCanvas = avatarCanvas;
+        card._avatarSignature = '';
 
         // Click to select agent
         card.addEventListener('click', () => {
@@ -375,6 +380,7 @@ export class DashboardRenderer {
             agent.currentTool || '',
             agent.currentToolInput || '',
             agent.lastMessage || '',
+            i18n.lang || '',
         ].join('|');
 
         cardEl._projectPath = agent.projectPath || '_unknown';
@@ -420,6 +426,12 @@ export class DashboardRenderer {
                 this._setStyle(refs.message, 'display', 'none');
             }
         }
+        const avatarSignature = `${agent.model || ''}|${agent.effort || ''}|${agent.provider || ''}`;
+        if (cardEl._avatarCanvas && cardEl._avatarSignature !== avatarSignature) {
+            cardEl._avatarSignature = avatarSignature;
+            cardEl._avatarCanvas.agent = agent;
+            cardEl._avatarCanvas.draw();
+        }
 
         // Render tool history
         const history = this.toolHistories.get(agent.id);
@@ -463,6 +475,7 @@ export class DashboardRenderer {
 
     _startDetailFetching() {
         this._stopDetailFetching();
+        this._detailFetchGeneration++;
         // Run once immediately, then every 3 seconds
         this._fetchAllDetails();
         this._globalFetchTimer = setInterval(() => this._fetchAllDetails(), SESSION_DETAIL_REFRESH_INTERVAL);
@@ -473,17 +486,19 @@ export class DashboardRenderer {
             clearInterval(this._globalFetchTimer);
             this._globalFetchTimer = null;
         }
-        this._isFetchingDetails = false;
+        this._detailFetchGeneration++;
     }
 
     async _fetchAllDetails() {
-        if (this._isFetchingDetails) return;
+        if (!this.active || this._isFetchingDetails) return;
         this._isFetchingDetails = true;
+        const generation = this._detailFetchGeneration;
 
         const agents = Array.from(this.world.agents.values());
         try {
             const candidates = this._detailCandidates(agents);
             const detailsByAgentId = await sessionDetailsService.fetchSessionDetailsBatch(candidates);
+            if (!this.active || generation !== this._detailFetchGeneration) return;
             for (const agent of candidates) {
                 const data = detailsByAgentId.get(agent.id);
                 if (!data || !data.toolHistory) continue;
@@ -494,6 +509,23 @@ export class DashboardRenderer {
         } finally {
             this._isFetchingDetails = false;
         }
+    }
+
+    _clearAllCardsAndSections() {
+        for (const [id, cardEl] of this.cards) {
+            this._observer?.unobserve?.(cardEl);
+            cardEl.remove();
+            this.cards.delete(id);
+        }
+        this.toolHistories.clear();
+        this.toolHistoryRenderSignatures.clear();
+        this._cardRenderSignatures.clear();
+        this._visibleAgentIds.clear();
+
+        for (const [, sectionEl] of this._sectionEls) sectionEl.remove();
+        this._sectionEls.clear();
+        this._sectionRefs.clear();
+        this._sectionSignatures.clear();
     }
 
     _detailCandidates(agents) {

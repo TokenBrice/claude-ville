@@ -17,8 +17,10 @@ const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 64 * 1024 * 1024;
 const MAX_HEAD_BYTES = 512 * 1024;
 const SESSION_ENTRY_CACHE_MAX = 256;
+const AGENT_LAUNCH_CACHE_MAX = 128;
 
 const _sessionEntryCache = new Map();
+const _agentLaunchCache = new Map();
 const _sessionNamesCache = { signature: '', value: new Map() };
 const _teamMembershipCache = { signature: '', value: new Map() };
 const _teamsCache = { signature: '', value: [] };
@@ -94,6 +96,10 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
   } catch {
     return [];
   }
+}
+
+function statCacheKey(filePath, stat) {
+  return `${filePath}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino || 0}`;
 }
 
 function readClaudeSessionNames() {
@@ -180,7 +186,7 @@ function directorySignature(dirPath, { recursive = false, extension = '' } = {})
         if (extension && !entry.name.endsWith(extension)) continue;
         try {
           const stat = fs.statSync(fullPath);
-          parts.push(`${fullPath}:${stat.size}:${Math.round(stat.mtimeMs)}`);
+          parts.push(statCacheKey(fullPath, stat));
         } catch { /* ignore */ }
       }
     };
@@ -194,7 +200,7 @@ function directorySignature(dirPath, { recursive = false, extension = '' } = {})
 function getSessionEntries(filePath) {
   try {
     const stat = fs.statSync(filePath);
-    const cacheKey = `${filePath}:${stat.size}:${Math.round(stat.mtimeMs)}`;
+    const cacheKey = statCacheKey(filePath, stat);
     const cached = _sessionEntryCache.get(filePath);
     if (cached?.key === cacheKey) {
       _sessionEntryCache.delete(filePath);
@@ -250,24 +256,44 @@ function getFirstUserPrompt(filePath) {
 }
 
 function getAgentLaunches(sessionFilePath) {
-  const launches = [];
-  const entries = getSessionEntries(sessionFilePath);
-
-  for (const entry of entries) {
-    const msg = entry.message;
-    if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
-
-    for (const block of msg.content) {
-      if (block.type !== 'tool_use' || block.name !== 'Agent' || !block.input) continue;
-      launches.push({
-        name: block.input.description || null,
-        agentType: block.input.subagent_type || 'sub-agent',
-        prompt: block.input.prompt || null,
-      });
+  try {
+    const stat = fs.statSync(sessionFilePath);
+    const cacheKey = statCacheKey(sessionFilePath, stat);
+    const cached = _agentLaunchCache.get(sessionFilePath);
+    if (cached?.key === cacheKey) {
+      _agentLaunchCache.delete(sessionFilePath);
+      _agentLaunchCache.set(sessionFilePath, cached);
+      return cached.launches;
     }
-  }
 
-  return launches;
+    const launches = [];
+    const raw = fs.readFileSync(sessionFilePath, 'utf-8');
+    const entries = parseJsonLines(raw ? raw.split('\n') : []);
+
+    for (const entry of entries) {
+      const msg = entry.message;
+      if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+
+      for (const block of msg.content) {
+        if (block.type !== 'tool_use' || block.name !== 'Agent' || !block.input) continue;
+        launches.push({
+          name: block.input.description || null,
+          agentType: block.input.subagent_type || 'sub-agent',
+          prompt: block.input.prompt || null,
+        });
+      }
+    }
+
+    _agentLaunchCache.set(sessionFilePath, { key: cacheKey, launches });
+    while (_agentLaunchCache.size > AGENT_LAUNCH_CACHE_MAX) {
+      const oldest = _agentLaunchCache.keys().next().value;
+      if (oldest === undefined) break;
+      _agentLaunchCache.delete(oldest);
+    }
+    return launches;
+  } catch {
+    return [];
+  }
 }
 
 // ─── Session parsing ────────────────────────────────────────
@@ -820,6 +846,7 @@ class ClaudeAdapter {
 
   invalidateCaches() {
     _sessionEntryCache.clear();
+    _agentLaunchCache.clear();
     _sessionNamesCache.signature = '';
     _sessionNamesCache.value = new Map();
     _teamMembershipCache.signature = '';

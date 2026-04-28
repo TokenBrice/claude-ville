@@ -74,16 +74,17 @@ export class Sidebar {
 
     _bindToggle() {
         if (!this.toggleEl) return;
-        this.toggleEl.addEventListener('click', () => {
+        this._onToggleClick = () => {
             this.isCollapsed = !this.isCollapsed;
             localStorage.setItem('claudeville.sidebarCollapsed', String(this.isCollapsed));
             this._applyCollapsedState();
-        });
+        };
+        this.toggleEl.addEventListener('click', this._onToggleClick);
     }
 
     _bindListClick() {
         if (!this.listEl) return;
-        this.listEl.addEventListener('click', (event) => {
+        this._onListClick = (event) => {
             const row = event.target.closest('.sidebar__agent[data-agent-id]');
             if (!row || !this.listEl.contains(row)) return;
             const id = row.dataset.agentId;
@@ -94,7 +95,8 @@ export class Sidebar {
                 return;
             }
             eventBus.emit('agent:selected', agent);
-        });
+        };
+        this.listEl.addEventListener('click', this._onListClick);
     }
 
     _applyCollapsedState() {
@@ -253,5 +255,7 @@ export class Sidebar {
         eventBus.off('harbor:updated', this._onHarborUpdate);
         eventBus.off('agent:selected', this._onAgentSelected);
         eventBus.off('agent:deselected', this._onAgentDeselected);
+        if (this._onToggleClick) this.toggleEl?.removeEventListener('click', this._onToggleClick);
+        if (this._onListClick) this.listEl?.removeEventListener('click', this._onListClick);
     }
 }

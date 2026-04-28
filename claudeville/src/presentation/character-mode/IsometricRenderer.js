@@ -54,7 +54,7 @@ import {
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
-const MAX_LIGHT_GRADIENT_CACHE_PIXELS = Math.floor(CANVAS_BUDGET.maxScreenCachePixels / 4);
+const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const VISIT_OVERFLOW_TILES = Object.freeze({
@@ -517,6 +517,7 @@ export class IsometricRenderer {
         this._chronicleNextUpdateAt = 0;
         this._chronicleUpdating = false;
         this._worldModeActive = true;
+        this._worldSpritesDirty = false;
         this._onModeChanged = null;
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
@@ -1124,14 +1125,29 @@ export class IsometricRenderer {
         // Subscribe to domain events
         this._unsubscribers.push(
             eventBus.on('agent:added', (agent) => {
+                if (!this._worldModeActive) {
+                    this._worldSpritesDirty = true;
+                    return;
+                }
                 this._addAgentSprite(agent);
                 this._beginRelationshipArrival(agent);
             }),
             eventBus.on('agent:removed', (agent) => {
+                if (!this._worldModeActive) {
+                    this._removeAgentSprite(agent.id);
+                    this._worldSpritesDirty = true;
+                    return;
+                }
                 const handled = this._beginRelationshipDeparture(agent);
                 if (!handled) this._beginAgentGateDeparture(agent);
             }),
             eventBus.on('agent:updated', (agent) => {
+                if (!this._worldModeActive) {
+                    const sprite = this.agentSprites.get(agent.id);
+                    if (sprite) sprite.agent = agent;
+                    this._worldSpritesDirty = true;
+                    return;
+                }
                 const sprite = this.agentSprites.get(agent.id);
                 if (sprite) {
                     sprite.agent = agent;
@@ -1259,6 +1275,7 @@ export class IsometricRenderer {
         this._worldModeActive = nextActive;
         this._lastFrameTime = performance.now();
         if (nextActive) {
+            if (this._worldSpritesDirty) this._reconcileSpritesWithWorld();
             this.invalidateViewportCaches();
             this._startLoop();
         } else {
@@ -1290,7 +1307,7 @@ export class IsometricRenderer {
         this.invalidateViewportCaches();
         this.camera?.onViewportResize?.();
         this._lastFrameTime = performance.now();
-        this._startLoop();
+        if (this._worldModeActive) this._startLoop();
     }
 
     releaseVolatileCaches() {
@@ -1316,6 +1333,17 @@ export class IsometricRenderer {
             world: this.world,
             motionScale: this.motionScale,
         });
+    }
+
+    _reconcileSpritesWithWorld() {
+        const liveIds = new Set(this.world?.agents?.keys?.() || []);
+        for (const agentId of Array.from(this.agentSprites.keys())) {
+            if (!liveIds.has(agentId)) this._removeAgentSprite(agentId);
+        }
+        for (const agent of this.world?.agents?.values?.() || []) {
+            this._addAgentSprite(agent);
+        }
+        this._worldSpritesDirty = false;
     }
 
     _markSpritesDirty() {
@@ -5978,10 +6006,11 @@ export class IsometricRenderer {
         stamp.width = Math.max(1, Math.round(size * dpr));
         stamp.height = Math.max(1, Math.round(size * dpr));
         const stampPixels = canvasPixelCount(stamp);
-        if (
+        const shouldCache = stampPixels <= MAX_LIGHT_GRADIENT_CACHE_PIXELS;
+        if (shouldCache && (
             this.lightGradientCache.size > 240 ||
             canvasMapPixelCount(this.lightGradientCache) + stampPixels > MAX_LIGHT_GRADIENT_CACHE_PIXELS
-        ) {
+        )) {
             releaseCanvasMap(this.lightGradientCache);
         }
         const stampCtx = stamp.getContext('2d');
@@ -5994,7 +6023,7 @@ export class IsometricRenderer {
         stampCtx.beginPath();
         stampCtx.arc(radius, radius, radius, 0, Math.PI * 2);
         stampCtx.fill();
-        this.lightGradientCache.set(key, stamp);
+        if (shouldCache) this.lightGradientCache.set(key, stamp);
         return stamp;
     }
 
