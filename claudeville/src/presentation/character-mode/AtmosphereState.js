@@ -27,8 +27,8 @@ const WEATHER_TIMELINE_KNOTS = 6;
 const PHASES = [
     { name: 'dawn', start: 5 * 60 + 30, end: 7 * 60 },
     { name: 'day', start: 7 * 60, end: 17 * 60 + 30 },
-    { name: 'dusk', start: 17 * 60 + 30, end: 19 * 60 },
-    { name: 'night', start: 19 * 60, end: 5 * 60 + 30 },
+    { name: 'dusk', start: 17 * 60 + 30, end: 20 * 60 },
+    { name: 'night', start: 20 * 60, end: 5 * 60 + 30 },
 ];
 
 export const WEATHER_TYPES = ['clear', 'partly-cloudy', 'overcast', 'rain', 'fog', 'storm'];

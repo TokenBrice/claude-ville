@@ -5,7 +5,7 @@
 
 import { AtmosphereState } from './AtmosphereState.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
-import { tileToWorld } from './Projection.js';
+import { mapWorldCorners } from './Projection.js';
 
 const STAR_COUNT = 90;
 const STAR_CEILING_FRAC = 0.60;
@@ -23,7 +23,8 @@ const CANOPY_MAX_HEIGHT = 520;
 const AURORA_DURATION_MS = 12000;
 const AURORA_FADE_IN_MS = 2000;
 const AURORA_HOLD_MS = 6000;
-const SUN_REFERENCE_TILE = { tileX: 27, tileY: 21 };
+const SUN_MAP_CLEARANCE_RADIUS = 2.15;
+const SUN_MIN_SCREEN_RADIUS = 3.0;
 
 const CONSTELLATIONS = [
     {
@@ -98,7 +99,7 @@ export class SkyRenderer {
         ctx.clip();
         ctx.globalCompositeOperation = 'screen';
         this._drawStars(ctx, canvas, canopy);
-        this._drawSun(ctx, camera, canvas, canopy);
+        this._drawSun(ctx, camera, canvas, canopy, { ensureVisible: true });
         this._drawMoon(ctx, canvas, canopy);
         ctx.globalCompositeOperation = 'source-over';
         this._drawClouds(ctx, camera, canvas, canopy);
@@ -114,7 +115,11 @@ export class SkyRenderer {
                 starsAlpha: (sky.starsAlpha || 0) * 0.72,
                 cloudAlpha: (sky.cloudAlpha || 0) * 0.34,
                 cloudDensity: Math.min(1, (sky.cloudDensity || 0) * 0.72),
-                sun: sky.sun ? { ...sky.sun, alpha: sky.sun.alpha * 0.34 } : sky.sun,
+                sun: sky.sun ? {
+                    ...sky.sun,
+                    alpha: sky.sun.alpha * 0.34,
+                    canopyRescueAlpha: sky.sun.alpha * 0.9,
+                } : sky.sun,
                 moon: sky.moon ? { ...sky.moon, alpha: sky.moon.alpha * 0.62 } : sky.moon,
             },
         };
@@ -292,16 +297,20 @@ export class SkyRenderer {
         ctx.restore();
     }
 
-    _drawSun(ctx, camera, canvas, atmosphere) {
+    _drawSun(ctx, camera, canvas, atmosphere, options = {}) {
         const sun = atmosphere.sky?.sun;
         if (!sun?.visible || sun.alpha <= 0.01) return;
-        const { x, y } = this._resolveSunPosition(camera, canvas, sun);
         const radius = Math.max(22, Math.min(canvas.width, canvas.height) * 0.042);
+        const position = this._resolveSunPosition(camera, canvas, sun, radius);
+        const { x, y } = position;
+        const visibleSun = options.ensureVisible && position.clamped && Number.isFinite(sun.canopyRescueAlpha)
+            ? { ...sun, alpha: Math.max(sun.alpha, sun.canopyRescueAlpha) }
+            : sun;
         const lighting = atmosphere.lighting || {};
         const warmth = lighting.sunWarmth ?? 0;
         const bloomScale = lighting.sunBloomScale ?? 1;
-        const squashY = sun.squashY ?? 1;
-        const horizonScale = 1 - (sun.horizonOcclusion || 0) * 0.35;
+        const squashY = visibleSun.squashY ?? 1;
+        const horizonScale = 1 - (visibleSun.horizonOcclusion || 0) * 0.35;
         const glowRadius = radius * (4.3 + warmth * 3.0) * bloomScale;
         const warmG = Math.round(232 - warmth * 42);
         const warmB = Math.round(170 - warmth * 58);
@@ -310,15 +319,15 @@ export class SkyRenderer {
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         const glow = ctx.createRadialGradient(x, y, 0, x, y, glowRadius);
-        glow.addColorStop(0, `rgba(255, ${warmth ? warmG : 238}, ${warmth ? warmB : 128}, ${0.46 * sun.alpha})`);
+        glow.addColorStop(0, `rgba(255, ${warmth ? warmG : 238}, ${warmth ? warmB : 128}, ${0.46 * visibleSun.alpha})`);
         glow.addColorStop(0.38, warmth
-            ? `rgba(255, ${hazeG}, 80, ${0.22 * sun.alpha * bloomScale})`
-            : `rgba(255, 222, 92, ${0.18 * sun.alpha})`);
+            ? `rgba(255, ${hazeG}, 80, ${0.22 * visibleSun.alpha * bloomScale})`
+            : `rgba(255, 222, 92, ${0.18 * visibleSun.alpha})`);
         glow.addColorStop(1, 'rgba(255, 222, 92, 0)');
         ctx.fillStyle = glow;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        const rayAlpha = Math.min(0.26, sun.alpha * horizonScale * (0.16 + bloomScale * 0.08));
+        const rayAlpha = Math.min(0.26, visibleSun.alpha * horizonScale * (0.16 + bloomScale * 0.08));
         ctx.strokeStyle = warmth > 0.05
             ? `rgba(255, 188, 86, ${rayAlpha})`
             : `rgba(255, 228, 90, ${rayAlpha})`;
@@ -341,7 +350,7 @@ export class SkyRenderer {
         }
 
         ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = sun.alpha;
+        ctx.globalAlpha = visibleSun.alpha;
         const body = ctx.createRadialGradient(
             x - radius * 0.28,
             y - radius * 0.32,
@@ -358,7 +367,7 @@ export class SkyRenderer {
         ctx.ellipse(x, y, radius, radius * squashY, 0, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.globalAlpha = sun.alpha * 0.5;
+        ctx.globalAlpha = visibleSun.alpha * 0.5;
         ctx.strokeStyle = warmth > 0.05 ? '#ffe0a3' : '#fff0a8';
         ctx.lineWidth = 2;
         ctx.beginPath();
@@ -367,21 +376,46 @@ export class SkyRenderer {
         ctx.restore();
     }
 
-    _resolveSunPosition(camera, canvas, sun) {
-        const screenAnchor = {
-            x: canvas.width * sun.xFrac,
-            y: canvas.height * sun.yFrac,
-        };
-        if (!camera || !Number.isFinite(camera.x) || !Number.isFinite(camera.y)) return screenAnchor;
+    _resolveSunPosition(camera, canvas, sun, radius) {
+        const x = canvas.width * sun.xFrac;
+        const skyY = canvas.height * sun.yFrac;
+        const mapTopY = this._mapTopYAtScreenX(camera, x);
+        if (!Number.isFinite(mapTopY)) return { x, y: skyY, clamped: false };
 
-        const zoom = Number.isFinite(camera.zoom) && camera.zoom > 0 ? camera.zoom : 1;
-        const referenceWorld = tileToWorld(SUN_REFERENCE_TILE);
-        const centeredCameraX = -referenceWorld.x + canvas.width / (2 * zoom);
-        const centeredCameraY = -referenceWorld.y + canvas.height / (2 * zoom);
+        const clearance = radius * SUN_MAP_CLEARANCE_RADIUS;
+        const minimumY = radius * SUN_MIN_SCREEN_RADIUS;
         return {
-            x: screenAnchor.x + (camera.x - centeredCameraX) * zoom,
-            y: screenAnchor.y + (camera.y - centeredCameraY) * zoom,
+            x,
+            y: Math.max(minimumY, Math.min(skyY, mapTopY - clearance)),
+            clamped: skyY > mapTopY - clearance,
         };
+    }
+
+    _mapTopYAtScreenX(camera, x) {
+        if (!camera?.worldToScreen) return null;
+        const corners = mapWorldCorners().map(point => camera.worldToScreen(point.x, point.y));
+        if (corners.some(point => !Number.isFinite(point.x) || !Number.isFinite(point.y))) return null;
+
+        const edges = [
+            [corners[0], corners[1]],
+            [corners[1], corners[3]],
+            [corners[3], corners[2]],
+            [corners[2], corners[0]],
+        ];
+        const candidates = [];
+        for (const [a, b] of edges) {
+            const minX = Math.min(a.x, b.x);
+            const maxX = Math.max(a.x, b.x);
+            if (x < minX || x > maxX) continue;
+            const dx = b.x - a.x;
+            if (Math.abs(dx) < 0.001) {
+                candidates.push(Math.min(a.y, b.y));
+                continue;
+            }
+            const t = (x - a.x) / dx;
+            candidates.push(a.y + (b.y - a.y) * t);
+        }
+        return candidates.length ? Math.min(...candidates) : Math.min(...corners.map(point => point.y));
     }
 
     _drawMoon(ctx, canvas, atmosphere) {
