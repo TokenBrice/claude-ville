@@ -666,11 +666,13 @@ The new tower's highest point above the base is `hStone + hWood + roofH = 64 + 4
 
 If the visual smoke at zoom 1 / 2 / 3 in Task 3 showed any clipping at the top of the gate (e.g., roof being culled when only the gate is in view), bump `top` to `-200`. Otherwise leave as-is.
 
-- [ ] **Step 3: Decide and (optionally) edit**
+- [ ] **Step 3: Concrete clipping test, then decide**
 
-If you saw clipping in earlier tasks: change `top: -180` to `top: -200` in `VILLAGE_GATE_BOUNDS`.
+In the browser at `http://localhost:4000`, zoom to level 3 (max) and pan so only the gate is in view (no other buildings around it). Confirm both tower roof apexes are fully visible — i.e., neither roof tip is cut off at the top of the canvas, AND when an agent approaches the gate from the north side, no part of either roof disappears as the static-prop occlusion split kicks in.
 
-If not: skip the file edit. Leave bounds untouched.
+If both roofs render fully in all camera positions you can reach: skip the file edit. Leave bounds untouched.
+
+If either roof tip is clipped or flickers as the camera moves: change `top: -180` to `top: -200` in `VILLAGE_GATE_BOUNDS`.
 
 - [ ] **Step 4: Verify syntax (only if changed)**
 
@@ -832,13 +834,21 @@ Locate the method:
 grep -n "_buildVillageWallSprites()" claudeville/src/presentation/character-mode/IsometricRenderer.js
 ```
 
-Expected line: `2463`. Inside the inner loop (`for (let i = 0; i < route.points.length - 1; i++)`), the current `drawFn` is:
+Expected line: `2463`. Inside the inner loop (`for (let i = 0; i < route.points.length - 1; i++)`), find this `out.push(...)` block (currently around line 2480-2488 of `IsometricRenderer.js`):
 
 ```js
+                out.push(new StaticPropSprite({
+                    tileX: midTile.tileX,
+                    tileY: midTile.tileY,
+                    id: `village.wall.${route.id}.${i}`,
+                    bounds: wallBounds,
+                    splitForOcclusion: false,
+                    sortY: Math.max(start.y, end.y) - 14,
                     drawFn: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i),
+                }));
 ```
 
-Replace it with code that determines `footingExtent` for the gate-adjacent segment:
+Replace ONLY the `drawFn` line so the block becomes:
 
 ```js
                     drawFn: (ctx, x, y) => {
@@ -848,7 +858,7 @@ Replace it with code that determines `footingExtent` for the gate-adjacent segme
                         if (route.id === 'west' && isLastSegment) {
                             footingExtent = { side: 'end', distance: 30, dither: 32 };
                         } else if (route.id === 'east' && isFirstSegment) {
-                            footingExtent = { side: 'start', distance: 30, dither: 32 };
+                            footingExtent = { side: 'start', distance: 24, dither: 32 };
                         }
                         this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i, footingExtent);
                     },
@@ -933,6 +943,10 @@ Add these two methods inside the IsometricRenderer class, near the other gate-re
         this.gateDoorsOpen = false;
     }
 
+    // Note: when motionScale=0, _beginAgentGateArrival short-circuits BEFORE
+    // adding to gateTransits, so doors stay closed during reduced-motion
+    // spawns. This mirrors the no-walk policy: if the agent doesn't visibly
+    // walk in, the doors don't visibly open.
     _hasAgentNearGate() {
         const minTileX = 17;
         const maxTileX = 21;
@@ -940,7 +954,7 @@ Add these two methods inside the IsometricRenderer class, near the other gate-re
         const maxTileY = 39.5;
         for (const sprite of this.agentSprites.values()) {
             if (!sprite) continue;
-            const tile = this._screenToGateTile(sprite.x, sprite.y);
+            const tile = worldToTile(sprite.x, sprite.y);
             if (tile.tileX >= minTileX && tile.tileX <= maxTileX
                 && tile.tileY >= minTileY && tile.tileY <= maxTileY) {
                 return true;
@@ -949,32 +963,21 @@ Add these two methods inside the IsometricRenderer class, near the other gate-re
         return false;
     }
 
-    _screenToGateTile(worldX, worldY) {
-        // Inverse of tileToWorld: wx = (tx - ty) * 32, wy = (tx + ty) * 16
-        const tileX = (worldY / 16 + worldX / 32) / 2;
-        const tileY = (worldY / 16 - worldX / 32) / 2;
-        return { tileX, tileY };
-    }
 ```
 
 - [ ] **Step 4: Wire `_updateGateDoorState` into the per-frame loop**
 
-Locate the main draw / update entry point. Run:
-
-```bash
-grep -n "_renderFrame\|requestAnimationFrame\|_loopFrame\|_tick\|_drawFrame" claudeville/src/presentation/character-mode/IsometricRenderer.js | head
-```
-
-There should be a method that runs per-frame (likely calls `_drawVillageGatehouse` indirectly through static prop sprites). Add a call to `this._updateGateDoorState();` near the top of that per-frame function so the boolean is fresh each frame. A safe spot: at the start of `_drawScene` / equivalent, BEFORE any `_drawVillage*` call. If you can't find a single per-frame entry point, place the call inside `_drawVillageGatehouse` itself at the top:
+The per-frame entry is `renderWorldFrame(renderer, dt)` in `claudeville/src/presentation/character-mode/WorldFrameRenderer.js` (line 5). Locate the line `renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow);` (around line 26) and add a call to `_updateGateDoorState` immediately after it:
 
 ```js
-    _drawVillageGatehouse(ctx, originX, originY) {
-        this._updateGateDoorState();
-        // ... existing body
-    }
+    renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow);
+    renderer._updateGateDoorState?.(perfNow);
+    const viewport = renderer._screenViewport();
 ```
 
-This guarantees the state is fresh whenever the gate is drawn, even though the proper place is the loop. The cost is one method call per gate render, which happens up to ~60×/s.
+This places the door-state update before any draw happens — once per frame, regardless of whether the gate is visible. The optional-chaining `?.` keeps the call safe if the method ever moves.
+
+Verify: `grep -n "_updateGateDoorState" claudeville/src/presentation/character-mode/WorldFrameRenderer.js` — expect 1 match.
 
 - [ ] **Step 5: Add `_drawVillageGateDoors` method**
 
@@ -1175,7 +1178,7 @@ Insert this method near `_computeFrameLightSources`:
 ```js
     _villageGateLightSources(lighting = null) {
         if (!VILLAGE_GATE) return [];
-        const center = tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY);
+        const center = this._tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY);
         const lanternX = center.x;
         // The lantern hangs ~96 px above the threshold (matches the arch math:
         // lintel start.y is base.y - 110; lantern sits below the plaque at
@@ -1268,9 +1271,9 @@ With `npm run dev` running, start a fresh agent session. Watch the agent appear 
 
 - [ ] **Step 2: Decide whether the path uses the avenue**
 
-Acceptable: the agent walks inward on the new gate-avenue cobble (passing through tiles around (19, 36), (18, 32), (18, 27)). The grass-cutting is fine if it's brief.
+Acceptable: the agent reaches the gate-avenue (any tile on the route `[18, 27], [18, 32], [19, 36], [19, 39]`) within at most 1 full tile of grass-cutting from the spawn at `outside`. The agent should be visibly on cobble for the bulk of its inward walk.
 
-Unacceptable: the agent immediately heads east (toward `VILLAGE_GATE.inside` at tileX 20.5) and never touches the avenue.
+Unacceptable: the agent cuts more than 1 tile of grass before joining the avenue, OR heads east toward `VILLAGE_GATE.inside` at tileX 20.5 and never touches the avenue.
 
 If acceptable → skip Step 3 and Step 4.
 
@@ -1348,4 +1351,4 @@ If any of the visual checks fails, the offending task's commit is the natural ro
 
 - **Spec coverage:** Every section of `agents/plans/village-gate-redesign-design.md` has a corresponding task. New road → Task 1. Stone palette → Task 2. Tower / arch / threshold rewrites → Tasks 3, 4, 5. Bounds check → Task 6. Wall footing → Task 7. Doors (binary state, triggers, grace timer) → Task 8. Lantern + LightSourceRegistry → Task 9. Pathfinder walk-test + optional inside.tileX → Task 10.
 - **Placeholder scan:** No "TBD", no "implement later", no "similar to Task N", no "add appropriate error handling". Every code-bearing step contains the actual code.
-- **Type consistency:** `VILLAGE_STONE_PALETTE` keys (`light/mid/shadow/mortar/moss/outline`) are referenced consistently across Tasks 3, 4, 7. `gateDoorsOpen`, `_gateDoorsOpenUntilMs`, `_updateGateDoorState`, `_hasAgentNearGate`, `_screenToGateTile`, `_drawVillageGateDoors`, `_villageGateLightSources` all named identically across the tasks they appear in. `footingExtent = { side, distance, dither }` shape consistent between Task 7 Step 2 and Step 4.
+- **Type consistency:** `VILLAGE_STONE_PALETTE` keys (`light/mid/shadow/mortar/moss/outline`) are referenced consistently across Tasks 3, 4, 7. `gateDoorsOpen`, `_gateDoorsOpenUntilMs`, `_updateGateDoorState`, `_hasAgentNearGate`, `_drawVillageGateDoors`, `_villageGateLightSources` all named identically across the tasks they appear in. `footingExtent = { side, distance, dither }` shape consistent between Task 7 Step 2 and Step 4.

@@ -147,6 +147,7 @@ const VILLAGE_STONE_PALETTE = Object.freeze({
     shadow: '#a59e8d',
     mortar: '#5b574e',
     moss: '#4f7b3d',
+    outline: '#1b1009',
 });
 ```
 
