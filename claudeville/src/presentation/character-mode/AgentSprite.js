@@ -70,6 +70,11 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     gpt54: 'wrench',
     gpt55: 'sword',
 });
+const EFFORT_FLOOR_RING_VISUALS = Object.freeze({
+    low: { stroke: '#d7a456', highlight: '#ffe0a0', glow: 'rgba(215, 164, 86, 0.18)', bands: 1, rx: 17, ry: 5 },
+    medium: { stroke: '#b8c4cc', highlight: '#eef7ff', glow: 'rgba(184, 196, 204, 0.18)', bands: 2, rx: 19, ry: 6 },
+    high: { stroke: '#f2d36b', highlight: '#fff1b8', glow: 'rgba(242, 211, 107, 0.22)', bands: 3, rx: 21, ry: 7 },
+});
 
 export class AgentSprite {
     constructor(agent, {
@@ -973,9 +978,14 @@ export class AgentSprite {
     }
 
     _drawEffortFloorRing(ctx, identity) {
-        if (!this.assets) return;
         const effortRingId = this._runtimeEffortFloorRing(identity);
         if (!effortRingId) return;
+        const effortTier = this._effortFloorRingTier(identity, effortRingId);
+        if (effortTier) {
+            this._drawProceduralEffortFloorRing(ctx, effortTier);
+            return;
+        }
+        if (!this.assets) return;
         const effortRing = this.assets.get(effortRingId);
         if (!effortRing) return;
         const dims = this.assets.getDims(effortRingId);
@@ -986,6 +996,53 @@ export class AgentSprite {
             dims.w,
             dims.h
         );
+    }
+
+    _effortFloorRingTier(identity, effortRingId) {
+        const effortTier = String(identity?.effortTier || '').toLowerCase();
+        if (EFFORT_FLOOR_RING_VISUALS[effortTier]) return effortTier;
+        const id = String(effortRingId || '').toLowerCase();
+        if (id.includes('effortlow')) return 'low';
+        if (id.includes('effortmedium')) return 'medium';
+        if (id.includes('efforthigh')) return 'high';
+        return null;
+    }
+
+    _drawProceduralEffortFloorRing(ctx, effortTier) {
+        const visual = EFFORT_FLOOR_RING_VISUALS[effortTier];
+        if (!visual) return;
+        const pulse = 0.72 + 0.28 * Math.sin(this.statusAnim * 1.8);
+        ctx.save();
+        ctx.imageSmoothingEnabled = false;
+        ctx.translate(Math.round(this.x), Math.round(this.y + 4));
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = pulse;
+        ctx.fillStyle = visual.glow;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, visual.rx + 3, visual.ry + 2, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+        for (let band = 0; band < visual.bands; band++) {
+            const inset = band * 3;
+            const yOffset = (band - (visual.bands - 1) / 2) * 1.5;
+            ctx.globalAlpha = (0.52 + band * 0.11) * pulse;
+            ctx.strokeStyle = band === visual.bands - 1 ? visual.highlight : visual.stroke;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.ellipse(0, yOffset, Math.max(8, visual.rx - inset), Math.max(3, visual.ry - band), 0, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 0.78 * pulse;
+        ctx.fillStyle = visual.highlight;
+        const ticks = effortTier === 'high'
+            ? [[-14, -1], [0, -6], [14, -1], [-7, 4], [7, 4]]
+            : effortTier === 'medium'
+                ? [[-12, -1], [12, -1], [0, 5]]
+                : [[0, -5], [0, 5]];
+        for (const [x, y] of ticks) {
+            ctx.fillRect(Math.round(x), Math.round(y), 2, 1);
+        }
+        ctx.restore();
     }
 
     _drawGrounding(ctx) {
@@ -1568,7 +1625,6 @@ export class AgentSprite {
 
     _drawCodexHeavyArmor(ctx, warlord = false, directionKey = 's') {
         const sideView = directionKey === 'e' || directionKey === 'w';
-        const shoulderW = warlord ? 18 : 14;
         const torsoW = sideView ? 14 : (warlord ? 22 : 18);
         const armorTop = -4;
         ctx.fillStyle = '#081218';
@@ -1598,26 +1654,37 @@ export class AgentSprite {
         ctx.fillRect(-2, 7, 4, 4);
 
         const pauldronY = warlord ? -3 : 0;
+        const shoulderReach = warlord ? 7 : 5;
+        const shoulderDrop = warlord ? 6 : 5;
+        const leftPauldron = [
+            [-torsoW / 2, pauldronY],
+            [-torsoW / 2 - shoulderReach, pauldronY + 2],
+            [-torsoW / 2 - shoulderReach + 2, pauldronY + shoulderDrop],
+            [-torsoW / 2 - 1, pauldronY + shoulderDrop + 1],
+        ];
+        const rightPauldron = leftPauldron.map(([x, y]) => [-x, y]);
         ctx.fillStyle = '#071015';
-        ctx.beginPath();
-        ctx.ellipse(-torsoW / 2 - 5, pauldronY + 2, shoulderW, warlord ? 10 : 8, -0.18, 0, Math.PI * 2);
-        ctx.ellipse(torsoW / 2 + 5, pauldronY + 2, shoulderW, warlord ? 10 : 8, 0.18, 0, Math.PI * 2);
-        ctx.fill();
+        this._fillWeaponPolygon(ctx, leftPauldron);
+        this._fillWeaponPolygon(ctx, rightPauldron);
         ctx.fillStyle = warlord ? '#657682' : '#4d626b';
-        ctx.beginPath();
-        ctx.ellipse(-torsoW / 2 - 5, pauldronY + 1, shoulderW - 2, warlord ? 8 : 6, -0.18, 0, Math.PI * 2);
-        ctx.ellipse(torsoW / 2 + 5, pauldronY + 1, shoulderW - 2, warlord ? 8 : 6, 0.18, 0, Math.PI * 2);
-        ctx.fill();
+        this._fillWeaponPolygon(ctx, leftPauldron.map(([x, y], index) => [
+            x + 1,
+            y + (index === 0 ? 1 : 0),
+        ]));
+        this._fillWeaponPolygon(ctx, rightPauldron.map(([x, y], index) => [
+            x - 1,
+            y + (index === 0 ? 1 : 0),
+        ]));
         ctx.fillStyle = '#f8c45f';
-        ctx.fillRect(-torsoW / 2 - shoulderW + 4, pauldronY, shoulderW - 4, 2);
-        ctx.fillRect(torsoW / 2, pauldronY, shoulderW - 4, 2);
+        ctx.fillRect(Math.round(-torsoW / 2 - shoulderReach + 3), pauldronY + 2, shoulderReach - 2, 1);
+        ctx.fillRect(Math.round(torsoW / 2 + 1), pauldronY + 2, shoulderReach - 2, 1);
         if (warlord) {
             ctx.fillStyle = '#fff1b8';
-            ctx.fillRect(-torsoW / 2 - 17, pauldronY - 3, 8, 2);
-            ctx.fillRect(torsoW / 2 + 9, pauldronY - 3, 8, 2);
+            ctx.fillRect(-torsoW / 2 - 5, pauldronY + 1, 3, 1);
+            ctx.fillRect(torsoW / 2 + 2, pauldronY + 1, 3, 1);
             ctx.fillStyle = '#7be3d7';
-            ctx.fillRect(-torsoW / 2 - 9, 8, 2, 2);
-            ctx.fillRect(torsoW / 2 + 7, 8, 2, 2);
+            ctx.fillRect(-torsoW / 2 - 3, 7, 1, 2);
+            ctx.fillRect(torsoW / 2 + 2, 7, 1, 2);
         }
     }
 
