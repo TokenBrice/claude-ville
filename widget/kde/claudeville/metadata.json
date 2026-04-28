@@ -1,0 +1,19 @@
+{
+  "KPackageStructure": "Plasma/Applet",
+  "KPlugin": {
+    "Authors": [
+      {
+        "Name": "honorstudio"
+      }
+    ],
+    "Category": "System Information",
+    "Description": "Monitor local ClaudeVille AI coding sessions from a KDE Plasma panel.",
+    "Icon": "applications-development",
+    "Id": "com.honorstudio.claudeville.kde",
+    "License": "LicenseRef-Private",
+    "Name": "ClaudeVille",
+    "Version": "0.1.0",
+    "Website": "https://github.com/TokenBrice/claude-ville"
+  },
+  "X-Plasma-API-Minimum-Version": "6.0"
+}

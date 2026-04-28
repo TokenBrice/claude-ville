@@ -2,7 +2,7 @@
 
 ClaudeVille is a local dashboard for AI coding agent activity. It reads session files from Claude Code, OpenAI Codex CLI, and Google Gemini CLI, normalizes them into a shared session model, and displays them in either an isometric RPG-style world or a dense monitoring dashboard.
 
-The app is intentionally small: a zero-dependency Node.js HTTP/WebSocket server, static browser assets, vanilla ES modules, Canvas 2D rendering, and an optional macOS menu bar widget.
+The app is intentionally small: a zero-dependency Node.js HTTP/WebSocket server, static browser assets, vanilla ES modules, Canvas 2D rendering, and optional desktop widgets for macOS and KDE Plasma.
 
 ## Quick Start
 
@@ -21,6 +21,8 @@ Runtime is dependency-free: `npm run dev` uses only Node built-ins and static br
 | `npm run dev` | Start `claudeville/server.js` on port `4000`. |
 | `npm run widget:build` | Compile the optional macOS widget app. |
 | `npm run widget` | Open `widget/ClaudeVilleWidget.app`. |
+| `npm run widget:kde:install` | Install or upgrade the KDE Plasma widget. |
+| `npm run widget:kde:uninstall` | Remove the KDE Plasma widget. |
 | `npm run sprites:validate` | Validate `assets/sprites/manifest.yaml` against PNG files and character-sheet shape. Requires dev dependencies. |
 | `npm run sprites:capture-baseline` | Capture baseline world screenshots for sprite visual diffing. Requires the dev server and Playwright. |
 | `npm run sprites:capture-fresh` | Capture fresh screenshots next to the baseline set. Requires the dev server and Playwright. |
@@ -49,7 +51,8 @@ For an unfamiliar agent, read these first:
   - Claude Code: `~/.claude/`
   - Codex CLI: `~/.codex/` (sessions are read from `~/.codex/sessions/`)
   - Gemini CLI: `~/.gemini/` (sessions are read from `~/.gemini/tmp/`)
-- Widget only: macOS with the Xcode Command Line Tools available for `swiftc`.
+- macOS widget only: macOS with the Xcode Command Line Tools available for `swiftc`.
+- KDE widget only: KDE Plasma 6 with `kpackagetool6`.
 
 Empty provider lists are normal on machines where no supported CLI has local session files yet.
 
@@ -81,6 +84,7 @@ claude-ville/
 |-- widget/
 |   |-- Sources/main.swift         # macOS status item app
 |   |-- Resources/                 # Widget HTML and CSS served by the Node server
+|   |-- kde/                       # KDE Plasma panel widget package and install helpers
 |   `-- build.sh                   # Swift build and local path stamping
 `-- package.json
 ```
@@ -185,6 +189,22 @@ There are two widget surfaces:
 - The native menu-bar popover is rendered by Swift (`buildHTML()` in `widget/Sources/main.swift`) with `webView.loadHTMLString(...)`.
 - `widget/Resources/widget.html` and `widget.css` are static resources served by `server.js` at `/widget.html` and `/widget.css`, and are also copied into the app bundle. Editing them does not automatically change the native Swift-generated popover.
 
+## KDE Plasma Widget
+
+The KDE Plasma widget lives in `widget/kde/claudeville` as a Plasma 6 applet package. It polls these endpoints every 5 seconds by default:
+
+- `http://localhost:4000/api/sessions`
+- `http://localhost:4000/api/usage`
+
+Install and add it to a Plasma panel:
+
+```bash
+npm run dev
+npm run widget:kde:install
+```
+
+Then open Plasma's **Add Widgets** panel and search for **ClaudeVille**. The widget settings expose the server URL and refresh interval.
+
 ## Validation
 
 Basic syntax smoke:
@@ -214,7 +234,7 @@ npm run sprites:visual-diff
 
 If dependencies are not installed and installing them is out of scope, fall back to manifest/code inspection plus `file claudeville/assets/sprites/**/*.png` checks for touched assets.
 
-For widget changes, run `npm run widget:build`, then `npm run widget`, and confirm the app can reach port `4000`.
+For macOS widget changes, run `npm run widget:build`, then `npm run widget`, and confirm the app can reach port `4000`. For KDE widget changes, run `bash -n widget/kde/install.sh widget/kde/uninstall.sh`, install with `npm run widget:kde:install`, and confirm the panel widget can reach port `4000`.
 
 ## Development Notes
 

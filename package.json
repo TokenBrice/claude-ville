@@ -9,6 +9,8 @@
     "dev": "node claudeville/server.js",
     "widget:build": "cd widget && bash build.sh",
     "widget": "npm run widget:build && sh -c 'app=\"widget/ClaudeVilleWidget.app\"; if [ ! -d \"$app\" ]; then echo \"widget: missing $app after build\" >&2; exit 1; fi; open \"$app\"'",
+    "widget:kde:install": "bash widget/kde/install.sh",
+    "widget:kde:uninstall": "bash widget/kde/uninstall.sh",
     "sprites:validate": "node scripts/sprites/manifest-validator.mjs",
     "sprites:visual-diff": "node scripts/sprites/visual-diff.mjs",
     "sprites:capture-baseline": "node scripts/sprites/capture-baseline.mjs",
