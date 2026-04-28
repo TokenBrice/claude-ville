@@ -5,6 +5,7 @@
 
 import { AtmosphereState } from './AtmosphereState.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
+import { tileToWorld } from './Projection.js';
 
 const STAR_COUNT = 90;
 const STAR_CEILING_FRAC = 0.60;
@@ -22,6 +23,7 @@ const CANOPY_MAX_HEIGHT = 520;
 const AURORA_DURATION_MS = 12000;
 const AURORA_FADE_IN_MS = 2000;
 const AURORA_HOLD_MS = 6000;
+const SUN_REFERENCE_TILE = { tileX: 27, tileY: 21 };
 
 const CONSTELLATIONS = [
     {
@@ -70,7 +72,7 @@ export class SkyRenderer {
         }
 
         this._drawStars(ctx, canvas, snapshot);
-        this._drawSun(ctx, canvas, snapshot);
+        this._drawSun(ctx, camera, canvas, snapshot);
         this._drawMoon(ctx, canvas, snapshot);
         this._drawClouds(ctx, camera, canvas, snapshot);
         this._drawAurora(ctx, canvas, snapshot, motionScale);
@@ -96,7 +98,7 @@ export class SkyRenderer {
         ctx.clip();
         ctx.globalCompositeOperation = 'screen';
         this._drawStars(ctx, canvas, canopy);
-        this._drawSun(ctx, canvas, canopy);
+        this._drawSun(ctx, camera, canvas, canopy);
         this._drawMoon(ctx, canvas, canopy);
         ctx.globalCompositeOperation = 'source-over';
         this._drawClouds(ctx, camera, canvas, canopy);
@@ -290,11 +292,10 @@ export class SkyRenderer {
         ctx.restore();
     }
 
-    _drawSun(ctx, canvas, atmosphere) {
+    _drawSun(ctx, camera, canvas, atmosphere) {
         const sun = atmosphere.sky?.sun;
         if (!sun?.visible || sun.alpha <= 0.01) return;
-        const x = canvas.width * sun.xFrac;
-        const y = canvas.height * sun.yFrac;
+        const { x, y } = this._resolveSunPosition(camera, canvas, sun);
         const radius = Math.max(22, Math.min(canvas.width, canvas.height) * 0.042);
         const lighting = atmosphere.lighting || {};
         const warmth = lighting.sunWarmth ?? 0;
@@ -364,6 +365,23 @@ export class SkyRenderer {
         ctx.ellipse(x, y, radius - 1, (radius - 1) * squashY, 0, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
+    }
+
+    _resolveSunPosition(camera, canvas, sun) {
+        const screenAnchor = {
+            x: canvas.width * sun.xFrac,
+            y: canvas.height * sun.yFrac,
+        };
+        if (!camera || !Number.isFinite(camera.x) || !Number.isFinite(camera.y)) return screenAnchor;
+
+        const zoom = Number.isFinite(camera.zoom) && camera.zoom > 0 ? camera.zoom : 1;
+        const referenceWorld = tileToWorld(SUN_REFERENCE_TILE);
+        const centeredCameraX = -referenceWorld.x + canvas.width / (2 * zoom);
+        const centeredCameraY = -referenceWorld.y + canvas.height / (2 * zoom);
+        return {
+            x: screenAnchor.x + (camera.x - centeredCameraX) * zoom,
+            y: screenAnchor.y + (camera.y - centeredCameraY) * zoom,
+        };
     }
 
     _drawMoon(ctx, canvas, atmosphere) {
