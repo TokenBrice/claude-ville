@@ -10,36 +10,54 @@ export const WATER_POLYLINES = [
     // lagoon water and gives the upper-left forest a tropical focal point.
     {
         kind: 'river',
+        region: 'lagoon',
+        surface: 'current',
+        weatherProfile: 'lagoon',
         width: 1.35,
         points: [[2, 7], [6, 8], [10, 8], [14, 9], [17, 10]],
     },
     // Forest spring: a bright tropical cascade feeding the northern lagoon.
     {
         kind: 'river',
+        region: 'lagoon',
+        surface: 'current',
+        weatherProfile: 'lagoon',
         width: 1.05,
         points: [[18, 4], [18, 6], [17, 8], [17, 10]],
     },
     // Top-right sea inlet: a broad deep-water body that reads as open water
     // feeding the harbor instead of a defensive moat around the map edge.
     {
-        kind: 'moat',
+        kind: 'sea',
+        region: 'sea',
+        surface: 'surf',
+        weatherProfile: 'openSea',
         width: 6.1,
         points: [[23, 0], [29, 1], [35, 3], [39, 6]],
     },
     {
-        kind: 'moat',
+        kind: 'sea',
+        region: 'sea',
+        surface: 'surf',
+        weatherProfile: 'openSea',
         width: 6.3,
         points: [[39, 3], [36, 9], [35, 15], [35, 22], [37, 29], [39, 34]],
     },
     {
-        kind: 'moat',
+        kind: 'harbor',
+        region: 'harbor',
+        surface: 'harbor',
+        weatherProfile: 'harbor',
         width: 2.6,
         points: [[31, 22], [34, 22], [37, 22], [39, 23]],
     },
     // Main moat through City Center. It separates the north civic landmarks
     // from the production row, then drains into the harbor sea.
     {
-        kind: 'moat',
+        kind: 'river',
+        region: 'river',
+        surface: 'current',
+        weatherProfile: 'river',
         width: 2.15,
         points: [[0, 25], [9, 25], [14, 25], [22, 25], [30, 24], [35, 23], [39, 22]],
     },
@@ -50,6 +68,9 @@ export const WATER_POLYLINES = [
 export const WATER_BASINS = [
     {
         kind: 'river',
+        region: 'lagoon',
+        surface: 'current',
+        weatherProfile: 'lagoon',
         centerX: 7.6,
         centerY: 8.3,
         radiusX: 5.1,
@@ -58,6 +79,9 @@ export const WATER_BASINS = [
     },
     {
         kind: 'river',
+        region: 'lagoon',
+        surface: 'current',
+        weatherProfile: 'lagoon',
         centerX: 12.4,
         centerY: 5.2,
         radiusX: 3.6,
@@ -66,6 +90,9 @@ export const WATER_BASINS = [
     },
     {
         kind: 'river',
+        region: 'lagoon',
+        surface: 'current',
+        weatherProfile: 'lagoon',
         centerX: 17.4,
         centerY: 10.5,
         radiusX: 4.8,
@@ -74,6 +101,9 @@ export const WATER_BASINS = [
     },
     {
         kind: 'river',
+        region: 'lagoon',
+        surface: 'current',
+        weatherProfile: 'lagoon',
         centerX: 24.8,
         centerY: 7.6,
         radiusX: 3.6,
@@ -81,7 +111,10 @@ export const WATER_BASINS = [
         edgeNoise: 0.16,
     },
     {
-        kind: 'moat',
+        kind: 'river',
+        region: 'river',
+        surface: 'current',
+        weatherProfile: 'river',
         centerX: 0.8,
         centerY: 25,
         radiusX: 4.2,
@@ -89,7 +122,10 @@ export const WATER_BASINS = [
         edgeNoise: 0.06,
     },
     {
-        kind: 'moat',
+        kind: 'sea',
+        region: 'sea',
+        surface: 'surf',
+        weatherProfile: 'openSea',
         centerX: 43,
         centerY: 19,
         radiusX: 13.6,
@@ -97,7 +133,10 @@ export const WATER_BASINS = [
         edgeNoise: 0.11,
     },
     {
-        kind: 'moat',
+        kind: 'sea',
+        region: 'sea',
+        surface: 'surf',
+        weatherProfile: 'openSea',
         centerX: 38,
         centerY: 3.5,
         radiusX: 13.5,
@@ -105,7 +144,10 @@ export const WATER_BASINS = [
         edgeNoise: 0.14,
     },
     {
-        kind: 'moat',
+        kind: 'harbor',
+        region: 'harbor',
+        surface: 'harbor',
+        weatherProfile: 'harbor',
         centerX: 37.3,
         centerY: 21.7,
         radiusX: 6.8,
@@ -113,7 +155,10 @@ export const WATER_BASINS = [
         edgeNoise: 0.16,
     },
     {
-        kind: 'moat',
+        kind: 'harbor',
+        region: 'harbor',
+        surface: 'harbor',
+        weatherProfile: 'harbor',
         centerX: 39.2,
         centerY: 16.2,
         radiusX: 4.8,

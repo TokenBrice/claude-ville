@@ -11,6 +11,40 @@ export const TOWN_DISTRICTS = Object.freeze([
     { id: 'harbor', label: 'Harbor Quay', center: [34, 17], radius: 9 },
 ]);
 
+export const VILLAGE_GATE = Object.freeze({
+    id: 'prop.villageGate',
+    tileX: 19.0,
+    tileY: 39.1,
+    widthTiles: 9.0,
+    outside: { tileX: 18.4, tileY: 39.25 },
+    inside: { tileX: 20.5, tileY: 37.85 },
+});
+
+export const VILLAGE_GATE_BOUNDS = Object.freeze({
+    left: -236,
+    right: 236,
+    top: -180,
+    bottom: 96,
+    splitY: -42,
+});
+
+export const VILLAGE_WALL_ROUTES = Object.freeze([
+    {
+        id: 'west',
+        points: [
+            { tileX: 0.0, tileY: 39.1 },
+            { tileX: 14.5, tileY: 39.1 },
+        ],
+    },
+    {
+        id: 'east',
+        points: [
+            { tileX: 23.5, tileY: 39.1 },
+            { tileX: 35.8, tileY: 39.1 },
+        ],
+    },
+]);
+
 export const TOWN_ROAD_ROUTES = Object.freeze([
     {
         id: 'north-bank-promenade',
