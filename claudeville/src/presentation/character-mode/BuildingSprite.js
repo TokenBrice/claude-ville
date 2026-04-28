@@ -51,6 +51,11 @@ const LANDMARK_LABEL_EMBLEMS = {
     taskboard: 'scroll',
     archive: 'book',
 };
+const WATCHTOWER_LANTERN_FIRE = Object.freeze({
+    flame: [200, 68],
+    light: [200, 66],
+    particle: [200, 66],
+});
 const PARTICLE_ALIASES = {
     sparkle2: 'sparkle',
     sparkle3: 'sparkle',
@@ -73,7 +78,7 @@ const BUILDING_EMITTER_FALLBACKS = {
         { type: 'sparkle', at: [122, 80], chance: 0.025, count: 1 },
     ],
     watchtower: [
-        { type: 'beaconMote', at: [196, 32], chance: 0.038, count: 1 },
+        { type: 'beaconMote', at: WATCHTOWER_LANTERN_FIRE.particle, chance: 0.038, count: 1 },
     ],
     harbor: [
         { type: 'torch', at: [48, 42], chance: 0.026, count: 1 },
@@ -98,14 +103,11 @@ const BUILDING_LIGHT_FALLBACKS = {
 const LIGHT_SOURCE_REGISTRY = {
     watchtower: [
         {
-            kind: 'beam',
-            at: [196, 32],
-            color: '#ffd36a',
-            radius: 132,
-            length: 390,
-            width: 96,
-            alpha: 0.12,
-            overlay: 'atmosphere.light.lighthouse-beam',
+            kind: 'point',
+            at: WATCHTOWER_LANTERN_FIRE.light,
+            color: '#ffb347',
+            radius: 108,
+            overlay: 'atmosphere.light.fire-glow',
         },
     ],
 };
@@ -847,8 +849,7 @@ export class BuildingSprite {
     }
 
     // Light sources for water/wall additive light passes (Phase 2.5.5).
-    // `overlay` is the atmosphere sprite id used for the additive reflection;
-    // defaults to the lighthouse beam when the manifest entry omits it.
+    // `overlay` is the atmosphere sprite id used for the additive reflection.
     getLightSources(lightingState = this.lightingState) {
         const lightBoost = lightingState?.lightBoost ?? 1;
         const windowWarmth = this.atmosphereState?.reactions?.windowWarmth || 0;
@@ -907,7 +908,7 @@ export class BuildingSprite {
                     origin,
                     color: source.color || entry?.lightColor || '#ffcc66',
                     radius: source.radius || entry?.lightRadius || 64,
-                    overlay: source.overlay || entry?.lightOverlay || 'atmosphere.light.lighthouse-beam',
+                    overlay: source.overlay || entry?.lightOverlay || 'atmosphere.light.lantern-glow',
                     buildingType: b.type,
                     kind: source.kind || 'point',
                     building: b,
@@ -930,10 +931,10 @@ export class BuildingSprite {
             }
             if (entry?.lightSource) {
                 pushSource({
-                    at: entry.lightSource,
+                    at: b.type === 'watchtower' ? WATCHTOWER_LANTERN_FIRE.light : entry.lightSource,
                     color: entry.lightColor || 'rgba(255,210,140,0.4)',
                     radius: entry.lightRadius || 64,
-                    overlay: entry.lightOverlay || 'atmosphere.light.lighthouse-beam',
+                    overlay: entry.lightOverlay || 'atmosphere.light.lantern-glow',
                 });
             }
             for (const source of LIGHT_SOURCE_REGISTRY[b.type] || []) {
@@ -1093,6 +1094,10 @@ export class BuildingSprite {
             if (!Array.isArray(at) || !Number.isFinite(Number(at[0])) || !Number.isFinite(Number(at[1]))) return;
             points.push({ x: Number(at[0]), y: Number(at[1]), r: radius });
         };
+        if (building.type === 'watchtower') {
+            push(WATCHTOWER_LANTERN_FIRE.light, 20);
+            return points;
+        }
         if (Array.isArray(entry?.lightSources)) {
             for (const source of entry.lightSources.slice(0, 3)) push(source.at, Math.min(28, Math.max(14, (source.radius || 42) * 0.28)));
         }
@@ -1229,8 +1234,8 @@ export class BuildingSprite {
             }
             this._drawPortalRitual(ctx, gate, portalRitual);
         } else if (building.type === 'watchtower') {
-            if (!entry.layers?.beacon && shouldDrawLocalY(34)) {
-                const beacon = localPoint(196, 34);
+            if (shouldDrawLocalY(WATCHTOWER_LANTERN_FIRE.flame[1])) {
+                const beacon = localPoint(...WATCHTOWER_LANTERN_FIRE.flame);
                 this._drawWatchtowerFire(ctx, beacon, pulse);
                 this._drawWatchtowerRitual(ctx, beacon);
             }
@@ -2428,15 +2433,21 @@ export class BuildingSprite {
         const color = failed ? '#ff6d52' : '#ffd36a';
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.07 + intensity * 0.22;
+        ctx.globalAlpha = 0.10 + intensity * 0.20;
         ctx.strokeStyle = color;
-        ctx.lineWidth = 4 + intensity * 6;
-        const speed = 0.018 * (1 + Math.min(1.8, active / 4));
-        const angle = this.motionScale ? this.frame * speed : -0.35;
+        ctx.lineWidth = 2 + intensity * 3;
+        const flutter = this.motionScale ? Math.sin(this.frame * 0.16) : 0.4;
+        for (let i = 0; i < 3; i++) {
+            const radius = 19 + i * 9 + intensity * 9 + flutter * (i + 1);
+            ctx.beginPath();
+            ctx.ellipse(beacon.x, beacon.y + 2, radius, radius * 0.5, -0.12, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.globalAlpha = 0.18 + intensity * 0.18;
+        ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.moveTo(beacon.x, beacon.y);
-        ctx.lineTo(beacon.x + Math.cos(angle) * (112 + intensity * 34), beacon.y + Math.sin(angle) * (50 + intensity * 18));
-        ctx.stroke();
+        ctx.ellipse(beacon.x, beacon.y + 8, 28 + intensity * 12, 10 + intensity * 4, 0, 0, Math.PI * 2);
+        ctx.fill();
         if (failed) {
             ctx.globalAlpha = 0.16 + intensity * 0.18;
             ctx.fillStyle = '#ff4d3f';
@@ -2485,14 +2496,14 @@ export class BuildingSprite {
         const intensity = this._watchtowerIntensity();
 
         ctx.globalCompositeOperation = 'screen';
-        const glow = ctx.createRadialGradient(beacon.x, beacon.y, 1, beacon.x, beacon.y, 30 + pulse * 6 + intensity * 10);
+        const glow = ctx.createRadialGradient(beacon.x, beacon.y, 1, beacon.x, beacon.y, 24 + pulse * 5 + intensity * 8);
         glow.addColorStop(0, failed ? 'rgba(255, 220, 170, 0.84)' : 'rgba(255, 236, 150, 0.78)');
         glow.addColorStop(0.36, failed ? 'rgba(255, 93, 67, 0.42)' : 'rgba(255, 142, 51, 0.34)');
         glow.addColorStop(1, failed ? 'rgba(255, 47, 39, 0)' : 'rgba(255, 91, 26, 0)');
         ctx.globalAlpha = 0.58 + pulse * 0.12 + intensity * 0.14;
         ctx.fillStyle = glow;
         ctx.beginPath();
-        ctx.arc(beacon.x, beacon.y, 30 + pulse * 7, 0, Math.PI * 2);
+        ctx.arc(beacon.x, beacon.y, 24 + pulse * 6, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.globalCompositeOperation = 'source-over';
@@ -2501,7 +2512,7 @@ export class BuildingSprite {
         ctx.strokeStyle = '#2f1d12';
         ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.ellipse(beacon.x, beacon.y + 7, 13, 5, 0, 0, Math.PI * 2);
+        ctx.ellipse(beacon.x, beacon.y + 7, 10, 4, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
@@ -2509,30 +2520,20 @@ export class BuildingSprite {
         ctx.globalAlpha = 0.92;
         ctx.fillStyle = failed ? '#ff5d43' : '#ff7a2f';
         ctx.beginPath();
-        ctx.moveTo(beacon.x - 7, beacon.y + 5);
-        ctx.quadraticCurveTo(beacon.x - 10 + lean, beacon.y - 4 - flicker, beacon.x - 1 + lean, beacon.y - 19 - flicker);
-        ctx.quadraticCurveTo(beacon.x + 11 + lean, beacon.y - 2, beacon.x + 7, beacon.y + 6);
+        ctx.moveTo(beacon.x - 6, beacon.y + 5);
+        ctx.quadraticCurveTo(beacon.x - 8 + lean, beacon.y - 3 - flicker, beacon.x - 1 + lean, beacon.y - 15 - flicker);
+        ctx.quadraticCurveTo(beacon.x + 9 + lean, beacon.y - 1, beacon.x + 6, beacon.y + 6);
         ctx.closePath();
         ctx.fill();
 
         ctx.fillStyle = failed ? '#ffd08b' : '#ffe68a';
         ctx.globalAlpha = 0.95;
         ctx.beginPath();
-        ctx.moveTo(beacon.x - 3, beacon.y + 4);
-        ctx.quadraticCurveTo(beacon.x - 4 + lean * 0.4, beacon.y - 4 - flicker * 0.5, beacon.x + 2 + lean * 0.3, beacon.y - 12 - flicker * 0.5);
-        ctx.quadraticCurveTo(beacon.x + 6 + lean * 0.2, beacon.y - 1, beacon.x + 3, beacon.y + 5);
+        ctx.moveTo(beacon.x - 2, beacon.y + 4);
+        ctx.quadraticCurveTo(beacon.x - 3 + lean * 0.4, beacon.y - 3 - flicker * 0.5, beacon.x + 2 + lean * 0.3, beacon.y - 10 - flicker * 0.5);
+        ctx.quadraticCurveTo(beacon.x + 5 + lean * 0.2, beacon.y, beacon.x + 3, beacon.y + 5);
         ctx.closePath();
         ctx.fill();
-
-        ctx.globalAlpha = 0.40 + pulse * 0.14 + intensity * 0.14;
-        ctx.strokeStyle = failed ? '#ff8a6f' : '#ffd66f';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(beacon.x - 18, beacon.y + 2);
-        ctx.lineTo(beacon.x + 18, beacon.y + 2);
-        ctx.moveTo(beacon.x, beacon.y - 16);
-        ctx.lineTo(beacon.x, beacon.y + 18);
-        ctx.stroke();
     }
 
     _spawnEmittersFor(b, dt = 16) {
@@ -2543,7 +2544,8 @@ export class BuildingSprite {
         const baseAnchor = this.assets.getAnchor(entryId);
         for (const [particleType, [lx, ly]] of Object.entries(entry?.emitters || {})) {
             const normalizedType = PARTICLE_ALIASES[particleType] || particleType;
-            this._spawnBuildingParticle(normalizedType, center, baseAnchor, [lx, ly], 0.035, 1, dt);
+            const at = b.type === 'watchtower' ? WATCHTOWER_LANTERN_FIRE.particle : [lx, ly];
+            this._spawnBuildingParticle(normalizedType, center, baseAnchor, at, 0.035, 1, dt);
         }
         for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
             const chanceBoost = b.type === 'forge'

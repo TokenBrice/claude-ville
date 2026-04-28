@@ -150,7 +150,7 @@ function drawBuildingLightReflections(renderer, ctx, atmosphere) {
             renderer._drawLighthouseBeam(ctx, light, atmosphere);
             continue;
         }
-        const overlayId = light.overlay || 'atmosphere.light.lighthouse-beam';
+        const overlayId = light.overlay || 'atmosphere.light.lantern-glow';
         const overlayImg = renderer.assets.get(overlayId);
         if (!overlayImg) continue;
         const dims = renderer.assets.getDims(overlayId);

@@ -14,7 +14,7 @@ const RITUAL_META = {
     taskboard: { kind: 'task-paper', durationMs: 2600, pulseBand: 'fast' },
     command: { kind: 'command-signal', durationMs: 2600, pulseBand: 'static' },
     harbor: { kind: 'harbor-crate', durationMs: 30000, pulseBand: 'static' },
-    watchtower: { kind: 'watchtower-beam', durationMs: 1800, pulseBand: 'slow' },
+    watchtower: { kind: 'watchtower-flare', durationMs: 1800, pulseBand: 'slow' },
 };
 
 function compactText(value, fallback = '') {
