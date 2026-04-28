@@ -11,7 +11,9 @@ PlasmoidItem {
 
     readonly property string serverUrl: normalizeUrl(plasmoid.configuration.serverUrl || "http://localhost:4000")
     readonly property int refreshInterval: Math.max(1000, Number(plasmoid.configuration.refreshIntervalMs || 5000))
+    readonly property int compactSpriteHeight: Math.max(30, PlasmaCore.Units.gridUnit * 2)
     property var sessionRows: []
+    property var workingRows: []
     property var usage: null
     property bool online: false
     property bool loading: false
@@ -44,12 +46,60 @@ PlasmoidItem {
 
     compactRepresentation: MouseArea {
         id: compact
-        Layout.minimumWidth: compactRow.implicitWidth + PlasmaCore.Units.smallSpacing * 2
-        Layout.minimumHeight: PlasmaCore.Units.iconSizes.smallMedium
+        Layout.minimumWidth: Math.max(
+            PlasmaCore.Units.iconSizes.smallMedium,
+            (spriteStrip.visible ? spriteStrip.implicitWidth : compactFallback.implicitWidth) + PlasmaCore.Units.smallSpacing * 2
+        )
+        Layout.minimumHeight: Math.max(PlasmaCore.Units.iconSizes.smallMedium, root.compactSpriteHeight)
         onClicked: plasmoid.expanded = !plasmoid.expanded
 
+        Row {
+            id: spriteStrip
+            visible: root.online && root.workingRows.length > 0
+            anchors.centerIn: parent
+            spacing: -Math.max(1, Math.round(PlasmaCore.Units.smallSpacing / 2))
+
+            Repeater {
+                model: root.workingRows
+
+                delegate: Item {
+                    width: modelData.spritePanelWidth
+                    height: root.compactSpriteHeight
+
+                    Rectangle {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        anchors.bottomMargin: 1
+                        width: Math.max(12, parent.width - 4)
+                        height: 4
+                        radius: 2
+                        color: Qt.rgba(0, 0, 0, 0.28)
+                    }
+
+                    Image {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.bottom: parent.bottom
+                        width: modelData.spritePanelWidth
+                        height: root.compactSpriteHeight
+                        source: modelData.spriteSource
+                        sourceClipRect: Qt.rect(
+                            modelData.spriteClipX,
+                            modelData.spriteClipY,
+                            modelData.spriteClipWidth,
+                            modelData.spriteClipHeight
+                        )
+                        fillMode: Image.PreserveAspectFit
+                        smooth: false
+                        mipmap: false
+                        asynchronous: true
+                    }
+                }
+            }
+        }
+
         RowLayout {
-            id: compactRow
+            id: compactFallback
+            visible: !spriteStrip.visible
             anchors.centerIn: parent
             spacing: PlasmaCore.Units.smallSpacing
 
@@ -63,7 +113,7 @@ PlasmoidItem {
             }
 
             PlasmaComponents.Label {
-                text: root.online ? i18n("%1/%2", root.workingCount, root.sessionRows.length) : i18n("off")
+                text: root.online ? i18n("idle") : i18n("off")
                 font.bold: true
                 elide: Text.ElideRight
             }
@@ -313,6 +363,65 @@ PlasmoidItem {
         return effortText ? text + " " + effortText : text
     }
 
+    function normalizedIdentityText(value) {
+        return String(value || "")
+            .toLowerCase()
+            .replace(/[._]/g, "-")
+            .replace(/\s+/g, "-")
+    }
+
+    function spriteIdFor(model, provider) {
+        var normalizedModel = normalizedIdentityText(model)
+        var normalizedProvider = normalizedIdentityText(provider)
+        if (normalizedModel.indexOf("opus") !== -1) return "agent.claude.opus"
+        if (normalizedModel.indexOf("haiku") !== -1) return "agent.claude.haiku"
+        if (normalizedModel.indexOf("sonnet") !== -1 || normalizedProvider.indexOf("claude") !== -1) {
+            return "agent.claude.sonnet"
+        }
+        if (normalizedModel.indexOf("gpt-5-3-codex-spark") !== -1) return "agent.codex.gpt53spark"
+        if (normalizedModel.indexOf("gpt-5-5") !== -1) return "agent.codex.gpt55"
+        if (normalizedModel.indexOf("gpt-5-4") !== -1) return "agent.codex.gpt54"
+        if (normalizedProvider.indexOf("gemini") !== -1 || normalizedModel.indexOf("gemini") !== -1) {
+            return "agent.gemini.base"
+        }
+        if (normalizedProvider.indexOf("codex") !== -1
+                || normalizedModel.indexOf("codex") !== -1
+                || normalizedModel.indexOf("gpt") !== -1) {
+            return "agent.codex.gpt54"
+        }
+        return "agent.codex.gpt54"
+    }
+
+    function spriteFrame(spriteId) {
+        var frames = {
+            "agent.claude.base": [19, 559, 63, 83],
+            "agent.claude.haiku": [29, 558, 35, 78],
+            "agent.claude.opus": [26, 562, 46, 67],
+            "agent.claude.sonnet": [29, 564, 39, 63],
+            "agent.codex.base": [19, 568, 63, 74],
+            "agent.codex.gpt53spark": [31, 571, 30, 56],
+            "agent.codex.gpt54": [30, 571, 35, 54],
+            "agent.codex.gpt55": [24, 552, 44, 92],
+            "agent.gemini.base": [19, 564, 64, 78]
+        }
+        var frame = frames[spriteId] || frames["agent.codex.gpt54"]
+        return {
+            x: frame[0],
+            y: frame[1],
+            width: frame[2],
+            height: frame[3]
+        }
+    }
+
+    function spriteSource(spriteId) {
+        return root.serverUrl + "/assets/sprites/characters/" + spriteId + "/sheet.png"
+    }
+
+    function spritePanelWidth(frame) {
+        var ratio = Number(frame.width || 1) / Math.max(1, Number(frame.height || 1))
+        return Math.max(18, Math.round(root.compactSpriteHeight * ratio))
+    }
+
     function projectName(path) {
         var text = String(path || "")
         if (!text) return i18n("No project")
@@ -385,6 +494,7 @@ PlasmoidItem {
             root.loading = false
             if (failure) {
                 root.online = false
+                root.workingRows = []
                 root.errorText = failure
                 return
             }
@@ -417,17 +527,31 @@ PlasmoidItem {
             var sessionTokens = tokenTotal(session)
             tokens += sessionTokens
             cost += estimateCost(session)
+            var spriteId = spriteIdFor(session.model, session.provider)
+            var frame = spriteFrame(spriteId)
             rows.push({
                 name: sessionName(session, i),
                 model: shortModel(session.model, session.reasoningEffort || session.effort),
                 project: projectName(session.project),
                 status: status,
                 statusLabel: statusLabel(status),
-                tokens: sessionTokens
+                tokens: sessionTokens,
+                spriteId: spriteId,
+                spriteSource: spriteSource(spriteId),
+                spriteClipX: frame.x,
+                spriteClipY: frame.y,
+                spriteClipWidth: frame.width,
+                spriteClipHeight: frame.height,
+                spritePanelWidth: spritePanelWidth(frame)
             })
         }
         rows.sort(sortRows)
+        var workingRows = []
+        for (var j = 0; j < rows.length; j++) {
+            if (rows[j].status === "working") workingRows.push(rows[j])
+        }
         root.sessionRows = rows
+        root.workingRows = workingRows
         root.usage = usageData
         root.workingCount = working
         root.waitingCount = waiting
