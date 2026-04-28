@@ -13,6 +13,7 @@ const SCREEN_SUMMARY_MS = 16000;
 const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
 const HARBOR_CRATE_TTL_MS = 30000;
 const MAX_LABEL_CHARS = 30;
+const COMMIT_EQUIVALENCE_WINDOW_MS = 10 * 60 * 1000;
 const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
 const REPO_DOCK_SHIP_Y_OFFSET = 236;
@@ -195,16 +196,34 @@ function stripShellQuotes(value = '') {
     return text;
 }
 
+function cleanCommitSubject(value = '') {
+    let text = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!text) return '';
+
+    const heredoc = text.match(/\$\(cat\s+<<['"]?([A-Za-z0-9_-]+)['"]?\s+([\s\S]*?)\s+\1\s*\)?/);
+    if (heredoc) text = heredoc[2];
+
+    text = stripShellQuotes(text)
+        .replace(/\s+Co-Authored-By:.*$/i, '')
+        .replace(/\s+Signed-off-by:.*$/i, '')
+        .replace(/\s+EOF\s*\)?\s*$/i, '')
+        .replace(/^\$\(cat\s+<<['"]?[A-Za-z0-9_-]+['"]?\s*/i, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+
+    return text;
+}
+
 function commitMessageFromCommand(command) {
     const text = String(command || '');
     const match = text.match(/(?:^|\s)(?:-m|--message)(?:=|\s+)(?:"([^"]+)"|'([^']+)'|([^\s;&|]+))/);
     if (!match) return '';
-    return stripShellQuotes(match[1] || match[2] || match[3] || '');
+    return cleanCommitSubject(match[1] || match[2] || match[3] || '');
 }
 
 function eventLabel(event, type, sha) {
     const explicit = event.label || event.message || event.subject || event.title || '';
-    if (explicit) return shortenLabel(explicit);
+    if (explicit) return shortenLabel(type === 'commit' ? cleanCommitSubject(explicit) || explicit : explicit);
     if (type === 'commit') {
         const commandLabel = commitMessageFromCommand(event.command);
         if (commandLabel) return shortenLabel(commandLabel);
@@ -388,6 +407,87 @@ function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
     const latestPush = latestPushTimes.get(event.project) || 0;
     if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
     return Math.max(0, now - latestPush) > RECENT_PUSH_REPLAY_MS;
+}
+
+function shipEligibleForPush(ship, event, previousPush, now) {
+    if (!ship || ship.project !== event.project || ship.status !== 'docked') return false;
+    const pushTime = Number.isFinite(event.timestamp) && event.timestamp > 0 ? event.timestamp : 0;
+    if (!pushTime) return true;
+    if (Number.isFinite(ship.eventTime) && ship.eventTime <= pushTime) return true;
+
+    // Existing harbor ships predate the observed push even when their backend
+    // timestamps are slightly out of order. New post-push commits must stay docked.
+    const firstSeenBeforePush = Number.isFinite(ship.createdAt)
+        && ship.createdAt < (previousPush?.seenAt || now);
+    return firstSeenBeforePush;
+}
+
+function commitCompareText(value = '') {
+    return cleanCommitSubject(value)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+}
+
+function commitIdentityParts(event = {}) {
+    const project = String(event.project || 'unknown');
+    const sha = String(event.sha || '').trim().toLowerCase();
+    const label = cleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
+    return {
+        project,
+        sha,
+        label,
+        compareLabel: commitCompareText(label),
+        timestamp: Number(event.timestamp ?? event.eventTime ?? 0) || 0,
+    };
+}
+
+function commitTimesClose(a, b) {
+    if (!Number.isFinite(a) || !Number.isFinite(b) || a <= 0 || b <= 0) return true;
+    return Math.abs(a - b) <= COMMIT_EQUIVALENCE_WINDOW_MS;
+}
+
+function commitLabelsEquivalent(left, right, leftTime, rightTime) {
+    if (!left || !right || !commitTimesClose(leftTime, rightTime)) return false;
+    if (left === right) {
+        if (left.length >= 10) return true;
+        if (!Number.isFinite(leftTime) || !Number.isFinite(rightTime) || leftTime <= 0 || rightTime <= 0) return false;
+        return Math.abs(leftTime - rightTime) <= 30000;
+    }
+    if (Math.min(left.length, right.length) < 18) return false;
+    return left.startsWith(right) || right.startsWith(left);
+}
+
+function sameCommitIdentity(a, b) {
+    const left = commitIdentityParts(a);
+    const right = commitIdentityParts(b);
+    if (left.project !== right.project) return false;
+    if (left.sha && right.sha) return left.sha === right.sha;
+    if (left.sha || right.sha) {
+        return commitLabelsEquivalent(left.compareLabel, right.compareLabel, left.timestamp, right.timestamp);
+    }
+    return commitLabelsEquivalent(left.compareLabel, right.compareLabel, left.timestamp, right.timestamp);
+}
+
+function findExistingCommitShip(state, event) {
+    for (const ship of state.ships.values()) {
+        if (sameCommitIdentity(ship, event)) return ship;
+    }
+    return null;
+}
+
+function mergeCommitIntoShip(ship, event) {
+    const nextLabel = cleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
+    const currentLabel = cleanCommitSubject(ship.label || '');
+    ship.eventIds = Array.isArray(ship.eventIds) ? ship.eventIds : [ship.id].filter(Boolean);
+    if (event.id && !ship.eventIds.includes(event.id)) ship.eventIds.push(event.id);
+    if (!ship.sha && event.sha) ship.sha = event.sha;
+    if (nextLabel && (!currentLabel || currentLabel.startsWith('$(cat') || nextLabel.length < currentLabel.length)) {
+        ship.label = nextLabel;
+    }
+    if (Number.isFinite(event.timestamp) && event.timestamp > 0) {
+        ship.eventTime = Math.min(Number(ship.eventTime || event.timestamp), event.timestamp);
+    }
 }
 
 export function snapshotHarborTrafficState(state) {
@@ -581,6 +681,12 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
 
         if (event.type === 'commit') {
             if (isHistoricalCommittedBeforePush(event, latestPushTimes, now)) continue;
+            const existingShip = findExistingCommitShip(state, event);
+            if (existingShip) {
+                state.seenEventIds.add(event.id);
+                mergeCommitIntoShip(existingShip, event);
+                continue;
+            }
             const { berthIndex, quayIndex } = chooseBerthIndex(state, event.project);
             const laneIndex = stableHash(`${event.project}:${event.id}`) % SEA_LANES.length;
             const profile = repoProfile(event.project);
@@ -591,12 +697,13 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 repoName: profile.shortName,
                 quayIndex,
                 sha: event.sha,
-                label: event.label,
+                label: cleanCommitSubject(event.label || commitMessageFromCommand(event.command)) || event.label,
                 status: 'docked',
                 berthIndex,
                 laneIndex,
                 eventTime: event.timestamp || now,
                 createdAt: now,
+                eventIds: [event.id],
             });
             continue;
         }
@@ -615,19 +722,24 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const status = previousStatus && incomingStatus === 'unknown' ? previousStatus : incomingStatus;
             const existingBatch = state.batches.get(batchId);
             const statusChanged = previousStatus && previousStatus !== status;
-            if (previousPush && !statusChanged) continue;
 
             let selectedShips = [];
+            const existingShipIds = new Set(existingBatch?.shipIds || []);
+            const selectedIds = new Set();
+            const addShip = (ship) => {
+                if (!ship || selectedIds.has(ship.id)) return;
+                selectedIds.add(ship.id);
+                selectedShips.push(ship);
+            };
             if (existingBatch?.shipIds?.length) {
-                selectedShips = existingBatch.shipIds
+                existingBatch.shipIds
                     .map(id => state.ships.get(id))
-                    .filter(Boolean);
-            } else {
-                for (const ship of state.ships.values()) {
-                    if (ship.project !== event.project || ship.status !== 'docked') continue;
-                    if (pushTime > 0 && Number.isFinite(ship.eventTime) && ship.eventTime > pushTime) continue;
-                    selectedShips.push(ship);
-                }
+                    .filter(Boolean)
+                    .forEach(addShip);
+            }
+            for (const ship of state.ships.values()) {
+                if (!shipEligibleForPush(ship, event, previousPush, now)) continue;
+                addShip(ship);
             }
 
             if (!existingBatch && selectedShips.length === 0) {
@@ -642,10 +754,12 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 continue;
             }
 
-            const shipIds = existingBatch?.shipIds?.length
-                ? [...existingBatch.shipIds]
-                : selectedShips.map(ship => ship.id);
+            const newShipCount = selectedShips.filter(ship => !existingShipIds.has(ship.id)).length;
+            if (previousPush && !statusChanged && existingBatch && newShipCount === 0) continue;
+
+            const shipIds = selectedShips.map(ship => ship.id);
             const startedAt = existingBatch?.startedAt
+                || previousPush?.seenAt
                 || (skipOldReplay ? now - SCREEN_SUMMARY_MS - FINALE_EFFECT_MS - 1 : now);
             const batch = {
                 ...(existingBatch || {}),
@@ -690,7 +804,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.departEventId = event.id;
                 ship.departStartedAt = skipDepartureAnimation
                     ? now - DEPARTURE_MS - FADE_DELAY_MS - EXIT_FADE_MS - EXIT_HOLD_MS - 1
-                    : ship.departStartedAt || now;
+                    : ship.departStartedAt || startedAt;
                 ship.departEventTime = event.timestamp || now;
             }
         }
@@ -1496,7 +1610,8 @@ export class HarborTraffic {
     _drawCommitPennant(ctx, ship, zoom, alpha = 1, profile = repoProfile(ship.project)) {
         const s = 1 / Math.max(1, zoom || 1);
         const label = shortenLabel(ship.label || ship.sha || ship.id, MAX_LABEL_CHARS);
-        const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
+        const statusStyle = PUSH_STATUS_STYLE[ship.pushStatus] || null;
+        const accent = ship.pushStatus === 'failed' && statusStyle ? statusStyle.accent : profile.accent;
         const queueColumn = Number(ship.harborQueueColumn);
         const inHarborQueue = Number.isFinite(Number(ship.harborQueueIndex));
         const repoIndex = Math.max(0, Number(ship.repoDockIndex || 0));
@@ -1515,16 +1630,16 @@ export class HarborTraffic {
         ctx.globalAlpha = 0.94 * alpha;
         ctx.fillStyle = 'rgba(24, 42, 39, 0.9)';
         ctx.fillRect(x, y, Math.round(width), Math.round(height));
-        ctx.strokeStyle = ship.pushStatus ? style.accent : profile.accent;
+        ctx.strokeStyle = accent;
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
         ctx.fillStyle = profile.accent;
         ctx.fillRect(x, y, Math.max(2, Math.round(4 * s)), Math.round(height));
-        ctx.fillStyle = ship.pushStatus ? style.accent : profile.accent;
+        ctx.fillStyle = accent;
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, Math.round(ship.x + 2 * s), Math.round(y + height / 2 + 0.5));
-        ctx.fillStyle = ship.pushStatus ? style.accent : profile.accent;
+        ctx.fillStyle = accent;
         ctx.fillRect(Math.round(ship.x - 22 * s), Math.round(ship.y - 31 * s), Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
         ctx.restore();
     }
