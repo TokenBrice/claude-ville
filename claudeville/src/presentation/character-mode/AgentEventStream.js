@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { classifyTool } from './VisitIntentManager.js';
 
 function nowMs() {
     if (typeof performance !== 'undefined' && performance.now) return performance.now();
@@ -135,6 +136,7 @@ export class AgentEventStream {
 
     _emitToolIfChanged(agent, previous, next) {
         if (!next.tool) return;
+        if (String(agent.status || '').toLowerCase() !== 'working') return;
         if (previous && previous.toolKey === next.toolKey) return;
         const event = this._toolEvent(agent, next);
         if (typeof this.shouldEmitToolEvent === 'function' && !this.shouldEmitToolEvent(event, agent)) return;
@@ -143,12 +145,16 @@ export class AgentEventStream {
     }
 
     _toolEvent(agent, snap, extra = {}) {
+        const classified = classifyTool(snap.tool, snap.input);
         return {
             agentId: agent.id,
             tool: snap.tool,
             input: snap.input,
             ts: Date.now(),
-            building: agent.targetBuildingType || agent.lastKnownBuildingType || null,
+            building: classified?.building || agent.targetBuildingType || agent.lastKnownBuildingType || null,
+            reason: classified?.reason || null,
+            confidence: classified?.confidence ?? null,
+            label: classified?.label || null,
             ...extra,
         };
     }
