@@ -76,6 +76,11 @@ export class AgentSprite {
         bridgeTiles = null,
         assets = null,
         compositor = null,
+        getIntentForAgent = null,
+        getBuilding = null,
+        allocateVisitTile = null,
+        releaseVisitReservation = null,
+        renewVisitReservation = null,
     } = {}) {
         this.agent = agent;
         this.x = 0;
@@ -89,6 +94,13 @@ export class AgentSprite {
         this.statusAnim = 0;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._lastBuildingType = null;
+        this._lastIntentId = null;
+        this._lastTargetTile = null;
+        this._lastReservationId = null;
+        this._lastReservationRenewedAt = 0;
+        this._recentBuildings = [];
+        this._behaviorState = 'roaming';
+        this._behaviorReason = 'spawn';
         this._targetCycle = 0;
         this.nameTagSlot = 0;
         this.labelAlpha = 1;
@@ -108,6 +120,11 @@ export class AgentSprite {
 
         this.pathfinder = pathfinder;
         this.bridgeTiles = bridgeTiles;
+        this.getIntentForAgent = typeof getIntentForAgent === 'function' ? getIntentForAgent : null;
+        this.getBuilding = typeof getBuilding === 'function' ? getBuilding : null;
+        this.allocateVisitTile = typeof allocateVisitTile === 'function' ? allocateVisitTile : null;
+        this.releaseVisitReservation = typeof releaseVisitReservation === 'function' ? releaseVisitReservation : null;
+        this.renewVisitReservation = typeof renewVisitReservation === 'function' ? renewVisitReservation : null;
         this.waypoints = [];
         this._lastPathTileKey = null;
         this._pathAgeFrames = 0;
@@ -140,6 +157,9 @@ export class AgentSprite {
     _pickTarget() {
         // Move to the partner position when there is a chat partner
         if (this.chatPartner) {
+            this._releaseVisitReservation();
+            this._behaviorState = 'chat-approach';
+            this._behaviorReason = 'chat';
             const offsetX = this.x < this.chatPartner.x ? -25 : 25;
             const chatTargetX = this.chatPartner.x + offsetX;
             const chatTargetY = this.chatPartner.y;
@@ -151,11 +171,12 @@ export class AgentSprite {
             return;
         }
 
-        const buildingType = this._targetBuildingTypeForState();
+        const intent = this._activeVisitIntent();
+        const buildingType = intent?.building || this._targetBuildingTypeForState();
         let building = null;
 
         if (buildingType) {
-            building = BUILDING_DEFS.find(b => b.type === buildingType);
+            building = this._buildingForType(buildingType);
         }
 
         if (!building) {
@@ -163,9 +184,14 @@ export class AgentSprite {
         }
 
         const seed = Math.abs(this._hash(`${this.agent.id}:${building.type}:${this._targetCycle++}`));
-        const target = new Position(...this._visitTileForBuilding(building, seed));
+        const target = new Position(...this._visitTileForBuilding(building, seed, intent));
         const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
         this._lastBuildingType = building.type;
+        this._lastIntentId = intent?.id || null;
+        this._lastTargetTile = { tileX: target.tileX, tileY: target.tileY };
+        this._behaviorState = intent ? 'traveling' : 'roaming';
+        this._behaviorReason = intent?.reason || (this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status');
+        this._recordRecentBuilding(building.type);
         this._assignTarget(screen.x, screen.y, target.tileX, target.tileY);
         this.moving = true;
         this.waitTimer = 0;
@@ -173,7 +199,7 @@ export class AgentSprite {
 
     _fallbackBuildingForState() {
         const preferred = this._ambientBuildingTypeForState();
-        return BUILDING_DEFS.find((b) => b.type === preferred) || BUILDING_DEFS[0];
+        return this._buildingForType(preferred) || BUILDING_DEFS[0];
     }
 
     _ambientBuildingTypeForState() {
@@ -187,29 +213,99 @@ export class AgentSprite {
             return lastKnown || 'taskboard';
         }
 
-        if (lastKnown && (seed % 10) < 3) return lastKnown;
+        if (lastKnown && (seed % 100) < this._lastKnownRevisitWeight()) return lastKnown;
         if (this.teamPlazaPreference && this.agent.teamName && (seed % 6) < 4) return 'command';
         if (this.agent.isSubagent && (seed % 6) < 2) return 'command';
         const totalTokens = (this.agent.tokens?.input || 0) + (this.agent.tokens?.output || 0);
         if (totalTokens > 0 && seed % 8 === 0) return 'mine';
 
         const providerHome = PROVIDER_HOME_BUILDINGS[this._providerKey()];
-        if (providerHome && seed % 7 === 0) return providerHome;
+        if (providerHome && seed % 11 === 0 && this._recentBuildingCount(providerHome) < 2) return providerHome;
 
+        return this._ambientSequenceChoice(seed);
+    }
+
+    _lastKnownRevisitWeight() {
+        const age = Number(this.agent.activityAgeMs);
+        if (!Number.isFinite(age)) return 5;
+        if (age <= 30000) return 35;
+        if (age <= 90000) return 15;
+        return 5;
+    }
+
+    _ambientSequenceChoice(seed) {
+        for (let offset = 0; offset < AMBIENT_BUILDING_SEQUENCE.length; offset++) {
+            const candidate = AMBIENT_BUILDING_SEQUENCE[(seed + offset) % AMBIENT_BUILDING_SEQUENCE.length];
+            if (this._recentBuildingCount(candidate) < 2) return candidate;
+        }
         return AMBIENT_BUILDING_SEQUENCE[seed % AMBIENT_BUILDING_SEQUENCE.length];
     }
 
-    _visitTileForBuilding(building, seed) {
+    _recentBuildingCount(type) {
+        return this._recentBuildings.filter((entry) => entry === type).length;
+    }
+
+    _recordRecentBuilding(type) {
+        if (!type) return;
+        this._recentBuildings.push(type);
+        if (this._recentBuildings.length > 4) this._recentBuildings.shift();
+    }
+
+    _visitTileForBuilding(building, seed, intent = null) {
+        const allocated = this.allocateVisitTile?.({
+            agent: this.agent,
+            sprite: this,
+            building,
+            intent,
+        });
+        if (allocated && Number.isFinite(Number(allocated.tileX)) && Number.isFinite(Number(allocated.tileY))) {
+            this._lastReservationId = allocated.reservationId || null;
+            this._lastReservationRenewedAt = Date.now();
+            return [Number(allocated.tileX), Number(allocated.tileY)];
+        }
+        this._lastReservationId = null;
         const candidates = Array.isArray(building.visitTiles) && building.visitTiles.length
             ? building.visitTiles
             : building.entrance
                 ? [building.entrance]
-                : [{ tileX: building.x + Math.floor(building.width / 2), tileY: building.y + building.height }];
+                : [{
+                    tileX: (building.x ?? building.position?.tileX ?? 0) + Math.floor((building.width || 1) / 2),
+                    tileY: (building.y ?? building.position?.tileY ?? 0) + (building.height || 1),
+                }];
         const chosen = candidates[seed % candidates.length];
         const jitterScale = this.agent.status === AgentStatus.WORKING ? 0.64 : 0.78;
         const jitterX = (this._noise(seed, 11) - 0.5) * jitterScale;
         const jitterY = (this._noise(seed, 17) - 0.5) * jitterScale;
         return [chosen.tileX + jitterX, chosen.tileY + jitterY];
+    }
+
+    _buildingForType(type) {
+        if (!type) return null;
+        const normalized = type === 'lighthouse' ? 'watchtower' : type;
+        return this.getBuilding?.(normalized)
+            || BUILDING_DEFS.find((b) => b.type === normalized)
+            || null;
+    }
+
+    _activeVisitIntent() {
+        const intent = this.getIntentForAgent?.(this.agent?.id);
+        return intent?.building ? intent : null;
+    }
+
+    _releaseVisitReservation() {
+        if (!this._lastReservationId && !this.agent?.id) return;
+        this.releaseVisitReservation?.(this.agent?.id, this._lastReservationId);
+        this._lastReservationId = null;
+        this._lastReservationRenewedAt = 0;
+    }
+
+    _renewVisitReservation() {
+        if (!this._lastReservationId || !this.agent?.id || !this.renewVisitReservation) return;
+        const now = Date.now();
+        if (now - this._lastReservationRenewedAt < 5000) return;
+        if (this.renewVisitReservation(this.agent.id)) {
+            this._lastReservationRenewedAt = now;
+        }
     }
 
     _assignTarget(targetScreenX, targetScreenY, targetTileX, targetTileY) {
@@ -320,6 +416,9 @@ export class AgentSprite {
     setArrivalState(state) {
         this._arrivalState = state === 'pending' ? 'pending' : 'visible';
         if (this._arrivalState === 'pending') {
+            this._releaseVisitReservation();
+            this._behaviorState = 'departing';
+            this._behaviorReason = 'arrival-state';
             this.moving = false;
             this.waitTimer = 0;
             this.waypoints = [];
@@ -351,6 +450,7 @@ export class AgentSprite {
     walkToTile(tileX, tileY) {
         const target = new Position(tileX, tileY);
         const screen = target.toScreen(TILE_WIDTH, TILE_HEIGHT);
+        this._releaseVisitReservation();
         this.chatPartner = null;
         this.chatting = false;
         this.chatBubbleAnim = 0;
@@ -390,6 +490,8 @@ export class AgentSprite {
             const cpDist = Math.sqrt(cpDx * cpDx + cpDy * cpDy);
             if (cpDist < 35) {
                 this.chatting = true;
+                this._behaviorState = 'chatting';
+                this._behaviorReason = 'chat';
                 this.chatBubbleAnim = 0;
                 this.moving = false;
                 this._resetWalkCycle();
@@ -400,6 +502,8 @@ export class AgentSprite {
                 if (!this.chatPartner.chatting) {
                     this.chatPartner.chatPartner = this;
                     this.chatPartner.chatting = true;
+                    this.chatPartner._behaviorState = 'chatting';
+                    this.chatPartner._behaviorReason = 'chat';
                     this.chatPartner.chatBubbleAnim = 0;
                     this.chatPartner.moving = false;
                     this.chatPartner._resetWalkCycle();
@@ -419,10 +523,12 @@ export class AgentSprite {
 
         // Reroute immediately when status or fresh tool changes the intended building.
         if (!this.chatPartner) {
-            const curBuilding = this.agent.status === AgentStatus.IDLE
+            const activeIntent = this._activeVisitIntent();
+            const curBuilding = activeIntent?.building || (this.agent.status === AgentStatus.IDLE
                 ? this._lastBuildingType
-                : this._targetBuildingTypeForState();
-            if (curBuilding !== this._lastBuildingType) {
+                : this._targetBuildingTypeForState());
+            const curIntentId = activeIntent?.id || null;
+            if (curBuilding !== this._lastBuildingType || (curIntentId && curIntentId !== this._lastIntentId)) {
                 this._lastBuildingType = curBuilding;
                 this._pickTarget();
             }
@@ -430,6 +536,7 @@ export class AgentSprite {
 
         if (this.waitTimer > 0) {
             if (!this.moving) this._snapToNearestWalkable();
+            this._renewVisitReservation();
             this.waitTimer -= frameScale;
             if (this.waitTimer <= 0) {
                 this._pickTarget();
@@ -441,9 +548,12 @@ export class AgentSprite {
         if (!this.moving) {
             this._snapToNearestWalkable();
             this._advanceIdleAnimation(dt);
+            this._renewVisitReservation();
             this._pickTarget();
             return;
         }
+
+        this._renewVisitReservation();
 
         const dx = this.targetX - this.x;
         const dy = this.targetY - this.y;
@@ -464,6 +574,7 @@ export class AgentSprite {
                 }
             }
             this.moving = false;
+            this._behaviorState = this._lastIntentId ? 'performing' : 'lingering';
             this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
             this._resetWalkCycle();
             return;
@@ -554,6 +665,9 @@ export class AgentSprite {
 
     /** Start chat (called from IsometricRenderer) */
     startChat(partnerSprite) {
+        this._releaseVisitReservation();
+        this._behaviorState = 'chat-approach';
+        this._behaviorReason = 'chat';
         this.chatPartner = partnerSprite;
         this.chatting = false;
         this.chatBubbleAnim = 0;
@@ -562,10 +676,33 @@ export class AgentSprite {
 
     /** End chat */
     endChat() {
+        this._releaseVisitReservation();
         this.chatPartner = null;
         this.chatting = false;
         this.chatBubbleAnim = 0;
+        this._behaviorState = 'cooldown';
+        this._behaviorReason = 'chat-ended';
         this._pickTarget(); // resume normal behavior
+    }
+
+    getBehaviorDebugSnapshot() {
+        const tile = this._screenToTile(this.x, this.y);
+        return {
+            agentId: this.agent?.id || null,
+            name: this.agent?.displayName || this.agent?.name || null,
+            status: this.agent?.status || null,
+            building: this._lastBuildingType,
+            intentId: this._lastIntentId,
+            reservationId: this._lastReservationId,
+            behaviorState: this._behaviorState,
+            behaviorReason: this._behaviorReason,
+            recentBuildings: [...this._recentBuildings],
+            targetTile: this._lastTargetTile ? { ...this._lastTargetTile } : null,
+            tile,
+            moving: this.moving,
+            chatting: this.chatting,
+            waypointCount: this.waypoints?.length || 0,
+        };
     }
 
     draw(ctx, zoom = 1) {
