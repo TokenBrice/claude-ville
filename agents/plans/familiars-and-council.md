@@ -309,7 +309,7 @@ Aligned with the validation matrix in `claudeville/CLAUDE.md`:
 | Sprint | Smoke checks |
 | --- | --- |
 | Sprint 1 (Familiars) | `npm run dev`; mock-spawn a Claude subagent (touch a `subagents/agent-X.jsonl` under an active project; the live polling at `adapters/index.js:67` will pick it up). Verify wisp emits, motes orbit, parent selection brightens motes, child removal triggers re-merge particles. Test with `prefers-reduced-motion: reduce` toggled in DevTools. |
-| Sprint 2 (Council) | Populate two team-member sessions via `~/.claude/teams/<test>/config.json` plus `~/.claude/projects/<encoded>/<sessionId>.jsonl` files; confirm both agents share a colored ring on the plaza. Confirm Sidebar shows the team-color dot. Resize to mobile width — ring still readable. |
+| Sprint 2 (Council) | Populate two team-member sessions via `~/.claude/teams/<test>/config.json` plus `~/.claude/projects/<encoded>/<sessionId>.jsonl` files; confirm both agents share a colored ring on the plaza. Confirm Sidebar shows the team-color dot. |
 | Sprint 3 (Talk arcs) | Two active sessions where one's `currentTool === 'SendMessage'` and `currentToolInput` matches the other's name (this is already exercised by `IsometricRenderer._updateChatMatching`). Confirm arc renders, lock-on tracks both partners, dotted fallback under reduced motion. |
 | Sprint 4 (Arrivals & departures) | Add a session via the live polling path; observe carriage/boat. Then `rm` the session file or wait past `activeThresholdMs`; observe departure sigil. Run with all three providers if available. |
 | Adapters touched (FC0.1) | `node --check claudeville/adapters/claude.js`; spot-check `curl http://localhost:4000/api/sessions` shows `teamName` populated for team-member sessions. |

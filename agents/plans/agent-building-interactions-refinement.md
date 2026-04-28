@@ -1143,7 +1143,6 @@ npm run sprites:visual-diff
 Use Playwright screenshots at:
 
 - desktop default viewport
-- narrow/mobile-ish viewport if the canvas shell is changed
 - dense-agent scenario
 - reduced-motion scenario
 

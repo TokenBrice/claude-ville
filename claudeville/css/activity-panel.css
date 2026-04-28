@@ -441,23 +441,3 @@
         linear-gradient(180deg, rgba(83, 91, 45, 0.34), rgba(31, 22, 17, 0.64));
     border-color: rgba(114, 208, 113, 0.22);
 }
-
-@media (max-width: 700px) {
-    .activity-panel {
-        position: absolute;
-        top: 0;
-        right: 0;
-        bottom: 0;
-        width: min(320px, calc(100vw - 48px));
-        max-width: calc(100% - 48px);
-        z-index: 80;
-        animation: none;
-    }
-
-    .activity-panel__header,
-    .activity-panel__meta,
-    .activity-panel__section {
-        padding-left: 10px;
-        padding-right: 10px;
-    }
-}

@@ -2,6 +2,7 @@
 
 - Work from `/home/ahirice/Documents/git/claude-ville`.
 - ClaudeVille is a local, zero-build dashboard for watching AI coding CLI sessions as a browser "village" plus an optional macOS menu bar widget.
+- Desktop-only target: assume browser viewports ≥1280px wide. Do not add `@media` queries, mobile/narrow-viewport testing, or responsive shrinking.
 - Touch only files needed for the task. Shared checkout: start with `git status --short`, preserve unrelated edits, prefer `rg`/`rg --files` for discovery.
 - No install step, bundler, transpiler, lint, formatter, app test runner, or CI.
 

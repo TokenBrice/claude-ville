@@ -488,7 +488,6 @@ Browser screenshots:
 
 - 1280x720
 - 1690x1185
-- mobile-ish narrow viewport if practical
 
 ### Phase 5: Foreground Weather Layer Ownership
 

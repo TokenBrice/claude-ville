@@ -42,6 +42,7 @@ For an unfamiliar agent, read these first:
 
 ## Requirements
 
+- Desktop browser at 1280px wide or larger. Mobile and narrow viewports are out of scope.
 - Node.js 18 or newer.
 - `npm install` only for dev scripts that import packages (`js-yaml`, `pngjs`, `pixelmatch`, `playwright`). The server itself does not need installed packages.
 - At least one local provider directory:

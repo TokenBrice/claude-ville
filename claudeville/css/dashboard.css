@@ -134,25 +134,6 @@
 .dash-card--idle    { border-left: 3px solid #60a5fa; }
 .dash-card--waiting { border-left: 3px solid #f97316; }
 
-@media (max-width: 700px) {
-    .dashboard__section-grid {
-        grid-template-columns: minmax(0, 1fr);
-        padding: 8px;
-    }
-
-    .dashboard__section-header {
-        padding: 9px 10px;
-    }
-
-    .dashboard__section-name {
-        font-size: 9px;
-    }
-
-    .dashboard__section-path {
-        display: none;
-    }
-}
-
 /* ─ Card header ─ */
 .dash-card__header {
     display: flex;
