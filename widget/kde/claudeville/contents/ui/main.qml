@@ -28,8 +28,6 @@ PlasmoidItem {
         ? i18n("%1 working, %2 total", workingCount, sessionRows.length)
         : errorText || i18n("Offline")
 
-    Plasmoid.preferredRepresentation: Plasmoid.compactRepresentation
-
     Layout.minimumWidth: PlasmaCore.Units.gridUnit * 18
     Layout.minimumHeight: PlasmaCore.Units.gridUnit * 14
     Layout.preferredWidth: PlasmaCore.Units.gridUnit * 24
