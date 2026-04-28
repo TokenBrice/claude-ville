@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-atmosphere-phase8-v1"
+  assetVersion: "2026-04-28-fortification-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -419,13 +419,24 @@ props:
 
   - id: prop.villageGate
     tool: map_object
-    prompt: "obvious old-school RPG village gatehouse for an isometric town spawn entrance, very wide open central archway broad enough for two tiny agents, raised iron portcullis, integrated short curtain wall stubs extending left and right, tall blue-grey stone towers, teal slate roofs, chunky readable stone blocks, warm lanterns, small crimson pennants, cobblestone threshold road continuing through the arch, large landmark silhouette, transparent background, no text, no characters"
-    anchor: [160, 205]
+    prompt: "isolated open fantasy RPG city gatehouse, two tall square stone-and-timber towers with teal slate roofs, massive central stone archway, wide open black tunnel, raised iron portcullis, warm torches, small red pennants, mossy stone footings, transparent background, no foreground fence, no courtyard, no enclosed yard, no platform, no drawbridge, no text, no characters"
+    width: 384
+    height: 280
+    anchor: [192, 260]
 
   - id: prop.villageWall
     tool: map_object
-    prompt: "straight repeatable fantasy city wall segment matching blue-roof stone village gatehouse, chunky blue-grey mossy stone block curtain wall, teal-blue slate coping stones and crenellations, transparent background, no towers, no door, no arch, no text, no characters"
-    anchor: [96, 104]
+    prompt: "repeatable high-fantasy isometric village palisade wall segment, heavy dark timber posts, sharpened uneven stakes, stone footing blocks, rope lashings, cross braces, teal slate coping accents, moss and rivets, transparent background, no tower, no gate, no door, no text, no characters"
+    width: 224
+    height: 144
+    anchor: [112, 130]
+
+  - id: prop.villageWallSeaTower
+    tool: map_object
+    prompt: "wooden sea watchtower at the end of a fantasy village wall, square timber tower over rocky shoreline, dark wooden legs and cross braces, covered lookout platform with teal slate roof, palisade wall socket on left side, rope ladder, amber lantern, crimson pennant, mossy stone footings, transparent background, no text, no characters, no water tile, no ground tile"
+    width: 192
+    height: 260
+    anchor: [96, 244]
 
   - id: prop.signpost
     tool: isometric_tile
@@ -762,6 +773,7 @@ atmosphere:
     tool: tileset
     lower: "abyssal sea, dark currents, painterly"
     upper: "abyssal sea, dark currents, painterly"
+    # Tile size; generated atmosphere tileset PNG is a 2x2 128px sheet.
     size: 64
 
   - id: atmosphere.light.lighthouse-beam
@@ -807,7 +819,8 @@ atmosphere:
   - id: atmosphere.cloud.overcast-bank
     tool: map_object
     prompt: "broad overcast gray-blue cloud bank, layered storm cloud silhouette, soft underside shadow, transparent background, pixel art"
-    size: 96
+    width: 96
+    height: 64
 
   - id: atmosphere.cloud.storm-shelf
     tool: map_object

@@ -125,8 +125,13 @@ for (const entry of characterEntries) {
     invalidCharacters += validateCharacterSheet(entry);
 }
 
-console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  invalid manifest entries: ${invalidManifest}  invalid character sheets: ${invalidCharacters}`);
-process.exit(missing > 0 || invalidManifest > 0 || invalidCharacters > 0 ? 1 : 0);
+let invalidAtmosphere = 0;
+for (const entry of manifest.atmosphere || []) {
+    invalidAtmosphere += validateAtmospherePng(entry);
+}
+
+console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  invalid manifest entries: ${invalidManifest}  invalid character sheets: ${invalidCharacters}  invalid atmosphere PNGs: ${invalidAtmosphere}`);
+process.exit(missing > 0 || invalidManifest > 0 || invalidCharacters > 0 || invalidAtmosphere > 0 ? 1 : 0);
 
 function validateManifestEntry(entry) {
     if (!entry?.id) return 0;
@@ -182,6 +187,43 @@ function validateCharacterSheet(entry) {
     }
     errors += validateRequiredEquipment(entry, png, cell, rel);
     return errors;
+}
+
+function validateAtmospherePng(entry) {
+    const rel = pathFor(entry);
+    if (!rel) return 0;
+    const abs = join(spritesRoot, rel);
+    if (!existsSync(abs)) return 0;
+
+    const expected = expectedAtmosphereDimensions(entry);
+    if (!expected) return 0;
+
+    let png;
+    try {
+        png = PNG.sync.read(readFileSync(abs));
+    } catch (err) {
+        console.error(`INVALID ATMOSPHERE: ${rel} cannot be decoded (${err.message})`);
+        return 1;
+    }
+
+    if (png.width === expected.width && png.height === expected.height) return 0;
+    console.error(`INVALID ATMOSPHERE: ${rel} is ${png.width}x${png.height}, expected ${expected.width}x${expected.height}`);
+    return 1;
+}
+
+function expectedAtmosphereDimensions(entry) {
+    const width = Number(entry.width);
+    const height = Number(entry.height);
+    if (Number.isFinite(width) && Number.isFinite(height)) {
+        return { width, height };
+    }
+
+    const size = Number(entry.size);
+    if (!Number.isFinite(size)) return null;
+    if (entry.tool === 'tileset') {
+        return { width: size * 2, height: size * 2 };
+    }
+    return { width: size, height: size };
 }
 
 function validateRequiredEquipment(entry, png, cell, rel) {
