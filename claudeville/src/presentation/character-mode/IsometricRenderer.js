@@ -350,10 +350,7 @@ const VILLAGE_WOOD_PALETTE = Object.freeze({
     lantern: '#ffd56a',
     glow: 'rgba(255, 202, 94, 0.26)',
 });
-const VILLAGE_GATE_SPRITE_ID = 'prop.villageGate';
-const VILLAGE_WALL_SPRITE_ID = 'prop.villageWall';
 const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
-const VILLAGE_WALL_SPRITE_TILE_SPAN = 3.35;
 const AMBIENT_GROUND_PROPS = [
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
     { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
