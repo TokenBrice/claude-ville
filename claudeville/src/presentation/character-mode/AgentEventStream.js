@@ -188,13 +188,15 @@ export class AgentEventStream {
         for (const key of nextPairs) {
             if (this.chatPairs.has(key)) continue;
             const [aId, bId] = key.split('|');
-            eventBus.emit('chat:started', { aId, bId, ts: Date.now() });
+            const event = { aId, bId, ts: Date.now() };
+            if (this._canEmit('chat:started', event, null)) eventBus.emit('chat:started', event);
         }
 
         for (const key of this.chatPairs) {
             if (nextPairs.has(key)) continue;
             const [aId, bId] = key.split('|');
-            eventBus.emit('chat:ended', { aId, bId, ts: Date.now() });
+            const event = { aId, bId, ts: Date.now() };
+            if (this._canEmit('chat:ended', event, null)) eventBus.emit('chat:ended', event);
         }
 
         this.chatPairs = nextPairs;
@@ -205,7 +207,8 @@ export class AgentEventStream {
             if (!key.split('|').includes(agentId)) continue;
             this.chatPairs.delete(key);
             const [aId, bId] = key.split('|');
-            eventBus.emit('chat:ended', { aId, bId, ts: Date.now() });
+            const event = { aId, bId, ts: Date.now() };
+            if (this._canEmit('chat:ended', event, null)) eventBus.emit('chat:ended', event);
         }
     }
 }

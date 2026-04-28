@@ -55,6 +55,7 @@ import {
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
+const MAX_LIGHT_GRADIENT_STAMP_PIXELS = Math.floor(MAX_LIGHT_GRADIENT_CACHE_PIXELS / 5);
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
 const VISIT_OVERFLOW_TILES = Object.freeze({
@@ -6001,23 +6002,35 @@ export class IsometricRenderer {
             dpr,
         ].join('|');
         const cached = this.lightGradientCache.get(key);
-        if (cached) return cached;
+        if (cached) {
+            this.lightGradientCache.delete(key);
+            this.lightGradientCache.set(key, cached);
+            return cached;
+        }
 
         const size = Math.max(2, Math.ceil(radius * 2));
         const stampDpr = Math.max(
             0.1,
-            Math.min(dpr, Math.sqrt(MAX_LIGHT_GRADIENT_CACHE_PIXELS / Math.max(1, size * size))),
+            Math.min(dpr, Math.sqrt(MAX_LIGHT_GRADIENT_STAMP_PIXELS / Math.max(1, size * size))),
         );
         const stamp = document.createElement('canvas');
         stamp.width = Math.max(1, Math.round(size * stampDpr));
         stamp.height = Math.max(1, Math.round(size * stampDpr));
         const stampPixels = canvasPixelCount(stamp);
-        const shouldCache = stampPixels <= MAX_LIGHT_GRADIENT_CACHE_PIXELS;
-        if (shouldCache && (
-            this.lightGradientCache.size > 240 ||
-            canvasMapPixelCount(this.lightGradientCache) + stampPixels > MAX_LIGHT_GRADIENT_CACHE_PIXELS
-        )) {
-            releaseCanvasMap(this.lightGradientCache);
+        const shouldCache = stampPixels <= MAX_LIGHT_GRADIENT_STAMP_PIXELS;
+        if (shouldCache) {
+            let retainedPixels = canvasMapPixelCount(this.lightGradientCache);
+            while (
+                this.lightGradientCache.size > 0 &&
+                (this.lightGradientCache.size >= 240 ||
+                    retainedPixels + stampPixels > MAX_LIGHT_GRADIENT_CACHE_PIXELS)
+            ) {
+                const oldestKey = this.lightGradientCache.keys().next().value;
+                const oldest = this.lightGradientCache.get(oldestKey);
+                retainedPixels -= canvasPixelCount(oldest);
+                releaseCanvasBackingStore(oldest);
+                this.lightGradientCache.delete(oldestKey);
+            }
         }
         const stampCtx = stamp.getContext('2d');
         stampCtx.setTransform(stampDpr, 0, 0, stampDpr, 0, 0);
