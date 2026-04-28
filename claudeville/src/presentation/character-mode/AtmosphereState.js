@@ -163,6 +163,12 @@ const SKY_ASSETS = {
     },
 };
 
+const CLOUD_LAYER_BANDS = [
+    { yFrac: 0.16, parallax: 0.025, driftMul: 0.46, alphaMul: 0.62, scaleBase: 0.86 },
+    { yFrac: 0.25, parallax: 0.060, driftMul: 0.78, alphaMul: 0.54, scaleBase: 1.05 },
+    { yFrac: 0.35, parallax: 0.105, driftMul: 1.08, alphaMul: 0.38, scaleBase: 1.22 },
+];
+
 function clamp(value, min = 0, max = 1) {
     return Math.max(min, Math.min(max, value));
 }
@@ -216,6 +222,14 @@ function seededRandom(seed) {
         state = Math.imul(1664525, state) + 1013904223;
         return (state >>> 0) / 4294967296;
     };
+}
+
+function random01(seed, salt) {
+    let value = (seed + Math.imul(salt + 1, 0x9e3779b1)) >>> 0;
+    value ^= value << 13;
+    value ^= value >>> 17;
+    value ^= value << 5;
+    return (value >>> 0) / 4294967296;
 }
 
 function weatherTypeFromRoll(roll, minute) {
@@ -540,32 +554,100 @@ function starAlpha(phase, phaseProgress, weather) {
     return clamp(base * (1 - preset.starOcclusion * clamp(weather.intensity + 0.22)));
 }
 
+function celestialHorizonState(yFrac, horizonFrac) {
+    const proximity = smoothstep((yFrac - (horizonFrac - 0.085)) / 0.14);
+    return {
+        horizonOcclusion: clamp(proximity * 0.52),
+        squashY: clamp(1 - proximity * 0.26, 0.72, 1),
+        horizonFade: clamp(1 - proximity * 0.42, 0.58, 1),
+    };
+}
+
 function buildSun(minute, phase, phaseProgress, weather) {
     const progress = progressInInterval(minute, PHASES[0].start, PHASES[2].end);
     const light = phaseLight(phase, phaseProgress);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const alpha = clamp(light * (1 - preset.sunOcclusion * clamp(weather.intensity + 0.16)));
+    const yFrac = 0.50 - Math.sin(progress * Math.PI) * 0.38;
+    const horizon = celestialHorizonState(yFrac, 0.49);
     return {
         visible: alpha > 0.02,
-        alpha,
+        alpha: alpha * horizon.horizonFade,
         xFrac: 0.08 + progress * 0.84,
-        yFrac: 0.50 - Math.sin(progress * Math.PI) * 0.38,
+        yFrac,
+        ...horizon,
     };
 }
 
-function buildMoon(minute, phase, phaseProgress, weather) {
+function moonPhaseForDate(date) {
+    const synodicMonth = 29.530588853;
+    const referenceNewMoon = Date.UTC(2000, 0, 6, 18, 14);
+    const localNoon = Date.UTC(date.getFullYear(), date.getMonth(), date.getDate(), 12, 0);
+    const age = ((localNoon - referenceNewMoon) / 86400000 % synodicMonth + synodicMonth) % synodicMonth;
+    const illumination = (1 - Math.cos((age / synodicMonth) * Math.PI * 2)) / 2;
+    let phaseName = 'crescent';
+    if (illumination < 0.08) phaseName = 'new';
+    else if (illumination < 0.34) phaseName = 'crescent';
+    else if (illumination < 0.66) phaseName = 'half';
+    else phaseName = 'gibbous';
+    const waxing = age < synodicMonth / 2;
+    return {
+        phaseName,
+        illumination: clamp(illumination),
+        waxing,
+        age: Number(age.toFixed(2)),
+    };
+}
+
+function buildMoon(minute, phase, phaseProgress, weather, date) {
     const progress = progressInInterval(minute, PHASES[3].start, PHASES[3].end);
     let base = phase === 'night' ? 0.92 : 0;
     if (phase === 'dusk') base = 0.34 * smoothstep(phaseProgress);
     if (phase === 'dawn') base = 0.34 * (1 - smoothstep(phaseProgress));
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
-    const alpha = clamp(base * (1 - preset.sunOcclusion * clamp(weather.intensity)));
+    const phaseState = moonPhaseForDate(date);
+    const moonBodyAlpha = 0.34 + phaseState.illumination * 0.66;
+    const alpha = clamp(base * moonBodyAlpha * (1 - preset.sunOcclusion * clamp(weather.intensity)));
+    const yFrac = 0.44 - Math.sin(progress * Math.PI) * 0.30;
+    const horizon = celestialHorizonState(yFrac, 0.43);
     return {
         visible: alpha > 0.02,
-        alpha,
+        alpha: alpha * horizon.horizonFade,
         xFrac: 0.08 + progress * 0.84,
-        yFrac: 0.44 - Math.sin(progress * Math.PI) * 0.30,
+        yFrac,
+        ...horizon,
+        phase: phaseState,
     };
+}
+
+function buildCloudLayers({ date, weather, assetIds, cloudDensity, cloudAlpha }) {
+    const ids = assetIds?.clouds?.length ? assetIds.clouds : SKY_ASSETS.clear.clouds;
+    const seed = Number.isFinite(Number(weather.seed))
+        ? Number(weather.seed) >>> 0
+        : hashString(`${localDateKey(date)}|${weather.type}|clouds`);
+    const density = clamp(cloudDensity ?? 0.3);
+    const alpha = clamp(cloudAlpha ?? 0.28);
+    const layerCount = Math.max(3, Math.min(14, Math.round(3 + density * 11)));
+    const out = [];
+
+    for (let i = 0; i < layerCount; i++) {
+        const band = CLOUD_LAYER_BANDS[i % CLOUD_LAYER_BANDS.length];
+        const row = Math.floor(i / CLOUD_LAYER_BANDS.length);
+        const rowOffset = random01(seed, row * 313 + 17) * 0.32;
+        const xFrac = (random01(seed, i * 97 + 11) + rowOffset) % 1;
+        const yNoise = (random01(seed, i * 101 + 23) - 0.5) * 0.075;
+        const scaleNoise = 0.72 + random01(seed, i * 103 + 37) * 0.72;
+        out.push({
+            assetId: ids[i % ids.length],
+            xFrac,
+            yFrac: clamp(band.yFrac + row * 0.075 + yNoise, 0.08, 0.55),
+            scale: Number((band.scaleBase * scaleNoise).toFixed(3)),
+            alpha: Number(clamp(alpha * band.alphaMul * (0.74 + random01(seed, i * 107 + 41) * 0.46), 0, 0.86).toFixed(3)),
+            parallax: band.parallax,
+            driftMul: band.driftMul,
+        });
+    }
+    return out;
 }
 
 function buildGrade(phase, phaseProgress, weather) {
@@ -627,6 +709,7 @@ function buildLighting(phase, phaseProgress, weather) {
         lightBoost: clamp(0.75 + dark * 0.85 + sunWarmth * 0.35 + weatherDim * 0.35, 0.65, 1.8),
         sunBloomScale: clamp(0.85 + sunWarmth * 0.95 - weatherDim * 0.35, 0.65, 1.85),
         beaconIntensity: clamp(dark * 0.9 + sunWarmth * 0.25 + weatherDim * 0.25, 0, 1),
+        waterGlintScale: clamp(0.64 + light * 0.28 + sunWarmth * 0.48 - weatherDim * 0.22, 0.32, 1.42),
     });
 }
 
@@ -643,6 +726,34 @@ export function normalizeLightingState(state = {}) {
         lightBoost: clamp(state.lightBoost ?? 1, 0, 2),
         sunBloomScale: clamp(state.sunBloomScale ?? 1, 0, 2),
         beaconIntensity: clamp(state.beaconIntensity ?? 0, 0, 1),
+        waterGlintScale: clamp(state.waterGlintScale ?? 1, 0, 2),
+    };
+}
+
+function buildReactions(phase, phaseProgress, weather, lighting) {
+    const precipitation = clamp(weather.precipitation ?? 0);
+    const fog = clamp(weather.fog ?? 0);
+    const cloudCover = clamp(weather.cloudCover ?? 0);
+    const light = phaseLight(phase, phaseProgress);
+    const dark = 1 - light;
+    const warmEdge = phase === 'dawn'
+        ? 1 - smoothstep(phaseProgress)
+        : phase === 'dusk'
+            ? smoothstep(phaseProgress)
+            : 0;
+    const storm = weather.type === 'storm' ? clamp(weather.intensity) : 0;
+    const overcast = Math.max(0, cloudCover - 0.62) / 0.38;
+    return {
+        puddleAlpha: clamp(precipitation * 0.38),
+        roofGlintAlpha: clamp((precipitation * 0.18 + warmEdge * 0.16) * (lighting.waterGlintScale ?? 1)),
+        waterRippleScale: clamp(0.24 + precipitation * 0.72 + storm * 0.36, 0, 1.35),
+        windowWarmth: clamp(dark * 0.82 + warmEdge * 0.22 + overcast * 0.26 + precipitation * 0.22),
+        fogNearWaterAlpha: clamp(fog * 0.34 + precipitation * 0.06),
+        waterFogAlpha: clamp(fog * 0.30),
+        stormRoughness: clamp(storm * 0.9 + precipitation * 0.22),
+        warmGlint: clamp(warmEdge * (1 - overcast * 0.52)),
+        nightReflection: clamp(dark * 0.58 + (phase === 'night' ? 0.20 : 0)),
+        distantContrast: clamp(1 - fog * 0.32 - overcast * 0.12, 0.55, 1),
     };
 }
 
@@ -687,6 +798,8 @@ export function createAtmosphereSnapshot({
     const cloudAlpha = clamp(preset.cloudAlpha * (0.54 + intensity * 0.32 + cloudCover * 0.42));
     const cloudDensity = clamp(preset.cloudDensity * (0.58 + intensity * 0.28 + cloudCover * 0.52));
     const transition = phaseTransition(phase, phaseProgress);
+    const assetIds = SKY_ASSETS[weather.type] || SKY_ASSETS.clear;
+    const lighting = buildLighting(phase, phaseProgress, weather);
     const timeBucket = Math.floor(dayProgress * 96);
     const lightBucket = Math.round(phaseLight(phase, phaseProgress) * 100);
     const intensityBucket = Math.round(intensity * 10);
@@ -706,16 +819,18 @@ export function createAtmosphereSnapshot({
         weather,
         sky: {
             palette: blendPalette(phase, phaseProgress),
-            assetIds: SKY_ASSETS[weather.type] || SKY_ASSETS.clear,
+            assetIds,
             sun: buildSun(minute, phase, phaseProgress, weather),
-            moon: buildMoon(minute, phase, phaseProgress, weather),
+            moon: buildMoon(minute, phase, phaseProgress, weather, effectiveDate),
             starsAlpha: starAlpha(phase, phaseProgress, weather),
             cloudAlpha,
             cloudDensity,
             cloudCover,
+            cloudLayers: buildCloudLayers({ date: effectiveDate, weather, assetIds, cloudDensity, cloudAlpha }),
         },
         grade: buildGrade(phase, phaseProgress, weather),
-        lighting: buildLighting(phase, phaseProgress, weather),
+        lighting,
+        reactions: buildReactions(phase, phaseProgress, weather, lighting),
         motion: {
             driftEnabled,
             particleEnabled: effectiveMotionScale > 0,
