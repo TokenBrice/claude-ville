@@ -17,6 +17,25 @@ const AURORA_DURATION_MS = 12000;
 const AURORA_FADE_IN_MS = 2000;
 const AURORA_HOLD_MS = 6000;
 
+const CONSTELLATIONS = [
+    {
+        anchor: [0.15, 0.20],
+        points: [[0, 0], [0.035, -0.030], [0.072, -0.018], [0.104, -0.055], [0.137, -0.024]],
+    },
+    {
+        anchor: [0.53, 0.16],
+        points: [[0, 0], [0.028, 0.026], [0.057, 0.006], [0.090, 0.034], [0.119, 0.016]],
+    },
+    {
+        anchor: [0.74, 0.29],
+        points: [[0, 0], [0.026, -0.034], [0.052, -0.003], [0.079, -0.034]],
+    },
+    {
+        anchor: [0.33, 0.38],
+        points: [[0, 0], [0.024, -0.024], [0.054, -0.016], [0.081, -0.045], [0.112, -0.038]],
+    },
+];
+
 const CLOUD_LAYER_DEFAULTS = [
     { fy: 0.20, parallax: 0.03, driftMul: 0.55, alphaMul: 0.72 },
     { fy: 0.30, parallax: 0.07, driftMul: 0.92, alphaMul: 0.46 },
@@ -80,7 +99,7 @@ export class SkyRenderer {
 
     _buildCanopySnapshot(atmosphere) {
         const sky = atmosphere.sky || {};
-        return {
+        const canopy = {
             ...atmosphere,
             sky: {
                 ...sky,
@@ -91,6 +110,16 @@ export class SkyRenderer {
                 moon: sky.moon ? { ...sky.moon, alpha: sky.moon.alpha * 0.62 } : sky.moon,
             },
         };
+        if (canopy.sky.sun) {
+            const horizonCut = canopy.sky.sun.yFrac > 0.42 ? 0.58 : 1;
+            canopy.sky.sun.alpha *= 0.54 * horizonCut;
+        }
+        if (canopy.sky.cloudLayers?.length) {
+            canopy.sky.cloudLayers = canopy.sky.cloudLayers
+                .filter((layer, index) => index % 2 === 0 || layer.yFrac < 0.34)
+                .map(layer => ({ ...layer, alpha: layer.alpha * 0.58 }));
+        }
+        return canopy;
     }
 
     _normalizeDrawArgs(arg1, arg2, arg3, arg4) {
@@ -224,6 +253,33 @@ export class SkyRenderer {
             ctx.fillStyle = hot ? (palette.starHot || '#f2f7ff') : (palette.starWarm || '#c9ddff');
             ctx.fillRect(x, y, size, size);
         }
+        this._drawConstellations(ctx, canvas, atmosphere, alpha, palette);
+        ctx.restore();
+    }
+
+    _drawConstellations(ctx, canvas, atmosphere, alpha, palette) {
+        const drift = ((atmosphere.dayProgress || 0) * 0.16) % 1;
+        ctx.save();
+        ctx.globalAlpha = Math.min(0.52, alpha * 0.46);
+        ctx.strokeStyle = this._hexToRgba(palette.starWarm || '#c9ddff', 0.58);
+        ctx.fillStyle = palette.starHot || '#f2f7ff';
+        ctx.lineWidth = 1;
+        for (const constellation of CONSTELLATIONS) {
+            const points = constellation.points.map(([px, py]) => ({
+                x: wrap((constellation.anchor[0] + px + drift) * canvas.width, -24, canvas.width + 24),
+                y: Math.max(4, Math.min(canvas.height * STAR_CEILING_FRAC, (constellation.anchor[1] + py) * canvas.height)),
+            }));
+            if (!points.length) continue;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(points[0].x), Math.round(points[0].y));
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(Math.round(points[i].x), Math.round(points[i].y));
+            }
+            ctx.stroke();
+            for (const point of points) {
+                ctx.fillRect(Math.round(point.x) - 1, Math.round(point.y) - 1, 2, 2);
+            }
+        }
         ctx.restore();
     }
 
@@ -236,6 +292,8 @@ export class SkyRenderer {
         const lighting = atmosphere.lighting || {};
         const warmth = lighting.sunWarmth ?? 0;
         const bloomScale = lighting.sunBloomScale ?? 1;
+        const squashY = sun.squashY ?? 1;
+        const horizonScale = 1 - (sun.horizonOcclusion || 0) * 0.35;
         const glowRadius = radius * (4.3 + warmth * 3.0) * bloomScale;
         const warmG = Math.round(232 - warmth * 42);
         const warmB = Math.round(170 - warmth * 58);
@@ -252,7 +310,7 @@ export class SkyRenderer {
         ctx.fillStyle = glow;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-        const rayAlpha = Math.min(0.26, sun.alpha * (0.16 + bloomScale * 0.08));
+        const rayAlpha = Math.min(0.26, sun.alpha * horizonScale * (0.16 + bloomScale * 0.08));
         ctx.strokeStyle = warmth > 0.05
             ? `rgba(255, 188, 86, ${rayAlpha})`
             : `rgba(255, 228, 90, ${rayAlpha})`;
@@ -261,7 +319,7 @@ export class SkyRenderer {
         for (let i = 0; i < 12; i++) {
             const angle = (Math.PI * 2 * i) / 12;
             const inner = radius * (1.48 + (i % 2) * 0.16);
-            const outer = radius * (2.15 + (i % 3) * 0.18);
+            const outer = radius * horizonScale * (2.15 + (i % 3) * 0.18);
             ctx.beginPath();
             ctx.moveTo(
                 Math.round(x + Math.cos(angle) * inner),
@@ -289,14 +347,14 @@ export class SkyRenderer {
         body.addColorStop(1, warmth > 0.05 ? '#f3a14d' : '#ffc842');
         ctx.fillStyle = body;
         ctx.beginPath();
-        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.ellipse(x, y, radius, radius * squashY, 0, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.globalAlpha = sun.alpha * 0.5;
         ctx.strokeStyle = warmth > 0.05 ? '#ffe0a3' : '#fff0a8';
         ctx.lineWidth = 2;
         ctx.beginPath();
-        ctx.arc(x, y, radius - 1, 0, Math.PI * 2);
+        ctx.ellipse(x, y, radius - 1, (radius - 1) * squashY, 0, 0, Math.PI * 2);
         ctx.stroke();
         ctx.restore();
     }
@@ -304,11 +362,13 @@ export class SkyRenderer {
     _drawMoon(ctx, canvas, atmosphere) {
         const moon = atmosphere.sky?.moon;
         if (!moon?.visible || moon.alpha <= 0.01) return;
+        const phaseName = moon.phase?.phaseName || 'crescent';
+        const illumination = clamp(moon.phase?.illumination ?? 0.24, 0, 1);
         const id = this._firstAvailable([
             atmosphere.sky?.assetIds?.moon,
             FALLBACK_MOON_ID,
         ]);
-        if (id) {
+        if (id && phaseName === 'crescent' && illumination > 0.10 && illumination < 0.31) {
             const img = this.assets.get(id);
             const dims = this.assets.getDims(id);
             const x = canvas.width * moon.xFrac - dims.w / 2;
@@ -316,7 +376,14 @@ export class SkyRenderer {
             ctx.save();
             ctx.globalAlpha = moon.alpha;
             this._drawMoonGlow(ctx, canvas, moon, atmosphere);
-            ctx.drawImage(img, Math.round(x), Math.round(y));
+            const squashY = moon.squashY ?? 1;
+            if (squashY < 0.99) {
+                ctx.translate(canvas.width * moon.xFrac, canvas.height * moon.yFrac);
+                ctx.scale(1, squashY);
+                ctx.drawImage(img, Math.round(-dims.w / 2), Math.round(-dims.h / 2));
+            } else {
+                ctx.drawImage(img, Math.round(x), Math.round(y));
+            }
             ctx.restore();
             return;
         }
@@ -341,22 +408,58 @@ export class SkyRenderer {
         const x = canvas.width * moon.xFrac;
         const y = canvas.height * moon.yFrac;
         const r = Math.max(14, Math.min(canvas.width, canvas.height) * 0.026);
+        const squashY = moon.squashY ?? 1;
+        const phase = moon.phase || { phaseName: 'crescent', illumination: 0.24, waxing: false };
+        const illumination = clamp(phase.illumination ?? 0.24, 0, 1);
+        const litWidth = r * (0.22 + illumination * 1.46);
+        const shadowOffset = phase.phaseName === 'new'
+            ? 0
+            : (phase.waxing ? -1 : 1) * r * (0.92 - illumination * 0.84);
         ctx.save();
         ctx.globalAlpha = moon.alpha;
-        this._drawMoonGlow(ctx, canvas, moon, atmosphere);
+        this._drawMoonGlow(ctx, canvas, { ...moon, alpha: moon.alpha * (0.25 + illumination * 0.75) }, atmosphere);
+        ctx.translate(x, y);
+        ctx.scale(1, squashY);
         ctx.fillStyle = '#cfe4ff';
         ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalCompositeOperation = 'destination-out';
-        ctx.beginPath();
-        ctx.arc(x + r * 0.42, y - r * 0.10, r * 0.92, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.clip();
+        if (phase.phaseName === 'new') {
+            ctx.fillStyle = 'rgba(8, 18, 34, 0.76)';
+            ctx.fillRect(-r - 2, -r - 2, r * 2 + 4, r * 2 + 4);
+            ctx.strokeStyle = 'rgba(190, 216, 255, 0.36)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.arc(0, 0, r - 1, 0, Math.PI * 2);
+            ctx.stroke();
+        } else {
+            ctx.globalCompositeOperation = 'source-atop';
+            const shadow = ctx.createRadialGradient(shadowOffset, -r * 0.08, r * 0.12, shadowOffset, 0, r * 1.34);
+            shadow.addColorStop(0, 'rgba(20, 36, 58, 0.05)');
+            shadow.addColorStop(0.52, 'rgba(14, 26, 44, 0.28)');
+            shadow.addColorStop(1, 'rgba(4, 12, 24, 0.82)');
+            ctx.fillStyle = shadow;
+            const shadowX = phase.waxing ? -r - litWidth * 0.38 : litWidth * 0.38;
+            ctx.fillRect(shadowX, -r - 2, r * 2.4, r * 2 + 4);
+            ctx.globalCompositeOperation = 'screen';
+            ctx.fillStyle = `rgba(238, 247, 255, ${0.06 + illumination * 0.08})`;
+            ctx.beginPath();
+            ctx.ellipse((phase.waxing ? 1 : -1) * r * 0.12, -r * 0.18, litWidth * 0.32, r * 0.22, -0.24, 0, Math.PI * 2);
+            ctx.fill();
+        }
         ctx.restore();
     }
 
     _drawClouds(ctx, camera, canvas, atmosphere) {
         if (!this.assets) return;
+        const layers = Array.isArray(atmosphere.sky?.cloudLayers) && atmosphere.sky.cloudLayers.length
+            ? atmosphere.sky.cloudLayers
+            : null;
+        if (layers) {
+            this._drawCloudLayerDescriptors(ctx, camera, canvas, atmosphere, layers);
+            return;
+        }
         const cloudIds = this._availableCloudIds(atmosphere);
         if (!cloudIds.length) return;
 
@@ -402,6 +505,38 @@ export class SkyRenderer {
             }
             ctx.restore();
         });
+    }
+
+    _drawCloudLayerDescriptors(ctx, camera, canvas, atmosphere, layers) {
+        const camX = camera?.x || 0;
+        const clockDrift = atmosphere.motion?.clockDriftPx || 0;
+        const windX = atmosphere.motion?.windX || 1;
+        const wrapWidth = canvas.width + 260;
+        ctx.save();
+        for (const layer of layers) {
+            const id = this.assets.has(layer.assetId) ? layer.assetId : this._availableCloudIds(atmosphere)[0];
+            if (!id) continue;
+            const img = this.assets.get(id);
+            const dims = this.assets.getDims(id);
+            if (!img || !dims) continue;
+            const scale = Math.max(0.45, Number(layer.scale) || 1);
+            const w = dims.w * scale;
+            const h = dims.h * scale;
+            const parallax = Number(layer.parallax) || 0.04;
+            const driftMul = Number(layer.driftMul) || 1;
+            const drift = -camX * parallax
+                + clockDrift * driftMul
+                + this._decorativeCloudOffset * driftMul * windX;
+            const y = canvas.height * clamp(layer.yFrac ?? 0.25, 0.04, 0.62);
+            const baseX = (layer.xFrac ?? 0.5) * canvas.width + drift;
+            const x = wrap(baseX, -w - 130, wrapWidth);
+            ctx.globalAlpha = Math.min(0.88, Math.max(0, Number(layer.alpha) || 0));
+            ctx.drawImage(img, Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+            if (x + w < canvas.width + 80) {
+                ctx.drawImage(img, Math.round(x + wrapWidth), Math.round(y), Math.round(w), Math.round(h));
+            }
+        }
+        ctx.restore();
     }
 
     _drawAurora(ctx, canvas, atmosphere, motionScale = 1) {
@@ -501,6 +636,14 @@ export class SkyRenderer {
         ctx.restore();
     }
 
+    _hexToRgba(hex, alpha) {
+        const value = String(hex || '#ffffff').replace('#', '').padEnd(6, 'f').slice(0, 6);
+        const r = parseInt(value.slice(0, 2), 16);
+        const g = parseInt(value.slice(2, 4), 16);
+        const b = parseInt(value.slice(4, 6), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+
     _availableCloudIds(atmosphere) {
         const requested = atmosphere.sky?.assetIds?.clouds || [];
         const available = requested.filter(id => this.assets?.has(id));
@@ -528,6 +671,12 @@ export class SkyRenderer {
 
 function clamp(value, min = 0, max = 1) {
     return Math.max(min, Math.min(max, value));
+}
+
+function wrap(value, min, max) {
+    const range = max - min;
+    if (!Number.isFinite(range) || range <= 0) return min;
+    return ((value - min) % range + range) % range + min;
 }
 
 function hashString(value) {
