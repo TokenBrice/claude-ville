@@ -81,20 +81,21 @@ const CODEX_WEAPON_ASSETS = Object.freeze({
     greatsword: {
         id: 'equipment.codex.greatsword',
         fallback: 'greatsword',
-        pose: 'twoHanded',
+        pose: 'greatswordShoulder',
+        backLayer: 'always',
         anchor: [36, 82],
-        scale: 0.66,
-        hands: 'double',
-        handSpacing: 12,
+        scale: 0.56,
+        hands: 'single',
     },
     polearm: {
         id: 'equipment.codex.polearm',
         fallback: 'polearm',
-        pose: 'polearm',
+        pose: 'polearmUpright',
         anchor: [44, 74],
-        scale: 0.72,
+        scale: 0.70,
         hands: 'double',
-        handSpacing: 14,
+        handSpacing: 13,
+        handVector: [-7, 12],
     },
     engineerWrench: {
         id: 'equipment.codex.engineerWrench',
@@ -1413,7 +1414,7 @@ export class AgentSprite {
         }
 
         this._drawWeaponAt(ctx, pose, geometry.drawScale, () => {
-            if (assetDef.hands === 'double') this._drawWeaponGripHands(ctx, assetDef.handSpacing || 11);
+            if (assetDef.hands === 'double') this._drawWeaponGripHands(ctx, assetDef.handSpacing || 11, assetDef.handVector);
             else this._drawWeaponGripHand(ctx);
         });
     }
@@ -1448,6 +1449,8 @@ export class AgentSprite {
     }
 
     _assetWeaponBackLayer(assetDef, directionKey) {
+        if (assetDef.backLayer === 'always') return true;
+        if (Array.isArray(assetDef.backLayerDirections)) return assetDef.backLayerDirections.includes(directionKey);
         if (assetDef.backPose) return this._weaponBackCarryDirection(directionKey);
         return directionKey === 'n' || directionKey === 'ne' || directionKey === 'nw';
     }
@@ -1479,12 +1482,19 @@ export class AgentSprite {
             angle: this._greatswordLeanForDirection(directionKey),
             scale: 1.06,
         };
-        const polearm = {
-            x: centerX + sideSign * bodyWidth * 0.10 * drawScale,
-            y: torsoY + (handYOffset - 1) * drawScale,
+        const greatswordShoulder = {
+            x: centerX + sideSign * bodyWidth * 0.24 * drawScale,
+            y: shoulderY + 7 * drawScale,
+            flipX: sideSign < 0,
+            angle: this._greatswordLeanForDirection(directionKey),
+            scale: 1.00,
+        };
+        const polearmUpright = {
+            x: centerX + sideSign * bodyWidth * 0.40 * drawScale,
+            y: torsoY + (handYOffset + 4) * drawScale,
             flipX: sideSign < 0,
             angle: this._polearmLeanForDirection(directionKey),
-            scale: 1.04,
+            scale: 1.00,
         };
         const shoulderRest = {
             x: centerX + sideSign * bodyWidth * 0.30 * drawScale,
@@ -1536,7 +1546,9 @@ export class AgentSprite {
             torso,
             rightHand,
             twoHanded,
-            polearm,
+            polearm: polearmUpright,
+            greatswordShoulder,
+            polearmUpright,
             shoulderRest,
             shield,
             backCarry,
@@ -1586,19 +1598,17 @@ export class AgentSprite {
     }
 
     _greatswordLeanForDirection(directionKey) {
-        if (directionKey === 'e' || directionKey === 'w') return -0.24;
-        if (directionKey === 'ne' || directionKey === 'nw') return -0.42;
-        if (directionKey === 'n') return -0.46;
-        if (directionKey === 'se' || directionKey === 'sw') return -0.08;
-        return 0.02;
+        if (directionKey === 'e' || directionKey === 'w') return -0.50;
+        if (directionKey === 'ne' || directionKey === 'nw') return -0.54;
+        if (directionKey === 'n') return -0.55;
+        if (directionKey === 'se' || directionKey === 'sw') return -0.48;
+        return -0.46;
     }
 
     _polearmLeanForDirection(directionKey) {
-        if (directionKey === 'e' || directionKey === 'w') return -0.30;
-        if (directionKey === 'ne' || directionKey === 'nw') return -0.48;
-        if (directionKey === 'n') return -0.52;
-        if (directionKey === 'se' || directionKey === 'sw') return -0.12;
-        return -0.02;
+        if (directionKey === 'ne' || directionKey === 'nw' || directionKey === 'n') return -0.58;
+        if (directionKey === 'e' || directionKey === 'w') return -0.56;
+        return -0.54;
     }
 
     _drawCodexMultitool(ctx) {
@@ -1939,16 +1949,18 @@ export class AgentSprite {
         ctx.fillRect(-1, 0, 3, 3);
     }
 
-    _drawWeaponGripHands(ctx, spacing = 11) {
+    _drawWeaponGripHands(ctx, spacing = 11, vector = null) {
+        const secondX = Array.isArray(vector) ? vector[0] : 0;
+        const secondY = Array.isArray(vector) ? vector[1] : spacing;
         ctx.fillStyle = '#0b2430';
         ctx.fillRect(-5, -2, 10, 6);
-        ctx.fillRect(-5, spacing - 2, 10, 6);
+        ctx.fillRect(secondX - 5, secondY - 2, 10, 6);
         ctx.fillStyle = '#7be3d7';
         ctx.fillRect(-4, -1, 8, 4);
-        ctx.fillRect(-4, spacing - 1, 8, 4);
+        ctx.fillRect(secondX - 4, secondY - 1, 8, 4);
         ctx.fillStyle = '#f8c45f';
         ctx.fillRect(-1, 0, 3, 3);
-        ctx.fillRect(-1, spacing, 3, 3);
+        ctx.fillRect(secondX - 1, secondY, 3, 3);
     }
 
     _drawWeaponStroke(ctx, color, width, points) {
