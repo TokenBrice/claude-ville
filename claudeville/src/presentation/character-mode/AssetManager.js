@@ -50,6 +50,7 @@ export class AssetManager {
         const out = [];
         const collect = (arr) => arr && arr.forEach(e => out.push(e));
         collect(root.characters);
+        collect(root.equipment);
         collect(root.accessories);
         collect(root.statusOverlays);
         collect(root.buildings);
@@ -157,6 +158,7 @@ export class AssetManager {
         if (entry.assetPath) return entry.assetPath;
         // Deterministic path mapping by id prefix.
         if (entry.id.startsWith('agent.')) return `assets/sprites/characters/${entry.id}/sheet.png`;
+        if (entry.id.startsWith('equipment.')) return `assets/sprites/equipment/${entry.id}.png`;
         if (entry.id.startsWith('overlay.accessory.')) return `assets/sprites/overlays/${entry.id}.png`;
         if (entry.id.startsWith('overlay.status.')) return `assets/sprites/overlays/${entry.id}.png`;
         if (entry.id.startsWith('building.')) return `assets/sprites/buildings/${entry.id}/base.png`;

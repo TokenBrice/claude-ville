@@ -63,6 +63,12 @@ const CODEX_MODELS = [
     model: 'gpt-5.5',
   },
 ];
+const REQUIRED_EQUIPMENT_ASSETS = [
+  'equipment.codex.runeblade',
+  'equipment.codex.greatsword',
+  'equipment.codex.polearm',
+  'equipment.codex.engineerWrench',
+];
 
 await assertDevServer(baseUrl);
 mkdirSync(outDir, { recursive: true });
@@ -82,7 +88,7 @@ try {
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded', timeout: 10_000 });
   await page.waitForFunction(() => window.jsyaml && document.getElementById('worldCanvas'), null, { timeout: 10_000 });
 
-  const setup = await page.evaluate(async ({ models, efforts, directions, poses }) => {
+  const setup = await page.evaluate(async ({ models, efforts, directions, poses, equipmentAssets }) => {
     const [
       { AssetManager },
       { Compositor },
@@ -122,6 +128,7 @@ try {
     const missingSprites = models
       .map((model) => `agent.codex.${model.key}`)
       .filter((id) => !assets.has(id));
+    const missingEquipmentAssets = equipmentAssets.filter((id) => !assets.has(id));
 
     globalThis.drawBackground = (ctx, width, height) => {
       ctx.clearRect(0, 0, width, height);
@@ -193,11 +200,15 @@ try {
     return {
       assetVersion: assets.assetVersion || null,
       missingSprites,
+      missingEquipmentAssets,
     };
-  }, { models: CODEX_MODELS, efforts: EFFORTS, directions: DIRECTIONS, poses: POSES });
+  }, { models: CODEX_MODELS, efforts: EFFORTS, directions: DIRECTIONS, poses: POSES, equipmentAssets: REQUIRED_EQUIPMENT_ASSETS });
 
   if (setup.missingSprites.length) {
     throw new Error(`Missing required Codex sprite assets: ${setup.missingSprites.join(', ')}`);
+  }
+  if (setup.missingEquipmentAssets.length) {
+    throw new Error(`Missing required Codex equipment assets: ${setup.missingEquipmentAssets.join(', ')}`);
   }
 
   for (const model of CODEX_MODELS) {

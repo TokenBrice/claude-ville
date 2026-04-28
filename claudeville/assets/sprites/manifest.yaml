@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-fortification-v1"
+  assetVersion: "2026-04-28-codex-epic-weapons-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -115,6 +115,38 @@ palettes:
     robe: ['#4f46a5', '#5d65c8', '#44528e']
     pants: ['#201c43', '#27244d', '#1f2d55']
     trim: ['#b7ccff', '#d6b7ff', '#7bdff2']
+
+# ─── EQUIPMENT ───────────────────────────────────────────────────────────────
+# Runtime-held Codex weapons. Anchors mark the grip point used by AgentSprite,
+# not a bottom-center map anchor.
+equipment:
+  - id: equipment.codex.runeblade
+    tool: create_map_object
+    prompt: "legendary Codex runeblade longsword, broad angular icy steel blade with cyan glowing rune inlays, gold crossguard, dark navy hilt, teal crystal pommel, transparent background"
+    width: 96
+    height: 96
+    anchor: [31, 70]
+
+  - id: equipment.codex.greatsword
+    tool: create_map_object
+    prompt: "legendary Codex greatsword, oversized broad icy steel blade with angular split facets, cyan glowing rune channel down the blade, gold and dark navy crossguard, teal crystal core, transparent background"
+    width: 112
+    height: 112
+    anchor: [36, 82]
+
+  - id: equipment.codex.polearm
+    tool: create_map_object
+    prompt: "legendary Codex rune polearm glaive, long dark metal shaft, crescent icy steel blade with cyan glowing rune inlays, gold collars, teal crystal socket near blade, transparent background"
+    width: 112
+    height: 112
+    anchor: [44, 74]
+
+  - id: equipment.codex.engineerWrench
+    tool: create_map_object
+    prompt: "legendary Codex battle-engineer wrench hammer, heavy bronze crescent wrench head with steel jaws, cyan glowing rune core, dark metal handle with gold collars and teal crystal pommel, transparent background"
+    width: 96
+    height: 96
+    anchor: [34, 70]
 
 # ─── ACCESSORIES ─────────────────────────────────────────────────────────────
 accessories:

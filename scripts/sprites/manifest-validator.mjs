@@ -39,6 +39,7 @@ const palettes = yaml.load(readFileSync(palettesPath, 'utf8'));
 
 const expected = new Set();
 const characterEntries = [];
+const equipmentEntries = [];
 const manifestEntries = [];
 const CHARACTER_DIRECTIONS = 8;
 const CHARACTER_DIRECTION_KEYS = ['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw'];
@@ -68,6 +69,7 @@ const REQUIRED_PRO_CHARACTER_IDS = new Set([
 function pathFor(entry) {
     if (entry.assetPath) return String(entry.assetPath).replace(/^assets\/sprites\//, '');
     if (entry.id.startsWith('agent.')) return `characters/${entry.id}/sheet.png`;
+    if (entry.id.startsWith('equipment.')) return `equipment/${entry.id}.png`;
     if (entry.id.startsWith('overlay.')) return `overlays/${entry.id}.png`;
     if (entry.id.startsWith('building.')) return `buildings/${entry.id}/base.png`;
     if (entry.id.startsWith('prop.')) return `props/${entry.id}.png`;
@@ -83,6 +85,7 @@ function collect(group) {
     for (const e of group) {
         manifestEntries.push(e);
         if (e.id?.startsWith('agent.')) characterEntries.push(e);
+        if (e.id?.startsWith('equipment.')) equipmentEntries.push(e);
         if (e.composeGrid && e.layers?.base) {
             const [cols, rows] = e.composeGrid;
             for (let r = 0; r < rows; r++)
@@ -107,7 +110,7 @@ function collect(group) {
     }
 }
 
-['characters', 'accessories', 'statusOverlays', 'buildings', 'props',
+['characters', 'equipment', 'accessories', 'statusOverlays', 'buildings', 'props',
  'vegetation', 'terrain', 'bridges', 'atmosphere'].forEach(k => collect(manifest[k]));
 
 let invalidManifest = 0;
@@ -156,6 +159,11 @@ for (const entry of characterEntries) {
     invalidCharacters += validateCharacterSheet(entry);
 }
 
+let invalidEquipment = 0;
+for (const entry of equipmentEntries) {
+    invalidEquipment += validateEquipmentPng(entry);
+}
+
 let invalidAtmosphere = 0;
 for (const entry of manifest.atmosphere || []) {
     invalidAtmosphere += validateAtmospherePng(entry);
@@ -163,8 +171,8 @@ for (const entry of manifest.atmosphere || []) {
 
 const invalidPalettes = validatePaletteParity();
 
-console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid atmosphere PNGs: ${invalidAtmosphere}`);
-process.exit(missing > 0 || orphans > 0 || duplicatePngs > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidAtmosphere > 0 ? 1 : 0);
+console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid equipment PNGs: ${invalidEquipment}  invalid atmosphere PNGs: ${invalidAtmosphere}`);
+process.exit(missing > 0 || orphans > 0 || duplicatePngs > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidEquipment > 0 || invalidAtmosphere > 0 ? 1 : 0);
 
 function duplicateGroupKey(paths) {
     return [...paths].sort().join('|');
@@ -280,6 +288,54 @@ function validateCharacterSheet(entry) {
     }
     errors += validateRequiredEquipment(entry, png, cell, rel);
     return errors;
+}
+
+function validateEquipmentPng(entry) {
+    const rel = pathFor(entry);
+    if (!rel) return 0;
+    const abs = join(spritesRoot, rel);
+    if (!existsSync(abs)) return 0;
+
+    const expected = expectedEquipmentDimensions(entry);
+    let png;
+    try {
+        png = PNG.sync.read(readFileSync(abs));
+    } catch (err) {
+        console.error(`INVALID EQUIPMENT: ${rel} cannot be decoded (${err.message})`);
+        return 1;
+    }
+
+    let errors = 0;
+    if (expected && (png.width !== expected.width || png.height !== expected.height)) {
+        console.error(`INVALID EQUIPMENT: ${rel} is ${png.width}x${png.height}, expected ${expected.width}x${expected.height}`);
+        errors++;
+    }
+
+    const anchor = entry.anchor;
+    if (!Array.isArray(anchor) || anchor.length < 2) {
+        console.error(`INVALID EQUIPMENT: ${entry.id} must define anchor: [x, y] for the grip point`);
+        errors++;
+    } else {
+        const [x, y] = anchor.map(Number);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= png.width || y >= png.height) {
+            console.error(`INVALID EQUIPMENT: ${entry.id} anchor [${anchor.join(', ')}] is outside ${png.width}x${png.height}`);
+            errors++;
+        }
+    }
+
+    return errors;
+}
+
+function expectedEquipmentDimensions(entry) {
+    const width = Number(entry.width);
+    const height = Number(entry.height);
+    if (Number.isFinite(width) && Number.isFinite(height)) {
+        return { width, height };
+    }
+
+    const size = Number(entry.size);
+    if (!Number.isFinite(size)) return null;
+    return { width: size, height: size };
 }
 
 function validateAtmospherePng(entry) {

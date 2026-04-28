@@ -36,18 +36,18 @@ const EFFORT_FLOOR_RINGS = Object.freeze({
 });
 
 const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
-    codex: 'wrench',
+    codex: 'engineerWrench',
     spark: 'multitool',
-    gpt54: 'wrench',
-    gpt55: 'sword',
+    gpt54: 'engineerWrench',
+    gpt55: 'runeblade',
 });
 
 const CODEX_GPT55_EQUIPMENT_BY_EFFORT = Object.freeze({
-    none: 'sword',
-    low: 'sword',
-    medium: 'sword',
+    none: 'runeblade',
+    low: 'runeblade',
+    medium: 'runeblade',
     high: 'greatsword',
-    xhigh: 'warlord',
+    xhigh: 'polearm',
 });
 
 const DEFAULT_EFFORT_RENDERING = Object.freeze({

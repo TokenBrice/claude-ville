@@ -64,10 +64,47 @@ const MIN_AGENT_DRAW_SCALE = 1;
 const MAX_AGENT_DRAW_SCALE = 1.25;
 const PROCESSED_SPRITE_CACHE = new Map();
 const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
-    codex: 'wrench',
+    codex: 'engineerWrench',
     spark: 'multitool',
-    gpt54: 'wrench',
-    gpt55: 'sword',
+    gpt54: 'engineerWrench',
+    gpt55: 'runeblade',
+});
+const CODEX_WEAPON_ASSETS = Object.freeze({
+    runeblade: {
+        id: 'equipment.codex.runeblade',
+        fallback: 'runeblade',
+        pose: 'rightHand',
+        anchor: [31, 70],
+        scale: 0.62,
+        hands: 'single',
+    },
+    greatsword: {
+        id: 'equipment.codex.greatsword',
+        fallback: 'greatsword',
+        pose: 'twoHanded',
+        anchor: [36, 82],
+        scale: 0.66,
+        hands: 'double',
+        handSpacing: 12,
+    },
+    polearm: {
+        id: 'equipment.codex.polearm',
+        fallback: 'polearm',
+        pose: 'polearm',
+        anchor: [44, 74],
+        scale: 0.72,
+        hands: 'double',
+        handSpacing: 14,
+    },
+    engineerWrench: {
+        id: 'equipment.codex.engineerWrench',
+        fallback: 'wrench',
+        pose: 'shoulderRest',
+        backPose: 'backCarry',
+        anchor: [34, 70],
+        scale: 0.62,
+        hands: 'single',
+    },
 });
 const EFFORT_FLOOR_RING_VISUALS = Object.freeze({
     low: { stroke: '#d7a456', highlight: '#ffe0a0', glow: 'rgba(215, 164, 86, 0.18)', bands: 1, rx: 17, ry: 5 },
@@ -1256,23 +1293,26 @@ export class AgentSprite {
     }
 
     _drawCodexEquipment(ctx, identity, frameGeometry, layer = 'front') {
-        const equipment = this._runtimeCodexEquipment(identity);
+        const equipment = this._normalizedCodexEquipment(this._runtimeCodexEquipment(identity));
         if (!equipment) return;
 
         const directionKey = DIRECTIONS[this.direction] || 's';
         const geometry = this._codexWeaponGeometry(frameGeometry, directionKey);
-        const heavyArmor = equipment === 'greatsword' || equipment === 'warlord';
-        const warlord = equipment === 'warlord';
+        const heavyArmor = equipment === 'greatsword' || equipment === 'polearm';
+        const warlord = equipment === 'polearm';
+        const assetDef = CODEX_WEAPON_ASSETS[equipment] || null;
+        const assetDrawsBehindBody = assetDef && this._assetWeaponBackLayer(assetDef, directionKey);
 
         if (layer === 'back') {
             if (heavyArmor) {
                 this._drawGearAt(ctx, geometry.torso, geometry.drawScale, () => {
                     this._drawCodexCape(ctx, warlord, directionKey);
-                    if (warlord) this._drawCodexBackArsenal(ctx, directionKey);
                 });
             }
 
-            if (equipment === 'wrench' && this._weaponBackCarryDirection(directionKey)) {
+            if (assetDef && assetDrawsBehindBody) {
+                this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset');
+            } else if (equipment === 'engineerWrench' && this._weaponBackCarryDirection(directionKey)) {
                 this._drawWeaponAt(ctx, geometry.backCarry, geometry.drawScale, () => this._drawCodexBackWrench(ctx));
             }
             return;
@@ -1285,12 +1325,18 @@ export class AgentSprite {
             this._drawGearAt(ctx, geometry.head, geometry.drawScale, () => this._drawCodexHeavyHelmet(ctx, warlord, directionKey));
         }
 
+        if (assetDef) {
+            if (!assetDrawsBehindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset');
+            this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands');
+            return;
+        }
+
         if (equipment === 'multitool') {
             this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
                 this._drawCodexMultitool(ctx);
                 this._drawWeaponGripHand(ctx);
             });
-        } else if (equipment === 'sword') {
+        } else if (equipment === 'runeblade') {
             this._drawWeaponAt(ctx, geometry.rightHand, geometry.drawScale, () => {
                 this._drawCodexRuneblade(ctx);
                 this._drawWeaponGripHand(ctx);
@@ -1306,12 +1352,12 @@ export class AgentSprite {
                 this._drawCodexGreatsword(ctx);
                 this._drawWeaponGripHands(ctx);
             });
-        } else if (equipment === 'warlord') {
-            this._drawWeaponAt(ctx, geometry.twoHanded, geometry.drawScale, () => {
-                this._drawCodexGreatsword(ctx, true);
+        } else if (equipment === 'polearm') {
+            this._drawWeaponAt(ctx, geometry.polearm, geometry.drawScale, () => {
+                this._drawCodexPolearm(ctx);
                 this._drawWeaponGripHands(ctx);
             });
-        } else if (equipment === 'wrench') {
+        } else if (equipment === 'engineerWrench') {
             this._drawWeaponAt(ctx, geometry.shoulderRest, geometry.drawScale, () => {
                 this._drawCodexShoulderWrench(ctx);
                 this._drawWeaponGripHand(ctx);
@@ -1337,6 +1383,68 @@ export class AgentSprite {
         const classEquipment = CODEX_EQUIPMENT_BY_CLASS[modelClass];
         if (classEquipment) return classEquipment;
         return identity?.effortWeapon ?? null;
+    }
+
+    _normalizedCodexEquipment(equipment) {
+        const normalized = String(equipment || '').trim();
+        if (!normalized) return null;
+        if (normalized === 'sword') return 'runeblade';
+        if (normalized === 'wrench') return 'engineerWrench';
+        if (normalized === 'warlord') return 'polearm';
+        return normalized;
+    }
+
+    _drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, part = 'asset') {
+        const poseName = this._weaponPoseName(assetDef, directionKey);
+        const pose = geometry[poseName] || geometry.rightHand;
+        if (!pose) return;
+
+        if (part === 'asset') {
+            this._drawWeaponAt(ctx, {
+                ...pose,
+                scale: (pose.scale || 1) * (assetDef.scale || 1),
+            }, geometry.drawScale, () => this._drawCodexWeaponAssetImage(ctx, assetDef));
+            return;
+        }
+
+        this._drawWeaponAt(ctx, pose, geometry.drawScale, () => {
+            if (assetDef.hands === 'double') this._drawWeaponGripHands(ctx, assetDef.handSpacing || 11);
+            else this._drawWeaponGripHand(ctx);
+        });
+    }
+
+    _drawCodexWeaponAssetImage(ctx, assetDef) {
+        const img = this.assets?.has?.(assetDef.id) ? this.assets.get(assetDef.id) : null;
+        if (img) {
+            const dims = this.assets.getDims(assetDef.id) || { w: img.width, h: img.height };
+            const [ax, ay] = this._codexWeaponAssetAnchor(assetDef);
+            ctx.drawImage(img, Math.round(-ax), Math.round(-ay), dims.w, dims.h);
+            return;
+        }
+        this._drawCodexWeaponFallback(ctx, assetDef.fallback);
+    }
+
+    _codexWeaponAssetAnchor(assetDef) {
+        const entryAnchor = this.assets?.getEntry?.(assetDef.id)?.anchor;
+        if (Array.isArray(entryAnchor) && entryAnchor.length >= 2) return entryAnchor;
+        return assetDef.anchor || [0, 0];
+    }
+
+    _drawCodexWeaponFallback(ctx, fallback) {
+        if (fallback === 'runeblade') this._drawCodexRuneblade(ctx);
+        else if (fallback === 'greatsword') this._drawCodexGreatsword(ctx);
+        else if (fallback === 'polearm') this._drawCodexPolearm(ctx);
+        else if (fallback === 'wrench') this._drawCodexShoulderWrench(ctx);
+    }
+
+    _weaponPoseName(assetDef, directionKey) {
+        if (assetDef.backPose && this._weaponBackCarryDirection(directionKey)) return assetDef.backPose;
+        return assetDef.pose || 'rightHand';
+    }
+
+    _assetWeaponBackLayer(assetDef, directionKey) {
+        if (assetDef.backPose) return this._weaponBackCarryDirection(directionKey);
+        return directionKey === 'n' || directionKey === 'ne' || directionKey === 'nw';
     }
 
     _codexWeaponGeometry({ dx, dy, bounds, drawScale = 1 }, directionKey) {
@@ -1365,6 +1473,13 @@ export class AgentSprite {
             flipX: sideSign < 0,
             angle: this._greatswordLeanForDirection(directionKey),
             scale: 1.06,
+        };
+        const polearm = {
+            x: centerX + sideSign * bodyWidth * 0.10 * drawScale,
+            y: torsoY + (handYOffset - 1) * drawScale,
+            flipX: sideSign < 0,
+            angle: this._polearmLeanForDirection(directionKey),
+            scale: 1.04,
         };
         const shoulderRest = {
             x: centerX + sideSign * bodyWidth * 0.30 * drawScale,
@@ -1416,6 +1531,7 @@ export class AgentSprite {
             torso,
             rightHand,
             twoHanded,
+            polearm,
             shoulderRest,
             shield,
             backCarry,
@@ -1470,6 +1586,14 @@ export class AgentSprite {
         if (directionKey === 'n') return -0.46;
         if (directionKey === 'se' || directionKey === 'sw') return -0.08;
         return 0.02;
+    }
+
+    _polearmLeanForDirection(directionKey) {
+        if (directionKey === 'e' || directionKey === 'w') return -0.30;
+        if (directionKey === 'ne' || directionKey === 'nw') return -0.48;
+        if (directionKey === 'n') return -0.52;
+        if (directionKey === 'se' || directionKey === 'sw') return -0.12;
+        return -0.02;
     }
 
     _drawCodexMultitool(ctx) {
@@ -1537,6 +1661,28 @@ export class AgentSprite {
             ctx.fillStyle = '#fff1b8';
             ctx.fillRect(-1, 11, 3, 12);
         }
+    }
+
+    _drawCodexPolearm(ctx) {
+        this._drawWeaponStroke(ctx, '#071015', 5, [[-11, 23], [15, -38]]);
+        this._drawWeaponStroke(ctx, '#2f2321', 3, [[-11, 23], [15, -38]]);
+        this._drawWeaponStroke(ctx, '#d7a456', 1, [[-7, 15], [12, -31]]);
+        ctx.fillStyle = '#071015';
+        this._fillWeaponPolygon(ctx, [[9, -42], [23, -52], [17, -31], [10, -25], [13, -37]]);
+        ctx.fillStyle = '#dce8ec';
+        this._fillWeaponPolygon(ctx, [[12, -40], [21, -48], [16, -33], [12, -28], [14, -37]]);
+        ctx.fillStyle = '#55c7f0';
+        this._fillWeaponPolygon(ctx, [[13, -38], [18, -43], [15, -35], [13, -32]]);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(8, -31, 10, 4);
+        ctx.fillStyle = '#7be3d7';
+        ctx.fillRect(10, -30, 3, 3);
+        ctx.fillStyle = '#071015';
+        this._fillWeaponPolygon(ctx, [[0, -36], [10, -47], [9, -34], [2, -29]]);
+        ctx.fillStyle = '#a6b2b8';
+        this._fillWeaponPolygon(ctx, [[2, -35], [8, -42], [8, -35], [3, -31]]);
+        ctx.fillStyle = '#f8c45f';
+        ctx.fillRect(-16, 24, 9, 4);
     }
 
     _drawCodexShield(ctx, slim = false, ornate = false) {
@@ -1788,16 +1934,16 @@ export class AgentSprite {
         ctx.fillRect(-1, 0, 3, 3);
     }
 
-    _drawWeaponGripHands(ctx) {
+    _drawWeaponGripHands(ctx, spacing = 11) {
         ctx.fillStyle = '#0b2430';
         ctx.fillRect(-5, -2, 10, 6);
-        ctx.fillRect(-5, 9, 10, 6);
+        ctx.fillRect(-5, spacing - 2, 10, 6);
         ctx.fillStyle = '#7be3d7';
         ctx.fillRect(-4, -1, 8, 4);
-        ctx.fillRect(-4, 10, 8, 4);
+        ctx.fillRect(-4, spacing - 1, 8, 4);
         ctx.fillStyle = '#f8c45f';
         ctx.fillRect(-1, 0, 3, 3);
-        ctx.fillRect(-1, 11, 3, 3);
+        ctx.fillRect(-1, spacing, 3, 3);
     }
 
     _drawWeaponStroke(ctx, color, width, points) {
