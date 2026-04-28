@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-28-codex-engineer-north-lagoon-claude-sorcerers-v1"
+  assetVersion: "2026-04-28-village-gate-v2"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -416,6 +416,11 @@ props:
     prompt: "iron street lantern on post, warm amber candlelight glow, isometric"
     size: 32
     anchor: [16, 28]
+
+  - id: prop.villageGate
+    tool: map_object
+    prompt: "obvious old-school RPG village gatehouse for an isometric town spawn entrance, tall open central archway with raised iron portcullis, two stout mossy grey stone towers, blue slate roofs, dark timber crossbeam, warm lanterns flanking the passage, crimson pennants, cobblestone threshold road continuing through the arch, large landmark silhouette, transparent background, no text, no characters"
+    anchor: [96, 150]
 
   - id: prop.signpost
     tool: isometric_tile

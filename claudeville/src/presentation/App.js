@@ -15,6 +15,7 @@ import { ModeManager } from '../application/ModeManager.js';
 import { SessionWatcher } from '../application/SessionWatcher.js';
 import { NotificationService } from '../application/NotificationService.js';
 import { Settings } from '../application/Settings.js';
+import { AuroraGate } from '../application/AuroraGate.js';
 
 import { TopBar } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
@@ -41,6 +42,8 @@ class App {
         this.dashboardRenderer = null;
         this.activityPanel = null;
         this.chronicleStore = null;
+        this.auroraGate = null;
+        this.latestUsage = null;
         this._chroniclePruneInterval = null;
     }
 
@@ -58,6 +61,7 @@ class App {
             this.dataSource = new ClaudeDataSource();
             this.wsClient = new WebSocketClient();
             this.chronicleStore = new ChronicleStore();
+            this.auroraGate = new AuroraGate({ store: this.chronicleStore });
             this.chronicleStore.open()
                 .then(() => {
                     window.__chronicle = this.chronicleStore;
@@ -80,13 +84,17 @@ class App {
             this.agentManager = new AgentManager(this.world, this.dataSource);
             this.modeManager = new ModeManager();
             this.notificationService = new NotificationService(this.toast);
+            this._bindChronicleSignals();
 
             // 5. Load initial data
             await this.agentManager.loadInitialData();
 
             // 5-1. Load initial usage data
             this.dataSource.getUsage().then(usage => {
-                if (usage) eventBus.emit('usage:updated', usage);
+                if (usage) {
+                    this.latestUsage = usage;
+                    eventBus.emit('usage:updated', usage);
+                }
             });
 
             // 6. Start session watching
@@ -150,8 +158,13 @@ class App {
                 this.renderer.hide();
             }
 
-            this.renderer = new module.IsometricRenderer(this.world, { assets: this.assets });
+            this.renderer = new module.IsometricRenderer(this.world, {
+                assets: this.assets,
+                chronicleStore: this.chronicleStore,
+                modal: this.modal,
+            });
             this.renderer.show(canvas);
+            if (this.latestUsage) this.renderer.setQuotaState?.(this.latestUsage);
 
             requestAnimationFrame(() => {
                 if (this.renderer && this.renderer.camera) {
@@ -194,6 +207,34 @@ class App {
             if (this.renderer) {
                 this.renderer.selectAgentById(null);
             }
+        });
+    }
+
+    _bindChronicleSignals() {
+        eventBus.on('chronicle:milestone', (monument) => {
+            this.auroraGate?.recordMilestone(monument);
+            this.auroraGate?.evaluate(Date.now(), {
+                release: monument?.kind === 'release',
+                majorVerified: monument?.kind === 'verified' && monument?.weight === 'major',
+            }).then((result) => {
+                if (result === 'fire') {
+                    eventBus.emit('chronicle:aurora', { ts: Date.now(), reason: monument?.kind || 'milestone' });
+                }
+            }).catch(() => {});
+        });
+
+        eventBus.on('usage:updated', (usage) => {
+            this.latestUsage = usage;
+            this.renderer?.setQuotaState?.(usage);
+            this.auroraGate?.handleUsageUpdate(usage).then((result) => {
+                if (result === 'fire') {
+                    eventBus.emit('chronicle:aurora', { ts: Date.now(), reason: 'quota-rollover' });
+                }
+            }).catch(() => {});
+        });
+
+        eventBus.on('chronicle:aurora', () => {
+            this.renderer?.skyRenderer?.triggerAurora?.();
         });
     }
 

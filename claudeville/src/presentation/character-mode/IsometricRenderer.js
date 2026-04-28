@@ -13,7 +13,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { Camera } from './Camera.js';
 import { ParticleSystem } from './ParticleSystem.js';
-import { AgentSprite } from './AgentSprite.js';
+import { AgentSprite, drawFamiliarMotes } from './AgentSprite.js';
 import { BuildingSprite } from './BuildingSprite.js';
 import { Minimap } from './Minimap.js';
 import { SceneryEngine } from './SceneryEngine.js';
@@ -32,6 +32,17 @@ import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { getPulsePriority } from './PulsePolicy.js';
 import { lightSourceCacheKey } from './LightSourceRegistry.js';
+import {
+    applyTeamPlazaPreferences,
+    drawCouncilRings,
+    drawTalkArcs,
+    relationshipLightSources,
+} from './CouncilRing.js';
+import { ArrivalDepartureController } from './ArrivalDeparture.js';
+import { ChronicleManifests } from './ChronicleManifests.js';
+import { ChronicleMonuments } from './ChronicleMonuments.js';
+import { TrailRenderer } from './TrailRenderer.js';
+import { Chronicler } from './Chronicler.js';
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
@@ -236,6 +247,35 @@ const COMMAND_CENTER_DECORATION = [
     { type: 'guardpost', localX: 2.5, localY: -0.2 },
     { type: 'guardpost', localX: 2.5, localY: 2.5 },
 ];
+const VILLAGE_GATE = Object.freeze({
+    id: 'prop.villageGate',
+    tileX: 18.4,
+    tileY: 39.1,
+    scaleX: 2.35,
+    scaleY: 2,
+    outside: { tileX: 18.0, tileY: 39.7 },
+    inside: { tileX: 20.8, tileY: 37.6 },
+});
+const VILLAGE_WALL_ROUTES = Object.freeze([
+    {
+        id: 'west',
+        points: [
+            { tileX: -0.6, tileY: 34.3 },
+            { tileX: 5.4, tileY: 35.8 },
+            { tileX: 11.6, tileY: 37.2 },
+            { tileX: 16.7, tileY: 38.5 },
+        ],
+    },
+    {
+        id: 'east',
+        points: [
+            { tileX: 20.0, tileY: 38.7 },
+            { tileX: 24.7, tileY: 39.2 },
+            { tileX: 30.4, tileY: 39.6 },
+            { tileX: 35.7, tileY: 39.0 },
+        ],
+    },
+]);
 const AMBIENT_GROUND_PROPS = [
     // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
     { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
@@ -324,12 +364,20 @@ export class IsometricRenderer {
         this.skyRenderer = new SkyRenderer({ assets: this.assets });
         this.weatherRenderer = new WeatherRenderer();
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
+        this.chronicleStore = options.chronicleStore || null;
+        this.modal = options.modal || null;
         this.agentEventStream = null;
         this.relationshipState = null;
         this.ritualConductor = null;
+        this.arrivalDeparture = null;
+        this.chronicleManifests = null;
+        this.chronicleMonuments = null;
+        this.trailRenderer = null;
+        this.chronicler = null;
         this.pulsePriority = getPulsePriority();
         this.minimap = new Minimap();
         this.agentSprites = new Map();
+        this.gateTransits = new Map();
         this._sortedSprites = [];
         this._spritesNeedSort = true;
         this.running = false;
@@ -344,6 +392,22 @@ export class IsometricRenderer {
         this.motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
         this.ritualConductor = new RitualConductor({ motionScale: this.motionScale });
+        this.arrivalDeparture = new ArrivalDepartureController({ motionScale: this.motionScale });
+        this.chronicleManifests = new ChronicleManifests({
+            store: this.chronicleStore,
+            modal: this.modal,
+        });
+        this.chronicleMonuments = new ChronicleMonuments({ store: this.chronicleStore });
+        this.trailRenderer = new TrailRenderer({
+            store: this.chronicleStore,
+            world: this.world,
+            motionScale: this.motionScale,
+        });
+        this.chronicler = new Chronicler({
+            assets: this.assets,
+            sprites: this.sprites,
+            motionScale: this.motionScale,
+        });
         this.particleSystem.setMotionEnabled(this.motionScale > 0);
         this._onMotionPreferenceChange = (event) => this._setMotionScale(event.matches ? 0 : 1);
         this._motionPreferenceBound = false;
@@ -357,6 +421,8 @@ export class IsometricRenderer {
         this._chatMatchAccumulator = 250;
         this._crowdBumpCooldowns = new Map();
         this._chroniclerPauseUntil = 0;
+        this._chronicleNextUpdateAt = 0;
+        this._chronicleUpdating = false;
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
         for (let y = 0; y < MAP_SIZE; y++) {
@@ -872,6 +938,7 @@ export class IsometricRenderer {
             console.warn('[IsometricRenderer] show skipped: failed to get 2d context');
             return;
         }
+        this._ensureTrailRenderer();
         this.camera = new Camera(canvas);
         this.camera.attach();
         this._bindMotionPreference();
@@ -899,10 +966,13 @@ export class IsometricRenderer {
 
         // Subscribe to domain events
         this._unsubscribers.push(
-            eventBus.on('agent:added', (agent) => this._addAgentSprite(agent)),
+            eventBus.on('agent:added', (agent) => {
+                this._addAgentSprite(agent);
+                this._beginRelationshipArrival(agent);
+            }),
             eventBus.on('agent:removed', (agent) => {
-                this.agentSprites.delete(agent.id);
-                this._markSpritesDirty();
+                const handled = this._beginRelationshipDeparture(agent);
+                if (!handled) this._beginAgentGateDeparture(agent);
             }),
             eventBus.on('agent:updated', (agent) => {
                 const sprite = this.agentSprites.get(agent.id);
@@ -935,9 +1005,17 @@ export class IsometricRenderer {
             const screenX = e.clientX - rect.left;
             const screenY = e.clientY - rect.top;
             const worldPos = this.camera.screenToWorld(screenX, screenY);
-            this.buildingRenderer?.setHovered(this.buildingRenderer.hitTest(worldPos.x, worldPos.y) ?? null);
+            const hoveredBuilding = this.buildingRenderer?.hitTest(worldPos.x, worldPos.y) ?? null;
+            this.buildingRenderer?.setHovered(hoveredBuilding);
+            const monument = hoveredBuilding ? null : this.chronicleMonuments?.hitTest?.(worldPos.x, worldPos.y, Date.now());
+            canvas.title = monument ? this.chronicleMonuments.tooltipFor(monument, Date.now()) : '';
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
+        this._onMouseLeaveMain = () => {
+            this.buildingRenderer?.setHovered(null);
+            canvas.title = '';
+        };
+        canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
         this._onKeyDown = (e) => { if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle(); };
         window.addEventListener('keydown', this._onKeyDown);
 
@@ -963,12 +1041,17 @@ export class IsometricRenderer {
         if (this.canvas) {
             this.canvas.removeEventListener('click', this._onClick);
             this.canvas.removeEventListener('mousemove', this._onMouseMoveMain);
+            this.canvas.removeEventListener('mouseleave', this._onMouseLeaveMain);
+            this.canvas.title = '';
         }
         if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
         this._sortedSprites = [];
         this._spritesNeedSort = true;
         this.agentSprites.clear();
+        this.gateTransits.clear();
         this.particleSystem.clear();
+        this.trailRenderer?.dispose?.();
+        this.trailRenderer = null;
         this.agentEventStream?.dispose?.();
         this.relationshipState?.dispose?.();
         this.ritualConductor?.dispose?.();
@@ -982,6 +1065,15 @@ export class IsometricRenderer {
         this.weatherRenderer?.dispose?.();
         this.skyRenderer?.dispose?.();
         this.atmosphereState?.dispose?.();
+    }
+
+    _ensureTrailRenderer() {
+        if (this.trailRenderer) return;
+        this.trailRenderer = new TrailRenderer({
+            store: this.chronicleStore,
+            world: this.world,
+            motionScale: this.motionScale,
+        });
     }
 
     _markSpritesDirty() {
@@ -1041,6 +1133,9 @@ export class IsometricRenderer {
         this.motionScale = scale;
         this.buildingRenderer?.setMotionScale(scale);
         this.ritualConductor?.setMotionScale(scale);
+        this.arrivalDeparture?.setMotionScale(scale);
+        this.trailRenderer?.setMotionScale(scale);
+        this.chronicler?.setMotionScale(scale);
         this.harborTraffic?.setMotionScale(scale);
         this.landmarkActivity?.setMotionScale(scale);
         this.camera?.setReducedMotion?.(scale <= 0);
@@ -1048,6 +1143,25 @@ export class IsometricRenderer {
         for (const sprite of this.agentSprites.values()) {
             sprite.setMotionScale(scale);
         }
+        if (scale <= 0) {
+            const departures = [];
+            for (const [agentId, transit] of this.gateTransits.entries()) {
+                if (transit.type === 'departure') {
+                    departures.push(agentId);
+                } else {
+                    const sprite = this.agentSprites.get(agentId);
+                    sprite?.setTilePosition?.(VILLAGE_GATE.inside.tileX, VILLAGE_GATE.inside.tileY);
+                    this.gateTransits.delete(agentId);
+                }
+            }
+            for (const agentId of departures) this._removeAgentSprite(agentId);
+        }
+    }
+
+    setQuotaState(state) {
+        const quota = state?.quota || state || null;
+        this.quotaState = quota;
+        this.buildingRenderer?.setQuotaState?.(quota);
     }
 
     invalidateViewportCaches() {
@@ -1084,6 +1198,16 @@ export class IsometricRenderer {
     }
 
     _addAgentSprite(agent) {
+        const existing = this.agentSprites.get(agent.id);
+        if (existing) {
+            existing.agent = agent;
+            if (this._isGateTransit(existing, 'departure')) {
+                this.gateTransits.delete(agent.id);
+                this._beginAgentGateArrival(agent, existing);
+            }
+            this._markSpritesDirty();
+            return;
+        }
         if (!this.agentSprites.has(agent.id)) {
             const sprite = new AgentSprite(agent, {
                 pathfinder: this.pathfinder,
@@ -1093,9 +1217,115 @@ export class IsometricRenderer {
             });
             sprite.setMotionScale(this.motionScale);
             sprite.addedAt = performance.now();
+            this._beginAgentGateArrival(agent, sprite);
             this.agentSprites.set(agent.id, sprite);
             this._markSpritesDirty();
         }
+    }
+
+    _parentSpriteFor(agent) {
+        const parentId = agent?.parentSessionId || agent?.parentId || agent?.parentAgentId;
+        return parentId ? this.agentSprites.get(parentId) : null;
+    }
+
+    _beginRelationshipArrival(agent) {
+        const sprite = this.agentSprites.get(agent?.id);
+        if (!sprite || !this.arrivalDeparture) return false;
+        const parentSprite = this._parentSpriteFor(agent);
+        const started = parentSprite
+            ? this.arrivalDeparture.beginSubagentDispatch(parentSprite, sprite, { now: performance.now() })
+            : this.arrivalDeparture.beginAgentArrival(agent, sprite, { parentAlive: false, now: performance.now() });
+        if (started || this.motionScale <= 0) {
+            this.gateTransits.delete(agent.id);
+            this._markSpritesDirty();
+            return true;
+        }
+        return false;
+    }
+
+    _beginRelationshipDeparture(agent) {
+        const sprite = this.agentSprites.get(agent?.id);
+        const parentSprite = this._parentSpriteFor(agent);
+        const now = performance.now();
+
+        if (parentSprite && sprite) {
+            this.arrivalDeparture?.beginSubagentMerge?.(
+                agent,
+                { x: sprite.x, y: sprite.y },
+                parentSprite,
+                { now },
+            );
+            this._removeAgentSprite(agent.id);
+            return true;
+        }
+
+        const lastTile = sprite && typeof sprite._screenToTile === 'function'
+            ? sprite._screenToTile(sprite.x, sprite.y)
+            : (agent?.position ? { tileX: agent.position.tileX, tileY: agent.position.tileY } : null);
+        this.arrivalDeparture?.recordDeparture?.(agent, lastTile, { now, parentAlive: false });
+        return false;
+    }
+
+    _gateJitter(agent, axis = 'x', amount = 0.18) {
+        const seed = String(agent?.id || '') + axis;
+        let hash = 0;
+        for (let i = 0; i < seed.length; i++) hash = Math.imul(hash ^ seed.charCodeAt(i), 16777619);
+        const unit = ((hash >>> 0) / 4294967295) - 0.5;
+        return unit * amount;
+    }
+
+    _beginAgentGateArrival(agent, sprite) {
+        if (!sprite) return;
+        if (this.motionScale <= 0) {
+            sprite.setTilePosition?.(
+                VILLAGE_GATE.inside.tileX + this._gateJitter(agent, 'arrival-x', 0.32),
+                VILLAGE_GATE.inside.tileY + this._gateJitter(agent, 'arrival-y', 0.22),
+            );
+            return;
+        }
+
+        sprite.setTilePosition?.(
+            VILLAGE_GATE.outside.tileX + this._gateJitter(agent, 'outside-x', 0.28),
+            VILLAGE_GATE.outside.tileY + this._gateJitter(agent, 'outside-y', 0.18),
+        );
+        sprite.walkToTile?.(
+            VILLAGE_GATE.inside.tileX + this._gateJitter(agent, 'inside-x', 0.42),
+            VILLAGE_GATE.inside.tileY + this._gateJitter(agent, 'inside-y', 0.28),
+        );
+        this.gateTransits.set(agent.id, { type: 'arrival' });
+    }
+
+    _beginAgentGateDeparture(agent) {
+        const sprite = this.agentSprites.get(agent.id);
+        if (!sprite || this.motionScale <= 0) {
+            this._removeAgentSprite(agent.id);
+            return;
+        }
+
+        sprite.selected = false;
+        sprite.walkToTile?.(
+            VILLAGE_GATE.outside.tileX + this._gateJitter(agent, 'depart-x', 0.30),
+            VILLAGE_GATE.outside.tileY + this._gateJitter(agent, 'depart-y', 0.20),
+        );
+        this.gateTransits.set(agent.id, { type: 'departure' });
+        this._markSpritesDirty();
+    }
+
+    _removeAgentSprite(agentId) {
+        const sprite = this.agentSprites.get(agentId);
+        if (!sprite) return;
+        if (this.selectedAgent?.id === agentId) {
+            this.selectedAgent = null;
+            this.camera?.stopFollow?.();
+        }
+        this.gateTransits.delete(agentId);
+        this.agentSprites.delete(agentId);
+        this._markSpritesDirty();
+    }
+
+    _isGateTransit(sprite, type = null) {
+        const transit = this.gateTransits.get(sprite?.agent?.id);
+        return Boolean(transit && (!type || transit.type === type));
     }
 
     _handleClick(worldX, worldY) {
@@ -1107,9 +1337,18 @@ export class IsometricRenderer {
         const sorted = Array.from(this.agentSprites.values())
             .sort((a, b) => b.y - a.y);            // front-most first
         for (const sprite of sorted) {
+            if (this._isGateTransit(sprite, 'departure')) continue;
             if (sprite.hitTest(worldX, worldY)) {
                 clicked = sprite;
                 break;
+            }
+        }
+
+        if (!clicked) {
+            const manifest = this.chronicleManifests?.hitTest?.(worldX, worldY, Date.now());
+            if (manifest) {
+                this.chronicleManifests.openManifestModal?.(manifest);
+                return;
             }
         }
 
@@ -1143,6 +1382,7 @@ export class IsometricRenderer {
         const spriteByRecipient = new Map();
 
         for (const sprite of this.agentSprites.values()) {
+            if (this._isGateTransit(sprite)) continue;
             const agent = sprite.agent;
             if (!agent) continue;
             const aliases = [
@@ -1160,6 +1400,7 @@ export class IsometricRenderer {
         }
 
         for (const sprite of this.agentSprites.values()) {
+            if (this._isGateTransit(sprite)) continue;
             const agent = sprite.agent;
             if (!agent) continue;
             if (agent.status === AgentStatus.WORKING && agent.currentTool === 'SendMessage' && agent.currentToolInput) {
@@ -1176,6 +1417,7 @@ export class IsometricRenderer {
 
         // Clear chat state for agents not using SendMessage
         for (const sprite of this.agentSprites.values()) {
+            if (this._isGateTransit(sprite)) continue;
             if (sprite.chatPartner && !senders.has(sprite)) {
                 // Keep it if the other side is still using SendMessage
                 if (senders.has(sprite.chatPartner)) continue;
@@ -1192,7 +1434,7 @@ export class IsometricRenderer {
         }
         if (agentId) {
             const sprite = this.agentSprites.get(agentId);
-            if (sprite) {
+            if (sprite && !this._isGateTransit(sprite, 'departure')) {
                 sprite.selected = true;
                 this.selectedAgent = sprite.agent;
                 this.camera.followAgent(sprite);
@@ -1219,18 +1461,37 @@ export class IsometricRenderer {
             this._updateChatMatching();
             this.agentEventStream?.reconcileChatPairs?.(this.agentSprites);
         }
-        this.relationshipState?.update?.({ agentSprites: this.agentSprites, now: performance.now() });
+        const now = performance.now();
+        const chronicleNow = Date.now();
+        this.relationshipState?.update?.({ agentSprites: this.agentSprites, now });
+        applyTeamPlazaPreferences(this.relationshipState, this.agentSprites);
+        this.arrivalDeparture?.update?.(now);
         this.ritualConductor?.update?.(dt);
+        this.chronicler?.update?.(dt, chronicleNow);
+        if (chronicleNow >= this._chronicleNextUpdateAt) {
+            this._chronicleNextUpdateAt = chronicleNow + 1000;
+            this._updateChronicleSystems(chronicleNow);
+        }
 
         // Update agent sprites
         let shouldResort = false;
+        const completedDepartures = [];
         for (const sprite of this.agentSprites.values()) {
             sprite.update(this.particleSystem, dt);
+            const transit = this.gateTransits.get(sprite.agent?.id);
+            if (transit && !sprite.moving && sprite.hasReachedTarget?.()) {
+                if (transit.type === 'departure') {
+                    completedDepartures.push(sprite.agent.id);
+                } else {
+                    this.gateTransits.delete(sprite.agent.id);
+                }
+            }
             if (sprite._lastSortedY !== sprite.y) {
                 shouldResort = true;
                 sprite._lastSortedY = sprite.y;
             }
         }
+        for (const agentId of completedDepartures) this._removeAgentSprite(agentId);
         if (shouldResort) {
             this._markSpritesDirty();
         }
@@ -1238,7 +1499,7 @@ export class IsometricRenderer {
         // Steering separation: push moving agents apart when they overlap in screen space.
         const SEP_RADIUS = 28;   // px — slightly wider than sprite half-width (24)
         const SEP_STRENGTH = 0.8; // px per frame — small enough to never push across a tile
-        const movingSprites = Array.from(this.agentSprites.values()).filter(s => s.moving && !s.chatting);
+        const movingSprites = Array.from(this.agentSprites.values()).filter(s => s.moving && !s.chatting && !this._isGateTransit(s, 'departure'));
         for (let i = 0; i < movingSprites.length; i++) {
             for (let j = i + 1; j < movingSprites.length; j++) {
                 const a = movingSprites[i];
@@ -1281,6 +1542,37 @@ export class IsometricRenderer {
 
         // Update particles
         this.particleSystem.update();
+    }
+
+    _updateChronicleSystems(now = Date.now()) {
+        if (this._chronicleUpdating) return;
+        this._chronicleUpdating = true;
+        const agents = Array.from(this.world?.agents?.values?.() || []);
+        const context = {
+            waterTiles: this.waterTiles,
+            blockedTiles: this._monumentBlockedTiles(),
+        };
+        Promise.allSettled([
+            this.chronicleManifests?.update?.(agents, now),
+            this.chronicleMonuments?.update?.(agents, context, now),
+            this.trailRenderer?.update?.(agents, now, this._lastAtmosphere),
+        ]).finally(() => {
+            this._chronicleUpdating = false;
+        });
+    }
+
+    _monumentBlockedTiles() {
+        if (this._monumentBlockedTilesCache) return this._monumentBlockedTilesCache;
+        const out = new Set();
+        const grid = this.walkabilityGrid || [];
+        for (let y = 0; y < grid.length; y++) {
+            const row = grid[y] || [];
+            for (let x = 0; x < row.length; x++) {
+                if (!row[x]) out.add(`${x},${y}`);
+            }
+        }
+        this._monumentBlockedTilesCache = out;
+        return out;
     }
 
     _isSpritePositionWalkable(sprite, x, y) {
@@ -1338,6 +1630,7 @@ export class IsometricRenderer {
             now: new Date(renderNow),
             motionScale: this.motionScale,
         });
+        this._lastAtmosphere = atmosphere;
         // Cache weather state for lagoon palette B7 — consumed in _drawTerrainTone and
         // _drawDynamicWaterHighlights without threading atmosphere through every call.
         const wx = atmosphere?.weather;
@@ -1368,6 +1661,7 @@ export class IsometricRenderer {
         this._drawFishSchools(ctx);
         this._drawTropicalWaterfalls(ctx);
         this._drawOpenSeaGulls(ctx);
+        this.trailRenderer?.draw?.(ctx, this.camera, viewport, renderNow);
 
         // Phase 2.5.5: light reflections — soft, screen-blended overlays over
         // terrain near each building's declared light source. `screen` (vs the
@@ -1405,6 +1699,14 @@ export class IsometricRenderer {
 
         // 2. Building shadows
         this.buildingRenderer?.drawShadows(ctx);
+        drawCouncilRings(ctx, {
+            relationship: this.relationshipState,
+            agentSprites: this.agentSprites,
+            zoom: this.camera.zoom,
+            now: performance.now(),
+            motionScale: this.motionScale,
+            lighting: atmosphere?.lighting,
+        });
 
         // 3. Buildings + 4. Agents — interleaved by sortY for proper occlusion
         const buildingDrawables = this.buildingRenderer?.enumerateDrawables() ?? [];
@@ -1413,6 +1715,9 @@ export class IsometricRenderer {
         const harborDrawables = this.harborTraffic?.enumerateDrawables() ?? [];
         const harborPendingRepos = this.harborTraffic?.getPendingRepoSummaries?.() ?? [];
         const landmarkDrawables = this.landmarkActivity?.enumerateDrawables() ?? [];
+        const chronicleManifestDrawables = this.chronicleManifests?.enumerateDrawables?.(renderNow, this.camera) ?? [];
+        const chronicleMonumentDrawables = this.chronicleMonuments?.enumerateDrawables?.(renderNow, this.camera) ?? [];
+        const chroniclerDrawables = this.chronicler?.enumerateDrawables?.() ?? [];
         const zoom = this.camera.zoom;
         this._assignAgentOverlaySlots(sortedSprites, zoom);
 
@@ -1422,6 +1727,9 @@ export class IsometricRenderer {
         for (const sprite of sortedSprites) drawables.push({ kind: 'agent', sortY: sprite.y, payload: sprite });
         for (const d of harborDrawables) drawables.push({ kind: 'harbor-traffic', sortY: d.sortY, payload: d });
         for (const d of landmarkDrawables) drawables.push({ kind: 'landmark-activity', sortY: d.sortY, payload: d });
+        for (const d of chronicleManifestDrawables) drawables.push(d);
+        for (const d of chronicleMonumentDrawables) drawables.push(d);
+        for (const d of chroniclerDrawables) drawables.push(d);
         drawables.sort((a, b) => a.sortY - b.sortY);
 
         for (const item of drawables) {
@@ -1437,10 +1745,30 @@ export class IsometricRenderer {
                 this.harborTraffic.draw(ctx, item.payload, zoom);
             } else if (item.kind === 'landmark-activity') {
                 this.landmarkActivity.draw(ctx, item.payload, zoom);
+            } else if (item.kind === 'chronicle-manifest') {
+                this.chronicleManifests.draw(ctx, item.payload, zoom, renderNow);
+            } else if (item.kind === 'chronicle-monument') {
+                this.chronicleMonuments.draw(ctx, item.payload, zoom, renderNow);
+            } else if (item.kind === 'chronicler') {
+                this.chronicler.draw(ctx, item.payload, zoom);
             } else {
                 this.buildingRenderer.drawDrawable(ctx, item.payload);
             }
         }
+        this._drawFamiliarMotesForFamilies(ctx, sortedSprites, atmosphere, renderNow);
+        drawTalkArcs(ctx, {
+            relationship: this.relationshipState,
+            agentSprites: this.agentSprites,
+            zoom,
+            now: performance.now(),
+            motionScale: this.motionScale,
+            lighting: atmosphere?.lighting,
+        });
+        this.arrivalDeparture?.draw?.(ctx, {
+            zoom,
+            now: performance.now(),
+            lighting: atmosphere?.lighting,
+        });
 
         // X-ray silhouette: draw tinted overlay of any agent passing behind a hero
         // building's front half so the agent stays findable through the obstruction.
@@ -1520,7 +1848,37 @@ export class IsometricRenderer {
             waterTiles: this.waterTiles,
             bridgeTiles: this.bridgeTiles,
             selectedAgent: this.selectedAgent,
+            chronicleMonuments: this.chronicleMonuments?.minimapMarkers?.() || [],
         });
+    }
+
+    _drawFamiliarMotesForFamilies(ctx, _sortedSprites, atmosphere = null) {
+        const snapshot = this.relationshipState?.getSnapshot?.();
+        if (!snapshot?.parentToChildren?.size) return;
+        const now = performance.now();
+        for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
+            const parentSprite = this.agentSprites.get(parentId);
+            if (!parentSprite || parentSprite.isArrivalPending?.()) continue;
+            const childSprites = Array.from(childIds || [])
+                .map(id => this.agentSprites.get(id))
+                .filter(sprite => sprite && !sprite.isArrivalPending?.());
+            const departedChildren = (snapshot.recentDepartures || [])
+                .filter(item => item.parentSessionId === parentId)
+                .map(item => ({
+                    id: item.agentId,
+                    provider: item.provider,
+                    name: item.name,
+                }));
+            drawFamiliarMotes(ctx, {
+                parentSprite,
+                childSprites,
+                childAgents: departedChildren,
+                zoom: this.camera?.zoom || 1,
+                now,
+                motionScale: this.motionScale,
+                lighting: atmosphere?.lighting,
+            });
+        }
     }
 
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1) {
@@ -1740,7 +2098,21 @@ export class IsometricRenderer {
 
     _buildDistrictPropSprites() {
         if (!this.sprites) return [];
-        return DISTRICT_PROPS
+        const sprites = this._buildVillageWallSprites();
+        for (const prop of DISTRICT_PROPS.filter((item) => item.layer === 'gate')) {
+            const dims = this.assets?.getDims?.(prop.id);
+            const scaleX = prop.scaleX || prop.scale || VILLAGE_GATE.scaleX || 1;
+            const scaleY = prop.scaleY || prop.scale || VILLAGE_GATE.scaleY || 1;
+            sprites.push(new StaticPropSprite({
+                tileX: prop.tileX,
+                tileY: prop.tileY,
+                id: prop.id,
+                bounds: this._scaledAssetPropBounds(prop.id, scaleX, scaleY, 0.54),
+                splitForOcclusion: Boolean(dims && dims.h >= 56),
+                drawFn: (ctx, x, y) => this._drawScaledSprite(ctx, prop.id, x, y, scaleX, scaleY),
+            }));
+        }
+        sprites.push(...DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted')
             .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.pathTiles, this.bridgeTiles))
             .map((prop) => {
@@ -1753,7 +2125,47 @@ export class IsometricRenderer {
                     splitForOcclusion: Boolean(dims && dims.h >= 56),
                     drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, prop.id, x, y),
                 });
-            });
+            }));
+        return sprites;
+    }
+
+    _buildVillageWallSprites() {
+        const out = [];
+        for (const route of VILLAGE_WALL_ROUTES) {
+            for (let i = 0; i < route.points.length - 1; i++) {
+                const startTile = route.points[i];
+                const endTile = route.points[i + 1];
+                const midTile = {
+                    tileX: (startTile.tileX + endTile.tileX) / 2,
+                    tileY: (startTile.tileY + endTile.tileY) / 2,
+                };
+                const start = this._tileToWorld(startTile.tileX, startTile.tileY);
+                const end = this._tileToWorld(endTile.tileX, endTile.tileY);
+                const mid = this._tileToWorld(midTile.tileX, midTile.tileY);
+                const localStart = { x: start.x - mid.x, y: start.y - mid.y };
+                const localEnd = { x: end.x - mid.x, y: end.y - mid.y };
+                const wallBounds = this._villageWallBounds(localStart, localEnd);
+                out.push(new StaticPropSprite({
+                    tileX: midTile.tileX,
+                    tileY: midTile.tileY,
+                    id: `village.wall.${route.id}.${i}`,
+                    bounds: wallBounds,
+                    splitForOcclusion: false,
+                    drawFn: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i),
+                }));
+            }
+        }
+        return out;
+    }
+
+    _villageWallBounds(start, end) {
+        return {
+            left: Math.min(start.x, end.x) - 20,
+            right: Math.max(start.x, end.x) + 20,
+            top: Math.min(start.y, end.y) - 58,
+            bottom: Math.max(start.y, end.y) + 12,
+            splitY: Math.min(start.y, end.y) - 18,
+        };
     }
 
     _assetPropBounds(id, splitRatio = 0.58) {
@@ -1767,6 +2179,154 @@ export class IsometricRenderer {
             bottom: dims.h - ay,
             splitY: -ay + Math.round(dims.h * splitRatio),
         };
+    }
+
+    _scaledAssetPropBounds(id, scaleX = 1, scaleY = scaleX, splitRatio = 0.58) {
+        const bounds = this._assetPropBounds(id, splitRatio);
+        const factorX = Number.isFinite(Number(scaleX)) ? Math.max(0.1, Number(scaleX)) : 1;
+        const factorY = Number.isFinite(Number(scaleY)) ? Math.max(0.1, Number(scaleY)) : factorX;
+        return {
+            left: bounds.left * factorX,
+            right: bounds.right * factorX,
+            top: bounds.top * factorY,
+            bottom: bounds.bottom * factorY,
+            splitY: bounds.splitY * factorY,
+        };
+    }
+
+    _drawScaledSprite(ctx, id, x, y, scaleX = 1, scaleY = scaleX) {
+        const img = this.assets?.get?.(id);
+        if (!img) return;
+        const [ax, ay] = this.assets?.getAnchor?.(id) || [Math.round(img.width / 2), img.height];
+        const factorX = Number.isFinite(Number(scaleX)) ? Math.max(0.1, Number(scaleX)) : 1;
+        const factorY = Number.isFinite(Number(scaleY)) ? Math.max(0.1, Number(scaleY)) : factorX;
+        ctx.save();
+        ctx.translate(Math.round(x), Math.round(y));
+        ctx.scale(factorX, factorY);
+        ctx.drawImage(img, Math.round(-ax), Math.round(-ay));
+        ctx.restore();
+    }
+
+    _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0) {
+        const x1 = Math.round(originX + start.x);
+        const y1 = Math.round(originY + start.y);
+        const x2 = Math.round(originX + end.x);
+        const y2 = Math.round(originY + end.y);
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        const ux = dx / length;
+        const uy = dy / length;
+        const nx = -uy;
+        const ny = ux;
+        const height = 34;
+        const cap = 9;
+        const mossSide = (phase % 2 === 0) ? 1 : -1;
+
+        const topA = { x: x1, y: y1 - height };
+        const topB = { x: x2, y: y2 - height };
+        const capA = { x: topA.x + nx * cap, y: topA.y + ny * cap };
+        const capB = { x: topB.x + nx * cap, y: topB.y + ny * cap };
+
+        ctx.save();
+        ctx.lineJoin = 'miter';
+        ctx.lineCap = 'butt';
+
+        // Ground shadow.
+        ctx.fillStyle = 'rgba(13, 18, 22, 0.28)';
+        ctx.beginPath();
+        ctx.moveTo(x1 - nx * 8, y1 - ny * 8 + 5);
+        ctx.lineTo(x2 - nx * 8, y2 - ny * 8 + 5);
+        ctx.lineTo(x2 + nx * 14, y2 + ny * 14 + 7);
+        ctx.lineTo(x1 + nx * 14, y1 + ny * 14 + 7);
+        ctx.closePath();
+        ctx.fill();
+
+        // Main stone face.
+        ctx.fillStyle = '#465564';
+        ctx.strokeStyle = '#17202b';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.lineTo(topB.x, topB.y);
+        ctx.lineTo(topA.x, topA.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Slightly lighter side planes, so the wall matches the gate towers.
+        ctx.fillStyle = '#5d6d78';
+        ctx.beginPath();
+        ctx.moveTo(topA.x, topA.y);
+        ctx.lineTo(topB.x, topB.y);
+        ctx.lineTo(capB.x, capB.y);
+        ctx.lineTo(capA.x, capA.y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Dark slate coping.
+        ctx.strokeStyle = '#1b2a35';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(topA.x + nx * 2, topA.y + ny * 2);
+        ctx.lineTo(topB.x + nx * 2, topB.y + ny * 2);
+        ctx.stroke();
+        ctx.strokeStyle = '#2f7890';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(topA.x + nx * 3, topA.y + ny * 3 - 1);
+        ctx.lineTo(topB.x + nx * 3, topB.y + ny * 3 - 1);
+        ctx.stroke();
+
+        // Block courses and vertical stone joints.
+        ctx.strokeStyle = 'rgba(24, 33, 43, 0.72)';
+        ctx.lineWidth = 1;
+        for (let row = 0; row < 3; row++) {
+            const t = (row + 1) / 4;
+            ctx.beginPath();
+            ctx.moveTo(x1 + (topA.x - x1) * t, y1 + (topA.y - y1) * t);
+            ctx.lineTo(x2 + (topB.x - x2) * t, y2 + (topB.y - y2) * t);
+            ctx.stroke();
+        }
+        const jointStep = 28;
+        const joints = Math.floor(length / jointStep);
+        for (let i = 1; i <= joints; i++) {
+            const d = (i * jointStep + (phase % 2) * 10) / length;
+            if (d <= 0 || d >= 1) continue;
+            const bx = x1 + dx * d;
+            const by = y1 + dy * d;
+            ctx.beginPath();
+            ctx.moveTo(bx, by - 2);
+            ctx.lineTo(bx, by - height + 4);
+            ctx.stroke();
+        }
+
+        // Crenellations.
+        for (let d = 10 + (phase % 2) * 8; d < length - 8; d += 34) {
+            const bx = x1 + ux * d;
+            const by = y1 + uy * d - height - 2;
+            const w = 12;
+            const h = 12;
+            ctx.fillStyle = '#17202b';
+            ctx.fillRect(Math.round(bx - w / 2 + 1), Math.round(by - h + 2), w, h);
+            ctx.fillStyle = '#60727e';
+            ctx.fillRect(Math.round(bx - w / 2), Math.round(by - h), w, h);
+            ctx.fillStyle = '#86a5ad';
+            ctx.fillRect(Math.round(bx - w / 2 + 2), Math.round(by - h + 2), w - 4, 2);
+        }
+
+        // Small moss clumps on the village side.
+        ctx.fillStyle = 'rgba(99, 145, 83, 0.86)';
+        for (let d = 18 + phase * 9; d < length - 12; d += 64) {
+            const bx = x1 + ux * d + nx * mossSide * 3;
+            const by = y1 + uy * d - 8 + ny * mossSide * 3;
+            ctx.fillRect(Math.round(bx - 4), Math.round(by), 8, 3);
+            ctx.fillRect(Math.round(bx - 1), Math.round(by - 3), 5, 3);
+        }
+
+        ctx.restore();
     }
 
     _fantasyTreePropBounds(tree) {
@@ -3941,15 +4501,10 @@ export class IsometricRenderer {
     _drawEmptyStateWorldCue(ctx) {
         const command = this._getCommandBuilding();
         if (!command) return;
-        const archive = this.world?.buildings?.get?.('archive') || command;
         const portal = this.world?.buildings?.get?.('portal') || command;
         const plaza = {
             tileX: command.position.tileX + command.width / 2,
             tileY: command.position.tileY + command.height + 0.8,
-        };
-        const archiveDoor = {
-            tileX: archive.position.tileX + archive.width / 2,
-            tileY: archive.position.tileY + archive.height + 0.4,
         };
         const portalGate = {
             tileX: portal.position.tileX + portal.width / 2,
@@ -3973,11 +4528,6 @@ export class IsometricRenderer {
             ctx.stroke();
             ctx.setLineDash([]);
         }
-
-        const chronicler = this._chroniclerWorldPosition(archiveDoor, plaza);
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 0.82;
-        this._drawChroniclerScaffold(ctx, chronicler.x, chronicler.y, chronicler.facing);
         ctx.restore();
     }
 
@@ -4043,6 +4593,20 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
+    _ambientLightSources(atmosphere = null) {
+        const lighting = atmosphere?.lighting || null;
+        const sources = this.buildingRenderer?.getLightSources?.(lighting) || [];
+        return [
+            ...sources,
+            ...relationshipLightSources({
+                relationship: this.relationshipState,
+                agentSprites: this.agentSprites,
+                lighting,
+            }),
+            ...(this.arrivalDeparture?.getLightSources?.({ now: performance.now() }) || []),
+        ];
+    }
+
     _drawAtmosphere(ctx, atmosphere = null, dt = 16) {
         const canvas = this._screenViewport();
         ctx.save();
@@ -4066,8 +4630,8 @@ export class IsometricRenderer {
             ctx.save();
             const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
             ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.12 : 0.18) * glowScale);
-            for (const light of this.buildingRenderer.getLightSources(atmosphere?.lighting)) {
-                if (light.kind && !['point', 'spark', 'orbit'].includes(light.kind)) continue;
+            for (const light of this._ambientLightSources(atmosphere)) {
+                if (light.kind && !['point', 'spark', 'orbit', 'arc'].includes(light.kind)) continue;
                 const p = this.camera.worldToScreen(light.x, light.y);
                 if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
                 const radius = light.radius * this.camera.zoom;

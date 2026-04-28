@@ -3,6 +3,23 @@
 // Local-clock atmosphere snapshots for world rendering. This module is pure
 // browser-local state: no geolocation, network weather, or render-loop time is
 // used to decide semantic time of day.
+//
+// Snapshot field layout (top-level vs nested):
+//   atmosphere.phase / phaseProgress / dayProgress  — semantic time-of-day
+//                                                     (dawn/day/dusk/night)
+//   atmosphere.clock.{hours,minutes,seconds,label,phase,phaseProgress}
+//                                                   — wall-clock readout, with
+//                                                     phase fields aliased onto
+//                                                     the clock for ergonomic
+//                                                     external consumers
+//   atmosphere.weather                              — type + intensity + wind
+//   atmosphere.sky / lighting / grade / motion      — render-time tints, tones,
+//                                                     and motion budget
+//
+// The semantic phase fields exist at both the top level (canonical) AND nested
+// under `clock` (alias). Prefer the top-level fields inside this module's
+// renderer consumers; the nested aliases are for downstream tooling (HUDs,
+// widgets, debug overlays) that already destructure `atmosphere.clock`.
 
 const DAY_MINUTES = 24 * 60;
 
@@ -363,7 +380,7 @@ export function normalizeLightingState(state = {}) {
     };
 }
 
-function buildClock(date, minute) {
+function buildClock(date, minute, phase, phaseProgress) {
     const hours = date.getHours();
     const minutes = date.getMinutes();
     const seconds = date.getSeconds();
@@ -376,6 +393,12 @@ function buildClock(date, minute) {
         seconds,
         minuteOfDay: minute,
         label,
+        // Aliases of the top-level semantic phase fields. Top-level
+        // atmosphere.phase / phaseProgress remain the canonical source; these
+        // exist so consumers that already destructure `atmosphere.clock` can
+        // read time-of-day without reaching back to the parent snapshot.
+        phase,
+        phaseProgress,
     };
 }
 
@@ -425,7 +448,7 @@ export function createAtmosphereSnapshot({
             windX: weather.windX,
         },
         effectiveDate,
-        clock: buildClock(new Date(effectiveDate.getTime()), minute),
+        clock: buildClock(new Date(effectiveDate.getTime()), minute, phase, phaseProgress),
     };
 }
 
