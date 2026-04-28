@@ -2933,93 +2933,133 @@ export class IsometricRenderer {
     }
 
     _drawVillageGateArch(ctx, leftBase, rightBase) {
-        const palette = VILLAGE_WOOD_PALETTE;
+        const wood = VILLAGE_WOOD_PALETTE;
+        const stone = VILLAGE_STONE_PALETTE;
         const dx = rightBase.x - leftBase.x;
         const dy = rightBase.y - leftBase.y;
         const length = Math.max(1, Math.hypot(dx, dy));
         const ux = dx / length;
         const uy = dy / length;
-        const start = { x: leftBase.x + ux * 18, y: leftBase.y + uy * 18 - 72 };
-        const end = { x: rightBase.x - ux * 18, y: rightBase.y - uy * 18 - 72 };
+        const lintelInset = 22;
+        const lintelHeight = 26;
+        const start = { x: leftBase.x + ux * lintelInset, y: leftBase.y + uy * lintelInset - 110 };
+        const end = { x: rightBase.x - ux * lintelInset, y: rightBase.y - uy * lintelInset - 110 };
+        const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
+
         ctx.save();
         SpriteRenderer.disableSmoothing(ctx);
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 24;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(start.x), Math.round(start.y));
-        ctx.lineTo(Math.round(end.x), Math.round(end.y));
-        ctx.stroke();
-        ctx.strokeStyle = palette.mid;
-        ctx.lineWidth = 18;
-        ctx.stroke();
-        ctx.strokeStyle = palette.cut;
-        ctx.lineWidth = 5;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(start.x), Math.round(start.y - 5));
-        ctx.lineTo(Math.round(end.x), Math.round(end.y - 5));
-        ctx.stroke();
 
-        ctx.strokeStyle = palette.ropeDark;
-        ctx.lineWidth = 5;
-        for (let d = 20; d < length - 20; d += 26) {
-            const px = start.x + ux * d;
-            const py = start.y + uy * d - 6;
+        // Lintel main beam
+        const trace = (...points) => {
             ctx.beginPath();
-            ctx.moveTo(Math.round(px), Math.round(py));
-            ctx.lineTo(Math.round(px), Math.round(py + 22));
-            ctx.stroke();
-            ctx.strokeStyle = palette.rope;
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(px - ux * 4), Math.round(py + 4));
-            ctx.lineTo(Math.round(px + ux * 4), Math.round(py + 10));
-            ctx.stroke();
-            ctx.strokeStyle = palette.ropeDark;
-            ctx.lineWidth = 5;
-        }
-
-        const postDrop = 52;
-        ctx.strokeStyle = palette.dark;
-        ctx.lineWidth = 9;
-        for (const p of [start, end]) {
-            ctx.beginPath();
-            ctx.moveTo(Math.round(p.x), Math.round(p.y + 2));
-            ctx.lineTo(Math.round(p.x), Math.round(p.y + postDrop));
-            ctx.stroke();
-        }
-
-        const mid = { x: (leftBase.x + rightBase.x) / 2, y: (leftBase.y + rightBase.y) / 2 };
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.arc(Math.round(mid.x), Math.round(mid.y - 28), 24, Math.PI, 0);
-        ctx.stroke();
-
-        ctx.fillStyle = palette.lantern;
-        const lantern = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 + 14 };
-        ctx.fillRect(Math.round(lantern.x - 4), Math.round(lantern.y - 3), 8, 8);
-        ctx.fillStyle = palette.glow;
-        ctx.fillRect(Math.round(lantern.x - 9), Math.round(lantern.y - 7), 18, 16);
-        ctx.fillStyle = palette.dark;
-        ctx.fillRect(Math.round(lantern.x - 16), Math.round(lantern.y + 9), 32, 18);
-        ctx.strokeStyle = palette.outline;
+            ctx.moveTo(Math.round(points[0].x), Math.round(points[0].y));
+            for (const p of points.slice(1)) ctx.lineTo(Math.round(p.x), Math.round(p.y));
+            ctx.closePath();
+        };
+        trace(
+            { x: start.x, y: start.y },
+            { x: end.x, y: end.y },
+            { x: end.x, y: end.y + lintelHeight },
+            { x: start.x, y: start.y + lintelHeight },
+        );
+        ctx.fillStyle = wood.mid;
+        ctx.fill();
+        ctx.strokeStyle = stone.outline;
         ctx.lineWidth = 2;
-        ctx.strokeRect(Math.round(lantern.x - 16), Math.round(lantern.y + 9), 32, 18);
-        ctx.fillStyle = palette.lantern;
+        ctx.stroke();
+
+        // Top edge highlight
+        ctx.strokeStyle = wood.cut;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.moveTo(Math.round(lantern.x), Math.round(lantern.y + 12));
-        ctx.lineTo(Math.round(lantern.x + 6), Math.round(lantern.y + 18));
-        ctx.lineTo(Math.round(lantern.x), Math.round(lantern.y + 24));
-        ctx.lineTo(Math.round(lantern.x - 6), Math.round(lantern.y + 18));
-        ctx.closePath();
-        ctx.fill();
-        ctx.fillStyle = '#b0342b';
+        ctx.moveTo(Math.round(start.x), Math.round(start.y + 1));
+        ctx.lineTo(Math.round(end.x), Math.round(end.y + 1));
+        ctx.stroke();
+
+        // Bottom shadow line
+        ctx.strokeStyle = '#3f2412';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.moveTo(Math.round(lantern.x + 12), Math.round(lantern.y - 20));
-        ctx.lineTo(Math.round(lantern.x + 29), Math.round(lantern.y - 15));
-        ctx.lineTo(Math.round(lantern.x + 12), Math.round(lantern.y - 10));
-        ctx.closePath();
+        ctx.moveTo(Math.round(start.x), Math.round(start.y + lintelHeight - 1));
+        ctx.lineTo(Math.round(end.x), Math.round(end.y + lintelHeight - 1));
+        ctx.stroke();
+
+        // Iron straps (two evenly spaced)
+        ctx.fillStyle = '#2c190d';
+        for (const t of [0.32, 0.68]) {
+            const sx = start.x + (end.x - start.x) * t;
+            const sy = start.y + (end.y - start.y) * t;
+            ctx.fillRect(Math.round(sx - 1.5), Math.round(sy), 3, lintelHeight);
+        }
+
+        // Corbel brackets at each end (carved support pieces)
+        for (const corbel of [
+            { x: start.x, dir: 1 },
+            { x: end.x, dir: -1 },
+        ]) {
+            const cy = start.y + lintelHeight;
+            trace(
+                { x: corbel.x, y: cy },
+                { x: corbel.x, y: cy + 12 },
+                { x: corbel.x + corbel.dir * 12, y: cy },
+            );
+            ctx.fillStyle = wood.deep;
+            ctx.fill();
+            ctx.strokeStyle = stone.outline;
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        }
+
+        // Plaque mounted on the lintel
+        const plaqueWidth = Math.min(96, length * 0.42);
+        const plaqueHeight = 14;
+        const plaqueY = start.y + lintelHeight + 2;
+        ctx.fillStyle = wood.deep;
+        ctx.fillRect(Math.round(mid.x - plaqueWidth / 2), Math.round(plaqueY), plaqueWidth, plaqueHeight);
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 1;
+        ctx.strokeRect(Math.round(mid.x - plaqueWidth / 2), Math.round(plaqueY), plaqueWidth, plaqueHeight);
+        // Plaque text
+        ctx.fillStyle = wood.cut;
+        ctx.font = '700 9px ui-monospace, monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('CLAUDEVILLE', Math.round(mid.x), Math.round(plaqueY + plaqueHeight / 2 + 1));
+
+        // Hanging chain
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(mid.x), Math.round(plaqueY + plaqueHeight));
+        ctx.lineTo(Math.round(mid.x), Math.round(plaqueY + plaqueHeight + 14));
+        ctx.stroke();
+
+        // Iron lantern body
+        const lanternX = mid.x;
+        const lanternY = plaqueY + plaqueHeight + 14;
+        ctx.fillStyle = '#2c190d';
+        ctx.fillRect(Math.round(lanternX - 7), Math.round(lanternY), 14, 16);
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 1.5;
+        ctx.strokeRect(Math.round(lanternX - 7), Math.round(lanternY), 14, 16);
+        // Lantern flame core
+        ctx.fillStyle = wood.lantern;
+        ctx.fillRect(Math.round(lanternX - 4), Math.round(lanternY + 3), 8, 10);
+        // Lantern bars
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(lanternX), Math.round(lanternY));
+        ctx.lineTo(Math.round(lanternX), Math.round(lanternY + 16));
+        ctx.moveTo(Math.round(lanternX - 7), Math.round(lanternY + 8));
+        ctx.lineTo(Math.round(lanternX + 7), Math.round(lanternY + 8));
+        ctx.stroke();
+        // Glow halo
+        ctx.fillStyle = wood.glow;
+        ctx.beginPath();
+        ctx.ellipse(Math.round(lanternX), Math.round(lanternY + 8), 22, 12, 0, 0, Math.PI * 2);
         ctx.fill();
+
         ctx.restore();
     }
 
