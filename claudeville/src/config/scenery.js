@@ -284,7 +284,6 @@ export const TROPICAL_WATERFALLS = [
 ];
 
 export const DISTRICT_PROPS = [
-    { tileX: 18.4, tileY: 39.1, id: 'prop.villageGate', layer: 'gate', district: 'entrance', scaleX: 2.35, scaleY: 2 },
     { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 18.8, tileY: 21.1, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 16.2, tileY: 22.0, id: 'prop.runeFountain', layer: 'cache', district: 'civic' },

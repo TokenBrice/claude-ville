@@ -249,25 +249,25 @@ const COMMAND_CENTER_DECORATION = [
 ];
 const VILLAGE_GATE = Object.freeze({
     id: 'prop.villageGate',
-    tileX: 18.4,
+    tileX: 18.9,
     tileY: 39.1,
-    scaleX: 2.35,
-    scaleY: 2,
-    outside: { tileX: 18.0, tileY: 39.7 },
-    inside: { tileX: 20.8, tileY: 37.6 },
+    scaleX: 1.65,
+    scaleY: 1.58,
+    outside: { tileX: 18.1, tileY: 39.15 },
+    inside: { tileX: 20.8, tileY: 37.8 },
 });
 const VILLAGE_WALL_ROUTES = Object.freeze([
     {
         id: 'west',
         points: [
-            { tileX: -0.8, tileY: 34.0 },
-            { tileX: 14.0, tileY: 39.0 },
+            { tileX: -0.8, tileY: 39.1 },
+            { tileX: 15.0, tileY: 39.1 },
         ],
     },
     {
         id: 'east',
         points: [
-            { tileX: 20.7, tileY: 39.1 },
+            { tileX: 22.8, tileY: 39.1 },
             { tileX: 36.4, tileY: 39.2 },
         ],
     },
@@ -574,6 +574,7 @@ export class IsometricRenderer {
         }
         this._generateTownSquare(plazaHub.x, plazaHub.y);
         this._generatePlannedRoads();
+        this._generateGateApproach();
         // Fallback connection for future buildings that are not covered by
         // the authored road plan.
         for (const bDef of buildingDefs) {
@@ -642,6 +643,18 @@ export class IsometricRenderer {
                     this.pathTiles.add(key);
                     this._markRoadMaterial(key, material);
                 }
+            }
+        }
+    }
+
+    _generateGateApproach() {
+        this._addRoadPolyline([[18, 38], [20, 38], [21, 38], [20, 39], [18, 39]], 1, 'dirt');
+        for (let x = 18; x <= 21; x++) {
+            for (let y = 38; y <= 39; y++) {
+                if (!this._inMapBounds(x, y)) continue;
+                const key = `${x},${y}`;
+                this.pathTiles.add(key);
+                this._markRoadMaterial(key, 'dirt');
             }
         }
     }
@@ -2132,19 +2145,15 @@ export class IsometricRenderer {
     _buildDistrictPropSprites() {
         if (!this.sprites) return [];
         const sprites = this._buildVillageWallSprites();
-        for (const prop of DISTRICT_PROPS.filter((item) => item.layer === 'gate')) {
-            const dims = this.assets?.getDims?.(prop.id);
-            const scaleX = prop.scaleX || prop.scale || VILLAGE_GATE.scaleX || 1;
-            const scaleY = prop.scaleY || prop.scale || VILLAGE_GATE.scaleY || 1;
-            sprites.push(new StaticPropSprite({
-                tileX: prop.tileX,
-                tileY: prop.tileY,
-                id: prop.id,
-                bounds: this._scaledAssetPropBounds(prop.id, scaleX, scaleY, 0.54),
-                splitForOcclusion: Boolean(dims && dims.h >= 56),
-                drawFn: (ctx, x, y) => this._drawScaledSprite(ctx, prop.id, x, y, scaleX, scaleY),
-            }));
-        }
+        const gateDims = this.assets?.getDims?.(VILLAGE_GATE.id);
+        sprites.push(new StaticPropSprite({
+            tileX: VILLAGE_GATE.tileX,
+            tileY: VILLAGE_GATE.tileY,
+            id: VILLAGE_GATE.id,
+            bounds: this._scaledAssetPropBounds(VILLAGE_GATE.id, VILLAGE_GATE.scaleX, VILLAGE_GATE.scaleY, 0.54),
+            splitForOcclusion: Boolean(gateDims && gateDims.h >= 56),
+            drawFn: (ctx, x, y) => this._drawScaledSprite(ctx, VILLAGE_GATE.id, x, y, VILLAGE_GATE.scaleX, VILLAGE_GATE.scaleY),
+        }));
         sprites.push(...DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted')
             .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.pathTiles, this.bridgeTiles))
@@ -2178,14 +2187,13 @@ export class IsometricRenderer {
                 const localStart = { x: start.x - mid.x, y: start.y - mid.y };
                 const localEnd = { x: end.x - mid.x, y: end.y - mid.y };
                 const wallBounds = this._villageWallBounds(localStart, localEnd);
-                const gateSort = this._tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY).y - 36;
                 out.push(new StaticPropSprite({
                     tileX: midTile.tileX,
                     tileY: midTile.tileY,
                     id: `village.wall.${route.id}.${i}`,
                     bounds: wallBounds,
                     splitForOcclusion: false,
-                    sortY: gateSort,
+                    sortY: Math.max(start.y, end.y) - 14,
                     drawFn: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i),
                 }));
             }
@@ -2197,9 +2205,9 @@ export class IsometricRenderer {
         return {
             left: Math.min(start.x, end.x) - 72,
             right: Math.max(start.x, end.x) + 72,
-            top: Math.min(start.y, end.y) - 96,
-            bottom: Math.max(start.y, end.y) + 18,
-            splitY: Math.min(start.y, end.y) - 34,
+            top: Math.min(start.y, end.y) - 112,
+            bottom: Math.max(start.y, end.y) + 22,
+            splitY: Math.min(start.y, end.y) - 42,
         };
     }
 
@@ -2243,8 +2251,6 @@ export class IsometricRenderer {
     }
 
     _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0) {
-        const img = this.assets?.get?.('prop.villageWall');
-        if (!img) return;
         const x1 = Math.round(originX + start.x);
         const y1 = Math.round(originY + start.y);
         const x2 = Math.round(originX + end.x);
@@ -2252,28 +2258,121 @@ export class IsometricRenderer {
         const dx = x2 - x1;
         const dy = y2 - y1;
         const length = Math.max(1, Math.hypot(dx, dy));
-        const angle = Math.atan2(dy, dx);
-        const step = 92;
-        const scale = 1.35;
-        const drawW = img.width * scale;
-        const drawH = img.height * scale;
-        const count = Math.max(1, Math.ceil(length / step));
-        const spacing = length / count;
+        const ux = dx / length;
+        const uy = dy / length;
+        let nx = -uy;
+        let ny = ux;
+        if (ny < 0) {
+            nx *= -1;
+            ny *= -1;
+        }
+        const wallHeight = 54;
+        const capWidth = 12;
+        const capLift = 7;
+        const faceTop1 = { x: x1, y: y1 - wallHeight };
+        const faceTop2 = { x: x2, y: y2 - wallHeight };
+        const capBack1 = { x: faceTop1.x + nx * capWidth, y: faceTop1.y + ny * capWidth - capLift };
+        const capBack2 = { x: faceTop2.x + nx * capWidth, y: faceTop2.y + ny * capWidth - capLift };
+        const shadowDrop = 14;
+        const crenelStep = 19;
+        const crenelWidth = 10;
+        const crenelHeight = 14;
+        const offset = (phase % 2) * 5;
+
+        const traceQuad = (a, b, c, d) => {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(a.x), Math.round(a.y));
+            ctx.lineTo(Math.round(b.x), Math.round(b.y));
+            ctx.lineTo(Math.round(c.x), Math.round(c.y));
+            ctx.lineTo(Math.round(d.x), Math.round(d.y));
+            ctx.closePath();
+        };
 
         ctx.save();
-        ctx.translate(x1, y1);
-        ctx.rotate(angle);
         SpriteRenderer.disableSmoothing(ctx);
-        for (let i = 0; i < count; i++) {
-            const x = i * spacing + spacing / 2;
-            ctx.drawImage(
-                img,
-                Math.round(x - drawW / 2),
-                Math.round(-drawH + 14 + (phase % 2) * 2),
-                Math.round(drawW),
-                Math.round(drawH)
-            );
+
+        ctx.globalAlpha = 0.28;
+        ctx.fillStyle = '#12191e';
+        traceQuad(
+            { x: x1 - nx * 7, y: y1 + shadowDrop },
+            { x: x2 - nx * 7, y: y2 + shadowDrop },
+            { x: x2 + nx * 11, y: y2 + shadowDrop + 8 },
+            { x: x1 + nx * 11, y: y1 + shadowDrop + 8 },
+        );
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        traceQuad({ x: x1, y: y1 }, { x: x2, y: y2 }, faceTop2, faceTop1);
+        const faceGradient = ctx.createLinearGradient(0, Math.min(y1, y2) - wallHeight, 0, Math.max(y1, y2));
+        faceGradient.addColorStop(0, '#5f7890');
+        faceGradient.addColorStop(0.55, '#31475c');
+        faceGradient.addColorStop(1, '#1b2938');
+        ctx.fillStyle = faceGradient;
+        ctx.fill();
+        ctx.strokeStyle = '#101820';
+        ctx.lineWidth = 3;
+        ctx.stroke();
+
+        traceQuad(faceTop1, faceTop2, capBack2, capBack1);
+        ctx.fillStyle = '#8fb1bd';
+        ctx.fill();
+        ctx.strokeStyle = '#172231';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+
+        ctx.save();
+        traceQuad({ x: x1, y: y1 }, { x: x2, y: y2 }, faceTop2, faceTop1);
+        ctx.clip();
+        for (let row = 10; row < wallHeight; row += 11) {
+            ctx.strokeStyle = row % 22 === 0 ? '#6f8798' : '#24384b';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(x1), Math.round(y1 - row));
+            ctx.lineTo(Math.round(x2), Math.round(y2 - row));
+            ctx.stroke();
         }
+        for (let d = 10 + offset; d < length; d += 21) {
+            const baseX = x1 + ux * d;
+            const baseY = y1 + uy * d;
+            const stagger = Math.floor(d / 21) % 2 ? 8 : 0;
+            ctx.strokeStyle = '#182638';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(baseX), Math.round(baseY - 6 - stagger));
+            ctx.lineTo(Math.round(baseX), Math.round(baseY - wallHeight + 5 + stagger));
+            ctx.stroke();
+        }
+        ctx.restore();
+
+        ctx.strokeStyle = '#bde5e7';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(faceTop1.x), Math.round(faceTop1.y));
+        ctx.lineTo(Math.round(faceTop2.x), Math.round(faceTop2.y));
+        ctx.stroke();
+
+        for (let d = 8 + offset; d < length - 2; d += crenelStep) {
+            const half = crenelWidth / 2;
+            const a = { x: x1 + ux * (d - half), y: y1 + uy * (d - half) - wallHeight };
+            const b = { x: x1 + ux * (d + half), y: y1 + uy * (d + half) - wallHeight };
+            const c = { x: b.x, y: b.y - crenelHeight };
+            const e = { x: a.x, y: a.y - crenelHeight };
+            traceQuad(a, b, c, e);
+            ctx.fillStyle = '#7797a9';
+            ctx.fill();
+            ctx.strokeStyle = '#132031';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.fillStyle = '#bfe9e6';
+            ctx.fillRect(Math.round(e.x + ux * 2), Math.round(e.y + 2), 3, 3);
+        }
+
+        ctx.strokeStyle = '#0d151f';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x1), Math.round(y1));
+        ctx.lineTo(Math.round(x2), Math.round(y2));
+        ctx.stroke();
         ctx.restore();
     }
 
