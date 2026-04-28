@@ -3,7 +3,6 @@ import QtQuick.Controls as Controls
 import QtQuick.Layouts
 import org.kde.kirigami as Kirigami
 import org.kde.plasma.components as PlasmaComponents
-import org.kde.plasma.core as PlasmaCore
 import org.kde.plasma.plasmoid
 
 PlasmoidItem {
@@ -11,7 +10,7 @@ PlasmoidItem {
 
     readonly property string serverUrl: normalizeUrl(plasmoid.configuration.serverUrl || "http://localhost:4000")
     readonly property int refreshInterval: Math.max(1000, Number(plasmoid.configuration.refreshIntervalMs || 5000))
-    readonly property int compactSpriteHeight: Math.max(30, PlasmaCore.Units.gridUnit * 2)
+    readonly property int compactSpriteHeight: Math.max(30, Kirigami.Units.gridUnit * 2)
     property var sessionRows: []
     property var workingRows: []
     property var usage: null
@@ -30,10 +29,10 @@ PlasmoidItem {
         ? i18n("%1 working, %2 total", workingCount, sessionRows.length)
         : errorText || i18n("Offline")
 
-    Layout.minimumWidth: PlasmaCore.Units.gridUnit * 18
-    Layout.minimumHeight: PlasmaCore.Units.gridUnit * 14
-    Layout.preferredWidth: PlasmaCore.Units.gridUnit * 24
-    Layout.preferredHeight: PlasmaCore.Units.gridUnit * 28
+    Layout.minimumWidth: Kirigami.Units.gridUnit * 18
+    Layout.minimumHeight: Kirigami.Units.gridUnit * 14
+    Layout.preferredWidth: Kirigami.Units.gridUnit * 24
+    Layout.preferredHeight: Kirigami.Units.gridUnit * 28
 
     Timer {
         id: refreshTimer
@@ -47,10 +46,10 @@ PlasmoidItem {
     compactRepresentation: MouseArea {
         id: compact
         readonly property int contentWidth: Math.max(
-            PlasmaCore.Units.iconSizes.smallMedium,
-            (spriteStrip.visible ? spriteStrip.implicitWidth : compactFallback.implicitWidth) + PlasmaCore.Units.smallSpacing * 2
+            Kirigami.Units.iconSizes.smallMedium,
+            (spriteStrip.visible ? spriteStrip.implicitWidth : compactFallback.implicitWidth) + Kirigami.Units.smallSpacing * 2
         )
-        readonly property int contentHeight: Math.max(PlasmaCore.Units.iconSizes.smallMedium, root.compactSpriteHeight)
+        readonly property int contentHeight: Math.max(Kirigami.Units.iconSizes.smallMedium, root.compactSpriteHeight)
 
         implicitWidth: contentWidth
         implicitHeight: contentHeight
@@ -60,49 +59,58 @@ PlasmoidItem {
         Layout.preferredHeight: contentHeight
         onClicked: plasmoid.expanded = !plasmoid.expanded
 
-        Row {
+        RowLayout {
             id: spriteStrip
             visible: root.online && root.workingRows.length > 0
             anchors.centerIn: parent
-            spacing: -Math.max(1, Math.round(PlasmaCore.Units.smallSpacing / 2))
+            spacing: Kirigami.Units.smallSpacing
 
-            Repeater {
-                model: root.workingRows
+            PlasmaComponents.Label {
+                text: i18np("%1 agent working in ClaudeVille", "%1 agents working in ClaudeVille", root.workingCount)
+                elide: Text.ElideRight
+            }
 
-                delegate: Item {
-                    width: modelData.spritePanelWidth
-                    height: root.compactSpriteHeight
+            Row {
+                spacing: -Math.max(1, Math.round(Kirigami.Units.smallSpacing / 2))
 
-                    Rectangle {
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        anchors.bottom: parent.bottom
-                        anchors.bottomMargin: 1
-                        width: Math.max(12, parent.width - 4)
-                        height: 4
-                        radius: 2
-                        color: Qt.rgba(0, 0, 0, 0.28)
-                    }
+                Repeater {
+                    model: root.workingRows
 
-                    Rectangle {
-                        anchors.centerIn: parent
-                        width: Math.max(10, Math.min(parent.width, parent.height) - 6)
-                        height: width
-                        radius: width / 2
-                        color: modelData.spriteAccent
-                        opacity: avatar.status === Image.Ready ? 0 : 1
-                    }
-
-                    Image {
-                        id: avatar
-                        anchors.horizontalCenter: parent.horizontalCenter
-                        anchors.bottom: parent.bottom
+                    delegate: Item {
                         width: modelData.spritePanelWidth
                         height: root.compactSpriteHeight
-                        source: modelData.spriteSource
-                        fillMode: Image.PreserveAspectFit
-                        smooth: false
-                        mipmap: false
-                        asynchronous: true
+
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.bottom
+                            anchors.bottomMargin: 1
+                            width: Math.max(12, parent.width - 4)
+                            height: 4
+                            radius: 2
+                            color: Qt.rgba(0, 0, 0, 0.28)
+                        }
+
+                        Rectangle {
+                            anchors.centerIn: parent
+                            width: Math.max(10, Math.min(parent.width, parent.height) - 6)
+                            height: width
+                            radius: width / 2
+                            color: modelData.spriteAccent
+                            opacity: avatar.status === Image.Ready ? 0 : 1
+                        }
+
+                        Image {
+                            id: avatar
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            anchors.bottom: parent.bottom
+                            width: modelData.spritePanelWidth
+                            height: root.compactSpriteHeight
+                            source: modelData.spriteSource
+                            fillMode: Image.PreserveAspectFit
+                            smooth: false
+                            mipmap: false
+                            asynchronous: true
+                        }
                     }
                 }
             }
@@ -112,11 +120,11 @@ PlasmoidItem {
             id: compactFallback
             visible: !spriteStrip.visible
             anchors.centerIn: parent
-            spacing: PlasmaCore.Units.smallSpacing
+            spacing: Kirigami.Units.smallSpacing
 
             Rectangle {
-                Layout.preferredWidth: PlasmaCore.Units.smallSpacing
-                Layout.preferredHeight: PlasmaCore.Units.smallSpacing
+                Layout.preferredWidth: Kirigami.Units.smallSpacing
+                Layout.preferredHeight: Kirigami.Units.smallSpacing
                 radius: width / 2
                 color: root.online
                     ? (root.workingCount > 0 ? "#4ade80" : "#60a5fa")
@@ -132,23 +140,23 @@ PlasmoidItem {
     }
 
     fullRepresentation: Item {
-        Layout.minimumWidth: PlasmaCore.Units.gridUnit * 20
-        Layout.minimumHeight: PlasmaCore.Units.gridUnit * 20
-        Layout.preferredWidth: PlasmaCore.Units.gridUnit * 26
-        Layout.preferredHeight: PlasmaCore.Units.gridUnit * 30
+        Layout.minimumWidth: Kirigami.Units.gridUnit * 20
+        Layout.minimumHeight: Kirigami.Units.gridUnit * 20
+        Layout.preferredWidth: Kirigami.Units.gridUnit * 26
+        Layout.preferredHeight: Kirigami.Units.gridUnit * 30
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: PlasmaCore.Units.gridUnit
-            spacing: PlasmaCore.Units.smallSpacing
+            anchors.margins: Kirigami.Units.gridUnit
+            spacing: Kirigami.Units.smallSpacing
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: PlasmaCore.Units.smallSpacing
+                spacing: Kirigami.Units.smallSpacing
 
                 Rectangle {
-                    Layout.preferredWidth: PlasmaCore.Units.iconSizes.small
-                    Layout.preferredHeight: PlasmaCore.Units.iconSizes.small
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
                     radius: width / 2
                     color: root.online
                         ? (root.workingCount > 0 ? "#4ade80" : "#60a5fa")
@@ -192,7 +200,7 @@ PlasmoidItem {
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: PlasmaCore.Units.smallSpacing
+                spacing: Kirigami.Units.smallSpacing
 
                 StatPill {
                     Layout.fillWidth: true
@@ -216,7 +224,7 @@ PlasmoidItem {
 
             RowLayout {
                 Layout.fillWidth: true
-                spacing: PlasmaCore.Units.smallSpacing
+                spacing: Kirigami.Units.smallSpacing
 
                 StatPill {
                     Layout.fillWidth: true
@@ -245,25 +253,25 @@ PlasmoidItem {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
                 clip: true
-                spacing: PlasmaCore.Units.smallSpacing
+                spacing: Kirigami.Units.smallSpacing
                 model: root.sessionRows
 
                 delegate: Rectangle {
                     width: sessionList.width
-                    height: PlasmaCore.Units.gridUnit * 3
-                    radius: PlasmaCore.Units.smallSpacing
+                    height: Kirigami.Units.gridUnit * 3
+                    radius: Kirigami.Units.smallSpacing
                     color: index % 2 === 0
-                        ? Qt.rgba(PlasmaCore.Theme.textColor.r, PlasmaCore.Theme.textColor.g, PlasmaCore.Theme.textColor.b, 0.07)
-                        : Qt.rgba(PlasmaCore.Theme.textColor.r, PlasmaCore.Theme.textColor.g, PlasmaCore.Theme.textColor.b, 0.03)
+                        ? Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.07)
+                        : Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.03)
 
                     RowLayout {
                         anchors.fill: parent
-                        anchors.margins: PlasmaCore.Units.smallSpacing
-                        spacing: PlasmaCore.Units.smallSpacing
+                        anchors.margins: Kirigami.Units.smallSpacing
+                        spacing: Kirigami.Units.smallSpacing
 
                         Rectangle {
-                            Layout.preferredWidth: PlasmaCore.Units.smallSpacing
-                            Layout.preferredHeight: PlasmaCore.Units.smallSpacing
+                            Layout.preferredWidth: Kirigami.Units.smallSpacing
+                            Layout.preferredHeight: Kirigami.Units.smallSpacing
                             radius: width / 2
                             color: root.statusColor(modelData.status)
                         }
@@ -301,17 +309,17 @@ PlasmoidItem {
     component StatPill: Rectangle {
         property string label: ""
         property string value: ""
-        property color accent: PlasmaCore.Theme.highlightColor
+        property color accent: Kirigami.Theme.highlightColor
 
-        implicitHeight: PlasmaCore.Units.gridUnit * 2.4
-        radius: PlasmaCore.Units.smallSpacing
+        implicitHeight: Kirigami.Units.gridUnit * 2.4
+        radius: Kirigami.Units.smallSpacing
         color: Qt.rgba(accent.r, accent.g, accent.b, 0.14)
         border.color: Qt.rgba(accent.r, accent.g, accent.b, 0.42)
         border.width: 1
 
         ColumnLayout {
             anchors.fill: parent
-            anchors.margins: PlasmaCore.Units.smallSpacing
+            anchors.margins: Kirigami.Units.smallSpacing
             spacing: 0
 
             PlasmaComponents.Label {
