@@ -2506,16 +2506,13 @@ export class IsometricRenderer {
     _buildDistrictPropSprites() {
         if (!this.sprites) return [];
         const sprites = this._buildVillageWallSprites();
-        const hasGateSprite = this.assets?.has?.(VILLAGE_GATE_SPRITE_ID);
         sprites.push(new StaticPropSprite({
             tileX: VILLAGE_GATE.tileX,
             tileY: VILLAGE_GATE.tileY,
-            id: VILLAGE_GATE_SPRITE_ID,
-            bounds: hasGateSprite ? this._assetPropBounds(VILLAGE_GATE_SPRITE_ID, 0.72) : VILLAGE_GATE_BOUNDS,
+            id: VILLAGE_GATE.id,
+            bounds: VILLAGE_GATE_BOUNDS,
             splitForOcclusion: true,
-            drawFn: hasGateSprite
-                ? (ctx, x, y) => this.sprites.drawSprite(ctx, VILLAGE_GATE_SPRITE_ID, x, y)
-                : (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y),
+            drawFn: (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y),
         }));
         sprites.push(...this._buildVillageWallTerminalSprites());
         sprites.push(...DISTRICT_PROPS
@@ -2537,21 +2534,17 @@ export class IsometricRenderer {
 
     _buildVillageWallSprites() {
         const out = [];
-        const hasWallSprite = this.assets?.has?.(VILLAGE_WALL_SPRITE_ID);
         for (const route of VILLAGE_WALL_ROUTES) {
             for (let i = 0; i < route.points.length - 1; i++) {
                 const startTile = route.points[i];
                 const endTile = route.points[i + 1];
-                if (hasWallSprite && this._canUseVillageWallSpriteRun(startTile, endTile)) {
-                    out.push(...this._buildVillageWallSpriteRun(route, i, startTile, endTile));
-                    continue;
-                }
+                const visualEndTile = this._villageWallVisualEndTile(route, startTile, endTile);
                 const midTile = {
-                    tileX: (startTile.tileX + endTile.tileX) / 2,
-                    tileY: (startTile.tileY + endTile.tileY) / 2,
+                    tileX: (startTile.tileX + visualEndTile.tileX) / 2,
+                    tileY: (startTile.tileY + visualEndTile.tileY) / 2,
                 };
                 const start = this._tileToWorld(startTile.tileX, startTile.tileY);
-                const end = this._tileToWorld(endTile.tileX, endTile.tileY);
+                const end = this._tileToWorld(visualEndTile.tileX, visualEndTile.tileY);
                 const mid = this._tileToWorld(midTile.tileX, midTile.tileY);
                 const localStart = { x: start.x - mid.x, y: start.y - mid.y };
                 const localEnd = { x: end.x - mid.x, y: end.y - mid.y };
@@ -2570,35 +2563,18 @@ export class IsometricRenderer {
         return out;
     }
 
-    _canUseVillageWallSpriteRun(startTile, endTile) {
-        if (!startTile || !endTile) return false;
-        return Math.abs(Number(startTile.tileY) - Number(endTile.tileY)) < 0.05
-            && Number(endTile.tileX) > Number(startTile.tileX);
-    }
-
-    _buildVillageWallSpriteRun(route, segmentIndex, startTile, endTile) {
-        const out = [];
+    _villageWallVisualEndTile(route, startTile, endTile) {
+        if (route?.id !== 'east') return endTile;
+        const towerTile = this._villageWallSeaTowerTile(endTile, startTile);
         const dx = Number(endTile.tileX) - Number(startTile.tileX);
         const dy = Number(endTile.tileY) - Number(startTile.tileY);
         const length = Math.max(0.1, Math.hypot(dx, dy));
-        const count = Math.max(1, Math.ceil(length / VILLAGE_WALL_SPRITE_TILE_SPAN));
-        const bounds = this._assetPropBounds(VILLAGE_WALL_SPRITE_ID, 0.62);
-        for (let i = 0; i < count; i++) {
-            const t = (i + 0.5) / count;
-            const tileX = startTile.tileX + dx * t;
-            const tileY = startTile.tileY + dy * t;
-            const world = this._tileToWorld(tileX, tileY);
-            out.push(new StaticPropSprite({
-                tileX,
-                tileY,
-                id: `village.wall.${route.id}.${segmentIndex}.${i}`,
-                bounds,
-                splitForOcclusion: false,
-                sortY: world.y - 14,
-                drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, VILLAGE_WALL_SPRITE_ID, x, y),
-            }));
-        }
-        return out;
+        const ux = dx / length;
+        const uy = dy / length;
+        return {
+            tileX: towerTile.tileX - ux * 0.42,
+            tileY: towerTile.tileY - uy * 0.42,
+        };
     }
 
     _buildVillageWallTerminalSprites() {
@@ -2731,61 +2707,84 @@ export class IsometricRenderer {
             nx *= -1;
             ny *= -1;
         }
-        const frontLeft = { x: leftBase.x - ux * 28 + nx * 32, y: leftBase.y - uy * 28 + ny * 32 + 16 };
-        const frontRight = { x: rightBase.x + ux * 28 + nx * 32, y: rightBase.y + uy * 28 + ny * 32 + 16 };
-        const backRight = { x: rightBase.x + ux * 18 - nx * 28, y: rightBase.y + uy * 18 - ny * 28 - 10 };
-        const backLeft = { x: leftBase.x - ux * 18 - nx * 28, y: leftBase.y - uy * 18 - ny * 28 - 10 };
+        const mid = { x: (leftBase.x + rightBase.x) / 2, y: (leftBase.y + rightBase.y) / 2 };
+        const pathHalf = Math.min(26, Math.max(20, length * 0.10));
+        const frontDepth = 7;
+        const backDepth = 11;
+        const frontLeft = { x: mid.x - ux * pathHalf + nx * frontDepth, y: mid.y - uy * pathHalf + ny * frontDepth + 4 };
+        const frontRight = { x: mid.x + ux * pathHalf + nx * frontDepth, y: mid.y + uy * pathHalf + ny * frontDepth + 4 };
+        const backRight = { x: mid.x + ux * pathHalf - nx * backDepth, y: mid.y + uy * pathHalf - ny * backDepth - 6 };
+        const backLeft = { x: mid.x - ux * pathHalf - nx * backDepth, y: mid.y - uy * pathHalf - ny * backDepth - 6 };
 
-        const trace = (a, b, c, d) => {
+        const trace = (...points) => {
             ctx.beginPath();
-            ctx.moveTo(Math.round(a.x), Math.round(a.y));
-            ctx.lineTo(Math.round(b.x), Math.round(b.y));
-            ctx.lineTo(Math.round(c.x), Math.round(c.y));
-            ctx.lineTo(Math.round(d.x), Math.round(d.y));
+            ctx.moveTo(Math.round(points[0].x), Math.round(points[0].y));
+            for (const point of points.slice(1)) {
+                ctx.lineTo(Math.round(point.x), Math.round(point.y));
+            }
             ctx.closePath();
         };
 
         ctx.save();
         SpriteRenderer.disableSmoothing(ctx);
-        trace(frontLeft, frontRight, backRight, backLeft);
-        ctx.fillStyle = '#5b3318';
-        ctx.fill();
-        ctx.strokeStyle = palette.outline;
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        ctx.strokeStyle = palette.cut;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(backLeft.x), Math.round(backLeft.y));
-        ctx.lineTo(Math.round(backRight.x), Math.round(backRight.y));
-        ctx.stroke();
 
-        for (let d = 0; d <= length + 56; d += 18) {
-            const x = frontLeft.x + ux * d;
-            const y = frontLeft.y + uy * d;
-            ctx.strokeStyle = d % 36 === 0 ? '#2d1a0d' : '#7c4c22';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(x), Math.round(y));
-            ctx.lineTo(Math.round(x - nx * 58), Math.round(y - ny * 58 - 21));
-            ctx.stroke();
-        }
         for (const base of [leftBase, rightBase]) {
-            ctx.fillStyle = 'rgba(27, 16, 9, 0.42)';
-            ctx.beginPath();
-            ctx.moveTo(Math.round(base.x - ux * 20 + nx * 25), Math.round(base.y - uy * 20 + ny * 25 + 12));
-            ctx.lineTo(Math.round(base.x + ux * 20 + nx * 25), Math.round(base.y + uy * 20 + ny * 25 + 12));
-            ctx.lineTo(Math.round(base.x + ux * 15 - nx * 17), Math.round(base.y + uy * 15 - ny * 17 - 5));
-            ctx.lineTo(Math.round(base.x - ux * 15 - nx * 17), Math.round(base.y - uy * 15 - ny * 17 - 5));
-            ctx.closePath();
+            ctx.fillStyle = 'rgba(27, 16, 9, 0.36)';
+            trace(
+                { x: base.x - ux * 21 + nx * 24, y: base.y - uy * 21 + ny * 24 + 11 },
+                { x: base.x + ux * 21 + nx * 24, y: base.y + uy * 21 + ny * 24 + 11 },
+                { x: base.x + ux * 16 - nx * 16, y: base.y + uy * 16 - ny * 16 - 5 },
+                { x: base.x - ux * 16 - nx * 16, y: base.y - uy * 16 - ny * 16 - 5 },
+            );
             ctx.fill();
         }
-        for (let d = 12; d < length + 38; d += 32) {
-            const x = frontLeft.x + ux * d - nx * 18;
-            const y = frontLeft.y + uy * d - ny * 18 - 6;
-            ctx.fillStyle = '#c08a45';
-            ctx.fillRect(Math.round(x), Math.round(y), 3, 3);
+
+        trace(frontLeft, frontRight, backRight, backLeft);
+        ctx.fillStyle = '#4e4b43';
+        ctx.fill();
+        ctx.strokeStyle = palette.outline;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.save();
+        trace(frontLeft, frontRight, backRight, backLeft);
+        ctx.clip();
+        for (let d = -pathHalf + 6; d <= pathHalf - 3; d += 14) {
+            const laneShift = Math.floor((d + pathHalf) / 14) % 2 ? 4 : 0;
+            for (let n = -backDepth + laneShift; n <= frontDepth + 2; n += 14) {
+                const seed = this._tileNoise(Math.round(d + 211), Math.round(n + 97));
+                const x = mid.x + ux * d + nx * n;
+                const y = mid.y + uy * d + ny * n + (n > 0 ? 4 : -5);
+                ctx.fillStyle = seed > 0.55 ? '#8c8370' : '#565246';
+                ctx.strokeStyle = '#332d25';
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.ellipse(Math.round(x), Math.round(y), 4.5 + seed * 1.6, 2.4 + seed, Math.atan2(uy, ux), 0, Math.PI * 2);
+                ctx.fill();
+                ctx.stroke();
+            }
         }
+        ctx.restore();
+
+        ctx.fillStyle = 'rgba(12, 11, 13, 0.54)';
+        ctx.beginPath();
+        ctx.ellipse(
+            Math.round(mid.x - nx * 21),
+            Math.round(mid.y - ny * 21 - 18),
+            pathHalf * 0.90,
+            8,
+            Math.atan2(uy, ux),
+            0,
+            Math.PI * 2,
+        );
+        ctx.fill();
+
+        ctx.strokeStyle = '#b4a17b';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(frontLeft.x), Math.round(frontLeft.y));
+        ctx.lineTo(Math.round(frontRight.x), Math.round(frontRight.y));
+        ctx.stroke();
         ctx.restore();
     }
 
