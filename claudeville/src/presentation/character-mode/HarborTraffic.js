@@ -29,10 +29,10 @@ const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
 const REPO_DOCK_SHIP_Y_OFFSET = 236;
 const REPO_DOCK_SHIP_SORT_OFFSET = 8;
 const HARBOR_SHIP_CLASSES = Object.freeze([
-    { key: 'flagship', spriteId: 'prop.harborShip.flagship', minCommits: 50, scale: 1.00, wakeScale: 2.60, cargoRows: 7, mastCount: 5, labelLift: 68, flagOffsetX: 48, flagOffsetY: 72, badge: '50+' },
-    { key: 'dreadnought', spriteId: 'prop.harborShip.dreadnought', minCommits: 35, scale: 1.00, wakeScale: 2.30, cargoRows: 7, mastCount: 5, labelLift: 60, flagOffsetX: 42, flagOffsetY: 64, badge: '35+' },
-    { key: 'galleon', spriteId: 'prop.harborShip.galleon', minCommits: 20, scale: 1.00, wakeScale: 2.00, cargoRows: 6, mastCount: 4, labelLift: 52, flagOffsetX: 36, flagOffsetY: 56, badge: '20+' },
-    { key: 'brigantine', spriteId: 'prop.harborShip.brigantine', minCommits: 10, scale: 1.00, wakeScale: 1.70, cargoRows: 5, mastCount: 3, labelLift: 42, flagOffsetX: 28, flagOffsetY: 46, badge: '10+' },
+    { key: 'flagship', spriteId: 'prop.harborShip.flagship', minCommits: 30, scale: 1.00, wakeScale: 2.60, cargoRows: 7, mastCount: 5, labelLift: 68, flagOffsetX: 48, flagOffsetY: 72, badge: '30+' },
+    { key: 'dreadnought', spriteId: 'prop.harborShip.dreadnought', minCommits: 20, scale: 1.00, wakeScale: 2.30, cargoRows: 7, mastCount: 5, labelLift: 60, flagOffsetX: 42, flagOffsetY: 64, badge: '20+' },
+    { key: 'galleon', spriteId: 'prop.harborShip.galleon', minCommits: 12, scale: 1.00, wakeScale: 2.00, cargoRows: 6, mastCount: 4, labelLift: 52, flagOffsetX: 36, flagOffsetY: 56, badge: '12+' },
+    { key: 'brigantine', spriteId: 'prop.harborShip.brigantine', minCommits: 8, scale: 1.00, wakeScale: 1.70, cargoRows: 5, mastCount: 3, labelLift: 42, flagOffsetX: 28, flagOffsetY: 46, badge: '8+' },
     { key: 'sloop', spriteId: 'prop.harborShip.sloop', minCommits: 5, scale: 1.00, wakeScale: 1.42, cargoRows: 3, mastCount: 2, labelLift: 34, flagOffsetX: 20, flagOffsetY: 34, badge: '5+' },
     { key: 'cutter', spriteId: 'prop.harborShip.cutter', minCommits: 3, scale: 1.00, wakeScale: 1.15, cargoRows: 1, mastCount: 1, labelLift: 18, flagOffsetX: 10, flagOffsetY: 18, badge: '3+' },
     { key: 'skiff', spriteId: 'prop.harborShip.skiff', minCommits: 1, scale: 0.94, wakeScale: 0.88, cargoRows: 0, mastCount: 1, labelLift: 0, flagOffsetX: 0, flagOffsetY: 0, badge: '' },
