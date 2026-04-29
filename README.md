@@ -20,7 +20,7 @@ Runtime is dependency-free: `npm run dev` uses only Node built-ins and static br
 | --- | --- |
 | `npm run dev` | Start `claudeville/server.js` on port `4000`. |
 | `npm run widget:build` | Compile the optional macOS widget app. |
-| `npm run widget` | Open `widget/ClaudeVilleWidget.app`. |
+| `npm run widget` | Build, then open `widget/ClaudeVilleWidget.app`. |
 | `npm run widget:kde:install` | Install or upgrade the KDE Plasma widget. |
 | `npm run widget:kde:uninstall` | Remove the KDE Plasma widget. |
 | `npm run sprites:validate` | Validate `assets/sprites/manifest.yaml` against PNG files and character-sheet shape. Requires dev dependencies. |
@@ -244,7 +244,7 @@ For macOS widget changes, run `npm run widget:build`, then `npm run widget`, and
 - Keep small changes within the current vanilla JavaScript and CSS architecture. There is no framework, bundler, transpiler, or app test runner today.
 - Do not edit generated sprite PNGs without also checking `claudeville/assets/sprites/manifest.yaml` and the sprite validation rules.
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.
-- See `docs/visual-experience-crafting.md` for the transferable design method behind the RPG world model. It is intended as a handoff note for applying the same visual-representation logic to unrelated datasets.
+- See `docs/visual-experience-crafting.md` for the transferable design method behind the RPG world model, and `agents/handover/claudeville-type-design-handover.md` for a concrete handover packet template for agents adapting the framework to a different scenery/domain.
 - `demo-server.js` at the repo root is unused/abandoned and not wired into `package.json`; do not run it.
 
 ## Docs Map
@@ -264,6 +264,7 @@ For macOS widget changes, run `npm run widget:build`, then `npm run widget`, and
 | `docs/troubleshooting.md` | Operators and agents | Common first-hour failures and diagnosis paths. |
 | `docs/motion-budget.md` | World mode work | Motion, pulse-band, and reduced-motion policy. |
 | `docs/visual-experience-crafting.md` | Visual/UX work | Transferable design method behind the RPG world model. |
+| `agents/handover/claudeville-type-design-handover.md` | Visual/UX handoff | Agent-ready packet for adapting ClaudeVille's world metaphor to another scenery/domain. |
 | `scripts/sprites/generate.md` | Sprite work | Manifest-first Pixellab generation and asset validation runbook. |
 | `docs/pixellab-reference.md` | Sprite work | Pixellab tool catalog, parameter enums, animation templates, async lifecycle, and pitfalls. |
 

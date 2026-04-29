@@ -4,6 +4,8 @@ This note is for an agent building a visual representation layer for a different
 
 The best result should feel like a tiny game board that explains the data before the user reads a table.
 
+ClaudeVille's specific scenery is a fantasy village, but the transferable unit is the contract: durable concepts become places, active records become embodied actors, recent events become temporary effects, and dense truth stays in DOM panels. A different product can become a space station, harbor, factory floor, clinic, newsroom, research campus, or logistics map without copying a single ClaudeVille building.
+
 ## 1. Start With The World Model
 
 Before drawing anything, decide what the world means.
@@ -204,7 +206,25 @@ Build the visual experience in layers:
 
 At each step, ask whether the visual makes the data easier to understand. If not, remove or simplify it.
 
-## 11. Common Pitfalls
+## 11. Scenery Adaptation Brief
+
+Before generating assets for a new scenery, write a brief with these fields:
+
+| Field | Decision |
+| --- | --- |
+| Domain | What system, dataset, or workflow the world represents. |
+| Scenery metaphor | The place users will recognize: station, harbor, factory, campus, clinic, newsroom, fleet, market. |
+| Durable landmarks | The stable categories that deserve buildings or large props. |
+| Active actors | The moving entities users need to track. |
+| Movement rules | Where actors go for work, waiting, failure, communication, and completion. |
+| Attention rules | What earns glow, pulse, particles, labels, or camera focus. |
+| Dense-detail surface | The DOM panel/card/table that carries exact text and actions. |
+| Asset system | Manifest shape, path contract, sprite sizes, anchors, palette rules, and cache-busting version. |
+| Validation | Empty, normal, overloaded, unknown-type, reduced-motion, and asset-missing checks. |
+
+Do not generate art before this brief exists. Asset generation should fill a semantic plan, not discover one by accident.
+
+## 12. Common Pitfalls
 
 - Decorative metaphor: the world looks charming but does not answer real questions.
 - Unstable mapping: users cannot learn the meaning because visuals change too often.
@@ -217,8 +237,10 @@ At each step, ask whether the visual makes the data easier to understand. If not
 - Poor depth rules: sprites appear in front of objects they should be behind.
 - Hidden data loss: aggregation hides critical outliers or errors.
 - No empty state: the world looks broken when there is simply no data.
+- Asset-first planning: generated scenery dictates the product model instead of expressing it.
+- Tool lock-in: the renderer assumes one generation provider instead of a manifest/path contract that another tool could satisfy.
 
-## 12. Validation Checklist
+## 13. Validation Checklist
 
 Functional validation:
 
