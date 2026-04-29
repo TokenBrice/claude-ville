@@ -1,5 +1,5 @@
 import { Agent } from '../domain/entities/Agent.js';
-import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
+import { AgentStatus, statusFromSessionActivity } from '../domain/value-objects/AgentStatus.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 
 export class AgentManager {
@@ -148,13 +148,7 @@ export class AgentManager {
     }
 
     _resolveStatus(session) {
-        if (session.status === 'active') {
-            const age = Date.now() - (session.lastActivity || 0);
-            if (age < 30000) return AgentStatus.WORKING;
-            if (age < 120000) return AgentStatus.WAITING;
-            return AgentStatus.IDLE;
-        }
-        return AgentStatus.IDLE;
+        return statusFromSessionActivity(session);
     }
 
 }

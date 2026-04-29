@@ -1,4 +1,4 @@
-import { AgentStatus } from '../value-objects/AgentStatus.js';
+import { AgentStatus, normalizeAgentStatus } from '../value-objects/AgentStatus.js';
 import { Position } from '../value-objects/Position.js';
 import { Appearance } from '../value-objects/Appearance.js';
 import { i18n } from '../../config/i18n.js';
@@ -46,7 +46,7 @@ export class Agent {
         this.parentSessionId = parentSessionId || null;
         this.model = model || 'unknown';
         this.effort = effort || null;
-        this.status = status || AgentStatus.IDLE;
+        this.status = normalizeAgentStatus(status);
         this.role = role || 'general';
         this.tokens = TokenUsage.normalize(tokens);
         this.messages = messages || [];
@@ -118,6 +118,9 @@ export class Agent {
         const updates = { ...(data || {}) };
         if (Object.prototype.hasOwnProperty.call(updates, 'tokens')) {
             updates.tokens = TokenUsage.normalize(updates.tokens);
+        }
+        if (Object.prototype.hasOwnProperty.call(updates, 'status')) {
+            updates.status = normalizeAgentStatus(updates.status, this.status || AgentStatus.IDLE);
         }
         if (Object.prototype.hasOwnProperty.call(updates, 'name') && !updates.name) {
             updates.name = this.generateName();

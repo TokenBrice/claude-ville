@@ -1,4 +1,5 @@
 import { eventBus } from '../events/DomainEvent.js';
+import { AgentStatus, normalizeAgentStatus } from '../value-objects/AgentStatus.js';
 
 export class World {
     constructor() {
@@ -42,9 +43,10 @@ export class World {
         for (const agent of this.agents.values()) {
             totalTokens += (agent.tokens.input || 0) + (agent.tokens.output || 0);
             totalCost += agent.cost;
-            if (agent.status === 'working') working++;
-            else if (agent.status === 'idle') idle++;
-            else if (agent.status === 'waiting') waiting++;
+            const status = normalizeAgentStatus(agent.status);
+            if (status === AgentStatus.WORKING) working++;
+            else if (status === AgentStatus.IDLE) idle++;
+            else if (status === AgentStatus.WAITING) waiting++;
         }
 
         return { totalTokens, totalCost, working, idle, waiting, total: this.agents.size };

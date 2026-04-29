@@ -43,18 +43,32 @@ class App {
         this.renderer = null;
         this.dashboardRenderer = null;
         this.activityPanel = null;
+        this.assets = null;
         this.chronicleStore = null;
         this.auroraGate = null;
         this.latestUsage = null;
         this._chroniclePruneInterval = null;
         this._resizeWorldCanvas = null;
+        this._resizeObserver = null;
+        this._resizeHandle = null;
+        this._loadRendererRetryHandle = null;
+        this._centerCameraHandle = null;
+        this._settingsButton = null;
+        this._onSettingsClick = null;
+        this._onWindowResize = null;
+        this._perfDebugCanvasBudget = null;
+        this._cameraSetHelper = null;
         this._onWorldContextLost = null;
         this._onWorldContextRestored = null;
         this._onVisibilityChange = null;
+        this._worldCanvas = null;
+        this._eventUnsubscribers = [];
+        this._destroyed = false;
     }
 
     async boot() {
         try {
+            this._destroyed = false;
             console.log('[App] ClaudeVille boot started...');
 
             // 1. Initialize domain
@@ -70,6 +84,7 @@ class App {
             this.auroraGate = new AuroraGate({ store: this.chronicleStore });
             this.chronicleStore.open()
                 .then(() => {
+                    if (this._destroyed) return null;
                     window.__chronicle = this.chronicleStore;
                     return this.chronicleStore.prune();
                 })
@@ -94,9 +109,11 @@ class App {
 
             // 5. Load initial data
             await this.agentManager.loadInitialData();
+            if (this._destroyed) return;
 
             // 5-1. Load initial usage data
             this.dataSource.getUsage().then(usage => {
+                if (this._destroyed) return;
                 if (usage) {
                     this.latestUsage = usage;
                     eventBus.emit('usage:updated', usage);
@@ -115,6 +132,7 @@ class App {
             // 8. Preload sprite assets, then dynamically load character renderer
             this.assets = new AssetManager();
             await this.assets.load();
+            if (this._destroyed) return;
             console.log('[App] sprite assets loaded');
             await this._loadRenderer();
 
@@ -140,7 +158,9 @@ class App {
 
     async _loadRenderer() {
         try {
+            if (this._destroyed) return;
             const module = await import('./character-mode/IsometricRenderer.js');
+            if (this._destroyed) return;
             const canvas = document.getElementById('worldCanvas');
 
             if (!module.IsometricRenderer) {
@@ -150,8 +170,10 @@ class App {
             if (!canvas) {
                 if (!this._loadRendererRetryScheduled) {
                     this._loadRendererRetryScheduled = true;
-                    requestAnimationFrame(() => {
+                    this._loadRendererRetryHandle = requestAnimationFrame(() => {
+                        this._loadRendererRetryHandle = null;
                         this._loadRendererRetryScheduled = false;
+                        if (this._destroyed) return;
                         void this._loadRenderer();
                     });
                 }
@@ -173,7 +195,8 @@ class App {
             if (this.latestUsage) this.renderer.setQuotaState?.(this.latestUsage);
             this._installPerfDebugHelper();
 
-            requestAnimationFrame(() => {
+            this._centerCameraHandle = requestAnimationFrame(() => {
+                this._centerCameraHandle = null;
                 if (this.renderer && this.renderer.camera) {
                     this.renderer.camera.centerOnMap();
                 }
@@ -191,7 +214,9 @@ class App {
 
     async _loadDashboard() {
         try {
+            if (this._destroyed) return;
             const module = await import('./dashboard-mode/DashboardRenderer.js');
+            if (this._destroyed) return;
             if (module.DashboardRenderer) {
                 this.dashboardRenderer = new module.DashboardRenderer(this.world);
                 console.log('[App] DashboardRenderer loaded');
@@ -203,22 +228,22 @@ class App {
 
     _bindAgentFollow() {
         // Follow the camera when an agent is selected
-        eventBus.on('agent:selected', (agent) => {
+        this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
             if (agent && this.renderer) {
                 this.renderer.selectAgentById(agent.id);
             }
-        });
+        }));
 
         // Stop following when the panel closes
-        eventBus.on('agent:deselected', () => {
+        this._eventUnsubscribers.push(eventBus.on('agent:deselected', () => {
             if (this.renderer) {
                 this.renderer.selectAgentById(null);
             }
-        });
+        }));
     }
 
     _bindChronicleSignals() {
-        eventBus.on('chronicle:milestone', (monument) => {
+        this._eventUnsubscribers.push(eventBus.on('chronicle:milestone', (monument) => {
             this.auroraGate?.recordMilestone(monument);
             this.auroraGate?.evaluate(Date.now(), {
                 release: monument?.kind === 'release',
@@ -228,9 +253,9 @@ class App {
                     eventBus.emit('chronicle:aurora', { ts: Date.now(), reason: monument?.kind || 'milestone' });
                 }
             }).catch(() => {});
-        });
+        }));
 
-        eventBus.on('usage:updated', (usage) => {
+        this._eventUnsubscribers.push(eventBus.on('usage:updated', (usage) => {
             this.latestUsage = usage;
             this.renderer?.setQuotaState?.(usage);
             this.auroraGate?.handleUsageUpdate(usage).then((result) => {
@@ -238,17 +263,18 @@ class App {
                     eventBus.emit('chronicle:aurora', { ts: Date.now(), reason: 'quota-rollover' });
                 }
             }).catch(() => {});
-        });
+        }));
 
-        eventBus.on('chronicle:aurora', () => {
+        this._eventUnsubscribers.push(eventBus.on('chronicle:aurora', () => {
             this.renderer?.skyRenderer?.triggerAurora?.();
-        });
+        }));
     }
 
     _bindResize() {
         const canvas = document.getElementById('worldCanvas');
         const container = canvas?.parentElement;
         if (!canvas || !container) return;
+        this._worldCanvas = canvas;
         if (this._resizeHandle) {
             cancelAnimationFrame(this._resizeHandle);
             this._resizeHandle = null;
@@ -262,6 +288,7 @@ class App {
                 if (!this._resizeHandle && this.modeManager?.getCurrentMode() !== 'dashboard') {
                     this._resizeHandle = requestAnimationFrame(() => {
                         this._resizeHandle = null;
+                        if (this._destroyed) return;
                         resize();
                     });
                 }
@@ -304,7 +331,8 @@ class App {
         this._resizeObserver = new ResizeObserver(() => resize());
         this._resizeObserver.observe(container);
 
-        window.addEventListener('resize', () => resize());
+        this._onWindowResize = () => resize();
+        window.addEventListener('resize', this._onWindowResize);
         this._resizeWorldCanvas = resize;
         this._bindGraphicsRecovery(canvas, resize);
         resize();
@@ -344,18 +372,21 @@ class App {
     _installPerfDebugHelper() {
         if (typeof window === 'undefined') return;
         const existing = window.__claudeVillePerf || {};
+        this._perfDebugCanvasBudget = () => this.renderer?.getCanvasBudget?.() || null;
+        this._cameraSetHelper = (pose = {}) => this.renderer?.setCameraPose?.(pose) || false;
         window.__claudeVillePerf = {
             ...existing,
-            canvasBudget: () => this.renderer?.getCanvasBudget?.() || null,
+            canvasBudget: this._perfDebugCanvasBudget,
         };
-        window.cameraSet = (pose = {}) => this.renderer?.setCameraPose?.(pose) || false;
+        window.cameraSet = this._cameraSetHelper;
     }
 
     _bindSettings() {
         const btn = document.getElementById('btnSettings');
         if (!btn) return;
+        this._settingsButton = btn;
 
-        btn.addEventListener('click', () => {
+        this._onSettingsClick = () => {
             const currentLang = i18n.lang;
             const privacyRedaction = Settings.privacyRedaction;
             this.modal.open(i18n.t('settingsTitle'), `
@@ -397,7 +428,8 @@ class App {
             privacyInput?.addEventListener('change', () => {
                 Settings.privacyRedaction = privacyInput.checked;
             });
-        });
+        };
+        btn.addEventListener('click', this._onSettingsClick);
     }
 
     _applyI18n() {
@@ -448,10 +480,99 @@ class App {
             ]),
         ]);
     }
+
+    destroy() {
+        this._destroyed = true;
+
+        if (this._chroniclePruneInterval) {
+            window.clearInterval(this._chroniclePruneInterval);
+            this._chroniclePruneInterval = null;
+        }
+        if (this._resizeHandle) {
+            cancelAnimationFrame(this._resizeHandle);
+            this._resizeHandle = null;
+        }
+        if (this._loadRendererRetryHandle) {
+            cancelAnimationFrame(this._loadRendererRetryHandle);
+            this._loadRendererRetryHandle = null;
+        }
+        if (this._centerCameraHandle) {
+            cancelAnimationFrame(this._centerCameraHandle);
+            this._centerCameraHandle = null;
+        }
+
+        for (const unsubscribe of this._eventUnsubscribers.splice(0)) {
+            unsubscribe?.();
+        }
+
+        if (this._settingsButton && this._onSettingsClick) {
+            this._settingsButton.removeEventListener('click', this._onSettingsClick);
+        }
+        this._settingsButton = null;
+        this._onSettingsClick = null;
+
+        if (this._onWindowResize) {
+            window.removeEventListener('resize', this._onWindowResize);
+            this._onWindowResize = null;
+        }
+        this._resizeObserver?.disconnect?.();
+        this._resizeObserver = null;
+
+        if (this._worldCanvas && this._onWorldContextLost) {
+            this._worldCanvas.removeEventListener('contextlost', this._onWorldContextLost);
+            this._worldCanvas.removeEventListener('contextrestored', this._onWorldContextRestored);
+        }
+        this._onWorldContextLost = null;
+        this._onWorldContextRestored = null;
+        this._worldCanvas = null;
+
+        if (this._onVisibilityChange) {
+            document.removeEventListener('visibilitychange', this._onVisibilityChange);
+            this._onVisibilityChange = null;
+        }
+
+        this.sessionWatcher?.stop?.();
+        this.notificationService?.destroy?.();
+        this.activityPanel?.destroy?.();
+        this.dashboardRenderer?.destroy?.();
+        this.renderer?.hide?.();
+        // ModeManager does not expose a destroy hook yet; adding one would touch
+        // its button-listener ownership and is left as a narrow follow-up.
+        this.sidebar?.destroy?.();
+        this.topBar?.destroy?.();
+        this.modal?.destroy?.();
+        this.toast?.destroy?.();
+        this.chronicleStore?.close?.();
+
+        if (typeof window !== 'undefined') {
+            if (window.__chronicle === this.chronicleStore) delete window.__chronicle;
+            if (window.__claudeVilleApp === this) delete window.__claudeVilleApp;
+            if (window.cameraSet === this._cameraSetHelper) delete window.cameraSet;
+            if (window.__claudeVillePerf?.canvasBudget === this._perfDebugCanvasBudget) {
+                delete window.__claudeVillePerf.canvasBudget;
+            }
+        }
+
+        this.renderer = null;
+        this.dashboardRenderer = null;
+        this.activityPanel = null;
+        this.sessionWatcher = null;
+        this.notificationService = null;
+        this.sidebar = null;
+        this.topBar = null;
+        this.modal = null;
+        this.toast = null;
+        this.chronicleStore = null;
+        this.auroraGate = null;
+        this._perfDebugCanvasBudget = null;
+        this._cameraSetHelper = null;
+        this._resizeWorldCanvas = null;
+    }
 }
 
 // Boot
 window.addEventListener('load', () => {
     const app = new App();
+    window.__claudeVilleApp = app;
     app.boot();
 });

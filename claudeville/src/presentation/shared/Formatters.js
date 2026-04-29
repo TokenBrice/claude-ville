@@ -1,3 +1,5 @@
+import { AgentStatus, normalizeAgentStatus } from '../../domain/value-objects/AgentStatus.js';
+
 const HOME_ROOTS = Object.freeze(['Users', 'home']);
 
 export function hashRows(rows, fields) {
@@ -20,13 +22,12 @@ export function hashRows(rows, fields) {
 }
 
 export function normalizeStatus(status, fallback = 'idle') {
-    const normalized = String(status || fallback || 'idle').toLowerCase();
-    return normalized === 'active' ? 'working' : normalized;
+    return normalizeAgentStatus(status, fallback);
 }
 
 export function statusClass(status, fallback = 'idle') {
     const normalized = normalizeStatus(status, fallback);
-    return ['working', 'idle', 'waiting'].includes(normalized) ? normalized : fallback;
+    return [AgentStatus.WORKING, AgentStatus.IDLE, AgentStatus.WAITING].includes(normalized) ? normalized : fallback;
 }
 
 export function formatNumber(num) {
