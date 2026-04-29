@@ -36,8 +36,8 @@ export class Camera {
     }
 
     centerOnMap() {
-        // Frame the village core while keeping the Pharos lighthouse and harbor in the first view.
-        const tx = 30, ty = 21;
+        // Frame the village core while giving the right-side harbor sea lanes more room.
+        const tx = 33, ty = 18;
         const screen = tileToWorld(tx, ty);
         this.zoom = 1;
         if (!this.canvas) return;
