@@ -13,8 +13,6 @@ export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
 const SHIP_SPRITE_ID = 'prop.harborBoat';
 const MAX_SHIPS_PER_SQUAD_ANCHORAGE = 3;
 const HARBOR_LOG_TILE = { tileX: 34.8, tileY: 17.2 };
-const COMMIT_LAGOON_BATCH_SIZE = 10;
-const COMMIT_LAGOON_MIN_COMMITS = COMMIT_LAGOON_BATCH_SIZE + 1;
 const COMMIT_LAGOON_LOG_TILE = { tileX: 17.2, tileY: 6.1 };
 const DEPARTURE_MS = 48000;
 const DEPARTURE_STAGGER_MS = 720;
@@ -298,10 +296,6 @@ function trafficIdentity(project, branch = '') {
     return `${String(project || 'unknown')}\x1f${normalizeRepoBranch(branch)}`;
 }
 
-function projectIdentity(project) {
-    return String(project || 'unknown');
-}
-
 function trafficProfile(project, branch = '') {
     return repoBranchProfile(project, normalizeRepoBranch(branch));
 }
@@ -514,43 +508,6 @@ function dockSquadFormationSpacing(ships = [], repoDockOffset = 0, repoDockCount
     ), 1);
 }
 
-function commitLagoonProjectFromGroups(groups = new Map()) {
-    const projects = new Map();
-    for (const group of groups.values()) {
-        const key = projectIdentity(group.project);
-        const current = projects.get(key) || {
-            project: group.project,
-            key,
-            count: 0,
-            failedCount: 0,
-            latestEventTime: 0,
-        };
-        current.count += group.ships.length;
-        current.failedCount += group.failedCount || 0;
-        current.latestEventTime = Math.max(current.latestEventTime, group.latestEventTime || 0);
-        projects.set(key, current);
-    }
-
-    let best = null;
-    for (const project of projects.values()) {
-        if (project.count < COMMIT_LAGOON_MIN_COMMITS) continue;
-        if (!best
-            || project.count > best.count
-            || (project.count === best.count && project.failedCount > best.failedCount)
-            || (project.count === best.count && project.failedCount === best.failedCount && project.latestEventTime > best.latestEventTime)
-            || (project.count === best.count && project.failedCount === best.failedCount && project.latestEventTime === best.latestEventTime && project.key.localeCompare(best.key) < 0)) {
-            best = project;
-        }
-    }
-    return best;
-}
-
-function currentHarborBatchSize(commitCount) {
-    const count = Math.max(0, Math.floor(Number(commitCount) || 0));
-    if (count <= COMMIT_LAGOON_BATCH_SIZE) return count;
-    return ((count - 1) % COMMIT_LAGOON_BATCH_SIZE) + 1;
-}
-
 function anchoragesForWaitingZone(waitingZone) {
     return isCommitLagoonZone(waitingZone)
         ? COMMIT_LAGOON_SQUAD_ANCHORAGES
@@ -743,17 +700,13 @@ function buildDockSquadLayout(state) {
         groups.set(profile.key, group);
         totalDocked += 1;
     }
-    const commitLagoonProject = commitLagoonProjectFromGroups(groups);
-
     const repoGroups = [...groups.values()]
         .map((group) => ({
             ...group,
             ships: [...group.ships].sort(compareDockedShips),
             count: group.ships.length,
-            storageEligible: commitLagoonProject && projectIdentity(group.project) === commitLagoonProject.key,
         }))
-        .sort((a, b) => Number(b.storageEligible) - Number(a.storageEligible)
-            || (a.quayIndex - b.quayIndex)
+        .sort((a, b) => (a.quayIndex - b.quayIndex)
             || (b.failedCount - a.failedCount)
             || (b.count - a.count)
             || (b.latestEventTime - a.latestEventTime)
@@ -762,19 +715,16 @@ function buildDockSquadLayout(state) {
     const squads = [];
     repoGroups.forEach((group, repoGroupIndex) => {
         const totalRepoDockCount = group.ships.length;
-        const harborBatchSize = group.storageEligible
-            ? currentHarborBatchSize(totalRepoDockCount)
-            : totalRepoDockCount;
         const zonePartitions = [
             {
                 waitingZone: 'harbor',
-                ships: group.ships.slice(0, harborBatchSize),
+                ships: [],
                 sourceOffset: 0,
             },
             {
                 waitingZone: 'commit-lagoon',
-                ships: group.storageEligible ? group.ships.slice(harborBatchSize) : [],
-                sourceOffset: harborBatchSize,
+                ships: group.ships,
+                sourceOffset: 0,
             },
         ];
 
@@ -881,8 +831,6 @@ function buildDockSquadLayout(state) {
         byShipId,
         totalDocked,
         squadCount,
-        commitLagoonProject,
-        commitLagoonProjectKey: commitLagoonProject?.key || null,
     };
 }
 
