@@ -3755,7 +3755,7 @@ export class IsometricRenderer {
         for (const wake of descriptors.slice(0, 16)) {
             const alpha = Math.min(0.22, (wake.alpha ?? 0.12) * (1 + roughness * 0.28));
             if (alpha <= 0.01) continue;
-            const token = WATER_TOKENS.harbor;
+            const token = WATER_TOKENS[wake.waterRegion] || WATER_TOKENS.harbor;
             const dx = wake.x - (wake.tailX ?? wake.x - 1);
             const dy = wake.y - (wake.tailY ?? wake.y);
             const wakeRotation = wake.type === 'departing' ? Math.atan2(dy, dx) * 0.55 : -0.18;

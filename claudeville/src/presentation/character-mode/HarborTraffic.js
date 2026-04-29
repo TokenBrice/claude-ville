@@ -13,8 +13,13 @@ export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
 const SHIP_SPRITE_ID = 'prop.harborBoat';
 const MAX_SHIPS_PER_SQUAD_ANCHORAGE = 3;
 const HARBOR_LOG_TILE = { tileX: 34.8, tileY: 17.2 };
+const COMMIT_LAGOON_BATCH_SIZE = 10;
+const COMMIT_LAGOON_MIN_COMMITS = COMMIT_LAGOON_BATCH_SIZE + 1;
+const COMMIT_LAGOON_LOG_TILE = { tileX: 17.2, tileY: 6.1 };
 const DEPARTURE_MS = 48000;
 const DEPARTURE_STAGGER_MS = 720;
+const STORAGE_TRANSFER_MS = 9000;
+const STORAGE_TRANSFER_STAGGER_MS = 220;
 const EXIT_HOLD_MS = 1800;
 const EXIT_FADE_MS = 4200;
 const FADE_DELAY_MS = 3200;
@@ -56,6 +61,18 @@ const HARBOR_DOCK_WATER_REGIONS = Object.freeze([
     { centerX: 39.20, centerY: 16.20, radiusX: 4.45, radiusY: 6.05, limit: 0.82 },
     { centerX: 43.00, centerY: 19.00, radiusX: 12.60, radiusY: 23.00, limit: 0.88 },
 ]);
+const COMMIT_LAGOON_WATER_BOUNDS = Object.freeze({
+    minTileX: 5.15,
+    maxTileX: 27.85,
+    minTileY: 3.55,
+    maxTileY: 12.85,
+});
+const COMMIT_LAGOON_WATER_REGIONS = Object.freeze([
+    { centerX: 7.60, centerY: 8.30, radiusX: 5.45, radiusY: 3.65, limit: 0.88 },
+    { centerX: 12.40, centerY: 5.20, radiusX: 3.85, radiusY: 2.65, limit: 0.86 },
+    { centerX: 17.40, centerY: 10.50, radiusX: 5.15, radiusY: 3.45, limit: 0.88 },
+    { centerX: 24.80, centerY: 7.60, radiusX: 3.95, radiusY: 2.70, limit: 0.86 },
+]);
 const HARBOR_SQUAD_ANCHORAGES = Object.freeze([
     { name: 'Inner West Basin', zone: 'inner-harbor', tileX: 32.60, tileY: 22.75, columns: 2, columnDx: 1.16, columnDy: 0.08, rowDx: -0.54, rowDy: 1.02 },
     { name: 'Inner Quay Basin', zone: 'inner-harbor', tileX: 35.15, tileY: 22.55, columns: 2, columnDx: 1.12, columnDy: -0.12, rowDx: -0.40, rowDy: 1.04 },
@@ -65,6 +82,12 @@ const HARBOR_SQUAD_ANCHORAGES = Object.freeze([
     { name: 'East Roadstead', zone: 'outer-roadstead', tileX: 38.75, tileY: 16.15, columns: 2, columnDx: 0.86, columnDy: -0.70, rowDx: 0.54, rowDy: 0.76 },
     { name: 'South Roadstead', zone: 'outer-roadstead', tileX: 38.90, tileY: 21.20, columns: 2, columnDx: 1.04, columnDy: 0.08, rowDx: 0.38, rowDy: 0.98 },
     { name: 'Outer Fairway', zone: 'outer-roadstead', tileX: 38.25, tileY: 24.05, columns: 2, columnDx: 1.06, columnDy: 0.20, rowDx: -0.28, rowDy: 1.04 },
+]);
+const COMMIT_LAGOON_SQUAD_ANCHORAGES = Object.freeze([
+    { name: 'Commit Lagoon West', zone: 'commit-lagoon', tileX: 7.75, tileY: 8.55, columns: 2, columnDx: 0.96, columnDy: -0.22, rowDx: 0.36, rowDy: 0.82 },
+    { name: 'Commit Lagoon Spring', zone: 'commit-lagoon', tileX: 12.30, tileY: 5.75, columns: 2, columnDx: 0.82, columnDy: 0.18, rowDx: 0.54, rowDy: 0.72 },
+    { name: 'Commit Lagoon Center', zone: 'commit-lagoon', tileX: 17.20, tileY: 10.10, columns: 2, columnDx: 1.04, columnDy: -0.18, rowDx: 0.42, rowDy: 0.82 },
+    { name: 'Commit Lagoon East', zone: 'commit-lagoon', tileX: 24.20, tileY: 7.55, columns: 2, columnDx: 0.82, columnDy: -0.24, rowDx: 0.46, rowDy: 0.78 },
 ]);
 
 const BERTHS = [
@@ -164,6 +187,50 @@ const LOCAL_WATER_ROUTE_BANDS = Object.freeze([
         exitLaneIndex: 3,
     },
 ]);
+const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
+    {
+        name: 'lagoon-east-channel',
+        offsetX: 0.30,
+        offsetY: -0.14,
+        allowSouthbound: true,
+        waypoints: [
+            { tileX: 14.8, tileY: 8.2 },
+            { tileX: 20.4, tileY: 8.8 },
+            { tileX: 25.0, tileY: 7.2 },
+            { tileX: 30.6, tileY: 5.2 },
+            { tileX: 36.2, tileY: 4.9 },
+        ],
+        exitLaneIndex: 2,
+    },
+    {
+        name: 'lagoon-spring-channel',
+        offsetX: -0.22,
+        offsetY: -0.26,
+        allowSouthbound: true,
+        waypoints: [
+            { tileX: 12.8, tileY: 6.3 },
+            { tileX: 18.2, tileY: 6.6 },
+            { tileX: 24.8, tileY: 6.0 },
+            { tileX: 31.4, tileY: 4.4 },
+            { tileX: 36.8, tileY: 5.6 },
+        ],
+        exitLaneIndex: 1,
+    },
+    {
+        name: 'observatory-backwater',
+        offsetX: 0.14,
+        offsetY: 0.22,
+        allowSouthbound: true,
+        waypoints: [
+            { tileX: 18.4, tileY: 10.2 },
+            { tileX: 22.8, tileY: 8.9 },
+            { tileX: 27.8, tileY: 6.2 },
+            { tileX: 34.0, tileY: 4.3 },
+            { tileX: 38.2, tileY: 6.6 },
+        ],
+        exitLaneIndex: 3,
+    },
+]);
 
 const PUSH_STATUS_STYLE = {
     success: {
@@ -227,6 +294,10 @@ function eventBranch(event = {}) {
 
 function trafficIdentity(project, branch = '') {
     return `${String(project || 'unknown')}\x1f${normalizeRepoBranch(branch)}`;
+}
+
+function projectIdentity(project) {
+    return String(project || 'unknown');
 }
 
 function trafficProfile(project, branch = '') {
@@ -441,20 +512,80 @@ function dockSquadFormationSpacing(ships = [], repoDockOffset = 0, repoDockCount
     ), 1);
 }
 
+function commitLagoonProjectFromGroups(groups = new Map()) {
+    const projects = new Map();
+    for (const group of groups.values()) {
+        const key = projectIdentity(group.project);
+        const current = projects.get(key) || {
+            project: group.project,
+            key,
+            count: 0,
+            failedCount: 0,
+            latestEventTime: 0,
+        };
+        current.count += group.ships.length;
+        current.failedCount += group.failedCount || 0;
+        current.latestEventTime = Math.max(current.latestEventTime, group.latestEventTime || 0);
+        projects.set(key, current);
+    }
+
+    let best = null;
+    for (const project of projects.values()) {
+        if (project.count < COMMIT_LAGOON_MIN_COMMITS) continue;
+        if (!best
+            || project.count > best.count
+            || (project.count === best.count && project.failedCount > best.failedCount)
+            || (project.count === best.count && project.failedCount === best.failedCount && project.latestEventTime > best.latestEventTime)
+            || (project.count === best.count && project.failedCount === best.failedCount && project.latestEventTime === best.latestEventTime && project.key.localeCompare(best.key) < 0)) {
+            best = project;
+        }
+    }
+    return best;
+}
+
+function currentHarborBatchSize(commitCount) {
+    const count = Math.max(0, Math.floor(Number(commitCount) || 0));
+    if (count <= COMMIT_LAGOON_BATCH_SIZE) return count;
+    return ((count - 1) % COMMIT_LAGOON_BATCH_SIZE) + 1;
+}
+
+function anchoragesForWaitingZone(waitingZone) {
+    return isCommitLagoonZone(waitingZone)
+        ? COMMIT_LAGOON_SQUAD_ANCHORAGES
+        : HARBOR_SQUAD_ANCHORAGES;
+}
+
 function harborShipCollisionRadius(ship = {}) {
     const shipClass = harborShipClass(ship);
     const wakeScale = Math.max(0.85, Number(shipClass.wakeScale || 1));
     return Math.max(34, Math.min(66, 22 + wakeScale * 16));
 }
 
+function isCommitLagoonZone(zone) {
+    return zone === 'commit-lagoon';
+}
+
+function dockWaterBounds(entry = {}) {
+    return isCommitLagoonZone(entry.waitingZone || entry.departWaterZone)
+        ? COMMIT_LAGOON_WATER_BOUNDS
+        : HARBOR_DOCK_WATER_BOUNDS;
+}
+
+function dockWaterRegions(entry = {}) {
+    return isCommitLagoonZone(entry.waitingZone || entry.departWaterZone)
+        ? COMMIT_LAGOON_WATER_REGIONS
+        : HARBOR_DOCK_WATER_REGIONS;
+}
+
 function dockShipWaterBounds(entry = {}) {
     const radius = Math.max(34, Number(entry.collisionRadius) || 42);
     const margin = clamp((radius - 34) / 64, 0, 0.62);
+    const bounds = dockWaterBounds(entry);
     return {
-        minTileX: HARBOR_DOCK_WATER_BOUNDS.minTileX + margin * 0.40,
-        maxTileX: HARBOR_DOCK_WATER_BOUNDS.maxTileX - margin * 0.92,
-        minTileY: HARBOR_DOCK_WATER_BOUNDS.minTileY + margin * 0.32,
-        maxTileY: HARBOR_DOCK_WATER_BOUNDS.maxTileY - margin * 0.50,
+        minTileX: bounds.minTileX + margin * 0.40,
+        maxTileX: bounds.maxTileX - margin * 0.92,
+        minTileY: bounds.minTileY + margin * 0.32,
+        maxTileY: bounds.maxTileY - margin * 0.50,
     };
 }
 
@@ -478,13 +609,14 @@ function projectTileIntoHarborRegion(tile, region) {
 function clampDockTileToHarborWater(tile, entry = {}) {
     const bounds = dockShipWaterBounds(entry);
     let next = {
-        tileX: clamp(Number(tile.tileX) || HARBOR_DOCK_WATER_BOUNDS.maxTileX, bounds.minTileX, bounds.maxTileX),
-        tileY: clamp(Number(tile.tileY) || HARBOR_DOCK_WATER_BOUNDS.maxTileY, bounds.minTileY, bounds.maxTileY),
+        tileX: clamp(Number(tile.tileX) || bounds.maxTileX, bounds.minTileX, bounds.maxTileX),
+        tileY: clamp(Number(tile.tileY) || bounds.maxTileY, bounds.minTileY, bounds.maxTileY),
     };
 
-    let bestRegion = HARBOR_DOCK_WATER_REGIONS[0];
+    const regions = dockWaterRegions(entry);
+    let bestRegion = regions[0];
     let bestScore = Infinity;
-    for (const region of HARBOR_DOCK_WATER_REGIONS) {
+    for (const region of regions) {
         const score = harborWaterRegionScore(next, region);
         if (score < bestScore) {
             bestScore = score;
@@ -609,14 +741,17 @@ function buildDockSquadLayout(state) {
         groups.set(profile.key, group);
         totalDocked += 1;
     }
+    const commitLagoonProject = commitLagoonProjectFromGroups(groups);
 
     const repoGroups = [...groups.values()]
         .map((group) => ({
             ...group,
             ships: [...group.ships].sort(compareDockedShips),
             count: group.ships.length,
+            storageEligible: commitLagoonProject && projectIdentity(group.project) === commitLagoonProject.key,
         }))
-        .sort((a, b) => (a.quayIndex - b.quayIndex)
+        .sort((a, b) => Number(b.storageEligible) - Number(a.storageEligible)
+            || (a.quayIndex - b.quayIndex)
             || (b.failedCount - a.failedCount)
             || (b.count - a.count)
             || (b.latestEventTime - a.latestEventTime)
@@ -624,40 +759,70 @@ function buildDockSquadLayout(state) {
 
     const squads = [];
     repoGroups.forEach((group, repoGroupIndex) => {
-        const repoDockCount = group.ships.length;
-        const repoSegmentCount = Math.max(1, Math.ceil(repoDockCount / MAX_SHIPS_PER_SQUAD_ANCHORAGE));
-        for (let repoSegmentIndex = 0; repoSegmentIndex < repoSegmentCount; repoSegmentIndex++) {
-            const start = repoSegmentIndex * MAX_SHIPS_PER_SQUAD_ANCHORAGE;
-            const ships = group.ships.slice(start, start + MAX_SHIPS_PER_SQUAD_ANCHORAGE);
-            if (!ships.length) continue;
-            squads.push({
-                ...group,
-                ships,
-                count: ships.length,
-                repoDockCount,
-                repoDockOffset: start,
-                repoGroupIndex,
-                repoSegmentIndex,
-                repoSegmentCount,
-                segmentKey: `${group.key}:segment:${repoSegmentIndex}`,
-                failedCount: ships.filter(ship => ship.pushStatus === 'failed').length,
-                latestEventTime: ships.reduce((max, ship) => Math.max(max, ship.eventTime || 0), 0),
-            });
+        const totalRepoDockCount = group.ships.length;
+        const harborBatchSize = group.storageEligible
+            ? currentHarborBatchSize(totalRepoDockCount)
+            : totalRepoDockCount;
+        const zonePartitions = [
+            {
+                waitingZone: 'harbor',
+                ships: group.ships.slice(0, harborBatchSize),
+                sourceOffset: 0,
+            },
+            {
+                waitingZone: 'commit-lagoon',
+                ships: group.storageEligible ? group.ships.slice(harborBatchSize) : [],
+                sourceOffset: harborBatchSize,
+            },
+        ];
+
+        for (const partition of zonePartitions) {
+            const zoneDockCount = partition.ships.length;
+            if (!zoneDockCount) continue;
+            const repoSegmentCount = Math.max(1, Math.ceil(zoneDockCount / MAX_SHIPS_PER_SQUAD_ANCHORAGE));
+            for (let repoSegmentIndex = 0; repoSegmentIndex < repoSegmentCount; repoSegmentIndex++) {
+                const start = repoSegmentIndex * MAX_SHIPS_PER_SQUAD_ANCHORAGE;
+                const ships = partition.ships.slice(start, start + MAX_SHIPS_PER_SQUAD_ANCHORAGE);
+                if (!ships.length) continue;
+                const repoDockOffset = start;
+                squads.push({
+                    ...group,
+                    ships,
+                    count: ships.length,
+                    repoDockCount: zoneDockCount,
+                    repoTotalDockCount: totalRepoDockCount,
+                    repoDockOffset,
+                    repoSourceOffset: partition.sourceOffset + start,
+                    repoGroupIndex,
+                    repoSegmentIndex,
+                    repoSegmentCount,
+                    segmentKey: `${group.key}:${partition.waitingZone}:segment:${repoSegmentIndex}`,
+                    waitingZone: partition.waitingZone,
+                    failedCount: ships.filter(ship => ship.pushStatus === 'failed').length,
+                    latestEventTime: ships.reduce((max, ship) => Math.max(max, ship.eventTime || 0), 0),
+                });
+            }
         }
     });
 
     const byShipId = new Map();
     const squadCount = squads.length;
+    const zoneSquadCounts = new Map();
     squads.forEach((squad, squadIndex) => {
-        const anchorIndex = squadIndex % HARBOR_SQUAD_ANCHORAGES.length;
-        const squadCycle = Math.floor(squadIndex / HARBOR_SQUAD_ANCHORAGES.length);
-        const anchor = HARBOR_SQUAD_ANCHORAGES[anchorIndex] || HARBOR_SQUAD_ANCHORAGES[0];
+        const waitingZone = squad.waitingZone || 'harbor';
+        const zoneSquadIndex = zoneSquadCounts.get(waitingZone) || 0;
+        zoneSquadCounts.set(waitingZone, zoneSquadIndex + 1);
+        const anchorages = anchoragesForWaitingZone(waitingZone);
+        const anchorIndex = zoneSquadIndex % anchorages.length;
+        const squadCycle = Math.floor(zoneSquadIndex / anchorages.length);
+        const anchor = anchorages[anchorIndex] || anchorages[0] || HARBOR_SQUAD_ANCHORAGES[0];
         const repoDockCount = Math.max(squad.count, Number(squad.repoDockCount) || squad.count);
         const density = dockSquadDensity(totalDocked, squadCount, repoDockCount);
         const compactCommitLabel = density >= 0.52 || totalDocked >= 9 || repoDockCount >= 3;
         squad.anchor = anchor;
         squad.anchorIndex = anchorIndex;
         squad.squadIndex = squadIndex;
+        squad.zoneSquadIndex = zoneSquadIndex;
         squad.squadCount = squadCount;
         squad.totalDocked = totalDocked;
         squad.density = density;
@@ -673,6 +838,7 @@ function buildDockSquadLayout(state) {
                 repoDockIndex,
                 repoDockCount,
                 repoDockVisibleCount: squad.count,
+                waitingZone,
             };
             const showCommitLabel = ship.pushStatus === 'failed'
                 || (!compactCommitLabel && totalDocked <= 18)
@@ -685,14 +851,17 @@ function buildDockSquadLayout(state) {
                 y: world.y,
                 collisionRadius: harborShipCollisionRadius(layoutShip),
                 squadKey: squad.key,
+                waitingZone,
                 anchorageName: anchor.name,
                 anchorageIndex: anchorIndex,
                 repoDockIndex,
                 repoDockCount,
+                repoTotalDockCount: squad.repoTotalDockCount,
                 repoDockVisibleCount: squad.count,
                 repoSegmentIndex: squad.repoSegmentIndex,
                 repoSegmentCount: squad.repoSegmentCount,
                 squadIndex,
+                zoneSquadIndex,
                 squadCount,
                 squadShipIndex: shipIndex,
                 squadShipCount: squad.count,
@@ -705,12 +874,20 @@ function buildDockSquadLayout(state) {
 
     relaxDockShipLayout([...byShipId.values()]);
 
-    return { squads, byShipId, totalDocked, squadCount };
+    return {
+        squads,
+        byShipId,
+        totalDocked,
+        squadCount,
+        commitLagoonProject,
+        commitLagoonProjectKey: commitLagoonProject?.key || null,
+    };
 }
 
-function routeBandsFromData(routeData) {
-    return Array.isArray(routeData?.bands) && routeData.bands.length
-        ? routeData.bands
+function routeBandsFromData(routeData, ship = null) {
+    if (Array.isArray(routeData?.bands) && routeData.bands.length) return routeData.bands;
+    return isCommitLagoonZone(ship?.departWaterZone || ship?.waitingZone)
+        ? COMMIT_LAGOON_ROUTE_BANDS
         : LOCAL_WATER_ROUTE_BANDS;
 }
 
@@ -734,7 +911,7 @@ function offsetWaterRoutePoint(point, band, ship, index, lastIndex) {
 }
 
 function composeWaterRouteTiles(startTile, ship, routeData = null) {
-    const bands = routeBandsFromData(routeData);
+    const bands = routeBandsFromData(routeData, ship);
     const routeIndex = Number.isFinite(Number(ship?.departRouteIndex))
         ? Number(ship.departRouteIndex)
         : Number(ship?.laneIndex || 0);
@@ -743,7 +920,7 @@ function composeWaterRouteTiles(startTile, ship, routeData = null) {
     const raw = [];
     pushRoutePoint(raw, startTile);
     for (const point of band.waypoints || []) {
-        if (Number(point.tileY) > Number(startTile.tileY) + 0.65) continue;
+        if (!band.allowSouthbound && Number(point.tileY) > Number(startTile.tileY) + 0.65) continue;
         pushRoutePoint(raw, point);
     }
     const exitPoint = fallbackLane?.[fallbackLane.length - 1];
@@ -755,6 +932,24 @@ function composeWaterRouteTiles(startTile, ship, routeData = null) {
         pushRoutePoint(route, offsetWaterRoutePoint(point, band, ship, index, lastIndex));
     });
     return route.length ? route : [startTile, ...(fallbackLane || [])];
+}
+
+function composeStorageTransferTiles(fromTile, toTile, ship = {}) {
+    const route = [];
+    pushRoutePoint(route, fromTile);
+    const laneOffset = Math.max(-0.44, Math.min(0.44, ((stableHash(`${ship.id || ''}:storage-lane`) % 9) - 4) * 0.11));
+    const entryY = Math.max(12.0, Math.min(16.2, fromTile.tileY - 5.6));
+    pushRoutePoint(route, { tileX: 37.0 + laneOffset, tileY: entryY });
+    pushRoutePoint(route, { tileX: 35.2 + laneOffset, tileY: 9.1 });
+    pushRoutePoint(route, { tileX: 28.4 + laneOffset * 0.6, tileY: 6.6 });
+    if (toTile.tileX < 15) {
+        pushRoutePoint(route, { tileX: 20.6 + laneOffset * 0.4, tileY: 6.3 });
+        pushRoutePoint(route, { tileX: 14.2 + laneOffset * 0.3, tileY: 6.5 });
+    } else if (toTile.tileX > 21) {
+        pushRoutePoint(route, { tileX: 24.2 + laneOffset * 0.3, tileY: 6.6 });
+    }
+    pushRoutePoint(route, toTile);
+    return route;
 }
 
 function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
@@ -912,6 +1107,7 @@ export function snapshotHarborTrafficState(state) {
                     laneIndex: ship.laneIndex,
                     repoDockIndex: meta.repoDockIndex ?? ship.repoDockIndex ?? null,
                     repoDockCount: meta.repoDockCount ?? ship.repoDockCount ?? null,
+                    repoTotalDockCount: meta.repoTotalDockCount ?? ship.repoTotalDockCount ?? null,
                     repoDockVisibleCount: meta.repoDockVisibleCount ?? ship.repoDockVisibleCount ?? null,
                     repoSegmentIndex: meta.repoSegmentIndex ?? ship.repoSegmentIndex ?? null,
                     repoSegmentCount: meta.repoSegmentCount ?? ship.repoSegmentCount ?? null,
@@ -924,8 +1120,11 @@ export function snapshotHarborTrafficState(state) {
                     showCommitLabel: meta.showCommitLabel ?? ship.showCommitLabel ?? null,
                     formationColumn: meta.column ?? ship.formationColumn ?? null,
                     formationRow: meta.row ?? ship.formationRow ?? null,
+                    waitingZone: meta.waitingZone ?? ship.waitingZone ?? null,
+                    departWaterZone: ship.departWaterZone || null,
                     anchorageName: meta.anchorageName ?? ship.anchorageName ?? null,
                     anchorageIndex: meta.anchorageIndex ?? ship.anchorageIndex ?? null,
+                    zoneSquadIndex: meta.zoneSquadIndex ?? ship.zoneSquadIndex ?? null,
                     departSquadIndex: ship.departSquadIndex ?? null,
                     departSquadCount: ship.departSquadCount ?? null,
                     departRouteIndex: ship.departRouteIndex ?? null,
@@ -969,18 +1168,33 @@ export function snapshotHarborTrafficState(state) {
 }
 
 function pendingRepoSummariesFromDockSummaries(summaries) {
-    return [...(summaries?.values?.() || [])]
-        .filter(summary => (Number(summary.count) || 0) > 0)
-        .map((summary) => ({
+    const byRepo = new Map();
+    for (const summary of summaries?.values?.() || []) {
+        const count = Number(summary.count) || 0;
+        if (count <= 0) continue;
+        const profile = summary.profile || trafficProfile(summary.project, summary.branch);
+        const existing = byRepo.get(profile.key) || {
             project: summary.project,
             branch: summary.branch || '',
             repoName: trafficLabel(summary.project, summary.branch),
-            shortName: summary.profile?.shortName || trafficLabel(summary.project, summary.branch, 18),
-            profile: summary.profile || trafficProfile(summary.project, summary.branch),
-            pendingCommits: Number(summary.count) || 0,
-            failedPushes: Number(summary.failedCount) || 0,
-            latestEventTime: Number(summary.latestEventTime) || 0,
-        }))
+            shortName: profile.shortName || trafficLabel(summary.project, summary.branch, 18),
+            profile,
+            pendingCommits: 0,
+            failedPushes: 0,
+            latestEventTime: 0,
+            waitingZone: 'harbor',
+            storageCommits: 0,
+        };
+        existing.pendingCommits += count;
+        existing.failedPushes += Number(summary.failedCount) || 0;
+        existing.latestEventTime = Math.max(existing.latestEventTime, Number(summary.latestEventTime) || 0);
+        if (isCommitLagoonZone(summary.waitingZone)) {
+            existing.waitingZone = 'commit-lagoon';
+            existing.storageCommits += count;
+        }
+        byRepo.set(profile.key, existing);
+    }
+    return [...byRepo.values()]
         .sort((a, b) => (b.failedPushes - a.failedPushes)
             || (b.pendingCommits - a.pendingCommits)
             || (b.latestEventTime - a.latestEventTime)
@@ -1176,15 +1390,21 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 seenAt: previousPush?.seenAt || now,
             });
 
-            const routeIndex = stableHash(`${event.project}:${branch}:${event.id}:water-route`) % LOCAL_WATER_ROUTE_BANDS.length;
             const departSquadCount = Math.max(1, selectedShips.length);
             selectedShips.forEach((ship, departSquadIndex) => {
                 const dockMeta = dockLayout.byShipId.get(ship.id);
                 const berth = BERTHS[ship.berthIndex % BERTHS.length] || BERTHS[0];
+                const departWaterZone = dockMeta?.waitingZone || ship.waitingZone || 'harbor';
+                const routeBands = isCommitLagoonZone(departWaterZone)
+                    ? COMMIT_LAGOON_ROUTE_BANDS
+                    : LOCAL_WATER_ROUTE_BANDS;
+                const routeIndex = stableHash(`${event.project}:${branch}:${event.id}:${departWaterZone}:water-route`) % routeBands.length;
                 ship.pushStatus = status;
                 ship.batchId = batchId;
                 ship.pushEventId = event.id;
                 ship.pushSeenAt = now;
+                ship.waitingZone = departWaterZone;
+                ship.departWaterZone = departWaterZone;
                 ship.departSquadIndex = departSquadIndex;
                 ship.departSquadCount = departSquadCount;
                 ship.departRouteIndex = routeIndex;
@@ -1196,6 +1416,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 if (dockMeta) {
                     ship.repoDockIndex = dockMeta.repoDockIndex;
                     ship.repoDockCount = dockMeta.repoDockCount;
+                    ship.repoTotalDockCount = dockMeta.repoTotalDockCount;
                     ship.repoDockVisibleCount = dockMeta.repoDockVisibleCount;
                     ship.repoSegmentIndex = dockMeta.repoSegmentIndex;
                     ship.repoSegmentCount = dockMeta.repoSegmentCount;
@@ -1208,6 +1429,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ship.showCommitLabel = dockMeta.showCommitLabel;
                     ship.formationColumn = dockMeta.column;
                     ship.formationRow = dockMeta.row;
+                    ship.waitingZone = dockMeta.waitingZone;
+                    ship.departWaterZone = dockMeta.waitingZone;
                     ship.anchorageName = dockMeta.anchorageName;
                     ship.anchorageIndex = dockMeta.anchorageIndex;
                 }
@@ -1259,6 +1482,8 @@ export class HarborTraffic {
         this.state = cloneState();
         this._pendingRepoSummaries = [];
         this.harborCrates = new Map();
+        this.storageTransfers = new Map();
+        this._lastDockLayoutByShipId = new Map();
         this.motionScale = 1;
         this.frame = 0;
         this.waterRouteData = null;
@@ -1271,6 +1496,7 @@ export class HarborTraffic {
 
     setMotionScale(scale) {
         this.motionScale = scale === 0 ? 0 : 1;
+        if (this.motionScale <= 0) this.storageTransfers.clear();
     }
 
     update(agents, dt = 16, now = Date.now()) {
@@ -1283,7 +1509,9 @@ export class HarborTraffic {
             now,
             motionScale: this.motionScale,
         });
-        this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaries());
+        const dockLayout = buildDockSquadLayout(this.state);
+        this._observeStorageTransfers(dockLayout, now);
+        this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaries(dockLayout));
         this._observeHarborCrates(agents, events, now);
         this._observePeakDensity(now);
     }
@@ -1306,6 +1534,8 @@ export class HarborTraffic {
                 dockedCommits: 0,
                 failedPushes: 0,
                 latestEventTime: Number(summary.latestEventTime) || 0,
+                waitingZone: summary.waitingZone || 'harbor',
+                storageCommits: Number(summary.storageCommits) || 0,
             });
         }
         for (const summary of this._repoDockSummaries().values()) {
@@ -1319,10 +1549,24 @@ export class HarborTraffic {
                 dockedCommits: 0,
                 failedPushes: 0,
                 latestEventTime: 0,
+                waitingZone: summary.waitingZone || 'harbor',
+                storageCommits: 0,
             };
-            existing.dockedCommits = summary.count;
-            existing.failedPushes = summary.failedCount;
+            existing.dockedCommits += summary.count;
+            if (Number(existing.pendingCommits) <= 0) {
+                existing.failedPushes += summary.failedCount;
+            }
             existing.latestEventTime = Math.max(existing.latestEventTime, summary.latestEventTime || 0);
+            if (isCommitLagoonZone(summary.waitingZone)) {
+                existing.waitingZone = 'commit-lagoon';
+                if (Number(existing.pendingCommits) > 0) {
+                    existing.storageCommits = Math.max(existing.storageCommits, Number(summary.count) || 0);
+                } else {
+                    existing.storageCommits += Number(summary.count) || 0;
+                }
+            } else {
+                existing.waitingZone = existing.waitingZone || 'harbor';
+            }
             summaries.set(summary.profile.key, existing);
         }
         return [...summaries.values()]
@@ -1449,12 +1693,110 @@ export class HarborTraffic {
         }
     }
 
+    _observeStorageTransfers(dockLayout, now = Date.now()) {
+        const next = new Map();
+        for (const [id, meta] of dockLayout?.byShipId?.entries?.() || []) {
+            next.set(id, {
+                x: meta.x,
+                y: meta.y,
+                tileX: meta.tileX,
+                tileY: meta.tileY,
+                waitingZone: meta.waitingZone || 'harbor',
+            });
+        }
+
+        if (this.motionScale <= 0) {
+            this.storageTransfers.clear();
+            this._lastDockLayoutByShipId = next;
+            return;
+        }
+
+        if (!this._lastDockLayoutByShipId.size) {
+            this._lastDockLayoutByShipId = next;
+            return;
+        }
+
+        let transferIndex = 0;
+        for (const [id, current] of next) {
+            const previous = this._lastDockLayoutByShipId.get(id);
+            if (!previous) continue;
+            const ship = this.state.ships.get(id);
+            if (!ship || ship.status !== 'docked') continue;
+            const enteringStorage = !isCommitLagoonZone(previous.waitingZone)
+                && isCommitLagoonZone(current.waitingZone);
+            if (!enteringStorage || this.storageTransfers.has(id)) continue;
+
+            const fromTile = {
+                tileX: Number(previous.tileX),
+                tileY: Number(previous.tileY),
+            };
+            const toTile = {
+                tileX: Number(current.tileX),
+                tileY: Number(current.tileY),
+            };
+            this.storageTransfers.set(id, {
+                id,
+                startedAt: now + transferIndex * STORAGE_TRANSFER_STAGGER_MS,
+                duration: STORAGE_TRANSFER_MS,
+                route: composeStorageTransferTiles(fromTile, toTile, ship)
+                    .map(point => toWorld(point.tileX, point.tileY)),
+                fromZone: previous.waitingZone || 'harbor',
+                toZone: current.waitingZone || 'commit-lagoon',
+            });
+            transferIndex += 1;
+        }
+
+        for (const [id, transfer] of this.storageTransfers) {
+            const current = next.get(id);
+            if (!current || !isCommitLagoonZone(current.waitingZone)) {
+                this.storageTransfers.delete(id);
+                continue;
+            }
+            if (now - (transfer.startedAt || now) > (transfer.duration || STORAGE_TRANSFER_MS) + 250) {
+                this.storageTransfers.delete(id);
+            }
+        }
+
+        this._lastDockLayoutByShipId = next;
+    }
+
+    _storageTransferPosition(shipId, fallback, now = Date.now()) {
+        const transfer = this.storageTransfers.get(shipId);
+        if (!transfer || this.motionScale <= 0) return null;
+        const duration = Math.max(1, Number(transfer.duration) || STORAGE_TRANSFER_MS);
+        const rawProgress = Math.max(0, Math.min(1, (now - (transfer.startedAt || now)) / duration));
+        const eased = easedDeparture(rawProgress);
+        const route = Array.isArray(transfer.route) && transfer.route.length
+            ? transfer.route
+            : [{ x: fallback.x, y: fallback.y }];
+        const pos = pointAlongPath(route, eased);
+        const tail = pointAlongPath(route, Math.max(0, eased - 0.035));
+        if (rawProgress >= 1) {
+            this.storageTransfers.delete(shipId);
+            return {
+                x: fallback.x,
+                y: fallback.y,
+                tailX: tail.x,
+                tailY: tail.y,
+                progress: 1,
+            };
+        }
+        return {
+            x: pos.x,
+            y: pos.y,
+            tailX: tail.x,
+            tailY: tail.y,
+            progress: rawProgress,
+        };
+    }
+
     enumerateDrawables(now = Date.now()) {
-        const repoSummaries = this._repoDockSummaries();
-        const markers = this._repoQuayDrawables(repoSummaries);
         const dockLayout = buildDockSquadLayout(this.state);
+        const repoSummaries = this._repoDockSummaries(dockLayout);
+        const markers = this._repoQuayDrawables(repoSummaries);
         const markerByRepo = new Map();
         for (const marker of markers) {
+            if (marker.payload?.type !== 'repo-quay') continue;
             const profile = marker.payload?.profile || trafficProfile(marker.payload?.project, marker.payload?.branch);
             const key = profile.key;
             if (key) markerByRepo.set(key, marker.payload);
@@ -1490,6 +1832,7 @@ export class HarborTraffic {
                 drawable.payload.y = meta.y;
                 drawable.payload.repoDockIndex = meta.repoDockIndex;
                 drawable.payload.repoDockCount = meta.repoDockCount;
+                drawable.payload.repoTotalDockCount = meta.repoTotalDockCount;
                 drawable.payload.repoDockVisibleCount = meta.repoDockVisibleCount;
                 drawable.payload.squadKey = meta.squadKey;
                 drawable.payload.squadIndex = meta.squadIndex;
@@ -1499,10 +1842,21 @@ export class HarborTraffic {
                 drawable.payload.squadDensity = meta.squadDensity;
                 drawable.payload.compactCommitLabel = meta.compactCommitLabel;
                 drawable.payload.showCommitLabel = meta.showCommitLabel;
+                drawable.payload.waitingZone = meta.waitingZone;
+                drawable.payload.zoneSquadIndex = meta.zoneSquadIndex;
                 drawable.payload.anchorageName = meta.anchorageName;
                 drawable.payload.anchorageIndex = meta.anchorageIndex;
                 drawable.payload.formationColumn = meta.column;
                 drawable.payload.formationRow = meta.row;
+                const transfer = this._storageTransferPosition(ship.id, meta, now);
+                if (transfer) {
+                    drawable.payload.x = transfer.x;
+                    drawable.payload.y = transfer.y;
+                    drawable.payload.tailX = transfer.tailX;
+                    drawable.payload.tailY = transfer.tailY;
+                    drawable.payload.storageTransferProgress = transfer.progress;
+                    drawable.payload.storageTransfer = transfer.progress < 1;
+                }
                 drawable.payload.harborCrate = !crateDrawnForKeys.has(squad.key)
                     ? this.harborCrates.get(squad.key) || null
                     : null;
@@ -1534,6 +1888,22 @@ export class HarborTraffic {
             const drawable = item.payload;
             if (!drawable || drawable.type !== 'ship') continue;
             const shipClass = harborShipClass(drawable);
+            const waterRegion = this._shipWaterRegion(drawable);
+            if (drawable.storageTransfer && drawable.storageTransferProgress > 0.002 && drawable.storageTransferProgress < 1) {
+                wakes.push({
+                    type: 'departing',
+                    x: drawable.x,
+                    y: drawable.y,
+                    tailX: drawable.tailX,
+                    tailY: drawable.tailY,
+                    alpha: Math.max(0.06, 0.14 * (1 - drawable.storageTransferProgress * 0.45)),
+                    spread: (0.32 + drawable.storageTransferProgress * 0.52) * shipClass.wakeScale,
+                    progress: drawable.storageTransferProgress,
+                    waterRegion,
+                    projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
+                });
+                continue;
+            }
             if (drawable.status === 'docked') {
                 const pulse = this.motionScale > 0
                     ? 0.55 + 0.25 * Math.sin(this.frame * 0.08 + drawable.berthIndex)
@@ -1545,6 +1915,7 @@ export class HarborTraffic {
                     alpha: 0.08 + pulse * 0.045,
                     radiusX: 26 * shipClass.wakeScale,
                     radiusY: 12 * shipClass.wakeScale,
+                    waterRegion,
                     projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
                 });
                 continue;
@@ -1559,11 +1930,27 @@ export class HarborTraffic {
                     alpha: Math.max(0.05, 0.18 * (1 - drawable.progress)),
                     spread: (0.35 + drawable.progress * 0.75) * shipClass.wakeScale,
                     progress: drawable.progress,
+                    waterRegion,
                     projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
                 });
             }
         }
         return wakes;
+    }
+
+    _shipWaterRegion(ship = {}) {
+        if (Number.isFinite(Number(ship.storageTransferProgress))) {
+            const progress = Number(ship.storageTransferProgress);
+            if (progress < 0.24) return 'harbor';
+            if (progress > 0.74) return 'lagoon';
+            return 'sea';
+        }
+        if (isCommitLagoonZone(ship.departWaterZone || ship.waitingZone)) {
+            return ship.status === 'departing' && Number(ship.progress || 0) > 0.72
+                ? 'sea'
+                : 'lagoon';
+        }
+        return 'harbor';
     }
 
     _harborCrateDrawables(markerByRepo, skipKeys = new Set()) {
@@ -1627,19 +2014,28 @@ export class HarborTraffic {
         }
     }
 
-    _repoDockSummaries() {
+    _repoDockSummaries(dockLayout = null) {
+        const layout = dockLayout || buildDockSquadLayout(this.state);
         const summaries = new Map();
         for (const ship of this.state.ships.values()) {
             if (ship.status !== 'docked') continue;
             const profile = trafficProfile(ship.project, ship.branch);
-            const berth = BERTHS[ship.berthIndex % BERTHS.length];
-            if (!berth) continue;
-            const pos = toWorld(berth.tileX, berth.tileY);
-            const summary = summaries.get(profile.key) || {
+            const dockMeta = layout.byShipId.get(ship.id);
+            const berth = BERTHS[ship.berthIndex % BERTHS.length] || BERTHS[0];
+            const pos = dockMeta
+                ? { x: dockMeta.x, y: dockMeta.y }
+                : toWorld(berth.tileX, berth.tileY);
+            const waitingZone = dockMeta?.waitingZone
+                || ship.waitingZone
+                || 'harbor';
+            const summaryKey = `${profile.key}\x1f${waitingZone}`;
+            const summary = summaries.get(summaryKey) || {
                 project: ship.project,
                 branch: ship.branch || '',
                 profile,
+                summaryKey,
                 quayIndex: Number.isFinite(Number(ship.quayIndex)) ? Number(ship.quayIndex) : assignedQuayIndex(this.state, ship.project),
+                waitingZone,
                 count: 0,
                 failedCount: 0,
                 x: 0,
@@ -1651,35 +2047,70 @@ export class HarborTraffic {
             summary.x += pos.x;
             summary.y += pos.y;
             summary.latestEventTime = Math.max(summary.latestEventTime, ship.eventTime || 0);
-            summaries.set(profile.key, summary);
+            summary.waitingZone = waitingZone;
+            summaries.set(summaryKey, summary);
         }
         return summaries;
     }
 
     _repoQuayDrawables(summaries = this._repoDockSummaries()) {
         const ordered = [...summaries.values()]
-            .sort((a, b) => (a.quayIndex - b.quayIndex)
+            .sort((a, b) => Number(isCommitLagoonZone(b.waitingZone)) - Number(isCommitLagoonZone(a.waitingZone))
+                || (a.quayIndex - b.quayIndex)
                 || (b.count - a.count)
                 || (b.latestEventTime - a.latestEventTime)
                 || a.profile.name.localeCompare(b.profile.name));
-        const anchor = toWorld(HARBOR_LOG_TILE.tileX, HARBOR_LOG_TILE.tileY);
+        const harborAnchor = toWorld(HARBOR_LOG_TILE.tileX, HARBOR_LOG_TILE.tileY);
+        const lagoonAnchor = toWorld(COMMIT_LAGOON_LOG_TILE.tileX, COMMIT_LAGOON_LOG_TILE.tileY);
         const drawables = [];
-        ordered.forEach((summary, index) => {
-            const quayIndex = Number.isFinite(Number(summary.quayIndex)) ? Number(summary.quayIndex) : 0;
+
+        const lagoonSummaries = ordered.filter(summary => isCommitLagoonZone(summary.waitingZone));
+        if (lagoonSummaries.length) {
+            const total = lagoonSummaries.reduce((sum, summary) => sum + (Number(summary.count) || 0), 0);
+            const leader = lagoonSummaries
+                .slice()
+                .sort((a, b) => (b.count - a.count)
+                    || (b.latestEventTime - a.latestEventTime)
+                    || a.profile.name.localeCompare(b.profile.name))[0];
             drawables.push({
                 kind: 'harbor-traffic',
-                sortY: anchor.y - 190 + index,
+                sortY: lagoonAnchor.y - 96,
+                payload: {
+                    type: 'commit-lagoon-sign',
+                    project: leader?.project || '',
+                    branch: leader?.branch || '',
+                    profile: leader?.profile || repoProfile(leader?.project),
+                    count: total,
+                    repoName: leader ? trafficLabel(leader.project, leader.branch) : '',
+                    x: lagoonAnchor.x,
+                    y: lagoonAnchor.y - 96,
+                },
+            });
+        }
+
+        const zoneIndexes = new Map();
+        ordered.forEach((summary) => {
+            const quayIndex = Number.isFinite(Number(summary.quayIndex)) ? Number(summary.quayIndex) : 0;
+            const waitingZone = summary.waitingZone || 'harbor';
+            const index = zoneIndexes.get(waitingZone) || 0;
+            zoneIndexes.set(waitingZone, index + 1);
+            const anchor = isCommitLagoonZone(waitingZone) ? lagoonAnchor : harborAnchor;
+            const yOffset = isCommitLagoonZone(waitingZone) ? -66 + index * 16 : -192 + index * 16;
+            drawables.push({
+                kind: 'harbor-traffic',
+                sortY: anchor.y + yOffset + index,
                 payload: {
                     type: 'repo-quay',
                     project: summary.project,
                     branch: summary.branch || '',
                     profile: summary.profile,
-                    quayName: QUAY_GROUPS[quayIndex]?.name || 'Quay',
+                    quayName: isCommitLagoonZone(waitingZone) ? 'Commit Lagoon' : QUAY_GROUPS[quayIndex]?.name || 'Quay',
+                    waitingZone,
                     count: summary.count,
                     failedCount: summary.failedCount,
                     repoLogIndex: index,
                     x: anchor.x,
-                    y: anchor.y - 192 + index * 16,
+                    y: anchor.y + yOffset,
                 },
             });
         });
@@ -1785,6 +2216,10 @@ export class HarborTraffic {
         }
         if (drawable.payload.type === 'repo-quay') {
             this._drawRepoQuayMarker(ctx, drawable.payload, zoom);
+            return;
+        }
+        if (drawable.payload.type === 'commit-lagoon-sign') {
+            this._drawCommitLagoonSign(ctx, drawable.payload, zoom);
             return;
         }
         if (drawable.payload.type === 'crate') {
@@ -2343,6 +2778,37 @@ export class HarborTraffic {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, Math.round(payload.x), Math.round(y + height / 2));
+        ctx.restore();
+    }
+
+    _drawCommitLagoonSign(ctx, payload, zoom) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const profile = payload.profile || trafficProfile(payload.project, payload.branch);
+        const count = Math.max(1, Number(payload.count || 1));
+        const detail = `${shortGitLabel(payload.repoName || trafficLabel(payload.project, payload.branch), 20, '…')} (${count})`;
+        const title = 'COMMIT LAGOON';
+        const width = Math.max(118 * s, Math.min(186 * s, Math.max(title.length, detail.length) * 6.2 * s + 22 * s));
+        const height = 32 * s;
+        const x = Math.round(payload.x - width / 2);
+        const y = Math.round(payload.y - height / 2);
+
+        ctx.save();
+        ctx.globalAlpha = 0.96;
+        ctx.fillStyle = 'rgba(50, 42, 25, 0.92)';
+        ctx.fillRect(x, y, Math.round(width), Math.round(height));
+        ctx.strokeStyle = 'rgba(247, 214, 123, 0.86)';
+        ctx.lineWidth = Math.max(1, Math.round(1 * s));
+        ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(x + Math.round(5 * s), y + Math.round(5 * s), Math.max(2, Math.round(4 * s)), Math.round(height - 10 * s));
+        ctx.fillStyle = '#f4df9f';
+        ctx.font = `${Math.max(8, Math.round(10 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(title, Math.round(payload.x + 2 * s), Math.round(y + 10 * s));
+        ctx.fillStyle = profile.accent;
+        ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.fillText(detail, Math.round(payload.x + 2 * s), Math.round(y + 22 * s));
         ctx.restore();
     }
 
