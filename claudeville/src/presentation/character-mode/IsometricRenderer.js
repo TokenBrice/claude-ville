@@ -5974,10 +5974,11 @@ export class IsometricRenderer {
         if (!VILLAGE_GATE) return [];
         const center = this._tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY);
         const lanternX = center.x;
-        // The lantern hangs ~96 px above the threshold (matches the arch math:
-        // lintel start.y is base.y - 110; lantern sits below the plaque at
-        // base.y - 110 + 26 + 2 + 14 + 8 ≈ base.y - 60 from the lintel base).
-        const lanternY = center.y - 96;
+        // The lantern body draws at base.y - 54 (start.y - 110 + lintelHeight 26
+        // + 2 plaque margin + plaqueHeight 14 + chain 14 = base.y - 54). Light
+        // source center sits at the lantern body's middle (lanternY + 8 ≈
+        // base.y - 46). Earlier value of -96 floated the halo above the lintel.
+        const lanternY = center.y - 46;
         const phaseBoost = Math.max(0.6, lighting?.lightBoost ?? 1);
         return [normalizeLightSource({
             id: 'gate.lantern',
