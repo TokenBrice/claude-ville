@@ -68,6 +68,9 @@ main().catch((err) => {
 });
 
 async function main() {
+    if (!idFilter) {
+        throw new Error('legacy PixelLab revamp generation requires an explicit --ids=<manifest-id[,manifest-id...]> list');
+    }
     const plannedIds = plannedSpriteIds();
     assertManifested(plannedIds);
     if (dryRun) {

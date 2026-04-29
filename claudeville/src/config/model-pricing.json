@@ -1,0 +1,19 @@
+{
+  "claude": {
+    "default": { "input": 3, "output": 15, "cacheRead": 0.3, "cacheCreate": 3.75 },
+    "rates": [
+      { "match": "opus", "input": 15, "output": 75, "cacheRead": 1.5, "cacheCreate": 18.75 },
+      { "match": "sonnet", "input": 3, "output": 15, "cacheRead": 0.3, "cacheCreate": 3.75 },
+      { "match": "haiku", "input": 0.8, "output": 4, "cacheRead": 0.08, "cacheCreate": 1 }
+    ]
+  },
+  "openai": {
+    "default": { "input": 1.25, "output": 10, "cacheRead": 0.125, "cacheCreate": 0 },
+    "rates": [
+      { "match": "gpt-5.5", "input": 15, "output": 120, "cacheRead": 1.5, "cacheCreate": 0 },
+      { "match": "gpt-5.4", "input": 10, "output": 80, "cacheRead": 1, "cacheCreate": 0 },
+      { "match": "gpt-5.3", "input": 5, "output": 40, "cacheRead": 0.5, "cacheCreate": 0 },
+      { "match": "gpt-5", "input": 1.25, "output": 10, "cacheRead": 0.125, "cacheCreate": 0 }
+    ]
+  }
+}
