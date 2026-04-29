@@ -33,7 +33,7 @@ import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
 import VisitTileAllocator from './VisitTileAllocator.js';
 import { getPulsePriority } from './PulsePolicy.js';
-import { lightSourceCacheKey } from './LightSourceRegistry.js';
+import { lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import {
     applyTeamPlazaPreferences,
     relationshipLightSources,
@@ -5970,6 +5970,27 @@ export class IsometricRenderer {
         return sources;
     }
 
+    _villageGateLightSources(lighting = null) {
+        if (!VILLAGE_GATE) return [];
+        const center = this._tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY);
+        const lanternX = center.x;
+        // The lantern hangs ~96 px above the threshold (matches the arch math:
+        // lintel start.y is base.y - 110; lantern sits below the plaque at
+        // base.y - 110 + 26 + 2 + 14 + 8 ≈ base.y - 60 from the lintel base).
+        const lanternY = center.y - 96;
+        const phaseBoost = Math.max(0.6, lighting?.lightBoost ?? 1);
+        return [normalizeLightSource({
+            id: 'gate.lantern',
+            kind: 'point',
+            x: lanternX,
+            y: lanternY,
+            radius: 84,
+            color: '#ffd56a',
+            intensity: phaseBoost,
+            buildingType: 'village.gate',
+        })];
+    }
+
     _computeFrameLightSources(atmosphere = null, now = performance.now()) {
         const lighting = atmosphere?.lighting || null;
         const building = this.buildingRenderer?.getLightSources?.(lighting) || [];
@@ -5982,6 +6003,7 @@ export class IsometricRenderer {
             }),
             ...this._familiarMoteLightSources(lighting),
             ...(this.arrivalDeparture?.getLightSources?.({ now }) || []),
+            ...this._villageGateLightSources(lighting),
         ];
         return { building, ambient };
     }
