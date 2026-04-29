@@ -7,8 +7,10 @@ const { CodexAdapter } = require('./codex');
 const { GeminiAdapter } = require('./gemini');
 const { execFileSync } = require('child_process');
 const {
+  getGitEnrichmentPerfStats,
   inferPushedGitEventsForSessions,
   inferUnpushedGitEventsForSessions,
+  isGitEnrichmentDisabled,
 } = require('./gitEvents');
 
 const adapters = [
@@ -18,6 +20,17 @@ const adapters = [
 ];
 
 const ADAPTER_BY_PROVIDER = Object.fromEntries(adapters.map((adapter) => [adapter.provider, adapter]));
+const SYNTHETIC_PROVIDERS = Object.freeze([
+  {
+    provider: 'git',
+    name: 'Git Repository',
+    homeDir: null,
+    synthetic: true,
+    supportsDetail: true,
+    supportsWatchPaths: false,
+    detailReason: 'Synthetic repository git sessions do not have provider transcript details.',
+  },
+]);
 const SESSION_LIST_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_MAX_CACHE = 256;
@@ -34,6 +47,68 @@ const _repositoryScanCache = {
   at: 0,
   projects: [],
 };
+
+function normalizeProviderId(provider, fallback = 'claude') {
+  return String(provider || fallback).toLowerCase();
+}
+
+function normalizeSession(session, context = {}) {
+  const provider = normalizeProviderId(session?.provider, context.provider || 'unknown');
+  return {
+    ...session,
+    sessionId: String(session?.sessionId || ''),
+    provider,
+    agentId: session?.agentId ?? null,
+    agentType: session?.agentType || 'main',
+    agentName: session?.agentName ?? session?.name ?? null,
+    project: session?.project ?? null,
+    model: session?.model || provider,
+    status: session?.status || 'active',
+    lastActivity: Number(session?.lastActivity) || 0,
+    lastTool: session?.lastTool ?? null,
+    lastToolInput: session?.lastToolInput ?? null,
+    lastMessage: session?.lastMessage ?? null,
+    tokenUsage: session?.tokenUsage ?? session?.tokens ?? session?.usage ?? null,
+    parentSessionId: session?.parentSessionId ?? null,
+    reasoningEffort: session?.reasoningEffort ?? null,
+    gitEvents: Array.isArray(session?.gitEvents) ? session.gitEvents : [],
+  };
+}
+
+function normalizeDetail(detail, context = {}) {
+  const value = detail && typeof detail === 'object' ? detail : {};
+  return {
+    ...value,
+    provider: normalizeProviderId(value.provider, context.provider || 'claude'),
+    sessionId: String(value.sessionId || context.sessionId || ''),
+    project: value.project ?? context.project ?? '',
+    toolHistory: Array.isArray(value.toolHistory) ? value.toolHistory : [],
+    messages: Array.isArray(value.messages) ? value.messages : [],
+    tokenUsage: value.tokenUsage ?? value.tokens ?? value.usage ?? null,
+    gitEvents: Array.isArray(value.gitEvents) ? value.gitEvents : [],
+    agentName: value.agentName ?? value.name ?? null,
+  };
+}
+
+function getAdapterMetadata({ includeUnavailable = true } = {}) {
+  const adapterMetadata = adapters
+    .filter((adapter) => includeUnavailable || adapter.isAvailable())
+    .map((adapter) => ({
+      name: adapter.name,
+      provider: adapter.provider,
+      homeDir: adapter.homeDir,
+      synthetic: false,
+      supportsDetail: typeof adapter.getSessionDetail === 'function',
+      supportsWatchPaths: typeof adapter.getWatchPaths === 'function',
+    }));
+  return [...adapterMetadata, ...SYNTHETIC_PROVIDERS];
+}
+
+function isKnownSessionDetailProvider(provider) {
+  const normalizedProvider = normalizeProviderId(provider, '');
+  return getAdapterMetadata()
+    .some((metadata) => metadata.provider === normalizedProvider && metadata.supportsDetail);
+}
 
 function runGit(args) {
   return execFileSync('git', args, {
@@ -76,14 +151,17 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
     if (!adapter.isAvailable()) continue;
     try {
       const sessions = adapter.getActiveSessions(activeThresholdMs);
-      allSessions.push(...sessions);
+      if (!Array.isArray(sessions)) continue;
+      allSessions.push(...sessions.map((session) => normalizeSession(session, { provider: adapter.provider })));
     } catch (err) {
       console.error(`[${adapter.name}] Failed to fetch sessions:`, err.message);
     }
   }
+  const repositoryScanProjects = isGitEnrichmentDisabled() ? [] : getRepositoryScanProjects();
   const sessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions, {
-    projects: getRepositoryScanProjects(),
+    projects: repositoryScanProjects,
   }))
+    .map((session) => normalizeSession(session))
     .sort((a, b) => b.lastActivity - a.lastActivity);
 
   _sessionListCache.at = now;
@@ -97,6 +175,7 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
  */
 function getSessionDetailByProvider(provider, sessionId, project, { force = false } = {}) {
   const now = Date.now();
+  provider = normalizeProviderId(provider);
   const key = `${provider}::${sessionId}::${project || ''}`;
   const cached = _sessionDetailCache.get(key);
 
@@ -107,16 +186,20 @@ function getSessionDetailByProvider(provider, sessionId, project, { force = fals
   }
 
   const adapter = ADAPTER_BY_PROVIDER[provider];
-  if (!adapter) return { toolHistory: [], messages: [] };
+  if (!adapter) {
+    return normalizeDetail({
+      reason: SYNTHETIC_PROVIDERS.find((metadata) => metadata.provider === provider)?.detailReason || 'No adapter detail provider is registered.',
+    }, { provider, sessionId, project });
+  }
 
   try {
-    const value = adapter.getSessionDetail(sessionId, project);
+    const value = normalizeDetail(adapter.getSessionDetail(sessionId, project), { provider, sessionId, project });
     _sessionDetailCache.set(key, { value, at: now });
     _trimSessionDetailCache();
     return value;
   } catch (err) {
     console.error(`[${adapter.name}] Failed to fetch session details:`, err.message);
-    return cached?.value || { toolHistory: [], messages: [] };
+    return cached?.value || normalizeDetail(null, { provider, sessionId, project });
   }
 }
 
@@ -204,6 +287,9 @@ function getActiveProviders() {
     name: a.name,
     provider: a.provider,
     homeDir: a.homeDir,
+    synthetic: false,
+    supportsDetail: typeof a.getSessionDetail === 'function',
+    supportsWatchPaths: typeof a.getWatchPaths === 'function',
   }));
 }
 
@@ -224,11 +310,16 @@ function getAdapterPerfStats() {
 
 module.exports = {
   adapters,
+  getAdapterMetadata,
   getAllSessions,
   getSessionDetailByProvider,
   getSessionDetailsBatch,
   getAllWatchPaths,
   getActiveProviders,
   getAdapterPerfStats,
+  getGitEnrichmentPerfStats,
+  isKnownSessionDetailProvider,
   invalidateSessionCaches,
+  normalizeDetail,
+  normalizeSession,
 };

@@ -271,6 +271,7 @@ function fetchUsage() {
   tryFetchQuota();
 
   return {
+    provider: 'claude',
     account: {
       subscriptionType: credentials.subscriptionType,
       rateLimitTier: credentials.rateLimitTier,

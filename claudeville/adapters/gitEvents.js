@@ -48,6 +48,76 @@ const MAX_LOCAL_BRANCHES_TO_SCAN = 32;
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const _gitStatusCache = new Map();
 const _currentBranchCache = new Map();
+const _perf = {
+  disabled: false,
+  enrichmentCalls: 0,
+  enrichmentTimeMs: 0,
+  projectsScanned: 0,
+  gitCommandCount: 0,
+  gitCommandTimeMs: 0,
+  gitCommandErrors: 0,
+  gitCommandTimeouts: 0,
+  cacheHits: 0,
+  lastRun: null,
+  recentRuns: [],
+};
+
+function isGitEnrichmentDisabled() {
+  return ['1', 'true', 'yes'].includes(String(process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT || '').toLowerCase());
+}
+
+function recordGitEnrichment(label, projectCount, fn) {
+  const disabled = isGitEnrichmentDisabled();
+  _perf.disabled = disabled;
+  _perf.enrichmentCalls++;
+  if (disabled) {
+    const run = {
+      label,
+      disabled: true,
+      projectCount: Number(projectCount) || 0,
+      elapsed: 0,
+      ts: Date.now(),
+    };
+    _perf.lastRun = run;
+    _perf.recentRuns.push(run);
+    while (_perf.recentRuns.length > 25) _perf.recentRuns.shift();
+    return null;
+  }
+
+  const start = Date.now();
+  const beforeCommands = _perf.gitCommandCount;
+  const beforeErrors = _perf.gitCommandErrors;
+  const beforeTimeouts = _perf.gitCommandTimeouts;
+  try {
+    return fn();
+  } finally {
+    const elapsed = Date.now() - start;
+    _perf.enrichmentTimeMs += elapsed;
+    _perf.projectsScanned += Number(projectCount) || 0;
+    const run = {
+      label,
+      disabled: false,
+      projectCount: Number(projectCount) || 0,
+      elapsed,
+      gitCommands: _perf.gitCommandCount - beforeCommands,
+      errors: _perf.gitCommandErrors - beforeErrors,
+      timeouts: _perf.gitCommandTimeouts - beforeTimeouts,
+      ts: Date.now(),
+    };
+    _perf.lastRun = run;
+    _perf.recentRuns.push(run);
+    while (_perf.recentRuns.length > 25) _perf.recentRuns.shift();
+  }
+}
+
+function getGitEnrichmentPerfStats() {
+  return {
+    ..._perf,
+    disabled: isGitEnrichmentDisabled(),
+    statusCacheSize: _gitStatusCache.size,
+    currentBranchCacheSize: _currentBranchCache.size,
+  };
+}
 
 function stableHash(value) {
   return crypto.createHash('sha256').update(String(value || '')).digest('hex').slice(0, 16);
@@ -515,11 +585,23 @@ function mergeUnpushedGitEvents(observedEvents, inferredEvents) {
 
 function runGit(project, args) {
   if (!project) return '';
-  return execFileSync('git', ['-C', project, ...args], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'ignore'],
-    timeout: 750,
-  }).trim();
+  const start = Date.now();
+  _perf.gitCommandCount++;
+  try {
+    return execFileSync('git', ['-C', project, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 750,
+    }).trim();
+  } catch (err) {
+    _perf.gitCommandErrors++;
+    if (err?.code === 'ETIMEDOUT' || err?.signal === 'SIGTERM' || /timed? out|timeout/i.test(err?.message || '')) {
+      _perf.gitCommandTimeouts++;
+    }
+    throw err;
+  } finally {
+    _perf.gitCommandTimeMs += Date.now() - start;
+  }
 }
 
 function tryRunGit(project, args) {
@@ -539,7 +621,10 @@ function currentBranch(project) {
   if (!project) return '';
   const now = Date.now();
   const cached = _currentBranchCache.get(project);
-  if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) return cached.value;
+  if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) {
+    _perf.cacheHits++;
+    return cached.value;
+  }
   const value = tryRunGit(project, ['branch', '--show-current']);
   _currentBranchCache.set(project, { at: now, value });
   return value;
@@ -664,7 +749,10 @@ function readPushState(project, branch = null) {
   const normalizedBranch = normalizeLocalBranchName(branch);
   const cacheKey = `${project}::${normalizedBranch || 'HEAD'}`;
   const cached = _gitStatusCache.get(cacheKey);
-  if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) return cached.value;
+  if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) {
+    _perf.cacheHits++;
+    return cached.value;
+  }
 
   let value = { pushedToUpstream: false, upstream: null };
   try {
@@ -871,49 +959,59 @@ function inferUnpushedGitEventsForSessions(sessions, options = {}) {
     ? options.projects.filter(Boolean)
     : [];
   if (sessions.length === 0 && extraProjects.length === 0) return sessions;
+  if (isGitEnrichmentDisabled()) {
+    recordGitEnrichment('unpushed', 0, () => sessions);
+    return sessions;
+  }
   const eventsByProject = new Map();
   const projects = [
     ...sessions.map((session) => session?.project).filter(Boolean),
     ...extraProjects,
   ];
 
-  for (const project of projects) {
-    if (!project) continue;
-    if (!eventsByProject.has(project)) {
-      eventsByProject.set(project, readUnpushedCommitEvents(project, {
-        provider: 'git',
-        sessionId: `git-repo-${stableHash(project)}`,
-      }));
+  const uniqueProjects = [...new Set(projects.filter(Boolean))];
+  return recordGitEnrichment('unpushed', uniqueProjects.length, () => {
+    for (const project of uniqueProjects) {
+      if (!eventsByProject.has(project)) {
+        eventsByProject.set(project, readUnpushedCommitEvents(project, {
+          provider: 'git',
+          sessionId: `git-repo-${stableHash(project)}`,
+        }));
+      }
     }
-  }
 
-  if (![...eventsByProject.values()].some((events) => events.length > 0)) return sessions;
+    if (![...eventsByProject.values()].some((events) => events.length > 0)) return sessions;
 
-  const enrichedSessions = sessions.map((session) => {
-    const project = session?.project;
-    const unpushed = project ? eventsByProject.get(project) || [] : [];
-    if (!unpushed.length) return session;
+    const enrichedSessions = sessions.map((session) => {
+      const project = session?.project;
+      const unpushed = project ? eventsByProject.get(project) || [] : [];
+      if (!unpushed.length) return session;
 
-    const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
-    return {
-      ...session,
-      gitEvents: mergeUnpushedGitEvents(ownEvents, unpushed),
-    };
+      const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
+      return {
+        ...session,
+        gitEvents: mergeUnpushedGitEvents(ownEvents, unpushed),
+      };
+    });
+
+    const sessionProjects = new Set(sessions.map((session) => session?.project).filter(Boolean));
+    for (const project of extraProjects) {
+      if (sessionProjects.has(project)) continue;
+      const unpushed = eventsByProject.get(project) || [];
+      if (!unpushed.length) continue;
+      enrichedSessions.push(createRepositoryGitSession(project, unpushed));
+    }
+
+    return enrichedSessions;
   });
-
-  const sessionProjects = new Set(sessions.map((session) => session?.project).filter(Boolean));
-  for (const project of extraProjects) {
-    if (sessionProjects.has(project)) continue;
-    const unpushed = eventsByProject.get(project) || [];
-    if (!unpushed.length) continue;
-    enrichedSessions.push(createRepositoryGitSession(project, unpushed));
-  }
-
-  return enrichedSessions;
 }
 
 function inferPushedGitEventsForSessions(sessions, options = {}) {
   if (!Array.isArray(sessions) || sessions.length === 0) return sessions;
+  if (isGitEnrichmentDisabled()) {
+    recordGitEnrichment('pushed', 0, () => sessions);
+    return sessions;
+  }
 
   const eventsByProject = new Map();
   for (const session of sessions) {
@@ -925,27 +1023,29 @@ function inferPushedGitEventsForSessions(sessions, options = {}) {
     }
   }
 
-  const inferredByProject = new Map();
-  for (const [project, events] of eventsByProject.entries()) {
-    const enriched = inferPushedGitEvents(events, options);
-    const inferred = enriched.filter((event) => event.inferred && !events.some((existing) => existing.id === event.id));
-    if (inferred.length) inferredByProject.set(project, inferred);
-  }
-
-  if (!inferredByProject.size) return sessions;
-  return sessions.map((session) => {
-    const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
-    const additions = [];
-    for (const event of ownEvents) {
-      if (event?.type === 'commit' && event.project && inferredByProject.has(event.project)) {
-        additions.push(...inferredByProject.get(event.project));
-      }
+  return recordGitEnrichment('pushed', eventsByProject.size, () => {
+    const inferredByProject = new Map();
+    for (const [project, events] of eventsByProject.entries()) {
+      const enriched = inferPushedGitEvents(events, options);
+      const inferred = enriched.filter((event) => event.inferred && !events.some((existing) => existing.id === event.id));
+      if (inferred.length) inferredByProject.set(project, inferred);
     }
-    if (!additions.length) return session;
-    return {
-      ...session,
-      gitEvents: dedupeGitEvents([...ownEvents, ...additions]),
-    };
+
+    if (!inferredByProject.size) return sessions;
+    return sessions.map((session) => {
+      const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
+      const additions = [];
+      for (const event of ownEvents) {
+        if (event?.type === 'commit' && event.project && inferredByProject.has(event.project)) {
+          additions.push(...inferredByProject.get(event.project));
+        }
+      }
+      if (!additions.length) return session;
+      return {
+        ...session,
+        gitEvents: dedupeGitEvents([...ownEvents, ...additions]),
+      };
+    });
   });
 }
 
@@ -958,9 +1058,11 @@ module.exports = {
   dedupeGitEvents,
   extractCommand,
   extractGitEventsFromCommandSource,
+  getGitEnrichmentPerfStats,
   inferPushedGitEvents,
   inferPushedGitEventsForSessions,
   inferUnpushedGitEventsForSessions,
+  isGitEnrichmentDisabled,
   mergeUnpushedGitEvents,
   parseGitEventsFromCommand,
   stableHash,

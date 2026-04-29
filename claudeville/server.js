@@ -10,8 +10,10 @@ const {
   getSessionDetailsBatch,
   getAllWatchPaths,
   getActiveProviders,
+  isKnownSessionDetailProvider,
   invalidateSessionCaches,
   getAdapterPerfStats,
+  getGitEnrichmentPerfStats,
   adapters,
 } = require('./adapters');
 
@@ -28,7 +30,6 @@ const STATIC_ROOT = path.resolve(STATIC_DIR);
 const realpathSync = fs.realpathSync.native || fs.realpathSync;
 const STATIC_REAL_ROOT = realpathSync(STATIC_ROOT);
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
-const ALLOWED_SESSION_PROVIDERS = Object.freeze(new Set(['claude', 'codex', 'gemini', 'git']));
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
 const JSON_BODY_LIMIT_BYTES = 256 * 1024;
@@ -248,7 +249,7 @@ function handleGetSessionDetail(req, res) {
     const provider = String(url.searchParams.get('provider') || 'claude').toLowerCase();
 
     if (!sessionId) return sendError(res, 400, 'sessionId is required');
-    if (!ALLOWED_SESSION_PROVIDERS.has(provider)) return sendError(res, 400, 'invalid provider');
+    if (!isKnownSessionDetailProvider(provider)) return sendError(res, 400, 'invalid provider');
 
     const result = getSessionDetailByProvider(provider, sessionId, project);
     sendJson(res, 200, result);
@@ -274,7 +275,7 @@ function handlePostSessionDetails(req, res) {
     for (const item of items) {
       const provider = String(item?.provider || 'claude').toLowerCase();
       const sessionId = String(item?.sessionId || '');
-      if (!sessionId || !ALLOWED_SESSION_PROVIDERS.has(provider)) continue;
+      if (!sessionId || !isKnownSessionDetailProvider(provider)) continue;
       valid.push({
         key: item.key,
         provider,
@@ -339,6 +340,7 @@ function handleGetPerf(req, res) {
       lastError: fallback.lastError || null,
     })),
     providers: getAdapterPerfStats(),
+    gitEnrichment: getGitEnrichmentPerfStats(),
     watchFailures: serverPerf.watchFailures,
     recentWatchFailures: serverPerf.watchFailureDetails,
     fallbackScans: serverPerf.fallbackScans,
