@@ -3032,77 +3032,137 @@ export class IsometricRenderer {
         const ux = dx / length;
         const uy = dy / length;
         const lintelInset = 22;
-        const lintelLevel = -110; // matches arch start.y offset
-        const doorTop = lintelLevel + 26 + 2; // just under the lintel
-        const doorBottom = 14; // a few pixels above the ground
-        const doorHalfWidth = (length - 2 * lintelInset) / 2;
-        const mid = { x: (leftBase.x + rightBase.x) / 2, y: (leftBase.y + rightBase.y) / 2 };
+        const lintelHeight = 26;
+        const doorTopPad = 2;
+        const doorBottomLift = 14;
 
-        const open = this.gateDoorsOpen;
+        // Lintel-aligned anchors (must match _drawVillageGateArch math exactly).
+        const lintelStart = { x: leftBase.x + ux * lintelInset, y: leftBase.y + uy * lintelInset - 110 };
+        const lintelEnd = { x: rightBase.x - ux * lintelInset, y: rightBase.y - uy * lintelInset - 110 };
+
+        // Door corners: trapezoid following the iso slope.
+        const tl = { x: lintelStart.x, y: lintelStart.y + lintelHeight + doorTopPad };
+        const tr = { x: lintelEnd.x, y: lintelEnd.y + lintelHeight + doorTopPad };
+        const bl = { x: lintelStart.x, y: leftBase.y - doorBottomLift };
+        const br = { x: lintelEnd.x, y: rightBase.y - doorBottomLift };
+        const tc = { x: (tl.x + tr.x) / 2, y: (tl.y + tr.y) / 2 };
+        const bc = { x: (bl.x + br.x) / 2, y: (bl.y + br.y) / 2 };
+        const isoAngle = Math.atan2(uy, ux);
+
+        const trace = (...pts) => {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(pts[0].x), Math.round(pts[0].y));
+            for (const p of pts.slice(1)) ctx.lineTo(Math.round(p.x), Math.round(p.y));
+            ctx.closePath();
+        };
+        const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
 
         ctx.save();
         SpriteRenderer.disableSmoothing(ctx);
 
-        if (open) {
-            // Open state: leaves tucked flat against the inner jambs (slim vertical strips).
-            const tucked = 6;
-            const leafW = 7;
-            for (const dir of [-1, 1]) {
-                const baseX = mid.x + dir * (doorHalfWidth - leafW / 2 - tucked);
-                ctx.fillStyle = '#2c190d';
-                ctx.fillRect(Math.round(baseX - leafW / 2), Math.round(mid.y + doorTop), leafW, doorBottom + Math.abs(doorTop));
-                ctx.strokeStyle = stone.outline;
-                ctx.lineWidth = 1.2;
-                ctx.strokeRect(Math.round(baseX - leafW / 2), Math.round(mid.y + doorTop), leafW, doorBottom + Math.abs(doorTop));
-            }
-            // Warm interior glow spilling onto the road
+        if (this.gateDoorsOpen) {
+            // Open state: thin strips tucked against the inner jambs.
+            const tuck = 7;
+            // Left leaf strip: along the left edge of the opening.
+            trace(
+                tl,
+                { x: tl.x + ux * tuck, y: tl.y + uy * tuck },
+                { x: bl.x + ux * tuck, y: bl.y + uy * tuck },
+                bl,
+            );
+            ctx.fillStyle = '#2c190d';
+            ctx.fill();
+            ctx.strokeStyle = stone.outline;
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+            // Right leaf strip.
+            trace(
+                { x: tr.x - ux * tuck, y: tr.y - uy * tuck },
+                tr,
+                br,
+                { x: br.x - ux * tuck, y: br.y - uy * tuck },
+            );
+            ctx.fillStyle = '#2c190d';
+            ctx.fill();
+            ctx.strokeStyle = stone.outline;
+            ctx.lineWidth = 1.2;
+            ctx.stroke();
+
+            // Warm interior glow at the threshold midline (rotated with the iso slope).
+            const glowRadius = Math.max(8, length / 2 - lintelInset);
             ctx.fillStyle = wood.glow;
             ctx.beginPath();
-            ctx.ellipse(Math.round(mid.x), Math.round(mid.y + doorBottom), doorHalfWidth + 8, 18, 0, 0, Math.PI * 2);
+            ctx.ellipse(Math.round(bc.x), Math.round(bc.y), glowRadius, 16, isoAngle, 0, Math.PI * 2);
             ctx.fill();
             ctx.fillStyle = 'rgba(255, 212, 142, 0.32)';
             ctx.beginPath();
-            ctx.ellipse(Math.round(mid.x), Math.round(mid.y + doorBottom - 6), doorHalfWidth - 4, 10, 0, 0, Math.PI * 2);
+            ctx.ellipse(Math.round(bc.x), Math.round(bc.y - 6),
+                Math.max(6, glowRadius - 4), 10, isoAngle, 0, Math.PI * 2);
             ctx.fill();
         } else {
-            // Closed state: two leaves shut across the opening.
-            const totalH = doorBottom - doorTop;
-            for (const dir of [-1, 1]) {
-                const leafX = mid.x + dir * (doorHalfWidth / 2);
-                ctx.fillStyle = '#3f2412';
-                ctx.fillRect(Math.round(leafX - doorHalfWidth / 2), Math.round(mid.y + doorTop),
-                             doorHalfWidth, totalH);
-                ctx.strokeStyle = stone.outline;
-                ctx.lineWidth = 1.5;
-                ctx.strokeRect(Math.round(leafX - doorHalfWidth / 2), Math.round(mid.y + doorTop),
-                               doorHalfWidth, totalH);
-                // Plank lines
-                ctx.strokeStyle = '#2c190d';
-                ctx.lineWidth = 0.6;
-                for (let p = 0; p < 3; p++) {
-                    const px = leafX - doorHalfWidth / 2 + (p + 1) * (doorHalfWidth / 4);
-                    ctx.beginPath();
-                    ctx.moveTo(Math.round(px), Math.round(mid.y + doorTop + 2));
-                    ctx.lineTo(Math.round(px), Math.round(mid.y + doorBottom - 2));
-                    ctx.stroke();
-                }
+            // Closed state: two trapezoidal leaves following the iso slope.
+            trace(tl, tc, bc, bl);
+            ctx.fillStyle = '#3f2412';
+            ctx.fill();
+            ctx.strokeStyle = stone.outline;
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+
+            trace(tc, tr, br, bc);
+            ctx.fillStyle = '#3f2412';
+            ctx.fill();
+            ctx.stroke();
+
+            // Iron bands at vertical fractions, sloping with the iso projection.
+            ctx.strokeStyle = '#2c190d';
+            ctx.lineWidth = 3;
+            for (const t of [0.22, 0.78]) {
+                const bandLeft = lerp(tl, bl, t);
+                const bandRight = lerp(tr, br, t);
+                ctx.beginPath();
+                ctx.moveTo(Math.round(bandLeft.x), Math.round(bandLeft.y));
+                ctx.lineTo(Math.round(bandRight.x), Math.round(bandRight.y));
+                ctx.stroke();
             }
-            // Iron bands (top and bottom)
-            ctx.fillStyle = '#2c190d';
-            ctx.fillRect(Math.round(mid.x - doorHalfWidth), Math.round(mid.y + doorTop + 12), doorHalfWidth * 2, 3);
-            ctx.fillRect(Math.round(mid.x - doorHalfWidth), Math.round(mid.y + doorBottom - 14), doorHalfWidth * 2, 3);
-            // Center seam
+
+            // Plank lines per leaf, sloping with the door axis.
+            ctx.strokeStyle = '#2c190d';
+            ctx.lineWidth = 0.6;
+            // Left leaf planks
+            for (const f of [0.25, 0.5, 0.75]) {
+                const plankTop = lerp(tl, tc, f);
+                const plankBot = lerp(bl, bc, f);
+                ctx.beginPath();
+                ctx.moveTo(Math.round(plankTop.x), Math.round(plankTop.y + 2));
+                ctx.lineTo(Math.round(plankBot.x), Math.round(plankBot.y - 2));
+                ctx.stroke();
+            }
+            // Right leaf planks
+            for (const f of [0.25, 0.5, 0.75]) {
+                const plankTop = lerp(tc, tr, f);
+                const plankBot = lerp(bc, br, f);
+                ctx.beginPath();
+                ctx.moveTo(Math.round(plankTop.x), Math.round(plankTop.y + 2));
+                ctx.lineTo(Math.round(plankBot.x), Math.round(plankBot.y - 2));
+                ctx.stroke();
+            }
+
+            // Center seam.
             ctx.strokeStyle = stone.outline;
             ctx.lineWidth = 1;
             ctx.beginPath();
-            ctx.moveTo(Math.round(mid.x), Math.round(mid.y + doorTop));
-            ctx.lineTo(Math.round(mid.x), Math.round(mid.y + doorBottom));
+            ctx.moveTo(Math.round(tc.x), Math.round(tc.y));
+            ctx.lineTo(Math.round(bc.x), Math.round(bc.y));
             ctx.stroke();
-            // Ring handles
+
+            // Ring handles near the center seam at mid-height per leaf.
+            ctx.fillStyle = '#9aa0a6';
             for (const dir of [-1, 1]) {
-                ctx.fillStyle = '#9aa0a6';
+                const top = lerp(tc, dir < 0 ? tl : tr, 0.18);
+                const bot = lerp(bc, dir < 0 ? bl : br, 0.18);
+                const handle = lerp(top, bot, 0.5);
                 ctx.beginPath();
-                ctx.arc(Math.round(mid.x + dir * 4), Math.round(mid.y + (doorTop + doorBottom) / 2), 1.6, 0, Math.PI * 2);
+                ctx.arc(Math.round(handle.x), Math.round(handle.y), 1.6, 0, Math.PI * 2);
                 ctx.fill();
             }
         }
