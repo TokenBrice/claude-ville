@@ -42,7 +42,7 @@ import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
-import { tileToWorld } from './Projection.js';
+import { tileToWorld, worldToTile } from './Projection.js';
 import { buildStaticPropDrawables } from './StaticPropDrawables.js';
 import { renderWorldFrame } from './WorldFrameRenderer.js';
 import {
@@ -474,6 +474,8 @@ export class IsometricRenderer {
         this.minimap = new Minimap();
         this.agentSprites = new Map();
         this.gateTransits = new Map();
+        this.gateDoorsOpen = false;
+        this._gateDoorsOpenUntilMs = 0;
         this._sortedSprites = [];
         this._movingSprites = [];
         this._spritesNeedSort = true;
@@ -1804,6 +1806,40 @@ export class IsometricRenderer {
         return Boolean(transit && (!type || transit.type === type));
     }
 
+    _updateGateDoorState(now = performance.now()) {
+        const wantOpen = this.gateTransits.size > 0 || this._hasAgentNearGate();
+        if (wantOpen) {
+            this.gateDoorsOpen = true;
+            this._gateDoorsOpenUntilMs = now + 1500; // 1.5s grace timer
+            return;
+        }
+        if (now < this._gateDoorsOpenUntilMs) {
+            this.gateDoorsOpen = true;
+            return;
+        }
+        this.gateDoorsOpen = false;
+    }
+
+    // Note: when motionScale=0, _beginAgentGateArrival short-circuits BEFORE
+    // adding to gateTransits, so doors stay closed during reduced-motion
+    // spawns. This mirrors the no-walk policy: if the agent doesn't visibly
+    // walk in, the doors don't visibly open.
+    _hasAgentNearGate() {
+        const minTileX = 17;
+        const maxTileX = 21;
+        const minTileY = 38;
+        const maxTileY = 39.5;
+        for (const sprite of this.agentSprites.values()) {
+            if (!sprite) continue;
+            const tile = worldToTile(sprite.x, sprite.y);
+            if (tile.tileX >= minTileX && tile.tileX <= maxTileX
+                && tile.tileY >= minTileY && tile.tileY <= maxTileY) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     _handleClick(worldX, worldY) {
         if (!this.agentSprites.size && !this.buildingRenderer) return;
 
@@ -2638,6 +2674,7 @@ export class IsometricRenderer {
         this._drawVillageGateTower(ctx, leftBase.x, leftBase.y, -1);
         this._drawVillageGateTower(ctx, rightBase.x, rightBase.y, 1);
         this._drawVillageGateArch(ctx, leftBase, rightBase);
+        this._drawVillageGateDoors(ctx, leftBase, rightBase);
     }
 
     _drawVillageGateThreshold(ctx, leftBase, rightBase) {
@@ -2982,6 +3019,93 @@ export class IsometricRenderer {
         ctx.beginPath();
         ctx.ellipse(Math.round(lanternX), Math.round(lanternY + 8), 22, 12, 0, 0, Math.PI * 2);
         ctx.fill();
+
+        ctx.restore();
+    }
+
+    _drawVillageGateDoors(ctx, leftBase, rightBase) {
+        const wood = VILLAGE_WOOD_PALETTE;
+        const stone = VILLAGE_STONE_PALETTE;
+        const dx = rightBase.x - leftBase.x;
+        const dy = rightBase.y - leftBase.y;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        const ux = dx / length;
+        const uy = dy / length;
+        const lintelInset = 22;
+        const lintelLevel = -110; // matches arch start.y offset
+        const doorTop = lintelLevel + 26 + 2; // just under the lintel
+        const doorBottom = 14; // a few pixels above the ground
+        const doorHalfWidth = (length - 2 * lintelInset) / 2;
+        const mid = { x: (leftBase.x + rightBase.x) / 2, y: (leftBase.y + rightBase.y) / 2 };
+
+        const open = this.gateDoorsOpen;
+
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+
+        if (open) {
+            // Open state: leaves tucked flat against the inner jambs (slim vertical strips).
+            const tucked = 6;
+            const leafW = 7;
+            for (const dir of [-1, 1]) {
+                const baseX = mid.x + dir * (doorHalfWidth - leafW / 2 - tucked);
+                ctx.fillStyle = '#2c190d';
+                ctx.fillRect(Math.round(baseX - leafW / 2), Math.round(mid.y + doorTop), leafW, doorBottom + Math.abs(doorTop));
+                ctx.strokeStyle = stone.outline;
+                ctx.lineWidth = 1.2;
+                ctx.strokeRect(Math.round(baseX - leafW / 2), Math.round(mid.y + doorTop), leafW, doorBottom + Math.abs(doorTop));
+            }
+            // Warm interior glow spilling onto the road
+            ctx.fillStyle = wood.glow;
+            ctx.beginPath();
+            ctx.ellipse(Math.round(mid.x), Math.round(mid.y + doorBottom), doorHalfWidth + 8, 18, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255, 212, 142, 0.32)';
+            ctx.beginPath();
+            ctx.ellipse(Math.round(mid.x), Math.round(mid.y + doorBottom - 6), doorHalfWidth - 4, 10, 0, 0, Math.PI * 2);
+            ctx.fill();
+        } else {
+            // Closed state: two leaves shut across the opening.
+            const totalH = doorBottom - doorTop;
+            for (const dir of [-1, 1]) {
+                const leafX = mid.x + dir * (doorHalfWidth / 2);
+                ctx.fillStyle = '#3f2412';
+                ctx.fillRect(Math.round(leafX - doorHalfWidth / 2), Math.round(mid.y + doorTop),
+                             doorHalfWidth, totalH);
+                ctx.strokeStyle = stone.outline;
+                ctx.lineWidth = 1.5;
+                ctx.strokeRect(Math.round(leafX - doorHalfWidth / 2), Math.round(mid.y + doorTop),
+                               doorHalfWidth, totalH);
+                // Plank lines
+                ctx.strokeStyle = '#2c190d';
+                ctx.lineWidth = 0.6;
+                for (let p = 0; p < 3; p++) {
+                    const px = leafX - doorHalfWidth / 2 + (p + 1) * (doorHalfWidth / 4);
+                    ctx.beginPath();
+                    ctx.moveTo(Math.round(px), Math.round(mid.y + doorTop + 2));
+                    ctx.lineTo(Math.round(px), Math.round(mid.y + doorBottom - 2));
+                    ctx.stroke();
+                }
+            }
+            // Iron bands (top and bottom)
+            ctx.fillStyle = '#2c190d';
+            ctx.fillRect(Math.round(mid.x - doorHalfWidth), Math.round(mid.y + doorTop + 12), doorHalfWidth * 2, 3);
+            ctx.fillRect(Math.round(mid.x - doorHalfWidth), Math.round(mid.y + doorBottom - 14), doorHalfWidth * 2, 3);
+            // Center seam
+            ctx.strokeStyle = stone.outline;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(mid.x), Math.round(mid.y + doorTop));
+            ctx.lineTo(Math.round(mid.x), Math.round(mid.y + doorBottom));
+            ctx.stroke();
+            // Ring handles
+            for (const dir of [-1, 1]) {
+                ctx.fillStyle = '#9aa0a6';
+                ctx.beginPath();
+                ctx.arc(Math.round(mid.x + dir * 4), Math.round(mid.y + (doorTop + doorBottom) / 2), 1.6, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
 
         ctx.restore();
     }

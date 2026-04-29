@@ -24,6 +24,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.buildingRenderer?.setAtmosphereState?.(atmosphere);
     const perfNow = performance.now();
     renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow);
+    renderer._updateGateDoorState?.(perfNow);
     const viewport = renderer._screenViewport();
 
     renderer._resetScreenTransform(ctx);
