@@ -2,6 +2,8 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { drawCouncilRings, drawTalkArcs } from './CouncilRing.js';
 import { appendDepthSortedDrawables, drawDepthSortedDrawables } from './DrawablePass.js';
 
+// Follow-up after layer extraction: move private renderer calls used here into
+// explicit layer/context methods so this module stays a frame orchestrator.
 export function renderWorldFrame(renderer, dt = 16) {
     const ctx = renderer.ctx;
     const canvas = renderer.canvas;

@@ -971,8 +971,9 @@ export class BuildingSprite {
         return null;
     }
 
-    // Returns drawables (one per building, or two if splitForOcclusion).
-    // Memoized per frame; invalidated by update().
+    // Returns drawable payloads (one per building, or two if splitForOcclusion).
+    // Cached until the building list changes; hover and animation state are read
+    // live by drawDrawable().
     enumerateDrawables() {
         if (this._drawablesCache) return this._drawablesCache;
         const out = [];

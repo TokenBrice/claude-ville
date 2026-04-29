@@ -2448,26 +2448,29 @@ export class IsometricRenderer {
         cacheCtx.setTransform(dpr, 0, 0, dpr, -bounds.x * dpr, -bounds.y * dpr);
 
         const previousMotionScale = this.motionScale;
-        this.motionScale = 0;
-        this._drawDioramaBackdrop(cacheCtx);
-        this._drawWorldBaseShadow(cacheCtx);
+        try {
+            this.motionScale = 0;
+            this._drawDioramaBackdrop(cacheCtx);
+            this._drawWorldBaseShadow(cacheCtx);
 
-        for (let y = 0; y < MAP_SIZE; y++) {
-            for (let x = 0; x < MAP_SIZE; x++) {
-                this._drawTile(cacheCtx, x, y);
+            for (let y = 0; y < MAP_SIZE; y++) {
+                for (let x = 0; x < MAP_SIZE; x++) {
+                    this._drawTile(cacheCtx, x, y);
+                }
             }
-        }
 
-        this._drawOpenWaterDepthWash(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-        this._drawStaticOpenSeaStructure(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-        this._drawDistrictAtmosphere(cacheCtx);
-        this._drawRiverContourLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-        this._drawWaterFoamLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-        this._drawOpenSeaSurfBreaks(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-        this._drawLandmarkBridgeSpans(cacheCtx);
-        this._drawAmbientGroundProps(cacheCtx);
-        this._drawWorldEdgeRim(cacheCtx);
-        this.motionScale = previousMotionScale;
+            this._drawOpenWaterDepthWash(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawStaticOpenSeaStructure(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawDistrictAtmosphere(cacheCtx);
+            this._drawRiverContourLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawWaterFoamLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawOpenSeaSurfBreaks(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawLandmarkBridgeSpans(cacheCtx);
+            this._drawAmbientGroundProps(cacheCtx);
+            this._drawWorldEdgeRim(cacheCtx);
+        } finally {
+            this.motionScale = previousMotionScale;
+        }
 
         this.terrainCache = canvas;
         this.terrainCacheBounds = bounds;

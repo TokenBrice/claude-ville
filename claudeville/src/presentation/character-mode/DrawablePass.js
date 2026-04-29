@@ -2,12 +2,25 @@ function finiteSortY(value) {
     return Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * Shared depth drawable contract for World mode overlap rendering.
+ *
+ * Shape:
+ * - kind: stable category for diagnostics and special-case consumers.
+ * - sortY: finite world-space Y used for painter ordering.
+ * - draw(ctx, zoom, context): draws itself without call-site dispatch.
+ * - hitArea: optional future hit-test metadata.
+ * - payload: original source object for legacy consumers.
+ */
 export function createDepthDrawable(kind, sortY, payload, draw) {
     return {
         kind,
         sortY: finiteSortY(sortY),
+        hitArea: payload?.hitArea || null,
         payload,
-        draw,
+        draw(ctx, zoom, context) {
+            draw?.(ctx, zoom, context, payload);
+        },
     };
 }
 
@@ -85,6 +98,6 @@ export function appendDepthSortedDrawables(target, {
 export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
     const zoom = context.zoom || 1;
     for (const drawable of drawables) {
-        drawable.draw?.(ctx, zoom, context, drawable.payload);
+        drawable.draw?.(ctx, zoom, context);
     }
 }
