@@ -2,10 +2,17 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
-import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { el, replaceChildren } from './DomSafe.js';
-import { formatCost, formatTokens, hashRows, normalizeStatus, truncateText } from './Formatters.js';
-import { shortToolName, toolIcon } from '../../domain/services/ToolIdentity.js';
+import { formatCost, formatTokens, hashRows, truncateText } from './Formatters.js';
+import { emitAgentDeselected } from './AgentSelection.js';
+import {
+    currentToolPresentation,
+    modelPresentation,
+    statusPresentation,
+    toolHistoryNodes,
+    toolHistorySignature,
+} from './AgentPresentation.js';
+
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
 
@@ -95,26 +102,24 @@ export class ActivityPanel {
             tokenUsage: '',
         };
         this._stopPolling();
-        eventBus.emit('agent:deselected');
+        emitAgentDeselected();
     }
 
     _updateInfo(agent) {
-        const status = normalizeStatus(agent.status);
+        const statusInfo = statusPresentation(agent.status);
         this.dom.panelAgentName.textContent = agent.name;
         const statusEl = this.dom.panelAgentStatus;
-        statusEl.textContent = status.toUpperCase();
-        statusEl.style.color = {
-            working: '#4ade80', idle: '#60a5fa', waiting: '#f97316',
-        }[status] || '#8b8b9e';
+        statusEl.textContent = statusInfo.status.toUpperCase();
+        statusEl.style.color = statusInfo.color;
 
-        const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
-        this.dom.panelModel.textContent = formatModelLabel(agent.model, agent.effort, agent.provider);
-        this.dom.panelModel.style.color = identity.accent?.[0] || '';
-        this.dom.panelModel.title = identity.label || agent.model || '';
+        const model = modelPresentation(agent);
+        this.dom.panelModel.textContent = model.label;
+        this.dom.panelModel.style.color = model.color;
+        this.dom.panelModel.title = model.title;
         this.dom.panelProvider.textContent = agent.provider || 'claude';
         this.dom.panelRole.textContent = agent.role || 'general';
-        this.dom.panelLevel.textContent = this._formatAgentLevel(identity);
-        this.dom.panelLevel.style.color = identity.accent?.[1] || identity.accent?.[0] || '';
+        this.dom.panelLevel.textContent = this._formatAgentLevel(model.identity);
+        this.dom.panelLevel.style.color = model.identity.accent?.[1] || model.identity.accent?.[0] || '';
         this.dom.panelTeam.textContent = agent.teamName || '-';
     }
 
@@ -135,18 +140,18 @@ export class ActivityPanel {
         const iconEl = this._toolEls.icon;
         const nameEl = this._toolEls.name;
         const inputEl = this._toolEls.input;
-        const status = normalizeStatus(agent.status);
+        const tool = currentToolPresentation(agent);
 
-        if (agent.currentTool) {
+        if (!tool.isIdle) {
             container.classList.remove('activity-panel__current-tool--idle');
-            iconEl.textContent = toolIcon(agent.currentTool);
-            nameEl.textContent = agent.currentTool;
-            inputEl.textContent = agent.currentToolInput || '';
+            iconEl.textContent = tool.icon;
+            nameEl.textContent = tool.name;
+            inputEl.textContent = tool.detail;
         } else {
             container.classList.add('activity-panel__current-tool--idle');
-            iconEl.textContent = status === 'idle' ? '\u{1F4A4}' : '\u23F3';
-            nameEl.textContent = status === 'idle' ? 'Idle' : 'Waiting...';
-            inputEl.textContent = '';
+            iconEl.textContent = tool.icon;
+            nameEl.textContent = tool.name;
+            inputEl.textContent = tool.detail;
         }
     }
 
@@ -179,31 +184,23 @@ export class ActivityPanel {
 
     _renderToolHistory(tools) {
         const limited = (tools || []).slice(-PANEL_TOOL_LIMIT);
-        const signature = `${limited.length}|${hashRows(limited, [
-            row => row?.ts || 0,
-            row => row?.tool || '',
-            row => (row?.detail || '').slice(0, 45),
-        ])}`;
+        const signature = toolHistorySignature(limited, {
+            limit: PANEL_TOOL_LIMIT,
+            detailLength: 45,
+        });
         if (signature === this._renderSignatures.toolHistory) return;
         this._renderSignatures.toolHistory = signature;
 
         const container = this.dom.panelToolHistory;
-        if (!limited.length) {
-            replaceChildren(container, [
-                this._emptyState('No tool usage'),
-            ]);
-            return;
-        }
-        const reversed = [...limited].reverse();
-        replaceChildren(container, reversed.map(t => {
-            const icon = toolIcon(t.tool);
-            const name = shortToolName(t.tool);
-            const detail = t.detail ? truncateText(t.detail, 45) : '';
-            return el('div', { className: 'activity-panel__tool-item' }, [
-                el('span', { className: 'activity-panel__tool-item-icon', text: icon }),
-                el('span', { className: 'activity-panel__tool-item-name', text: name }),
-                el('span', { className: 'activity-panel__tool-item-detail', text: detail }),
-            ]);
+        replaceChildren(container, toolHistoryNodes(limited, {
+            limit: PANEL_TOOL_LIMIT,
+            detailLength: 45,
+            emptyText: 'No tool usage',
+            emptyClass: 'activity-panel__empty',
+            itemClass: 'activity-panel__tool-item',
+            iconClass: 'activity-panel__tool-item-icon',
+            nameClass: 'activity-panel__tool-item-name',
+            detailClass: 'activity-panel__tool-item-detail',
         }));
     }
 

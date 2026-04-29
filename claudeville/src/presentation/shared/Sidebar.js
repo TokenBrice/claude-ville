@@ -1,13 +1,20 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
-import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { getTeamColor, shortTeamName } from './TeamColor.js';
-import { repoBranchProfile, repoProfile } from './RepoColor.js';
+import { repoBranchProfile } from './RepoColor.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { hashRows, shortProjectName, statusClass } from './Formatters.js';
+import {
+    AgentSelectionMirror,
+    toggleAgentSelection,
+} from './AgentSelection.js';
+import {
+    groupAgentsByProject,
+    modelPresentation,
+    projectProfile,
+    providerPresentation,
+} from './AgentPresentation.js';
 
-const PROVIDER_ICONS = { claude: 'C', codex: 'X', gemini: 'G', git: '#' };
-const PROVIDER_COLORS = { claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa', git: '#f6cf60' };
 const RELATIVE_TIME_THRESHOLDS = [
     [60_000, 'just now'],
     [60 * 60_000, (ms) => `${Math.floor(ms / 60_000)}m ago`],
@@ -33,11 +40,13 @@ export class Sidebar {
         this.harborListEl = document.getElementById('harborList');
         this.harborCountEl = document.getElementById('harborCount');
         this.toggleEl = document.getElementById('sidebarToggle');
-        this.selectedId = null;
         this.harborRepos = [];
         this._harborSignature = '';
         this._renderSignature = '';
         this.isCollapsed = localStorage.getItem('claudeville.sidebarCollapsed') === 'true';
+        this.selection = new AgentSelectionMirror({
+            onChange: (nextId, previousId) => this._syncSelection(previousId, nextId),
+        });
 
         this._onUpdate = () => this.render();
         this._onHarborUpdate = (repos = []) => {
@@ -55,22 +64,10 @@ export class Sidebar {
             this.harborRepos = nextRepos;
             this.renderHarbor();
         };
-        this._onAgentSelected = (agent) => {
-            const previous = this.selectedId;
-            this.selectedId = agent?.id || null;
-            this._syncSelection(previous, this.selectedId);
-        };
-        this._onAgentDeselected = () => {
-            const previous = this.selectedId;
-            this.selectedId = null;
-            this._syncSelection(previous, null);
-        };
         eventBus.on('agent:added', this._onUpdate);
         eventBus.on('agent:updated', this._onUpdate);
         eventBus.on('agent:removed', this._onUpdate);
         eventBus.on('harbor:updated', this._onHarborUpdate);
-        eventBus.on('agent:selected', this._onAgentSelected);
-        eventBus.on('agent:deselected', this._onAgentDeselected);
 
         this._bindToggle();
         this._bindListClick();
@@ -95,13 +92,7 @@ export class Sidebar {
             const row = event.target.closest('.sidebar__agent[data-agent-id]');
             if (!row || !this.listEl.contains(row)) return;
             const id = row.dataset.agentId;
-            const agent = this.world.agents.get(id);
-            if (!agent) return;
-            if (this.selectedId === id) {
-                eventBus.emit('agent:deselected');
-                return;
-            }
-            eventBus.emit('agent:selected', agent);
+            toggleAgentSelection(this.world, id, this.selection.selectedId);
         };
         this.listEl.addEventListener('click', this._onListClick);
     }
@@ -135,20 +126,18 @@ export class Sidebar {
             ].join('|'))
             .join('\n');
         if (signature === this._renderSignature) {
-            this._syncSelection(null, this.selectedId);
+            this._syncSelection(null, this.selection.selectedId);
             return;
         }
         this._renderSignature = signature;
 
         // Group by project
-        const groups = this._groupByProject(agents);
+        const groups = groupAgentsByProject(agents);
 
         const nodes = [];
         for (const [projectPath, groupAgents] of groups) {
             const projectName = shortProjectName(projectPath, i18n.t('unknownProject'));
-            const profile = projectPath === '_unknown'
-                ? { accent: '#8b8b9e', glow: 'rgba(139, 139, 158, 0.3)', panel: 'rgba(28, 28, 36, 0.68)' }
-                : repoProfile(projectPath);
+            const profile = projectProfile(projectPath, { surface: 'sidebar' });
             const groupEl = el('div', { className: 'sidebar__project-group' });
             groupEl.append(el('div', {
                 className: 'sidebar__project-header',
@@ -176,12 +165,12 @@ export class Sidebar {
                 }),
             ]));
             for (const agent of groupAgents) {
-                const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
-                const providerColor = identity.minimapColor || PROVIDER_COLORS[agent.provider] || '#8b8b9e';
+                const model = modelPresentation(agent);
+                const provider = providerPresentation(agent.provider, model.identity);
                 const team = agent.teamName ? getTeamColor(agent.teamName) : null;
                 const teamLabel = agent.teamName ? `Team ${shortTeamName(agent.teamName)}` : '';
                 const agentClasses = ['sidebar__agent'];
-                if (agent.id === this.selectedId) agentClasses.push('sidebar__agent--selected');
+                if (this.selection.isSelected(agent.id)) agentClasses.push('sidebar__agent--selected');
                 const nameChildren = [];
                 if (team) {
                     nameChildren.push(el('span', {
@@ -202,12 +191,12 @@ export class Sidebar {
                 nameChildren.push(agent.name || '');
 
                 const providerIcon = el('span', {
-                    text: PROVIDER_ICONS[agent.provider] || '?',
-                    style: { color: providerColor, fontWeight: 'bold' },
+                    text: provider.icon,
+                    style: { color: provider.color, fontWeight: 'bold' },
                 });
                 const modelEl = el('span', { className: 'sidebar__agent-model' }, [
                     providerIcon,
-                    ` ${this._shortModel(agent.model, agent.effort, agent.provider)}`,
+                    ` ${model.label}`,
                 ]);
 
                 groupEl.append(el('div', {
@@ -227,7 +216,7 @@ export class Sidebar {
         }
 
         replaceChildren(this.listEl, nodes);
-        this._syncSelection(null, this.selectedId);
+        this._syncSelection(null, this.selection.selectedId);
     }
 
     _syncSelection(previousId, nextId) {
@@ -304,28 +293,12 @@ export class Sidebar {
         replaceChildren(this.harborListEl, nodes);
     }
 
-    _groupByProject(agents) {
-        const groups = new Map();
-        for (const agent of agents) {
-            const key = agent.projectPath || '_unknown';
-            if (!groups.has(key)) groups.set(key, []);
-            groups.get(key).push(agent);
-        }
-        return groups;
-    }
-
-    _shortModel(model, effort, provider) {
-        if (!model) return '';
-        return formatModelLabel(model, effort, provider);
-    }
-
     destroy() {
         eventBus.off('agent:added', this._onUpdate);
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('harbor:updated', this._onHarborUpdate);
-        eventBus.off('agent:selected', this._onAgentSelected);
-        eventBus.off('agent:deselected', this._onAgentDeselected);
+        this.selection?.destroy?.();
         if (this._onToggleClick) this.toggleEl?.removeEventListener('click', this._onToggleClick);
         if (this._onListClick) this.listEl?.removeEventListener('click', this._onListClick);
     }

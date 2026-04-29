@@ -11,6 +11,8 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 | `TopBar.js` | Global status, usage display, mode/settings affordances. |
 | `Sidebar.js` | Agent list and sidebar-driven `agent:selected` events. |
 | `ActivityPanel.js` | Right-side 320px detail panel for the selected agent. |
+| `AgentSelection.js` | Shared selection event helpers and local selected-agent mirrors for presentation components. |
+| `AgentPresentation.js` | Shared project grouping plus provider, model, status, current-tool, and tool-history presentation helpers. |
 | `SessionDetailsService.js` | Shared `/api/session-detail` and `/api/session-details` fetch dedupe, cache, stale fallback, and timeout handling. |
 | `ModelVisualIdentity.js` | Provider/model/effort labels, sprite IDs, palette keys, colors, and minimap accents. |
 | `RepoColor.js` | Deterministic project/repository color assignment. |
@@ -20,6 +22,7 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 
 ## Event Ownership
 
+- Emit `agent:selected` and `agent:deselected` through `AgentSelection.js` helpers so future event-shape changes stay centralized.
 - `agent:selected` can be emitted by World mode, Dashboard cards, or Sidebar rows.
 - `ActivityPanel` opens on `agent:selected`, refreshes its selected agent on matching `agent:updated`, and hides when that agent is removed.
 - `ActivityPanel.hide()` emits `agent:deselected`; `App.js` bridges that event back to World mode so camera follow stops.

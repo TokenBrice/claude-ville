@@ -23,6 +23,7 @@ import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
 import { ActivityPanel } from './shared/ActivityPanel.js';
 import { el, replaceChildren } from './shared/DomSafe.js';
+import { emitAgentSelected } from './shared/AgentSelection.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
@@ -203,7 +204,7 @@ class App {
             });
 
             this.renderer.onAgentSelect = (agent) => {
-                if (agent) eventBus.emit('agent:selected', agent);
+                emitAgentSelected(agent);
             };
 
             console.log('[App] IsometricRenderer loaded');

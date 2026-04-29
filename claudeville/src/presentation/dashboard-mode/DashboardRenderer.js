@@ -3,18 +3,21 @@ import { AvatarCanvas } from './AvatarCanvas.js';
 import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
-import { formatModelLabel, getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
-import { repoProfile } from '../shared/RepoColor.js';
-import { el, replaceChildren } from '../shared/DomSafe.js';
-import { hashRows, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
-import { shortToolName, toolCategory, toolIcon } from '../../domain/services/ToolIdentity.js';
+import { replaceChildren } from '../shared/DomSafe.js';
+import { normalizeStatus, shortenHomePath, shortProjectName } from '../shared/Formatters.js';
+import { AgentSelectionMirror, emitAgentSelected } from '../shared/AgentSelection.js';
+import {
+    currentToolPresentation,
+    groupAgentsByProject,
+    modelPresentation,
+    projectProfile,
+    providerPresentation,
+    sortAgentsByStatus,
+    statusPresentation,
+    toolHistoryNodes,
+    toolHistorySignature,
+} from '../shared/AgentPresentation.js';
 
-const PROVIDER_BADGES = {
-    claude: { label: 'Claude', color: '#a78bfa', bg: 'rgba(167,139,250,0.15)' },
-    codex:  { label: 'Codex',  color: '#4ade80', bg: 'rgba(74,222,128,0.15)' },
-    gemini: { label: 'Gemini', color: '#60a5fa', bg: 'rgba(96,165,250,0.15)' },
-    git:    { label: 'Git',    color: '#f6cf60', bg: 'rgba(246,207,96,0.15)' },
-};
 const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const DETAIL_FETCH_LIMIT = 48;
 
@@ -35,6 +38,13 @@ export class DashboardRenderer {
         this._sectionEls = new Map(); // projectPath → section element
         this._sectionRefs = new Map(); // projectPath → cached section refs
         this._observer = this._createVisibilityObserver();
+        this.selection = new AgentSelectionMirror({
+            notifyOnRepeat: true,
+            onChange: (nextId) => {
+                this._selectedAgentId = nextId;
+                if (this.active) void this._fetchAllDetails();
+            },
+        });
 
         this._onAgentAdded = () => { if (this.active) this.render(); };
         this._onAgentUpdated = (agent) => {
@@ -48,13 +58,6 @@ export class DashboardRenderer {
             sessionDetailsService.deleteForAgent(agent);
             if (this.active) this.render();
         };
-        this._onAgentSelected = (agent) => {
-            this._selectedAgentId = agent?.id || null;
-            if (this.active) void this._fetchAllDetails();
-        };
-        this._onAgentDeselected = () => {
-            this._selectedAgentId = null;
-        };
         this._onModeChanged = (mode) => {
             this.active = mode === 'dashboard';
             if (this.active) {
@@ -67,8 +70,6 @@ export class DashboardRenderer {
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
-        eventBus.on('agent:selected', this._onAgentSelected);
-        eventBus.on('agent:deselected', this._onAgentDeselected);
         eventBus.on('mode:changed', this._onModeChanged);
     }
 
@@ -87,22 +88,14 @@ export class DashboardRenderer {
         this.gridEl.style.display = '';
         this.emptyEl.classList.remove('dashboard__empty--visible');
 
-        // Group by project
-        const groups = this._groupByProject(agents);
-
-        // Status order: working > waiting > idle
-        const order = { working: 0, waiting: 1, idle: 2 };
+        const groups = groupAgentsByProject(agents);
 
         const existingIds = new Set();
         const existingSections = new Set();
 
         for (const [projectPath, groupAgents] of groups) {
             existingSections.add(projectPath);
-            groupAgents.sort((a, b) => {
-                const statusA = normalizeStatus(a.status);
-                const statusB = normalizeStatus(b.status);
-                return (order[statusA] ?? 3) - (order[statusB] ?? 3);
-            });
+            sortAgentsByStatus(groupAgents);
 
             // Create/get section element
             let sectionEl = this._sectionEls.get(projectPath);
@@ -190,33 +183,12 @@ export class DashboardRenderer {
         this._updateCard(cardEl, agent);
     }
 
-    _groupByProject(agents) {
-        const groups = new Map();
-        for (const agent of agents) {
-            const key = agent.projectPath || '_unknown';
-            if (!groups.has(key)) groups.set(key, []);
-            groups.get(key).push(agent);
-        }
-        return groups;
-    }
-
-    _projectProfile(projectPath) {
-        if (!projectPath || projectPath === '_unknown') {
-            return {
-                accent: '#8b8b9e',
-                glow: 'rgba(139, 139, 158, 0.3)',
-                panel: 'rgba(28, 28, 36, 0.72)',
-            };
-        }
-        return repoProfile(projectPath);
-    }
-
     _createSection(projectPath) {
         const section = document.createElement('div');
         section.className = 'dashboard__section';
         section.dataset.project = projectPath;
 
-        const profile = this._projectProfile(projectPath);
+        const profile = projectProfile(projectPath);
         section.innerHTML = `
             <div class="dashboard__section-header" style="border-left-color: ${profile.accent}; background: ${profile.panel}">
                 <span class="dashboard__section-dot" style="background: ${profile.accent}; box-shadow: 0 0 8px ${profile.glow}"></span>
@@ -296,7 +268,7 @@ export class DashboardRenderer {
         // Click to select agent
         card.addEventListener('click', () => {
             const current = this.world.agents.get(card.dataset.agentId);
-            if (current) eventBus.emit('agent:selected', current);
+            emitAgentSelected(current);
         });
 
         card._elements = {
@@ -320,7 +292,9 @@ export class DashboardRenderer {
     _updateCard(cardEl, agent) {
         const refs = cardEl._elements;
         const status = normalizeStatus(agent.status);
-        const identity = getModelVisualIdentity(agent.model, agent.effort, agent.provider);
+        const model = modelPresentation(agent);
+        const provider = providerPresentation(agent.provider, model.identity);
+        const statusInfo = statusPresentation(status, i18n);
         const signature = [
             agent.name || '',
             agent.model || '',
@@ -343,31 +317,31 @@ export class DashboardRenderer {
             if (cardEl.className !== nextClass) cardEl.className = nextClass;
 
             this._setText(refs.name, agent.name);
-            this._setText(refs.model, this._shortModel(agent.model, agent.effort, agent.provider));
-            this._setStyle(refs.model, 'color', identity.accent?.[0] || '');
-            refs.model.title = identity.label || agent.model || '';
+            this._setText(refs.model, model.label);
+            this._setStyle(refs.model, 'color', model.color);
+            refs.model.title = model.title;
             this._setText(refs.role, agent.role || '');
 
-            const badge = PROVIDER_BADGES[agent.provider] || PROVIDER_BADGES.claude;
+            const badge = provider.badge;
             this._setText(refs.providerBadge, badge.label);
             this._setStyle(refs.providerBadge, 'color', badge.color);
             this._setStyle(refs.providerBadge, 'background', badge.bg);
 
             const nextStatusClass = `dash-card__status dash-card__status--${status}`;
             if (refs.status.className !== nextStatusClass) refs.status.className = nextStatusClass;
-            const statusKey = { working: 'statusWorking', idle: 'statusIdle', waiting: 'statusWaiting' };
-            this._setText(refs.statusLabel, i18n.t(statusKey[status] || status));
+            this._setText(refs.statusLabel, statusInfo.label);
 
-            if (agent.currentTool) {
+            const tool = currentToolPresentation(agent, i18n);
+            if (!tool.isIdle) {
                 refs.currentTool.classList.remove('dash-card__current-tool--idle');
-                this._setText(refs.toolIcon, toolIcon(agent.currentTool));
-                this._setText(refs.toolName, agent.currentTool);
-                this._setText(refs.toolDetail, agent.currentToolInput || '');
+                this._setText(refs.toolIcon, tool.icon);
+                this._setText(refs.toolName, tool.name);
+                this._setText(refs.toolDetail, tool.detail);
             } else {
                 refs.currentTool.classList.add('dash-card__current-tool--idle');
-                this._setText(refs.toolIcon, status === 'idle' ? '💤' : '⏳');
-                this._setText(refs.toolName, status === 'idle' ? i18n.t('statusIdle') : i18n.t('statusWaiting') + '...');
-                this._setText(refs.toolDetail, '');
+                this._setText(refs.toolIcon, tool.icon);
+                this._setText(refs.toolName, tool.name);
+                this._setText(refs.toolDetail, tool.detail);
             }
 
             if (agent.lastMessage) {
@@ -395,36 +369,25 @@ export class DashboardRenderer {
         const listEl = cardEl._elements.toolList;
         const limited = (tools || []).slice(-DASHBOARD_TOOL_HISTORY_LIMIT);
 
-        const signature = `${limited.length}|${hashRows(limited, [
-            row => row?.ts || 0,
-            row => row?.tool || '',
-            row => (row?.detail || '').slice(0, 60),
-        ])}`;
+        const signature = toolHistorySignature(limited, {
+            limit: DASHBOARD_TOOL_HISTORY_LIMIT,
+            detailLength: 60,
+        });
 
         if (this.toolHistoryRenderSignatures.get(agentId) === signature) return;
         this.toolHistoryRenderSignatures.set(agentId, signature);
 
-        if (!limited.length) {
-            replaceChildren(listEl, [
-                el('div', {
-                    className: 'dash-card__loading',
-                    text: i18n.t('noToolUsage'),
-                    style: { color: '#666' },
-                }),
-            ]);
-            return;
-        }
-
-        // Newest first
-        const reversed = [...limited].reverse();
-        replaceChildren(listEl, reversed.map(t => {
-            const cat = toolCategory(t.tool);
-            const detail = t.detail ? truncateText(t.detail, 60) : '';
-            return el('div', { className: 'dash-card__tool-item' }, [
-                el('span', { className: ['dash-card__tool-item-icon', `tool-cat--${cat}`], text: toolIcon(t.tool) }),
-                el('span', { className: ['dash-card__tool-item-name', `tool-cat--${cat}`], text: shortToolName(t.tool) }),
-                el('span', { className: 'dash-card__tool-item-detail', text: detail }),
-            ]);
+        replaceChildren(listEl, toolHistoryNodes(limited, {
+            limit: DASHBOARD_TOOL_HISTORY_LIMIT,
+            detailLength: 60,
+            emptyText: i18n.t('noToolUsage'),
+            emptyClass: 'dash-card__loading',
+            emptyStyle: { color: '#666' },
+            itemClass: 'dash-card__tool-item',
+            iconClass: 'dash-card__tool-item-icon',
+            nameClass: 'dash-card__tool-item-name',
+            detailClass: 'dash-card__tool-item-detail',
+            includeCategoryClasses: true,
         }));
     }
 
@@ -526,11 +489,6 @@ export class DashboardRenderer {
         }
     }
 
-    _shortModel(model, effort, provider) {
-        if (!model) return '';
-        return formatModelLabel(model, effort, provider);
-    }
-
     _setText(el, value) {
         const next = value == null ? '' : String(value);
         if (el && el.textContent !== next) el.textContent = next;
@@ -547,11 +505,10 @@ export class DashboardRenderer {
             cardEl._avatarCanvas?.destroy?.();
         }
         this._observer?.disconnect?.();
+        this.selection?.destroy?.();
         eventBus.off('agent:added', this._onAgentAdded);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);
-        eventBus.off('agent:selected', this._onAgentSelected);
-        eventBus.off('agent:deselected', this._onAgentDeselected);
         eventBus.off('mode:changed', this._onModeChanged);
     }
 }
