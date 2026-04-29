@@ -231,6 +231,8 @@ const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
         exitLaneIndex: 3,
     },
 ]);
+const DEPARTURE_EDGE_Y = 2.8;
+const DEPARTURE_EDGE_LANES = Object.freeze([7.4, 10.2, 13.0, 15.8, 18.6, 21.4, 24.2, 27.0, 29.8, 32.6, 35.4, 38.2]);
 
 const PUSH_STATUS_STYLE = {
     success: {
@@ -891,6 +893,26 @@ function routeBandsFromData(routeData, ship = null) {
         : LOCAL_WATER_ROUTE_BANDS;
 }
 
+function departureEdgeTile(ship, band) {
+    if (!ship) return { tileX: 19.3, tileY: DEPARTURE_EDGE_Y };
+    const laneCount = DEPARTURE_EDGE_LANES.length;
+    const routeIndex = Number.isFinite(Number(ship?.departRouteIndex))
+        ? Number(ship.departRouteIndex)
+        : (Number(ship?.laneIndex) || 0);
+    const squadIndex = Math.max(0, Math.min(10000, Number(ship?.departSquadIndex || 0)));
+    const squadCount = Math.max(1, Number(ship?.departSquadCount || 1));
+    const zone = ship?.departWaterZone || ship?.waitingZone || 'harbor';
+    const routeSeed = stableHash(`${ship.id || ''}:${ship.departEventId || ''}:${zone}`);
+    const laneOffset = Math.round((squadIndex - (squadCount - 1) / 2) * 0.8);
+    const laneIndex = (((routeSeed % laneCount) + Math.abs(routeIndex) + laneOffset) % laneCount);
+    const lane = DEPARTURE_EDGE_LANES[(laneIndex + laneCount) % laneCount];
+    const bandBias = Number.isFinite(Number(band?.exitLaneIndex))
+        ? Number(band.exitLaneIndex)
+        : 0;
+    const x = clamp(lane + bandBias * 0.28, 4.2, MAP_SIZE - 1.4);
+    return { tileX: x, tileY: DEPARTURE_EDGE_Y };
+}
+
 function pushRoutePoint(route, point) {
     if (!point) return;
     const previous = route[route.length - 1];
@@ -925,6 +947,7 @@ function composeWaterRouteTiles(startTile, ship, routeData = null) {
     }
     const exitPoint = fallbackLane?.[fallbackLane.length - 1];
     pushRoutePoint(raw, exitPoint);
+    pushRoutePoint(raw, departureEdgeTile(ship, band));
 
     const lastIndex = raw.length - 1;
     const route = [];
