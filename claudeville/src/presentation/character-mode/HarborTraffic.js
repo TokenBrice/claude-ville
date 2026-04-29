@@ -1,4 +1,4 @@
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { normalizeRepoBranch, repoBranchProfile, repoProfile } from '../shared/RepoColor.js';
 import {
     cleanCommitSubject,
@@ -36,13 +36,25 @@ const HARBOR_SQUAD_REUSE_OFFSETS = Object.freeze([
     { tileX: -0.64, tileY: -0.42 },
 ]);
 const HARBOR_SHIP_CLASSES = Object.freeze([
-    { key: 'flagship', spriteId: 'prop.harborShip.flagship', minCommits: 10, scale: 0.70, wakeScale: 2.60, cargoRows: 7, mastCount: 5, labelLift: 52, flagOffsetX: 34, flagOffsetY: 52, badge: '10+' },
-    { key: 'dreadnought', spriteId: 'prop.harborShip.dreadnought', minCommits: 8, scale: 0.72, wakeScale: 2.30, cargoRows: 7, mastCount: 5, labelLift: 48, flagOffsetX: 30, flagOffsetY: 48, badge: '8+' },
-    { key: 'galleon', spriteId: 'prop.harborShip.galleon', minCommits: 6, scale: 0.75, wakeScale: 2.00, cargoRows: 6, mastCount: 4, labelLift: 42, flagOffsetX: 26, flagOffsetY: 42, badge: '6+' },
-    { key: 'brigantine', spriteId: 'prop.harborShip.brigantine', minCommits: 4, scale: 0.80, wakeScale: 1.70, cargoRows: 5, mastCount: 3, labelLift: 34, flagOffsetX: 20, flagOffsetY: 34, badge: '4+' },
-    { key: 'sloop', spriteId: 'prop.harborShip.sloop', minCommits: 3, scale: 0.84, wakeScale: 1.42, cargoRows: 3, mastCount: 2, labelLift: 28, flagOffsetX: 16, flagOffsetY: 28, badge: '3+' },
+    { key: 'flagship', spriteId: 'prop.harborShip.flagship', minCommits: 10, scale: 0.64, wakeScale: 2.38, cargoRows: 7, mastCount: 5, labelLift: 48, flagOffsetX: 31, flagOffsetY: 48, badge: '10+' },
+    { key: 'dreadnought', spriteId: 'prop.harborShip.dreadnought', minCommits: 8, scale: 0.66, wakeScale: 2.12, cargoRows: 7, mastCount: 5, labelLift: 44, flagOffsetX: 28, flagOffsetY: 44, badge: '8+' },
+    { key: 'galleon', spriteId: 'prop.harborShip.galleon', minCommits: 6, scale: 0.69, wakeScale: 1.86, cargoRows: 6, mastCount: 4, labelLift: 38, flagOffsetX: 24, flagOffsetY: 38, badge: '6+' },
+    { key: 'brigantine', spriteId: 'prop.harborShip.brigantine', minCommits: 4, scale: 0.75, wakeScale: 1.56, cargoRows: 5, mastCount: 3, labelLift: 31, flagOffsetX: 18, flagOffsetY: 31, badge: '4+' },
+    { key: 'sloop', spriteId: 'prop.harborShip.sloop', minCommits: 3, scale: 0.80, wakeScale: 1.32, cargoRows: 3, mastCount: 2, labelLift: 26, flagOffsetX: 14, flagOffsetY: 26, badge: '3+' },
     { key: 'cutter', spriteId: 'prop.harborShip.cutter', minCommits: 2, scale: 0.88, wakeScale: 1.15, cargoRows: 1, mastCount: 1, labelLift: 16, flagOffsetX: 8, flagOffsetY: 16, badge: '2+' },
     { key: 'skiff', spriteId: 'prop.harborShip.skiff', minCommits: 1, scale: 0.82, wakeScale: 0.88, cargoRows: 0, mastCount: 1, labelLift: 0, flagOffsetX: 0, flagOffsetY: 0, badge: '' },
+]);
+const HARBOR_SHIP_PACK_SEQUENCE = Object.freeze([10, 8, 6, 4, 3, 2, 1, 8, 6, 4, 3, 2, 1, 6, 4, 2, 1]);
+const HARBOR_DOCK_WATER_BOUNDS = Object.freeze({
+    minTileX: 31.05,
+    maxTileX: MAP_SIZE - 1.95,
+    minTileY: 10.15,
+    maxTileY: 24.85,
+});
+const HARBOR_DOCK_WATER_REGIONS = Object.freeze([
+    { centerX: 37.30, centerY: 21.70, radiusX: 6.35, radiusY: 7.00, limit: 0.86 },
+    { centerX: 39.20, centerY: 16.20, radiusX: 4.45, radiusY: 6.05, limit: 0.82 },
+    { centerX: 43.00, centerY: 19.00, radiusX: 12.60, radiusY: 23.00, limit: 0.88 },
 ]);
 const HARBOR_SQUAD_ANCHORAGES = Object.freeze([
     { name: 'Inner West Basin', zone: 'inner-harbor', tileX: 32.60, tileY: 22.75, columns: 2, columnDx: 1.16, columnDy: 0.08, rowDx: -0.54, rowDy: 1.02 },
@@ -194,6 +206,10 @@ function toTile(x, y) {
         tileX: y / TILE_HEIGHT + x / TILE_WIDTH,
         tileY: y / TILE_HEIGHT - x / TILE_WIDTH,
     };
+}
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
 }
 
 function stableHash(input) {
@@ -431,6 +447,68 @@ function harborShipCollisionRadius(ship = {}) {
     return Math.max(34, Math.min(66, 22 + wakeScale * 16));
 }
 
+function dockShipWaterBounds(entry = {}) {
+    const radius = Math.max(34, Number(entry.collisionRadius) || 42);
+    const margin = clamp((radius - 34) / 64, 0, 0.62);
+    return {
+        minTileX: HARBOR_DOCK_WATER_BOUNDS.minTileX + margin * 0.40,
+        maxTileX: HARBOR_DOCK_WATER_BOUNDS.maxTileX - margin * 0.92,
+        minTileY: HARBOR_DOCK_WATER_BOUNDS.minTileY + margin * 0.32,
+        maxTileY: HARBOR_DOCK_WATER_BOUNDS.maxTileY - margin * 0.50,
+    };
+}
+
+function harborWaterRegionScore(tile, region) {
+    const dx = (tile.tileX - region.centerX) / region.radiusX;
+    const dy = (tile.tileY - region.centerY) / region.radiusY;
+    return dx * dx + dy * dy;
+}
+
+function projectTileIntoHarborRegion(tile, region) {
+    const score = harborWaterRegionScore(tile, region);
+    if (score <= region.limit) return tile;
+
+    const scale = Math.sqrt(region.limit / Math.max(score, 0.0001));
+    return {
+        tileX: region.centerX + (tile.tileX - region.centerX) * scale,
+        tileY: region.centerY + (tile.tileY - region.centerY) * scale,
+    };
+}
+
+function clampDockTileToHarborWater(tile, entry = {}) {
+    const bounds = dockShipWaterBounds(entry);
+    let next = {
+        tileX: clamp(Number(tile.tileX) || HARBOR_DOCK_WATER_BOUNDS.maxTileX, bounds.minTileX, bounds.maxTileX),
+        tileY: clamp(Number(tile.tileY) || HARBOR_DOCK_WATER_BOUNDS.maxTileY, bounds.minTileY, bounds.maxTileY),
+    };
+
+    let bestRegion = HARBOR_DOCK_WATER_REGIONS[0];
+    let bestScore = Infinity;
+    for (const region of HARBOR_DOCK_WATER_REGIONS) {
+        const score = harborWaterRegionScore(next, region);
+        if (score < bestScore) {
+            bestScore = score;
+            bestRegion = region;
+        }
+        if (score <= region.limit) return next;
+    }
+
+    next = projectTileIntoHarborRegion(next, bestRegion);
+    return {
+        tileX: clamp(next.tileX, bounds.minTileX, bounds.maxTileX),
+        tileY: clamp(next.tileY, bounds.minTileY, bounds.maxTileY),
+    };
+}
+
+function clampDockShipToHarborWater(entry = {}) {
+    const tile = clampDockTileToHarborWater(toTile(entry.x, entry.y), entry);
+    const world = toWorld(tile.tileX, tile.tileY);
+    entry.x = world.x;
+    entry.y = world.y;
+    entry.tileX = tile.tileX;
+    entry.tileY = tile.tileY;
+}
+
 function dockSquadCycleOffset(squadCycle = 0, anchorIndex = 0) {
     const cycle = Math.max(0, Math.floor(Number(squadCycle) || 0));
     if (cycle <= 0) return { tileX: 0, tileY: 0 };
@@ -472,7 +550,10 @@ function dockSquadFormationTile(anchor, shipIndex, shipCount, squadCycle = 0, ke
 }
 
 function relaxDockShipLayout(entries = []) {
-    if (!Array.isArray(entries) || entries.length <= 1) return;
+    if (!Array.isArray(entries) || !entries.length) return;
+    for (const entry of entries) clampDockShipToHarborWater(entry);
+    if (entries.length <= 1) return;
+
     for (let iteration = 0; iteration < 14; iteration++) {
         for (let i = 0; i < entries.length; i++) {
             for (let j = i + 1; j < entries.length; j++) {
@@ -493,10 +574,14 @@ function relaxDockShipLayout(entries = []) {
                 b.y += uy * push;
             }
         }
+        for (const entry of entries) clampDockShipToHarborWater(entry);
     }
 
     for (const entry of entries) {
-        const tile = toTile(entry.x, entry.y);
+        const tile = clampDockTileToHarborWater(toTile(entry.x, entry.y), entry);
+        const world = toWorld(tile.tileX, tile.tileY);
+        entry.x = world.x;
+        entry.y = world.y;
         entry.tileX = tile.tileX;
         entry.tileY = tile.tileY;
     }
@@ -589,9 +674,10 @@ function buildDockSquadLayout(state) {
                 repoDockCount,
                 repoDockVisibleCount: squad.count,
             };
-            const showCommitLabel = !compactCommitLabel
-                || ship.pushStatus === 'failed'
-                || (shipIndex === 0 && totalDocked <= 12 && repoDockCount <= 5);
+            const showCommitLabel = ship.pushStatus === 'failed'
+                || (!compactCommitLabel && totalDocked <= 18)
+                || (shipIndex === 0 && totalDocked <= 18 && repoDockCount <= 5)
+                || (shipIndex === 0 && totalDocked <= 36 && (squad.repoSegmentIndex % 3) === 0);
             byShipId.set(ship.id, {
                 ...tile,
                 id: ship.id,
@@ -906,8 +992,11 @@ function distributedHarborShipPackSize(fleetCount, fleetIndex) {
     const index = Math.max(0, Math.min(count - 1, Math.round(Number(fleetIndex) || 0)));
     const maxPackSize = Math.min(MAX_HARBOR_SHIP_PACK_SIZE, count);
     if (count <= 1) return 1;
-    const rank = 1 - index / Math.max(1, count - 1);
-    return Math.max(1, Math.min(maxPackSize, Math.ceil(maxPackSize * rank)));
+    if (index === 0) return maxPackSize;
+
+    const cycle = Math.floor((index - 1) / HARBOR_SHIP_PACK_SEQUENCE.length);
+    const sequenceIndex = (index - 1 + cycle * 3) % HARBOR_SHIP_PACK_SEQUENCE.length;
+    return Math.max(1, Math.min(maxPackSize, HARBOR_SHIP_PACK_SEQUENCE[sequenceIndex] || 1));
 }
 
 function harborShipPackSize(ship = {}) {
@@ -1840,7 +1929,9 @@ export class HarborTraffic {
         if (ship.harborCrate) {
             this._drawHarborCrate(ctx, ship, zoom, alpha, profile, shipClass);
         }
-        this._drawCommitPennant(ctx, ship, zoom, alpha, profile, shipClass);
+        if (ship.showCommitLabel !== false || ship.pushStatus === 'failed') {
+            this._drawCommitPennant(ctx, ship, zoom, alpha, profile, shipClass);
+        }
     }
 
     _drawShipSprite(ctx, ship, alpha, shipClass = harborShipClass(ship)) {
