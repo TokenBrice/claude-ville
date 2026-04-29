@@ -2492,7 +2492,17 @@ export class IsometricRenderer {
                     bounds: wallBounds,
                     splitForOcclusion: false,
                     sortY: Math.max(start.y, end.y) - 14,
-                    drawFn: (ctx, x, y) => this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i),
+                    drawFn: (ctx, x, y) => {
+                        const isLastSegment = i === route.points.length - 2;
+                        const isFirstSegment = i === 0;
+                        let footingExtent = null;
+                        if (route.id === 'west' && isLastSegment) {
+                            footingExtent = { side: 'end', distance: 30, dither: 32 };
+                        } else if (route.id === 'east' && isFirstSegment) {
+                            footingExtent = { side: 'start', distance: 24, dither: 32 };
+                        }
+                        this._drawVillageWallSegment(ctx, x, y, localStart, localEnd, i, footingExtent);
+                    },
                 }));
             }
         }
@@ -2976,7 +2986,7 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0) {
+    _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0, footingExtent = null) {
         const palette = VILLAGE_WOOD_PALETTE;
         const x1 = Math.round(originX + start.x);
         const y1 = Math.round(originY + start.y);
@@ -3110,6 +3120,10 @@ export class IsometricRenderer {
             ctx.stroke();
         }
 
+        if (footingExtent) {
+            this._drawVillageWallStoneFooting(ctx, x1, y1, x2, y2, ux, uy, nx, ny, length, footingExtent);
+        }
+
         for (let d = 32 + offset; d < length - 12; d += 72) {
             const p = { x: x1 + ux * d, y: y1 + uy * d };
             const w = 13;
@@ -3156,6 +3170,92 @@ export class IsometricRenderer {
         ctx.moveTo(Math.round(x1), Math.round(y1));
         ctx.lineTo(Math.round(x2), Math.round(y2));
         ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawVillageWallStoneFooting(ctx, x1, y1, x2, y2, ux, uy, nx, ny, length, extent) {
+        const stone = VILLAGE_STONE_PALETTE;
+        // Footing is painted as a strip at the wall base on the side closest to the gate.
+        const fullDist = Math.min(extent.distance ?? 30, length - 32); // stay clear of the last watchpost
+        const ditherDist = extent.dither ?? 32;
+        if (fullDist <= 0) return;
+
+        // Determine which end of the segment is gate-adjacent.
+        const fromEnd = extent.side === 'end';
+        const startD = fromEnd ? length - fullDist : 0;
+        const endD = fromEnd ? length : fullDist;
+        const ditherStartD = fromEnd ? startD - ditherDist : endD;
+        const ditherEndD = fromEnd ? startD : endD + ditherDist;
+
+        const footingHeight = 18; // px, drops below the wall face
+        const stoneY = (d) => ({
+            x: x1 + ux * d,
+            y: y1 + uy * d,
+        });
+
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+
+        // Full footing block
+        const a = stoneY(startD);
+        const b = stoneY(endD);
+        ctx.fillStyle = stone.mid;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(a.x), Math.round(a.y));
+        ctx.lineTo(Math.round(b.x), Math.round(b.y));
+        ctx.lineTo(Math.round(b.x), Math.round(b.y + footingHeight));
+        ctx.lineTo(Math.round(a.x), Math.round(a.y + footingHeight));
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        // Mortar line across the middle of the footing
+        ctx.strokeStyle = stone.mortar;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(a.x), Math.round(a.y + footingHeight / 2));
+        ctx.lineTo(Math.round(b.x), Math.round(b.y + footingHeight / 2));
+        ctx.stroke();
+
+        // Vertical mortar joints (offset between courses)
+        for (let d = startD + 16; d < endD; d += 24) {
+            const p = stoneY(d);
+            ctx.beginPath();
+            ctx.moveTo(Math.round(p.x), Math.round(p.y));
+            ctx.lineTo(Math.round(p.x), Math.round(p.y + footingHeight / 2));
+            ctx.stroke();
+        }
+        for (let d = startD + 28; d < endD; d += 24) {
+            const p = stoneY(d);
+            ctx.beginPath();
+            ctx.moveTo(Math.round(p.x), Math.round(p.y + footingHeight / 2));
+            ctx.lineTo(Math.round(p.x), Math.round(p.y + footingHeight));
+            ctx.stroke();
+        }
+
+        // Moss tufts on top edge of footing (only inside the full block)
+        ctx.fillStyle = stone.moss;
+        for (let d = startD + 8; d < endD; d += 28) {
+            const p = stoneY(d);
+            ctx.fillRect(Math.round(p.x - 4), Math.round(p.y - 2), 8, 3);
+        }
+
+        // Dither cubes — fade out over half a tile
+        const cubeCount = 4;
+        for (let i = 0; i < cubeCount; i++) {
+            const t = (i + 1) / (cubeCount + 1);
+            const d = fromEnd ? startD - t * ditherDist : endD + t * ditherDist;
+            const size = Math.max(2, Math.round(footingHeight * (1 - t)));
+            const p = stoneY(d);
+            ctx.fillStyle = stone.mid;
+            ctx.fillRect(Math.round(p.x - size / 2), Math.round(p.y + footingHeight - size), size, size);
+            ctx.strokeStyle = stone.outline;
+            ctx.lineWidth = 0.8;
+            ctx.strokeRect(Math.round(p.x - size / 2), Math.round(p.y + footingHeight - size), size, size);
+        }
+
         ctx.restore();
     }
 
