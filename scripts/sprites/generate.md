@@ -62,7 +62,9 @@ If the runtime cannot load an image, `AssetManager` falls back to `assets/sprite
 
 Use `curl --fail` when downloading direct Pixellab URLs. Pixellab may return non-PNG JSON while a job is still pending; `--fail` prevents accidentally saving that response as an image.
 
-`scripts/sprites/generate-pixellab-revamp.mjs` is a legacy REST helper with a static asset inventory. Run it only with an explicit, reviewed `--ids` list unless it has first been updated to read `manifest.yaml`.
+Use `npm run sprites:plan -- --ids=<manifest-id>` for a manifest-backed dry run before generating. The plan prints the selected IDs, expected output paths, tool names, dimensions, and style-anchored prompts without calling external services.
+
+`scripts/sprites/generate-pixellab-revamp.mjs` is a legacy REST helper with a static asset inventory. It now fails unless run with an explicit, reviewed `--ids` list.
 
 ## Smoke Before Bulk Work
 

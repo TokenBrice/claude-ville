@@ -8,6 +8,14 @@ This is a Plasma 6 panel widget for EndeavourOS/KDE. It polls the local ClaudeVi
 - `kpackagetool6` available on `PATH`.
 - ClaudeVille running on `http://localhost:4000` with `npm run dev`.
 
+## Check
+
+```bash
+npm run widget:kde:check
+```
+
+The check is non-mutating: it validates package files, metadata, QML config files, and referenced sprite images without installing or uninstalling the widget.
+
 ## Install
 
 ```bash

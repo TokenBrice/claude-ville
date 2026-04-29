@@ -56,6 +56,24 @@ The render loop keeps the scene readable by drawing in broad layers:
 
 When adding a visual feature, place it in the lowest layer that still communicates the state. Avoid adding per-frame work when it can be cached into terrain or static scenery.
 
+## Depth drawable contract
+
+World mode overlap rendering goes through `DrawablePass.js`. New overlap-aware visual systems should adapt their items to this shape before entering the shared sorted pass:
+
+```js
+{
+  kind: '<stable-category>',
+  sortY: <finite-world-y>,
+  draw(ctx, zoom, context) {},
+  hitArea: null, // optional future hit-test metadata
+  payload: <source-object>
+}
+```
+
+`kind` should be stable enough for diagnostics and narrow special cases such as the selected-agent x-ray pass. `sortY` is the only ordering key, so normalize missing or non-finite values before sorting. `draw()` should own the dispatch for that item; avoid adding new manual draw switches in `WorldFrameRenderer.js` when an adapter in `DrawablePass.js` can preserve the existing behavior.
+
+`WorldFrameRenderer.js` still reaches into renderer private helpers for terrain, atmosphere, debug, labels, and post-processing. Treat that as a follow-up for layer extraction, not a reason to broaden a drawable-only change.
+
 ## Selection lifecycle
 
 ```
@@ -122,11 +140,13 @@ Selection events (`agent:selected`, `agent:deselected`) are bridged in `App.js`,
 
    Tile coordinates must keep the footprint `(x..x+width-1, y..y+height-1)` within `0..MAP_SIZE-1` and not overlap an existing building or water.
 
-2. If `BuildingSprite.js` switches on `type` for visuals, label treatment, decoration, emitters, or building-specific overlays, add a branch for the new `type`. Reuse an existing visual if the role matches.
+2. If `BuildingSprite.js` switches on `type` for visuals, label treatment, decoration, emitters, or building-specific overlays, add the smallest branch needed. Reuse an existing visual if the role matches.
 
 3. (Optional) If the building needs hover/click behavior beyond the default tooltip, subscribe in `IsometricRenderer.js` near the existing `_onMouseMoveMain` / `_onClick` handlers, or extend `BuildingSprite.hitTest`.
 
 4. Reload the page. There is no build step — `App.js` adds buildings from `BUILDING_DEFS` on every boot (`App.js:46-49`).
+
+Future building visual cleanup should migrate data-only behavior into a `buildingVisuals` registry before moving custom procedural drawing. Good first candidates are label accents/emblems, light sources, emitter specs, overlay anchors, and split-pass rules. Keep custom renderers behind named functions so adding a building usually changes config data rather than several distant `type` branches.
 
 ## Frame and update notes
 
@@ -136,3 +156,4 @@ Selection events (`agent:selected`, `agent:deselected`) are bridged in `App.js`,
 - Event-bus subscriptions (`agent:added`, `agent:updated`, `agent:removed`) are stored in `_unsubscribers` and torn down in `hide()`. New subscriptions in this directory should follow the same pattern to avoid leaks across mode toggles.
 - `ParticleSystem.setMotionEnabled(false)` is set when `(prefers-reduced-motion: reduce)` matches; respect this when adding new effects.
 - New motion-bearing features must follow [`../../../../docs/motion-budget.md`](../../../../docs/motion-budget.md): check `motionScale` before allocating animation resources, declare a pulse band, and ship a static reduced-motion fallback.
+- Pulse math is still mostly local to feature modules. Prefer introducing a small shared pulse helper before adding another repeating sine cadence, then migrate existing callers gradually.

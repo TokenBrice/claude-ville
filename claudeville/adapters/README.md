@@ -8,7 +8,7 @@ Each adapter wraps one provider's on-disk session format and exposes a small uni
 
 Adapters never write. Provider session files are inputs; do not mutate them.
 
-Registration happens in `claudeville/adapters/index.js`:
+Registration and runtime metadata live in `claudeville/adapters/index.js`:
 
 ```js
 const adapters = [
@@ -19,6 +19,7 @@ const adapters = [
 ```
 
 `isAvailable()` is checked on every aggregation pass, so machines without a provider installed are silently skipped.
+The registry also exposes provider metadata (`provider`, display `name`, `supportsDetail`, `supportsWatchPaths`) used by `server.js` for detail-route validation. Do not add a second provider allowlist in the server.
 
 ## Adapter registry behavior
 
@@ -28,6 +29,7 @@ const adapters = [
 - `getSessionDetailByProvider(provider, sessionId, project)` dispatches to the matching adapter, caches successful detail payloads briefly, and returns stale cached details after an adapter error when possible.
 - `getAllWatchPaths()` merges active adapter watch paths and ignores adapter watch-path errors.
 - `getActiveProviders()` surfaces provider display names and home directories for `/api/providers`.
+- `normalizeSession(session)` and `normalizeDetail(detail, context)` are the final API-shape gate. Adapters should still return the documented shape, but the registry supplies safe defaults for nullable fields before data reaches `server.js`.
 
 The short caches are intentional. The browser, activity panel, dashboard mode, WebSocket loop, and widget all poll near-live state, so the registry absorbs repeated identical reads without making the UI feel stale.
 
@@ -44,6 +46,8 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | `getActiveSessions(activeThresholdMs)` | method | `Session[]` (see below) | Called from `server.js` per request and per polling tick |
 | `getSessionDetail(sessionId, project)` | method | `{ toolHistory, messages, tokenUsage?, sessionId }` | Served at `/api/session-detail` |
 | `getWatchPaths()` | method | `WatchPath[]` (see below) | Consumed by `server.js` in `startFileWatcher()` |
+
+Registry metadata treats adapter-backed providers as detail-capable when `getSessionDetail` exists. Synthetic providers must be declared in the registry metadata instead of hard-coded in `server.js`.
 
 ### Claude-only optional methods
 
@@ -74,10 +78,10 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | `lastTool` | string \| null | Most recent tool name. |
 | `lastToolInput` | string \| null | Compact summary of the tool's argument; truncated to ~60 chars. |
 | `lastMessage` | string \| null | Most recent assistant text; truncated. |
-| `tokenUsage` | object \| null | See "Token normalization" below. Some adapters omit this. |
+| `tokenUsage` | object \| null | See "Token normalization" below. Registry normalization sets this to null when adapters omit token data. |
 | `parentSessionId` | string \| null | Set on subagent / spawned-thread sessions. |
 | `reasoningEffort` | string \| null | Codex-only. Pulled from `turn_context` / `event_msg`. |
-| `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Dry-run events are omitted. Events include `id`, `type`, `project`, `provider`, `sessionId`, `sourceId`, `ts`, and `commandHash`; `command`, `targetRef`, `success`, `exitCode`, and `completedAt` are optional metadata when the adapter can derive them. |
+| `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Registry normalization sets this to `[]` when adapters omit it. Dry-run events are omitted. Events include `id`, `type`, `project`, `provider`, `sessionId`, `sourceId`, `ts`, and `commandHash`; `command`, `targetRef`, `success`, `exitCode`, and `completedAt` are optional metadata when the adapter can derive them. |
 
 ### Git event extraction
 
@@ -90,6 +94,8 @@ Each adapter class must expose the following getters and methods. Getters are JS
 - Parsing is best-effort and command-string based; do not treat events as an authoritative audit log.
 
 Adapters attach `gitEvents` to active session objects. `/api/session-detail` and `POST /api/session-details` currently focus on tool history, messages, and tokens, so consumers that need git events should read them from the session list data.
+
+Git enrichment diagnostics are exposed through `/api/perf` as `gitEnrichment`, including project counts, git command counts, elapsed time, cache hits, errors, and timeouts. Set `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1` before starting the server to disable inferred git enrichment for diagnosis without changing provider parsing.
 
 ### Token normalization
 
@@ -129,9 +135,10 @@ The 2-second polling interval in `startFileWatcher` is independent of these watc
 
 1. Create `claudeville/adapters/<name>.js` exporting a class that implements the contract above. Use the existing adapters as templates — they all follow the same module-private parser helpers + adapter class layout.
 2. Register the new instance in `claudeville/adapters/index.js`. Add the require and append to the `adapters` array.
-3. Confirm `isAvailable()` returns `true` only when the provider's home directory exists. Do not throw on missing files — return `false` or an empty array.
-4. Confirm `getWatchPaths()` returns valid `{ type, path, recursive?, filter? }` entries. Prefer `type: 'directory'` with a `filter` over watching every file individually.
-5. Validate:
+3. Confirm the registry metadata exposes the provider's detail/watch support. `server.js` derives valid detail providers from the registry.
+4. Confirm `isAvailable()` returns `true` only when the provider's home directory exists. Do not throw on missing files — return `false` or an empty array.
+5. Confirm `getWatchPaths()` returns valid `{ type, path, recursive?, filter? }` entries. Prefer `type: 'directory'` with a `filter` over watching every file individually.
+6. Validate:
    - `node --check claudeville/adapters/<name>.js`
    - `npm run dev`
    - `curl http://localhost:4000/api/providers` — confirm the new provider appears.

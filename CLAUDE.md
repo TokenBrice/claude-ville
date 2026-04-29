@@ -35,9 +35,11 @@ Committed agent outputs go under `/agents/`:
 - `/agents/research/<slug>/` — research notes, proofs, image dumps
 - `/agents/handover/<slug>.md` — handover memos
 
+Before using an old artifact as implementation input, check [`agents/README.md`](agents/README.md) for status, supersession notes, and reusable templates.
+
 ## Workflow
 
-- Multi-part work or explicit swarm requests → follow [`docs/swarm-orchestration-procedure.md`](docs/swarm-orchestration-procedure.md) (ownership, baselines, destructive-command and commit/push gates).
+- Multi-part work or explicit swarm requests → follow [`docs/swarm-orchestration-procedure.md`](docs/swarm-orchestration-procedure.md) (quick modes, ownership, baselines, destructive-command and commit/push gates).
 - Single-file / single-owner tasks → direct execution unless swarm is requested.
 
 ## Browser Verification

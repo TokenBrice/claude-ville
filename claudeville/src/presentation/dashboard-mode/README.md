@@ -2,6 +2,8 @@
 
 Dashboard mode is the DOM/card view for scanning active sessions without the Canvas world. It is owned by `DashboardRenderer.js` and uses the same domain `World` data as World mode.
 
+Desktop-only constraint: validate at browser widths of 1280px or wider. Do not add narrow-viewport behavior, mobile breakpoints, or responsive shrinking in this area.
+
 ## Responsibilities
 
 | File | Responsibility |

@@ -10,6 +10,17 @@ ClaudeVille's World mode uses motion to communicate state. New motion-bearing wo
 - Prefer alpha decay, static tint, or one-shot flashes when motion is ornamental rather than semantic.
 - Reuse the shared `getPulsePriority()` hook for visual A/B work instead of hardcoding competing priority orders in feature modules.
 
+## Shared Helper Direction
+
+World mode does not yet have a shared pulse clock. Before adding another repeating sine cadence, prefer a small helper that:
+
+- accepts `motionScale` and returns fixed fallback values when motion is disabled
+- exposes named bands matching the table below
+- keeps band choice visible at the call site
+- avoids allocating timers, particles, paths, or offscreen caches when `motionScale <= 0`
+
+Existing local pulse math can migrate gradually as nearby features are touched. Do not introduce a broad renderer split just to add the helper.
+
 ## Pulse Bands
 
 | Band | Cadence | Canonical owner | Permitted claimants | Forbidden |

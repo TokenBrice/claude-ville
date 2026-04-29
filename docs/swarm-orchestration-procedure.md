@@ -4,6 +4,87 @@ Use this procedure when a request can be split into parallel, independent workst
 
 Do not use this SOP when the user forbids subagents or asks for a quick direct change.
 
+## Quick Modes
+
+| Mode | Use when | Shape |
+| --- | --- | --- |
+| Direct single-owner task | One agent can safely read, edit, validate, and report. | No subagents; start and end with `git status --short`. |
+| Read-only light swarm | Independent research, audit, inventory, ranking, or validation slices. | 1-3 notes-only agents; orchestrator synthesizes and performs any small edits. |
+| Full implementation swarm | Multiple editable slices, shared contracts, or correctness risk. | Owned-path baselines, scoped workers, reviewer gate, optional handover. |
+
+Copyable read-only audit packet:
+
+```text
+Goal:
+Scope:
+  cwd: /home/ahirice/Documents/git/claude-ville
+  owned paths: none
+  read-only paths:
+  current HEAD:
+  current git status summary:
+Non-goals: Do not edit files, stage, commit, or run destructive commands.
+Direct edits allowed: no
+Expected output: Findings with file/line references, severity, and validation notes.
+Validation required:
+Stop conditions: Stop if required files are missing or target paths change during review.
+Return format: Findings, validation run, residual risks.
+```
+
+Copyable implementation worker packet:
+
+```text
+Goal:
+Scope:
+  cwd: /home/ahirice/Documents/git/claude-ville
+  owned paths:
+  read-only paths:
+  current HEAD:
+  current git status summary:
+  owned-path baseline:
+Non-goals:
+Direct edits allowed: yes
+Expected output: Summary, changed files, validation run, residual risks.
+Validation required:
+Stop conditions: Stop if owned paths have unexpected unrelated edits.
+Return format: Worker Output template.
+```
+
+Copyable reviewer packet:
+
+```text
+Goal: Review the proposed changes for correctness, scope, and validation gaps.
+Scope:
+  cwd: /home/ahirice/Documents/git/claude-ville
+  owned paths: none
+  read-only paths:
+  current HEAD:
+  current git status summary:
+Non-goals: Do not edit, stage, commit, or expand scope.
+Direct edits allowed: no
+Expected output: approve | approve-with-fixes | request-changes | defer-follow-up.
+Validation required:
+Stop conditions: Stop if the reviewed diff no longer matches the worktree.
+Return format: Reviewer Output template.
+```
+
+Copyable handover packet:
+
+```text
+Goal: Produce a concise handover for completed or deferred work.
+Scope:
+  cwd: /home/ahirice/Documents/git/claude-ville
+  owned paths: agents/handover/<slug>.md
+  read-only paths:
+  current HEAD:
+  current git status summary:
+Non-goals: Do not edit implementation files.
+Direct edits allowed: yes, handover path only
+Expected output: Handover artifact with landed changes, validation, risks, and next boundary.
+Validation required: Docs diff review and `git status --short`.
+Stop conditions: Stop if handover path has unexpected unrelated edits.
+Return format: Summary, changed files, validation run.
+```
+
 ## Activation Matrix
 
 | Task shape | Default workflow |
@@ -201,6 +282,12 @@ Never run destructive or ownership-disrupting commands without explicit approval
 - `kill`, `pkill`, `killall`, or port-killing pipelines
 
 ## Assignment Packet Template
+
+Reusable committed artifact templates live in `agents/templates/`:
+
+- `agents/templates/plan.md`
+- `agents/templates/research.md`
+- `agents/templates/handover.md`
 
 ```text
 Goal:

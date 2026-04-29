@@ -35,7 +35,9 @@ For an unfamiliar agent, read these first:
 1. `README.md` for the app shape, commands, API surface, and docs map.
 2. `AGENTS.md` or `CLAUDE.md` for repo workflow, shared-checkout rules, validation, and known pitfalls.
 3. `claudeville/CLAUDE.md` for implementation-level architecture inside the app.
-4. The area README for the slice you are editing:
+4. `agents/README.md` before using any historical agent plan or handover as implementation input.
+5. `docs/agent-provider-addition.md` before adding providers, models, or visual identities.
+6. The area README for the slice you are editing:
    - `claudeville/adapters/README.md` for provider parsing and normalized session contracts.
    - `claudeville/src/presentation/character-mode/README.md` for World mode.
    - `claudeville/src/presentation/dashboard-mode/README.md` for Dashboard mode.
@@ -260,10 +262,12 @@ For macOS widget changes, run `npm run widget:build`, then `npm run widget`, and
 | `claudeville/src/presentation/dashboard-mode/README.md` | Dashboard work | DOM renderer lifecycle, detail polling, selection contract. |
 | `claudeville/src/presentation/shared/README.md` | Shared UI work | Top bar/sidebar/activity panel, model identity, session-detail cache. |
 | `docs/swarm-orchestration-procedure.md` | Multi-agent workflows | SOP for splitting work across subagents in a shared checkout. |
+| `docs/agent-provider-addition.md` | Provider/model work | End-to-end runbook for adding providers, models, and agent visual identities. |
 | `docs/design-decisions.md` | Maintainers | Load-bearing constraints and what to update if one changes. |
 | `docs/troubleshooting.md` | Operators and agents | Common first-hour failures and diagnosis paths. |
 | `docs/motion-budget.md` | World mode work | Motion, pulse-band, and reduced-motion policy. |
 | `docs/visual-experience-crafting.md` | Visual/UX work | Transferable design method behind the RPG world model. |
+| `agents/README.md` | Agents | Agent artifact index, status taxonomy, and templates. |
 | `agents/handover/claudeville-type-design-handover.md` | Visual/UX handoff | Agent-ready packet for adapting ClaudeVille's world metaphor to another scenery/domain. |
 | `scripts/sprites/generate.md` | Sprite work | Manifest-first Pixellab generation and asset validation runbook. |
 | `docs/pixellab-reference.md` | Sprite work | Pixellab tool catalog, parameter enums, animation templates, async lifecycle, and pitfalls. |
