@@ -39,6 +39,7 @@ Every generated PNG must land at the path implied by its manifest ID:
 | ID prefix | Expected path |
 | --- | --- |
 | `agent.*` | `claudeville/assets/sprites/characters/<id>/sheet.png` |
+| `equipment.*` | `claudeville/assets/sprites/equipment/<id>.png` |
 | `overlay.*` | `claudeville/assets/sprites/overlays/<id>.png` |
 | `building.*` | `claudeville/assets/sprites/buildings/<id>/base.png`, or composed grid/layer files when `composeGrid`/`layers` are set |
 | `prop.*` | `claudeville/assets/sprites/props/<id>.png` |
@@ -54,7 +55,7 @@ If the runtime cannot load an image, `AssetManager` falls back to `assets/sprite
 1. Read the current `style.anchor` from `manifest.yaml`.
 2. For entries with `prompt`, prepend the anchor to that prompt.
 3. For tileset entries with `lower` and `upper`, prepend the anchor to both descriptions and pass them as the lower/upper tileset inputs.
-4. Use the entry's `tool`, `size` or `width`/`height`, `n_directions`, `animations`, `composeGrid`, and `layers` fields.
+4. Use the entry's `tool`, `size` or `width`/`height`, `n_directions`, `animations`, `composeGrid`, `layers`, and `anchor` fields. Manifest `tool` names are short repo labels; map them to the actual PixelLab surface before calling tools (`create_character`, `isometric_tile`, `create_topdown_tileset`, `create_map_object`, or REST `create-image-pixflux` for large hero assets).
 5. Save output to the path contract above.
 6. Bump `style.assetVersion` when changed PNGs may be browser-cached.
 7. If editing palette keys or colors, keep `manifest.yaml` and `palettes.yaml` synchronized.
@@ -99,15 +100,18 @@ Run after sprite changes:
 npm run sprites:validate
 ```
 
+The validator checks expected paths, orphan PNGs, duplicate PNGs, palette mirror parity, character-sheet shape/motion, equipment PNG dimensions, and atmosphere PNG dimensions. It does not prove that an asset is artistically correct; inspect important regenerated assets in the browser.
+
 For visual regression checks:
 
 ```bash
 npm run dev
+npm run sprites:capture-baseline   # once, when accepting a new local baseline
 npm run sprites:capture-fresh
 npm run sprites:visual-diff
 ```
 
-`sprites:visual-diff` compares against screenshots under `docs/superpowers/specs/2026-04-25-pixel-art-baseline` when that baseline exists. If no baseline exists, it exits successfully with a warning.
+`sprites:capture-baseline` and `sprites:capture-fresh` write to `scripts/sprites/baselines/`; `sprites:visual-diff` compares `<pose>.png` against `<pose>-fresh.png` in that directory. If the baseline directory or individual baseline images are missing, visual diff fails unless you pass `--allow-missing-baselines` directly to `scripts/sprites/visual-diff.mjs`.
 
 If dependencies are unavailable and installing them is out of scope, use fallback validation:
 

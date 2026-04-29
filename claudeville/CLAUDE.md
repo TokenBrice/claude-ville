@@ -21,7 +21,7 @@ Top-level scripts:
 ```bash
 npm run dev           # node claudeville/server.js
 npm run widget:build  # cd widget && bash build.sh
-npm run widget        # open widget/ClaudeVilleWidget.app
+npm run widget        # build, then open widget/ClaudeVilleWidget.app
 ```
 
 ## Server
@@ -181,7 +181,7 @@ Pixel-art sprites are generated through the [pixellab MCP server](https://mcpser
 Workflow:
 
 1. User installs the pixellab MCP server with their API token (`claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`).
-2. Claude Code session reads `manifest.yaml`, calls the appropriate MCP tool per entry (`mcp__pixellab__create_character`, `mcp__pixellab__animate_character`, `mcp__pixellab__create_topdown_tileset`, `mcp__pixellab__create_isometric_tile`).
+2. Claude Code session reads `manifest.yaml`, maps each entry's short `tool` value to the appropriate MCP or REST call, and uses the matching PixelLab surface (`mcp__pixellab__create_character`, `mcp__pixellab__animate_character`, `mcp__pixellab__create_topdown_tileset`, `mcp__pixellab__create_isometric_tile`, `mcp__pixellab__create_map_object`, or REST `create-image-pixflux` for large hero assets).
 3. Resulting PNGs are saved to the manifest-implied path (see `AssetManager._pathFor` for the mapping).
 4. Run `npm run sprites:validate` to confirm every manifest entry resolves to a real PNG and no orphan PNGs exist.
 

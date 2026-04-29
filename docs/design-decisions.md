@@ -102,13 +102,13 @@ This avoids accidental rollback when one agent integrates work and another is mi
 
 If you change this, update: `claudeville/CLAUDE.md`, `AGENTS.md`, `docs/swarm-orchestration-procedure.md`.
 
-## macOS-only widget
+## Platform-specific widgets
 
-`widget/Sources/main.swift` builds a Cocoa `NSStatusItem` with a `WKWebView` popover and is compiled by `swiftc`. `widget/build.sh` produces a `.app` bundle.
+`widget/Sources/main.swift` builds a Cocoa `NSStatusItem` with a `WKWebView` popover and is compiled by `swiftc`. `widget/build.sh` produces a `.app` bundle. KDE Plasma support lives separately under `widget/kde/claudeville` and is installed through `widget:kde:install`.
 
-A status-bar app is the most native, lowest-friction surface for "is the dashboard alive?" on macOS. A cross-platform widget would mean Electron or Tauri, which would break the no-dependencies rule and add a build pipeline. Linux and Windows users open the dashboard at `http://localhost:4000` directly; that path is fully supported.
+The widget policy is platform-specific native surfaces, not one shared desktop shell. A cross-platform widget would mean Electron or Tauri, which would break the no-dependencies rule and add a build pipeline. Linux users without KDE and Windows users open the dashboard at `http://localhost:4000` directly; that path is fully supported.
 
-If you add a Linux or Windows widget, expect a parallel implementation under `widget-linux/` or similar; do not couple it to the Swift code.
+If you add another platform widget, keep it parallel to the Swift and KDE implementations; do not couple it to either existing widget surface.
 
 ## Polling cadence: 2s server scheduler, 2s panel, 5s widget
 

@@ -11,7 +11,7 @@ For tactical "how do I run the validation script" questions, stay in `scripts/sp
 
 ## Tier-3 budget
 
-As of 2026-04-27, ClaudeVille is believed to be on **Tier 3 (Pixel Architect)**: 10,000 generations per month, resets near the 25th. Recent utilization was around 3%, so headroom was generous at the time this was written. Before a broad asset bake, verify the current plan and remaining generations with `GET https://api.pixellab.ai/v2/balance` or the PixelLab account page. Spend deliberately on quality, not volume — do not over-engineer caching to save twenty generations.
+As of 2026-04-27, ClaudeVille was believed to be on **Tier 3 (Pixel Architect)**: 10,000 generations per month, resets near the 25th. Recent utilization was around 3%, so headroom was generous at the time this was written. Before a broad asset bake, verify the current plan and remaining generations with `GET https://api.pixellab.ai/v2/balance` or the PixelLab account page. Spend deliberately on quality, not volume — do not over-engineer caching to save twenty generations.
 
 Approximate cost per asset family (so an agent can sanity-check before kicking off a bulk bake):
 
@@ -36,9 +36,9 @@ When the local doc is silent or stale, fetch directly. The official files are LL
 
 | URL | Size | Use it for |
 | --- | --- | --- |
-| `https://www.pixellab.ai/llms.txt` | ~200 lines | First orientation; index of every doc page and tool. |
+| `https://www.pixellab.ai/llms.txt` | ~200 lines | First orientation; index of every doc page and tool. Rechecked 2026-04-29. |
 | `https://www.pixellab.ai/llms-full.txt` | ~3,700 lines | Full prose for every tool when you need behavioral nuance. |
-| `https://api.pixellab.ai/v2/llms.txt` | ~2,000 lines | Endpoint signatures, parameter shapes, status codes. |
+| `https://api.pixellab.ai/v2/llms.txt` | ~2,000 lines | Endpoint signatures, parameter shapes, status codes. Rechecked 2026-04-29. |
 | `https://api.pixellab.ai/v2/openapi.json` | ~250 KB JSON | Machine-readable schema. The llms.txt enums sometimes truncate with `...`; OpenAPI is the source of truth. |
 | `https://www.pixellab.ai/create-character` (browser) | n/a | Live `template_animation_id` dropdown when the documented enum is incomplete. |
 
@@ -71,7 +71,7 @@ The pixellab MCP server (configured via `claude mcp add --transport http pixella
 - Maps: `create-map`, `create-map-new`, `extend-map`, `extend-map-v2`, `create-large-image`, `create-texture`
 - Other: `create-instant-character`, `create-ui-elements`, `create-ui-elements-pro`, `create-sl-image-pro`, `create-character-with-4-directions`, `create-character-with-8-directions` (the MCP `create_character` wraps these last two)
 
-**Why ClaudeVille uses both:** MCP `create_isometric_tile` caps at 64 px. Hero buildings such as `building.watchtower` (400×300) need REST `create-image-pixflux`. `scripts/sprites/generate-pixellab-revamp.mjs` calls REST directly and reads `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` from `.dev.vars`, but its baked inventory is legacy/static. Run it only with an explicit, reviewed `--ids` list until it is made manifest-driven.
+**Why ClaudeVille uses both:** MCP `create_isometric_tile` caps at 64 px. Hero buildings such as `building.watchtower` (400×300) need REST `create-image-pixflux`. Equipment and props that need transparent backgrounds up to 400 px should prefer MCP `create_map_object`. `scripts/sprites/generate-pixellab-revamp.mjs` calls REST directly and reads `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` from `.dev.vars`, but its bake list is still code-defined and only checked against the manifest. Run it only with an explicit, reviewed `--ids` list until it is fully manifest-driven.
 
 ## Tool catalog
 
@@ -100,7 +100,7 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 
 - Inputs: `description`, `image_size` (32-400 px, max area 400×400 basic / 192×192 with inpainting), `view` (default `high top-down`), `outline`, `shading`, `detail`, `init_image`, `background_image` (style match), `inpainting`.
 - Output: object image with transparent background. **Async.**
-- Repo usage: not currently active. Consider when a prop exceeds 64 px and needs transparency.
+- Repo usage: runtime equipment under `claudeville/assets/sprites/equipment/` and any prop that exceeds 64 px and needs transparency.
 
 ### `create_topdown_tileset`
 
@@ -131,7 +131,7 @@ You need to bake or edit X. Use this branching:
 - **Terrain transition (Wang):** MCP `create_topdown_tileset` with `lower_description` + `upper_description` + optional `transition_description`. Pick `tile_size: 32` for 24+px legibility.
 - **Multi-shape terrain set (hex, octagon, square at angle):** MCP `create_tiles_pro`. Use `tile_view_angle` for fine control.
 - **Map concept image / freeform scene:** REST `create-image-pixflux` with `isometric: true`, `view: 'low top-down'`. Used in `generate-pixellab-revamp.mjs` for the town concept.
-- **Prop with transparent BG, larger than 64 px:** MCP `create_map_object`.
+- **Equipment or prop with transparent BG, larger than 64 px:** MCP `create_map_object`.
 - **Edit/inpaint an existing PNG:** REST only. Decide whether the cost of a one-off REST call is worth it vs. regenerating from scratch.
 
 ## Async / job lifecycle
@@ -250,7 +250,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 
 | Script | Path used | Authentication | When to invoke |
 | --- | --- | --- | --- |
-| `scripts/sprites/generate-pixellab-revamp.mjs` | REST `/v2/create-image-pixflux` | `.dev.vars` → `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` | Legacy/static-inventory helper. Use only with explicit reviewed `--ids`; do not run broadly until it reads current `manifest.yaml`. |
+| `scripts/sprites/generate-pixellab-revamp.mjs` | REST `/v2/create-image-pixflux` | `.dev.vars` → `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` | Legacy/code-defined bake helper. It asserts selected IDs exist in `manifest.yaml`, but it does not read per-entry prompts, sizes, anchors, or tool fields. Use only with explicit reviewed `--ids`; do not run broadly until it becomes fully manifest-driven. |
 | `scripts/sprites/generate-character-mcp.mjs` | MCP ZIP assembly only (you call MCP first) | Inherits from MCP server (token in MCP config) | After `mcp__pixellab__create_character` + `animate_character` complete, to assemble into the 736×920 sheet. |
 | `scripts/sprites/manifest-validator.mjs` | None (filesystem) | n/a | After any sprite change. `npm run sprites:validate`. |
 
