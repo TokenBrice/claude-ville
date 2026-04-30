@@ -207,7 +207,10 @@ export class Sidebar {
                         className: ['sidebar__agent-dot', `sidebar__agent-dot--${statusClass(agent.status)}`],
                     }),
                     el('div', { className: 'sidebar__agent-info' }, [
-                        el('span', { className: 'sidebar__agent-name' }, nameChildren),
+                        el('span', {
+                            className: 'sidebar__agent-name',
+                            style: { color: profile.accent },
+                        }, nameChildren),
                         modelEl,
                     ]),
                 ]));

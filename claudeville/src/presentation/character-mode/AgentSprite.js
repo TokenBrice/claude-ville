@@ -2,6 +2,7 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
+import { repoProfile } from '../shared/RepoColor.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
@@ -2198,7 +2199,8 @@ export class AgentSprite {
         const lines = layout.lines;
         const contentW = layout.contentW;
         const w = Math.min(190, contentW + 12);
-        ctx.fillStyle = this.selected ? 'rgba(255, 239, 176, 0.98)' : 'rgba(242, 211, 107, 0.90)';
+        const repo = this._repoNameTagProfile();
+        ctx.fillStyle = repo.panel;
         const h = lines.length > 1 ? 26 : 16;
         const r = 4;
         ctx.beginPath();
@@ -2213,10 +2215,15 @@ export class AgentSprite {
         ctx.quadraticCurveTo(-w/2, -h/2, -w/2 + r, -h/2);
         ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = this.selected ? '#f2d36b' : '#5a371d';
-        ctx.lineWidth = this.selected ? 1.5 : 1;
+        ctx.strokeStyle = repo.accent;
+        ctx.lineWidth = this.selected ? 2 : 1.25;
         ctx.stroke();
-        ctx.fillStyle = '#241812';
+        if (this.selected) {
+            ctx.strokeStyle = repo.accent;
+            ctx.lineWidth = 1;
+            ctx.strokeRect(Math.round(-w / 2 + 3) + 0.5, Math.round(-h / 2 + 3) + 0.5, Math.max(1, Math.round(w - 6)), Math.max(1, Math.round(h - 6)));
+        }
+        ctx.fillStyle = repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         if (lines.length === 1) {
@@ -2262,7 +2269,7 @@ export class AgentSprite {
     }
 
     _drawCompactNameStatus(ctx) {
-        const trim = this._providerTrimColor();
+        const repo = this._repoNameTagProfile();
         const rawName = String(this.agent?.name || this.agent?.displayName || '').trim() || 'Agent';
         const s = 1 / (this._zoom || 1);
         const slot = this.overlaySlot ?? this.nameTagSlot ?? 0;
@@ -2278,8 +2285,8 @@ export class AgentSprite {
         const w = layout.width;
         const h = 13;
 
-        ctx.fillStyle = 'rgba(20, 14, 10, 0.90)';
-        ctx.strokeStyle = trim;
+        ctx.fillStyle = repo.panel;
+        ctx.strokeStyle = repo.accent;
         ctx.lineWidth = 1;
         ctx.beginPath();
         if (ctx.roundRect) {
@@ -2290,11 +2297,16 @@ export class AgentSprite {
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = '#f8ead1';
+        ctx.fillStyle = repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(text, 0, 0.5);
         ctx.restore();
+    }
+
+    _repoNameTagProfile() {
+        const project = this.agent?.projectPath || this.agent?.project || this.agent?.teamName || this.agent?.provider || 'unknown';
+        return repoProfile(project);
     }
 
     _activityLabel() {

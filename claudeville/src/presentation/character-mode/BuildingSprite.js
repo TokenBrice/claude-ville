@@ -552,11 +552,14 @@ export class BuildingSprite {
             ctx.shadowOffsetY = 1;
             const textX = tagLeft + padX + iconSize + iconGap + (isLandmark ? 2 : 0);
             if (displaySubRows.length) {
-                ctx.fillText(displayText, textX, by - 5);
+                const titleY = isHarborLedger ? by - 14 : by - 5;
+                const rowStartY = isHarborLedger ? by + 1 : by + 6;
+                const rowGap = isHarborLedger ? 10 : 8;
+                ctx.fillText(displayText, textX, titleY);
                 ctx.font = subFont || chosenFont;
                 displaySubRows.forEach((row, index) => {
                     ctx.fillStyle = row.color || '#f6d384';
-                    ctx.fillText(row.label, textX, by + 6 + index * 8);
+                    ctx.fillText(row.label, textX, rowStartY + index * rowGap);
                 });
             } else if (displaySubText) {
                 ctx.fillText(displayText, textX, by - 5);
@@ -621,15 +624,15 @@ export class BuildingSprite {
             {
                 text: isHarborLedger ? compactText : baseText,
                 subRows: isHarborLedger ? harborLedgerRows : [],
-                subFont: '7px "Press Start 2P", monospace',
-                subMaxTextWidth: Math.round((isHovered ? 158 : 132) * widthScale),
+                subFont: isHarborLedger ? 'bold 8px "Press Start 2P", monospace' : '7px "Press Start 2P", monospace',
+                subMaxTextWidth: Math.round((isHarborLedger ? (isHovered ? 214 : 184) : (isHovered ? 158 : 132)) * widthScale),
                 labelFont,
-                maxTextWidth: Math.round((isHovered ? 190 : isLandmark ? 132 : 96) * widthScale),
-                iconSize: building.icon ? (isHovered || isLandmark ? 22 : 16) * scale : 0,
-                iconGap: building.icon ? 7 * scale : 0,
-                padX: isHovered || isLandmark ? 11 : 7,
+                maxTextWidth: Math.round((isHarborLedger ? (isHovered ? 220 : 180) : isHovered ? 190 : isLandmark ? 132 : 96) * widthScale),
+                iconSize: building.icon ? (isHarborLedger ? (isHovered || isLandmark ? 24 : 20) : (isHovered || isLandmark ? 22 : 16)) * scale : 0,
+                iconGap: building.icon ? (isHarborLedger ? 9 : 7) * scale : 0,
+                padX: isHarborLedger ? (isHovered || isLandmark ? 13 : 11) : (isHovered || isLandmark ? 11 : 7),
                 iconFont: isHovered || isLandmark ? 9 : 8,
-                tagH: Math.round((isHarborLedger ? (isHovered ? 44 : 40) : isHovered ? 28 : isLandmark ? 24 : 16) * scale),
+                tagH: Math.round((isHarborLedger ? (isHovered ? 62 : 56) : isHovered ? 28 : isLandmark ? 24 : 16) * scale),
                 overlapTolerance: isHovered || isLandmark ? Math.min(0.92, LABEL_OVERLAP_TOLERANCE * overlapScale) : 0.3,
                 blockAgents: true,
                 degraded: false,
@@ -2702,7 +2705,7 @@ export class BuildingSprite {
             .sort((a, b) => (Number(b.pendingCommits) - Number(a.pendingCommits))
                 || String(a.repoName || a.shortName || '').localeCompare(String(b.repoName || b.shortName || '')));
         if (!active.length) return [];
-        const visible = active.slice(0, 2).map((repo) => {
+        const visible = active.slice(0, 3).map((repo) => {
             const name = String(repo.shortName || repo.repoName || repo.project || 'Repo')
                 .replace(/[-_]+/g, ' ')
                 .replace(/\b\w/g, (char) => char.toUpperCase());

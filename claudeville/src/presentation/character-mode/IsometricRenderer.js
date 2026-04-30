@@ -2323,13 +2323,7 @@ export class IsometricRenderer {
     }
 
     _agentLabelAlpha(sprite, zoom) {
-        if (sprite.selected) return 1;
-        const status = sprite.agent?.status;
-        const priority = this._agentLabelPriority(sprite);
-        const zoomFade = Math.max(0.36, Math.min(1, (zoom - 0.85) / 1.4));
-        const statusFade = status === AgentStatus.WORKING ? 1 : status === AgentStatus.WAITING ? 0.82 : 0.62;
-        const priorityFade = priority >= 600 ? 1 : 0.84;
-        return Math.max(0.28, Math.min(0.92, zoomFade * statusFade * priorityFade));
+        return 1;
     }
 
     _collectAgentLabelHitRects(sprites) {

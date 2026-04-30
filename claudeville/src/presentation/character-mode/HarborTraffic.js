@@ -2266,8 +2266,8 @@ export class HarborTraffic {
             ? ` -> ${summary.targetRef}`
             : '';
         const detail = `${project}${target}`;
-        const width = Math.min(350, Math.max(236, Math.max(title.length, detail.length) * 6.4 + 34));
-        const height = 58;
+        const width = Math.min(470, Math.max(316, Math.max(title.length, detail.length) * 7.2 + 58));
+        const height = 76;
         const origin = this._batchOrigin(summary);
         const screen = camera?.worldToScreen
             ? camera.worldToScreen(origin.x, origin.y)
@@ -2284,25 +2284,39 @@ export class HarborTraffic {
 
         ctx.save();
         ctx.globalAlpha = fade;
+        ctx.shadowColor = 'rgba(14, 8, 5, 0.46)';
+        ctx.shadowBlur = 10;
+        ctx.shadowOffsetY = 3;
         ctx.fillStyle = style.panel;
         ctx.fillRect(x, y, width, height);
+        ctx.shadowColor = 'transparent';
+        ctx.strokeStyle = 'rgba(255, 224, 150, 0.34)';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(x - 1.5, y - 1.5, width + 3, height + 3);
         ctx.strokeStyle = style.accent;
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 2;
         ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
         ctx.fillStyle = style.accent;
-        ctx.fillRect(x, y, 4, height);
+        ctx.fillRect(x, y, 7, height);
         ctx.fillStyle = profile.accent;
-        ctx.fillRect(x + 5, y, 3, height);
+        ctx.fillRect(x + 9, y + 5, 4, height - 10);
+        ctx.fillStyle = 'rgba(255, 239, 185, 0.13)';
+        ctx.fillRect(x + 15, y + 6, width - 22, 1);
+        ctx.fillRect(x + 15, y + height - 7, width - 22, 1);
 
-        ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.font = '700 14px ui-monospace, SFMono-Regular, Menlo, monospace';
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
-        ctx.fillText(shortGitLabel(title, 46, '…'), x + 14, y + 10);
-        ctx.fillStyle = 'rgba(244, 232, 190, 0.92)';
-        ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-        ctx.fillText(shortGitLabel(detail, 44, '…'), x + 14, y + 29);
-        ctx.fillStyle = 'rgba(244, 232, 190, 0.58)';
-        ctx.fillRect(x + 14, y + 46, Math.max(34, width - 28), 1);
+        ctx.fillStyle = '#fff0b8';
+        ctx.fillText(shortGitLabel(title, 56, '…'), x + 24, y + 13);
+        ctx.fillStyle = profile.accent;
+        ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.fillText(shortGitLabel(detail, 60, '…'), x + 24, y + 37);
+        ctx.fillStyle = 'rgba(244, 232, 190, 0.62)';
+        ctx.font = '700 9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.fillText((PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown).shortLabel.toUpperCase(), x + 24, y + 57);
+        ctx.fillStyle = 'rgba(244, 232, 190, 0.42)';
+        ctx.fillRect(x + 94, y + 61, Math.max(34, width - 114), 1);
         ctx.restore();
     }
 
