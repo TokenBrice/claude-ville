@@ -17,6 +17,14 @@ const RITUAL_META = {
     watchtower: { kind: 'watchtower-flare', durationMs: 1800, pulseBand: 'slow' },
 };
 
+const COMMAND_LIFECYCLE_ACTIONS = {
+    spawn: 'summon',
+    send_input: 'familiar-send',
+    wait: 'familiar-wait',
+    resume: 'familiar-return',
+    close: 'dismiss',
+};
+
 function compactText(value, fallback = '') {
     const text = String(value || fallback || '').replace(/\s+/g, ' ').trim();
     if (!text) return fallback;
@@ -173,6 +181,19 @@ function ritualMetaFor(event) {
         };
     }
     if (building === 'command') {
+        const lifecycle = event.commandLifecycle || null;
+        const lifecycleAction = COMMAND_LIFECYCLE_ACTIONS[lifecycle?.kind];
+        if (lifecycleAction) {
+            const targetLabel = lifecycle.targetName || lifecycle.targetRef || '';
+            return {
+                ...RITUAL_META.portal,
+                building: 'portal',
+                kind: `portal-${lifecycleAction}`,
+                action: lifecycleAction,
+                label: compactText(targetLabel, lifecycleAction),
+                commandLifecycle: lifecycle,
+            };
+        }
         const action = tool === 'SendMessage' ? 'message' : tool === 'TeamCreate' ? 'team' : 'command';
         return { ...base, action, label: compactText(tool, 'CMD') };
     }
@@ -219,6 +240,16 @@ function buildingContainsTile(building, tile) {
     const visitTile = typeof building.primaryVisitTile === 'function' ? building.primaryVisitTile() : null;
     if (visitTile) return Math.hypot(visitTile.tileX - tile.tileX, visitTile.tileY - tile.tileY) <= 0.85;
     return false;
+}
+
+function lifecycleTargetKey(lifecycle) {
+    if (!lifecycle?.kind) return '';
+    return [
+        lifecycle.kind,
+        lifecycle.targetAgentId || '',
+        lifecycle.targetProviderId || '',
+        lifecycle.targetRef || '',
+    ].join('\u001f');
 }
 
 export class RitualConductor {
@@ -270,6 +301,8 @@ export class RitualConductor {
         if (typeof isAgentVisible === 'function' && !isAgentVisible(event.agentId)) return false;
         if (sprite?.isArrivalPending?.()) return false;
 
+        if (event.commandLifecycle?.kind) return true;
+
         if (!building) return true;
         if (sprite) return buildingContainsTile(building, spriteTile(sprite));
         if (agent && typeof building.isAgentVisiting === 'function') return building.isAgentVisiting(agent);
@@ -281,11 +314,14 @@ export class RitualConductor {
         const meta = ritualMetaFor(event);
         if (!meta) return null;
         if (!this.canAccept(event)) return null;
+        const building = meta.building || event.building;
         const now = event.ts || Date.now();
+        const targetKey = lifecycleTargetKey(meta.commandLifecycle || event.commandLifecycle);
         const existing = this.rituals.find(ritual => (
-            ritual.building === event.building
+            ritual.building === building
             && ritual.kind === meta.kind
             && ritual.tool === event.tool
+            && lifecycleTargetKey(ritual.commandLifecycle) === targetKey
             && now - ritual.createdAt <= COALESCE_WINDOW_MS
         ));
         if (existing) {
@@ -306,12 +342,13 @@ export class RitualConductor {
             agentId: event.agentId,
             tool: event.tool,
             input: event.input || null,
-            building: event.building,
+            building,
             kind: meta.kind,
             action: meta.action || null,
             taskKey: meta.taskKey || null,
             label: meta.label || '',
             angle: meta.angle || 0,
+            commandLifecycle: meta.commandLifecycle || event.commandLifecycle || null,
             pulseBand: meta.pulseBand || 'static',
             phase: 'pending',
             count: 1,

@@ -481,6 +481,7 @@ export class IsometricRenderer {
         this._spritesNeedSort = true;
         this._staticPropDrawables = [];
         this._drawables = [];
+        this._familiarMoteDrawables = [];
         this._harborPendingSignature = '';
         this._contextLost = false;
         this.running = false;
@@ -2256,6 +2257,43 @@ export class IsometricRenderer {
                 lighting: atmosphere?.lighting,
             });
         }
+    }
+
+    _enumerateFamiliarMoteDrawables(atmosphere = null) {
+        const drawables = this._familiarMoteDrawables;
+        drawables.length = 0;
+        const snapshot = this.relationshipState?.getSnapshot?.();
+        if (!snapshot?.parentToChildren?.size) return drawables;
+        const now = performance.now();
+        for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
+            const parentSprite = this.agentSprites.get(parentId);
+            if (!parentSprite || parentSprite.isArrivalPending?.()) continue;
+            const childSprites = Array.from(childIds || [])
+                .map(id => this.agentSprites.get(id))
+                .filter(sprite => sprite && !sprite.isArrivalPending?.());
+            const departedChildren = (snapshot.recentDepartures || [])
+                .filter(item => item.parentSessionId === parentId)
+                .map(item => ({
+                    id: item.agentId,
+                    provider: item.provider,
+                    name: item.name,
+                }));
+            if (!childSprites.length && !departedChildren.length) continue;
+            drawables.push({
+                kind: 'familiar-motes',
+                sortY: parentSprite.y - 50,
+                draw: (ctx, zoom) => drawFamiliarMotes(ctx, {
+                    parentSprite,
+                    childSprites,
+                    childAgents: departedChildren,
+                    zoom,
+                    now,
+                    motionScale: this.motionScale,
+                    lighting: atmosphere?.lighting,
+                }),
+            });
+        }
+        return drawables;
     }
 
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1) {

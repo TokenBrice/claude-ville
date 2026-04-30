@@ -28,6 +28,164 @@ function snapshotAgent(agent) {
     };
 }
 
+const COMMAND_LIFECYCLE_TOOLS = new Map([
+    ['functions.spawn_agent', 'spawn'],
+    ['spawn_agent', 'spawn'],
+    ['functions.send_input', 'send_input'],
+    ['send_input', 'send_input'],
+    ['functions.wait_agent', 'wait'],
+    ['wait_agent', 'wait'],
+    ['functions.resume_agent', 'resume'],
+    ['resume_agent', 'resume'],
+    ['functions.close_agent', 'close'],
+    ['close_agent', 'close'],
+]);
+
+const TARGET_REF_KEYS = [
+    'targetAgentId',
+    'target_agent_id',
+    'sessionId',
+    'session_id',
+    'agentId',
+    'agent_id',
+    'threadId',
+    'thread_id',
+    'target',
+    'recipient',
+    'id',
+];
+
+function commandLifecycleKind(toolName) {
+    const tool = String(toolName || '');
+    if (COMMAND_LIFECYCLE_TOOLS.has(tool)) return COMMAND_LIFECYCLE_TOOLS.get(tool);
+    const lower = tool.toLowerCase();
+    for (const [name, kind] of COMMAND_LIFECYCLE_TOOLS.entries()) {
+        if (lower.includes(name.toLowerCase())) return kind;
+    }
+    return null;
+}
+
+function parseToolInputObject(input) {
+    if (!input) return null;
+    if (typeof input === 'object') return input;
+    if (typeof input !== 'string') return null;
+    const text = input.trim();
+    if (!text) return null;
+    if (/^[\[{]/.test(text)) {
+        try {
+            return JSON.parse(text);
+        } catch {
+            return null;
+        }
+    }
+    return null;
+}
+
+function firstScalar(value) {
+    if (value == null) return null;
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const scalar = firstScalar(item);
+            if (scalar) return scalar;
+        }
+        return null;
+    }
+    if (typeof value === 'object') {
+        for (const key of TARGET_REF_KEYS) {
+            const scalar = firstScalar(value[key]);
+            if (scalar) return scalar;
+        }
+        return null;
+    }
+    const text = String(value).trim();
+    return text || null;
+}
+
+function extractTargetRef(input) {
+    const parsed = parseToolInputObject(input);
+    if (parsed && typeof parsed === 'object') {
+        for (const key of TARGET_REF_KEYS) {
+            const value = firstScalar(parsed[key]);
+            if (value) return value;
+        }
+        const targetFromList = firstScalar(parsed.targets);
+        if (targetFromList) return targetFromList;
+    }
+    const text = String(input || '').trim();
+    if (!text) return null;
+    const fieldMatch = text.match(/(?:targetAgentId|target_agent_id|sessionId|session_id|agentId|agent_id|threadId|thread_id|target|recipient|id)["']?\s*[:=]\s*["']?([A-Za-z0-9_.:-]+)/i);
+    if (fieldMatch?.[1]) return fieldMatch[1];
+    if (/^[A-Za-z0-9_.:-]+$/.test(text)) return text;
+    const bareId = text.split(/[,\s]+/).find(part => /^[A-Za-z0-9_.:-]{6,}$/.test(part));
+    return bareId || null;
+}
+
+function agentDisplayName(agent) {
+    return agent?.agentName || agent?.name || agent?.displayName || null;
+}
+
+function resolveVisibleAgent(world, targetRef, provider) {
+    const ref = String(targetRef || '').trim();
+    if (!ref || !world?.agents?.values) {
+        return { targetAgentId: null, targetProviderId: null, targetName: null, confidence: 0, source: 'none' };
+    }
+    if (world.agents.has(ref)) {
+        const agent = world.agents.get(ref);
+        return { targetAgentId: ref, targetProviderId: agent?.agentId || null, targetName: agentDisplayName(agent), confidence: 1, source: 'input' };
+    }
+    for (const prefix of ['codex-', 'subagent-']) {
+        const id = `${prefix}${ref}`;
+        if (world.agents.has(id)) {
+            const agent = world.agents.get(id);
+            return { targetAgentId: id, targetProviderId: agent?.agentId || null, targetName: agentDisplayName(agent), confidence: 0.92, source: 'input' };
+        }
+    }
+    for (const agent of world.agents.values()) {
+        if (String(agent?.agentId || '') === ref) {
+            return { targetAgentId: agent.id, targetProviderId: agent.agentId || null, targetName: agentDisplayName(agent), confidence: 0.9, source: 'provider-id' };
+        }
+    }
+    const providerPrefix = String(provider || '').toLowerCase();
+    if (providerPrefix) {
+        const id = `${providerPrefix}-${ref}`;
+        if (world.agents.has(id)) {
+            const agent = world.agents.get(id);
+            return { targetAgentId: id, targetProviderId: agent?.agentId || null, targetName: agentDisplayName(agent), confidence: 0.86, source: 'input' };
+        }
+    }
+    const lowerRef = ref.toLowerCase();
+    for (const agent of world.agents.values()) {
+        const names = [agent?.agentName, agent?.name, agent?.displayName].filter(Boolean).map(name => String(name).toLowerCase());
+        if (names.includes(lowerRef)) {
+            return { targetAgentId: agent.id, targetProviderId: agent.agentId || null, targetName: agentDisplayName(agent), confidence: 0.45, source: 'name' };
+        }
+    }
+    return { targetAgentId: null, targetProviderId: null, targetName: null, confidence: 0, source: 'none' };
+}
+
+function commandLifecycleFor(agent, tool, input, world) {
+    const kind = commandLifecycleKind(tool);
+    if (!kind) return null;
+    if (kind === 'spawn') {
+        return {
+            kind,
+            targetRef: null,
+            targetAgentId: null,
+            targetProviderId: null,
+            targetName: null,
+            confidence: 0,
+            source: 'none',
+        };
+    }
+    const targetRef = extractTargetRef(input);
+    const resolved = resolveVisibleAgent(world, targetRef, agent?.provider);
+    return {
+        kind,
+        targetRef,
+        ...resolved,
+    };
+}
+
 function pairKey(aId, bId) {
     return [aId, bId].sort().join('|');
 }
@@ -158,8 +316,10 @@ export class AgentEventStream {
 
     _toolEvent(agent, snap, extra = {}) {
         const classified = classifyTool(snap.tool, snap.input);
+        const commandLifecycle = commandLifecycleFor(agent, snap.tool, snap.input, this.world);
         return {
             agentId: agent.id,
+            provider: agent.provider || null,
             tool: snap.tool,
             input: snap.input,
             ts: Date.now(),
@@ -167,6 +327,7 @@ export class AgentEventStream {
             reason: classified?.reason || null,
             confidence: classified?.confidence ?? null,
             label: classified?.label || null,
+            commandLifecycle,
             ...extra,
         };
     }

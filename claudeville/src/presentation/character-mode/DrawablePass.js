@@ -52,6 +52,10 @@ function drawChronicler(ctx, zoom, context, drawable) {
     context.chronicler?.draw?.(ctx, drawable, zoom);
 }
 
+function drawFamiliarMotes(ctx, zoom, context, drawable) {
+    drawable?.draw?.(ctx, zoom, context);
+}
+
 export function propDepthDrawable(sprite, part = 'whole') {
     const kind = part === 'whole' ? 'prop' : `prop-${part}`;
     const sortY = part === 'back'
@@ -70,6 +74,7 @@ export function appendDepthSortedDrawables(target, {
     landmarkDrawables = [],
     chronicleMonumentDrawables = [],
     chroniclerDrawables = [],
+    familiarDrawables = [],
 } = {}) {
     for (const drawable of buildingDrawables) {
         target.push(createDepthDrawable(drawable.kind, drawable.sortY, drawable, drawBuilding));
@@ -91,6 +96,9 @@ export function appendDepthSortedDrawables(target, {
     }
     for (const drawable of chroniclerDrawables) {
         target.push(createDepthDrawable('chronicler', drawable.sortY, drawable, drawChronicler));
+    }
+    for (const drawable of familiarDrawables) {
+        target.push(createDepthDrawable(drawable.kind || 'familiar-motes', drawable.sortY, drawable, drawFamiliarMotes));
     }
     target.sort((a, b) => a.sortY - b.sortY);
 }

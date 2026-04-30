@@ -1445,11 +1445,18 @@ export class BuildingSprite {
                         building,
                     }));
                 } else if (building.type === 'portal') {
+                    const color = ritual.action === 'dismiss'
+                        ? '#f08a8a'
+                        : ritual.action === 'familiar-wait'
+                            ? '#f2d36b'
+                            : ritual.action === 'familiar-return'
+                                ? '#bda7ff'
+                                : '#8feaff';
                     sources.push(normalizeLightSource({
                         id: `ritual:${ritual.id}:portal`,
                         kind: 'orbit',
                         origin: toOrigin([144, 60]),
-                        color: '#8feaff',
+                        color,
                         radius: 58,
                         alpha: fade * 0.26 * lightBoost,
                         overlay: 'atmosphere.light.lantern-glow',
@@ -2295,10 +2302,61 @@ export class BuildingSprite {
     _drawPortalRitual(ctx, gate, ritual) {
         if (!ritual) return;
         const fade = this._ritualFade(ritual);
+        const action = ritual.action || 'portal';
+        const progress = ritual.motionEnabled === false ? 1 : this._ritualProgress(ritual);
+        const color = action === 'dismiss'
+            ? '#f08a8a'
+            : action === 'familiar-wait'
+                ? '#f2d36b'
+                : action === 'familiar-return'
+                    ? '#bda7ff'
+                    : '#8feaff';
+
         ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = fade * (action === 'familiar-wait' ? 0.16 : 0.24);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.4;
+        const ringPhase = ritual.motionEnabled === false ? 0.5 : progress;
+        for (let i = 0; i < 3; i++) {
+            const offset = action === 'dismiss' ? (1 - ringPhase) * 13 : ringPhase * 12;
+            const radius = 23 + i * 8 + offset;
+            const tilt = this.motionScale ? this.frame * 0.012 + i * 0.7 : i * 0.7;
+            ctx.beginPath();
+            ctx.ellipse(gate.x, gate.y + 2, radius, radius * 0.55, tilt, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        const targetSprite = this._targetSpriteForRitual(ritual);
+        if (targetSprite && action !== 'summon') {
+            const target = { x: targetSprite.x, y: targetSprite.y - 42 };
+            const control = {
+                x: (gate.x + target.x) / 2,
+                y: Math.min(gate.y, target.y) - 46,
+            };
+            const travel = action === 'dismiss' || action === 'familiar-return'
+                ? 1 - progress
+                : progress;
+            const pulseX = gate.x * (1 - travel) + target.x * travel;
+            const pulseY = gate.y * (1 - travel) + target.y * travel - Math.sin(Math.PI * travel) * 22;
+            ctx.globalAlpha = fade * 0.24;
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(gate.x, gate.y);
+            ctx.quadraticCurveTo(control.x, control.y, target.x, target.y);
+            ctx.stroke();
+            ctx.globalAlpha = fade * 0.78;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(pulseX, pulseY, 3.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = fade;
         ctx.fillStyle = 'rgba(22, 35, 48, 0.86)';
-        ctx.strokeStyle = '#8feaff';
+        ctx.strokeStyle = color;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.roundRect?.(gate.x - 42, gate.y - 58, 84, 24, 4);
@@ -2309,8 +2367,24 @@ export class BuildingSprite {
         ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(compactRitualLabel(ritual.label, 'PORTAL'), gate.x, gate.y - 46);
+        ctx.fillText(this._portalRitualLabel(ritual), gate.x, gate.y - 46);
         ctx.restore();
+    }
+
+    _portalRitualLabel(ritual) {
+        const lifecycle = ritual?.commandLifecycle;
+        const fallback = lifecycle?.kind === 'spawn'
+            ? 'SUMMON'
+            : lifecycle?.kind === 'close'
+                ? 'DISMISS'
+                : lifecycle?.kind === 'wait'
+                    ? 'ATTUNE'
+                    : lifecycle?.kind === 'resume'
+                        ? 'RECALL'
+                        : lifecycle?.kind === 'send_input'
+                            ? 'TETHER'
+                            : 'PORTAL';
+        return compactRitualLabel(ritual?.label, fallback).toUpperCase();
     }
 
     _drawTaskboardRitual(ctx, localPoint) {
@@ -2482,8 +2556,30 @@ export class BuildingSprite {
     }
 
     _chatTargetForRitual(ritual) {
+        const explicitTarget = this._targetSpriteForRitual(ritual);
+        if (explicitTarget) return explicitTarget;
         const source = this.agentSprites.find(sprite => sprite?.agent?.id === ritual.agentId);
         return source?.chatPartner || null;
+    }
+
+    _targetSpriteForRitual(ritual) {
+        const lifecycle = ritual?.commandLifecycle || null;
+        const targetId = lifecycle?.targetAgentId || null;
+        if (targetId) {
+            const exact = this.agentSprites.find(sprite => sprite?.agent?.id === targetId);
+            if (exact) return exact;
+        }
+        const targetRef = lifecycle?.targetRef || null;
+        if (!targetRef) return null;
+        const ref = String(targetRef).toLowerCase();
+        return this.agentSprites.find((sprite) => {
+            const agent = sprite?.agent;
+            if (!agent) return false;
+            return String(agent.id || '').toLowerCase() === ref
+                || String(agent.agentId || '').toLowerCase() === ref
+                || String(agent.agentName || '').toLowerCase() === ref
+                || String(agent.name || '').toLowerCase() === ref;
+        }) || null;
     }
 
     _mineSeamColor() {

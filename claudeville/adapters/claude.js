@@ -264,6 +264,17 @@ function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {})
   else if (input.file_path) value = basenameFile ? input.file_path.split('/').pop() : input.file_path;
   else if (input.pattern) value = input.pattern;
   else if (input.query) value = input.query;
+  else if (input.target) value = input.target;
+  else if (input.target_agent_id) value = input.target_agent_id;
+  else if (input.targetAgentId) value = input.targetAgentId;
+  else if (input.session_id) value = input.session_id;
+  else if (input.sessionId) value = input.sessionId;
+  else if (input.agent_id) value = input.agent_id;
+  else if (input.agentId) value = input.agentId;
+  else if (input.thread_id) value = input.thread_id;
+  else if (input.threadId) value = input.threadId;
+  else if (input.id) value = input.id;
+  else if (Array.isArray(input.targets)) value = input.targets.join(',');
   else if (input.recipient) value = input.recipient;
   else if (input.description) value = input.description;
   else if (input.prompt) value = input.prompt;

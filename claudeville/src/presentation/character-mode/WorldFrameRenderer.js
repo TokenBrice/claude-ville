@@ -73,6 +73,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     const landmarkDrawables = renderer.landmarkActivity?.enumerateDrawables() ?? [];
     const chronicleMonumentDrawables = renderer.chronicleMonuments?.enumerateDrawables?.(renderNow, renderer.camera) ?? [];
     const chroniclerDrawables = renderer.chronicler?.enumerateDrawables?.() ?? [];
+    const familiarDrawables = renderer._enumerateFamiliarMoteDrawables?.(atmosphere) ?? [];
     const zoom = renderer.camera.zoom;
     renderer._assignAgentOverlaySlots(sortedSprites, zoom);
 
@@ -86,6 +87,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         landmarkDrawables,
         chronicleMonumentDrawables,
         chroniclerDrawables,
+        familiarDrawables,
     });
     drawDepthSortedDrawables(ctx, drawables, {
         zoom,
@@ -96,7 +98,6 @@ export function renderWorldFrame(renderer, dt = 16) {
         chronicleMonuments: renderer.chronicleMonuments,
         chronicler: renderer.chronicler,
     });
-    renderer._drawFamiliarMotesForFamilies(ctx, sortedSprites, atmosphere, renderNow);
     drawTalkArcs(ctx, {
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,
