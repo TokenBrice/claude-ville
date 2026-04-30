@@ -6,6 +6,9 @@ const { ClaudeAdapter } = require('./claude');
 const { CodexAdapter } = require('./codex');
 const { GeminiAdapter } = require('./gemini');
 const { execFileSync } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const {
   getGitEnrichmentPerfStats,
   inferPushedGitEventsForSessions,
@@ -35,6 +38,9 @@ const SESSION_LIST_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_MAX_CACHE = 256;
 const REPOSITORY_SCAN_CACHE_TTL_MS = 5000;
+const REPOSITORY_SCAN_MAX_PROJECTS = Math.max(1, Number(process.env.CLAUDEVILLE_REPOSITORY_SCAN_MAX || 80) || 80);
+const REPOSITORY_SCAN_ROOT = process.env.CLAUDEVILLE_REPOSITORY_SCAN_ROOT
+  || path.join(os.homedir(), 'Documents', 'git');
 
 const _sessionListCache = {
   at: 0,
@@ -118,6 +124,62 @@ function runGit(args) {
   }).trim();
 }
 
+function resolveGitConfigPath(project) {
+  try {
+    const dotGit = path.join(project, '.git');
+    const stat = fs.statSync(dotGit);
+    if (stat.isDirectory()) return path.join(dotGit, 'config');
+    if (!stat.isFile()) return null;
+
+    const content = fs.readFileSync(dotGit, 'utf8');
+    const match = content.match(/^\s*gitdir:\s*(.+?)\s*$/im);
+    if (!match) return null;
+    const gitDir = path.resolve(project, match[1]);
+    return path.join(gitDir, 'config');
+  } catch {
+    return null;
+  }
+}
+
+function hasGitHubRemote(project) {
+  const configPath = resolveGitConfigPath(project);
+  if (!configPath) return false;
+
+  try {
+    const config = fs.readFileSync(configPath, 'utf8');
+    return /url\s*=\s*.*github\.com[:/]/i.test(config);
+  } catch {
+    return false;
+  }
+}
+
+function discoverGitHubProjects(root) {
+  if (!root) return [];
+  let entries = [];
+  try {
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+
+  const projects = [];
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (entry.name.startsWith('.')) continue;
+    const candidate = path.join(root, entry.name);
+    let stat = null;
+    try {
+      stat = entry.isSymbolicLink() ? fs.statSync(candidate) : null;
+    } catch {
+      continue;
+    }
+    if (!entry.isDirectory() && !(stat && stat.isDirectory())) continue;
+    if (!hasGitHubRemote(candidate)) continue;
+    projects.push(candidate);
+    if (projects.length >= REPOSITORY_SCAN_MAX_PROJECTS) break;
+  }
+  return projects;
+}
+
 function getRepositoryScanProjects() {
   const now = Date.now();
   if ((now - _repositoryScanCache.at) < REPOSITORY_SCAN_CACHE_TTL_MS) {
@@ -131,6 +193,7 @@ function getRepositoryScanProjects() {
   } catch {
     // ClaudeVille can run outside a git checkout, so repo scanning is optional.
   }
+  projects.push(...discoverGitHubProjects(REPOSITORY_SCAN_ROOT));
 
   _repositoryScanCache.at = now;
   _repositoryScanCache.projects = [...new Set(projects)];

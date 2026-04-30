@@ -791,6 +791,7 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
   if (!commits.length) return null;
 
   const branch = commits[0].branch || commits[0].targetRef || null;
+  if (!eventBranch({ branch })) return null;
   const pushState = readPushState(project, branch);
   if (!pushState.pushedToUpstream) return null;
 
@@ -1036,9 +1037,11 @@ function inferPushedGitEventsForSessions(sessions, options = {}) {
       const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
       const additions = [];
       for (const event of ownEvents) {
-        if (event?.type === 'commit' && event.project && inferredByProject.has(event.project)) {
-          additions.push(...inferredByProject.get(event.project));
-        }
+        if (event?.type !== 'commit' || !event.project || !inferredByProject.has(event.project)) continue;
+        const branch = eventBranch(event);
+        if (!branch) continue;
+        additions.push(...inferredByProject.get(event.project)
+          .filter((inferred) => eventBranch(inferred) === branch));
       }
       if (!additions.length) return session;
       return {

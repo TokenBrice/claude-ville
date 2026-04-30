@@ -431,11 +431,18 @@ function latestPushTimesByProject(events) {
     const latest = new Map();
     for (const event of events) {
         if (event?.type !== 'push' || !event.project || !Number.isFinite(event.timestamp) || event.timestamp <= 0) continue;
+        if (!pushMarksCommitsLanded(event)) continue;
         const key = trafficIdentity(event.project, eventBranch(event));
         const previous = latest.get(key) || 0;
         if (event.timestamp > previous) latest.set(key, event.timestamp);
     }
     return latest;
+}
+
+function pushMarksCommitsLanded(event = {}) {
+    if (event.status === 'success' || event.success === true) return true;
+    const exitCode = event.exitCode ?? event.exit_code;
+    return exitCode != null && Number.isFinite(Number(exitCode)) && Number(exitCode) === 0;
 }
 
 function pointAlongPath(points, progress) {
@@ -924,7 +931,9 @@ function composeStorageTransferTiles(fromTile, toTile, ship = {}) {
 }
 
 function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
-    const latestPush = latestPushTimes.get(trafficIdentity(event.project, eventBranch(event))) || 0;
+    const latestPush = latestPushTimes.get(trafficIdentity(event.project, eventBranch(event)))
+        || latestPushTimes.get(trafficIdentity(event.project, ''))
+        || 0;
     if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
     return Math.max(0, now - latestPush) > RECENT_PUSH_REPLAY_MS;
 }
@@ -933,7 +942,7 @@ function pushEventMatchesShip(event, ship) {
     if (!ship || ship.project !== event.project) return false;
     const pushBranch = eventBranch(event);
     const shipBranch = normalizeRepoBranch(ship.branch || ship.targetRef || '');
-    if (!pushBranch) return !shipBranch;
+    if (!pushBranch) return true;
     return pushBranch === shipBranch;
 }
 
@@ -1311,6 +1320,20 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 addShip(ship);
             }
             selectedShips.sort(compareDepartingShips);
+
+            if (status !== 'success' && status !== 'failed') {
+                if (existingBatch?.status === 'unknown') state.batches.delete(batchId);
+                state.pushEvents.set(event.id, {
+                    id: event.id,
+                    project: event.project,
+                    branch,
+                    status,
+                    eventTime: event.timestamp || now,
+                    batchId: null,
+                    seenAt: previousPush?.seenAt || now,
+                });
+                continue;
+            }
 
             if (!existingBatch && selectedShips.length === 0) {
                 state.pushEvents.set(event.id, {
