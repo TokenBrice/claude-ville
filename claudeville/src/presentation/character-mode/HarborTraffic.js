@@ -931,11 +931,23 @@ function composeStorageTransferTiles(fromTile, toTile, ship = {}) {
 }
 
 function isHistoricalCommittedBeforePush(event, latestPushTimes, now) {
-    const latestPush = latestPushTimes.get(trafficIdentity(event.project, eventBranch(event)))
+    const branch = eventBranch(event);
+    const latestPush = latestPushTimes.get(trafficIdentity(event.project, branch))
         || latestPushTimes.get(trafficIdentity(event.project, ''))
+        || (branch ? 0 : latestProjectPushTime(latestPushTimes, event.project))
         || 0;
     if (!latestPush || !Number.isFinite(event.timestamp) || event.timestamp > latestPush) return false;
     return Math.max(0, now - latestPush) > RECENT_PUSH_REPLAY_MS;
+}
+
+function latestProjectPushTime(latestPushTimes, project) {
+    const prefix = `${String(project || 'unknown')}\x1f`;
+    let latest = 0;
+    for (const [key, timestamp] of latestPushTimes.entries()) {
+        if (!String(key).startsWith(prefix)) continue;
+        if (Number(timestamp) > latest) latest = Number(timestamp);
+    }
+    return latest;
 }
 
 function pushEventMatchesShip(event, ship) {
@@ -943,6 +955,7 @@ function pushEventMatchesShip(event, ship) {
     const pushBranch = eventBranch(event);
     const shipBranch = normalizeRepoBranch(ship.branch || ship.targetRef || '');
     if (!pushBranch) return true;
+    if (!shipBranch) return true;
     return pushBranch === shipBranch;
 }
 

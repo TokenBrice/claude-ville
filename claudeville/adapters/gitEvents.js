@@ -44,7 +44,6 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
   '--repo',
 ]);
 const GIT_STATUS_CACHE_TTL_MS = 5000;
-const MAX_LOCAL_BRANCHES_TO_SCAN = 32;
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const _gitStatusCache = new Map();
 const _currentBranchCache = new Map();
@@ -640,45 +639,6 @@ function branchUpstream(project, branch) {
   return tryRunGit(project, ['for-each-ref', '--format=%(upstream:short)', `refs/heads/${normalized}`]);
 }
 
-function listLocalBranches(project) {
-  const current = normalizeLocalBranchName(currentBranch(project));
-  const output = tryRunGit(project, [
-    'for-each-ref',
-    '--sort=-committerdate',
-    '--format=%(refname:short)%00%(upstream:short)%00%(committerdate:unix)',
-    'refs/heads',
-  ]);
-
-  const byName = new Map();
-  if (output) {
-    for (const line of output.split('\n')) {
-      const [name, upstream, timestampSeconds] = line.split('\0');
-      const branch = normalizeLocalBranchName(name);
-      if (!branch) continue;
-      byName.set(branch, {
-        branch,
-        upstream: upstream || '',
-        timestamp: Number(timestampSeconds) || 0,
-      });
-    }
-  }
-  if (current && !byName.has(current)) {
-    byName.set(current, {
-      branch: current,
-      upstream: branchUpstream(project, current),
-      timestamp: 0,
-    });
-  }
-
-  return [...byName.values()]
-    .sort((a, b) => {
-      if (a.branch === current) return -1;
-      if (b.branch === current) return 1;
-      return (b.timestamp - a.timestamp) || a.branch.localeCompare(b.branch);
-    })
-    .slice(0, MAX_LOCAL_BRANCHES_TO_SCAN);
-}
-
 function defaultComparisonBase(project, branch) {
   const candidates = [
     'origin/HEAD',
@@ -725,23 +685,6 @@ function branchComparison(project, branch, explicitUpstream = '') {
 
 function unpushedComparison(project) {
   return branchComparison(project, currentBranch(project));
-}
-
-function unpushedComparisons(project) {
-  const branches = listLocalBranches(project);
-  if (!branches.length) return [unpushedComparison(project)].filter((comparison) => comparison.baseRef);
-
-  const seen = new Set();
-  const comparisons = [];
-  for (const item of branches) {
-    const comparison = branchComparison(project, item.branch, item.upstream);
-    if (!comparison.baseRef || !comparison.branch) continue;
-    const key = `${comparison.branch}:${comparison.baseRef}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    comparisons.push(comparison);
-  }
-  return comparisons;
 }
 
 function readPushState(project, branch = null) {
@@ -791,12 +734,12 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
   if (!commits.length) return null;
 
   const branch = commits[0].branch || commits[0].targetRef || null;
-  if (!eventBranch({ branch })) return null;
   const pushState = readPushState(project, branch);
   if (!pushState.pushedToUpstream) return null;
 
   const latestCommit = commits[0];
   const latestCommitTime = latestCommit.completedAt || latestCommit.ts || 0;
+  const eventTime = latestCommitTime || now;
   const id = `git-push-inferred-${stableHash([
     project,
     pushState.upstream || 'upstream',
@@ -811,12 +754,12 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
     provider: latestCommit.provider,
     sessionId: latestCommit.sessionId,
     sourceId: 'git-upstream-status',
-    ts: now,
+    ts: eventTime,
     commandHash: stableHash(id),
     dryRun: false,
     success: true,
     exitCode: 0,
-    completedAt: now,
+    completedAt: eventTime,
     status: 'success',
     targetRef: pushState.upstream,
     branch: branch || null,
@@ -845,7 +788,7 @@ function readUnpushedCommitEvents(project, context = {}) {
 
   try {
     if (runGit(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') return [];
-    const comparisons = unpushedComparisons(project);
+    const comparisons = [unpushedComparison(project)].filter((comparison) => comparison.baseRef);
     if (!comparisons.length) return [];
 
     const events = [];
@@ -1039,9 +982,12 @@ function inferPushedGitEventsForSessions(sessions, options = {}) {
       for (const event of ownEvents) {
         if (event?.type !== 'commit' || !event.project || !inferredByProject.has(event.project)) continue;
         const branch = eventBranch(event);
-        if (!branch) continue;
-        additions.push(...inferredByProject.get(event.project)
-          .filter((inferred) => eventBranch(inferred) === branch));
+        const inferredForProject = inferredByProject.get(event.project);
+        if (!branch) {
+          additions.push(...inferredForProject.filter((inferred) => !inferred.branch));
+          continue;
+        }
+        additions.push(...inferredForProject.filter((inferred) => eventBranch(inferred) === branch));
       }
       if (!additions.length) return session;
       return {
