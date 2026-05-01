@@ -622,6 +622,12 @@ props:
     size: 32
     anchor: [16, 18]
 
+  - id: prop.fishSchoolKoi
+    tool: map_object
+    prompt: "small school of bright orange and white koi silhouettes just below dark green pond water surface, subtle warm sparkle, transparent background only, no water tile, no square base, empty transparent corners"
+    size: 32
+    anchor: [16, 18]
+
   - id: prop.gullFlight
     tool: map_object
     prompt: "tiny white seagull in flight, wings level fully spread gliding pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
