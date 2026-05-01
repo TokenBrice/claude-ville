@@ -1520,6 +1520,7 @@ export class IsometricRenderer {
                 if (provider === 'gemini' && point.tags?.includes('observatory')) score -= 12;
                 if (provider === 'codex' && point.tags?.includes('forge')) score -= 10;
                 if (provider === 'claude' && point.tags?.includes('command')) score -= 8;
+                if (provider === 'kimi' && point.tags?.includes('portal')) score -= 10;
                 if (agent.teamName && point.district === 'civic') score -= 6;
                 if (agent.isSubagent && point.tags?.includes('command')) score -= 7;
                 if (this.pathfinder && !this.pathfinder.isWalkable(Math.round(point.tileX), Math.round(point.tileY))) score += 1000;

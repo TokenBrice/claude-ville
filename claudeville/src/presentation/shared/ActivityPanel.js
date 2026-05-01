@@ -275,7 +275,9 @@ export class ActivityPanel {
 
     _contextLimitFor(agent) {
         const model = String(agent?.model || '').toLowerCase();
-        if (String(agent?.provider || '').toLowerCase() === 'codex' || model.includes('gpt')) return 258400;
+        const provider = String(agent?.provider || '').toLowerCase();
+        if (provider === 'codex' || model.includes('gpt')) return 258400;
+        if (provider === 'kimi' || model.includes('kimi')) return 262144;
         return 200000;
     }
 

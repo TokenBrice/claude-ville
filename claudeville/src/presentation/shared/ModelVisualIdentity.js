@@ -262,6 +262,25 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         };
     }
 
+    if (normalizedProvider.includes('kimi') || normalizedModel.includes('kimi')) {
+        return {
+            family: 'kimi',
+            modelClass: 'kimi',
+            modelTier: 'balanced',
+            label: 'Kimi',
+            shortLabel: 'Kimi',
+            effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
+            effortAccessory,
+            effortFloorRing,
+            spriteId: 'agent.kimi.base',
+            paletteKey: 'kimi',
+            trim: ['#f5c36a', '#ff8da8', '#ffeff3'],
+            accent: ['#ffeff3', '#ff8da8', '#f5c36a'],
+            minimapColor: '#ff8da8',
+        };
+    }
+
     return {
         family: null,
         modelClass: 'standard',

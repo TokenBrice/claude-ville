@@ -111,7 +111,7 @@ export class AvatarCanvas {
         ctx.stroke();
 
         // Body
-        ctx.fillStyle = identity.family === 'codex' || identity.family === 'claude' ? trim : app.shirt;
+        ctx.fillStyle = identity.family === 'codex' || identity.family === 'claude' || identity.family === 'kimi' ? trim : app.shirt;
         ctx.fillRect(-5, -2, 10, 12);
         this._drawModelInsignia(ctx, identity, accent, trim);
 

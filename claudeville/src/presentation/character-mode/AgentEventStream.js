@@ -133,7 +133,7 @@ function resolveVisibleAgent(world, targetRef, provider) {
         const agent = world.agents.get(ref);
         return { targetAgentId: ref, targetProviderId: agent?.agentId || null, targetName: agentDisplayName(agent), confidence: 1, source: 'input' };
     }
-    for (const prefix of ['codex-', 'subagent-']) {
+    for (const prefix of ['codex-', 'subagent-', 'kimi-']) {
         const id = `${prefix}${ref}`;
         if (world.agents.has(id)) {
             const agent = world.agents.get(id);

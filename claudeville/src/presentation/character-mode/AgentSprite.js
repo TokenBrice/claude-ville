@@ -41,6 +41,7 @@ const PROVIDER_TRIM = {
     claude: '#c7a6ff',
     codex: '#67f29a',
     gemini: '#7fc7ff',
+    kimi: '#ff8da8',
     default: '#f2d36b',
 };
 const MAX_VISIBLE_FAMILIAR_MOTES = 3;
@@ -59,6 +60,7 @@ const PROVIDER_HOME_BUILDINGS = {
     claude: 'command',
     codex: 'forge',
     gemini: 'observatory',
+    kimi: 'portal',
 };
 const TARGET_AGENT_CONTENT_HEIGHT = 92;
 const MIN_AGENT_DRAW_SCALE = 1;
@@ -2041,6 +2043,7 @@ export class AgentSprite {
         if (provider.includes('gemini') || model.includes('gemini')) return 'gemini';
         if (provider.includes('codex') || model.includes('codex') || model.includes('gpt')) return 'codex';
         if (provider.includes('claude') || model.includes('claude')) return 'claude';
+        if (provider.includes('kimi') || model.includes('kimi')) return 'kimi';
         return 'default';
     }
 

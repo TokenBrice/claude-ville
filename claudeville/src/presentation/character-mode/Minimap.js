@@ -99,7 +99,8 @@ export class Minimap {
             ctx.fillStyle = identity.minimapColor || (agent.provider === 'codex' ? '#7be3d7' :
                 agent.provider === 'claude' ? '#f2d36b' :
                     agent.provider === 'gemini' ? '#b7ccff' :
-                        statusColor);
+                        agent.provider === 'kimi' ? '#ff9f7a' :
+                            statusColor);
             if (identity.modelClass === 'haiku') {
                 ctx.fillStyle = identity.minimapColor || '#ffd47a';
                 ctx.beginPath();

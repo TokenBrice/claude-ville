@@ -15,6 +15,7 @@ const PROVIDER_COLORS = {
     codex: '#4ade80',
     gemini: '#60a5fa',
     git: '#f6cf60',
+    kimi: '#ff9f7a',
     default: '#f2d36b',
 };
 
@@ -23,6 +24,7 @@ const PROVIDER_INITIALS = {
     codex: 'X',
     gemini: 'G',
     git: '#',
+    kimi: 'K',
     default: '?',
 };
 
