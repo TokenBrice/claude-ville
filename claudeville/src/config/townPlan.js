@@ -50,7 +50,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'north-bank-promenade',
         material: 'avenue',
         width: 1,
-        points: [[7, 23], [10, 20], [16, 20], [23, 18], [28, 16], [29, 13]],
+        points: [[7, 23], [10, 20], [14, 21], [16, 20], [23, 18], [28, 16], [29, 13]],
     },
     {
         id: 'production-row',
@@ -68,7 +68,7 @@ export const TOWN_ROAD_ROUTES = Object.freeze([
         id: 'central-river-bridge',
         material: 'avenue',
         width: 1,
-        points: [[16, 20], [18, 22], [18, 25], [18, 27], [24, 31], [24, 37]],
+        points: [[16, 20], [19, 21], [20, 23], [19, 26], [18, 27], [24, 31], [24, 37]],
     },
     {
         id: 'archive-walk',
