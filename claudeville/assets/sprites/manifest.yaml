@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-04-29-harbor-ship-tiers-v1"
+  assetVersion: "2026-05-01-kimi-agent-v5"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -122,6 +122,16 @@ characters:
     anchor: [46, 80]
     mode: pro
 
+  - id: agent.kimi.base
+    tool: create_character
+    prompt: "Kimi celestial horned executor, ivory ceremonial robe panels, rose-pink cloak tails, ornate gold chest armor, tall twin horn crown, glowing pale mask eyes, heroic high-fantasy RPG silhouette, compact readable character, no handheld staff, no handheld weapon, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: kimi
+    anchor: [46, 80]
+    mode: pro
+
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
 # this block for standalone tooling — keep both in sync if you edit either.
@@ -138,6 +148,10 @@ palettes:
     robe: ['#4f46a5', '#5d65c8', '#44528e']
     pants: ['#201c43', '#27244d', '#1f2d55']
     trim: ['#b7ccff', '#d6b7ff', '#7bdff2']
+  kimi:
+    robe: ['#f2e4df', '#fff2ee', '#e8d6d2']
+    pants: ['#8f4150', '#6f2f42', '#4d1f24']
+    trim: ['#f5c36a', '#ff8da8', '#ffeff3']
 
 # ─── EQUIPMENT ───────────────────────────────────────────────────────────────
 # Runtime-held Codex weapons. Anchors mark the grip point used by AgentSprite,
@@ -619,12 +633,6 @@ props:
   - id: prop.fishSchoolTeal
     tool: isometric_tile
     prompt: "small school of bright teal fish silhouettes just below clear tropical water surface, subtle sparkle, transparent background only, no water tile, no square base, empty transparent corners"
-    size: 32
-    anchor: [16, 18]
-
-  - id: prop.fishSchoolKoi
-    tool: map_object
-    prompt: "small school of bright orange and white koi silhouettes just below dark green pond water surface, subtle warm sparkle, transparent background only, no water tile, no square base, empty transparent corners"
     size: 32
     anchor: [16, 18]
 

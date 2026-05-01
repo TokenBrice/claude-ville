@@ -60,6 +60,7 @@ const CHARACTERS = [
     character('agent.codex.gpt55', 'Codex GPT-5.5 master artificer, teal engineer coat, gold arcane lens, luminous chest core, tool belt, elite inventor silhouette'),
     character('agent.codex.gpt54', 'Codex GPT-5.4 senior engineer, blue teal coat, brass goggles, gear pauldron, blueprint scroll, sturdy artificer silhouette'),
     character('agent.codex.gpt53spark', 'Codex GPT-5.3 Spark scout artificer, yellow cyan lightning sash, light runner coat, compact fast engineer silhouette'),
+    character('agent.kimi.base', 'Kimi celestial horned executor, ivory ceremonial robe panels, rose-pink cloak tails, ornate gold chest armor, tall twin horn crown, glowing pale mask eyes, heroic high-fantasy RPG silhouette, no handheld staff, no handheld weapon, 8-direction pixel art'),
 ];
 
 main().catch((err) => {

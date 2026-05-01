@@ -12,3 +12,7 @@ gemini:
   robe: ['#4f46a5', '#5d65c8', '#44528e']
   pants: ['#201c43', '#27244d', '#1f2d55']
   trim: ['#b7ccff', '#d6b7ff', '#7bdff2']
+kimi:
+  robe: ['#f2e4df', '#fff2ee', '#e8d6d2']
+  pants: ['#8f4150', '#6f2f42', '#4d1f24']
+  trim: ['#f5c36a', '#ff8da8', '#ffeff3']

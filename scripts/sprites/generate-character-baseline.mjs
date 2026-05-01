@@ -119,6 +119,18 @@ const SPECS = [
         skin: '#c99172',
         hair: '#2b2440',
     },
+    {
+        id: 'agent.kimi.base',
+        family: 'kimi',
+        model: 'base',
+        robe: '#f2e4df',
+        robeDark: '#8f4150',
+        trim: '#f5c36a',
+        accent: '#ff8da8',
+        metal: '#d8893d',
+        skin: '#d9aa82',
+        hair: '#4d1f24',
+    },
 ];
 
 const EFFORTS = [
@@ -189,6 +201,7 @@ function drawCharacter(png, x0, y0, spec, direction, walking, frame) {
 
     if (spec.family === 'claude') drawClaudeBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob);
     else if (spec.family === 'gemini') drawGeminiBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob);
+    else if (spec.family === 'kimi') drawKimiBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob);
     else drawCodexBody(png, cx, y0, feetY, headY, spec, front, back, side, sideSign, step, bob);
 }
 
@@ -272,6 +285,67 @@ function drawCodexBody(png, cx, y0, feetY, headY, spec, front, back, side, sideS
         rect(png, cx - 6 + sideSign, headY, 3, 2, spec.accent);
         rect(png, cx + 3 + sideSign, headY, 3, 2, spec.accent);
         line(png, cx - 1 + sideSign, headY + 1, cx + 1 + sideSign, headY + 1, spec.metal, 1);
+    }
+}
+
+function drawKimiBody(png, cx, y0, feetY, headY, spec, front, back, sideSign, step, bob) {
+    const shadow = '#2a141a';
+    const ivory = spec.robe;
+    const rose = spec.robeDark;
+    const gold = spec.trim;
+    const glow = '#ffeff3';
+    const side = sideSign || 1;
+
+    // High-priest executor silhouette: cloak tails, white robe panels, gold armor.
+    polygon(png, [[cx - 15, y0 + 42 + bob], [cx + 15, y0 + 42 + bob], [cx + 14, feetY - 8], [cx + 5, feetY + 1], [cx, feetY - 5], [cx - 5, feetY + 1], [cx - 14, feetY - 8]], rose, 245);
+    polygon(png, [[cx - 10, y0 + 45 + bob], [cx + 10, y0 + 45 + bob], [cx + 9, feetY - 9], [cx + 2, feetY - 4], [cx, feetY - 11], [cx - 2, feetY - 4], [cx - 9, feetY - 9]], ivory, 250);
+    polygon(png, [[cx - 17, y0 + 43 + bob], [cx - 7, y0 + 35 + bob], [cx - 1, y0 + 43 + bob], [cx - 10, y0 + 51 + bob]], gold, 245);
+    polygon(png, [[cx + 17, y0 + 43 + bob], [cx + 7, y0 + 35 + bob], [cx + 1, y0 + 43 + bob], [cx + 10, y0 + 51 + bob]], gold, 245);
+    line(png, cx - 7, y0 + 48 + bob, cx - 10, feetY - 9, spec.accent, 1, 220);
+    line(png, cx + 7, y0 + 48 + bob, cx + 10, feetY - 9, spec.accent, 1, 220);
+
+    // Ornate chest plate and sash.
+    polygon(png, [[cx - 8, y0 + 46 + bob], [cx, y0 + 39 + bob], [cx + 8, y0 + 46 + bob], [cx + 5, y0 + 57 + bob], [cx - 5, y0 + 57 + bob]], gold, 250);
+    diamond(png, cx, y0 + 50 + bob, 4, spec.accent, 245);
+    rect(png, cx - 13, y0 + 57 + bob, 26, 4, shadow, 240);
+    rect(png, cx - 4, y0 + 56 + bob, 8, 6, gold, 255);
+    line(png, cx - 9, y0 + 62 + bob, cx - 4, feetY - 6, rose, 2, 230);
+    line(png, cx + 9, y0 + 62 + bob, cx + 4, feetY - 6, rose, 2, 230);
+
+    // Armored sleeves with heavy cuffs, readable even at village scale.
+    polygon(png, [[cx - 16, y0 + 45 + bob + step / 2], [cx - 22, y0 + 50 + bob + step / 2], [cx - 19, y0 + 65 + bob + step / 2], [cx - 12, y0 + 58 + bob + step / 2]], rose, 245);
+    polygon(png, [[cx + 16, y0 + 45 + bob - step / 2], [cx + 22, y0 + 50 + bob - step / 2], [cx + 19, y0 + 65 + bob - step / 2], [cx + 12, y0 + 58 + bob - step / 2]], rose, 245);
+    rect(png, cx - 23, y0 + 59 + bob + step / 2, 7, 4, gold, 245);
+    rect(png, cx + 16, y0 + 59 + bob - step / 2, 7, 4, gold, 245);
+    px(png, cx - 20, y0 + 61 + bob + step / 2, glow, 220);
+    px(png, cx + 20, y0 + 61 + bob - step / 2, glow, 220);
+
+    // Boots and robe hem points.
+    rect(png, cx - 12 + step, feetY - 1, 9, 6, shadow);
+    rect(png, cx + 3 - step, feetY - 1, 9, 6, shadow);
+    rect(png, cx - 10 + step, feetY + 3, 8, 2, gold, 190);
+    rect(png, cx + 2 - step, feetY + 3, 8, 2, gold, 190);
+    diamond(png, cx - 7, feetY - 10, 3, spec.accent, 200);
+    diamond(png, cx + 7, feetY - 10, 3, spec.accent, 200);
+
+    // Face, mask, and horned crown based on the reference sheet.
+    ellipse(png, cx, headY + 1, 10, 11, spec.skin, back ? 100 : 255);
+    polygon(png, [[cx - 11, headY - 5], [cx - 5, headY - 13], [cx, headY - 16], [cx + 5, headY - 13], [cx + 11, headY - 5], [cx + 9, headY + 8], [cx - 9, headY + 8]], rose, 245);
+    polygon(png, [[cx - 10, headY - 6], [cx, headY - 14], [cx + 10, headY - 6], [cx + 6, headY + 3], [cx - 6, headY + 3]], gold, 235);
+    line(png, cx - 8, headY - 2, cx + 8, headY - 2, glow, 1, 230);
+    line(png, cx - 8, headY - 10, cx - 14, headY - 23, gold, 2, 245);
+    line(png, cx + 8, headY - 10, cx + 14, headY - 23, gold, 2, 245);
+    line(png, cx - 12, headY - 16, cx - 18, headY - 24, spec.accent, 1, 230);
+    line(png, cx + 12, headY - 16, cx + 18, headY - 24, spec.accent, 1, 230);
+    star(png, cx, headY - 15, 3, glow, 230);
+
+    if (!back) {
+        rect(png, cx - 7 + sideSign, headY, 14, 3, shadow, 230);
+        rect(png, cx - 5 + sideSign, headY, 3, 2, glow, 245);
+        rect(png, cx + 2 + sideSign, headY, 3, 2, glow, 245);
+        px(png, cx + sideSign, headY + 5, spec.accent, 230);
+    } else {
+        line(png, cx - 6, headY + 1, cx + 6, headY + 1, gold, 1, 210);
     }
 }
 
