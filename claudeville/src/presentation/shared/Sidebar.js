@@ -142,7 +142,7 @@ export class Sidebar {
             groupEl.append(el('div', {
                 className: 'sidebar__project-header',
                 style: {
-                    borderLeftColor: profile.accent,
+                    borderLeftColor: profile.panelBorder || profile.accent,
                     background: profile.panel,
                 },
             }, [
@@ -156,12 +156,12 @@ export class Sidebar {
                 el('span', {
                     className: 'sidebar__project-name',
                     text: projectName,
-                    style: { color: profile.accent },
+                    style: { color: profile.labelText || profile.accent },
                 }),
                 el('span', {
                     className: 'sidebar__project-count',
                     text: groupAgents.length,
-                    style: { color: profile.accent },
+                    style: { color: profile.labelText || profile.accent },
                 }),
             ]));
             for (const agent of groupAgents) {
@@ -264,7 +264,7 @@ export class Sidebar {
                 el('span', {
                     className: 'sidebar__agent-name',
                     text: name,
-                    style: { color: profile.accent },
+                    style: { color: profile.labelText || profile.accent },
                 }),
             ];
             if (rel) {
@@ -274,7 +274,7 @@ export class Sidebar {
                 className: ['sidebar__agent', 'sidebar__harbor-row'],
                 title: repo.branch ? `${repo.project || ''} (${repo.branch})` : repo.project || '',
                 style: {
-                    borderLeftColor: profile.accent,
+                    borderLeftColor: profile.panelBorder || profile.accent,
                     background: profile.panel,
                 },
             }, [
@@ -289,7 +289,7 @@ export class Sidebar {
                 el('span', {
                     className: ['sidebar__project-count', 'sidebar__harbor-count'],
                     text: count,
-                    style: { color: profile.accent },
+                    style: { color: profile.labelText || profile.accent },
                 }),
             ]);
         });

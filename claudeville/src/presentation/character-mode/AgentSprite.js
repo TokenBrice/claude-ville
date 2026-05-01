@@ -2215,15 +2215,15 @@ export class AgentSprite {
         ctx.quadraticCurveTo(-w/2, -h/2, -w/2 + r, -h/2);
         ctx.closePath();
         ctx.fill();
-        ctx.strokeStyle = repo.accent;
+        ctx.strokeStyle = repo.panelBorder || repo.accent;
         ctx.lineWidth = this.selected ? 2 : 1.25;
         ctx.stroke();
         if (this.selected) {
-            ctx.strokeStyle = repo.accent;
+            ctx.strokeStyle = repo.panelBorder || repo.accent;
             ctx.lineWidth = 1;
             ctx.strokeRect(Math.round(-w / 2 + 3) + 0.5, Math.round(-h / 2 + 3) + 0.5, Math.max(1, Math.round(w - 6)), Math.max(1, Math.round(h - 6)));
         }
-        ctx.fillStyle = repo.accent;
+        ctx.fillStyle = repo.labelText || repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         if (lines.length === 1) {
@@ -2286,7 +2286,7 @@ export class AgentSprite {
         const h = 13;
 
         ctx.fillStyle = repo.panel;
-        ctx.strokeStyle = repo.accent;
+        ctx.strokeStyle = repo.panelBorder || repo.accent;
         ctx.lineWidth = 1;
         ctx.beginPath();
         if (ctx.roundRect) {
@@ -2297,7 +2297,7 @@ export class AgentSprite {
         ctx.fill();
         ctx.stroke();
 
-        ctx.fillStyle = repo.accent;
+        ctx.fillStyle = repo.labelText || repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(text, 0, 0.5);

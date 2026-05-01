@@ -9,13 +9,17 @@ export const UNKNOWN_PROJECT_KEY = '_unknown';
 
 const UNKNOWN_PROJECT_PROFILE = Object.freeze({
     accent: '#8b8b9e',
+    labelText: '#d7d7e8',
     glow: 'rgba(139, 139, 158, 0.3)',
     panel: 'rgba(28, 28, 36, 0.72)',
+    panelBorder: 'rgba(139, 139, 158, 0.9)',
 });
 const UNKNOWN_PROJECT_SIDEBAR_PROFILE = Object.freeze({
     accent: '#8b8b9e',
+    labelText: '#d7d7e8',
     glow: 'rgba(139, 139, 158, 0.3)',
     panel: 'rgba(28, 28, 36, 0.68)',
+    panelBorder: 'rgba(139, 139, 158, 0.86)',
 });
 
 const PROVIDER_ICONS = Object.freeze({ claude: 'C', codex: 'X', gemini: 'G', git: '#' });

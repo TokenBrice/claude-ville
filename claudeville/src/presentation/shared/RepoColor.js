@@ -20,18 +20,30 @@ function hslaColor(hue, saturation, lightness, alpha) {
     return `hsla(${Math.round(hue)}, ${Math.round(saturation)}%, ${Math.round(lightness)}%, ${alpha})`;
 }
 
+function readableAccentLightness(hue, baseLightness) {
+    const normalizedHue = positiveModulo(hue, 360);
+    const blueViolet = normalizedHue >= 205 && normalizedHue <= 285;
+    const redOrange = normalizedHue <= 32 || normalizedHue >= 345;
+    if (blueViolet) return clamp(baseLightness + 8, 72, 80);
+    if (redOrange) return clamp(baseLightness + 4, 68, 76);
+    return clamp(baseLightness, 66, 76);
+}
+
 function colorProfileFromHash(hash, options = {}) {
     const offset = Number(options.hueOffset) || 0;
     const hue = positiveModulo((hash % 360) + ((hash >> 7) % 29) * GOLDEN_ANGLE + offset, 360);
-    const saturation = clamp(62 + (hash % 18), 58, 78);
-    const lightness = clamp(54 + ((hash >> 4) % 11), 52, 66);
+    const saturation = clamp(70 + (hash % 16), 66, 86);
+    const lightness = readableAccentLightness(hue, 66 + ((hash >> 4) % 8));
+    const labelLightness = readableAccentLightness(hue, lightness + 5);
     return {
         hue,
         saturation,
         lightness,
         accent: hslColor(hue, saturation, lightness),
-        glow: hslaColor(hue, saturation, lightness, 0.34),
-        panel: hslaColor(hue, clamp(saturation - 22, 34, 54), 20, 0.9),
+        labelText: hslColor(hue, clamp(saturation - 6, 64, 82), labelLightness),
+        glow: hslaColor(hue, saturation, lightness, 0.38),
+        panel: hslaColor(hue, clamp(saturation - 34, 30, 46), 11, 0.94),
+        panelBorder: hslaColor(hue, clamp(saturation - 4, 64, 84), lightness, 0.96),
     };
 }
 
@@ -39,15 +51,18 @@ function branchColorProfile(baseProfile, branchHash) {
     const direction = branchHash % 2 === 0 ? 1 : -1;
     const shift = 18 + (branchHash % 28);
     const hue = positiveModulo((baseProfile.hue || 0) + direction * shift, 360);
-    const saturation = clamp((baseProfile.saturation || 66) + ((branchHash >> 5) % 9) - 4, 56, 82);
-    const lightness = clamp((baseProfile.lightness || 58) + ((branchHash >> 9) % 9) - 4, 50, 68);
+    const saturation = clamp((baseProfile.saturation || 74) + ((branchHash >> 5) % 9) - 3, 64, 86);
+    const lightness = readableAccentLightness(hue, (baseProfile.lightness || 68) + ((branchHash >> 9) % 7) - 3);
+    const labelLightness = readableAccentLightness(hue, lightness + 5);
     return {
         hue,
         saturation,
         lightness,
         accent: hslColor(hue, saturation, lightness),
-        glow: hslaColor(hue, saturation, lightness, 0.36),
-        panel: hslaColor(hue, clamp(saturation - 18, 38, 58), 20, 0.92),
+        labelText: hslColor(hue, clamp(saturation - 6, 64, 82), labelLightness),
+        glow: hslaColor(hue, saturation, lightness, 0.4),
+        panel: hslaColor(hue, clamp(saturation - 34, 30, 48), 11, 0.95),
+        panelBorder: hslaColor(hue, clamp(saturation - 4, 64, 84), lightness, 0.98),
     };
 }
 

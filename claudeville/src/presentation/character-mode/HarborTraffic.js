@@ -2293,7 +2293,7 @@ export class HarborTraffic {
         ctx.strokeStyle = 'rgba(255, 224, 150, 0.34)';
         ctx.lineWidth = 2;
         ctx.strokeRect(x - 1.5, y - 1.5, width + 3, height + 3);
-        ctx.strokeStyle = style.accent;
+        ctx.strokeStyle = style.panelBorder || style.accent;
         ctx.lineWidth = 2;
         ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
         ctx.fillStyle = style.accent;
@@ -2309,7 +2309,7 @@ export class HarborTraffic {
         ctx.textBaseline = 'top';
         ctx.fillStyle = '#fff0b8';
         ctx.fillText(shortGitLabel(title, 56, '…'), x + 24, y + 13);
-        ctx.fillStyle = profile.accent;
+        ctx.fillStyle = profile.labelText || profile.accent;
         ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
         ctx.fillText(shortGitLabel(detail, 60, '…'), x + 24, y + 37);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.62)';
@@ -2704,7 +2704,7 @@ export class HarborTraffic {
         }
         ctx.fillStyle = profile.accent;
         ctx.fillRect(x + (profile.isBranchVariant ? Math.max(1, Math.round(2 * s)) : 0), y, Math.max(2, Math.round(4 * s)), Math.round(height));
-        ctx.fillStyle = accent;
+        ctx.fillStyle = ship.pushStatus === 'failed' && statusStyle ? accent : (profile.labelText || accent);
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -2827,7 +2827,7 @@ export class HarborTraffic {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(title, Math.round(payload.x + 2 * s), Math.round(y + 10 * s));
-        ctx.fillStyle = profile.accent;
+        ctx.fillStyle = profile.labelText || profile.accent;
         ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.fillText(detail, Math.round(payload.x + 2 * s), Math.round(y + 22 * s));
         ctx.restore();
@@ -2850,7 +2850,7 @@ export class HarborTraffic {
         ctx.globalAlpha = 0.94;
         ctx.fillStyle = profile.panel || 'rgba(20, 30, 34, 0.88)';
         ctx.fillRect(x, y, Math.round(width), Math.round(height));
-        ctx.strokeStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
+        ctx.strokeStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
         ctx.lineWidth = 1;
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(width) - 1, Math.round(height) - 1);
         if (profile.isBranchVariant && profile.baseAccent) {
@@ -2861,7 +2861,7 @@ export class HarborTraffic {
         ctx.fillRect(x + (profile.isBranchVariant ? Math.max(2, Math.round(3 * s)) : 0), y, Math.max(3, Math.round(5 * s)), Math.round(height));
 
         ctx.globalAlpha = 1;
-        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
+        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.labelText || profile.accent);
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';

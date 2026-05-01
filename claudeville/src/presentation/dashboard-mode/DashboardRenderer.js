@@ -190,11 +190,11 @@ export class DashboardRenderer {
 
         const profile = projectProfile(projectPath);
         section.innerHTML = `
-            <div class="dashboard__section-header" style="border-left-color: ${profile.accent}; background: ${profile.panel}">
+            <div class="dashboard__section-header" style="border-left-color: ${profile.panelBorder || profile.accent}; background: ${profile.panel}">
                 <span class="dashboard__section-dot" style="background: ${profile.accent}; box-shadow: 0 0 8px ${profile.glow}"></span>
-                <span class="dashboard__section-name" style="color: ${profile.accent}"></span>
+                <span class="dashboard__section-name" style="color: ${profile.labelText || profile.accent}"></span>
                 <span class="dashboard__section-path"></span>
-                <span class="dashboard__section-count" style="color: ${profile.accent}"></span>
+                <span class="dashboard__section-count" style="color: ${profile.labelText || profile.accent}"></span>
             </div>
             <div class="dashboard__section-grid"></div>
         `;
