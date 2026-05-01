@@ -397,7 +397,8 @@ export class BuildingSprite {
                     displaySubText = subMetrics.displayText;
                     subTw = subMetrics.width;
                 }
-                const tagW = Math.ceil(Math.max(tw, subTw) + attempt.iconSize + attempt.iconGap + attempt.padX * 2 + (isLandmark ? 8 : 0));
+                const subIconSpace = displaySubRows.length ? 11 : 0;
+                const tagW = Math.ceil(Math.max(tw, subTw + subIconSpace) + attempt.iconSize + attempt.iconGap + attempt.padX * 2 + (isLandmark ? 8 : 0));
                 const tagH = attempt.tagH;
                 const layout = this._resolveLabelLayout({
                     candidates: this._labelLayoutCandidates(isLandmark, isHovered),
@@ -547,9 +548,7 @@ export class BuildingSprite {
             ctx.font = chosenFont;
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
-            ctx.shadowColor = 'rgba(0, 0, 0, 0.7)';
-            ctx.shadowBlur = 4;
-            ctx.shadowOffsetY = 1;
+            this._applyReadableLabelShadow(ctx);
             const textX = tagLeft + padX + iconSize + iconGap + (isLandmark ? 2 : 0);
             if (displaySubRows.length) {
                 const titleY = isHarborLedger ? by - 14 : by - 5;
@@ -558,8 +557,10 @@ export class BuildingSprite {
                 ctx.fillText(displayText, textX, titleY);
                 ctx.font = subFont || chosenFont;
                 displaySubRows.forEach((row, index) => {
+                    const rowY = rowStartY + index * rowGap;
+                    this._drawRepoRowIcon(ctx, textX + 3, rowY, row.profile);
                     ctx.fillStyle = row.color || '#f6d384';
-                    ctx.fillText(row.label, textX, rowStartY + index * rowGap);
+                    ctx.fillText(row.label, textX + 11, rowY);
                 });
             } else if (displaySubText) {
                 ctx.fillText(displayText, textX, by - 5);
@@ -630,9 +631,9 @@ export class BuildingSprite {
                 maxTextWidth: Math.round((isHarborLedger ? (isHovered ? 220 : 180) : isHovered ? 190 : isLandmark ? 132 : 96) * widthScale),
                 iconSize: building.icon ? (isHarborLedger ? (isHovered || isLandmark ? 24 : 20) : (isHovered || isLandmark ? 22 : 16)) * scale : 0,
                 iconGap: building.icon ? (isHarborLedger ? 9 : 7) * scale : 0,
-                padX: isHarborLedger ? (isHovered || isLandmark ? 13 : 11) : (isHovered || isLandmark ? 11 : 7),
+                padX: isHarborLedger ? (isHovered || isLandmark ? 15 : 13) : (isHovered || isLandmark ? 12 : 8),
                 iconFont: isHovered || isLandmark ? 9 : 8,
-                tagH: Math.round((isHarborLedger ? (isHovered ? 62 : 56) : isHovered ? 28 : isLandmark ? 24 : 16) * scale),
+                tagH: Math.round((isHarborLedger ? (isHovered ? 66 : 60) : isHovered ? 30 : isLandmark ? 26 : 18) * scale),
                 overlapTolerance: isHovered || isLandmark ? Math.min(0.92, LABEL_OVERLAP_TOLERANCE * overlapScale) : 0.3,
                 blockAgents: true,
                 degraded: false,
@@ -649,9 +650,9 @@ export class BuildingSprite {
                 maxTextWidth: Math.round((isLandmark ? 92 : 76) * widthScale),
                 iconSize: building.icon ? (isHovered || isLandmark ? 19 : 13) * scale : 0,
                 iconGap: building.icon ? 6 * scale : 0,
-                padX: isHovered || isLandmark ? 10 : 6,
+                padX: isHovered || isLandmark ? 11 : 7,
                 iconFont: isHovered || isLandmark ? 8 : 7,
-                tagH: Math.round((isHovered ? 24 : isLandmark ? 21 : 13) * scale),
+                tagH: Math.round((isHovered ? 26 : isLandmark ? 23 : 15) * scale),
                 overlapTolerance: isHovered || isLandmark ? Math.min(0.95, LABEL_COMPACT_OVERLAP_TOLERANCE * overlapScale) : 0.38,
                 blockAgents: true,
                 degraded: false,
@@ -665,9 +666,9 @@ export class BuildingSprite {
                 maxTextWidth: Math.round((isLandmark ? 64 : 58) * widthScale),
                 iconSize: building.icon ? (isHovered || isLandmark ? 17 : 11) * scale : 0,
                 iconGap: building.icon ? 5 * scale : 0,
-                padX: isHovered || isLandmark ? 8 : 5,
+                padX: isHovered || isLandmark ? 9 : 6,
                 iconFont: isHovered || isLandmark ? 8 : 7,
-                tagH: Math.round((isHovered ? 21 : isLandmark ? 18 : 11) * scale),
+                tagH: Math.round((isHovered ? 23 : isLandmark ? 20 : 13) * scale),
                 overlapTolerance: isHovered || isLandmark ? Math.min(0.97, 0.78 * overlapScale) : 0.55,
                 blockAgents: true,
                 degraded: false,
@@ -2807,7 +2808,8 @@ export class BuildingSprite {
                 .replace(/\b\w/g, (char) => char.toUpperCase());
             return {
                 label: `${name} (${Number(repo.pendingCommits)})`,
-                color: repo.profile?.accent || '#f6d384',
+                color: repo.profile?.labelText || repo.profile?.accent || '#f6d384',
+                profile: repo.profile || null,
             };
         });
         const remaining = active.length - visible.length;
@@ -2818,6 +2820,31 @@ export class BuildingSprite {
             };
         }
         return visible;
+    }
+
+    _applyReadableLabelShadow(ctx) {
+        ctx.shadowColor = 'rgba(8, 5, 4, 0.88)';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+    }
+
+    _drawRepoRowIcon(ctx, x, y, profile = null) {
+        const accent = profile?.accent || '#f6d384';
+        ctx.save();
+        this._applyReadableLabelShadow(ctx);
+        ctx.fillStyle = accent;
+        ctx.strokeStyle = 'rgba(255, 238, 180, 0.86)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y - 3);
+        ctx.lineTo(x + 3, y);
+        ctx.lineTo(x, y + 3);
+        ctx.lineTo(x - 3, y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
     }
 
     _drawLabelEmblem(ctx, building, cx, cy, size, { accent, isHovered, isLandmark } = {}) {

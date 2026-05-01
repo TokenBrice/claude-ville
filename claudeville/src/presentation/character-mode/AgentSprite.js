@@ -2082,8 +2082,8 @@ export class AgentSprite {
         const layout = this._bubbleLayout(ctx, text, maxWidth, anchored);
         const displayText = layout.displayText;
         const textWidth = layout.textWidth;
-        const bubbleW = textWidth + (anchored ? 14 : 20);
-        const bubbleH = anchored ? 18 : 24;
+        const bubbleW = textWidth + (anchored ? 18 : 24);
+        const bubbleH = anchored ? 20 : 26;
         const radius = anchored ? 5 : 6;
 
         ctx.translate(0, anchored ? -18 : -50);
@@ -2114,6 +2114,7 @@ export class AgentSprite {
         ctx.fillStyle = '#f3e2bd';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        this._applyReadableTextShadow(ctx);
         ctx.fillText(displayText, 0, 0, maxWidth);
 
         ctx.restore();
@@ -2198,10 +2199,10 @@ export class AgentSprite {
         const layout = this._nameTagLayout(ctx, rawName);
         const lines = layout.lines;
         const contentW = layout.contentW;
-        const w = Math.min(190, contentW + 12);
+        const w = Math.min(202, contentW + 26);
         const repo = this._repoNameTagProfile();
         ctx.fillStyle = repo.panel;
-        const h = lines.length > 1 ? 26 : 16;
+        const h = lines.length > 1 ? 30 : 20;
         const r = 4;
         ctx.beginPath();
         ctx.moveTo(-w/2 + r, -h/2);
@@ -2223,14 +2224,16 @@ export class AgentSprite {
             ctx.lineWidth = 1;
             ctx.strokeRect(Math.round(-w / 2 + 3) + 0.5, Math.round(-h / 2 + 3) + 0.5, Math.max(1, Math.round(w - 6)), Math.max(1, Math.round(h - 6)));
         }
+        this._drawRepoLabelGlyph(ctx, -w / 2 + 10, 0, 7, repo);
         ctx.fillStyle = repo.labelText || repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
+        this._applyReadableTextShadow(ctx);
         if (lines.length === 1) {
-            ctx.fillText(lines[0], 0, 1);
+            ctx.fillText(lines[0], 4, 1);
         } else {
-            ctx.fillText(lines[0], 0, -5);
-            ctx.fillText(lines[1], 0, 6);
+            ctx.fillText(lines[0], 4, -5);
+            ctx.fillText(lines[1], 4, 6);
         }
         ctx.restore();
     }
@@ -2283,7 +2286,7 @@ export class AgentSprite {
         const layout = this._compactNameStatusLayout(ctx, rawName);
         const text = layout.text;
         const w = layout.width;
-        const h = 13;
+        const h = 15;
 
         ctx.fillStyle = repo.panel;
         ctx.strokeStyle = repo.panelBorder || repo.accent;
@@ -2297,10 +2300,12 @@ export class AgentSprite {
         ctx.fill();
         ctx.stroke();
 
+        this._drawRepoLabelGlyph(ctx, -w / 2 + 8, 0, 6, repo);
         ctx.fillStyle = repo.labelText || repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(text, 0, 0.5);
+        this._applyReadableTextShadow(ctx);
+        ctx.fillText(text, 4, 0.5);
         ctx.restore();
     }
 
@@ -2357,11 +2362,39 @@ export class AgentSprite {
             return this._compactNameStatusCache;
         }
         const text = this._fitText(ctx, rawName, 144);
-        const width = Math.min(184, Math.max(34, ctx.measureText(text).width + 14));
+        const width = Math.min(192, Math.max(42, ctx.measureText(text).width + 24));
         const layout = { text, width };
         this._compactNameStatusCacheKey = key;
         this._compactNameStatusCache = layout;
         return layout;
+    }
+
+    _applyReadableTextShadow(ctx) {
+        ctx.shadowColor = 'rgba(8, 5, 4, 0.86)';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+    }
+
+    _drawRepoLabelGlyph(ctx, x, y, size, repo) {
+        const r = size / 2;
+        ctx.save();
+        ctx.shadowColor = 'rgba(8, 5, 4, 0.7)';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+        ctx.fillStyle = repo.accent || '#f6d384';
+        ctx.strokeStyle = 'rgba(255, 242, 190, 0.88)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y - r);
+        ctx.lineTo(x + r, y);
+        ctx.lineTo(x, y + r);
+        ctx.lineTo(x - r, y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
     }
 
     _snapWorldToScreenPixel(value) {

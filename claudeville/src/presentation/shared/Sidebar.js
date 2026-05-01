@@ -147,12 +147,13 @@ export class Sidebar {
                 },
             }, [
                 el('span', {
-                    className: 'sidebar__project-dot',
+                    className: ['sidebar__project-dot', 'sidebar__project-dot--repo'],
                     style: {
                         background: profile.accent,
                         boxShadow: `0 0 6px ${profile.glow}`,
                     },
                 }),
+                el('span', { className: 'sidebar__label-icon', text: '#' }),
                 el('span', {
                     className: 'sidebar__project-name',
                     text: projectName,
@@ -174,17 +175,13 @@ export class Sidebar {
                 const nameChildren = [];
                 if (team) {
                     nameChildren.push(el('span', {
+                        className: 'sidebar__team-icon',
                         title: teamLabel,
                         ariaLabel: teamLabel,
+                        text: 'T',
                         style: {
-                            display: 'inline-block',
-                            width: '7px',
-                            height: '7px',
-                            borderRadius: '50%',
                             background: team.accent,
                             boxShadow: `0 0 6px ${team.glow}`,
-                            marginRight: '4px',
-                            verticalAlign: 'middle',
                         },
                     }));
                 }
@@ -285,6 +282,7 @@ export class Sidebar {
                         boxShadow: `0 0 6px ${profile.glow}`,
                     },
                 }),
+                el('span', { className: 'sidebar__label-icon', text: repo.branch ? 'br' : '#' }),
                 el('div', { className: 'sidebar__agent-info' }, infoChildren),
                 el('span', {
                     className: ['sidebar__project-count', 'sidebar__harbor-count'],

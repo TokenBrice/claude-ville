@@ -1497,6 +1497,47 @@ export class HarborTraffic {
         if (typeof window !== 'undefined') window.__harbor = this;
     }
 
+    _applyReadableTextShadow(ctx) {
+        ctx.shadowColor = 'rgba(8, 5, 4, 0.88)';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+    }
+
+    _fillReadableText(ctx, text, x, y, maxWidth) {
+        ctx.save();
+        this._applyReadableTextShadow(ctx);
+        if (maxWidth != null) ctx.fillText(text, x, y, maxWidth);
+        else ctx.fillText(text, x, y);
+        ctx.restore();
+    }
+
+    _drawRepoLabelIcon(ctx, x, y, size, profile = null) {
+        const r = size / 2;
+        ctx.save();
+        this._applyReadableTextShadow(ctx);
+        ctx.fillStyle = profile?.accent || '#f6d384';
+        ctx.strokeStyle = 'rgba(255, 240, 184, 0.9)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, y - r);
+        ctx.lineTo(x + r, y);
+        ctx.lineTo(x, y + r);
+        ctx.lineTo(x - r, y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        if (profile?.isBranchVariant) {
+            ctx.strokeStyle = 'rgba(19, 12, 8, 0.78)';
+            ctx.beginPath();
+            ctx.moveTo(x - r * 0.3, y - r * 0.35);
+            ctx.lineTo(x + r * 0.25, y + r * 0.2);
+            ctx.lineTo(x + r * 0.52, y + r * 0.2);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
     setWaterRouteData(routeData) {
         this.waterRouteData = routeData || null;
     }
@@ -2266,8 +2307,8 @@ export class HarborTraffic {
             ? ` -> ${summary.targetRef}`
             : '';
         const detail = `${project}${target}`;
-        const width = Math.min(470, Math.max(316, Math.max(title.length, detail.length) * 7.2 + 58));
-        const height = 76;
+        const width = Math.min(500, Math.max(344, Math.max(title.length, detail.length) * 7.2 + 76));
+        const height = 82;
         const origin = this._batchOrigin(summary);
         const screen = camera?.worldToScreen
             ? camera.worldToScreen(origin.x, origin.y)
@@ -2308,13 +2349,14 @@ export class HarborTraffic {
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
         ctx.fillStyle = '#fff0b8';
-        ctx.fillText(shortGitLabel(title, 56, '…'), x + 24, y + 13);
+        this._fillReadableText(ctx, shortGitLabel(title, 56, '…'), x + 26, y + 14);
+        this._drawRepoLabelIcon(ctx, x + 27, y + 44, 8, profile);
         ctx.fillStyle = profile.labelText || profile.accent;
         ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
-        ctx.fillText(shortGitLabel(detail, 60, '…'), x + 24, y + 37);
+        this._fillReadableText(ctx, shortGitLabel(detail, 60, '…'), x + 38, y + 38);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.62)';
         ctx.font = '700 9px ui-monospace, SFMono-Regular, Menlo, monospace';
-        ctx.fillText((PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown).shortLabel.toUpperCase(), x + 24, y + 57);
+        this._fillReadableText(ctx, (PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown).shortLabel.toUpperCase(), x + 26, y + 62);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.42)';
         ctx.fillRect(x + 94, y + 61, Math.max(34, width - 114), 1);
         ctx.restore();
@@ -2687,11 +2729,11 @@ export class HarborTraffic {
         const label = shortGitLabel(commitPennantLabel(ship), compact ? 10 : 12, '…');
         const textSize = Math.max(7, Math.round(8 * s));
         const maxWidth = compact ? 58 * s : 70 * s;
-        const width = Math.max(32 * s, Math.min(maxWidth, label.length * textSize * 0.62 + 10 * s));
+        const width = Math.max(42 * s, Math.min(maxWidth + 12 * s, label.length * textSize * 0.62 + 22 * s));
         const x = Math.round(ship.x - width / 2 + lane * 34 * s);
         const labelTier = compact ? localIndex % 4 : localIndex % 3;
         const y = Math.round(ship.y + (22 + labelTier * 10 + Math.min(8, labelLift * 0.18)) * s);
-        const height = 12 * s;
+        const height = 15 * s;
         ctx.save();
         ctx.globalAlpha = 0.92 * alpha;
         ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.9)';
@@ -2704,11 +2746,12 @@ export class HarborTraffic {
         }
         ctx.fillStyle = profile.accent;
         ctx.fillRect(x + (profile.isBranchVariant ? Math.max(1, Math.round(2 * s)) : 0), y, Math.max(2, Math.round(4 * s)), Math.round(height));
+        this._drawRepoLabelIcon(ctx, x + 8 * s, y + height / 2, 6 * s, profile);
         ctx.fillStyle = ship.pushStatus === 'failed' && statusStyle ? accent : (profile.labelText || accent);
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        ctx.textAlign = 'center';
+        ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(label, Math.round(x + width / 2 + 1 * s), Math.round(y + height / 2 + 0.5));
+        this._fillReadableText(ctx, label, Math.round(x + 15 * s), Math.round(y + height / 2 + 0.5), Math.max(12, width - 18 * s));
         ctx.fillStyle = accent;
         ctx.fillRect(miniX, miniY, Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
         ctx.restore();
@@ -2808,8 +2851,8 @@ export class HarborTraffic {
         const count = Math.max(1, Number(payload.count || 1));
         const detail = `${shortGitLabel(payload.repoName || trafficLabel(payload.project, payload.branch), 20, '…')} (${count})`;
         const title = 'COMMIT LAGOON';
-        const width = Math.max(118 * s, Math.min(186 * s, Math.max(title.length, detail.length) * 6.2 * s + 22 * s));
-        const height = 32 * s;
+        const width = Math.max(132 * s, Math.min(204 * s, Math.max(title.length, detail.length) * 6.2 * s + 34 * s));
+        const height = 36 * s;
         const x = Math.round(payload.x - width / 2);
         const y = Math.round(payload.y - height / 2);
 
@@ -2826,10 +2869,12 @@ export class HarborTraffic {
         ctx.font = `${Math.max(8, Math.round(10 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(title, Math.round(payload.x + 2 * s), Math.round(y + 10 * s));
+        this._fillReadableText(ctx, title, Math.round(payload.x + 2 * s), Math.round(y + 11 * s));
+        this._drawRepoLabelIcon(ctx, x + 15 * s, y + 25 * s, 7 * s, profile);
         ctx.fillStyle = profile.labelText || profile.accent;
         ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-        ctx.fillText(detail, Math.round(payload.x + 2 * s), Math.round(y + 22 * s));
+        ctx.textAlign = 'left';
+        this._fillReadableText(ctx, detail, Math.round(x + 23 * s), Math.round(y + 25 * s), Math.max(24, width - 28 * s));
         ctx.restore();
     }
 
@@ -2840,8 +2885,8 @@ export class HarborTraffic {
         const name = shortGitLabel(trafficLabel(payload.project, payload.branch), count >= 100 ? 18 : 20, '…');
         const label = `${name} (${count})`;
         const textSize = Math.max(7, Math.round(9 * s));
-        const width = Math.max(92 * s, Math.min(172 * s, label.length * textSize * 0.58 + 18 * s));
-        const height = 16 * s;
+        const width = Math.max(104 * s, Math.min(190 * s, label.length * textSize * 0.58 + 30 * s));
+        const height = 18 * s;
         const x = Math.round(payload.x - width / 2);
         const y = Math.round(payload.y - height / 2);
         const failed = Number(payload.failedCount || 0) > 0;
@@ -2861,11 +2906,12 @@ export class HarborTraffic {
         ctx.fillRect(x + (profile.isBranchVariant ? Math.max(2, Math.round(3 * s)) : 0), y, Math.max(3, Math.round(5 * s)), Math.round(height));
 
         ctx.globalAlpha = 1;
+        this._drawRepoLabelIcon(ctx, x + 11 * s, y + height / 2, 7 * s, profile);
         ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.labelText || profile.accent);
         ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
-        ctx.fillText(label, Math.round(x + 10 * s), Math.round(y + height / 2 + 0.5));
+        this._fillReadableText(ctx, label, Math.round(x + 20 * s), Math.round(y + height / 2 + 0.5), Math.max(24, width - 24 * s));
         ctx.restore();
     }
 

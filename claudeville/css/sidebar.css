@@ -212,6 +212,32 @@
     flex-shrink: 0;
 }
 
+.sidebar__label-icon,
+.sidebar__team-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    width: 14px;
+    height: 12px;
+    border: 1px solid rgba(236, 201, 123, 0.34);
+    border-radius: 2px;
+    background: rgba(34, 22, 15, 0.72);
+    color: #f4d983;
+    font: 700 7px 'Press Start 2P', monospace;
+    line-height: 1;
+    text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.76);
+}
+
+.sidebar__team-icon {
+    width: 12px;
+    height: 10px;
+    margin-right: 4px;
+    color: #2a160e;
+    border-color: rgba(255, 245, 205, 0.42);
+    vertical-align: middle;
+}
+
 .sidebar__project-name {
     font-size: 8px;
     color: #b9a27f;
