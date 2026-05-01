@@ -167,6 +167,26 @@ The server uses `fs.watch({ recursive: true })`, `Buffer.readBigUInt64BE`, and b
 
 The adapters target POSIX path conventions and have no `process.platform === 'win32'` branches. Linux and macOS are tested. Windows path normalization is not implemented today.
 
+## Checkerboard placeholders in World mode
+
+A checkerboard pattern means `AssetManager` could not load a sprite and fell back to the placeholder.
+
+Common causes:
+
+1. **Missing PNG** - the manifest references an ID with no file on disk.
+2. **Wrong path** - the manifest ID does not map to the path `AssetManager._pathFor()` expects.
+3. **Stale cache** - the browser cached an old 404 response. Bump `style.assetVersion` in `manifest.yaml` and hard-refresh.
+4. **Orphan PNG** - a file exists but has no manifest entry.
+
+Diagnosis:
+
+```bash
+npm run sprites:validate
+file claudeville/assets/sprites/path/to/suspect.png
+```
+
+Inspect `manifest.yaml`, `AssetManager._pathFor()`, and the browser devtools Network tab for 404s.
+
 ## "Empty array of providers" but `~/.claude/` exists
 
 Provider activation is decided by directory existence, not by file content. If `~/.claude/` is present but empty, the Claude adapter still registers, and `/api/providers` will list it. `/api/sessions` will be empty because there are no JSONL files to read. Generate a session in the upstream CLI to populate it.
