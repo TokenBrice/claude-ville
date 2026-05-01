@@ -187,6 +187,27 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         };
     }
 
+    if (normalizedModel.includes('gpt-5-3-codex')) {
+        const modelClass = 'spark';
+        const codexEffortTier = normalizeCodexEffortTier(effortTier);
+        const equipment = codexEquipment(codexEffortTier, modelClass);
+        return {
+            family: 'codex',
+            modelClass,
+            modelTier: 'swift',
+            label: 'GPT-5.3 Codex',
+            shortLabel: '5.3',
+            effortTier: codexEffortTier,
+            ...DEFAULT_EFFORT_RENDERING,
+            ...equipment,
+            spriteId: 'agent.codex.gpt53spark',
+            paletteKey: 'codex',
+            trim: ['#f8e36f', '#87f7ff', '#c5ff72'],
+            accent: ['#fff6a3', '#55e7ff', '#b8ff5c'],
+            minimapColor: '#f8e36f',
+        };
+    }
+
     if (normalizedModel.includes('gpt-5-5')) {
         const modelClass = 'gpt55';
         const codexEffortTier = normalizeCodexEffortTier(effortTier);
