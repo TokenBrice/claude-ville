@@ -165,6 +165,17 @@ export const WATER_BASINS = [
         radiusY: 6.4,
         edgeNoise: 0.12,
     },
+    {
+        kind: 'river',
+        region: 'lagoon',
+        surface: 'current',
+        weatherProfile: 'lagoon',
+        centerX: 17,
+        centerY: 22,
+        radiusX: 1.6,
+        radiusY: 1.2,
+        edgeNoise: 0.14,
+    },
 ];
 
 // Bridge hints: explicit tile positions where a deck must exist.
@@ -209,6 +220,7 @@ export const FOREST_FLOOR_REGIONS = [
     { name: 'clock-greenwood', centerX: 27.8, centerY: 8.2, radiusX: 9.8, radiusY: 6.6, base: '#2e5835', accent: '#6c9648', strength: 0.80 },
     { name: 'archive-grove', centerX: 8.2, centerY: 14.8, radiusX: 6.2, radiusY: 4.8, base: '#315f32', accent: '#729948', strength: 0.68 },
     { name: 'lighthouse-windbreak', centerX: 30.2, centerY: 10.8, radiusX: 5.8, radiusY: 6.2, base: '#315a36', accent: '#73924c', strength: 0.58 },
+    { name: 'central-isle', centerX: 17, centerY: 22, radiusX: 7, radiusY: 6, base: '#2c5a32', accent: '#6c9a48', strength: 0.95 },
 ];
 
 // Tree clusters: anchor tile + radius (tiles) + density (0..1).
@@ -237,6 +249,9 @@ export const TREE_CLUSTERS = [
     { centerX: 18, centerY: 23, radiusX: 7.2, radiusY: 3.2, density: 0.28, palmBias: 0.61 },
     { centerX: 26, centerY: 23, radiusX: 5.6, radiusY: 3.6, density: 0.25, palmBias: 0.57 },
     { centerX: 35, centerY: 15, radiusX: 4.8, radiusY: 5.2, density: 0.34, palmBias: 0.61 },
+    { centerX: 14, centerY: 21, radiusX: 4.6, radiusY: 4.0, density: 0.78, palmBias: 0.55 },
+    { centerX: 20, centerY: 22, radiusX: 4.4, radiusY: 4.0, density: 0.74, palmBias: 0.50 },
+    { centerX: 17, centerY: 19, radiusX: 5.2, radiusY: 3.4, density: 0.70, palmBias: 0.48 },
 ];
 
 export const TROPICAL_PALMS = [
@@ -255,6 +270,11 @@ export const TROPICAL_PALMS = [
     { tileX: 17.0, tileY: 10.0, scale: 1.28, seed: 0.14 },
     { tileX: 20.4, tileY: 11.7, scale: 1.22, seed: 0.88 },
     { tileX: 24.8, tileY: 9.6, scale: 1.18, seed: 0.48 },
+    { tileX: 14.6, tileY: 23.4, scale: 1.22, seed: 0.34 },
+    { tileX: 19.4, tileY: 23.6, scale: 1.18, seed: 0.61 },
+    { tileX: 18.5, tileY: 24.6, scale: 1.20, seed: 0.27 },
+    { tileX: 15.4, tileY: 20.2, scale: 1.16, seed: 0.82 },
+    { tileX: 19.8, tileY: 20.6, scale: 1.24, seed: 0.45 },
 ];
 
 export const TROPICAL_BROADLEAF_TREES = [
@@ -264,6 +284,10 @@ export const TROPICAL_BROADLEAF_TREES = [
     { tileX: 12.1, tileY: 8.1, scale: 1.22, seed: 0.67 },
     { tileX: 16.0, tileY: 6.3, scale: 1.12, seed: 0.31 },
     { tileX: 18.6, tileY: 10.8, scale: 1.20, seed: 0.74 },
+    { tileX: 13.8, tileY: 22.8, scale: 1.20, seed: 0.18 },
+    { tileX: 20.6, tileY: 21.4, scale: 1.16, seed: 0.55 },
+    { tileX: 17.6, tileY: 24.4, scale: 1.18, seed: 0.71 },
+    { tileX: 22.5, tileY: 13.8, scale: 1.14, seed: 0.39 },
 ];
 
 // Static large boulders. Drawn Y-sorted (occlude behind agents).
@@ -281,6 +305,11 @@ export const BOULDERS = [
     { tileX: 15.4, tileY: 34.3, scale: 0.9, variant: 'a' },
     { tileX: 27.9, tileY: 33.6, scale: 1.05, variant: 'b' },
     { tileX: 32.8, tileY: 6.5, scale: 0.9, variant: 'a' },
+    { tileX: 22.0, tileY: 14.0, scale: 1.05, variant: 'b' },
+    { tileX: 23.2, tileY: 13.2, scale: 0.95, variant: 'b' },
+    { tileX: 18.6, tileY: 23.2, scale: 0.90, variant: 'a' },
+    { tileX: 19.0, tileY: 22.4, scale: 1.00, variant: 'a' },
+    { tileX: 16.4, tileY: 23.4, scale: 0.85, variant: 'a' },
 ];
 
 // District biases make the authored map read in larger masses instead of
@@ -311,15 +340,16 @@ export const SCENERY_CLEARINGS = [
     { name: 'elderwood-glade', centerX: 16.8, centerY: 10.5, radius: 3.6, strength: 0.18 },
     { name: 'clock-skybreak', centerX: 27.2, centerY: 14.0, radius: 5.8, strength: 0.95 },
     { name: 'archive-approach', centerX: 9.0, centerY: 17.0, radius: 4.2, strength: 0.36 },
-    { name: 'command-skyline', centerX: 20.4, centerY: 16.0, radius: 4.4, strength: 0.22 },
+    { name: 'command-skyline', centerX: 20.4, centerY: 16.0, radius: 2.8, strength: 0.15 },
     { name: 'lighthouse-beacon-skybreak', centerX: 31.0, centerY: 12.6, radius: 3.8, strength: 0.24 },
-    { name: 'north-bank-civic', centerX: 20, centerY: 22, radius: 6.4, strength: 0.23 },
     { name: 'archive-terrace', centerX: 8, centerY: 19, radius: 4.8, strength: 0.26 },
     { name: 'clock-terrace', centerX: 27, centerY: 18, radius: 5.2, strength: 0.32 },
     { name: 'production-row', centerX: 22, centerY: 29.5, radius: 12.0, strength: 0.21 },
     { name: 'harbor-stage', centerX: 37, centerY: 20.5, radius: 7.5, strength: 0.28 },
     { name: 'central-river-bridge', centerX: 18, centerY: 24, radius: 5.4, strength: 0.30 },
     { name: 'harbor-mouth', centerX: 32, centerY: 21, radius: 4.0, strength: 0.24 },
+    { name: 'isle-promenade-bend', centerX: 14, centerY: 21, radius: 1.6, strength: 0.5 },
+    { name: 'isle-bridge-bend', centerX: 20, centerY: 23, radius: 1.8, strength: 0.5 },
 ];
 
 export const TROPICAL_WATERFALLS = [
@@ -331,7 +361,7 @@ export const TROPICAL_WATERFALLS = [
 export const DISTRICT_PROPS = [
     { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 18.8, tileY: 21.1, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
-    { tileX: 16.2, tileY: 22.0, id: 'prop.runeFountain', layer: 'cache', district: 'civic' },
+    { tileX: 15.4, tileY: 21.6, id: 'prop.runeFountain', layer: 'cache', district: 'civic' },
     { tileX: 2.2, tileY: 14.4, id: 'veg.root.arch', layer: 'sorted', district: 'elderwood' },
     { tileX: 6.2, tileY: 26.5, id: 'veg.standingStone.mossy', layer: 'cache', district: 'elderwood' },
     { tileX: 32.3, tileY: 19.6, id: 'prop.netRack', layer: 'cache', district: 'harbor' },
@@ -352,6 +382,20 @@ export const DISTRICT_PROPS = [
     // Driftwood logs: west shore shallows.
     { tileX: 7.2, tileY: 10.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
     { tileX: 8.6, tileY: 9.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
+    // Central island shrine and lily pool composition.
+    { tileX: 15.0, tileY: 22.4, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
+    { tileX: 15.6, tileY: 21.0, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
+    { tileX: 15.2, tileY: 22.2, id: 'prop.runeBrazier', layer: 'cache', district: 'civic' },
+    { tileX: 17.2, tileY: 21.6, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 16.6, tileY: 22.2, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 17.6, tileY: 22.4, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 17.0, tileY: 21.4, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 16.8, tileY: 22.6, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 17.4, tileY: 22.7, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'civic' },
+    { tileX: 16.4, tileY: 21.4, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
+    { tileX: 16.2, tileY: 22.4, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'civic' },
+    { tileX: 17.8, tileY: 21.4, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
+    { tileX: 17.6, tileY: 22.8, id: 'prop.driftwood.log', layer: 'cache', district: 'civic' },
 ];
 
 export const MARINE_FISH_SCHOOLS = [
@@ -359,6 +403,7 @@ export const MARINE_FISH_SCHOOLS = [
     { tileX: 35.4, tileY: 14.5, id: 'prop.fishSchoolTeal', radius: 0.32, phase: 2.1 },
     { tileX: 18.2, tileY: 10.4, id: 'prop.fishSchoolTeal', radius: 0.22, phase: 3.6 },
     { tileX: 36.6, tileY: 24.0, id: 'prop.fishSchoolTeal', radius: 0.26, phase: 5.2 },
+    { tileX: 17.0, tileY: 22.0, id: 'prop.fishSchoolKoi', radius: 0.20, phase: 1.4 },
 ];
 
 // Density thresholds for noise-driven flat features.
