@@ -22,7 +22,7 @@ const STRINGS = {
 
         // dashboard
         noActiveAgents: 'NO ACTIVE AGENTS',
-        noActiveAgentsSub: 'Start a Claude Code session to see agents here',
+        noActiveAgentsSub: 'Start an AI coding session to see agents here',
         toolHistory: 'TOOL HISTORY',
         noToolUsage: 'No tool usage yet',
         nAgents: (n) => `${n} agents`,

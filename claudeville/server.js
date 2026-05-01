@@ -171,6 +171,7 @@ function printStartupStats(providers) {
 
   const projects = new Set(sessions.map(session => session.project).filter(Boolean));
   const namedCodexAgents = sessions.filter(session => session.provider === 'codex' && (session.name || session.agentName)).length;
+  const namedKimiAgents = sessions.filter(session => session.provider === 'kimi' && (session.name || session.agentName)).length;
   const sessionsWithTools = sessions.filter(session => session.lastTool).length;
   const latestActivity = sessions.reduce((latest, session) => Math.max(latest, session.lastActivity || 0), 0);
 
@@ -183,6 +184,7 @@ function printStartupStats(providers) {
     console.log(`    - Provider sessions: ${providerSummary}`);
   }
   console.log(`    - Named Codex agents: ${namedCodexAgents}`);
+  console.log(`    - Named Kimi agents: ${namedKimiAgents}`);
   console.log(`    - Sessions with current tool: ${sessionsWithTools}`);
   console.log(`    - Latest activity: ${latestActivity ? formatAge(Date.now() - latestActivity) : 'none'}`);
   console.log(`    - Watch paths configured: ${watchPaths.length}`);
@@ -1178,7 +1180,7 @@ server.listen(PORT, () => {
   const providers = getActiveProviders();
   if (providers.length === 0) {
     console.log('  [!] No active providers');
-    console.log('      One of ~/.claude/, ~/.codex/, or ~/.gemini/ is required');
+    console.log('      One of ~/.claude/, ~/.codex/, ~/.gemini/, or ~/.kimi/ is required');
   } else {
     console.log('  Active providers:');
     for (const p of providers) {

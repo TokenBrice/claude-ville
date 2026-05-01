@@ -15,5 +15,11 @@
       { "match": "gpt-5.3", "input": 5, "output": 40, "cacheRead": 0.5, "cacheCreate": 0 },
       { "match": "gpt-5", "input": 1.25, "output": 10, "cacheRead": 0.125, "cacheCreate": 0 }
     ]
+  },
+  "kimi": {
+    "default": { "input": 3, "output": 12, "cacheRead": 0.3, "cacheCreate": 0 },
+    "rates": [
+      { "match": "kimi-for-coding", "input": 3, "output": 12, "cacheRead": 0.3, "cacheCreate": 0 }
+    ]
   }
 }

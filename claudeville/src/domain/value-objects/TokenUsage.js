@@ -24,8 +24,13 @@ const OPEN_AI_RATES = [
     { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
 ];
 
+const KIMI_RATES = [
+    { match: 'kimi-for-coding', input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 },
+];
+
 const DEFAULT_CLAUDE_RATES = { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 };
 const DEFAULT_OPEN_AI_RATES = { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 };
+const DEFAULT_KIMI_RATES = { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 };
 
 const FIELD_ALIASES = {
     input: ['input', 'totalInput', 'input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'total_input_tokens', 'total_input'],
@@ -106,6 +111,9 @@ export class TokenUsage {
     static pricingForModel(model, provider) {
         const normalizedModel = String(model || '').toLowerCase();
         const normalizedProvider = String(provider || '').toLowerCase();
+        if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) {
+            return KIMI_RATES.find((rate) => normalizedModel.includes(rate.match)) || DEFAULT_KIMI_RATES;
+        }
         const table = (normalizedProvider === 'codex' || normalizedModel.includes('gpt'))
             ? OPEN_AI_RATES
             : CLAUDE_RATES;
