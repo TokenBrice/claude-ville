@@ -186,9 +186,17 @@
       { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
     ];
 
+    const KIMI_RATES = [
+      { match: 'kimi-for-coding', input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 },
+    ];
+
     function pricingForModel(model, provider) {
       const normalizedModel = String(model || '').toLowerCase();
       const normalizedProvider = String(provider || '').toLowerCase();
+      if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) {
+        return KIMI_RATES.find((entry) => normalizedModel.includes(entry.match)) ||
+          { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 };
+      }
       const table = normalizedProvider === 'codex' || normalizedModel.includes('gpt')
         ? OPEN_AI_RATES
         : CLAUDE_RATES;
@@ -249,6 +257,9 @@
       }
       if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
         return { label: model || 'Codex', effortTier, color: '#7be3d7' };
+      }
+      if (normalizedProvider.includes('kimi') || normalizedModel.includes('kimi')) {
+        return { label: 'Kimi', effortTier, color: '#ff9f7a' };
       }
       return { label: model || '?', effortTier, color: '#64748b' };
     }

@@ -403,6 +403,9 @@ PlasmoidItem {
         if (normalizedProvider.indexOf("gemini") !== -1 || normalizedModel.indexOf("gemini") !== -1) {
             return "agent.gemini.base"
         }
+        if (normalizedProvider.indexOf("kimi") !== -1 || normalizedModel.indexOf("kimi") !== -1) {
+            return "agent.kimi.base"
+        }
         if (normalizedProvider.indexOf("codex") !== -1
                 || normalizedModel.indexOf("codex") !== -1
                 || normalizedModel.indexOf("gpt") !== -1) {
@@ -421,7 +424,8 @@ PlasmoidItem {
             "agent.codex.gpt53spark": [30, 56],
             "agent.codex.gpt54": [35, 54],
             "agent.codex.gpt55": [44, 92],
-            "agent.gemini.base": [64, 78]
+            "agent.gemini.base": [64, 78],
+            "agent.kimi.base": [46, 80]
         }
         var frame = frames[spriteId] || frames["agent.codex.gpt54"]
         return {
@@ -437,6 +441,7 @@ PlasmoidItem {
     function spriteAccent(spriteId) {
         if (spriteId.indexOf("claude") !== -1) return "#f2d36b"
         if (spriteId.indexOf("gemini") !== -1) return "#9ad7ff"
+        if (spriteId.indexOf("kimi") !== -1) return "#ff9f7a"
         if (spriteId.indexOf("gpt55") !== -1) return "#fff1b8"
         if (spriteId.indexOf("gpt53spark") !== -1) return "#f8e36f"
         return "#7be3d7"

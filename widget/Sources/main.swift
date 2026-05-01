@@ -250,6 +250,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             base = "5.5"
         } else if normalizedProvider.contains("codex") || normalizedModel.contains("codex") || normalizedModel.contains("gpt") {
             base = model
+        } else if normalizedProvider.contains("kimi") || normalizedModel.contains("kimi") {
+            base = "Kimi"
         } else {
             base = model
                 .replacingOccurrences(of: "claude-", with: "")
@@ -269,6 +271,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if normalizedModel.contains("gpt-5-3-codex-spark") { return "#f8e36f" }
         if normalizedModel.contains("gpt-5-5") { return "#fff1b8" }
         if normalizedProvider.contains("codex") || normalizedModel.contains("codex") || normalizedModel.contains("gpt") { return "#7be3d7" }
+        if normalizedProvider.contains("kimi") || normalizedModel.contains("kimi") { return "#ff9f7a" }
         return "#64748b"
     }
 
@@ -505,12 +508,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         (match: "gpt-5", input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0),
     ]
 
+    static let kimiRates: [(match: String, input: Double, output: Double, cacheRead: Double, cacheCreate: Double)] = [
+        (match: "kimi-for-coding", input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0),
+    ]
+
     static let defaultClaudeRates = (input: 3.0, output: 15.0, cacheRead: 0.3, cacheCreate: 3.75)
     static let defaultOpenAIRates = (input: 1.25, output: 10.0, cacheRead: 0.125, cacheCreate: 0.0)
+    static let defaultKimiRates = (input: 3.0, output: 12.0, cacheRead: 0.3, cacheCreate: 0.0)
 
     static func pricingForModel(_ model: String?, _ provider: String?) -> (input: Double, output: Double, cacheRead: Double, cacheCreate: Double) {
         let normalizedModel = (model ?? "").lowercased()
         let normalizedProvider = (provider ?? "").lowercased()
+        if normalizedProvider == "kimi" || normalizedModel.contains("kimi") {
+            if let match = Self.kimiRates.first(where: { normalizedModel.contains($0.match) }) {
+                return (input: match.input, output: match.output, cacheRead: match.cacheRead, cacheCreate: match.cacheCreate)
+            }
+            return Self.defaultKimiRates
+        }
         let table = (normalizedProvider == "codex" || normalizedModel.contains("gpt")) ? Self.openAIRates : Self.claudeRates
         if let match = table.first(where: { normalizedModel.contains($0.match) }) {
             return (input: match.input, output: match.output, cacheRead: match.cacheRead, cacheCreate: match.cacheCreate)
