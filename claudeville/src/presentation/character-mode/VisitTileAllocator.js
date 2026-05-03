@@ -8,6 +8,8 @@ const BUILDING_CROWD_PENALTY = 18;
 const OVER_CAPACITY_PENALTY = 130;
 const DISTANCE_WEIGHT = 0.15;
 const SAME_AGENT_SLOT_BONUS = 90;
+const RELATED_CLUSTER_BONUS = 30;
+const RELATED_CLUSTER_RADIUS = 2.5;
 
 const BUILDING_CAPACITY_OVERRIDES = Object.freeze({
     command: 5,
@@ -31,6 +33,8 @@ export class VisitTileAllocator {
         this.pathfinder = null;
         this.reservations = new Map();
         this.agentReservationIds = new Map();
+        this.agentMeta = new Map();
+        this._relatedCache = new Map();
         this._sequence = 0;
         this.metrics = {
             allocations: 0,
@@ -42,6 +46,7 @@ export class VisitTileAllocator {
             unwalkableSkipped: 0,
             scenicAllocations: 0,
             overflowAllocations: 0,
+            clusteredAllocations: 0,
         };
     }
 
@@ -53,9 +58,58 @@ export class VisitTileAllocator {
         this.buildings = this._normalizeBuildings(buildings);
         this.agentSprites = this._normalizeAgentSprites(agentSprites);
         this.pathfinder = pathfinder || null;
+        this._rebuildAgentMeta();
         this.cleanup(Date.now());
         this._releaseStaleAgentReservations();
         return this;
+    }
+
+    _rebuildAgentMeta() {
+        this.agentMeta.clear();
+        this._relatedCache.clear();
+        for (const sprite of this.agentSprites) {
+            const agent = sprite?.agent;
+            const id = this._agentId(agent, sprite, null);
+            if (!id) continue;
+            this.agentMeta.set(id, {
+                teamName: agent?.teamName || null,
+                parentSessionId: agent?.parentSessionId || null,
+            });
+        }
+    }
+
+    _relatedAgentIds(agentId) {
+        if (!agentId) return null;
+        if (this._relatedCache.has(agentId)) return this._relatedCache.get(agentId);
+        const self = this.agentMeta.get(agentId);
+        if (!self) {
+            this._relatedCache.set(agentId, null);
+            return null;
+        }
+        const related = new Set();
+        if (self.parentSessionId) related.add(self.parentSessionId);
+        for (const [otherId, meta] of this.agentMeta.entries()) {
+            if (otherId === agentId) continue;
+            if (meta.parentSessionId && meta.parentSessionId === agentId) related.add(otherId);
+            if (self.teamName && meta.teamName && self.teamName === meta.teamName) related.add(otherId);
+        }
+        const result = related.size > 0 ? related : null;
+        this._relatedCache.set(agentId, result);
+        return result;
+    }
+
+    _nearestRelatedReservationDistance(agentId, buildingType, slot) {
+        const related = this._relatedAgentIds(agentId);
+        if (!related) return Infinity;
+        let best = Infinity;
+        for (const reservation of this.reservations.values()) {
+            if (reservation.buildingType !== buildingType) continue;
+            if (reservation.agentId === agentId) continue;
+            if (!related.has(reservation.agentId)) continue;
+            const dist = this._distance(reservation, slot);
+            if (dist < best) best = dist;
+        }
+        return best;
     }
 
     allocate({
@@ -144,6 +198,7 @@ export class VisitTileAllocator {
         this.metrics.allocations++;
         if (reservation.scenic) this.metrics.scenicAllocations++;
         if (reservation.overflow) this.metrics.overflowAllocations++;
+        if (best.clustered) this.metrics.clusteredAllocations++;
 
         return {
             tileX: reservation.tileX,
@@ -285,6 +340,9 @@ export class VisitTileAllocator {
         const overBuildingCapacity = Math.max(0, projectedBuildingUse - buildingCapacity + 1);
         const intentBonus = this._intentSlotBonus(intent, slot);
 
+        const relatedDistance = this._nearestRelatedReservationDistance(agentId, buildingType, slot);
+        const clustered = relatedDistance <= RELATED_CLUSTER_RADIUS;
+
         let score = 0;
         if (!walkable) score += WALKABILITY_PENALTY;
         if (reservedByOther) score += RESERVED_PENALTY;
@@ -293,6 +351,7 @@ export class VisitTileAllocator {
         score += (overTileCapacity + overBuildingCapacity) * OVER_CAPACITY_PENALTY;
         score += distance * DISTANCE_WEIGHT;
         if (sameAgentSlot) score -= SAME_AGENT_SLOT_BONUS;
+        if (clustered) score -= RELATED_CLUSTER_BONUS;
         score -= intentBonus;
         if (slot.overflow) score += 35;
         if (slot.scenic) score += intent?.source === 'ambient' ? -14 : 10;
@@ -302,6 +361,7 @@ export class VisitTileAllocator {
             buildingType,
             score,
             walkable,
+            clustered,
         };
     }
 
