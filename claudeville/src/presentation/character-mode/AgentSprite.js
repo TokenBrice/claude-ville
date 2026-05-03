@@ -606,6 +606,7 @@ export class AgentSprite {
         if (this.waitTimer > 0) {
             if (!this.moving) this._snapToNearestWalkable();
             this._renewVisitReservation();
+            this._advanceFidget(dt);
             this.waitTimer -= frameScale;
             if (this.waitTimer <= 0) {
                 if (this.behavior.cooldownUntil > Date.now()) {
@@ -654,6 +655,7 @@ export class AgentSprite {
                 state: this._lastIntentId ? 'performing' : 'lingering',
                 cooldownMs: this._lastIntentId ? 2000 : 0,
             });
+            if (!this.chatPartner) this._faceBuilding(this._buildingForType(this._lastBuildingType));
             this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
             this._resetWalkCycle();
             return;
@@ -730,6 +732,40 @@ export class AgentSprite {
         if (!this.chatPartner) return;
         const dir = dirFromVelocity(this.chatPartner.x - this.x, this.chatPartner.y - this.y);
         if (dir != null) this.direction = dir;
+    }
+
+    _faceBuilding(building) {
+        if (!building) return;
+        const x = Number(building.x);
+        const y = Number(building.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        const cx = x + (Number(building.width) || 1) / 2;
+        const cy = y + (Number(building.height) || 1) / 2;
+        const center = tileToWorld({ tileX: cx, tileY: cy });
+        const dir = dirFromVelocity(center.x - this.x, center.y - this.y);
+        if (dir != null) this.direction = dir;
+    }
+
+    _advanceFidget(dt) {
+        if (this.motionScale <= 0 || this.chatting || this.chatPartner) return;
+        if (this._fidgetActiveMs > 0) {
+            this._fidgetActiveMs -= dt;
+            if (this._fidgetActiveMs <= 0) {
+                this._fidgetActiveMs = 0;
+                this._faceBuilding(this._buildingForType(this._lastBuildingType));
+            }
+            return;
+        }
+        if (this._fidgetCooldownMs == null) {
+            this._fidgetCooldownMs = 3000 + Math.random() * 6000;
+        }
+        this._fidgetCooldownMs -= dt;
+        if (this._fidgetCooldownMs <= 0) {
+            const sign = Math.random() > 0.5 ? 1 : -1;
+            this.direction = (this.direction + sign + 8) % 8;
+            this._fidgetActiveMs = 600 + Math.random() * 400;
+            this._fidgetCooldownMs = 4000 + Math.random() * 5000;
+        }
     }
 
     _resetWalkCycle() {
