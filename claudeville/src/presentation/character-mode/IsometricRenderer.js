@@ -1535,6 +1535,7 @@ export class IsometricRenderer {
             label: point.reason,
             district: point.district || 'ambient',
             capacity: { ambient: 1, work: 1 },
+            routeViaRoads: true,
             visitTiles: [{
                 tileX: point.tileX,
                 tileY: point.tileY,
@@ -1676,6 +1677,7 @@ export class IsometricRenderer {
                 releaseVisitReservation: (agentId) => this.visitTileAllocator?.release?.(agentId),
                 renewVisitReservation: (agentId) => this.visitTileAllocator?.renew?.(agentId),
                 getAmbientDestination: (request) => this._getAmbientDestination(request),
+                getRoadTiles: () => this.pathTiles,
             });
             sprite.setMotionScale(this.motionScale);
             sprite.addedAt = performance.now();

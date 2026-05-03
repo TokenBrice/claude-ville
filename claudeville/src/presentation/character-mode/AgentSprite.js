@@ -128,6 +128,7 @@ export class AgentSprite {
         releaseVisitReservation = null,
         renewVisitReservation = null,
         getAmbientDestination = null,
+        getRoadTiles = null,
     } = {}) {
         this.agent = agent;
         this.x = 0;
@@ -172,6 +173,7 @@ export class AgentSprite {
         this.releaseVisitReservation = typeof releaseVisitReservation === 'function' ? releaseVisitReservation : null;
         this.renewVisitReservation = typeof renewVisitReservation === 'function' ? renewVisitReservation : null;
         this.getAmbientDestination = typeof getAmbientDestination === 'function' ? getAmbientDestination : null;
+        this.getRoadTiles = typeof getRoadTiles === 'function' ? getRoadTiles : null;
         this.waypoints = [];
         this._lastPathTileKey = null;
         this._pathAgeFrames = 0;
@@ -246,7 +248,10 @@ export class AgentSprite {
             reason: intent?.reason || (building.type?.startsWith('ambient:') ? 'scenic' : (this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status')),
             targetTile: this._lastTargetTile,
         });
-        this._assignTarget(screen.x, screen.y, targetTileX, targetTileY);
+        const viaWaypoints = building.routeViaRoads
+            ? this._roadWaypointsForScenic(targetTileX, targetTileY)
+            : null;
+        this._assignTarget(screen.x, screen.y, targetTileX, targetTileY, viaWaypoints);
         this.moving = this._targetReachable;
         if (!this._targetReachable) {
             this.behavior.transition('blocked', 'no-route');
@@ -254,6 +259,29 @@ export class AgentSprite {
             return;
         }
         this.waitTimer = 0;
+    }
+
+    _roadWaypointsForScenic(targetTileX, targetTileY) {
+        if (!this.getRoadTiles) return null;
+        const fromTile = this._screenToTile(this.x, this.y);
+        const toTile = { tileX: targetTileX, tileY: targetTileY };
+        const entry = this._findNearestRoadTile(fromTile, toTile);
+        const exit = this._findNearestRoadTile(toTile, fromTile);
+        const waypoints = [];
+        const fx = Math.round(fromTile.tileX);
+        const fy = Math.round(fromTile.tileY);
+        const tx = Math.round(targetTileX);
+        const ty = Math.round(targetTileY);
+        if (entry && (Math.round(entry.tileX) !== fx || Math.round(entry.tileY) !== fy)) {
+            waypoints.push(entry);
+        }
+        if (exit && (Math.round(exit.tileX) !== tx || Math.round(exit.tileY) !== ty)) {
+            const last = waypoints[waypoints.length - 1];
+            if (!last || Math.round(last.tileX) !== Math.round(exit.tileX) || Math.round(last.tileY) !== Math.round(exit.tileY)) {
+                waypoints.push(exit);
+            }
+        }
+        return waypoints.length > 0 ? waypoints : null;
     }
 
     _fallbackBuildingForState() {
@@ -372,7 +400,7 @@ export class AgentSprite {
         }
     }
 
-    _assignTarget(targetScreenX, targetScreenY, targetTileX, targetTileY) {
+    _assignTarget(targetScreenX, targetScreenY, targetTileX, targetTileY, viaWaypoints = null) {
         this._targetReachable = true;
         if (!this.pathfinder) {
             this.targetX = targetScreenX;
@@ -382,18 +410,18 @@ export class AgentSprite {
         }
         this._snapToNearestWalkable();
         const fromTile = this._screenToTile(this.x, this.y);
-        const tileKey = `${Math.round(targetTileX)},${Math.round(targetTileY)}`;
+        const viaKey = viaWaypoints?.length
+            ? '|' + viaWaypoints.map((w) => `${Math.round(w.tileX)},${Math.round(w.tileY)}`).join('|')
+            : '';
+        const tileKey = `${Math.round(targetTileX)},${Math.round(targetTileY)}${viaKey}`;
         if (tileKey === this._lastPathTileKey && this.waypoints.length > 0 && this._pathAgeFrames < 30) {
             this._pathAgeFrames++;
             return;
         }
         this._pathAgeFrames = 0;
         this._lastPathTileKey = tileKey;
-        const tilePath = this.pathfinder.findPath(
-            fromTile,
-            { tileX: targetTileX, tileY: targetTileY },
-            this.bridgeTiles,
-        );
+        const finalTarget = { tileX: targetTileX, tileY: targetTileY };
+        let tilePath = this._findStitchedPath(fromTile, finalTarget, viaWaypoints);
         if (tilePath.length === 0) {
             this._targetReachable = false;
             this._releaseVisitReservation();
@@ -417,6 +445,63 @@ export class AgentSprite {
         const head = this.waypoints[0];
         this.targetX = head.x;
         this.targetY = head.y;
+    }
+
+    _findStitchedPath(fromTile, toTile, viaWaypoints) {
+        if (!viaWaypoints || viaWaypoints.length === 0) {
+            return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles);
+        }
+        const stitched = [];
+        let leg = fromTile;
+        const legs = [...viaWaypoints, toTile];
+        for (const next of legs) {
+            if (Math.round(leg.tileX) === Math.round(next.tileX) && Math.round(leg.tileY) === Math.round(next.tileY)) {
+                continue;
+            }
+            const segment = this.pathfinder.findPath(leg, next, this.bridgeTiles);
+            if (segment.length === 0) {
+                return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles);
+            }
+            if (stitched.length > 0) segment.shift();
+            stitched.push(...segment);
+            leg = next;
+        }
+        if (stitched.length === 0) {
+            return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles);
+        }
+        return stitched;
+    }
+
+    _findNearestRoadTile(fromTile, towardTile, maxRadius = 6) {
+        const roads = this.getRoadTiles?.();
+        if (!roads || !roads.size) return null;
+        const fx = Number(fromTile?.tileX);
+        const fy = Number(fromTile?.tileY);
+        const tx = Number(towardTile?.tileX);
+        const ty = Number(towardTile?.tileY);
+        if (!Number.isFinite(fx) || !Number.isFinite(fy)) return null;
+        const dirX = Number.isFinite(tx) ? tx - fx : 0;
+        const dirY = Number.isFinite(ty) ? ty - fy : 0;
+        const hasDir = (dirX !== 0 || dirY !== 0);
+        let best = null;
+        let bestDist = Infinity;
+        for (const key of roads) {
+            const comma = key.indexOf(',');
+            if (comma < 0) continue;
+            const rx = Number(key.slice(0, comma));
+            const ry = Number(key.slice(comma + 1));
+            if (!Number.isFinite(rx) || !Number.isFinite(ry)) continue;
+            const dx = rx - fx;
+            const dy = ry - fy;
+            const dist = Math.hypot(dx, dy);
+            if (dist > maxRadius) continue;
+            if (hasDir && (dirX * dx + dirY * dy) < 0) continue;
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = { tileX: rx, tileY: ry };
+            }
+        }
+        return best;
     }
 
     _isScreenPointWalkable(x, y) {
