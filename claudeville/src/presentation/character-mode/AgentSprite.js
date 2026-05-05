@@ -67,6 +67,7 @@ const TARGET_AGENT_CONTENT_HEIGHT = 92;
 const MIN_AGENT_DRAW_SCALE = 1;
 const MAX_AGENT_DRAW_SCALE = 1.25;
 const ACTION_TRAIL_LIMIT = 2;
+const ACTION_TRAIL_TTL_MS = 30000;
 const STATUS_BUBBLE_MAIN_MAX_WIDTH = Object.freeze({
     anchored: 232,
     floating: 360,
@@ -647,11 +648,13 @@ export class AgentSprite {
 
     applyAgentUpdate(agent) {
         if (!agent) return;
-        const previous = this._activitySnapshot || this._captureActivitySnapshot(this.agent);
+        const now = Date.now();
+        this._pruneActivityTrail(now);
+        const previous = this._activitySnapshot || this._captureActivitySnapshot(this.agent, now);
         this.agent = agent;
-        const current = this._captureActivitySnapshot(agent);
+        const current = this._captureActivitySnapshot(agent, now);
         if (previous?.key && current?.key && previous.key !== current.key) {
-            this._rememberActivitySnapshot(previous);
+            this._rememberActivitySnapshot(previous, now);
         }
         this._activitySnapshot = current;
     }
@@ -2532,7 +2535,9 @@ export class AgentSprite {
     }
 
     _activityThread() {
-        const current = this._captureActivitySnapshot(this.agent);
+        const now = Date.now();
+        this._pruneActivityTrail(now);
+        const current = this._captureActivitySnapshot(this.agent, now);
         this._activitySnapshot = current;
         const all = [current, ...this._activityTrail];
         const deduped = [];
@@ -2548,19 +2553,19 @@ export class AgentSprite {
         return deduped;
     }
 
-    _captureActivitySnapshot(agent = this.agent) {
-        const entry = this._activityEntryForAgent(agent);
+    _captureActivitySnapshot(agent = this.agent, timestamp = Date.now()) {
+        const entry = this._activityEntryForAgent(agent, timestamp);
         if (entry) return entry;
         return {
             kind: 'status',
             key: `status:${AgentStatus.IDLE}`,
             text: 'IDLE',
             accent: STATUS_VISUALS[AgentStatus.IDLE]?.color || '#8fb7cf',
-            timestamp: Date.now(),
+            timestamp,
         };
     }
 
-    _activityEntryForAgent(agent = this.agent) {
+    _activityEntryForAgent(agent = this.agent, timestamp = Date.now()) {
         if (!agent) return null;
         const currentTool = String(agent.currentTool || '').trim();
         if (currentTool) {
@@ -2573,7 +2578,7 @@ export class AgentSprite {
                 key: `tool:${currentTool}:${detailKey}`,
                 text: this._truncateActivityText(text, ACTIVITY_TEXT_CAP),
                 accent: this._providerTrimColor(agent),
-                timestamp: Date.now(),
+                timestamp,
             };
         }
 
@@ -2585,7 +2590,7 @@ export class AgentSprite {
                 key: `message:${rawMessage}`,
                 text: quoted,
                 accent: '#8fc4ff',
-                timestamp: Date.now(),
+                timestamp,
             };
         }
 
@@ -2597,25 +2602,37 @@ export class AgentSprite {
             key: `status:${status}`,
             text: visual?.label || 'IDLE',
             accent: visual?.color || STATUS_VISUALS[AgentStatus.IDLE]?.color || '#8fb7cf',
-            timestamp: Date.now(),
+            timestamp,
         };
     }
 
-    _rememberActivitySnapshot(entry) {
+    _rememberActivitySnapshot(entry, timestamp = Date.now()) {
         if (!entry?.text || !entry?.key) return;
         if (entry.kind === 'status') return;
+        this._pruneActivityTrail(timestamp);
         const latest = this._activityTrail[0];
-        if (latest?.key === entry.key) return;
+        if (latest?.key === entry.key) {
+            latest.timestamp = timestamp;
+            return;
+        }
         this._activityTrail.unshift({
             kind: entry.kind || 'tool',
             key: entry.key,
             text: entry.text,
             accent: entry.accent || this._providerTrimColor(),
-            timestamp: Date.now(),
+            timestamp,
         });
         if (this._activityTrail.length > ACTION_TRAIL_LIMIT) {
             this._activityTrail.length = ACTION_TRAIL_LIMIT;
         }
+    }
+
+    _pruneActivityTrail(now = Date.now()) {
+        if (!this._activityTrail.length) return;
+        this._activityTrail = this._activityTrail.filter((entry) => {
+            const timestamp = Number(entry?.timestamp);
+            return Number.isFinite(timestamp) && now - timestamp <= ACTION_TRAIL_TTL_MS;
+        });
     }
 
     _toolActivityLabel(toolName) {
