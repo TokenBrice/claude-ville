@@ -6,6 +6,7 @@ import { repoProfile } from '../shared/RepoColor.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
+import { compactToolInput, toolActionLabel } from '../../domain/services/ToolIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 
 // Hit-test geometry (unchanged from vector version).
@@ -65,7 +66,28 @@ const PROVIDER_HOME_BUILDINGS = {
 const TARGET_AGENT_CONTENT_HEIGHT = 92;
 const MIN_AGENT_DRAW_SCALE = 1;
 const MAX_AGENT_DRAW_SCALE = 1.25;
+const ACTION_TRAIL_LIMIT = 2;
+const STATUS_BUBBLE_MAIN_MAX_WIDTH = Object.freeze({
+    anchored: 232,
+    floating: 360,
+});
+const STATUS_BUBBLE_HISTORY_MAX_WIDTH = Object.freeze({
+    anchored: 216,
+    floating: 320,
+});
+const TOOL_DETAIL_PREVIEW_CHARS = 36;
+const TOOL_DETAIL_KEY_CHARS = 56;
+const ACTIVITY_TEXT_CAP = 60;
+const MESSAGE_TEXT_CAP = 56;
 const PROCESSED_SPRITE_CACHE = new Map();
+const TOOL_ACTIVITY_LABEL_OVERRIDES = Object.freeze({
+    'functions.spawn_agent': 'Spawning',
+    'functions.send_input': 'Directing',
+    'functions.wait_agent': 'Waiting On',
+    'functions.resume_agent': 'Resuming',
+    'functions.close_agent': 'Closing',
+    'multi_tool_use.parallel': 'Coordinating',
+});
 const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     codex: 'engineerWrench',
     spark: 'multitool',
@@ -203,6 +225,8 @@ export class AgentSprite {
         this._bubbleLayoutCache = null;
         this._compactNameStatusCacheKey = '';
         this._compactNameStatusCache = null;
+        this._activityTrail = [];
+        this._activitySnapshot = this._captureActivitySnapshot(agent);
 
         this._pickTarget();
     }
@@ -619,6 +643,17 @@ export class AgentSprite {
 
     hasReachedTarget(tolerance = 6) {
         return Math.hypot(this.targetX - this.x, this.targetY - this.y) <= tolerance;
+    }
+
+    applyAgentUpdate(agent) {
+        if (!agent) return;
+        const previous = this._activitySnapshot || this._captureActivitySnapshot(this.agent);
+        this.agent = agent;
+        const current = this._captureActivitySnapshot(agent);
+        if (previous?.key && current?.key && previous.key !== current.key) {
+            this._rememberActivitySnapshot(previous);
+        }
+        this._activitySnapshot = current;
     }
 
     update(particleSystem, dt = 16) {
@@ -1386,10 +1421,14 @@ export class AgentSprite {
     }
 
     _statusVisual() {
+        return this._statusVisualFor(this.agent);
+    }
+
+    _statusVisualFor(agent = this.agent) {
         // Sprite-level chatting flag overrides domain status because chat lifecycle
         // is driven by IsometricRenderer, not the adapter feed.
-        if (this.chatting) return STATUS_VISUALS.chatting;
-        const rawStatus = this.agent?.status;
+        if (agent === this.agent && this.chatting) return STATUS_VISUALS.chatting;
+        const rawStatus = agent?.status;
         const status = typeof rawStatus === 'string' ? rawStatus : (rawStatus?.value || AgentStatus.IDLE);
         return STATUS_VISUALS[status] || STATUS_VISUALS[AgentStatus.IDLE];
     }
@@ -2158,9 +2197,9 @@ export class AgentSprite {
 
     // --- Provider / model helpers ---
 
-    _providerKey() {
-        const provider = String(this.agent.provider || '').toLowerCase();
-        const model = String(this.agent.model || '').toLowerCase();
+    _providerKey(agent = this.agent) {
+        const provider = String(agent?.provider || '').toLowerCase();
+        const model = String(agent?.model || '').toLowerCase();
         if (provider.includes('gemini') || model.includes('gemini')) return 'gemini';
         if (provider.includes('codex') || model.includes('codex') || model.includes('gpt')) return 'codex';
         if (provider.includes('claude') || model.includes('claude')) return 'claude';
@@ -2188,8 +2227,12 @@ export class AgentSprite {
 
     _drawStatus(ctx, contentTopY = null) {
         const visual = this._statusVisual();
-        const text = this._activityLabel();
-        this._drawBubble(ctx, text, visual.color, contentTopY);
+        const thread = this._activityThread();
+        if (!thread.length) return;
+        this._drawBubble(ctx, thread[0].text, thread[0].accent || visual.color, contentTopY);
+        if (thread.length > 1) {
+            this._drawHistoryBubbles(ctx, thread.slice(1), contentTopY);
+        }
     }
 
     _drawBubble(ctx, text, accentColor, contentTopY = null) {
@@ -2202,7 +2245,7 @@ export class AgentSprite {
         // Measure text size and auto-truncate
         const anchored = Number.isFinite(contentTopY);
         ctx.font = `bold ${anchored ? 7 : 10}px "Press Start 2P", monospace`;
-        const maxWidth = anchored ? 116 : 180;
+        const maxWidth = anchored ? STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored : STATUS_BUBBLE_MAIN_MAX_WIDTH.floating;
         const layout = this._bubbleLayout(ctx, text, maxWidth, anchored);
         const displayText = layout.displayText;
         const textWidth = layout.textWidth;
@@ -2261,6 +2304,56 @@ export class AgentSprite {
         ctx.lineTo(-hw - r, -10 + r);
         ctx.quadraticCurveTo(-hw - r, -10, -hw, -10);
         ctx.closePath();
+    }
+
+    _drawHistoryBubbles(ctx, entries = [], contentTopY = null) {
+        if (!entries.length) return;
+        ctx.save();
+        const s = 1 / (this._zoom || 1);
+        const anchored = Number.isFinite(contentTopY);
+        const maxWidth = anchored ? STATUS_BUBBLE_HISTORY_MAX_WIDTH.anchored : STATUS_BUBBLE_HISTORY_MAX_WIDTH.floating;
+        const fontPx = anchored ? 6 : 8;
+        ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
+        ctx.scale(s, s);
+        ctx.font = `bold ${fontPx}px "Press Start 2P", monospace`;
+
+        let offsetY = anchored ? -32 : -66;
+        const shown = entries.slice(0, ACTION_TRAIL_LIMIT);
+        for (let i = 0; i < shown.length; i++) {
+            const entry = shown[i];
+            const fade = i === 0 ? 0.74 : 0.56;
+            const layout = this._bubbleLayout(ctx, entry.text, maxWidth, anchored);
+            const text = layout.displayText;
+            const textWidth = layout.textWidth;
+            const bubbleW = textWidth + (anchored ? 14 : 18);
+            const bubbleH = anchored ? 14 : 18;
+            const radius = anchored ? 3 : 4;
+
+            ctx.save();
+            ctx.globalAlpha *= fade;
+            ctx.translate(0, offsetY);
+            ctx.fillStyle = 'rgba(24, 18, 14, 0.88)';
+            ctx.strokeStyle = entry.accent || this._providerTrimColor();
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(-bubbleW / 2, -bubbleH / 2, bubbleW, bubbleH, radius);
+            } else {
+                ctx.rect(-bubbleW / 2, -bubbleH / 2, bubbleW, bubbleH);
+            }
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.fillStyle = '#d9cbb0';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            this._applyReadableTextShadow(ctx);
+            ctx.fillText(text, 0, 0, maxWidth);
+            ctx.restore();
+
+            offsetY -= bubbleH + 4;
+        }
+        ctx.restore();
     }
 
     _drawChatEffect(ctx) {
@@ -2438,10 +2531,114 @@ export class AgentSprite {
         return repoProfile(project);
     }
 
-    _activityLabel() {
-        const visual = this._statusVisual();
-        const bubbleText = String(this.agent?.bubbleText || '').trim();
-        return bubbleText || visual?.label || 'IDLE';
+    _activityThread() {
+        const current = this._captureActivitySnapshot(this.agent);
+        this._activitySnapshot = current;
+        const all = [current, ...this._activityTrail];
+        const deduped = [];
+        const seen = new Set();
+        for (const entry of all) {
+            if (!entry?.text) continue;
+            const dedupeKey = entry.key || entry.text;
+            if (seen.has(dedupeKey)) continue;
+            seen.add(dedupeKey);
+            deduped.push(entry);
+            if (deduped.length >= ACTION_TRAIL_LIMIT + 1) break;
+        }
+        return deduped;
+    }
+
+    _captureActivitySnapshot(agent = this.agent) {
+        const entry = this._activityEntryForAgent(agent);
+        if (entry) return entry;
+        return {
+            kind: 'status',
+            key: `status:${AgentStatus.IDLE}`,
+            text: 'IDLE',
+            accent: STATUS_VISUALS[AgentStatus.IDLE]?.color || '#8fb7cf',
+            timestamp: Date.now(),
+        };
+    }
+
+    _activityEntryForAgent(agent = this.agent) {
+        if (!agent) return null;
+        const currentTool = String(agent.currentTool || '').trim();
+        if (currentTool) {
+            const toolLabel = this._toolActivityLabel(currentTool);
+            const detail = compactToolInput(agent.currentToolInput, TOOL_DETAIL_PREVIEW_CHARS);
+            const detailKey = compactToolInput(agent.currentToolInput, TOOL_DETAIL_KEY_CHARS);
+            const text = detail ? `${toolLabel} ${detail}` : toolLabel;
+            return {
+                kind: 'tool',
+                key: `tool:${currentTool}:${detailKey}`,
+                text: this._truncateActivityText(text, ACTIVITY_TEXT_CAP),
+                accent: this._providerTrimColor(agent),
+                timestamp: Date.now(),
+            };
+        }
+
+        const rawMessage = String(agent.lastMessage || '').replace(/\s+/g, ' ').trim();
+        if (rawMessage) {
+            const quoted = `"${this._truncateActivityText(rawMessage, MESSAGE_TEXT_CAP)}"`;
+            return {
+                kind: 'message',
+                key: `message:${rawMessage}`,
+                text: quoted,
+                accent: '#8fc4ff',
+                timestamp: Date.now(),
+            };
+        }
+
+        const visual = this._statusVisualFor(agent);
+        const rawStatus = agent?.status;
+        const status = typeof rawStatus === 'string' ? rawStatus : (rawStatus?.value || AgentStatus.IDLE);
+        return {
+            kind: 'status',
+            key: `status:${status}`,
+            text: visual?.label || 'IDLE',
+            accent: visual?.color || STATUS_VISUALS[AgentStatus.IDLE]?.color || '#8fb7cf',
+            timestamp: Date.now(),
+        };
+    }
+
+    _rememberActivitySnapshot(entry) {
+        if (!entry?.text || !entry?.key) return;
+        if (entry.kind === 'status') return;
+        const latest = this._activityTrail[0];
+        if (latest?.key === entry.key) return;
+        this._activityTrail.unshift({
+            kind: entry.kind || 'tool',
+            key: entry.key,
+            text: entry.text,
+            accent: entry.accent || this._providerTrimColor(),
+            timestamp: Date.now(),
+        });
+        if (this._activityTrail.length > ACTION_TRAIL_LIMIT) {
+            this._activityTrail.length = ACTION_TRAIL_LIMIT;
+        }
+    }
+
+    _toolActivityLabel(toolName) {
+        const tool = String(toolName || '').trim();
+        if (!tool) return 'Working';
+        const override = TOOL_ACTIVITY_LABEL_OVERRIDES[tool];
+        if (override) return override;
+        const labeled = toolActionLabel(tool);
+        if (labeled) return labeled;
+        const readable = tool
+            .split('.')
+            .pop()
+            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+            .replace(/[_-]+/g, ' ')
+            .trim();
+        return readable || 'Working';
+    }
+
+    _truncateActivityText(text, cap = ACTIVITY_TEXT_CAP) {
+        const source = String(text || '').replace(/\s+/g, ' ').trim();
+        if (!source) return '';
+        if (source.length <= cap) return source;
+        return `${source.slice(0, Math.max(1, cap - 1))}…`;
     }
 
     _nameTagLayout(ctx, rawName) {
@@ -2549,9 +2746,9 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _providerTrimColor() {
-        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
-        return identity.trim?.[0] || PROVIDER_TRIM[this._providerKey()] || PROVIDER_TRIM.default;
+    _providerTrimColor(agent = this.agent) {
+        const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider);
+        return identity.trim?.[0] || PROVIDER_TRIM[this._providerKey(agent)] || PROVIDER_TRIM.default;
     }
 
     _rgba(color, alpha) {

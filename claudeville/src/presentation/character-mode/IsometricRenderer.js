@@ -1160,13 +1160,15 @@ export class IsometricRenderer {
             eventBus.on('agent:updated', (agent) => {
                 if (!this._worldModeActive) {
                     const sprite = this.agentSprites.get(agent.id);
-                    if (sprite) sprite.agent = agent;
+                    if (sprite?.applyAgentUpdate) sprite.applyAgentUpdate(agent);
+                    else if (sprite) sprite.agent = agent;
                     this._worldSpritesDirty = true;
                     return;
                 }
                 const sprite = this.agentSprites.get(agent.id);
                 if (sprite) {
-                    sprite.agent = agent;
+                    if (sprite.applyAgentUpdate) sprite.applyAgentUpdate(agent);
+                    else sprite.agent = agent;
                     this._markSpritesDirty();
                 }
             }),
@@ -1657,7 +1659,8 @@ export class IsometricRenderer {
     _addAgentSprite(agent) {
         const existing = this.agentSprites.get(agent.id);
         if (existing) {
-            existing.agent = agent;
+            if (existing.applyAgentUpdate) existing.applyAgentUpdate(agent);
+            else existing.agent = agent;
             if (this._isGateTransit(existing, 'departure')) {
                 this.gateTransits.delete(agent.id);
                 this._beginAgentGateArrival(agent, existing);
