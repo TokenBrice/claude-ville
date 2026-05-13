@@ -649,15 +649,18 @@ class ClaudeAdapter {
 
     mainSessions.sort((a, b) => b.lastActivity - a.lastActivity);
 
-    // Subagents (pass the project path map)
-    const subAgents = this._getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject, projectPathMap);
+    // Orphan sessions (active .jsonl files whose history entry is older than HISTORY_SCAN_MS).
+    // Computed before subagents so their session IDs feed into the subagent scan — otherwise
+    // long-running parents that haven't logged a recent prompt would have their subagents missed.
+    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, new Set(sessionsMap.keys()), sessionNames, teamMembership);
+    for (const orphan of orphans) {
+      if (!orphan.project || !orphan.sessionId) continue;
+      const encoded = orphan.project.replace(/\//g, '-');
+      if (!activeSessionIdsByProject.has(encoded)) activeSessionIdsByProject.set(encoded, new Set());
+      activeSessionIdsByProject.get(encoded).add(orphan.sessionId);
+    }
 
-    // Orphan sessions (team members not found in history.jsonl or subagents/)
-    const knownIds = new Set([
-      ...Array.from(sessionsMap.keys()),
-      ...subAgents.map(s => s.sessionId.replace('subagent-', '')),
-    ]);
-    const orphans = this._getOrphanSessions(activeThresholdMs, projectPathMap, knownIds, sessionNames, teamMembership);
+    const subAgents = this._getActiveSubAgents(activeThresholdMs, activeSessionIdsByProject, projectPathMap);
 
     return [...mainSessions, ...subAgents, ...orphans];
   }
@@ -761,7 +764,24 @@ class ClaudeAdapter {
           let stat;
           try { stat = fs.statSync(filePath); } catch { continue; }
 
-          if (now - stat.mtimeMs > activeThresholdMs) continue;
+          // Long-running parents (e.g., orchestrating 8 audit subagents) can leave their
+          // own .jsonl untouched for minutes while children write constantly. Treat the
+          // session as active if either the parent file or any subagent file is fresh.
+          let lastActivity = stat.mtimeMs;
+          const subagentsDir = path.join(projPath, sessionId, 'subagents');
+          if (fs.existsSync(subagentsDir)) {
+            try {
+              for (const agentFile of fs.readdirSync(subagentsDir)) {
+                if (!agentFile.startsWith('agent-') || !agentFile.endsWith('.jsonl')) continue;
+                try {
+                  const aStat = fs.statSync(path.join(subagentsDir, agentFile));
+                  if (aStat.mtimeMs > lastActivity) lastActivity = aStat.mtimeMs;
+                } catch { /* ignore */ }
+              }
+            } catch { /* ignore */ }
+          }
+
+          if (now - lastActivity > activeThresholdMs) continue;
 
           const detail = getSubAgentDetail(filePath);
           const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name);
@@ -778,7 +798,7 @@ class ClaudeAdapter {
             agentType: 'team-member',
             model: detail.model || 'unknown',
             status: 'active',
-            lastActivity: stat.mtimeMs,
+            lastActivity,
             project: decodedProject,
             lastMessage: detail.lastMessage,
             lastTool: detail.lastTool,
