@@ -25,6 +25,7 @@ const _agentLaunchCache = new Map();
 const _tokenUsageCache = new Map();
 const _sessionNamesCache = { signature: '', value: new Map() };
 const _teamMembershipCache = { signature: '', value: new Map() };
+const _teamMembershipWarned = new Set();
 const _teamsCache = { signature: '', value: [] };
 
 // ─── Utilities ─────────────────────────────────────────────
@@ -163,7 +164,11 @@ function readClaudeTeamMembership() {
     }
 
     for (const [agentName, teams] of collisions.entries()) {
-      console.warn(`[claude adapter] agentName "${agentName}" appears in multiple teams: ${teams.join(', ')}; using ${members.get(agentName)}`);
+      const winner = members.get(agentName);
+      const key = `${agentName}|${teams.slice().sort().join(',')}|${winner}`;
+      if (_teamMembershipWarned.has(key)) continue;
+      _teamMembershipWarned.add(key);
+      console.warn(`[claude adapter] agentName "${agentName}" appears in multiple teams: ${teams.join(', ')}; using ${winner}`);
     }
   } catch { /* ignore */ }
   _teamMembershipCache.signature = signature;
