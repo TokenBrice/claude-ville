@@ -17,6 +17,16 @@ const RAIN_MIN_STREAKS = 24;
 const FOG_MAX_BANDS = 9;
 const FOG_MIN_BANDS = 3;
 
+const RAIN_SPLASH_SPRITE_ID = 'atmosphere.rain.splash';
+const RAIN_RIPPLE_SPRITE_ID = 'atmosphere.water.ripple.rain';
+const SPLASH_PRECIP_THRESHOLD = 0.15;
+const SPLASH_STAMP_INTERVAL_MS = 120;
+const SPLASH_STAMP_MIN_COUNT = 6;
+const SPLASH_STAMP_MAX_COUNT = 18;
+const SPLASH_STATIC_GRID_COUNT = 12;
+const RIPPLE_TILE_THROTTLE_MS = 2000;
+const RIPPLE_TILE_TRACK_LIMIT = 256;
+
 const DEFAULT_INTENSITY = {
     overcast: 0.38,
     rain: 0.64,
@@ -25,8 +35,16 @@ const DEFAULT_INTENSITY = {
 };
 
 export class WeatherRenderer {
-    constructor() {
+    constructor({ assets = null } = {}) {
+        this.assets = assets;
         this.elapsedMs = 0;
+        this._lastSplashStamp = 0;
+        this._splashStampSeed = 0;
+        this._rippleStampTimes = new Map();
+    }
+
+    setAssets(assets) {
+        this.assets = assets || null;
     }
 
     drawForeground(ctx, { canvas = ctx?.canvas, atmosphere = null, dt = 16 } = {}) {
@@ -88,6 +106,9 @@ export class WeatherRenderer {
 
     dispose() {
         this.elapsedMs = 0;
+        this._lastSplashStamp = 0;
+        this._splashStampSeed = 0;
+        this._rippleStampTimes.clear();
     }
 
     _drawOvercast(ctx, canvas, intensity) {
@@ -177,6 +198,169 @@ export class WeatherRenderer {
         }
 
         ctx.restore();
+
+        if (weather.precipitation > SPLASH_PRECIP_THRESHOLD || intensity > SPLASH_PRECIP_THRESHOLD) {
+            this._drawRainSplashes(ctx, canvas, {
+                intensity,
+                precipitation: clamp(weather.precipitation, 0, 1),
+                particleEnabled,
+                seed,
+            });
+        }
+    }
+
+    _drawRainSplashes(ctx, canvas, { intensity, precipitation, particleEnabled, seed }) {
+        if (!this._hasSplashSprite()) {
+            this._drawProceduralSplashFallback(ctx, canvas, { intensity, precipitation, particleEnabled, seed });
+            return;
+        }
+
+        if (!particleEnabled) {
+            this._drawStaticSplashGrid(ctx, canvas, seed);
+            return;
+        }
+
+        if (this.elapsedMs - this._lastSplashStamp < SPLASH_STAMP_INTERVAL_MS) return;
+        this._lastSplashStamp = this.elapsedMs;
+        this._splashStampSeed = (this._splashStampSeed + 1) >>> 0;
+
+        const driveT = Math.min(1, Math.max(intensity, precipitation));
+        const count = Math.round(
+            SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT,
+        );
+        const stampSeed = (seed + Math.imul(this._splashStampSeed + 1, 0x85ebca6b)) >>> 0;
+        const alpha = Math.min(0.42, 0.18 + driveT * 0.28);
+
+        for (let i = 0; i < count; i++) {
+            const x = random01(stampSeed, i + 11) * canvas.width;
+            const y = random01(stampSeed, i + 29) * canvas.height;
+            const scale = 0.55 + random01(stampSeed, i + 53) * 0.45;
+            const rotation = (random01(stampSeed, i + 71) - 0.5) * 0.5;
+            this._stampSpriteAt(ctx, RAIN_SPLASH_SPRITE_ID, {
+                x,
+                y,
+                alpha,
+                scale,
+                rotation,
+            });
+        }
+    }
+
+    _drawStaticSplashGrid(ctx, canvas, seed) {
+        const cols = 4;
+        const rows = 3;
+        const colStep = canvas.width / (cols + 1);
+        const rowStep = canvas.height / (rows + 1);
+        let drawn = 0;
+        for (let r = 1; r <= rows; r++) {
+            for (let c = 1; c <= cols; c++) {
+                if (drawn >= SPLASH_STATIC_GRID_COUNT) break;
+                const idx = drawn;
+                drawn++;
+                const jitterX = (random01(seed, idx + 113) - 0.5) * colStep * 0.18;
+                const jitterY = (random01(seed, idx + 191) - 0.5) * rowStep * 0.18;
+                this._stampSpriteAt(ctx, RAIN_SPLASH_SPRITE_ID, {
+                    x: c * colStep + jitterX,
+                    y: r * rowStep + jitterY,
+                    alpha: 0.22,
+                    scale: 0.62,
+                    rotation: -0.12,
+                });
+            }
+        }
+    }
+
+    _drawProceduralSplashFallback(ctx, canvas, { intensity, precipitation, particleEnabled, seed }) {
+        const driveT = Math.min(1, Math.max(intensity, precipitation));
+        const count = particleEnabled
+            ? Math.round(SPLASH_STAMP_MIN_COUNT + (SPLASH_STAMP_MAX_COUNT - SPLASH_STAMP_MIN_COUNT) * driveT)
+            : SPLASH_STATIC_GRID_COUNT;
+        if (count <= 0) return;
+        const stampSeed = particleEnabled
+            ? (seed + Math.floor(this.elapsedMs / SPLASH_STAMP_INTERVAL_MS) * 0x9e3779b1) >>> 0
+            : seed;
+        if (particleEnabled && this.elapsedMs - this._lastSplashStamp < SPLASH_STAMP_INTERVAL_MS) return;
+        if (particleEnabled) this._lastSplashStamp = this.elapsedMs;
+        const alpha = Math.min(0.32, 0.14 + driveT * 0.22);
+
+        ctx.save();
+        ctx.strokeStyle = `rgba(204, 232, 240, ${alpha})`;
+        ctx.lineWidth = 1;
+        for (let i = 0; i < count; i++) {
+            const x = random01(stampSeed, i + 37) * canvas.width;
+            const y = random01(stampSeed, i + 59) * canvas.height;
+            const radius = 2 + random01(stampSeed, i + 83) * 2;
+            ctx.beginPath();
+            ctx.ellipse(Math.round(x), Math.round(y), radius, radius * 0.42, 0, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    // Public stamp helper for IsometricRenderer's water draw loop. Stamps a
+    // single rain ripple sprite at the supplied screen coordinates, throttled
+    // per tile to avoid re-stamping the same water cell within 2 seconds. The
+    // caller is responsible for selecting a small fraction of water tiles per
+    // frame so the global ripple budget stays bounded. No-op when the sprite
+    // is missing or the throttle is still active.
+    maybeStampWaterRipple(ctx, tileX, tileY, tileScreenX, tileScreenY) {
+        if (!ctx || !this._hasRippleSprite()) return false;
+        const key = `${tileX | 0},${tileY | 0}`;
+        const now = this.elapsedMs;
+        const last = this._rippleStampTimes.get(key);
+        if (last !== undefined && now - last < RIPPLE_TILE_THROTTLE_MS) return false;
+        this._trackRippleStamp(key, now);
+        this._stampSpriteAt(ctx, RAIN_RIPPLE_SPRITE_ID, {
+            x: tileScreenX,
+            y: tileScreenY,
+            alpha: 0.28,
+            scale: 1,
+        });
+        return true;
+    }
+
+    _hasSplashSprite() {
+        return Boolean(this.assets?.has?.(RAIN_SPLASH_SPRITE_ID));
+    }
+
+    _hasRippleSprite() {
+        return Boolean(this.assets?.has?.(RAIN_RIPPLE_SPRITE_ID));
+    }
+
+    _stampSpriteAt(ctx, id, { x, y, alpha = 1, scale = 1, rotation = 0 } = {}) {
+        if (!ctx || !this.assets || alpha <= 0.005) return false;
+        const img = this.assets.get?.(id);
+        if (!img) return false;
+        const dims = this.assets.getDims?.(id) || { w: img.width || 0, h: img.height || 0 };
+        if (!dims.w || !dims.h) return false;
+        ctx.save();
+        ctx.globalAlpha *= alpha;
+        ctx.translate(Math.round(x), Math.round(y));
+        if (rotation) ctx.rotate(rotation);
+        if (scale !== 1) ctx.scale(scale, scale);
+        ctx.drawImage(img, Math.round(-dims.w / 2), Math.round(-dims.h / 2));
+        ctx.restore();
+        return true;
+    }
+
+    _trackRippleStamp(key, nowMs) {
+        if (this._rippleStampTimes.size >= RIPPLE_TILE_TRACK_LIMIT) {
+            // Cheap GC: evict the oldest half when we hit the cap so the map
+            // does not grow unbounded across long sessions.
+            const cutoff = nowMs - RIPPLE_TILE_THROTTLE_MS;
+            for (const [k, t] of this._rippleStampTimes) {
+                if (t < cutoff) this._rippleStampTimes.delete(k);
+            }
+            if (this._rippleStampTimes.size >= RIPPLE_TILE_TRACK_LIMIT) {
+                const drop = Math.ceil(this._rippleStampTimes.size / 2);
+                let i = 0;
+                for (const k of this._rippleStampTimes.keys()) {
+                    if (i++ >= drop) break;
+                    this._rippleStampTimes.delete(k);
+                }
+            }
+        }
+        this._rippleStampTimes.set(key, nowMs);
     }
 
     _drawFogBands(ctx, canvas, intensity, phaseMs, seed, particleEnabled) {
