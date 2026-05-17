@@ -350,6 +350,8 @@ function handleGetPerf(req, res) {
     skippedWrites: serverPerf.skippedWrites,
     lastBroadcast: serverPerf.lastBroadcast,
     recentBroadcasts: serverPerf.broadcasts,
+    cacheStampCounter,
+    lastBroadcastStamp,
     timestamp: Date.now(),
   });
 }
@@ -711,6 +713,10 @@ let watchDebounce = null;
 let watchRefreshDebounce = null;
 const watchRetryTimers = new Map();
 let lastBroadcastSignature = null;
+// Coarse counter bumped on any cache invalidation; used to skip the broadcast
+// SHA when nothing relevant has changed since the last broadcast.
+let cacheStampCounter = 0;
+let lastBroadcastStamp = -1;
 let providerDataDirty = true;
 let teamsDirty = true;
 let lastFullDiscoveryAt = 0;
@@ -741,6 +747,7 @@ const TEAMS_CACHE_TTL_MS = 5000;
 function markProviderDataDirty(reason = 'watch', provider = null) {
   providerDataDirty = true;
   if (!provider || provider === 'claude') teamsDirty = true;
+  cacheStampCounter++;
   invalidateSessionCaches({ provider });
   if (process.env.DEBUG_WATCH) {
     const scope = provider ? ` provider=${provider}` : ' provider=all';
@@ -757,6 +764,7 @@ function getTeamsCached({ force = false } = {}) {
   const teams = claudeAdapter.getTeams();
   teamsCache.at = now;
   teamsCache.teams = teams;
+  if (teamsDirty) cacheStampCounter++;
   teamsDirty = false;
   return teams;
 }
@@ -785,27 +793,54 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
   const heartbeatDue = now - lastFullBroadcastAt >= BROADCAST_FULL_DISCOVERY_INTERVAL;
   if (!force && !providerDataDirty && !heartbeatDue) return;
 
+  // When the cache stamp hasn't moved we can skip a heartbeat-only refresh
+  // without hashing the multi-KB payload. force-paths still flow through.
+  const currentStamp = cacheStampCounter;
+  if (!force && heartbeatDue && !providerDataDirty && currentStamp === lastBroadcastStamp) {
+    lastFullBroadcastAt = now;
+    return;
+  }
+
   try {
     if (heartbeatDue) refreshWatchPaths();
     const collectStart = Date.now();
+    const stampAtCollect = cacheStampCounter;
     const { payload, stages } = collectBroadcastPayload({ force: force || heartbeatDue });
 
-    const signature = crypto
-      .createHash('sha1')
-      .update(JSON.stringify({
-        sessions: payload.sessions,
-        teams: payload.teams,
-        usage: payload.usage,
-      }))
-      .digest('hex');
+    const sigStart = Date.now();
+    let signature = lastBroadcastSignature;
+    let signatureSkipped = false;
+    if (force || stampAtCollect !== lastBroadcastStamp || lastBroadcastSignature === null) {
+      signature = crypto
+        .createHash('sha1')
+        .update(JSON.stringify({
+          sessions: payload.sessions,
+          teams: payload.teams,
+          usage: payload.usage,
+        }))
+        .digest('hex');
+    } else {
+      signatureSkipped = true;
+    }
+    stages.signature = Date.now() - sigStart;
 
-    if (signature === lastBroadcastSignature) {
+    if (!signatureSkipped && signature === lastBroadcastSignature) {
       providerDataDirty = false;
+      lastBroadcastStamp = stampAtCollect;
+      lastFullBroadcastAt = now;
+      return;
+    }
+
+    if (signatureSkipped) {
+      // Stamp matched — nothing changed since the last broadcast; bail without re-sending.
+      providerDataDirty = false;
+      lastBroadcastStamp = stampAtCollect;
       lastFullBroadcastAt = now;
       return;
     }
 
     lastBroadcastSignature = signature;
+    lastBroadcastStamp = stampAtCollect;
     wsBroadcast(payload);
     providerDataDirty = false;
     lastFullBroadcastAt = now;
@@ -901,8 +936,35 @@ function addRecursiveWatchFallback(wp, key, err) {
   serverPerf.recursiveWatchFallbacks = recursiveWatchFallbacks.size;
 }
 
-function getWatchFallbackSignature(wp) {
-  const root = wp.path;
+// Per-subdirectory signature cache used to keep recursive fallback scans cheap
+// when a user has hundreds of historic project directories.
+const WATCH_FALLBACK_DIR_CACHE_TTL_MS = 10_000;
+const WATCH_FALLBACK_DIR_IDLE_MS = 5 * 60_000;
+const watchFallbackDirCache = new Map();
+let recentlyActiveDirsAt = 0;
+let recentlyActiveDirsCache = null;
+const RECENTLY_ACTIVE_DIRS_TTL_MS = 5000;
+
+function getRecentlyActiveDirs() {
+  const now = Date.now();
+  if (recentlyActiveDirsCache && now - recentlyActiveDirsAt < RECENTLY_ACTIVE_DIRS_TTL_MS) {
+    return recentlyActiveDirsCache;
+  }
+  const dirs = new Set();
+  try {
+    const sessions = getAllSessions(ACTIVE_THRESHOLD_MS);
+    for (const session of sessions) {
+      if (session.project) dirs.add(session.project);
+    }
+  } catch {
+    // Best-effort; if session enumeration fails, fall back to no constraint.
+  }
+  recentlyActiveDirsCache = dirs;
+  recentlyActiveDirsAt = now;
+  return dirs;
+}
+
+function _walkDirForSignature(root, wp, budget) {
   const stack = [{ dir: root, depth: 0 }];
   let entries = 0;
   let files = 0;
@@ -911,7 +973,7 @@ function getWatchFallbackSignature(wp) {
   let truncated = false;
   let errors = 0;
 
-  while (stack.length > 0 && entries < WATCH_FALLBACK_MAX_ENTRIES) {
+  while (stack.length > 0 && entries < budget) {
     const current = stack.pop();
     let dirents;
     try {
@@ -923,7 +985,7 @@ function getWatchFallbackSignature(wp) {
 
     for (const dirent of dirents) {
       entries++;
-      if (entries >= WATCH_FALLBACK_MAX_ENTRIES) {
+      if (entries >= budget) {
         truncated = true;
         break;
       }
@@ -951,6 +1013,112 @@ function getWatchFallbackSignature(wp) {
   }
 
   if (stack.length > 0) truncated = true;
+  return { files, latestMtimeMs, totalSize, truncated, errors };
+}
+
+function getWatchFallbackSignature(wp) {
+  const root = wp.path;
+  const now = Date.now();
+
+  // Try to constrain the scan to immediate children of `root` (e.g.
+  // ~/.claude/projects/*) so we can per-dir cache and skip idle ones.
+  let rootDirents;
+  try {
+    rootDirents = fs.readdirSync(root, { withFileTypes: true });
+  } catch {
+    // Root unreadable — fall back to a single full walk for compatibility.
+    const walk = _walkDirForSignature(root, wp, WATCH_FALLBACK_MAX_ENTRIES);
+    return JSON.stringify({
+      files: walk.files,
+      latestMtimeMs: Math.round(walk.latestMtimeMs),
+      totalSize: walk.totalSize,
+      truncated: walk.truncated,
+      errors: walk.errors + 1,
+    });
+  }
+
+  const activeDirs = getRecentlyActiveDirs();
+  let files = 0;
+  let latestMtimeMs = 0;
+  let totalSize = 0;
+  let truncated = false;
+  let errors = 0;
+  // Total entry budget shared across children so a runaway dir can't starve siblings.
+  let budgetLeft = WATCH_FALLBACK_MAX_ENTRIES;
+
+  for (const dirent of rootDirents) {
+    const childPath = path.join(root, dirent.name);
+    if (!dirent.isDirectory()) {
+      if (dirent.isFile()) {
+        if (wp.filter && !dirent.name.endsWith(wp.filter)) continue;
+        try {
+          const stat = fs.statSync(childPath);
+          files++;
+          latestMtimeMs = Math.max(latestMtimeMs, stat.mtimeMs);
+          totalSize += stat.size;
+        } catch {
+          errors++;
+        }
+      }
+      continue;
+    }
+
+    if (budgetLeft <= 0) {
+      truncated = true;
+      break;
+    }
+
+    const cacheKey = `${wp.provider || 'unknown'}:${wp.filter || ''}:${childPath}`;
+    const cached = watchFallbackDirCache.get(cacheKey);
+
+    // Cheap stat first: if the dir itself hasn't moved and we have a fresh
+    // cached signature, reuse it.
+    let dirMtimeMs = 0;
+    try {
+      dirMtimeMs = fs.statSync(childPath).mtimeMs;
+    } catch {
+      errors++;
+      continue;
+    }
+
+    const isActive = activeDirs.has(childPath);
+    const cacheFresh = cached && (now - cached.at) < WATCH_FALLBACK_DIR_CACHE_TTL_MS;
+    const dirIdle = cached && dirMtimeMs <= cached.dirMtimeMs && (now - cached.lastChangedAt) > WATCH_FALLBACK_DIR_IDLE_MS;
+
+    if (cacheFresh || (cached && !isActive && dirIdle)) {
+      files += cached.files;
+      latestMtimeMs = Math.max(latestMtimeMs, cached.latestMtimeMs);
+      totalSize += cached.totalSize;
+      if (cached.truncated) truncated = true;
+      errors += cached.errors;
+      continue;
+    }
+
+    const childBudget = Math.min(budgetLeft, WATCH_FALLBACK_MAX_ENTRIES);
+    const walk = _walkDirForSignature(childPath, wp, childBudget);
+    budgetLeft -= Math.min(childBudget, walk.files + 1);
+    files += walk.files;
+    latestMtimeMs = Math.max(latestMtimeMs, walk.latestMtimeMs);
+    totalSize += walk.totalSize;
+    if (walk.truncated) truncated = true;
+    errors += walk.errors;
+
+    const changed = !cached
+      || cached.files !== walk.files
+      || cached.totalSize !== walk.totalSize
+      || Math.round(cached.latestMtimeMs) !== Math.round(walk.latestMtimeMs);
+    watchFallbackDirCache.set(cacheKey, {
+      at: now,
+      dirMtimeMs,
+      lastChangedAt: changed ? now : (cached?.lastChangedAt || now),
+      files: walk.files,
+      latestMtimeMs: walk.latestMtimeMs,
+      totalSize: walk.totalSize,
+      truncated: walk.truncated,
+      errors: walk.errors,
+    });
+  }
+
   return JSON.stringify({ files, latestMtimeMs: Math.round(latestMtimeMs), totalSize, truncated, errors });
 }
 

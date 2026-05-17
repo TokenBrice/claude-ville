@@ -22,7 +22,6 @@ export class WebSocketClient {
 
             this.ws.onopen = () => {
                 this.connected = true;
-                this.reconnectAttempts = 0;
                 console.log('[WS] Connected');
                 eventBus.emit('ws:connected');
                 this._clearReconnect();
@@ -73,6 +72,9 @@ export class WebSocketClient {
     _handleMessage(data) {
         switch (data.type) {
             case 'init':
+                // Reset reconnect attempts only after server confirms a healthy session,
+                // so half-open TCPs that never deliver init keep backing off.
+                this.reconnectAttempts = 0;
                 eventBus.emit('ws:init', data);
                 if (data.usage) eventBus.emit('usage:updated', data.usage);
                 break;
@@ -90,10 +92,12 @@ export class WebSocketClient {
     _scheduleReconnect() {
         this._clearReconnect();
         this.reconnectAttempts++;
-        const delay = Math.min(
+        const backoff = Math.min(
             WS_RECONNECT_INTERVAL * Math.pow(2, this.reconnectAttempts - 1),
-            30000
+            15000
         );
+        // Jitter avoids lockstep reconnect storms when many tabs reopen at once.
+        const delay = backoff + Math.random() * 500;
         this.reconnectTimer = setTimeout(() => {
             if (this.reconnectAttempts > 3) {
                 console.log(`[WS] Reconnect attempt... (retrying in ${Math.round(delay / 1000)} seconds)`);
