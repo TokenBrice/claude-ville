@@ -9,6 +9,7 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
+import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState } from './AtmosphereState.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
@@ -140,6 +141,11 @@ const PRESENCE_TIER_TABLE = Object.freeze({
     occupied: { emitter: 1.0, radius: 1.0, occupancy: 0.7 },
     busy:     { emitter: 1.6, radius: 1.15, occupancy: 1 },
 });
+// Phase 4.12 — Observatory clock spin while a WebFetch/WebSearch/web.run ritual
+// is active. Spin speed is in rad/s; ease back to 0 over OBSERVATORY_SPIN_EASE_MS.
+const OBSERVATORY_WEB_RITUAL_TOOLS = new Set(['WebFetch', 'WebSearch', 'web.run']);
+const OBSERVATORY_SPIN_RATE_RAD_PER_S = 0.9;
+const OBSERVATORY_SPIN_EASE_MS = 1500;
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
@@ -258,6 +264,15 @@ export class BuildingSprite {
             }
         };
         eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, this._onPresence);
+        // Phase 4.10 — Archive read intensity (0..1) sourced from LandmarkActivity.
+        this._archiveReadIntensity = 0;
+        this._onReadIntensity = (map) => {
+            const next = Number(map?.archive);
+            this._archiveReadIntensity = Number.isFinite(next) ? clamp01(next) : 0;
+        };
+        eventBus.on('building:read-intensity', this._onReadIntensity);
+        // Phase 4.12 — Observatory clock extra rotation while a web ritual is active.
+        this._observatoryClockSpin = 0;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -267,6 +282,7 @@ export class BuildingSprite {
     dispose() {
         this._motionMq?.removeEventListener?.('change', this._onMotionChange);
         eventBus.off(BUILDING_EVENTS.ACTIVE_AGENTS, this._onPresence);
+        eventBus.off('building:read-intensity', this._onReadIntensity);
     }
 
     _presenceTierFor(type) {
@@ -322,7 +338,34 @@ export class BuildingSprite {
         this._updateVisitorCounts();
         this._syncTaskboardPapers(Date.now());
         this._updateForgeGlow(dt);
+        this._updateObservatoryClockSpin(dt);
         for (const b of this.buildings) this._spawnEmittersFor(b, dt);
+    }
+
+    // Phase 4.12 — Tick the extra clock spin while a web ritual is active at the
+    // Observatory; ease back to 0 within OBSERVATORY_SPIN_EASE_MS once it ends.
+    // Held at 0 under reduced motion so the time-of-day hands stay still.
+    _updateObservatoryClockSpin(dt) {
+        if (!this.motionScale) {
+            this._observatoryClockSpin = 0;
+            return;
+        }
+        const seconds = Math.max(0, Number(dt) || 0) / 1000;
+        if (this._hasObservatoryWebRitual()) {
+            this._observatoryClockSpin = (this._observatoryClockSpin + seconds * OBSERVATORY_SPIN_RATE_RAD_PER_S) % (Math.PI * 2);
+            return;
+        }
+        if (this._observatoryClockSpin <= 0) return;
+        const easePerSecond = (Math.PI * 2) / (OBSERVATORY_SPIN_EASE_MS / 1000);
+        this._observatoryClockSpin = Math.max(0, this._observatoryClockSpin - seconds * easePerSecond);
+    }
+
+    _hasObservatoryWebRitual() {
+        const rituals = this._ritualsFor('observatory');
+        for (const ritual of rituals) {
+            if (OBSERVATORY_WEB_RITUAL_TOOLS.has(ritual?.tool)) return true;
+        }
+        return false;
     }
 
     // Soft drop shadows under each building footprint. Hero buildings use the
@@ -1583,9 +1626,21 @@ export class BuildingSprite {
         const left = Math.round(face.x - size / 2);
         const top = Math.round(face.y - size / 2);
         const previousSmoothing = ctx.imageSmoothingEnabled;
+        // Phase 4.12 — Independent web-ritual spin layered on top of the
+        // time-of-day hands cached inside `source`. Rotate around the face
+        // center so the disc orbits in place. Reduced motion holds at 0.
+        const spin = this.motionScale ? (this._observatoryClockSpin || 0) : 0;
 
         ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(source, left, top, size, size);
+        if (spin) {
+            ctx.save();
+            ctx.translate(face.x, face.y);
+            ctx.rotate(spin);
+            ctx.drawImage(source, -size / 2, -size / 2, size, size);
+            ctx.restore();
+        } else {
+            ctx.drawImage(source, left, top, size, size);
+        }
         ctx.imageSmoothingEnabled = previousSmoothing;
     }
 
@@ -1734,10 +1789,16 @@ export class BuildingSprite {
 
     _drawArchiveEnhancement(ctx, localPoint, pulse) {
         const crest = localPoint(168, 82);
+        const window = localPoint(168, 88);
         const doorway = localPoint(168, 130);
         const leftLamp = localPoint(142, 128);
         const rightLamp = localPoint(194, 128);
         const ritual = this._latestRitual('archive');
+        // Phase 4.10 — Read-counter intensity drives the front-window overlay.
+        // <0.2 keeps the existing faint baseline; 0.2-0.6 brightens the window;
+        // 0.6-1.0 lights up the doorway and is reinforced by door particle bursts
+        // in `_spawnEmittersFor`.
+        const readIntensity = this._archiveReadIntensity || 0;
 
         ctx.globalCompositeOperation = 'screen';
         ctx.globalAlpha = 0.20;
@@ -1745,7 +1806,16 @@ export class BuildingSprite {
         ctx.beginPath();
         ctx.ellipse(crest.x, crest.y, 26, 18, -0.12, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = 0.24 + (ritual ? this._ritualFade(ritual) * 0.16 : 0);
+        if (readIntensity > 0.04) {
+            const windowGlow = 0.12 + Math.min(0.42, readIntensity * 0.6);
+            ctx.globalAlpha = windowGlow;
+            ctx.fillStyle = '#fff2b0';
+            ctx.beginPath();
+            ctx.ellipse(window.x, window.y, 18 + readIntensity * 6, 12 + readIntensity * 4, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        const doorwayBoost = readIntensity > 0.6 ? (readIntensity - 0.6) * 0.55 : 0;
+        ctx.globalAlpha = 0.24 + (ritual ? this._ritualFade(ritual) * 0.16 : 0) + doorwayBoost;
         ctx.fillStyle = '#ffd36a';
         ctx.beginPath();
         ctx.ellipse(doorway.x, doorway.y, 32, 20, -0.08, 0, Math.PI * 2);
@@ -2390,13 +2460,19 @@ export class BuildingSprite {
         const fade = this._ritualFade(ritual);
         const action = ritual.action || 'portal';
         const progress = ritual.motionEnabled === false ? 1 : this._ritualProgress(ritual);
+        // Phase 4.11 — Distinguish browser-preview vs Playwright-active by
+        // re-classifying the ritual's source tool. `action === 'summon'` (and
+        // other lifecycle actions) keep the full-stack rings unchanged.
+        const reason = action === 'portal' ? this._portalReasonFor(ritual) : null;
         const color = action === 'dismiss'
             ? '#f08a8a'
             : action === 'familiar-wait'
                 ? '#f2d36b'
                 : action === 'familiar-return'
                     ? '#bda7ff'
-                    : '#8feaff';
+                    : reason === 'portal-preview'
+                        ? '#7dd3ff'
+                        : '#8feaff';
 
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
@@ -2404,7 +2480,10 @@ export class BuildingSprite {
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.4;
         const ringPhase = ritual.motionEnabled === false ? 0.5 : progress;
-        for (let i = 0; i < 3; i++) {
+        // portal-preview = single inner ring (cool blue); other states keep the
+        // 3-ring stack so summon/dismiss/familiar/active read as full ceremony.
+        const ringCount = reason === 'portal-preview' ? 1 : 3;
+        for (let i = 0; i < ringCount; i++) {
             const offset = action === 'dismiss' ? (1 - ringPhase) * 13 : ringPhase * 12;
             const radius = 23 + i * 8 + offset;
             const tilt = this.motionScale ? this.frame * 0.012 + i * 0.7 : i * 0.7;
@@ -2440,6 +2519,11 @@ export class BuildingSprite {
         }
 
         ctx.globalCompositeOperation = 'source-over';
+        // Phase 4.11 — Procedural 16x12 floating screen for portal-active.
+        // Drawn before the label so the parchment tag sits above it.
+        if (reason === 'portal-active') {
+            this._drawPortalActiveScreen(ctx, gate, fade);
+        }
         ctx.globalAlpha = fade;
         ctx.fillStyle = 'rgba(22, 35, 48, 0.86)';
         ctx.strokeStyle = color;
@@ -2454,6 +2538,51 @@ export class BuildingSprite {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(this._portalRitualLabel(ritual), gate.x, gate.y - 46);
+        ctx.restore();
+    }
+
+    // Phase 4.11 — Re-classify the ritual's source tool/input to recover the
+    // browser-preview vs Playwright-active reason. The conductor currently
+    // does not forward `event.reason`, so derive it here from the same
+    // ToolIdentity helper that produced the original event.
+    _portalReasonFor(ritual) {
+        if (!ritual?.tool) return null;
+        try {
+            const classified = classifyTool(ritual.tool, ritual.input || '');
+            const reason = classified?.reason;
+            if (reason === 'portal-active' || reason === 'portal-preview') return reason;
+        } catch {
+            return null;
+        }
+        return null;
+    }
+
+    // Phase 4.11 — Canvas-drawn 16x12 rounded screen hovering above the gate.
+    // Scanline drift uses `frame` so it pauses under reduced motion. No PixelLab.
+    _drawPortalActiveScreen(ctx, gate, fade) {
+        const w = 16;
+        const h = 12;
+        const x = Math.round(gate.x - w / 2);
+        const y = Math.round(gate.y - 34);
+        ctx.save();
+        ctx.globalAlpha = fade * 0.9;
+        ctx.fillStyle = 'rgba(18, 28, 42, 0.94)';
+        ctx.strokeStyle = '#8feaff';
+        ctx.lineWidth = 1;
+        if (ctx.roundRect) {
+            ctx.beginPath();
+            ctx.roundRect(x, y, w, h, 2);
+            ctx.fill();
+            ctx.stroke();
+        } else {
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1);
+        }
+        // Faint scanline that drifts top-to-bottom; static at row 5 when motion is off.
+        const drift = this.motionScale ? Math.floor((this.frame * 0.18) % (h - 2)) : 5;
+        ctx.globalAlpha = fade * 0.45;
+        ctx.fillStyle = '#bff2ff';
+        ctx.fillRect(x + 1, y + 1 + drift, w - 2, 1);
         ctx.restore();
     }
 
@@ -2734,10 +2863,16 @@ export class BuildingSprite {
             this._spawnBuildingParticle(normalizedType, center, baseAnchor, at, 0.035, 1, dt);
         }
         const presenceMult = PRESENCE_TIER_TABLE[this._presenceTierFor(b.type)].emitter;
+        // Phase 4.10 — Door-region archiveMote emitters (at y≈128) burst more
+        // when read intensity passes 0.6. Crest emitter (y≈82) is unaffected.
+        const archiveReadIntensity = b.type === 'archive' ? (this._archiveReadIntensity || 0) : 0;
         for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
-            const chanceBoost = b.type === 'forge'
+            let chanceBoost = b.type === 'forge'
                 ? 0.7 + this._forgeGlowIntensity() * 1.1
                 : this._visitorCountFor(b) > 0 ? 1.6 : 1;
+            if (archiveReadIntensity > 0.6 && Array.isArray(emitter.at) && emitter.at[1] >= 120) {
+                chanceBoost *= 1 + (archiveReadIntensity - 0.6) * 5;
+            }
             const chance = emitter.chance * chanceBoost * presenceMult;
             this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt);
         }

@@ -12,6 +12,11 @@ const RITUAL_TOKEN_DELTA_THRESHOLD = 256;
 const PRESENCE_RECENCY_MS = 60000;
 const PRESENCE_EMIT_INTERVAL_MS = 500;
 const PRESENCE_DORMANT_THRESHOLD = 0.1;
+// Phase 4.10 — Archive shelf-fill keyed to local-search counter.
+// Decay over 2 min so a burst of 6 reads gives full intensity for ~30 s then fades.
+const ARCHIVE_READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS']);
+const ARCHIVE_READ_DECAY_HALFLIFE_S = 120;
+const ARCHIVE_READ_FULL_INTENSITY_COUNT = 6;
 
 const BUILDING_OFFSETS = {
     command: [
@@ -102,6 +107,10 @@ export class LandmarkActivity {
         this.seenSnapshots = new Set();
         this.previousTokenTotals = new Map();
         this.lastForgeByAgent = new Map();
+        // Phase 4.10 — Rolling Read/Grep/Glob/LS counter for the Archive.
+        // Decay-based: each update() step multiplies count by exp(-dt / halflife).
+        this._archiveReadCounter = { count: 0, lastInvocationTs: 0 };
+        this._archiveReadSeen = new Set();
         this.agentSprites = [];
         this._kindIds = new Map();
         this._recencyByType = new Map();
@@ -118,9 +127,14 @@ export class LandmarkActivity {
         this.agentSprites = Array.from(agentSprites || []);
         const agentList = Array.from(agents || []);
 
+        // Phase 4.10 — Decay the Archive read counter before observing new
+        // invocations so this frame's bumps remain at their full weight.
+        this._decayArchiveReadCounter(dt);
+
         for (const agent of agentList) {
             this._observeTokens(agent, now);
             this._observeToolActivity(agent, now);
+            this._observeArchiveReadActivity(agent, now);
         }
 
         this._observeCommandRelationships(agentList, now);
@@ -173,6 +187,42 @@ export class LandmarkActivity {
         // suppress the duplicate Command Center SUMMON stub here.
         if (agent.currentTool === 'Task' || agent.currentTool === 'Agent') return;
         if (building === 'command' || isCommandTool(agent)) this._addCommandItem(agent, now);
+    }
+
+    _observeArchiveReadActivity(agent, now) {
+        const tool = agent?.currentTool;
+        if (!tool || !ARCHIVE_READ_TOOLS.has(tool)) return;
+        // Dedupe per (agent, sessionActivity, tool, toolInput) so a held
+        // snapshot doesn't bump the counter every frame.
+        const key = [
+            agent.id || 'unknown',
+            tool,
+            agent.currentToolInput || agent.lastToolInput || '',
+            agent.lastSessionActivity || '',
+        ].join('|');
+        if (this._archiveReadSeen.has(key)) return;
+        this._archiveReadSeen.add(key);
+        if (this._archiveReadSeen.size > 240) {
+            this._archiveReadSeen = new Set([...this._archiveReadSeen].slice(-160));
+        }
+        this._archiveReadCounter.count += 1;
+        this._archiveReadCounter.lastInvocationTs = now;
+        this._recencyByType.set('archive', now);
+    }
+
+    _decayArchiveReadCounter(dt) {
+        const count = this._archiveReadCounter.count;
+        if (count <= 0) return;
+        const seconds = Math.max(0, Number(dt) || 0) / 1000;
+        if (seconds <= 0) return;
+        const next = count * Math.exp(-seconds / ARCHIVE_READ_DECAY_HALFLIFE_S);
+        this._archiveReadCounter.count = next < 0.01 ? 0 : next;
+    }
+
+    getArchiveReadIntensity() {
+        const count = this._archiveReadCounter.count || 0;
+        if (count <= 0) return 0;
+        return Math.max(0, Math.min(1, count / ARCHIVE_READ_FULL_INTENSITY_COUNT));
     }
 
     _observeTokens(agent, now) {
@@ -428,6 +478,9 @@ export class LandmarkActivity {
             payload[building.type] = this.getBuildingPresence(building.type, now);
         }
         eventBus.emit('building:active-agents', payload);
+        // Phase 4.10 — Surface Archive read intensity so BuildingSprite can tier
+        // the front-window overlay and door particle spawn rate without coupling.
+        eventBus.emit('building:read-intensity', { archive: this.getArchiveReadIntensity() });
     }
 
     _itemPosition(item, now) {
