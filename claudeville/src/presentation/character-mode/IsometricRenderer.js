@@ -6434,20 +6434,87 @@ export class IsometricRenderer {
     }
 
     _drawLighthouseBeam(ctx, light, atmosphere = null) {
+        const signal = (typeof this.harborTraffic?.getActivePushSignal === 'function'
+            ? this.harborTraffic.getActivePushSignal()
+            : null) || { state: 'idle' };
+        const stateName = typeof signal.state === 'string' ? signal.state : 'idle';
+        const now = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now()
+            : Date.now();
+        if (this._beamSignalState !== stateName) {
+            this._beamPrevSignalState = this._beamSignalState || 'idle';
+            this._beamSignalState = stateName;
+            this._beamSignalSince = now;
+            this._beamPrevAngle = (typeof this._beamLastIdleAngle === 'number')
+                ? this._beamLastIdleAngle
+                : -0.34;
+        }
+        const transitionElapsed = Math.max(0, now - (this._beamSignalSince || now));
+        const reducedMotion = this.motionScale <= 0;
+
         const beaconIntensity = atmosphere?.lighting?.beaconIntensity ?? 0.5;
         const phase = this.motionScale ? this.waterFrame * 0.11 : 0.65;
         const sweep = Math.sin(phase) * 0.28;
-        const alpha = (light.alpha ?? 0.12) * (0.45 + beaconIntensity * 0.85) * (light.intensity || 1);
+        const baseAlpha = (light.alpha ?? 0.12) * (0.45 + beaconIntensity * 0.85) * (light.intensity || 1);
         const length = light.length || 360;
         const farWidth = light.width || 92;
         const nearWidth = Math.max(8, farWidth * 0.13);
-        const angles = [-0.34 + sweep, Math.PI - 0.34 + sweep];
+        const defaultColor = light.color;
+
+        let primaryAngle = -0.34 + sweep;
+        let secondaryAngle = Math.PI - 0.34 + sweep;
+        let color = defaultColor;
+        let alpha = baseAlpha;
+        let lockedSingleBeam = false;
+
+        if (stateName === 'departing' && signal.departingTile) {
+            const target = this._tileToWorld(signal.departingTile.tileX, signal.departingTile.tileY);
+            const targetAngle = Math.atan2(target.y - light.y, target.x - light.x);
+            const lockDuration = 600;
+            const t = reducedMotion ? 1 : Math.min(1, transitionElapsed / lockDuration);
+            const prev = (typeof this._beamPrevAngle === 'number') ? this._beamPrevAngle : targetAngle;
+            const delta = Math.atan2(Math.sin(targetAngle - prev), Math.cos(targetAngle - prev));
+            primaryAngle = prev + delta * t;
+            secondaryAngle = primaryAngle + Math.PI;
+            lockedSingleBeam = true;
+            color = (typeof signal.accent === 'string' && signal.accent) ? signal.accent : defaultColor;
+        } else if (stateName === 'failed' || stateName === 'rejected') {
+            const fallback = stateName === 'failed' ? '#ff755d' : '#ffd34a';
+            color = (typeof signal.accent === 'string' && signal.accent) ? signal.accent : fallback;
+            if (reducedMotion) {
+                alpha = baseAlpha * 0.7;
+            } else {
+                const strobeOn = Math.floor(transitionElapsed / 200) % 2 === 0;
+                alpha = strobeOn ? baseAlpha : 0;
+            }
+        } else if (stateName === 'untethered') {
+            alpha = baseAlpha * 0.4;
+            if (this.weatherRenderer && typeof this.weatherRenderer.nudgeFogIntensity === 'function' && !reducedMotion) {
+                this.weatherRenderer.nudgeFogIntensity(0.15);
+            }
+        } else if (stateName === 'pulsing') {
+            if (reducedMotion) {
+                alpha = baseAlpha * 0.85;
+            } else {
+                const pulseT = (transitionElapsed % 1500) / 1500;
+                const pulse = 0.7 + (Math.sin(pulseT * Math.PI * 2) * 0.5 + 0.5) * 0.3;
+                alpha = baseAlpha * pulse;
+            }
+        }
+
+        if (stateName !== 'departing') {
+            this._beamLastIdleAngle = primaryAngle;
+        }
 
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         ctx.globalAlpha = 1;
-        this._drawBeamWedge(ctx, light.x, light.y, angles[0], length, nearWidth, farWidth, light.color, alpha);
-        this._drawBeamWedge(ctx, light.x, light.y, angles[1], length * 0.72, nearWidth, farWidth * 0.72, light.color, alpha * 0.55);
+        if (alpha > 0) {
+            this._drawBeamWedge(ctx, light.x, light.y, primaryAngle, length, nearWidth, farWidth, color, alpha);
+            if (!lockedSingleBeam) {
+                this._drawBeamWedge(ctx, light.x, light.y, secondaryAngle, length * 0.72, nearWidth, farWidth * 0.72, color, alpha * 0.55);
+            }
+        }
         ctx.restore();
     }
 
