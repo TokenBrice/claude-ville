@@ -7,7 +7,7 @@ import { runtimeRoleAccessory } from '../shared/RoleAccessory.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
-import { compactToolInput, toolActionLabel, toolCategory } from '../../domain/services/ToolIdentity.js';
+import { compactToolInput, toolActionLabel, toolCategory, classifyTool } from '../../domain/services/ToolIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 
 // Hit-test geometry (unchanged from vector version).
@@ -291,9 +291,20 @@ export class AgentSprite {
             reason: intent?.reason || (building.type?.startsWith('ambient:') ? 'scenic' : (this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status')),
             targetTile: this._lastTargetTile,
         });
-        const viaWaypoints = building.routeViaRoads
-            ? this._roadWaypointsForScenic(targetTileX, targetTileY)
-            : null;
+        // Task 2.12: IDLE ambient destinations beyond 6 tiles also route via roads.
+        let viaWaypoints = null;
+        if (building.routeViaRoads) {
+            viaWaypoints = this._roadWaypointsForScenic(targetTileX, targetTileY);
+        } else if (this.agent?.status === AgentStatus.IDLE && this.getRoadTiles) {
+            const fromTile = this._screenToTile(this.x, this.y);
+            const tileDist = Math.hypot(
+                Number(targetTileX) - Number(fromTile.tileX),
+                Number(targetTileY) - Number(fromTile.tileY),
+            );
+            if (Number.isFinite(tileDist) && tileDist > 6) {
+                viaWaypoints = this._roadWaypointsForScenic(targetTileX, targetTileY);
+            }
+        }
         this._assignTarget(screen.x, screen.y, targetTileX, targetTileY, viaWaypoints);
         this.moving = this._targetReachable;
         if (!this._targetReachable) {
@@ -625,6 +636,11 @@ export class AgentSprite {
         this.teamPlazaPreference = !!enabled;
     }
 
+    setFamilyPlazaPreference(tileX, tileY) {
+        // route to AgentBehaviorState (30 s TTL); see WU-C task 2.5.
+        this.behavior?.setFamilyPlazaPreference?.(tileX, tileY);
+    }
+
     setTilePosition(tileX, tileY) {
         const screen = tileToWorld(tileX, tileY);
         this.x = screen.x;
@@ -675,6 +691,32 @@ export class AgentSprite {
             this._rememberActivitySnapshot(previous, now);
         }
         this._activitySnapshot = current;
+        // Tasks 2.8 + 2.11: feed tool transitions into behavior state for
+        // plan-mode tracking and per-agent retry detection (no AgentEventStream edits).
+        this._observeToolForBehavior(agent, previous, current);
+    }
+
+    _observeToolForBehavior(agent, previous, current) {
+        if (!this.behavior?.observeToolTransition) return;
+        const tool = String(agent?.currentTool || '').trim();
+        if (!tool) return;
+        if (previous?.key && current?.key && previous.key === current.key) return;
+        const reason = this._classifyToolReason(tool, agent?.currentToolInput);
+        this.behavior.observeToolTransition({
+            agentId: agent.id || null,
+            tool,
+            input: agent?.currentToolInput || null,
+            reason,
+        });
+    }
+
+    _classifyToolReason(tool, input) {
+        try {
+            const classified = classifyTool(tool, input);
+            return classified?.reason || null;
+        } catch {
+            return null;
+        }
     }
 
     update(particleSystem, dt = 16) {
@@ -773,6 +815,12 @@ export class AgentSprite {
 
         this._renewVisitReservation();
 
+        // Task 2.12: IDLE strollers stop-and-look at landmarks 1-2 s every 18-30 s.
+        if (this._advanceIdleStopAndLook(dt)) {
+            this._advanceIdleAnimation(dt);
+            return;
+        }
+
         const dx = this.targetX - this.x;
         const dy = this.targetY - this.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
@@ -816,6 +864,20 @@ export class AgentSprite {
             this.frameTimer = 0;
             this.walkFrame = 0;
             return;
+        }
+
+        // Task 2.12: deliberate stride pause for IDLE strollers.
+        // Hold the frame for 6 ticks out of every 12 ticks so motion looks
+        // unhurried. Pause is skipped when reduced-motion is active (motionScale 0).
+        const isIdleStroll = this.agent?.status === AgentStatus.IDLE && !this.chatPartner && !this.chatting;
+        if (isIdleStroll) {
+            this._idleStrideTick = (this._idleStrideTick || 0) + 1;
+            const phase = this._idleStrideTick % 12;
+            if (phase < 6) {
+                // Pause stride: skip distance accumulation, keep current frame.
+                this.walkFrame = this.frame;
+                return;
+            }
         }
 
         const previousFrame = this.frame % WALK_FRAMES;
@@ -875,16 +937,57 @@ export class AgentSprite {
         if (dir != null) this.direction = dir;
     }
 
-    _faceBuilding(building) {
-        if (!building) return;
-        const x = Number(building.x);
-        const y = Number(building.y);
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-        const cx = x + (Number(building.width) || 1) / 2;
-        const cy = y + (Number(building.height) || 1) / 2;
-        const center = tileToWorld({ tileX: cx, tileY: cy });
+    _faceBuilding(building, facingPoint = null) {
+        if (!building && !facingPoint) return;
+        // Task 2.7: prefer explicit facingPoint (allocator/reservation thread-through
+        // or building.visitTile entry); fall back to building geometry center.
+        const point = this._resolveBuildingFacingPoint(building, facingPoint);
+        if (!point) return;
+        const center = tileToWorld({ tileX: point.tileX, tileY: point.tileY });
         const dir = dirFromVelocity(center.x - this.x, center.y - this.y);
         if (dir != null) this.direction = dir;
+    }
+
+    _resolveBuildingFacingPoint(building, explicitFacingPoint = null) {
+        const finite = (value) => Number.isFinite(Number(value));
+        const wrap = (raw) => {
+            if (!raw) return null;
+            const fx = Number(raw.x ?? raw.tileX);
+            const fy = Number(raw.y ?? raw.tileY);
+            if (!finite(fx) || !finite(fy)) return null;
+            return { tileX: fx, tileY: fy };
+        };
+        const fromExplicit = wrap(explicitFacingPoint);
+        if (fromExplicit) return fromExplicit;
+        const reservation = this.behavior?.currentReservation || null;
+        const fromReservation = wrap(reservation?.facingPoint);
+        if (fromReservation) return fromReservation;
+        const intent = this.behavior?.intent || null;
+        const fromIntent = wrap(intent?.facingPoint);
+        if (fromIntent) return fromIntent;
+        // Defensive: WU-E populates building.facingPoint or visitTile.facingPoint.
+        const fromBuilding = wrap(building?.facingPoint);
+        if (fromBuilding) return fromBuilding;
+        const visitFacing = wrap(this._currentVisitTileEntry(building)?.facingPoint);
+        if (visitFacing) return visitFacing;
+        if (!building) return null;
+        const bx = Number(building.x);
+        const by = Number(building.y);
+        if (!finite(bx) || !finite(by)) return null;
+        const cx = bx + (Number(building.width) || 1) / 2;
+        const cy = by + (Number(building.height) || 1) / 2;
+        return { tileX: cx, tileY: cy };
+    }
+
+    _currentVisitTileEntry(building) {
+        if (!building || !Array.isArray(building.visitTiles) || !this._lastTargetTile) return null;
+        const tx = Math.round(this._lastTargetTile.tileX);
+        const ty = Math.round(this._lastTargetTile.tileY);
+        for (const entry of building.visitTiles) {
+            if (!entry) continue;
+            if (Math.round(Number(entry.tileX)) === tx && Math.round(Number(entry.tileY)) === ty) return entry;
+        }
+        return null;
     }
 
     _advanceFidget(dt) {
@@ -900,6 +1003,16 @@ export class AgentSprite {
         if (this._fidgetCooldownMs == null) {
             this._fidgetCooldownMs = 3000 + Math.random() * 6000;
         }
+        // Task 2.7: re-anchor 4-9 s nudges back to building facingPoint when dwelling.
+        if (this._anchorReinforceMs == null) {
+            this._anchorReinforceMs = 4000 + Math.random() * 5000;
+        }
+        this._anchorReinforceMs -= dt;
+        if (this._anchorReinforceMs <= 0) {
+            const building = this._buildingForType(this._lastBuildingType);
+            if (building) this._faceBuilding(building);
+            this._anchorReinforceMs = 4000 + Math.random() * 5000;
+        }
         this._fidgetCooldownMs -= dt;
         if (this._fidgetCooldownMs <= 0) {
             const sign = Math.random() > 0.5 ? 1 : -1;
@@ -907,6 +1020,48 @@ export class AgentSprite {
             this._fidgetActiveMs = 600 + Math.random() * 400;
             this._fidgetCooldownMs = 4000 + Math.random() * 5000;
         }
+    }
+
+    _advanceIdleStopAndLook(dt) {
+        // Task 2.12: every 18-30 s, IDLE agents pause 1-2 s and face a landmark.
+        if (this.motionScale <= 0 || this.chatPartner || this.chatting) return false;
+        if (this.agent?.status !== AgentStatus.IDLE) return false;
+        if (this._stopLookActiveMs > 0) {
+            this._stopLookActiveMs -= dt;
+            if (this._stopLookActiveMs <= 0) {
+                this._stopLookActiveMs = 0;
+            }
+            return true;
+        }
+        if (this._stopLookCooldownMs == null) {
+            this._stopLookCooldownMs = 18000 + Math.random() * 12000;
+        }
+        this._stopLookCooldownMs -= dt;
+        if (this._stopLookCooldownMs <= 0) {
+            const nearest = this._nearestLandmarkBuilding();
+            if (nearest) this._faceBuilding(nearest);
+            this._stopLookActiveMs = 1000 + Math.random() * 1000;
+            this._stopLookCooldownMs = 18000 + Math.random() * 12000;
+            return true;
+        }
+        return false;
+    }
+
+    _nearestLandmarkBuilding() {
+        let best = null;
+        let bestDist = Infinity;
+        for (const def of BUILDING_DEFS) {
+            if (!def || typeof def.x !== 'number' || typeof def.y !== 'number') continue;
+            const cx = def.x + (Number(def.width) || 1) / 2;
+            const cy = def.y + (Number(def.height) || 1) / 2;
+            const center = tileToWorld({ tileX: cx, tileY: cy });
+            const dist = Math.hypot(center.x - this.x, center.y - this.y);
+            if (dist < bestDist) {
+                bestDist = dist;
+                best = def;
+            }
+        }
+        return best;
     }
 
     _resetWalkCycle() {
@@ -1063,6 +1218,11 @@ export class AgentSprite {
             this._drawStatus(ctx, contentTopY);
         }
         this._drawStatusEmote(ctx, contentTopY);
+        // Tasks 2.8 + 2.11: plan-mode and retry glyphs sit above the silhouette.
+        // The status emote (kind != null) wins the slot; otherwise plan-mode glyph
+        // renders slightly higher. Retry glyph renders to the right.
+        this._drawPlanModeGlyph(ctx, contentTopY);
+        this._drawRetryGlyph(ctx, contentTopY);
         this._drawNameTag(ctx);
     }
 
@@ -2943,6 +3103,66 @@ export class AgentSprite {
         } else if (kind === 'thinking') {
             this._drawThinkingDotsGlyph(ctx, box, '#cfd6df');
         }
+        ctx.restore();
+    }
+
+    _drawPlanModeGlyph(ctx, contentTopY) {
+        // Task 2.8: render small blueprint/compass glyph (three angle ticks) when
+        // behavior.planMode is true. Hide if a status emote is already rendering
+        // to avoid overlap (status emote wins the slot).
+        if (!Number.isFinite(contentTopY)) return;
+        if (!this.behavior?.planMode) return;
+        if (this._statusEmoteKind()) return;
+        ctx.save();
+        const s = 1 / (this._zoom || 1);
+        ctx.translate(this.x, contentTopY);
+        ctx.scale(s, s);
+        ctx.translate(0, -22);
+        const box = 8;
+        const half = box / 2;
+        ctx.strokeStyle = '#8fc4ff';
+        ctx.lineWidth = 1.2;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        // Three connected angle ticks — draftsman's set-square silhouette.
+        ctx.moveTo(-half, half);
+        ctx.lineTo(half, half);
+        ctx.lineTo(-half, -half);
+        ctx.closePath();
+        ctx.stroke();
+        // Pivot dot at right-angle vertex.
+        ctx.fillStyle = '#cfe2ff';
+        ctx.fillRect(-half - 1, half - 1, 2, 2);
+        ctx.restore();
+    }
+
+    _drawRetryGlyph(ctx, contentTopY) {
+        // Task 2.11: yellow ↻ glyph for 6 s after last tool:retried event.
+        if (!Number.isFinite(contentTopY)) return;
+        if (!this.behavior?.isRetryGlyphActive?.()) return;
+        ctx.save();
+        const s = 1 / (this._zoom || 1);
+        ctx.translate(this.x, contentTopY);
+        ctx.scale(s, s);
+        // Offset slightly to the right so it doesn't collide with emote stack.
+        ctx.translate(12, -14);
+        const box = 8;
+        const r = box / 2;
+        ctx.strokeStyle = '#f6cf60';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, Math.PI * 0.25, Math.PI * 1.85);
+        ctx.stroke();
+        // Arrowhead at the open end.
+        ctx.fillStyle = '#f6cf60';
+        const ax = Math.cos(Math.PI * 1.85) * r;
+        const ay = Math.sin(Math.PI * 1.85) * r;
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(ax - 2, ay - 2);
+        ctx.lineTo(ax + 1, ay - 2);
+        ctx.closePath();
+        ctx.fill();
         ctx.restore();
     }
 
