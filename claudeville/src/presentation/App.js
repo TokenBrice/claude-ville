@@ -109,8 +109,16 @@ class App {
             this.notificationService = new NotificationService(this.toast);
             this._bindChronicleSignals();
 
+            // 4-1. Behavior simulator (?sim=1, dev only — overrides session ingestion)
+            const simMode = new URLSearchParams(location.search).get('sim') === '1';
+            if (simMode) {
+                const mod = await import('./character-mode/__simfixture__/AgentSimulator.js');
+                this.agentSimulator = new mod.default({ world: this.world, agentManager: this.agentManager, eventBus });
+                this.agentSimulator.start();
+            }
+
             // 5. Load initial data
-            await this.agentManager.loadInitialData();
+            if (!simMode) await this.agentManager.loadInitialData();
             if (this._destroyed) return;
 
             // 5-1. Load initial usage data
@@ -122,11 +130,13 @@ class App {
                 }
             });
 
-            // 6. Start session watching
-            this.sessionWatcher = new SessionWatcher(
-                this.agentManager, this.wsClient, this.dataSource
-            );
-            this.sessionWatcher.start();
+            // 6. Start session watching (skipped in sim mode)
+            if (!simMode) {
+                this.sessionWatcher = new SessionWatcher(
+                    this.agentManager, this.wsClient, this.dataSource
+                );
+                this.sessionWatcher.start();
+            }
 
             // 7. Handle canvas resizing (run before the renderer so the canvas size is set)
             this._bindResize();
