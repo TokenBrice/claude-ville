@@ -732,7 +732,7 @@ export class AgentSprite {
         // Handle chatting state
         if (this.chatting) {
             this._faceChatPartner();
-            this.chatBubbleAnim += 0.06 * frameScale;
+            this.chatBubbleAnim += 0.06 * this.motionScale * frameScale;
             this._advanceIdleAnimation(dt);
             return; // Do not move while chatting
         }
@@ -1199,7 +1199,7 @@ export class AgentSprite {
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
         // IDLE-status agents bob slower and shallower to read as "resting".
         const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
-        const bobY = this.animState === 'idle'
+        const bobY = this.animState === 'idle' && this.motionScale > 0
             ? Math.round(
                 isIdleStatus
                     ? Math.sin(this.frame * 0.25) * 0.4
