@@ -29,6 +29,18 @@ const MAX_LABEL_CHARS = 30;
 const COMMIT_EQUIVALENCE_WINDOW_MS = 10 * 60 * 1000;
 const HARBOR_FINALE_TILE = { tileX: 38.2, tileY: 6.6 };
 const HARBOR_SUMMARY_TILE = { tileX: 35.2, tileY: 21.5 };
+const FORCE_DEPARTURE_MS = 12000;
+const CAST_OFF_MS = 1500;
+const MIST_FADE_MS = 800;
+const BOOMERANG_OUT_MS = 16000;
+const BOOMERANG_IN_MS = 12000;
+const INBOUND_DURATION_MS = 36000;
+const INBOUND_FADE_IN_MS = 8000;
+const INBOUND_SHIP_CLASS_KEY = 'cutter';
+const UNTETHERED_MIN_COMMITS = 2;
+const UNTETHERED_HOLD_MS = 5 * 60 * 1000;
+const PUSH_SIGNAL_EXPIRY_MS = 8000;
+const HARBOR_BEACON_BUOY_TILE = { tileX: 26.0, tileY: 6.0 };
 const REPO_DOCK_SHIP_Y_OFFSET = 236;
 const REPO_DOCK_SHIP_SORT_OFFSET = 8;
 const MAX_HARBOR_SHIP_PACK_SIZE = 10;
@@ -246,6 +258,14 @@ const PUSH_STATUS_STYLE = {
         accent: '#f07668',
         panel: 'rgba(62, 31, 34, 0.93)',
         glow: 'rgba(240, 87, 76, 0.55)',
+    },
+    rejected: {
+        label: 'Push rejected',
+        shortLabel: 'rejected',
+        accent: '#ffd34a',
+        panel: 'rgba(60, 50, 22, 0.93)',
+        glow: 'rgba(255, 211, 74, 0.55)',
+        panelBorder: '#ff755d',
     },
     unknown: {
         label: 'Push sent',
@@ -1033,10 +1053,12 @@ function findExistingCommitShip(state, event) {
     return null;
 }
 
-function mergeCommitIntoShip(ship, event) {
+function mergeCommitIntoShip(ship, event, now = Date.now()) {
     const nextLabel = cleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
     const currentLabel = cleanCommitSubject(ship.label || '');
-    ship.eventIds = Array.isArray(ship.eventIds) ? ship.eventIds : [ship.id].filter(Boolean);
+    const previousEventIds = Array.isArray(ship.eventIds) ? ship.eventIds : [ship.id].filter(Boolean);
+    ship.eventIds = previousEventIds;
+    const isNewAmend = !!(event.id && !ship.eventIds.includes(event.id));
     if (event.id && !ship.eventIds.includes(event.id)) ship.eventIds.push(event.id);
     if (!ship.sha && event.sha) ship.sha = event.sha;
     if (!ship.branch && eventBranch(event)) ship.branch = eventBranch(event);
@@ -1046,6 +1068,19 @@ function mergeCommitIntoShip(ship, event) {
     }
     if (Number.isFinite(event.timestamp) && event.timestamp > 0) {
         ship.eventTime = Math.min(Number(ship.eventTime || event.timestamp), event.timestamp);
+    }
+    if (isNewAmend) {
+        // 3.6 — amended commit: bump count and flash hull for 400ms via amendFlashAt
+        ship.amendCount = Math.max(0, Number(ship.amendCount || 0)) + 1;
+        ship.amendFlashAt = now;
+    }
+    // 3.6 — detached HEAD detection (commit with empty branch)
+    if (eventBranch(event) === '' && ship.detachedHead !== true) {
+        ship.detachedHead = true;
+    }
+    // Track upstream hint when an adapter forwards it on commits
+    if (typeof event.hasUpstream === 'boolean' && ship.hasUpstreamHint == null) {
+        ship.hasUpstreamHint = event.hasUpstream;
     }
 }
 
@@ -1230,6 +1265,16 @@ function harborShipPackSize(ship = {}) {
 }
 
 function harborShipClass(ship = {}) {
+    // 3.2 — inbound ships use a small fixed class so the inbound ramp is visually consistent.
+    if (ship.isInbound) {
+        const variant = inboundShipClass();
+        return {
+            ...variant,
+            packSize: 1,
+            trim: 0,
+            scale: variant.scale,
+        };
+    }
     const packSize = harborShipPackSize(ship);
     const variant = HARBOR_SHIP_CLASSES.find(item => packSize >= item.minCommits)
         || HARBOR_SHIP_CLASSES[HARBOR_SHIP_CLASSES.length - 1];
@@ -1241,6 +1286,39 @@ function harborShipClass(ship = {}) {
         trim,
         scale: variant.key === 'skiff' ? skiffScale : variant.scale,
     };
+}
+
+// 3.5 — push lifecycle: mass-scaled departure (overridden by force-push)
+function dynamicDepartureMs(ship = {}, force = null) {
+    if (force === true) return FORCE_DEPARTURE_MS;
+    const packSize = Math.max(1, harborShipPackSize(ship));
+    return DEPARTURE_MS + Math.min(20000, packSize * 1200);
+}
+
+// 3.2 — inbound ship class lookup
+function inboundShipClass() {
+    return HARBOR_SHIP_CLASSES.find(item => item.key === INBOUND_SHIP_CLASS_KEY)
+        || HARBOR_SHIP_CLASSES[HARBOR_SHIP_CLASSES.length - 1];
+}
+
+// 3.2 — parse incoming commit count from pull flags/remote args. Best-effort.
+function parseIncomingCommits(event = {}) {
+    const flags = Array.isArray(event.flags) ? event.flags : [];
+    const stderr = String(event.stderr || '');
+    // Look for tokens like "+12" or "Fast-forwarded ... 12 files changed".
+    const stderrMatch = stderr.match(/(\d+)\s+(?:files?\s+changed|commits?|insertions?|new\s+commits?)/i);
+    if (stderrMatch) {
+        const n = parseInt(stderrMatch[1], 10);
+        if (Number.isFinite(n) && n > 0) return Math.min(10, n);
+    }
+    for (const flag of flags) {
+        const m = String(flag).match(/^--depth=(\d+)$/);
+        if (m) {
+            const n = parseInt(m[1], 10);
+            if (Number.isFinite(n) && n > 0) return Math.min(10, n);
+        }
+    }
+    return 0;
 }
 
 export function reduceHarborTrafficState(previous, events, options = {}) {
@@ -1274,7 +1352,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const existingShip = findExistingCommitShip(state, event);
             if (existingShip) {
                 state.seenEventIds.add(event.id);
-                mergeCommitIntoShip(existingShip, event);
+                mergeCommitIntoShip(existingShip, event, now);
                 continue;
             }
             const branch = eventBranch(event);
@@ -1297,6 +1375,59 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 eventTime: event.timestamp || now,
                 createdAt: now,
                 eventIds: [event.id],
+                // 3.6 — edge case flags inferred at commit time
+                detachedHead: branch === '',
+                hasUpstreamHint: typeof event.hasUpstream === 'boolean' ? event.hasUpstream : null,
+                amendCount: 0,
+            });
+            continue;
+        }
+
+        // 3.2 — pull/fetch as inbound ships sailing toward harbor.
+        if (event.type === 'pull' || event.type === 'fetch') {
+            if (motionScale === 0) continue;
+            const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
+                ? Math.max(0, now - event.timestamp)
+                : 0;
+            if (eventAge > RECENT_PUSH_REPLAY_MS) continue;
+            const inboundId = `inbound:${event.id}`;
+            if (state.ships.has(inboundId)) continue;
+            const branch = eventBranch(event);
+            const profile = trafficProfile(event.project, branch);
+            const laneIndex = stableHash(`${event.project}:${branch}:${event.id}:inbound`) % SEA_LANES.length;
+            const cargoCount = parseIncomingCommits(event);
+            // Choose an outer-roadstead anchor for fetch (waits) or a berth for pull.
+            const isFetch = event.type === 'fetch';
+            const outerRoadsteads = HARBOR_SQUAD_ANCHORAGES.filter(a => a.zone === 'outer-roadstead');
+            const roadstead = outerRoadsteads[stableHash(`${event.project}:${event.id}:roadstead`) % outerRoadsteads.length]
+                || HARBOR_SQUAD_ANCHORAGES[0];
+            const { berthIndex, quayIndex } = isFetch
+                ? { berthIndex: -1, quayIndex: assignedQuayIndex(state, event.project) }
+                : chooseBerthIndex(state, event.project);
+            state.nextSequence++;
+            state.ships.set(inboundId, {
+                id: inboundId,
+                project: event.project,
+                branch,
+                targetRef: event.targetRef || '',
+                repoName: profile.shortName,
+                quayIndex,
+                sha: '',
+                label: isFetch ? 'fetch' : 'pull',
+                status: 'arriving',
+                arrivingKind: isFetch ? 'fetch' : 'pull',
+                inboundCargoCount: cargoCount,
+                inboundRoadsteadTile: isFetch ? { tileX: roadstead.tileX, tileY: roadstead.tileY } : null,
+                berthIndex: berthIndex >= 0 ? berthIndex : (state.nextSequence % BERTHS.length),
+                laneIndex,
+                arrivingStartedAt: now,
+                arrivingDuration: INBOUND_DURATION_MS,
+                eventTime: event.timestamp || now,
+                createdAt: now,
+                eventIds: [event.id],
+                isInbound: true,
+                detachedHead: false,
+                amendCount: 0,
             });
             continue;
         }
@@ -1317,6 +1448,10 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const statusChanged = previousStatus && previousStatus !== status;
             const branch = eventBranch(event);
             const profile = trafficProfile(event.project, branch);
+            // 3.1 — capture force flag (true / 'lease' / 'includes')
+            const forceFlag = event.force === true || event.force === 'lease' || event.force === 'includes'
+                ? event.force
+                : null;
 
             let selectedShips = [];
             const existingShipIds = new Set(existingBatch?.shipIds || []);
@@ -1338,7 +1473,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             }
             selectedShips.sort(compareDepartingShips);
 
-            if (status !== 'success' && status !== 'failed') {
+            if (status !== 'success' && status !== 'failed' && status !== 'rejected') {
                 if (existingBatch?.status === 'unknown') state.batches.delete(batchId);
                 state.pushEvents.set(event.id, {
                     id: event.id,
@@ -1383,6 +1518,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 label: event.label || existingBatch?.label || '',
                 targetRef: event.targetRef || existingBatch?.targetRef || '',
                 status,
+                // 3.1 — keep force flag on the batch so renderers can branch on it
+                force: forceFlag,
                 shipIds,
                 shipCount: shipIds.length,
                 sequence: existingBatch?.sequence || ++state.nextBatchSequence,
@@ -1445,6 +1582,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ship.anchorageName = dockMeta.anchorageName;
                     ship.anchorageIndex = dockMeta.anchorageIndex;
                 }
+                // 3.1 — propagate force flag to each ship so draw/lifecycle helpers can react.
+                ship.pushForce = forceFlag;
                 if (status === 'failed') {
                     ship.status = 'docked';
                     ship.failedAt = skipOldReplay ? null : now;
@@ -1453,24 +1592,79 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ship.departEventTime = null;
                     return;
                 }
+                // 3.3 — rejected push boomerangs: out then back, redocks with caution flag.
+                if (status === 'rejected') {
+                    if (statusChanged || !ship.boomerangStartedAt) {
+                        ship.boomerangStartedAt = skipDepartureAnimation
+                            ? now - BOOMERANG_OUT_MS - BOOMERANG_IN_MS - 1
+                            : now + departSquadIndex * DEPARTURE_STAGGER_MS;
+                    }
+                    ship.status = skipDepartureAnimation ? 'docked' : 'rejecting';
+                    ship.departEventId = event.id;
+                    ship.departEventTime = event.timestamp || now;
+                    return;
+                }
                 ship.status = 'departing';
                 ship.departEventId = event.id;
+                // 3.5 — mass-scaled departure (force-push wins).
+                ship.departMsOverride = dynamicDepartureMs(ship, forceFlag);
                 if (status === 'success' && previousStatus !== 'success') {
                     ship.departStartedAt = null;
                 }
                 ship.departStartedAt = skipDepartureAnimation
-                    ? now - DEPARTURE_MS - FADE_DELAY_MS - EXIT_FADE_MS - EXIT_HOLD_MS - 1
+                    ? now - ship.departMsOverride - FADE_DELAY_MS - EXIT_FADE_MS - EXIT_HOLD_MS - 1
                     : ship.departStartedAt || startedAt + departSquadIndex * DEPARTURE_STAGGER_MS;
+                // 3.5 — cast-off phase: hold at berth briefly before the proper departure.
+                if (!skipDepartureAnimation && (statusChanged || !ship.castOffStartedAt)) {
+                    ship.castOffStartedAt = ship.departStartedAt;
+                }
                 ship.departEventTime = event.timestamp || now;
             });
         }
     }
 
     for (const [id, ship] of state.ships) {
+        // 3.3 — boomerang lifecycle: out then back, then redock with caution flag.
+        if (ship.status === 'rejecting') {
+            const startedAt = ship.boomerangStartedAt || now;
+            const totalMs = BOOMERANG_OUT_MS + BOOMERANG_IN_MS;
+            if (motionScale === 0 || now - startedAt >= totalMs) {
+                ship.status = 'docked';
+                ship.pushStatus = 'rejected';
+                ship.rejectedAt = now;
+                ship.boomerangStartedAt = null;
+                ship.departStartedAt = null;
+                ship.departEventId = null;
+            }
+            continue;
+        }
+        // 3.2 — inbound lifecycle: arrive then dock (pull) or anchor (fetch).
+        if (ship.status === 'arriving') {
+            const startedAt = ship.arrivingStartedAt || now;
+            const duration = Math.max(1, Number(ship.arrivingDuration) || INBOUND_DURATION_MS);
+            if (motionScale === 0 || now - startedAt >= duration) {
+                if (ship.arrivingKind === 'fetch') {
+                    ship.status = 'anchored';
+                } else {
+                    ship.status = 'docked';
+                    ship.eventTime = ship.eventTime || now;
+                }
+            }
+            continue;
+        }
+        // 3.2 — anchored fetch ships expire after a while.
+        if (ship.status === 'anchored') {
+            const startedAt = ship.arrivingStartedAt || now;
+            if (now - startedAt > INBOUND_DURATION_MS * 2) {
+                state.ships.delete(id);
+            }
+            continue;
+        }
         if (ship.status !== 'departing') continue;
+        const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
         const startedAt = ship.departStartedAt || now;
-        const progress = motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / DEPARTURE_MS));
-        if (progress >= 1 && now - startedAt > DEPARTURE_MS + FADE_DELAY_MS + EXIT_FADE_MS + EXIT_HOLD_MS) {
+        const progress = motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / departMs));
+        if (progress >= 1 && now - startedAt > departMs + FADE_DELAY_MS + EXIT_FADE_MS + EXIT_HOLD_MS) {
             const batch = ship.batchId ? state.batches.get(ship.batchId) : null;
             if (batch) {
                 const startTile = Number.isFinite(Number(ship?.departFromTile?.tileX))
@@ -1756,6 +1950,37 @@ export class HarborTraffic {
         };
     }
 
+    // 3.6 — detect projects without upstream tracking. A project is "untethered" if either:
+    //   (a) any ship has an explicit hasUpstreamHint === false, OR
+    //   (b) it has >= UNTETHERED_MIN_COMMITS docked commits and no push event has ever landed
+    //       (the lagoon has held the commits without progress).
+    _computeUntetheredProjects(now = Date.now()) {
+        const untethered = new Set();
+        const dockedByProject = new Map();
+        const pushedProjects = new Set();
+        for (const push of this.state.pushEvents.values()) {
+            if (push?.project) pushedProjects.add(String(push.project));
+        }
+        for (const ship of this.state.ships.values()) {
+            if (ship.status !== 'docked') continue;
+            const projectKey = String(ship.project || 'unknown');
+            const entry = dockedByProject.get(projectKey) || { count: 0, oldest: now };
+            entry.count += 1;
+            entry.oldest = Math.min(entry.oldest, ship.createdAt || now);
+            dockedByProject.set(projectKey, entry);
+            if (ship.hasUpstreamHint === false) {
+                untethered.add(projectKey);
+            }
+        }
+        for (const [project, entry] of dockedByProject) {
+            if (pushedProjects.has(project)) continue;
+            if (entry.count >= UNTETHERED_MIN_COMMITS && (now - entry.oldest) >= UNTETHERED_HOLD_MS) {
+                untethered.add(project);
+            }
+        }
+        return untethered;
+    }
+
     _observePeakDensity(now) {
         if (!this._peakWindow) this._peakWindow = { peak: 0, since: now };
         if (this.state.ships.size > this._peakWindow.peak) {
@@ -1881,6 +2106,8 @@ export class HarborTraffic {
             const baseKey = repoProfile(marker.payload?.project).key;
             if (baseKey && !markerByRepo.has(baseKey)) markerByRepo.set(baseKey, marker.payload);
         }
+        // 3.6 — compute untethered projects (no upstream, >N docked commits).
+        const untetheredProjects = this._computeUntetheredProjects(now);
         const dockedByRepo = new Map();
         const departing = [];
 
@@ -1939,6 +2166,10 @@ export class HarborTraffic {
                     ? this.harborCrates.get(squad.key) || null
                     : null;
                 if (drawable.payload.harborCrate) crateDrawnForKeys.add(squad.key);
+                // 3.6 — mark flagship of an untethered project so renderer can draw broken-rope chevron.
+                if (meta.squadShipIndex === 0 && untetheredProjects.has(String(drawable.payload.project || 'unknown'))) {
+                    drawable.payload.untetheredFlag = true;
+                }
                 drawable.sortY = drawable.payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
                 visible.push(drawable);
             }
@@ -1954,8 +2185,45 @@ export class HarborTraffic {
         for (const drawable of this._harborCrateDrawables(markerByRepo, crateDrawnForKeys)) {
             visible.push(drawable);
         }
+        // 3.7 — single lagoon channel buoy at the Commit Lagoon → Harbor seam.
+        const buoyDrawable = this._lagoonChannelBuoyDrawable(now);
+        if (buoyDrawable) visible.push(buoyDrawable);
 
         return visible.sort((a, b) => a.sortY - b.sortY);
+    }
+
+    // 3.7 — lagoon channel buoy: pulses in the repo accent of whichever ship is mid-storage-transfer.
+    _lagoonChannelBuoyDrawable(now = Date.now()) {
+        const pos = toWorld(HARBOR_BEACON_BUOY_TILE.tileX, HARBOR_BEACON_BUOY_TILE.tileY);
+        let activeProfile = null;
+        let activeCount = 0;
+        let activeProject = '';
+        // Find an active storage transfer (Commit Lagoon ↔ Harbor) to colour the buoy.
+        for (const [shipId] of this.storageTransfers) {
+            const ship = this.state.ships.get(shipId);
+            if (!ship) continue;
+            const profile = trafficProfile(ship.project, ship.branch);
+            activeProfile = profile;
+            activeProject = trafficLabel(ship.project, ship.branch);
+            // Count commits flowing toward the harbor via the lagoon.
+            for (const other of this.state.ships.values()) {
+                if (other.status === 'docked' && other.project === ship.project) activeCount += 1;
+            }
+            break;
+        }
+        return {
+            kind: 'harbor-traffic',
+            sortY: pos.y + 12,
+            payload: {
+                type: 'lagoon-channel-buoy',
+                x: pos.x,
+                y: pos.y,
+                profile: activeProfile,
+                activeProject,
+                activeCount,
+                ts: now,
+            },
+        };
     }
 
     enumerateWakeDescriptors(now = Date.now()) {
@@ -2231,8 +2499,10 @@ export class HarborTraffic {
 
     _batchFinaleDelay(batch) {
         const status = batch?.status || 'unknown';
-        if (status === 'failed' || this.motionScale === 0) return 0;
-        return DEPARTURE_MS * 0.96;
+        if (status === 'failed' || status === 'rejected' || this.motionScale === 0) return 0;
+        // 3.1 — force-push uses a shorter departure window, so fire the whirlpool earlier.
+        const baseDeparture = batch?.force === true ? FORCE_DEPARTURE_MS : DEPARTURE_MS;
+        return baseDeparture * 0.96;
     }
 
     _batchClockStart(batch, now = Date.now()) {
@@ -2306,6 +2576,10 @@ export class HarborTraffic {
         if (drawable.payload.type === 'crate') {
             const profile = drawable.payload.profile || repoProfile(drawable.payload.project);
             this._drawHarborCrate(ctx, drawable.payload, zoom, 1, profile);
+            return;
+        }
+        if (drawable.payload.type === 'lagoon-channel-buoy') {
+            this._drawLagoonChannelBuoy(ctx, drawable.payload, zoom);
             return;
         }
         this._drawShip(ctx, drawable.payload, zoom);
@@ -2401,19 +2675,101 @@ export class HarborTraffic {
         let x = start.x;
         let y = start.y;
         let progress = 0;
+        let castOff = 0;
+        let castingOff = false;
+        let inboundProgress = 0;
 
         if (ship.status === 'departing') {
             const route = this._shipRouteTiles(ship).map(point => toWorld(point.tileX, point.tileY));
+            const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
             const startedAt = ship.departStartedAt || now;
-            progress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / DEPARTURE_MS));
-            const eased = easedDeparture(progress);
-            const pos = pointAlongPath(route, eased);
-            const previous = pointAlongPath(route, Math.max(0, eased - 0.035));
+            const elapsed = Math.max(0, now - startedAt);
+            // 3.5 — cast-off phase ('casting-off'): hold ship at berth, stutter east ~8px.
+            if (this.motionScale > 0 && elapsed < CAST_OFF_MS) {
+                castingOff = true;
+                ship.phase = 'casting-off';
+                castOff = elapsed / CAST_OFF_MS;
+                x = start.x + castOff * 8;
+                y = start.y;
+            } else {
+                if (ship.phase === 'casting-off') ship.phase = 'departing';
+                const effectiveElapsed = Math.max(0, elapsed - CAST_OFF_MS);
+                progress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, effectiveElapsed / departMs));
+                const eased = easedDeparture(progress);
+                const pos = pointAlongPath(route, eased);
+                const previous = pointAlongPath(route, Math.max(0, eased - 0.035));
+                x = pos.x;
+                y = pos.y;
+                ship.tailX = previous.x;
+                ship.tailY = previous.y;
+                if (progress >= 1 && this.motionScale === 0) return null;
+            }
+        } else if (ship.status === 'rejecting') {
+            // 3.3 — boomerang: 16s out, 12s back; turn 180° at apex.
+            const route = this._shipRouteTiles(ship).map(point => toWorld(point.tileX, point.tileY));
+            const startedAt = ship.boomerangStartedAt || now;
+            const elapsed = Math.max(0, now - startedAt);
+            let phaseProgress;
+            let outbound = true;
+            if (elapsed < BOOMERANG_OUT_MS) {
+                phaseProgress = elapsed / BOOMERANG_OUT_MS;
+                // Outbound never reaches further than the halfway point along the route.
+                const eased = easedDeparture(phaseProgress) * 0.5;
+                const pos = pointAlongPath(route, eased);
+                const previous = pointAlongPath(route, Math.max(0, eased - 0.035));
+                x = pos.x;
+                y = pos.y;
+                ship.tailX = previous.x;
+                ship.tailY = previous.y;
+                progress = phaseProgress * 0.5;
+            } else {
+                outbound = false;
+                phaseProgress = Math.min(1, (elapsed - BOOMERANG_OUT_MS) / BOOMERANG_IN_MS);
+                // Inbound from the apex back toward the berth.
+                const eased = 0.5 - easedDeparture(phaseProgress) * 0.5;
+                const pos = pointAlongPath(route, eased);
+                const next = pointAlongPath(route, Math.min(1, eased + 0.035));
+                x = pos.x;
+                y = pos.y;
+                ship.tailX = next.x;
+                ship.tailY = next.y;
+                progress = eased;
+            }
+            return {
+                kind: 'harbor-traffic',
+                sortY: y,
+                payload: {
+                    ...ship,
+                    type: 'ship',
+                    x,
+                    y,
+                    tailX: ship.tailX,
+                    tailY: ship.tailY,
+                    progress,
+                    boomerangOutbound: outbound,
+                    boomerangPhaseProgress: phaseProgress,
+                    elapsed,
+                },
+            };
+        } else if (ship.status === 'arriving' || ship.status === 'anchored') {
+            // 3.2 — inbound ship: sail toward dock through the reversed route.
+            const dockTile = ship.arrivingKind === 'fetch'
+                ? (ship.inboundRoadsteadTile || { tileX: 38.05, tileY: 13.15 })
+                : startTile;
+            const fakeShipForRoute = { ...ship, departFromTile: dockTile };
+            const fwdRoute = composeWaterRouteTiles(dockTile, fakeShipForRoute, this.waterRouteData)
+                .map(point => toWorld(point.tileX, point.tileY));
+            const reversedRoute = [...fwdRoute].reverse();
+            const startedAt = ship.arrivingStartedAt || now;
+            const duration = Math.max(1, Number(ship.arrivingDuration) || INBOUND_DURATION_MS);
+            inboundProgress = this.motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / duration));
+            const eased = easedDeparture(inboundProgress);
+            const pos = pointAlongPath(reversedRoute, eased);
+            const next = pointAlongPath(reversedRoute, Math.min(1, eased + 0.035));
             x = pos.x;
             y = pos.y;
-            ship.tailX = previous.x;
-            ship.tailY = previous.y;
-            if (progress >= 1 && this.motionScale === 0) return null;
+            ship.tailX = next.x;
+            ship.tailY = next.y;
         }
 
         return {
@@ -2427,15 +2783,25 @@ export class HarborTraffic {
                 tailX: ship.tailX,
                 tailY: ship.tailY,
                 progress,
-                elapsed: Math.max(0, now - (ship.departStartedAt || now)),
+                castingOff,
+                castOffProgress: castOff,
+                inboundProgress,
+                elapsed: Math.max(0, now - (ship.departStartedAt || ship.arrivingStartedAt || ship.boomerangStartedAt || now)),
             },
         };
     }
 
     _drawShip(ctx, ship, zoom) {
-        const alpha = ship.status === 'departing'
-            ? this._departureAlpha(ship)
-            : 1;
+        // 3.2 — inbound ships fade in over the first 8s of approach.
+        let alpha;
+        if (ship.status === 'departing') {
+            alpha = this._departureAlpha(ship);
+        } else if (ship.status === 'arriving' || ship.status === 'anchored') {
+            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
+            alpha = Math.max(0, Math.min(1, elapsed / INBOUND_FADE_IN_MS));
+        } else {
+            alpha = 1;
+        }
         if (alpha <= 0.02) return;
         const profile = trafficProfile(ship.project, ship.branch);
         const shipClass = harborShipClass(ship);
@@ -2443,24 +2809,127 @@ export class HarborTraffic {
         // Ship wakes are exported through enumerateWakeDescriptors() so the
         // water layer can render them beneath harbor traffic and buildings.
 
-        if (this.sprites) {
-            this._drawShipSprite(ctx, ship, alpha, shipClass);
-        } else {
-            this._drawFallbackBoat(ctx, ship.x, ship.y, alpha, shipClass, profile);
+        ctx.save();
+        // 3.6 — amended commit flash hull in repo accent for 400ms.
+        const amendFlashAt = Number(ship.amendFlashAt) || 0;
+        const amendFlashElapsed = amendFlashAt ? Math.max(0, Date.now() - amendFlashAt) : Infinity;
+        const flashing = amendFlashElapsed < 400;
+        // 3.1 — force-push: ship lists and sinks in last 4s of departure.
+        let listAngle = 0;
+        let sinkY = 0;
+        let forceSinkAlpha = alpha;
+        if (this.motionScale > 0 && ship.status === 'departing' && ship.pushForce === true) {
+            const departMs = Math.max(1, Number(ship.departMsOverride) || FORCE_DEPARTURE_MS);
+            const sinkWindow = Math.min(4000, departMs * 0.5);
+            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
+            const sinkProgress = Math.max(0, Math.min(1, (elapsed - (departMs - sinkWindow)) / sinkWindow));
+            if (sinkProgress > 0) {
+                listAngle = (4 + 4 * sinkProgress) * (Math.PI / 180); // 4° → 8°
+                sinkY = 16 * sinkProgress;
+                forceSinkAlpha = Math.max(0, alpha * (1 - sinkProgress * 0.55));
+            }
         }
-        this._drawShipClassOverlay(ctx, ship, alpha, profile, shipClass);
-        this._drawRepoFlag(ctx, ship, zoom, alpha, profile, shipClass);
+        if (listAngle !== 0 || sinkY !== 0) {
+            ctx.translate(ship.x, ship.y);
+            ctx.rotate(listAngle);
+            ctx.translate(-ship.x, -ship.y + sinkY);
+        }
+        if (flashing && this.motionScale > 0) {
+            ctx.save();
+            ctx.globalAlpha = 0.42 * (1 - amendFlashElapsed / 400);
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.fillStyle = profile.accent;
+            ctx.beginPath();
+            ctx.ellipse(ship.x, ship.y - 2, 26 * (shipClass.scale || 1), 14 * (shipClass.scale || 1), 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+        }
+        if (this.sprites) {
+            this._drawShipSprite(ctx, ship, forceSinkAlpha, shipClass);
+        } else {
+            this._drawFallbackBoat(ctx, ship.x, ship.y, forceSinkAlpha, shipClass, profile);
+        }
+        this._drawShipClassOverlay(ctx, ship, forceSinkAlpha, profile, shipClass);
+        this._drawRepoFlag(ctx, ship, zoom, forceSinkAlpha, profile, shipClass);
+        ctx.restore();
 
-        if (ship.status === 'docked') {
+        // 3.1 — red spray particles puff at the keel during sinking (force-push).
+        if (this.motionScale > 0 && ship.status === 'departing' && ship.pushForce === true) {
+            const departMs = Math.max(1, Number(ship.departMsOverride) || FORCE_DEPARTURE_MS);
+            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
+            const sinkWindow = Math.min(4000, departMs * 0.5);
+            const sinkProgress = Math.max(0, Math.min(1, (elapsed - (departMs - sinkWindow)) / sinkWindow));
+            if (sinkProgress > 0) {
+                this._drawRedSprayParticles(ctx, ship, sinkProgress);
+            }
+        }
+
+        // 3.5 — mist fade through last 800ms of departure.
+        if (this.motionScale > 0 && ship.status === 'departing') {
+            const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
+            const elapsed = Math.max(0, Number(ship.elapsed) || 0);
+            const mistStart = departMs - MIST_FADE_MS;
+            if (elapsed >= mistStart) {
+                const t = Math.max(0, Math.min(1, (elapsed - mistStart) / MIST_FADE_MS));
+                this._drawMistFade(ctx, ship.x, ship.y, t);
+            }
+        }
+
+        if (ship.status === 'docked' || ship.status === 'anchored') {
             this._drawMooringTick(ctx, ship, zoom, profile, shipClass);
+            // 3.5 — cast-off phase: shrinking mooring tick + puff handled via _drawMooringTick variant.
+        }
+        if (ship.status === 'departing' && this.motionScale > 0 && Number(ship.elapsed || 0) < CAST_OFF_MS) {
+            // mooring tick shrinks as the cast-off animates.
+            this._drawMooringTick(ctx, ship, zoom, profile, shipClass, {
+                shrink: 1 - Math.min(1, Number(ship.elapsed || 0) / CAST_OFF_MS),
+                puff: true,
+            });
         }
         if (ship.status === 'docked' && ship.pushStatus === 'failed') {
             this._drawFailedPushMark(ctx, ship, zoom, shipClass);
         }
+        // 3.3 — rejected ships docked back with caution flag overlay.
+        if (ship.status === 'docked' && ship.pushStatus === 'rejected') {
+            this._drawRejectedCautionFlag(ctx, ship, zoom, shipClass);
+        }
+        // 3.3 — boomerang collision flare at apex (~50% of phase 1).
+        if (ship.status === 'rejecting' && ship.boomerangOutbound && Number(ship.boomerangPhaseProgress || 0) > 0.92) {
+            this._drawCollisionFlare(ctx, ship.x, ship.y, Math.min(1, (Number(ship.boomerangPhaseProgress) - 0.92) / 0.08));
+        }
+        // 3.1 — force flag heraldic decorations (only on flagship/dreadnought).
+        if (ship.pushForce === 'lease' && (shipClass.key === 'flagship' || shipClass.key === 'dreadnought')) {
+            this._drawForceLeaseBanner(ctx, ship, zoom, shipClass);
+        } else if (ship.pushForce === 'includes') {
+            this._drawForceIncludesUnderline(ctx, ship, zoom, shipClass);
+        }
+        // 3.5 — flagship/dreadnought hoist a secondary pennon at cast-off end.
+        if ((shipClass.key === 'flagship' || shipClass.key === 'dreadnought')
+            && ship.status === 'departing'
+            && Number(ship.elapsed || 0) >= CAST_OFF_MS
+            && Number(ship.elapsed || 0) < CAST_OFF_MS + 1200) {
+            this._drawSecondaryPennon(ctx, ship, zoom, profile, shipClass);
+        }
+        // 3.6 — untethered (no remote) flagship gets a broken-rope chevron.
+        if (ship.untetheredFlag) {
+            this._drawUntetheredFlag(ctx, ship, zoom, profile, shipClass);
+        }
+        // 3.6 — detached HEAD ships get a checkered band on the flag.
+        if (ship.detachedHead && !ship.branch) {
+            this._drawDetachedHeadBand(ctx, ship, zoom, shipClass);
+        }
+        // 3.6 — amended commits show a superscript on the flag.
+        if (Number(ship.amendCount || 0) > 0) {
+            this._drawAmendSuperscript(ctx, ship, zoom, shipClass);
+        }
+        // 3.2 — inbound pull/fetch ships carry crates per incoming-commit count.
+        if (ship.isInbound && Number(ship.inboundCargoCount || 0) > 0) {
+            this._drawInboundCrates(ctx, ship, zoom, profile, shipClass);
+        }
         if (ship.harborCrate) {
             this._drawHarborCrate(ctx, ship, zoom, alpha, profile, shipClass);
         }
-        if (ship.showCommitLabel !== false || ship.pushStatus === 'failed') {
+        if (ship.showCommitLabel !== false || ship.pushStatus === 'failed' || ship.pushStatus === 'rejected') {
             this._drawCommitPennant(ctx, ship, zoom, alpha, profile, shipClass);
         }
     }
@@ -2688,15 +3157,333 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    _drawMooringTick(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+    _drawMooringTick(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship), options = {}) {
         const s = 1 / Math.max(1, zoom || 1);
         const style = PUSH_STATUS_STYLE[ship.pushStatus] || PUSH_STATUS_STYLE.success;
         const offsetX = Math.max(0, Number(shipClass.flagOffsetX || 0));
         const offsetY = Math.max(0, Number(shipClass.flagOffsetY || 0)) * 0.45;
+        const shrink = Math.max(0, Math.min(1, Number(options.shrink ?? 1)));
+        if (shrink <= 0.02 && !options.puff) return;
         ctx.save();
         ctx.fillStyle = ship.pushStatus ? style.accent : profile.accent;
-        ctx.fillRect(Math.round(ship.x + (17 + offsetX) * s), Math.round(ship.y - (23 + offsetY) * s), Math.max(1, Math.round(2 * s)), Math.max(1, Math.round(5 * s)));
+        const fullHeight = Math.max(1, Math.round(5 * s));
+        const height = Math.max(1, Math.round(fullHeight * shrink));
+        const baseY = Math.round(ship.y - (23 + offsetY) * s) + (fullHeight - height);
+        ctx.fillRect(Math.round(ship.x + (17 + offsetX) * s), baseY, Math.max(1, Math.round(2 * s)), height);
+        // 3.5 — small puff when cast-off begins shrinking the mooring tick.
+        if (options.puff && this.motionScale > 0) {
+            ctx.globalAlpha = 0.45 * (1 - (1 - shrink));
+            ctx.fillStyle = 'rgba(225, 225, 225, 0.65)';
+            const px = Math.round(ship.x + (17 + offsetX) * s);
+            for (let i = 0; i < 4; i++) {
+                const dx = ((i % 2 === 0) ? -1 : 1) * (1 + i) * s;
+                const dy = -i * 1.5 * s;
+                ctx.fillRect(px + dx, baseY + dy, Math.max(1, Math.round(1.5 * s)), Math.max(1, Math.round(1.5 * s)));
+            }
+        }
         ctx.restore();
+    }
+
+    // 3.1 — yellow chevron banner above the flagship's flag for --force-with-lease.
+    _drawForceLeaseBanner(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
+        const y = Math.round(ship.y - (45 + (shipClass.flagOffsetY || 0)) * s);
+        ctx.save();
+        ctx.fillStyle = '#ffd34a';
+        ctx.strokeStyle = 'rgba(40, 28, 8, 0.78)';
+        ctx.lineWidth = Math.max(1, Math.round(1 * s));
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + 11 * s, y + 4 * s);
+        ctx.lineTo(x, y + 8 * s);
+        ctx.lineTo(x + 5 * s, y + 4 * s);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // 3.1 — thin yellow underline beneath the flag for --force-if-includes.
+    _drawForceIncludesUnderline(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
+        const y = Math.round(ship.y - (16 + (shipClass.flagOffsetY || 0)) * s);
+        ctx.save();
+        ctx.fillStyle = '#ffd34a';
+        ctx.fillRect(x, y, Math.max(2, Math.round(11 * s)), Math.max(1, Math.round(1.5 * s)));
+        ctx.restore();
+    }
+
+    // 3.1 — red spray particles puff at the keel during a force-push sink.
+    _drawRedSprayParticles(ctx, ship, sinkProgress) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0.4, 0.85 * sinkProgress);
+        ctx.fillStyle = '#ff4a39';
+        for (let i = 0; i < 5; i++) {
+            const seed = stableHash(`${ship.id || ''}:spray:${i}`);
+            const angle = ((seed % 628) / 100) + this.frame * 0.02 * (i % 2 === 0 ? 1 : -1);
+            const distance = 4 + ((seed >> 2) % 12) * sinkProgress;
+            const sx = ship.x + Math.cos(angle) * distance;
+            const sy = ship.y + 2 + Math.sin(angle) * distance * 0.4;
+            ctx.fillRect(Math.round(sx), Math.round(sy), 2, 2);
+        }
+        ctx.restore();
+    }
+
+    // 3.5 — sea-mist fade gradient at the ship's last position.
+    _drawMistFade(ctx, x, y, t) {
+        const radius = 38 + t * 18;
+        const grd = ctx.createRadialGradient(x, y, 0, x, y, radius);
+        grd.addColorStop(0, `rgba(220, 224, 230, ${0.62 * t})`);
+        grd.addColorStop(0.6, `rgba(214, 222, 228, ${0.32 * t})`);
+        grd.addColorStop(1, 'rgba(214, 222, 228, 0)');
+        ctx.save();
+        ctx.fillStyle = grd;
+        ctx.beginPath();
+        ctx.ellipse(x, y, radius, radius * 0.55, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    // 3.5 — secondary pennon hoisted on flagship/dreadnought at cast-off end.
+    _drawSecondaryPennon(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
+        const y = Math.round(ship.y - (52 + (shipClass.flagOffsetY || 0)) * s);
+        ctx.save();
+        ctx.fillStyle = profile.accent;
+        ctx.beginPath();
+        ctx.moveTo(x + 2 * s, y);
+        ctx.lineTo(x + 8 * s, y + 3 * s);
+        ctx.lineTo(x + 2 * s, y + 6 * s);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+    }
+
+    // 3.3 — yellow caution flag overlay on a rejected ship.
+    _drawRejectedCautionFlag(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
+        const y = Math.round(ship.y - (38 + (shipClass.flagOffsetY || 0)) * s);
+        const pulse = this.motionScale > 0
+            ? 0.62 + 0.22 * Math.sin(this.frame * 0.18 + ship.berthIndex)
+            : 0.72;
+        ctx.save();
+        ctx.globalAlpha = pulse;
+        ctx.fillStyle = PUSH_STATUS_STYLE.rejected.accent;
+        ctx.strokeStyle = PUSH_STATUS_STYLE.rejected.panelBorder || '#ff755d';
+        ctx.lineWidth = Math.max(1, Math.round(1 * s));
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x + 10 * s, y + 4 * s);
+        ctx.lineTo(x, y + 8 * s);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // 3.3 — red collision flare burst at the boomerang turn point.
+    _drawCollisionFlare(ctx, x, y, t) {
+        ctx.save();
+        ctx.globalAlpha = Math.max(0.4, 0.95 * (1 - t));
+        ctx.strokeStyle = '#ff5a3c';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(x, y - 12, 8 + t * 12, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = '#ff7a55';
+        for (let i = 0; i < 6; i++) {
+            const angle = (i / 6) * Math.PI * 2;
+            const r = 10 + t * 14;
+            ctx.fillRect(Math.round(x + Math.cos(angle) * r), Math.round(y - 12 + Math.sin(angle) * r * 0.5), 2, 2);
+        }
+        ctx.restore();
+    }
+
+    // 3.6 — broken-rope chevron above the flag for untethered (no remote).
+    _drawUntetheredFlag(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
+        const y = Math.round(ship.y - (47 + (shipClass.flagOffsetY || 0)) * s);
+        ctx.save();
+        ctx.strokeStyle = '#d6dadf';
+        ctx.lineWidth = Math.max(1, Math.round(1.3 * s));
+        // broken-rope chevron: two segments with a gap between
+        ctx.beginPath();
+        ctx.moveTo(x - 4 * s, y + 4 * s);
+        ctx.lineTo(x + 1 * s, y);
+        ctx.lineTo(x + 3 * s, y + 2 * s);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(x + 6 * s, y + 5 * s);
+        ctx.lineTo(x + 9 * s, y + 1 * s);
+        ctx.lineTo(x + 13 * s, y + 4 * s);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    // 3.6 — checkered black-and-white band overlay for detached HEAD.
+    _drawDetachedHeadBand(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = Math.round(ship.x + (15 + (shipClass.flagOffsetX || 0)) * s);
+        const y = Math.round(ship.y - (27 + (shipClass.flagOffsetY || 0)) * s);
+        const cell = Math.max(1, Math.round(2 * s));
+        ctx.save();
+        for (let i = 0; i < 5; i++) {
+            ctx.fillStyle = i % 2 === 0 ? '#1a1a1a' : '#f4f0e6';
+            ctx.fillRect(x + i * cell, y, cell, cell);
+        }
+        ctx.restore();
+    }
+
+    // 3.6 — small superscript on the flag indicating amend count (²).
+    _drawAmendSuperscript(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const count = Math.max(1, Number(ship.amendCount || 0));
+        if (count <= 0) return;
+        const labels = ['', '²', '³', '⁴', '⁵', '⁶', '⁷', '⁸', '⁹'];
+        const text = count > 1 ? (labels[count] || `^${count}`) : '¹';
+        const x = Math.round(ship.x + (26 + (shipClass.flagOffsetX || 0)) * s);
+        const y = Math.round(ship.y - (33 + (shipClass.flagOffsetY || 0)) * s);
+        ctx.save();
+        ctx.fillStyle = '#f6cf60';
+        ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        this._fillReadableText(ctx, text, x, y);
+        ctx.restore();
+    }
+
+    // 3.2 — small crates ride along inbound ships proportional to incoming commit count.
+    _drawInboundCrates(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const count = Math.min(4, Math.max(1, Number(ship.inboundCargoCount || 0)));
+        const baseY = Math.round(ship.y - 14 * (shipClass.scale || 1));
+        ctx.save();
+        ctx.fillStyle = '#8a5530';
+        ctx.strokeStyle = '#2d1c12';
+        ctx.lineWidth = Math.max(1, Math.round(1 * s));
+        for (let i = 0; i < count; i++) {
+            const cx = Math.round(ship.x - 8 * s + i * 5 * s);
+            const cy = baseY - i * 2 * s;
+            ctx.fillRect(cx, cy, Math.round(4 * s), Math.round(4 * s));
+            ctx.strokeRect(cx + 0.5, cy + 0.5, Math.round(4 * s) - 1, Math.round(4 * s) - 1);
+        }
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(Math.round(ship.x - 8 * s), Math.round(baseY + 5 * s), Math.max(2, Math.round(count * 5 * s)), 1);
+        ctx.restore();
+    }
+
+    // 3.7 — single channel buoy pulsing in the active storage-transfer repo accent.
+    _drawLagoonChannelBuoy(ctx, payload, zoom) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const profile = payload.profile;
+        const muted = !profile;
+        const accent = muted ? '#8c95a0' : profile.accent;
+        const pulse = (!muted && this.motionScale > 0)
+            ? 0.55 + 0.40 * (0.5 + 0.5 * Math.sin(this.frame * 0.16))
+            : 0.65;
+        const x = Math.round(payload.x);
+        const y = Math.round(payload.y);
+        ctx.save();
+        // Base — pylon shape rooted into the water.
+        ctx.fillStyle = 'rgba(38, 50, 58, 0.95)';
+        ctx.strokeStyle = 'rgba(15, 22, 28, 0.92)';
+        ctx.lineWidth = Math.max(1, Math.round(1 * s));
+        ctx.fillRect(x - 4 * s, y - 2 * s, 8 * s, 6 * s);
+        ctx.strokeRect(x - 4 * s + 0.5, y - 2 * s + 0.5, 8 * s - 1, 6 * s - 1);
+        // Lantern — pulses in the active repo accent (or muted when idle).
+        ctx.globalAlpha = pulse;
+        ctx.fillStyle = accent;
+        ctx.fillRect(x - 3 * s, y - 10 * s, 6 * s, 7 * s);
+        ctx.globalAlpha = Math.min(1, pulse * 1.2);
+        ctx.fillStyle = muted ? 'rgba(140, 149, 160, 0.6)' : 'rgba(255, 246, 200, 0.9)';
+        ctx.fillRect(x - 2 * s, y - 9 * s, 4 * s, 5 * s);
+        // Glow halo when active.
+        if (!muted) {
+            ctx.globalCompositeOperation = 'lighter';
+            ctx.globalAlpha = 0.32 * pulse;
+            const grd = ctx.createRadialGradient(x, y - 7 * s, 0, x, y - 7 * s, 22 * s);
+            grd.addColorStop(0, accent);
+            grd.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = grd;
+            ctx.beginPath();
+            ctx.arc(x, y - 7 * s, 22 * s, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = 'source-over';
+        }
+        ctx.restore();
+    }
+
+    // 3.4 — public API: lighthouse beam (WU3-B) consumes this to drive its strobe.
+    // Returns the most informative signal for the current tick.
+    getActivePushSignal(now = Date.now()) {
+        // 1. Active failed push → strobe red briefly.
+        for (const batch of this.state.batches.values()) {
+            const status = batch.status || 'unknown';
+            if (status !== 'failed') continue;
+            const ts = batch.statusUpdatedAt || batch.eventTime || batch.startedAt || now;
+            if (now - ts > PUSH_SIGNAL_EXPIRY_MS) continue;
+            const profile = trafficProfile(batch.project, batch.branch);
+            return {
+                state: 'failed',
+                accent: profile.accent || PUSH_STATUS_STYLE.failed.accent,
+                ts,
+                expiresAt: ts + PUSH_SIGNAL_EXPIRY_MS,
+            };
+        }
+        // 2. Active rejected push → strobe yellow briefly.
+        for (const batch of this.state.batches.values()) {
+            const status = batch.status || 'unknown';
+            if (status !== 'rejected') continue;
+            const ts = batch.statusUpdatedAt || batch.eventTime || batch.startedAt || now;
+            if (now - ts > PUSH_SIGNAL_EXPIRY_MS) continue;
+            const profile = trafficProfile(batch.project, batch.branch);
+            return {
+                state: 'rejected',
+                accent: profile.accent || PUSH_STATUS_STYLE.rejected.accent,
+                ts,
+                expiresAt: ts + PUSH_SIGNAL_EXPIRY_MS,
+            };
+        }
+        // 3. Departing squad → sweep beam from origin to departure tile in the squad accent.
+        let activeDeparting = null;
+        for (const ship of this.state.ships.values()) {
+            if (ship.status !== 'departing') continue;
+            if (!activeDeparting || (ship.departStartedAt || 0) > (activeDeparting.departStartedAt || 0)) {
+                activeDeparting = ship;
+            }
+        }
+        if (activeDeparting) {
+            const profile = trafficProfile(activeDeparting.project, activeDeparting.branch);
+            const originTile = this._shipStartTile(activeDeparting);
+            const route = this._shipRouteTiles(activeDeparting);
+            const departTile = route?.[route.length - 1] || originTile;
+            return {
+                state: 'departing',
+                squadId: activeDeparting.batchId || activeDeparting.departEventId || activeDeparting.id || null,
+                originTile: { tileX: originTile.tileX, tileY: originTile.tileY },
+                departingTile: { tileX: departTile.tileX, tileY: departTile.tileY },
+                accent: profile.accent,
+                ts: activeDeparting.departStartedAt || now,
+            };
+        }
+        // 4. Untethered (no remote) + lagoon non-empty for > 5min → steady caution.
+        const untethered = this._computeUntetheredProjects(now);
+        if (untethered.size > 0) {
+            return { state: 'untethered' };
+        }
+        // 5. Unpushed commits sitting in the lagoon → gentle pulse.
+        for (const ship of this.state.ships.values()) {
+            if (ship.status !== 'docked') continue;
+            const meta = this._lastDockLayoutByShipId.get(ship.id);
+            const inLagoon = isCommitLagoonZone(meta?.waitingZone || ship.waitingZone);
+            if (inLagoon) return { state: 'pulsing' };
+        }
+        return { state: 'idle' };
     }
 
     _drawFailedPushMark(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
@@ -2799,15 +3586,17 @@ export class HarborTraffic {
         const count = Math.max(1, Number(effect.shipCount || 1));
         const intensity = Math.max(1, Math.min(4, Math.sqrt(count)));
         const burstCount = Math.min(28, 8 + count * 2);
+        // 3.1 — force-push success uses a sinking whirlpool, not expanding rings.
+        const forceSink = effect.status === 'success' && effect.force === true;
 
         ctx.save();
-        ctx.globalCompositeOperation = effect.status === 'failed' ? 'source-over' : 'screen';
+        ctx.globalCompositeOperation = (effect.status === 'failed' || effect.status === 'rejected' || forceSink) ? 'source-over' : 'screen';
         ctx.globalAlpha = Math.max(0.18, alpha);
         ctx.strokeStyle = style.accent;
         ctx.fillStyle = style.glow;
         ctx.lineWidth = 2;
 
-        if (effect.status === 'failed') {
+        if (effect.status === 'failed' || effect.status === 'rejected') {
             const radius = 20 + wave * 12;
             ctx.beginPath();
             ctx.arc(effect.x, effect.y - 24, radius, 0, Math.PI * 2);
@@ -2818,6 +3607,32 @@ export class HarborTraffic {
             ctx.moveTo(effect.x + 11, effect.y - 35);
             ctx.lineTo(effect.x - 11, effect.y - 13);
             ctx.stroke();
+        } else if (forceSink) {
+            // 3.1 — whirlpool: concentric inward-spiraling arcs with red spray.
+            ctx.strokeStyle = '#3a4f6a';
+            ctx.lineWidth = 2;
+            const spirals = this.motionScale === 0 ? 1 : 3;
+            for (let i = 0; i < spirals; i++) {
+                const ringProgress = Math.max(0, Math.min(1, progress - i * 0.18));
+                const ring = Math.max(6, 48 - ringProgress * 36 + i * 6);
+                ctx.globalAlpha = Math.max(0.10, alpha * (1 - i * 0.22));
+                ctx.beginPath();
+                ctx.ellipse(effect.x, effect.y, ring, ring * 0.36, -0.22 + ringProgress * 0.6, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            // Red spray particles erupting from the whirlpool eye.
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = Math.max(0.22, alpha * 0.92);
+            ctx.fillStyle = '#ff4a39';
+            const sprayCount = Math.min(14, 5 + Math.round(count));
+            for (let i = 0; i < sprayCount; i++) {
+                const seed = stableHash(`${effect.id}:whirl:${i}`);
+                const angle = (seed % 628) / 100;
+                const distance = 6 + ((seed >> 3) % 28) * progress;
+                const x = effect.x + Math.cos(angle) * distance;
+                const y = effect.y + Math.sin(angle) * distance * 0.42;
+                ctx.fillRect(Math.round(x), Math.round(y), 2, 2);
+            }
         } else {
             for (let i = 0; i < Math.ceil(intensity) + 1; i++) {
                 const ringProgress = Math.max(0, Math.min(1, progress * 1.18 - i * 0.14));
