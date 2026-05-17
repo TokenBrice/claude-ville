@@ -3,6 +3,7 @@ import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import { getTeamColor } from '../shared/TeamColor.js';
 import { runtimeRoleAccessory } from '../shared/RoleAccessory.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
@@ -1123,6 +1124,21 @@ export class AgentSprite {
         if (this.isArrivalPending()) return;
         if (!this.compositor) return;       // defensive: no compositor → render nothing
 
+        // 4.15: archive fade. The renderer sets `_archiveAnim = { startedAt }`
+        // on agent:removed and disposes the sprite when progress >= 1; our job
+        // is the visual fade + sparkle flash + pinned FINAL bubble. We wrap the
+        // remaining draw body in save/restore so alpha unwinds cleanly.
+        const archiveProgress = this._archiveFadeProgress();
+        if (archiveProgress >= 1) return;
+        let archivePushed = false;
+        if (archiveProgress > 0) {
+            ctx.save();
+            // Reduced-motion (motionScale === 0): hard cut, no ramp.
+            const fadeAlpha = this.motionScale > 0 ? Math.max(0, 1 - archiveProgress) : 0;
+            ctx.globalAlpha *= fadeAlpha;
+            archivePushed = true;
+        }
+
         const currentStatus = this.agent?.status || null;
         if (currentStatus !== this._lastStatus) {
             if (currentStatus === AgentStatus.COMPLETED) this._completedAtMs = Date.now();
@@ -1139,10 +1155,15 @@ export class AgentSprite {
         const cleanupKey = this._shouldScrubBakedCodexWeapon(identity)
             ? `clean:${String(identity.modelClass || 'codex').toLowerCase()}`
             : 'raw';
-        const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}|${equipmentKey}|${cleanupKey}`;
+        // 4.14: team-colored sash trim. teamTrim is null when the agent has no
+        // teamName, so spriteFor falls back to the variant-derived trim color
+        // and cache hits remain identical to the pre-team behavior.
+        const teamTrim = this._teamTrimAccent();
+        const teamHash = teamTrim || '_';
+        const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}|${equipmentKey}|${cleanupKey}|${teamHash}`;
 
         if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
-            const baseCanvas = this.compositor.spriteFor(spriteId, paletteKey, variant, accessory);
+            const baseCanvas = this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim);
             this.spriteCanvas = this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
             if (this.spriteCanvas) {
                 this.spriteSheet = new SpriteSheet(this.spriteCanvas);
@@ -1152,7 +1173,10 @@ export class AgentSprite {
             }
         }
 
-        if (!this.spriteCanvas || !this.spriteSheet) return;
+        if (!this.spriteCanvas || !this.spriteSheet) {
+            if (archivePushed) ctx.restore();
+            return;
+        }
 
         // Ensure animState reflects current movement (idle when not moving).
         this.animState = this.moving && this.motionScale > 0 ? 'walk' : 'idle';
@@ -1164,6 +1188,7 @@ export class AgentSprite {
         if (!this.selected && zoom < 1) {
             this._drawLowZoomImpostor(ctx);
             this._drawCompactNameStatus(ctx);
+            if (archivePushed) ctx.restore();
             return;
         }
 
@@ -1224,6 +1249,15 @@ export class AgentSprite {
         this._drawPlanModeGlyph(ctx, contentTopY);
         this._drawRetryGlyph(ctx, contentTopY);
         this._drawNameTag(ctx);
+
+        // 4.15: sparkle flash during the first 200 ms of the archive fade.
+        // Reduced-motion skips entirely; otherwise we draw a brief radial puff
+        // around the sprite head using the status color (no ParticleSystem
+        // access from inside draw — keep it procedural and self-contained).
+        if (archiveProgress > 0 && this.motionScale > 0) {
+            this._drawArchiveSparkle(ctx, contentTopY, archiveProgress);
+        }
+        if (archivePushed) ctx.restore();
     }
 
     _prepareSpriteCanvas(baseCanvas, identity, cacheKey) {
@@ -2844,8 +2878,87 @@ export class AgentSprite {
         return repoProfile(project);
     }
 
+    // 4.14: returns the team accent (#rrggbb) used as the secondary trim/sash
+    // swap target, or null when the agent is not part of any team (skip swap).
+    _teamTrimAccent() {
+        const name = this.agent?.teamName;
+        if (!name) return null;
+        const accent = getTeamColor(name)?.accent;
+        if (!accent || typeof accent !== 'string') return null;
+        // Only return well-formed hex; getTeamColor falls back to a neutral grey
+        // when teamName is empty, which we already filter above by truthiness.
+        return /^#?[0-9a-fA-F]{6}$/.test(accent.trim()) ? accent.trim() : null;
+    }
+
+    // 4.15: archive fade progress in [0, 1]. The sibling IsometricRenderer
+    // worker sets `_archiveAnim = { startedAt }` on agent:removed; we read it
+    // here. Returns 0 (no fade) when the field is missing or malformed.
+    _archiveFadeProgress(now = Date.now()) {
+        const startedAt = Number(this._archiveAnim?.startedAt);
+        if (!Number.isFinite(startedAt) || startedAt <= 0) return 0;
+        const elapsed = now - startedAt;
+        if (elapsed <= 0) return 0;
+        return Math.max(0, Math.min(1, elapsed / 800));
+    }
+
+    // 4.15: brief radial sparkle puff during the first 200 ms of the fade.
+    // Procedural — does not poke the shared ParticleSystem from inside draw.
+    _drawArchiveSparkle(ctx, contentTopY, progress) {
+        const t = Math.min(1, progress / 0.25); // first 200ms of the 800ms fade
+        if (t >= 1) return;
+        const visual = this._statusVisual();
+        const color = visual?.color || '#f2d36b';
+        const headY = Number.isFinite(contentTopY) ? contentTopY + 12 : this.y - 36;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha *= (1 - t) * 0.85;
+        ctx.fillStyle = color;
+        // ~5 sparkle dots radiating outward from the head.
+        const baseRadius = 6 + t * 22;
+        for (let i = 0; i < 5; i++) {
+            const angle = (i / 5) * Math.PI * 2 + t * 0.6;
+            const r = baseRadius + ((i * 13) % 7);
+            const sx = this.x + Math.cos(angle) * r;
+            const sy = headY + Math.sin(angle) * r * 0.55;
+            const size = 1.6 + (1 - t) * 1.2;
+            ctx.beginPath();
+            ctx.arc(sx, sy, size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
     _activityThread() {
         const now = Date.now();
+        // 4.15: when archiving, pin a synthetic FINAL entry at the head of the
+        // thread for the duration of the fade (~800 ms). The remaining slots
+        // still show the agent's most recent real activity so the player can
+        // read "what they did last" while they fade out.
+        const archiveProgress = this._archiveFadeProgress(now);
+        if (archiveProgress > 0 && archiveProgress < 1) {
+            this._pruneActivityTrail(now);
+            const previous = this._captureActivitySnapshot(this.agent, now);
+            const visual = this._statusVisual();
+            const finalEntry = {
+                kind: 'final',
+                key: 'archive:final',
+                text: 'FINAL',
+                accent: visual?.color || '#f2d36b',
+                timestamp: now,
+            };
+            const trail = [previous, ...this._activityTrail]
+                .filter((entry) => entry && entry.text);
+            const deduped = [];
+            const seen = new Set();
+            for (const entry of [finalEntry, ...trail]) {
+                const dedupeKey = entry.key || entry.text;
+                if (seen.has(dedupeKey)) continue;
+                seen.add(dedupeKey);
+                deduped.push({ ...entry, count: 1 });
+                if (deduped.length >= ACTION_TRAIL_LIMIT + 1) break;
+            }
+            return deduped;
+        }
         this._pruneActivityTrail(now);
         const current = this._captureActivitySnapshot(this.agent, now);
         this._activitySnapshot = current;

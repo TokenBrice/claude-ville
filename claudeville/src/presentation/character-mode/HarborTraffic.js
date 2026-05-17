@@ -2129,6 +2129,12 @@ export class HarborTraffic {
         for (const squad of dockLayout.squads) {
             const list = dockedByRepo.get(squad.key) || [];
             const byId = new Map(list.map(drawable => [drawable.payload.id, drawable]));
+            // 4.17: precompute screen positions for each ship in the squad so
+            // we can wire a `buntingNext` field onto each drawable (the next
+            // sibling's anchor). Bunting renders only when squad.ships.length >= 2.
+            const squadAnchors = squad.ships
+                .map(ship => ({ id: ship.id, meta: dockLayout.byShipId.get(ship.id) }))
+                .filter(entry => entry.meta);
             for (const ship of squad.ships) {
                 const drawable = byId.get(ship.id);
                 const meta = dockLayout.byShipId.get(ship.id);
@@ -2169,6 +2175,15 @@ export class HarborTraffic {
                 // 3.6 — mark flagship of an untethered project so renderer can draw broken-rope chevron.
                 if (meta.squadShipIndex === 0 && untetheredProjects.has(String(drawable.payload.project || 'unknown'))) {
                     drawable.payload.untetheredFlag = true;
+                }
+                // 4.17: bunting neighbor anchor (next docked ship in the same
+                // squad). Read by _drawShip to draw a thin arc between the two
+                // adjacent ships when squadAnchors.length >= 2.
+                if (squadAnchors.length >= 2 && meta.squadShipIndex < squadAnchors.length - 1) {
+                    const next = squadAnchors[meta.squadShipIndex + 1];
+                    if (next?.meta) {
+                        drawable.payload.buntingNext = { x: next.meta.x, y: next.meta.y };
+                    }
                 }
                 drawable.sortY = drawable.payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
                 visible.push(drawable);
@@ -2851,6 +2866,16 @@ export class HarborTraffic {
         }
         this._drawShipClassOverlay(ctx, ship, forceSinkAlpha, profile, shipClass);
         this._drawRepoFlag(ctx, ship, zoom, forceSinkAlpha, profile, shipClass);
+        // 4.17: procedural repo heraldry shield on the squad flagship. Drawn
+        // alongside (not replacing) the existing pennant/flag — the small
+        // pennant remains for cluster-density reads.
+        if (ship.squadShipIndex === 0 && ship.status === 'docked') {
+            this._drawRepoShield(ctx, ship, zoom, forceSinkAlpha, profile, shipClass);
+        }
+        // 4.17: bunting arc to the next docked sibling in the same squad.
+        if (ship.buntingNext && ship.status === 'docked') {
+            this._drawSquadBunting(ctx, ship, ship.buntingNext, zoom, forceSinkAlpha, profile);
+        }
         ctx.restore();
 
         // 3.1 — red spray particles puff at the keel during sinking (force-push).
@@ -3529,6 +3554,109 @@ export class HarborTraffic {
             ctx.fillStyle = profile.baseAccent;
             ctx.fillRect(x + 3 * s, y + 6 * s, Math.max(2, Math.round(9 * s)), Math.max(1, Math.round(2 * s)));
         }
+        ctx.restore();
+    }
+
+    // 4.17: procedural repo heraldry shield on squad flagship. Drawn in canvas
+    // (no sprite/asset) so we can tint by repo hue at render time. Height ~24 px
+    // in world units; clamped tightly above the ship so it doesn't overlap the
+    // commit pennant which sits to the side and below.
+    _drawRepoShield(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const w = 18 * s;
+        const h = 24 * s;
+        const cx = Math.round(ship.x);
+        const top = Math.round(ship.y - (44 + (shipClass.flagOffsetY || 0) * 0.6) * s);
+        const left = cx - w / 2;
+        const right = cx + w / 2;
+        const pointY = top + h;
+        const shoulderY = top + h * 0.72;
+
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, alpha) * 0.94;
+        // Drop shadow behind the shield for legibility against busy water.
+        ctx.fillStyle = 'rgba(8, 12, 16, 0.55)';
+        ctx.beginPath();
+        ctx.moveTo(left + 1, top + 2);
+        ctx.lineTo(right + 1, top + 2);
+        ctx.lineTo(right + 1, shoulderY + 2);
+        ctx.lineTo(cx + 1, pointY + 2);
+        ctx.lineTo(left + 1, shoulderY + 2);
+        ctx.closePath();
+        ctx.fill();
+
+        // Shield body filled with the repo accent.
+        ctx.fillStyle = profile.accent || '#f6d384';
+        ctx.beginPath();
+        ctx.moveTo(left, top);
+        ctx.lineTo(right, top);
+        ctx.lineTo(right, shoulderY);
+        ctx.lineTo(cx, pointY);
+        ctx.lineTo(left, shoulderY);
+        ctx.closePath();
+        ctx.fill();
+
+        // Outer rim — gold on base repos, branch accent on variants.
+        ctx.strokeStyle = profile.isBranchVariant && profile.baseAccent
+            ? profile.baseAccent
+            : 'rgba(255, 240, 184, 0.88)';
+        ctx.lineWidth = Math.max(1, 1.2 * s);
+        ctx.stroke();
+
+        // Branch variant: thin sash band across the bottom (the band sits just
+        // above the point so the chevron still reads as a shield).
+        if (profile.isBranchVariant && profile.baseAccent) {
+            const bandTop = top + h * 0.50;
+            const bandH = Math.max(1, Math.round(3 * s));
+            ctx.fillStyle = profile.baseAccent;
+            ctx.fillRect(left + 1.5 * s, bandTop, w - 3 * s, bandH);
+        }
+
+        // Short repo label in the upper third of the shield.
+        const shortName = String(profile.shortName || profile.name || '').slice(0, 3).toUpperCase();
+        if (shortName) {
+            ctx.fillStyle = profile.labelText || 'rgba(20, 14, 10, 0.94)';
+            ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            this._applyReadableTextShadow(ctx);
+            ctx.fillText(shortName, cx, top + h * 0.34, w - 4 * s);
+        }
+        ctx.restore();
+    }
+
+    // 4.17: thin static bunting arc between two adjacent docked ships in the
+    // same squad. No animation — reduced-motion clients get the same visual.
+    _drawSquadBunting(ctx, ship, neighbor, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch)) {
+        if (!neighbor || !Number.isFinite(neighbor.x) || !Number.isFinite(neighbor.y)) return;
+        const s = 1 / Math.max(1, zoom || 1);
+        const liftA = 28 * s; // anchor lift above each ship's deck
+        const liftB = 28 * s;
+        const ax = ship.x;
+        const ay = ship.y - liftA;
+        const bx = neighbor.x;
+        const by = neighbor.y - liftB;
+        const sag = Math.min(14 * s, Math.hypot(bx - ax, by - ay) * 0.18);
+        const mx = (ax + bx) / 2;
+        const my = (ay + by) / 2 + sag;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, alpha) * 0.82;
+        ctx.strokeStyle = profile.accent || '#f6d384';
+        ctx.lineWidth = Math.max(1, 1.2 * s);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.quadraticCurveTo(mx, my, bx, by);
+        ctx.stroke();
+        // Small midpoint pennant for a flag-line feel.
+        ctx.fillStyle = profile.isBranchVariant && profile.baseAccent
+            ? profile.baseAccent
+            : (profile.accent || '#f6d384');
+        ctx.beginPath();
+        ctx.moveTo(mx, my);
+        ctx.lineTo(mx - 3 * s, my + 5 * s);
+        ctx.lineTo(mx + 3 * s, my + 5 * s);
+        ctx.closePath();
+        ctx.fill();
         ctx.restore();
     }
 
