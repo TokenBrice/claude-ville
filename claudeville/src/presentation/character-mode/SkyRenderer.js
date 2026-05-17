@@ -6,6 +6,7 @@
 import { AtmosphereState } from './AtmosphereState.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { mapWorldCorners } from './Projection.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const STAR_COUNT = 90;
 const STAR_CEILING_FRAC = 0.60;
@@ -23,8 +24,13 @@ const CANOPY_MAX_HEIGHT = 520;
 const AURORA_DURATION_MS = 12000;
 const AURORA_FADE_IN_MS = 2000;
 const AURORA_HOLD_MS = 6000;
+const AURORA_COOLDOWN_MS = 5 * 60 * 1000;
 const SUN_MAP_CLEARANCE_RADIUS = 2.15;
 const SUN_MIN_SCREEN_RADIUS = 3.0;
+const SHOOTING_STAR_DURATION_MS = 1200;
+const SHOOTING_STAR_MAX = 3;
+const SHOOTING_STAR_COOLDOWN_MS = 4000;
+const SHOOTING_STAR_NIGHT_PHASES = new Set(['night', 'dusk']);
 
 const CONSTELLATIONS = [
     {
@@ -59,12 +65,37 @@ export class SkyRenderer {
         this._decorativeCloudOffset = 0;
         this._fallbackAtmosphere = null;
         this._auroraStartedAt = 0;
+        this._lastAuroraTriggerAt = 0;
+        this._lastShootingStarAt = 0;
+        this._shootingStars = [];
+        this._currentPhase = null;
+        this._currentMotionScale = 1;
+        this._unsubscribers = [];
+        this._subscribeToEvents();
+    }
+
+    _subscribeToEvents() {
+        if (!eventBus || typeof eventBus.on !== 'function') return;
+        const onPush = () => this.maybeTriggerAuroraForPushSuccess(this._currentPhase);
+        this._unsubscribers.push(eventBus.on('git:pushed', onPush));
+        this._unsubscribers.push(eventBus.on('harbor:push-success', onPush));
+        this._unsubscribers.push(eventBus.on('subagent:completed', () => {
+            const now = Date.now();
+            if (now - this._lastShootingStarAt < SHOOTING_STAR_COOLDOWN_MS) return;
+            const angle = Math.PI / 3 + Math.random() * (Math.PI / 6);
+            const length = 0.14 + Math.random() * 0.08;
+            if (this.triggerShootingStar({ angle, length })) {
+                this._lastShootingStarAt = now;
+            }
+        }));
     }
 
     draw(ctx, arg1 = {}, arg2 = null, arg3 = 16, arg4 = 1) {
         const { canvas, camera, dt, atmosphere, motionScale } = this._normalizeDrawArgs(arg1, arg2, arg3, arg4);
         if (!canvas) return;
         const snapshot = atmosphere || this._getFallbackAtmosphere(motionScale);
+        this._currentPhase = snapshot.phase || null;
+        this._currentMotionScale = motionScale;
         const cached = this._getCachedBackground(canvas, snapshot);
         ctx.drawImage(cached, 0, 0, canvas.width, canvas.height);
 
@@ -78,16 +109,48 @@ export class SkyRenderer {
         this._drawGodrays(ctx, camera, canvas, snapshot);
         this._drawClouds(ctx, camera, canvas, snapshot);
         this._drawAurora(ctx, canvas, snapshot, motionScale);
+        this._drawShootingStars(ctx, canvas, dt, motionScale);
         this._drawBackgroundWeather(ctx, canvas, snapshot);
     }
 
     triggerAurora(now = Date.now()) {
         this._auroraStartedAt = now;
+        this._lastAuroraTriggerAt = now;
+    }
+
+    maybeTriggerAuroraForPushSuccess(phase = this._currentPhase) {
+        if (phase !== 'night') return false;
+        const now = Date.now();
+        if (now - this._lastAuroraTriggerAt < AURORA_COOLDOWN_MS) return false;
+        this.triggerAurora(now);
+        return true;
+    }
+
+    triggerShootingStar({ angle = null, length = null } = {}) {
+        if (this._currentMotionScale === 0) return false;
+        if (!SHOOTING_STAR_NIGHT_PHASES.has(this._currentPhase)) return false;
+        if (this._shootingStars.length >= SHOOTING_STAR_MAX) return false;
+        const resolvedAngle = Number.isFinite(angle)
+            ? angle
+            : Math.PI / 3 + Math.random() * (Math.PI / 6);
+        const resolvedLength = Number.isFinite(length) ? length : 0.18;
+        const startXFrac = 0.05 + Math.random() * 0.75;
+        const startYFrac = Math.random() * (STAR_CEILING_FRAC * 0.7);
+        this._shootingStars.push({
+            angle: resolvedAngle,
+            lengthFrac: resolvedLength,
+            startXFrac,
+            startYFrac,
+            elapsed: 0,
+        });
+        return true;
     }
 
     drawCanopy(ctx, { canvas, camera = null, dt = 16, atmosphere = null, motionScale = 1 } = {}) {
         if (!canvas) return;
         const source = atmosphere || this._getFallbackAtmosphere(motionScale);
+        this._currentPhase = source.phase || this._currentPhase;
+        this._currentMotionScale = motionScale;
         const canopy = this._buildCanopySnapshot(source);
         const height = Math.max(
             CANOPY_MIN_HEIGHT,
@@ -713,6 +776,63 @@ export class SkyRenderer {
         return Math.max(0, 1 - fadeElapsed / (AURORA_DURATION_MS - AURORA_FADE_IN_MS - AURORA_HOLD_MS));
     }
 
+    _drawShootingStars(ctx, canvas, dt, motionScale) {
+        if (!this._shootingStars.length) return;
+        if (motionScale === 0) {
+            this._shootingStars.length = 0;
+            return;
+        }
+        const ceilingY = canvas.height * STAR_CEILING_FRAC;
+        const next = [];
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const star of this._shootingStars) {
+            star.elapsed += dt;
+            const t = star.elapsed / SHOOTING_STAR_DURATION_MS;
+            if (t >= 1) continue;
+            const alpha = t < 0.18 ? t / 0.18 : 1 - (t - 0.18) / 0.82;
+            if (alpha <= 0.01) {
+                next.push(star);
+                continue;
+            }
+            const length = canvas.width * star.lengthFrac;
+            const dx = Math.cos(star.angle);
+            const dy = Math.sin(star.angle);
+            const x0 = canvas.width * star.startXFrac;
+            const y0 = canvas.height * star.startYFrac;
+            const headProgress = 0.2 + t * 0.8;
+            const hx = x0 + dx * length * headProgress;
+            const hy = y0 + dy * length * headProgress;
+            const tx = hx - dx * length * 0.55;
+            const ty = hy - dy * length * 0.55;
+            if (hy > ceilingY + 4) {
+                next.push(star);
+                continue;
+            }
+            const trail = ctx.createLinearGradient(tx, ty, hx, hy);
+            trail.addColorStop(0, `rgba(255, 196, 132, 0)`);
+            trail.addColorStop(0.55, `rgba(255, 214, 158, ${alpha * 0.42})`);
+            trail.addColorStop(1, `rgba(255, 250, 232, ${alpha * 0.88})`);
+            ctx.strokeStyle = trail;
+            ctx.lineWidth = 1.6;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.moveTo(tx, ty);
+            ctx.lineTo(hx, hy);
+            ctx.stroke();
+            const head = ctx.createRadialGradient(hx, hy, 0, hx, hy, 6);
+            head.addColorStop(0, `rgba(255, 255, 255, ${alpha})`);
+            head.addColorStop(1, 'rgba(255, 255, 255, 0)');
+            ctx.fillStyle = head;
+            ctx.beginPath();
+            ctx.arc(hx, hy, 6, 0, Math.PI * 2);
+            ctx.fill();
+            next.push(star);
+        }
+        ctx.restore();
+        this._shootingStars = next;
+    }
+
     _drawBackgroundWeather(ctx, canvas, atmosphere) {
         const weather = atmosphere.weather;
         if (!weather) return;
@@ -791,6 +911,11 @@ export class SkyRenderer {
         this.cacheKey = '';
         this._decorativeCloudOffset = 0;
         this._auroraStartedAt = 0;
+        this._shootingStars.length = 0;
+        for (const unsubscribe of this._unsubscribers) {
+            try { unsubscribe?.(); } catch { /* ignore */ }
+        }
+        this._unsubscribers.length = 0;
         this._fallbackAtmosphere?.dispose?.();
         this._fallbackAtmosphere = null;
     }
