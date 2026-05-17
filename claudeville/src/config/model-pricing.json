@@ -21,5 +21,16 @@
     "rates": [
       { "match": "kimi-for-coding", "input": 3, "output": 12, "cacheRead": 0.3, "cacheCreate": 0 }
     ]
+  },
+  "deepseek": {
+    "default": { "input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheCreate": 0 },
+    "rates": [
+      { "match": "deepseek-v4-pro", "input": 1.74, "output": 3.48, "cacheRead": 0.145, "cacheCreate": 0 },
+      { "match": "v4-pro", "input": 1.74, "output": 3.48, "cacheRead": 0.145, "cacheCreate": 0 },
+      { "match": "deepseek-v4-flash", "input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheCreate": 0 },
+      { "match": "v4-flash", "input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheCreate": 0 },
+      { "match": "deepseek-reasoner", "input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheCreate": 0 },
+      { "match": "reasoner", "input": 0.14, "output": 0.28, "cacheRead": 0.028, "cacheCreate": 0 }
+    ]
   }
 }

@@ -372,11 +372,20 @@ PlasmoidItem {
         return String(Math.round(n))
     }
 
-    function shortModel(model, effort) {
+    function shortModel(model, effort, provider) {
         var text = String(model || "?")
-        if (text.indexOf("gpt-5.5") !== -1) text = "5.5"
-        else if (text.indexOf("gpt-5.4") !== -1) text = "5.4"
-        else if (text.indexOf("gpt-5.3") !== -1) text = "5.3"
+        var normalizedModel = normalizedIdentityText(model)
+        var normalizedProvider = normalizedIdentityText(provider)
+        if (normalizedModel.indexOf("gpt-5-5") !== -1) text = "5.5"
+        else if (normalizedModel.indexOf("gpt-5-4") !== -1) text = "5.4"
+        else if (normalizedModel.indexOf("gpt-5-3") !== -1) text = "5.3"
+        else if (normalizedModel.indexOf("deepseek-v4-pro") !== -1
+                || (normalizedModel.indexOf("deepseek") !== -1 && normalizedModel.indexOf("v4-pro") !== -1)
+                || (normalizedProvider.indexOf("deepseek") !== -1 && normalizedModel.indexOf("v4-pro") !== -1)) text = "DS V4 Pro"
+        else if (normalizedModel.indexOf("deepseek-v4-flash") !== -1
+                || (normalizedModel.indexOf("deepseek") !== -1 && normalizedModel.indexOf("v4-flash") !== -1)
+                || (normalizedProvider.indexOf("deepseek") !== -1 && normalizedModel.indexOf("v4-flash") !== -1)) text = "DS Flash"
+        else if (normalizedModel.indexOf("deepseek") !== -1 || normalizedProvider.indexOf("deepseek") !== -1) text = "DS Reasoner"
         else if (text.toLowerCase().indexOf("claude") !== -1) text = text.replace(/^claude[-_ ]?/i, "Claude ")
         var effortText = String(effort || "").toLowerCase()
         return effortText ? text + " " + effortText : text
@@ -400,6 +409,7 @@ PlasmoidItem {
         if (normalizedModel.indexOf("gpt-5-3-codex-spark") !== -1) return "agent.codex.gpt53spark"
         if (normalizedModel.indexOf("gpt-5-5") !== -1) return "agent.codex.gpt55"
         if (normalizedModel.indexOf("gpt-5-4") !== -1) return "agent.codex.gpt54"
+        if (normalizedModel.indexOf("deepseek") !== -1) return "agent.gemini.base"
         if (normalizedProvider.indexOf("gemini") !== -1 || normalizedModel.indexOf("gemini") !== -1) {
             return "agent.gemini.base"
         }
@@ -561,7 +571,7 @@ PlasmoidItem {
             var frame = spriteFrame(spriteId)
             rows.push({
                 name: sessionName(session, i),
-                model: shortModel(session.model, session.reasoningEffort || session.effort),
+                model: shortModel(session.model, session.reasoningEffort || session.effort, session.provider),
                 project: projectName(session.project),
                 status: status,
                 statusLabel: statusLabel(status),

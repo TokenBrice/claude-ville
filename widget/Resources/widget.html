@@ -190,12 +190,25 @@
       { match: 'kimi-for-coding', input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 },
     ];
 
+    const DEEPSEEK_RATES = [
+      { match: 'deepseek-v4-pro', input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0 },
+      { match: 'v4-pro', input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0 },
+      { match: 'deepseek-v4-flash', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
+      { match: 'v4-flash', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
+      { match: 'deepseek-reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
+      { match: 'reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
+    ];
+
     function pricingForModel(model, provider) {
       const normalizedModel = String(model || '').toLowerCase();
       const normalizedProvider = String(provider || '').toLowerCase();
       if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) {
         return KIMI_RATES.find((entry) => normalizedModel.includes(entry.match)) ||
           { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 };
+      }
+      if (normalizedProvider === 'deepseek' || normalizedModel.includes('deepseek')) {
+        return DEEPSEEK_RATES.find((entry) => normalizedModel.includes(entry.match)) ||
+          { input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 };
       }
       const table = normalizedProvider === 'codex' || normalizedModel.includes('gpt')
         ? OPEN_AI_RATES
@@ -254,6 +267,15 @@
       }
       if (normalizedModel.includes('gpt-5-5')) {
         return { label: '5.5', effortTier, color: '#fff1b8' };
+      }
+      if (normalizedModel.includes('deepseek-v4-pro') || (normalizedModel.includes('deepseek') && normalizedModel.includes('v4-pro')) || (normalizedProvider.includes('deepseek') && normalizedModel.includes('v4-pro'))) {
+        return { label: 'DS V4 Pro', effortTier, color: '#9ee7ff' };
+      }
+      if (normalizedModel.includes('deepseek-v4-flash') || (normalizedModel.includes('deepseek') && normalizedModel.includes('v4-flash')) || (normalizedProvider.includes('deepseek') && normalizedModel.includes('v4-flash'))) {
+        return { label: 'DS Flash', effortTier, color: '#7cf4c8' };
+      }
+      if (normalizedModel.includes('deepseek-reasoner') || normalizedModel.includes('deepseek') || normalizedProvider.includes('deepseek')) {
+        return { label: 'DS Reasoner', effortTier, color: '#7cf4c8' };
       }
       if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
         return { label: model || 'Codex', effortTier, color: '#7be3d7' };

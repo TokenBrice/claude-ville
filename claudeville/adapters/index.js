@@ -6,6 +6,7 @@ const { ClaudeAdapter } = require('./claude');
 const { CodexAdapter } = require('./codex');
 const { GeminiAdapter } = require('./gemini');
 const { KimiAdapter } = require('./kimi');
+const { OpenCodeAdapter } = require('./opencode');
 const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -22,6 +23,7 @@ const adapters = [
   new CodexAdapter(),
   new GeminiAdapter(),
   new KimiAdapter(),
+  new OpenCodeAdapter(),
 ];
 
 const ADAPTER_BY_PROVIDER = Object.fromEntries(adapters.map((adapter) => [adapter.provider, adapter]));

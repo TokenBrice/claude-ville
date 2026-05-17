@@ -45,6 +45,8 @@ const PROVIDER_TRIM = {
     codex: '#67f29a',
     gemini: '#7fc7ff',
     kimi: '#ff8da8',
+    opencode: '#7cf4c8',
+    deepseek: '#7cf4c8',
     default: '#f2d36b',
 };
 const PROVIDER_BADGE_COLORS = Object.freeze({
@@ -52,6 +54,8 @@ const PROVIDER_BADGE_COLORS = Object.freeze({
     codex: '#4ade80',
     gemini: '#60a5fa',
     kimi: '#ff9f7a',
+    opencode: '#7cf4c8',
+    deepseek: '#7cf4c8',
     default: '#8b8b9e',
 });
 const MODEL_TIER_COLORS = Object.freeze({
@@ -78,6 +82,8 @@ const PROVIDER_HOME_BUILDINGS = {
     codex: 'forge',
     gemini: 'observatory',
     kimi: 'portal',
+    opencode: 'portal',
+    deepseek: 'observatory',
 };
 const TARGET_AGENT_CONTENT_HEIGHT = 92;
 const MIN_AGENT_DRAW_SCALE = 1;
@@ -2428,6 +2434,8 @@ export class AgentSprite {
     _providerKey(agent = this.agent) {
         const provider = String(agent?.provider || '').toLowerCase();
         const model = String(agent?.model || '').toLowerCase();
+        if (model.includes('deepseek')) return 'deepseek';
+        if (provider.includes('opencode')) return 'opencode';
         if (provider.includes('gemini') || model.includes('gemini')) return 'gemini';
         if (provider.includes('codex') || model.includes('codex') || model.includes('gpt')) return 'codex';
         if (provider.includes('claude') || model.includes('claude')) return 'claude';
@@ -3490,6 +3498,8 @@ export class AgentSprite {
 
 function providerMoteColor(agent) {
     const provider = String(agent?.provider || '').toLowerCase();
+    const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider);
+    if (identity.trim?.[0]) return identity.trim[0];
     return PROVIDER_TRIM[provider] || PROVIDER_TRIM.default;
 }
 

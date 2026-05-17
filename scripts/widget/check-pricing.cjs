@@ -16,10 +16,10 @@ let failures = 0;
 
 for (const rel of sources) {
   const text = readFileSync(join(repoRoot, rel), 'utf8');
-  checkRates(rel, text, pricing.claude.rates);
-  checkRates(rel, text, pricing.openai.rates);
-  checkDefault(rel, text, pricing.claude.default);
-  checkDefault(rel, text, pricing.openai.default);
+  for (const provider of ['claude', 'openai', 'kimi', 'deepseek']) {
+    checkRates(rel, text, pricing[provider].rates);
+    checkDefault(rel, text, pricing[provider].default);
+  }
 }
 
 const kdeText = readFileSync(join(repoRoot, 'widget/kde/claudeville/contents/ui/main.qml'), 'utf8');

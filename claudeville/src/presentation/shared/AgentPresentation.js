@@ -22,14 +22,15 @@ const UNKNOWN_PROJECT_SIDEBAR_PROFILE = Object.freeze({
     panelBorder: 'rgba(139, 139, 158, 0.86)',
 });
 
-const PROVIDER_ICONS = Object.freeze({ claude: 'C', codex: 'X', gemini: 'G', git: '#', kimi: 'K' });
-const PROVIDER_COLORS = Object.freeze({ claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa', git: '#f6cf60', kimi: '#ff9f7a' });
+const PROVIDER_ICONS = Object.freeze({ claude: 'C', codex: 'X', gemini: 'G', git: '#', kimi: 'K', opencode: 'O' });
+const PROVIDER_COLORS = Object.freeze({ claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa', git: '#f6cf60', kimi: '#ff9f7a', opencode: '#7cf4c8' });
 const PROVIDER_BADGES = Object.freeze({
     claude: { label: 'Claude', color: '#a78bfa', bg: 'rgba(167,139,250,0.15)' },
     codex:  { label: 'Codex',  color: '#4ade80', bg: 'rgba(74,222,128,0.15)' },
     gemini: { label: 'Gemini', color: '#60a5fa', bg: 'rgba(96,165,250,0.15)' },
     git:    { label: 'Git',    color: '#f6cf60', bg: 'rgba(246,207,96,0.15)' },
     kimi:   { label: 'Kimi',   color: '#ff9f7a', bg: 'rgba(255,159,122,0.15)' },
+    opencode: { label: 'OpenCode', color: '#7cf4c8', bg: 'rgba(124,244,200,0.15)' },
 });
 
 export function projectKeyForAgent(agent) {

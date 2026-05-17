@@ -89,6 +89,14 @@ Adapters are in `adapters/` and registered by `adapters/index.js`.
   - Source: `~/.gemini/tmp/`.
   - Reads `tmp/<project_hash>/chats/session-*.json`.
   - Extracts model, tool calls, messages, and attempts to reverse-map project hashes to local paths.
+- `kimi.js`
+  - Source: `~/.kimi/`.
+  - Reads Kimi session wire/state files and config.
+  - Extracts model, tool calls, messages, token usage, and project paths.
+- `opencode.js`
+  - Source: `~/.local/share/opencode/opencode.db`.
+  - Reads OpenCode SQLite sessions, messages, and parts in read-only mode.
+  - Extracts model provider/id, subagent parent links, tool calls, text messages, token totals, and git events from shell tools.
 - `gitEvents.js`
   - Shared parser for git `commit` and `push` commands seen in provider tool logs.
   - Dry-runs are omitted.

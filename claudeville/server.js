@@ -1348,7 +1348,7 @@ server.listen(PORT, () => {
   const providers = getActiveProviders();
   if (providers.length === 0) {
     console.log('  [!] No active providers');
-    console.log('      One of ~/.claude/, ~/.codex/, ~/.gemini/, or ~/.kimi/ is required');
+    console.log('      One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.kimi/, or ~/.local/share/opencode/ is required');
   } else {
     console.log('  Active providers:');
     for (const p of providers) {

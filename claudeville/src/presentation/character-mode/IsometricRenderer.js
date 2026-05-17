@@ -1605,6 +1605,7 @@ export class IsometricRenderer {
         const seed = Math.abs(Math.floor(this._tileNoise(agent.id.length + cycle * 7, cycle + String(agent.id).charCodeAt(0)) * 100000));
         const recent = new Set(recentBuildings);
         const provider = String(agent.provider || '').toLowerCase();
+        const model = String(agent.model || '').toLowerCase();
         const sprite = this.agentSprites.get(agent.id);
         const sourceTile = sprite?._screenToTile?.(sprite.x, sprite.y) || agent.position || null;
         const weighted = AMBIENT_SCENIC_POINTS
@@ -1616,6 +1617,8 @@ export class IsometricRenderer {
                 if (provider === 'codex' && point.tags?.includes('forge')) score -= 10;
                 if (provider === 'claude' && point.tags?.includes('command')) score -= 8;
                 if (provider === 'kimi' && point.tags?.includes('portal')) score -= 10;
+                if (provider === 'opencode' && point.tags?.includes('portal')) score -= 8;
+                if (model.includes('deepseek') && point.tags?.includes('observatory')) score -= 10;
                 if (agent.teamName && point.district === 'civic') score -= 6;
                 if (agent.isSubagent && point.tags?.includes('command')) score -= 7;
                 if (this.pathfinder && !this.pathfinder.isWalkable(Math.round(point.tileX), Math.round(point.tileY))) score += 1000;

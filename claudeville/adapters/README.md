@@ -1,6 +1,6 @@
 # Provider Adapters
 
-Read-only readers that pull active session data from the local CLI provider directories (`~/.claude/`, `~/.codex/`, `~/.gemini/`) and normalize it into a single shape the rest of ClaudeVille consumes.
+Read-only readers that pull active session data from local CLI provider stores (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.kimi/`, and `~/.local/share/opencode/`) and normalize it into a single shape the rest of ClaudeVille consumes.
 
 ## Purpose
 
@@ -15,6 +15,8 @@ const adapters = [
   new ClaudeAdapter(),
   new CodexAdapter(),
   new GeminiAdapter(),
+  new KimiAdapter(),
+  new OpenCodeAdapter(),
 ];
 ```
 
@@ -40,7 +42,7 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | Member | Kind | Returns | Consumer |
 | --- | --- | --- | --- |
 | `name` | getter | display string (e.g. `'Claude Code'`) | `getActiveProviders()`, surfaced via `/api/providers` |
-| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'`) | Adapter dispatch and adapter-backed session objects |
+| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'` / `'kimi'` / `'opencode'`) | Adapter dispatch and adapter-backed session objects |
 | `homeDir` | getter | absolute path to the provider's source dir | `getActiveProviders()` |
 | `isAvailable()` | method | `boolean` | Gates every registry iteration |
 | `getActiveSessions(activeThresholdMs)` | method | `Session[]` (see below) | Called from `server.js` per request and per polling tick |
@@ -66,8 +68,8 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `sessionId` | string | Unique across providers. Codex and Gemini prefix with `codex-` / `gemini-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
-| `provider` | `'claude' \| 'codex' \| 'gemini' \| 'git'` | Adapter-backed sessions use `claude`, `codex`, or `gemini`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
+| `sessionId` | string | Unique across providers. Codex, Gemini, Kimi, and OpenCode prefix with `codex-` / `gemini-` / `kimi-` / `opencode-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
+| `provider` | `'claude' \| 'codex' \| 'gemini' \| 'kimi' \| 'opencode' \| 'git'` | Adapter-backed sessions use the CLI/source provider id. DeepSeek-backed OpenCode sessions still use `provider: 'opencode'` and expose DeepSeek through `model`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
 | `agentId` | string \| null | Provider-specific agent thread id; nullable for Gemini. |
 | `agentType` | `'main' \| 'sub-agent' \| 'team-member'` | Drives sprite/card grouping. Default `'main'`. |
 | `agentName` | string \| null | Human label when the provider exposes one (Codex `agent_nickname`, Claude team launch name). |
@@ -112,7 +114,7 @@ Within any of those, the consumer reads sub-fields under multiple aliases:
 - cacheRead: `cached_input_tokens` / `cache_read_input_tokens` / `cacheReadInputTokens`
 - cacheCreate: `cache_creation_input_tokens` / `cacheCreationInputTokens`
 
-The fallback chain exists because providers rename fields between releases (Codex switched to cumulative `token_count` events; Gemini varies between camelCase and snake_case). Adapters absorb the variance so the UI does not need provider-specific conditionals.
+The fallback chain exists because providers rename fields between releases (Codex switched to cumulative `token_count` events; Gemini varies between camelCase and snake_case; OpenCode stores cumulative totals in SQLite columns). Adapters absorb the variance so the UI does not need provider-specific conditionals.
 
 ## `getWatchPaths()` shape
 
@@ -201,3 +203,39 @@ The adapter reads `session_meta` from the first 5 lines and tools/messages/usage
 ```
 
 `projectHash` is `sha256(cwd)`. The adapter attempts to reverse-map known candidate paths back to a real `project` string.
+
+### Kimi — `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl`
+
+```jsonc
+// shape only — fields the adapter reads
+{"timestamp":1737567890,"message":{"type":"ToolCall","payload":{"function":{"name":"Shell","arguments":"{\"command\":\"ls\"}"}}}}
+{"timestamp":1737567891,"message":{"type":"ContentPart","payload":{"type":"text","text":"Done."}}}
+{"timestamp":1737567892,"message":{"type":"StatusUpdate","payload":{"token_usage":{"input_other":100,"output":20,"input_cache_read":50,"input_cache_creation":0},"context_tokens":170,"max_context_tokens":262144}}}
+```
+
+The adapter resolves project hashes from `~/.kimi/kimi.json` and common local work directories, then reads `state.json` for a user-facing title when present.
+
+### OpenCode — `~/.local/share/opencode/opencode.db` (SQLite)
+
+```jsonc
+// session row shape only — fields the adapter reads
+{
+  "id": "ses_123",
+  "parent_id": null,
+  "directory": "/Users/me/code/proj",
+  "title": "Review data",
+  "agent": "build",
+  "model": "{\"id\":\"deepseek-v4-pro\",\"providerID\":\"deepseek\"}",
+  "tokens_input": 1200,
+  "tokens_output": 300,
+  "tokens_cache_read": 40000,
+  "tokens_cache_write": 0,
+  "time_updated": 1737567890123
+}
+
+// part.data examples
+{"type":"tool","tool":"bash","state":{"status":"completed","input":{"command":"git commit -m init"},"metadata":{"exit":0}}}
+{"type":"text","text":"Done.","time":{"start":1737567890123,"end":1737567891123}}
+```
+
+OpenCode support is SQLite read-only. It uses `node:sqlite` with read-only mode when available and falls back to `sqlite3 -readonly` when the CLI is present. It never mutates provider config files and does not issue writes, migrations, checkpoints, or vacuum commands against OpenCode's database. DeepSeek-backed sessions are represented as `provider: 'opencode'` with `model: 'deepseek/<model-id>'`, which lets the UI keep the source CLI distinct from the model family.

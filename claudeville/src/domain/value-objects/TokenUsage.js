@@ -28,9 +28,19 @@ const KIMI_RATES = [
     { match: 'kimi-for-coding', input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 },
 ];
 
+const DEEPSEEK_RATES = [
+    { match: 'deepseek-v4-pro', input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0 },
+    { match: 'v4-pro', input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0 },
+    { match: 'deepseek-v4-flash', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
+    { match: 'v4-flash', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
+    { match: 'deepseek-reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
+    { match: 'reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
+];
+
 const DEFAULT_CLAUDE_RATES = { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 };
 const DEFAULT_OPEN_AI_RATES = { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 };
 const DEFAULT_KIMI_RATES = { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 };
+const DEFAULT_DEEPSEEK_RATES = { input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 };
 
 const FIELD_ALIASES = {
     input: ['input', 'totalInput', 'input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'total_input_tokens', 'total_input'],
@@ -113,6 +123,9 @@ export class TokenUsage {
         const normalizedProvider = String(provider || '').toLowerCase();
         if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) {
             return KIMI_RATES.find((rate) => normalizedModel.includes(rate.match)) || DEFAULT_KIMI_RATES;
+        }
+        if (normalizedProvider === 'deepseek' || normalizedModel.includes('deepseek')) {
+            return DEEPSEEK_RATES.find((rate) => normalizedModel.includes(rate.match)) || DEFAULT_DEEPSEEK_RATES;
         }
         const table = (normalizedProvider === 'codex' || normalizedModel.includes('gpt'))
             ? OPEN_AI_RATES

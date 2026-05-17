@@ -281,6 +281,32 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         };
     }
 
+    if (normalizedProvider.includes('deepseek') || normalizedModel.includes('deepseek')) {
+        const isPro = normalizedModel.includes('v4-pro');
+        const isFlash = normalizedModel.includes('v4-flash');
+        const isReasoner = normalizedModel.includes('reasoner');
+        return {
+            family: 'deepseek',
+            modelClass: isPro ? 'v4-pro' : isFlash ? 'v4-flash' : isReasoner ? 'reasoner' : 'deepseek',
+            modelTier: isPro ? 'long-context' : isFlash ? 'swift' : isReasoner ? 'balanced' : null,
+            label: isPro ? 'DeepSeek V4 Pro' : isFlash ? 'DeepSeek V4 Flash' : isReasoner ? 'DeepSeek Reasoner' : 'DeepSeek',
+            shortLabel: isPro ? 'DS V4 Pro' : isFlash ? 'DS Flash' : isReasoner ? 'DS Reasoner' : 'DeepSeek',
+            effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
+            effortAccessory,
+            effortFloorRing,
+            spriteId: 'agent.gemini.base',
+            paletteKey: 'gemini',
+            trim: isPro
+                ? ['#9ee7ff', '#6dd7ff', '#d9f7ff']
+                : ['#7cf4c8', '#45dca8', '#c8fff0'],
+            accent: isPro
+                ? ['#e5fbff', '#9ee7ff', '#76b8ff']
+                : ['#d8fff4', '#7cf4c8', '#6dd7ff'],
+            minimapColor: isPro ? '#9ee7ff' : '#7cf4c8',
+        };
+    }
+
     return {
         family: null,
         modelClass: 'standard',

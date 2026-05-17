@@ -344,6 +344,9 @@ export class ActivityPanel {
         const provider = String(agent?.provider || '').toLowerCase();
         if (provider === 'codex' || model.includes('gpt')) return 258400;
         if (provider === 'kimi' || model.includes('kimi')) return 262144;
+        if (model.includes('deepseek-v4-pro') || (model.includes('deepseek') && model.includes('v4-pro')) || (provider === 'deepseek' && model.includes('v4-pro'))) return 1000000;
+        if (model.includes('deepseek-v4-flash') || (model.includes('deepseek') && model.includes('v4-flash')) || (provider === 'deepseek' && model.includes('v4-flash'))) return 256000;
+        if (model.includes('deepseek') || provider === 'deepseek') return 128000;
         return 200000;
     }
 

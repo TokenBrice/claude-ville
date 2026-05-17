@@ -34,6 +34,7 @@ This directory stores committed agent outputs. Before using any old plan as impl
 | `agents/handover/claudeville-type-design-handover.md` | `reference` | 2026-04-29 | `docs/visual-experience-crafting.md`. | No | Design-transfer packet, not a local implementation plan. |
 | `agents/plans/world-enhancement-council-2026-05-17.md` | `ready` | 2026-05-17 at `e919f845c5074487c694d6aa163968df48728de1` | Current code; supersedes the visible-scope overlap in `world-enhancement-plan.md`, `atmosphere-enhancement-roadmap.md`, `agent-building-interactions-refinement.md`, `familiars-and-council.md`, `harbor-capacity-phase-b.md`. | Partial | 5-phase roadmap synthesizing six parallel council audits; re-verify file:line refs against current HEAD before each phase. |
 | `agents/research/world-enhancement-council-2026-05-17/` | `reference` | 2026-05-17 at `e919f845c5074487c694d6aa163968df48728de1` | Six per-domain audit notes (visual, behavior, buildings, character, git/harbor, portal/codehealth) feeding the consolidated plan. | No | Rationale + raw findings for the consolidated plan; do not execute the per-member recommendations directly without consulting the consolidated phasing. |
+| `agents/plans/deepseek-opencode-agent-support-plan.md` | `historical` | 2026-05-17 at `9faa58b97463de936e756df6dc25d1971ba6a956` | Current code in `claudeville/adapters/opencode.js` and related UI/pricing files. | No | Implemented plan for OpenCode adapter support for DeepSeek-backed sessions, details, tokens, parent/subagent links, and UI identity. |
 
 ## Templates
 

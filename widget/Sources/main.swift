@@ -248,6 +248,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             base = "5.3 Spark"
         } else if normalizedModel.contains("gpt-5-5") {
             base = "5.5"
+        } else if normalizedModel.contains("deepseek-v4-pro") || (normalizedModel.contains("deepseek") && normalizedModel.contains("v4-pro")) || (normalizedProvider.contains("deepseek") && normalizedModel.contains("v4-pro")) {
+            base = "DS V4 Pro"
+        } else if normalizedModel.contains("deepseek-v4-flash") || (normalizedModel.contains("deepseek") && normalizedModel.contains("v4-flash")) || (normalizedProvider.contains("deepseek") && normalizedModel.contains("v4-flash")) {
+            base = "DS Flash"
+        } else if normalizedModel.contains("deepseek-reasoner") || normalizedModel.contains("deepseek") || normalizedProvider.contains("deepseek") {
+            base = "DS Reasoner"
         } else if normalizedProvider.contains("codex") || normalizedModel.contains("codex") || normalizedModel.contains("gpt") {
             base = model
         } else if normalizedProvider.contains("kimi") || normalizedModel.contains("kimi") {
@@ -270,6 +276,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let normalizedProvider = (provider ?? "").lowercased()
         if normalizedModel.contains("gpt-5-3-codex-spark") { return "#f8e36f" }
         if normalizedModel.contains("gpt-5-5") { return "#fff1b8" }
+        if normalizedModel.contains("deepseek-v4-pro") || (normalizedModel.contains("deepseek") && normalizedModel.contains("v4-pro")) || (normalizedProvider.contains("deepseek") && normalizedModel.contains("v4-pro")) { return "#9ee7ff" }
+        if normalizedModel.contains("deepseek") || normalizedProvider.contains("deepseek") { return "#7cf4c8" }
         if normalizedProvider.contains("codex") || normalizedModel.contains("codex") || normalizedModel.contains("gpt") { return "#7be3d7" }
         if normalizedProvider.contains("kimi") || normalizedModel.contains("kimi") { return "#ff9f7a" }
         return "#64748b"
@@ -512,9 +520,19 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         (match: "kimi-for-coding", input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0),
     ]
 
+    static let deepseekRates: [(match: String, input: Double, output: Double, cacheRead: Double, cacheCreate: Double)] = [
+        (match: "deepseek-v4-pro", input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0),
+        (match: "v4-pro", input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0),
+        (match: "deepseek-v4-flash", input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0),
+        (match: "v4-flash", input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0),
+        (match: "deepseek-reasoner", input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0),
+        (match: "reasoner", input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0),
+    ]
+
     static let defaultClaudeRates = (input: 3.0, output: 15.0, cacheRead: 0.3, cacheCreate: 3.75)
     static let defaultOpenAIRates = (input: 1.25, output: 10.0, cacheRead: 0.125, cacheCreate: 0.0)
     static let defaultKimiRates = (input: 3.0, output: 12.0, cacheRead: 0.3, cacheCreate: 0.0)
+    static let defaultDeepseekRates = (input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0.0)
 
     static func pricingForModel(_ model: String?, _ provider: String?) -> (input: Double, output: Double, cacheRead: Double, cacheCreate: Double) {
         let normalizedModel = (model ?? "").lowercased()
@@ -524,6 +542,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return (input: match.input, output: match.output, cacheRead: match.cacheRead, cacheCreate: match.cacheCreate)
             }
             return Self.defaultKimiRates
+        }
+        if normalizedProvider == "deepseek" || normalizedModel.contains("deepseek") {
+            if let match = Self.deepseekRates.first(where: { normalizedModel.contains($0.match) }) {
+                return (input: match.input, output: match.output, cacheRead: match.cacheRead, cacheCreate: match.cacheCreate)
+            }
+            return Self.defaultDeepseekRates
         }
         let table = (normalizedProvider == "codex" || normalizedModel.contains("gpt")) ? Self.openAIRates : Self.claudeRates
         if let match = table.first(where: { normalizedModel.contains($0.match) }) {
