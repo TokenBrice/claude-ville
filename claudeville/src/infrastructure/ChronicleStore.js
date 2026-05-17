@@ -2,6 +2,7 @@ const DB_NAME = 'claudeville-chronicle';
 const DB_VERSION = 2;
 const LEASE_KEY = 'claudeville.chronicle.captureLease';
 const DEFAULT_LEASE_TTL_MS = 7000;
+const LIFETIME_COUNTS_META_KEY = 'lifetimeCounts';
 
 const RETENTION_MS = {
     manifests: 24 * 60 * 60 * 1000,
@@ -53,6 +54,8 @@ export class ChronicleStore {
             : null;
         this._leaseToken = null;
         this._lastLeaseNotice = 0;
+        this._lifetimeCounts = null;
+        this._lifetimeCountsLoad = null;
         this.channel?.addEventListener?.('message', (event) => {
             if (event.data?.type === 'lease-acquired') {
                 this._lastLeaseNotice = nowMs();
@@ -203,6 +206,56 @@ export class ChronicleStore {
 
     async setMeta(key, value) {
         return this.put('meta', { key, value, ts: nowMs() });
+    }
+
+    async _loadLifetimeCounts() {
+        if (this._lifetimeCounts) return this._lifetimeCounts;
+        if (this._lifetimeCountsLoad) return this._lifetimeCountsLoad;
+        this._lifetimeCountsLoad = (async () => {
+            const raw = await this.getMeta(LIFETIME_COUNTS_META_KEY, null).catch(() => null);
+            const map = new Map();
+            if (raw && typeof raw === 'object') {
+                const entries = raw instanceof Map ? raw.entries() : Object.entries(raw);
+                for (const [project, value] of entries) {
+                    const key = String(project || '').trim();
+                    if (!key) continue;
+                    const commits = Number((value && value.commits) ?? 0);
+                    if (!Number.isFinite(commits) || commits <= 0) continue;
+                    const lastUpdated = Number((value && value.lastUpdated) ?? 0);
+                    map.set(key, { commits, lastUpdated: Number.isFinite(lastUpdated) ? lastUpdated : 0 });
+                }
+            }
+            this._lifetimeCounts = map;
+            return map;
+        })();
+        return this._lifetimeCountsLoad;
+    }
+
+    async _persistLifetimeCounts() {
+        if (!this._lifetimeCounts) return;
+        const out = {};
+        for (const [project, entry] of this._lifetimeCounts.entries()) {
+            out[project] = { commits: entry.commits, lastUpdated: entry.lastUpdated };
+        }
+        try {
+            await this.setMeta(LIFETIME_COUNTS_META_KEY, out);
+        } catch { /* persist is best-effort */ }
+    }
+
+    async recordCommit(projectId, now = nowMs()) {
+        const key = String(projectId || '').trim() || 'unknown';
+        const counts = await this._loadLifetimeCounts();
+        const previous = counts.get(key) || { commits: 0, lastUpdated: 0 };
+        const next = { commits: previous.commits + 1, lastUpdated: now };
+        counts.set(key, next);
+        await this._persistLifetimeCounts();
+        return next.commits;
+    }
+
+    async getLifetimeCommitCount(projectId) {
+        const key = String(projectId || '').trim() || 'unknown';
+        const counts = await this._loadLifetimeCounts();
+        return counts.get(key)?.commits || 0;
     }
 
     acquireCaptureLease({ ttlMs = DEFAULT_LEASE_TTL_MS } = {}) {

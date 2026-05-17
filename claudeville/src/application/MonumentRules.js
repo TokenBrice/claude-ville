@@ -24,6 +24,13 @@ const DISTRICT_ALIASES = {
 
 const DISTRICT_CAP = 6;
 
+const MILESTONE_TIERS = Object.freeze([
+    { count: 1000, tier: 'aurora' },
+    { count: 100, tier: 'flagship' },
+    { count: 10, tier: 'ribbon' },
+    { count: 1, tier: 'maiden' },
+]);
+
 function textOf(value) {
     return String(value || '').trim();
 }
@@ -158,6 +165,15 @@ export class MonumentRules {
             label: textOf(event.label || event.name || 'verified'),
             dedupKey: `verified:${event.commitId || event.commitHash || event.sourceId}`,
         };
+    }
+
+    classifyMilestone(projectCommitCount) {
+        const count = Number(projectCommitCount);
+        if (!Number.isFinite(count) || count <= 0) return null;
+        for (const { count: threshold, tier } of MILESTONE_TIERS) {
+            if (count === threshold) return tier;
+        }
+        return null;
     }
 
     buildRecord(event, context = {}) {

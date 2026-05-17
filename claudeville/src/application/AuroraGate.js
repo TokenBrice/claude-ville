@@ -63,18 +63,23 @@ export class AuroraGate {
 
     async evaluate(now = Date.now(), signals = {}) {
         const localDate = localDateKey(now);
-        if (await this._hasFired(localDate)) return 'skip';
+        const force = Boolean(signals.force);
+        if (!force && await this._hasFired(localDate)) return 'skip';
         this._trimMilestones(now);
 
         const release = this.recentMilestones.some(item => item.kind === 'release');
         const majorVerified = this.recentMilestones.some(item => (
             item.kind === 'verified' && (item.weight === 'major' || Number(item.weight) >= 3)
         ));
-        const shouldFire = Boolean(signals.release || signals.quotaRollover || signals.majorVerified || release || majorVerified);
+        const shouldFire = force || Boolean(signals.release || signals.quotaRollover || signals.majorVerified || release || majorVerified);
         if (!shouldFire) return 'skip';
 
         await this._markFired(localDate, now, signals);
         return 'fire';
+    }
+
+    async forceTrigger(reason = 'milestone', now = Date.now()) {
+        return this.evaluate(now, { force: true, reason });
     }
 
     _trimMilestones(now) {
