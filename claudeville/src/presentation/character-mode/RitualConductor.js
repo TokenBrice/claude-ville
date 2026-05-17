@@ -169,8 +169,8 @@ function ritualMetaFor(event) {
     const isCompletedTask = /status['"]?\s*[:=]\s*['"]?completed\b/i.test(text) || /\bcompleted\b/i.test(text);
     const label = host ? compactText(host, host) : compactText(input, tool);
     if (tool === 'Task' || tool === 'Agent') {
-        // Priority per Phase 2.3: synthetic dispatch payload (child*), then
-        // classified label, then subagent_type parsed from the Task input.
+        // Priority order: synthetic dispatch payload (child*), then classified
+        // label, then subagent_type parsed from the Task input.
         const parsedInput = tryParseInput(input);
         const subagentTypeFromInput = parsedInput && typeof parsedInput === 'object'
             ? (parsedInput.subagent_type || parsedInput.subagentType || null)

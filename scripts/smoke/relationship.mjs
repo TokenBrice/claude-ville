@@ -1,9 +1,9 @@
 // Deterministic smoke for RelationshipState against a stub World.
 //
 // Exercises the parent/child + team membership snapshot, and confirms that
-// the Phase 0 membership cache does not reallocate when _membershipDirty is
-// false (snapshot.teamToMembers and its inner Array references must be
-// preserved across non-dirty update() calls).
+// the membership cache does not reallocate when _membershipDirty is false
+// (snapshot.teamToMembers and its inner Array references must be preserved
+// across non-dirty update() calls).
 
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';

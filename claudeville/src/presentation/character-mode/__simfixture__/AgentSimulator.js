@@ -108,7 +108,7 @@ const DEFAULT_TIMELINE = [
         parentId: 'sim1',
         agentName: 'Forge Helper',
     },
-    // ts 2000: Nova picks up a research task at the Observatory
+    // ts 2000: Nova picks up research work at the Observatory
     {
         ts: 2000,
         agentId: 'sim2',

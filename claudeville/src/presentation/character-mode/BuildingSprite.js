@@ -135,14 +135,14 @@ const OBSERVATORY_CLOCK_FACE = Object.freeze({
 });
 const MINE_SEAM_COLORS = ['#ffc15a', '#ff8a33', '#ff4528'];
 // Presence tier -> (emitter chance ×, light radius ×, occupancy scalar 0..1).
-// Per Phase 1.6 plan; occupancy feeds window warmth via 0.45 + 0.55 * scalar.
+// Occupancy feeds window warmth via 0.45 + 0.55 * scalar.
 const PRESENCE_TIER_TABLE = Object.freeze({
     dormant:  { emitter: 0.3, radius: 0.85, occupancy: 0 },
     occupied: { emitter: 1.0, radius: 1.0, occupancy: 0.7 },
     busy:     { emitter: 1.6, radius: 1.15, occupancy: 1 },
 });
-// Phase 4.12 — Observatory clock spin while a WebFetch/WebSearch/web.run ritual
-// is active. Spin speed is in rad/s; ease back to 0 over OBSERVATORY_SPIN_EASE_MS.
+// Observatory clock spin while a WebFetch/WebSearch/web.run ritual is active.
+// Spin speed is in rad/s; ease back to 0 over OBSERVATORY_SPIN_EASE_MS.
 const OBSERVATORY_WEB_RITUAL_TOOLS = new Set(['WebFetch', 'WebSearch', 'web.run']);
 const OBSERVATORY_SPIN_RATE_RAD_PER_S = 0.9;
 const OBSERVATORY_SPIN_EASE_MS = 1500;
@@ -175,7 +175,7 @@ function mixHex(a, b, t) {
 }
 
 // Multiply saturation and luminance of a hex color in HSL space. Used by the
-// state-aware label accent boost (Phase 1.8).
+// state-aware label accent boost.
 function brightenHex(hex, satMult = 1.2, lumMult = 1.2) {
     const { r, g, b } = hexToRgb(hex);
     const rf = r / 255, gf = g / 255, bf = b / 255;
@@ -264,14 +264,14 @@ export class BuildingSprite {
             }
         };
         eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, this._onPresence);
-        // Phase 4.10 — Archive read intensity (0..1) sourced from LandmarkActivity.
+        // Archive read intensity (0..1) sourced from LandmarkActivity.
         this._archiveReadIntensity = 0;
         this._onReadIntensity = (map) => {
             const next = Number(map?.archive);
             this._archiveReadIntensity = Number.isFinite(next) ? clamp01(next) : 0;
         };
         eventBus.on('building:read-intensity', this._onReadIntensity);
-        // Phase 4.12 — Observatory clock extra rotation while a web ritual is active.
+        // Observatory clock extra rotation while a web ritual is active.
         this._observatoryClockSpin = 0;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
@@ -342,7 +342,7 @@ export class BuildingSprite {
         for (const b of this.buildings) this._spawnEmittersFor(b, dt);
     }
 
-    // Phase 4.12 — Tick the extra clock spin while a web ritual is active at the
+    // Tick the extra clock spin while a web ritual is active at the
     // Observatory; ease back to 0 within OBSERVATORY_SPIN_EASE_MS once it ends.
     // Held at 0 under reduced motion so the time-of-day hands stay still.
     _updateObservatoryClockSpin(dt) {
@@ -1626,9 +1626,9 @@ export class BuildingSprite {
         const left = Math.round(face.x - size / 2);
         const top = Math.round(face.y - size / 2);
         const previousSmoothing = ctx.imageSmoothingEnabled;
-        // Phase 4.12 — Independent web-ritual spin layered on top of the
-        // time-of-day hands cached inside `source`. Rotate around the face
-        // center so the disc orbits in place. Reduced motion holds at 0.
+        // Independent web-ritual spin layered on top of the time-of-day hands
+        // cached inside `source`. Rotate around the face center so the disc
+        // orbits in place. Reduced motion holds at 0.
         const spin = this.motionScale ? (this._observatoryClockSpin || 0) : 0;
 
         ctx.imageSmoothingEnabled = false;
@@ -1794,7 +1794,7 @@ export class BuildingSprite {
         const leftLamp = localPoint(142, 128);
         const rightLamp = localPoint(194, 128);
         const ritual = this._latestRitual('archive');
-        // Phase 4.10 — Read-counter intensity drives the front-window overlay.
+        // Read-counter intensity drives the front-window overlay.
         // <0.2 keeps the existing faint baseline; 0.2-0.6 brightens the window;
         // 0.6-1.0 lights up the doorway and is reinforced by door particle bursts
         // in `_spawnEmittersFor`.
@@ -2479,9 +2479,9 @@ export class BuildingSprite {
         const fade = this._ritualFade(ritual);
         const action = ritual.action || 'portal';
         const progress = ritual.motionEnabled === false ? 1 : this._ritualProgress(ritual);
-        // Phase 4.11 — Distinguish browser-preview vs Playwright-active by
-        // re-classifying the ritual's source tool. `action === 'summon'` (and
-        // other lifecycle actions) keep the full-stack rings unchanged.
+        // Distinguish browser-preview vs Playwright-active by re-classifying
+        // the ritual's source tool. `action === 'summon'` (and other lifecycle
+        // actions) keep the full-stack rings unchanged.
         const reason = action === 'portal' ? this._portalReasonFor(ritual) : null;
         const color = action === 'dismiss'
             ? '#f08a8a'
@@ -2538,8 +2538,8 @@ export class BuildingSprite {
         }
 
         ctx.globalCompositeOperation = 'source-over';
-        // Phase 4.11 — Procedural 16x12 floating screen for portal-active.
-        // Drawn before the label so the parchment tag sits above it.
+        // Procedural 16x12 floating screen for portal-active. Drawn before the
+        // label so the parchment tag sits above it.
         if (reason === 'portal-active') {
             this._drawPortalActiveScreen(ctx, gate, fade);
         }
@@ -2560,7 +2560,7 @@ export class BuildingSprite {
         ctx.restore();
     }
 
-    // Phase 4.11 — Re-classify the ritual's source tool/input to recover the
+    // Re-classify the ritual's source tool/input to recover the
     // browser-preview vs Playwright-active reason. The conductor currently
     // does not forward `event.reason`, so derive it here from the same
     // ToolIdentity helper that produced the original event.
@@ -2576,7 +2576,7 @@ export class BuildingSprite {
         return null;
     }
 
-    // Phase 4.11 — Canvas-drawn 16x12 rounded screen hovering above the gate.
+    // Canvas-drawn 16x12 rounded screen hovering above the gate.
     // Scanline drift uses `frame` so it pauses under reduced motion. No PixelLab.
     _drawPortalActiveScreen(ctx, gate, fade) {
         const w = 16;
@@ -2882,8 +2882,8 @@ export class BuildingSprite {
             this._spawnBuildingParticle(normalizedType, center, baseAnchor, at, 0.035, 1, dt);
         }
         const presenceMult = PRESENCE_TIER_TABLE[this._presenceTierFor(b.type)].emitter;
-        // Phase 4.10 — Door-region archiveMote emitters (at y≈128) burst more
-        // when read intensity passes 0.6. Crest emitter (y≈82) is unaffected.
+        // Door-region archiveMote emitters (at y≈128) burst more when read
+        // intensity passes 0.6. Crest emitter (y≈82) is unaffected.
         const archiveReadIntensity = b.type === 'archive' ? (this._archiveReadIntensity || 0) : 0;
         for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
             let chanceBoost = b.type === 'forge'

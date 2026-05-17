@@ -1346,7 +1346,7 @@ function harborShipClass(ship = {}) {
     };
 }
 
-// 3.5 — push lifecycle: mass-scaled departure (overridden by force-push)
+// Push lifecycle: mass-scaled departure (overridden by force-push)
 function dynamicDepartureMs(ship = {}, force = null) {
     if (force === true) return FORCE_DEPARTURE_MS;
     const packSize = Math.max(1, harborShipPackSize(ship));
@@ -1650,7 +1650,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ship.departEventTime = null;
                     return;
                 }
-                // 3.3 — rejected push boomerangs: out then back, redocks with caution flag.
+                // Rejected push boomerangs: out then back, redocks with caution flag.
                 if (status === 'rejected') {
                     if (statusChanged || !ship.boomerangStartedAt) {
                         ship.boomerangStartedAt = skipDepartureAnimation
@@ -1676,7 +1676,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 }
                 ship.status = 'departing';
                 ship.departEventId = event.id;
-                // 3.5 — mass-scaled departure (force-push wins).
+                // Mass-scaled departure (force-push wins).
                 ship.departMsOverride = dynamicDepartureMs(ship, forceFlag);
                 if (status === 'success' && previousStatus !== 'success') {
                     ship.departStartedAt = null;
@@ -1684,7 +1684,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.departStartedAt = skipDepartureAnimation
                     ? now - ship.departMsOverride - FADE_DELAY_MS - EXIT_FADE_MS - EXIT_HOLD_MS - 1
                     : ship.departStartedAt || startedAt + departSquadIndex * DEPARTURE_STAGGER_MS;
-                // 3.5 — cast-off phase: hold at berth briefly before the proper departure.
+                // Cast-off phase: hold at berth briefly before the proper departure.
                 if (!skipDepartureAnimation && (statusChanged || !ship.castOffStartedAt)) {
                     ship.castOffStartedAt = ship.departStartedAt;
                 }
@@ -1694,7 +1694,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     }
 
     for (const [id, ship] of state.ships) {
-        // 3.3 — boomerang lifecycle: out then back, then redock with caution flag.
+        // Boomerang lifecycle: out then back, then redock with caution flag.
         if (ship.status === 'rejecting') {
             const startedAt = ship.boomerangStartedAt || now;
             const totalMs = BOOMERANG_OUT_MS + BOOMERANG_IN_MS;
@@ -2782,7 +2782,7 @@ export class HarborTraffic {
             const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
             const startedAt = ship.departStartedAt || now;
             const elapsed = Math.max(0, now - startedAt);
-            // 3.5 — cast-off phase ('casting-off'): hold ship at berth, stutter east ~8px.
+            // Cast-off phase ('casting-off'): hold ship at berth, stutter east ~8px.
             if (this.motionScale > 0 && elapsed < CAST_OFF_MS) {
                 castingOff = true;
                 ship.phase = 'casting-off';
@@ -2803,7 +2803,7 @@ export class HarborTraffic {
                 if (progress >= 1 && this.motionScale === 0) return null;
             }
         } else if (ship.status === 'rejecting') {
-            // 3.3 — boomerang: 16s out, 12s back; turn 180° at apex.
+            // Boomerang: 16s out, 12s back; turn 180° at apex.
             const route = this._shipRouteTiles(ship).map(point => toWorld(point.tileX, point.tileY));
             const startedAt = ship.boomerangStartedAt || now;
             const elapsed = Math.max(0, now - startedAt);
@@ -3007,7 +3007,7 @@ export class HarborTraffic {
             }
         }
 
-        // 3.5 — mist fade through last 800ms of departure.
+        // Mist fade through last 800ms of departure.
         if (this.motionScale > 0 && ship.status === 'departing') {
             const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
             const elapsed = Math.max(0, Number(ship.elapsed) || 0);
@@ -3020,7 +3020,7 @@ export class HarborTraffic {
 
         if (ship.status === 'docked' || ship.status === 'anchored') {
             this._drawMooringTick(ctx, ship, zoom, profile, shipClass);
-            // 3.5 — cast-off phase: shrinking mooring tick + puff handled via _drawMooringTick variant.
+            // Cast-off phase: shrinking mooring tick + puff handled via _drawMooringTick variant.
         }
         if (ship.status === 'departing' && this.motionScale > 0 && Number(ship.elapsed || 0) < CAST_OFF_MS) {
             // mooring tick shrinks as the cast-off animates.
@@ -3032,11 +3032,11 @@ export class HarborTraffic {
         if (ship.status === 'docked' && ship.pushStatus === 'failed') {
             this._drawFailedPushMark(ctx, ship, zoom, shipClass);
         }
-        // 3.3 — rejected ships docked back with caution flag overlay.
+        // Rejected ships docked back with caution flag overlay.
         if (ship.status === 'docked' && ship.pushStatus === 'rejected') {
             this._drawRejectedCautionFlag(ctx, ship, zoom, shipClass);
         }
-        // 3.3 — boomerang collision flare at apex (~50% of phase 1).
+        // Boomerang collision flare at apex (~50% of phase 1).
         if (ship.status === 'rejecting' && ship.boomerangOutbound && Number(ship.boomerangPhaseProgress || 0) > 0.92) {
             this._drawCollisionFlare(ctx, ship.x, ship.y, Math.min(1, (Number(ship.boomerangPhaseProgress) - 0.92) / 0.08));
         }
@@ -3046,7 +3046,7 @@ export class HarborTraffic {
         } else if (ship.pushForce === 'includes') {
             this._drawForceIncludesUnderline(ctx, ship, zoom, shipClass);
         }
-        // 3.5 — flagship/dreadnought hoist a secondary pennon at cast-off end.
+        // Flagship/dreadnought hoist a secondary pennon at cast-off end.
         if ((shipClass.key === 'flagship' || shipClass.key === 'dreadnought')
             && ship.status === 'departing'
             && Number(ship.elapsed || 0) >= CAST_OFF_MS
@@ -3313,7 +3313,7 @@ export class HarborTraffic {
         const height = Math.max(1, Math.round(fullHeight * shrink));
         const baseY = Math.round(ship.y - (23 + offsetY) * s) + (fullHeight - height);
         ctx.fillRect(Math.round(ship.x + (17 + offsetX) * s), baseY, Math.max(1, Math.round(2 * s)), height);
-        // 3.5 — small puff when cast-off begins shrinking the mooring tick.
+        // Small puff when cast-off begins shrinking the mooring tick.
         if (options.puff && this.motionScale > 0) {
             ctx.globalAlpha = 0.45 * (1 - (1 - shrink));
             ctx.fillStyle = 'rgba(225, 225, 225, 0.65)';
@@ -3374,7 +3374,7 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    // 3.5 — sea-mist fade gradient at the ship's last position.
+    // Sea-mist fade gradient at the ship's last position.
     _drawMistFade(ctx, x, y, t) {
         const radius = 38 + t * 18;
         const grd = ctx.createRadialGradient(x, y, 0, x, y, radius);
@@ -3389,7 +3389,7 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    // 3.5 — secondary pennon hoisted on flagship/dreadnought at cast-off end.
+    // Secondary pennon hoisted on flagship/dreadnought at cast-off end.
     _drawSecondaryPennon(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
         const s = 1 / Math.max(1, zoom || 1);
         const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
@@ -3405,7 +3405,7 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    // 3.3 — yellow caution flag overlay on a rejected ship.
+    // Yellow caution flag overlay on a rejected ship.
     _drawRejectedCautionFlag(ctx, ship, zoom, shipClass = harborShipClass(ship)) {
         const s = 1 / Math.max(1, zoom || 1);
         const x = Math.round(ship.x + (13 + (shipClass.flagOffsetX || 0)) * s);
@@ -3428,7 +3428,7 @@ export class HarborTraffic {
         ctx.restore();
     }
 
-    // 3.3 — red collision flare burst at the boomerang turn point.
+    // Red collision flare burst at the boomerang turn point.
     _drawCollisionFlare(ctx, x, y, t) {
         ctx.save();
         ctx.globalAlpha = Math.max(0.4, 0.95 * (1 - t));

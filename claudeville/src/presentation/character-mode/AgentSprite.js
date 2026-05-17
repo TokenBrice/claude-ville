@@ -292,7 +292,7 @@ export class AgentSprite {
             reason: intent?.reason || (building.type?.startsWith('ambient:') ? 'scenic' : (this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status')),
             targetTile: this._lastTargetTile,
         });
-        // Task 2.12: IDLE ambient destinations beyond 6 tiles also route via roads.
+        // IDLE ambient destinations beyond 6 tiles also route via roads.
         let viaWaypoints = null;
         if (building.routeViaRoads) {
             viaWaypoints = this._roadWaypointsForScenic(targetTileX, targetTileY);
@@ -638,7 +638,7 @@ export class AgentSprite {
     }
 
     setFamilyPlazaPreference(tileX, tileY) {
-        // route to AgentBehaviorState (30 s TTL); see WU-C task 2.5.
+        // route to AgentBehaviorState (30 s TTL).
         this.behavior?.setFamilyPlazaPreference?.(tileX, tileY);
     }
 
@@ -692,8 +692,8 @@ export class AgentSprite {
             this._rememberActivitySnapshot(previous, now);
         }
         this._activitySnapshot = current;
-        // Tasks 2.8 + 2.11: feed tool transitions into behavior state for
-        // plan-mode tracking and per-agent retry detection (no AgentEventStream edits).
+        // Feed tool transitions into behavior state for plan-mode tracking
+        // and per-agent retry detection (no AgentEventStream edits).
         this._observeToolForBehavior(agent, previous, current);
     }
 
@@ -816,7 +816,7 @@ export class AgentSprite {
 
         this._renewVisitReservation();
 
-        // Task 2.12: IDLE strollers stop-and-look at landmarks 1-2 s every 18-30 s.
+        // IDLE strollers stop-and-look at landmarks 1-2 s every 18-30 s.
         if (this._advanceIdleStopAndLook(dt)) {
             this._advanceIdleAnimation(dt);
             return;
@@ -867,9 +867,9 @@ export class AgentSprite {
             return;
         }
 
-        // Task 2.12: deliberate stride pause for IDLE strollers.
-        // Hold the frame for 6 ticks out of every 12 ticks so motion looks
-        // unhurried. Pause is skipped when reduced-motion is active (motionScale 0).
+        // Deliberate stride pause for IDLE strollers: hold the frame for 6 ticks
+        // out of every 12 so motion looks unhurried. Pause is skipped when
+        // reduced-motion is active (motionScale 0).
         const isIdleStroll = this.agent?.status === AgentStatus.IDLE && !this.chatPartner && !this.chatting;
         if (isIdleStroll) {
             this._idleStrideTick = (this._idleStrideTick || 0) + 1;
@@ -940,8 +940,6 @@ export class AgentSprite {
 
     _faceBuilding(building, facingPoint = null) {
         if (!building && !facingPoint) return;
-        // Task 2.7: prefer explicit facingPoint (allocator/reservation thread-through
-        // or building.visitTile entry); fall back to building geometry center.
         const point = this._resolveBuildingFacingPoint(building, facingPoint);
         if (!point) return;
         const center = tileToWorld({ tileX: point.tileX, tileY: point.tileY });
@@ -960,13 +958,6 @@ export class AgentSprite {
         };
         const fromExplicit = wrap(explicitFacingPoint);
         if (fromExplicit) return fromExplicit;
-        const reservation = this.behavior?.currentReservation || null;
-        const fromReservation = wrap(reservation?.facingPoint);
-        if (fromReservation) return fromReservation;
-        const intent = this.behavior?.intent || null;
-        const fromIntent = wrap(intent?.facingPoint);
-        if (fromIntent) return fromIntent;
-        // Defensive: WU-E populates building.facingPoint or visitTile.facingPoint.
         const fromBuilding = wrap(building?.facingPoint);
         if (fromBuilding) return fromBuilding;
         const visitFacing = wrap(this._currentVisitTileEntry(building)?.facingPoint);
@@ -1004,7 +995,7 @@ export class AgentSprite {
         if (this._fidgetCooldownMs == null) {
             this._fidgetCooldownMs = 3000 + Math.random() * 6000;
         }
-        // Task 2.7: re-anchor 4-9 s nudges back to building facingPoint when dwelling.
+        // Re-anchor 4-9 s nudges back to building facingPoint when dwelling.
         if (this._anchorReinforceMs == null) {
             this._anchorReinforceMs = 4000 + Math.random() * 5000;
         }
@@ -1024,7 +1015,7 @@ export class AgentSprite {
     }
 
     _advanceIdleStopAndLook(dt) {
-        // Task 2.12: every 18-30 s, IDLE agents pause 1-2 s and face a landmark.
+        // Every 18-30 s, IDLE agents pause 1-2 s and face a landmark.
         if (this.motionScale <= 0 || this.chatPartner || this.chatting) return false;
         if (this.agent?.status !== AgentStatus.IDLE) return false;
         if (this._stopLookActiveMs > 0) {
@@ -1124,9 +1115,9 @@ export class AgentSprite {
         if (this.isArrivalPending()) return;
         if (!this.compositor) return;       // defensive: no compositor → render nothing
 
-        // 4.15: archive fade. The renderer sets `_archiveAnim = { startedAt }`
-        // on agent:removed and disposes the sprite when progress >= 1; our job
-        // is the visual fade + sparkle flash + pinned FINAL bubble. We wrap the
+        // Archive fade. The renderer sets `_archiveAnim = { startedAt }` on
+        // agent:removed and disposes the sprite when progress >= 1; our job is
+        // the visual fade + sparkle flash + pinned FINAL bubble. We wrap the
         // remaining draw body in save/restore so alpha unwinds cleanly.
         const archiveProgress = this._archiveFadeProgress();
         if (archiveProgress >= 1) return;
@@ -1155,7 +1146,7 @@ export class AgentSprite {
         const cleanupKey = this._shouldScrubBakedCodexWeapon(identity)
             ? `clean:${String(identity.modelClass || 'codex').toLowerCase()}`
             : 'raw';
-        // 4.14: team-colored sash trim. teamTrim is null when the agent has no
+        // Team-colored sash trim. teamTrim is null when the agent has no
         // teamName, so spriteFor falls back to the variant-derived trim color
         // and cache hits remain identical to the pre-team behavior.
         const teamTrim = this._teamTrimAccent();
@@ -1243,14 +1234,14 @@ export class AgentSprite {
             this._drawStatus(ctx, contentTopY);
         }
         this._drawStatusEmote(ctx, contentTopY);
-        // Tasks 2.8 + 2.11: plan-mode and retry glyphs sit above the silhouette.
-        // The status emote (kind != null) wins the slot; otherwise plan-mode glyph
-        // renders slightly higher. Retry glyph renders to the right.
+        // Plan-mode and retry glyphs sit above the silhouette. The status
+        // emote (kind != null) wins the slot; otherwise plan-mode glyph renders
+        // slightly higher. Retry glyph renders to the right.
         this._drawPlanModeGlyph(ctx, contentTopY);
         this._drawRetryGlyph(ctx, contentTopY);
         this._drawNameTag(ctx);
 
-        // 4.15: sparkle flash during the first 200 ms of the archive fade.
+        // Sparkle flash during the first 200 ms of the archive fade.
         // Reduced-motion skips entirely; otherwise we draw a brief radial puff
         // around the sprite head using the status color (no ParticleSystem
         // access from inside draw — keep it procedural and self-contained).
@@ -2878,8 +2869,8 @@ export class AgentSprite {
         return repoProfile(project);
     }
 
-    // 4.14: returns the team accent (#rrggbb) used as the secondary trim/sash
-    // swap target, or null when the agent is not part of any team (skip swap).
+    // Returns the team accent (#rrggbb) used as the secondary trim/sash swap
+    // target, or null when the agent is not part of any team (skip swap).
     _teamTrimAccent() {
         const name = this.agent?.teamName;
         if (!name) return null;
@@ -2890,9 +2881,9 @@ export class AgentSprite {
         return /^#?[0-9a-fA-F]{6}$/.test(accent.trim()) ? accent.trim() : null;
     }
 
-    // 4.15: archive fade progress in [0, 1]. The sibling IsometricRenderer
-    // worker sets `_archiveAnim = { startedAt }` on agent:removed; we read it
-    // here. Returns 0 (no fade) when the field is missing or malformed.
+    // Archive fade progress in [0, 1]. IsometricRenderer sets
+    // `_archiveAnim = { startedAt }` on agent:removed; we read it here.
+    // Returns 0 (no fade) when the field is missing or malformed.
     _archiveFadeProgress(now = Date.now()) {
         const startedAt = Number(this._archiveAnim?.startedAt);
         if (!Number.isFinite(startedAt) || startedAt <= 0) return 0;
@@ -2901,7 +2892,7 @@ export class AgentSprite {
         return Math.max(0, Math.min(1, elapsed / 800));
     }
 
-    // 4.15: brief radial sparkle puff during the first 200 ms of the fade.
+    // Brief radial sparkle puff during the first 200 ms of the fade.
     // Procedural — does not poke the shared ParticleSystem from inside draw.
     _drawArchiveSparkle(ctx, contentTopY, progress) {
         const t = Math.min(1, progress / 0.25); // first 200ms of the 800ms fade
@@ -2930,7 +2921,7 @@ export class AgentSprite {
 
     _activityThread() {
         const now = Date.now();
-        // 4.15: when archiving, pin a synthetic FINAL entry at the head of the
+        // When archiving, pin a synthetic FINAL entry at the head of the
         // thread for the duration of the fade (~800 ms). The remaining slots
         // still show the agent's most recent real activity so the player can
         // read "what they did last" while they fade out.
@@ -3220,9 +3211,7 @@ export class AgentSprite {
     }
 
     _drawPlanModeGlyph(ctx, contentTopY) {
-        // Task 2.8: render small blueprint/compass glyph (three angle ticks) when
-        // behavior.planMode is true. Hide if a status emote is already rendering
-        // to avoid overlap (status emote wins the slot).
+        // Hide when a status emote is rendering — status emote wins the slot.
         if (!Number.isFinite(contentTopY)) return;
         if (!this.behavior?.planMode) return;
         if (this._statusEmoteKind()) return;
@@ -3237,27 +3226,24 @@ export class AgentSprite {
         ctx.lineWidth = 1.2;
         ctx.lineCap = 'round';
         ctx.beginPath();
-        // Three connected angle ticks — draftsman's set-square silhouette.
         ctx.moveTo(-half, half);
         ctx.lineTo(half, half);
         ctx.lineTo(-half, -half);
         ctx.closePath();
         ctx.stroke();
-        // Pivot dot at right-angle vertex.
         ctx.fillStyle = '#cfe2ff';
         ctx.fillRect(-half - 1, half - 1, 2, 2);
         ctx.restore();
     }
 
     _drawRetryGlyph(ctx, contentTopY) {
-        // Task 2.11: yellow ↻ glyph for 6 s after last tool:retried event.
         if (!Number.isFinite(contentTopY)) return;
         if (!this.behavior?.isRetryGlyphActive?.()) return;
         ctx.save();
         const s = 1 / (this._zoom || 1);
         ctx.translate(this.x, contentTopY);
         ctx.scale(s, s);
-        // Offset slightly to the right so it doesn't collide with emote stack.
+        // Offset right so it doesn't collide with the emote stack.
         ctx.translate(12, -14);
         const box = 8;
         const r = box / 2;
@@ -3266,7 +3252,6 @@ export class AgentSprite {
         ctx.beginPath();
         ctx.arc(0, 0, r, Math.PI * 0.25, Math.PI * 1.85);
         ctx.stroke();
-        // Arrowhead at the open end.
         ctx.fillStyle = '#f6cf60';
         const ax = Math.cos(Math.PI * 1.85) * r;
         const ay = Math.sin(Math.PI * 1.85) * r;

@@ -12,7 +12,7 @@ const RITUAL_TOKEN_DELTA_THRESHOLD = 256;
 const PRESENCE_RECENCY_MS = 60000;
 const PRESENCE_EMIT_INTERVAL_MS = 500;
 const PRESENCE_DORMANT_THRESHOLD = 0.1;
-// Phase 4.10 — Archive shelf-fill keyed to local-search counter.
+// Archive shelf-fill keyed to local-search counter.
 // Decay over 2 min so a burst of 6 reads gives full intensity for ~30 s then fades.
 const ARCHIVE_READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS']);
 const ARCHIVE_READ_DECAY_HALFLIFE_S = 120;
@@ -107,7 +107,7 @@ export class LandmarkActivity {
         this.seenSnapshots = new Set();
         this.previousTokenTotals = new Map();
         this.lastForgeByAgent = new Map();
-        // Phase 4.10 — Rolling Read/Grep/Glob/LS counter for the Archive.
+        // Rolling Read/Grep/Glob/LS counter for the Archive.
         // Decay-based: each update() step multiplies count by exp(-dt / halflife).
         this._archiveReadCounter = { count: 0, lastInvocationTs: 0 };
         this._archiveReadSeen = new Set();
@@ -127,8 +127,8 @@ export class LandmarkActivity {
         this.agentSprites = Array.from(agentSprites || []);
         const agentList = Array.from(agents || []);
 
-        // Phase 4.10 — Decay the Archive read counter before observing new
-        // invocations so this frame's bumps remain at their full weight.
+        // Decay the Archive read counter before observing new invocations so
+        // this frame's bumps remain at their full weight.
         this._decayArchiveReadCounter(dt);
 
         for (const agent of agentList) {
@@ -183,8 +183,9 @@ export class LandmarkActivity {
         const building = agent.targetBuildingType;
         if (building === 'forge') this._addForgeItem(agent, now);
         if (building === 'taskboard') this._addTaskItem(agent, now);
-        // Task/Agent transitions now manifest as Portal summon rituals (handled by RitualConductor);
-        // suppress the duplicate Command Center SUMMON stub here.
+        // Subagent transitions now manifest as Portal summon rituals (handled
+        // by RitualConductor); suppress the duplicate Command Center SUMMON
+        // stub here.
         if (agent.currentTool === 'Task' || agent.currentTool === 'Agent') return;
         if (building === 'command' || isCommandTool(agent)) this._addCommandItem(agent, now);
     }
@@ -478,8 +479,8 @@ export class LandmarkActivity {
             payload[building.type] = this.getBuildingPresence(building.type, now);
         }
         eventBus.emit('building:active-agents', payload);
-        // Phase 4.10 — Surface Archive read intensity so BuildingSprite can tier
-        // the front-window overlay and door particle spawn rate without coupling.
+        // Surface Archive read intensity so BuildingSprite can tier the
+        // front-window overlay and door particle spawn rate without coupling.
         eventBus.emit('building:read-intensity', { archive: this.getArchiveReadIntensity() });
     }
 

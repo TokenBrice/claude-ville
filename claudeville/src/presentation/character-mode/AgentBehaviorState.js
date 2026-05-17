@@ -43,7 +43,6 @@ export class AgentBehaviorState {
         this.lastRetryAt = 0;
         this.lastRetryCount = 0;
         this.lastRetryTool = null;
-        this.errorBurst = 0;
     }
 
     setRoute({ state = 'traveling', intent = null, building = null, reason = null, targetTile = null } = {}) {
@@ -183,7 +182,6 @@ export class AgentBehaviorState {
             lastRetryAt: this.lastRetryAt,
             lastRetryCount: this.lastRetryCount,
             lastRetryTool: this.lastRetryTool,
-            errorBurst: this.errorBurst,
         };
     }
 }

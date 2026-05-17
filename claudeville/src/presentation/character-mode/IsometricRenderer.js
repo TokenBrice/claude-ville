@@ -161,7 +161,7 @@ const GULL_FLIGHT_FRAMES = [
 const GULL_BANK_FRAME = 'prop.gullFlight.bank';
 const GULL_ROUTE_SPEED_SCALE = 0.52;
 const GULL_LIGHTHOUSE_HOTSPOT = { tileX: 31.4, tileY: 12.2 };
-// 4.13 — Watchtower gull orbit: single-bird 30s loop pegged just north of the
+// Watchtower gull orbit: single-bird 30s loop pegged just north of the
 // Pharos Lighthouse lantern (watchtower footprint sits at tile (27,8) sized
 // 3x5), with the orbit centre on the sea side so the bird reads as guarding
 // the beacon. Buoys flank the beacon on adjacent open-water tiles.
@@ -181,7 +181,7 @@ const WATCHTOWER_BEACON_BUOY_TILES = Object.freeze([
     { tileX: 29, tileY: 9 },
     { tileX: 30, tileY: 11 },
 ]);
-// 4.15 — Archive fade: keep the sprite in the draw loop for this many ms after
+// Archive fade: keep the sprite in the draw loop for this many ms after
 // `agent:removed` so the sibling AgentSprite fade/sparkle animation can play.
 const ARCHIVE_FADE_DURATION_MS = 800;
 const GULL_OFFMAP_GATEWAYS = [
@@ -491,16 +491,15 @@ export class IsometricRenderer {
         this.atmosphereState = new AtmosphereState();
         this.skyRenderer = new SkyRenderer({ assets: this.assets });
         this.weatherRenderer = new WeatherRenderer();
-        // Phase 4 WU-C: weather renderer needs the AssetManager so its
-        // sprite-stamp helpers (rain splashes, water ripples) can resolve
-        // atmosphere.* asset IDs. Method is defensively optional because it
-        // only landed alongside the stamp helpers.
+        // Weather renderer needs the AssetManager so its sprite-stamp helpers
+        // (rain splashes, water ripples) can resolve atmosphere.* asset IDs.
+        // Method is defensively optional because it only landed alongside the
+        // stamp helpers.
         this.weatherRenderer.setAssets?.(this.assets);
-        // Phase 4 — seasonal ambient particles (snow/petals/fireflies/leaves)
-        // routed into the shared ParticleSystem. Atmosphere snapshot is
-        // captured per-frame onto _lastAtmosphere by WorldFrameRenderer;
-        // fall back to the raw AtmosphereState snapshot before the first
-        // frame runs.
+        // Seasonal ambient particles (snow/petals/fireflies/leaves) routed
+        // into the shared ParticleSystem. Atmosphere snapshot is captured
+        // per-frame onto _lastAtmosphere by WorldFrameRenderer; fall back to
+        // the raw AtmosphereState snapshot before the first frame runs.
         this.seasonalAmbience = new SeasonalAmbience({
             particleSystem: this.particleSystem,
             atmosphereStateGetter: () => this._lastAtmosphere ?? this.atmosphereState?.snapshot?.() ?? null,
@@ -668,9 +667,9 @@ export class IsometricRenderer {
         this.treePropSprites = [...generatedTrees, ...authoredPalms, ...authoredBroadleafTrees]
             .filter((t) => !this._isInBridgeTreeExclusion(t.tileX, t.tileY))
             .map((t) => {
-            // 4.8 — Deterministic per-tree phase seed for wind sway. Anchored
-            // to tile coordinates + variant so the visual offset is stable
-            // across reloads but each tree drifts on its own phase.
+            // Deterministic per-tree phase seed for wind sway. Anchored to
+            // tile coordinates + variant so the visual offset is stable across
+            // reloads but each tree drifts on its own phase.
             const swaySeed = this._windSwaySeed(t);
             if (t.canopy || t.tropical) {
                 const bounds = this._fantasyTreePropBounds(t);
@@ -737,7 +736,7 @@ export class IsometricRenderer {
         this._generateCommandCenterAmbience();
         this.ambientEmitters = [];
         this._generateAmbientEmitters();
-        // Task 1.7: latest building presence tiers, refreshed via building:active-agents
+        // Latest building presence tiers, refreshed via building:active-agents
         // and consulted by gated emitters. Map<type, { count, recencyScore, tier }>.
         this._buildingPresenceMap = new Map();
         // Per-emitter interval timestamps for gated/intervaled emitters.
@@ -1130,8 +1129,8 @@ export class IsometricRenderer {
             { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
             { tileX: 32.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
-            // Task 1.7 — building-activity gated smoke plumes. Roof anchors raise
-            // the spawn point (worldY -= 22) above each building footprint and
+            // Building-activity gated smoke plumes. Roof anchors raise the
+            // spawn point (worldY -= 22) above each building footprint and
             // the `gatedBy: 'building.activeAgents'` flag tells _updateAmbientEffects
             // to consult the presence map (occupied/busy => spawn ~every 600ms).
             { tileX: 28, tileY: 27, particleType: 'smoke', intervalMs: 600,
@@ -1255,8 +1254,8 @@ export class IsometricRenderer {
             eventBus.on('subagent:dispatched', (payload) => {
                 this._enqueueSubagentSummonRitual(payload);
             }),
-            // Task 1.7: cache the latest building presence tiers so per-frame
-            // emitter gating (forge/mine smoke) can read tier === 'occupied'|'busy'
+            // Cache the latest building presence tiers so per-frame emitter
+            // gating (forge/mine smoke) can read tier === 'occupied'|'busy'
             // without hot-path enumeration of agent sprites.
             eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, (payload) => {
                 if (!payload) return;
@@ -1364,8 +1363,8 @@ export class IsometricRenderer {
         this.skyRenderer?.detach?.();
         this.skyRenderer?.releaseCache?.();
         this.atmosphereState?.dispose?.();
-        // Phase 4 — SeasonalAmbience holds no resources today; the optional
-        // chain keeps the lifecycle hook in place if a dispose method lands.
+        // SeasonalAmbience holds no resources today; the optional chain keeps
+        // the lifecycle hook in place if a dispose method lands.
         this.seasonalAmbience?.dispose?.();
     }
 
@@ -1975,12 +1974,11 @@ export class IsometricRenderer {
         }
         this.gateTransits.delete(agentId);
         this.visitTileAllocator?.release?.(agentId);
-        // 4.15 — Archive fade: defer the actual sprite disposal by
-        // ARCHIVE_FADE_DURATION_MS so the sibling AgentSprite.draw() fade
-        // alpha + sparkle puff (Phase 4 WU-G) can play. The sprite stays in
-        // agentSprites and is collected by _pruneArchiveFadedSprites().
-        // Reduced motion (motionScale === 0) short-circuits to immediate
-        // disposal — there is no fade to play.
+        // Archive fade: defer the actual sprite disposal by
+        // ARCHIVE_FADE_DURATION_MS so AgentSprite.draw() fade alpha + sparkle
+        // puff can play. The sprite stays in agentSprites and is collected by
+        // _pruneArchiveFadedSprites(). Reduced motion (motionScale === 0)
+        // short-circuits to immediate disposal — there is no fade to play.
         const motionScale = this.motionScale ?? 1;
         if (motionScale > 0 && !sprite._archiveAnim) {
             sprite._archiveAnim = {
@@ -1996,7 +1994,7 @@ export class IsometricRenderer {
         this._markSpritesDirty();
     }
 
-    // 4.15 — Sweep archive-fading sprites whose fade window has elapsed.
+    // Sweep archive-fading sprites whose fade window has elapsed.
     // Called once per frame from `_update`.
     _pruneArchiveFadedSprites(nowMs = Date.now()) {
         let removed = false;
@@ -2082,7 +2080,7 @@ export class IsometricRenderer {
         if (this.onAgentSelect) this.onAgentSelect(null);
 
         // No agent hit; fall through to building selection. Renderer state for
-        // building selection is owned downstream (Phase 4); we only emit.
+        // building selection is owned downstream; we only emit.
         const building = this.buildingRenderer?.hitTest(worldX, worldY) ?? null;
         if (building) {
             eventBus.emit(BUILDING_EVENTS.SELECTED, building);
@@ -2304,14 +2302,13 @@ export class IsometricRenderer {
         this.buildingRenderer?.update(dt);
         this._updateAmbientEffects(dt);
 
-        // 4.15 — Reap any agent sprites whose 800ms archive-fade window has
-        // expired before the particle update so the next frame draws the
-        // final state.
+        // Reap any agent sprites whose 800ms archive-fade window has expired
+        // before the particle update so the next frame draws the final state.
         this._pruneArchiveFadedSprites(Date.now());
 
-        // Phase 4 — Seasonal ambience emits drift particles into the shared
-        // particle system, capped at ~4 spawns/sec and gated by reduced
-        // motion inside SeasonalAmbience.update().
+        // Seasonal ambience emits drift particles into the shared particle
+        // system, capped at ~4 spawns/sec and gated by reduced motion inside
+        // SeasonalAmbience.update().
         this.seasonalAmbience?.update?.(dt);
 
         // Update particles
@@ -2424,8 +2421,8 @@ export class IsometricRenderer {
         let spawned = 0;
         const now = performance.now();
         for (const emitter of this.ambientEmitters) {
-            // Task 1.7: building.activeAgents-gated emitters use interval timing
-            // and are not subject to the single-spawn-per-frame cap below.
+            // building.activeAgents-gated emitters use interval timing and
+            // are not subject to the single-spawn-per-frame cap below.
             if (emitter.gatedBy === 'building.activeAgents') {
                 const presence = emitter.building
                     ? this._buildingPresenceMap?.get(emitter.building)
@@ -2713,8 +2710,8 @@ export class IsometricRenderer {
         this.seasonalAmbience?.drawStatic?.(ctx);
     }
 
-    // Task 1.7 static fallback: when motionScale === 0 the particle system is
-    // disabled, so we draw a single deterministic puff per occupied building.
+    // Static fallback: when motionScale === 0 the particle system is disabled,
+    // so we draw a single deterministic puff per occupied building.
     _drawStaticBuildingSmoke(ctx) {
         if (this.motionScale > 0) return;
         if (!this.ambientEmitters?.length) return;
@@ -2878,10 +2875,10 @@ export class IsometricRenderer {
         };
     }
 
-    // 4.13 — Decorative beacon buoys flanking the Pharos Lighthouse on the
-    // sea-line. Authored tile positions live in WATCHTOWER_BEACON_BUOY_TILES
-    // (config-near-call-site by design); they're picked to land on open
-    // water away from the harbor anchorages declared in HarborTraffic.js.
+    // Decorative beacon buoys flanking the Pharos Lighthouse on the sea-line.
+    // Authored tile positions live in WATCHTOWER_BEACON_BUOY_TILES
+    // (config-near-call-site by design); they're picked to land on open water
+    // away from the harbor anchorages declared in HarborTraffic.js.
     _buildWatchtowerBeaconBuoySprites() {
         const id = 'prop.harborBeaconBuoy';
         if (!this.assets?.has?.(id) || !this.sprites) return [];
@@ -3794,8 +3791,8 @@ export class IsometricRenderer {
         };
     }
 
-    // 4.8 — Deterministic per-tree phase for wind sway. Mixes tile position
-    // and variant into [0, 2π) so neighbouring trees don't pulse in lockstep.
+    // Deterministic per-tree phase for wind sway. Mixes tile position and
+    // variant into [0, 2π) so neighbouring trees don't pulse in lockstep.
     _windSwaySeed(tree) {
         const tx = Number(tree?.tileX) || 0;
         const ty = Number(tree?.tileY) || 0;
@@ -3804,9 +3801,9 @@ export class IsometricRenderer {
         return (n - Math.floor(n)) * Math.PI * 2;
     }
 
-    // 4.8 — Apply a small horizontal offset to a tree drawFn based on the
-    // current atmosphere wind. Clamped to ±2 px so pixel-art sprites do not
-    // shimmer; skipped under reduced motion (motionScale === 0).
+    // Apply a small horizontal offset to a tree drawFn based on the current
+    // atmosphere wind. Clamped to ±2 px so pixel-art sprites do not shimmer;
+    // skipped under reduced motion (motionScale === 0).
     _withTreeSway(ctx, seed, drawFn) {
         if (typeof drawFn !== 'function') return;
         const motionScale = this.motionScale ?? 1;
@@ -3995,10 +3992,10 @@ export class IsometricRenderer {
         const rain = weather.rain || 0;
         if (rain <= 0.08) return;
 
-        // Phase 4 WU-C — Stamp the manifest-driven rain ripple sprite for a
-        // small random fraction of visible water tiles per frame. The
-        // WeatherRenderer self-throttles per tile (2s) so the global ripple
-        // budget stays bounded. Skipped under reduced motion.
+        // Stamp the manifest-driven rain ripple sprite for a small random
+        // fraction of visible water tiles per frame. The WeatherRenderer
+        // self-throttles per tile (2s) so the global ripple budget stays
+        // bounded. Skipped under reduced motion.
         const stampRipples = (this.motionScale ?? 1) > 0
             && typeof this.weatherRenderer?.maybeStampWaterRipple === 'function';
 
@@ -4092,8 +4089,8 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    // Task 1.10 — Phase-coupled water palette. Tint base water toward the active
-    // phase palette's horizon (warm dusk/dawn) or zenith-darkened (night). At noon
+    // Phase-coupled water palette. Tint base water toward the active phase
+    // palette's horizon (warm dusk/dawn) or zenith-darkened (night). At noon
     // both reactions are ~0 so this method is a near-noop and water stays teal.
     _drawPhaseWaterTint(ctx, startX, endX, startY, endY) {
         const reactions = this._atmosphereReactions || {};
@@ -4114,7 +4111,7 @@ export class IsometricRenderer {
             });
         }
         if (nightActive && palette.zenith) {
-            // Halve the zenith RGB to darken (per plan: "palette.zenith * 0.5").
+            // Halve the zenith RGB to darken (palette.zenith * 0.5).
             const zenithMix = THEME.waterTint?.zenithMix ?? 0.45;
             tints.push({
                 color: this._halfHex(palette.zenith),
@@ -6181,9 +6178,9 @@ export class IsometricRenderer {
                 && this._isGullFlightTile(tileX, tileY);
         });
 
-        // 4.13 — Single guardian gull orbiting the Pharos Lighthouse beacon.
-        // 30s loop, low altitude; falls back to a held pose under reduced
-        // motion so the silhouette still reads near the watchtower.
+        // Single guardian gull orbiting the Pharos Lighthouse beacon. 30s
+        // loop, low altitude; falls back to a held pose under reduced motion
+        // so the silhouette still reads near the watchtower.
         const watchtowerGull = this._watchtowerGullPosition();
         if (watchtowerGull && this._isGullInVisibleBounds(watchtowerGull, visible)) {
             visibleGulls.push(watchtowerGull);
@@ -6229,9 +6226,9 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    // 4.13 — Watchtower beacon gull. Single bird looping the Pharos
-    // Lighthouse at WATCHTOWER_GULL_ORBIT. Reduced motion (motionScale === 0)
-    // pins the gull at the start-of-orbit anchor so the silhouette remains.
+    // Watchtower beacon gull. Single bird looping the Pharos Lighthouse at
+    // WATCHTOWER_GULL_ORBIT. Reduced motion (motionScale === 0) pins the gull
+    // at the start-of-orbit anchor so the silhouette remains.
     _watchtowerGullPosition() {
         if (!this.assets?.has?.('prop.gullFlight')) return null;
         const motionScale = this.motionScale ?? 1;
@@ -6747,12 +6744,11 @@ export class IsometricRenderer {
             this._beamLastIdleAngle = primaryAngle;
         }
 
-        // 4.7 — Punch the beam through fog/rain/storm so it stays legible
-        // when the sky is occluded. Multipliers cap at 1.5× alpha and 1.25×
-        // bloom; a faint volumetric cone wedge is added at 0.4 alpha to read
-        // as light scattering through precipitation. Stacks above the
-        // push-signal hue work above (Phase 3 WU3-B), inside the same
-        // `screen` composite block.
+        // Punch the beam through fog/rain/storm so it stays legible when the
+        // sky is occluded. Multipliers cap at 1.5× alpha and 1.25× bloom; a
+        // faint volumetric cone wedge is added at 0.4 alpha to read as light
+        // scattering through precipitation. Stacks above the push-signal hue
+        // work, inside the same `screen` composite block.
         const weather = atmosphere?.weather;
         let weatherBoost = 1;
         let bloomScale = 1;
@@ -6797,10 +6793,10 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    // 4.7 — Faint volumetric cone wedge added on top of the existing
-    // beam pass when fog/rain/storm intensity is non-zero. Mirrors the
-    // wedge geometry of _drawBeamWedge but uses a white→transparent
-    // gradient at low alpha to read as scattered light through weather.
+    // Faint volumetric cone wedge added on top of the existing beam pass when
+    // fog/rain/storm intensity is non-zero. Mirrors the wedge geometry of
+    // _drawBeamWedge but uses a white→transparent gradient at low alpha to
+    // read as scattered light through weather.
     _drawBeamFogCone(ctx, x, y, angle, length, farWidth, alpha) {
         if (alpha <= 0) return;
         const dx = Math.cos(angle);
@@ -6844,8 +6840,8 @@ export class IsometricRenderer {
         ctx.closePath();
         ctx.fill();
 
-        // 4.7 — `bloomScale` widens the radial bloom radius under fog/rain/
-        // storm so the head of the beam reads through the precipitation.
+        // `bloomScale` widens the radial bloom radius under fog/rain/storm
+        // so the head of the beam reads through the precipitation.
         const bloomRadius = farWidth * 0.75 * bloomScale;
         const bloom = ctx.createRadialGradient(farX, farY, 0, farX, farY, bloomRadius);
         bloom.addColorStop(0, this._withAlpha(color, this._quantizedAlpha(alpha * 0.28)));

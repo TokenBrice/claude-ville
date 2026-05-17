@@ -3,7 +3,7 @@
 // Event-name contracts (string keys; no registry enforcement):
 //   agent:added, agent:updated, agent:removed
 //   agent:selected, agent:deselected
-//   building:selected, building:deselected     // emitted by IsometricRenderer click handler (Phase 0 Batch 2)
+//   building:selected, building:deselected     // emitted by IsometricRenderer click handler
 //   building:active-agents                      // map<type,{count,recencyScore,tier}> from LandmarkActivity (~500ms)
 //   tool:invoked, subagent:dispatched, subagent:completed
 //   mode:changed, usage:updated

@@ -108,20 +108,13 @@ function isTokenEvent(event) {
 }
 
 export class MonumentRules {
-    constructor({ enableVerifiedStones = false } = {}) {
-        this.enableVerifiedStones = enableVerifiedStones;
-    }
-
     classify(event) {
         if (!event || isTokenEvent(event)) return null;
         const type = textOf(event.type).toLowerCase();
-        if (!['commit', 'push', 'tag', 'pr-merge', 'test-summary'].includes(type)) return null;
+        if (!['commit', 'push', 'tag', 'pr-merge'].includes(type)) return null;
 
         if ((type === 'tag' || type === 'push') && targetReleaseRef(event)) {
             return this._releaseStone(event);
-        }
-        if (type === 'test-summary') {
-            return this.enableVerifiedStones ? this._verifiedStone(event) : null;
         }
         if (type === 'commit' || type === 'pr-merge') {
             return this._featureStone(event);
@@ -153,17 +146,6 @@ export class MonumentRules {
             weight: parsed.type === 'feat' ? 'medium' : 'minor',
             label: parsed.subject || parsed.type,
             dedupKey: `commit:${project}:${event.sha || event.commandHash || event.id || textOf(parsed.subject).slice(0, 80)}`,
-        };
-    }
-
-    _verifiedStone(event) {
-        if (!event.commitId && !event.commitHash && !event.sourceId) return null;
-        return {
-            kind: 'verified',
-            district: 'taskboard',
-            weight: 'major',
-            label: textOf(event.label || event.name || 'verified'),
-            dedupKey: `verified:${event.commitId || event.commitHash || event.sourceId}`,
         };
     }
 

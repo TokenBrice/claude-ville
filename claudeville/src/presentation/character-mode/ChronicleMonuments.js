@@ -83,9 +83,9 @@ export class ChronicleMonuments {
         this.planter = new MonumentPlanter({ store, rules, eventTarget });
         this._loaded = false;
         this._pendingHydrate = null;
-        // ChronicleStore is used for lifetime commit counts (task 4.3 milestones).
-        // It may be the same instance as `store`, but kept as a separate slot so
-        // tests can inject a stub.
+        // ChronicleStore is used for lifetime commit-count milestones. It may
+        // be the same instance as `store`, but kept as a separate slot so tests
+        // can inject a stub.
         this.chronicleStore = chronicleStore || store;
         // AuroraGate is optional. When passed, the 1000th-commit milestone calls
         // `forceTrigger('milestone-1000')` to bypass the daily cap. When absent
