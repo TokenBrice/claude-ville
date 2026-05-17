@@ -36,11 +36,14 @@ const STATIC_FALLBACK_COUNT = 14;
 const FALLBACK_SCATTER_W = 1280;
 const FALLBACK_SCATTER_H = 720;
 
+// Under reduced motion the shared ParticleSystem is muted, so the static
+// fallback can't go through spawn(). Each season carries a representative
+// color + size pair used by the direct-canvas drawStatic() pass.
 const SEASONS = {
-    winter: { type: 'firefly', label: 'snow' },
-    spring: { type: 'leaf',    label: 'cherryPetal' },
-    summer: { type: 'firefly', label: 'firefly' },
-    autumn: { type: 'leaf',    label: 'leaf' },
+    winter: { type: 'firefly', label: 'snow',        staticColor: '#fff1a8', staticSize: 2 },
+    spring: { type: 'leaf',    label: 'cherryPetal', staticColor: '#8fbf58', staticSize: 2 },
+    summer: { type: 'firefly', label: 'firefly',     staticColor: '#fff1a8', staticSize: 2 },
+    autumn: { type: 'leaf',    label: 'leaf',        staticColor: '#b8914b', staticSize: 2 },
 };
 
 export class SeasonalAmbience {
@@ -65,6 +68,7 @@ export class SeasonalAmbience {
         this._lastSeasonKey = '';
         this._staticFallbackSeeded = false;
         this._staticFallbackSeasonKey = '';
+        this._staticFallbackDots = [];
     }
 
     setEnabled(flag) {
@@ -72,6 +76,7 @@ export class SeasonalAmbience {
         if (!this.enabled) {
             this._spawnAccumulator = 0;
             this._staticFallbackSeeded = false;
+            this._staticFallbackDots = [];
         }
     }
 
@@ -111,6 +116,10 @@ export class SeasonalAmbience {
         this.particleSystem.spawn(season.type, x, y, 1);
     }
 
+    // Reduced motion: ParticleSystem.spawn() is gated by motionEnabled and
+    // would no-op. Build a deterministic dot list instead and let
+    // drawStatic(ctx) render it via direct canvas calls, mirroring the
+    // static-smoke fallback pattern in IsometricRenderer.
     _seedStaticFallback(season, seasonKey) {
         if (this._staticFallbackSeeded && this._staticFallbackSeasonKey === seasonKey) return;
 
@@ -118,17 +127,36 @@ export class SeasonalAmbience {
         const width = viewport.width || FALLBACK_SCATTER_W;
         const height = viewport.height || FALLBACK_SCATTER_H;
         const seedBase = hashString(seasonKey);
+        const dots = [];
 
         for (let i = 0; i < STATIC_FALLBACK_COUNT; i++) {
             const u = random01(seedBase, i * 2 + 1);
             const v = random01(seedBase, i * 2 + 2);
-            const px = viewport.x + Math.round(u * width);
-            const py = viewport.y + Math.round(v * height);
-            this.particleSystem.spawn(season.type, px, py, 1);
+            dots.push({
+                x: viewport.x + Math.round(u * width),
+                y: viewport.y + Math.round(v * height),
+                color: season.staticColor || '#fff1a8',
+                size: season.staticSize || 2,
+            });
         }
 
+        this._staticFallbackDots = dots;
         this._staticFallbackSeeded = true;
         this._staticFallbackSeasonKey = seasonKey;
+    }
+
+    drawStatic(ctx) {
+        if (!this.enabled) return;
+        const motionScale = clamp01(Number(this.motionScaleGetter()) || 0);
+        if (motionScale > 0) return;
+        if (!this._staticFallbackDots.length) return;
+        ctx.save();
+        ctx.globalAlpha = 0.72;
+        for (const dot of this._staticFallbackDots) {
+            ctx.fillStyle = dot.color;
+            ctx.fillRect(dot.x - dot.size / 2, dot.y - dot.size / 2, dot.size, dot.size);
+        }
+        ctx.restore();
     }
 
     _sampleViewport() {

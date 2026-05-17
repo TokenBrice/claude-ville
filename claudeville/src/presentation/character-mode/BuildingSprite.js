@@ -1840,7 +1840,26 @@ export class BuildingSprite {
             ctx.fill();
         }
         ctx.globalCompositeOperation = 'source-over';
+        // Reduced motion: ParticleSystem is muted so the high-intensity
+        // doorway archiveMote burst would be invisible. Stamp a small fixed
+        // dot cluster so the read signal still reads at the door.
+        if (!this.motionScale && readIntensity > 0.6) {
+            this._drawArchiveStaticDoorBurst(ctx, doorway);
+        }
         this._drawArchiveRitual(ctx, doorway, ritual);
+    }
+
+    _drawArchiveStaticDoorBurst(ctx, doorway) {
+        const dots = [
+            [0, -8], [-7, -2], [7, -2], [-3, 6], [3, 6],
+        ];
+        ctx.save();
+        ctx.globalAlpha = 0.78;
+        ctx.fillStyle = '#fff1bd';
+        for (const [dx, dy] of dots) {
+            ctx.fillRect(doorway.x + dx, doorway.y + dy, 2, 2);
+        }
+        ctx.restore();
     }
 
     _drawForgeEnhancement(ctx, localPoint, pulse, building = null) {

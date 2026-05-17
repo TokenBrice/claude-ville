@@ -71,10 +71,13 @@ export class SkyRenderer {
         this._currentPhase = null;
         this._currentMotionScale = 1;
         this._unsubscribers = [];
-        this._subscribeToEvents();
+        this.attach();
     }
 
-    _subscribeToEvents() {
+    // Subscriptions live on attach/detach so the renderer can survive mode
+    // toggles: IsometricRenderer.hide() calls detach() and show() re-attaches.
+    attach() {
+        if (this._unsubscribers.length) this.detach();
         if (!eventBus || typeof eventBus.on !== 'function') return;
         const onPush = () => this.maybeTriggerAuroraForPushSuccess(this._currentPhase);
         this._unsubscribers.push(eventBus.on('git:pushed', onPush));
@@ -88,6 +91,13 @@ export class SkyRenderer {
                 this._lastShootingStarAt = now;
             }
         }));
+    }
+
+    detach() {
+        for (const unsubscribe of this._unsubscribers) {
+            try { unsubscribe?.(); } catch { /* ignore */ }
+        }
+        this._unsubscribers.length = 0;
     }
 
     draw(ctx, arg1 = {}, arg2 = null, arg3 = 16, arg4 = 1) {
@@ -905,17 +915,21 @@ export class SkyRenderer {
         return null;
     }
 
-    dispose() {
+    // Drop the cached background bitmap without detaching subscriptions.
+    // Used by viewport/resize cache invalidation paths that must not tear
+    // down the aurora / shooting-star event wiring.
+    releaseCache() {
         releaseCanvasBackingStore(this.cache);
         this.cache = null;
         this.cacheKey = '';
+    }
+
+    dispose() {
+        this.releaseCache();
         this._decorativeCloudOffset = 0;
         this._auroraStartedAt = 0;
         this._shootingStars.length = 0;
-        for (const unsubscribe of this._unsubscribers) {
-            try { unsubscribe?.(); } catch { /* ignore */ }
-        }
-        this._unsubscribers.length = 0;
+        this.detach();
         this._fallbackAtmosphere?.dispose?.();
         this._fallbackAtmosphere = null;
     }

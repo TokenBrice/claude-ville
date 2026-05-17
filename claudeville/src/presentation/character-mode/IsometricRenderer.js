@@ -1181,6 +1181,9 @@ export class IsometricRenderer {
         this._contextLost = false;
         this.camera = new Camera(canvas);
         this.camera.attach();
+        // Re-arm SkyRenderer aurora/shooting-star event wiring; mode toggles
+        // detach in hide() and would otherwise leave these subscriptions dead.
+        this.skyRenderer?.attach?.();
         this._bindMotionPreference();
         this._setMotionScale(this.motionQuery?.matches ? 0 : 1);
         this.atmosphereState?.installDebugHelper?.();
@@ -1358,7 +1361,8 @@ export class IsometricRenderer {
         this.visitTileAllocator?.updateContext?.({ agentSprites: [] });
         this.fantasyForestTreeCache.clear();
         this.weatherRenderer?.dispose?.();
-        this.skyRenderer?.dispose?.();
+        this.skyRenderer?.detach?.();
+        this.skyRenderer?.releaseCache?.();
         this.atmosphereState?.dispose?.();
         // Phase 4 — SeasonalAmbience holds no resources today; the optional
         // chain keeps the lifecycle hook in place if a dispose method lands.
@@ -1429,7 +1433,7 @@ export class IsometricRenderer {
         this.atmosphereVignetteCacheKey = '';
         releaseCanvasMap(this.lightGradientCache);
         this.lightFadeColorCache?.clear?.();
-        this.skyRenderer?.dispose?.();
+        this.skyRenderer?.releaseCache?.();
         this.trailRenderer?.pause?.();
         this.weatherRenderer?.dispose?.();
         this.minimap?.releaseStaticLayer?.();
@@ -1746,7 +1750,7 @@ export class IsometricRenderer {
         this.atmosphereVignetteCache = null;
         this.atmosphereVignetteCacheKey = '';
         releaseCanvasMap(this.lightGradientCache);
-        this.skyRenderer?.dispose?.();
+        this.skyRenderer?.releaseCache?.();
         this.trailRenderer?.releaseCache?.();
     }
 
@@ -2703,6 +2707,10 @@ export class IsometricRenderer {
         this._drawDynamicWaterHighlights(ctx);
         this._drawWeatherPuddles(ctx);
         this._drawStaticBuildingSmoke(ctx);
+        // Under reduced motion the ParticleSystem is muted, so the seasonal
+        // drift renderer pushes deterministic dots through direct canvas
+        // calls instead of going through spawn() (which would no-op).
+        this.seasonalAmbience?.drawStatic?.(ctx);
     }
 
     // Task 1.7 static fallback: when motionScale === 0 the particle system is
@@ -6040,12 +6048,20 @@ export class IsometricRenderer {
     }
 
     _openSeaGullPositions() {
+        const reducedMotion = !this.motionScale;
         const time = this.motionScale ? this.waterFrame : 0;
         return this.openSeaFlockBirds.map((gull) => {
             const rawCycle = time * gull.speed + gull.cycleOffset;
             const cycleIndex = Math.floor(rawCycle);
-            const cyclePhase = rawCycle - cycleIndex;
-            if (!this._isGullCycleEnabled(gull, cycleIndex)) return null;
+            // Under reduced motion every gull becomes a deterministic
+            // in-flight snapshot — fold cycleOffset back into the active
+            // window so birds whose offset > activeSpan still render, and
+            // skip the population gate so each route keeps at least one
+            // visible bird.
+            const cyclePhase = reducedMotion
+                ? (gull.cycleOffset % gull.activeSpan)
+                : (rawCycle - cycleIndex);
+            if (!reducedMotion && !this._isGullCycleEnabled(gull, cycleIndex)) return null;
             if (cyclePhase > gull.activeSpan) return null;
 
             const journeyT = cyclePhase / gull.activeSpan;
