@@ -2,11 +2,29 @@ import { Agent } from '../domain/entities/Agent.js';
 import { AgentStatus, statusFromSessionActivity } from '../domain/value-objects/AgentStatus.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 
+// Heuristic gate: lastMessage text-match for ERRORED is loud (false positives
+// from agents echoing user prose). Keep off by default; flip when paired with
+// a stricter classifier.
+const ENABLE_ERROR_HEURISTIC = false;
+const WAITING_ON_USER_TOOLS = new Set([
+    'AskUserQuestion',
+    'request_user_input',
+    'functions.request_user_input',
+]);
+const ERROR_MESSAGE_PATTERN = /^FAIL[: ]|error:|exception\b|timeout/i;
+const GIT_FAIL_WINDOW_MS = 60_000;
+const RATE_LIMIT_THRESHOLD = 0.95;
+
 export class AgentManager {
     constructor(world, dataSource) {
         this.world = world;
         this.dataSource = dataSource;
         this._teamMembers = new Map();
+        this._usageGetter = null;
+    }
+
+    setUsageGetter(fn) {
+        this._usageGetter = typeof fn === 'function' ? fn : null;
     }
 
     _buildTeamMembers(teams) {
@@ -148,7 +166,55 @@ export class AgentManager {
     }
 
     _resolveStatus(session) {
-        return statusFromSessionActivity(session);
+        const base = statusFromSessionActivity(session);
+
+        // Priority: RATE_LIMITED > ERRORED > WAITING_ON_USER > base.
+        if (base === AgentStatus.WORKING && this._isRateLimited()) {
+            return AgentStatus.RATE_LIMITED;
+        }
+        if (this._isErrored(session)) {
+            return AgentStatus.ERRORED;
+        }
+        if (this._isWaitingOnUser(session, base)) {
+            return AgentStatus.WAITING_ON_USER;
+        }
+        return base;
+    }
+
+    _isRateLimited() {
+        if (!this._usageGetter) return false;
+        const usage = this._usageGetter();
+        const fiveHour = Number(usage?.quota?.fiveHour);
+        return Number.isFinite(fiveHour) && fiveHour > RATE_LIMIT_THRESHOLD;
+    }
+
+    _isErrored(session) {
+        const events = Array.isArray(session.gitEvents) ? session.gitEvents : [];
+        if (events.length) {
+            const cutoff = Date.now() - GIT_FAIL_WINDOW_MS;
+            for (const event of events) {
+                const ts = Number(event?.completedAt || event?.ts || 0);
+                if (!ts || ts < cutoff) continue;
+                if (event?.status === 'failed' || event?.success === false) {
+                    return true;
+                }
+            }
+        }
+        if (ENABLE_ERROR_HEURISTIC) {
+            const msg = String(session.lastMessage || '').trim();
+            if (msg && ERROR_MESSAGE_PATTERN.test(msg)) return true;
+        }
+        return false;
+    }
+
+    _isWaitingOnUser(session, baseStatus) {
+        const tool = session.lastTool || null;
+        if (tool && WAITING_ON_USER_TOOLS.has(tool)) return true;
+        if (baseStatus === AgentStatus.WAITING) {
+            const msg = String(session.lastMessage || '').trim();
+            if (msg && msg.endsWith('?')) return true;
+        }
+        return false;
     }
 
 }

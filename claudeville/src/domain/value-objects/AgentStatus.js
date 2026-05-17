@@ -3,6 +3,9 @@ export const AgentStatus = {
     IDLE: 'idle',
     WAITING: 'waiting',
     COMPLETED: 'completed',
+    RATE_LIMITED: 'rate_limited',
+    ERRORED: 'errored',
+    WAITING_ON_USER: 'waiting_on_user',
 };
 
 const KNOWN_STATUSES = new Set(Object.values(AgentStatus));
