@@ -1,3 +1,5 @@
+export { runtimeRoleAccessory } from './RoleAccessory.js';
+
 const DEFAULT_CODEX_IDENTITY = Object.freeze({
     family: 'codex',
     modelClass: 'codex',

@@ -3,10 +3,11 @@ import { BUILDING_DEFS } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
+import { runtimeRoleAccessory } from '../shared/RoleAccessory.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
-import { compactToolInput, toolActionLabel } from '../../domain/services/ToolIdentity.js';
+import { compactToolInput, toolActionLabel, toolCategory } from '../../domain/services/ToolIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 
 // Hit-test geometry (unchanged from vector version).
@@ -45,6 +46,20 @@ const PROVIDER_TRIM = {
     kimi: '#ff8da8',
     default: '#f2d36b',
 };
+const PROVIDER_BADGE_COLORS = Object.freeze({
+    claude: '#a78bfa',
+    codex: '#4ade80',
+    gemini: '#60a5fa',
+    kimi: '#ff9f7a',
+    default: '#8b8b9e',
+});
+const MODEL_TIER_COLORS = Object.freeze({
+    apex: '#f6d27a',
+    balanced: '#cfd6df',
+    senior: '#cfd6df',
+    light: '#c47b46',
+    swift: '#c47b46',
+});
 const MAX_VISIBLE_FAMILIAR_MOTES = 3;
 const AMBIENT_BUILDING_SEQUENCE = [
     'command',
@@ -183,6 +198,9 @@ export class AgentSprite {
         this.chatting = false;       // chatting flag
         this.chatTimer = 0;          // chat animation timer
         this.chatBubbleAnim = 0;     // speech bubble animation
+
+        this._lastStatus = agent?.status || null;
+        this._completedAtMs = 0;
 
         const screen = tileToWorld(agent.position);
         this.x = screen.x;
@@ -950,12 +968,18 @@ export class AgentSprite {
         if (this.isArrivalPending()) return;
         if (!this.compositor) return;       // defensive: no compositor → render nothing
 
+        const currentStatus = this.agent?.status || null;
+        if (currentStatus !== this._lastStatus) {
+            if (currentStatus === AgentStatus.COMPLETED) this._completedAtMs = Date.now();
+            this._lastStatus = currentStatus;
+        }
+
         const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
         const provider = this._providerKey();
         const variant = this._hashVariant();
         const spriteId = identity.spriteId || `agent.${provider}.base`;
         const paletteKey = identity.paletteKey || provider;
-        const accessory = this._runtimeEffortAccessory(identity);
+        const accessory = this._runtimeHeadAccessory(identity, this.agent);
         const equipmentKey = this._runtimeCodexEquipment(identity) || '_';
         const cleanupKey = this._shouldScrubBakedCodexWeapon(identity)
             ? `clean:${String(identity.modelClass || 'codex').toLowerCase()}`
@@ -993,8 +1017,14 @@ export class AgentSprite {
         const bounds = this._getCellContentBounds(cell);
         const drawScale = this._spriteDrawScale(bounds);
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
+        // IDLE-status agents bob slower and shallower to read as "resting".
+        const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
         const bobY = this.animState === 'idle'
-            ? Math.round(Math.sin(this.frame * 0.4) * 0.6)
+            ? Math.round(
+                isIdleStatus
+                    ? Math.sin(this.frame * 0.25) * 0.4
+                    : Math.sin(this.frame * 0.4) * 0.6,
+            )
             : 0;
         const drawX = this._snapWorldToScreenPixel(this.x);
         const drawY = this._snapWorldToScreenPixel(this.y);
@@ -1010,6 +1040,7 @@ export class AgentSprite {
             dx, dy, cell.sw * drawScale, cell.sh * drawScale
         );
         this._drawCodexEquipment(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'front');
+        this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
 
         // Selection halo (if selected) — outer glow + pulsed ring at feet level.
         if (this.selected) {
@@ -1031,6 +1062,7 @@ export class AgentSprite {
         } else {
             this._drawStatus(ctx, contentTopY);
         }
+        this._drawStatusEmote(ctx, contentTopY);
         this._drawNameTag(ctx);
     }
 
@@ -1271,10 +1303,16 @@ export class AgentSprite {
             const isWorking = this.agent?.status === AgentStatus.WORKING;
             const isWaiting = this.agent?.status === AgentStatus.WAITING;
             const flash = this.bumpFlash ? this.bumpFlash * 0.26 : 0;
+            let workingAlpha = 0.30 + 0.22 * pulse + flash;
+            if (isWorking) {
+                const totalTokens = Number(this.agent?.tokens?.total) || 0;
+                const burnMul = Math.max(0.6, Math.min(1.4, 0.6 + Math.log10(Math.max(1, totalTokens)) / 6));
+                workingAlpha *= burnMul;
+            }
             ctx.globalAlpha = this.selected
                 ? 0.95
                 : isWorking
-                    ? 0.30 + 0.22 * pulse + flash
+                    ? workingAlpha
                     : isWaiting
                         ? 0.30 + flash
                         : 0.18 + flash;
@@ -1537,9 +1575,11 @@ export class AgentSprite {
         }
     }
 
-    _runtimeEffortAccessory(identity) {
-        if (identity?.allowRuntimeEffortAccessory === false) return null;
-        return identity?.effortAccessory ?? null;
+    _runtimeHeadAccessory(identity, agent = this.agent) {
+        if (identity?.allowRuntimeEffortAccessory !== false && identity?.effortAccessory) {
+            return identity.effortAccessory;
+        }
+        return runtimeRoleAccessory(agent);
     }
 
     _runtimeEffortFloorRing(identity) {
@@ -2232,10 +2272,72 @@ export class AgentSprite {
         const visual = this._statusVisual();
         const thread = this._activityThread();
         if (!thread.length) return;
-        this._drawBubble(ctx, thread[0].text, thread[0].accent || visual.color, contentTopY);
+        const head = thread[0];
+        const useClock = this._shouldUseLongWaitClock(head);
+        if (useClock) {
+            this._drawLongWaitClockBubble(ctx, head.accent || visual.color, contentTopY);
+        } else {
+            this._drawBubble(ctx, head.text, head.accent || visual.color, contentTopY);
+        }
         if (thread.length > 1) {
             this._drawHistoryBubbles(ctx, thread.slice(1), contentTopY);
         }
+    }
+
+    _shouldUseLongWaitClock(entry) {
+        if (!entry || entry.kind !== 'status') return false;
+        if (this.agent?.status !== AgentStatus.WAITING) return false;
+        const age = Number(this.agent?.activityAgeMs);
+        return Number.isFinite(age) && age > 60_000;
+    }
+
+    _drawLongWaitClockBubble(ctx, accentColor, contentTopY = null) {
+        ctx.save();
+        const s = 1 / (this._zoom || 1);
+        ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
+        ctx.scale(s, s);
+        const anchored = Number.isFinite(contentTopY);
+        const bubbleW = anchored ? 22 : 28;
+        const bubbleH = anchored ? 20 : 26;
+        const radius = anchored ? 5 : 6;
+        ctx.translate(0, anchored ? -18 : -50);
+        const halfW = bubbleW / 2;
+        ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(-halfW + radius, -bubbleH / 2);
+        ctx.lineTo(halfW - radius, -bubbleH / 2);
+        ctx.quadraticCurveTo(halfW, -bubbleH / 2, halfW, -bubbleH / 2 + radius);
+        ctx.lineTo(halfW, bubbleH / 2 - radius);
+        ctx.quadraticCurveTo(halfW, bubbleH / 2, halfW - radius, bubbleH / 2);
+        ctx.lineTo(4, bubbleH / 2);
+        ctx.lineTo(0, bubbleH / 2 + (anchored ? 6 : 7));
+        ctx.lineTo(-4, bubbleH / 2);
+        ctx.lineTo(-halfW + radius, bubbleH / 2);
+        ctx.quadraticCurveTo(-halfW, bubbleH / 2, -halfW, bubbleH / 2 - radius);
+        ctx.lineTo(-halfW, -bubbleH / 2 + radius);
+        ctx.quadraticCurveTo(-halfW, -bubbleH / 2, -halfW + radius, -bubbleH / 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // 6-line clock glyph: outer ring + two hands.
+        const cx = 0;
+        const cy = 0;
+        const r = anchored ? 5 : 6;
+        ctx.strokeStyle = accentColor;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx, cy - r + 1);
+        ctx.moveTo(cx, cy);
+        ctx.lineTo(cx + r - 2, cy);
+        ctx.stroke();
+        ctx.restore();
     }
 
     _drawBubble(ctx, text, accentColor, contentTopY = null) {
@@ -2496,6 +2598,10 @@ export class AgentSprite {
         const rawName = String(this.agent?.name || this.agent?.displayName || '').trim() || 'Agent';
         const s = 1 / (this._zoom || 1);
         const slot = this.overlaySlot ?? this.nameTagSlot ?? 0;
+        const providerKey = this._providerKey();
+        const providerColor = PROVIDER_BADGE_COLORS[providerKey] || PROVIDER_BADGE_COLORS.default;
+        const identity = getModelVisualIdentity(this.agent?.model, this.agent?.effort, this.agent?.provider);
+        const tierColor = MODEL_TIER_COLORS[identity?.modelTier] || MODEL_TIER_COLORS.balanced;
 
         ctx.save();
         ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
@@ -2520,12 +2626,56 @@ export class AgentSprite {
         ctx.fill();
         ctx.stroke();
 
-        this._drawRepoLabelGlyph(ctx, -w / 2 + 8, 0, 6, repo);
+        // Three 6px glyphs stacked left: provider square, tier dot, repo diamond.
+        // 6px glyph + 1px gap = 7px stride; 3px gap before text.
+        const glyphLeft = -w / 2 + 5;
+        this._drawProviderMarkGlyph(ctx, glyphLeft, 0, 6, providerColor);
+        this._drawModelTierDotGlyph(ctx, glyphLeft + 7, 0, 6, tierColor);
+        this._drawRepoLabelGlyph(ctx, glyphLeft + 14, 0, 6, repo);
+
+        // Text takes the remaining space to the right of the glyph stack.
+        const textAreaLeft = glyphLeft + 17 + 3;
+        const textAreaRight = w / 2 - 4;
+        const textCenter = (textAreaLeft + textAreaRight) / 2;
         ctx.fillStyle = repo.labelText || repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._applyReadableTextShadow(ctx);
-        ctx.fillText(text, 4, 0.5);
+        ctx.fillText(text, textCenter, 0.5);
+        ctx.restore();
+    }
+
+    _drawProviderMarkGlyph(ctx, x, y, size, color) {
+        const r = size / 2;
+        ctx.save();
+        ctx.shadowColor = 'rgba(8, 5, 4, 0.7)';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+        ctx.fillStyle = color;
+        ctx.strokeStyle = 'rgba(255, 242, 190, 0.6)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.rect(x - r, y - r, size, size);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawModelTierDotGlyph(ctx, x, y, size, color) {
+        const r = size / 2;
+        ctx.save();
+        ctx.shadowColor = 'rgba(8, 5, 4, 0.7)';
+        ctx.shadowBlur = 0;
+        ctx.shadowOffsetX = 1;
+        ctx.shadowOffsetY = 1;
+        ctx.fillStyle = color;
+        ctx.strokeStyle = 'rgba(255, 242, 190, 0.7)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
         ctx.restore();
     }
 
@@ -2547,10 +2697,29 @@ export class AgentSprite {
             const dedupeKey = entry.key || entry.text;
             if (seen.has(dedupeKey)) continue;
             seen.add(dedupeKey);
-            deduped.push(entry);
+            // Collapse consecutive same-category tool entries into the most
+            // recent label suffixed with ×N.
+            const last = deduped[deduped.length - 1];
+            if (
+                last
+                && last.kind === 'tool'
+                && entry.kind === 'tool'
+                && last.category
+                && entry.category
+                && last.category === entry.category
+            ) {
+                last.count = (last.count || 1) + 1;
+                last.text = `${this._stripRunCount(last.text)} ×${last.count}`;
+                continue;
+            }
+            deduped.push({ ...entry, count: 1 });
             if (deduped.length >= ACTION_TRAIL_LIMIT + 1) break;
         }
         return deduped;
+    }
+
+    _stripRunCount(text) {
+        return String(text || '').replace(/\s×\d+$/, '');
     }
 
     _captureActivitySnapshot(agent = this.agent, timestamp = Date.now()) {
@@ -2578,6 +2747,8 @@ export class AgentSprite {
                 key: `tool:${currentTool}:${detailKey}`,
                 text: this._truncateActivityText(text, ACTIVITY_TEXT_CAP),
                 accent: this._providerTrimColor(agent),
+                tool: currentTool,
+                category: toolCategory(currentTool),
                 timestamp,
             };
         }
@@ -2620,6 +2791,8 @@ export class AgentSprite {
             key: entry.key,
             text: entry.text,
             accent: entry.accent || this._providerTrimColor(),
+            tool: entry.tool || null,
+            category: entry.category || null,
             timestamp,
         });
         if (this._activityTrail.length > ACTION_TRAIL_LIMIT) {
@@ -2700,7 +2873,7 @@ export class AgentSprite {
             return this._compactNameStatusCache;
         }
         const text = this._fitText(ctx, rawName, 144);
-        const width = Math.min(192, Math.max(42, ctx.measureText(text).width + 24));
+        const width = Math.min(192, Math.max(60, ctx.measureText(text).width + 41));
         const layout = { text, width };
         this._compactNameStatusCacheKey = key;
         this._compactNameStatusCache = layout;
@@ -2733,6 +2906,161 @@ export class AgentSprite {
         ctx.fill();
         ctx.stroke();
         ctx.restore();
+    }
+
+    _statusEmoteKind() {
+        const status = this.agent?.status;
+        if (status === AgentStatus.RATE_LIMITED) return 'rate_limited';
+        if (status === AgentStatus.ERRORED) return 'errored';
+        if (status === AgentStatus.WAITING_ON_USER) return 'waiting_on_user';
+        if (status === AgentStatus.COMPLETED && this._completedAtMs > 0 && Date.now() - this._completedAtMs < 4000) {
+            return 'completed';
+        }
+        if (this.agent?.isToolFresh && !this.chatting && status === AgentStatus.WORKING) {
+            return 'thinking';
+        }
+        return null;
+    }
+
+    _drawStatusEmote(ctx, contentTopY) {
+        if (!Number.isFinite(contentTopY)) return;
+        const kind = this._statusEmoteKind();
+        if (!kind) return;
+        ctx.save();
+        const s = 1 / (this._zoom || 1);
+        ctx.translate(this.x, contentTopY);
+        ctx.scale(s, s);
+        ctx.translate(0, -14);
+        const box = 12;
+        if (kind === 'rate_limited') {
+            this._drawHourglassGlyph(ctx, box, '#ffa64d');
+        } else if (kind === 'errored') {
+            this._drawAlertCircleGlyph(ctx, box, '#ff5a5a', '!');
+        } else if (kind === 'waiting_on_user') {
+            this._drawAlertCircleGlyph(ctx, box, '#ffd13a', '?');
+        } else if (kind === 'completed') {
+            this._drawCheckGlyph(ctx, box, '#7be39a');
+        } else if (kind === 'thinking') {
+            this._drawThinkingDotsGlyph(ctx, box, '#cfd6df');
+        }
+        ctx.restore();
+    }
+
+    _drawHourglassGlyph(ctx, box, color) {
+        const half = box / 2;
+        ctx.fillStyle = color;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(-half, -half);
+        ctx.lineTo(half, -half);
+        ctx.lineTo(0, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.beginPath();
+        ctx.moveTo(-half, half);
+        ctx.lineTo(half, half);
+        ctx.lineTo(0, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(8, 5, 4, 0.8)';
+        ctx.beginPath();
+        ctx.moveTo(-half, -half);
+        ctx.lineTo(half, -half);
+        ctx.moveTo(-half, half);
+        ctx.lineTo(half, half);
+        ctx.stroke();
+    }
+
+    _drawAlertCircleGlyph(ctx, box, color, mark) {
+        const r = box / 2;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.arc(0, 0, r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#1a1208';
+        ctx.font = `bold ${Math.round(box - 2)}px "Press Start 2P", monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(mark, 0, 1);
+    }
+
+    _drawCheckGlyph(ctx, box, color) {
+        const half = box / 2;
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.moveTo(-half + 1, 0);
+        ctx.lineTo(-1, half - 1);
+        ctx.lineTo(half - 1, -half + 2);
+        ctx.stroke();
+    }
+
+    _drawThinkingDotsGlyph(ctx, box, color) {
+        const dotSize = 2;
+        const gap = 3;
+        const animated = this.motionScale > 0;
+        const phase = animated ? Math.floor(this.frame * 0.1) % 3 : -1;
+        for (let i = 0; i < 3; i++) {
+            ctx.fillStyle = color;
+            ctx.globalAlpha = phase === i || phase === -1 ? 1 : 0.45;
+            ctx.beginPath();
+            ctx.arc(-gap + i * gap, 0, dotSize / 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        void box;
+    }
+
+    _drawStanceOverlay(ctx, frameGeometry) {
+        const status = this.agent?.status;
+        if (status === AgentStatus.IDLE && !this.chatting) return;
+        const { dx, dy, bounds, drawScale } = frameGeometry || {};
+        if (!bounds || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
+        const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
+        const centerX = dx + (bounds.minX + bounds.maxX) * drawScale / 2;
+        const handY = dy + (bounds.minY + contentHeight * 0.62) * drawScale;
+        const directionKey = DIRECTIONS[this.direction] || 's';
+        const sideSign = ['sw', 'w', 'nw', 'n'].includes(directionKey) ? -1 : 1;
+        const handX = centerX + sideSign * contentWidth * 0.30 * drawScale;
+        const phase = this.motionScale > 0 ? Math.floor(this.frame * 0.1) % 2 : 0;
+
+        if (this.chatting) {
+            const wavePhase = this.motionScale > 0 ? Math.floor(Date.now() / 600) % 2 : 0;
+            const waveX = centerX + (wavePhase ? sideSign : -sideSign) * contentWidth * 0.34 * drawScale;
+            ctx.save();
+            ctx.fillStyle = '#f2d36b';
+            ctx.fillRect(Math.round(waveX) - 1, Math.round(handY) - 1, 2, 2);
+            ctx.restore();
+            return;
+        }
+
+        if (status === AgentStatus.WORKING && this.agent?.isToolFresh) {
+            ctx.save();
+            ctx.fillStyle = this._statusVisual()?.color || '#7be39a';
+            ctx.globalAlpha = 0.7 + (phase ? 0.3 : 0);
+            ctx.beginPath();
+            ctx.arc(handX, handY, 1.6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            return;
+        }
+
+        if (status === AgentStatus.WAITING && !this._statusEmoteKind()) {
+            ctx.save();
+            ctx.strokeStyle = this._statusVisual()?.color || '#df8c3f';
+            ctx.lineWidth = 1.2;
+            ctx.globalAlpha = 0.85;
+            const baseY = dy + (bounds.minY - 4) * drawScale;
+            ctx.beginPath();
+            ctx.moveTo(centerX - 3, baseY);
+            ctx.lineTo(centerX, baseY + 3);
+            ctx.lineTo(centerX + 3, baseY);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
     }
 
     _snapWorldToScreenPixel(value) {
