@@ -2792,41 +2792,38 @@ export class AgentSprite {
         ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
         ctx.translate(this.x, this.y);
         ctx.scale(s, s);
-        ctx.translate(0, 20 + slot * 11);
-        ctx.font = 'bold 6px "Press Start 2P", monospace';
+        ctx.translate(0, 26 + slot * 16);
+        ctx.font = 'bold 10px "Press Start 2P", monospace';
         const layout = this._compactNameStatusLayout(ctx, rawName);
         const text = layout.text;
         const w = layout.width;
-        const h = 15;
+        const h = 22;
 
         ctx.fillStyle = repo.panel;
         ctx.strokeStyle = repo.panelBorder || repo.accent;
         ctx.lineWidth = 1;
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(-w / 2, -h / 2, w, h, 3);
+            ctx.roundRect(-w / 2, -h / 2, w, h, 4);
         } else {
             ctx.rect(-w / 2, -h / 2, w, h);
         }
         ctx.fill();
         ctx.stroke();
 
-        // Three 6px glyphs stacked left: provider square, tier dot, repo diamond.
-        // 6px glyph + 1px gap = 7px stride; 3px gap before text.
-        const glyphLeft = -w / 2 + 5;
-        this._drawProviderMarkGlyph(ctx, glyphLeft, 0, 6, providerColor);
-        this._drawModelTierDotGlyph(ctx, glyphLeft + 7, 0, 6, tierColor);
-        this._drawRepoLabelGlyph(ctx, glyphLeft + 14, 0, 6, repo);
+        const glyphLeft = -w / 2 + 6;
+        this._drawProviderMarkGlyph(ctx, glyphLeft, 0, 8, providerColor);
+        this._drawModelTierDotGlyph(ctx, glyphLeft + 9, 0, 8, tierColor);
+        this._drawRepoLabelGlyph(ctx, glyphLeft + 18, 0, 8, repo);
 
-        // Text takes the remaining space to the right of the glyph stack.
-        const textAreaLeft = glyphLeft + 17 + 3;
-        const textAreaRight = w / 2 - 4;
+        const textAreaLeft = glyphLeft + 22 + 4;
+        const textAreaRight = w / 2 - 5;
         const textCenter = (textAreaLeft + textAreaRight) / 2;
         ctx.fillStyle = repo.labelText || repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._applyReadableTextShadow(ctx);
-        ctx.fillText(text, textCenter, 0.5);
+        ctx.fillText(text, textCenter, 1);
         ctx.restore();
     }
 
@@ -3132,12 +3129,12 @@ export class AgentSprite {
 
     _compactNameStatusLayout(ctx, rawName) {
         const fontStatus = typeof document !== 'undefined' ? document.fonts?.status || 'unknown' : 'unknown';
-        const key = `${rawName}|${ctx.font}|144|${fontStatus}`;
+        const key = `${rawName}|${ctx.font}|180|${fontStatus}`;
         if (this._compactNameStatusCacheKey === key && this._compactNameStatusCache) {
             return this._compactNameStatusCache;
         }
-        const text = this._fitText(ctx, rawName, 144);
-        const width = Math.min(192, Math.max(60, ctx.measureText(text).width + 41));
+        const text = this._fitText(ctx, rawName, 180);
+        const width = Math.min(240, Math.max(72, ctx.measureText(text).width + 50));
         const layout = { text, width };
         this._compactNameStatusCacheKey = key;
         this._compactNameStatusCache = layout;
