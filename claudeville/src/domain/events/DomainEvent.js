@@ -1,4 +1,19 @@
 // Singleton event bus (observer pattern)
+//
+// Event-name contracts (string keys; no registry enforcement):
+//   agent:added, agent:updated, agent:removed
+//   agent:selected, agent:deselected
+//   building:selected, building:deselected     // emitted by IsometricRenderer click handler (Phase 0 Batch 2)
+//   building:active-agents                      // map<type,{count,recencyScore,tier}> from LandmarkActivity (~500ms)
+//   tool:invoked, subagent:dispatched, subagent:completed
+//   mode:changed, usage:updated
+//   ws:connected, ws:disconnected, ws:init, ws:update, ws:message
+export const BUILDING_EVENTS = Object.freeze({
+    SELECTED: 'building:selected',
+    DESELECTED: 'building:deselected',
+    ACTIVE_AGENTS: 'building:active-agents',
+});
+
 class DomainEvent {
     constructor() {
         this.listeners = new Map();

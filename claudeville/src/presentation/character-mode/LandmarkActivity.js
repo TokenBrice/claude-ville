@@ -1,5 +1,6 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { worldToTile } from './Projection.js';
 import { compactToolLabel, isCommandToolName, isTaskCommandInput } from '../../domain/services/ToolIdentity.js';
 
 const MAX_ITEMS_PER_KIND = 10;
@@ -8,6 +9,9 @@ const FORGE_HANDOFF_WINDOW_MS = 45000;
 const TOKEN_ITEM_TTL_MS = 22000;
 const COMMAND_ITEM_TTL_MS = 16000;
 const RITUAL_TOKEN_DELTA_THRESHOLD = 256;
+const PRESENCE_RECENCY_MS = 60000;
+const PRESENCE_EMIT_INTERVAL_MS = 500;
+const PRESENCE_DORMANT_THRESHOLD = 0.1;
 
 const BUILDING_OFFSETS = {
     command: [
@@ -99,6 +103,10 @@ export class LandmarkActivity {
         this.previousTokenTotals = new Map();
         this.lastForgeByAgent = new Map();
         this.agentSprites = [];
+        this._kindIds = new Map();
+        this._recencyByType = new Map();
+        this._countByType = new Map();
+        this._lastPresenceEmit = 0;
     }
 
     setMotionScale(scale) {
@@ -117,6 +125,8 @@ export class LandmarkActivity {
 
         this._observeCommandRelationships(agentList, now);
         this._expireItems(now);
+        this._refreshBuildingCounts();
+        this._maybeEmitPresence(now);
     }
 
     enumerateDrawables(now = Date.now()) {
@@ -194,7 +204,8 @@ export class LandmarkActivity {
             slot: stableHash(id) % BUILDING_OFFSETS.mine.length,
             sortOffset: 4,
         });
-        this._capKind('token', MAX_ITEMS_PER_KIND);
+        this._recencyByType.set('mine', now);
+        this._capKind('token', MAX_ITEMS_PER_KIND, id);
     }
 
     _observeCommandRelationships(agents, now) {
@@ -226,7 +237,7 @@ export class LandmarkActivity {
                 label: 'SUB',
                 sortOffset: -80,
             });
-            this._capKind('dispatch-line', MAX_ITEMS_PER_KIND);
+            this._capKind('dispatch-line', MAX_ITEMS_PER_KIND, id);
         }
 
         for (const sprite of this.agentSprites) {
@@ -268,7 +279,8 @@ export class LandmarkActivity {
             sortOffset: 6,
         });
         this.lastForgeByAgent.set(agent.id, { id, at: now });
-        this._capKind('forge', MAX_ITEMS_PER_KIND);
+        this._recencyByType.set('forge', now);
+        this._capKind('forge', MAX_ITEMS_PER_KIND, id);
     }
 
     _addTaskItem(agent, now) {
@@ -302,7 +314,8 @@ export class LandmarkActivity {
                 sortOffset: 2,
             });
         }
-        this._capKind('task', MAX_ITEMS_PER_KIND);
+        this._recencyByType.set('taskboard', now);
+        this._capKind('task', MAX_ITEMS_PER_KIND, id);
     }
 
     _addCommandItem(agent, now) {
@@ -321,7 +334,8 @@ export class LandmarkActivity {
             label: commandActivityLabel(agent),
             sortOffset: -2,
         });
-        this._capKind('command', MAX_ITEMS_PER_KIND);
+        this._recencyByType.set('command', now);
+        this._capKind('command', MAX_ITEMS_PER_KIND, id);
     }
 
     _expireItems(now) {
@@ -333,14 +347,84 @@ export class LandmarkActivity {
         }
     }
 
-    _capKind(type, max) {
-        const sameType = [...this.items.values()]
-            .filter((item) => item.type === type)
-            .sort((a, b) => a.createdAt - b.createdAt);
-        while (sameType.length > max) {
-            const oldest = sameType.shift();
-            if (oldest) this.items.delete(oldest.id);
+    _capKind(type, max, addedId = null) {
+        let ids = this._kindIds.get(type);
+        if (!ids) {
+            ids = [];
+            this._kindIds.set(type, ids);
         }
+        if (addedId && (ids.length === 0 || ids[ids.length - 1] !== addedId)) {
+            ids.push(addedId);
+        }
+        while (ids.length && !this.items.has(ids[0])) {
+            ids.shift();
+        }
+        while (ids.length > max) {
+            const oldest = ids.shift();
+            if (oldest) this.items.delete(oldest);
+        }
+    }
+
+    _refreshBuildingCounts() {
+        this._countByType.clear();
+        const buildings = this.world?.buildings;
+        if (!buildings || typeof buildings.values !== 'function') return;
+        for (const sprite of this.agentSprites) {
+            if (!sprite?.agent) continue;
+            if (!Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+            const tile = worldToTile(sprite.x, sprite.y);
+            const positionedAgent = { ...sprite.agent, position: tile };
+            for (const building of buildings.values()) {
+                if (!building?.type) continue;
+                const visiting = typeof building.isAgentVisiting === 'function'
+                    ? building.isAgentVisiting(positionedAgent)
+                    : building.containsPoint(tile.tileX, tile.tileY);
+                if (visiting) {
+                    this._countByType.set(building.type, (this._countByType.get(building.type) || 0) + 1);
+                }
+            }
+        }
+    }
+
+    _recencyScore(type, now) {
+        const last = this._recencyByType.get(type);
+        if (!last) return 0;
+        const age = now - last;
+        if (age <= 0) return 1;
+        if (age >= PRESENCE_RECENCY_MS) return 0;
+        return 1 - age / PRESENCE_RECENCY_MS;
+    }
+
+    _capacityWork(type) {
+        const cap = this.world?.buildings?.get(type)?.capacity?.work;
+        return Number.isFinite(cap) && cap > 0 ? cap : Infinity;
+    }
+
+    _tier(count, recencyScore, capacityWork) {
+        if (count >= capacityWork) return 'busy';
+        if (count > 0) return 'occupied';
+        if (recencyScore >= PRESENCE_DORMANT_THRESHOLD) return 'occupied';
+        return 'dormant';
+    }
+
+    getBuildingPresence(type, now = Date.now()) {
+        const count = this._countByType.get(type) || 0;
+        const recencyScore = this._recencyScore(type, now);
+        const tier = this._tier(count, recencyScore, this._capacityWork(type));
+        return { count, recencyScore, tier };
+    }
+
+    _maybeEmitPresence(now) {
+        if (now - this._lastPresenceEmit < PRESENCE_EMIT_INTERVAL_MS) return;
+        this._lastPresenceEmit = now;
+        const buildings = this.world?.buildings;
+        if (!buildings || typeof buildings.values !== 'function') return;
+        const payload = {};
+        for (const building of buildings.values()) {
+            if (!building?.type) continue;
+            payload[building.type] = this.getBuildingPresence(building.type, now);
+        }
+        eventBus.emit('building:active-agents', payload);
     }
 
     _itemPosition(item, now) {
