@@ -169,9 +169,20 @@ function ritualMetaFor(event) {
     const isCompletedTask = /status['"]?\s*[:=]\s*['"]?completed\b/i.test(text) || /\bcompleted\b/i.test(text);
     const label = host ? compactText(host, host) : compactText(input, tool);
     if (tool === 'Task' || tool === 'Agent') {
+        // Priority per Phase 2.3: synthetic dispatch payload (child*), then
+        // classified label, then subagent_type parsed from the Task input.
+        const parsedInput = tryParseInput(input);
+        const subagentTypeFromInput = parsedInput && typeof parsedInput === 'object'
+            ? (parsedInput.subagent_type || parsedInput.subagentType || null)
+            : null;
         const classifiedLabel = event?.label || null;
-        const subagentLabel = event?.commandLifecycle?.targetName || null;
-        const targetName = subagentLabel || classifiedLabel || null;
+        const existingTarget = event?.commandLifecycle?.targetName || null;
+        const targetName = event?.childAgentName
+            || event?.childSubagentType
+            || classifiedLabel
+            || subagentTypeFromInput
+            || existingTarget
+            || null;
         return {
             ...RITUAL_META.portal,
             building: 'portal',
@@ -180,7 +191,7 @@ function ritualMetaFor(event) {
             label: compactText(targetName || tool, 'SUMMON'),
             commandLifecycle: {
                 kind: 'spawn',
-                targetAgentId: null,
+                targetAgentId: event?.commandLifecycle?.targetAgentId || null,
                 targetName,
             },
         };

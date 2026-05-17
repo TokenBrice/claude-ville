@@ -84,6 +84,10 @@ const VISIT_OVERFLOW_TILES = Object.freeze({
         { tileX: 27, tileY: 15, overflow: true, reason: 'lookout' },
     ],
 });
+// Center of Portal Gate footprint (origin 5,29 size 4x4). Subagents spawn here
+// so dispatch reads as "child stepped through the portal" rather than the
+// generic Village Gate arrival used by top-level sessions.
+const PORTAL_SPAWN_TILE = Object.freeze({ tileX: 7, tileY: 32 });
 const AMBIENT_SCENIC_POINTS = Object.freeze([
     { id: 'bridge-west', tileX: 14, tileY: 28, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
     { id: 'bridge-east', tileX: 18, tileY: 30, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
@@ -1639,13 +1643,28 @@ export class IsometricRenderer {
         if (!this._worldModeActive || !this.ritualConductor) return;
         const parentId = payload?.parentId;
         if (!parentId) return;
-        const targetName = payload?.childSubagentType || payload?.childAgentName || null;
+        // Defensive fallback: AgentEventStream._onAdded should already enrich
+        // the dispatched payload, but if subagent_type was added to the world
+        // agent after the event fired, surface it here so the ritual label
+        // ("SUMMON: code-reviewer") still resolves.
+        const childAgent = payload?.childId ? this.world?.agents?.get?.(payload.childId) : null;
+        const childAgentName = payload?.childAgentName
+            || childAgent?.agentName
+            || childAgent?.name
+            || null;
+        const childSubagentType = payload?.childSubagentType
+            || childAgent?.subagent_type
+            || childAgent?.subagentType
+            || null;
+        const targetName = childAgentName || childSubagentType || null;
         this.ritualConductor.enqueue({
             agentId: parentId,
             tool: 'Task',
             input: null,
             ts: payload?.ts || Date.now(),
             building: 'portal',
+            childAgentName,
+            childSubagentType,
             commandLifecycle: {
                 kind: 'spawn',
                 targetAgentId: payload?.childId || null,
@@ -1745,8 +1764,12 @@ export class IsometricRenderer {
         const sprite = this.agentSprites.get(agent?.id);
         if (!sprite || !this.arrivalDeparture) return false;
         const parentSprite = this._parentSpriteFor(agent);
+        const portalScreenPoint = this._tileToWorld(PORTAL_SPAWN_TILE.tileX, PORTAL_SPAWN_TILE.tileY);
         const started = parentSprite
-            ? this.arrivalDeparture.beginSubagentDispatch(parentSprite, sprite, { now: performance.now() })
+            ? this.arrivalDeparture.beginSubagentDispatch(parentSprite, sprite, {
+                now: performance.now(),
+                portalScreenPoint,
+            })
             : this.arrivalDeparture.beginAgentArrival(agent, sprite, { parentAlive: false, now: performance.now() });
         if (started || this.motionScale <= 0) {
             this.gateTransits.delete(agent.id);
@@ -1791,6 +1814,17 @@ export class IsometricRenderer {
                 tileX: agent.position.tileX ?? agent.position.x,
                 tileY: agent.position.tileY ?? agent.position.y,
             } : null);
+
+        // Orphan subagent: parent vanished mid-flight. Animate a return wisp to
+        // the Portal Gate instead of fading in place at the child's last tile.
+        const parentRef = agent?.parentSessionId || agent?.parentId || agent?.parentAgentId;
+        if (parentRef) {
+            const portalScreenPoint = this._tileToWorld(PORTAL_SPAWN_TILE.tileX, PORTAL_SPAWN_TILE.tileY);
+            this.arrivalDeparture?.recordOrphanReturn?.(agent, lastTile, portalScreenPoint, { now });
+            if (sprite) this._removeAgentSprite(agent.id);
+            return true;
+        }
+
         this.arrivalDeparture?.recordDeparture?.(agent, lastTile, { now, parentAlive: false });
         return false;
     }
@@ -1805,6 +1839,34 @@ export class IsometricRenderer {
 
     _beginAgentGateArrival(agent, sprite) {
         if (!sprite) return;
+
+        // Subagents step out of the Portal Gate toward their parent rather than
+        // riding the carriage/boat arrival used for top-level sessions.
+        const parentRef = agent?.parentSessionId || agent?.parentId || agent?.parentAgentId;
+        if (parentRef) {
+            const parentSprite = this.agentSprites.get(parentRef);
+            const parentTile = parentSprite && typeof parentSprite._screenToTile === 'function'
+                ? parentSprite._screenToTile(parentSprite.x, parentSprite.y)
+                : null;
+            const intent = this.visitIntentManager?.getIntentForAgent?.(parentRef) || null;
+            const intentBuilding = intent?.building ? this._getBuildingByType(intent.building) : null;
+            const intentVisitTile = intentBuilding && typeof intentBuilding.primaryVisitTile === 'function'
+                ? intentBuilding.primaryVisitTile()
+                : null;
+            const destination = parentTile || intentVisitTile || null;
+
+            sprite.setTilePosition?.(
+                PORTAL_SPAWN_TILE.tileX + this._gateJitter(agent, 'portal-x', 0.32),
+                PORTAL_SPAWN_TILE.tileY + this._gateJitter(agent, 'portal-y', 0.22),
+            );
+            if (this.motionScale <= 0 || !destination) {
+                return;
+            }
+            sprite.walkToTile?.(destination.tileX, destination.tileY);
+            this.gateTransits.set(agent.id, { type: 'arrival' });
+            return;
+        }
+
         if (this.motionScale <= 0) {
             sprite.setTilePosition?.(
                 VILLAGE_GATE.inside.tileX + this._gateJitter(agent, 'arrival-x', 0.32),

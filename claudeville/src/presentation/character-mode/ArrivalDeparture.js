@@ -3,12 +3,14 @@ import { tileToWorld } from './Projection.js';
 const ARRIVAL_MS = 3000;
 const DISPATCH_MS = 600;
 const MERGE_MS = 400;
+const ORPHAN_RETURN_MS = 1200;
 const DEPARTURE_SIGIL_MS = 12000;
 const REDUCED_SIGIL_MS = 6000;
 const SUBAGENT_COMPLETION_MS = 2200;
 const REDUCED_COMPLETION_MS = 3600;
 const MAX_SIGILS = 6;
 const MAX_COMPLETION_CUES = 8;
+const MAX_ORPHAN_RETURNS = 6;
 
 const PROVIDER_COLORS = {
     claude: '#a78bfa',
@@ -32,6 +34,10 @@ const COMMAND_ARRIVAL = { tileX: 16, tileY: 24 };
 const COMMAND_APPROACH = { tileX: 11, tileY: 29 };
 const HARBOR_ARRIVAL = { tileX: 31, tileY: 27 };
 const HARBOR_APPROACH = { tileX: 39, tileY: 31 };
+// Mirrors PORTAL_SPAWN_TILE in IsometricRenderer.js (Portal Gate footprint
+// center). Used as the fallback target when the renderer cannot project a
+// screen point for an orphan subagent's return.
+const PORTAL_SPAWN_TILE = { tileX: 7, tileY: 32 };
 
 function nowMs() {
     if (typeof performance !== 'undefined' && performance.now) return performance.now();
@@ -93,6 +99,7 @@ export class ArrivalDepartureController {
         this.merges = new Map();
         this.sigils = [];
         this.completionCues = [];
+        this.orphanReturns = [];
     }
 
     setMotionScale(scale) {
@@ -126,7 +133,7 @@ export class ArrivalDepartureController {
         return this.arrivals.get(agent.id);
     }
 
-    beginSubagentDispatch(parentSprite, childSprite, { now = nowMs() } = {}) {
+    beginSubagentDispatch(parentSprite, childSprite, { now = nowMs(), portalScreenPoint = null } = {}) {
         if (!parentSprite || !childSprite) return null;
         const childId = childSprite.agent?.id;
         if (!childId) return null;
@@ -135,12 +142,16 @@ export class ArrivalDepartureController {
             return null;
         }
 
+        const start = portalScreenPoint && Number.isFinite(portalScreenPoint.x) && Number.isFinite(portalScreenPoint.y)
+            ? { x: portalScreenPoint.x, y: portalScreenPoint.y - 24 }
+            : { x: parentSprite.x, y: parentSprite.y - 34 };
+
         childSprite.setArrivalState?.('pending');
         this.dispatches.set(childId, {
             id: childId,
             parentSprite,
             childSprite,
-            start: { x: parentSprite.x, y: parentSprite.y - 34 },
+            start,
             end: { x: childSprite.x, y: childSprite.y - 20 },
             startedAt: now,
             duration: DISPATCH_MS,
@@ -189,6 +200,34 @@ export class ArrivalDepartureController {
         return cue;
     }
 
+    recordOrphanReturn(child, lastTile, portalScreenPoint, { now = nowMs() } = {}) {
+        if (!child) return null;
+        if (this.motionScale === 0) return null;
+        const startTile = lastTile && Number.isFinite(lastTile.tileX) && Number.isFinite(lastTile.tileY)
+            ? lastTile
+            : (child.position
+                ? { tileX: child.position.tileX ?? child.position.x, tileY: child.position.tileY ?? child.position.y }
+                : null);
+        if (!startTile) return null;
+        const start = tileToScreen(startTile);
+        const end = portalScreenPoint && Number.isFinite(portalScreenPoint.x) && Number.isFinite(portalScreenPoint.y)
+            ? { x: portalScreenPoint.x, y: portalScreenPoint.y }
+            : tileToScreen(PORTAL_SPAWN_TILE);
+        const entry = {
+            id: `${child.id || 'orphan'}:${Math.round(now)}`,
+            start: { x: start.x, y: start.y - 20 },
+            end: { x: end.x, y: end.y - 24 },
+            startedAt: now,
+            duration: ORPHAN_RETURN_MS,
+            color: providerColor(child.provider),
+        };
+        this.orphanReturns.push(entry);
+        if (this.orphanReturns.length > MAX_ORPHAN_RETURNS) {
+            this.orphanReturns.splice(0, this.orphanReturns.length - MAX_ORPHAN_RETURNS);
+        }
+        return entry;
+    }
+
     recordDeparture(agent, lastTile, { now = nowMs(), parentAlive = false } = {}) {
         if (!agent || parentAlive) return null;
         const tile = lastTile || (agent.position ? { tileX: agent.position.x, tileY: agent.position.y } : null);
@@ -230,6 +269,7 @@ export class ArrivalDepartureController {
         }
         this.sigils = this.sigils.filter(sigil => now - sigil.startedAt <= sigil.duration);
         this.completionCues = this.completionCues.filter(cue => now - cue.startedAt <= cue.duration);
+        this.orphanReturns = this.orphanReturns.filter(entry => now - entry.startedAt <= entry.duration);
     }
 
     draw(ctx, { zoom = 1, now = nowMs(), lighting = null } = {}) {
@@ -237,6 +277,7 @@ export class ArrivalDepartureController {
         for (const arrival of this.arrivals.values()) this._drawArrival(ctx, arrival, zoom, now);
         for (const dispatch of this.dispatches.values()) this._drawWisp(ctx, dispatch, zoom, now, lighting);
         for (const merge of this.merges.values()) this._drawWisp(ctx, merge, zoom, now, lighting);
+        for (const entry of this.orphanReturns) this._drawWisp(ctx, entry, zoom, now, lighting, { fadeOut: true });
         for (const sigil of this.sigils) drawDepartureSigil(ctx, sigil, { zoom, now, motionScale: this.motionScale, lighting });
         for (const cue of this.completionCues) drawSubagentCompletionCue(ctx, cue, { zoom, now, motionScale: this.motionScale, lighting });
     }
@@ -262,6 +303,9 @@ export class ArrivalDepartureController {
         }
         for (const merge of this.merges.values()) {
             sources.push(wispLightSource(merge, `merge:${merge.id}`, now));
+        }
+        for (const entry of this.orphanReturns) {
+            sources.push(wispLightSource(entry, `orphan-return:${entry.id}`, now));
         }
         for (const sigil of this.sigils) {
             sources.push({
@@ -306,19 +350,20 @@ export class ArrivalDepartureController {
         }
     }
 
-    _drawWisp(ctx, item, zoom, now, lighting) {
+    _drawWisp(ctx, item, zoom, now, lighting, { fadeOut = false } = {}) {
         const progress = Math.max(0, Math.min(1, (now - item.startedAt) / item.duration));
         const point = pointOnPath(item.start, item.end, progress, 24);
         const lightBoost = lighting?.lightBoost ?? 1;
+        const fade = fadeOut ? Math.max(0, 1 - progress) : 1;
         ctx.save();
         ctx.translate(point.x, point.y);
         ctx.scale(1 / (zoom || 1), 1 / (zoom || 1));
-        ctx.globalAlpha = Math.min(1, 0.74 * lightBoost);
+        ctx.globalAlpha = Math.min(1, 0.74 * lightBoost * fade);
         ctx.fillStyle = item.color;
         ctx.beginPath();
         ctx.arc(0, 0, 4, 0, Math.PI * 2);
         ctx.fill();
-        ctx.globalAlpha = 0.42;
+        ctx.globalAlpha = 0.42 * fade;
         ctx.strokeStyle = item.color;
         ctx.lineWidth = 1;
         ctx.beginPath();
