@@ -19,14 +19,24 @@ export class RelationshipState {
         this.recentDepartures = [];
         this.chatPairs = [];
         this._lastSpriteTiles = new Map();
-        this._dirty = true;
+        this._membershipDirty = true;
+        this._lastMembership = new Map();
+        this._cachedSnapshotTeamToMembersArrays = new Map();
         this._snapshot = null;
         this.unsubscribers = [
             eventBus.on('agent:added', (agent) => {
                 this.recentArrivals.push({ agentId: agent.id, at: performance.now() });
-                this._dirty = true;
+                this._membershipDirty = true;
             }),
-            eventBus.on('agent:updated', () => { this._dirty = true; }),
+            eventBus.on('agent:updated', (agent) => {
+                if (!agent || !agent.id) { this._membershipDirty = true; return; }
+                const prev = this._lastMembership.get(agent.id);
+                const nextParent = agent.parentSessionId || null;
+                const nextTeam = agent.teamName || null;
+                if (!prev || prev.parentSessionId !== nextParent || prev.teamName !== nextTeam) {
+                    this._membershipDirty = true;
+                }
+            }),
             eventBus.on('agent:removed', (agent) => {
                 const lastTile = this._lastSpriteTiles.get(agent.id) || (
                     agent.position ? { tileX: agent.position.x, tileY: agent.position.y } : null
@@ -44,7 +54,7 @@ export class RelationshipState {
                     this.recentDepartures.splice(0, this.recentDepartures.length - MAX_RECENT_DEPARTURES);
                 }
                 this._lastSpriteTiles.delete(agent.id);
-                this._dirty = true;
+                this._membershipDirty = true;
             }),
         ];
     }
@@ -53,20 +63,22 @@ export class RelationshipState {
         for (const unsubscribe of this.unsubscribers) unsubscribe();
         this.unsubscribers = [];
         this._lastSpriteTiles.clear();
+        this._lastMembership.clear();
+        this._cachedSnapshotTeamToMembersArrays.clear();
     }
 
     update({ agentSprites = null, now = performance.now() } = {}) {
         this._prune(now);
         this._rememberSpriteTiles(agentSprites);
-        if (this._dirty) {
+        if (this._membershipDirty) {
             this._rebuildMembership();
-            this._dirty = false;
+            this._membershipDirty = false;
         }
         this._rebuildChatPairs(agentSprites);
         this._snapshot = {
-            parentToChildren: this._cloneSetMap(this.parentToChildren),
-            childToParent: new Map(this.childToParent),
-            teamToMembers: new Map(Array.from(this.teamToMembers, ([team, members]) => [team, [...members]])),
+            parentToChildren: this.parentToChildren,
+            childToParent: this.childToParent,
+            teamToMembers: this._cachedSnapshotTeamToMembersArrays,
             recentArrivals: this.recentArrivals.map(item => ({ ...item, sinceMs: now - item.at })),
             recentDepartures: this.recentDepartures.map(item => ({ ...item, sinceMs: now - item.at })),
             chatPairs: this.chatPairs.map(pair => ({ ...pair })),
@@ -79,22 +91,37 @@ export class RelationshipState {
     }
 
     _rebuildMembership() {
-        this.parentToChildren = new Map();
-        this.childToParent = new Map();
-        this.teamToMembers = new Map();
+        this.parentToChildren.clear();
+        this.childToParent.clear();
+        this.teamToMembers.clear();
+        this._lastMembership.clear();
+        this._cachedSnapshotTeamToMembersArrays.clear();
 
         for (const agent of this.world?.agents?.values?.() || []) {
-            if (agent.parentSessionId) {
-                this.childToParent.set(agent.id, agent.parentSessionId);
-                if (!this.parentToChildren.has(agent.parentSessionId)) {
-                    this.parentToChildren.set(agent.parentSessionId, new Set());
+            const parentSessionId = agent.parentSessionId || null;
+            const teamName = agent.teamName || null;
+            this._lastMembership.set(agent.id, { parentSessionId, teamName });
+            if (parentSessionId) {
+                this.childToParent.set(agent.id, parentSessionId);
+                let bucket = this.parentToChildren.get(parentSessionId);
+                if (!bucket) {
+                    bucket = new Set();
+                    this.parentToChildren.set(parentSessionId, bucket);
                 }
-                this.parentToChildren.get(agent.parentSessionId).add(agent.id);
+                bucket.add(agent.id);
             }
-            if (agent.teamName) {
-                if (!this.teamToMembers.has(agent.teamName)) this.teamToMembers.set(agent.teamName, []);
-                this.teamToMembers.get(agent.teamName).push(agent.id);
+            if (teamName) {
+                let members = this.teamToMembers.get(teamName);
+                if (!members) {
+                    members = new Set();
+                    this.teamToMembers.set(teamName, members);
+                }
+                members.add(agent.id);
             }
+        }
+
+        for (const [team, members] of this.teamToMembers) {
+            this._cachedSnapshotTeamToMembersArrays.set(team, [...members]);
         }
     }
 
@@ -130,9 +157,5 @@ export class RelationshipState {
     _prune(now) {
         this.recentArrivals = this.recentArrivals.filter(item => now - item.at <= ARRIVAL_WINDOW_MS);
         this.recentDepartures = this.recentDepartures.filter(item => now - item.at <= DEPARTURE_WINDOW_MS);
-    }
-
-    _cloneSetMap(map) {
-        return new Map(Array.from(map, ([key, set]) => [key, new Set(set)]));
     }
 }

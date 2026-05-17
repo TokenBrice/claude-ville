@@ -331,10 +331,14 @@ function cloneState(previous = {}) {
         : Object.entries(previous.batches || {});
     const batches = new Map();
     for (const [id, batch] of sourceBatches) {
-        batches.set(id, {
+        const next = {
             ...batch,
             shipIds: Array.isArray(batch.shipIds) ? [...batch.shipIds] : [],
-        });
+        };
+        if (Array.isArray(batch.sealedOriginPoints)) {
+            next.sealedOriginPoints = batch.sealedOriginPoints.map(p => ({ x: p.x, y: p.y }));
+        }
+        batches.set(id, next);
     }
     const sourcePushEvents = previous.pushEvents instanceof Map
         ? previous.pushEvents.entries()
@@ -1451,6 +1455,9 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 }
                 ship.status = 'departing';
                 ship.departEventId = event.id;
+                if (status === 'success' && previousStatus !== 'success') {
+                    ship.departStartedAt = null;
+                }
                 ship.departStartedAt = skipDepartureAnimation
                     ? now - DEPARTURE_MS - FADE_DELAY_MS - EXIT_FADE_MS - EXIT_HOLD_MS - 1
                     : ship.departStartedAt || startedAt + departSquadIndex * DEPARTURE_STAGGER_MS;
@@ -1464,6 +1471,25 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         const startedAt = ship.departStartedAt || now;
         const progress = motionScale === 0 ? 1 : Math.max(0, Math.min(1, (now - startedAt) / DEPARTURE_MS));
         if (progress >= 1 && now - startedAt > DEPARTURE_MS + FADE_DELAY_MS + EXIT_FADE_MS + EXIT_HOLD_MS) {
+            const batch = ship.batchId ? state.batches.get(ship.batchId) : null;
+            if (batch) {
+                const startTile = Number.isFinite(Number(ship?.departFromTile?.tileX))
+                    && Number.isFinite(Number(ship?.departFromTile?.tileY))
+                    ? { tileX: Number(ship.departFromTile.tileX), tileY: Number(ship.departFromTile.tileY) }
+                    : (() => {
+                        const berth = BERTHS[ship.berthIndex % BERTHS.length] || BERTHS[0];
+                        return { tileX: berth.tileX, tileY: berth.tileY };
+                    })();
+                const route = composeWaterRouteTiles(startTile, ship, null);
+                const endpointTile = (batch.status || 'unknown') === 'failed'
+                    ? startTile
+                    : route?.[route.length - 1] || startTile;
+                if (endpointTile) {
+                    const world = toWorld(endpointTile.tileX, endpointTile.tileY);
+                    if (!batch.sealedOriginPoints) batch.sealedOriginPoints = [];
+                    batch.sealedOriginPoints.push({ x: world.x, y: world.y });
+                }
+            }
             state.ships.delete(id);
         }
     }
@@ -1494,7 +1520,9 @@ export class HarborTraffic {
         this.motionScale = 1;
         this.frame = 0;
         this.waterRouteData = null;
-        if (typeof window !== 'undefined') window.__harbor = this;
+        if (typeof window !== 'undefined' && window.localStorage?.getItem('claudeVilleDebug') === '1') {
+            window.__harbor = this;
+        }
     }
 
     _applyReadableTextShadow(ctx) {
@@ -1734,7 +1762,9 @@ export class HarborTraffic {
             this._peakWindow.peak = this.state.ships.size;
         }
         if (now - this._peakWindow.since > 60000) {
-            if (this._peakWindow.peak >= 8) {
+            if (this._peakWindow.peak >= 8
+                && typeof window !== 'undefined'
+                && window.localStorage?.getItem('claudeVilleDebug') === '1') {
                 console.info(`[harbor] peak ships in last minute: ${this._peakWindow.peak}`);
             }
             this._peakWindow = { peak: this.state.ships.size, since: now };
@@ -2229,6 +2259,9 @@ export class HarborTraffic {
             const route = this._shipRouteTiles(ship);
             const endpoint = route?.[route.length - 1];
             if (endpoint) points.push(toWorld(endpoint.tileX, endpoint.tileY));
+        }
+        for (const sealed of batch.sealedOriginPoints || []) {
+            points.push({ x: sealed.x, y: sealed.y });
         }
         if (points.length === 0) return toWorld(HARBOR_FINALE_TILE.tileX, HARBOR_FINALE_TILE.tileY);
         const sum = points.reduce((acc, point) => ({
