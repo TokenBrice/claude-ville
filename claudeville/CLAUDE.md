@@ -52,6 +52,26 @@ Current API surface:
 
 Do not change port `4000` casually. The README, widget, and local workflows assume it.
 
+## Polling and Cache Cadence
+
+The data path layers a client-side poll fallback, a server broadcast loop, and TTL caches in adapters. The current cadence:
+
+| Layer | Constant | Where | Value |
+| --- | --- | --- | --- |
+| Client poll fallback | `REFRESH_INTERVAL` | `src/config/constants.js` | 2000 ms |
+| Activity panel detail poll | `SESSION_DETAIL_PANEL_REFRESH_INTERVAL` | `src/config/constants.js` | 2000 ms |
+| Dashboard detail poll | `SESSION_DETAIL_REFRESH_INTERVAL` | `src/config/constants.js` | 3000 ms |
+| WS reconnect base | `WS_RECONNECT_INTERVAL` | `src/config/constants.js` | 3000 ms |
+| Server broadcast poll | `BROADCAST_POLL_INTERVAL` | `server.js` | 2000 ms |
+| Server full discovery | `BROADCAST_FULL_DISCOVERY_INTERVAL` | `server.js` | 20000 ms |
+| Teams cache TTL | `TEAMS_CACHE_TTL_MS` | `server.js` | 5000 ms |
+| WS heartbeat | `WS_HEARTBEAT_INTERVAL_MS` | `server.js` | 30000 ms |
+| Session list cache TTL | `SESSION_LIST_CACHE_TTL_MS` | `adapters/index.js` | 5000 ms |
+| Widget poll | hardcoded `withTimeInterval: 5.0` | `widget/Sources/main.swift` | 5000 ms |
+| Unpushed-commit infer cache TTL | `GIT_STATUS_CACHE_TTL_MS` | `adapters/gitEvents.js` | 30000 ms |
+
+Invariant: client poll fallback runs at 2 s; server cache TTL is 5 s; WS heartbeat is 30 s; widget poll is 5 s — never lower client poll under server cache TTL/2 or the cache becomes useless.
+
 ## Provider Adapters
 
 Adapters are in `adapters/` and registered by `adapters/index.js`.
