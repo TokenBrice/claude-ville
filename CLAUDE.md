@@ -6,6 +6,8 @@
 - Touch only files needed for the task. Shared checkout: start with `git status --short`, preserve unrelated edits, prefer `rg`/`rg --files` for discovery.
 - No install step, bundler, transpiler, lint, formatter, app test runner, or CI.
 
+Local dev-server (maintained): http://localhost:4000
+
 ## Commands
 
 - Start: `npm run dev` → `http://localhost:4000`
