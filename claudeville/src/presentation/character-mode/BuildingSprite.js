@@ -8,6 +8,7 @@
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
+import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState } from './AtmosphereState.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
@@ -132,6 +133,13 @@ const OBSERVATORY_CLOCK_FACE = Object.freeze({
     minuteHandLength: 15,
 });
 const MINE_SEAM_COLORS = ['#ffc15a', '#ff8a33', '#ff4528'];
+// Presence tier -> (emitter chance ×, light radius ×, occupancy scalar 0..1).
+// Per Phase 1.6 plan; occupancy feeds window warmth via 0.45 + 0.55 * scalar.
+const PRESENCE_TIER_TABLE = Object.freeze({
+    dormant:  { emitter: 0.3, radius: 0.85, occupancy: 0 },
+    occupied: { emitter: 1.0, radius: 1.0, occupancy: 0.7 },
+    busy:     { emitter: 1.6, radius: 1.15, occupancy: 1 },
+});
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
@@ -158,6 +166,46 @@ function mixHex(a, b, t) {
     const from = hexToRgb(a);
     const to = hexToRgb(b);
     return `rgb(${Math.round(lerp(from.r, to.r, t))}, ${Math.round(lerp(from.g, to.g, t))}, ${Math.round(lerp(from.b, to.b, t))})`;
+}
+
+// Multiply saturation and luminance of a hex color in HSL space. Used by the
+// state-aware label accent boost (Phase 1.8).
+function brightenHex(hex, satMult = 1.2, lumMult = 1.2) {
+    const { r, g, b } = hexToRgb(hex);
+    const rf = r / 255, gf = g / 255, bf = b / 255;
+    const max = Math.max(rf, gf, bf);
+    const min = Math.min(rf, gf, bf);
+    const l = (max + min) / 2;
+    const d = max - min;
+    let h = 0, s = 0;
+    if (d !== 0) {
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        if (max === rf) h = ((gf - bf) / d + (gf < bf ? 6 : 0));
+        else if (max === gf) h = ((bf - rf) / d + 2);
+        else h = ((rf - gf) / d + 4);
+        h /= 6;
+    }
+    const s2 = clamp01(s * satMult);
+    const l2 = clamp01(l * lumMult);
+    const hue2rgb = (p, q, t) => {
+        if (t < 0) t += 1;
+        if (t > 1) t -= 1;
+        if (t < 1/6) return p + (q - p) * 6 * t;
+        if (t < 1/2) return q;
+        if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+        return p;
+    };
+    let r2, g2, b2;
+    if (s2 === 0) { r2 = g2 = b2 = l2; }
+    else {
+        const q = l2 < 0.5 ? l2 * (1 + s2) : l2 + s2 - l2 * s2;
+        const p = 2 * l2 - q;
+        r2 = hue2rgb(p, q, h + 1/3);
+        g2 = hue2rgb(p, q, h);
+        b2 = hue2rgb(p, q, h - 1/3);
+    }
+    const toHex = (v) => Math.round(v * 255).toString(16).padStart(2, '0');
+    return `#${toHex(r2)}${toHex(g2)}${toHex(b2)}`;
 }
 
 function compactRitualLabel(value, fallback = '') {
@@ -202,6 +250,14 @@ export class BuildingSprite {
         this._taskboardPapers = [];
         this._seenTaskboardRituals = new Set();
         this._forgeGlow = FORGE_GLOW_BASELINE;
+        this._presenceByType = new Map();
+        this._onPresence = (map) => {
+            this._presenceByType.clear();
+            for (const [type, entry] of Object.entries(map || {})) {
+                if (entry) this._presenceByType.set(type, entry);
+            }
+        };
+        eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, this._onPresence);
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -210,6 +266,11 @@ export class BuildingSprite {
 
     dispose() {
         this._motionMq?.removeEventListener?.('change', this._onMotionChange);
+        eventBus.off(BUILDING_EVENTS.ACTIVE_AGENTS, this._onPresence);
+    }
+
+    _presenceTierFor(type) {
+        return this._presenceByType.get(type)?.tier || 'dormant';
     }
 
     setMotionScale(s) { this.motionScale = s; }
@@ -342,7 +403,13 @@ export class BuildingSprite {
             const localLabelDensity = this._estimateLocalLabelDensity(occupied, center.x, center.y);
 
             ctx.save();
-            const accent = LANDMARK_LABEL_ACCENTS[b.type] || '#d6a951';
+            const presenceTier = this._presenceTierFor(b.type);
+            const baseAccent = LANDMARK_LABEL_ACCENTS[b.type] || '#d6a951';
+            const failedPushAlert = b.type === 'watchtower' && this.harborStatus?.failedPushActive;
+            const presenceActive = presenceTier === 'occupied' || presenceTier === 'busy';
+            const accent = failedPushAlert
+                ? '#ff755d'
+                : presenceActive ? brightenHex(baseAccent, 1.2, 1.2) : baseAccent;
             const textColor = isHovered ? '#fff6cf' : isLandmark ? '#ffe7a3' : '#e8c982';
             const baseY = Math.round(center.y - dims.h - (isHovered ? 34 : isLandmark ? 28 : 24));
             const baseX = center.x;
@@ -540,6 +607,17 @@ export class BuildingSprite {
                     isHovered,
                     isLandmark,
                 });
+                // Presence dot: 3px accent-coloured pip immediately left of the
+                // icon when the building is occupied/busy or in failed-push alert.
+                if ((presenceActive || failedPushAlert) && iconSize > 0 && padX >= 5) {
+                    ctx.save();
+                    ctx.fillStyle = accent;
+                    ctx.globalAlpha = 1;
+                    ctx.beginPath();
+                    ctx.arc(iconCx - iconSize / 2 - 3, iconCy, 1.5, 0, Math.PI * 2);
+                    ctx.fill();
+                    ctx.restore();
+                }
             }
 
             // Label text.
@@ -872,7 +950,10 @@ export class BuildingSprite {
                 if (this.harborStatus?.failedPushActive) color = '#ff755d';
             }
             const warmthBoost = source.kind === 'beam' ? 0 : windowWarmth * 0.16;
-            const radius = source.radius * Math.min(1.68, 0.72 + lightBoost * 0.28 + warmthBoost + (activity - 1) * 0.18);
+            const presenceRadiusMult = source.buildingType
+                ? PRESENCE_TIER_TABLE[this._presenceTierFor(source.buildingType)].radius
+                : 1;
+            const radius = source.radius * Math.min(1.68, 0.72 + lightBoost * 0.28 + warmthBoost + (activity - 1) * 0.18) * presenceRadiusMult;
             return normalizeLightSource({
                 ...source,
                 color,
@@ -1059,7 +1140,11 @@ export class BuildingSprite {
         this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, dims, baseAnchor);
         ctx.globalCompositeOperation = 'screen';
         if (windowWarmth > 0.035) {
-            const warmthAlpha = Math.min(0.28, windowWarmth * (0.12 + pulse * 0.05));
+            // Per-building occupancy modulates the global warmth: empty buildings
+            // stay dim, packed ones stay lit regardless of hour.
+            const occupancy = PRESENCE_TIER_TABLE[this._presenceTierFor(building.type)].occupancy;
+            const buildingWarmth = windowWarmth * (0.45 + 0.55 * occupancy);
+            const warmthAlpha = Math.min(0.28, buildingWarmth * (0.12 + pulse * 0.05));
             const lightPoints = this._buildingReactionLightPoints(building, entry, dims);
             for (const point of lightPoints) {
                 if (!shouldDrawLocalY(point.y)) continue;
@@ -2648,11 +2733,12 @@ export class BuildingSprite {
             const at = b.type === 'watchtower' ? WATCHTOWER_LANTERN_FIRE.particle : [lx, ly];
             this._spawnBuildingParticle(normalizedType, center, baseAnchor, at, 0.035, 1, dt);
         }
+        const presenceMult = PRESENCE_TIER_TABLE[this._presenceTierFor(b.type)].emitter;
         for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
             const chanceBoost = b.type === 'forge'
                 ? 0.7 + this._forgeGlowIntensity() * 1.1
                 : this._visitorCountFor(b) > 0 ? 1.6 : 1;
-            const chance = emitter.chance * chanceBoost;
+            const chance = emitter.chance * chanceBoost * presenceMult;
             this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt);
         }
     }
