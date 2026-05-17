@@ -1,3 +1,20 @@
+/**
+ * Appearance value-object.
+ *
+ * DEPRECATED FIELDS (skin, shirt, hair, hairStyle, pants, accessory, eyeStyle):
+ * These fields are only consumed by the dashboard avatar's procedural fallback
+ * path in `presentation/dashboard-mode/AvatarCanvas.js` (i.e. when
+ * `getModelVisualIdentity(...).spriteId` is null, when the sprite PNG fails to
+ * load, or on the first frame before the PNG is decoded). World mode
+ * (`presentation/character-mode/*`) renders agents from sprite sheets with
+ * palette-swap and does NOT read any of these fields. When the dashboard
+ * fallback is retired or replaced with sprite-only rendering, these fields and
+ * their color tables can be removed.
+ *
+ * `Appearance.hashCode` is still used as a stable per-agent hash by
+ * `Agent.generateName`, `Agent.displayName`, and `App._regenerateAgentNames`.
+ * Keep `hashCode` even if/when the appearance fields are removed.
+ */
 const SKIN_COLORS = ['#ffdbac', '#f1c27d', '#e0ac69', '#c68642', '#8d5524'];
 const SHIRT_COLORS = ['#4a9eff', '#ff6b6b', '#51cf66', '#ffd43b', '#cc5de8', '#ff922b', '#20c997'];
 const HAIR_COLORS = ['#2c1810', '#4a3728', '#8b6914', '#c9a96e', '#d63c3c', '#1a1a2e'];
