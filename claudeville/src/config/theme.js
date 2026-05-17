@@ -14,6 +14,14 @@ export const THEME = {
     plaza: ['#8a7656', '#988362', '#796748', '#a08b68'],
     water: ['#103a55', '#174f70', '#216984'],
     deepWater: ['#0a2336', '#0e2c44', '#103456'],
+    // Task 1.10 — phase-coupled water tint mix weights. The renderer multiplies
+    // each by `atmosphere.reactions.warmGlint` / `nightReflection` to blend the
+    // base teal water toward the active phase palette's horizon/zenith.
+    waterTint: {
+        horizonMix: 0.55,
+        zenithMix: 0.45,
+        alphaCap: 0.22,
+    },
     bridgeWood: {
         deck: '#5a3f24',
         deckLight: '#74532f',

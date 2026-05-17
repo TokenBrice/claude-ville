@@ -1,4 +1,5 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
+import { THEME } from '../../config/theme.js';
 import { TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
 import {
     BRIDGE_ACCENT_PROPS,
@@ -675,6 +676,11 @@ export class IsometricRenderer {
         this._generateCommandCenterAmbience();
         this.ambientEmitters = [];
         this._generateAmbientEmitters();
+        // Task 1.7: latest building presence tiers, refreshed via building:active-agents
+        // and consulted by gated emitters. Map<type, { count, recencyScore, tier }>.
+        this._buildingPresenceMap = new Map();
+        // Per-emitter interval timestamps for gated/intervaled emitters.
+        this._emitterIntervalLastMs = new Map();
 
         // Event subscriptions
         this._unsubscribers = [];
@@ -1063,6 +1069,14 @@ export class IsometricRenderer {
             { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
             { tileX: 32.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
+            // Task 1.7 — building-activity gated smoke plumes. Roof anchors raise
+            // the spawn point (worldY -= 22) above each building footprint and
+            // the `gatedBy: 'building.activeAgents'` flag tells _updateAmbientEffects
+            // to consult the presence map (occupied/busy => spawn ~every 600ms).
+            { tileX: 28, tileY: 27, particleType: 'smoke', intervalMs: 600,
+              gatedBy: 'building.activeAgents', building: 'forge', worldYOffset: -22 },
+            { tileX: 12, tileY: 32, particleType: 'smoke', intervalMs: 600,
+              gatedBy: 'building.activeAgents', building: 'mine', worldYOffset: -22 },
         ];
 
         for (const prop of this.commandCenterGroundProps) {
@@ -1176,6 +1190,13 @@ export class IsometricRenderer {
             }),
             eventBus.on('subagent:dispatched', (payload) => {
                 this._enqueueSubagentSummonRitual(payload);
+            }),
+            // Task 1.7: cache the latest building presence tiers so per-frame
+            // emitter gating (forge/mine smoke) can read tier === 'occupied'|'busy'
+            // without hot-path enumeration of agent sprites.
+            eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, (payload) => {
+                if (!payload) return;
+                this._buildingPresenceMap = new Map(Object.entries(payload));
             }),
         );
 
@@ -2233,8 +2254,26 @@ export class IsometricRenderer {
 
         const particleBudget = Math.max(0.22, 1 - activeParticles / maxParticles);
         let spawned = 0;
+        const now = performance.now();
         for (const emitter of this.ambientEmitters) {
-            if (spawned >= 1) break;
+            // Task 1.7: building.activeAgents-gated emitters use interval timing
+            // and are not subject to the single-spawn-per-frame cap below.
+            if (emitter.gatedBy === 'building.activeAgents') {
+                const presence = emitter.building
+                    ? this._buildingPresenceMap?.get(emitter.building)
+                    : null;
+                const tier = presence?.tier;
+                if (tier !== 'occupied' && tier !== 'busy') continue;
+                const interval = Math.max(120, emitter.intervalMs || 600);
+                const last = this._emitterIntervalLastMs.get(emitter) || 0;
+                if (now - last < interval) continue;
+                this._emitterIntervalLastMs.set(emitter, now);
+                const yOffset = Number.isFinite(emitter.worldYOffset) ? emitter.worldYOffset : -18;
+                this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y + yOffset, 1);
+                continue;
+            }
+
+            if (spawned >= 1) continue;
             const localBudget = this._ambientEmitterBudget(emitter);
             const frameScale = Math.max(0, Math.min(3, dt / 16));
             const chance = 1 - Math.pow(1 - Math.max(0, Math.min(1, emitter.chance * particleBudget * localBudget)), frameScale);
@@ -2499,6 +2538,36 @@ export class IsometricRenderer {
         }
         this._drawDynamicWaterHighlights(ctx);
         this._drawWeatherPuddles(ctx);
+        this._drawStaticBuildingSmoke(ctx);
+    }
+
+    // Task 1.7 static fallback: when motionScale === 0 the particle system is
+    // disabled, so we draw a single deterministic puff per occupied building.
+    _drawStaticBuildingSmoke(ctx) {
+        if (this.motionScale > 0) return;
+        if (!this.ambientEmitters?.length) return;
+        ctx.save();
+        for (const emitter of this.ambientEmitters) {
+            if (emitter.gatedBy !== 'building.activeAgents') continue;
+            const presence = emitter.building
+                ? this._buildingPresenceMap?.get(emitter.building)
+                : null;
+            const tier = presence?.tier;
+            if (tier !== 'occupied' && tier !== 'busy') continue;
+            const yOffset = Number.isFinite(emitter.worldYOffset) ? emitter.worldYOffset : -18;
+            const cx = emitter.x;
+            const cy = emitter.y + yOffset;
+            ctx.globalAlpha = tier === 'busy' ? 0.40 : 0.28;
+            ctx.fillStyle = '#888888';
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, 6, 3.2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha *= 0.6;
+            ctx.beginPath();
+            ctx.ellipse(cx + 2, cy - 4, 4.5, 2.4, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
     }
 
     _getVisibleTileBounds(margin = 5) {
@@ -3550,6 +3619,7 @@ export class IsometricRenderer {
 
     _drawDynamicWaterHighlights(ctx) {
         const { startX, endX, startY, endY } = this._getVisibleTileBounds(3);
+        this._drawPhaseWaterTint(ctx, startX, endX, startY, endY);
         this._drawWeatherWaterRipples(ctx, startX, endX, startY, endY);
         this._drawWaterFogEdgeWash(ctx, startX, endX, startY, endY);
         this._drawHarborWakeWaterDescriptors(ctx);
@@ -3778,6 +3848,64 @@ export class IsometricRenderer {
             }
         }
         ctx.restore();
+    }
+
+    // Task 1.10 — Phase-coupled water palette. Tint base water toward the active
+    // phase palette's horizon (warm dusk/dawn) or zenith-darkened (night). At noon
+    // both reactions are ~0 so this method is a near-noop and water stays teal.
+    _drawPhaseWaterTint(ctx, startX, endX, startY, endY) {
+        const reactions = this._atmosphereReactions || {};
+        const warmGlint = reactions.warmGlint || 0;
+        const nightReflection = reactions.nightReflection || 0;
+        const warmActive = warmGlint > 0.05;
+        const nightActive = nightReflection > 0.10;
+        if (!warmActive && !nightActive) return;
+        const palette = this._lastAtmosphere?.sky?.palette;
+        if (!palette) return;
+        const cap = THEME.waterTint?.alphaCap ?? 0.22;
+        const tints = [];
+        if (warmActive && palette.horizon) {
+            const horizonMix = THEME.waterTint?.horizonMix ?? 0.55;
+            tints.push({
+                color: palette.horizon,
+                alpha: Math.min(cap, warmGlint * horizonMix),
+            });
+        }
+        if (nightActive && palette.zenith) {
+            // Halve the zenith RGB to darken (per plan: "palette.zenith * 0.5").
+            const zenithMix = THEME.waterTint?.zenithMix ?? 0.45;
+            tints.push({
+                color: this._halfHex(palette.zenith),
+                alpha: Math.min(cap, nightReflection * zenithMix),
+            });
+        }
+        if (!tints.length) return;
+        ctx.save();
+        // source-over: this is a base tint, not an additive highlight.
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                for (const tint of tints) {
+                    ctx.fillStyle = this._withAlpha(tint.color, tint.alpha);
+                    this._drawDiamond(ctx, screenX, screenY);
+                    ctx.fill();
+                }
+            }
+        }
+        ctx.restore();
+    }
+
+    // Halve a #rrggbb hex toward black; used for night water zenith darkening.
+    _halfHex(hex) {
+        if (typeof hex !== 'string' || hex.length !== 7 || hex[0] !== '#') return hex;
+        const r = Math.max(0, Math.min(255, Math.round(parseInt(hex.slice(1, 3), 16) * 0.5)));
+        const g = Math.max(0, Math.min(255, Math.round(parseInt(hex.slice(3, 5), 16) * 0.5)));
+        const b = Math.max(0, Math.min(255, Math.round(parseInt(hex.slice(5, 7), 16) * 0.5)));
+        const hh = (n) => n.toString(16).padStart(2, '0');
+        return `#${hh(r)}${hh(g)}${hh(b)}`;
     }
 
     _drawNightWaterReflections(ctx, startX, endX, startY, endY) {
