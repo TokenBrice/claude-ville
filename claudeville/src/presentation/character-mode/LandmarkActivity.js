@@ -169,6 +169,9 @@ export class LandmarkActivity {
         const building = agent.targetBuildingType;
         if (building === 'forge') this._addForgeItem(agent, now);
         if (building === 'taskboard') this._addTaskItem(agent, now);
+        // Task/Agent transitions now manifest as Portal summon rituals (handled by RitualConductor);
+        // suppress the duplicate Command Center SUMMON stub here.
+        if (agent.currentTool === 'Task' || agent.currentTool === 'Agent') return;
         if (building === 'command' || isCommandTool(agent)) this._addCommandItem(agent, now);
     }
 

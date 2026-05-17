@@ -39,6 +39,8 @@ import {
     relationshipLightSources,
 } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
+import { extractRecipientName } from '../../domain/services/RecipientResolver.js';
+import { BUILDING_EVENTS } from '../../domain/events/DomainEvent.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
@@ -1172,6 +1174,9 @@ export class IsometricRenderer {
                     this._markSpritesDirty();
                 }
             }),
+            eventBus.on('subagent:dispatched', (payload) => {
+                this._enqueueSubagentSummonRitual(payload);
+            }),
         );
 
         // Minimap
@@ -1609,6 +1614,25 @@ export class IsometricRenderer {
         return this.ritualConductor?.canAccept?.(event) ?? true;
     }
 
+    _enqueueSubagentSummonRitual(payload) {
+        if (!this._worldModeActive || !this.ritualConductor) return;
+        const parentId = payload?.parentId;
+        if (!parentId) return;
+        const targetName = payload?.childSubagentType || payload?.childAgentName || null;
+        this.ritualConductor.enqueue({
+            agentId: parentId,
+            tool: 'Task',
+            input: null,
+            ts: payload?.ts || Date.now(),
+            building: 'portal',
+            commandLifecycle: {
+                kind: 'spawn',
+                targetAgentId: payload?.childId || null,
+                targetName,
+            },
+        });
+    }
+
     _replayActiveToolRituals({ force = false } = {}) {
         this._syncRitualContext();
         return this.agentEventStream?.emitInitialToolEvents?.({
@@ -1871,10 +1895,20 @@ export class IsometricRenderer {
             this.selectedAgent = clicked.agent;
             this.camera.followAgent(clicked);
             if (this.onAgentSelect) this.onAgentSelect(clicked.agent);
+            return;
+        }
+
+        this.selectedAgent = null;
+        this.camera.stopFollow();
+        if (this.onAgentSelect) this.onAgentSelect(null);
+
+        // No agent hit; fall through to building selection. Renderer state for
+        // building selection is owned downstream (Phase 4); we only emit.
+        const building = this.buildingRenderer?.hitTest(worldX, worldY) ?? null;
+        if (building) {
+            eventBus.emit(BUILDING_EVENTS.SELECTED, building);
         } else {
-            this.selectedAgent = null;
-            this.camera.stopFollow();
-            if (this.onAgentSelect) this.onAgentSelect(null);
+            eventBus.emit(BUILDING_EVENTS.DESELECTED);
         }
     }
 
@@ -1937,7 +1971,9 @@ export class IsometricRenderer {
 
                 if (sprite.chatPartner) continue;
 
-                const target = spriteByRecipient.get(agent.currentToolInput);
+                const recipient = extractRecipientName(agent.currentToolInput);
+                if (!recipient) continue;
+                const target = spriteByRecipient.get(recipient);
                 if (target && target !== sprite) {
                     sprite.startChat(target);
                 }

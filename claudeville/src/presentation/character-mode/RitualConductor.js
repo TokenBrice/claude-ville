@@ -162,13 +162,30 @@ function extractTaskKey(input, { preferCompleted = false } = {}) {
 function ritualMetaFor(event) {
     const building = event?.building;
     const base = RITUAL_META[building];
-    if (!base) return null;
     const tool = String(event.tool || '');
     const input = event.input;
     const text = inputText(input);
     const host = extractHost(input);
     const isCompletedTask = /status['"]?\s*[:=]\s*['"]?completed\b/i.test(text) || /\bcompleted\b/i.test(text);
     const label = host ? compactText(host, host) : compactText(input, tool);
+    if (tool === 'Task' || tool === 'Agent') {
+        const classifiedLabel = event?.label || null;
+        const subagentLabel = event?.commandLifecycle?.targetName || null;
+        const targetName = subagentLabel || classifiedLabel || null;
+        return {
+            ...RITUAL_META.portal,
+            building: 'portal',
+            kind: 'portal-summon',
+            action: 'summon',
+            label: compactText(targetName || tool, 'SUMMON'),
+            commandLifecycle: {
+                kind: 'spawn',
+                targetAgentId: null,
+                targetName,
+            },
+        };
+    }
+    if (!base) return null;
     if (tool === '__token_delta') {
         return { ...RITUAL_META.mine, kind: 'mine-pick', label: `+${Number(input) || 0}` };
     }
@@ -180,7 +197,7 @@ function ritualMetaFor(event) {
             label: compactText(tool, 'TASK'),
         };
     }
-    if (building === 'command') {
+    if (building === 'command' || building === 'portal') {
         const lifecycle = event.commandLifecycle || null;
         const lifecycleAction = COMMAND_LIFECYCLE_ACTIONS[lifecycle?.kind];
         if (lifecycleAction) {
@@ -194,8 +211,10 @@ function ritualMetaFor(event) {
                 commandLifecycle: lifecycle,
             };
         }
-        const action = tool === 'SendMessage' ? 'message' : tool === 'TeamCreate' ? 'team' : 'command';
-        return { ...base, action, label: compactText(tool, 'CMD') };
+        if (building === 'command') {
+            const action = tool === 'SendMessage' ? 'message' : tool === 'TeamCreate' ? 'team' : 'command';
+            return { ...base, action, label: compactText(tool, 'CMD') };
+        }
     }
     if (building === 'observatory') {
         return {
