@@ -1,7 +1,8 @@
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
 
-const GIT_EVENT_TYPES = new Set(['commit', 'push']);
+const GIT_EVENT_TYPES = new Set(['commit', 'push', 'pull', 'fetch']);
+const GIT_PULL_FETCH_FLAG_TRACKED = new Set(['--all', '--prune', '--tags']);
 const GIT_GLOBAL_FLAGS_WITH_VALUE = new Set([
   '-C',
   '-c',
@@ -335,12 +336,21 @@ function normalizeRefName(ref) {
 function pushPositionals(tokens, subcommandIndex) {
   const positionals = [];
   let repositoryFromFlag = false;
+  let force = null;
 
   for (let i = subcommandIndex + 1; i < tokens.length; i++) {
     const token = tokens[i];
     if (token === '--') {
       positionals.push(...tokens.slice(i + 1));
       break;
+    }
+
+    if (token === '--force' || token === '-f') {
+      if (force === null) force = true;
+    } else if (token === '--force-with-lease' || token.startsWith('--force-with-lease=')) {
+      force = 'lease';
+    } else if (token === '--force-if-includes' || token.startsWith('--force-if-includes=')) {
+      force = 'includes';
     }
 
     if (token === '--repo') repositoryFromFlag = true;
@@ -356,25 +366,69 @@ function pushPositionals(tokens, subcommandIndex) {
     if (token.startsWith('--push-option=') || token.startsWith('--receive-pack=')) continue;
     if (token.startsWith('-')) continue;
 
+    if (token.startsWith('+') && force === null) force = true;
     positionals.push(token);
   }
 
-  return { positionals, repositoryFromFlag };
+  return { positionals, repositoryFromFlag, force };
+}
+
+function pullFetchPositionals(tokens, subcommandIndex) {
+  const positionals = [];
+  const flags = [];
+
+  for (let i = subcommandIndex + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--') {
+      positionals.push(...tokens.slice(i + 1));
+      break;
+    }
+
+    if (GIT_PULL_FETCH_FLAG_TRACKED.has(token) && !flags.includes(token)) flags.push(token);
+    if (GIT_PUSH_FLAGS_WITH_VALUE.has(token) || GIT_SUBCOMMAND_FLAGS_WITH_VALUE.has(token)) {
+      i++;
+      continue;
+    }
+    if (token.startsWith('-')) continue;
+
+    positionals.push(token);
+  }
+
+  return { positionals, flags };
 }
 
 function extractTargetRef(type, tokens, subcommandIndex) {
-  if (type !== 'push') return null;
+  if (type === 'push') {
+    const { positionals, repositoryFromFlag } = pushPositionals(tokens, subcommandIndex);
+    const refspecs = repositoryFromFlag ? positionals : positionals.slice(1);
+    if (refspecs[0] === 'tag' && refspecs[1]) return normalizeRefName(refspecs[1]);
 
-  const { positionals, repositoryFromFlag } = pushPositionals(tokens, subcommandIndex);
-  const refspecs = repositoryFromFlag ? positionals : positionals.slice(1);
-  if (refspecs[0] === 'tag' && refspecs[1]) return normalizeRefName(refspecs[1]);
+    for (const refspec of refspecs) {
+      const target = normalizeRefName(refspec);
+      if (target) return target;
+    }
 
-  for (const refspec of refspecs) {
-    const target = normalizeRefName(refspec);
-    if (target) return target;
+    return null;
+  }
+
+  if (type === 'pull' || type === 'fetch') {
+    const { positionals } = pullFetchPositionals(tokens, subcommandIndex);
+    const refspecs = positionals.slice(1);
+    for (const refspec of refspecs) {
+      const target = normalizeRefName(refspec);
+      if (target) return target;
+    }
+    return null;
   }
 
   return null;
+}
+
+function extractRemote(type, tokens, subcommandIndex) {
+  if (type !== 'pull' && type !== 'fetch') return null;
+  const { positionals } = pullFetchPositionals(tokens, subcommandIndex);
+  const remote = positionals[0];
+  return remote ? String(remote).trim() || null : null;
 }
 
 function createGitEvent(command, type, dryRun, context, parsed = {}) {
@@ -408,10 +462,16 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
       if (!event.targetRef) event.targetRef = branch;
     }
   }
+  if (type === 'push' && parsed.force) event.force = parsed.force;
+  if ((type === 'pull' || type === 'fetch')) {
+    if (parsed.remote) event.remote = parsed.remote;
+    if (Array.isArray(parsed.flags) && parsed.flags.length) event.flags = parsed.flags;
+  }
   if (typeof context.success === 'boolean') event.success = context.success;
   if (Number.isFinite(Number(context.exitCode))) event.exitCode = Number(context.exitCode);
   const completedAt = parseTimestamp(context.completedAt);
   if (completedAt) event.completedAt = completedAt;
+  if (typeof context.stderr === 'string' && context.stderr) event.stderr = context.stderr;
 
   return event;
 }
@@ -431,9 +491,18 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
     const dryRun = isDryRun(match.type, tokens, match.subcommandIndex);
     if (dryRun && ignoreDryRun) continue;
 
-    events.push(createGitEvent(segment, match.type, dryRun, context, {
+    const parsed = {
       targetRef: extractTargetRef(match.type, tokens, match.subcommandIndex),
-    }));
+    };
+    if (match.type === 'push') {
+      const pushInfo = pushPositionals(tokens, match.subcommandIndex);
+      if (pushInfo.force) parsed.force = pushInfo.force;
+    } else if (match.type === 'pull' || match.type === 'fetch') {
+      parsed.remote = extractRemote(match.type, tokens, match.subcommandIndex);
+      const pullInfo = pullFetchPositionals(tokens, match.subcommandIndex);
+      if (pullInfo.flags.length) parsed.flags = pullInfo.flags;
+    }
+    events.push(createGitEvent(segment, match.type, dryRun, context, parsed));
   }
 
   return dedupeGitEvents(events);

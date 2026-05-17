@@ -22,6 +22,9 @@ function snapshotAgent(agent) {
         toolKey: toolKey(agent),
         parentId: agent.parentSessionId || null,
         teamName: agent.teamName || null,
+        agentType: agent.agentType || null,
+        agentName: agent.agentName || null,
+        subagentType: agent.subagent_type || agent.subagentType || null,
         lastTile: agent.position
             ? { tileX: agent.position.x, tileY: agent.position.y }
             : null,
@@ -258,6 +261,9 @@ export class AgentEventStream {
             const event = {
                 parentId: snap.parentId,
                 childId: agent.id,
+                childAgentType: snap.agentType,
+                childAgentName: snap.agentName,
+                childSubagentType: snap.subagentType,
                 ts: Date.now(),
             };
             if (this._canEmit('subagent:dispatched', event, agent)) eventBus.emit('subagent:dispatched', event);

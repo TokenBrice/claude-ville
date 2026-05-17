@@ -77,9 +77,18 @@ export function gitEventKind(event) {
 
 export function normalizePushStatus(event) {
     if (!event || typeof event !== 'object') return 'unknown';
-    if (typeof event.success === 'boolean') return event.success ? 'success' : 'failed';
+    // rejected: non-fast-forward or upstream refused
+    const stderr = String(event.stderr || event.output || '');
+    const looksRejected = /rejected|non-fast-forward|failed to push some refs/i.test(stderr);
+    if (typeof event.success === 'boolean') {
+        if (event.success) return 'success';
+        return looksRejected ? 'rejected' : 'failed';
+    }
     const exitCode = event.exitCode ?? event.exit_code ?? event.code ?? event.returnCode ?? event.return_code;
-    if (Number.isFinite(Number(exitCode))) return Number(exitCode) === 0 ? 'success' : 'failed';
+    if (Number.isFinite(Number(exitCode))) {
+        if (Number(exitCode) === 0) return 'success';
+        return looksRejected ? 'rejected' : 'failed';
+    }
 
     const raw = event.status
         ?? event.outcome
@@ -89,10 +98,13 @@ export function normalizePushStatus(event) {
         ?? event.lifecycle
         ?? '';
     const text = String(raw).toLowerCase();
-    if (!text) return 'unknown';
+    if (!text) return looksRejected ? 'rejected' : 'unknown';
     if (['success', 'succeeded', 'ok', 'passed', 'pass', 'complete', 'completed', 'landed'].includes(text)) return 'success';
-    if (['failed', 'failure', 'fail', 'error', 'errored', 'cancelled', 'canceled', 'timed_out', 'timeout'].includes(text)) return 'failed';
-    return 'unknown';
+    if (text === 'rejected') return 'rejected';
+    if (['failed', 'failure', 'fail', 'error', 'errored', 'cancelled', 'canceled', 'timed_out', 'timeout'].includes(text)) {
+        return looksRejected ? 'rejected' : 'failed';
+    }
+    return looksRejected ? 'rejected' : 'unknown';
 }
 
 function eventLabel(event, type, sha, options = {}) {

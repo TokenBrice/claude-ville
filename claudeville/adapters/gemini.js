@@ -290,6 +290,7 @@ function getGitEvents(filePath, context) {
             ...context,
             ts,
             sourceId: tc.id || msg.id || `${stableHash(JSON.stringify(msg))}:${callIndex}`,
+            stderr: '',
           }));
         });
       }
@@ -299,6 +300,7 @@ function getGitEvents(filePath, context) {
           ...context,
           ts,
           sourceId: msg.id || `${stableHash(JSON.stringify(msg))}:input`,
+          stderr: '',
         }));
       }
     });

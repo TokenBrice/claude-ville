@@ -513,16 +513,46 @@ function getGitEvents(sessionFilePath, context) {
   try {
     const entries = getSessionEntries(sessionFilePath);
 
+    // Index tool_result blocks by tool_use_id so we can surface push stderr
+    // back into the parser context (rejected vs. failed disambiguation).
+    const resultsByToolUseId = new Map();
+    for (const entry of entries) {
+      const msg = entry.message;
+      if (!msg || msg.role !== 'user' || !Array.isArray(msg.content)) continue;
+      for (const block of msg.content) {
+        if (block?.type !== 'tool_result' || !block.tool_use_id) continue;
+        const tur = entry.toolUseResult;
+        const parts = [];
+        if (tur) {
+          if (typeof tur.stderr === 'string') parts.push(tur.stderr);
+          if (typeof tur.stdout === 'string') parts.push(tur.stdout);
+        }
+        if (typeof block.content === 'string') {
+          parts.push(block.content);
+        } else if (Array.isArray(block.content)) {
+          for (const item of block.content) {
+            if (item?.type === 'text' && typeof item.text === 'string') parts.push(item.text);
+          }
+        }
+        resultsByToolUseId.set(block.tool_use_id, {
+          stderr: parts.join('\n'),
+          isError: block.is_error === true,
+        });
+      }
+    }
+
     entries.forEach((entry, entryIndex) => {
       const msg = entry.message;
       if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) return;
 
       msg.content.forEach((block, blockIndex) => {
         if (block.type !== 'tool_use' || !block.input) return;
+        const result = block.id ? resultsByToolUseId.get(block.id) : null;
         events.push(...extractGitEventsFromCommandSource(block.input, {
           ...context,
           ts: entry.timestamp || entry.created_at || 0,
           sourceId: block.id || entry.uuid || entry.id || `${stableHash(JSON.stringify(entry))}:${blockIndex}`,
+          stderr: result?.stderr || '',
         }));
       });
     });

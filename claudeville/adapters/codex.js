@@ -532,12 +532,18 @@ function completionFromExecEvent(entry) {
     success = false;
   }
 
+  const stderrParts = [];
+  if (typeof payload.stderr === 'string') stderrParts.push(payload.stderr);
+  if (typeof payload.stdout === 'string') stderrParts.push(payload.stdout);
+  if (!stderrParts.length && typeof payload.aggregated_output === 'string') stderrParts.push(payload.aggregated_output);
+
   return {
     callId: payload.call_id || payload.callId || payload.id || null,
     command: commandFromExecPayload(payload),
     success,
     exitCode,
     completedAt,
+    stderr: stderrParts.join('\n'),
   };
 }
 
@@ -561,6 +567,7 @@ function applyCompletionMetadata(eventsById, completion) {
     if (typeof completion.success === 'boolean') event.success = completion.success;
     if (completion.exitCode !== null) event.exitCode = completion.exitCode;
     if (completion.completedAt) event.completedAt = completion.completedAt;
+    if (completion.stderr) event.stderr = completion.stderr;
   }
 }
 
