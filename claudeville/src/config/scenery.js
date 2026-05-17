@@ -396,6 +396,20 @@ export const DISTRICT_PROPS = [
     { tileX: 16.2, tileY: 22.4, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'civic' },
     { tileX: 17.8, tileY: 21.4, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
     { tileX: 17.6, tileY: 22.8, id: 'prop.driftwood.log', layer: 'cache', district: 'civic' },
+    // Workshop district: Code Forge approach and Forge → Task Board handoff.
+    { tileX: 27.0, tileY: 30.2, id: 'prop.scrollCrates', layer: 'cache', district: 'workshop' },
+    { tileX: 30.2, tileY: 28.4, id: 'prop.runestone', layer: 'sorted', district: 'workshop' },
+    { tileX: 26.2, tileY: 31.5, id: 'prop.runeBrazier', layer: 'cache', district: 'workshop' },
+    // Civic north promenade: Command Center → Observatory corridor.
+    { tileX: 18.5, tileY: 17.5, id: 'prop.well', layer: 'cache', district: 'civic' },
+    { tileX: 19.0, tileY: 18.0, id: 'prop.flowerCart', layer: 'cache', district: 'civic' },
+    { tileX: 16.0, tileY: 21.3, id: 'prop.signpost', layer: 'sorted', district: 'civic' },
+    // Gate-avenue spine between river bridge and village gate.
+    { tileX: 17.5, tileY: 30.0, id: 'prop.marketStall', layer: 'sorted', district: 'gate' },
+    { tileX: 20.0, tileY: 27.5, id: 'prop.noticePillar', layer: 'sorted', district: 'gate' },
+    // Mine ↔ Portal corridor along west-production-road.
+    { tileX: 9.0, tileY: 31.3, id: 'prop.runestone', layer: 'sorted', district: 'arcane' },
+    { tileX: 10.0, tileY: 32.0, id: 'prop.lantern', layer: 'sorted', district: 'arcane' },
 ];
 
 export const MARINE_FISH_SCHOOLS = [
