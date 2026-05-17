@@ -23,6 +23,7 @@ import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState } from './AtmosphereState.js';
 import { WeatherRenderer } from './WeatherRenderer.js';
+import { SeasonalAmbience } from './SeasonalAmbience.js';
 import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
@@ -160,6 +161,29 @@ const GULL_FLIGHT_FRAMES = [
 const GULL_BANK_FRAME = 'prop.gullFlight.bank';
 const GULL_ROUTE_SPEED_SCALE = 0.52;
 const GULL_LIGHTHOUSE_HOTSPOT = { tileX: 31.4, tileY: 12.2 };
+// 4.13 — Watchtower gull orbit: single-bird 30s loop pegged just north of the
+// Pharos Lighthouse lantern (watchtower footprint sits at tile (27,8) sized
+// 3x5), with the orbit centre on the sea side so the bird reads as guarding
+// the beacon. Buoys flank the beacon on adjacent open-water tiles.
+const WATCHTOWER_GULL_ORBIT = Object.freeze({
+    centerTileX: 28,
+    centerTileY: 12,
+    radiusTileX: 2.2,
+    radiusTileY: 1.6,
+    periodMs: 30000,
+    altitudePx: 38,
+});
+const WATCHTOWER_GULL_FALLBACK_TILE = Object.freeze({
+    tileX: WATCHTOWER_GULL_ORBIT.centerTileX + WATCHTOWER_GULL_ORBIT.radiusTileX,
+    tileY: WATCHTOWER_GULL_ORBIT.centerTileY,
+});
+const WATCHTOWER_BEACON_BUOY_TILES = Object.freeze([
+    { tileX: 29, tileY: 9 },
+    { tileX: 30, tileY: 11 },
+]);
+// 4.15 — Archive fade: keep the sprite in the draw loop for this many ms after
+// `agent:removed` so the sibling AgentSprite fade/sparkle animation can play.
+const ARCHIVE_FADE_DURATION_MS = 800;
 const GULL_OFFMAP_GATEWAYS = [
     { tileX: -4.8, tileY: 24.8 },
     { tileX: 7.2, tileY: -4.6 },
@@ -467,6 +491,27 @@ export class IsometricRenderer {
         this.atmosphereState = new AtmosphereState();
         this.skyRenderer = new SkyRenderer({ assets: this.assets });
         this.weatherRenderer = new WeatherRenderer();
+        // Phase 4 WU-C: weather renderer needs the AssetManager so its
+        // sprite-stamp helpers (rain splashes, water ripples) can resolve
+        // atmosphere.* asset IDs. Method is defensively optional because it
+        // only landed alongside the stamp helpers.
+        this.weatherRenderer.setAssets?.(this.assets);
+        // Phase 4 — seasonal ambient particles (snow/petals/fireflies/leaves)
+        // routed into the shared ParticleSystem. Atmosphere snapshot is
+        // captured per-frame onto _lastAtmosphere by WorldFrameRenderer;
+        // fall back to the raw AtmosphereState snapshot before the first
+        // frame runs.
+        this.seasonalAmbience = new SeasonalAmbience({
+            particleSystem: this.particleSystem,
+            atmosphereStateGetter: () => this._lastAtmosphere ?? this.atmosphereState?.snapshot?.() ?? null,
+            motionScaleGetter: () => this.motionScale ?? 1,
+            viewportProvider: () => ({
+                x: 0,
+                y: 0,
+                w: (this.canvas?.width ?? 0) / (this._screenDpr?.() || 1),
+                h: (this.canvas?.height ?? 0) / (this._screenDpr?.() || 1),
+            }),
+        });
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.chronicleStore = options.chronicleStore || null;
         this.modal = options.modal || null;
@@ -623,6 +668,10 @@ export class IsometricRenderer {
         this.treePropSprites = [...generatedTrees, ...authoredPalms, ...authoredBroadleafTrees]
             .filter((t) => !this._isInBridgeTreeExclusion(t.tileX, t.tileY))
             .map((t) => {
+            // 4.8 — Deterministic per-tree phase seed for wind sway. Anchored
+            // to tile coordinates + variant so the visual offset is stable
+            // across reloads but each tree drifts on its own phase.
+            const swaySeed = this._windSwaySeed(t);
             if (t.canopy || t.tropical) {
                 const bounds = this._fantasyTreePropBounds(t);
                 return new StaticPropSprite({
@@ -631,7 +680,11 @@ export class IsometricRenderer {
                     id: 'fantasy.tree',
                     bounds,
                     splitForOcclusion: true,
-                    drawFn: (ctx, x, y) => this._drawFantasyForestTree(ctx, x, y, t),
+                    drawFn: (ctx, x, y) => this._withTreeSway(
+                        ctx,
+                        swaySeed,
+                        () => this._drawFantasyForestTree(ctx, x, y, t),
+                    ),
                 });
             }
             // variant 0 -> oak, 1 -> pine, 2 -> willow; size driven by scale threshold.
@@ -644,7 +697,11 @@ export class IsometricRenderer {
                 id,
                 bounds: this._assetPropBounds(id),
                 splitForOcclusion: true,
-                drawFn: (ctx, x, y) => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
+                drawFn: (ctx, x, y) => this._withTreeSway(
+                    ctx,
+                    swaySeed,
+                    () => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
+                ),
             });
         });
 
@@ -1303,6 +1360,9 @@ export class IsometricRenderer {
         this.weatherRenderer?.dispose?.();
         this.skyRenderer?.dispose?.();
         this.atmosphereState?.dispose?.();
+        // Phase 4 — SeasonalAmbience holds no resources today; the optional
+        // chain keeps the lifecycle hook in place if a dispose method lands.
+        this.seasonalAmbience?.dispose?.();
     }
 
     _startLoop() {
@@ -1911,8 +1971,40 @@ export class IsometricRenderer {
         }
         this.gateTransits.delete(agentId);
         this.visitTileAllocator?.release?.(agentId);
+        // 4.15 — Archive fade: defer the actual sprite disposal by
+        // ARCHIVE_FADE_DURATION_MS so the sibling AgentSprite.draw() fade
+        // alpha + sparkle puff (Phase 4 WU-G) can play. The sprite stays in
+        // agentSprites and is collected by _pruneArchiveFadedSprites().
+        // Reduced motion (motionScale === 0) short-circuits to immediate
+        // disposal — there is no fade to play.
+        const motionScale = this.motionScale ?? 1;
+        if (motionScale > 0 && !sprite._archiveAnim) {
+            sprite._archiveAnim = {
+                startedAt: Date.now(),
+                total: ARCHIVE_FADE_DURATION_MS,
+                agent: sprite.agent,
+            };
+            sprite.selected = false;
+            this._markSpritesDirty();
+            return;
+        }
         this.agentSprites.delete(agentId);
         this._markSpritesDirty();
+    }
+
+    // 4.15 — Sweep archive-fading sprites whose fade window has elapsed.
+    // Called once per frame from `_update`.
+    _pruneArchiveFadedSprites(nowMs = Date.now()) {
+        let removed = false;
+        for (const [agentId, sprite] of this.agentSprites) {
+            const anim = sprite._archiveAnim;
+            if (!anim) continue;
+            if (nowMs - anim.startedAt >= anim.total) {
+                this.agentSprites.delete(agentId);
+                removed = true;
+            }
+        }
+        if (removed) this._markSpritesDirty();
     }
 
     _isGateTransit(sprite, type = null) {
@@ -2207,6 +2299,16 @@ export class IsometricRenderer {
         });
         this.buildingRenderer?.update(dt);
         this._updateAmbientEffects(dt);
+
+        // 4.15 — Reap any agent sprites whose 800ms archive-fade window has
+        // expired before the particle update so the next frame draws the
+        // final state.
+        this._pruneArchiveFadedSprites(Date.now());
+
+        // Phase 4 — Seasonal ambience emits drift particles into the shared
+        // particle system, capped at ~4 spawns/sec and gated by reduced
+        // motion inside SeasonalAmbience.update().
+        this.seasonalAmbience?.update?.(dt);
 
         // Update particles
         this.particleSystem.update(dt);
@@ -2695,6 +2797,7 @@ export class IsometricRenderer {
             drawFn: (ctx, x, y) => this._drawVillageGatehouse(ctx, x, y),
         }));
         sprites.push(...this._buildVillageWallTerminalSprites());
+        sprites.push(...this._buildWatchtowerBeaconBuoySprites());
         sprites.push(...DISTRICT_PROPS
             .filter((prop) => prop.layer === 'sorted')
             .filter((prop) => !this.scenery.isBlockedForTallScenery(prop.tileX, prop.tileY, this.pathTiles, this.bridgeTiles))
@@ -2765,6 +2868,27 @@ export class IsometricRenderer {
             tileX: towerTile.tileX - ux * 0.42,
             tileY: towerTile.tileY - uy * 0.42,
         };
+    }
+
+    // 4.13 — Decorative beacon buoys flanking the Pharos Lighthouse on the
+    // sea-line. Authored tile positions live in WATCHTOWER_BEACON_BUOY_TILES
+    // (config-near-call-site by design); they're picked to land on open
+    // water away from the harbor anchorages declared in HarborTraffic.js.
+    _buildWatchtowerBeaconBuoySprites() {
+        const id = 'prop.harborBeaconBuoy';
+        if (!this.assets?.has?.(id) || !this.sprites) return [];
+        const out = [];
+        for (const buoy of WATCHTOWER_BEACON_BUOY_TILES) {
+            out.push(new StaticPropSprite({
+                tileX: buoy.tileX,
+                tileY: buoy.tileY,
+                id,
+                bounds: this._assetPropBounds(id, 0.58),
+                splitForOcclusion: false,
+                drawFn: (ctx, x, y) => this.sprites.drawSprite(ctx, id, x, y),
+            }));
+        }
+        return out;
     }
 
     _buildVillageWallTerminalSprites() {
@@ -3662,6 +3786,44 @@ export class IsometricRenderer {
         };
     }
 
+    // 4.8 — Deterministic per-tree phase for wind sway. Mixes tile position
+    // and variant into [0, 2π) so neighbouring trees don't pulse in lockstep.
+    _windSwaySeed(tree) {
+        const tx = Number(tree?.tileX) || 0;
+        const ty = Number(tree?.tileY) || 0;
+        const variant = Number(tree?.variant) || 0;
+        const n = Math.sin(tx * 12.9898 + ty * 78.233 + variant * 7.131) * 43758.5453;
+        return (n - Math.floor(n)) * Math.PI * 2;
+    }
+
+    // 4.8 — Apply a small horizontal offset to a tree drawFn based on the
+    // current atmosphere wind. Clamped to ±2 px so pixel-art sprites do not
+    // shimmer; skipped under reduced motion (motionScale === 0).
+    _withTreeSway(ctx, seed, drawFn) {
+        if (typeof drawFn !== 'function') return;
+        const motionScale = this.motionScale ?? 1;
+        const windX = Number(this._lastAtmosphere?.motion?.windX) || 0;
+        if (motionScale <= 0 || windX === 0) {
+            drawFn();
+            return;
+        }
+        const t = (typeof performance !== 'undefined' && performance.now
+            ? performance.now()
+            : Date.now()) * 0.001;
+        let dx = Math.sin(t + seed) * windX * 1.5;
+        if (dx > 2) dx = 2;
+        else if (dx < -2) dx = -2;
+        const offset = Math.round(dx);
+        if (offset === 0) {
+            drawFn();
+            return;
+        }
+        ctx.save();
+        ctx.translate(offset, 0);
+        drawFn();
+        ctx.restore();
+    }
+
     _terrainCacheBounds() {
         if (this.terrainCacheBounds) return this.terrainCacheBounds;
         const points = this._worldDiamondPoints();
@@ -3825,6 +3987,13 @@ export class IsometricRenderer {
         const rain = weather.rain || 0;
         if (rain <= 0.08) return;
 
+        // Phase 4 WU-C — Stamp the manifest-driven rain ripple sprite for a
+        // small random fraction of visible water tiles per frame. The
+        // WeatherRenderer self-throttles per tile (2s) so the global ripple
+        // budget stays bounded. Skipped under reduced motion.
+        const stampRipples = (this.motionScale ?? 1) > 0
+            && typeof this.weatherRenderer?.maybeStampWaterRipple === 'function';
+
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         const rippleScale = reactions.waterRippleScale || rain;
@@ -3839,6 +4008,9 @@ export class IsometricRenderer {
                 if (((x * 3 + y * 5 + Math.floor(seed * 11)) % localStride) !== 0) continue;
                 const screenX = (x - y) * TILE_WIDTH / 2;
                 const screenY = (x + y) * TILE_HEIGHT / 2;
+                if (stampRipples && Math.random() < 1 / 30) {
+                    this.weatherRenderer.maybeStampWaterRipple(ctx, x, y, screenX, screenY);
+                }
                 const phase = (this.motionScale ? this.waterFrame : STATIC_WATER_SHIMMER) * (1.8 + rain * 1.3) + seed * 6.28;
                 const pulse = (Math.sin(phase) + 1) / 2;
                 const profileScale = profile === 'openSea' ? 0.72 : profile === 'harbor' ? 0.90 : 1.14;
@@ -5993,6 +6165,14 @@ export class IsometricRenderer {
                 && this._isGullFlightTile(tileX, tileY);
         });
 
+        // 4.13 — Single guardian gull orbiting the Pharos Lighthouse beacon.
+        // 30s loop, low altitude; falls back to a held pose under reduced
+        // motion so the silhouette still reads near the watchtower.
+        const watchtowerGull = this._watchtowerGullPosition();
+        if (watchtowerGull && this._isGullInVisibleBounds(watchtowerGull, visible)) {
+            visibleGulls.push(watchtowerGull);
+        }
+
         if (this.sprites) {
             ctx.save();
             for (const gull of visibleGulls) {
@@ -6031,6 +6211,51 @@ export class IsometricRenderer {
             ctx.stroke();
         }
         ctx.restore();
+    }
+
+    // 4.13 — Watchtower beacon gull. Single bird looping the Pharos
+    // Lighthouse at WATCHTOWER_GULL_ORBIT. Reduced motion (motionScale === 0)
+    // pins the gull at the start-of-orbit anchor so the silhouette remains.
+    _watchtowerGullPosition() {
+        if (!this.assets?.has?.('prop.gullFlight')) return null;
+        const motionScale = this.motionScale ?? 1;
+        let tileX;
+        let tileY;
+        let facing = 1;
+        let frameId = 'prop.gullFlight.level';
+        if (motionScale <= 0) {
+            tileX = WATCHTOWER_GULL_FALLBACK_TILE.tileX;
+            tileY = WATCHTOWER_GULL_FALLBACK_TILE.tileY;
+        } else {
+            const now = (typeof performance !== 'undefined' && performance.now)
+                ? performance.now()
+                : Date.now();
+            const t = (now % WATCHTOWER_GULL_ORBIT.periodMs) / WATCHTOWER_GULL_ORBIT.periodMs;
+            const angle = t * Math.PI * 2;
+            tileX = WATCHTOWER_GULL_ORBIT.centerTileX + Math.cos(angle) * WATCHTOWER_GULL_ORBIT.radiusTileX;
+            tileY = WATCHTOWER_GULL_ORBIT.centerTileY + Math.sin(angle) * WATCHTOWER_GULL_ORBIT.radiusTileY;
+            const tangentX = -Math.sin(angle) * WATCHTOWER_GULL_ORBIT.radiusTileX;
+            const tangentY = Math.cos(angle) * WATCHTOWER_GULL_ORBIT.radiusTileY;
+            const screenVx = (tangentX - tangentY) * TILE_WIDTH / 2;
+            facing = screenVx < 0 ? -1 : 1;
+            const flapIndex = Math.floor(now * 0.006) % GULL_FLIGHT_FRAMES.length;
+            frameId = GULL_FLIGHT_FRAMES[flapIndex];
+        }
+        const waterY = (tileX + tileY) * TILE_HEIGHT / 2;
+        return {
+            tileX,
+            tileY,
+            x: (tileX - tileY) * TILE_WIDTH / 2,
+            y: waterY - WATCHTOWER_GULL_ORBIT.altitudePx,
+            waterY,
+            altitude: WATCHTOWER_GULL_ORBIT.altitudePx,
+            alpha: 0.92,
+            wing: 0.6,
+            frameId,
+            fallbackFrameId: 'prop.gullFlight',
+            facing,
+            screenSpeed: 0,
+        };
     }
 
     _drawDiamond(ctx, screenX, screenY) {
@@ -6506,19 +6731,82 @@ export class IsometricRenderer {
             this._beamLastIdleAngle = primaryAngle;
         }
 
+        // 4.7 — Punch the beam through fog/rain/storm so it stays legible
+        // when the sky is occluded. Multipliers cap at 1.5× alpha and 1.25×
+        // bloom; a faint volumetric cone wedge is added at 0.4 alpha to read
+        // as light scattering through precipitation. Stacks above the
+        // push-signal hue work above (Phase 3 WU3-B), inside the same
+        // `screen` composite block.
+        const weather = atmosphere?.weather;
+        let weatherBoost = 1;
+        let bloomScale = 1;
+        let fogConeAlpha = 0;
+        if (weather && (weather.type === 'fog' || weather.type === 'rain' || weather.type === 'storm')) {
+            const intensity = Math.max(0, Math.min(1, Number(weather.intensity) || 0));
+            if (intensity > 0) {
+                weatherBoost = Math.min(1.5, 1 + intensity * 0.6);
+                bloomScale = 1 + intensity * 0.25;
+                fogConeAlpha = 0.4 * intensity;
+            }
+        }
+        const finalAlpha = alpha * weatherBoost;
+
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         ctx.globalAlpha = 1;
-        if (alpha > 0) {
-            this._drawBeamWedge(ctx, light.x, light.y, primaryAngle, length, nearWidth, farWidth, color, alpha);
+        if (finalAlpha > 0) {
+            this._drawBeamWedge(
+                ctx, light.x, light.y, primaryAngle, length,
+                nearWidth, farWidth, color, finalAlpha, bloomScale,
+            );
             if (!lockedSingleBeam) {
-                this._drawBeamWedge(ctx, light.x, light.y, secondaryAngle, length * 0.72, nearWidth, farWidth * 0.72, color, alpha * 0.55);
+                this._drawBeamWedge(
+                    ctx, light.x, light.y, secondaryAngle, length * 0.72,
+                    nearWidth, farWidth * 0.72, color, finalAlpha * 0.55, bloomScale,
+                );
+            }
+            if (fogConeAlpha > 0) {
+                this._drawBeamFogCone(
+                    ctx, light.x, light.y, primaryAngle, length,
+                    farWidth, fogConeAlpha,
+                );
+                if (!lockedSingleBeam) {
+                    this._drawBeamFogCone(
+                        ctx, light.x, light.y, secondaryAngle, length * 0.72,
+                        farWidth * 0.72, fogConeAlpha * 0.55,
+                    );
+                }
             }
         }
         ctx.restore();
     }
 
-    _drawBeamWedge(ctx, x, y, angle, length, nearWidth, farWidth, color, alpha) {
+    // 4.7 — Faint volumetric cone wedge added on top of the existing
+    // beam pass when fog/rain/storm intensity is non-zero. Mirrors the
+    // wedge geometry of _drawBeamWedge but uses a white→transparent
+    // gradient at low alpha to read as scattered light through weather.
+    _drawBeamFogCone(ctx, x, y, angle, length, farWidth, alpha) {
+        if (alpha <= 0) return;
+        const dx = Math.cos(angle);
+        const dy = Math.sin(angle);
+        const px = -dy;
+        const py = dx;
+        const farX = x + dx * length;
+        const farY = y + dy * length;
+        const wedgeWidth = farWidth * 1.10;
+        const gradient = ctx.createLinearGradient(x, y, farX, farY);
+        gradient.addColorStop(0, `rgba(255, 255, 255, ${this._quantizedAlpha(alpha * 0.85)})`);
+        gradient.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(farX + px * wedgeWidth * 0.5, farY + py * wedgeWidth * 0.5);
+        ctx.lineTo(farX - px * wedgeWidth * 0.5, farY - py * wedgeWidth * 0.5);
+        ctx.closePath();
+        ctx.fill();
+    }
+
+    _drawBeamWedge(ctx, x, y, angle, length, nearWidth, farWidth, color, alpha, bloomScale = 1) {
         if (alpha <= 0) return;
         const dx = Math.cos(angle);
         const dy = Math.sin(angle);
@@ -6540,12 +6828,15 @@ export class IsometricRenderer {
         ctx.closePath();
         ctx.fill();
 
-        const bloom = ctx.createRadialGradient(farX, farY, 0, farX, farY, farWidth * 0.75);
+        // 4.7 — `bloomScale` widens the radial bloom radius under fog/rain/
+        // storm so the head of the beam reads through the precipitation.
+        const bloomRadius = farWidth * 0.75 * bloomScale;
+        const bloom = ctx.createRadialGradient(farX, farY, 0, farX, farY, bloomRadius);
         bloom.addColorStop(0, this._withAlpha(color, this._quantizedAlpha(alpha * 0.28)));
         bloom.addColorStop(1, this._withAlpha(color, 0));
         ctx.fillStyle = bloom;
         ctx.beginPath();
-        ctx.ellipse(farX, farY, farWidth * 0.72, farWidth * 0.22, angle, 0, Math.PI * 2);
+        ctx.ellipse(farX, farY, farWidth * 0.72 * bloomScale, farWidth * 0.22 * bloomScale, angle, 0, Math.PI * 2);
         ctx.fill();
     }
 
