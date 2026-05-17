@@ -1,10 +1,16 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { THEME } from '../../config/theme.js';
 import { getTeamColor } from '../shared/TeamColor.js';
-import { tileToWorld } from './Projection.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
+import { BUILDING_DEFS } from '../../config/buildings.js';
+import { tileToWorld, worldToTile } from './Projection.js';
 
 const MAX_TALK_ARCS = 8;
 const COMMAND_PLAZA = { tileX: 16, tileY: 21 };
+const TEAM_GATHER_COOLDOWN_MS = 5 * 60 * 1000;
+const TEAM_GATHER_RADIUS_TILES = 12;
+const _lastTeamGatherEmittedAt = new Map();
+const _commandPlazaVisitTiles = (BUILDING_DEFS.find(def => def.type === 'command')?.visitTiles || []).map(tile => ({ ...tile }));
 
 function tileToScreen(tile) {
     return tileToWorld(tile);
@@ -37,6 +43,10 @@ function sortedSpritesForTeam(memberIds, agentSprites) {
     return sprites.sort((a, b) => Math.atan2(a.y, a.x) - Math.atan2(b.y, b.x));
 }
 
+function isIdleSprite(sprite) {
+    return sprite?.agent?.status === AgentStatus.IDLE;
+}
+
 export function applyTeamPlazaPreferences(relationship, agentSprites) {
     const snapshot = relationshipSnapshot(relationship);
     if (!snapshot?.teamToMembers || !agentSprites) return;
@@ -45,13 +55,93 @@ export function applyTeamPlazaPreferences(relationship, agentSprites) {
     for (const memberIds of snapshot.teamToMembers.values()) {
         const idle = memberIds
             .map(id => agentSprites.get(id))
-            .filter(sprite => sprite?.agent?.status === AgentStatus.IDLE);
+            .filter(isIdleSprite);
         if (idle.length < 2) continue;
         for (const sprite of idle) preferredIds.add(sprite.agent.id);
     }
 
     for (const sprite of agentSprites.values()) {
         sprite.setTeamPlazaPreference?.(preferredIds.has(sprite.agent?.id));
+    }
+
+    if (snapshot.parentToChildren) {
+        for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
+            if (!childIds || childIds.size < 2) continue;
+            const parent = agentSprites.get(parentId);
+            if (!parent || !isIdleSprite(parent)) continue;
+            const parentTile = worldToTile(parent.x, parent.y);
+            for (const childId of childIds) {
+                const child = agentSprites.get(childId);
+                if (!child || !isIdleSprite(child)) continue;
+                if (typeof child.setFamilyPlazaPreference === 'function') {
+                    child.setFamilyPlazaPreference(parentTile.tileX, parentTile.tileY);
+                }
+            }
+        }
+    }
+
+    applyTeamGatherChoreography(snapshot, agentSprites);
+}
+
+export function applyTeamGatherChoreography(snapshot, agentSprites, { now = performance.now() } = {}) {
+    const data = relationshipSnapshot(snapshot);
+    if (!data?.teamToMembers || !agentSprites) return;
+
+    for (const [teamName, memberIds] of data.teamToMembers.entries()) {
+        const last = _lastTeamGatherEmittedAt.get(teamName) || 0;
+        if (now - last < TEAM_GATHER_COOLDOWN_MS) continue;
+
+        const idle = [];
+        let blocked = false;
+        for (const id of memberIds) {
+            const sprite = agentSprites.get(id);
+            if (!sprite) continue;
+            if (sprite.agent?.status === AgentStatus.WAITING_ON_USER) { blocked = true; break; }
+            if (!isIdleSprite(sprite)) continue;
+            if (sprite.isArrivalPending?.()) continue;
+            idle.push(sprite);
+        }
+        if (blocked || idle.length < 2) continue;
+
+        let maxDist = 0;
+        for (let i = 0; i < idle.length && maxDist <= TEAM_GATHER_RADIUS_TILES; i++) {
+            const a = worldToTile(idle[i].x, idle[i].y);
+            for (let j = i + 1; j < idle.length; j++) {
+                const b = worldToTile(idle[j].x, idle[j].y);
+                const d = Math.hypot(a.tileX - b.tileX, a.tileY - b.tileY);
+                if (d > maxDist) maxDist = d;
+                if (maxDist > TEAM_GATHER_RADIUS_TILES) break;
+            }
+        }
+        if (maxDist > TEAM_GATHER_RADIUS_TILES) continue;
+
+        const cx = idle.reduce((sum, s) => sum + s.x, 0) / idle.length;
+        const cy = idle.reduce((sum, s) => sum + s.y, 0) / idle.length;
+        const centroidTile = worldToTile(cx, cy);
+        const sorted = idle
+            .map(sprite => ({ sprite, angle: Math.atan2(sprite.y - cy, sprite.x - cx) }))
+            .sort((a, b) => a.angle - b.angle);
+
+        const slotCount = _commandPlazaVisitTiles.length || 1;
+        const centroidArc = sorted.map((entry, index) => {
+            const slotIndex = index % slotCount;
+            const tile = _commandPlazaVisitTiles[slotIndex] || COMMAND_PLAZA;
+            return {
+                agentId: entry.sprite.agent.id,
+                angle: entry.angle,
+                slotIndex,
+                tileX: tile.tileX,
+                tileY: tile.tileY,
+            };
+        });
+
+        _lastTeamGatherEmittedAt.set(teamName, now);
+        eventBus.emit('team:gather', {
+            teamName,
+            members: sorted.map(entry => entry.sprite.agent.id),
+            plazaTile: { tileX: centroidTile.tileX, tileY: centroidTile.tileY },
+            centroidArc,
+        });
     }
 }
 
@@ -108,6 +198,59 @@ export function drawCouncilRings(ctx, {
         ctx.closePath();
         ctx.stroke();
         ctx.restore();
+    }
+}
+
+export function drawFamilyTethers(ctx, {
+    relationship,
+    agentSprites,
+    zoom = 1,
+    now = performance.now(),
+    motionScale = 1,
+    lighting = null,
+    projectIsoToScreen = null, // reserved; world transform already applied by caller
+} = {}) {
+    void projectIsoToScreen;
+    const snapshot = relationshipSnapshot(relationship);
+    if (!ctx || !snapshot?.parentToChildren || !agentSprites) return;
+
+    const boost = lightBoost(lighting);
+    const flicker = motionScale === 0 ? 1 : 0.85 + 0.15 * Math.sin(now * 0.003);
+    const alpha = Math.min(0.28, Math.max(0.18, 0.22 * boost * flicker));
+    const dashOffset = motionScale === 0 ? 0 : -(Math.floor(now * 0.06) % 9);
+
+    for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
+        const parent = agentSprites.get(parentId);
+        if (!parent || parent.isArrivalPending?.()) continue;
+        const trim = parent._providerTrimColor?.() || parent.providerTrimColor || '#8b8b9e';
+        const stroke = rgba(trim, alpha);
+
+        for (const childId of childIds) {
+            const child = agentSprites.get(childId);
+            if (!child || child.isArrivalPending?.()) continue;
+
+            const start = { x: parent.x, y: parent.y - 6 };
+            const end = { x: child.x, y: child.y - 6 };
+            const dx = end.x - start.x;
+            const dy = end.y - start.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist < 1) continue;
+            const control = {
+                x: (start.x + end.x) / 2,
+                y: (start.y + end.y) / 2 - Math.min(28, dist * 0.18),
+            };
+
+            ctx.save();
+            ctx.strokeStyle = stroke;
+            ctx.lineWidth = 1 / (zoom || 1);
+            ctx.setLineDash([3 / (zoom || 1), 6 / (zoom || 1)]);
+            ctx.lineDashOffset = dashOffset / (zoom || 1);
+            ctx.beginPath();
+            ctx.moveTo(start.x, start.y);
+            ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
+            ctx.stroke();
+            ctx.restore();
+        }
     }
 }
 

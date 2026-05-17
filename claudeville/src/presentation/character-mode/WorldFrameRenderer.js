@@ -1,5 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { drawCouncilRings, drawTalkArcs } from './CouncilRing.js';
+import { drawCouncilRings, drawFamilyTethers, drawTalkArcs } from './CouncilRing.js';
 import { appendDepthSortedDrawables, drawDepthSortedDrawables } from './DrawablePass.js';
 
 // Follow-up after layer extraction: move private renderer calls used here into
@@ -52,6 +52,14 @@ export function renderWorldFrame(renderer, dt = 16) {
 
     renderer.buildingRenderer?.drawShadows(ctx);
     drawCouncilRings(ctx, {
+        relationship: renderer.relationshipState,
+        agentSprites: renderer.agentSprites,
+        zoom: renderer.camera.zoom,
+        now: perfNow,
+        motionScale: renderer.motionScale,
+        lighting: atmosphere?.lighting,
+    });
+    drawFamilyTethers(ctx, {
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,
         zoom: renderer.camera.zoom,
