@@ -20,6 +20,9 @@ export class AssetManager {
         // IDs that resolved to the placeholder checker (404 or load error).
         // has(id) returns false for these so callers can skip drawing them.
         this.missing = new Set();
+        // Per-asset miss records ({id, path}) collected across this load() pass;
+        // flushed as one summary warn when load() resolves.
+        this._loadMisses = [];
     }
 
     async load() {
@@ -38,6 +41,13 @@ export class AssetManager {
         const entries = this._flattenManifest(this.manifest);
         this._entriesCache = entries;
         await Promise.all(entries.map(e => this._loadEntry(e)));
+
+        if (this._loadMisses.length > 0) {
+            console.warn(
+                `[AssetManager] missing ${this._loadMisses.length} assets:`,
+                this._loadMisses.map(m => m.id)
+            );
+        }
     }
 
     async _fetchText(path) {
@@ -71,7 +81,10 @@ export class AssetManager {
         // Standard single-PNG entry.
         const path = this._pathFor(entry);
         const { img: loadedImg, ok } = await this._loadImage(path);
-        if (!ok) this.missing.add(entry.id);
+        if (!ok) {
+            this.missing.add(entry.id);
+            this._loadMisses.push({ id: entry.id, path });
+        }
         const img = this._normalizeImageToManifestSize(entry, loadedImg);
         this.bitmaps.set(entry.id, img);
         this.dimensions.set(entry.id, { w: img.width, h: img.height });
@@ -92,7 +105,10 @@ export class AssetManager {
                 const layerId = `${entry.id}.${name}`;
                 const layerPath = this._pathFor({ id: layerId, ...layer });
                 const { img: loadedLayerImg, ok: layerOk } = await this._loadImage(layerPath);
-                if (!layerOk) this.missing.add(layerId);
+                if (!layerOk) {
+                    this.missing.add(layerId);
+                    this._loadMisses.push({ id: layerId, path: layerPath });
+                }
                 const layerImg = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedLayerImg);
                 this.bitmaps.set(layerId, layerImg);
                 this.dimensions.set(layerId, { w: layerImg.width, h: layerImg.height });
@@ -110,20 +126,15 @@ export class AssetManager {
         canvas.height = rows * cellSize;
         const ctx = canvas.getContext('2d');
         ctx.imageSmoothingEnabled = false;
-        const missingCells = [];
         for (let r = 0; r < rows; r++) {
             for (let c = 0; c < cols; c++) {
                 const cellPath = `assets/sprites/buildings/${entry.id}/base-${c}-${r}.png`;
                 const { img, ok } = await this._loadImage(cellPath);
-                if (!ok) missingCells.push(cellPath);
+                if (!ok) {
+                    this._loadMisses.push({ id: `${entry.id}#cell[${c},${r}]`, path: cellPath });
+                }
                 ctx.drawImage(img, c * cellSize, r * cellSize, cellSize, cellSize);
             }
-        }
-        if (missingCells.length > 0) {
-            this.missing.add(entry.id);
-            throw new Error(
-                `[AssetManager] missing required composed cells for ${entry.id}: ${missingCells.join(', ')}`
-            );
         }
         this.bitmaps.set(entry.id, canvas);
         this.dimensions.set(entry.id, { w: canvas.width, h: canvas.height });
@@ -145,7 +156,10 @@ export class AssetManager {
                 const layerId = `${entry.id}.${name}`;
                 const layerPath = `assets/sprites/buildings/${entry.id}/${name}.png`;
                 const { img: loadedImg, ok: layerOk } = await this._loadImage(layerPath);
-                if (!layerOk) this.missing.add(layerId);
+                if (!layerOk) {
+                    this.missing.add(layerId);
+                    this._loadMisses.push({ id: layerId, path: layerPath });
+                }
                 const img = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedImg);
                 this.bitmaps.set(layerId, img);
                 this.dimensions.set(layerId, { w: img.width, h: img.height });
@@ -177,7 +191,6 @@ export class AssetManager {
             const img = new Image();
             img.onload = () => resolve({ img, ok: true });
             img.onerror = () => {
-                console.warn(`[AssetManager] missing asset: ${path} — using placeholder`);
                 const ph = new Image();
                 ph.onload = () => resolve({ img: ph, ok: false });
                 ph.onerror = () => resolve({ img, ok: false });   // give up
