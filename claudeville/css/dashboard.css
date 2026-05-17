@@ -149,9 +149,12 @@
     transform: translateY(-1px);
 }
 
-.dash-card--working { border-left: 3px solid #4ade80; }
-.dash-card--idle    { border-left: 3px solid #60a5fa; }
-.dash-card--waiting { border-left: 3px solid #f97316; }
+.dash-card--working          { border-left: 3px solid #4ade80; }
+.dash-card--idle             { border-left: 3px solid #60a5fa; }
+.dash-card--waiting          { border-left: 3px solid #f97316; }
+.dash-card--rate_limited     { border-left: 3px solid #f59e0b; }
+.dash-card--errored          { border-left: 3px solid #ef4444; }
+.dash-card--waiting_on_user  { border-left: 3px solid #facc15; }
 
 /* ─ Card header ─ */
 .dash-card__header {
@@ -233,13 +236,19 @@
     border-radius: 50%;
 }
 
-.dash-card__status--working .dash-card__status-dot { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
-.dash-card__status--idle .dash-card__status-dot    { background: #60a5fa; }
-.dash-card__status--waiting .dash-card__status-dot { background: #f97316; animation: dashboard-pulse-dot 1.5s infinite; }
+.dash-card__status--working .dash-card__status-dot          { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+.dash-card__status--idle .dash-card__status-dot             { background: #60a5fa; }
+.dash-card__status--waiting .dash-card__status-dot          { background: #f97316; animation: dashboard-pulse-dot 1.5s infinite; }
+.dash-card__status--rate_limited .dash-card__status-dot     { background: #f59e0b; box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); animation: dashboard-pulse-dot 2.4s infinite; }
+.dash-card__status--errored .dash-card__status-dot          { background: #ef4444; box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); animation: dashboard-pulse-dot 1.2s infinite; }
+.dash-card__status--waiting_on_user .dash-card__status-dot  { background: #facc15; box-shadow: 0 0 6px rgba(250, 204, 21, 0.55); animation: dashboard-pulse-dot 1.6s infinite; }
 
-.dash-card__status--working { color: #4ade80; }
-.dash-card__status--idle    { color: #60a5fa; }
-.dash-card__status--waiting { color: #f97316; }
+.dash-card__status--working          { color: #4ade80; }
+.dash-card__status--idle             { color: #60a5fa; }
+.dash-card__status--waiting          { color: #f97316; }
+.dash-card__status--rate_limited     { color: #f59e0b; }
+.dash-card__status--errored          { color: #ef4444; }
+.dash-card__status--waiting_on_user  { color: #facc15; }
 
 @keyframes dashboard-pulse-dot {
     0%, 100% { opacity: 1; }

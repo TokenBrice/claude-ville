@@ -159,6 +159,24 @@
     animation: sidebar-pulse-dot 2s ease-in-out infinite;
 }
 
+.sidebar__agent-dot--rate_limited {
+    background: #f59e0b;
+    box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
+    animation: sidebar-pulse-dot 2.4s ease-in-out infinite;
+}
+
+.sidebar__agent-dot--errored {
+    background: #ef4444;
+    box-shadow: 0 0 8px rgba(239, 68, 68, 0.55);
+    animation: sidebar-pulse-dot 1.2s ease-in-out infinite;
+}
+
+.sidebar__agent-dot--waiting_on_user {
+    background: #facc15;
+    box-shadow: 0 0 6px rgba(250, 204, 21, 0.5);
+    animation: sidebar-pulse-dot 1.6s ease-in-out infinite;
+}
+
 @keyframes sidebar-pulse-dot {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }

@@ -27,7 +27,14 @@ export function normalizeStatus(status, fallback = 'idle') {
 
 export function statusClass(status, fallback = 'idle') {
     const normalized = normalizeStatus(status, fallback);
-    return [AgentStatus.WORKING, AgentStatus.IDLE, AgentStatus.WAITING].includes(normalized) ? normalized : fallback;
+    return [
+        AgentStatus.WORKING,
+        AgentStatus.IDLE,
+        AgentStatus.WAITING,
+        AgentStatus.RATE_LIMITED,
+        AgentStatus.ERRORED,
+        AgentStatus.WAITING_ON_USER,
+    ].includes(normalized) ? normalized : fallback;
 }
 
 export function formatNumber(num) {

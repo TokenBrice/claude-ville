@@ -454,7 +454,7 @@ export class DashboardRenderer {
         const visible = [];
         for (const agent of agents) {
             if (agent.id === this._selectedAgentId) selected.push(agent);
-            else if (['working', 'waiting'].includes(normalizeStatus(agent.status))) active.push(agent);
+            else if (['working', 'waiting', 'errored', 'rate_limited', 'waiting_on_user'].includes(normalizeStatus(agent.status))) active.push(agent);
             else if (!this._observer || this._visibleAgentIds.has(agent.id)) visible.push(agent);
         }
         const seen = new Set();

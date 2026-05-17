@@ -54,11 +54,18 @@ export function projectProfile(projectPath, { surface = 'dashboard' } = {}) {
 }
 
 export function sortAgentsByStatus(agents) {
-    const order = { working: 0, waiting: 1, idle: 2 };
+    const order = {
+        errored: 0,
+        waiting_on_user: 1,
+        working: 2,
+        waiting: 3,
+        rate_limited: 4,
+        idle: 5,
+    };
     return agents.sort((a, b) => {
         const statusA = normalizeStatus(a.status);
         const statusB = normalizeStatus(b.status);
-        return (order[statusA] ?? 3) - (order[statusB] ?? 3);
+        return (order[statusA] ?? 6) - (order[statusB] ?? 6);
     });
 }
 
@@ -76,14 +83,24 @@ export function providerPresentation(provider, identity = null) {
 export function statusPresentation(status, translator = i18n) {
     const normalized = normalizeStatus(status);
     const statusKey = { working: 'statusWorking', idle: 'statusIdle', waiting: 'statusWaiting' };
+    const statusOverrideLabel = {
+        rate_limited: 'Rate-limited',
+        errored: 'Errored',
+        waiting_on_user: 'Waiting for you',
+    };
     const fallbackLabel = normalized.charAt(0).toUpperCase() + normalized.slice(1);
     return {
         status: normalized,
-        label: translator?.t?.(statusKey[normalized] || normalized) || fallbackLabel,
+        label: statusOverrideLabel[normalized]
+            || translator?.t?.(statusKey[normalized] || normalized)
+            || fallbackLabel,
         color: {
             working: '#4ade80',
             idle: '#60a5fa',
             waiting: '#f97316',
+            rate_limited: '#f59e0b',
+            errored: '#ef4444',
+            waiting_on_user: '#facc15',
         }[normalized] || '#8b8b9e',
     };
 }
