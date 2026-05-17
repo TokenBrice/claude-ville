@@ -75,6 +75,7 @@ export class SkyRenderer {
         this._drawStars(ctx, canvas, snapshot);
         this._drawSun(ctx, camera, canvas, snapshot);
         this._drawMoon(ctx, canvas, snapshot);
+        this._drawGodrays(ctx, camera, canvas, snapshot);
         this._drawClouds(ctx, camera, canvas, snapshot);
         this._drawAurora(ctx, canvas, snapshot, motionScale);
         this._drawBackgroundWeather(ctx, canvas, snapshot);
@@ -101,6 +102,7 @@ export class SkyRenderer {
         this._drawStars(ctx, canvas, canopy);
         this._drawSun(ctx, camera, canvas, canopy, { ensureVisible: true });
         this._drawMoon(ctx, canvas, canopy);
+        this._drawGodrays(ctx, camera, canvas, canopy, { alphaMul: 0.4 });
         ctx.globalCompositeOperation = 'source-over';
         this._drawClouds(ctx, camera, canvas, canopy);
         ctx.restore();
@@ -373,6 +375,59 @@ export class SkyRenderer {
         ctx.beginPath();
         ctx.ellipse(x, y, radius - 1, (radius - 1) * squashY, 0, 0, Math.PI * 2);
         ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawGodrays(ctx, camera, canvas, atmosphere, options = {}) {
+        const sun = atmosphere.sky?.sun;
+        const lighting = atmosphere.lighting || {};
+        const warmth = lighting.sunWarmth ?? 0;
+        if (!sun?.visible) return;
+        if (warmth <= 0.18) return;
+        if ((sun.alpha ?? 0) <= 0.04) return;
+
+        const radius = Math.max(22, Math.min(canvas.width, canvas.height) * 0.042);
+        const position = this._resolveSunPosition(camera, canvas, sun, radius);
+        if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
+        const { x, y } = position;
+
+        const alphaMul = Number.isFinite(options.alphaMul) ? options.alphaMul : 1;
+        const baseAlpha = 0.10 * warmth * (sun.alpha ?? 0) * alphaMul;
+        if (baseAlpha <= 0.002) return;
+
+        const rayCount = 7;
+        const spreadRad = 25 * Math.PI / 180;
+        const length = Math.hypot(canvas.width, canvas.height) * 1.1;
+        const halfWidth = Math.max(8, radius * 0.42);
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (let i = 0; i < rayCount; i++) {
+            const t = rayCount === 1 ? 0 : (i / (rayCount - 1)) * 2 - 1;
+            const angle = Math.PI / 2 + t * spreadRad;
+            const dx = Math.cos(angle);
+            const dy = Math.sin(angle);
+            const fx = x + dx * length;
+            const fy = y + dy * length;
+            const px = -dy * halfWidth;
+            const py = dx * halfWidth;
+            const widthBoost = 1 + (1 - Math.abs(t)) * 0.35;
+            const rayAlpha = baseAlpha * (0.78 + (1 - Math.abs(t)) * 0.22);
+
+            const grad = ctx.createLinearGradient(x, y, fx, fy);
+            grad.addColorStop(0, `rgba(255, 226, 168, ${rayAlpha})`);
+            grad.addColorStop(0.45, `rgba(255, 206, 138, ${rayAlpha * 0.45})`);
+            grad.addColorStop(1, 'rgba(255, 198, 124, 0)');
+
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.moveTo(x - px * 0.45 * widthBoost, y - py * 0.45 * widthBoost);
+            ctx.lineTo(x + px * 0.45 * widthBoost, y + py * 0.45 * widthBoost);
+            ctx.lineTo(fx + px * widthBoost, fy + py * widthBoost);
+            ctx.lineTo(fx - px * widthBoost, fy - py * widthBoost);
+            ctx.closePath();
+            ctx.fill();
+        }
         ctx.restore();
     }
 
