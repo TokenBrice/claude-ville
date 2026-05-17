@@ -8,8 +8,9 @@ const BUILDING_CROWD_PENALTY = 18;
 const OVER_CAPACITY_PENALTY = 130;
 const DISTANCE_WEIGHT = 0.15;
 const SAME_AGENT_SLOT_BONUS = 90;
-const RELATED_CLUSTER_BONUS = 30;
-const RELATED_CLUSTER_RADIUS = 2.5;
+const RELATED_CLUSTER_BONUS = 45;
+const RELATED_CLUSTER_RADIUS = 3.0;
+const TARGET_SLOT_INDEX_BONUS = 80;
 
 const BUILDING_CAPACITY_OVERRIDES = Object.freeze({
     command: 5,
@@ -185,6 +186,7 @@ export class VisitTileAllocator {
             tileX: best.tileX,
             tileY: best.tileY,
             slotId: best.slotId,
+            slotIndex: Number.isInteger(best.slotIndex) ? best.slotIndex : null,
             intentId: intent?.id || null,
             createdAt: now,
             expiresAt,
@@ -192,6 +194,9 @@ export class VisitTileAllocator {
             walkable: best.walkable,
             scenic: best.scenic,
             overflow: best.overflow,
+            facingPoint: best.facingPoint
+                ? { x: best.facingPoint.x, y: best.facingPoint.y }
+                : null,
         };
         this.reservations.set(reservationId, reservation);
         this.agentReservationIds.set(agentId, reservationId);
@@ -204,6 +209,7 @@ export class VisitTileAllocator {
             tileX: reservation.tileX,
             tileY: reservation.tileY,
             slotId: reservation.slotId,
+            slotIndex: reservation.slotIndex,
             reservationId,
             buildingType: reservation.buildingType,
             expiresAt,
@@ -211,6 +217,7 @@ export class VisitTileAllocator {
             walkable: reservation.walkable,
             scenic: reservation.scenic,
             overflow: reservation.overflow,
+            facingPoint: reservation.facingPoint,
         };
     }
 
@@ -352,6 +359,10 @@ export class VisitTileAllocator {
         score += distance * DISTANCE_WEIGHT;
         if (sameAgentSlot) score -= SAME_AGENT_SLOT_BONUS;
         if (clustered) score -= RELATED_CLUSTER_BONUS;
+        const targetSlotIndex = Number(intent?.targetSlotIndex ?? intent?.payload?.targetSlotIndex);
+        if (Number.isInteger(targetSlotIndex) && targetSlotIndex === slot.slotIndex) {
+            score -= TARGET_SLOT_INDEX_BONUS;
+        }
         score -= intentBonus;
         if (slot.overflow) score += 35;
         if (slot.scenic) score += intent?.source === 'ambient' ? -14 : 10;
@@ -380,6 +391,7 @@ export class VisitTileAllocator {
             out.push({
                 ...tile,
                 slotId: tile.slotId || `${buildingType || 'scenic'}:${key}`,
+                slotIndex: out.length,
             });
         }
         return out;
@@ -407,6 +419,11 @@ export class VisitTileAllocator {
         const tileX = Number(tile.tileX ?? tile.x);
         const tileY = Number(tile.tileY ?? tile.y);
         if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+        const facingPoint = tile.facingPoint
+            && Number.isFinite(Number(tile.facingPoint.x))
+            && Number.isFinite(Number(tile.facingPoint.y))
+            ? { x: Number(tile.facingPoint.x), y: Number(tile.facingPoint.y) }
+            : null;
         return {
             tileX,
             tileY,
@@ -416,6 +433,7 @@ export class VisitTileAllocator {
             overflow: !!tile.overflow,
             reason: tile.reason || null,
             intentId: tile.intentId || null,
+            facingPoint,
         };
     }
 

@@ -104,6 +104,7 @@ class App {
 
             // 4. Initialize application services
             this.agentManager = new AgentManager(this.world, this.dataSource);
+            this.agentManager.setUsageGetter(() => this.latestUsage);
             this.modeManager = new ModeManager();
             this.notificationService = new NotificationService(this.toast);
             this._bindChronicleSignals();
@@ -259,6 +260,10 @@ class App {
         this._eventUnsubscribers.push(eventBus.on('usage:updated', (usage) => {
             this.latestUsage = usage;
             this.renderer?.setQuotaState?.(usage);
+            const fiveHour = Number(usage?.quota?.fiveHour);
+            if (Number.isFinite(fiveHour) && fiveHour > 0.85) {
+                eventBus.emit('quota:throttled', { fiveHour, ts: Date.now() });
+            }
             this.auroraGate?.handleUsageUpdate(usage).then((result) => {
                 if (result === 'fire') {
                     eventBus.emit('chronicle:aurora', { ts: Date.now(), reason: 'quota-rollover' });

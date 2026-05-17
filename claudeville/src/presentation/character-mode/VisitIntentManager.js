@@ -1,5 +1,17 @@
 import { classifyTool, compactToolLabel as compactLabel } from '../../domain/services/ToolIdentity.js';
 import { normalizeGitEvent, parseEventTime } from '../shared/GitEventIdentity.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
+
+const CASH_OUT_TOKEN_DELTA = 1024;
+const CASH_OUT_PRIORITY = 95;
+const CASH_OUT_TTL_MS = 8000;
+const CASH_OUT_STICKY_MS = 8000;
+const QUOTA_THROTTLE_PRIORITY = 20;
+const QUOTA_THROTTLE_WINDOW_MS = 60000;
+const QUOTA_THROTTLE_CLEAR_RATIO = 0.7;
+const TEAM_GATHER_PRIORITY = 70;
+const TEAM_GATHER_TTL_MS = 30000;
+const TEAM_GATHER_STICKY_MS = 30000;
 
 const DEFAULT_TTLS = Object.freeze({
     chat: { priority: 100, ttlMs: 30000, stickyMs: 30000 },
@@ -65,6 +77,29 @@ export class VisitIntentManager {
         this.seenGitEventIds = new Set();
         this.lastForgeByAgent = new Map();
         this.lastToolBuildingByAgent = new Map();
+        this.throttleActiveUntil = 0;
+        this.throttleAgents = new Set();
+        this.pendingGathers = [];
+        this._eventUnsubscribers = [];
+        this._subscribeEventBus();
+    }
+
+    _subscribeEventBus() {
+        this._eventUnsubscribers.push(eventBus.on('quota:throttled', (payload) => {
+            const ts = Number(payload?.ts);
+            const base = Number.isFinite(ts) ? ts : this.now();
+            this.throttleActiveUntil = base + QUOTA_THROTTLE_WINDOW_MS;
+        }));
+        this._eventUnsubscribers.push(eventBus.on('usage:updated', (usage) => {
+            const fiveHour = Number(usage?.quota?.fiveHour);
+            if (Number.isFinite(fiveHour) && fiveHour < QUOTA_THROTTLE_CLEAR_RATIO) {
+                this.throttleActiveUntil = 0;
+            }
+        }));
+        this._eventUnsubscribers.push(eventBus.on('team:gather', (payload) => {
+            if (!payload) return;
+            this.pendingGathers.push(payload);
+        }));
     }
 
     update(agents = null, now = this.now()) {
@@ -78,6 +113,8 @@ export class VisitIntentManager {
             this._deriveAgentIntents(agent, currentNow);
         }
         this._deriveGlobalIntents(activeAgents, currentNow);
+        this._consumePendingGathers(activeAgents, currentNow);
+        this._applyQuotaThrottle(activeAgents, currentNow);
 
         for (const agentId of Array.from(this.intentsByAgent.keys())) {
             if (!activeIds.has(agentId)) this.intentsByAgent.delete(agentId);
@@ -137,6 +174,11 @@ export class VisitIntentManager {
         this.seenGitEventIds.clear();
         this.lastForgeByAgent.clear();
         this.lastToolBuildingByAgent.clear();
+        this.throttleAgents.clear();
+        this.pendingGathers.length = 0;
+        for (const unsubscribe of this._eventUnsubscribers.splice(0)) {
+            unsubscribe?.();
+        }
     }
 
     _deriveAgentIntents(agent, now) {
@@ -202,7 +244,20 @@ export class VisitIntentManager {
 
         if (previous != null && current > previous) {
             const delta = current - previous;
-            if (delta >= TOKEN_DELTA_THRESHOLD) {
+            if (delta >= CASH_OUT_TOKEN_DELTA) {
+                this._upsertIntent(agent.id, {
+                    source: 'token',
+                    sourceKey: `cash-out-${agent.id}-${now}`,
+                    building: 'mine',
+                    reason: 'cash-out',
+                    confidence: 0.95,
+                    priority: CASH_OUT_PRIORITY,
+                    ttlMs: CASH_OUT_TTL_MS,
+                    stickyMs: CASH_OUT_STICKY_MS,
+                    label: `+${delta}`,
+                    payload: { delta, total: current, ratio: contextRatio(agent) },
+                }, now);
+            } else if (delta >= TOKEN_DELTA_THRESHOLD) {
                 this._upsertIntent(agent.id, {
                     source: 'token',
                     sourceKey: `${Math.floor(current / TOKEN_DELTA_THRESHOLD)}:${delta}`,
@@ -372,6 +427,87 @@ export class VisitIntentManager {
         }
     }
 
+    _applyQuotaThrottle(agents, now) {
+        const active = this.throttleActiveUntil > now;
+        const nextActive = new Set();
+        if (active) {
+            for (const agent of agents) {
+                if (!agent?.id) continue;
+                if (String(agent.status || '').toLowerCase() !== 'working') continue;
+                this._upsertIntent(agent.id, {
+                    source: 'quota',
+                    sourceKey: `throttle:${agent.id}`,
+                    building: 'mine',
+                    reason: 'quota-throttle',
+                    confidence: 0.55,
+                    priority: QUOTA_THROTTLE_PRIORITY,
+                    label: 'throttled',
+                    payload: { throttle: true },
+                }, now);
+                nextActive.add(agent.id);
+                if (!this.throttleAgents.has(agent.id)) {
+                    eventBus.emit('agent:throttle-tint', { agentId: agent.id, active: true });
+                }
+                if (agent.behavior && typeof agent.behavior === 'object') {
+                    agent.behavior.quotaThrottle = true;
+                }
+            }
+        }
+        for (const previousId of this.throttleAgents) {
+            if (nextActive.has(previousId)) continue;
+            eventBus.emit('agent:throttle-tint', { agentId: previousId, active: false });
+            const agent = agents.find((a) => a?.id === previousId);
+            if (agent?.behavior && typeof agent.behavior === 'object') {
+                agent.behavior.quotaThrottle = false;
+            }
+        }
+        this.throttleAgents = nextActive;
+    }
+
+    _consumePendingGathers(agents, now) {
+        if (!this.pendingGathers.length) return;
+        const agentsById = new Map();
+        for (const agent of agents) {
+            if (agent?.id) agentsById.set(agent.id, agent);
+        }
+        const pending = this.pendingGathers.splice(0);
+        for (const payload of pending) {
+            const members = Array.isArray(payload?.members) ? payload.members : [];
+            const plazaTile = payload?.plazaTile || null;
+            const centroidArc = Array.isArray(payload?.centroidArc) ? payload.centroidArc : null;
+            for (let index = 0; index < members.length; index++) {
+                const member = members[index];
+                const agentId = typeof member === 'string'
+                    ? member
+                    : (member?.agentId || member?.id || null);
+                if (!agentId || !agentsById.has(agentId)) continue;
+                const slotEntry = centroidArc ? centroidArc[index] : null;
+                const targetSlotIndex = Number.isInteger(slotEntry?.slotIndex)
+                    ? slotEntry.slotIndex
+                    : (Number.isInteger(slotEntry) ? slotEntry : index);
+                this._upsertIntent(agentId, {
+                    source: 'team',
+                    sourceKey: `team-gather:${payload?.teamName || 'team'}:${payload?.ts || now}`,
+                    building: 'command',
+                    reason: 'team-gather',
+                    confidence: 0.8,
+                    priority: TEAM_GATHER_PRIORITY,
+                    ttlMs: TEAM_GATHER_TTL_MS,
+                    stickyMs: TEAM_GATHER_STICKY_MS,
+                    label: 'gather',
+                    targetTile: plazaTile,
+                    targetSlotIndex,
+                    payload: {
+                        teamName: payload?.teamName || null,
+                        plazaTile,
+                        targetSlotIndex,
+                        centroidArc,
+                    },
+                }, now);
+            }
+        }
+    }
+
     _trimSeenGitEvents() {
         if (this.seenGitEventIds.size <= MAX_SEEN_GIT_EVENTS) return;
         this.seenGitEventIds = new Set([...this.seenGitEventIds].slice(-Math.floor(MAX_SEEN_GIT_EVENTS * 0.75)));
@@ -385,6 +521,12 @@ export class VisitIntentManager {
         const id = `${agentId}:${draft.source}:${sourceKey}`;
         const map = this._agentIntentMap(agentId);
         const previous = map.get(id);
+        const ttlMs = Number.isFinite(Number(draft.ttlMs)) && Number(draft.ttlMs) > 0
+            ? Number(draft.ttlMs)
+            : meta.ttlMs;
+        const stickyMs = Number.isFinite(Number(draft.stickyMs)) && Number(draft.stickyMs) >= 0
+            ? Number(draft.stickyMs)
+            : meta.stickyMs;
         const intent = {
             id,
             agentId,
@@ -396,9 +538,10 @@ export class VisitIntentManager {
             label: draft.label || '',
             createdAt: previous?.createdAt || createdAt,
             updatedAt: now,
-            expiresAt: Math.max(previous?.expiresAt || 0, now + meta.ttlMs),
-            stickyUntil: Math.max(previous?.stickyUntil || 0, now + meta.stickyMs),
+            expiresAt: Math.max(previous?.expiresAt || 0, now + ttlMs),
+            stickyUntil: Math.max(previous?.stickyUntil || 0, now + stickyMs),
             targetTile: draft.targetTile || previous?.targetTile || null,
+            targetSlotIndex: Number.isInteger(draft.targetSlotIndex) ? draft.targetSlotIndex : (previous?.targetSlotIndex ?? null),
             payload: draft.payload || {},
         };
         map.set(id, intent);
