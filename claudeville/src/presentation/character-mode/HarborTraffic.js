@@ -34,6 +34,8 @@ const CAST_OFF_MS = 1500;
 const MIST_FADE_MS = 800;
 const BOOMERANG_OUT_MS = 16000;
 const BOOMERANG_IN_MS = 12000;
+// 5.11 — cancelled pushes return to berth half-speed with no collision flare.
+const CANCEL_RETURN_MS = 12000;
 const INBOUND_DURATION_MS = 36000;
 const INBOUND_FADE_IN_MS = 8000;
 const INBOUND_SHIP_CLASS_KEY = 'cutter';
@@ -266,6 +268,14 @@ const PUSH_STATUS_STYLE = {
         panel: 'rgba(60, 50, 22, 0.93)',
         glow: 'rgba(255, 211, 74, 0.55)',
         panelBorder: '#ff755d',
+    },
+    // 5.11 — cancelled is distinct from failed: muted grey, no red effects.
+    cancelled: {
+        label: 'Push cancelled',
+        shortLabel: 'cancelled',
+        accent: '#6c757d',
+        panel: 'rgba(40, 44, 48, 0.92)',
+        glow: 'rgba(108, 117, 125, 0.45)',
     },
     unknown: {
         label: 'Push sent',
@@ -709,7 +719,55 @@ function relaxDockShipLayout(entries = []) {
     }
 }
 
+// 5.5 — memo for buildDockSquadLayout. relaxDockShipLayout runs up to 14 iterations
+// per call; on first-paint replay (200 unpushed commits across 8 repos) the same
+// ship set + status set repeats across many ticks. Key is the sorted ship-id list +
+// per-ship status/pushStatus/eventTime; cap at 32 entries (drop oldest on overflow).
+const DOCK_SQUAD_LAYOUT_CACHE_SIZE = 32;
+const _dockSquadLayoutCache = new Map();
+
+function dockSquadLayoutCacheKey(state) {
+    const ships = state?.ships;
+    if (!ships) return '';
+    const ids = [];
+    const meta = [];
+    const iterable = ships instanceof Map
+        ? ships.values()
+        : Object.values(ships || {});
+    for (const ship of iterable) {
+        if (!ship || !ship.id || ship.status !== 'docked') continue;
+        ids.push(ship.id);
+        meta.push(`${ship.id}:${ship.pushStatus || ''}:${ship.eventTime || 0}`);
+    }
+    if (!ids.length) return 'empty';
+    ids.sort();
+    meta.sort();
+    return `${ids.join('|')}#${meta.join(',')}`;
+}
+
 function buildDockSquadLayout(state) {
+    const cacheKey = dockSquadLayoutCacheKey(state);
+    if (cacheKey) {
+        const cached = _dockSquadLayoutCache.get(cacheKey);
+        if (cached) {
+            // refresh LRU order
+            _dockSquadLayoutCache.delete(cacheKey);
+            _dockSquadLayoutCache.set(cacheKey, cached);
+            return cached;
+        }
+    }
+    const layout = _buildDockSquadLayoutFresh(state);
+    if (cacheKey) {
+        _dockSquadLayoutCache.set(cacheKey, layout);
+        if (_dockSquadLayoutCache.size > DOCK_SQUAD_LAYOUT_CACHE_SIZE) {
+            const oldest = _dockSquadLayoutCache.keys().next().value;
+            if (oldest !== undefined) _dockSquadLayoutCache.delete(oldest);
+        }
+    }
+    return layout;
+}
+
+function _buildDockSquadLayoutFresh(state) {
     const groups = new Map();
     let totalDocked = 0;
     for (const ship of state?.ships?.values?.() || []) {
@@ -1473,7 +1531,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             }
             selectedShips.sort(compareDepartingShips);
 
-            if (status !== 'success' && status !== 'failed' && status !== 'rejected') {
+            if (status !== 'success' && status !== 'failed' && status !== 'rejected' && status !== 'cancelled') {
                 if (existingBatch?.status === 'unknown') state.batches.delete(batchId);
                 state.pushEvents.set(event.id, {
                     id: event.id,
@@ -1604,6 +1662,18 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ship.departEventTime = event.timestamp || now;
                     return;
                 }
+                // 5.11 — cancelled push: half-speed return to berth, no collision flare.
+                if (status === 'cancelled') {
+                    if (statusChanged || !ship.cancelReturnStartedAt) {
+                        ship.cancelReturnStartedAt = skipDepartureAnimation
+                            ? now - CANCEL_RETURN_MS - 1
+                            : now + departSquadIndex * DEPARTURE_STAGGER_MS;
+                    }
+                    ship.status = skipDepartureAnimation ? 'docked' : 'cancelling';
+                    ship.departEventId = event.id;
+                    ship.departEventTime = event.timestamp || now;
+                    return;
+                }
                 ship.status = 'departing';
                 ship.departEventId = event.id;
                 // 3.5 — mass-scaled departure (force-push wins).
@@ -1633,6 +1703,19 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.pushStatus = 'rejected';
                 ship.rejectedAt = now;
                 ship.boomerangStartedAt = null;
+                ship.departStartedAt = null;
+                ship.departEventId = null;
+            }
+            continue;
+        }
+        // 5.11 — cancelled lifecycle: half-speed return then redock, no caution flag.
+        if (ship.status === 'cancelling') {
+            const startedAt = ship.cancelReturnStartedAt || now;
+            if (motionScale === 0 || now - startedAt >= CANCEL_RETURN_MS) {
+                ship.status = 'docked';
+                ship.pushStatus = 'cancelled';
+                ship.cancelledAt = now;
+                ship.cancelReturnStartedAt = null;
                 ship.departStartedAt = null;
                 ship.departEventId = null;
             }
@@ -2514,7 +2597,7 @@ export class HarborTraffic {
 
     _batchFinaleDelay(batch) {
         const status = batch?.status || 'unknown';
-        if (status === 'failed' || status === 'rejected' || this.motionScale === 0) return 0;
+        if (status === 'failed' || status === 'rejected' || status === 'cancelled' || this.motionScale === 0) return 0;
         // 3.1 — force-push uses a shorter departure window, so fire the whirlpool earlier.
         const baseDeparture = batch?.force === true ? FORCE_DEPARTURE_MS : DEPARTURE_MS;
         return baseDeparture * 0.96;
@@ -2763,6 +2846,41 @@ export class HarborTraffic {
                     progress,
                     boomerangOutbound: outbound,
                     boomerangPhaseProgress: phaseProgress,
+                    elapsed,
+                },
+            };
+        } else if (ship.status === 'cancelling') {
+            // 5.11 — cancelled return: short outbound (~30%), then back to berth.
+            //        Total CANCEL_RETURN_MS, half-speed of a full departure. No flare.
+            const route = this._shipRouteTiles(ship).map(point => toWorld(point.tileX, point.tileY));
+            const startedAt = ship.cancelReturnStartedAt || now;
+            const elapsed = Math.max(0, now - startedAt);
+            const phaseProgress = Math.min(1, elapsed / CANCEL_RETURN_MS);
+            // 0 → 0.5 (apex) → 0 along the route, peaking at 30% of the way out.
+            const apex = 0.30;
+            const eased = phaseProgress < 0.5
+                ? (phaseProgress / 0.5) * apex
+                : apex * (1 - (phaseProgress - 0.5) / 0.5);
+            const pos = pointAlongPath(route, eased);
+            const trailingDir = phaseProgress < 0.5
+                ? pointAlongPath(route, Math.max(0, eased - 0.025))
+                : pointAlongPath(route, Math.min(1, eased + 0.025));
+            x = pos.x;
+            y = pos.y;
+            ship.tailX = trailingDir.x;
+            ship.tailY = trailingDir.y;
+            return {
+                kind: 'harbor-traffic',
+                sortY: y,
+                payload: {
+                    ...ship,
+                    type: 'ship',
+                    x,
+                    y,
+                    tailX: ship.tailX,
+                    tailY: ship.tailY,
+                    progress: eased,
+                    cancelPhaseProgress: phaseProgress,
                     elapsed,
                 },
             };
@@ -3718,7 +3836,7 @@ export class HarborTraffic {
         const forceSink = effect.status === 'success' && effect.force === true;
 
         ctx.save();
-        ctx.globalCompositeOperation = (effect.status === 'failed' || effect.status === 'rejected' || forceSink) ? 'source-over' : 'screen';
+        ctx.globalCompositeOperation = (effect.status === 'failed' || effect.status === 'rejected' || effect.status === 'cancelled' || forceSink) ? 'source-over' : 'screen';
         ctx.globalAlpha = Math.max(0.18, alpha);
         ctx.strokeStyle = style.accent;
         ctx.fillStyle = style.glow;
@@ -3734,6 +3852,15 @@ export class HarborTraffic {
             ctx.lineTo(effect.x + 11, effect.y - 13);
             ctx.moveTo(effect.x + 11, effect.y - 35);
             ctx.lineTo(effect.x - 11, effect.y - 13);
+            ctx.stroke();
+        } else if (effect.status === 'cancelled') {
+            // 5.11 — soft grey expanding ring, low alpha. Reduced-motion: a single
+            //        static ring at mid radius.
+            const staticMotion = this.motionScale === 0;
+            const radius = staticMotion ? 22 : (16 + progress * 18);
+            ctx.globalAlpha = Math.max(0.12, alpha * 0.55);
+            ctx.beginPath();
+            ctx.arc(effect.x, effect.y - 24, radius, 0, Math.PI * 2);
             ctx.stroke();
         } else if (forceSink) {
             // 3.1 — whirlpool: concentric inward-spiraling arcs with red spray.

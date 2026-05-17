@@ -44,7 +44,10 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
   '--receive-pack',
   '--repo',
 ]);
-const GIT_STATUS_CACHE_TTL_MS = 5000;
+// 5.5 — raised from 5s to 30s: unpushed-commit scans are idempotent and dominate the
+// per-poll cost when many repos are open. The cache is read-only (no explicit busting);
+// stale entries simply expire on TTL, so 30s only delays new commit visibility by ≤30s.
+const GIT_STATUS_CACHE_TTL_MS = 30000;
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const _gitStatusCache = new Map();
 const _currentBranchCache = new Map();

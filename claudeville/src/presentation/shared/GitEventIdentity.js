@@ -75,6 +75,8 @@ export function gitEventKind(event) {
     return null;
 }
 
+const CANCELLED_STATUS_KEYWORDS = new Set(['cancelled', 'canceled', 'timed_out', 'timeout']);
+
 export function normalizePushStatus(event) {
     if (!event || typeof event !== 'object') return 'unknown';
     // rejected: non-fast-forward or upstream refused
@@ -101,7 +103,12 @@ export function normalizePushStatus(event) {
     if (!text) return looksRejected ? 'rejected' : 'unknown';
     if (['success', 'succeeded', 'ok', 'passed', 'pass', 'complete', 'completed', 'landed'].includes(text)) return 'success';
     if (text === 'rejected') return 'rejected';
-    if (['failed', 'failure', 'fail', 'error', 'errored', 'cancelled', 'canceled', 'timed_out', 'timeout'].includes(text)) {
+    // 5.11 — cancel/timeout keywords are conceptually distinct from a hard failure;
+    // surface them as 'cancelled' so the harbor renderer can show a soft return.
+    if (CANCELLED_STATUS_KEYWORDS.has(text)) {
+        return looksRejected ? 'rejected' : 'cancelled';
+    }
+    if (['failed', 'failure', 'fail', 'error', 'errored'].includes(text)) {
         return looksRejected ? 'rejected' : 'failed';
     }
     return looksRejected ? 'rejected' : 'unknown';
