@@ -29,6 +29,8 @@ const DIRECT_TOOL_CLASSIFICATIONS = Object.freeze({
     TaskUpdate: { building: 'taskboard', reason: 'update-task', confidence: 0.92 },
     TaskList: { building: 'taskboard', reason: 'review-tasks', confidence: 0.88 },
     TodoWrite: { building: 'taskboard', reason: 'plan-work', confidence: 0.95 },
+    EnterPlanMode: { building: 'taskboard', reason: 'plan-mode-enter', confidence: 0.94 },
+    ExitPlanMode: { building: 'taskboard', reason: 'plan-mode-exit', confidence: 0.94 },
     'functions.update_plan': { building: 'taskboard', reason: 'plan-work', confidence: 0.95 },
     'functions.request_user_input': { building: 'taskboard', reason: 'ask-decision', confidence: 0.86 },
 });
@@ -78,12 +80,18 @@ const TOOL_CATEGORIES = Object.freeze({
 const TOOL_ACTION_LABELS = Object.freeze({
     Read: 'Reading',
     Edit: 'Editing',
+    MultiEdit: 'Editing',
     Write: 'Writing',
     Bash: 'Running',
     Grep: 'Searching',
     Glob: 'Finding',
     Task: 'Delegating',
     TaskCreate: 'Planning',
+    TaskList: 'Reviewing tasks',
+    TeamCreate: 'Forming team',
+    NotebookEdit: 'Editing notebook',
+    apply_patch: 'Patching',
+    'functions.apply_patch': 'Patching',
     WebSearch: 'Researching',
     WebFetch: 'Fetching',
     SendMessage: 'Messaging',
@@ -159,14 +167,62 @@ export function compactToolLabel(value, fallback = '', maxChars = 18) {
     return base.length > maxChars ? `${base.slice(0, Math.max(1, maxChars - 3))}...` : base;
 }
 
+const SHELL_WRAPPER_PREFIXES = new Set(['bash', 'sh', 'zsh', 'fish', 'exec_command', 'shell', 'command_execution']);
+const BOUNDARY_CHARS = ['/', '.', ' ', ':'];
+
+function snapToBoundary(text, maxLength) {
+    if (text.length <= maxLength) return text;
+    const window = Math.max(1, Math.floor(maxLength / 4));
+    let bestIndex = -1;
+    for (let i = maxLength; i >= Math.max(1, maxLength - window); i--) {
+        if (BOUNDARY_CHARS.includes(text[i - 1])) { bestIndex = i - 1; break; }
+    }
+    if (bestIndex < 0) {
+        const forwardLimit = Math.min(text.length, maxLength + 4);
+        for (let i = maxLength; i < forwardLimit; i++) {
+            if (BOUNDARY_CHARS.includes(text[i])) { bestIndex = i; break; }
+        }
+    }
+    if (bestIndex > 0) {
+        const snapped = text.slice(0, bestIndex).replace(/[\s./:]+$/, '');
+        if (snapped.length >= Math.max(3, maxLength - window)) return `${snapped}...`;
+    }
+    return `${text.slice(0, Math.max(1, maxLength - 3))}...`;
+}
+
+export function compactShellInputPreview(input, maxLength = 18) {
+    if (input == null) return '';
+    const raw = String(input).trim();
+    if (!raw) return '';
+    const tokens = raw.split(/\s+/);
+    let head = tokens[0] || '';
+    if (SHELL_WRAPPER_PREFIXES.has(head.toLowerCase()) && tokens[1]) head = tokens[1];
+    if (!head) return '';
+    if (head.length <= maxLength) return head;
+    return snapToBoundary(head, maxLength);
+}
+
+function isShellLikeTool(input) {
+    if (input && typeof input === 'object') {
+        if (typeof input.cmd === 'string' || typeof input.command === 'string' || typeof input.script === 'string') return true;
+    }
+    if (typeof input !== 'string') return false;
+    return /^(?:bash|sh|zsh|fish|exec_command|shell|command_execution|git|gh|wrangler|vercel|npm|node|pnpm|yarn|bun|python|pytest|playwright|curl|wget|rg|grep|find|fd|ls|cat|sed|head|tail|jq|pharos-watch)\b/.test(input.trim());
+}
+
 export function compactToolInput(input, maxChars = 18) {
     if (input == null) return '';
     const raw = String(input).trim();
     if (!raw) return '';
+    if (isShellLikeTool(input)) {
+        const preview = compactShellInputPreview(raw, maxChars);
+        if (preview) return preview;
+    }
     const lastSlash = Math.max(raw.lastIndexOf('/'), raw.lastIndexOf('\\'));
     const base = (lastSlash >= 0 ? raw.slice(lastSlash + 1) : raw).split(/\s+/)[0] || '';
     if (base.length > 8 && /^[a-z0-9-]+$/i.test(base) && !/[aeiou]/i.test(base)) return '';
-    return compactToolLabel(base, '', maxChars);
+    if (base.length <= maxChars) return base;
+    return snapToBoundary(base, maxChars);
 }
 
 export function isDocumentationToolInput(input) {
@@ -219,6 +275,38 @@ export function extractToolCalls(input) {
     const found = [...text.matchAll(/(?:recipient_name|tool|name)["']?\s*[:=]\s*["']([^"']+)["']/g)]
         .map((match) => ({ tool: match[1], input: text }));
     return found.length ? found : [{ tool: null, input: text }];
+}
+
+function extractFirstUrl(text) {
+    if (!text) return null;
+    const match = String(text).match(/https?:\/\/[^\s"'<>`]+/i);
+    return match ? match[0] : null;
+}
+
+export function currentToolInputHost(tool, input) {
+    const name = String(tool || '');
+    let url = null;
+    if (input && typeof input === 'object') {
+        const candidate = input.url || input.uri || input.href || input.target;
+        if (typeof candidate === 'string') url = candidate;
+    }
+    if (!url) url = extractFirstUrl(typeof input === 'string' ? input : normalizeToolInput(input));
+    if (!url) return null;
+    try {
+        return new URL(url).host || null;
+    } catch {
+        return null;
+    }
+}
+
+function isPlaywrightMcpTool(tool) {
+    const name = String(tool || '');
+    return /^mcp__plugin_playwright_/.test(name) || name.startsWith('mcp__playwright__') || name.startsWith('mcp__claude-in-chrome__');
+}
+
+function isPortalPreviewInput(input) {
+    const text = normalizeToolInput(input);
+    return /localhost:|127\.0\.0\.1:/.test(text);
 }
 
 export function classifyShellInput(input) {
@@ -283,9 +371,32 @@ export function classifyTool(toolName, input) {
                 reason: example?.reason || 'multi-tool',
                 confidence: Math.min(0.96, Math.max(0.65, weights.get(building) / Math.max(1, calls.length))),
                 label: example?.label || compactToolLabel(tool, 'tools'),
+                count: calls.length,
             };
         }
         return classifyShellInput(input);
+    }
+
+    if (isPlaywrightMcpTool(tool)) {
+        const host = currentToolInputHost(tool, input);
+        return {
+            building: 'portal',
+            reason: 'portal-active',
+            confidence: 0.92,
+            label: compactToolLabel(host || tool, 'browser'),
+            ...(host ? { currentToolInputHost: host } : {}),
+        };
+    }
+
+    if (tool === 'WebFetch' && isPortalPreviewInput(input)) {
+        const host = currentToolInputHost(tool, input);
+        return {
+            building: 'portal',
+            reason: 'portal-preview',
+            confidence: 0.9,
+            label: compactToolLabel(host || tool, 'preview'),
+            ...(host ? { currentToolInputHost: host } : {}),
+        };
     }
 
     if (COMMAND_AGENT_TOOLS.has(tool)) {
@@ -304,6 +415,14 @@ export function classifyTool(toolName, input) {
             if (isCodeToolInput(input)) {
                 return { building: 'forge', reason: 'inspect-code', confidence: 0.78, label: compactToolLabel(input || tool, 'code') };
             }
+        }
+        if (['WebFetch', 'WebSearch', 'web.run'].includes(tool)) {
+            const host = currentToolInputHost(tool, input);
+            return {
+                ...base,
+                label: compactToolLabel(host || input || tool, tool),
+                ...(host ? { currentToolInputHost: host } : {}),
+            };
         }
         return { ...base, label: compactToolLabel(input || tool, tool) };
     }
@@ -369,8 +488,13 @@ export function shortToolName(name) {
     return String(name).replace('mcp__playwright__', 'pw:').replace('mcp__', '');
 }
 
-export function toolActionLabel(tool) {
-    return TOOL_ACTION_LABELS[tool] || tool || '';
+export function toolActionLabel(tool, options) {
+    const name = String(tool || '');
+    if (MULTI_TOOL_NAMES.has(name)) {
+        const count = Number(options?.count);
+        return count >= 2 ? `Coordinating ×${count}` : 'Coordinating';
+    }
+    return TOOL_ACTION_LABELS[name] || name || '';
 }
 
 export function isTaskCommandInput(input) {
