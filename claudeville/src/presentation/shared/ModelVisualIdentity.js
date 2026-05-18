@@ -60,6 +60,7 @@ const DEFAULT_EFFORT_RENDERING = Object.freeze({
     allowRuntimeEffortAccessory: true,
     allowRuntimeEffortFloorRing: true,
     allowRuntimeEffortWeapon: true,
+    allowRuntimeRoleAccessory: false,
 });
 
 function codexEquipment(effortTier, modelClass) {

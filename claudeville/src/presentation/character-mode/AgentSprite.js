@@ -1770,6 +1770,7 @@ export class AgentSprite {
         if (identity?.allowRuntimeEffortAccessory !== false && identity?.effortAccessory) {
             return identity.effortAccessory;
         }
+        if (identity?.allowRuntimeRoleAccessory === false) return null;
         return runtimeRoleAccessory(agent);
     }
 
