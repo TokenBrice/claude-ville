@@ -49,9 +49,12 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
 // busting); stale entries expire on TTL, so 30s only delays new commit
 // visibility by ≤30s.
 const GIT_STATUS_CACHE_TTL_MS = 30000;
+const RECENT_REPOSITORY_PUSH_TTL_MS = 2 * 60 * 1000;
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const _gitStatusCache = new Map();
 const _currentBranchCache = new Map();
+const _lastUnpushedByProjectBranch = new Map();
+const _recentRepositoryPushEvents = new Map();
 const _perf = {
   disabled: false,
   enrichmentCalls: 0,
@@ -870,6 +873,107 @@ function syntheticPushesForProject(project, commitEvents, now = Date.now()) {
     .filter(Boolean);
 }
 
+function projectBranchKey(project, branch = '') {
+  return `${project}::${normalizeLocalBranchName(branch) || 'HEAD'}`;
+}
+
+function groupCommitEventsByBranch(events = []) {
+  const groups = new Map();
+  for (const event of events || []) {
+    if (event?.type !== 'commit') continue;
+    const branch = eventBranch(event);
+    const list = groups.get(branch) || [];
+    list.push(event);
+    groups.set(branch, list);
+  }
+  return groups;
+}
+
+function syntheticRepositoryPushFromTransition(project, branch, commitEvents, pushState, now) {
+  const commits = (commitEvents || [])
+    .filter((event) => event?.type === 'commit' && event.project === project && event.success !== false)
+    .sort((a, b) => ((b.completedAt || b.ts || 0) - (a.completedAt || a.ts || 0)));
+  if (!commits.length || !pushState?.pushedToUpstream) return null;
+
+  const latestCommit = commits[0];
+  const normalizedBranch = normalizeLocalBranchName(branch || latestCommit.branch || latestCommit.targetRef || '');
+  const id = `git-push-transition-${stableHash([
+    project,
+    normalizedBranch || 'HEAD',
+    pushState.upstream || 'upstream',
+    latestCommit.sha || latestCommit.id || latestCommit.commandHash || latestCommit.command,
+  ].join('|'))}`;
+
+  return {
+    id,
+    type: 'push',
+    command: `git push (${pushState.upstream || 'upstream'} now contains HEAD)`,
+    project,
+    provider: latestCommit.provider || 'git',
+    sessionId: latestCommit.sessionId || `git-repo-${stableHash(project)}`,
+    sourceId: 'git-upstream-transition',
+    ts: now,
+    commandHash: stableHash(id),
+    dryRun: false,
+    success: true,
+    exitCode: 0,
+    completedAt: now,
+    status: 'success',
+    targetRef: pushState.upstream,
+    branch: normalizedBranch || null,
+    label: pushState.upstream ? `Pushed to ${pushState.upstream}` : 'Pushed',
+    inferred: true,
+  };
+}
+
+function expireRecentRepositoryPushEvents(now = Date.now()) {
+  const cutoff = now - RECENT_REPOSITORY_PUSH_TTL_MS;
+  for (const [id, event] of _recentRepositoryPushEvents.entries()) {
+    const ts = Number(event?.completedAt || event?.ts || 0);
+    if (!Number.isFinite(ts) || ts < cutoff) _recentRepositoryPushEvents.delete(id);
+  }
+}
+
+function observeRepositoryPushTransitions(project, unpushedEvents = [], now = Date.now()) {
+  if (!project) return;
+  expireRecentRepositoryPushEvents(now);
+
+  const currentByBranch = groupCommitEventsByBranch(unpushedEvents);
+  for (const [branch, events] of currentByBranch.entries()) {
+    _lastUnpushedByProjectBranch.set(projectBranchKey(project, branch), {
+      project,
+      branch,
+      events: dedupeGitEvents(events),
+      observedAt: now,
+    });
+  }
+
+  for (const [key, previous] of _lastUnpushedByProjectBranch.entries()) {
+    if (previous.project !== project) continue;
+    if (currentByBranch.has(previous.branch)) continue;
+
+    const pushState = readPushState(project, previous.branch);
+    if (pushState.pushedToUpstream) {
+      const event = syntheticRepositoryPushFromTransition(project, previous.branch, previous.events, pushState, now);
+      if (event) _recentRepositoryPushEvents.set(event.id, event);
+      _lastUnpushedByProjectBranch.delete(key);
+    }
+  }
+}
+
+function recentRepositoryPushEventsByProject(projects = [], now = Date.now()) {
+  expireRecentRepositoryPushEvents(now);
+  const projectSet = new Set((projects || []).filter(Boolean));
+  const byProject = new Map();
+  for (const event of _recentRepositoryPushEvents.values()) {
+    if (projectSet.size && !projectSet.has(event.project)) continue;
+    const list = byProject.get(event.project) || [];
+    list.push(event);
+    byProject.set(event.project, list);
+  }
+  return byProject;
+}
+
 function readUnpushedCommitEvents(project, context = {}) {
   if (!project) return [];
 
@@ -962,6 +1066,11 @@ function createRepositoryGitSession(project, gitEvents) {
     return Math.max(latest, Number(eventTime) || 0);
   }, Date.now());
   const count = events.length;
+  const pushCount = events.filter((event) => event?.type === 'push').length;
+  const commitCount = events.filter((event) => event?.type === 'commit').length;
+  const lastMessage = pushCount && !commitCount
+    ? (pushCount === 1 ? '1 pushed batch' : `${pushCount} pushed batches`)
+    : (commitCount === 1 ? '1 unpushed commit' : `${commitCount || count} unpushed commits`);
 
   return {
     sessionId: `git-repo-${stableHash(project)}`,
@@ -974,7 +1083,7 @@ function createRepositoryGitSession(project, gitEvents) {
     status: 'active',
     lastActivity: latestActivity || Date.now(),
     project,
-    lastMessage: count === 1 ? '1 unpushed commit' : `${count} unpushed commits`,
+    lastMessage,
     lastTool: 'git status',
     lastToolInput: 'Scan unpushed commits',
     tokenUsage: null,
@@ -1002,26 +1111,34 @@ function inferUnpushedGitEventsForSessions(sessions, options = {}) {
 
   const uniqueProjects = [...new Set(projects.filter(Boolean))];
   return recordGitEnrichment('unpushed', uniqueProjects.length, () => {
+    const now = Date.now();
     for (const project of uniqueProjects) {
       if (!eventsByProject.has(project)) {
-        eventsByProject.set(project, readUnpushedCommitEvents(project, {
+        const unpushed = readUnpushedCommitEvents(project, {
           provider: 'git',
           sessionId: `git-repo-${stableHash(project)}`,
-        }));
+        });
+        eventsByProject.set(project, unpushed);
+        observeRepositoryPushTransitions(project, unpushed, now);
       }
     }
 
-    if (![...eventsByProject.values()].some((events) => events.length > 0)) return sessions;
+    const recentPushesByProject = recentRepositoryPushEventsByProject(uniqueProjects, now);
+    const hasUnpushed = [...eventsByProject.values()].some((events) => events.length > 0);
+    const hasRecentPushes = [...recentPushesByProject.values()].some((events) => events.length > 0);
+    if (!hasUnpushed && !hasRecentPushes) return sessions;
 
     const enrichedSessions = sessions.map((session) => {
       const project = session?.project;
       const unpushed = project ? eventsByProject.get(project) || [] : [];
-      if (!unpushed.length) return session;
+      const recentPushes = project ? recentPushesByProject.get(project) || [] : [];
+      if (!unpushed.length && !recentPushes.length) return session;
 
       const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
+      const commitEvents = mergeUnpushedGitEvents(ownEvents, unpushed);
       return {
         ...session,
-        gitEvents: mergeUnpushedGitEvents(ownEvents, unpushed),
+        gitEvents: dedupeGitEvents([...commitEvents, ...recentPushes]),
       };
     });
 
@@ -1029,8 +1146,10 @@ function inferUnpushedGitEventsForSessions(sessions, options = {}) {
     for (const project of extraProjects) {
       if (sessionProjects.has(project)) continue;
       const unpushed = eventsByProject.get(project) || [];
-      if (!unpushed.length) continue;
-      enrichedSessions.push(createRepositoryGitSession(project, unpushed));
+      const recentPushes = recentPushesByProject.get(project) || [];
+      const events = dedupeGitEvents([...unpushed, ...recentPushes]);
+      if (!events.length) continue;
+      enrichedSessions.push(createRepositoryGitSession(project, events));
     }
 
     return enrichedSessions;
