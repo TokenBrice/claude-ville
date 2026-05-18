@@ -244,6 +244,105 @@ const COMMIT_LAGOON_ROUTE_BANDS = Object.freeze([
     },
 ]);
 const DEPARTURE_EDGE_Y = 2.8;
+const HARBOR_ROUTE_GRAPH_VERSION = 1;
+const RELEASE_CONVOY_MIN_SHIPS = 2;
+const HARBOR_ROUTE_WAYPOINTS = Object.freeze({
+    'berth.quay': { id: 'berth.quay', name: 'Repo Berth', zone: 'berth' },
+    'berth.pull': { id: 'berth.pull', name: 'Pull Berth', zone: 'berth' },
+    'harbor.inner-basin': { id: 'harbor.inner-basin', name: 'Inner Basin', zone: 'harbor', tileX: 36.4, tileY: 22.05 },
+    'harbor.mouth': { id: 'harbor.mouth', name: 'Harbor Mouth', zone: 'harbor', tileX: 38.05, tileY: 20.35 },
+    'roadstead.north': { id: 'roadstead.north', name: 'North Roadstead', zone: 'roadstead', tileX: 38.05, tileY: 13.15 },
+    'roadstead.east': { id: 'roadstead.east', name: 'East Roadstead', zone: 'roadstead', tileX: 38.75, tileY: 16.15 },
+    'roadstead.south': { id: 'roadstead.south', name: 'South Roadstead', zone: 'roadstead', tileX: 38.90, tileY: 21.20 },
+    'roadstead.outer': { id: 'roadstead.outer', name: 'Outer Fairway', zone: 'roadstead', tileX: 38.25, tileY: 24.05 },
+    'sea.exit': { id: 'sea.exit', name: 'Departure Edge', zone: 'sea', tileY: DEPARTURE_EDGE_Y },
+    'lagoon.west': { id: 'lagoon.west', name: 'Commit Lagoon West', zone: 'commit-lagoon', tileX: 7.75, tileY: 8.55 },
+    'lagoon.spring': { id: 'lagoon.spring', name: 'Commit Lagoon Spring', zone: 'commit-lagoon', tileX: 12.30, tileY: 5.75 },
+    'lagoon.center': { id: 'lagoon.center', name: 'Commit Lagoon Center', zone: 'commit-lagoon', tileX: 17.20, tileY: 10.10 },
+    'lagoon.east': { id: 'lagoon.east', name: 'Commit Lagoon East', zone: 'commit-lagoon', tileX: 24.20, tileY: 7.55 },
+    'lagoon.channel-buoy': { id: 'lagoon.channel-buoy', name: 'Lagoon Channel Buoy', zone: 'commit-lagoon', tileX: 26.0, tileY: 6.0 },
+});
+const HARBOR_ROUTE_GRAPH = Object.freeze({
+    version: HARBOR_ROUTE_GRAPH_VERSION,
+    routes: Object.freeze({
+        'outbound.inner-channel': {
+            id: 'outbound.inner-channel',
+            name: 'Inner Channel',
+            kind: 'outbound',
+            zone: 'harbor',
+            bandName: 'inner-channel',
+            waypoints: ['berth.quay', 'harbor.inner-basin', 'harbor.mouth', 'roadstead.north', 'sea.exit'],
+        },
+        'outbound.outer-channel': {
+            id: 'outbound.outer-channel',
+            name: 'Outer Channel',
+            kind: 'outbound',
+            zone: 'harbor',
+            bandName: 'outer-channel',
+            waypoints: ['berth.quay', 'harbor.mouth', 'roadstead.east', 'roadstead.north', 'sea.exit'],
+        },
+        'outbound.beacon-channel': {
+            id: 'outbound.beacon-channel',
+            name: 'Beacon Channel',
+            kind: 'outbound',
+            zone: 'harbor',
+            bandName: 'beacon-channel',
+            waypoints: ['berth.quay', 'harbor.mouth', 'roadstead.south', 'roadstead.outer', 'sea.exit'],
+        },
+        'lagoon.lagoon-east-channel': {
+            id: 'lagoon.lagoon-east-channel',
+            name: 'Lagoon East Channel',
+            kind: 'lagoon',
+            zone: 'commit-lagoon',
+            bandName: 'lagoon-east-channel',
+            waypoints: ['lagoon.center', 'lagoon.east', 'lagoon.channel-buoy', 'roadstead.north', 'sea.exit'],
+        },
+        'lagoon.lagoon-spring-channel': {
+            id: 'lagoon.lagoon-spring-channel',
+            name: 'Lagoon Spring Channel',
+            kind: 'lagoon',
+            zone: 'commit-lagoon',
+            bandName: 'lagoon-spring-channel',
+            waypoints: ['lagoon.spring', 'lagoon.channel-buoy', 'roadstead.north', 'sea.exit'],
+        },
+        'lagoon.observatory-backwater': {
+            id: 'lagoon.observatory-backwater',
+            name: 'Observatory Backwater',
+            kind: 'lagoon',
+            zone: 'commit-lagoon',
+            bandName: 'observatory-backwater',
+            waypoints: ['lagoon.center', 'lagoon.east', 'lagoon.channel-buoy', 'roadstead.outer', 'sea.exit'],
+        },
+        'inbound.pull': {
+            id: 'inbound.pull',
+            name: 'Inbound Pull Approach',
+            kind: 'inbound',
+            zone: 'berth',
+            waypoints: ['sea.exit', 'roadstead.north', 'harbor.mouth', 'berth.pull'],
+        },
+        'inbound.fetch-roadstead': {
+            id: 'inbound.fetch-roadstead',
+            name: 'Inbound Fetch Roadstead',
+            kind: 'roadstead',
+            zone: 'roadstead',
+            waypoints: ['sea.exit', 'roadstead.north', 'roadstead.outer'],
+        },
+        'berth.assignment': {
+            id: 'berth.assignment',
+            name: 'Berth Assignment',
+            kind: 'berth',
+            zone: 'berth',
+            waypoints: ['berth.quay'],
+        },
+        'storage.lagoon-transfer': {
+            id: 'storage.lagoon-transfer',
+            name: 'Lagoon Storage Transfer',
+            kind: 'lagoon-transfer',
+            zone: 'commit-lagoon',
+            waypoints: ['harbor.inner-basin', 'lagoon.channel-buoy', 'lagoon.center'],
+        },
+    }),
+});
 const DEPARTURE_EDGE_LANES = Object.freeze([7.4, 10.2, 13.0, 15.8, 18.6, 21.4, 24.2, 27.0, 29.8, 32.6, 35.4, 38.2]);
 
 const PUSH_STATUS_STYLE = {
@@ -337,6 +436,55 @@ function trafficLabel(project, branch = '', maxChars = 26) {
     return `${repo}/${shortGitLabel(normalizedBranch, 14, '…')}`;
 }
 
+function boundedEventConfidence(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return null;
+    return Math.max(0, Math.min(1, numeric));
+}
+
+function gitEventSourceLabel(event = {}) {
+    const explicit = event.source || event.eventSource || event.sourceType || event.origin || '';
+    if (explicit) return String(explicit);
+    if (event.command) return 'command-parser';
+    return event.inferred === true ? 'inferred' : 'observed';
+}
+
+function gitEventStatusLabel(event = {}) {
+    if (event.status) return String(event.status);
+    if (event.success === true) return 'success';
+    if (event.success === false) return 'failed';
+    return 'unknown';
+}
+
+function gitEventRefLabel(event = {}, branch = '') {
+    return String(event.ref || event.refspec || event.targetRef || branch || event.upstream || '');
+}
+
+function gitEventDebugMetadata(event = {}, branch = '') {
+    const inferred = event.inferred === true;
+    return {
+        gitKind: event.type ? String(event.type) : '',
+        eventStatus: gitEventStatusLabel(event),
+        remote: event.remote ? String(event.remote) : '',
+        ref: gitEventRefLabel(event, branch),
+        refspec: event.refspec ? String(event.refspec) : '',
+        source: gitEventSourceLabel(event),
+        sourceId: event.sourceId ? String(event.sourceId) : '',
+        confidence: boundedEventConfidence(event.confidence),
+        inferred,
+        observed: event.observed === true || (!inferred && event.observed !== false),
+        sessionId: event.sessionId ? String(event.sessionId) : '',
+        agentId: event.agentId ? String(event.agentId) : '',
+        completedAt: Number(event.completedAt || event.completed_at || 0) || 0,
+    };
+}
+
+function inboundGitLabel(event = {}, branch = '') {
+    const type = event.type === 'fetch' ? 'fetch' : 'pull';
+    const parts = [type, event.remote || '', event.targetRef || event.ref || event.refspec || branch || ''].filter(Boolean);
+    return shortGitLabel(parts.join(' '), 22, '…') || type;
+}
+
 function rotateIndexes(indexes, offset) {
     const list = Array.isArray(indexes) ? indexes : [];
     if (list.length <= 1) return [...list];
@@ -354,7 +502,11 @@ function cloneState(previous = {}) {
         : Object.entries(previous.ships || {});
     const ships = new Map();
     for (const [id, ship] of sourceShips) {
-        ships.set(id, { ...ship });
+        ships.set(id, {
+            ...ship,
+            route: compactRouteMetadata(ship.route),
+            convoy: ship.convoy ? { ...ship.convoy } : null,
+        });
     }
     const sourceBatches = previous.batches instanceof Map
         ? previous.batches.entries()
@@ -364,6 +516,8 @@ function cloneState(previous = {}) {
         const next = {
             ...batch,
             shipIds: Array.isArray(batch.shipIds) ? [...batch.shipIds] : [],
+            route: compactRouteMetadata(batch.route),
+            convoy: batch.convoy ? { ...batch.convoy } : null,
         };
         if (Array.isArray(batch.sealedOriginPoints)) {
             next.sealedOriginPoints = batch.sealedOriginPoints.map(p => ({ x: p.x, y: p.y }));
@@ -523,6 +677,24 @@ function compareDockedShips(a, b) {
 function compareDepartingShips(a, b) {
     return ((a?.eventTime || 0) - (b?.eventTime || 0))
         || String(a?.id || '').localeCompare(String(b?.id || ''));
+}
+
+function releaseConvoyMetadata(event, branch, selectedShips = [], status = 'unknown', forceFlag = null) {
+    if (status !== 'success' || forceFlag === true) return null;
+    if (!Array.isArray(selectedShips) || selectedShips.length < RELEASE_CONVOY_MIN_SHIPS) return null;
+    const profile = trafficProfile(event.project, branch);
+    return {
+        id: `release-convoy:${event.id}`,
+        mode: 'release-convoy',
+        project: event.project,
+        branch: branch || '',
+        repoName: profile.shortName,
+        label: 'Release convoy',
+        count: selectedShips.length,
+        leaderShipId: selectedShips[0]?.id || '',
+        pushEventId: event.id,
+        routeId: '',
+    };
 }
 
 function dockSquadDensity(totalDocked, squadCount, shipCount) {
@@ -923,6 +1095,72 @@ function _buildDockSquadLayoutFresh(state) {
     };
 }
 
+function harborRouteGraphRoute(routeId) {
+    return HARBOR_ROUTE_GRAPH.routes[routeId] || null;
+}
+
+function routeGraphWaypointSnapshot(waypointId) {
+    const waypoint = HARBOR_ROUTE_WAYPOINTS[waypointId] || { id: waypointId, name: waypointId, zone: 'unknown' };
+    return {
+        id: waypoint.id,
+        name: waypoint.name,
+        zone: waypoint.zone,
+        tileX: Number.isFinite(Number(waypoint.tileX)) ? Number(waypoint.tileX) : null,
+        tileY: Number.isFinite(Number(waypoint.tileY)) ? Number(waypoint.tileY) : null,
+    };
+}
+
+function routeGraphMetadata(routeId, overrides = {}) {
+    const route = harborRouteGraphRoute(routeId);
+    if (!route) return null;
+    const waypointIds = Array.isArray(route.waypoints) ? [...route.waypoints] : [];
+    return {
+        graphVersion: HARBOR_ROUTE_GRAPH.version,
+        id: route.id,
+        name: route.name,
+        kind: overrides.kind || route.kind,
+        zone: overrides.zone || route.zone,
+        bandName: overrides.bandName || route.bandName || '',
+        waypointIds,
+        waypoints: waypointIds.map(routeGraphWaypointSnapshot),
+        fromWaypoint: overrides.fromWaypoint || waypointIds[0] || '',
+        toWaypoint: overrides.toWaypoint || waypointIds[waypointIds.length - 1] || '',
+    };
+}
+
+function outboundRouteIdForBand(band, zone = 'harbor') {
+    const bandName = String(band?.name || '');
+    if (isCommitLagoonZone(zone)) return `lagoon.${bandName}`;
+    return `outbound.${bandName}`;
+}
+
+function waterRouteMetadataForBand(band, ship = {}, kind = 'outbound') {
+    if (kind === 'inbound') {
+        return routeGraphMetadata(ship?.arrivingKind === 'fetch' ? 'inbound.fetch-roadstead' : 'inbound.pull');
+    }
+    const zone = ship?.departWaterZone || ship?.waitingZone || 'harbor';
+    return routeGraphMetadata(outboundRouteIdForBand(band, zone), {
+        kind: isCommitLagoonZone(zone) ? 'lagoon' : 'outbound',
+        zone: isCommitLagoonZone(zone) ? 'commit-lagoon' : 'harbor',
+        bandName: band?.name || '',
+    });
+}
+
+function compactRouteMetadata(route = null) {
+    if (!route) return null;
+    return {
+        graphVersion: route.graphVersion,
+        id: route.id,
+        name: route.name,
+        kind: route.kind,
+        zone: route.zone,
+        bandName: route.bandName || '',
+        waypointIds: Array.isArray(route.waypointIds) ? [...route.waypointIds] : [],
+        fromWaypoint: route.fromWaypoint || '',
+        toWaypoint: route.toWaypoint || '',
+    };
+}
+
 function routeBandsFromData(routeData, ship = null) {
     if (Array.isArray(routeData?.bands) && routeData.bands.length) return routeData.bands;
     return isCommitLagoonZone(ship?.departWaterZone || ship?.waitingZone)
@@ -1191,7 +1429,30 @@ export function snapshotHarborTrafficState(state) {
                     sha: ship.sha || '',
                     label: ship.label || '',
                     status: ship.status,
+                    gitKind: ship.gitKind || '',
+                    eventStatus: ship.eventStatus || '',
+                    remote: ship.remote || '',
+                    ref: ship.ref || '',
+                    refspec: ship.refspec || '',
+                    targetRef: ship.targetRef || '',
+                    source: ship.source || '',
+                    sourceId: ship.sourceId || '',
+                    confidence: ship.confidence ?? null,
+                    inferred: ship.inferred === true,
+                    observed: ship.observed === true,
+                    sessionId: ship.sessionId || '',
+                    agentId: ship.agentId || '',
+                    completedAt: ship.completedAt || 0,
+                    arrivingKind: ship.arrivingKind || null,
+                    inboundCargoCount: ship.inboundCargoCount ?? null,
                     pushStatus: ship.pushStatus || null,
+                    pushSource: ship.pushSource || '',
+                    pushConfidence: ship.pushConfidence ?? null,
+                    pushInferred: ship.pushInferred === true,
+                    pushObserved: ship.pushObserved === true,
+                    pushRemote: ship.pushRemote || '',
+                    pushRef: ship.pushRef || '',
+                    pushForce: ship.pushForce || null,
                     batchId: ship.batchId || null,
                     berthIndex: ship.berthIndex,
                     laneIndex: ship.laneIndex,
@@ -1218,6 +1479,8 @@ export function snapshotHarborTrafficState(state) {
                     departSquadIndex: ship.departSquadIndex ?? null,
                     departSquadCount: ship.departSquadCount ?? null,
                     departRouteIndex: ship.departRouteIndex ?? null,
+                    route: compactRouteMetadata(ship.route),
+                    convoy: ship.convoy ? { ...ship.convoy } : null,
                     departFromTile: ship.departFromTile || null,
                     eventTime: ship.eventTime,
                     departEventId: ship.departEventId || null,
@@ -1237,7 +1500,19 @@ export function snapshotHarborTrafficState(state) {
                 repoName: batch.repoName || '',
                 label: batch.label || '',
                 status: batch.status || 'unknown',
+                eventStatus: batch.eventStatus || '',
+                remote: batch.remote || '',
+                ref: batch.ref || '',
+                refspec: batch.refspec || '',
+                source: batch.source || '',
+                sourceId: batch.sourceId || '',
+                confidence: batch.confidence ?? null,
+                inferred: batch.inferred === true,
+                observed: batch.observed === true,
                 targetRef: batch.targetRef || '',
+                force: batch.force || null,
+                route: compactRouteMetadata(batch.route),
+                convoy: batch.convoy ? { ...batch.convoy } : null,
                 shipCount: batch.shipCount || 0,
                 eventTime: batch.eventTime || 0,
                 startedAt: batch.startedAt || 0,
@@ -1250,6 +1525,16 @@ export function snapshotHarborTrafficState(state) {
                 project: push.project || '',
                 branch: push.branch || '',
                 status: push.status || 'unknown',
+                eventStatus: push.eventStatus || '',
+                remote: push.remote || '',
+                ref: push.ref || '',
+                refspec: push.refspec || '',
+                source: push.source || '',
+                sourceId: push.sourceId || '',
+                confidence: push.confidence ?? null,
+                inferred: push.inferred === true,
+                observed: push.observed === true,
+                force: push.force || null,
                 eventTime: push.eventTime || 0,
                 batchId: push.batchId || null,
             }))
@@ -1423,11 +1708,13 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 project: event.project,
                 branch,
                 targetRef: event.targetRef || '',
+                ...gitEventDebugMetadata(event, branch),
                 repoName: profile.shortName,
                 quayIndex,
                 sha: event.sha,
                 label: cleanCommitSubject(event.label || commitMessageFromCommand(event.command)) || event.label,
                 status: 'docked',
+                route: routeGraphMetadata('berth.assignment'),
                 berthIndex,
                 laneIndex,
                 eventTime: event.timestamp || now,
@@ -1443,6 +1730,12 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
 
         // 3.2 — pull/fetch as inbound ships sailing toward harbor.
         if (event.type === 'pull' || event.type === 'fetch') {
+            const inboundStatus = String(event.status || gitEventStatusLabel(event) || '').toLowerCase();
+            if (inboundStatus === 'failed' || inboundStatus === 'rejected'
+                || inboundStatus === 'cancelled' || inboundStatus === 'canceled') {
+                state.seenEventIds.add(event.id);
+                continue;
+            }
             if (motionScale === 0) continue;
             const eventAge = Number.isFinite(event.timestamp) && event.timestamp > 0
                 ? Math.max(0, now - event.timestamp)
@@ -1468,12 +1761,14 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 project: event.project,
                 branch,
                 targetRef: event.targetRef || '',
+                ...gitEventDebugMetadata(event, branch),
                 repoName: profile.shortName,
                 quayIndex,
                 sha: '',
-                label: isFetch ? 'fetch' : 'pull',
+                label: inboundGitLabel(event, branch),
                 status: 'arriving',
                 arrivingKind: isFetch ? 'fetch' : 'pull',
+                route: routeGraphMetadata(isFetch ? 'inbound.fetch-roadstead' : 'inbound.pull'),
                 inboundCargoCount: cargoCount,
                 inboundRoadsteadTile: isFetch ? { tileX: roadstead.tileX, tileY: roadstead.tileY } : null,
                 berthIndex: berthIndex >= 0 ? berthIndex : (state.nextSequence % BERTHS.length),
@@ -1506,6 +1801,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const statusChanged = previousStatus && previousStatus !== status;
             const branch = eventBranch(event);
             const profile = trafficProfile(event.project, branch);
+            const pushMetadata = gitEventDebugMetadata(event, branch);
             // 3.1 — capture force flag (true / 'lease' / 'includes')
             const forceFlag = event.force === true || event.force === 'lease' || event.force === 'includes'
                 ? event.force
@@ -1538,6 +1834,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     project: event.project,
                     branch,
                     status,
+                    ...pushMetadata,
+                    force: forceFlag,
                     eventTime: event.timestamp || now,
                     batchId: null,
                     seenAt: previousPush?.seenAt || now,
@@ -1551,6 +1849,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     project: event.project,
                     branch,
                     status,
+                    ...pushMetadata,
+                    force: forceFlag,
                     eventTime: event.timestamp || now,
                     batchId: null,
                     seenAt: now,
@@ -1566,6 +1866,9 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const startedAt = existingBatch?.startedAt
                 || previousPush?.seenAt
                 || (skipOldReplay ? now - SCREEN_SUMMARY_MS - FINALE_EFFECT_MS - 1 : now);
+            const convoy = status === 'success'
+                ? (existingBatch?.convoy || releaseConvoyMetadata(event, branch, selectedShips, status, forceFlag))
+                : null;
             const batch = {
                 ...(existingBatch || {}),
                 id: batchId,
@@ -1576,8 +1879,10 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 label: event.label || existingBatch?.label || '',
                 targetRef: event.targetRef || existingBatch?.targetRef || '',
                 status,
+                ...pushMetadata,
                 // 3.1 — keep force flag on the batch so renderers can branch on it
                 force: forceFlag,
+                convoy,
                 shipIds,
                 shipCount: shipIds.length,
                 sequence: existingBatch?.sequence || ++state.nextBatchSequence,
@@ -1591,6 +1896,8 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 project: event.project,
                 branch,
                 status,
+                ...pushMetadata,
+                force: forceFlag,
                 eventTime: event.timestamp || now,
                 batchId,
                 seenAt: previousPush?.seenAt || now,
@@ -1605,7 +1912,17 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     ? COMMIT_LAGOON_ROUTE_BANDS
                     : LOCAL_WATER_ROUTE_BANDS;
                 const routeIndex = stableHash(`${event.project}:${branch}:${event.id}:${departWaterZone}:water-route`) % routeBands.length;
+                const routeBand = routeBands[routeIndex] || routeBands[0];
+                const route = waterRouteMetadataForBand(routeBand, { ...ship, departWaterZone });
+                if (convoy && !convoy.routeId && route?.id) convoy.routeId = route.id;
+                if (!batch.route && route) batch.route = route;
                 ship.pushStatus = status;
+                ship.pushSource = pushMetadata.source || '';
+                ship.pushConfidence = pushMetadata.confidence;
+                ship.pushInferred = pushMetadata.inferred === true;
+                ship.pushObserved = pushMetadata.observed === true;
+                ship.pushRemote = pushMetadata.remote || '';
+                ship.pushRef = pushMetadata.ref || '';
                 ship.batchId = batchId;
                 ship.pushEventId = event.id;
                 ship.pushSeenAt = now;
@@ -1614,6 +1931,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 ship.departSquadIndex = departSquadIndex;
                 ship.departSquadCount = departSquadCount;
                 ship.departRouteIndex = routeIndex;
+                ship.route = route;
                 ship.departRouteOffset = departSquadIndex - (departSquadCount - 1) / 2;
                 ship.departStaggerMs = DEPARTURE_STAGGER_MS;
                 ship.departFromTile = dockMeta
@@ -1642,6 +1960,12 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 }
                 // 3.1 — propagate force flag to each ship so draw/lifecycle helpers can react.
                 ship.pushForce = forceFlag;
+                ship.convoy = convoy ? {
+                    ...convoy,
+                    routeId: convoy.routeId || route?.id || '',
+                    index: departSquadIndex,
+                    leaderShipId: convoy.leaderShipId || selectedShips[0]?.id || ship.id,
+                } : null;
                 if (status === 'failed') {
                     ship.status = 'docked';
                     ship.failedAt = skipOldReplay ? null : now;
@@ -2124,6 +2448,7 @@ export class HarborTraffic {
                 id,
                 startedAt: now + transferIndex * STORAGE_TRANSFER_STAGGER_MS,
                 duration: STORAGE_TRANSFER_MS,
+                routeMetadata: routeGraphMetadata('storage.lagoon-transfer'),
                 route: composeStorageTransferTiles(fromTile, toTile, ship)
                     .map(point => toWorld(point.tileX, point.tileY)),
                 fromZone: previous.waitingZone || 'harbor',
@@ -2277,6 +2602,31 @@ export class HarborTraffic {
             || ((a.payload.departSquadIndex || 0) - (b.payload.departSquadIndex || 0))
             || ((a.payload.eventTime || 0) - (b.payload.eventTime || 0))
             || a.payload.id.localeCompare(b.payload.id));
+        const convoyGroups = new Map();
+        for (const drawable of departing) {
+            const convoy = drawable.payload?.convoy;
+            if (!convoy?.id || (drawable.payload?.pushStatus || '') !== 'success') continue;
+            const list = convoyGroups.get(convoy.id) || [];
+            list.push(drawable);
+            convoyGroups.set(convoy.id, list);
+        }
+        for (const list of convoyGroups.values()) {
+            if (list.length < RELEASE_CONVOY_MIN_SHIPS) continue;
+            list.sort((a, b) => ((Number.isFinite(Number(a.payload.convoy?.index)) ? Number(a.payload.convoy.index) : 0)
+                - (Number.isFinite(Number(b.payload.convoy?.index)) ? Number(b.payload.convoy.index) : 0))
+                || ((a.payload.departStartedAt || 0) - (b.payload.departStartedAt || 0))
+                || a.payload.id.localeCompare(b.payload.id));
+            list.forEach((drawable, index) => {
+                drawable.payload.convoy = {
+                    ...drawable.payload.convoy,
+                    visibleCount: list.length,
+                    visibleIndex: index,
+                };
+                if (index === 0) drawable.payload.convoyLeader = true;
+                const next = list[index + 1]?.payload;
+                if (next) drawable.payload.convoyNext = { x: next.x, y: next.y };
+            });
+        }
         for (const drawable of departing) {
             visible.push(drawable);
         }
@@ -2995,6 +3345,13 @@ export class HarborTraffic {
             this._drawSquadBunting(ctx, ship, ship.buntingNext, zoom, forceSinkAlpha, profile);
         }
         ctx.restore();
+
+        if (ship.status === 'departing' && ship.convoy) {
+            if (ship.convoyNext) {
+                this._drawReleaseConvoyLine(ctx, ship, ship.convoyNext, zoom, forceSinkAlpha, profile);
+            }
+            this._drawReleaseConvoyCue(ctx, ship, zoom, forceSinkAlpha, profile, shipClass);
+        }
 
         // 3.1 — red spray particles puff at the keel during sinking (force-push).
         if (this.motionScale > 0 && ship.status === 'departing' && ship.pushForce === true) {
@@ -3775,6 +4132,63 @@ export class HarborTraffic {
         ctx.lineTo(mx + 3 * s, my + 5 * s);
         ctx.closePath();
         ctx.fill();
+        ctx.restore();
+    }
+
+    _drawReleaseConvoyLine(ctx, ship, neighbor, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch)) {
+        if (!neighbor || !Number.isFinite(neighbor.x) || !Number.isFinite(neighbor.y)) return;
+        const s = 1 / Math.max(1, zoom || 1);
+        const ax = ship.x;
+        const ay = ship.y - 18 * s;
+        const bx = neighbor.x;
+        const by = neighbor.y - 18 * s;
+        const distance = Math.hypot(bx - ax, by - ay);
+        if (distance < 8) return;
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, alpha) * 0.50;
+        ctx.strokeStyle = profile.accent || '#f6d384';
+        ctx.lineWidth = Math.max(1, Math.round(1.2 * s));
+        ctx.setLineDash([Math.max(4, 6 * s), Math.max(3, 5 * s)]);
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawReleaseConvoyCue(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const lift = Math.max(0, Number(shipClass.labelLift || 0));
+        const x = Math.round(ship.x - 15 * s);
+        const y = Math.round(ship.y - (49 + lift * 0.55) * s);
+        ctx.save();
+        ctx.globalAlpha = Math.max(0, alpha) * 0.88;
+        ctx.fillStyle = profile.accent || '#f6d384';
+        for (let i = 0; i < 2; i++) {
+            const dx = i * 9 * s;
+            ctx.beginPath();
+            ctx.moveTo(x + dx, y);
+            ctx.lineTo(x + dx + 7 * s, y + 4 * s);
+            ctx.lineTo(x + dx, y + 8 * s);
+            ctx.closePath();
+            ctx.fill();
+        }
+        if (ship.convoyLeader) {
+            const count = Math.max(RELEASE_CONVOY_MIN_SHIPS, Number(ship.convoy?.visibleCount || ship.convoy?.count || 0));
+            const label = `CVY ${count}`;
+            const width = Math.max(36 * s, label.length * 6.2 * s + 12 * s);
+            const labelX = Math.round(ship.x - width / 2);
+            const labelY = Math.round(y - 17 * s);
+            ctx.fillStyle = 'rgba(24, 42, 39, 0.88)';
+            ctx.fillRect(labelX, labelY, Math.round(width), Math.round(13 * s));
+            ctx.strokeStyle = profile.accent || '#f6d384';
+            ctx.strokeRect(labelX + 0.5, labelY + 0.5, Math.round(width) - 1, Math.round(13 * s) - 1);
+            ctx.fillStyle = profile.labelText || '#fff0b8';
+            ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            this._fillReadableText(ctx, label, Math.round(ship.x), Math.round(labelY + 7 * s), Math.max(12, width - 4 * s));
+        }
         ctx.restore();
     }
 

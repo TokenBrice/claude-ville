@@ -68,14 +68,41 @@ export function displayRepoName(project, maxChars = 26) {
 
 export function gitEventKind(event) {
     const raw = String(event?.type || event?.kind || event?.action || event?.event || event?.name || '').toLowerCase();
+    const tokens = raw.split(/[^a-z0-9]+/).filter(Boolean);
     if (raw.includes('push')) return 'push';
     if (raw.includes('commit')) return 'commit';
+    if (tokens.includes('fetch') || raw.includes('fetch')) return 'fetch';
+    if ((tokens.includes('pull') || raw.includes('git pull')) && !tokens.includes('request')) return 'pull';
     if (event?.pushed === true || Array.isArray(event?.commits)) return 'push';
     if (event?.sha || event?.commit || event?.hash) return 'commit';
+    if (event?.fetched === true) return 'fetch';
+    if (event?.pulled === true) return 'pull';
     return null;
 }
 
 const CANCELLED_STATUS_KEYWORDS = new Set(['cancelled', 'canceled', 'timed_out', 'timeout']);
+
+function normalizeGitCommandStatus(event) {
+    if (!event || typeof event !== 'object') return 'unknown';
+    if (typeof event.success === 'boolean') return event.success ? 'success' : 'failed';
+
+    const exitCode = event.exitCode ?? event.exit_code ?? event.code ?? event.returnCode ?? event.return_code;
+    if (Number.isFinite(Number(exitCode))) return Number(exitCode) === 0 ? 'success' : 'failed';
+
+    const raw = event.status
+        ?? event.outcome
+        ?? event.conclusion
+        ?? event.result
+        ?? event.state
+        ?? event.lifecycle
+        ?? '';
+    const text = String(raw).toLowerCase();
+    if (!text) return 'unknown';
+    if (['success', 'succeeded', 'ok', 'passed', 'pass', 'complete', 'completed', 'landed'].includes(text)) return 'success';
+    if (CANCELLED_STATUS_KEYWORDS.has(text)) return 'cancelled';
+    if (['failed', 'failure', 'fail', 'error', 'errored'].includes(text)) return 'failed';
+    return 'unknown';
+}
 
 export function normalizePushStatus(event) {
     if (!event || typeof event !== 'object') return 'unknown';
@@ -136,7 +163,27 @@ function eventLabel(event, type, sha, options = {}) {
         if (commandLabel) return shortGitLabel(commandLabel, maxLabelChars, ellipsis);
     }
     if (sha) return shortGitLabel(String(sha).slice(0, 10), maxLabelChars, ellipsis);
+    if (type === 'pull' || type === 'fetch') {
+        const remote = event.remote || '';
+        const ref = event.targetRef || event.ref || event.branch || event.refspec || '';
+        const parts = [type, remote, ref].filter(Boolean);
+        if (parts.length > 1) return shortGitLabel(parts.join(' '), maxLabelChars, ellipsis);
+    }
     return shortGitLabel(event.commandHash || event.id || type, maxLabelChars, ellipsis);
+}
+
+function boundedConfidence(value, fallback = null) {
+    if (value == null || value === '') return fallback;
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric)) return fallback;
+    return Math.max(0, Math.min(1, numeric));
+}
+
+function eventSource(event, inferred) {
+    const explicit = event.source || event.eventSource || event.sourceType || event.origin || '';
+    if (explicit) return String(explicit);
+    if (event.command) return 'command-parser';
+    return inferred ? 'inferred' : 'observed';
 }
 
 export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
@@ -158,10 +205,11 @@ export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
         || agent.project
         || 'unknown';
     const sha = event.sha || event.commit || event.hash || event.commitSha || event.revision || '';
-    const targetRef = event.targetRef || event.ref || event.branch || '';
-    const branch = event.branch || (type === 'commit' ? targetRef : '');
+    const targetRef = event.targetRef || event.target || event.ref || event.branch || '';
+    const branch = event.branch || (type === 'commit' || type === 'push' || type === 'pull' || type === 'fetch' ? targetRef : '');
+    const completedAt = parseEventTime(event.completedAt || event.completed_at, 0);
     const timestamp = parseEventTime(
-        event.timestamp || event.time || event.ts || event.date || event.createdAt || event.created_at,
+        event.timestamp || event.time || event.ts || event.date || event.createdAt || event.created_at || completedAt,
         fallbackTimestamp
     );
     const id = event.id
@@ -169,6 +217,23 @@ export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
         || event.uuid
         || event.key
         || `${type}:${project}:${sha}:${timestamp}:${index}`;
+    const inferred = event.inferred === true;
+    const hasCompletionMetadata = completedAt > 0
+        || typeof event.success === 'boolean'
+        || Number.isFinite(Number(event.exitCode ?? event.exit_code))
+        || event.status != null;
+    const confidence = boundedConfidence(
+        event.confidence ?? event.sourceConfidence ?? event.confidenceScore,
+        inferred ? 0.7 : (hasCompletionMetadata ? 0.95 : 0.82)
+    );
+    const status = type === 'push'
+        ? normalizePushStatus(event)
+        : (type === 'pull' || type === 'fetch' ? normalizeGitCommandStatus(event) : null);
+    const remote = event.remote || event.remoteName || event.repositoryRemote || '';
+    const refspecs = Array.isArray(event.refspecs)
+        ? event.refspecs.map(refspec => String(refspec)).filter(Boolean)
+        : [];
+    const refspec = event.refspec || event.refSpec || refspecs[0] || '';
 
     return {
         id: String(id),
@@ -180,11 +245,20 @@ export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
         ts: timestamp,
         label: eventLabel(event, type, sha, options),
         command: event.command ? String(event.command) : '',
+        commandHash: event.commandHash || '',
         targetRef,
         branch,
+        remote,
+        ref: event.ref || refspec || targetRef || branch || '',
+        refspec,
+        refspecs,
+        flags: Array.isArray(event.flags) ? [...event.flags] : [],
         upstream: event.upstream || '',
         comparisonRef: event.comparisonRef || '',
-        inferred: event.inferred === true,
+        inferred,
+        observed: event.observed === true || (!inferred && event.observed !== false),
+        source: eventSource(event, inferred),
+        confidence,
         provider: event.provider || agent.provider || '',
         sessionId: event.sessionId || event.session_id || agent.sessionId || agent.agentId || agent.id || '',
         sourceId: event.sourceId || '',
@@ -192,9 +266,15 @@ export function normalizeGitEvent(event, agent = {}, index = 0, options = {}) {
         exitCode: Number.isFinite(Number(event.exitCode ?? event.exit_code))
             ? Number(event.exitCode ?? event.exit_code)
             : null,
-        completedAt: parseEventTime(event.completedAt || event.completed_at, 0),
-        status: type === 'push' ? normalizePushStatus(event) : null,
+        completedAt,
+        status,
+        force: event.force || null,
+        dryRun: event.dryRun === true,
         agentId: agent.id || agent.agentId || '',
+        agentName: event.agentName || agent.agentName || agent.name || '',
+        agentStatus: agent.status || '',
+        agentModel: event.model || agent.model || '',
+        teamName: event.teamName || agent.teamName || '',
     };
 }
 

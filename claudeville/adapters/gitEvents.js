@@ -445,11 +445,32 @@ function extractTargetRef(type, tokens, subcommandIndex) {
   return null;
 }
 
+function extractRefspecs(type, tokens, subcommandIndex) {
+  if (type === 'push') {
+    const { positionals, repositoryFromFlag } = pushPositionals(tokens, subcommandIndex);
+    const refspecs = repositoryFromFlag ? positionals : positionals.slice(1);
+    return refspecs.filter(Boolean);
+  }
+
+  if (type === 'pull' || type === 'fetch') {
+    const { positionals } = pullFetchPositionals(tokens, subcommandIndex);
+    return positionals.slice(1).filter(Boolean);
+  }
+
+  return [];
+}
+
 function extractRemote(type, tokens, subcommandIndex) {
   if (type !== 'pull' && type !== 'fetch') return null;
   const { positionals } = pullFetchPositionals(tokens, subcommandIndex);
   const remote = positionals[0];
   return remote ? String(remote).trim() || null : null;
+}
+
+function clampConfidence(value, fallback) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(0, Math.min(1, numeric));
 }
 
 function createGitEvent(command, type, dryRun, context, parsed = {}) {
@@ -461,6 +482,11 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
   const ts = parseTimestamp(context.ts);
   const project = context.project || null;
   const identity = [provider, sessionId, sourceId, project, ts, type, commandHash].filter(Boolean).join('|');
+  const completedAt = parseTimestamp(context.completedAt);
+  const hasCompletionMetadata = completedAt
+    || typeof context.success === 'boolean'
+    || Number.isFinite(Number(context.exitCode))
+    || context.status != null;
 
   const event = {
     id: `git-${type}-${stableHash(identity)}`,
@@ -473,15 +499,25 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
     ts,
     commandHash,
     dryRun,
+    source: context.source || 'command-parser',
+    confidence: clampConfidence(context.confidence, hasCompletionMetadata ? 0.98 : 0.92),
+    inferred: context.inferred === true,
+    observed: context.observed !== false && context.inferred !== true,
   };
 
   if (parsed.targetRef) event.targetRef = parsed.targetRef;
+  if (parsed.refspec) event.refspec = parsed.refspec;
+  if (Array.isArray(parsed.refspecs) && parsed.refspecs.length) event.refspecs = parsed.refspecs;
   if (project && type === 'push') {
     const branch = normalizeRefName(parsed.targetRef) || currentBranch(project);
     if (branch) {
       event.branch = branch;
       if (!event.targetRef) event.targetRef = branch;
     }
+  }
+  if (project && (type === 'pull' || type === 'fetch')) {
+    const branch = normalizeRefName(parsed.targetRef) || currentBranch(project);
+    if (branch) event.branch = branch;
   }
   if (type === 'push' && parsed.force) event.force = parsed.force;
   if ((type === 'pull' || type === 'fetch')) {
@@ -490,7 +526,7 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
   }
   if (typeof context.success === 'boolean') event.success = context.success;
   if (Number.isFinite(Number(context.exitCode))) event.exitCode = Number(context.exitCode);
-  const completedAt = parseTimestamp(context.completedAt);
+  if (context.status) event.status = context.status;
   if (completedAt) event.completedAt = completedAt;
   if (typeof context.stderr === 'string' && context.stderr) event.stderr = context.stderr;
 
@@ -515,6 +551,11 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
     const parsed = {
       targetRef: extractTargetRef(match.type, tokens, match.subcommandIndex),
     };
+    const refspecs = extractRefspecs(match.type, tokens, match.subcommandIndex);
+    if (refspecs.length) {
+      parsed.refspec = refspecs[0];
+      parsed.refspecs = refspecs;
+    }
     if (match.type === 'push') {
       const pushInfo = pushPositionals(tokens, match.subcommandIndex);
       if (pushInfo.force) parsed.force = pushInfo.force;
@@ -844,6 +885,8 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
     provider: latestCommit.provider,
     sessionId: latestCommit.sessionId,
     sourceId: 'git-upstream-status',
+    source: 'git-upstream-status',
+    confidence: 0.76,
     ts: eventTime,
     commandHash: stableHash(id),
     dryRun: false,
@@ -855,6 +898,7 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
     branch: branch || null,
     label: pushState.upstream ? `Pushed to ${pushState.upstream}` : 'Pushed',
     inferred: true,
+    observed: false,
   };
 }
 
@@ -912,6 +956,8 @@ function syntheticRepositoryPushFromTransition(project, branch, commitEvents, pu
     provider: latestCommit.provider || 'git',
     sessionId: latestCommit.sessionId || `git-repo-${stableHash(project)}`,
     sourceId: 'git-upstream-transition',
+    source: 'git-upstream-transition',
+    confidence: 0.82,
     ts: now,
     commandHash: stableHash(id),
     dryRun: false,
@@ -923,6 +969,7 @@ function syntheticRepositoryPushFromTransition(project, branch, commitEvents, pu
     branch: normalizedBranch || null,
     label: pushState.upstream ? `Pushed to ${pushState.upstream}` : 'Pushed',
     inferred: true,
+    observed: false,
   };
 }
 
@@ -1006,6 +1053,8 @@ function readUnpushedCommitEvents(project, context = {}) {
           provider: context.provider,
           sessionId: context.sessionId,
           sourceId: 'git-upstream-status',
+          source: 'git-upstream-status',
+          confidence: 0.72,
           ts: Number.isFinite(ts) ? ts : Date.now(),
           commandHash: stableHash(id),
           dryRun: false,
@@ -1015,6 +1064,7 @@ function readUnpushedCommitEvents(project, context = {}) {
           sha,
           label: subject || sha.slice(0, 10),
           inferred: true,
+          observed: false,
           branch: comparison.branch || null,
           targetRef: comparison.branch || comparison.baseRef,
           upstream: comparison.upstream,
