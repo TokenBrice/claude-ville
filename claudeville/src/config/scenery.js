@@ -319,7 +319,7 @@ export const VEGETATION_DISTRICTS = [
     { name: 'northern-elderwood', centerX: 17, centerY: 8, radius: 15.0, bushBoost: 0.044, grassBoost: 0.060, treeBoost: 0.120 },
     { name: 'scholars-ridge', centerX: 17, centerY: 18, radius: 10.0, bushBoost: 0.022, grassBoost: 0.048, treeBoost: 0.040 },
     { name: 'west-river-frame', centerX: 7, centerY: 22, radius: 7.0, bushBoost: 0.04, grassBoost: 0.045, treeBoost: 0.065 },
-    { name: 'portal-grove', centerX: 10.5, centerY: 28.5, radius: 5.0, bushBoost: 0.032, grassBoost: 0.023, treeBoost: 0.018 },
+    { name: 'portal-grove', centerX: 7.5, centerY: 28.5, radius: 5.0, bushBoost: 0.032, grassBoost: 0.023, treeBoost: 0.018 },
     { name: 'south-wildwood', centerX: 22, centerY: 35, radius: 12, bushBoost: 0.04, grassBoost: 0.05, treeBoost: 0.08 },
     { name: 'harbor-windbreak', centerX: 35, centerY: 22, radius: 5.2, bushBoost: 0.020, grassBoost: 0.014, treeBoost: 0.008 },
 ];

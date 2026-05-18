@@ -39,7 +39,7 @@ const HARBOR_APPROACH = { tileX: 39, tileY: 31 };
 // Mirrors PORTAL_SPAWN_TILE in IsometricRenderer.js (Portal Gate footprint
 // center). Used as the fallback target when the renderer cannot project a
 // screen point for an orphan subagent's return.
-const PORTAL_SPAWN_TILE = { tileX: 7, tileY: 32 };
+const PORTAL_SPAWN_TILE = { tileX: 4, tileY: 32 };
 
 function nowMs() {
     if (typeof performance !== 'undefined' && performance.now) return performance.now();

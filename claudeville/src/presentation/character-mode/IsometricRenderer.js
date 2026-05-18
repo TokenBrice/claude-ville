@@ -80,21 +80,28 @@ const VISIT_OVERFLOW_TILES = Object.freeze({
         { tileX: 22, tileY: 34, overflow: true, reason: 'review' },
         { tileX: 24, tileY: 34, overflow: true, reason: 'review' },
     ],
+    mine: [
+        { tileX: 9, tileY: 34, overflow: true, reason: 'mine-yard' },
+        { tileX: 10, tileY: 36, overflow: true, reason: 'mine-yard' },
+        { tileX: 13, tileY: 37, overflow: true, reason: 'cart-path' },
+        { tileX: 16, tileY: 34, overflow: true, reason: 'ore-sort' },
+        { tileX: 16, tileY: 36, overflow: true, reason: 'ore-sort' },
+    ],
     watchtower: [
         { tileX: 28, tileY: 15, overflow: true, reason: 'lookout' },
         { tileX: 27, tileY: 15, overflow: true, reason: 'lookout' },
     ],
 });
-// Center of Portal Gate footprint (origin 5,29 size 4x4). Subagents spawn here
+// Center of Portal Gate footprint (origin 2,29 size 4x4). Subagents spawn here
 // so dispatch reads as "child stepped through the portal" rather than the
 // generic Village Gate arrival used by top-level sessions.
-const PORTAL_SPAWN_TILE = Object.freeze({ tileX: 7, tileY: 32 });
+const PORTAL_SPAWN_TILE = Object.freeze({ tileX: 4, tileY: 32 });
 const AMBIENT_SCENIC_POINTS = Object.freeze([
     { id: 'bridge-west', tileX: 14, tileY: 28, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
     { id: 'bridge-east', tileX: 18, tileY: 30, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
     { id: 'harbor-rail', tileX: 31, tileY: 23, district: 'harbor', reason: 'harbor-watch', tags: ['water'] },
     { id: 'harbor-ledger', tileX: 33, tileY: 24, district: 'harbor', reason: 'dock-ledger', tags: ['harbor'] },
-    { id: 'portal-ruins', tileX: 7, tileY: 36, district: 'arcane', reason: 'portal-observe', tags: ['portal'] },
+    { id: 'portal-ruins', tileX: 4, tileY: 36, district: 'arcane', reason: 'portal-observe', tags: ['portal'] },
     { id: 'mine-cart', tileX: 15, tileY: 37, district: 'resource', reason: 'cart-path', tags: ['mine'] },
     { id: 'forest-edge', tileX: 25, tileY: 11, district: 'knowledge', reason: 'forest-edge', tags: ['quiet'] },
     { id: 'archive-alcove', tileX: 10, tileY: 18, district: 'knowledge', reason: 'reading-alcove', tags: ['archive'] },
@@ -1123,7 +1130,7 @@ export class IsometricRenderer {
             { tileX: 13.4, tileY: 34.3, particleType: 'mineDust', chance: 0.016 },
             { tileX: 13.4, tileY: 34.0, particleType: 'firefly', chance: 0.014 },
             { tileX: 27.8, tileY: 29.2, particleType: 'forgeEmber', chance: 0.02 },
-            { tileX: 7.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
+            { tileX: 4.8, tileY: 32.2, particleType: 'portalRune', chance: 0.022 },
             { tileX: 22.4, tileY: 33.1, particleType: 'questPing', chance: 0.014 },
             { tileX: 8.5, tileY: 16.8, particleType: 'archiveMote', chance: 0.022 },
             { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
