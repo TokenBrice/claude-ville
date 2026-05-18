@@ -56,6 +56,8 @@ Detail payloads should return `{ sessionId, toolHistory, messages, tokenUsage }`
 Backend/provider changes:
 
 ```bash
+npm run check:adapters
+npm run check:services
 node --check claudeville/adapters/<provider>.js
 node --check claudeville/adapters/index.js
 npm run dev
@@ -63,6 +65,8 @@ curl http://localhost:4000/api/providers
 curl http://localhost:4000/api/sessions
 curl 'http://localhost:4000/api/session-detail?provider=<provider>&sessionId=<id>&project=<project>'
 ```
+
+Run `node scripts/smoke/adapters.mjs` when touching Claude adapter discovery or shared adapter fixture assumptions. It currently covers Claude fixture behavior, not every provider. Run `npm run check:git-events` when provider changes affect git command extraction.
 
 Frontend identity changes:
 
@@ -74,18 +78,19 @@ Frontend identity changes:
 Sprite changes:
 
 ```bash
-npm run sprites:validate
+npm run sprites:audit-refresh
 npm run sprites:capture-fresh
 npm run sprites:visual-diff
 ```
 
 Widget changes:
 
-- macOS: `npm run widget:build`, then `npm run widget`.
-- KDE: `npm run widget:kde:install` when KDE is available; otherwise diff the QML and shell scripts.
+- macOS: `npm run widget:build`, then `npm run widget:check` or `npm run widget:verify-bundle`, then `npm run widget`.
+- KDE: `npm run widget:kde:check`, then `npm run widget:kde:install` when KDE is available.
 
 Docs-only changes:
 
 ```bash
 git status --short
+npm run validate:quick
 ```

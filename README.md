@@ -1,6 +1,6 @@
 # ClaudeVille
 
-ClaudeVille is a local dashboard for AI coding agent activity. It reads session files from Claude Code, OpenAI Codex CLI, and Google Gemini CLI, normalizes them into a shared session model, and displays them in either an isometric RPG-style world or a dense monitoring dashboard.
+ClaudeVille is a local dashboard for AI coding agent activity. It reads session files from Claude Code, OpenAI Codex CLI, Google Gemini CLI, Kimi, and OpenCode, normalizes them into a shared session model, and displays them in either an isometric RPG-style world or a dense monitoring dashboard.
 
 The app is intentionally small: a zero-dependency Node.js HTTP/WebSocket server, static browser assets, vanilla ES modules, Canvas 2D rendering, and optional desktop widgets for macOS and KDE Plasma.
 
@@ -14,19 +14,29 @@ Open `http://localhost:4000`.
 
 Runtime is dependency-free: `npm run dev` uses only Node built-ins and static browser files. The repo also has a `package-lock.json` and dev dependencies for sprite validation, visual diffs, and Playwright-based capture scripts; run `npm install` only when those development scripts are needed.
 
-`package.json` defines:
+Common `package.json` scripts:
 
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | Start `claudeville/server.js` on port `4000`. |
+| `npm run validate:quick` | Run the no-runtime syntax, adapter-fixture, git-event, sprite-ID, and widget source checks. |
+| `npm run check:server` / `check:adapters` / `check:services` / `check:frontend-syntax` / `check:scripts` | Targeted JavaScript syntax checks. |
+| `npm run check:git-events` | Validate git-event parsing fixtures. |
+| `npm run check:adapter-fixtures` | Validate adapter fixture behavior. |
 | `npm run widget:build` | Compile the optional macOS widget app. |
 | `npm run widget` | Build, then open `widget/ClaudeVilleWidget.app`. |
+| `npm run widget:check` | Verify macOS widget source checks and copied app-bundle resources. |
+| `npm run widget:kde:check` | Validate the KDE Plasma package without installing it. |
 | `npm run widget:kde:install` | Install or upgrade the KDE Plasma widget. |
 | `npm run widget:kde:uninstall` | Remove the KDE Plasma widget. |
+| `npm run sprites:audit-ids` | Check renderer sprite references against the manifest. |
+| `npm run sprites:audit-refresh` | Run sprite ID audit and full manifest validation together. |
 | `npm run sprites:validate` | Validate `assets/sprites/manifest.yaml` against PNG files and character-sheet shape. Requires dev dependencies. |
 | `npm run sprites:capture-baseline` | Capture baseline world screenshots for sprite visual diffing. Requires the dev server and Playwright. |
 | `npm run sprites:capture-fresh` | Capture fresh screenshots next to the baseline set. Requires the dev server and Playwright. |
 | `npm run sprites:visual-diff` | Compare baseline and fresh sprite screenshots with `pixelmatch`. Requires dev dependencies. |
+| `npm run world:validate-buildings` | Validate building definitions, entrances, visit tiles, walk exclusions, and manifest references. |
+| `npm run world:validate-terrain` | Validate terrain chunk/cache sizing guardrails. |
 
 ## Fast Onboarding Path
 
@@ -53,6 +63,8 @@ For an unfamiliar agent, read these first:
   - Claude Code: `~/.claude/`
   - Codex CLI: `~/.codex/` (sessions are read from `~/.codex/sessions/`)
   - Gemini CLI: `~/.gemini/` (sessions are read from `~/.gemini/tmp/`)
+  - Kimi: `~/.kimi/` (sessions are read from `~/.kimi/sessions/`)
+  - OpenCode: `~/.local/share/opencode/opencode.db` with Node `node:sqlite` support or the `sqlite3` CLI available for read-only access.
 - macOS widget only: macOS with the Xcode Command Line Tools available for `swiftc`.
 - KDE widget only: KDE Plasma 6 with `kpackagetool6`.
 
@@ -69,6 +81,8 @@ claude-ville/
 |   |   |-- claude.js
 |   |   |-- codex.js
 |   |   |-- gemini.js
+|   |   |-- kimi.js
+|   |   |-- opencode.js
 |   |   |-- gitEvents.js            # Git commit/push extraction from tool commands
 |   |   `-- index.js               # Adapter registry
 |   |-- assets/sprites/            # Pixel-art manifest and generated PNG assets
@@ -118,7 +132,7 @@ The server is hardcoded to port `4000`.
 | --- | --- |
 | `GET /api/sessions` | Active sessions from all available providers. Accepts `force=1`, `force=true`, or `force=yes` to bypass the session-list cache. |
 | `GET /api/session-detail?sessionId=&project=&provider=` | Tool history, recent messages, token usage where available. |
-| `POST /api/session-details` | Batch detail fetch for visible or selected sessions. Body shape: `{ "items": [{ "key", "sessionId", "project", "provider" }] }`. |
+| `POST /api/session-details` | Batch detail fetch for visible or selected sessions. Body shape: `{ "items": [{ "key", "sessionId", "project", "provider" }] }`; request body max is 256 KiB, the server reads up to 100 items, skips invalid providers, and returns `count` as the number of returned detail payloads. |
 | `GET /api/teams` | Claude Code team metadata from `~/.claude/teams/`. |
 | `GET /api/tasks` | Claude Code task groups from `~/.claude/tasks/`. |
 | `GET /api/providers` | Detected provider list and home directories. |
@@ -139,6 +153,8 @@ Adapters live in `claudeville/adapters/` and are registered in `adapters/index.j
 | Claude Code | `~/.claude/` | `history.jsonl`, `projects/*/*.jsonl`, subagent files, teams, tasks | Supports main sessions, subagents, orphan/team-member sessions, token usage, teams, tasks, and git commit/push extraction. |
 | Codex CLI | `~/.codex/sessions/` | Recent `rollout-*.jsonl` files under date folders | Reads recent rollouts, session metadata, tools, messages, token count events, reasoning effort, and git commit/push extraction. |
 | Gemini CLI | `~/.gemini/tmp/` | `tmp/<project_hash>/chats/session-*.json` | Reads recent chat JSON files, attempts to reverse-map project hashes to local paths, and extracts git commit/push events where commands are present. |
+| Kimi | `~/.kimi/` | `sessions/<project_hash>/<session_uuid>/wire.jsonl`, `state.json`, `kimi.json` | Reads tool/message/status events, resolves project hashes, extracts token usage, and extracts git commit/push events. |
+| OpenCode | `~/.local/share/opencode/opencode.db` | SQLite session/message/part rows | Opens the database read-only via `node:sqlite` or `sqlite3 -readonly`, preserves OpenCode as the provider, exposes model families such as DeepSeek through `model`, and extracts git commit/push events from shell tools. |
 
 Only active adapters are used. Claude-only concepts such as teams and tasks are optional and return empty arrays when unavailable.
 
@@ -209,12 +225,30 @@ Then open Plasma's **Add Widgets** panel and search for **ClaudeVille**. The wid
 
 ## Validation
 
-Basic syntax smoke:
+Default non-runtime validation:
 
 ```bash
-node --check claudeville/server.js
-find claudeville/adapters claudeville/services -name '*.js' -print0 | xargs -0 -n1 node --check
+npm run validate:quick
 ```
+
+Targeted syntax smoke:
+
+```bash
+npm run check:server
+npm run check:adapters
+npm run check:services
+npm run check:frontend-syntax
+npm run check:scripts
+```
+
+`scripts/smoke/` also has hand-run fixture checks for specific high-risk paths:
+
+```bash
+node scripts/smoke/adapters.mjs
+NODE_NO_WARNINGS=1 node scripts/smoke/relationship.mjs
+```
+
+These smoke scripts are not part of `npm run validate:quick`.
 
 Runtime smoke:
 
@@ -236,7 +270,7 @@ npm run sprites:visual-diff
 
 If dependencies are not installed and installing them is out of scope, fall back to manifest/code inspection plus `file claudeville/assets/sprites/**/*.png` checks for touched assets.
 
-For macOS widget changes, run `npm run widget:build`, then `npm run widget`, and confirm the app can reach port `4000`. For KDE widget changes, run `bash -n widget/kde/install.sh widget/kde/uninstall.sh`, install with `npm run widget:kde:install`, and confirm the panel widget can reach port `4000`.
+For macOS widget changes, run `npm run widget:build`, then `npm run widget:check` or `npm run widget:verify-bundle`, then `npm run widget`, and confirm the app can reach port `4000`. `validate:quick` checks widget pricing and KDE source structure but does not prove the generated `.app` bundle resources are current. For KDE widget changes, run `npm run widget:kde:check`, install with `npm run widget:kde:install` when KDE is available, and confirm the panel widget can reach port `4000`.
 
 ## Development Notes
 
@@ -268,6 +302,7 @@ For macOS widget changes, run `npm run widget:build`, then `npm run widget`, and
 | `docs/motion-budget.md` | World mode work | Motion, pulse-band, and reduced-motion policy. |
 | `docs/visual-experience-crafting.md` | Visual/UX work | Transferable design method behind the RPG world model. |
 | `agents/README.md` | Agents | Agent artifact index, status taxonomy, and templates. |
+| `agents/research/kimi-integration-export/kimi-export-0beb2209-20260501-183644.md` | Historical provenance | Raw Kimi integration session export; not current implementation guidance. |
 | `agents/handover/claudeville-type-design-handover.md` | Visual/UX handoff | Agent-ready packet for adapting ClaudeVille's world metaphor to another scenery/domain. |
 | `scripts/sprites/generate.md` | Sprite work | Manifest-first Pixellab generation and asset validation runbook. |
 | `docs/pixellab-reference.md` | Sprite work | Pixellab tool catalog, parameter enums, animation templates, async lifecycle, and pitfalls. |

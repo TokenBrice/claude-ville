@@ -6,16 +6,16 @@ The dashboard observes local AI CLI session files. It writes nothing back to tho
 
 ## "No providers detected" / `/api/providers` returns `[]`
 
-At least one provider home directory must exist: `~/.claude/`, `~/.codex/`, or `~/.gemini/`. The adapters in `claudeville/adapters/index.js` register providers by home-directory presence, not by whether session subdirectories already contain data. A fresh machine with none of these CLIs installed correctly returns an empty list.
+At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.kimi/`, or `~/.local/share/opencode/opencode.db`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OpenCode is stricter: the database must exist and either Node's `node:sqlite` support or the `sqlite3` CLI must be available for read-only access. A fresh machine with none of these CLIs installed correctly returns an empty list.
 
 Server log on startup will say:
 
 ```
 [!] No active providers
-    One of ~/.claude/, ~/.codex/, or ~/.gemini/ is required
+    One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.kimi/, or ~/.local/share/opencode/ is required
 ```
 
-Fix: install at least one of Claude Code, Codex, or Gemini and run a session so the provider home and session files are created. Then restart the server.
+Fix: install at least one supported CLI and run a session so the provider home and session files are created. Then restart the server.
 
 ## Providers detected, but `/api/sessions` is empty
 
@@ -27,7 +27,12 @@ Provider scan windows also matter:
 
 - Claude uses recent `history.jsonl` entries to find active sessions, then checks recent project/session files.
 - Codex scans recent date folders under `~/.codex/sessions/YYYY/MM/DD/` and filters by file activity.
-- Codex and Gemini detail lookup can search a wider window than the active-session list, so a detail URL may work for a session that no longer appears as active.
+- Gemini reads recent chat JSON files under `~/.gemini/tmp/<project_hash>/chats/`.
+- Kimi reads recent `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl` data and resolves project hashes from Kimi config and common local work directories.
+- OpenCode reads recent rows from `~/.local/share/opencode/opencode.db` in read-only mode.
+- Some detail lookups can search a wider window than the active-session list, so a detail URL may work for a session that no longer appears as active.
+
+Repository-only `git` sessions can also appear when git enrichment detects unpushed or pushed GitHub repository activity outside a live provider session. That scan defaults to `~/Documents/git`, can be narrowed with `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`, capped with `CLAUDEVILLE_REPOSITORY_SCAN_MAX`, and disabled with `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`. Synthetic git session detail returns a reason string rather than a provider transcript.
 
 ## WebSocket never connects / port 4000 collision (`EADDRINUSE`)
 
@@ -80,7 +85,7 @@ Credential and activity sources are cached briefly, and quota checks are best-ef
 
 ## Cost numbers look wrong
 
-Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. The shared pricing and token normalization logic lives in `claudeville/src/domain/value-objects/TokenUsage.js`. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`). Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
+Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. The shared pricing and token normalization logic lives in `claudeville/src/domain/value-objects/TokenUsage.js`. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`, `kimi-for-coding`, `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`). DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but match DeepSeek pricing by model string. Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
 
 If a model is missing or its price has changed, update `TokenUsage.js`, `widget/Sources/main.swift`, and `widget/Resources/widget.html`; then verify browser and widget cost displays. `Agent` and `ActivityPanel` both call `TokenUsage.estimateCost(...)` in the browser app.
 
@@ -124,9 +129,9 @@ curl http://localhost:4000/api/perf
 
 If the journal shows GPU ring timeouts, compositor `GL_CONTEXT_LOST`, or Xwayland/browser core dumps without OOM-killer entries, treat it as a graphics-stack reset. ClaudeVille should reduce load by pausing World mode in Dashboard, releasing renderer-owned canvas caches, and capping canvas backing-store pixels, but driver/compositor resets can still originate below the app.
 
-## Widget will not build
+## macOS widget will not build
 
-The widget is macOS only. `widget/build.sh` invokes `swiftc`, which requires the Xcode Command Line Tools. On Linux or Windows the build script will fail at the first compile step. There is no fallback for those platforms.
+The Swift menu-bar widget is macOS only. `widget/build.sh` invokes `swiftc`, which requires the Xcode Command Line Tools. On Linux or Windows the build script will fail at the first compile step. KDE Plasma support is separate under `widget/kde/` and does not use `swiftc`.
 
 ## Browser console errors after editing
 

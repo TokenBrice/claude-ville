@@ -42,7 +42,7 @@ Current API surface:
 | --- | --- |
 | `GET /api/sessions` | Active sessions from every available provider. |
 | `GET /api/session-detail?sessionId=&project=&provider=` | Tool history, messages, and token usage for one session when available. |
-| `POST /api/session-details` | Batch detail fetch for visible or selected sessions. |
+| `POST /api/session-details` | Batch detail fetch for visible or selected sessions. Request body max is 256 KiB, up to 100 items are read, invalid providers are skipped, and `count` is the returned detail count. |
 | `GET /api/teams` | Claude Code team metadata. |
 | `GET /api/tasks` | Claude Code task metadata. |
 | `GET /api/providers` | Active provider adapters. |
@@ -101,6 +101,7 @@ Adapters are in `adapters/` and registered by `adapters/index.js`.
   - Shared parser for git `commit` and `push` commands seen in provider tool logs.
   - Dry-runs are omitted.
   - Events are attached to active session objects as `gitEvents`; detail payloads currently focus on tools/messages/tokens.
+  - The registry can synthesize repository-only `provider: 'git'` sessions for unpushed/pushed GitHub repository activity. Scans default to `~/Documents/git`, can be tuned with `CLAUDEVILLE_REPOSITORY_SCAN_ROOT` and `CLAUDEVILLE_REPOSITORY_SCAN_MAX`, and can be disabled with `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`.
 
 Adapter availability is automatic. A machine can have any subset of providers installed, and empty provider output is not necessarily an error.
 
@@ -232,9 +233,9 @@ Dashboard mode is DOM/card rendering under `src/presentation/dashboard-mode/`.
 
 ## Activity Panel
 
-`src/presentation/shared/ActivityPanel.js` is the 320px right panel opened by `agent:selected` and closed by `agent:deselected`.
+`src/presentation/shared/ActivityPanel.js` is the 320px right panel for selected-agent and selected-building detail. `agent:selected` opens agent mode; `BUILDING_EVENTS.SELECTED` opens building mode and clears agent selection.
 
-It polls session detail every 2 seconds for the selected agent and shows tool history, recent messages, and token usage when the provider adapter exposes those fields.
+It polls session detail every 2 seconds for the selected agent and shows tool history, recent messages, and token usage when the provider adapter exposes those fields. In building mode it renders purpose/status/occupants and refreshes occupants every 5 seconds.
 
 The panel shares `SessionDetailsService.js` with Dashboard mode. It renders only when detail signatures change, so stale-looking output can be caused by cached detail data or an unchanged signature rather than a missed DOM update.
 

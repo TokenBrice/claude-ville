@@ -4,11 +4,11 @@ Short decision records for load-bearing constraints in ClaudeVille. Each entry s
 
 ## Port 4000 is hardcoded
 
-`claudeville/server.js` defines `const PORT = 4000;`. The widget and `widget/Resources/widget.html` hardcode the same port. The README, both `CLAUDE.md` files, and `AGENTS.md` reference it as fixed.
+`claudeville/server.js` defines `const PORT = 4000;`. The macOS widget, `widget/Resources/widget.html`, and KDE widget defaults hardcode the same port. The README, both `CLAUDE.md` files, and `AGENTS.md` reference it as fixed.
 
 The local-first design assumes one user, one machine, one server. Making the port configurable would force the widget, the embedded `widget.html`, and the docs to learn how to discover it. A constant is simpler and matches user muscle memory.
 
-If you change this, update: `claudeville/server.js`, `widget/Sources/main.swift`, `widget/Resources/widget.html`, README, both `CLAUDE.md` files, and `docs/troubleshooting.md`.
+If you change this, update: `claudeville/server.js`, `widget/Sources/main.swift`, `widget/Resources/widget.html`, `widget/kde/claudeville/contents/config/main.xml`, `widget/kde/claudeville/contents/ui/main.qml`, README, both `CLAUDE.md` files, `AGENTS.md`, `widget/kde/README.md`, and `docs/troubleshooting.md`.
 
 ## Dependency-free runtime, no build step
 
@@ -30,7 +30,7 @@ If you change this, update: `claudeville/CLAUDE.md` and the boot path described 
 
 ## Read-only adapter contract
 
-The provider session files in `~/.claude/`, `~/.codex/sessions/`, and `~/.gemini/tmp/` are owned by the upstream CLIs. ClaudeVille adapters open them for reading only. `claudeville/CLAUDE.md` states: "Treat all provider session files as read-only inputs" and "Do not mutate local CLI session files."
+The provider session files in `~/.claude/`, `~/.codex/sessions/`, `~/.gemini/tmp/`, `~/.kimi/`, and `~/.local/share/opencode/opencode.db` are owned by the upstream CLIs. ClaudeVille adapters open them for reading only. OpenCode support uses read-only SQLite access through `node:sqlite` when available and falls back to `sqlite3 -readonly`; it does not write migrations, checkpoints, vacuums, or config changes. `claudeville/CLAUDE.md` states: "Treat all provider session files as read-only inputs" and "Do not mutate local CLI session files."
 
 The CLIs append to these files concurrently and may change their format in any release. Writing back would create races and version drift. The dashboard's correctness depends on never being a second writer.
 
@@ -67,6 +67,8 @@ Different providers report cache hits differently. The adapters normalize them i
 - Claude adapter (`claudeville/adapters/claude.js:253-254`) reads `cache_read_input_tokens` and `cache_creation_input_tokens` from each turn's `usage` and sums them.
 - Codex adapter (`claudeville/adapters/codex.js:317-349`) reads `cache_read_input_tokens` / `cacheReadInputTokens` and `cache_creation_input_tokens`. Codex has no separate cache-create concept in some payloads, so `cacheCreate` is set to 0 in those branches.
 - Gemini does not currently report cache tokens; the field is left at 0.
+- Kimi reads cache token fields from status updates and normalizes cache reads/creation into the same shape.
+- OpenCode reads SQLite token totals for cache read/write; frontend token normalization treats cache write aliases as `cacheCreate`.
 
 If a provider format changes, update only the relevant adapter. The frontend keeps using the normalized shape.
 
