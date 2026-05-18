@@ -29,6 +29,29 @@ const DEFAULT_TTLS = Object.freeze({
 const TOKEN_DELTA_THRESHOLD = 128;
 const CONTEXT_PRESSURE_THRESHOLD = 0.82;
 const MAX_SEEN_GIT_EVENTS = 600;
+const WORKING_PHASES = new Set([
+    'reading',
+    'editing',
+    'testing',
+    'researching',
+    'coordinating',
+    'git',
+    'quota/resource',
+    'waiting',
+]);
+const AGENT_GOALS = new Set([
+    'complete-task',
+    'assist-parent',
+    'monitor-quota',
+    'recover-error',
+]);
+const WORK_ITINERARY_ROUTE = Object.freeze(['archive', 'forge', 'taskboard', 'harbor']);
+const WORK_ITINERARY_PHASE_INDEX = Object.freeze({
+    reading: 0,
+    editing: 1,
+    testing: 2,
+    git: 3,
+});
 
 function timeNow() {
     return Date.now();
@@ -66,6 +89,196 @@ function intentSort(a, b, now) {
     if (aSticky !== bSticky) return bSticky - aSticky;
     if (a.confidence !== b.confidence) return b.confidence - a.confidence;
     return b.createdAt - a.createdAt;
+}
+
+function normalizeWorkingPhase(phase) {
+    const value = String(phase || '').trim().toLowerCase();
+    return WORKING_PHASES.has(value) ? value : null;
+}
+
+function normalizeGoal(goal) {
+    const value = String(goal || '')
+        .trim()
+        .replace(/([a-z])([A-Z])/g, '$1-$2')
+        .replace(/[_\s]+/g, '-')
+        .toLowerCase();
+    const aliases = {
+        complete: 'complete-task',
+        completetask: 'complete-task',
+        task: 'complete-task',
+        assist: 'assist-parent',
+        assistparent: 'assist-parent',
+        parent: 'assist-parent',
+        monitor: 'monitor-quota',
+        monitorquota: 'monitor-quota',
+        quota: 'monitor-quota',
+        recover: 'recover-error',
+        recovererror: 'recover-error',
+        error: 'recover-error',
+    };
+    const normalized = aliases[value] || value;
+    return AGENT_GOALS.has(normalized) ? normalized : null;
+}
+
+function stringifyToolInput(input) {
+    if (input == null) return '';
+    if (typeof input === 'string') return input;
+    try {
+        return JSON.stringify(input);
+    } catch {
+        return String(input);
+    }
+}
+
+function phaseFromToolClassification(tool, input, classified) {
+    const building = String(classified?.building || '').toLowerCase();
+    const text = [
+        tool,
+        stringifyToolInput(input),
+        classified?.reason,
+        classified?.label,
+        building,
+    ].join(' ').toLowerCase();
+
+    if (building === 'harbor' || /\b(git\s+\w+|gh\s+\w+|commit|push|pull|merge|rebase|checkout)\b/.test(text)) return 'git';
+    if (building === 'mine' || /\b(quota|token|context|usage|throttle|rate.?limit|resource)\b/.test(text)) return 'quota/resource';
+    if (/\b(test|spec|pytest|jest|vitest|playwright|check|lint|typecheck|validate|verification)\b/.test(text)) return 'testing';
+    if (building === 'forge' || /\b(edit|write|patch|apply_patch|modify|refactor|generate|create|delete|rename|move|format)\b/.test(text)) return 'editing';
+    if (building === 'observatory' || building === 'portal' || /\b(web|browser|browse|fetch|curl|research|search_query|image_query|lookup)\b/.test(text)) return 'researching';
+    if (building === 'archive' || /\b(read|grep|rg|find|cat|sed|open|inspect|scan|list|ls|view)\b/.test(text)) return 'reading';
+    if (building === 'command' || building === 'taskboard' || /\b(spawn|agent|parallel|multi_tool|todo|task|plan|handoff|coordinate|delegate|wait|resume)\b/.test(text)) return 'coordinating';
+    return 'coordinating';
+}
+
+function phaseFromIntentDraft(draft) {
+    const explicit = normalizeWorkingPhase(draft?.phase || draft?.workingPhase);
+    if (explicit) return explicit;
+    const source = String(draft?.source || '').toLowerCase();
+    const building = String(draft?.building || '').toLowerCase();
+    const reason = String(draft?.reason || '').toLowerCase();
+    if (source === 'git' || building === 'harbor') return 'git';
+    if (source === 'quota' || source === 'token' || building === 'mine') return 'quota/resource';
+    if (source === 'handoff' || source === 'team' || source === 'subagent') return 'coordinating';
+    if (source === 'alert' && reason.includes('wait')) return 'waiting';
+    if (building === 'archive') return 'reading';
+    if (building === 'forge') return 'editing';
+    if (building === 'observatory' || building === 'portal') return 'researching';
+    if (building === 'taskboard') return 'testing';
+    return 'coordinating';
+}
+
+function interruptibleForIntentDraft(draft, priority, phase) {
+    if (draft?.interruptible === false) return false;
+    if (draft?.interruptible === true) return true;
+    const source = String(draft?.source || '').toLowerCase();
+    if (source === 'ambient') return true;
+    if (phase === 'waiting') return true;
+    if (source === 'alert' || source === 'git') return false;
+    return priority < 85;
+}
+
+function goalFromIntentDraft(draft, phase) {
+    const explicit = normalizeGoal(draft?.goal || draft?.intentGoal || draft?.payload?.goal);
+    if (explicit) return explicit;
+    const source = String(draft?.source || '').toLowerCase();
+    const reason = String(draft?.reason || '').toLowerCase();
+    const building = String(draft?.building || '').toLowerCase();
+    if (source === 'subagent' || reason.includes('parent') || draft?.payload?.parentId) return 'assist-parent';
+    if (
+        source === 'quota'
+        || source === 'token'
+        || phase === 'quota/resource'
+        || building === 'mine'
+        || /\b(quota|context|resource|token|throttle|rate.?limit)\b/.test(reason)
+    ) {
+        return 'monitor-quota';
+    }
+    if (/\b(fail(?:ed)?|error|errored|reject(?:ed)?|cancel(?:led|ed)?|recover|retry|blocked)\b/.test(reason)) {
+        return 'recover-error';
+    }
+    return 'complete-task';
+}
+
+function normalizeRouteStop(stop) {
+    const value = typeof stop === 'string'
+        ? stop
+        : (stop?.building || stop?.buildingType || stop?.type || stop?.id || '');
+    return String(value || '').trim().toLowerCase() || null;
+}
+
+function normalizeItineraryRoute(raw) {
+    const route = Array.isArray(raw)
+        ? raw
+        : (Array.isArray(raw?.route)
+            ? raw.route
+            : (Array.isArray(raw?.stops) ? raw.stops : raw?.buildings));
+    if (!Array.isArray(route)) return [];
+    const result = [];
+    for (const stop of route) {
+        const normalized = normalizeRouteStop(stop);
+        if (normalized && result[result.length - 1] !== normalized) result.push(normalized);
+    }
+    return result;
+}
+
+function clampRouteIndex(index, route) {
+    const numeric = Number(index);
+    if (!Number.isFinite(numeric) || !route.length) return -1;
+    return Math.max(0, Math.min(route.length - 1, Math.round(numeric)));
+}
+
+function cloneItinerary(itinerary) {
+    if (!itinerary) return null;
+    return {
+        ...itinerary,
+        route: Array.isArray(itinerary.route) ? [...itinerary.route] : [],
+    };
+}
+
+function itineraryFromIntentDraft(draft, { phase, goal, intentId, previous = null, now } = {}) {
+    const raw = draft?.itinerary || draft?.payload?.itinerary || null;
+    const explicitRoute = normalizeItineraryRoute(raw);
+    if (explicitRoute.length) {
+        const building = normalizeRouteStop(draft?.building);
+        let currentIndex = clampRouteIndex(raw?.currentIndex ?? raw?.stepIndex ?? raw?.index, explicitRoute);
+        if (currentIndex < 0 && building) currentIndex = explicitRoute.indexOf(building);
+        if (currentIndex < 0 && phase && WORK_ITINERARY_PHASE_INDEX[phase] != null) {
+            currentIndex = clampRouteIndex(WORK_ITINERARY_PHASE_INDEX[phase], explicitRoute);
+        }
+        if (currentIndex < 0) currentIndex = 0;
+        return {
+            id: raw?.id || intentId || null,
+            label: raw?.label || '',
+            goal: normalizeGoal(raw?.goal || goal) || goal || null,
+            route: explicitRoute,
+            currentIndex,
+            currentStop: explicitRoute[currentIndex] || building || null,
+            nextStop: explicitRoute[currentIndex + 1] || null,
+            source: draft?.source || null,
+            reason: draft?.reason || null,
+            updatedAt: now,
+            inferred: !!raw?.inferred,
+        };
+    }
+
+    const stepIndex = WORK_ITINERARY_PHASE_INDEX[phase];
+    const source = String(draft?.source || '').toLowerCase();
+    if (stepIndex == null || !['tool', 'handoff', 'git'].includes(source)) {
+        return previous?.itinerary ? cloneItinerary(previous.itinerary) : null;
+    }
+    return {
+        id: `work-cycle:${intentId || draft?.sourceKey || draft?.building || 'intent'}`,
+        label: 'Work cycle',
+        goal,
+        route: [...WORK_ITINERARY_ROUTE],
+        currentIndex: stepIndex,
+        currentStop: WORK_ITINERARY_ROUTE[stepIndex] || null,
+        nextStop: WORK_ITINERARY_ROUTE[stepIndex + 1] || null,
+        source: draft?.source || null,
+        reason: draft?.reason || null,
+        updatedAt: now,
+        inferred: true,
+    };
 }
 
 export class VisitIntentManager {
@@ -146,7 +359,11 @@ export class VisitIntentManager {
         for (const map of this.intentsByAgent.values()) {
             for (const intent of map.values()) {
                 if (intent.expiresAt <= now) continue;
-                intents.push({ ...intent, msRemaining: Math.max(0, intent.expiresAt - now) });
+                intents.push({
+                    ...intent,
+                    itinerary: cloneItinerary(intent.itinerary),
+                    msRemaining: Math.max(0, intent.expiresAt - now),
+                });
             }
         }
         intents.sort((a, b) => (a.agentId || '').localeCompare(b.agentId || '') || intentSort(a, b, now));
@@ -195,9 +412,12 @@ export class VisitIntentManager {
         if (String(agent.status || '').toLowerCase() !== 'working') return;
         const classified = classifyTool(tool, agent.currentToolInput ?? agent.lastToolInput);
         if (!classified?.building) return;
+        const input = agent.currentToolInput ?? agent.lastToolInput;
+        const phase = phaseFromToolClassification(tool, input, classified);
         this.lastToolBuildingByAgent.set(agent.id, {
             building: classified.building,
             reason: classified.reason,
+            phase,
             at: now,
         });
         if (classified.building === 'forge' && /edit|write|patch|modify|refactor|generate|asset/i.test(classified.reason || '')) {
@@ -211,6 +431,7 @@ export class VisitIntentManager {
                     sourceKey: `forge-taskboard:${Math.floor(forge.at / 1000)}`,
                     building: 'taskboard',
                     reason: 'validate-after-edit',
+                    phase: 'testing',
                     confidence: 0.9,
                     label: forge.label || 'forge-check',
                     payload: { from: 'forge', to: 'taskboard', forgeAt: forge.at },
@@ -227,11 +448,13 @@ export class VisitIntentManager {
             ].join('|'),
             building: classified.building,
             reason: classified.reason,
+            phase,
             confidence: classified.confidence,
             label: classified.label || compactLabel(tool, 'tool'),
             payload: {
                 tool,
                 input: agent.currentToolInput ?? null,
+                phase,
                 sessionId: agent.sessionId || agent.agentId || agent.id,
             },
         }, now);
@@ -250,6 +473,7 @@ export class VisitIntentManager {
                     sourceKey: `cash-out-${agent.id}-${now}`,
                     building: 'mine',
                     reason: 'cash-out',
+                    phase: 'quota/resource',
                     confidence: 0.95,
                     priority: CASH_OUT_PRIORITY,
                     ttlMs: CASH_OUT_TTL_MS,
@@ -263,6 +487,7 @@ export class VisitIntentManager {
                     sourceKey: `${Math.floor(current / TOKEN_DELTA_THRESHOLD)}:${delta}`,
                     building: 'mine',
                     reason: 'token-delta',
+                    phase: 'quota/resource',
                     confidence: Math.min(0.95, 0.55 + delta / 3000),
                     label: `+${delta}`,
                     payload: { delta, total: current, ratio: contextRatio(agent) },
@@ -277,6 +502,7 @@ export class VisitIntentManager {
                 sourceKey: `context:${Math.floor(ratio * 100)}`,
                 building: 'mine',
                 reason: 'context-pressure',
+                phase: 'quota/resource',
                 confidence: Math.min(0.95, ratio),
                 label: `${Math.round(ratio * 100)}%`,
                 payload: { ratio, total: current },
@@ -304,7 +530,10 @@ export class VisitIntentManager {
                     source: 'git',
                     sourceKey,
                     building: 'harbor',
-                    reason: normalized.type === 'push' ? 'push' : 'commit',
+                    reason: normalized.type === 'push'
+                        ? 'push'
+                        : (normalized.type === 'pull' || normalized.type === 'fetch' ? normalized.type : 'commit'),
+                    phase: 'git',
                     confidence: normalized.type === 'push' ? 0.94 : 0.86,
                     label: normalized.label,
                     payload: normalized,
@@ -317,6 +546,7 @@ export class VisitIntentManager {
                         sourceKey: `failed-push:${sourceKey}`,
                         building: 'watchtower',
                         reason: 'failed-push-watch',
+                        phase: 'git',
                         confidence: 0.94,
                         label: normalized.label || 'push failed',
                         payload: normalized,
@@ -337,6 +567,7 @@ export class VisitIntentManager {
                 sourceKey: `parent:${agent.parentSessionId}:${parentBuilding}`,
                 building: parentBuilding,
                 reason: parentBuilding === 'command' ? 'join-parent' : 'follow-parent-work',
+                phase: parentLast?.phase || parentIntent?.phase || phaseFromIntentDraft({ source: 'subagent', building: parentBuilding }),
                 confidence: 0.72,
                 label: 'subagent',
                 payload: { parentId: agent.parentSessionId, parentBuilding },
@@ -348,6 +579,7 @@ export class VisitIntentManager {
                 sourceKey: String(agent.teamName),
                 building: 'command',
                 reason: 'join-team',
+                phase: 'coordinating',
                 confidence: 0.68,
                 label: compactLabel(agent.teamName, 'team'),
                 payload: { teamName: agent.teamName },
@@ -364,6 +596,7 @@ export class VisitIntentManager {
                 sourceKey: `long-wait:${Math.floor(age / 60000)}`,
                 building: 'watchtower',
                 reason: 'long-wait-watch',
+                phase: 'waiting',
                 confidence: 0.56,
                 label: `${Math.floor(age / 60000)}m wait`,
                 payload: { ageMs: age },
@@ -377,6 +610,7 @@ export class VisitIntentManager {
                 sourceKey: `long-work:${last?.building || 'work'}:${Math.floor(age / 300000)}`,
                 building: last?.building || agent.lastKnownBuildingType || 'command',
                 reason: 'long-work-shift',
+                phase: last?.phase || phaseFromIntentDraft({ source: 'team', building: last?.building || agent.lastKnownBuildingType || 'command' }),
                 confidence: 0.52,
                 label: `${Math.floor(age / 60000)}m work`,
                 payload: { ageMs: age },
@@ -397,6 +631,7 @@ export class VisitIntentManager {
                     sourceKey: `active-count:${working.length}`,
                     building: 'watchtower',
                     reason: 'high-activity-watch',
+                    phase: 'coordinating',
                     confidence: 0.58,
                     label: `${working.length} active`,
                     payload: { activeWorkingCount: working.length },
@@ -418,6 +653,7 @@ export class VisitIntentManager {
                     sourceKey: 'quota-sentinel',
                     building: 'mine',
                     reason: 'resource-check',
+                    phase: 'quota/resource',
                     confidence: 0.5,
                     label: 'quota watch',
                     payload: { sentinel: true },
@@ -439,6 +675,7 @@ export class VisitIntentManager {
                     sourceKey: `throttle:${agent.id}`,
                     building: 'mine',
                     reason: 'quota-throttle',
+                    phase: 'quota/resource',
                     confidence: 0.55,
                     priority: QUOTA_THROTTLE_PRIORITY,
                     label: 'throttled',
@@ -490,6 +727,7 @@ export class VisitIntentManager {
                     sourceKey: `team-gather:${payload?.teamName || 'team'}:${payload?.ts || now}`,
                     building: 'command',
                     reason: 'team-gather',
+                    phase: 'coordinating',
                     confidence: 0.8,
                     priority: TEAM_GATHER_PRIORITY,
                     ttlMs: TEAM_GATHER_TTL_MS,
@@ -527,19 +765,35 @@ export class VisitIntentManager {
         const stickyMs = Number.isFinite(Number(draft.stickyMs)) && Number(draft.stickyMs) >= 0
             ? Number(draft.stickyMs)
             : meta.stickyMs;
+        const priority = Number.isFinite(Number(draft.priority)) ? Number(draft.priority) : meta.priority;
+        const phase = phaseFromIntentDraft(draft);
+        const goal = goalFromIntentDraft(draft, phase);
+        const itinerary = itineraryFromIntentDraft(draft, {
+            phase,
+            goal,
+            intentId: id,
+            previous,
+            now,
+        });
         const intent = {
             id,
             agentId,
             building: draft.building,
             source: draft.source,
             reason: draft.reason || draft.source,
-            priority: Number.isFinite(Number(draft.priority)) ? Number(draft.priority) : meta.priority,
+            priority,
             confidence: Math.max(0, Math.min(1, Number(draft.confidence ?? 0.5))),
             label: draft.label || '',
             createdAt: previous?.createdAt || createdAt,
             updatedAt: now,
             expiresAt: Math.max(previous?.expiresAt || 0, now + ttlMs),
             stickyUntil: Math.max(previous?.stickyUntil || 0, now + stickyMs),
+            ttlMs,
+            stickyMs,
+            phase,
+            goal,
+            itinerary,
+            interruptible: interruptibleForIntentDraft(draft, priority, phase),
             targetTile: draft.targetTile || previous?.targetTile || null,
             targetSlotIndex: Number.isInteger(draft.targetSlotIndex) ? draft.targetSlotIndex : (previous?.targetSlotIndex ?? null),
             payload: draft.payload || {},

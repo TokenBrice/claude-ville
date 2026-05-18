@@ -1,6 +1,16 @@
 import { MAP_SIZE } from '../../config/constants.js';
 
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]];
+const TILE_WEIGHTS = Object.freeze({
+    bridge: 0.55,
+    dock: 0.62,
+    plaza: 0.68,
+    road: 0.65,
+    lane: 0.58,
+    avoid: 1.35,
+    congestionStep: 0.16,
+    congestionMax: 1.2,
+});
 
 export class Pathfinder {
     constructor(grid) {
@@ -72,9 +82,10 @@ export class Pathfinder {
     // Returns an array of {tileX, tileY} waypoints from `from` exclusive to `to` inclusive.
     // Empty array if unreachable. If straight-line works (no obstacles between centers
     // sampled at tile granularity), returns the single waypoint [to].
-    findPath(from, to, bridgeTiles) {
+    findPath(from, to, bridgeTiles, options = null) {
         const fx = Math.round(from.tileX);
         const fy = Math.round(from.tileY);
+        const pathOptions = this._normalizePathOptions(options, bridgeTiles);
 
         // Guard: if the start tile is unwalkable (e.g., agent currently
         // straddling a shore tile due to floating-point drift), search the
@@ -83,7 +94,7 @@ export class Pathfinder {
         if (!this.isWalkable(fx, fy)) {
             const nearest = this.nearestWalkable(fx, fy, 8);
             if (nearest) {
-                const sub = this.findPath(nearest, to, bridgeTiles);
+                const sub = this.findPath(nearest, to, bridgeTiles, options);
                 if (sub.length > 0) return [nearest, ...sub];
             }
             console.warn('[Pathfinder] stuck: no walkable tile near', fx, fy);
@@ -93,9 +104,17 @@ export class Pathfinder {
         const targetCandidates = this._walkableCandidates(Math.round(to.tileX), Math.round(to.tileY));
         if (targetCandidates.length === 0) return [];
 
-        const cacheKey = `${fx},${fy}|${Math.round(to.tileX)},${Math.round(to.tileY)}`;
+        const cacheKey = `${fx},${fy}|${Math.round(to.tileX)},${Math.round(to.tileY)}${this._pathOptionsCacheKey(pathOptions)}`;
         const cached = this._pathCache.get(cacheKey);
         if (cached) return cached;
+
+        if (pathOptions.weighted) {
+            const weightedResult = this._findWeightedPath(fx, fy, targetCandidates, bridgeTiles, pathOptions);
+            if (weightedResult.length > 0) {
+                this._cacheResult(cacheKey, weightedResult);
+                return weightedResult;
+            }
+        }
 
         // Fast path: if a tile-step line from `from` to `to` never crosses a blocked tile,
         // skip BFS entirely.
@@ -176,6 +195,233 @@ export class Pathfinder {
             }
         }
         return candidates;
+    }
+
+    _findWeightedPath(fx, fy, targetCandidates, bridgeTiles, pathOptions) {
+        const N = MAP_SIZE;
+        const startIdx = fy * N + fx;
+        const targetSet = new Set(targetCandidates.map(({ tileX, tileY }) => tileY * N + tileX));
+        const visited = new Uint8Array(N * N);
+        const parent = new Int32Array(N * N).fill(-1);
+        const cost = new Float64Array(N * N);
+        cost.fill(Infinity);
+        cost[startIdx] = 0;
+        const heap = [];
+        this._heapPush(heap, { idx: startIdx, cost: 0 });
+
+        let foundIdx = -1;
+        while (heap.length > 0) {
+            const current = this._heapPop(heap);
+            if (!current || visited[current.idx]) continue;
+            if (current.cost > cost[current.idx]) continue;
+            visited[current.idx] = 1;
+            if (targetSet.has(current.idx)) {
+                foundIdx = current.idx;
+                break;
+            }
+
+            const cx = current.idx % N;
+            const cy = (current.idx - cx) / N;
+            for (const [dx, dy] of DIRS) {
+                const nx = cx + dx;
+                const ny = cy + dy;
+                if (nx < 0 || nx >= N || ny < 0 || ny >= N) continue;
+                if (dx !== 0 && dy !== 0 && (!this.isWalkable(cx + dx, cy) || !this.isWalkable(cx, cy + dy))) continue;
+                if (!this.isWalkable(nx, ny)) continue;
+                const nextIdx = ny * N + nx;
+                if (visited[nextIdx]) continue;
+                const stepCost = this._weightedStepCost(cx, cy, nx, ny, dx, dy, bridgeTiles, pathOptions);
+                const nextCost = current.cost + stepCost;
+                if (nextCost >= cost[nextIdx]) continue;
+                cost[nextIdx] = nextCost;
+                parent[nextIdx] = current.idx;
+                this._heapPush(heap, { idx: nextIdx, cost: nextCost });
+            }
+        }
+
+        if (foundIdx === -1) return [];
+
+        const tiles = [];
+        let cur = foundIdx;
+        while (cur !== -1 && cur !== startIdx) {
+            tiles.push({ tileX: cur % N, tileY: (cur - (cur % N)) / N });
+            cur = parent[cur];
+        }
+        tiles.reverse();
+        return this._simplify(tiles, bridgeTiles);
+    }
+
+    _weightedStepCost(cx, cy, nx, ny, dx, dy, bridgeTiles, pathOptions) {
+        const diagonal = dx !== 0 && dy !== 0;
+        const base = diagonal ? 1.414 : 1;
+        const fromWeight = this._tileTravelWeight(cx, cy, bridgeTiles, pathOptions);
+        const toWeight = this._tileTravelWeight(nx, ny, bridgeTiles, pathOptions);
+        return base * Math.min(fromWeight, toWeight);
+    }
+
+    _tileTravelWeight(tileX, tileY, bridgeTiles, pathOptions) {
+        const key = `${tileX},${tileY}`;
+        let weight = 1;
+        if (bridgeTiles?.has(key) || pathOptions.bridgeTiles?.has(key)) weight = TILE_WEIGHTS.bridge;
+        else if (pathOptions.dockTiles?.has(key)) weight = TILE_WEIGHTS.dock;
+        else if (pathOptions.plazaTiles?.has(key)) weight = TILE_WEIGHTS.plaza;
+        else if (pathOptions.roadTiles?.has(key) || pathOptions.preferredTiles?.has(key)) weight = TILE_WEIGHTS.road;
+        if (pathOptions.laneTiles?.has(key)) weight = Math.min(weight, TILE_WEIGHTS.lane);
+        if (pathOptions.avoidTiles?.has(key)) weight += TILE_WEIGHTS.avoid;
+        const congestion = Number(pathOptions.congestionTiles?.get?.(key) || 0);
+        if (congestion > 0) {
+            weight += Math.min(TILE_WEIGHTS.congestionMax, congestion * TILE_WEIGHTS.congestionStep);
+        }
+        return weight;
+    }
+
+    _normalizePathOptions(options, bridgeTiles) {
+        const roadTiles = this._normalizeTileSet(options?.roadTiles);
+        const preferredTiles = this._normalizeTileSet(options?.preferredTiles);
+        const plazaTiles = this._normalizeTileSet(options?.plazaTiles);
+        const dockTiles = this._normalizeTileSet(options?.dockTiles);
+        const laneTiles = this._normalizeTileSet(options?.laneTiles);
+        const avoidTiles = this._normalizeTileSet(options?.avoidTiles);
+        const congestionTiles = this._normalizeTileWeights(options?.congestionTiles);
+        const optionBridgeTiles = this._normalizeTileSet(options?.bridgeTiles);
+        const bridgeCount = optionBridgeTiles?.size || bridgeTiles?.size || 0;
+        const weighted = (
+            (roadTiles?.size || 0) +
+            (preferredTiles?.size || 0) +
+            (plazaTiles?.size || 0) +
+            (dockTiles?.size || 0) +
+            (laneTiles?.size || 0) +
+            (avoidTiles?.size || 0) +
+            (congestionTiles?.size || 0) +
+            bridgeCount
+        ) > 0;
+        return {
+            weighted: !!options?.preferRoads || weighted,
+            cacheKey: options?.cacheKey || '',
+            congestionVersion: options?.congestionVersion || options?.crowdVersion || '',
+            roadTiles,
+            preferredTiles,
+            plazaTiles,
+            dockTiles,
+            laneTiles,
+            avoidTiles,
+            congestionTiles,
+            bridgeTiles: optionBridgeTiles,
+        };
+    }
+
+    _normalizeTileSet(input) {
+        if (!input) return null;
+        if (input instanceof Set) return input;
+        if (input instanceof Map) return new Set(input.keys());
+        if (!Array.isArray(input)) return null;
+        const out = new Set();
+        for (const tile of input) {
+            if (typeof tile === 'string') {
+                out.add(tile);
+                continue;
+            }
+            const tileX = Number(tile?.tileX ?? tile?.x);
+            const tileY = Number(tile?.tileY ?? tile?.y);
+            if (Number.isFinite(tileX) && Number.isFinite(tileY)) out.add(`${Math.round(tileX)},${Math.round(tileY)}`);
+        }
+        return out;
+    }
+
+    _normalizeTileWeights(input) {
+        if (!input) return null;
+        const out = new Map();
+        const add = (tile, weight = 1) => {
+            if (typeof tile === 'string') {
+                const value = Number(weight);
+                if (Number.isFinite(value) && value > 0) out.set(tile, value);
+                return;
+            }
+            const tileX = Number(tile?.tileX ?? tile?.x);
+            const tileY = Number(tile?.tileY ?? tile?.y);
+            const value = Number(tile?.weight ?? tile?.pressure ?? tile?.count ?? weight);
+            if (Number.isFinite(tileX) && Number.isFinite(tileY) && Number.isFinite(value) && value > 0) {
+                out.set(`${Math.round(tileX)},${Math.round(tileY)}`, value);
+            }
+        };
+
+        if (input instanceof Map) {
+            for (const [key, value] of input.entries()) add(key, value);
+        } else if (Array.isArray(input)) {
+            for (const entry of input) {
+                if (Array.isArray(entry)) add(entry[0], entry[1]);
+                else add(entry, 1);
+            }
+        } else if (typeof input === 'object') {
+            for (const [key, value] of Object.entries(input)) add(key, value);
+        }
+
+        return out.size > 0 ? out : null;
+    }
+
+    _pathOptionsCacheKey(pathOptions) {
+        if (!pathOptions.weighted) return '';
+        if (pathOptions.cacheKey) return `|${pathOptions.cacheKey}`;
+        return `|weighted:${pathOptions.roadTiles?.size || 0}:${pathOptions.preferredTiles?.size || 0}:${pathOptions.plazaTiles?.size || 0}:${pathOptions.dockTiles?.size || 0}:${pathOptions.laneTiles?.size || 0}:${pathOptions.avoidTiles?.size || 0}:${pathOptions.congestionTiles?.size || 0}:${pathOptions.bridgeTiles?.size || 0}:${pathOptions.congestionVersion}`;
+    }
+
+    describeRoute(tiles, options = null) {
+        const list = Array.isArray(tiles) ? tiles : [];
+        const pathOptions = this._normalizePathOptions(options, options?.bridgeTiles || null);
+        let roadSteps = 0;
+        let bridgeSteps = 0;
+        let laneSteps = 0;
+        let congestion = 0;
+        for (const tile of list) {
+            const tileX = Math.round(Number(tile?.tileX ?? tile?.x));
+            const tileY = Math.round(Number(tile?.tileY ?? tile?.y));
+            if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) continue;
+            const key = `${tileX},${tileY}`;
+            if (pathOptions.roadTiles?.has(key) || pathOptions.preferredTiles?.has(key)) roadSteps++;
+            if (pathOptions.bridgeTiles?.has(key)) bridgeSteps++;
+            if (pathOptions.laneTiles?.has(key)) laneSteps++;
+            congestion += Number(pathOptions.congestionTiles?.get?.(key) || 0);
+        }
+        return {
+            steps: list.length,
+            roadSteps,
+            bridgeSteps,
+            laneSteps,
+            congestion,
+            roadShare: list.length ? roadSteps / list.length : 0,
+        };
+    }
+
+    _heapPush(heap, item) {
+        heap.push(item);
+        let index = heap.length - 1;
+        while (index > 0) {
+            const parent = Math.floor((index - 1) / 2);
+            if (heap[parent].cost <= item.cost) break;
+            heap[index] = heap[parent];
+            index = parent;
+        }
+        heap[index] = item;
+    }
+
+    _heapPop(heap) {
+        if (heap.length === 0) return null;
+        const root = heap[0];
+        const last = heap.pop();
+        if (heap.length > 0 && last) {
+            let index = 0;
+            while (true) {
+                const left = index * 2 + 1;
+                const right = left + 1;
+                if (left >= heap.length) break;
+                const child = right < heap.length && heap[right].cost < heap[left].cost ? right : left;
+                if (heap[child].cost >= last.cost) break;
+                heap[index] = heap[child];
+                index = child;
+            }
+            heap[index] = last;
+        }
+        return root;
     }
 
     _lineWalkable(x0, y0, x1, y1) {

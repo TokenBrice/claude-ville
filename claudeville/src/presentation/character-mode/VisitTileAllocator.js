@@ -11,6 +11,10 @@ const SAME_AGENT_SLOT_BONUS = 90;
 const RELATED_CLUSTER_BONUS = 45;
 const RELATED_CLUSTER_RADIUS = 3.0;
 const TARGET_SLOT_INDEX_BONUS = 80;
+const LOCAL_CLUSTER_RADIUS = 2.4;
+const LOCAL_CLUSTER_PENALTY = 12;
+const CROWD_CLUSTER_CELL_SIZE = 4;
+const CROWD_CLUSTER_TOP_LIMIT = 12;
 
 const BUILDING_CAPACITY_OVERRIDES = Object.freeze({
     command: 5,
@@ -48,7 +52,13 @@ export class VisitTileAllocator {
             scenicAllocations: 0,
             overflowAllocations: 0,
             clusteredAllocations: 0,
+            queuedAllocations: 0,
+            overCapacityAllocations: 0,
+            clusterPressureAllocations: 0,
         };
+        this._occupancyEntries = [];
+        this._occupancyBuckets = new Map();
+        this._crowdClusters = [];
     }
 
     updateContext({
@@ -60,6 +70,7 @@ export class VisitTileAllocator {
         this.agentSprites = this._normalizeAgentSprites(agentSprites);
         this.pathfinder = pathfinder || null;
         this._rebuildAgentMeta();
+        this._rebuildOccupancyIndex();
         this.cleanup(Date.now());
         this._releaseStaleAgentReservations();
         return this;
@@ -75,6 +86,7 @@ export class VisitTileAllocator {
             this.agentMeta.set(id, {
                 teamName: agent?.teamName || null,
                 parentSessionId: agent?.parentSessionId || null,
+                isSubagent: !!agent?.isSubagent,
             });
         }
     }
@@ -92,11 +104,137 @@ export class VisitTileAllocator {
         for (const [otherId, meta] of this.agentMeta.entries()) {
             if (otherId === agentId) continue;
             if (meta.parentSessionId && meta.parentSessionId === agentId) related.add(otherId);
+            if (self.parentSessionId && meta.parentSessionId && self.parentSessionId === meta.parentSessionId) related.add(otherId);
             if (self.teamName && meta.teamName && self.teamName === meta.teamName) related.add(otherId);
         }
         const result = related.size > 0 ? related : null;
         this._relatedCache.set(agentId, result);
         return result;
+    }
+
+    _rebuildOccupancyIndex() {
+        this._occupancyEntries = [];
+        this._occupancyBuckets = new Map();
+        for (const sprite of this.agentSprites) {
+            const agentId = this._agentId(sprite?.agent, sprite, null);
+            if (!agentId) continue;
+            const tile = this._spriteTile(sprite) || this._agentTile(sprite?.agent);
+            if (!tile) continue;
+            const entry = {
+                agentId,
+                tileX: tile.tileX,
+                tileY: tile.tileY,
+                status: sprite?.agent?.status || null,
+                teamName: sprite?.agent?.teamName || null,
+                parentSessionId: sprite?.agent?.parentSessionId || null,
+                moving: !!sprite?.moving,
+            };
+            this._occupancyEntries.push(entry);
+            const key = this._occupancyBucketKey(tile.tileX, tile.tileY);
+            const bucket = this._occupancyBuckets.get(key) || [];
+            bucket.push(entry);
+            this._occupancyBuckets.set(key, bucket);
+        }
+        this._crowdClusters = this._summarizeCrowdClustersFromEntries();
+    }
+
+    _occupancyBucketKey(tileX, tileY) {
+        return `${Math.floor(Number(tileX) || 0)},${Math.floor(Number(tileY) || 0)}`;
+    }
+
+    _nearbyOccupancyEntries(tileX, tileY, radius) {
+        const x = Number(tileX);
+        const y = Number(tileY);
+        const r = Math.max(0, Number(radius) || 0);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || !this._occupancyBuckets?.size) return [];
+        const out = [];
+        for (let bx = Math.floor(x - r); bx <= Math.floor(x + r); bx++) {
+            for (let by = Math.floor(y - r); by <= Math.floor(y + r); by++) {
+                const bucket = this._occupancyBuckets.get(`${bx},${by}`);
+                if (bucket?.length) out.push(...bucket);
+            }
+        }
+        return out;
+    }
+
+    _clusterPressureAt(tileX, tileY, ignoredAgentId) {
+        if ((this._occupancyEntries?.length || 0) < 18) return 0;
+        let count = 0;
+        for (const entry of this._nearbyOccupancyEntries(tileX, tileY, LOCAL_CLUSTER_RADIUS)) {
+            if (ignoredAgentId && entry.agentId === ignoredAgentId) continue;
+            if (this._distance(entry, { tileX, tileY }) <= LOCAL_CLUSTER_RADIUS) count++;
+        }
+        return count;
+    }
+
+    _summarizeCrowdClustersFromEntries() {
+        const entries = this._occupancyEntries || [];
+        if (entries.length === 0) return [];
+        const groups = new Map();
+        for (const entry of entries) {
+            const cellX = Math.floor(entry.tileX / CROWD_CLUSTER_CELL_SIZE);
+            const cellY = Math.floor(entry.tileY / CROWD_CLUSTER_CELL_SIZE);
+            const key = `${cellX},${cellY}`;
+            const group = groups.get(key) || {
+                id: key,
+                cellX,
+                cellY,
+                count: 0,
+                moving: 0,
+                sumX: 0,
+                sumY: 0,
+                statuses: {},
+                teams: new Set(),
+            };
+            group.count++;
+            if (entry.moving) group.moving++;
+            group.sumX += entry.tileX;
+            group.sumY += entry.tileY;
+            const status = entry.status || 'unknown';
+            group.statuses[status] = (group.statuses[status] || 0) + 1;
+            if (entry.teamName) group.teams.add(entry.teamName);
+            groups.set(key, group);
+        }
+
+        const minClusterSize = entries.length >= 90 ? 6 : entries.length >= 50 ? 5 : 3;
+        return Array.from(groups.values())
+            .filter(group => group.count >= minClusterSize)
+            .map(group => ({
+                id: group.id,
+                tileX: group.sumX / group.count,
+                tileY: group.sumY / group.count,
+                count: group.count,
+                moving: group.moving,
+                dominantStatus: this._dominantKey(group.statuses),
+                statuses: group.statuses,
+                teamCount: group.teams.size,
+            }))
+            .sort((a, b) => (b.count - a.count) || a.id.localeCompare(b.id))
+            .slice(0, CROWD_CLUSTER_TOP_LIMIT);
+    }
+
+    _crowdSnapshot() {
+        const clusters = this._crowdClusters || [];
+        return {
+            agentCount: this._occupancyEntries?.length || 0,
+            clusterCellSize: CROWD_CLUSTER_CELL_SIZE,
+            clusters,
+            denseClusterCount: clusters.length,
+            maxClusterSize: clusters.reduce((max, cluster) => Math.max(max, cluster.count || 0), 0),
+            congestedAgents: clusters.reduce((sum, cluster) => sum + (cluster.count || 0), 0),
+        };
+    }
+
+    _dominantKey(counts) {
+        let bestKey = null;
+        let bestCount = -1;
+        for (const [key, count] of Object.entries(counts || {})) {
+            if (count > bestCount || (count === bestCount && key.localeCompare(bestKey || '') < 0)) {
+                bestKey = key;
+                bestCount = count;
+            }
+        }
+        return bestKey;
     }
 
     _nearestRelatedReservationDistance(agentId, buildingType, slot) {
@@ -194,6 +332,21 @@ export class VisitTileAllocator {
             walkable: best.walkable,
             scenic: best.scenic,
             overflow: best.overflow,
+            queueGroup: best.queueGroup,
+            queueIndex: best.queueIndex,
+            queueDepth: best.queueDepth,
+            queueOverflow: best.queueOverflow,
+            buildingCapacity: best.buildingCapacity,
+            tileCapacity: best.tileCapacity,
+            buildingOccupancy: best.buildingOccupancy,
+            tileOccupancy: best.tileOccupancy,
+            projectedBuildingUse: best.projectedBuildingUse,
+            projectedTileUse: best.projectedTileUse,
+            overBuildingCapacity: best.overBuildingCapacity,
+            overTileCapacity: best.overTileCapacity,
+            clusterPressure: best.clusterPressure,
+            relatedCluster: best.clustered,
+            relatedDistance: Number.isFinite(best.relatedDistance) ? best.relatedDistance : null,
             facingPoint: best.facingPoint
                 ? { x: best.facingPoint.x, y: best.facingPoint.y }
                 : null,
@@ -204,6 +357,9 @@ export class VisitTileAllocator {
         if (reservation.scenic) this.metrics.scenicAllocations++;
         if (reservation.overflow) this.metrics.overflowAllocations++;
         if (best.clustered) this.metrics.clusteredAllocations++;
+        if (reservation.queueIndex > 0) this.metrics.queuedAllocations++;
+        if (reservation.queueOverflow) this.metrics.overCapacityAllocations++;
+        if (reservation.clusterPressure > 0) this.metrics.clusterPressureAllocations++;
 
         return {
             tileX: reservation.tileX,
@@ -217,6 +373,21 @@ export class VisitTileAllocator {
             walkable: reservation.walkable,
             scenic: reservation.scenic,
             overflow: reservation.overflow,
+            queueGroup: reservation.queueGroup,
+            queueIndex: reservation.queueIndex,
+            queueDepth: reservation.queueDepth,
+            queueOverflow: reservation.queueOverflow,
+            buildingCapacity: reservation.buildingCapacity,
+            tileCapacity: reservation.tileCapacity,
+            buildingOccupancy: reservation.buildingOccupancy,
+            tileOccupancy: reservation.tileOccupancy,
+            projectedBuildingUse: reservation.projectedBuildingUse,
+            projectedTileUse: reservation.projectedTileUse,
+            overBuildingCapacity: reservation.overBuildingCapacity,
+            overTileCapacity: reservation.overTileCapacity,
+            clusterPressure: reservation.clusterPressure,
+            relatedCluster: reservation.relatedCluster,
+            relatedDistance: reservation.relatedDistance,
             facingPoint: reservation.facingPoint,
         };
     }
@@ -288,6 +459,22 @@ export class VisitTileAllocator {
                 walkable: reservation.walkable,
                 scenic: reservation.scenic,
                 overflow: reservation.overflow,
+                queueGroup: reservation.queueGroup,
+                queueIndex: reservation.queueIndex,
+                queueDepth: reservation.queueDepth,
+                queueOverflow: reservation.queueOverflow,
+                buildingCapacity: reservation.buildingCapacity,
+                tileCapacity: reservation.tileCapacity,
+                buildingOccupancy: reservation.buildingOccupancy,
+                tileOccupancy: reservation.tileOccupancy,
+                projectedBuildingUse: reservation.projectedBuildingUse,
+                projectedTileUse: reservation.projectedTileUse,
+                overBuildingCapacity: reservation.overBuildingCapacity,
+                overTileCapacity: reservation.overTileCapacity,
+                clusterPressure: reservation.clusterPressure,
+                relatedCluster: reservation.relatedCluster,
+                relatedDistance: reservation.relatedDistance,
+                facingPoint: reservation.facingPoint,
             }));
 
         const buildings = {};
@@ -301,6 +488,8 @@ export class VisitTileAllocator {
                 visitTiles: candidates.length,
                 occupied: this._buildingOccupancy(building, type, null),
                 reserved: reservations.filter((reservation) => reservation.buildingType === type).length,
+                queued: reservations.filter((reservation) => reservation.buildingType === type && reservation.queueOverflow).length,
+                overflowReserved: reservations.filter((reservation) => reservation.buildingType === type && reservation.queueOverflow).length,
             };
         }
 
@@ -309,6 +498,7 @@ export class VisitTileAllocator {
             reservationCount: reservations.length,
             reservations,
             buildings,
+            crowd: this._crowdSnapshot(),
             metrics: { ...this.metrics },
             metricsScope: 'since allocator start',
         };
@@ -339,6 +529,7 @@ export class VisitTileAllocator {
             && existingReservation.buildingType === buildingType
             && existingReservation.slotId === slotId;
         const tileOccupancy = this._tileOccupancy(tileX, tileY, agentId);
+        const clusterPressure = this._clusterPressureAt(tileX, tileY, agentId);
         const distance = sourceTile ? this._distance(sourceTile, slot) : 0;
         const capacityLimit = Math.max(1, Number(slot.capacity) || buildingCapacity);
         const projectedTileUse = tileOccupancy + reservations.filter((reservation) => reservation.agentId !== agentId).length;
@@ -346,6 +537,16 @@ export class VisitTileAllocator {
         const overTileCapacity = Math.max(0, projectedTileUse - capacityLimit + 1);
         const overBuildingCapacity = Math.max(0, projectedBuildingUse - buildingCapacity + 1);
         const intentBonus = this._intentSlotBonus(intent, slot);
+        const queueOverflow = !!slot.overflow || overTileCapacity > 0 || overBuildingCapacity > 0;
+        const queueGroup = this._slotQueueGroup(slot, buildingType);
+        const queueDepth = queueOverflow
+            ? this._queueDepth(queueGroup, agentId, now, { overflowOnly: true })
+            : 0;
+        const queueIndex = queueOverflow
+            ? (sameAgentSlot && Number.isInteger(existingReservation?.queueIndex)
+                ? existingReservation.queueIndex
+                : queueDepth)
+            : 0;
 
         const relatedDistance = this._nearestRelatedReservationDistance(agentId, buildingType, slot);
         const clustered = relatedDistance <= RELATED_CLUSTER_RADIUS;
@@ -354,6 +555,7 @@ export class VisitTileAllocator {
         if (!walkable) score += WALKABILITY_PENALTY;
         if (reservedByOther) score += RESERVED_PENALTY;
         score += tileOccupancy * TILE_CROWD_PENALTY;
+        score += clusterPressure * LOCAL_CLUSTER_PENALTY;
         score += Math.max(0, buildingOccupancy - 1) * BUILDING_CROWD_PENALTY;
         score += (overTileCapacity + overBuildingCapacity) * OVER_CAPACITY_PENALTY;
         score += distance * DISTANCE_WEIGHT;
@@ -373,6 +575,20 @@ export class VisitTileAllocator {
             score,
             walkable,
             clustered,
+            relatedDistance,
+            queueGroup,
+            queueDepth,
+            queueIndex,
+            queueOverflow,
+            buildingCapacity,
+            tileCapacity: capacityLimit,
+            buildingOccupancy,
+            tileOccupancy,
+            projectedBuildingUse,
+            projectedTileUse,
+            overBuildingCapacity,
+            overTileCapacity,
+            clusterPressure,
         };
     }
 
@@ -429,6 +645,8 @@ export class VisitTileAllocator {
             tileY,
             slotId: tile.slotId ? String(tile.slotId) : null,
             capacity: Number.isFinite(Number(tile.capacity)) ? Math.max(1, Number(tile.capacity)) : null,
+            queueGroup: tile.queueGroup ? String(tile.queueGroup) : null,
+            role: tile.role ? String(tile.role) : null,
             scenic: !!tile.scenic,
             overflow: !!tile.overflow,
             reason: tile.reason || null,
@@ -478,11 +696,8 @@ export class VisitTileAllocator {
     _buildingOccupancy(building, buildingType, ignoredAgentId) {
         let count = 0;
         const visitTiles = this._candidateTiles({ building, buildingType, candidates: null });
-        for (const sprite of this.agentSprites) {
-            const agentId = this._agentId(sprite?.agent, sprite, null);
-            if (ignoredAgentId && agentId === ignoredAgentId) continue;
-            const tile = this._spriteTile(sprite) || this._agentTile(sprite?.agent);
-            if (!tile) continue;
+        for (const tile of this._occupancyEntries || []) {
+            if (ignoredAgentId && tile.agentId === ignoredAgentId) continue;
             if (building && typeof building.containsVisitPoint === 'function' && building.containsVisitPoint(tile.tileX, tile.tileY)) {
                 count++;
                 continue;
@@ -498,11 +713,8 @@ export class VisitTileAllocator {
 
     _tileOccupancy(tileX, tileY, ignoredAgentId) {
         let count = 0;
-        for (const sprite of this.agentSprites) {
-            const agentId = this._agentId(sprite?.agent, sprite, null);
-            if (ignoredAgentId && agentId === ignoredAgentId) continue;
-            const tile = this._spriteTile(sprite) || this._agentTile(sprite?.agent);
-            if (!tile) continue;
+        for (const tile of this._nearbyOccupancyEntries(tileX, tileY, TILE_OCCUPANCY_RADIUS)) {
+            if (ignoredAgentId && tile.agentId === ignoredAgentId) continue;
             if (this._distance(tile, { tileX, tileY }) <= TILE_OCCUPANCY_RADIUS) count++;
         }
         return count;
@@ -564,6 +776,25 @@ export class VisitTileAllocator {
             if (reservation.buildingType !== buildingType) continue;
             if (ignoredAgentId && reservation.agentId === ignoredAgentId) continue;
             count++;
+        }
+        return count;
+    }
+
+    _slotQueueGroup(slot, buildingType) {
+        if (slot?.queueGroup) return String(slot.queueGroup);
+        if (slot?.overflow) return `${buildingType || 'scenic'}:overflow`;
+        if (slot?.scenic) return `${buildingType || 'scenic'}:scenic`;
+        return `${buildingType || 'scenic'}:primary`;
+    }
+
+    _queueDepth(queueGroup, ignoredAgentId, now, { overflowOnly = false } = {}) {
+        if (!queueGroup) return 0;
+        let count = 0;
+        for (const reservation of this.reservations.values()) {
+            if (reservation.expiresAt <= now) continue;
+            if (ignoredAgentId && reservation.agentId === ignoredAgentId) continue;
+            if (overflowOnly && !reservation.queueOverflow) continue;
+            if (reservation.queueGroup === queueGroup) count++;
         }
         return count;
     }

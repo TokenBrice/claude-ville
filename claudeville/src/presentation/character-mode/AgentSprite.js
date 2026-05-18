@@ -160,6 +160,32 @@ const EFFORT_FLOOR_RING_VISUALS = Object.freeze({
     medium: { stroke: '#b8c4cc', highlight: '#eef7ff', glow: 'rgba(184, 196, 204, 0.18)', bands: 2, rx: 19, ry: 6 },
     high: { stroke: '#f2d36b', highlight: '#fff1b8', glow: 'rgba(242, 211, 107, 0.22)', bands: 3, rx: 21, ry: 7 },
 });
+const INTENT_SOURCE_MOTION = Object.freeze({
+    chat: { dwell: 1.0, speed: 1.2, stableMs: 3000 },
+    alert: { dwell: 1.15, speed: 1.18, stableMs: 9000 },
+    git: { dwell: 0.9, speed: 1.14, stableMs: 8000 },
+    handoff: { dwell: 1.0, speed: 1.04, stableMs: 6500 },
+    tool: { dwell: 1.0, speed: 1.0, stableMs: 5500 },
+    token: { dwell: 0.95, speed: 1.02, stableMs: 5000 },
+    team: { dwell: 1.18, speed: 0.96, stableMs: 7000 },
+    subagent: { dwell: 1.12, speed: 0.98, stableMs: 7000 },
+    quota: { dwell: 1.25, speed: 0.9, stableMs: 9000 },
+    ambient: { dwell: 1.0, speed: 0.9, stableMs: 0 },
+});
+const PHASE_MOTION = Object.freeze({
+    reading: { dwell: 1.12, speed: 0.96 },
+    editing: { dwell: 0.95, speed: 1.05 },
+    testing: { dwell: 0.92, speed: 1.06 },
+    researching: { dwell: 1.18, speed: 0.94 },
+    coordinating: { dwell: 1.08, speed: 1.0 },
+    git: { dwell: 0.88, speed: 1.1 },
+    'quota/resource': { dwell: 1.22, speed: 0.9 },
+    waiting: { dwell: 1.35, speed: 0.84 },
+});
+const MIN_INTENT_STABLE_MS = 2200;
+const MAX_INTENT_STABLE_MS = 12000;
+const SAME_INTENT_BUILDING_PRIORITY_DELTA = 10;
+const LOCAL_DIRECT_PATH_TILE_DISTANCE = 4.5;
 
 export class AgentSprite {
     constructor(agent, {
@@ -190,8 +216,16 @@ export class AgentSprite {
         this._lastIntentId = null;
         this._lastTargetTile = null;
         this._lastReservationId = null;
+        this._lastVisitSlotId = null;
+        this._lastVisitFacingPoint = null;
+        this._lastVisitMeta = null;
+        this._lastIntentSnapshot = null;
+        this._intentStableUntil = 0;
+        this._blockedIntentId = null;
+        this._blockedIntentRetryAfter = 0;
         this._lastReservationRenewedAt = 0;
         this._targetReachable = true;
+        this._lastBlockedRecovery = null;
         this.behavior = new AgentBehaviorState();
         this._targetCycle = 0;
         this.nameTagSlot = 0;
@@ -286,40 +320,284 @@ export class AgentSprite {
         }
 
         const seed = Math.abs(this._hash(`${this.agent.id}:${building.type}:${this._targetCycle++}`));
-        const [targetTileX, targetTileY] = this._visitTileForBuilding(building, seed, intent);
+        const visitTarget = this._visitTileForBuilding(building, seed, intent);
+        if (this._routeToVisitTarget(building, intent, visitTarget)) return;
+        if (this._recoverBlockedTarget({ building, intent, seed, failedTarget: visitTarget })) return;
+
+        this.behavior.transition('blocked', 'no-route');
+        this.waitTimer = 90;
+    }
+
+    _routeToVisitTarget(building, intent, visitTarget, {
+        reason = null,
+        state = null,
+        blockedReason = 'no-route',
+        recovery = null,
+        viaWaypoints = undefined,
+    } = {}) {
+        if (!building || !visitTarget) return false;
+        const targetTileX = Number(visitTarget.tileX);
+        const targetTileY = Number(visitTarget.tileY);
+        if (!Number.isFinite(targetTileX) || !Number.isFinite(targetTileY)) return false;
+
         const screen = tileToWorld(targetTileX, targetTileY);
         this._lastBuildingType = building.type;
         this._lastIntentId = intent?.id || null;
         this._lastTargetTile = { tileX: targetTileX, tileY: targetTileY };
+        this._lastVisitSlotId = visitTarget.slotId || null;
+        this._lastVisitFacingPoint = visitTarget.facingPoint ? { ...visitTarget.facingPoint } : null;
+        this._lastVisitMeta = visitTarget.meta ? { ...visitTarget.meta } : null;
+
+        const routeReason = reason || this._routeReasonFor(building, intent);
         this.behavior.setRoute({
-            state: intent ? 'traveling' : (building.type?.startsWith('ambient:') ? 'wandering' : 'roaming'),
+            state: state || this._routeStateFor(building, intent),
             intent,
             building: building.type,
-            reason: intent?.reason || (building.type?.startsWith('ambient:') ? 'scenic' : (this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status')),
+            reason: routeReason,
             targetTile: this._lastTargetTile,
+            phase: intent?.phase || this._phaseForAgentState(building?.type),
+            interruptible: intent?.interruptible,
         });
-        // IDLE ambient destinations beyond 6 tiles also route via roads.
-        let viaWaypoints = null;
-        if (building.routeViaRoads) {
-            viaWaypoints = this._roadWaypointsForScenic(targetTileX, targetTileY);
-        } else if (this.agent?.status === AgentStatus.IDLE && this.getRoadTiles) {
-            const fromTile = this._screenToTile(this.x, this.y);
-            const tileDist = Math.hypot(
-                Number(targetTileX) - Number(fromTile.tileX),
-                Number(targetTileY) - Number(fromTile.tileY),
-            );
-            if (Number.isFinite(tileDist) && tileDist > 6) {
-                viaWaypoints = this._roadWaypointsForScenic(targetTileX, targetTileY);
-            }
-        }
-        this._assignTarget(screen.x, screen.y, targetTileX, targetTileY, viaWaypoints);
+        this._rememberRouteIntent(intent);
+
+        const waypoints = viaWaypoints === undefined
+            ? this._waypointsForVisitTarget(building, targetTileX, targetTileY)
+            : viaWaypoints;
+        this._assignTarget(screen.x, screen.y, targetTileX, targetTileY, waypoints);
         this.moving = this._targetReachable;
         if (!this._targetReachable) {
-            this.behavior.transition('blocked', 'no-route');
-            this.waitTimer = 90;
-            return;
+            this.behavior.recordBlocked({
+                reason: blockedReason,
+                building: building.type,
+                intent,
+                targetTile: this._lastTargetTile,
+                recovery,
+                fromTile: this._screenToTile(this.x, this.y),
+            });
+            return false;
+        }
+        if (intent?.id && this._blockedIntentId === intent.id) {
+            this._blockedIntentId = null;
+            this._blockedIntentRetryAfter = 0;
         }
         this.waitTimer = 0;
+        return true;
+    }
+
+    _routeStateFor(building, intent) {
+        if (intent) return 'traveling';
+        return building.type?.startsWith('ambient:') ? 'wandering' : 'roaming';
+    }
+
+    _routeReasonFor(building, intent) {
+        if (intent?.reason) return intent.reason;
+        if (building.type?.startsWith('ambient:')) return 'scenic';
+        return this.agent.status === AgentStatus.IDLE ? 'ambient' : 'status';
+    }
+
+    _phaseForAgentState(buildingType = this._lastBuildingType) {
+        if (this.agent.status === AgentStatus.WAITING) return 'waiting';
+        const type = String(buildingType || '').toLowerCase();
+        if (type === 'harbor') return 'git';
+        if (type === 'mine') return 'quota/resource';
+        if (type === 'forge') return 'editing';
+        if (type === 'taskboard') return 'testing';
+        if (type === 'archive') return 'reading';
+        if (type === 'observatory' || type === 'portal') return 'researching';
+        return 'coordinating';
+    }
+
+    _waypointsForVisitTarget(building, targetTileX, targetTileY) {
+        if (building.routeViaRoads) return this._roadWaypointsForScenic(targetTileX, targetTileY);
+        if (this.agent?.status !== AgentStatus.IDLE || !this.getRoadTiles) return null;
+        const fromTile = this._screenToTile(this.x, this.y);
+        const tileDist = Math.hypot(
+            Number(targetTileX) - Number(fromTile.tileX),
+            Number(targetTileY) - Number(fromTile.tileY),
+        );
+        return Number.isFinite(tileDist) && tileDist > 6
+            ? this._roadWaypointsForScenic(targetTileX, targetTileY)
+            : null;
+    }
+
+    _recoverBlockedTarget({ building, intent, seed, failedTarget }) {
+        const baseReason = this._routeReasonFor(building, intent);
+        const alternateCandidates = this._alternateVisitCandidates(building, failedTarget);
+        if (alternateCandidates.length > 0) {
+            const alternateTarget = this._visitTileForBuilding(building, seed + 101, intent, alternateCandidates);
+            if (this._routeToVisitTarget(building, intent, alternateTarget, {
+                reason: `${baseReason}:alternate-slot`,
+                blockedReason: 'alternate-slot-unreachable',
+                recovery: 'alternate-slot',
+            })) {
+                this._recordBlockedRecovery('alternate-slot', building, alternateTarget);
+                return true;
+            }
+        }
+
+        const roadTarget = this._nearestRoadOrWalkableFallback(failedTarget, building);
+        if (roadTarget && this._routeToVisitTarget(building, intent, roadTarget, {
+            reason: `${baseReason}:nearest-road`,
+            blockedReason: 'nearest-road-unreachable',
+            recovery: 'nearest-road',
+            viaWaypoints: null,
+        })) {
+            this._recordBlockedRecovery(roadTarget.recoverySource || 'nearest-road', building, roadTarget);
+            return true;
+        }
+
+        const scenicBuilding = this._scenicRecoveryBuilding(building);
+        if (scenicBuilding) {
+            const scenicTarget = this._visitTileForBuilding(scenicBuilding, seed + 211, null);
+            if (this._routeToVisitTarget(scenicBuilding, null, scenicTarget, {
+                reason: 'blocked:scenic-fallback',
+                blockedReason: 'scenic-fallback-unreachable',
+                recovery: 'scenic-fallback',
+            })) {
+                this._deferBlockedIntent(intent);
+                this._recordBlockedRecovery('scenic-fallback', scenicBuilding, scenicTarget);
+                return true;
+            }
+        }
+
+        const fallbackBuilding = this._blockedFallbackBuilding(building);
+        if (fallbackBuilding) {
+            const fallbackTarget = this._visitTileForBuilding(fallbackBuilding, seed + 307, null);
+            if (this._routeToVisitTarget(fallbackBuilding, null, fallbackTarget, {
+                reason: 'blocked:fallback-building',
+                blockedReason: 'fallback-building-unreachable',
+                recovery: 'fallback-building',
+            })) {
+                this._deferBlockedIntent(intent);
+                this._recordBlockedRecovery('fallback-building', fallbackBuilding, fallbackTarget);
+                return true;
+            }
+        }
+
+        this._recordBlockedRecovery('failed', building, failedTarget);
+        this._deferBlockedIntent(intent, 3500);
+        return false;
+    }
+
+    _deferBlockedIntent(intent, retryDelayMs = 5500) {
+        if (!intent?.id) return;
+        this._blockedIntentId = intent.id;
+        this._blockedIntentRetryAfter = Date.now() + retryDelayMs;
+    }
+
+    _alternateVisitCandidates(building, failedTarget) {
+        if (!building || !Array.isArray(building.visitTiles) || building.visitTiles.length <= 1) return [];
+        const failedX = Math.round(Number(failedTarget?.tileX));
+        const failedY = Math.round(Number(failedTarget?.tileY));
+        return building.visitTiles.filter((tile) => {
+            const tileX = Math.round(Number(tile?.tileX ?? tile?.x));
+            const tileY = Math.round(Number(tile?.tileY ?? tile?.y));
+            if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return false;
+            return tileX !== failedX || tileY !== failedY;
+        });
+    }
+
+    _nearestRoadOrWalkableFallback(failedTarget, building) {
+        const origin = {
+            tileX: Number(failedTarget?.tileX),
+            tileY: Number(failedTarget?.tileY),
+        };
+        if (!Number.isFinite(origin.tileX) || !Number.isFinite(origin.tileY)) return null;
+
+        const road = this._nearestTileInSet(this.getRoadTiles?.(), origin, 9);
+        if (road) {
+            return {
+                ...road,
+                facingPoint: failedTarget?.facingPoint || this._buildingFacingPoint(building),
+                recoverySource: 'nearest-road',
+                meta: { recovery: 'nearest-road' },
+            };
+        }
+
+        if (this.pathfinder?.nearestWalkable) {
+            const nearest = this.pathfinder.nearestWalkable(Math.round(origin.tileX), Math.round(origin.tileY), 7);
+            if (nearest) {
+                return {
+                    tileX: nearest.tileX,
+                    tileY: nearest.tileY,
+                    facingPoint: failedTarget?.facingPoint || this._buildingFacingPoint(building),
+                    recoverySource: 'nearest-walkable',
+                    meta: { recovery: 'nearest-walkable' },
+                };
+            }
+        }
+        return null;
+    }
+
+    _nearestTileInSet(tileSet, origin, maxRadius = 9) {
+        if (!tileSet || !tileSet.size) return null;
+        let best = null;
+        let bestDist = Infinity;
+        for (const key of tileSet) {
+            const comma = String(key).indexOf(',');
+            if (comma < 0) continue;
+            const tileX = Number(String(key).slice(0, comma));
+            const tileY = Number(String(key).slice(comma + 1));
+            if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) continue;
+            const dist = Math.hypot(tileX - origin.tileX, tileY - origin.tileY);
+            if (dist > maxRadius || dist >= bestDist) continue;
+            bestDist = dist;
+            best = { tileX, tileY };
+        }
+        return best;
+    }
+
+    _scenicRecoveryBuilding(blockedBuilding) {
+        if (!this.getAmbientDestination) return null;
+        const scenic = this.getAmbientDestination({
+            agent: this.agent,
+            sprite: this,
+            recentBuildings: this.behavior.recentBuildings,
+            cycle: this._targetCycle + 17,
+            blockedBuilding: blockedBuilding?.type || null,
+        });
+        if (!scenic || scenic.type === blockedBuilding?.type) return null;
+        return scenic;
+    }
+
+    _blockedFallbackBuilding(blockedBuilding) {
+        const candidates = [
+            this._fallbackBuildingForState(),
+            this._buildingForType('command'),
+            this._buildingForType('taskboard'),
+            BUILDING_DEFS[0],
+        ].filter(Boolean);
+        const seen = new Set();
+        for (const candidate of candidates) {
+            if (!candidate?.type || seen.has(candidate.type)) continue;
+            seen.add(candidate.type);
+            if (candidate.type !== blockedBuilding?.type) return candidate;
+        }
+        return candidates[0] || null;
+    }
+
+    _buildingFacingPoint(building) {
+        const finite = (value) => Number.isFinite(Number(value));
+        const raw = building?.facingPoint;
+        if (raw && finite(raw.x ?? raw.tileX) && finite(raw.y ?? raw.tileY)) {
+            return { x: Number(raw.x ?? raw.tileX), y: Number(raw.y ?? raw.tileY) };
+        }
+        const bx = Number(building?.x);
+        const by = Number(building?.y);
+        if (!finite(bx) || !finite(by)) return null;
+        return {
+            x: bx + (Number(building.width) || 1) / 2,
+            y: by + (Number(building.height) || 1) / 2,
+        };
+    }
+
+    _recordBlockedRecovery(reason, building, target) {
+        this._lastBlockedRecovery = {
+            reason,
+            building: building?.type || null,
+            targetTile: target ? { tileX: target.tileX, tileY: target.tileY } : null,
+            at: Date.now(),
+        };
     }
 
     _roadWaypointsForScenic(targetTileX, targetTileY) {
@@ -404,20 +682,46 @@ export class AgentSprite {
         });
     }
 
-    _visitTileForBuilding(building, seed, intent = null) {
+    _visitTileForBuilding(building, seed, intent = null, candidatesOverride = null) {
         const allocated = this.allocateVisitTile?.({
             agent: this.agent,
             sprite: this,
             building,
             intent,
+            candidates: candidatesOverride,
         });
         if (allocated && Number.isFinite(Number(allocated.tileX)) && Number.isFinite(Number(allocated.tileY))) {
             this._lastReservationId = allocated.reservationId || null;
             this._lastReservationRenewedAt = Date.now();
-            return [Number(allocated.tileX), Number(allocated.tileY)];
+            this._lastVisitSlotId = allocated.slotId || null;
+            this._lastVisitFacingPoint = allocated.facingPoint ? { ...allocated.facingPoint } : null;
+            this._lastVisitMeta = {
+                reservationId: allocated.reservationId || null,
+                slotId: allocated.slotId || null,
+                slotIndex: allocated.slotIndex ?? null,
+                buildingType: allocated.buildingType || building?.type || null,
+                queueGroup: allocated.queueGroup || null,
+                queueIndex: Number.isInteger(allocated.queueIndex) ? allocated.queueIndex : null,
+                queueDepth: Number.isInteger(allocated.queueDepth) ? allocated.queueDepth : null,
+                queueOverflow: !!allocated.queueOverflow,
+                overflow: !!allocated.overflow,
+                scenic: !!allocated.scenic,
+                relatedCluster: !!allocated.relatedCluster,
+                score: Number.isFinite(Number(allocated.score)) ? Number(allocated.score) : null,
+            };
+            return {
+                tileX: Number(allocated.tileX),
+                tileY: Number(allocated.tileY),
+                slotId: allocated.slotId || null,
+                facingPoint: allocated.facingPoint ? { ...allocated.facingPoint } : null,
+                meta: this._lastVisitMeta,
+            };
         }
         this._lastReservationId = null;
-        const candidates = Array.isArray(building.visitTiles) && building.visitTiles.length
+        this._lastVisitMeta = null;
+        const candidates = Array.isArray(candidatesOverride) && candidatesOverride.length
+            ? candidatesOverride
+            : Array.isArray(building.visitTiles) && building.visitTiles.length
             ? building.visitTiles
             : building.entrance
                 ? [building.entrance]
@@ -429,7 +733,24 @@ export class AgentSprite {
         const jitterScale = this.agent.status === AgentStatus.WORKING ? 0.64 : 0.78;
         const jitterX = (this._noise(seed, 11) - 0.5) * jitterScale;
         const jitterY = (this._noise(seed, 17) - 0.5) * jitterScale;
-        return [chosen.tileX + jitterX, chosen.tileY + jitterY];
+        const facingPoint = chosen?.facingPoint
+            ? { ...chosen.facingPoint }
+            : this._buildingFacingPoint(building);
+        this._lastVisitSlotId = chosen?.slotId || null;
+        this._lastVisitFacingPoint = facingPoint;
+        return {
+            tileX: Number(chosen.tileX) + jitterX,
+            tileY: Number(chosen.tileY) + jitterY,
+            slotId: chosen?.slotId || null,
+            facingPoint,
+            meta: {
+                reservationId: null,
+                slotId: chosen?.slotId || null,
+                slotIndex: null,
+                buildingType: building?.type || null,
+                fallback: true,
+            },
+        };
     }
 
     _buildingForType(type) {
@@ -442,13 +763,95 @@ export class AgentSprite {
 
     _activeVisitIntent() {
         const intent = this.getIntentForAgent?.(this.agent?.id);
+        if (
+            intent?.id &&
+            this._blockedIntentId === intent.id &&
+            Date.now() < this._blockedIntentRetryAfter
+        ) {
+            return null;
+        }
         return intent?.building ? intent : null;
+    }
+
+    _rememberRouteIntent(intent) {
+        if (!intent) {
+            this._lastIntentSnapshot = null;
+            this._intentStableUntil = 0;
+            return;
+        }
+        const now = Date.now();
+        const sourceProfile = INTENT_SOURCE_MOTION[intent.source] || INTENT_SOURCE_MOTION.tool;
+        const ttlRemaining = Number.isFinite(Number(intent.expiresAt))
+            ? Math.max(0, Number(intent.expiresAt) - now)
+            : sourceProfile.stableMs;
+        const priority = Number(intent.priority);
+        const priorityBonus = Number.isFinite(priority) ? Math.max(0, priority - 70) * 45 : 0;
+        const stableMs = Math.max(
+            MIN_INTENT_STABLE_MS,
+            Math.min(MAX_INTENT_STABLE_MS, sourceProfile.stableMs + priorityBonus, ttlRemaining || sourceProfile.stableMs),
+        );
+        this._intentStableUntil = now + stableMs;
+        this._lastIntentSnapshot = {
+            id: intent.id || null,
+            source: intent.source || null,
+            building: intent.building || null,
+            reason: intent.reason || null,
+            phase: intent.phase || null,
+            goal: intent.goal || null,
+            itinerary: this._cloneIntentItinerary(intent.itinerary),
+            priority: Number.isFinite(priority) ? priority : null,
+            expiresAt: Number.isFinite(Number(intent.expiresAt)) ? Number(intent.expiresAt) : null,
+            interruptible: intent.interruptible !== false,
+            stableUntil: this._intentStableUntil,
+        };
+    }
+
+    _cloneIntentItinerary(itinerary) {
+        if (!itinerary) return null;
+        return {
+            ...itinerary,
+            route: Array.isArray(itinerary.route) ? [...itinerary.route] : [],
+        };
+    }
+
+    _adoptIntentWithoutRetarget(intent) {
+        if (!intent?.id) return;
+        this._lastIntentId = intent.id;
+        this._rememberRouteIntent(intent);
+        this.behavior.acceptIntent?.(intent, {
+            building: this._lastBuildingType,
+            reason: intent.reason || 'same-building-intent',
+            targetTile: this._lastTargetTile,
+            phase: intent.phase,
+            interruptible: intent.interruptible,
+        });
+    }
+
+    _shouldRetargetForIntent(intent, nextBuildingType, nextIntentId) {
+        const buildingChanged = nextBuildingType !== this._lastBuildingType;
+        if (!nextIntentId) return buildingChanged;
+        if (!this._lastIntentSnapshot || !this._lastIntentSnapshot.id) return true;
+        if (nextIntentId === this._lastIntentSnapshot.id) return buildingChanged;
+
+        const now = Date.now();
+        const nextPriority = Number(intent?.priority);
+        const currentPriority = Number(this._lastIntentSnapshot.priority);
+        const priorityDelta = Number.isFinite(nextPriority) && Number.isFinite(currentPriority)
+            ? nextPriority - currentPriority
+            : 0;
+        if (priorityDelta >= SAME_INTENT_BUILDING_PRIORITY_DELTA) return true;
+        if (!buildingChanged) return false;
+        if (now >= this._intentStableUntil && this.behavior?.interruptible !== false) return true;
+        return false;
     }
 
     _releaseVisitReservation() {
         if (!this._lastReservationId && !this.agent?.id) return;
         this.releaseVisitReservation?.(this.agent?.id, this._lastReservationId);
         this._lastReservationId = null;
+        this._lastVisitSlotId = null;
+        this._lastVisitFacingPoint = null;
+        this._lastVisitMeta = null;
         this._lastReservationRenewedAt = 0;
     }
 
@@ -510,7 +913,7 @@ export class AgentSprite {
 
     _findStitchedPath(fromTile, toTile, viaWaypoints) {
         if (!viaWaypoints || viaWaypoints.length === 0) {
-            return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles);
+            return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles, this._pathOptions(fromTile, toTile));
         }
         const stitched = [];
         let leg = fromTile;
@@ -519,18 +922,41 @@ export class AgentSprite {
             if (Math.round(leg.tileX) === Math.round(next.tileX) && Math.round(leg.tileY) === Math.round(next.tileY)) {
                 continue;
             }
-            const segment = this.pathfinder.findPath(leg, next, this.bridgeTiles);
+            const segment = this.pathfinder.findPath(leg, next, this.bridgeTiles, this._pathOptions(leg, next));
             if (segment.length === 0) {
-                return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles);
+                return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles, this._pathOptions(fromTile, toTile));
             }
             if (stitched.length > 0) segment.shift();
             stitched.push(...segment);
             leg = next;
         }
         if (stitched.length === 0) {
-            return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles);
+            return this.pathfinder.findPath(fromTile, toTile, this.bridgeTiles, this._pathOptions(fromTile, toTile));
         }
         return stitched;
+    }
+
+    _pathOptions(fromTile, toTile) {
+        const roadTiles = this.getRoadTiles?.();
+        const bridgeTiles = this.bridgeTiles;
+        const hasRoads = !!roadTiles?.size;
+        const hasBridges = !!bridgeTiles?.size;
+        if (!hasRoads && !hasBridges) return null;
+
+        const distance = Math.hypot(
+            Number(toTile?.tileX) - Number(fromTile?.tileX),
+            Number(toTile?.tileY) - Number(fromTile?.tileY),
+        );
+        if (Number.isFinite(distance) && distance <= LOCAL_DIRECT_PATH_TILE_DISTANCE) return null;
+
+        return {
+            preferRoads: true,
+            roadTiles,
+            preferredTiles: roadTiles,
+            dockTiles: roadTiles,
+            bridgeTiles,
+            cacheKey: `roads:${roadTiles?.size || 0}:bridges:${bridgeTiles?.size || 0}`,
+        };
     }
 
     _findNearestRoadTile(fromTile, towardTile, maxRadius = 6) {
@@ -605,18 +1031,61 @@ export class AgentSprite {
     }
 
     _waitDurationForState() {
-        if (this.agent.status === AgentStatus.WORKING) return 60 + Math.floor(Math.random() * 120);
-        if (this.agent.status === AgentStatus.WAITING) return 120 + Math.floor(Math.random() * 160);
-        if (this.agent.status === AgentStatus.IDLE) return 240 + Math.floor(Math.random() * 260);
-        return 90;
+        const intent = this._currentMotionIntent();
+        let base = 90;
+        if (this.agent.status === AgentStatus.WORKING) base = 95;
+        if (this.agent.status === AgentStatus.WAITING) base = 180;
+        if (this.agent.status === AgentStatus.IDLE) base = 310;
+
+        const priority = Number(intent?.priority);
+        const priorityBonus = Number.isFinite(priority) ? (priority - 60) * 0.9 : 0;
+        const ttlMs = Number.isFinite(Number(intent?.expiresAt))
+            ? Math.max(0, Number(intent.expiresAt) - Date.now())
+            : 0;
+        const ttlBonus = ttlMs > 0 ? Math.min(85, ttlMs / 900) : 0;
+        const seed = Math.abs(this._hash(`${this.agent.id}:${intent?.id || this._lastBuildingType || 'ambient'}:${this._lastVisitSlotId || ''}`));
+        const jitter = Math.floor((this._noise(seed, 29) - 0.5) * 44);
+        const dwell = (base + priorityBonus + ttlBonus + jitter) * this._intentDwellMultiplier(intent);
+        return Math.round(this._clamp(dwell, 45, 480));
     }
 
     _speedForState() {
         if (this.chatPartner) return 2.5;
-        if (this.agent.status === AgentStatus.WORKING) return 1.5;
-        if (this.agent.status === AgentStatus.WAITING) return 1.1;
-        if (this.agent.status === AgentStatus.IDLE) return 0.8;
-        return 1.2;
+        let base = 1.2;
+        if (this.agent.status === AgentStatus.WORKING) base = 1.5;
+        if (this.agent.status === AgentStatus.WAITING) base = 1.1;
+        if (this.agent.status === AgentStatus.IDLE) base = 0.8;
+        return this._clamp(base * this._intentSpeedMultiplier(this._currentMotionIntent()), 0.62, 2.15);
+    }
+
+    _currentMotionIntent() {
+        const activeIntent = this._activeVisitIntent();
+        if (activeIntent?.id && activeIntent.id === this._lastIntentId) return activeIntent;
+        return this._lastIntentSnapshot;
+    }
+
+    _intentDwellMultiplier(intent) {
+        if (!intent) return 1;
+        const sourceProfile = INTENT_SOURCE_MOTION[intent.source] || INTENT_SOURCE_MOTION.tool;
+        const phaseProfile = PHASE_MOTION[intent.phase] || null;
+        return (sourceProfile.dwell || 1) * (phaseProfile?.dwell || 1);
+    }
+
+    _intentSpeedMultiplier(intent) {
+        if (!intent) return 1;
+        const sourceProfile = INTENT_SOURCE_MOTION[intent.source] || INTENT_SOURCE_MOTION.tool;
+        const phaseProfile = PHASE_MOTION[intent.phase] || null;
+        const priority = Number(intent.priority);
+        const priorityFactor = Number.isFinite(priority)
+            ? this._clamp(1 + ((priority - 70) / 260), 0.86, 1.16)
+            : 1;
+        const expiresAt = Number(intent.expiresAt);
+        const ttlFactor = Number.isFinite(expiresAt) && expiresAt - Date.now() < 6000 ? 1.06 : 1;
+        return (sourceProfile.speed || 1) * (phaseProfile?.speed || 1) * priorityFactor * ttlFactor;
+    }
+
+    _clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
     }
 
     setMotionScale(scale) {
@@ -783,13 +1252,20 @@ export class AgentSprite {
         // Reroute immediately when status or fresh tool changes the intended building.
         if (!this.chatPartner) {
             const activeIntent = this._activeVisitIntent();
-            const curBuilding = activeIntent?.building || (this.agent.status === AgentStatus.IDLE
+            let curBuilding = activeIntent?.building || (this.agent.status === AgentStatus.IDLE
                 ? this._lastBuildingType
                 : this._targetBuildingTypeForState());
+            if (!activeIntent && this._blockedIntentId && Date.now() < this._blockedIntentRetryAfter) {
+                curBuilding = this._lastBuildingType;
+            }
             const curIntentId = activeIntent?.id || null;
-            if (curBuilding !== this._lastBuildingType || (curIntentId && curIntentId !== this._lastIntentId)) {
+            const buildingChanged = curBuilding !== this._lastBuildingType;
+            const intentChanged = curIntentId && curIntentId !== this._lastIntentId;
+            if ((buildingChanged || intentChanged) && this._shouldRetargetForIntent(activeIntent, curBuilding, curIntentId)) {
                 this._lastBuildingType = curBuilding;
                 this._pickTarget();
+            } else if (intentChanged && !buildingChanged) {
+                this._adoptIntentWithoutRetarget(activeIntent);
             }
         }
 
@@ -850,8 +1326,10 @@ export class AgentSprite {
             this.behavior.arrive({
                 state: this._lastIntentId ? 'performing' : 'lingering',
                 cooldownMs: this._lastIntentId ? 2000 : 0,
+                phase: this._lastIntentSnapshot?.phase || this._phaseForAgentState(),
+                interruptible: this._lastIntentSnapshot?.interruptible,
             });
-            if (!this.chatPartner) this._faceBuilding(this._buildingForType(this._lastBuildingType));
+            if (!this.chatPartner) this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
             this.waitTimer = this.chatPartner ? 10 : this._waitDurationForState();
             this._resetWalkCycle();
             return;
@@ -964,10 +1442,12 @@ export class AgentSprite {
         };
         const fromExplicit = wrap(explicitFacingPoint);
         if (fromExplicit) return fromExplicit;
-        const fromBuilding = wrap(building?.facingPoint);
-        if (fromBuilding) return fromBuilding;
+        const fromLastVisit = wrap(this._lastVisitFacingPoint);
+        if (fromLastVisit) return fromLastVisit;
         const visitFacing = wrap(this._currentVisitTileEntry(building)?.facingPoint);
         if (visitFacing) return visitFacing;
+        const fromBuilding = wrap(building?.facingPoint);
+        if (fromBuilding) return fromBuilding;
         if (!building) return null;
         const bx = Number(building.x);
         const by = Number(building.y);
@@ -994,7 +1474,7 @@ export class AgentSprite {
             this._fidgetActiveMs -= dt;
             if (this._fidgetActiveMs <= 0) {
                 this._fidgetActiveMs = 0;
-                this._faceBuilding(this._buildingForType(this._lastBuildingType));
+                this._faceBuilding(this._buildingForType(this._lastBuildingType), this._lastVisitFacingPoint);
             }
             return;
         }
@@ -1008,7 +1488,7 @@ export class AgentSprite {
         this._anchorReinforceMs -= dt;
         if (this._anchorReinforceMs <= 0) {
             const building = this._buildingForType(this._lastBuildingType);
-            if (building) this._faceBuilding(building);
+            if (building) this._faceBuilding(building, this._lastVisitFacingPoint);
             this._anchorReinforceMs = 4000 + Math.random() * 5000;
         }
         this._fidgetCooldownMs -= dt;
@@ -1103,8 +1583,20 @@ export class AgentSprite {
             building: this._lastBuildingType,
             intentId: this._lastIntentId,
             reservationId: this._lastReservationId,
+            visitSlotId: this._lastVisitSlotId,
+            visitFacingPoint: this._lastVisitFacingPoint ? { ...this._lastVisitFacingPoint } : null,
+            visitMeta: this._lastVisitMeta ? { ...this._lastVisitMeta } : null,
+            routeIntent: this._lastIntentSnapshot ? { ...this._lastIntentSnapshot } : null,
+            intentStableUntil: this._intentStableUntil,
+            blockedIntentId: this._blockedIntentId,
+            blockedIntentRetryAfter: this._blockedIntentRetryAfter,
+            lastBlockedRecovery: this._lastBlockedRecovery ? { ...this._lastBlockedRecovery } : null,
             behaviorState: behavior.state,
             behaviorReason: behavior.reason,
+            goal: behavior.currentGoal || this._lastIntentSnapshot?.goal || null,
+            itinerary: behavior.currentItinerary
+                ? this._cloneIntentItinerary(behavior.currentItinerary)
+                : this._cloneIntentItinerary(this._lastIntentSnapshot?.itinerary),
             recentBuildings: behavior.recentBuildings,
             behavior,
             targetTile: this._lastTargetTile ? { ...this._lastTargetTile } : null,

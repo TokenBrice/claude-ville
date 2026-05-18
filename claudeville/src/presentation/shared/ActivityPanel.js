@@ -16,6 +16,46 @@ import {
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
 const BUILDING_OCCUPANT_REFRESH_INTERVAL = 5000;
+const JOURNEY_BREADCRUMB_LIMIT = 5;
+
+const BEHAVIOR_STATE_LABELS = Object.freeze({
+    blocked: 'Blocked',
+    cooldown: 'Cooling down',
+    performing: 'On site',
+    roaming: 'Roaming',
+    traveling: 'Traveling',
+    wandering: 'Wandering',
+});
+
+const BEHAVIOR_PHASE_LABELS = Object.freeze({
+    coordinating: 'Coordinating',
+    editing: 'Editing',
+    git: 'Git work',
+    'quota/resource': 'Quota check',
+    reading: 'Reading',
+    researching: 'Researching',
+    testing: 'Testing',
+    waiting: 'Waiting',
+});
+
+const AGENT_GOAL_LABELS = Object.freeze({
+    'assist-parent': 'Assist parent',
+    'complete-task': 'Complete task',
+    'monitor-quota': 'Monitor quota',
+    'recover-error': 'Recover error',
+});
+
+const PUSH_STATUS_LABELS = Object.freeze({
+    cancelled: 'Push cancelled',
+    canceled: 'Push cancelled',
+    failed: 'Push failed',
+    rejected: 'Push rejected',
+});
+
+const REASON_LABELS = Object.freeze({
+    'quota/resource': 'Quota check',
+    'quota-resource': 'Quota check',
+});
 
 export class ActivityPanel {
     constructor() {
@@ -51,11 +91,15 @@ export class ActivityPanel {
             name: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-name'),
             input: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-input'),
         };
+        this._journeySectionEl = null;
+        this._journeyBodyEl = null;
+        this._ensureJourneySection();
         // Sections that belong to agent mode and must be hidden when a building is selected.
         this._agentSections = Array.from(this.panelEl?.querySelectorAll('.activity-panel__meta, .activity-panel__section') || []);
         // Building-mode content container is created on demand and inserted after the header.
         this._buildingContentEl = null;
         this._renderSignatures = {
+            journey: '',
             toolHistory: '',
             messages: '',
             tokenUsage: '',
@@ -74,6 +118,7 @@ export class ActivityPanel {
                 this.currentAgent = agent;
                 this._updateInfo(agent);
                 this._updateCurrentTool(agent);
+                this._updateJourney(agent);
             }
         };
         this._onAgentRemoved = (agent) => {
@@ -110,6 +155,7 @@ export class ActivityPanel {
         this._mode = 'agent';
         this.currentAgent = agent;
         this._renderSignatures = {
+            journey: '',
             toolHistory: '',
             messages: '',
             tokenUsage: '',
@@ -118,6 +164,7 @@ export class ActivityPanel {
         this.panelEl.style.display = '';
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
+        this._updateJourney(agent);
         this._startPolling();
     }
 
@@ -144,6 +191,7 @@ export class ActivityPanel {
         this.panelEl.style.display = 'none';
         this.currentAgent = null;
         this._renderSignatures = {
+            journey: '',
             toolHistory: '',
             messages: '',
             tokenUsage: '',
@@ -159,7 +207,7 @@ export class ActivityPanel {
         const statusInfo = statusPresentation(agent.status);
         this.dom.panelAgentName.textContent = agent.name;
         const statusEl = this.dom.panelAgentStatus;
-        statusEl.textContent = statusInfo.status.toUpperCase();
+        statusEl.textContent = statusInfo.label.toUpperCase();
         statusEl.style.color = statusInfo.color;
 
         const model = modelPresentation(agent);
@@ -239,6 +287,7 @@ export class ActivityPanel {
     async _fetchDetail() {
         if (!this.currentAgent) return;
         const agent = this.currentAgent;
+        this._updateJourney(agent);
         const data = await sessionDetailsService.fetchSessionDetail(agent);
         if (!data || !this.currentAgent || this.currentAgent.id !== agent.id) return;
         this._renderToolHistory(data.toolHistory || []);
@@ -354,6 +403,287 @@ export class ActivityPanel {
         return el('div', { className: 'activity-panel__empty', text });
     }
 
+    // ─── Selected-agent journey ────────────────────────
+
+    _ensureJourneySection() {
+        if (this._journeySectionEl && this._journeyBodyEl) return;
+        const body = el('div', { className: ['activity-panel__token-usage', 'activity-panel__journey'] });
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Journey' }),
+            body,
+        ]);
+        const meta = this.panelEl?.querySelector('.activity-panel__meta');
+        if (meta?.nextSibling) {
+            this.panelEl.insertBefore(section, meta.nextSibling);
+        } else if (meta) {
+            this.panelEl.appendChild(section);
+        }
+        this._journeySectionEl = section;
+        this._journeyBodyEl = body;
+    }
+
+    _updateJourney(agent) {
+        if (!this._journeySectionEl || !this._journeyBodyEl) return;
+        if (this._mode !== 'agent' || !agent) {
+            this._journeySectionEl.style.display = 'none';
+            return;
+        }
+
+        const snapshot = this._getAgentBehaviorSnapshot(agent);
+        const rows = this._agentJourneyRows(agent, snapshot);
+        const signature = hashRows(rows, [
+            row => row.label,
+            row => row.value,
+        ]);
+        if (!rows.length) {
+            this._journeySectionEl.style.display = 'none';
+            this._renderSignatures.journey = '';
+            return;
+        }
+        this._journeySectionEl.style.display = '';
+        if (signature === this._renderSignatures.journey) return;
+        this._renderSignatures.journey = signature;
+        replaceChildren(this._journeyBodyEl, rows.map(row => this._journeyRow(row.label, row.value)));
+    }
+
+    _agentJourneyRows(agent, snapshot) {
+        if (!snapshot) return [];
+        const behavior = snapshot.behavior || {};
+        const currentIntent = behavior.currentIntent || {};
+        const buildingType = behavior.building
+            || snapshot.building
+            || currentIntent.building
+            || agent.lastKnownBuildingType
+            || null;
+        const buildingLabel = this._buildingLabel(buildingType);
+        const state = snapshot.behaviorState || behavior.state || null;
+        const phase = behavior.currentPhase || currentIntent.phase || null;
+        const reason = this._formatReasonLabel(
+            currentIntent.label
+                || behavior.reason
+                || snapshot.behaviorReason
+                || currentIntent.reason
+                || currentIntent.source
+                || '',
+        );
+        const targetTile = behavior.targetTile || snapshot.targetTile || currentIntent.targetTile || null;
+        const reservation = this._getVisitReservation(agent, snapshot);
+        const breadcrumb = this._formatBreadcrumb(behavior.recentBuildings || snapshot.recentBuildings);
+        const goal = this._formatGoalLabel(
+            behavior.currentGoal
+                || currentIntent.goal
+                || snapshot.goal
+                || snapshot.routeIntent?.goal,
+        );
+        const itinerary = this._formatItinerary(
+            behavior.currentItinerary
+                || currentIntent.itinerary
+                || snapshot.itinerary
+                || snapshot.routeIntent?.itinerary,
+        );
+        const rows = [];
+        if (goal) rows.push({ label: 'Goal', value: goal });
+        const why = this._journeyExplanation({
+            state,
+            moving: snapshot.moving,
+            buildingLabel,
+            phase,
+            reason,
+        });
+        if (why) rows.push({ label: 'Why', value: why });
+        if (buildingLabel) rows.push({ label: 'Building', value: buildingLabel });
+
+        const route = this._formatRoute({ state, moving: snapshot.moving, targetTile, waypointCount: snapshot.waypointCount });
+        if (route) rows.push({ label: 'Route', value: route });
+        if (itinerary) rows.push({ label: 'Itinerary', value: itinerary });
+        if (reason) rows.push({ label: 'Reason', value: reason });
+
+        const reservationText = this._formatReservation(reservation, snapshot);
+        if (reservationText) rows.push({ label: 'Reservation', value: reservationText });
+        if (breadcrumb) rows.push({ label: 'Breadcrumb', value: breadcrumb });
+        return rows;
+    }
+
+    _journeyExplanation({ state, moving, buildingLabel, phase, reason }) {
+        const action = this._formatBehaviorAction(state, moving);
+        const phaseLabel = this._formatPhaseLabel(phase);
+        const destination = buildingLabel ? ` ${buildingLabel}` : '';
+        const purpose = phaseLabel && phaseLabel !== 'Waiting' ? phaseLabel : reason;
+        if (action && destination && purpose) return `${action}${destination} for ${purpose.toLowerCase()}`;
+        if (action && destination) return `${action}${destination}`;
+        if (action && purpose) return `${action} for ${purpose.toLowerCase()}`;
+        return '';
+    }
+
+    _formatBehaviorAction(state, moving) {
+        const normalized = String(state || '').toLowerCase();
+        if (moving || normalized === 'traveling') return 'Moving to';
+        if (normalized === 'performing') return 'Working at';
+        if (normalized === 'blocked') return 'Blocked near';
+        if (normalized === 'cooldown') return 'Leaving';
+        if (normalized === 'wandering' || normalized === 'roaming') return 'Roaming near';
+        return '';
+    }
+
+    _formatRoute({ state, moving, targetTile, waypointCount }) {
+        const parts = [];
+        const stateLabel = BEHAVIOR_STATE_LABELS[String(state || '').toLowerCase()] || '';
+        if (stateLabel) parts.push(stateLabel);
+        else if (moving) parts.push('Moving');
+        const tile = this._formatTile(targetTile);
+        if (tile) parts.push(`target ${tile}`);
+        const stops = Number(waypointCount);
+        if (Number.isFinite(stops) && stops > 0) parts.push(`${stops} waypoint${stops === 1 ? '' : 's'}`);
+        return parts.join(', ');
+    }
+
+    _formatReservation(reservation, snapshot) {
+        if (!reservation && !snapshot?.reservationId) return '';
+        const parts = [];
+        const slot = reservation?.slotId || snapshot?.visitSlotId || '';
+        if (slot) parts.push(`slot ${this._titleize(String(slot).replace(/[:/]+/g, ' ')).toLowerCase()}`);
+        const tile = this._formatTile(reservation || snapshot?.targetTile);
+        if (tile) parts.push(tile);
+        const queueIndex = Number(reservation?.queueIndex);
+        const queueDepth = Number(reservation?.queueDepth);
+        if (Number.isFinite(queueIndex) && queueIndex > 0) {
+            const position = queueIndex + 1;
+            const total = Number.isFinite(queueDepth) && queueDepth >= 0
+                ? Math.max(position, queueDepth + 1)
+                : null;
+            parts.push(Number.isFinite(queueDepth) && queueDepth > 0
+                ? `queue ${position}/${total}`
+                : `queue ${position}`);
+        }
+        if (reservation?.overflow || reservation?.queueOverflow) parts.push('overflow');
+        if (!parts.length && snapshot?.reservationId) parts.push(String(snapshot.reservationId));
+        return parts.join(', ');
+    }
+
+    _formatBreadcrumb(buildings) {
+        const list = Array.isArray(buildings) ? buildings : [];
+        const labels = list
+            .slice(-JOURNEY_BREADCRUMB_LIMIT)
+            .map(type => this._buildingLabel(type))
+            .filter(Boolean);
+        return labels.join(' > ');
+    }
+
+    _formatGoalLabel(goal) {
+        const key = String(goal || '')
+            .trim()
+            .replace(/([a-z])([A-Z])/g, '$1-$2')
+            .replace(/[_\s]+/g, '-')
+            .toLowerCase();
+        return AGENT_GOAL_LABELS[key] || '';
+    }
+
+    _formatItinerary(itinerary) {
+        const route = Array.isArray(itinerary?.route)
+            ? itinerary.route
+            : (Array.isArray(itinerary?.stops) ? itinerary.stops : []);
+        if (route.length < 2) return '';
+        const currentIndex = Number(itinerary?.currentIndex);
+        return route
+            .map((stop, index) => {
+                const label = this._buildingLabel(
+                    typeof stop === 'string'
+                        ? stop
+                        : (stop?.building || stop?.buildingType || stop?.type || stop?.id),
+                );
+                if (!label) return '';
+                return Number.isFinite(currentIndex) && Math.round(currentIndex) === index
+                    ? `${label} (now)`
+                    : label;
+            })
+            .filter(Boolean)
+            .join(' > ');
+    }
+
+    _formatTile(value) {
+        const x = Number(value?.tileX);
+        const y = Number(value?.tileY);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return '';
+        return `tile ${Math.round(x)},${Math.round(y)}`;
+    }
+
+    _formatPhaseLabel(phase) {
+        const key = String(phase || '').trim().toLowerCase();
+        return BEHAVIOR_PHASE_LABELS[key] || this._titleize(key);
+    }
+
+    _formatReasonLabel(value) {
+        const raw = String(value || '').trim();
+        if (!raw) return '';
+        const reasonKey = raw.toLowerCase().replace(/[_\s]+/g, '-');
+        if (REASON_LABELS[reasonKey]) return REASON_LABELS[reasonKey];
+        const normalized = raw.toLowerCase().replace(/[\/_-]+/g, ' ');
+        const pushMatch = normalized.match(/\bpush\s+(failed|rejected|cancelled|canceled)\b/)
+            || normalized.match(/\b(failed|rejected|cancelled|canceled)\s+push\b/);
+        if (pushMatch) return PUSH_STATUS_LABELS[pushMatch[1]] || raw;
+        return this._titleize(normalized);
+    }
+
+    _titleize(value) {
+        return String(value || '')
+            .replace(/[\/_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\b\w/g, char => char.toUpperCase());
+    }
+
+    _buildingLabel(type) {
+        const key = String(type || '').trim();
+        if (!key) return '';
+        const building = this._getBuildingByType(key);
+        return building?.shortLabel || building?.label || this._titleize(key.replace(/^ambient:/, ''));
+    }
+
+    _getBuildingByType(type) {
+        const world = this._getWorld();
+        if (!world?.buildings) return null;
+        if (typeof world.buildings.get === 'function') return world.buildings.get(type) || null;
+        if (Array.isArray(world.buildings)) return world.buildings.find(building => building?.type === type) || null;
+        return null;
+    }
+
+    _getAgentBehaviorSnapshot(agent) {
+        const sprite = this._getAgentSprite(agent);
+        if (!sprite || typeof sprite.getBehaviorDebugSnapshot !== 'function') return null;
+        try {
+            return sprite.getBehaviorDebugSnapshot() || null;
+        } catch {
+            return null;
+        }
+    }
+
+    _getAgentSprite(agent) {
+        if (!agent?.id) return null;
+        const app = typeof window !== 'undefined' ? window.__claudeVilleApp : null;
+        return app?.renderer?.agentSprites?.get?.(agent.id) || null;
+    }
+
+    _getVisitReservation(agent, snapshot) {
+        const app = typeof window !== 'undefined' ? window.__claudeVilleApp : null;
+        const allocator = app?.renderer?.visitTileAllocator;
+        if (!allocator || typeof allocator.snapshot !== 'function') return null;
+        let reservations = [];
+        try {
+            reservations = allocator.snapshot?.()?.reservations || [];
+        } catch {
+            reservations = [];
+        }
+        if (!Array.isArray(reservations) || !reservations.length) return null;
+        const reservationId = snapshot?.reservationId;
+        return reservations.find(reservation => (
+            (reservationId && reservation.id === reservationId)
+            || (agent?.id && reservation.agentId === agent.id)
+        )) || null;
+    }
+
     // ─── Building mode ─────────────────────────────────
 
     _hideAgentSections() {
@@ -464,7 +794,7 @@ export class ActivityPanel {
                 style: { cursor: 'pointer' },
                 title: 'Switch to agent details',
             }, [
-                el('div', { className: 'activity-panel__msg-role', text: statusInfo.status }),
+                el('div', { className: 'activity-panel__msg-role', text: statusInfo.label }),
                 el('div', { text: agent.name || agent.id }),
             ]);
             row.addEventListener('click', () => emitAgentSelected(agent));
@@ -499,7 +829,7 @@ export class ActivityPanel {
             const harbor = this._getHarborTraffic();
             const failed = harbor?.getFailedPushState?.();
             const active = !!(failed && failed.hasFailedPush);
-            return [this._buildingRow('Failed push', active ? 'ACTIVE' : 'clear')];
+            return [this._buildingRow('Push issue', active ? 'Push failed' : 'clear')];
         }
         if (type === 'harbor') {
             const repos = this._getHarborRepoSummaries();
@@ -519,14 +849,31 @@ export class ActivityPanel {
         const parts = [];
         if (pending) parts.push(`${pending} pending`);
         if (docked) parts.push(`${docked} docked`);
-        if (failed) parts.push(`${failed} failed`);
+        if (failed) parts.push(this._formatPushIssueCount(failed, 'failed'));
         return parts.length ? parts.join(', ') : '0 pending';
+    }
+
+    _formatPushIssueCount(count, status) {
+        const normalized = String(status || '').toLowerCase();
+        if (normalized === 'failed') return `${count} ${count === 1 ? 'push failed' : 'pushes failed'}`;
+        if (normalized === 'rejected') return `${count} ${count === 1 ? 'push rejected' : 'pushes rejected'}`;
+        if (normalized === 'cancelled' || normalized === 'canceled') {
+            return `${count} ${count === 1 ? 'push cancelled' : 'pushes cancelled'}`;
+        }
+        return `${count} ${this._titleize(status).toLowerCase()}`;
     }
 
     _buildingRow(label, value) {
         return el('div', { className: 'activity-panel__token-row' }, [
             el('span', { className: 'activity-panel__token-label', text: label }),
             el('span', { className: 'activity-panel__token-value', text: String(value) }),
+        ]);
+    }
+
+    _journeyRow(label, value) {
+        return el('div', { className: 'activity-panel__journey-row' }, [
+            el('div', { className: 'activity-panel__journey-label', text: label }),
+            el('div', { className: 'activity-panel__journey-value', text: String(value) }),
         ]);
     }
 

@@ -304,6 +304,49 @@
     font-weight: bold;
 }
 
+.activity-panel__journey {
+    gap: 4px;
+}
+
+.activity-panel__journey-row {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    min-width: 0;
+    padding: 7px 0 8px;
+    border-top: 1px solid rgba(214, 169, 81, 0.08);
+}
+
+.activity-panel__journey-row:first-child {
+    padding-top: 0;
+    border-top: 0;
+}
+
+.activity-panel__journey-label {
+    display: block;
+    min-width: 0;
+    color: #a89476;
+    font-size: 6px;
+    line-height: 1.65;
+    text-transform: uppercase;
+    overflow-wrap: anywhere;
+}
+
+.activity-panel__journey-value {
+    display: block;
+    min-width: 0;
+    max-width: 100%;
+    color: #ffe58d;
+    font-size: 7px;
+    font-weight: normal;
+    line-height: 1.9;
+    text-align: left;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: normal;
+    text-shadow: 1px 1px 0 #2d1a12;
+}
+
 .activity-panel__token-value--cost {
     color: #72d071;
 }
