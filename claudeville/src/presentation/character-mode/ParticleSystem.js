@@ -2,7 +2,7 @@ const PARTICLE_GRAVITY = 0.05;
 const MAX_PARTICLES = 240;
 
 class Particle {
-    constructor(x, y, vx, vy, life, color, size, gravity) {
+    constructor(x, y, vx, vy, life, color, size, gravity, alpha = 1, layer = 'effects') {
         this.x = x;
         this.y = y;
         this.vx = vx;
@@ -12,6 +12,8 @@ class Particle {
         this.color = color;
         this.size = size;
         this.gravity = gravity;
+        this.alpha = alpha;
+        this.layer = layer;
     }
 
     update(dt = 16) {
@@ -30,7 +32,7 @@ class Particle {
 
     draw(ctx) {
         const alpha = this.life / this.maxLife;
-        ctx.globalAlpha = alpha;
+        ctx.globalAlpha = alpha * this.alpha;
         ctx.fillStyle = this.color;
         ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
         ctx.globalAlpha = 1;
@@ -168,6 +170,35 @@ function pick(arr) {
     return arr[Math.floor(Math.random() * arr.length)];
 }
 
+function normalizeRange(value, fallback) {
+    if (Array.isArray(value) && value.length >= 2) {
+        const a = Number(value[0]);
+        const b = Number(value[1]);
+        if (Number.isFinite(a) && Number.isFinite(b)) return [Math.min(a, b), Math.max(a, b)];
+    }
+    const single = Number(value);
+    if (Number.isFinite(single)) return [single, single];
+    return fallback;
+}
+
+function seededRandom(seed, index) {
+    let x = (Number(seed) || 0) + Math.imul(index + 1, 0x9e3779b1);
+    x ^= x >>> 16;
+    x = Math.imul(x, 0x7feb352d);
+    x ^= x >>> 15;
+    x = Math.imul(x, 0x846ca68b);
+    x ^= x >>> 16;
+    return (x >>> 0) / 0xffffffff;
+}
+
+function randFrom(rng, min, max) {
+    return min + rng() * (max - min);
+}
+
+function pickFrom(rng, arr) {
+    return arr[Math.floor(rng() * arr.length)] || arr[0];
+}
+
 export class ParticleSystem {
     constructor({ maxParticles = MAX_PARTICLES } = {}) {
         this.particles = [];
@@ -182,7 +213,11 @@ export class ParticleSystem {
         }
     }
 
-    spawn(type, x, y, count = 3) {
+    spawn(type, x, y, count = 3, options = {}) {
+        if (count && typeof count === 'object') {
+            options = count;
+            count = options.count ?? 3;
+        }
         const preset = PARTICLE_PRESETS[type];
         if (!preset || !this.motionEnabled) return;
 
@@ -194,32 +229,60 @@ export class ParticleSystem {
             this.particles.splice(0, overflow);
         }
 
+        const colors = Array.isArray(options.colors) && options.colors.length ? options.colors : preset.colors;
+        const sizeRange = normalizeRange(options.size, preset.size);
+        const lifeRange = normalizeRange(options.life, preset.life);
+        const speedRange = normalizeRange(options.speed, preset.speed);
+        const alphaRange = normalizeRange(options.alpha, [1, 1]);
+        const spreadRange = normalizeRange(options.spread, [3, 3]);
+        const gravity = options.gravity ?? preset.gravity;
+        const direction = options.direction || preset.direction;
+        const layer = options.layer || preset.layer || 'effects';
+        const seed = options.seed;
+
         for (let i = 0; i < spawnCount; i++) {
-            const size = rand(preset.size[0], preset.size[1]);
-            const life = Math.floor(rand(preset.life[0], preset.life[1]));
-            const speed = rand(preset.speed[0], preset.speed[1]);
-            const color = pick(preset.colors);
+            let seedIndex = i * 11;
+            const rng = Number.isFinite(Number(seed))
+                ? () => seededRandom(seed, seedIndex++)
+                : Math.random;
+            const size = randFrom(rng, sizeRange[0], sizeRange[1]);
+            const life = Math.floor(randFrom(rng, lifeRange[0], lifeRange[1]));
+            const speed = randFrom(rng, speedRange[0], speedRange[1]);
+            const color = pickFrom(rng, colors);
+            const alpha = randFrom(rng, alphaRange[0], alphaRange[1]);
+            const spread = randFrom(rng, spreadRange[0], spreadRange[1]);
 
             let vx = 0;
             let vy = 0;
 
-            switch (preset.direction) {
+            switch (direction) {
                 case 'up':
-                    vx = rand(-0.3, 0.3);
+                    vx = randFrom(rng, -0.3, 0.3);
                     vy = -speed;
                     break;
                 case 'down':
-                    vx = rand(-0.3, 0.3);
+                    vx = randFrom(rng, -0.3, 0.3);
                     vy = speed * 0.3;
                     break;
                 case 'random':
-                    const angle = Math.random() * Math.PI * 2;
+                    const angle = rng() * Math.PI * 2;
                     vx = Math.cos(angle) * speed;
                     vy = Math.sin(angle) * speed;
                     break;
             }
 
-            this.particles.push(new Particle(x + rand(-3, 3), y + rand(-3, 3), vx, vy, life, color, size, preset.gravity));
+            this.particles.push(new Particle(
+                x + randFrom(rng, -spread, spread),
+                y + randFrom(rng, -spread, spread),
+                vx,
+                vy,
+                life,
+                color,
+                size,
+                gravity,
+                alpha,
+                layer,
+            ));
         }
     }
 
@@ -235,9 +298,14 @@ export class ParticleSystem {
         this.particles.length = next;
     }
 
-    draw(ctx) {
+    draw(ctx, { layer = null, excludeLayer = null } = {}) {
         if (this.particles.length === 0) return;
+        const wantedLayer = layer == null ? null : String(layer);
+        const excludedLayer = excludeLayer == null ? null : String(excludeLayer);
         for (const p of this.particles) {
+            const particleLayer = p.layer || 'effects';
+            if (wantedLayer && particleLayer !== wantedLayer) continue;
+            if (excludedLayer && particleLayer === excludedLayer) continue;
             p.draw(ctx);
         }
     }

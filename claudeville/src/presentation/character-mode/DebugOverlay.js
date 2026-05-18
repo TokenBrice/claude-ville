@@ -112,15 +112,22 @@ export class DebugOverlay {
         ctx.restore();
     }
 
-    drawScreen(ctx, { visitIntents, visitReservations, agentSprites, viewport, panelY = 12, behaviorStats = null } = {}) {
+    drawScreen(ctx, { visitIntents, visitReservations, agentSprites, viewport, panelY = 12, behaviorStats = null, renderStats = null } = {}) {
         if (!this.enabled) return;
         const intents = Array.isArray(visitIntents?.intents) ? visitIntents.intents : [];
         const reservations = Array.isArray(visitReservations?.reservations) ? visitReservations.reservations : [];
         const buildingStats = visitReservations?.buildings || {};
+        const layerRows = this._renderLayerRows(renderStats);
+        const timingRows = this._renderTimingRows(renderStats);
         const rows = [
             `agents: ${agentSprites?.size || 0}`,
             `intents: ${intents.length}`,
             `reservations: ${reservations.length}`,
+            renderStats?.drawables ? `drawables: ${renderStats.drawables.total} drawn / ${renderStats.drawables.culling?.culled || 0} culled` : null,
+            renderStats?.harbor ? `harbor: pending ${renderStats.harbor.pendingRepos || 0} commits ${renderStats.harbor.pendingCommits || 0}` : null,
+            renderStats?.canvas ? `light/cache: ${renderStats.canvas.lightGradients || 0} gradients / particles ${renderStats.canvas.particles || 0}` : null,
+            ...timingRows,
+            ...layerRows,
             behaviorStats?.metricsScope ? `metrics: ${behaviorStats.metricsScope}` : null,
             behaviorStats?.behaviorMetrics ? `retarget/scenic/handoff: ${behaviorStats.behaviorMetrics.stationaryRetargets || 0}/${behaviorStats.behaviorMetrics.scenicVisits || 0}/${behaviorStats.behaviorMetrics.handoffIntents || 0}` : null,
             behaviorStats?.allocatorMetrics ? `alloc/renew/reject: ${behaviorStats.allocatorMetrics.allocations || 0}/${behaviorStats.allocatorMetrics.renewals || 0}/${behaviorStats.allocatorMetrics.rejected || 0}` : null,
@@ -166,6 +173,25 @@ export class DebugOverlay {
         ctx.restore();
     }
 
+    _renderLayerRows(renderStats) {
+        const byKind = renderStats?.drawables?.byKind || {};
+        return Object.entries(byKind)
+            .sort((a, b) => (b[1] - a[1]) || a[0].localeCompare(b[0]))
+            .slice(0, 6)
+            .map(([kind, count]) => `layer ${kind}: ${count}`);
+    }
+
+    _renderTimingRows(renderStats) {
+        const timings = Array.isArray(renderStats?.timings?.segments) ? renderStats.timings.segments : [];
+        if (!timings.length) return [];
+        const total = renderStats.timings.totalMs;
+        const rows = [`frame: ${formatMs(total)}ms total`];
+        for (const timing of timings.slice(0, 5)) {
+            rows.push(`${timing.label}: ${formatMs(timing.ms)} p95 ${formatMs(timing.p95)}`);
+        }
+        return rows;
+    }
+
     _tileToScreen(tileX, tileY) {
         return {
             x: (tileX - tileY) * TILE_WIDTH / 2,
@@ -193,4 +219,10 @@ export class DebugOverlay {
         ctx.arc(p.x, p.y, radius, 0, Math.PI * 2);
         ctx.fill();
     }
+}
+
+function formatMs(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) return '0.0';
+    return number.toFixed(number >= 10 ? 0 : 1);
 }

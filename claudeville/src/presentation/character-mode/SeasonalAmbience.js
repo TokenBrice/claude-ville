@@ -16,8 +16,8 @@
 //   this.seasonalAmbience.update(dt);
 //
 // `viewportProvider` is optional. When omitted, spawn coordinates fall back to
-// (0, 0) and the consumer is expected to translate the canvas before drawing
-// particles. ParticleSystem treats the supplied (x, y) as canvas-space pixels.
+// (0, 0). Seasonal particles use ParticleSystem's screen layer because the
+// supplied (x, y) coordinates are canvas-space pixels.
 //
 // Particle types per season:
 //   winter (Dec–Feb): 'firefly' (white-leaning proxy for snow)
@@ -25,11 +25,9 @@
 //   summer (Jun–Aug): 'firefly'
 //   autumn (Sep–Nov): 'leaf'
 //
-// We pass `type: 'leaf'` / `'firefly'` directly because the current
-// ParticleSystem.spawn(type, x, y, count) signature does not accept color or
-// other per-spawn overrides. The visual compromise is documented in the
-// world-enhancement plan; bumping ParticleSystem.spawn later to take an
-// options object would let us tighten the snow / cherry palette.
+// We pass `type: 'leaf'` / `'firefly'` directly. ParticleSystem supports
+// per-spawn overrides, but the seasonal palettes stay restrained until a
+// stronger art direction lands.
 
 const SPAWNS_PER_SECOND = 4;
 const STATIC_FALLBACK_COUNT = 14;
@@ -113,7 +111,7 @@ export class SeasonalAmbience {
 
     _spawnDriftParticle(season) {
         const { x, y } = this._sampleViewport();
-        this.particleSystem.spawn(season.type, x, y, 1);
+        this.particleSystem.spawn(season.type, x, y, 1, { layer: 'screen' });
     }
 
     // Reduced motion: ParticleSystem.spawn() is gated by motionEnabled and

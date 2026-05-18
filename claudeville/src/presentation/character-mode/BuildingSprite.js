@@ -13,6 +13,14 @@ import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState } from './AtmosphereState.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
+import {
+    getBuildingEffectAnchor,
+    getBuildingLabelAccent,
+    getBuildingLabelEmblem,
+    getBuildingLabelPriority,
+    getBuildingOccupancyState,
+    getBuildingVisual,
+} from './BuildingVisualRegistry.js';
 
 const LANDMARK_LABEL_TYPES = new Set(
     BUILDING_DEFS
@@ -31,33 +39,11 @@ const LABEL_SHORT_TEXT = Object.fromEntries(
         .filter((building) => typeof building.shortLabel === 'string' && building.shortLabel.trim())
         .map((building) => [building.type, building.shortLabel.trim().toUpperCase()]),
 );
-const LANDMARK_LABEL_ACCENTS = {
-    command: '#f6c85f',
-    forge: '#f08a4b',
-    portal: '#8bd7ff',
-    watchtower: '#ffe59a',
-    harbor: '#ffd37a',
-    observatory: '#bda7ff',
-    mine: '#ffab47',
-    taskboard: '#8bd7ff',
-    archive: '#b3d68c',
-};
-const LANDMARK_LABEL_EMBLEMS = {
-    command: 'crown',
-    forge: 'hammer',
-    portal: 'rune',
-    watchtower: 'flame',
-    harbor: 'anchor',
-    observatory: 'star',
-    mine: 'pick',
-    taskboard: 'scroll',
-    archive: 'book',
-};
-const WATCHTOWER_LANTERN_FIRE = Object.freeze({
+const WATCHTOWER_LANTERN_FIRE = Object.freeze(getBuildingEffectAnchor('watchtower', 'lanternFire', {
     flame: [200, 68],
     light: [200, 66],
     particle: [200, 66],
-});
+}));
 const PARTICLE_ALIASES = {
     sparkle2: 'sparkle',
     sparkle3: 'sparkle',
@@ -119,7 +105,7 @@ const EMITTER_LIGHTS = {
     forgeEmber: { color: '#ff8a33', radius: 42, overlay: 'atmosphere.light.fire-glow' },
     forgeSpark: { color: '#ff9f3f', radius: 34, overlay: 'atmosphere.light.fire-glow' },
 };
-const OBSERVATORY_CLOCK_FACE = Object.freeze({
+const OBSERVATORY_CLOCK_FACE = Object.freeze(getBuildingEffectAnchor('observatory', 'clockFace', {
     // Calibrated against the generated 312x208 clock observatory base.
     // Composite reference is asserted at first draw so a regenerated sprite
     // with different dimensions logs a visible warning instead of silently
@@ -132,7 +118,7 @@ const OBSERVATORY_CLOCK_FACE = Object.freeze({
     sourceRadius: 18,
     hourHandLength: 10,
     minuteHandLength: 15,
-});
+}));
 const MINE_SEAM_COLORS = ['#ffc15a', '#ff8a33', '#ff4528'];
 // Presence tier -> (emitter chance ×, light radius ×, occupancy scalar 0..1).
 // Occupancy feeds window warmth via 0.45 + 0.55 * scalar.
@@ -442,17 +428,19 @@ export class BuildingSprite {
             const dims = this.assets.getDims(`building.${b.type}`);
             if (!dims) continue;
             const isHovered = this.hovered === b;
-            const isLandmark = b.labelPriority === 'landmark' || LANDMARK_LABEL_TYPES.has(b.type);
+            const visual = getBuildingVisual(b.type);
+            const registryLabelPriority = getBuildingLabelPriority(b.type, b.labelPriority);
+            const isLandmark = registryLabelPriority === 'landmark' || b.labelPriority === 'landmark' || LANDMARK_LABEL_TYPES.has(b.type);
             const localLabelDensity = this._estimateLocalLabelDensity(occupied, center.x, center.y);
 
             ctx.save();
-            const presenceTier = this._presenceTierFor(b.type);
-            const baseAccent = LANDMARK_LABEL_ACCENTS[b.type] || '#d6a951';
             const failedPushAlert = b.type === 'watchtower' && this.harborStatus?.failedPushActive;
-            const presenceActive = presenceTier === 'occupied' || presenceTier === 'busy';
+            const occupancy = this._buildingOccupancyInfo(b, { alert: failedPushAlert });
+            const baseAccent = getBuildingLabelAccent(b.type, '#d6a951');
+            const presenceActive = occupancy.state !== 'idle';
             const accent = failedPushAlert
                 ? '#ff755d'
-                : presenceActive ? brightenHex(baseAccent, 1.2, 1.2) : baseAccent;
+                : this._occupancyAccent(baseAccent, occupancy.state);
             const textColor = isHovered ? '#fff6cf' : isLandmark ? '#ffe7a3' : '#e8c982';
             const baseY = Math.round(center.y - dims.h - (isHovered ? 34 : isLandmark ? 28 : 24));
             const baseX = center.x;
@@ -632,13 +620,27 @@ export class BuildingSprite {
 
             if (isHovered || isLandmark) {
                 ctx.fillStyle = accent;
-                ctx.globalAlpha = isHovered ? 0.95 : glowAlpha;
+                ctx.globalAlpha = this._pulseBandAlpha(visual, occupancy, isHovered ? 0.95 : glowAlpha);
                 ctx.fillRect(tagLeft + 5, tagTop + 3, tagW - 10, 2);
                 if (isHarborLedger) {
                     ctx.fillStyle = 'rgba(35, 21, 12, 0.6)';
                     ctx.fillRect(tagLeft + padX + iconSize + iconGap, by + 1, tagW - padX * 2 - iconSize - iconGap - 4, 1);
                 }
                 ctx.globalAlpha = isHovered ? 1 : glowAlpha;
+            }
+
+            if (!isHarborLedger && (isLandmark || isHovered)) {
+                this._drawCapacityMeter(ctx, {
+                    tagLeft,
+                    tagTop,
+                    tagW,
+                    tagH,
+                    padX,
+                    accent,
+                    occupancy,
+                    isHovered,
+                    isLandmark,
+                });
             }
 
             // Identity badge: hand-drawn guild emblem, not a plain letter token.
@@ -2927,11 +2929,88 @@ export class BuildingSprite {
         return this._visitorCountByType.get(building?.type) || 0;
     }
 
+    _buildingCapacityForLabel(building) {
+        const explicit = Number(building?.visitCapacity);
+        if (Number.isFinite(explicit) && explicit > 0) return Math.max(1, Math.floor(explicit));
+        const capacity = building?.capacity;
+        if (capacity && typeof capacity === 'object') {
+            const work = Number(capacity.work);
+            if (Number.isFinite(work) && work > 0) return Math.max(1, Math.floor(work));
+        }
+        return Array.isArray(building?.visitTiles)
+            ? Math.max(1, Math.min(6, building.visitTiles.filter((tile) => !tile.overflow || tile.role === 'work').length))
+            : 0;
+    }
+
+    _buildingOccupancyInfo(building, { alert = false } = {}) {
+        const presence = this._presenceByType.get(building?.type) || {};
+        const count = Math.max(this._visitorCountFor(building), Number(presence.count) || 0);
+        const capacity = this._buildingCapacityForLabel(building);
+        const state = getBuildingOccupancyState(building?.type, { count, capacity, alert });
+        return {
+            count,
+            capacity,
+            state,
+            ratio: capacity > 0 ? clamp01(count / capacity) : 0,
+        };
+    }
+
+    _occupancyAccent(baseAccent, state) {
+        if (state === 'alert') return '#ff755d';
+        if (state === 'full') return mixHex(brightenHex(baseAccent, 1.25, 1.18), '#ffcf6a', 0.42);
+        if (state === 'busy') return brightenHex(baseAccent, 1.22, 1.2);
+        if (state === 'occupied') return brightenHex(baseAccent, 1.08, 1.08);
+        return baseAccent;
+    }
+
+    _pulseBandAlpha(visual, occupancy, baseAlpha) {
+        const fallback = visual?.reducedMotionFallback || {};
+        const pulse = this.motionScale
+            ? (Math.sin(this.frame * 0.075) + 1) / 2
+            : Number.isFinite(fallback.pulse) ? fallback.pulse : 0.55;
+        const band = visual?.pulseBand || {};
+        const stateBoost = occupancy.state === 'full' || occupancy.state === 'alert'
+            ? 0.22
+            : occupancy.state === 'busy' ? 0.12 : 0;
+        const alpha = Number.isFinite(band.alpha) ? band.alpha : 0.24;
+        return Math.min(1, baseAlpha * (0.74 + alpha + pulse * 0.12 + stateBoost));
+    }
+
+    _drawCapacityMeter(ctx, { tagLeft, tagTop, tagW, tagH, padX, accent, occupancy, isHovered, isLandmark }) {
+        if (!occupancy?.capacity || tagH < 18) return;
+        const total = Math.max(1, Math.min(5, occupancy.capacity));
+        const filled = Math.max(0, Math.min(total, Math.ceil(occupancy.ratio * total)));
+        const pipW = isHovered ? 5 : 4;
+        const pipH = isHovered ? 3 : 2;
+        const gap = 2;
+        const width = total * pipW + (total - 1) * gap;
+        const x0 = Math.round(tagLeft + tagW - padX - width);
+        const y0 = Math.round(tagTop + tagH - (isHovered ? 7 : 6));
+        const emptyColor = isLandmark ? 'rgba(255, 225, 139, 0.18)' : 'rgba(215, 185, 121, 0.16)';
+        const fillColor = occupancy.state === 'alert' ? '#ff755d' : accent;
+
+        ctx.save();
+        ctx.globalAlpha = isHovered ? 0.96 : 0.86;
+        for (let i = 0; i < total; i++) {
+            const x = x0 + i * (pipW + gap);
+            ctx.fillStyle = i < filled ? fillColor : emptyColor;
+            ctx.fillRect(x, y0, pipW, pipH);
+        }
+        if (occupancy.count > occupancy.capacity) {
+            ctx.fillStyle = fillColor;
+            ctx.fillRect(x0 + width + 2, y0, 2, pipH);
+        }
+        ctx.restore();
+    }
+
     _drawFootprintContactPad(ctx, building, { isLandmark = false, isHovered = false } = {}) {
         const corners = this._buildingFootprintCorners(building);
+        const districtTint = getBuildingVisual(building.type)?.districtTint;
         ctx.save();
         ctx.globalAlpha = isHovered ? 0.86 : isLandmark ? 0.66 : 0.54;
-        ctx.fillStyle = isLandmark ? 'rgba(69, 55, 33, 0.34)' : 'rgba(34, 29, 23, 0.30)';
+        ctx.fillStyle = isLandmark
+            ? (districtTint || 'rgba(69, 55, 33, 0.34)')
+            : 'rgba(34, 29, 23, 0.30)';
         this._traceFootprint(ctx, corners);
         ctx.fill();
 
@@ -3089,7 +3168,7 @@ export class BuildingSprite {
 
     _drawLabelEmblem(ctx, building, cx, cy, size, { accent, isHovered, isLandmark } = {}) {
         const r = size / 2;
-        const emblem = LANDMARK_LABEL_EMBLEMS[building.type] || 'mark';
+        const emblem = getBuildingLabelEmblem(building.type, 'mark');
         ctx.save();
         ctx.fillStyle = isHovered ? 'rgba(255, 230, 148, 0.98)' : isLandmark ? accent : 'rgba(214, 169, 81, 0.82)';
         ctx.strokeStyle = 'rgba(43, 28, 17, 0.88)';

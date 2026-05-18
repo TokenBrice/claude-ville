@@ -77,12 +77,14 @@ export class Camera {
         if (this._reducedMotion) this._zoomAnimation = null;
     }
 
-    updateFollow() {
+    updateFollow(dt = 16) {
         if (!this.followTarget) return;
-        const targetX = -this.followTarget.x + this._viewportWidth() / (2 * this.zoom);
-        const targetY = -this.followTarget.y + this._viewportHeight() / (2 * this.zoom);
-        this.x += (targetX - this.x) * this.followSmoothing;
-        this.y += (targetY - this.y) * this.followSmoothing;
+        const focus = this._followFocusPoint(dt);
+        const targetX = -focus.x + this._viewportWidth() / (2 * this.zoom);
+        const targetY = -focus.y + this._viewportHeight() / (2 * this.zoom);
+        const smoothing = this._reducedMotion ? 1 : this.followSmoothing;
+        this.x += (targetX - this.x) * smoothing;
+        this.y += (targetY - this.y) * smoothing;
         this._clampToBounds();
     }
 
@@ -256,5 +258,31 @@ export class Camera {
         const clampedY = Math.max(minY, Math.min(maxY, centerWorldY));
         this.x = w / (2 * this.zoom) - clampedX;
         this.y = h / (2 * this.zoom) - clampedY;
+    }
+
+    _followFocusPoint(dt = 16) {
+        const sprite = this.followTarget;
+        const current = {
+            x: Number(sprite?.x) || 0,
+            y: Number(sprite?.y) || 0,
+        };
+        if (!sprite?.moving) return current;
+
+        const next = Array.isArray(sprite.waypoints) && sprite.waypoints.length
+            ? sprite.waypoints[0]
+            : { x: sprite.targetX, y: sprite.targetY };
+        if (!Number.isFinite(Number(next?.x)) || !Number.isFinite(Number(next?.y))) return current;
+
+        const dx = Number(next.x) - current.x;
+        const dy = Number(next.y) - current.y;
+        const distance = Math.hypot(dx, dy);
+        if (distance <= 1) return current;
+
+        const frameScale = Math.max(0.5, Math.min(2, (Number(dt) || 16) / 16));
+        const leadPx = Math.min(180 / Math.max(1, this.zoom), 42 * frameScale + distance * 0.22);
+        return {
+            x: current.x + dx / distance * leadPx,
+            y: current.y + dy / distance * leadPx,
+        };
     }
 }

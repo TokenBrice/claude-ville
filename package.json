@@ -24,11 +24,14 @@
     "widget:kde:install": "bash widget/kde/install.sh",
     "widget:kde:uninstall": "bash widget/kde/uninstall.sh",
     "sprites:audit-ids": "node scripts/sprites/manifest-id-audit.mjs",
+    "sprites:audit-refresh": "sh -c 'npm run sprites:audit-ids; ids=$?; npm run sprites:validate; manifest=$?; exit $((ids || manifest))'",
     "sprites:plan": "node scripts/sprites/plan.mjs",
     "sprites:validate": "node scripts/sprites/manifest-validator.mjs",
     "sprites:visual-diff": "node scripts/sprites/visual-diff.mjs",
     "sprites:capture-baseline": "node scripts/sprites/capture-baseline.mjs",
     "sprites:capture-fresh": "node scripts/sprites/capture-baseline.mjs --fresh",
+    "world:validate-buildings": "node scripts/world/validate-buildings.mjs",
+    "world:validate-terrain": "node scripts/world/validate-terrain.mjs",
     "vendor:refresh-js-yaml": "node scripts/vendor/refresh-js-yaml.mjs"
   },
   "devDependencies": {

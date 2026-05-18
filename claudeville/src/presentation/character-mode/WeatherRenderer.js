@@ -56,6 +56,7 @@ export class WeatherRenderer {
         const precipitation = clamp(weather.precipitation, 0, 1);
         const fog = clamp(weather.fog, 0, 1);
         const cloudCover = clamp(weather.cloudCover, 0, 1);
+        const legibility = weatherLegibilityGate(weather, atmosphere);
         const hasForegroundWeather = weather.intensity > 0
             && (!CLEAR_TYPES.has(weather.type) || precipitation > 0.02 || fog > 0.04 || cloudCover > 0.72);
         if (!hasForegroundWeather) return;
@@ -73,25 +74,25 @@ export class WeatherRenderer {
 
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
-        const washBudget = Math.min(1, 0.72 + (1 - fog) * 0.18);
+        const washBudget = Math.min(1, 0.72 + (1 - fog) * 0.18) * legibility.wash;
 
         if (weather.type === 'overcast' || cloudCover > 0.72) {
             this._drawOvercast(ctx, canvas, Math.max(weather.intensity * 0.72, cloudCover * 0.54) * washBudget);
         }
 
         if (fog > 0.04 || weather.type === 'fog') {
-            const fogIntensity = Math.max(fog, weather.type === 'fog' ? weather.intensity : 0);
+            const fogIntensity = Math.max(fog, weather.type === 'fog' ? weather.intensity : 0) * legibility.fog;
             this._drawFogWash(ctx, canvas, fogIntensity * washBudget);
             this._drawFogBands(ctx, canvas, fogIntensity, phaseMs, seed, particleEnabled);
         }
 
         if (RAIN_TYPES.has(weather.type) || precipitation > 0.02) {
             const storm = weather.type === 'storm';
-            const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72));
-            this._drawOvercast(ctx, canvas, Math.min(1, Math.max(cloudCover, weather.intensity) * (storm ? 0.56 : 0.42)));
+            const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * legibility.rain;
+            this._drawOvercast(ctx, canvas, Math.min(1, Math.max(cloudCover, weather.intensity) * (storm ? 0.56 : 0.42)) * washBudget);
             this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             if (storm && particleEnabled) {
-                this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation), seed);
+                this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation) * legibility.flash, seed);
             }
         } else if (weather.type === 'overcast' && fog <= 0.04) {
             this._drawFogBands(ctx, canvas, weather.intensity * 0.34, phaseMs, seed, particleEnabled);
@@ -473,6 +474,22 @@ function normalizeWeather(atmosphere) {
         precipitation: clamp(precipitation, 0, 1),
         fog: clamp(fog, 0, 1),
         seed,
+    };
+}
+
+function weatherLegibilityGate(weather, atmosphere) {
+    const weatherIntensity = clamp(Number(weather?.intensity) || 0, 0, 1);
+    const fog = clamp(Number(weather?.fog) || 0, 0, 1);
+    const precipitation = clamp(Number(weather?.precipitation) || 0, 0, 1);
+    const pressure = Math.max(fog * 0.95, precipitation * 0.62, weatherIntensity * (weather?.type === 'storm' ? 0.7 : 0.42));
+    const configured = Number(atmosphere?.weatherLegibilityScale ?? atmosphere?.legibility?.weatherScale);
+    const explicitScale = Number.isFinite(configured) ? clamp(configured, 0.45, 1.15) : null;
+    const base = explicitScale ?? clamp(1 - pressure * 0.28, 0.68, 1);
+    return {
+        wash: base,
+        fog: clamp(base + 0.06, 0.72, 1),
+        rain: clamp(base + 0.08, 0.74, 1),
+        flash: clamp(base + 0.16, 0.78, 1),
     };
 }
 

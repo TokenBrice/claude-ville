@@ -61,8 +61,30 @@ const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
 const MAX_LIGHT_GRADIENT_STAMP_PIXELS = Math.floor(MAX_LIGHT_GRADIENT_CACHE_PIXELS / 5);
+const TERRAIN_CACHE_MARGIN = 360;
+const TERRAIN_CACHE_CHUNK_SIZE = 16;
+const TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS = CANVAS_BUDGET.maxWorldCachePixels;
+const ACTIVE_BUILDING_EMITTER_GATE = 'active-building-agents';
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
+const LANE_STEERING = Object.freeze({
+    correctionPx: 0.55,
+    denseCorrectionPx: 0.42,
+    arrivalDistancePx: 18,
+    minimumCorrectionPx: 0.18,
+    avenueOffsetPx: 4.4,
+    dirtOffsetPx: 3.4,
+    plazaOffsetPx: 2.2,
+});
+const LOCAL_AVOIDANCE = Object.freeze({
+    radiusPx: 28,
+    denseRadiusPx: 26,
+    strengthPx: 0.8,
+    denseStrengthPx: 0.62,
+    bucketPx: 40,
+});
+const CROWD_CLUSTER_TILE_SIZE = 4;
+const CROWD_CLUSTER_TOP_LIMIT = 12;
 const VISIT_OVERFLOW_TILES = Object.freeze({
     archive: [
         { tileX: 8, tileY: 19, overflow: true, reason: 'archive-walk' },
@@ -514,8 +536,8 @@ export class IsometricRenderer {
             viewportProvider: () => ({
                 x: 0,
                 y: 0,
-                w: (this.canvas?.width ?? 0) / (this._screenDpr?.() || 1),
-                h: (this.canvas?.height ?? 0) / (this._screenDpr?.() || 1),
+                width: (this.canvas?.width ?? 0) / (this._screenDpr?.() || 1),
+                height: (this.canvas?.height ?? 0) / (this._screenDpr?.() || 1),
             }),
         });
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
@@ -537,6 +559,7 @@ export class IsometricRenderer {
         this._sortedSprites = [];
         this._movingSprites = [];
         this._spritesNeedSort = true;
+        this._laneTiles = new Map();
         this._staticPropDrawables = [];
         this._drawables = [];
         this._familiarMoteDrawables = [];
@@ -547,6 +570,8 @@ export class IsometricRenderer {
         this.terrainCache = null;
         this.terrainCacheBounds = null;
         this.terrainCacheKey = '';
+        this.terrainCacheMeta = null;
+        this._terrainCacheLimitWarningKey = '';
         this.fantasyForestTreeCache = new Map();
         this.terrainSeed = [];
         this.waterFrame = 0;
@@ -580,6 +605,12 @@ export class IsometricRenderer {
         this._chatMatchAccumulator = 250;
         this._crowdBumpCooldowns = new Map();
         this._stationaryOverlapAccumulator = 0;
+        this._localAvoidanceMetrics = {
+            laneCorrections: 0,
+            separationPushes: 0,
+            zeroDistancePairs: 0,
+        };
+        this._crowdStats = this._emptyCrowdStats();
         this.behaviorMetrics = {
             stationaryRetargets: 0,
             stationaryOverlapChecks: 0,
@@ -741,6 +772,7 @@ export class IsometricRenderer {
 
         this.commandCenterGroundProps = [];
         this._generateCommandCenterAmbience();
+        this._laneTiles = this._buildLaneTileIndex();
         this.ambientEmitters = [];
         this._generateAmbientEmitters();
         // Latest building presence tiers, refreshed via building:active-agents
@@ -1138,12 +1170,12 @@ export class IsometricRenderer {
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
             // Building-activity gated smoke plumes. Roof anchors raise the
             // spawn point (worldY -= 22) above each building footprint and
-            // the `gatedBy: 'building.activeAgents'` flag tells _updateAmbientEffects
+            // the active-building gate tells _updateAmbientEffects
             // to consult the presence map (occupied/busy => spawn ~every 600ms).
             { tileX: 28, tileY: 27, particleType: 'smoke', intervalMs: 600,
-              gatedBy: 'building.activeAgents', building: 'forge', worldYOffset: -22 },
+              gatedBy: ACTIVE_BUILDING_EMITTER_GATE, building: 'forge', worldYOffset: -22 },
             { tileX: 12, tileY: 32, particleType: 'smoke', intervalMs: 600,
-              gatedBy: 'building.activeAgents', building: 'mine', worldYOffset: -22 },
+              gatedBy: ACTIVE_BUILDING_EMITTER_GATE, building: 'mine', worldYOffset: -22 },
         ];
 
         for (const prop of this.commandCenterGroundProps) {
@@ -1222,6 +1254,7 @@ export class IsometricRenderer {
             window.__agentBehavior = (agentId) => this.agentSprites.get(agentId)?.getBehaviorDebugSnapshot?.() || null;
             window.__buildingCrowds = () => this.visitTileAllocator?.snapshot?.()?.buildings || {};
             window.__agentBehaviorStats = () => this._agentBehaviorStats();
+            window.__agentCrowds = () => this._crowdStats || this._summarizeCrowdClusters();
         }
 
         // Subscribe to domain events
@@ -1362,6 +1395,7 @@ export class IsometricRenderer {
             delete window.__agentBehavior;
             delete window.__buildingCrowds;
             delete window.__agentBehaviorStats;
+            delete window.__agentCrowds;
         }
         this.visitIntentManager?.dispose?.();
         this.visitTileAllocator?.updateContext?.({ agentSprites: [] });
@@ -1434,6 +1468,7 @@ export class IsometricRenderer {
         this.terrainCache = null;
         this.terrainCacheKey = '';
         this.terrainCacheBounds = null;
+        this.terrainCacheMeta = null;
         releaseCanvasBackingStore(this.atmosphereVignetteCache);
         this.atmosphereVignetteCache = null;
         this.atmosphereVignetteCacheKey = '';
@@ -1580,6 +1615,57 @@ export class IsometricRenderer {
         };
     }
 
+    applyScenarioMetadata(metadata = {}) {
+        if (!metadata || typeof metadata !== 'object') return false;
+        this._scenarioMetadata = JSON.parse(JSON.stringify(metadata));
+
+        const atmosphere = metadata.atmosphere || {};
+        const motionScale = Number(
+            atmosphere.motion?.motionScale
+            ?? metadata.motionScale
+            ?? (metadata.reducedMotion ? 0 : NaN)
+        );
+        if (Number.isFinite(motionScale)) {
+            this._setMotionScale(Math.max(0, Math.min(1, motionScale)));
+        }
+
+        const clock = atmosphere.clock || null;
+        const hour = Number(clock?.hours);
+        if (Number.isFinite(hour)) {
+            const minutes = Number(clock?.minutes);
+            const seconds = Number(clock?.seconds);
+            const hourValue = hour
+                + (Number.isFinite(minutes) ? minutes / 60 : 0)
+                + (Number.isFinite(seconds) ? seconds / 3600 : 0);
+            this.atmosphereState?.setHour?.(hourValue);
+            this.atmosphereState?.setTimelineMode?.('fixed');
+        }
+
+        if (atmosphere.weather) {
+            this.atmosphereState?.setWeather?.(atmosphere.weather);
+        }
+
+        const camera = metadata.camera || {};
+        const centerTile = camera.centerTile || null;
+        if (centerTile) {
+            const tileX = Number(centerTile.tileX);
+            const tileY = Number(centerTile.tileY);
+            if (Number.isFinite(tileX) && Number.isFinite(tileY)) {
+                const center = tileToWorld(tileX, tileY);
+                this.setCameraPose({ x: center.x, y: center.y, zoom: camera.zoom });
+            }
+        } else if (camera.zoom != null) {
+            this.setCameraPose({ zoom: camera.zoom });
+        }
+
+        if (metadata.selectedAgentId) {
+            this.selectAgentById(metadata.selectedAgentId);
+            if (this.selectedAgent && this.onAgentSelect) this.onAgentSelect(this.selectedAgent);
+        }
+
+        return true;
+    }
+
     _getBuildingByType(type) {
         const normalized = type === 'lighthouse' ? 'watchtower' : type;
         return normalized ? this.world?.buildings?.get?.(normalized) || null : null;
@@ -1693,6 +1779,8 @@ export class IsometricRenderer {
             allocatorMetrics: reservations.metrics || {},
             reservationCount: reservations.reservationCount || 0,
             buildingCrowds: reservations.buildings || {},
+            crowd: this._crowdStats || this._summarizeCrowdClusters(),
+            localAvoidance: { ...this._localAvoidanceMetrics },
         };
     }
 
@@ -2203,7 +2291,7 @@ export class IsometricRenderer {
         // Update camera follow
         if (this.camera) {
             this.camera.update(dt);
-            this.camera.updateFollow();
+            this.camera.updateFollow(dt);
         }
 
         // Chat matching only depends on session/tool state, not frame-perfect motion.
@@ -2248,9 +2336,8 @@ export class IsometricRenderer {
             this._markSpritesDirty();
         }
 
-        // Steering separation: push moving agents apart when they overlap in screen space.
-        const SEP_RADIUS = 28;   // px — slightly wider than sprite half-width (24)
-        const SEP_STRENGTH = 0.8; // px per frame — small enough to never push across a tile
+        // Steering separation: keep lane corrections and local nudges conservative
+        // so AgentSprite remains the source of target ownership and arrival state.
         const movingSprites = this._movingSprites;
         movingSprites.length = 0;
         for (const sprite of this.agentSprites.values()) {
@@ -2258,36 +2345,9 @@ export class IsometricRenderer {
                 movingSprites.push(sprite);
             }
         }
-        for (let i = 0; i < movingSprites.length; i++) {
-            for (let j = i + 1; j < movingSprites.length; j++) {
-                const a = movingSprites[i];
-                const b = movingSprites[j];
-                const dx = a.x - b.x;
-                const dy = a.y - b.y;
-                const dist = Math.sqrt(dx * dx + dy * dy);
-                if (dist >= SEP_RADIUS || dist === 0) continue;
-                const overlap = (SEP_RADIUS - dist) / SEP_RADIUS;
-                const nx = dx / dist;
-                const ny = dy / dist;
-                const nextAx = a.x + nx * overlap * SEP_STRENGTH;
-                const nextAy = a.y + ny * overlap * SEP_STRENGTH;
-                const nextBx = b.x - nx * overlap * SEP_STRENGTH;
-                const nextBy = b.y - ny * overlap * SEP_STRENGTH;
-
-                let moved = false;
-                if (this._isSpritePositionWalkable(a, nextAx, nextAy)) {
-                    a.x = nextAx;
-                    a.y = nextAy;
-                    moved = true;
-                }
-                if (this._isSpritePositionWalkable(b, nextBx, nextBy)) {
-                    b.x = nextBx;
-                    b.y = nextBy;
-                    moved = true;
-                }
-                if (moved) this._emitCrowdBumpFeedback(a, b, overlap);
-            }
-        }
+        this._applyLaneDiscipline(movingSprites, dt);
+        this._applyLocalAvoidance(movingSprites, dt);
+        this._crowdStats = this._summarizeCrowdClusters();
         this._stationaryOverlapAccumulator += dt;
         if (this._stationaryOverlapAccumulator >= 420) {
             this._stationaryOverlapAccumulator = 0;
@@ -2361,6 +2421,395 @@ export class IsometricRenderer {
         return this.pathfinder.isWalkable(Math.round(tile.tileX), Math.round(tile.tileY));
     }
 
+    _buildLaneTileIndex() {
+        const lanes = new Map();
+        if (!this.pathTiles?.size) return lanes;
+        for (const key of this.pathTiles) {
+            if (!this._isRoadLikeTileKey(key)) continue;
+            const tile = this._parseTileKey(key);
+            if (!tile) continue;
+            const axis = this._bestRoadAxis(tile.tileX, tile.tileY);
+            if (!axis) continue;
+            const center = tileToWorld(tile.tileX, tile.tileY);
+            const next = tileToWorld(tile.tileX + axis.dx, tile.tileY + axis.dy);
+            const vx = next.x - center.x;
+            const vy = next.y - center.y;
+            const length = Math.hypot(vx, vy);
+            if (length <= 0) continue;
+            const degree = this._roadNeighborCount(tile.tileX, tile.tileY);
+            const material = this._roadMaterialForKey(key);
+            const plazaLike = this.townSquareTiles?.has(key) || degree >= 4;
+            lanes.set(key, {
+                tileKey: key,
+                tileX: tile.tileX,
+                tileY: tile.tileY,
+                tangentX: vx / length,
+                tangentY: vy / length,
+                perpX: -vy / length,
+                perpY: vx / length,
+                laneOffset: plazaLike
+                    ? LANE_STEERING.plazaOffsetPx
+                    : material === 'avenue'
+                        ? LANE_STEERING.avenueOffsetPx
+                        : LANE_STEERING.dirtOffsetPx,
+                material,
+                degree,
+                plazaLike,
+            });
+        }
+        return lanes;
+    }
+
+    _parseTileKey(key) {
+        const comma = String(key).indexOf(',');
+        if (comma < 0) return null;
+        const tileX = Number(String(key).slice(0, comma));
+        const tileY = Number(String(key).slice(comma + 1));
+        if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+        return { tileX, tileY };
+    }
+
+    _isRoadLikeTileKey(key) {
+        return !!(
+            this.pathTiles?.has(key) &&
+            (
+                this.mainAvenueTiles?.has(key) ||
+                this.dirtPathTiles?.has(key) ||
+                this.commandCenterRoadTiles?.has(key) ||
+                this.bridgeTiles?.has?.(key)
+            )
+        );
+    }
+
+    _roadMaterialForKey(key) {
+        if (this.bridgeTiles?.has?.(key)) return 'bridge';
+        if (this.mainAvenueTiles?.has(key) || this.commandCenterRoadTiles?.has(key)) return 'avenue';
+        if (this.dirtPathTiles?.has(key)) return 'dirt';
+        return 'path';
+    }
+
+    _roadNeighborCount(tileX, tileY) {
+        let count = 0;
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                if (dx === 0 && dy === 0) continue;
+                if (this._isRoadLikeTileKey(`${tileX + dx},${tileY + dy}`)) count++;
+            }
+        }
+        return count;
+    }
+
+    _bestRoadAxis(tileX, tileY) {
+        const axes = [
+            { dx: 1, dy: 0 },
+            { dx: 0, dy: 1 },
+            { dx: 1, dy: 1 },
+            { dx: 1, dy: -1 },
+        ];
+        let best = null;
+        let bestScore = 0;
+        for (const axis of axes) {
+            let score = 0;
+            if (this._isRoadLikeTileKey(`${tileX + axis.dx},${tileY + axis.dy}`)) score++;
+            if (this._isRoadLikeTileKey(`${tileX - axis.dx},${tileY - axis.dy}`)) score++;
+            if (score > bestScore) {
+                best = axis;
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+
+    _laneInfoForSprite(sprite) {
+        if (!sprite || !this._laneTiles?.size) return null;
+        const tile = worldToTile(sprite.x, sprite.y);
+        if (!tile || !Number.isFinite(tile.tileX) || !Number.isFinite(tile.tileY)) return null;
+        const roundedKey = `${Math.round(tile.tileX)},${Math.round(tile.tileY)}`;
+        const direct = this._laneTiles.get(roundedKey);
+        if (direct) return direct;
+
+        let best = null;
+        let bestDistance = Infinity;
+        const baseX = Math.round(tile.tileX);
+        const baseY = Math.round(tile.tileY);
+        for (let dx = -1; dx <= 1; dx++) {
+            for (let dy = -1; dy <= 1; dy++) {
+                const candidate = this._laneTiles.get(`${baseX + dx},${baseY + dy}`);
+                if (!candidate) continue;
+                const distance = Math.hypot(tile.tileX - candidate.tileX, tile.tileY - candidate.tileY);
+                if (distance < bestDistance) {
+                    best = candidate;
+                    bestDistance = distance;
+                }
+            }
+        }
+        return bestDistance <= 1.15 ? best : null;
+    }
+
+    _laneSideForSprite(sprite, lane) {
+        const vx = Number(sprite?.targetX) - Number(sprite?.x);
+        const vy = Number(sprite?.targetY) - Number(sprite?.y);
+        const along = vx * lane.tangentX + vy * lane.tangentY;
+        if (Math.abs(along) > 0.05) return along >= 0 ? 1 : -1;
+        return (this._stableHash(sprite?.agent?.id || sprite?.id || '') % 2) === 0 ? 1 : -1;
+    }
+
+    _applyLaneDiscipline(movingSprites, dt = 16) {
+        if (!movingSprites?.length || !this._laneTiles?.size) return;
+        const dense = this.agentSprites.size >= 50;
+        const frameScale = Math.max(0, Math.min(2.5, dt / 16));
+        const maxCorrection = (dense ? LANE_STEERING.denseCorrectionPx : LANE_STEERING.correctionPx) * frameScale;
+        let corrections = 0;
+        for (const sprite of movingSprites) {
+            if (!sprite || sprite.chatPartner || sprite.chatting || sprite.isArrivalPending?.()) continue;
+            const targetDistance = Math.hypot(
+                Number(sprite.targetX) - Number(sprite.x),
+                Number(sprite.targetY) - Number(sprite.y),
+            );
+            if (!Number.isFinite(targetDistance) || targetDistance <= LANE_STEERING.arrivalDistancePx) {
+                delete sprite._laneDiscipline;
+                continue;
+            }
+            const lane = this._laneInfoForSprite(sprite);
+            if (!lane) {
+                delete sprite._laneDiscipline;
+                continue;
+            }
+            const side = this._laneSideForSprite(sprite, lane);
+            const center = tileToWorld(lane.tileX, lane.tileY);
+            const currentOffset = (sprite.x - center.x) * lane.perpX + (sprite.y - center.y) * lane.perpY;
+            const desiredOffset = lane.laneOffset * side;
+            const correction = desiredOffset - currentOffset;
+            if (Math.abs(correction) < LANE_STEERING.minimumCorrectionPx) {
+                sprite._laneDiscipline = { tileKey: lane.tileKey, side, offsetPx: desiredOffset };
+                continue;
+            }
+            const step = Math.max(-maxCorrection, Math.min(maxCorrection, correction));
+            const nextX = sprite.x + lane.perpX * step;
+            const nextY = sprite.y + lane.perpY * step;
+            if (!this._isSpritePositionWalkable(sprite, nextX, nextY)) continue;
+            sprite.x = nextX;
+            sprite.y = nextY;
+            sprite._laneDiscipline = { tileKey: lane.tileKey, side, offsetPx: desiredOffset };
+            corrections++;
+        }
+        if (corrections > 0) {
+            this._localAvoidanceMetrics.laneCorrections += corrections;
+            this._markSpritesDirty();
+        }
+    }
+
+    _applyLocalAvoidance(movingSprites, dt = 16) {
+        if (!movingSprites?.length) return;
+        const dense = this.agentSprites.size >= 50;
+        const radius = dense ? LOCAL_AVOIDANCE.denseRadiusPx : LOCAL_AVOIDANCE.radiusPx;
+        const frameScale = Math.max(0, Math.min(2.5, dt / 16));
+        const baseStrength = (dense ? LOCAL_AVOIDANCE.denseStrengthPx : LOCAL_AVOIDANCE.strengthPx) * frameScale;
+        let pushes = 0;
+        let zeroDistancePairs = 0;
+        this._forEachNearbySpritePair(movingSprites, LOCAL_AVOIDANCE.bucketPx, (a, b) => {
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            let dist = Math.hypot(dx, dy);
+            if (dist >= radius) return true;
+
+            let nx;
+            let ny;
+            if (dist <= 0.001) {
+                const angle = (this._stableHash(`${a.agent?.id || a.x}|${b.agent?.id || b.x}`) % 628) / 100;
+                nx = Math.cos(angle);
+                ny = Math.sin(angle);
+                dist = 0;
+                zeroDistancePairs++;
+            } else {
+                nx = dx / dist;
+                ny = dy / dist;
+            }
+
+            const overlap = dist > 0 ? (radius - dist) / radius : 1;
+            const sameLane = a._laneDiscipline?.tileKey && a._laneDiscipline.tileKey === b._laneDiscipline?.tileKey;
+            const opposingLanes = sameLane && a._laneDiscipline.side !== b._laneDiscipline.side;
+            const strength = baseStrength * (opposingLanes ? 0.55 : 1);
+            const nextAx = a.x + nx * overlap * strength;
+            const nextAy = a.y + ny * overlap * strength;
+            const nextBx = b.x - nx * overlap * strength;
+            const nextBy = b.y - ny * overlap * strength;
+
+            let moved = false;
+            if (this._isSpritePositionWalkable(a, nextAx, nextAy)) {
+                a.x = nextAx;
+                a.y = nextAy;
+                moved = true;
+            }
+            if (this._isSpritePositionWalkable(b, nextBx, nextBy)) {
+                b.x = nextBx;
+                b.y = nextBy;
+                moved = true;
+            }
+            if (moved) {
+                pushes++;
+                this._emitCrowdBumpFeedback(a, b, overlap);
+            }
+            return true;
+        });
+        if (pushes > 0) {
+            this._localAvoidanceMetrics.separationPushes += pushes;
+            this._markSpritesDirty();
+        }
+        if (zeroDistancePairs > 0) {
+            this._localAvoidanceMetrics.zeroDistancePairs += zeroDistancePairs;
+        }
+    }
+
+    _forEachNearbySpritePair(sprites, cellSize, visitor) {
+        const size = Math.max(1, Number(cellSize) || LOCAL_AVOIDANCE.bucketPx);
+        const buckets = new Map();
+        const ids = new Map();
+        for (let index = 0; index < sprites.length; index++) {
+            const sprite = sprites[index];
+            if (!sprite) continue;
+            ids.set(sprite, this._spriteStableId(sprite, index));
+            const key = `${Math.floor(sprite.x / size)},${Math.floor(sprite.y / size)}`;
+            const bucket = buckets.get(key) || [];
+            bucket.push(sprite);
+            buckets.set(key, bucket);
+        }
+
+        const visited = new Set();
+        for (const [key, bucket] of buckets.entries()) {
+            const [cellX, cellY] = key.split(',').map(Number);
+            for (let ox = -1; ox <= 1; ox++) {
+                for (let oy = -1; oy <= 1; oy++) {
+                    const other = buckets.get(`${cellX + ox},${cellY + oy}`);
+                    if (!other) continue;
+                    for (const a of bucket) {
+                        for (const b of other) {
+                            if (a === b) continue;
+                            const idA = ids.get(a);
+                            const idB = ids.get(b);
+                            if (!idA || !idB || idA === idB) continue;
+                            const pairKey = idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`;
+                            if (visited.has(pairKey)) continue;
+                            visited.add(pairKey);
+                            if (visitor(a, b) === false) return false;
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+    }
+
+    _spriteStableId(sprite, fallbackIndex = 0) {
+        return String(
+            sprite?.agent?.id ||
+            sprite?.id ||
+            `${Math.round(Number(sprite?.x) || 0)}:${Math.round(Number(sprite?.y) || 0)}:${fallbackIndex}`
+        );
+    }
+
+    _stableHash(value) {
+        const text = String(value || '');
+        let hash = 2166136261;
+        for (let i = 0; i < text.length; i++) {
+            hash ^= text.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+        return hash >>> 0;
+    }
+
+    _emptyCrowdStats() {
+        return {
+            agentCount: 0,
+            visibleAgents: 0,
+            movingAgents: 0,
+            clusterCellSize: CROWD_CLUSTER_TILE_SIZE,
+            minClusterSize: 3,
+            denseClusterCount: 0,
+            maxClusterSize: 0,
+            congestedAgents: 0,
+            clusters: [],
+            localAvoidance: { ...this._localAvoidanceMetrics },
+        };
+    }
+
+    _summarizeCrowdClusters() {
+        const groups = new Map();
+        let visibleAgents = 0;
+        let movingAgents = 0;
+        for (const sprite of this.agentSprites.values()) {
+            if (!sprite || this._isGateTransit(sprite, 'departure') || sprite.isArrivalPending?.()) continue;
+            const tile = worldToTile(sprite.x, sprite.y);
+            if (!tile || !Number.isFinite(tile.tileX) || !Number.isFinite(tile.tileY)) continue;
+            visibleAgents++;
+            if (sprite.moving) movingAgents++;
+            const cellX = Math.floor(tile.tileX / CROWD_CLUSTER_TILE_SIZE);
+            const cellY = Math.floor(tile.tileY / CROWD_CLUSTER_TILE_SIZE);
+            const key = `${cellX},${cellY}`;
+            const group = groups.get(key) || {
+                id: key,
+                count: 0,
+                moving: 0,
+                sumTileX: 0,
+                sumTileY: 0,
+                statuses: {},
+                providers: {},
+                teams: new Set(),
+            };
+            group.count++;
+            if (sprite.moving) group.moving++;
+            group.sumTileX += tile.tileX;
+            group.sumTileY += tile.tileY;
+            const status = sprite.agent?.status || 'unknown';
+            const provider = sprite.agent?.provider || 'unknown';
+            group.statuses[status] = (group.statuses[status] || 0) + 1;
+            group.providers[provider] = (group.providers[provider] || 0) + 1;
+            if (sprite.agent?.teamName) group.teams.add(sprite.agent.teamName);
+            groups.set(key, group);
+        }
+
+        const minClusterSize = visibleAgents >= 90 ? 6 : visibleAgents >= 50 ? 5 : 3;
+        const clusters = Array.from(groups.values())
+            .filter(group => group.count >= minClusterSize)
+            .map(group => ({
+                id: group.id,
+                tileX: group.sumTileX / group.count,
+                tileY: group.sumTileY / group.count,
+                count: group.count,
+                moving: group.moving,
+                dominantStatus: this._dominantCountKey(group.statuses),
+                dominantProvider: this._dominantCountKey(group.providers),
+                teamCount: group.teams.size,
+            }))
+            .sort((a, b) => (b.count - a.count) || a.id.localeCompare(b.id))
+            .slice(0, CROWD_CLUSTER_TOP_LIMIT);
+
+        return {
+            agentCount: this.agentSprites.size,
+            visibleAgents,
+            movingAgents,
+            clusterCellSize: CROWD_CLUSTER_TILE_SIZE,
+            minClusterSize,
+            denseClusterCount: clusters.length,
+            maxClusterSize: clusters.reduce((max, cluster) => Math.max(max, cluster.count || 0), 0),
+            congestedAgents: clusters.reduce((sum, cluster) => sum + (cluster.count || 0), 0),
+            clusters,
+            localAvoidance: { ...this._localAvoidanceMetrics },
+        };
+    }
+
+    _dominantCountKey(counts) {
+        let bestKey = null;
+        let bestCount = -1;
+        for (const [key, count] of Object.entries(counts || {})) {
+            if (count > bestCount || (count === bestCount && key.localeCompare(bestKey || '') < 0)) {
+                bestKey = key;
+                bestCount = count;
+            }
+        }
+        return bestKey;
+    }
+
     _resolveStationaryOverlaps() {
         const now = Date.now();
         const candidates = Array.from(this.agentSprites.values()).filter((sprite) => (
@@ -2374,28 +2823,26 @@ export class IsometricRenderer {
             this._canStationaryRetarget(sprite, now)
         ));
         this.behaviorMetrics.stationaryOverlapChecks++;
-        const threshold = 24;
-        const maxRetargets = 2;
+        const threshold = this.agentSprites.size >= 50 ? 26 : 24;
+        const maxRetargets = this.agentSprites.size >= 50 ? 5 : 2;
         let retargets = 0;
-        for (let i = 0; i < candidates.length && retargets < maxRetargets; i++) {
-            for (let j = i + 1; j < candidates.length && retargets < maxRetargets; j++) {
-                const a = candidates[i];
-                const b = candidates[j];
-                const dx = a.x - b.x;
-                const dy = a.y - b.y;
-                const dist = Math.hypot(dx, dy);
-                if (dist <= 0 || dist >= threshold) continue;
-                const aSnap = a.getBehaviorDebugSnapshot?.();
-                const bSnap = b.getBehaviorDebugSnapshot?.();
-                const sameBuilding = aSnap?.building && aSnap.building === bSnap?.building;
-                if (!sameBuilding && dist > 14) continue;
-                const loser = (aSnap?.behavior?.lastRerouteAt || 0) <= (bSnap?.behavior?.lastRerouteAt || 0) ? a : b;
-                if (loser.retargetVisit?.()) {
-                    retargets++;
-                    this.behaviorMetrics.stationaryRetargets++;
-                }
+        this._forEachNearbySpritePair(candidates, threshold + 8, (a, b) => {
+            if (retargets >= maxRetargets) return false;
+            const dx = a.x - b.x;
+            const dy = a.y - b.y;
+            const dist = Math.hypot(dx, dy);
+            if (dist <= 0 || dist >= threshold) return true;
+            const aSnap = a.getBehaviorDebugSnapshot?.();
+            const bSnap = b.getBehaviorDebugSnapshot?.();
+            const sameBuilding = aSnap?.building && aSnap.building === bSnap?.building;
+            if (!sameBuilding && dist > 14) return true;
+            const loser = (aSnap?.behavior?.lastRerouteAt || 0) <= (bSnap?.behavior?.lastRerouteAt || 0) ? a : b;
+            if (loser.retargetVisit?.()) {
+                retargets++;
+                this.behaviorMetrics.stationaryRetargets++;
             }
-        }
+            return retargets < maxRetargets;
+        });
     }
 
     _canStationaryRetarget(sprite, now = Date.now()) {
@@ -2431,9 +2878,9 @@ export class IsometricRenderer {
         let spawned = 0;
         const now = performance.now();
         for (const emitter of this.ambientEmitters) {
-            // building.activeAgents-gated emitters use interval timing and
+            // Active-building emitters use interval timing and
             // are not subject to the single-spawn-per-frame cap below.
-            if (emitter.gatedBy === 'building.activeAgents') {
+            if (emitter.gatedBy === ACTIVE_BUILDING_EMITTER_GATE) {
                 const presence = emitter.building
                     ? this._buildingPresenceMap?.get(emitter.building)
                     : null;
@@ -2710,14 +3157,12 @@ export class IsometricRenderer {
         const cached = this._getTerrainCache();
         if (cached) {
             ctx.drawImage(cached.canvas, cached.bounds.x, cached.bounds.y, cached.bounds.w, cached.bounds.h);
+        } else {
+            this._drawStaticTerrainSurface(ctx);
         }
         this._drawDynamicWaterHighlights(ctx);
         this._drawWeatherPuddles(ctx);
         this._drawStaticBuildingSmoke(ctx);
-        // Under reduced motion the ParticleSystem is muted, so the seasonal
-        // drift renderer pushes deterministic dots through direct canvas
-        // calls instead of going through spawn() (which would no-op).
-        this.seasonalAmbience?.drawStatic?.(ctx);
     }
 
     // Static fallback: when motionScale === 0 the particle system is disabled,
@@ -2727,7 +3172,7 @@ export class IsometricRenderer {
         if (!this.ambientEmitters?.length) return;
         ctx.save();
         for (const emitter of this.ambientEmitters) {
-            if (emitter.gatedBy !== 'building.activeAgents') continue;
+            if (emitter.gatedBy !== ACTIVE_BUILDING_EMITTER_GATE) continue;
             const presence = emitter.building
                 ? this._buildingPresenceMap?.get(emitter.building)
                 : null;
@@ -2755,6 +3200,14 @@ export class IsometricRenderer {
 
     _getTerrainCache() {
         const bounds = this._terrainCacheBounds();
+        const meta = this._getTerrainCacheMeta(bounds);
+        if (!meta.singleSurfaceWithinBudget) {
+            releaseCanvasBackingStore(this.terrainCache);
+            this.terrainCache = null;
+            this.terrainCacheKey = '';
+            this._emitTerrainCacheLimitWarning(meta);
+            return null;
+        }
         const dpr = 1;
         const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}`;
         if (this.terrainCache && this.terrainCacheKey === key) {
@@ -2769,35 +3222,39 @@ export class IsometricRenderer {
         SpriteRenderer.disableSmoothing(cacheCtx);
         cacheCtx.setTransform(dpr, 0, 0, dpr, -bounds.x * dpr, -bounds.y * dpr);
 
-        const previousMotionScale = this.motionScale;
-        try {
-            this.motionScale = 0;
-            this._drawDioramaBackdrop(cacheCtx);
-            this._drawWorldBaseShadow(cacheCtx);
-
-            for (let y = 0; y < MAP_SIZE; y++) {
-                for (let x = 0; x < MAP_SIZE; x++) {
-                    this._drawTile(cacheCtx, x, y);
-                }
-            }
-
-            this._drawOpenWaterDepthWash(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawStaticOpenSeaStructure(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawDistrictAtmosphere(cacheCtx);
-            this._drawRiverContourLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawWaterFoamLines(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawOpenSeaSurfBreaks(cacheCtx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
-            this._drawLandmarkBridgeSpans(cacheCtx);
-            this._drawAmbientGroundProps(cacheCtx);
-            this._drawWorldEdgeRim(cacheCtx);
-        } finally {
-            this.motionScale = previousMotionScale;
-        }
+        this._drawStaticTerrainSurface(cacheCtx);
 
         this.terrainCache = canvas;
         this.terrainCacheBounds = bounds;
         this.terrainCacheKey = key;
         return { canvas, bounds };
+    }
+
+    _drawStaticTerrainSurface(ctx) {
+        const previousMotionScale = this.motionScale;
+        try {
+            this.motionScale = 0;
+            this._drawDioramaBackdrop(ctx);
+            this._drawWorldBaseShadow(ctx);
+
+            for (let y = 0; y < MAP_SIZE; y++) {
+                for (let x = 0; x < MAP_SIZE; x++) {
+                    this._drawTile(ctx, x, y);
+                }
+            }
+
+            this._drawOpenWaterDepthWash(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawStaticOpenSeaStructure(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawDistrictAtmosphere(ctx);
+            this._drawRiverContourLines(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawWaterFoamLines(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawOpenSeaSurfBreaks(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
+            this._drawLandmarkBridgeSpans(ctx);
+            this._drawAmbientGroundProps(ctx);
+            this._drawWorldEdgeRim(ctx);
+        } finally {
+            this.motionScale = previousMotionScale;
+        }
     }
 
     _buildDistrictPropSprites() {
@@ -3842,11 +4299,10 @@ export class IsometricRenderer {
     _terrainCacheBounds() {
         if (this.terrainCacheBounds) return this.terrainCacheBounds;
         const points = this._worldDiamondPoints();
-        const margin = 360;
-        const minX = Math.floor(Math.min(...points.map(p => p.x)) - margin);
-        const maxX = Math.ceil(Math.max(...points.map(p => p.x)) + margin);
-        const minY = Math.floor(Math.min(...points.map(p => p.y)) - margin);
-        const maxY = Math.ceil(Math.max(...points.map(p => p.y)) + margin);
+        const minX = Math.floor(Math.min(...points.map(p => p.x)) - TERRAIN_CACHE_MARGIN);
+        const maxX = Math.ceil(Math.max(...points.map(p => p.x)) + TERRAIN_CACHE_MARGIN);
+        const minY = Math.floor(Math.min(...points.map(p => p.y)) - TERRAIN_CACHE_MARGIN);
+        const maxY = Math.ceil(Math.max(...points.map(p => p.y)) + TERRAIN_CACHE_MARGIN);
         this.terrainCacheBounds = {
             x: minX,
             y: minY,
@@ -3854,6 +4310,71 @@ export class IsometricRenderer {
             h: maxY - minY,
         };
         return this.terrainCacheBounds;
+    }
+
+    _getTerrainCacheMeta(bounds = this._terrainCacheBounds()) {
+        if (this.terrainCacheMeta?.bounds === bounds) return this.terrainCacheMeta;
+        const chunksX = Math.ceil(MAP_SIZE / TERRAIN_CACHE_CHUNK_SIZE);
+        const chunksY = Math.ceil(MAP_SIZE / TERRAIN_CACHE_CHUNK_SIZE);
+        const chunks = [];
+        for (let chunkY = 0; chunkY < chunksY; chunkY++) {
+            for (let chunkX = 0; chunkX < chunksX; chunkX++) {
+                const tileX = chunkX * TERRAIN_CACHE_CHUNK_SIZE;
+                const tileY = chunkY * TERRAIN_CACHE_CHUNK_SIZE;
+                chunks.push({
+                    key: `${chunkX},${chunkY}`,
+                    chunkX,
+                    chunkY,
+                    tileX,
+                    tileY,
+                    tileWidth: Math.min(TERRAIN_CACHE_CHUNK_SIZE, MAP_SIZE - tileX),
+                    tileHeight: Math.min(TERRAIN_CACHE_CHUNK_SIZE, MAP_SIZE - tileY),
+                });
+            }
+        }
+        const singleSurfacePixels = Math.max(1, Math.round(bounds.w)) * Math.max(1, Math.round(bounds.h));
+        this.terrainCacheMeta = {
+            bounds,
+            mapSize: MAP_SIZE,
+            strategy: singleSurfacePixels <= TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS
+                ? 'single-surface'
+                : 'uncached-over-budget',
+            chunkSize: TERRAIN_CACHE_CHUNK_SIZE,
+            chunksX,
+            chunksY,
+            chunkCount: chunks.length,
+            chunks,
+            singleSurfacePixels,
+            maxSingleSurfacePixels: TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS,
+            singleSurfaceWithinBudget: singleSurfacePixels <= TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS,
+        };
+        return this.terrainCacheMeta;
+    }
+
+    _emitTerrainCacheLimitWarning(meta) {
+        const key = `${meta.mapSize}:${meta.singleSurfacePixels}`;
+        if (this._terrainCacheLimitWarningKey === key) return;
+        this._terrainCacheLimitWarningKey = key;
+        console.warn(
+            `[IsometricRenderer] terrain cache ${meta.singleSurfacePixels}px exceeds ${meta.maxSingleSurfacePixels}px; ` +
+            `using uncached static terrain until chunked caches are implemented.`
+        );
+    }
+
+    getTerrainCacheDiagnostics() {
+        const meta = this._getTerrainCacheMeta();
+        return {
+            strategy: meta.strategy,
+            mapSize: meta.mapSize,
+            chunkSize: meta.chunkSize,
+            chunksX: meta.chunksX,
+            chunksY: meta.chunksY,
+            chunkCount: meta.chunkCount,
+            singleSurfacePixels: meta.singleSurfacePixels,
+            maxSingleSurfacePixels: meta.maxSingleSurfacePixels,
+            singleSurfaceWithinBudget: meta.singleSurfaceWithinBudget,
+            retainedPixels: canvasPixelCount(this.terrainCache),
+        };
     }
 
     _drawDynamicWaterHighlights(ctx) {
@@ -6974,6 +7495,7 @@ export class IsometricRenderer {
                 lightGradients: this.lightGradientCache?.size || 0,
                 fantasyForestTrees: this.fantasyForestTreeCache?.size || 0,
             },
+            terrainCache: this.getTerrainCacheDiagnostics(),
         };
     }
 

@@ -1,6 +1,11 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { drawCouncilRings, drawFamilyTethers, drawTalkArcs } from './CouncilRing.js';
-import { appendDepthSortedDrawables, drawDepthSortedDrawables } from './DrawablePass.js';
+import {
+    appendDepthSortedDrawables,
+    cullDepthSortedDrawables,
+    drawDepthSortedDrawables,
+    summarizeDrawableLayers,
+} from './DrawablePass.js';
 
 // Follow-up after layer extraction: move private renderer calls used here into
 // explicit layer/context methods so this module stays a frame orchestrator.
@@ -9,6 +14,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     const canvas = renderer.canvas;
     if (!ctx || !canvas) return;
     if (!canvas.width || !canvas.height) return;
+    const frameTimer = beginFrameTiming(renderer);
     const renderNow = Date.now();
     const atmosphere = renderer.atmosphereState.update({
         now: new Date(renderNow),
@@ -28,6 +34,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow);
     renderer._updateGateDoorState?.(perfNow);
     const viewport = renderer._screenViewport();
+    markFrameTiming(frameTimer, 'setup');
 
     renderer._resetScreenTransform(ctx);
     ctx.clearRect(0, 0, viewport.width, viewport.height);
@@ -38,6 +45,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         atmosphere,
         motionScale: renderer.motionScale,
     });
+    markFrameTiming(frameTimer, 'sky');
 
     renderer.camera.applyTransform(ctx);
     renderer._drawTerrain(ctx);
@@ -49,6 +57,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
 
     drawBuildingLightReflections(renderer, ctx, atmosphere);
+    markFrameTiming(frameTimer, 'terrain');
 
     renderer.buildingRenderer?.drawShadows(ctx);
     drawCouncilRings(ctx, {
@@ -67,6 +76,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         motionScale: renderer.motionScale,
         lighting: atmosphere?.lighting,
     });
+    markFrameTiming(frameTimer, 'prelayers');
 
     const buildingDrawables = renderer.buildingRenderer?.enumerateDrawables() ?? [];
     const sortedSprites = renderer._snapshotSortedSprites();
@@ -84,6 +94,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     const familiarDrawables = renderer._enumerateFamiliarMoteDrawables?.(atmosphere) ?? [];
     const zoom = renderer.camera.zoom;
     renderer._assignAgentOverlaySlots(sortedSprites, zoom);
+    markFrameTiming(frameTimer, 'collect');
 
     const drawables = renderer._drawables;
     drawables.length = 0;
@@ -97,6 +108,9 @@ export function renderWorldFrame(renderer, dt = 16) {
         chroniclerDrawables,
         familiarDrawables,
     });
+    const cullingStats = cullDepthSortedDrawables(drawables, renderer.camera, viewport, 220);
+    const drawableStats = summarizeDrawableLayers(drawables, cullingStats);
+    markFrameTiming(frameTimer, 'sort/cull');
     drawDepthSortedDrawables(ctx, drawables, {
         zoom,
         renderNow,
@@ -106,6 +120,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         chronicleMonuments: renderer.chronicleMonuments,
         chronicler: renderer.chronicler,
     });
+    markFrameTiming(frameTimer, 'drawables');
     drawTalkArcs(ctx, {
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,
@@ -122,13 +137,14 @@ export function renderWorldFrame(renderer, dt = 16) {
 
     drawSelectedAgentXray(renderer, ctx, buildingDrawables);
 
-    renderer.particleSystem.draw(ctx);
+    renderer.particleSystem.draw(ctx, { excludeLayer: 'screen' });
     renderer._drawEmptyStateWorldCue(ctx);
     renderer.harborTraffic?.drawFinaleEffects(ctx, renderNow);
 
     renderer._resetScreenTransform(ctx);
     renderer._drawAtmosphere(ctx, atmosphere, dt, renderer._frameLightSources?.ambient || null);
     renderer.camera.applyTransform(ctx);
+    markFrameTiming(frameTimer, 'effects');
 
     renderer.buildingRenderer?.drawBubbles(ctx, renderer.world);
     renderer.buildingRenderer?.drawLabels(ctx, {
@@ -136,8 +152,26 @@ export function renderWorldFrame(renderer, dt = 16) {
         occupiedBoxes: renderer._collectAgentLabelHitRects(sortedSprites),
         harborPendingRepos,
     });
+    renderer._lastRenderStats = buildRenderStats(renderer, {
+        drawableStats,
+        cullingStats,
+        harborPendingRepos,
+        inputCounts: {
+            buildings: buildingDrawables.length,
+            props: propDrawables.length,
+            agents: sortedSprites.length,
+            harbor: harborDrawables.length,
+            landmarks: landmarkDrawables.length,
+            monuments: chronicleMonumentDrawables.length,
+            chronicler: chroniclerDrawables.length,
+            familiars: familiarDrawables.length,
+        },
+    });
+    markFrameTiming(frameTimer, 'labels');
 
     renderer._resetScreenTransform(ctx);
+    renderer.particleSystem.draw(ctx, { layer: 'screen' });
+    renderer.seasonalAmbience?.drawStatic?.(ctx);
     renderer.harborTraffic?.drawScreenSummary(ctx, viewport, renderer.camera, renderNow);
     drawDebugOverlay(renderer, ctx, atmosphere, viewport);
     renderer.minimap.draw(renderer.world, renderer.camera, canvas, {
@@ -147,7 +181,13 @@ export function renderWorldFrame(renderer, dt = 16) {
         agentSprites: renderer.agentSprites,
         selectedAgent: renderer.selectedAgent,
         chronicleMonuments: renderer.chronicleMonuments?.minimapMarkers?.() || [],
+        harborPendingRepos,
     });
+    markFrameTiming(frameTimer, 'minimap');
+    renderer._lastRenderStats = {
+        ...renderer._lastRenderStats,
+        timings: finishFrameTiming(renderer, frameTimer),
+    };
 }
 
 function drawBuildingLightReflections(renderer, ctx, atmosphere) {
@@ -229,5 +269,74 @@ function drawDebugOverlay(renderer, ctx, atmosphere, viewport) {
         viewport,
         panelY: 180,
         behaviorStats: renderer._agentBehaviorStats(),
+        renderStats: renderer._lastRenderStats,
     });
+}
+
+function buildRenderStats(renderer, { drawableStats, cullingStats, harborPendingRepos, inputCounts }) {
+    const pendingRepos = Array.isArray(harborPendingRepos) ? harborPendingRepos : [];
+    return {
+        drawables: drawableStats,
+        culling: cullingStats,
+        inputs: inputCounts,
+        harbor: {
+            pendingRepos: pendingRepos.length,
+            pendingCommits: pendingRepos.reduce((sum, repo) => sum + (Number(repo.pendingCommits ?? repo.count) || 0), 0),
+            failedPushes: pendingRepos.reduce((sum, repo) => sum + (Number(repo.failedPushes) || 0), 0),
+        },
+        canvas: {
+            particles: renderer.particleSystem?.particles?.length || 0,
+            lightGradients: renderer.lightGradientCache?.size || 0,
+            lightSources: renderer._frameLightSources?.ambient?.length || 0,
+        },
+        terrainCache: renderer.getTerrainCacheDiagnostics?.() || null,
+        timings: renderer._lastRenderStats?.timings || null,
+    };
+}
+
+function beginFrameTiming(renderer) {
+    if (!renderer?.debugOverlay?.enabled) return null;
+    const now = performance.now();
+    return { start: now, last: now, segments: [] };
+}
+
+function markFrameTiming(timer, label) {
+    if (!timer) return;
+    const now = performance.now();
+    timer.segments.push({ label, ms: now - timer.last });
+    timer.last = now;
+}
+
+function finishFrameTiming(renderer, timer) {
+    if (!timer) return renderer?._lastRenderStats?.timings || null;
+    const totalMs = performance.now() - timer.start;
+    const samples = renderer._frameTimingSamples || (renderer._frameTimingSamples = new Map());
+    const segments = timer.segments.map((segment) => {
+        const values = samples.get(segment.label) || [];
+        values.push(segment.ms);
+        if (values.length > 90) values.shift();
+        samples.set(segment.label, values);
+        return {
+            ...segment,
+            p50: percentile(values, 0.5),
+            p95: percentile(values, 0.95),
+        };
+    }).sort((a, b) => b.p95 - a.p95);
+    const totalValues = samples.get('total') || [];
+    totalValues.push(totalMs);
+    if (totalValues.length > 90) totalValues.shift();
+    samples.set('total', totalValues);
+    return {
+        totalMs,
+        totalP50: percentile(totalValues, 0.5),
+        totalP95: percentile(totalValues, 0.95),
+        segments,
+    };
+}
+
+function percentile(values, p) {
+    if (!values?.length) return 0;
+    const ordered = [...values].sort((a, b) => a - b);
+    const index = Math.max(0, Math.min(ordered.length - 1, Math.ceil(ordered.length * p) - 1));
+    return ordered[index];
 }
