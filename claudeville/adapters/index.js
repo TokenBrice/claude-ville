@@ -13,6 +13,7 @@ const os = require('os');
 const path = require('path');
 const {
   getGitEnrichmentPerfStats,
+  invalidateGitStatusCaches,
   inferPushedGitEventsForSessions,
   inferUnpushedGitEventsForSessions,
   isGitEnrichmentDisabled,
@@ -291,6 +292,7 @@ function invalidateSessionCaches({ details = true, provider = null } = {}) {
   _sessionListCache.at = 0;
   _sessionListCache.threshold = null;
   _sessionListCache.sessions = [];
+  invalidateGitStatusCaches();
 
   if (details) {
     if (scopedProvider) {

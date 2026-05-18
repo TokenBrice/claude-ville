@@ -66,6 +66,20 @@ const _perf = {
   recentRuns: [],
 };
 
+function invalidateGitStatusCaches({ project = null } = {}) {
+  if (!project) {
+    _gitStatusCache.clear();
+    _currentBranchCache.clear();
+    return;
+  }
+
+  const prefix = `${project}::`;
+  for (const key of _gitStatusCache.keys()) {
+    if (key === project || key.startsWith(prefix)) _gitStatusCache.delete(key);
+  }
+  _currentBranchCache.delete(project);
+}
+
 function isGitEnrichmentDisabled() {
   return ['1', 'true', 'yes'].includes(String(process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT || '').toLowerCase());
 }
@@ -1081,6 +1095,7 @@ module.exports = {
   extractCommand,
   extractGitEventsFromCommandSource,
   getGitEnrichmentPerfStats,
+  invalidateGitStatusCaches,
   inferPushedGitEvents,
   inferPushedGitEventsForSessions,
   inferUnpushedGitEventsForSessions,

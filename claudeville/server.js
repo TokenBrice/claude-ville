@@ -62,6 +62,8 @@ const WS_MAX_BUFFER_BYTES = WS_MAX_PAYLOAD_BYTES + 32;
 const WATCH_FALLBACK_SCAN_INTERVAL_MS = 2000;
 const WATCH_FALLBACK_MAX_ENTRIES = 2000;
 const WATCH_FALLBACK_MAX_DEPTH = 10;
+const GIT_STATE_MAX_PROJECTS = 40;
+const GIT_STATE_MAX_REF_ENTRIES = 800;
 
 // ─── Utility functions ──────────────────────────────────────
 
@@ -721,6 +723,7 @@ let providerDataDirty = true;
 let teamsDirty = true;
 let lastFullDiscoveryAt = 0;
 let lastFullBroadcastAt = 0;
+const activeProjectGitState = new Map();
 const activeWatchers = new Map();
 const recursiveWatchFallbacks = new Map();
 const serverPerf = {
@@ -1241,6 +1244,120 @@ function refreshWatchPaths(initialWatchPaths = null) {
   lastFullDiscoveryAt = Date.now();
 }
 
+function resolveProjectGitDir(project) {
+  if (!project) return null;
+  try {
+    const dotGit = path.join(project, '.git');
+    const stat = fs.statSync(dotGit);
+    if (stat.isDirectory()) return dotGit;
+    if (!stat.isFile()) return null;
+
+    const content = fs.readFileSync(dotGit, 'utf8');
+    const match = content.match(/^\s*gitdir:\s*(.+?)\s*$/im);
+    if (!match) return null;
+    return path.resolve(project, match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function gitStateFilePart(filePath, label) {
+  try {
+    const stat = fs.statSync(filePath);
+    if (!stat.isFile()) return null;
+    return `${label}:${Math.round(stat.mtimeMs)}:${stat.size}`;
+  } catch {
+    return null;
+  }
+}
+
+function appendGitRefDirParts(parts, root, label) {
+  const stack = [{ dir: root, depth: 0 }];
+  let entries = 0;
+
+  while (stack.length > 0 && entries < GIT_STATE_MAX_REF_ENTRIES) {
+    const current = stack.pop();
+    let dirents = [];
+    try {
+      dirents = fs.readdirSync(current.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const dirent of dirents.sort((a, b) => a.name.localeCompare(b.name))) {
+      if (++entries > GIT_STATE_MAX_REF_ENTRIES) break;
+      const entryPath = path.join(current.dir, dirent.name);
+      const rel = path.relative(root, entryPath);
+      if (dirent.isDirectory()) {
+        if (current.depth < 8) stack.push({ dir: entryPath, depth: current.depth + 1 });
+        continue;
+      }
+      if (!dirent.isFile()) continue;
+      const part = gitStateFilePart(entryPath, `${label}/${rel}`);
+      if (part) parts.push(part);
+    }
+  }
+
+  if (entries >= GIT_STATE_MAX_REF_ENTRIES) parts.push(`${label}:truncated`);
+}
+
+function projectGitStateSignature(project) {
+  const gitDir = resolveProjectGitDir(project);
+  if (!gitDir) return null;
+
+  const parts = [];
+  for (const fileName of ['HEAD', 'FETCH_HEAD', 'ORIG_HEAD', 'packed-refs', path.join('logs', 'HEAD')]) {
+    const part = gitStateFilePart(path.join(gitDir, fileName), fileName);
+    if (part) parts.push(part);
+  }
+  appendGitRefDirParts(parts, path.join(gitDir, 'refs', 'heads'), 'refs/heads');
+  appendGitRefDirParts(parts, path.join(gitDir, 'refs', 'remotes'), 'refs/remotes');
+  appendGitRefDirParts(parts, path.join(gitDir, 'logs', 'refs', 'heads'), 'logs/refs/heads');
+  appendGitRefDirParts(parts, path.join(gitDir, 'logs', 'refs', 'remotes'), 'logs/refs/remotes');
+  return parts.sort().join('|');
+}
+
+function activeGitProjects() {
+  const projects = [];
+  const seen = new Set();
+  let sessions = [];
+  try {
+    sessions = getAllSessions(ACTIVE_THRESHOLD_MS);
+  } catch {
+    return projects;
+  }
+
+  for (const session of sessions) {
+    const project = session?.project;
+    if (!project || seen.has(project)) continue;
+    seen.add(project);
+    projects.push(project);
+    if (projects.length >= GIT_STATE_MAX_PROJECTS) break;
+  }
+  return projects;
+}
+
+function scanActiveProjectGitState() {
+  if (wsClients.size === 0) return;
+
+  const projects = activeGitProjects();
+  const activeProjects = new Set(projects);
+  for (const project of activeProjectGitState.keys()) {
+    if (!activeProjects.has(project)) activeProjectGitState.delete(project);
+  }
+
+  let changed = false;
+  for (const project of projects) {
+    const signature = projectGitStateSignature(project);
+    if (!signature) continue;
+    const previous = activeProjectGitState.get(project);
+    activeProjectGitState.set(project, signature);
+    if (previous && previous !== signature) changed = true;
+  }
+
+  if (changed) markProviderDataDirty('git-state');
+}
+
 function startFileWatcher(initialWatchPaths = null) {
   refreshWatchPaths(initialWatchPaths);
   // Periodic polling (2 seconds) to catch missed changes
@@ -1249,6 +1366,7 @@ function startFileWatcher(initialWatchPaths = null) {
       refreshWatchPaths();
     }
     runRecursiveWatchFallbackChecks();
+    scanActiveProjectGitState();
     if (wsClients.size > 0) broadcastUpdate({ reason: 'interval' });
   }, BROADCAST_POLL_INTERVAL);
   console.log('[Watch] Started dirty-driven 2-second scheduler');
