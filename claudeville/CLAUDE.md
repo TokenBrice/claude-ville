@@ -125,10 +125,9 @@ Treat all provider session files as read-only inputs.
 7. Binds canvas resizing with `ResizeObserver`.
 8. Loads `character-mode/IsometricRenderer.js`, then `dashboard-mode/DashboardRenderer.js`.
 9. Constructs `ActivityPanel` and binds agent-follow event handlers.
-10. Binds the settings button.
-11. Applies initial i18n.
+10. Applies initial English UI strings.
 
-The app still exposes a language setting, but the current visible strings are English. Documentation should also stay English.
+The app exposes English UI strings only. Documentation should also stay English.
 
 ## Layout Rules
 
@@ -275,7 +274,7 @@ Asset validation:
 Documentation validation (project-wide, English-only):
 
 ```bash
-rg -n -P "\\p{Hangul}" $(rg --files -g '*.md' --glob '!node_modules')
+rg -n -P "[\\x{1100}-\\x{11FF}\\x{3130}-\\x{318F}\\x{AC00}-\\x{D7AF}]" $(rg --files -g '*.md' --glob '!node_modules')
 ```
 
 That command should return no matches.

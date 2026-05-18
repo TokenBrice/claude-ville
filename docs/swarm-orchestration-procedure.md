@@ -399,7 +399,7 @@ The orchestrator should not integrate `request-changes` output without resolving
 - Server or adapter edits: use the syntax checklist in `AGENTS.md`.
 - API, runtime, or rendering behavior changes: use runtime and visual checks in `AGENTS.md`.
 - Process/docs changes (`AGENTS.md`, `claudeville/CLAUDE.md`, `README.md`, `docs/*.md`): diff review plus `git status --short`.
-- Visible docs or locale-sensitive copy changes in `README.md` or `claudeville/CLAUDE.md`: also run the Hangul scan listed in `claudeville/CLAUDE.md`.
+- Visible docs or locale-sensitive copy changes in `README.md` or `claudeville/CLAUDE.md`: also run the English-only source-script scan listed in `claudeville/CLAUDE.md`.
 
 ## Skills and Docs to Reuse
 

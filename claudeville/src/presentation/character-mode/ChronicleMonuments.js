@@ -1,5 +1,4 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
-import { Settings } from '../../application/Settings.js';
 import { MonumentPlanter, MonumentRules } from '../../application/MonumentRules.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { collectCommitEvents } from './ChronicleEvents.js';
@@ -69,14 +68,12 @@ function kindIcon(kind) {
 export class ChronicleMonuments {
     constructor({
         store = null,
-        settings = Settings,
         rules = new MonumentRules(),
         eventTarget = eventBus,
         chronicleStore = null,
         auroraGate = null,
     } = {}) {
         this.store = store;
-        this.settings = settings;
         this.rules = rules;
         this.eventBus = eventTarget;
         this.records = new Map();
@@ -213,10 +210,7 @@ export class ChronicleMonuments {
         if (!record) return '';
         const ageDays = Math.max(0, Math.floor((now - Number(record.plantedAt || record.ts || now)) / 86400000));
         const ageLabel = ageDays === 0 ? 'today' : `${ageDays}d ago`;
-        const redacted = this.settings?.privacyRedaction;
-        const label = redacted
-            ? (record.kind === 'release' ? '[redacted release]' : '[redacted commit]')
-            : (record.label || record.kind);
+        const label = record.label || record.kind;
         const repo = projectName(record.project);
         const weight = record.weight ? ` [${record.weight}]` : '';
         return `${kindIcon(record.kind)} ${record.kind}${weight}\nrepo: ${repo}\n${label}\nplanted ${ageLabel}`;

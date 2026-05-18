@@ -3,8 +3,6 @@ import { Building } from '../domain/entities/Building.js';
 import { BUILDING_DEFS } from '../config/buildings.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { i18n } from '../config/i18n.js';
-import { Appearance } from '../domain/value-objects/Appearance.js';
-import { Agent } from '../domain/entities/Agent.js';
 
 import { ClaudeDataSource } from '../infrastructure/ClaudeDataSource.js';
 import { WebSocketClient } from '../infrastructure/WebSocketClient.js';
@@ -14,7 +12,6 @@ import { AgentManager } from '../application/AgentManager.js';
 import { ModeManager } from '../application/ModeManager.js';
 import { SessionWatcher } from '../application/SessionWatcher.js';
 import { NotificationService } from '../application/NotificationService.js';
-import { Settings } from '../application/Settings.js';
 import { AuroraGate } from '../application/AuroraGate.js';
 
 import { TopBar } from './shared/TopBar.js';
@@ -54,8 +51,6 @@ class App {
         this._resizeHandle = null;
         this._loadRendererRetryHandle = null;
         this._centerCameraHandle = null;
-        this._settingsButton = null;
-        this._onSettingsClick = null;
         this._onWindowResize = null;
         this._perfDebugCanvasBudget = null;
         this._cameraSetHelper = null;
@@ -159,10 +154,7 @@ class App {
                 emitAgentSelected(this.renderer.selectedAgent);
             }
 
-            // 10. Settings button
-            this._bindSettings();
-
-            // 11. Apply initial i18n
+            // 10. Apply initial i18n
             this._applyI18n();
 
             console.log('[App] ClaudeVille boot complete!');
@@ -405,57 +397,6 @@ class App {
         window.cameraSet = this._cameraSetHelper;
     }
 
-    _bindSettings() {
-        const btn = document.getElementById('btnSettings');
-        if (!btn) return;
-        this._settingsButton = btn;
-
-        this._onSettingsClick = () => {
-            const currentLang = i18n.lang;
-            const privacyRedaction = Settings.privacyRedaction;
-            this.modal.open(i18n.t('settingsTitle'), `
-                <div class="settings-form">
-                    <div class="settings-row">
-                        <span class="settings-label">${i18n.t('language')}</span>
-                        <div class="settings-lang-btns">
-                            <button class="settings-lang-btn ${currentLang === 'ko' ? 'settings-lang-btn--active' : ''}" data-lang="ko">${i18n.t('langKo')}</button>
-                            <button class="settings-lang-btn ${currentLang === 'en' ? 'settings-lang-btn--active' : ''}" data-lang="en">${i18n.t('langEn')}</button>
-                        </div>
-                    </div>
-                    <label class="settings-row settings-row--toggle">
-                        <span class="settings-label">Privacy redaction</span>
-                        <input id="settingPrivacyRedaction" class="settings-toggle" type="checkbox" ${privacyRedaction ? 'checked' : ''}>
-                    </label>
-                </div>
-            `);
-
-            // Language button click event
-            document.querySelectorAll('.settings-lang-btn').forEach(langBtn => {
-                langBtn.addEventListener('click', () => {
-                    const newLang = langBtn.dataset.lang;
-                    if (newLang === i18n.lang) return;
-                    i18n.lang = newLang;
-                    this._regenerateAgentNames();
-                    this._applyI18n();
-                    this.sidebar.render();
-                    if (this.dashboardRenderer && this.dashboardRenderer.active) {
-                        this.dashboardRenderer.render();
-                    }
-                    this.modal.close();
-                    if (this.toast) {
-                        this.toast.show(i18n.t('langChanged'), 'success');
-                    }
-                });
-            });
-
-            const privacyInput = document.getElementById('settingPrivacyRedaction');
-            privacyInput?.addEventListener('change', () => {
-                Settings.privacyRedaction = privacyInput.checked;
-            });
-        };
-        btn.addEventListener('click', this._onSettingsClick);
-    }
-
     _applyI18n() {
         document.querySelectorAll('[data-i18n]').forEach(el => {
             const key = el.dataset.i18n;
@@ -464,16 +405,6 @@ class App {
                 el.textContent = val;
             }
         });
-    }
-
-    _regenerateAgentNames() {
-        for (const agent of this.world.agents.values()) {
-            // Only change generated names, not names assigned by a team
-            if (!agent._customName) {
-                const hash = Appearance.hashCode(agent.id);
-                agent.name = Agent.generateNameForLang(hash, i18n.lang);
-            }
-        }
     }
 
     _showBootError(err) {
@@ -528,12 +459,6 @@ class App {
         for (const unsubscribe of this._eventUnsubscribers.splice(0)) {
             unsubscribe?.();
         }
-
-        if (this._settingsButton && this._onSettingsClick) {
-            this._settingsButton.removeEventListener('click', this._onSettingsClick);
-        }
-        this._settingsButton = null;
-        this._onSettingsClick = null;
 
         if (this._onWindowResize) {
             window.removeEventListener('resize', this._onWindowResize);

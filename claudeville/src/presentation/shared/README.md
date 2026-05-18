@@ -8,7 +8,7 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 
 | File | Responsibility |
 | --- | --- |
-| `TopBar.js` | Global status, usage display, mode/settings affordances. |
+| `TopBar.js` | Global status, usage display, and mode affordances. |
 | `Sidebar.js` | Agent list and sidebar-driven `agent:selected` events. |
 | `ActivityPanel.js` | Right-side 320px detail panel for the selected agent. |
 | `AgentSelection.js` | Shared selection event helpers and local selected-agent mirrors for presentation components. |

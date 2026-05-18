@@ -106,7 +106,7 @@ The frontend boot path is `claudeville/src/presentation/App.js`:
 7. Bind canvas `ResizeObserver`.
 8. Dynamically load `IsometricRenderer` (World mode), then `DashboardRenderer`.
 9. Create the right-side `ActivityPanel` and bind agent-follow.
-10. Settings binding and i18n.
+10. Apply English UI strings.
 
 The layout is a full-height flex shell: fixed-height top bar, left sidebar, central content area, and an optional 320px right activity panel. World mode fills the content area with a canvas. Dashboard mode scrolls vertically.
 

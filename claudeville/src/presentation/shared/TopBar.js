@@ -1,5 +1,4 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { Settings } from '../../application/Settings.js';
 import { formatCost, formatNumber } from './Formatters.js';
 
 export class TopBar {
@@ -20,7 +19,6 @@ export class TopBar {
             quota5hPct: document.getElementById('quota5hPct'),
             quota7dBar: document.getElementById('quota7dBar'),
             quota7dPct: document.getElementById('quota7dPct'),
-            settingsButton: document.getElementById('btnSettings'),
         };
         this.timeInterval = null;
 
@@ -31,10 +29,8 @@ export class TopBar {
 
         this._onUsage = (usage) => this.renderQuota(usage);
         eventBus.on('usage:updated', this._onUsage);
-        this._unsubscribeSettings = Settings.subscribe(() => this._renderSettingsState());
 
         this._startTimer();
-        this._renderSettingsState();
         this.render();
     }
 
@@ -130,19 +126,11 @@ export class TopBar {
         }, 1000);
     }
 
-    _renderSettingsState() {
-        if (!this.els.settingsButton) return;
-        const suffix = Settings.privacyRedaction ? ' (privacy redaction on)' : '';
-        this.els.settingsButton.title = `Settings${suffix}`;
-        this.els.settingsButton.setAttribute('aria-label', `Settings${suffix}`);
-    }
-
     destroy() {
         if (this.timeInterval) clearInterval(this.timeInterval);
         eventBus.off('agent:added', this._onUpdate);
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('usage:updated', this._onUsage);
-        this._unsubscribeSettings?.();
     }
 }

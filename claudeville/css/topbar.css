@@ -236,28 +236,6 @@
     color: #0a0a0f;
 }
 
-.topbar__settings-btn {
-    font-size: 16px;
-    width: 34px;
-    height: 34px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid rgba(199, 157, 76, 0.48);
-    border-radius: 2px;
-    color: #bba17a;
-    background: rgba(25, 17, 15, 0.86);
-    transition: all 0.15s;
-    margin-left: 8px;
-    cursor: pointer;
-}
-
-.topbar__settings-btn:hover {
-    color: #f2d36b;
-    border-color: rgba(242, 211, 107, 0.72);
-    background: rgba(57, 37, 24, 0.78);
-}
-
 /* Worker C premium HUD refinement layer */
 .topbar {
     position: relative;

@@ -72,13 +72,13 @@ If a provider format changes, update only the relevant adapter. The frontend kee
 
 ## English-only documentation and UI
 
-The user-facing app exposes a language setting, but project policy keeps documentation and UI strings English. `claudeville/CLAUDE.md` defines the validation:
+The user-facing app exposes English UI strings only, and project policy keeps documentation and UI strings English. `claudeville/CLAUDE.md` defines the validation:
 
 ```bash
-rg -n -P "\\p{Hangul}" $(rg --files -g '*.md' --glob '!node_modules')
+rg -n -P "[\\x{1100}-\\x{11FF}\\x{3130}-\\x{318F}\\x{AC00}-\\x{D7AF}]" $(rg --files -g '*.md' --glob '!node_modules')
 ```
 
-The Hangul scan exists because earlier revisions of the codebase mixed Korean and English. The rule is now uniform English. Run the scan after edits that touch user-visible copy.
+The source-script scan exists because earlier revisions of the codebase mixed non-English copy with English. The rule is now uniform English. Run the scan after edits that touch user-visible copy.
 
 If you change this, update: `claudeville/CLAUDE.md`, `AGENTS.md`, and `docs/swarm-orchestration-procedure.md` ("Visible docs or locale-sensitive copy changes").
 
