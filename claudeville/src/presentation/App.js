@@ -111,6 +111,7 @@ class App {
 
             // 4-1. Behavior simulator (?sim=1, dev only — overrides session ingestion)
             const simMode = new URLSearchParams(location.search).get('sim') === '1';
+            this.simMode = simMode;
             if (simMode) {
                 const mod = await import('./character-mode/__simfixture__/AgentSimulator.js');
                 this.agentSimulator = new mod.default({ world: this.world, agentManager: this.agentManager, eventBus });
@@ -154,6 +155,9 @@ class App {
             // 9. right-side live activity panel
             this.activityPanel = new ActivityPanel();
             this._bindAgentFollow();
+            if (this.renderer?.selectedAgent) {
+                emitAgentSelected(this.renderer.selectedAgent);
+            }
 
             // 10. Settings button
             this._bindSettings();
@@ -207,16 +211,20 @@ class App {
             if (this.latestUsage) this.renderer.setQuotaState?.(this.latestUsage);
             this._installPerfDebugHelper();
 
-            this._centerCameraHandle = requestAnimationFrame(() => {
-                this._centerCameraHandle = null;
-                if (this.renderer && this.renderer.camera) {
-                    this.renderer.camera.centerOnMap();
-                }
-            });
-
             this.renderer.onAgentSelect = (agent) => {
                 emitAgentSelected(agent);
             };
+
+            const scenarioMetadata = this.agentSimulator?.getScenario?.()?.metadata || null;
+            const scenarioApplied = this.renderer.applyScenarioMetadata?.(scenarioMetadata) || false;
+            if (!scenarioApplied || !scenarioMetadata?.camera) {
+                this._centerCameraHandle = requestAnimationFrame(() => {
+                    this._centerCameraHandle = null;
+                    if (this.renderer && this.renderer.camera) {
+                        this.renderer.camera.centerOnMap();
+                    }
+                });
+            }
 
             console.log('[App] IsometricRenderer loaded');
         } catch (err) {

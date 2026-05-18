@@ -6,8 +6,8 @@
 // this class.
 //
 // Contract:
-//   - Pushes 6-12 fake agents into `world` directly via `world.addAgent` /
-//     `world.updateAgent` (real `Agent` constructor — no adapter, no WS).
+//   - Pushes fake agents into `world` directly via `world.addAgent` /
+//     `world.updateAgent` (real `Agent` constructor; no adapter, no WS).
 //   - Steps a timeline (`[{ ts, agentId, tool|event|status, ... }]`) using
 //     `setTimeout` keyed off step `ts` offsets.
 //   - Calls `world.removeAgent(id)` for every sim agent on `stop()`.
@@ -15,204 +15,52 @@
 
 import { Agent } from '../../../domain/entities/Agent.js';
 import { AgentStatus } from '../../../domain/value-objects/AgentStatus.js';
+import { Position } from '../../../domain/value-objects/Position.js';
+import {
+    DEFAULT_WORLD_SCENARIO_ID,
+    cloneWorldScenario,
+} from './WorldScenarios.js';
+
+export {
+    DEFAULT_WORLD_SCENARIO_ID,
+    getWorldScenario,
+    listWorldScenarios,
+    WORLD_SCENARIOS,
+} from './WorldScenarios.js';
 
 const SIM_DEBUG = false;
+const SCENARIO_TIMESTAMP_REBASE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 function debug(...args) {
     if (SIM_DEBUG) console.info('[AgentSimulator]', ...args);
 }
 
-// Default cast — two main agents, two co-workers, two distinct teams.
-// Names are short and unique so renderer chat-pair matching can resolve them.
-const DEFAULT_AGENTS = [
-    {
-        id: 'sim1',
-        name: 'Atlas',
-        provider: 'claude',
-        model: 'claude-sonnet-4-5',
-        role: 'general',
-        teamName: 'Sim Alpha',
-        status: AgentStatus.IDLE,
-        agentId: 'sim1',
-    },
-    {
-        id: 'sim2',
-        name: 'Nova',
-        provider: 'claude',
-        model: 'claude-sonnet-4-5',
-        role: 'general',
-        teamName: 'Sim Alpha',
-        status: AgentStatus.IDLE,
-        agentId: 'sim2',
-    },
-    {
-        id: 'codex-sim3',
-        name: 'Cipher',
-        provider: 'codex',
-        model: 'gpt-5',
-        role: 'general',
-        teamName: null,
-        status: AgentStatus.IDLE,
-        agentId: 'sim3',
-    },
-    {
-        id: 'sim4',
-        name: 'Pixel',
-        provider: 'claude',
-        model: 'claude-sonnet-4-5',
-        role: 'general',
-        teamName: 'Sim Beta',
-        status: AgentStatus.IDLE,
-        agentId: 'sim4',
-    },
-    {
-        id: 'sim5',
-        name: 'Spark',
-        provider: 'claude',
-        model: 'claude-sonnet-4-5',
-        role: 'general',
-        teamName: 'Sim Beta',
-        status: AgentStatus.IDLE,
-        agentId: 'sim5',
-    },
-    {
-        id: 'codex-sim6',
-        name: 'Echo',
-        provider: 'codex',
-        model: 'gpt-5-codex',
-        role: 'general',
-        teamName: null,
-        status: AgentStatus.IDLE,
-        agentId: 'sim6',
-    },
-];
+function clonePlain(value) {
+    return JSON.parse(JSON.stringify(value));
+}
 
-// Default timeline: covers each R10 scenario (chat exchange, subagent
-// dispatch, plan-mode toggle, retry, idle→working, completion).
-const DEFAULT_TIMELINE = [
-    // ts 1000: Atlas starts editing code
-    {
-        ts: 1000,
-        agentId: 'sim1',
-        tool: 'Edit',
-        input: 'file_path=/src/world/forge.js',
-        status: AgentStatus.WORKING,
-    },
-    // ts 1500: Atlas dispatches a subagent
-    {
-        ts: 1500,
-        agentId: 'sim1',
-        event: 'subagent:spawn',
-        subagentId: 'subagent-sim1-child',
-        subagentType: 'code-reviewer',
-        parentId: 'sim1',
-        agentName: 'Forge Helper',
-    },
-    // ts 2000: Nova picks up research work at the Observatory
-    {
-        ts: 2000,
-        agentId: 'sim2',
-        tool: 'WebFetch',
-        input: 'url=https://docs.example.com/spec',
-        status: AgentStatus.WORKING,
-    },
-    // ts 3000: Cipher enters plan mode
-    {
-        ts: 3000,
-        agentId: 'codex-sim3',
-        tool: 'EnterPlanMode',
-        input: '',
-        status: AgentStatus.WORKING,
-    },
-    // ts 4000: Atlas sends a chat message to Nova (recipient_name format)
-    {
-        ts: 4000,
-        agentId: 'sim1',
-        tool: 'SendMessage',
-        input: 'recipient_name=Nova, message=Can you review the spec section?',
-        status: AgentStatus.WORKING,
-    },
-    // ts 4500: Nova replies (chat pair)
-    {
-        ts: 4500,
-        agentId: 'sim2',
-        tool: 'SendMessage',
-        input: 'recipient_name=Atlas, message=Sure, looking now',
-        status: AgentStatus.WORKING,
-    },
-    // ts 5500: Subagent reports back
-    {
-        ts: 5500,
-        agentId: 'subagent-sim1-child',
-        tool: 'Read',
-        input: 'file_path=/src/world/forge.js',
-        status: AgentStatus.WORKING,
-    },
-    // ts 6000: Pixel transitions from idle to working (status flip)
-    {
-        ts: 6000,
-        agentId: 'sim4',
-        tool: 'Bash',
-        input: 'command=npm run dev',
-        status: AgentStatus.WORKING,
-    },
-    // ts 7000: Spark issues a tool, then retries the same tool/input — exercises tool:retried
-    {
-        ts: 7000,
-        agentId: 'sim5',
-        tool: 'Bash',
-        input: 'command=git push origin main',
-        status: AgentStatus.WORKING,
-    },
-    {
-        ts: 7800,
-        agentId: 'sim5',
-        tool: 'Bash',
-        input: 'command=git push origin main',
-        status: AgentStatus.WORKING,
-        retry: true,
-    },
-    // ts 8500: Cipher exits plan mode and starts editing
-    {
-        ts: 8500,
-        agentId: 'codex-sim3',
-        tool: 'ExitPlanMode',
-        input: '',
-        status: AgentStatus.WORKING,
-    },
-    {
-        ts: 9000,
-        agentId: 'codex-sim3',
-        tool: 'apply_patch',
-        input: 'path=/src/codex/router.ts',
-        status: AgentStatus.WORKING,
-    },
-    // ts 10000: Echo reads documentation
-    {
-        ts: 10000,
-        agentId: 'codex-sim6',
-        tool: 'Read',
-        input: 'file_path=/docs/design-decisions.md',
-        status: AgentStatus.WORKING,
-    },
-    // ts 11000: Subagent completes (removed from world)
-    {
-        ts: 11000,
-        agentId: 'subagent-sim1-child',
-        event: 'subagent:complete',
-    },
-    // ts 12000: Atlas finishes its work
-    {
-        ts: 12000,
-        agentId: 'sim1',
-        tool: null,
-        input: null,
-        status: AgentStatus.COMPLETED,
-    },
-];
+function browserScenarioId() {
+    try {
+        if (typeof location === 'undefined' || !location.search) return null;
+        const params = new URLSearchParams(location.search);
+        return params.get('scenario') || params.get('simScenario') || null;
+    } catch {
+        return null;
+    }
+}
 
-function buildAgent(spec) {
-    return new Agent({
+function positionFromSpec(value) {
+    const tileX = Number(value?.tileX);
+    const tileY = Number(value?.tileY);
+    if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+    return new Position(tileX, tileY);
+}
+
+function buildAgent(spec, timeBase) {
+    const lastSessionActivity = Number.isFinite(Number(spec.lastSessionActivity))
+        ? Number(spec.lastSessionActivity)
+        : timeBase;
+    const agent = new Agent({
         id: spec.id,
         name: spec.name,
         model: spec.model || 'unknown',
@@ -226,24 +74,64 @@ function buildAgent(spec) {
         agentType: spec.agentType || 'main',
         parentSessionId: spec.parentId || null,
         tokens: spec.tokens || { input: 0, output: 0 },
+        messages: Array.isArray(spec.messages) ? clonePlain(spec.messages) : [],
+        gitEvents: Array.isArray(spec.gitEvents) ? clonePlain(spec.gitEvents) : [],
         lastMessage: spec.lastMessage || null,
         currentTool: spec.currentTool || null,
         currentToolInput: spec.currentToolInput || null,
         lastTool: spec.lastTool || null,
         lastToolInput: spec.lastToolInput || null,
-        lastSessionActivity: Date.now(),
+        lastSessionActivity,
         activityAgeMs: 0,
     });
+    const position = positionFromSpec(spec.position);
+    if (position) agent.position = position;
+    const targetPosition = positionFromSpec(spec.targetPosition);
+    if (targetPosition) agent.targetPosition = targetPosition;
+    agent.lastActive = lastSessionActivity;
+    return agent;
+}
+
+function materializeScenario(input, fallbackId = DEFAULT_WORLD_SCENARIO_ID) {
+    if (Array.isArray(input)) {
+        const base = cloneWorldScenario(fallbackId);
+        base.id = 'custom-timeline';
+        base.label = 'Custom timeline';
+        base.timeline = clonePlain(input);
+        return base;
+    }
+
+    if (input && typeof input === 'object') {
+        const base = cloneWorldScenario(input.extends || fallbackId);
+        const custom = clonePlain(input);
+        return {
+            ...base,
+            ...custom,
+            agents: Array.isArray(custom.agents) ? custom.agents : base.agents,
+            timeline: Array.isArray(custom.timeline) ? custom.timeline : base.timeline,
+            metadata: {
+                ...(base.metadata || {}),
+                ...(custom.metadata || {}),
+            },
+        };
+    }
+
+    return cloneWorldScenario(input || fallbackId);
 }
 
 export default class AgentSimulator {
-    constructor({ world, agentManager = null, eventBus = null } = {}) {
+    constructor({ world, agentManager = null, eventBus = null, scenario = null, scenarioId = null } = {}) {
         if (!world || typeof world.addAgent !== 'function') {
             throw new Error('AgentSimulator requires a World with addAgent()');
         }
         this.world = world;
         this.agentManager = agentManager;
         this.eventBus = eventBus;
+        this._scenarioInput = scenario || scenarioId || browserScenarioId() || DEFAULT_WORLD_SCENARIO_ID;
+        this._scenario = null;
+        this._timeBase = Date.now();
+        this._scenarioTimeBase = this._timeBase;
+        this._preserveScenarioTimestamps = false;
         this._active = false;
         this._timers = [];
         this._agentIds = new Set();
@@ -254,23 +142,38 @@ export default class AgentSimulator {
         return this._active;
     }
 
-    start(timeline = null) {
+    getScenario() {
+        return this._scenario ? clonePlain(this._scenario) : null;
+    }
+
+    start(input = null) {
         if (this._active) {
             debug('start() ignored — already active');
             return;
         }
         this._active = true;
-        this._timeline = Array.isArray(timeline) && timeline.length
-            ? [...timeline].sort((a, b) => (a.ts || 0) - (b.ts || 0))
-            : [...DEFAULT_TIMELINE];
+        const scenario = materializeScenario(input || this._scenarioInput);
+        this._scenario = scenario;
+        const configuredTimeBase = Number(scenario.timeBase);
+        const liveTimeBase = Date.now();
+        this._scenarioTimeBase = Number.isFinite(configuredTimeBase)
+            ? configuredTimeBase
+            : liveTimeBase;
+        this._preserveScenarioTimestamps = scenario.metadata?.preserveTimestamps === true;
+        this._timeBase = this._preserveScenarioTimestamps
+            ? this._scenarioTimeBase
+            : liveTimeBase;
+        this._timeline = Array.isArray(scenario.timeline)
+            ? [...scenario.timeline].sort((a, b) => (a.ts || 0) - (b.ts || 0))
+            : [];
 
         // Seed the cast immediately.
-        for (const spec of DEFAULT_AGENTS) {
-            const agent = buildAgent(spec);
+        for (const spec of scenario.agents || []) {
+            const agent = buildAgent(spec, this._timeBase);
             this.world.addAgent(agent);
             this._agentIds.add(agent.id);
         }
-        debug(`seeded ${this._agentIds.size} agents`);
+        debug(`seeded ${this._agentIds.size} agents for ${scenario.id}`);
 
         // Schedule each step against its `ts` offset.
         for (const step of this._timeline) {
@@ -290,6 +193,7 @@ export default class AgentSimulator {
         }
         this._agentIds.clear();
         this._timeline = null;
+        this._scenario = null;
         debug('stopped');
     }
 
@@ -304,10 +208,29 @@ export default class AgentSimulator {
                 this._removeAgent(step.agentId);
                 return;
             }
+            if (step.event === 'agent:add') {
+                this._addAgent(step.agent || step);
+                return;
+            }
+            if (step.event === 'agent:remove') {
+                this._removeAgent(step.agentId || step.id);
+                return;
+            }
+            if (step.event === 'git:event') {
+                this._applyGitEventStep(step);
+                return;
+            }
             this._applyToolStep(step);
         } catch (err) {
             debug('step failed', step, err?.message || err);
         }
+    }
+
+    _addAgent(spec) {
+        if (!spec?.id || this.world.agents.has(spec.id)) return;
+        const agent = buildAgent(spec, this._timeBase);
+        this.world.addAgent(agent);
+        this._agentIds.add(agent.id);
     }
 
     _spawnSubagent(step) {
@@ -324,7 +247,10 @@ export default class AgentSimulator {
             agentType: step.subagentType || 'subagent',
             parentId: step.parentId || step.agentId,
             status: AgentStatus.WORKING,
-        });
+            position: step.position || null,
+            targetPosition: step.targetPosition || null,
+            tokens: step.tokens || { input: 0, output: 0 },
+        }, this._stepTime(step));
         this.world.addAgent(agent);
         this._agentIds.add(agent.id);
     }
@@ -335,22 +261,105 @@ export default class AgentSimulator {
         this._agentIds.delete(agentId);
     }
 
+    _stepTime(step, offset = 0) {
+        const explicit = step?.timestamp ?? step?.time;
+        if (Number.isFinite(Number(explicit))) return Number(explicit) + offset;
+        const ts = Number.isFinite(Number(step?.ts)) ? Number(step.ts) : 0;
+        return this._timeBase + ts + offset;
+    }
+
+    _rebaseScenarioTimestamp(value) {
+        const timestamp = Number(value);
+        if (!Number.isFinite(timestamp) || this._preserveScenarioTimestamps) return timestamp;
+        const offset = timestamp - this._scenarioTimeBase;
+        if (Math.abs(offset) > SCENARIO_TIMESTAMP_REBASE_WINDOW_MS) return timestamp;
+        return this._timeBase + offset;
+    }
+
+    _agentById(id) {
+        return this.world.agents instanceof Map
+            ? this.world.agents.get(id)
+            : null;
+    }
+
+    _gitEventsFromStep(step, agent) {
+        const rawEvents = [];
+        if (step.gitEvent) rawEvents.push(step.gitEvent);
+        if (Array.isArray(step.gitEvents)) rawEvents.push(...step.gitEvents);
+        return rawEvents
+            .filter((event) => event && typeof event === 'object')
+            .map((event, index) => {
+                const explicitTimestamp = Number(event.timestamp ?? event.ts ?? event.time);
+                const timestamp = Number.isFinite(explicitTimestamp)
+                    ? this._rebaseScenarioTimestamp(explicitTimestamp)
+                    : this._stepTime(step, index);
+                return {
+                    ...clonePlain(event),
+                    id: event.id || `${step.agentId}:git:${event.type || event.kind || 'event'}:${this._stepTime(step, index)}`,
+                    project: event.project || event.projectPath || agent?.projectPath || '/sim/project',
+                    provider: event.provider || agent?.provider || '',
+                    timestamp,
+                };
+            });
+    }
+
+    _applyGitEventStep(step) {
+        const id = step.agentId;
+        if (!id || !this.world.agents.has(id)) return;
+        const agent = this._agentById(id);
+        const gitEvents = this._gitEventsFromStep(step, agent);
+        if (!gitEvents.length) return;
+        const updates = {
+            gitEvents: [
+                ...(Array.isArray(agent?.gitEvents) ? agent.gitEvents : []),
+                ...gitEvents,
+            ],
+            lastSessionActivity: this._stepTime(step),
+            activityAgeMs: 0,
+        };
+        if (step.status) updates.status = step.status;
+        if (step.tool) {
+            updates.currentTool = step.tool;
+            updates.currentToolInput = step.input || null;
+            updates.lastTool = step.tool;
+            updates.lastToolInput = step.input || null;
+        }
+        this.world.updateAgent(id, updates);
+    }
+
     _applyToolStep(step) {
         const id = step.agentId;
         if (!id || !this.world.agents.has(id)) return;
-        const hasFreshTool = step.tool && step.status === AgentStatus.WORKING;
+        const agent = this._agentById(id);
+        const status = step.status || agent?.status || AgentStatus.IDLE;
+        const hasFreshTool = step.tool && status === AgentStatus.WORKING;
+        const stepTime = this._stepTime(step);
         const updates = {
-            status: step.status || AgentStatus.IDLE,
+            status,
             currentTool: hasFreshTool ? step.tool : null,
             currentToolInput: hasFreshTool ? (step.input || null) : null,
             lastTool: step.tool || null,
             lastToolInput: step.input || null,
-            lastSessionActivity: Date.now(),
+            lastSessionActivity: stepTime,
             activityAgeMs: 0,
         };
         // For retries, nudge the activity timestamp so AgentEventStream sees a
         // new toolKey (its key incorporates lastSessionActivity).
-        if (step.retry) updates.lastSessionActivity = Date.now() + 1;
+        if (step.retry) updates.lastSessionActivity = stepTime + 1;
+        const position = positionFromSpec(step.position);
+        if (position) updates.position = position;
+        const targetPosition = positionFromSpec(step.targetPosition);
+        if (targetPosition) updates.targetPosition = targetPosition;
+        if (Object.prototype.hasOwnProperty.call(step, 'lastMessage')) {
+            updates.lastMessage = step.lastMessage;
+        }
+        const gitEvents = this._gitEventsFromStep(step, agent);
+        if (gitEvents.length) {
+            updates.gitEvents = [
+                ...(Array.isArray(agent?.gitEvents) ? agent.gitEvents : []),
+                ...gitEvents,
+            ];
+        }
         this.world.updateAgent(id, updates);
     }
 }
