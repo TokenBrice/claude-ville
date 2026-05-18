@@ -15,6 +15,7 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `AgentBehaviorState.js` | Per-agent behavior and destination state used by movement/visit systems. |
 | `VisitIntentManager.js`, `VisitTileAllocator.js` | Building capacity, visit reservations, and destination assignment. |
 | `BuildingSprite.js` | Current building visuals, sprite blits, hover state, building-specific decoration/effects, occlusion split for hero buildings, and `hitTest` in world coordinates. |
+| `BuildingVisualRegistry.js` | Data-driven building visual profiles for labels, sprites, lights, emitter anchors, overlays, and split-pass rules. |
 | `AssetManager.js` | Loads `manifest.yaml` and `palettes.yaml`, maps manifest IDs to PNG paths, cache-busts with `style.assetVersion`, and supplies placeholder/checker fallbacks. |
 | `SpriteRenderer.js` | Single entry point for PNG sprite blits; keeps pixel-art draws snapped and smoothing disabled. |
 | `SpriteSheet.js` | Character sheet frame lookup and 8-direction velocity mapping. Character sheets are 8 columns × 10 rows of 92px cells. |
@@ -64,13 +65,15 @@ World mode overlap rendering goes through `DrawablePass.js`. New overlap-aware v
 {
   kind: '<stable-category>',
   sortY: <finite-world-y>,
+  sortBand: <optional-order-band>,
+  stableKey: '<optional-deterministic-key>',
   draw(ctx, zoom, context) {},
   hitArea: null, // optional future hit-test metadata
   payload: <source-object>
 }
 ```
 
-`kind` should be stable enough for diagnostics and narrow special cases such as the selected-agent x-ray pass. `sortY` is the only ordering key, so normalize missing or non-finite values before sorting. `draw()` should own the dispatch for that item; avoid adding new manual draw switches in `WorldFrameRenderer.js` when an adapter in `DrawablePass.js` can preserve the existing behavior.
+`kind` should be stable enough for diagnostics and narrow special cases such as the selected-agent x-ray pass. Ordering is `sortY`, then `sortBand`, then `kind`, then `stableKey`, then insertion sequence. `createDepthDrawable()` assigns default bands for building backs, props, harbor traffic, agents, landmark activity, chronicle visuals, familiar motes, and building fronts; set `sortBand` only when a new category needs deterministic interleaving. Normalize missing or non-finite `sortY` before sorting. `draw()` should own the dispatch for that item; avoid adding new manual draw switches in `WorldFrameRenderer.js` when an adapter in `DrawablePass.js` can preserve the existing behavior. Use `cullDepthSortedDrawables()` for large drawable sets that can be skipped outside the camera viewport.
 
 `WorldFrameRenderer.js` still reaches into renderer private helpers for terrain, atmosphere, debug, labels, and post-processing. Treat that as a follow-up for layer extraction, not a reason to broaden a drawable-only change.
 
@@ -131,22 +134,38 @@ Selection events (`agent:selected`, `agent:deselected`) are bridged in `App.js`,
 
 ## Adding a building
 
-1. Add an entry to `BUILDING_DEFS` in `claudeville/src/config/buildings.js`. Copy a neighboring entry for the field shape:
+1. Add an entry to `BUILDING_DEFS` in `claudeville/src/config/buildings.js`. Copy a neighboring entry for the validated field shape:
 
    ```js
-   { type: '<id>', x: <tileX>, y: <tileY>, width: <w>, height: <h>,
-     label: '<UPPER CASE>', icon: '<glyph>', description: '<short>' }
+   {
+     type: '<id>',
+     x: <tileX>,
+     y: <tileY>,
+     width: <w>,
+     height: <h>,
+     label: '<UPPER CASE>',
+     shortLabel: '<SHORT>',
+     icon: '<glyph>',
+     description: '<short>',
+     district: '<district>',
+     capacity: { work: <n>, ambient: <n>, overflow: <n> },
+     visualTier: 'hero' | 'major' | 'minor',
+     labelPriority: 'landmark' | 'standard' | 'low',
+     entrance: { tileX: <tileX>, tileY: <tileY> },
+     visitTiles: [workSlot(...), queueSlot(...), scenicSlot(...)],
+     walkExclusion: [{ dx: <n>, dy: <n>, width: <n>, height: <n> }],
+   }
    ```
 
-   Tile coordinates must keep the footprint `(x..x+width-1, y..y+height-1)` within `0..MAP_SIZE-1` and not overlap an existing building or water.
+   The local `workSlot`, `queueSlot`, and `scenicSlot` helpers create the visit-tile metadata expected by movement and occupancy systems. Tile coordinates must keep the footprint `(x..x+width-1, y..y+height-1)`, entrance, visit tiles, and walk exclusions within `0..MAP_SIZE-1` and not overlap water or another building footprint.
 
-2. If `BuildingSprite.js` switches on `type` for visuals, label treatment, decoration, emitters, or building-specific overlays, add the smallest branch needed. Reuse an existing visual if the role matches.
+2. Add or reuse a `BuildingVisualRegistry.js` profile for label treatment, sprite IDs, decoration, emitters, lights, overlay anchors, and split-pass behavior. Keep procedural fallbacks in `BuildingSprite.js` narrow.
 
 3. (Optional) If the building needs hover/click behavior beyond the default tooltip, subscribe in `IsometricRenderer.js` near the existing `_onMouseMoveMain` / `_onClick` handlers, or extend `BuildingSprite.hitTest`.
 
-4. Reload the page. There is no build step — `App.js` adds buildings from `BUILDING_DEFS` on every boot (`App.js:46-49`).
+4. Run `npm run world:validate-buildings` and `npm run world:validate-terrain`, then reload the page. There is no build step; `App.js` adds buildings from `BUILDING_DEFS` on every boot.
 
-Future building visual cleanup should migrate data-only behavior into a `buildingVisuals` registry before moving custom procedural drawing. Good first candidates are label accents/emblems, light sources, emitter specs, overlay anchors, and split-pass rules. Keep custom renderers behind named functions so adding a building usually changes config data rather than several distant `type` branches.
+Future building visual cleanup should expand the existing `BuildingVisualRegistry.js` coverage before adding custom procedural drawing. Good candidates are label accents/emblems, light sources, emitter specs, overlay anchors, and split-pass rules. Keep custom renderers behind named functions so adding a building usually changes config data rather than several distant `type` branches.
 
 ## Frame and update notes
 
@@ -156,4 +175,4 @@ Future building visual cleanup should migrate data-only behavior into a `buildin
 - Event-bus subscriptions (`agent:added`, `agent:updated`, `agent:removed`) are stored in `_unsubscribers` and torn down in `hide()`. New subscriptions in this directory should follow the same pattern to avoid leaks across mode toggles.
 - `ParticleSystem.setMotionEnabled(false)` is set when `(prefers-reduced-motion: reduce)` matches; respect this when adding new effects.
 - New motion-bearing features must follow [`../../../../docs/motion-budget.md`](../../../../docs/motion-budget.md): check `motionScale` before allocating animation resources, declare a pulse band, and ship a static reduced-motion fallback.
-- Pulse math is still mostly local to feature modules. Prefer introducing a small shared pulse helper before adding another repeating sine cadence, then migrate existing callers gradually.
+- Use `PulsePolicy.js` helpers such as `pulseValue()` and `pulseAlpha()` before adding another repeating sine cadence. Local pulse math should be justified by a feature-specific need and still honor reduced-motion fallback values.

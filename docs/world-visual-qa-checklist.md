@@ -12,6 +12,7 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 ## Crowd And Relationships
 
 - `dense-24-agents`: at least 20 agents remain selectable; dense labels do not cover building labels or each other excessively.
+- `dense-100-agents`: stress scenario for label, trail, drawable-culling, and terrain-cache readability at high agent counts.
 - `team-gather`: team members cluster around intended Command/Task Board areas with readable chat pairing.
 - `parent-subagents`: parent/child agents are visually distinguishable; completed child cleanup leaves no stale label or marker.
 
@@ -37,7 +38,8 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 ## Terrain Cache Scalability
 
 - Run `npm run world:validate-terrain` and confirm the terrain cache plan reports chunk coverage for the current `MAP_SIZE`.
-- In the debug overlay or console diagnostics, confirm terrain cache strategy is `single-surface` for the current 40x40 map.
+- Run `npm run world:validate-buildings` after building layout or visit-tile changes.
+- In the debug overlay or console diagnostics, confirm terrain cache strategy is `single-surface` for the current 40x40 map. Console diagnostics are exposed at `window.__claudeVillePerf.canvasBudget().terrainCache`.
 - Before increasing `MAP_SIZE`, confirm the single-surface estimate remains under the world cache budget or implement chunked terrain caches first.
 
 ## Sprite Refresh Audit

@@ -8,13 +8,17 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 
 | File | Responsibility |
 | --- | --- |
-| `TopBar.js` | Global status, usage display, and mode affordances. |
-| `Sidebar.js` | Agent list and sidebar-driven `agent:selected` events. |
-| `ActivityPanel.js` | Right-side 320px detail panel for the selected agent. |
+| `TopBar.js` | Global stats, clock, account/quota usage display, and agent/usage event summaries. Mode button lookup and clicks belong to `application/ModeManager.js`. |
+| `Sidebar.js` | Project-grouped agent list, selection mirror/toggle, persisted collapsed state, and Harbor pending-commit ledger from `harbor:updated`. |
+| `ActivityPanel.js` | Right-side 320px detail panel with selected-agent and selected-building modes. |
 | `AgentSelection.js` | Shared selection event helpers and local selected-agent mirrors for presentation components. |
 | `AgentPresentation.js` | Shared project grouping plus provider, model, status, current-tool, and tool-history presentation helpers. |
+| `DomSafe.js` | DOM construction/replacement helpers used by App, Dashboard, Sidebar, Activity Panel, and presentation helpers. |
+| `Formatters.js` | Status, path, number, cost, hash, and truncation formatting helpers. |
+| `GitEventIdentity.js` | Shared git event labeling and identity helpers for harbor/git flows. |
 | `SessionDetailsService.js` | Shared `/api/session-detail` and `/api/session-details` fetch dedupe, cache, stale fallback, and timeout handling. |
 | `ModelVisualIdentity.js` | Provider/model/effort labels, sprite IDs, palette keys, colors, and minimap accents. |
+| `RoleAccessory.js` | Runtime role/accessory selection for sprite composition. |
 | `RepoColor.js` | Deterministic project/repository color assignment. |
 | `TeamColor.js` | Deterministic team color assignment. |
 | `Modal.js` | Shared modal primitive. |
@@ -25,6 +29,8 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 - Emit `agent:selected` and `agent:deselected` through `AgentSelection.js` helpers so future event-shape changes stay centralized.
 - `agent:selected` can be emitted by World mode, Dashboard cards, or Sidebar rows.
 - `ActivityPanel` opens on `agent:selected`, refreshes its selected agent on matching `agent:updated`, and hides when that agent is removed.
+- `BUILDING_EVENTS.SELECTED` opens Activity Panel building mode, shows building purpose/status/occupants, polls occupants every 5 seconds, and emits `agent:deselected` when building selection overrides an agent selection.
+- `BUILDING_EVENTS.DESELECTED` clears building mode when the currently shown building is deselected.
 - `ActivityPanel.hide()` emits `agent:deselected`; `App.js` bridges that event back to World mode so camera follow stops.
 - Empty world clicks clear renderer selection/follow but do not close the panel. The panel remains open until its close button or selected-agent removal.
 - `usage:updated` feeds shared status surfaces such as `TopBar`. `ws:connected` and `ws:disconnected` are currently consumed by application services.
@@ -61,5 +67,6 @@ After shared component changes, test both modes because these components sit acr
 
 1. Select an agent from World mode, Dashboard mode, and Sidebar if available.
 2. Close the Activity Panel and confirm World mode follow clears.
-3. Switch modes while the panel is open.
-4. Confirm `/api/session-detail` and `/api/session-details` requests are not duplicated aggressively in the browser network panel.
+3. Select a building in World mode and confirm the panel switches to building purpose/status/occupants, then returns cleanly to agent detail.
+4. Switch modes while the panel is open.
+5. Confirm `/api/session-detail` and `/api/session-details` requests are not duplicated aggressively in the browser network panel.

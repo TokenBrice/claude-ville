@@ -12,14 +12,14 @@ ClaudeVille's World mode uses motion to communicate state. New motion-bearing wo
 
 ## Shared Helper Direction
 
-World mode does not yet have a shared pulse clock. Before adding another repeating sine cadence, prefer a small helper that:
+World mode exposes shared pulse helpers in `claudeville/src/presentation/character-mode/PulsePolicy.js`. Before adding another repeating sine cadence, use `pulseValue()` or `pulseAlpha()` when possible. The helper:
 
 - accepts `motionScale` and returns fixed fallback values when motion is disabled
 - exposes named bands matching the table below
 - keeps band choice visible at the call site
 - avoids allocating timers, particles, paths, or offscreen caches when `motionScale <= 0`
 
-Existing local pulse math can migrate gradually as nearby features are touched. Do not introduce a broad renderer split just to add the helper.
+Existing local pulse math can migrate gradually as nearby features are touched. Add local pulse math only when a feature needs a distinct waveform or timing model, and document why the shared helper is not enough.
 
 ## Pulse Bands
 
