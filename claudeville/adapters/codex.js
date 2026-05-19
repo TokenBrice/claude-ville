@@ -15,6 +15,7 @@ const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = requi
 
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
+const SESSION_INDEX_FILE = path.join(CODEX_DIR, 'session_index.jsonl');
 
 // ─── Utilities ─────────────────────────────────────────────
 
@@ -30,6 +31,7 @@ const MAX_ROLLOUT_FILES = 100000;
 const ROLLOUT_DIR_MTIME_EPSILON_MS = 1;
 
 const _rolloutFileBySessionId = new Map();
+const _sessionNamesCache = { signature: '', value: new Map() };
 const _rolloutDiscoveryCache = {
   initialized: false,
   filesByPath: new Map(),
@@ -126,6 +128,47 @@ function parseJsonLines(lines) {
     try { results.push(JSON.parse(line)); } catch { /* ignore */ }
   }
   return results;
+}
+
+function fileSignature(filePath) {
+  try {
+    const stat = fs.statSync(filePath);
+    return `${filePath}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino || 0}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+function parseTimestampMs(value) {
+  if (!value) return 0;
+  const ts = Date.parse(value);
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function readCodexSessionNames() {
+  const signature = fileSignature(SESSION_INDEX_FILE);
+  if (_sessionNamesCache.signature === signature) return _sessionNamesCache.value;
+
+  const names = new Map();
+  const seenAt = new Map();
+  try {
+    const lines = fs.readFileSync(SESSION_INDEX_FILE, 'utf-8').split('\n');
+    for (const entry of parseJsonLines(lines)) {
+      const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+      const name = typeof entry.thread_name === 'string' ? entry.thread_name.trim() : '';
+      if (!id || !name) continue;
+
+      const updatedAt = parseTimestampMs(entry.updated_at);
+      const previous = seenAt.get(id) || 0;
+      if (names.has(id) && updatedAt && previous && updatedAt < previous) continue;
+      names.set(id, name);
+      seenAt.set(id, updatedAt || Date.now());
+    }
+  } catch { /* ignore malformed or missing session index */ }
+
+  _sessionNamesCache.signature = signature;
+  _sessionNamesCache.value = names;
+  return names;
 }
 
 // ─── Rollout parsing ──────────────────────────────────────
@@ -799,6 +842,7 @@ class CodexAdapter {
 
   getActiveSessions(activeThresholdMs) {
     const rollouts = scanRecentRollouts(activeThresholdMs);
+    const sessionNames = readCodexSessionNames();
     const sessions = [];
     const parsedRollouts = [];
     const sessionIdByThreadId = new Map();
@@ -815,12 +859,13 @@ class CodexAdapter {
     }
 
     for (const { filePath, mtime, detail, sessionId, fullSessionId, threadId } of parsedRollouts) {
+      const sessionName = sessionNames.get(threadId) || sessionNames.get(sessionId) || detail.agentName || null;
       sessions.push({
         sessionId: fullSessionId,
         provider: 'codex',
         agentId: threadId,
-        name: detail.agentName,
-        agentName: detail.agentName,
+        name: sessionName,
+        agentName: sessionName,
         agentType: detail.agentType || 'main',
         model: detail.model || 'codex',
         reasoningEffort: detail.reasoningEffort,
@@ -881,11 +926,16 @@ class CodexAdapter {
     if (fs.existsSync(SESSIONS_DIR)) {
       paths.push({ type: 'directory', path: SESSIONS_DIR, recursive: true, filter: '.jsonl' });
     }
+    if (fs.existsSync(SESSION_INDEX_FILE)) {
+      paths.push({ type: 'file', path: SESSION_INDEX_FILE });
+    }
     return paths;
   }
 
   invalidateCaches() {
     _rolloutFileBySessionId.clear();
+    _sessionNamesCache.signature = '';
+    _sessionNamesCache.value = new Map();
     // Keep rollout discovery metadata across ordinary provider invalidations.
     // Watch events usually mean one file changed; dropping this cache would turn
     // every active-session refresh back into a full historical scan.

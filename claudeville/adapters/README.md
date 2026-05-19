@@ -72,7 +72,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `provider` | `'claude' \| 'codex' \| 'gemini' \| 'kimi' \| 'opencode' \| 'git'` | Adapter-backed sessions use the CLI/source provider id. DeepSeek-backed OpenCode sessions still use `provider: 'opencode'` and expose DeepSeek through `model`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
 | `agentId` | string \| null | Provider-specific agent thread id; nullable for Gemini. |
 | `agentType` | `'main' \| 'sub-agent' \| 'team-member'` | Drives sprite/card grouping. Default `'main'`. |
-| `agentName` | string \| null | Human label when the provider exposes one (Codex `agent_nickname`, Claude team launch name). |
+| `agentName` | string \| null | Human label when the provider exposes one (Codex `session_index.jsonl` `thread_name` with `agent_nickname` fallback, Claude team launch name). |
 | `project` | string \| null | Absolute working directory. Gemini may resolve this from a SHA-256 hash and return null on failure. |
 | `model` | string | Free-form. UI strips `claude-` and `-2025…` suffixes for display. |
 | `status` | `'active'` | Currently always `'active'`; idle/terminated transitions are inferred client-side by `AgentManager`. |
@@ -178,7 +178,13 @@ Subagent files at `~/.claude/projects/<encoded-project>/<sessionId>/subagents/ag
 {"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":12000,"output_tokens":340,"cached_input_tokens":8000},"last_token_usage":{"total_tokens":420},"model_context_window":200000}}}
 ```
 
-The adapter reads `session_meta` from the first 5 lines and tools/messages/usage from the last 50–500 lines.
+Renamed Codex sessions are read from `~/.codex/session_index.jsonl`:
+
+```jsonc
+{"id":"thr_01J9X...","thread_name":"plan-bot","updated_at":"2026-05-19T11:30:51.337Z"}
+```
+
+The adapter reads `session_meta` from the first metadata lines, prefers `session_index.jsonl` names when available, and reads tools/messages/usage from the last 50–500 lines.
 
 ### Gemini — `~/.gemini/tmp/<projectHash>/chats/session-*.json` (one JSON object per file)
 
