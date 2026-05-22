@@ -117,11 +117,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let name = (s["name"] as? String)
                 ?? (s["sessionId"] as? String)?.prefix(8).description
                 ?? "Unknown"
-            let rawModel = s["model"] as? String ?? "?"
-            let effort = (s["reasoningEffort"] as? String) ?? (s["effort"] as? String)
-            let provider = s["provider"] as? String
-            let model = Self.modelLabel(rawModel, effort: effort, provider: provider)
-            let modelColor = Self.modelColor(rawModel, provider: provider)
+            let model = (s["displayModel"] as? String)
+                ?? (s["model"] as? String)
+                ?? "?"
+            let modelColor = (s["modelColor"] as? String) ?? "#64748b"
             if status == "working" { working += 1 } else { idle += 1 }
             let tokenSource = s["tokenUsage"] as? [String: Any]
                 ?? s["tokens"] as? [String: Any]
@@ -130,11 +129,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let sessionTokens = normalizedUsage.input + normalizedUsage.output + normalizedUsage.cacheRead + normalizedUsage.cacheCreate
             totalTokens += sessionTokens
 
-            let estimatedCost = Self.toDouble(s["estimatedCost"]) ?? -1
-            let isEstimatedFinite = estimatedCost.isFinite && estimatedCost >= 0
-            let sessionCost = isEstimatedFinite
-                ? estimatedCost
-                : Self.estimateTokenCost(tokenSource, model: rawModel, provider: provider)
+            let estimatedCost = Self.toDouble(s["estimatedCost"]) ?? 0
+            let sessionCost = estimatedCost.isFinite && estimatedCost >= 0 ? estimatedCost : 0
 
             totalCost += sessionCost
             let signatureSessionId = (s["sessionId"] as? String)
@@ -225,62 +221,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return sub.prefix(1).uppercased() + sub.dropFirst()
         }
         return "Free"
-    }
-
-    static func normalizedEffort(_ effort: String?) -> String? {
-        let normalized = (effort ?? "").lowercased()
-        if normalized.isEmpty { return nil }
-        if normalized == "none" { return "none" }
-        if normalized.contains("xhigh") || normalized.contains("extra") { return "xhigh" }
-        if normalized.contains("high") { return "high" }
-        if normalized.contains("medium") { return "medium" }
-        if normalized.contains("low") { return "low" }
-        return normalized
-    }
-
-    static func modelLabel(_ model: String, effort: String?, provider: String?) -> String {
-        let normalizedModel = model.lowercased()
-            .replacingOccurrences(of: ".", with: "-")
-            .replacingOccurrences(of: "_", with: "-")
-        let normalizedProvider = (provider ?? "").lowercased()
-        let base: String
-        if normalizedModel.contains("gpt-5-3-codex-spark") {
-            base = "5.3 Spark"
-        } else if normalizedModel.contains("gpt-5-5") {
-            base = "5.5"
-        } else if normalizedModel.contains("deepseek-v4-pro") || (normalizedModel.contains("deepseek") && normalizedModel.contains("v4-pro")) || (normalizedProvider.contains("deepseek") && normalizedModel.contains("v4-pro")) {
-            base = "DS V4 Pro"
-        } else if normalizedModel.contains("deepseek-v4-flash") || (normalizedModel.contains("deepseek") && normalizedModel.contains("v4-flash")) || (normalizedProvider.contains("deepseek") && normalizedModel.contains("v4-flash")) {
-            base = "DS Flash"
-        } else if normalizedModel.contains("deepseek-reasoner") || normalizedModel.contains("deepseek") || normalizedProvider.contains("deepseek") {
-            base = "DS Reasoner"
-        } else if normalizedProvider.contains("codex") || normalizedModel.contains("codex") || normalizedModel.contains("gpt") {
-            base = model
-        } else if normalizedProvider.contains("kimi") || normalizedModel.contains("kimi") {
-            base = "Kimi"
-        } else {
-            base = model
-                .replacingOccurrences(of: "claude-", with: "")
-                .components(separatedBy: "-").first ?? model
-        }
-
-        guard let effort = normalizedEffort(effort), effort != "none" else { return base }
-        let effortLabels = ["medium": "med"]
-        return "\(base) \(effortLabels[effort] ?? effort)"
-    }
-
-    static func modelColor(_ model: String, provider: String?) -> String {
-        let normalizedModel = model.lowercased()
-            .replacingOccurrences(of: ".", with: "-")
-            .replacingOccurrences(of: "_", with: "-")
-        let normalizedProvider = (provider ?? "").lowercased()
-        if normalizedModel.contains("gpt-5-3-codex-spark") { return "#f8e36f" }
-        if normalizedModel.contains("gpt-5-5") { return "#fff1b8" }
-        if normalizedModel.contains("deepseek-v4-pro") || (normalizedModel.contains("deepseek") && normalizedModel.contains("v4-pro")) || (normalizedProvider.contains("deepseek") && normalizedModel.contains("v4-pro")) { return "#9ee7ff" }
-        if normalizedModel.contains("deepseek") || normalizedProvider.contains("deepseek") { return "#7cf4c8" }
-        if normalizedProvider.contains("codex") || normalizedModel.contains("codex") || normalizedModel.contains("gpt") { return "#7be3d7" }
-        if normalizedProvider.contains("kimi") || normalizedModel.contains("kimi") { return "#ff9f7a" }
-        return "#64748b"
     }
 
     static func buildHTML(agents: [(name: String, model: String, modelColor: String, status: String)],
@@ -501,69 +441,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             cacheRead: Int(max(0, cacheRead.rounded())),
             cacheCreate: Int(max(0, cacheCreate.rounded())),
         )
-    }
-
-    static let claudeRates: [(match: String, input: Double, output: Double, cacheRead: Double, cacheCreate: Double)] = [
-        (match: "opus", input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75),
-        (match: "sonnet", input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75),
-        (match: "haiku", input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1),
-    ]
-
-    static let openAIRates: [(match: String, input: Double, output: Double, cacheRead: Double, cacheCreate: Double)] = [
-        (match: "gpt-5.5", input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0),
-        (match: "gpt-5.4", input: 10, output: 80, cacheRead: 1, cacheCreate: 0),
-        (match: "gpt-5.3", input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0),
-        (match: "gpt-5", input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0),
-    ]
-
-    static let kimiRates: [(match: String, input: Double, output: Double, cacheRead: Double, cacheCreate: Double)] = [
-        (match: "kimi-for-coding", input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0),
-    ]
-
-    static let deepseekRates: [(match: String, input: Double, output: Double, cacheRead: Double, cacheCreate: Double)] = [
-        (match: "deepseek-v4-pro", input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0),
-        (match: "v4-pro", input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0),
-        (match: "deepseek-v4-flash", input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0),
-        (match: "v4-flash", input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0),
-        (match: "deepseek-reasoner", input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0),
-        (match: "reasoner", input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0),
-    ]
-
-    static let defaultClaudeRates = (input: 3.0, output: 15.0, cacheRead: 0.3, cacheCreate: 3.75)
-    static let defaultOpenAIRates = (input: 1.25, output: 10.0, cacheRead: 0.125, cacheCreate: 0.0)
-    static let defaultKimiRates = (input: 3.0, output: 12.0, cacheRead: 0.3, cacheCreate: 0.0)
-    static let defaultDeepseekRates = (input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0.0)
-
-    static func pricingForModel(_ model: String?, _ provider: String?) -> (input: Double, output: Double, cacheRead: Double, cacheCreate: Double) {
-        let normalizedModel = (model ?? "").lowercased()
-        let normalizedProvider = (provider ?? "").lowercased()
-        if normalizedProvider == "kimi" || normalizedModel.contains("kimi") {
-            if let match = Self.kimiRates.first(where: { normalizedModel.contains($0.match) }) {
-                return (input: match.input, output: match.output, cacheRead: match.cacheRead, cacheCreate: match.cacheCreate)
-            }
-            return Self.defaultKimiRates
-        }
-        if normalizedProvider == "deepseek" || normalizedModel.contains("deepseek") {
-            if let match = Self.deepseekRates.first(where: { normalizedModel.contains($0.match) }) {
-                return (input: match.input, output: match.output, cacheRead: match.cacheRead, cacheCreate: match.cacheCreate)
-            }
-            return Self.defaultDeepseekRates
-        }
-        let table = (normalizedProvider == "codex" || normalizedModel.contains("gpt")) ? Self.openAIRates : Self.claudeRates
-        if let match = table.first(where: { normalizedModel.contains($0.match) }) {
-            return (input: match.input, output: match.output, cacheRead: match.cacheRead, cacheCreate: match.cacheCreate)
-        }
-        return normalizedProvider == "codex" || normalizedModel.contains("gpt") ? Self.defaultOpenAIRates : Self.defaultClaudeRates
-    }
-
-    static func estimateTokenCost(_ usage: [String: Any]?, model: String?, provider: String?) -> Double {
-        let normalizedUsage = Self.normalizeTokenUsage(usage)
-        let rates = Self.pricingForModel(model, provider)
-        let total = Double(normalizedUsage.input) * rates.input
-            + Double(normalizedUsage.output) * rates.output
-            + Double(normalizedUsage.cacheRead) * rates.cacheRead
-            + Double(normalizedUsage.cacheCreate) * rates.cacheCreate
-        return max(0, total / 1_000_000)
     }
 
     static func readFirstNumber(_ usage: [String: Any], keys: [String]) -> Double? {

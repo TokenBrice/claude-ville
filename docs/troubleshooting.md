@@ -85,9 +85,9 @@ Credential and activity sources are cached briefly, and quota checks are best-ef
 
 ## Cost numbers look wrong
 
-Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. The shared pricing and token normalization logic lives in `claudeville/src/domain/value-objects/TokenUsage.js`. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`, `kimi-for-coding`, `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`). DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but match DeepSeek pricing by model string. Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
+Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. Browser-side estimates use `claudeville/src/domain/value-objects/TokenUsage.js`; server-side `/api/sessions` estimates and widget display fields use `claudeville/src/config/model-pricing.json` through the adapter session-presentation helper. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`, `kimi-for-coding`, `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`). DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but match DeepSeek pricing by model string. Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
 
-If a model is missing or its price has changed, update `TokenUsage.js`, `widget/Sources/main.swift`, and `widget/Resources/widget.html`; then verify browser and widget cost displays. `Agent` and `ActivityPanel` both call `TokenUsage.estimateCost(...)` in the browser app.
+If a model is missing or its price has changed, update `claudeville/src/config/model-pricing.json` and `TokenUsage.js`; then run `npm run widget:pricing-check` and verify browser, `/api/sessions`, and widget cost displays. Widgets consume the API-provided `estimatedCost`, `displayModel`, `modelColor`, and `spriteId` fields rather than carrying local pricing tables.
 
 ## Widget shows "offline"
 
@@ -104,7 +104,7 @@ npm run widget:build
 
 `widget/build.sh` recreates `widget/ClaudeVilleWidget.app`, so treat widget builds as generated-output changes in the shared checkout. Do not delete or rebuild the app bundle unless widget validation is in scope.
 
-There are two widget HTML surfaces. The native menu-bar popover is generated inline in `widget/Sources/main.swift`; `widget/Resources/widget.html` is a static resource served by the local server and copied into the bundle. Editing `widget.html` alone may not change the native popover.
+There are two widget HTML surfaces. The native menu-bar popover is generated inline in `widget/Sources/main.swift`; `widget/Resources/widget.html` is a static resource served by the local server and copied into the bundle. Editing `widget.html` alone may not change the native popover. Both widget surfaces now rely on `/api/sessions` for session cost and model display fields.
 
 Before launching Node, the widget checks `http://localhost:4000/api/providers` and verifies the response looks like ClaudeVille. It only terminates a server process that it started itself.
 

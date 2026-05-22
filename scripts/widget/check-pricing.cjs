@@ -3,29 +3,65 @@
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
+const { ratesForModel } = require('../../claudeville/adapters/sessionPresentation');
 
 const repoRoot = join(__dirname, '..', '..');
 const pricing = JSON.parse(readFileSync(join(repoRoot, 'claudeville/src/config/model-pricing.json'), 'utf8'));
-const sources = [
+const browserPricingSources = [
   'claudeville/src/domain/value-objects/TokenUsage.js',
+];
+const apiPricingSource = 'claudeville/adapters/sessionPresentation.js';
+const widgetSources = [
   'widget/Sources/main.swift',
   'widget/Resources/widget.html',
+  'widget/kde/claudeville/contents/ui/main.qml',
 ];
 
 let failures = 0;
 
-for (const rel of sources) {
+for (const rel of browserPricingSources) {
   const text = readFileSync(join(repoRoot, rel), 'utf8');
   for (const provider of ['claude', 'openai', 'kimi', 'deepseek']) {
     checkRates(rel, text, pricing[provider].rates);
     checkDefault(rel, text, pricing[provider].default);
   }
+  requireText(rel, text, 'pricingModelCandidates');
+  requireText(rel, text, 'gpt-5-(\\d)');
 }
 
-const kdeText = readFileSync(join(repoRoot, 'widget/kde/claudeville/contents/ui/main.qml'), 'utf8');
-if (!/tokens \* 0\.000003/.test(kdeText)) {
-  console.error('INVALID: KDE widget no longer uses the documented simplified flat estimate');
-  failures++;
+const apiText = readFileSync(join(repoRoot, apiPricingSource), 'utf8');
+requireText(apiPricingSource, apiText, "require('../src/config/model-pricing.json')");
+requireText(apiPricingSource, apiText, 'function estimateCost(');
+requireText(apiPricingSource, apiText, 'function decorateSessionPresentation(');
+requireText(apiPricingSource, apiText, 'function pricingModelCandidates(');
+requireText(apiPricingSource, apiText, 'gpt-5-(\\d)');
+assertRate('api gpt-5-5', ratesForModel('gpt-5-5', 'codex'), pricing.openai.rates[0]);
+assertRate('api gpt-5-4', ratesForModel('gpt-5-4', 'codex'), pricing.openai.rates[1]);
+assertRate('api gpt-5-3-codex-spark', ratesForModel('gpt-5-3-codex-spark', 'codex'), pricing.openai.rates[2]);
+
+const forbiddenWidgetPatterns = [
+  /\bpricingForModel\b/,
+  /\bestimateTokenCost\b/,
+  /\bCLAUDE_RATES\b/,
+  /\bOPEN_AI_RATES\b/,
+  /\bKIMI_RATES\b/,
+  /\bDEEPSEEK_RATES\b/,
+  /\bDEFAULT_(?:CLAUDE|OPEN_AI|KIMI|DEEPSEEK)_RATES\b/,
+  /\btokens\s*\*\s*0\.000003\b/,
+  /\bmatch:\s*['"][^'"]+['"]\s*,\s*input:\s*\d+(?:\.\d+)?\b/,
+];
+
+for (const rel of widgetSources) {
+  const text = readFileSync(join(repoRoot, rel), 'utf8');
+  requireText(rel, text, 'estimatedCost');
+  requireText(rel, text, 'displayModel');
+  requireText(rel, text, 'modelColor');
+  for (const pattern of forbiddenWidgetPatterns) {
+    if (pattern.test(text)) {
+      console.error(`INVALID: ${rel} still contains widget-side pricing/model rate logic matching ${pattern}`);
+      failures++;
+    }
+  }
 }
 
 if (failures) {
@@ -33,7 +69,7 @@ if (failures) {
   process.exit(1);
 }
 
-console.log(`pricing check passed: ${sources.length} detailed surfaces plus KDE flat estimate`);
+console.log(`pricing check passed: browser pricing parity, API session presentation, and ${widgetSources.length} widget consumers`);
 
 function checkRates(rel, text, rates) {
   for (const rate of rates) {
@@ -74,4 +110,19 @@ function numberPattern(value) {
 
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function requireText(rel, text, needle) {
+  if (text.includes(needle)) return;
+  console.error(`MISSING: ${rel} does not include ${needle}`);
+  failures++;
+}
+
+function assertRate(label, actual, expected) {
+  try {
+    assert.deepEqual(actual, expected);
+  } catch (err) {
+    console.error(`MISMATCH: ${label} should resolve to ${JSON.stringify(expected)} (${err.message})`);
+    failures++;
+  }
 }

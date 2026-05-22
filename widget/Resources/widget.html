@@ -173,63 +173,6 @@
       };
     }
 
-    const CLAUDE_RATES = [
-      { match: 'opus', input: 15, output: 75, cacheRead: 1.5, cacheCreate: 18.75 },
-      { match: 'sonnet', input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 },
-      { match: 'haiku', input: 0.8, output: 4, cacheRead: 0.08, cacheCreate: 1 },
-    ];
-
-    const OPEN_AI_RATES = [
-      { match: 'gpt-5.5', input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0 },
-      { match: 'gpt-5.4', input: 10, output: 80, cacheRead: 1, cacheCreate: 0 },
-      { match: 'gpt-5.3', input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0 },
-      { match: 'gpt-5', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
-    ];
-
-    const KIMI_RATES = [
-      { match: 'kimi-for-coding', input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 },
-    ];
-
-    const DEEPSEEK_RATES = [
-      { match: 'deepseek-v4-pro', input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0 },
-      { match: 'v4-pro', input: 1.74, output: 3.48, cacheRead: 0.145, cacheCreate: 0 },
-      { match: 'deepseek-v4-flash', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
-      { match: 'v4-flash', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
-      { match: 'deepseek-reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
-      { match: 'reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
-    ];
-
-    function pricingForModel(model, provider) {
-      const normalizedModel = String(model || '').toLowerCase();
-      const normalizedProvider = String(provider || '').toLowerCase();
-      if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) {
-        return KIMI_RATES.find((entry) => normalizedModel.includes(entry.match)) ||
-          { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 };
-      }
-      if (normalizedProvider === 'deepseek' || normalizedModel.includes('deepseek')) {
-        return DEEPSEEK_RATES.find((entry) => normalizedModel.includes(entry.match)) ||
-          { input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 };
-      }
-      const table = normalizedProvider === 'codex' || normalizedModel.includes('gpt')
-        ? OPEN_AI_RATES
-        : CLAUDE_RATES;
-      return table.find((entry) => normalizedModel.includes(entry.match)) ||
-        (table === OPEN_AI_RATES
-          ? { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 }
-          : { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 });
-    }
-
-    function estimateTokenCost(rawUsage, model, provider) {
-      const usage = normalizeTokenUsage(rawUsage);
-      const rates = pricingForModel(model, provider);
-      return (
-        usage.totalInput * rates.input +
-        usage.totalOutput * rates.output +
-        usage.cacheRead * rates.cacheRead +
-        usage.cacheCreate * rates.cacheCreate
-      ) / 1000000;
-    }
-
     function normalizeStatus(status) {
       const normalized = String(status || 'idle').trim().toLowerCase();
       if (normalized === 'active') return 'working';
@@ -246,55 +189,6 @@
         waiting: 'Waiting...',
       };
       return map[normalized] || 'Idle';
-    }
-
-    function normalizeReasoningEffort(effort) {
-      const normalized = String(effort || '').toLowerCase();
-      if (!normalized || normalized === 'none') return normalized ? 'none' : null;
-      if (normalized.includes('xhigh') || normalized.includes('extra')) return 'xhigh';
-      if (normalized.includes('high')) return 'high';
-      if (normalized.includes('medium')) return 'medium';
-      if (normalized.includes('low')) return 'low';
-      return normalized;
-    }
-
-    function getModelIdentity(model, effort, provider) {
-      const normalizedModel = String(model || '').toLowerCase().replace(/[._]/g, '-').replace(/\s+/g, '-');
-      const normalizedProvider = String(provider || '').toLowerCase();
-      const effortTier = normalizeReasoningEffort(effort);
-      if (normalizedModel.includes('gpt-5-3-codex-spark')) {
-        return { label: '5.3 Spark', effortTier, color: '#f8e36f' };
-      }
-      if (normalizedModel.includes('gpt-5-5')) {
-        return { label: '5.5', effortTier, color: '#fff1b8' };
-      }
-      if (normalizedModel.includes('deepseek-v4-pro') || (normalizedModel.includes('deepseek') && normalizedModel.includes('v4-pro')) || (normalizedProvider.includes('deepseek') && normalizedModel.includes('v4-pro'))) {
-        return { label: 'DS V4 Pro', effortTier, color: '#9ee7ff' };
-      }
-      if (normalizedModel.includes('deepseek-v4-flash') || (normalizedModel.includes('deepseek') && normalizedModel.includes('v4-flash')) || (normalizedProvider.includes('deepseek') && normalizedModel.includes('v4-flash'))) {
-        return { label: 'DS Flash', effortTier, color: '#7cf4c8' };
-      }
-      if (normalizedModel.includes('deepseek-reasoner') || normalizedModel.includes('deepseek') || normalizedProvider.includes('deepseek')) {
-        return { label: 'DS Reasoner', effortTier, color: '#7cf4c8' };
-      }
-      if (normalizedProvider.includes('codex') || normalizedModel.includes('codex') || normalizedModel.includes('gpt')) {
-        return { label: model || 'Codex', effortTier, color: '#7be3d7' };
-      }
-      if (normalizedProvider.includes('kimi') || normalizedModel.includes('kimi')) {
-        return { label: 'Kimi', effortTier, color: '#ff9f7a' };
-      }
-      return { label: model || '?', effortTier, color: '#64748b' };
-    }
-
-    function getModelLabel(model, effort, provider) {
-      const identity = getModelIdentity(model, effort, provider);
-      const effortLabels = { low: 'low', medium: 'med', high: 'high', xhigh: 'xhigh' };
-      const suffix = identity.effortTier && identity.effortTier !== 'none'
-        ? ` ${effortLabels[identity.effortTier] || identity.effortTier}`
-        : '';
-      return `${identity.label}${suffix}`
-        .replace('claude-', '')
-        .replace(/-\d{8}$/, '');
     }
 
     // ── Badge update (Swift bridge) ───────────────────────
@@ -361,7 +255,7 @@
         else idleCount++;
         const tokenSource = s.tokenUsage || s.tokens || s.usage;
         const estimatedCost = Number(s.estimatedCost);
-        const cost = Number.isFinite(estimatedCost) ? estimatedCost : estimateTokenCost(tokenSource, s.model, s.provider);
+        const cost = Number.isFinite(estimatedCost) && estimatedCost >= 0 ? estimatedCost : 0;
         const tokenUsage = normalizeTokenUsage(tokenSource);
         const sessionTokens = tokenUsage.input + tokenUsage.output + tokenUsage.cacheRead + tokenUsage.cacheCreate;
         totalTokens += sessionTokens;
@@ -369,8 +263,8 @@
         summary.push({
           id: s.sessionId || s.id || '',
           status,
-          model: getModelLabel(s.model, s.reasoningEffort || s.effort, s.provider),
-          modelColor: getModelIdentity(s.model, s.reasoningEffort || s.effort, s.provider).color,
+          model: s.displayModel || s.model || '?',
+          modelColor: s.modelColor || '#64748b',
           activity: getStatusLabel(status),
           tokens: sessionTokens,
           cost,

@@ -372,58 +372,6 @@ PlasmoidItem {
         return String(Math.round(n))
     }
 
-    function shortModel(model, effort, provider) {
-        var text = String(model || "?")
-        var normalizedModel = normalizedIdentityText(model)
-        var normalizedProvider = normalizedIdentityText(provider)
-        if (normalizedModel.indexOf("gpt-5-5") !== -1) text = "5.5"
-        else if (normalizedModel.indexOf("gpt-5-4") !== -1) text = "5.4"
-        else if (normalizedModel.indexOf("gpt-5-3") !== -1) text = "5.3"
-        else if (normalizedModel.indexOf("deepseek-v4-pro") !== -1
-                || (normalizedModel.indexOf("deepseek") !== -1 && normalizedModel.indexOf("v4-pro") !== -1)
-                || (normalizedProvider.indexOf("deepseek") !== -1 && normalizedModel.indexOf("v4-pro") !== -1)) text = "DS V4 Pro"
-        else if (normalizedModel.indexOf("deepseek-v4-flash") !== -1
-                || (normalizedModel.indexOf("deepseek") !== -1 && normalizedModel.indexOf("v4-flash") !== -1)
-                || (normalizedProvider.indexOf("deepseek") !== -1 && normalizedModel.indexOf("v4-flash") !== -1)) text = "DS Flash"
-        else if (normalizedModel.indexOf("deepseek") !== -1 || normalizedProvider.indexOf("deepseek") !== -1) text = "DS Reasoner"
-        else if (text.toLowerCase().indexOf("claude") !== -1) text = text.replace(/^claude[-_ ]?/i, "Claude ")
-        var effortText = String(effort || "").toLowerCase()
-        return effortText ? text + " " + effortText : text
-    }
-
-    function normalizedIdentityText(value) {
-        return String(value || "")
-            .toLowerCase()
-            .replace(/[._]/g, "-")
-            .replace(/\s+/g, "-")
-    }
-
-    function spriteIdFor(model, provider) {
-        var normalizedModel = normalizedIdentityText(model)
-        var normalizedProvider = normalizedIdentityText(provider)
-        if (normalizedModel.indexOf("opus") !== -1) return "agent.claude.opus"
-        if (normalizedModel.indexOf("haiku") !== -1) return "agent.claude.haiku"
-        if (normalizedModel.indexOf("sonnet") !== -1 || normalizedProvider.indexOf("claude") !== -1) {
-            return "agent.claude.sonnet"
-        }
-        if (normalizedModel.indexOf("gpt-5-3-codex-spark") !== -1) return "agent.codex.gpt53spark"
-        if (normalizedModel.indexOf("gpt-5-5") !== -1) return "agent.codex.gpt55"
-        if (normalizedModel.indexOf("gpt-5-4") !== -1) return "agent.codex.gpt54"
-        if (normalizedModel.indexOf("deepseek") !== -1) return "agent.gemini.base"
-        if (normalizedProvider.indexOf("gemini") !== -1 || normalizedModel.indexOf("gemini") !== -1) {
-            return "agent.gemini.base"
-        }
-        if (normalizedProvider.indexOf("kimi") !== -1 || normalizedModel.indexOf("kimi") !== -1) {
-            return "agent.kimi.base"
-        }
-        if (normalizedProvider.indexOf("codex") !== -1
-                || normalizedModel.indexOf("codex") !== -1
-                || normalizedModel.indexOf("gpt") !== -1) {
-            return "agent.codex.gpt54"
-        }
-        return "agent.codex.gpt54"
-    }
-
     function spriteFrame(spriteId) {
         var frames = {
             "agent.claude.base": [63, 83],
@@ -437,7 +385,7 @@ PlasmoidItem {
             "agent.gemini.base": [64, 78],
             "agent.kimi.base": [46, 80]
         }
-        var frame = frames[spriteId] || frames["agent.codex.gpt54"]
+        var frame = frames[packagedSpriteId(spriteId)] || frames["agent.codex.gpt54"]
         return {
             width: frame[0],
             height: frame[1]
@@ -445,7 +393,13 @@ PlasmoidItem {
     }
 
     function spriteSource(spriteId) {
-        return Qt.resolvedUrl("../images/" + spriteId + ".png")
+        return Qt.resolvedUrl("../images/" + packagedSpriteId(spriteId) + ".png")
+    }
+
+    function packagedSpriteId(spriteId) {
+        var id = String(spriteId || "agent.codex.gpt54")
+        if (id.indexOf("gpt55.") !== -1) return "agent.codex.gpt55"
+        return id
     }
 
     function spriteAccent(spriteId) {
@@ -482,13 +436,6 @@ PlasmoidItem {
             + Number(usage.totalOutput || usage.output || 0)
             + Number(usage.cacheRead || 0)
             + Number(usage.cacheCreate || 0)
-    }
-
-    function estimateCost(session) {
-        var explicit = Number(session.estimatedCost)
-        if (isFinite(explicit) && explicit >= 0) return explicit
-        var tokens = tokenTotal(session)
-        return tokens * 0.000003
     }
 
     function sortRows(left, right) {
@@ -566,19 +513,20 @@ PlasmoidItem {
             else idle += 1
             var sessionTokens = tokenTotal(session)
             tokens += sessionTokens
-            cost += estimateCost(session)
-            var spriteId = spriteIdFor(session.model, session.provider)
+            var sessionCost = Number(session.estimatedCost)
+            if (isFinite(sessionCost) && sessionCost >= 0) cost += sessionCost
+            var spriteId = String(session.spriteId || "agent.codex.gpt54")
             var frame = spriteFrame(spriteId)
             rows.push({
                 name: sessionName(session, i),
-                model: shortModel(session.model, session.reasoningEffort || session.effort, session.provider),
+                model: String(session.displayModel || session.model || "?"),
                 project: projectName(session.project),
                 status: status,
                 statusLabel: statusLabel(status),
                 tokens: sessionTokens,
                 spriteId: spriteId,
                 spriteSource: spriteSource(spriteId),
-                spriteAccent: spriteAccent(spriteId),
+                spriteAccent: String(session.modelColor || spriteAccent(spriteId)),
                 spritePanelWidth: spritePanelWidth(frame)
             })
         }

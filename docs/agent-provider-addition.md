@@ -32,14 +32,14 @@ Detail payloads should return `{ sessionId, toolHistory, messages, tokenUsage }`
 5. Check `AgentManager` handling for provider id, role, project grouping, status fallback, and parent/child relationships.
 6. Add or update `ModelVisualIdentity.js` so labels, colors, sprite ids, palette keys, minimap colors, and effort/accessory rules resolve without provider-specific UI conditionals.
 7. Smoke Dashboard cards, Sidebar rows, Activity Panel detail, World sprites, and minimap.
-8. Check widget impact. Browser widget resources, Swift `buildHTML()`, and KDE QML may need provider/model/status/pricing label updates.
+8. Check widget impact. `/api/sessions` must provide any new provider/model display fields needed by browser widget resources, Swift `buildHTML()`, and KDE QML.
 9. Update docs: `README.md`, `claudeville/adapters/README.md`, and this runbook when the contract changes.
 
 ## Track B: New Model For Existing Provider
 
 1. Confirm the adapter already passes the model string through unchanged.
 2. Update `ModelVisualIdentity.js` for display label, color, sprite id, palette key, minimap color, and effort/accessory behavior.
-3. If the model changes pricing or status copy, update all affected surfaces: browser UI, Swift widget, static widget resources, KDE widget, and docs.
+3. If the model changes pricing or status copy, update server session presentation plus browser UI/docs; widgets should consume the API-provided `estimatedCost`, `displayModel`, `modelColor`, and `spriteId` fields.
 4. If the model needs a new sprite, follow Track C.
 5. Smoke Dashboard, Activity Panel, Sidebar, World mode, and minimap with a session using the new model string.
 

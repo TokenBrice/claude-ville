@@ -74,6 +74,20 @@ const isLikelyNormalized = (raw) => {
     return ['input', 'output', 'cacheRead', 'cacheCreate'].every((key) => Number.isFinite(Number(raw[key])));
 };
 
+const pricingModelCandidates = (model) => {
+    const normalized = String(model || '')
+        .toLowerCase()
+        .replace(/[._]/g, '-')
+        .replace(/\s+/g, '-');
+    const dottedCodex = normalized.replace(/\bgpt-5-(\d)\b/g, 'gpt-5.$1');
+    return [...new Set([normalized, dottedCodex])];
+};
+
+const rateMatches = (candidates, rate) => {
+    const match = String(rate?.match || '').toLowerCase();
+    return !!match && candidates.some((candidate) => candidate.includes(match));
+};
+
 export class TokenUsage {
     constructor(raw = null) {
         Object.assign(this, TokenUsage.normalize(raw));
@@ -119,19 +133,20 @@ export class TokenUsage {
     }
 
     static pricingForModel(model, provider) {
-        const normalizedModel = String(model || '').toLowerCase();
+        const modelCandidates = pricingModelCandidates(model);
+        const normalizedModel = modelCandidates[0] || '';
         const normalizedProvider = String(provider || '').toLowerCase();
-        if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) {
-            return KIMI_RATES.find((rate) => normalizedModel.includes(rate.match)) || DEFAULT_KIMI_RATES;
+        if (normalizedProvider === 'kimi' || modelCandidates.some((candidate) => candidate.includes('kimi'))) {
+            return KIMI_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_KIMI_RATES;
         }
-        if (normalizedProvider === 'deepseek' || normalizedModel.includes('deepseek')) {
-            return DEEPSEEK_RATES.find((rate) => normalizedModel.includes(rate.match)) || DEFAULT_DEEPSEEK_RATES;
+        if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) {
+            return DEEPSEEK_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_DEEPSEEK_RATES;
         }
         const table = (normalizedProvider === 'codex' || normalizedModel.includes('gpt'))
             ? OPEN_AI_RATES
             : CLAUDE_RATES;
 
-        return table.find((rate) => normalizedModel.includes(rate.match)) ||
+        return table.find((rate) => rateMatches(modelCandidates, rate)) ||
             (table === OPEN_AI_RATES ? DEFAULT_OPEN_AI_RATES : DEFAULT_CLAUDE_RATES);
     }
 
@@ -145,16 +160,4 @@ export class TokenUsage {
             usage.cacheCreate * rates.cacheCreate
         ) / 1000000;
     }
-}
-
-export function normalizeTokenUsage(raw) {
-    return TokenUsage.normalize(raw);
-}
-
-export function pricingForModel(model, provider) {
-    return TokenUsage.pricingForModel(model, provider);
-}
-
-export function estimateTokenCost(usage, model, provider) {
-    return TokenUsage.estimateCost(usage, model, provider);
 }
