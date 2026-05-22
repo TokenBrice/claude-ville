@@ -2,10 +2,8 @@
 
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { collectSpriteEntries, loadSpriteManifest, manifestPath, repoRoot } from './manifest-utils.mjs';
 
-const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
-const manifestPath = join(repoRoot, 'claudeville', 'assets', 'sprites', 'manifest.yaml');
 const scanRoots = [
     'claudeville/src',
     'claudeville/config',
@@ -53,12 +51,7 @@ if (errors) {
 console.log(`sprite ID audit passed: ${references.length} references, ${manifestIds.size} manifest IDs`);
 
 function collectManifestIds() {
-    const ids = new Set();
-    const text = readFileSync(manifestPath, 'utf8');
-    for (const match of text.matchAll(/^\s*-\s+id:\s*([A-Za-z0-9_.-]+)\s*$/gm)) {
-        ids.add(match[1]);
-    }
-    return ids;
+    return new Set(collectSpriteEntries(loadSpriteManifest(manifestPath)).map((entry) => entry.id).filter(Boolean));
 }
 
 function collectReferences() {

@@ -4,15 +4,19 @@
 
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { createHash } from 'node:crypto';
 import yaml from 'js-yaml';
 import { PNG } from 'pngjs';
+import {
+    collectSpriteEntries,
+    expectedPathsForEntry,
+    loadSpriteManifest,
+    palettesPath,
+    pathForEntry,
+    repoRoot,
+    spritesRoot,
+} from './manifest-utils.mjs';
 
-const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
-const spritesRoot = join(repoRoot, 'claudeville', 'assets', 'sprites');
-const manifestPath = join(spritesRoot, 'manifest.yaml');
-const palettesPath = join(spritesRoot, 'palettes.yaml');
 const args = process.argv.slice(2);
 const orphanAllowlist = new Set([
     ...args
@@ -34,7 +38,7 @@ const duplicatePngAllowlist = new Set([
     ]),
 ]);
 
-const manifest = yaml.load(readFileSync(manifestPath, 'utf8'));
+const manifest = loadSpriteManifest();
 const palettes = yaml.load(readFileSync(palettesPath, 'utf8'));
 
 const expected = new Set();
@@ -66,52 +70,12 @@ const REQUIRED_PRO_CHARACTER_IDS = new Set([
     'agent.codex.gpt55',
 ]);
 
-function pathFor(entry) {
-    if (entry.assetPath) return String(entry.assetPath).replace(/^assets\/sprites\//, '');
-    if (entry.id.startsWith('agent.')) return `characters/${entry.id}/sheet.png`;
-    if (entry.id.startsWith('equipment.')) return `equipment/${entry.id}.png`;
-    if (entry.id.startsWith('overlay.')) return `overlays/${entry.id}.png`;
-    if (entry.id.startsWith('building.')) return `buildings/${entry.id}/base.png`;
-    if (entry.id.startsWith('prop.')) return `props/${entry.id}.png`;
-    if (entry.id.startsWith('veg.')) return `vegetation/${entry.id}.png`;
-    if (entry.id.startsWith('terrain.')) return `terrain/${entry.id}/sheet.png`;
-    if (entry.id.startsWith('bridge.') || entry.id.startsWith('dock.')) return `bridges/${entry.id}.png`;
-    if (entry.id.startsWith('atmosphere.')) return `atmosphere/${entry.id}.png`;
-    return null;
+for (const e of collectSpriteEntries(manifest)) {
+    manifestEntries.push(e);
+    if (e.id?.startsWith('agent.')) characterEntries.push(e);
+    if (e.id?.startsWith('equipment.')) equipmentEntries.push(e);
+    for (const p of expectedPathsForEntry(e)) expected.add(p);
 }
-
-function collect(group) {
-    if (!group) return;
-    for (const e of group) {
-        manifestEntries.push(e);
-        if (e.id?.startsWith('agent.')) characterEntries.push(e);
-        if (e.id?.startsWith('equipment.')) equipmentEntries.push(e);
-        if (e.composeGrid && e.layers?.base) {
-            const [cols, rows] = e.composeGrid;
-            for (let r = 0; r < rows; r++)
-                for (let c = 0; c < cols; c++)
-                    expected.add(`buildings/${e.id}/base-${c}-${r}.png`);
-            if (e.layers) {
-                for (const name of Object.keys(e.layers)) {
-                    if (name === 'base') continue;
-                    expected.add(`buildings/${e.id}/${name}.png`);
-                }
-            }
-            continue;
-        }
-        const p = pathFor(e);
-        if (p) expected.add(p);
-        if (e.layers) {
-            for (const name of Object.keys(e.layers)) {
-                if (name === 'base') continue;
-                expected.add(`buildings/${e.id}/${name}.png`);
-            }
-        }
-    }
-}
-
-['characters', 'equipment', 'accessories', 'statusOverlays', 'buildings', 'props',
- 'vegetation', 'terrain', 'bridges', 'atmosphere'].forEach(k => collect(manifest[k]));
 
 let invalidManifest = 0;
 for (const entry of manifestEntries) {
@@ -255,7 +219,7 @@ function canonicalize(value) {
 }
 
 function validateCharacterSheet(entry) {
-    const rel = pathFor(entry);
+    const rel = pathForEntry(entry);
     if (!rel) return 0;
     const abs = join(spritesRoot, rel);
     if (!existsSync(abs)) return 0;
@@ -291,7 +255,7 @@ function validateCharacterSheet(entry) {
 }
 
 function validateEquipmentPng(entry) {
-    const rel = pathFor(entry);
+    const rel = pathForEntry(entry);
     if (!rel) return 0;
     const abs = join(spritesRoot, rel);
     if (!existsSync(abs)) return 0;
@@ -339,7 +303,7 @@ function expectedEquipmentDimensions(entry) {
 }
 
 function validateAtmospherePng(entry) {
-    const rel = pathFor(entry);
+    const rel = pathForEntry(entry);
     if (!rel) return 0;
     const abs = join(spritesRoot, rel);
     if (!existsSync(abs)) return 0;

@@ -10,8 +10,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const SCRIPT_NAME = 'adapters.mjs';
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ACTIVE_THRESHOLD_MS = 10 * 60 * 1000;
 const NOW = Date.now();
 const MAIN_SESSION_ID = '11111111-1111-1111-1111-111111111111';
@@ -110,9 +112,7 @@ function loadAdapter() {
     process.env.HOME = tmpRoot;
     delete process.env.USERPROFILE;
     const require = createRequire(import.meta.url);
-    return require(
-        path.join('/home/ahirice/Documents/git/claude-ville', 'claudeville/adapters/claude.js'),
-    );
+    return require(path.join(REPO_ROOT, 'claudeville/adapters/claude.js'));
 }
 
 function runSmoke() {

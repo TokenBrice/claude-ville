@@ -7,10 +7,11 @@
 
 import assert from 'node:assert/strict';
 import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
 const SCRIPT_NAME = 'relationship.mjs';
-const REPO_ROOT = '/home/ahirice/Documents/git/claude-ville';
+const REPO_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const RELATIONSHIP_PATH = path.join(
     REPO_ROOT,
     'claudeville/src/presentation/character-mode/RelationshipState.js',
