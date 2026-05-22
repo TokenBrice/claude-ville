@@ -148,7 +148,11 @@ class App {
             await this._loadDashboard();
 
             // 9. right-side live activity panel
-            this.activityPanel = new ActivityPanel();
+            this.activityPanel = new ActivityPanel({
+                world: () => this.world,
+                renderer: () => this.renderer,
+                harborTraffic: () => this.renderer?.harborTraffic || null,
+            });
             this._bindAgentFollow();
             if (this.renderer?.selectedAgent) {
                 emitAgentSelected(this.renderer.selectedAgent);

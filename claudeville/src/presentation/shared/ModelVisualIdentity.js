@@ -20,6 +20,15 @@ const EFFORT_LABELS = Object.freeze({
     max: 'max',
 });
 
+const CONTEXT_WINDOW_LIMITS = Object.freeze({
+    codex: 258400,
+    kimi: 262144,
+    deepseekV4Pro: 1000000,
+    deepseekV4Flash: 256000,
+    deepseek: 128000,
+    default: 200000,
+});
+
 // Head overlays (anchored above hat). Only the apex tiers — low/med/high
 // moved to floor rings to avoid stacking conflicts with tall headgear.
 const EFFORT_ACCESSORIES = Object.freeze({
@@ -101,6 +110,30 @@ export function normalizeReasoningEffort(effort) {
     if (normalized.includes('medium')) return 'medium';
     if (normalized.includes('low')) return 'low';
     return normalized;
+}
+
+export function contextWindowLimitForModel(model, provider = '') {
+    const normalizedModel = normalizeModel(model);
+    const normalizedProvider = String(provider || '').toLowerCase();
+    if (normalizedProvider === 'codex' || normalizedModel.includes('gpt')) return CONTEXT_WINDOW_LIMITS.codex;
+    if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) return CONTEXT_WINDOW_LIMITS.kimi;
+    const isDeepseekProvider = normalizedProvider === 'deepseek';
+    if (
+        normalizedModel.includes('deepseek-v4-pro')
+        || (normalizedModel.includes('deepseek') && normalizedModel.includes('v4-pro'))
+        || (isDeepseekProvider && normalizedModel.includes('v4-pro'))
+    ) {
+        return CONTEXT_WINDOW_LIMITS.deepseekV4Pro;
+    }
+    if (
+        normalizedModel.includes('deepseek-v4-flash')
+        || (normalizedModel.includes('deepseek') && normalizedModel.includes('v4-flash'))
+        || (isDeepseekProvider && normalizedModel.includes('v4-flash'))
+    ) {
+        return CONTEXT_WINDOW_LIMITS.deepseekV4Flash;
+    }
+    if (normalizedProvider === 'deepseek' || normalizedModel.includes('deepseek')) return CONTEXT_WINDOW_LIMITS.deepseek;
+    return CONTEXT_WINDOW_LIMITS.default;
 }
 
 export function getModelVisualIdentity(model, effort, provider = '') {

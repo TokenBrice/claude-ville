@@ -12,6 +12,7 @@ import {
     toolHistoryNodes,
     toolHistorySignature,
 } from './AgentPresentation.js';
+import { contextWindowLimitForModel } from './ModelVisualIdentity.js';
 
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
@@ -58,9 +59,15 @@ const REASON_LABELS = Object.freeze({
 });
 
 export class ActivityPanel {
-    constructor() {
+    constructor({ world = null, renderer = null, harborTraffic = null } = {}) {
+        const getterFor = (value) => (typeof value === 'function' ? value : () => value);
         this.panelEl = document.getElementById('activityPanel');
         this.closeBtn = document.getElementById('panelClose');
+        this._dependencies = {
+            world: getterFor(world),
+            renderer: getterFor(renderer),
+            harborTraffic: getterFor(harborTraffic),
+        };
         this.currentAgent = null;
         this._mode = null;
         this._selectedBuilding = null;
@@ -240,17 +247,10 @@ export class ActivityPanel {
         const inputEl = this._toolEls.input;
         const tool = currentToolPresentation(agent);
 
-        if (!tool.isIdle) {
-            container.classList.remove('activity-panel__current-tool--idle');
-            iconEl.textContent = tool.icon;
-            nameEl.textContent = tool.name;
-            inputEl.textContent = tool.detail;
-        } else {
-            container.classList.add('activity-panel__current-tool--idle');
-            iconEl.textContent = tool.icon;
-            nameEl.textContent = tool.name;
-            inputEl.textContent = tool.detail;
-        }
+        container.classList.toggle('activity-panel__current-tool--idle', tool.isIdle);
+        iconEl.textContent = tool.icon;
+        nameEl.textContent = tool.name;
+        inputEl.textContent = tool.detail;
     }
 
     // ─── Live polling ────────────────────────────────
@@ -356,12 +356,15 @@ export class ActivityPanel {
         if (usageSignature === this._renderSignatures.tokenUsage) return;
         this._renderSignatures.tokenUsage = usageSignature;
 
-        const MAX_CONTEXT = normalizedUsage.contextWindowMax || this._contextLimitFor(this.currentAgent);
-        const contextPct = MAX_CONTEXT ? Math.min(100, (normalizedUsage.contextWindow / MAX_CONTEXT) * 100) : 0;
+        const maxContext = normalizedUsage.contextWindowMax || contextWindowLimitForModel(
+            this.currentAgent?.model,
+            this.currentAgent?.provider,
+        );
+        const contextPct = maxContext ? Math.min(100, (normalizedUsage.contextWindow / maxContext) * 100) : 0;
 
         // Context size (human-readable form)
         this.dom.panelContextSize.textContent =
-            formatTokens(normalizedUsage.contextWindow) + ` / ${formatTokens(MAX_CONTEXT)}`;
+            formatTokens(normalizedUsage.contextWindow) + ` / ${formatTokens(maxContext)}`;
 
         // Context bar
         const bar = this.dom.panelContextBar;
@@ -386,17 +389,6 @@ export class ActivityPanel {
             this.currentAgent?.provider,
         );
         this.dom.panelEstCost.textContent = formatCost(cost);
-    }
-
-    _contextLimitFor(agent) {
-        const model = String(agent?.model || '').toLowerCase();
-        const provider = String(agent?.provider || '').toLowerCase();
-        if (provider === 'codex' || model.includes('gpt')) return 258400;
-        if (provider === 'kimi' || model.includes('kimi')) return 262144;
-        if (model.includes('deepseek-v4-pro') || (model.includes('deepseek') && model.includes('v4-pro')) || (provider === 'deepseek' && model.includes('v4-pro'))) return 1000000;
-        if (model.includes('deepseek-v4-flash') || (model.includes('deepseek') && model.includes('v4-flash')) || (provider === 'deepseek' && model.includes('v4-flash'))) return 256000;
-        if (model.includes('deepseek') || provider === 'deepseek') return 128000;
-        return 200000;
     }
 
     _emptyState(text) {
@@ -662,13 +654,11 @@ export class ActivityPanel {
 
     _getAgentSprite(agent) {
         if (!agent?.id) return null;
-        const app = typeof window !== 'undefined' ? window.__claudeVilleApp : null;
-        return app?.renderer?.agentSprites?.get?.(agent.id) || null;
+        return this._getRenderer()?.agentSprites?.get?.(agent.id) || null;
     }
 
     _getVisitReservation(agent, snapshot) {
-        const app = typeof window !== 'undefined' ? window.__claudeVilleApp : null;
-        const allocator = app?.renderer?.visitTileAllocator;
+        const allocator = this._getRenderer()?.visitTileAllocator;
         if (!allocator || typeof allocator.snapshot !== 'function') return null;
         let reservations = [];
         try {
@@ -878,13 +868,15 @@ export class ActivityPanel {
     }
 
     _getWorld() {
-        const app = typeof window !== 'undefined' ? window.__claudeVilleApp : null;
-        return app?.world || null;
+        return this._dependencies.world?.() || null;
+    }
+
+    _getRenderer() {
+        return this._dependencies.renderer?.() || null;
     }
 
     _getHarborTraffic() {
-        const app = typeof window !== 'undefined' ? window.__claudeVilleApp : null;
-        return app?.renderer?.harborTraffic || null;
+        return this._dependencies.harborTraffic?.() || this._getRenderer()?.harborTraffic || null;
     }
 
     _getHarborRepoSummaries() {

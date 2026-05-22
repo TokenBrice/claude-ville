@@ -36,7 +36,6 @@ export class DashboardRenderer {
         this._isFetchingDetails = false;
         this._detailFetchGeneration = 0;
         this._sectionEls = new Map(); // projectPath → section element
-        this._sectionRefs = new Map(); // projectPath → cached section refs
         this._observer = this._createVisibilityObserver();
         this.selection = new AgentSelectionMirror({
             notifyOnRepeat: true,
@@ -102,18 +101,11 @@ export class DashboardRenderer {
             if (!sectionEl) {
                 sectionEl = this._createSection(projectPath);
                 this._sectionEls.set(projectPath, sectionEl);
-                this._sectionRefs.set(projectPath, {
-                    name: sectionEl.querySelector('.dashboard__section-name'),
-                    path: sectionEl.querySelector('.dashboard__section-path'),
-                    count: sectionEl.querySelector('.dashboard__section-count'),
-                    grid: sectionEl.querySelector('.dashboard__section-grid'),
-                });
                 this.gridEl.appendChild(sectionEl);
             }
             this._updateSectionHeader(sectionEl, projectPath, groupAgents);
 
-            const sectionRefs = this._sectionRefs.get(projectPath) || {};
-            const gridInner = sectionRefs.grid || sectionEl.querySelector('.dashboard__section-grid');
+            const gridInner = sectionEl._sectionRefs?.grid || sectionEl.querySelector('.dashboard__section-grid');
 
             for (const agent of groupAgents) {
                 existingIds.add(agent.id);
@@ -153,7 +145,6 @@ export class DashboardRenderer {
             if (!existingSections.has(path)) {
                 sectionEl.remove();
                 this._sectionEls.delete(path);
-                this._sectionRefs.delete(path);
             }
         }
         sessionDetailsService.sweep(agents);
@@ -199,16 +190,17 @@ export class DashboardRenderer {
             </div>
             <div class="dashboard__section-grid"></div>
         `;
+        section._sectionRefs = {
+            name: section.querySelector('.dashboard__section-name'),
+            path: section.querySelector('.dashboard__section-path'),
+            count: section.querySelector('.dashboard__section-count'),
+            grid: section.querySelector('.dashboard__section-grid'),
+        };
         return section;
     }
 
     _updateSectionHeader(sectionEl, projectPath, agents) {
-        const refs = sectionEl._sectionRefs || {
-            name: sectionEl.querySelector('.dashboard__section-name'),
-            path: sectionEl.querySelector('.dashboard__section-path'),
-            count: sectionEl.querySelector('.dashboard__section-count'),
-        };
-        sectionEl._sectionRefs = refs;
+        const refs = sectionEl._sectionRefs;
         const name = shortProjectName(projectPath, i18n.t('unknownProject'));
         refs.name.textContent = name;
         refs.count.textContent = i18n.t('nAgents')(agents.length);
@@ -333,17 +325,10 @@ export class DashboardRenderer {
             this._setText(refs.statusLabel, statusInfo.label);
 
             const tool = currentToolPresentation(agent, i18n);
-            if (!tool.isIdle) {
-                refs.currentTool.classList.remove('dash-card__current-tool--idle');
-                this._setText(refs.toolIcon, tool.icon);
-                this._setText(refs.toolName, tool.name);
-                this._setText(refs.toolDetail, tool.detail);
-            } else {
-                refs.currentTool.classList.add('dash-card__current-tool--idle');
-                this._setText(refs.toolIcon, tool.icon);
-                this._setText(refs.toolName, tool.name);
-                this._setText(refs.toolDetail, tool.detail);
-            }
+            refs.currentTool.classList.toggle('dash-card__current-tool--idle', tool.isIdle);
+            this._setText(refs.toolIcon, tool.icon);
+            this._setText(refs.toolName, tool.name);
+            this._setText(refs.toolDetail, tool.detail);
 
             if (agent.lastMessage) {
                 this._setText(refs.message, `"${agent.lastMessage}"`);
@@ -444,7 +429,6 @@ export class DashboardRenderer {
 
         for (const [, sectionEl] of this._sectionEls) sectionEl.remove();
         this._sectionEls.clear();
-        this._sectionRefs.clear();
     }
 
     _detailCandidates(agents) {
@@ -501,10 +485,7 @@ export class DashboardRenderer {
 
     destroy() {
         this._stopDetailFetching();
-        for (const cardEl of this.cards.values()) {
-            this._observer?.unobserve?.(cardEl);
-            cardEl._avatarCanvas?.destroy?.();
-        }
+        this._clearAllCardsAndSections();
         this._observer?.disconnect?.();
         this.selection?.destroy?.();
         eventBus.off('agent:added', this._onAgentAdded);

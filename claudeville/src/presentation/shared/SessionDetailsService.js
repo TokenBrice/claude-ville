@@ -62,6 +62,65 @@ class SessionDetailsService {
         this._counters = this._newCounters();
     }
 
+    _cacheStateFor(key, now = Date.now()) {
+        const entry = this._cache.get(key) || null;
+        if (!entry) {
+            return {
+                key,
+                entry: null,
+                value: null,
+                age: Infinity,
+                isFresh: false,
+                isStale: false,
+                hasEntry: false,
+            };
+        }
+        const age = now - entry.at;
+        return {
+            key,
+            entry,
+            value: entry.value,
+            age,
+            isFresh: age <= this._cacheTtlMs,
+            isStale: age > this._cacheTtlMs && age <= this._staleTtlMs,
+            hasEntry: true,
+        };
+    }
+
+    _recordFreshCacheHit(cacheState) {
+        this._counters.cacheHits++;
+        return cacheState.value;
+    }
+
+    _recordStaleCacheHit(cacheState) {
+        this._counters.cacheStaleHits++;
+        return cacheState.value;
+    }
+
+    _createFetchTimeout() {
+        const controller = new AbortController();
+        const state = {
+            controller,
+            signal: controller.signal,
+            didTimeout: false,
+            clear: () => clearTimeout(timeout),
+        };
+        const timeout = setTimeout(() => {
+            state.didTimeout = true;
+            controller.abort();
+        }, this._fetchTimeoutMs);
+        return state;
+    }
+
+    _recordTimedFailure(timeoutState, timedOutCounter, failedCounter) {
+        if (timeoutState.didTimeout) this._counters[timedOutCounter]++;
+        else this._counters[failedCounter]++;
+    }
+
+    _storeDetail(key, detail) {
+        this._cache.set(key, { value: detail, at: Date.now() });
+    }
+
     _trimCache() {
         if (this._cache.size <= this._maxCacheEntries) return;
 
@@ -112,22 +171,18 @@ class SessionDetailsService {
 
         const key = this.getSessionDetailKey(agent);
         const now = Date.now();
-        const cached = this._cache.get(key);
-        if (cached) {
-            const age = now - cached.at;
-            if (age <= this._cacheTtlMs) {
-                this._counters.cacheHits++;
-                return Promise.resolve(cached.value);
-            }
+        const cached = this._cacheStateFor(key, now);
+        if (cached.isFresh) {
+            return Promise.resolve(this._recordFreshCacheHit(cached));
+        }
 
-            if (age <= this._staleTtlMs) {
-                this._counters.cacheStaleHits++;
-                if (!this._inFlight.has(key)) {
-                    this._counters.staleRefreshStarted++;
-                    this._startFetch(key, agent, cached).catch(() => {});
-                }
-                return Promise.resolve(cached.value);
+        if (cached.isStale) {
+            this._recordStaleCacheHit(cached);
+            if (!this._inFlight.has(key)) {
+                this._counters.staleRefreshStarted++;
+                this._startFetch(key, agent, cached.entry).catch(() => {});
             }
+            return Promise.resolve(cached.value);
         }
 
         if (this._inFlight.has(key)) {
@@ -136,7 +191,7 @@ class SessionDetailsService {
         }
 
         this._counters.cacheMisses++;
-        return this._startFetch(key, agent, cached);
+        return this._startFetch(key, agent, cached.entry);
     }
 
     async fetchSessionDetailsBatch(agents = []) {
@@ -148,22 +203,20 @@ class SessionDetailsService {
         for (const agent of agents) {
             if (!agent?.id) continue;
             const key = this.getSessionDetailKey(agent);
-            const cached = this._cache.get(key);
-            if (cached && now - cached.at <= this._cacheTtlMs) {
-                this._counters.cacheHits++;
-                results.set(agent.id, cached.value);
+            const cached = this._cacheStateFor(key, now);
+            if (cached.isFresh) {
+                results.set(agent.id, this._recordFreshCacheHit(cached));
                 continue;
             }
-            if (cached && now - cached.at <= this._staleTtlMs) {
-                this._counters.cacheStaleHits++;
-                results.set(agent.id, cached.value);
+            if (cached.isStale) {
+                results.set(agent.id, this._recordStaleCacheHit(cached));
             }
             if (this._inFlight.has(key)) {
                 this._counters.inFlightJoined++;
-                pendingKeys.push({ agentId: agent.id, promise: this._inFlight.get(key), fallback: cached?.value || null });
+                pendingKeys.push({ agentId: agent.id, promise: this._inFlight.get(key), fallback: cached.value || null });
                 continue;
             }
-            if (!cached) this._counters.cacheMisses++;
+            if (!cached.hasEntry) this._counters.cacheMisses++;
             requests.push(this._requestPayloadFor(agent, key));
         }
 
@@ -193,12 +246,7 @@ class SessionDetailsService {
             return results;
         }
 
-        const controller = new AbortController();
-        let didTimeout = false;
-        const timeout = setTimeout(() => {
-            didTimeout = true;
-            controller.abort();
-        }, this._fetchTimeoutMs);
+        const timeoutState = this._createFetchTimeout();
         const fetchPromise = (async () => {
             const fetched = new Map();
             this._counters.batchStarted++;
@@ -207,7 +255,7 @@ class SessionDetailsService {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ items: requests }),
-                    signal: controller.signal,
+                    signal: timeoutState.signal,
                 });
                 if (!resp.ok) {
                     this._counters.batchFailed++;
@@ -218,17 +266,16 @@ class SessionDetailsService {
                 for (const request of requests) {
                     const detail = details[request.key];
                     if (!detail) continue;
-                    this._cache.set(request.key, { value: detail, at: Date.now() });
+                    this._storeDetail(request.key, detail);
                     fetched.set(request.sessionId, detail);
                 }
                 this._trimCache();
                 this._counters.batchSucceeded++;
             } catch {
-                if (didTimeout) this._counters.batchTimedOut++;
-                else this._counters.batchFailed++;
+                this._recordTimedFailure(timeoutState, 'batchTimedOut', 'batchFailed');
                 // Keep any stale values already returned to the caller.
             } finally {
-                clearTimeout(timeout);
+                timeoutState.clear();
             }
             return fetched;
         })();
@@ -251,12 +298,7 @@ class SessionDetailsService {
     }
 
     _startFetch(key, agent, fallbackCache) {
-        const controller = new AbortController();
-        let didTimeout = false;
-        const timeout = setTimeout(() => {
-            didTimeout = true;
-            controller.abort();
-        }, this._fetchTimeoutMs);
+        const timeoutState = this._createFetchTimeout();
 
         const fetchPromise = (async () => {
             this._counters.fetchStarted++;
@@ -266,24 +308,23 @@ class SessionDetailsService {
                     project: agent.projectPath || '',
                     provider: agent.provider || this._defaultProvider,
                 });
-                const resp = await fetch(`/api/session-detail?${params}`, { signal: controller.signal });
+                const resp = await fetch(`/api/session-detail?${params}`, { signal: timeoutState.signal });
                 if (!resp.ok) {
                     this._counters.fetchFailed++;
                     return fallbackCache ? fallbackCache.value : null;
                 }
 
                 const data = await resp.json();
-                this._cache.set(key, { value: data, at: Date.now() });
+                this._storeDetail(key, data);
                 this._trimCache();
                 this._counters.fetchSucceeded++;
                 return data;
             } catch {
-                if (didTimeout) this._counters.fetchTimedOut++;
-                else this._counters.fetchFailed++;
+                this._recordTimedFailure(timeoutState, 'fetchTimedOut', 'fetchFailed');
                 if (fallbackCache) return fallbackCache.value;
                 return null;
             } finally {
-                clearTimeout(timeout);
+                timeoutState.clear();
             }
         })();
 
