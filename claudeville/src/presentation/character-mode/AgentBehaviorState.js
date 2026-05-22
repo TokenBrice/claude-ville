@@ -1,4 +1,15 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import {
+    clampRouteIndex,
+    cloneItinerary,
+    inferGoal,
+    normalizeGoal,
+    normalizeItineraryRoute,
+    normalizePhase,
+    normalizeRouteStop,
+    WORK_ITINERARY_PHASE_INDEX,
+    WORK_ITINERARY_ROUTE,
+} from './VisitIntentSemantics.js';
 
 const MAX_RECENT_BUILDINGS = 5;
 const FAMILY_PLAZA_TTL_MS = 30000;
@@ -11,115 +22,10 @@ const COMPLETED_VISIT_HISTORY_LIMIT = 8;
 const BLOCKED_REASON_HISTORY_LIMIT = 10;
 const GOAL_HISTORY_LIMIT = 8;
 const ITINERARY_HISTORY_LIMIT = 8;
-const WORKING_PHASES = new Set([
-    'reading',
-    'editing',
-    'testing',
-    'researching',
-    'coordinating',
-    'git',
-    'quota/resource',
-    'waiting',
-]);
-const AGENT_GOALS = new Set([
-    'complete-task',
-    'assist-parent',
-    'monitor-quota',
-    'recover-error',
-]);
-const WORK_ITINERARY_ROUTE = Object.freeze(['archive', 'forge', 'taskboard', 'harbor']);
-const WORK_ITINERARY_PHASE_INDEX = Object.freeze({
-    reading: 0,
-    editing: 1,
-    testing: 2,
-    git: 3,
-});
 
 function boundedPush(list, entry, limit) {
     list.push(entry);
     if (list.length > limit) list.splice(0, list.length - limit);
-}
-
-function normalizePhase(phase) {
-    const value = String(phase || '').trim().toLowerCase();
-    return WORKING_PHASES.has(value) ? value : null;
-}
-
-function normalizeGoal(goal) {
-    const value = String(goal || '')
-        .trim()
-        .replace(/([a-z])([A-Z])/g, '$1-$2')
-        .replace(/[_\s]+/g, '-')
-        .toLowerCase();
-    const aliases = {
-        complete: 'complete-task',
-        complete_task: 'complete-task',
-        completetask: 'complete-task',
-        task: 'complete-task',
-        assist: 'assist-parent',
-        assist_parent: 'assist-parent',
-        assistparent: 'assist-parent',
-        parent: 'assist-parent',
-        monitor: 'monitor-quota',
-        monitor_quota: 'monitor-quota',
-        monitorquota: 'monitor-quota',
-        quota: 'monitor-quota',
-        recover: 'recover-error',
-        recover_error: 'recover-error',
-        recovererror: 'recover-error',
-        error: 'recover-error',
-    };
-    const normalized = aliases[value] || value;
-    return AGENT_GOALS.has(normalized) ? normalized : null;
-}
-
-function inferGoal({ source = null, reason = null, phase = null, building = null } = {}) {
-    const sourceKey = String(source || '').toLowerCase();
-    const reasonText = String(reason || '').toLowerCase();
-    const buildingType = String(building || '').toLowerCase();
-    if (sourceKey === 'subagent' || reasonText.includes('parent')) return 'assist-parent';
-    if (
-        sourceKey === 'quota'
-        || sourceKey === 'token'
-        || phase === 'quota/resource'
-        || buildingType === 'mine'
-        || /\b(quota|context|resource|token|throttle|rate.?limit)\b/.test(reasonText)
-    ) {
-        return 'monitor-quota';
-    }
-    if (/\b(fail(?:ed)?|error|errored|reject(?:ed)?|cancel(?:led|ed)?|recover|retry|blocked)\b/.test(reasonText)) {
-        return 'recover-error';
-    }
-    if (sourceKey || phase || buildingType) return 'complete-task';
-    return null;
-}
-
-function normalizeRouteStop(stop) {
-    const value = typeof stop === 'string'
-        ? stop
-        : (stop?.building || stop?.buildingType || stop?.type || stop?.id || '');
-    return String(value || '').trim().toLowerCase() || null;
-}
-
-function normalizeItineraryRoute(raw) {
-    const route = Array.isArray(raw)
-        ? raw
-        : (Array.isArray(raw?.route)
-            ? raw.route
-            : (Array.isArray(raw?.stops) ? raw.stops : raw?.buildings));
-    if (!Array.isArray(route)) return [];
-    const result = [];
-    for (const stop of route) {
-        const normalized = normalizeRouteStop(stop);
-        if (normalized && result[result.length - 1] !== normalized) result.push(normalized);
-    }
-    return result;
-}
-
-function clampRouteIndex(index, route) {
-    const numeric = Number(index);
-    if (!Number.isFinite(numeric) || !route.length) return -1;
-    return Math.max(0, Math.min(route.length - 1, Math.round(numeric)));
 }
 
 function normalizeItineraryRecord(intent, {
@@ -151,14 +57,6 @@ function normalizeItineraryRecord(intent, {
         reason: intent?.reason || null,
         updatedAt: now,
         inferred: !!raw?.inferred,
-    };
-}
-
-function cloneItinerary(itinerary) {
-    if (!itinerary) return null;
-    return {
-        ...itinerary,
-        route: Array.isArray(itinerary.route) ? [...itinerary.route] : [],
     };
 }
 

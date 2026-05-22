@@ -1,7 +1,7 @@
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { MonumentPlanter, MonumentRules } from '../../application/MonumentRules.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { collectCommitEvents } from './ChronicleEvents.js';
+import { tileToWorld } from './Projection.js';
 
 const MONTH_MS = 30 * 24 * 60 * 60 * 1000;
 const KIND_COLORS = {
@@ -33,10 +33,7 @@ const MILESTONE_DURATIONS_MS = {
 };
 
 function toWorld(tileX, tileY) {
-    return {
-        x: (tileX - tileY) * TILE_WIDTH / 2,
-        y: (tileX + tileY) * TILE_HEIGHT / 2,
-    };
+    return tileToWorld(tileX, tileY);
 }
 
 function projectName(project) {

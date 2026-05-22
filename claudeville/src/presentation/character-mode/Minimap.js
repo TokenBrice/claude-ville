@@ -1,7 +1,8 @@
-import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
+import { MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
+import { worldToTile } from './Projection.js';
 
 const MINIMAP_SIZE = 150;
 
@@ -472,9 +473,7 @@ export class Minimap {
     }
 
     _worldToTile(worldX, worldY) {
-        const tileX = (worldX / (TILE_WIDTH / 2) + worldY / (TILE_HEIGHT / 2)) / 2;
-        const tileY = (worldY / (TILE_HEIGHT / 2) - worldX / (TILE_WIDTH / 2)) / 2;
-        return { tileX, tileY };
+        return worldToTile(worldX, worldY);
     }
 
     _snapshotBuildings(world) {

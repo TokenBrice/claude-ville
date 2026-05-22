@@ -1,4 +1,4 @@
-import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { MAP_SIZE } from '../../config/constants.js';
 import { normalizeRepoBranch, repoBranchProfile, repoProfile } from '../shared/RepoColor.js';
 import {
     cleanCommitSubject,
@@ -7,6 +7,7 @@ import {
     displayRepoName,
     shortGitLabel,
 } from '../shared/GitEventIdentity.js';
+import { tileToWorld, worldToTile } from './Projection.js';
 
 export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
 
@@ -391,17 +392,11 @@ function isHarborCrateTool(agent) {
 }
 
 function toWorld(tileX, tileY) {
-    return {
-        x: (tileX - tileY) * TILE_WIDTH / 2,
-        y: (tileX + tileY) * TILE_HEIGHT / 2,
-    };
+    return tileToWorld(tileX, tileY);
 }
 
 function toTile(x, y) {
-    return {
-        tileX: y / TILE_HEIGHT + x / TILE_WIDTH,
-        tileY: y / TILE_HEIGHT - x / TILE_WIDTH,
-    };
+    return worldToTile(x, y);
 }
 
 function clamp(value, min, max) {

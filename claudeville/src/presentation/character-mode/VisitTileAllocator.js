@@ -1,3 +1,6 @@
+import { normalizeBuildingType, VISIT_OVERFLOW_TILES } from '../../config/buildings.js';
+import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
+
 const DEFAULT_RESERVATION_TTL_MS = 20000;
 const TILE_OCCUPANCY_RADIUS = 0.78;
 const BUILDING_OCCUPANCY_RADIUS = 1.15;
@@ -168,49 +171,11 @@ export class VisitTileAllocator {
     }
 
     _summarizeCrowdClustersFromEntries() {
-        const entries = this._occupancyEntries || [];
-        if (entries.length === 0) return [];
-        const groups = new Map();
-        for (const entry of entries) {
-            const cellX = Math.floor(entry.tileX / CROWD_CLUSTER_CELL_SIZE);
-            const cellY = Math.floor(entry.tileY / CROWD_CLUSTER_CELL_SIZE);
-            const key = `${cellX},${cellY}`;
-            const group = groups.get(key) || {
-                id: key,
-                cellX,
-                cellY,
-                count: 0,
-                moving: 0,
-                sumX: 0,
-                sumY: 0,
-                statuses: {},
-                teams: new Set(),
-            };
-            group.count++;
-            if (entry.moving) group.moving++;
-            group.sumX += entry.tileX;
-            group.sumY += entry.tileY;
-            const status = entry.status || 'unknown';
-            group.statuses[status] = (group.statuses[status] || 0) + 1;
-            if (entry.teamName) group.teams.add(entry.teamName);
-            groups.set(key, group);
-        }
-
-        const minClusterSize = entries.length >= 90 ? 6 : entries.length >= 50 ? 5 : 3;
-        return Array.from(groups.values())
-            .filter(group => group.count >= minClusterSize)
-            .map(group => ({
-                id: group.id,
-                tileX: group.sumX / group.count,
-                tileY: group.sumY / group.count,
-                count: group.count,
-                moving: group.moving,
-                dominantStatus: this._dominantKey(group.statuses),
-                statuses: group.statuses,
-                teamCount: group.teams.size,
-            }))
-            .sort((a, b) => (b.count - a.count) || a.id.localeCompare(b.id))
-            .slice(0, CROWD_CLUSTER_TOP_LIMIT);
+        return summarizeCrowdClusterEntries(this._occupancyEntries, {
+            cellSize: CROWD_CLUSTER_CELL_SIZE,
+            topLimit: CROWD_CLUSTER_TOP_LIMIT,
+            includeStatusCounts: true,
+        }).clusters;
     }
 
     _crowdSnapshot() {
@@ -223,18 +188,6 @@ export class VisitTileAllocator {
             maxClusterSize: clusters.reduce((max, cluster) => Math.max(max, cluster.count || 0), 0),
             congestedAgents: clusters.reduce((sum, cluster) => sum + (cluster.count || 0), 0),
         };
-    }
-
-    _dominantKey(counts) {
-        let bestKey = null;
-        let bestCount = -1;
-        for (const [key, count] of Object.entries(counts || {})) {
-            if (count > bestCount || (count === bestCount && key.localeCompare(bestKey || '') < 0)) {
-                bestKey = key;
-                bestCount = count;
-            }
-        }
-        return bestKey;
     }
 
     _nearestRelatedReservationDistance(agentId, buildingType, slot) {
@@ -273,6 +226,7 @@ export class VisitTileAllocator {
             building: resolvedBuilding,
             buildingType,
             candidates,
+            intent,
         });
         if (slots.length === 0) {
             this.metrics.rejected++;
@@ -592,10 +546,10 @@ export class VisitTileAllocator {
         };
     }
 
-    _candidateTiles({ building, buildingType, candidates }) {
+    _candidateTiles({ building, buildingType, candidates, intent = null }) {
         const source = Array.isArray(candidates) && candidates.length
             ? candidates
-            : this._buildingVisitTiles(building);
+            : this._buildingVisitTiles(building, intent);
         const seen = new Set();
         const out = [];
         for (let index = 0; index < source.length; index++) {
@@ -613,21 +567,35 @@ export class VisitTileAllocator {
         return out;
     }
 
-    _buildingVisitTiles(building) {
+    _buildingVisitTiles(building, intent = null) {
         if (!building) return [];
-        if (Array.isArray(building.visitTiles) && building.visitTiles.length) return building.visitTiles;
-        if (building.entrance) return [building.entrance];
-        if (typeof building.primaryVisitTile === 'function') {
+        let base = [];
+        if (Array.isArray(building.visitTiles) && building.visitTiles.length) {
+            base = building.visitTiles;
+        } else if (building.entrance) {
+            base = [building.entrance];
+        } else if (typeof building.primaryVisitTile === 'function') {
             const tile = building.primaryVisitTile();
-            return tile ? [tile] : [];
+            base = tile ? [tile] : [];
+        } else {
+            const x = Number.isFinite(building.x) ? building.x : building.position?.tileX;
+            const y = Number.isFinite(building.y) ? building.y : building.position?.tileY;
+            if (Number.isFinite(x) && Number.isFinite(y)) {
+                base = [{
+                    tileX: x + Math.floor((building.width || 1) / 2),
+                    tileY: y + (building.height || 1),
+                }];
+            }
         }
-        const x = Number.isFinite(building.x) ? building.x : building.position?.tileX;
-        const y = Number.isFinite(building.y) ? building.y : building.position?.tileY;
-        if (!Number.isFinite(x) || !Number.isFinite(y)) return [];
-        return [{
-            tileX: x + Math.floor((building.width || 1) / 2),
-            tileY: y + (building.height || 1),
-        }];
+        const buildingType = this._normalizeBuildingType(building.type);
+        const overflow = buildingType
+            ? (VISIT_OVERFLOW_TILES[buildingType] || []).map((tile, index) => ({
+                ...tile,
+                slotId: tile.slotId || `${buildingType}:overflow:${index}`,
+                intentId: intent?.id || null,
+            }))
+            : [];
+        return overflow.length ? [...base, ...overflow] : base;
     }
 
     _normalizeTile(tile) {
@@ -668,9 +636,7 @@ export class VisitTileAllocator {
     }
 
     _normalizeBuildingType(type) {
-        const value = String(type || '').trim();
-        if (!value) return null;
-        return value === 'lighthouse' ? 'watchtower' : value;
+        return normalizeBuildingType(type);
     }
 
     _buildingCapacity(building, buildingType, slotCount, intent = null) {

@@ -1,6 +1,5 @@
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { worldToTile } from './Projection.js';
+import { tileToWorld, worldToTile } from './Projection.js';
 import { compactToolLabel, isCommandToolName, isTaskCommandInput } from '../../domain/services/ToolIdentity.js';
 
 const MAX_ITEMS_PER_KIND = 10;
@@ -41,10 +40,7 @@ const TOOL_LABELS = {
 };
 
 function toWorld(tileX, tileY) {
-    return {
-        x: (tileX - tileY) * TILE_WIDTH / 2,
-        y: (tileX + tileY) * TILE_HEIGHT / 2,
-    };
+    return tileToWorld(tileX, tileY);
 }
 
 function tokenTotal(agent) {

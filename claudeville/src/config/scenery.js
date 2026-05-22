@@ -201,6 +201,43 @@ export const BRIDGE_ACCENT_PROPS = [
     { bridgeId: 'central-river-bridge', id: 'prop.bridgeBannerRune', t: 0.50, side: -1 },
 ];
 
+export const BRIDGE_STYLE_PALETTES = {
+    civic: {
+        shadow: 'rgba(19, 7, 5, 0.36)',
+        underStone: '#4c4a42',
+        underStoneDark: '#27241f',
+        underStoneLight: '#80745e',
+        deckDark: '#3d1b13',
+        deckEdge: '#4a2015',
+        deckA: '#774326',
+        deckB: '#c17a42',
+        deckC: '#e1a05d',
+        railDark: '#2a0f09',
+        railMid: '#8e4528',
+        rope: '#d3a45e',
+        rune: 'rgba(104, 204, 255, 0.72)',
+        glow: 'rgba(85, 195, 255, 0.24)',
+        moss: 'rgba(86, 126, 60, 0.45)',
+    },
+    elderwood: {
+        shadow: 'rgba(14, 10, 6, 0.38)',
+        underStone: '#3f4a3d',
+        underStoneDark: '#20281f',
+        underStoneLight: '#71805c',
+        deckDark: '#332015',
+        deckEdge: '#49301c',
+        deckA: '#684b29',
+        deckB: '#a26c35',
+        deckC: '#d0914f',
+        railDark: '#26180f',
+        railMid: '#7d542b',
+        rope: '#c7a35e',
+        rune: 'rgba(149, 226, 133, 0.70)',
+        glow: 'rgba(112, 207, 102, 0.22)',
+        moss: 'rgba(92, 151, 70, 0.54)',
+    },
+};
+
 // Small authored Harbor Master causeway. This is intentionally separate from
 // the two landmark river bridges so agents can reach the harbor without
 // creating extra town-wide crossings.
@@ -358,6 +395,20 @@ export const TROPICAL_WATERFALLS = [
     { tileX: 24.6, tileY: 6.2, height: 30, width: 28, poolTileX: 24.8, poolTileY: 7.8, scale: 0.78, phase: 1.9 },
 ];
 
+export const DISTRICT_WASHES = [
+    { x: 16, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
+    { x: 36, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
+    { x: 7, y: 28, radiusX: 7, radiusY: 5, color: '#7d4b25', alpha: 0.10 },
+    { x: 14, y: 16, radiusX: 12, radiusY: 6, color: '#476b2c', alpha: 0.11 },
+    { x: 20, y: 28, radiusX: 15, radiusY: 6, color: '#5b5228', alpha: 0.11 },
+];
+
+export const ANCIENT_RUINS = [
+    { tileX: 37, tileY: 3, scale: 1.05 },
+    { tileX: 2, tileY: 16, scale: 0.82 },
+    { tileX: 36, tileY: 34, scale: 0.95 },
+];
+
 export const DISTRICT_PROPS = [
     { tileX: 11.9, tileY: 21.0, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
     { tileX: 18.8, tileY: 21.1, id: 'prop.runeBrazier', layer: 'cache', district: 'command' },
@@ -410,6 +461,201 @@ export const DISTRICT_PROPS = [
     // Mine ↔ Portal corridor along west-production-road.
     { tileX: 9.0, tileY: 31.3, id: 'prop.runestone', layer: 'sorted', district: 'arcane' },
     { tileX: 10.0, tileY: 32.0, id: 'prop.lantern', layer: 'sorted', district: 'arcane' },
+];
+
+export const AMBIENT_GROUND_PROPS = [
+    // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
+    { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
+    { tileX: 25.4, tileY: 29.6, type: 'lantern' },
+    { tileX: 13.3, tileY: 34.7, type: 'oreCart' },
+    { tileX: 9.0, tileY: 33.8, type: 'lantern' },
+    { tileX: 15.5, tileY: 34.4, type: 'runestone' },
+    { tileX: 22.5, tileY: 33.6, type: 'noticePillar' },
+
+    // Civic core: utility props around the square, not scattered through the woods.
+    { tileX: 15.3, tileY: 20.4, type: 'well' },
+    { tileX: 12.1, tileY: 20.0, type: 'marketStall' },
+    { tileX: 17.8, tileY: 19.4, type: 'signpost' },
+    { tileX: 19.2, tileY: 16.0, type: 'scrollCrates' },
+    { tileX: 24.8, tileY: 18.6, type: 'noticePillar' },
+
+    // Research edges: fewer, quieter accents near knowledge landmarks.
+    { tileX: 5.8, tileY: 18.9, type: 'lantern' },
+    { tileX: 8.9, tileY: 16.1, type: 'scrollCrates' },
+    { tileX: 9.3, tileY: 18.5, type: 'noticePillar' },
+    { tileX: 22.5, tileY: 18.5, type: 'runestone' },
+    { tileX: 24.5, tileY: 18.9, type: 'lantern' },
+    { tileX: 26.4, tileY: 15.2, type: 'runestone' },
+    { tileX: 5.6, tileY: 25.8, type: 'runestone' },
+    { tileX: 15.0, tileY: 22.2, type: 'runestone' },
+];
+
+export const AMBIENT_SCENIC_POINTS = Object.freeze([
+    { id: 'bridge-west', tileX: 14, tileY: 28, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
+    { id: 'bridge-east', tileX: 18, tileY: 30, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
+    { id: 'harbor-rail', tileX: 31, tileY: 23, district: 'harbor', reason: 'harbor-watch', tags: ['water'] },
+    { id: 'harbor-ledger', tileX: 33, tileY: 24, district: 'harbor', reason: 'dock-ledger', tags: ['harbor'] },
+    { id: 'portal-ruins', tileX: 4, tileY: 36, district: 'arcane', reason: 'portal-observe', tags: ['portal'] },
+    { id: 'mine-cart', tileX: 15, tileY: 37, district: 'resource', reason: 'cart-path', tags: ['mine'] },
+    { id: 'forest-edge', tileX: 25, tileY: 11, district: 'knowledge', reason: 'forest-edge', tags: ['quiet'] },
+    { id: 'archive-alcove', tileX: 10, tileY: 18, district: 'knowledge', reason: 'reading-alcove', tags: ['archive'] },
+    { id: 'observatory-view', tileX: 25, tileY: 19, district: 'knowledge', reason: 'skywatch', tags: ['observatory'] },
+    { id: 'lighthouse-shore', tileX: 30, tileY: 15, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
+    { id: 'plaza-corner', tileX: 18, tileY: 23, district: 'civic', reason: 'plaza-pause', tags: ['command'] },
+    { id: 'forge-handoff', tileX: 25, tileY: 32, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
+]);
+
+export const GULL_FLIGHT_FRAMES = [
+    'prop.gullFlight.up',
+    'prop.gullFlight.level',
+    'prop.gullFlight.down',
+    'prop.gullFlight.level',
+];
+export const GULL_BANK_FRAME = 'prop.gullFlight.bank';
+export const GULL_ROUTE_SPEED_SCALE = 0.52;
+export const GULL_LIGHTHOUSE_HOTSPOT = { tileX: 31.4, tileY: 12.2 };
+// Watchtower gull orbit: single-bird 30s loop pegged just north of the
+// Pharos Lighthouse lantern (watchtower footprint sits at tile (27,8) sized
+// 3x5), with the orbit centre on the sea side so the bird reads as guarding
+// the beacon. Buoys flank the beacon on adjacent open-water tiles.
+export const WATCHTOWER_GULL_ORBIT = Object.freeze({
+    centerTileX: 28,
+    centerTileY: 12,
+    radiusTileX: 2.2,
+    radiusTileY: 1.6,
+    periodMs: 30000,
+    altitudePx: 38,
+});
+export const WATCHTOWER_GULL_FALLBACK_TILE = Object.freeze({
+    tileX: WATCHTOWER_GULL_ORBIT.centerTileX + WATCHTOWER_GULL_ORBIT.radiusTileX,
+    tileY: WATCHTOWER_GULL_ORBIT.centerTileY,
+});
+export const WATCHTOWER_BEACON_BUOY_TILES = Object.freeze([
+    { tileX: 29, tileY: 9 },
+    { tileX: 30, tileY: 11 },
+]);
+export const GULL_OFFMAP_GATEWAYS = [
+    { tileX: -4.8, tileY: 24.8 },
+    { tileX: 7.2, tileY: -4.6 },
+    { tileX: 22.8, tileY: -5.2 },
+    { tileX: 43.8, tileY: 4.8 },
+    { tileX: 45.2, tileY: 17.6 },
+    { tileX: 43.6, tileY: 34.4 },
+    { tileX: 28.2, tileY: 44.6 },
+    { tileX: 3.8, tileY: 43.8 },
+];
+export const GULL_STAGING_WAYPOINTS = [
+    { tileX: 10.8, tileY: 7.8 },
+    { tileX: 19.8, tileY: 9.8 },
+    { tileX: 27.4, tileY: 8.2 },
+    { tileX: 36.0, tileY: 10.4 },
+    { tileX: 35.8, tileY: 23.8 },
+    { tileX: 23.4, tileY: 24.8 },
+    { tileX: 9.8, tileY: 24.8 },
+    { tileX: 34.0, tileY: 29.4 },
+    { tileX: 7.4, tileY: 8.6 },
+    { tileX: 14.0, tileY: 9.6 },
+];
+export const OPEN_SEA_FLOCK_FORMATION = [
+    { side: 0.00, trail: 0.00 },
+    { side: -0.42, trail: 0.36 },
+    { side: 0.42, trail: 0.36 },
+    { side: -0.82, trail: 0.78 },
+    { side: 0.82, trail: 0.78 },
+    { side: -1.18, trail: 1.22 },
+    { side: 1.18, trail: 1.22 },
+    { side: -0.30, trail: 1.58 },
+    { side: 0.30, trail: 1.58 },
+    { side: 0.00, trail: 1.92 },
+];
+export const OPEN_SEA_FLOCK_ROUTES = [
+    {
+        size: 8,
+        altitude: 38,
+        phase: 0.02,
+        speed: 0.032,
+        wingRate: 3.6,
+        route: [
+            { tileX: 37.2, tileY: 5.4 },
+            { tileX: 33.2, tileY: 2.8 },
+            { tileX: 28.7, tileY: 4.8 },
+            { tileX: 31.8, tileY: 8.8 },
+            { tileX: 37.6, tileY: 9.4 },
+        ],
+    },
+    {
+        size: 9,
+        altitude: 31,
+        phase: 0.24,
+        speed: 0.026,
+        wingRate: 3.1,
+        route: [
+            { tileX: 38.4, tileY: 6.2 },
+            { tileX: 35.6, tileY: 12.6 },
+            { tileX: 37.6, tileY: 17.4 },
+            { tileX: 35.2, tileY: 24.8 },
+            { tileX: 37.5, tileY: 31.4 },
+            { tileX: 39.1, tileY: 20.8 },
+        ],
+    },
+    {
+        size: 7,
+        altitude: 27,
+        phase: 0.47,
+        speed: 0.038,
+        wingRate: 4.0,
+        route: [
+            { tileX: 31.6, tileY: 24.7 },
+            { tileX: 35.6, tileY: 25.6 },
+            { tileX: 38.2, tileY: 28.6 },
+            { tileX: 36.0, tileY: 32.6 },
+            { tileX: 33.0, tileY: 27.4 },
+        ],
+    },
+    {
+        size: 8,
+        altitude: 24,
+        phase: 0.69,
+        speed: 0.021,
+        wingRate: 2.9,
+        route: [
+            { tileX: 2.4, tileY: 25.0 },
+            { tileX: 9.0, tileY: 24.8 },
+            { tileX: 17.2, tileY: 25.2 },
+            { tileX: 25.8, tileY: 24.4 },
+            { tileX: 32.8, tileY: 24.4 },
+            { tileX: 37.8, tileY: 25.8 },
+        ],
+    },
+    {
+        size: 6,
+        altitude: 34,
+        phase: 0.86,
+        speed: 0.024,
+        wingRate: 3.4,
+        route: [
+            { tileX: 7.6, tileY: 8.4 },
+            { tileX: 12.3, tileY: 5.4 },
+            { tileX: 17.4, tileY: 9.8 },
+            { tileX: 24.8, tileY: 7.5 },
+            { tileX: 31.0, tileY: 5.0 },
+            { tileX: 36.8, tileY: 8.2 },
+        ],
+    },
+    {
+        size: 5,
+        altitude: 22,
+        phase: 0.13,
+        speed: 0.024,
+        wingRate: 3.4,
+        route: [
+            { tileX: 6.4, tileY: 9.6 },
+            { tileX: 11.2, tileY: 7.2 },
+            { tileX: 16.4, tileY: 9.0 },
+            { tileX: 13.0, tileY: 11.4 },
+            { tileX: 8.0, tileY: 11.2 },
+        ],
+    },
 ];
 
 export const MARINE_FISH_SCHOOLS = [

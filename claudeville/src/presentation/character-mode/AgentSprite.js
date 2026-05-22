@@ -1,5 +1,5 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { BUILDING_DEFS } from '../../config/buildings.js';
+import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { THEME } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
@@ -754,8 +754,8 @@ export class AgentSprite {
     }
 
     _buildingForType(type) {
-        if (!type) return null;
-        const normalized = type === 'lighthouse' ? 'watchtower' : type;
+        const normalized = normalizeBuildingType(type);
+        if (!normalized) return null;
         return this.getBuilding?.(normalized)
             || BUILDING_DEFS.find((b) => b.type === normalized)
             || null;

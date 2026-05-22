@@ -16,6 +16,7 @@ export class AssetManager {
         this.anchors = new Map();      // id → [cx, cy] in sprite-local px
         this.outlines = new Map();     // id → HTMLCanvasElement (1-px gold edge)
         this._entriesCache = null;
+        this._entryById = new Map();
         this.assetVersion = null;
         // IDs that resolved to the placeholder checker (404 or load error).
         // has(id) returns false for these so callers can skip drawing them.
@@ -40,6 +41,7 @@ export class AssetManager {
         this.assetVersion = this.manifest?.style?.assetVersion || null;
         const entries = this._flattenManifest(this.manifest);
         this._entriesCache = entries;
+        this._entryById = new Map(entries.map((entry) => [entry.id, entry]));
         await Promise.all(entries.map(e => this._loadEntry(e)));
 
         if (this._loadMisses.length > 0) {
@@ -48,6 +50,10 @@ export class AssetManager {
                 this._loadMisses.map(m => m.id)
             );
         }
+    }
+
+    entryFor(id) {
+        return this._entryById.get(id) || null;
     }
 
     async _fetchText(path) {
@@ -86,35 +92,44 @@ export class AssetManager {
             this._loadMisses.push({ id: entry.id, path });
         }
         const img = this._normalizeImageToManifestSize(entry, loadedImg);
-        this.bitmaps.set(entry.id, img);
-        this.dimensions.set(entry.id, { w: img.width, h: img.height });
-        if (entry.anchor) {
-            this.anchors.set(entry.id, entry.anchor);
-        } else if (entry.id.startsWith('building.')) {
-            // Standard single-tile buildings: anchor at bottom-center so the iso
-            // footprint sits at the building screen center.
-            this.anchors.set(entry.id, [Math.floor(img.width / 2), Math.floor(img.height * 7 / 8)]);
-        }
-        const mask = this._buildAlphaMask(img);
-        this.alphaMasks.set(entry.id, mask);
-        this.outlines.set(entry.id, this._bakeOutline(img.width, img.height, mask));
+        const anchor = entry.anchor
+            ? entry.anchor
+            : entry.id.startsWith('building.')
+                ? [Math.floor(img.width / 2), Math.floor(img.height * 7 / 8)]
+                : null;
+        this._storeBitmap(entry.id, img, { anchor });
         // Recurse for layered entries (overlays).
         if (entry.layers) {
             for (const [name, layer] of Object.entries(entry.layers)) {
                 if (name === 'base') continue;
                 const layerId = `${entry.id}.${name}`;
                 const layerPath = this._pathFor({ id: layerId, ...layer });
-                const { img: loadedLayerImg, ok: layerOk } = await this._loadImage(layerPath);
-                if (!layerOk) {
-                    this.missing.add(layerId);
-                    this._loadMisses.push({ id: layerId, path: layerPath });
-                }
-                const layerImg = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedLayerImg);
-                this.bitmaps.set(layerId, layerImg);
-                this.dimensions.set(layerId, { w: layerImg.width, h: layerImg.height });
-                if (layer.anchor) this.anchors.set(layerId, layer.anchor);
+                await this._loadLayer(layerId, layer, layerPath);
             }
         }
+    }
+
+    _storeBitmap(id, img, { anchor = null, mask = null, buildMask = true } = {}) {
+        this.bitmaps.set(id, img);
+        this.dimensions.set(id, { w: img.width, h: img.height });
+        if (anchor) this.anchors.set(id, anchor);
+        if (!buildMask) return;
+        const alphaMask = mask || this._buildAlphaMask(img);
+        this.alphaMasks.set(id, alphaMask);
+        this.outlines.set(id, this._bakeOutline(img.width, img.height, alphaMask));
+    }
+
+    async _loadLayer(layerId, layer, layerPath) {
+        const { img: loadedImg, ok } = await this._loadImage(layerPath);
+        if (!ok) {
+            this.missing.add(layerId);
+            this._loadMisses.push({ id: layerId, path: layerPath });
+        }
+        const img = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedImg);
+        this._storeBitmap(layerId, img, {
+            anchor: layer.anchor || null,
+            buildMask: false,
+        });
     }
 
     async _loadComposedBuilding(entry) {
@@ -136,34 +151,19 @@ export class AssetManager {
                 ctx.drawImage(img, c * cellSize, r * cellSize, cellSize, cellSize);
             }
         }
-        this.bitmaps.set(entry.id, canvas);
-        this.dimensions.set(entry.id, { w: canvas.width, h: canvas.height });
         // Composed hero buildings without an explicit manifest anchor land their
         // bottom-of-footprint near the iso tile center: bottom-center horizontally,
         // 7/8 down vertically (lower band ≈ ground footprint, upper band ≈ tower).
-        if (entry.anchor) {
-            this.anchors.set(entry.id, entry.anchor);
-        } else {
-            this.anchors.set(entry.id, [Math.floor(canvas.width / 2), Math.floor(canvas.height * 7 / 8)]);
-        }
+        const anchor = entry.anchor || [Math.floor(canvas.width / 2), Math.floor(canvas.height * 7 / 8)];
         const mask = this._buildAlphaMaskFromCanvas(canvas);
-        this.alphaMasks.set(entry.id, mask);
-        this.outlines.set(entry.id, this._bakeOutline(canvas.width, canvas.height, mask));
+        this._storeBitmap(entry.id, canvas, { anchor, mask });
         // Layer overlays (beacon, banner, etc.)
         if (entry.layers) {
             for (const [name, layer] of Object.entries(entry.layers)) {
                 if (name === 'base') continue;
                 const layerId = `${entry.id}.${name}`;
                 const layerPath = `assets/sprites/buildings/${entry.id}/${name}.png`;
-                const { img: loadedImg, ok: layerOk } = await this._loadImage(layerPath);
-                if (!layerOk) {
-                    this.missing.add(layerId);
-                    this._loadMisses.push({ id: layerId, path: layerPath });
-                }
-                const img = this._normalizeImageToManifestSize({ id: layerId, ...layer }, loadedImg);
-                this.bitmaps.set(layerId, img);
-                this.dimensions.set(layerId, { w: img.width, h: img.height });
-                if (layer.anchor) this.anchors.set(layerId, layer.anchor);
+                await this._loadLayer(layerId, layer, layerPath);
             }
         }
     }

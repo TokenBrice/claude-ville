@@ -1,6 +1,17 @@
 import { classifyTool, compactToolLabel as compactLabel } from '../../domain/services/ToolIdentity.js';
 import { normalizeGitEvent, parseEventTime } from '../shared/GitEventIdentity.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import {
+    clampRouteIndex,
+    cloneItinerary,
+    inferGoal,
+    normalizeGoal,
+    normalizeItineraryRoute,
+    normalizeRouteStop,
+    normalizeWorkingPhase,
+    WORK_ITINERARY_PHASE_INDEX,
+    WORK_ITINERARY_ROUTE,
+} from './VisitIntentSemantics.js';
 
 const CASH_OUT_TOKEN_DELTA = 1024;
 const CASH_OUT_PRIORITY = 95;
@@ -29,29 +40,6 @@ const DEFAULT_TTLS = Object.freeze({
 const TOKEN_DELTA_THRESHOLD = 128;
 const CONTEXT_PRESSURE_THRESHOLD = 0.82;
 const MAX_SEEN_GIT_EVENTS = 600;
-const WORKING_PHASES = new Set([
-    'reading',
-    'editing',
-    'testing',
-    'researching',
-    'coordinating',
-    'git',
-    'quota/resource',
-    'waiting',
-]);
-const AGENT_GOALS = new Set([
-    'complete-task',
-    'assist-parent',
-    'monitor-quota',
-    'recover-error',
-]);
-const WORK_ITINERARY_ROUTE = Object.freeze(['archive', 'forge', 'taskboard', 'harbor']);
-const WORK_ITINERARY_PHASE_INDEX = Object.freeze({
-    reading: 0,
-    editing: 1,
-    testing: 2,
-    git: 3,
-});
 
 function timeNow() {
     return Date.now();
@@ -89,35 +77,6 @@ function intentSort(a, b, now) {
     if (aSticky !== bSticky) return bSticky - aSticky;
     if (a.confidence !== b.confidence) return b.confidence - a.confidence;
     return b.createdAt - a.createdAt;
-}
-
-function normalizeWorkingPhase(phase) {
-    const value = String(phase || '').trim().toLowerCase();
-    return WORKING_PHASES.has(value) ? value : null;
-}
-
-function normalizeGoal(goal) {
-    const value = String(goal || '')
-        .trim()
-        .replace(/([a-z])([A-Z])/g, '$1-$2')
-        .replace(/[_\s]+/g, '-')
-        .toLowerCase();
-    const aliases = {
-        complete: 'complete-task',
-        completetask: 'complete-task',
-        task: 'complete-task',
-        assist: 'assist-parent',
-        assistparent: 'assist-parent',
-        parent: 'assist-parent',
-        monitor: 'monitor-quota',
-        monitorquota: 'monitor-quota',
-        quota: 'monitor-quota',
-        recover: 'recover-error',
-        recovererror: 'recover-error',
-        error: 'recover-error',
-    };
-    const normalized = aliases[value] || value;
-    return AGENT_GOALS.has(normalized) ? normalized : null;
 }
 
 function stringifyToolInput(input) {
@@ -180,59 +139,13 @@ function interruptibleForIntentDraft(draft, priority, phase) {
 function goalFromIntentDraft(draft, phase) {
     const explicit = normalizeGoal(draft?.goal || draft?.intentGoal || draft?.payload?.goal);
     if (explicit) return explicit;
-    const source = String(draft?.source || '').toLowerCase();
-    const reason = String(draft?.reason || '').toLowerCase();
-    const building = String(draft?.building || '').toLowerCase();
-    if (source === 'subagent' || reason.includes('parent') || draft?.payload?.parentId) return 'assist-parent';
-    if (
-        source === 'quota'
-        || source === 'token'
-        || phase === 'quota/resource'
-        || building === 'mine'
-        || /\b(quota|context|resource|token|throttle|rate.?limit)\b/.test(reason)
-    ) {
-        return 'monitor-quota';
-    }
-    if (/\b(fail(?:ed)?|error|errored|reject(?:ed)?|cancel(?:led|ed)?|recover|retry|blocked)\b/.test(reason)) {
-        return 'recover-error';
-    }
-    return 'complete-task';
-}
-
-function normalizeRouteStop(stop) {
-    const value = typeof stop === 'string'
-        ? stop
-        : (stop?.building || stop?.buildingType || stop?.type || stop?.id || '');
-    return String(value || '').trim().toLowerCase() || null;
-}
-
-function normalizeItineraryRoute(raw) {
-    const route = Array.isArray(raw)
-        ? raw
-        : (Array.isArray(raw?.route)
-            ? raw.route
-            : (Array.isArray(raw?.stops) ? raw.stops : raw?.buildings));
-    if (!Array.isArray(route)) return [];
-    const result = [];
-    for (const stop of route) {
-        const normalized = normalizeRouteStop(stop);
-        if (normalized && result[result.length - 1] !== normalized) result.push(normalized);
-    }
-    return result;
-}
-
-function clampRouteIndex(index, route) {
-    const numeric = Number(index);
-    if (!Number.isFinite(numeric) || !route.length) return -1;
-    return Math.max(0, Math.min(route.length - 1, Math.round(numeric)));
-}
-
-function cloneItinerary(itinerary) {
-    if (!itinerary) return null;
-    return {
-        ...itinerary,
-        route: Array.isArray(itinerary.route) ? [...itinerary.route] : [],
-    };
+    return inferGoal({
+        source: draft?.source,
+        reason: draft?.reason,
+        phase,
+        building: draft?.building,
+        parentId: draft?.payload?.parentId,
+    }) || 'complete-task';
 }
 
 function itineraryFromIntentDraft(draft, { phase, goal, intentId, previous = null, now } = {}) {

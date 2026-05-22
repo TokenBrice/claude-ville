@@ -31,6 +31,56 @@ const scenicSlot = (tileX, tileY, facingPoint, metadata = {}) => visitTile(tileX
     ...metadata,
 });
 
+export const normalizeBuildingType = (type) => {
+    const value = String(type || '').trim();
+    if (!value) return null;
+    return value === 'lighthouse' ? 'watchtower' : value;
+};
+
+export const VISIT_OVERFLOW_TILES = Object.freeze({
+    archive: [
+        { tileX: 8, tileY: 19, overflow: true, reason: 'archive-walk' },
+        { tileX: 9, tileY: 16, overflow: true, reason: 'reading-alcove' },
+        { tileX: 9, tileY: 19, overflow: true, reason: 'archive-walk' },
+        { tileX: 10, tileY: 17, overflow: true, reason: 'reading-alcove' },
+        { tileX: 10, tileY: 18, overflow: true, reason: 'archive-walk' },
+    ],
+    command: [
+        { tileX: 15, tileY: 22, overflow: true, reason: 'plaza' },
+        { tileX: 17, tileY: 22, overflow: true, reason: 'plaza' },
+        { tileX: 13, tileY: 22, overflow: true, reason: 'plaza' },
+    ],
+    taskboard: [
+        { tileX: 22, tileY: 34, overflow: true, reason: 'review' },
+        { tileX: 24, tileY: 34, overflow: true, reason: 'review' },
+    ],
+    mine: [
+        { tileX: 9, tileY: 34, overflow: true, reason: 'mine-yard' },
+        { tileX: 10, tileY: 36, overflow: true, reason: 'mine-yard' },
+        { tileX: 13, tileY: 37, overflow: true, reason: 'cart-path' },
+        { tileX: 16, tileY: 34, overflow: true, reason: 'ore-sort' },
+        { tileX: 16, tileY: 36, overflow: true, reason: 'ore-sort' },
+    ],
+    watchtower: [
+        { tileX: 28, tileY: 15, overflow: true, reason: 'lookout' },
+        { tileX: 27, tileY: 15, overflow: true, reason: 'lookout' },
+    ],
+});
+
+export const COMMAND_CENTER_DECORATION = Object.freeze([
+    { type: 'banner', localX: 1.1, localY: -0.9, facing: 'south', phase: 0 },
+    { type: 'banner', localX: 4.8, localY: 0.8, facing: 'north', phase: 1.7 },
+    { type: 'runestone', localX: -0.6, localY: 1.2, phase: 0.2 },
+    { type: 'runestone', localX: 2.2, localY: 0.0, phase: 2.4 },
+    { type: 'runestone', localX: 4.8, localY: 2.4, phase: 4.1 },
+    { type: 'watchfire', localX: 0.5, localY: 1.0, phase: 0.6 },
+    { type: 'watchfire', localX: 5.0, localY: 0.9, phase: 3.5 },
+    { type: 'guardpost', localX: -2.2, localY: 1.0 },
+    { type: 'guardpost', localX: 4.9, localY: 1.0 },
+    { type: 'guardpost', localX: 2.5, localY: -0.2 },
+    { type: 'guardpost', localX: 2.5, localY: 2.5 },
+]);
+
 export const BUILDING_DEFS = [
     {
         type: 'command',

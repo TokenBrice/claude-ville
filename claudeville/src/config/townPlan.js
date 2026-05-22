@@ -28,6 +28,11 @@ export const VILLAGE_GATE_BOUNDS = Object.freeze({
     splitY: -42,
 });
 
+// Center of Portal Gate footprint (origin 2,29 size 4x4). Subagents spawn here
+// so dispatch reads as "child stepped through the portal" rather than the
+// generic Village Gate arrival used by top-level sessions.
+export const PORTAL_SPAWN_TILE = Object.freeze({ tileX: 4, tileY: 32 });
+
 export const VILLAGE_WALL_ROUTES = Object.freeze([
     {
         id: 'west',

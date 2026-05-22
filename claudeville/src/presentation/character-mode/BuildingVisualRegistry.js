@@ -107,6 +107,66 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
     },
 });
 
+const WATCHTOWER_LANTERN_FIRE = BUILDING_VISUAL_REGISTRY.watchtower.effectAnchors.lanternFire;
+
+export const BUILDING_EMITTER_FALLBACKS = {
+    forge: [
+        { type: 'forgeEmber', at: [51, 66], chance: 0.06, count: 1 },
+        { type: 'forgeSpark', at: [50, 70], chance: 0.032, count: 1 },
+        { type: 'smoke', at: [39, 8], chance: 0.035, count: 1 },
+    ],
+    mine: [
+        { type: 'mineDust', at: [73, 95], chance: 0.035, count: 1 },
+        { type: 'mining', at: [78, 122], chance: 0.026, count: 1 },
+    ],
+    portal: [
+        { type: 'portalRune', at: [144, 60], chance: 0.05, count: 1 },
+        { type: 'sparkle', at: [122, 80], chance: 0.025, count: 1 },
+    ],
+    watchtower: [
+        { type: 'beaconMote', at: WATCHTOWER_LANTERN_FIRE.particle, chance: 0.038, count: 1 },
+    ],
+    harbor: [
+        { type: 'torch', at: [48, 42], chance: 0.026, count: 1 },
+        { type: 'sparkle', at: [70, 58], chance: 0.014, count: 1 },
+    ],
+    taskboard: [
+        { type: 'questPing', at: [56, 58], chance: 0.024, count: 1 },
+    ],
+    archive: [
+        { type: 'archiveMote', at: [168, 82], chance: 0.034, count: 1 },
+        { type: 'archiveMote', at: [142, 128], chance: 0.018, count: 1 },
+        { type: 'archiveMote', at: [194, 128], chance: 0.018, count: 1 },
+    ],
+};
+
+export const BUILDING_LIGHT_FALLBACKS = {
+    forge: { at: [51, 66], color: '#ff8a33', radius: 62, overlay: 'atmosphere.light.fire-glow' },
+    mine: { at: [73, 95], color: '#ffb84d', radius: 68, overlay: 'atmosphere.light.lantern-glow' },
+    taskboard: { at: [56, 58], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
+    archive: { at: [168, 88], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
+    harbor: { at: [48, 42], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
+};
+
+export const LIGHT_SOURCE_REGISTRY = {
+    watchtower: [
+        {
+            kind: 'point',
+            at: WATCHTOWER_LANTERN_FIRE.light,
+            color: '#ffb347',
+            radius: 108,
+            overlay: 'atmosphere.light.fire-glow',
+        },
+    ],
+};
+
+export const EMITTER_LIGHTS = {
+    torch: { color: '#ffbc62', radius: 42, overlay: 'atmosphere.light.fire-glow' },
+    signal: { color: '#ffd37a', radius: 48, overlay: 'atmosphere.light.lantern-glow' },
+    forgeEmber: { color: '#ff8a33', radius: 42, overlay: 'atmosphere.light.fire-glow' },
+    forgeSpark: { color: '#ff9f3f', radius: 34, overlay: 'atmosphere.light.fire-glow' },
+};
+
 export function getBuildingVisual(type) {
     return BUILDING_VISUAL_REGISTRY[type] || null;
 }

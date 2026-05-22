@@ -1,14 +1,31 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME } from '../../config/theme.js';
-import { TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
+import { COMMAND_CENTER_DECORATION, normalizeBuildingType } from '../../config/buildings.js';
+import { PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
 import {
+    AMBIENT_GROUND_PROPS,
+    AMBIENT_SCENIC_POINTS,
+    ANCIENT_RUINS,
     BRIDGE_ACCENT_PROPS,
+    BRIDGE_STYLE_PALETTES,
     DISTRICT_PROPS,
+    DISTRICT_WASHES,
     FOREST_FLOOR_REGIONS,
+    GULL_BANK_FRAME,
+    GULL_FLIGHT_FRAMES,
+    GULL_LIGHTHOUSE_HOTSPOT,
+    GULL_OFFMAP_GATEWAYS,
+    GULL_ROUTE_SPEED_SCALE,
+    GULL_STAGING_WAYPOINTS,
     MARINE_FISH_SCHOOLS,
+    OPEN_SEA_FLOCK_FORMATION,
+    OPEN_SEA_FLOCK_ROUTES,
     TROPICAL_BROADLEAF_TREES,
     TROPICAL_PALMS,
     TROPICAL_WATERFALLS,
+    WATCHTOWER_BEACON_BUOY_TILES,
+    WATCHTOWER_GULL_FALLBACK_TILE,
+    WATCHTOWER_GULL_ORBIT,
 } from '../../config/scenery.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
@@ -47,6 +64,7 @@ import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
 import { tileToWorld, worldToTile } from './Projection.js';
+import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { buildStaticPropDrawables } from './StaticPropDrawables.js';
 import { renderWorldFrame } from './WorldFrameRenderer.js';
 import {
@@ -85,53 +103,6 @@ const LOCAL_AVOIDANCE = Object.freeze({
 });
 const CROWD_CLUSTER_TILE_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
-const VISIT_OVERFLOW_TILES = Object.freeze({
-    archive: [
-        { tileX: 8, tileY: 19, overflow: true, reason: 'archive-walk' },
-        { tileX: 9, tileY: 16, overflow: true, reason: 'reading-alcove' },
-        { tileX: 9, tileY: 19, overflow: true, reason: 'archive-walk' },
-        { tileX: 10, tileY: 17, overflow: true, reason: 'reading-alcove' },
-        { tileX: 10, tileY: 18, overflow: true, reason: 'archive-walk' },
-    ],
-    command: [
-        { tileX: 15, tileY: 22, overflow: true, reason: 'plaza' },
-        { tileX: 17, tileY: 22, overflow: true, reason: 'plaza' },
-        { tileX: 13, tileY: 22, overflow: true, reason: 'plaza' },
-    ],
-    taskboard: [
-        { tileX: 22, tileY: 34, overflow: true, reason: 'review' },
-        { tileX: 24, tileY: 34, overflow: true, reason: 'review' },
-    ],
-    mine: [
-        { tileX: 9, tileY: 34, overflow: true, reason: 'mine-yard' },
-        { tileX: 10, tileY: 36, overflow: true, reason: 'mine-yard' },
-        { tileX: 13, tileY: 37, overflow: true, reason: 'cart-path' },
-        { tileX: 16, tileY: 34, overflow: true, reason: 'ore-sort' },
-        { tileX: 16, tileY: 36, overflow: true, reason: 'ore-sort' },
-    ],
-    watchtower: [
-        { tileX: 28, tileY: 15, overflow: true, reason: 'lookout' },
-        { tileX: 27, tileY: 15, overflow: true, reason: 'lookout' },
-    ],
-});
-// Center of Portal Gate footprint (origin 2,29 size 4x4). Subagents spawn here
-// so dispatch reads as "child stepped through the portal" rather than the
-// generic Village Gate arrival used by top-level sessions.
-const PORTAL_SPAWN_TILE = Object.freeze({ tileX: 4, tileY: 32 });
-const AMBIENT_SCENIC_POINTS = Object.freeze([
-    { id: 'bridge-west', tileX: 14, tileY: 28, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
-    { id: 'bridge-east', tileX: 18, tileY: 30, district: 'civic', reason: 'bridge-pause', tags: ['bridge'] },
-    { id: 'harbor-rail', tileX: 31, tileY: 23, district: 'harbor', reason: 'harbor-watch', tags: ['water'] },
-    { id: 'harbor-ledger', tileX: 33, tileY: 24, district: 'harbor', reason: 'dock-ledger', tags: ['harbor'] },
-    { id: 'portal-ruins', tileX: 4, tileY: 36, district: 'arcane', reason: 'portal-observe', tags: ['portal'] },
-    { id: 'mine-cart', tileX: 15, tileY: 37, district: 'resource', reason: 'cart-path', tags: ['mine'] },
-    { id: 'forest-edge', tileX: 25, tileY: 11, district: 'knowledge', reason: 'forest-edge', tags: ['quiet'] },
-    { id: 'archive-alcove', tileX: 10, tileY: 18, district: 'knowledge', reason: 'reading-alcove', tags: ['archive'] },
-    { id: 'observatory-view', tileX: 25, tileY: 19, district: 'knowledge', reason: 'skywatch', tags: ['observatory'] },
-    { id: 'lighthouse-shore', tileX: 30, tileY: 15, district: 'harbor', reason: 'shore-watch', tags: ['watchtower'] },
-    { id: 'plaza-corner', tileX: 18, tileY: 23, district: 'civic', reason: 'plaza-pause', tags: ['command'] },
-    { id: 'forge-handoff', tileX: 25, tileY: 32, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
-]);
 const WATER_TOKENS = {
     lagoon: {
         shallow: 'rgb(10,180,190)',
@@ -181,228 +152,15 @@ const ATMOSPHERE_EFFECT_ASSETS = Object.freeze({
     shoreFoam: 'atmosphere.water.foam.corner',
     harborWake: 'atmosphere.water.harbor.wake',
 });
-const GULL_FLIGHT_FRAMES = [
-    'prop.gullFlight.up',
-    'prop.gullFlight.level',
-    'prop.gullFlight.down',
-    'prop.gullFlight.level',
-];
-const GULL_BANK_FRAME = 'prop.gullFlight.bank';
-const GULL_ROUTE_SPEED_SCALE = 0.52;
-const GULL_LIGHTHOUSE_HOTSPOT = { tileX: 31.4, tileY: 12.2 };
-// Watchtower gull orbit: single-bird 30s loop pegged just north of the
-// Pharos Lighthouse lantern (watchtower footprint sits at tile (27,8) sized
-// 3x5), with the orbit centre on the sea side so the bird reads as guarding
-// the beacon. Buoys flank the beacon on adjacent open-water tiles.
-const WATCHTOWER_GULL_ORBIT = Object.freeze({
-    centerTileX: 28,
-    centerTileY: 12,
-    radiusTileX: 2.2,
-    radiusTileY: 1.6,
-    periodMs: 30000,
-    altitudePx: 38,
-});
-const WATCHTOWER_GULL_FALLBACK_TILE = Object.freeze({
-    tileX: WATCHTOWER_GULL_ORBIT.centerTileX + WATCHTOWER_GULL_ORBIT.radiusTileX,
-    tileY: WATCHTOWER_GULL_ORBIT.centerTileY,
-});
-const WATCHTOWER_BEACON_BUOY_TILES = Object.freeze([
-    { tileX: 29, tileY: 9 },
-    { tileX: 30, tileY: 11 },
-]);
 // Archive fade: keep the sprite in the draw loop for this many ms after
 // `agent:removed` so the sibling AgentSprite fade/sparkle animation can play.
 const ARCHIVE_FADE_DURATION_MS = 800;
-const GULL_OFFMAP_GATEWAYS = [
-    { tileX: -4.8, tileY: 24.8 },
-    { tileX: 7.2, tileY: -4.6 },
-    { tileX: 22.8, tileY: -5.2 },
-    { tileX: 43.8, tileY: 4.8 },
-    { tileX: 45.2, tileY: 17.6 },
-    { tileX: 43.6, tileY: 34.4 },
-    { tileX: 28.2, tileY: 44.6 },
-    { tileX: 3.8, tileY: 43.8 },
-];
-const GULL_STAGING_WAYPOINTS = [
-    { tileX: 10.8, tileY: 7.8 },
-    { tileX: 19.8, tileY: 9.8 },
-    { tileX: 27.4, tileY: 8.2 },
-    { tileX: 36.0, tileY: 10.4 },
-    { tileX: 35.8, tileY: 23.8 },
-    { tileX: 23.4, tileY: 24.8 },
-    { tileX: 9.8, tileY: 24.8 },
-    { tileX: 34.0, tileY: 29.4 },
-    { tileX: 7.4, tileY: 8.6 },
-    { tileX: 14.0, tileY: 9.6 },
-];
-const OPEN_SEA_FLOCK_FORMATION = [
-    { side: 0.00, trail: 0.00 },
-    { side: -0.42, trail: 0.36 },
-    { side: 0.42, trail: 0.36 },
-    { side: -0.82, trail: 0.78 },
-    { side: 0.82, trail: 0.78 },
-    { side: -1.18, trail: 1.22 },
-    { side: 1.18, trail: 1.22 },
-    { side: -0.30, trail: 1.58 },
-    { side: 0.30, trail: 1.58 },
-    { side: 0.00, trail: 1.92 },
-];
-const OPEN_SEA_FLOCK_ROUTES = [
-    {
-        size: 8,
-        altitude: 38,
-        phase: 0.02,
-        speed: 0.032,
-        wingRate: 3.6,
-        route: [
-            { tileX: 37.2, tileY: 5.4 },
-            { tileX: 33.2, tileY: 2.8 },
-            { tileX: 28.7, tileY: 4.8 },
-            { tileX: 31.8, tileY: 8.8 },
-            { tileX: 37.6, tileY: 9.4 },
-        ],
-    },
-    {
-        size: 9,
-        altitude: 31,
-        phase: 0.24,
-        speed: 0.026,
-        wingRate: 3.1,
-        route: [
-            { tileX: 38.4, tileY: 6.2 },
-            { tileX: 35.6, tileY: 12.6 },
-            { tileX: 37.6, tileY: 17.4 },
-            { tileX: 35.2, tileY: 24.8 },
-            { tileX: 37.5, tileY: 31.4 },
-            { tileX: 39.1, tileY: 20.8 },
-        ],
-    },
-    {
-        size: 7,
-        altitude: 27,
-        phase: 0.47,
-        speed: 0.038,
-        wingRate: 4.0,
-        route: [
-            { tileX: 31.6, tileY: 24.7 },
-            { tileX: 35.6, tileY: 25.6 },
-            { tileX: 38.2, tileY: 28.6 },
-            { tileX: 36.0, tileY: 32.6 },
-            { tileX: 33.0, tileY: 27.4 },
-        ],
-    },
-    {
-        size: 8,
-        altitude: 24,
-        phase: 0.69,
-        speed: 0.021,
-        wingRate: 2.9,
-        route: [
-            { tileX: 2.4, tileY: 25.0 },
-            { tileX: 9.0, tileY: 24.8 },
-            { tileX: 17.2, tileY: 25.2 },
-            { tileX: 25.8, tileY: 24.4 },
-            { tileX: 32.8, tileY: 24.4 },
-            { tileX: 37.8, tileY: 25.8 },
-        ],
-    },
-    {
-        size: 6,
-        altitude: 34,
-        phase: 0.86,
-        speed: 0.024,
-        wingRate: 3.4,
-        route: [
-            { tileX: 7.6, tileY: 8.4 },
-            { tileX: 12.3, tileY: 5.4 },
-            { tileX: 17.4, tileY: 9.8 },
-            { tileX: 24.8, tileY: 7.5 },
-            { tileX: 31.0, tileY: 5.0 },
-            { tileX: 36.8, tileY: 8.2 },
-        ],
-    },
-    {
-        size: 5,
-        altitude: 22,
-        phase: 0.13,
-        speed: 0.024,
-        wingRate: 3.4,
-        route: [
-            { tileX: 6.4, tileY: 9.6 },
-            { tileX: 11.2, tileY: 7.2 },
-            { tileX: 16.4, tileY: 9.0 },
-            { tileX: 13.0, tileY: 11.4 },
-            { tileX: 8.0, tileY: 11.2 },
-        ],
-    },
-];
 const GULL_BASE_POPULATION = OPEN_SEA_FLOCK_ROUTES.reduce((sum, flock) => sum + flock.size, 0);
 const GULL_MAX_POPULATION = GULL_BASE_POPULATION * 3;
 const GULL_MIN_ACTIVE_TARGET = Math.max(1, Math.floor(GULL_BASE_POPULATION / 4));
 const GULL_MAX_ACTIVE_TARGET = Math.max(GULL_MIN_ACTIVE_TARGET, Math.floor(GULL_MAX_POPULATION / 2));
-const BRIDGE_STYLE_PALETTES = {
-    civic: {
-        shadow: 'rgba(19, 7, 5, 0.36)',
-        underStone: '#4c4a42',
-        underStoneDark: '#27241f',
-        underStoneLight: '#80745e',
-        deckDark: '#3d1b13',
-        deckEdge: '#4a2015',
-        deckA: '#774326',
-        deckB: '#c17a42',
-        deckC: '#e1a05d',
-        railDark: '#2a0f09',
-        railMid: '#8e4528',
-        rope: '#d3a45e',
-        rune: 'rgba(104, 204, 255, 0.72)',
-        glow: 'rgba(85, 195, 255, 0.24)',
-        moss: 'rgba(86, 126, 60, 0.45)',
-    },
-    elderwood: {
-        shadow: 'rgba(14, 10, 6, 0.38)',
-        underStone: '#3f4a3d',
-        underStoneDark: '#20281f',
-        underStoneLight: '#71805c',
-        deckDark: '#332015',
-        deckEdge: '#49301c',
-        deckA: '#684b29',
-        deckB: '#a26c35',
-        deckC: '#d0914f',
-        railDark: '#26180f',
-        railMid: '#7d542b',
-        rope: '#c7a35e',
-        rune: 'rgba(149, 226, 133, 0.70)',
-        glow: 'rgba(112, 207, 102, 0.22)',
-        moss: 'rgba(92, 151, 70, 0.54)',
-    },
-};
 const BRIDGE_SPRITE_MIN_WIDTH = 390;
 const BRIDGE_SPRITE_MAX_WIDTH = 500;
-const DISTRICT_WASHES = [
-    { x: 16, y: 22, radiusX: 10, radiusY: 6, color: '#8b5526', alpha: 0.13 },
-    { x: 36, y: 20, radiusX: 10, radiusY: 8, color: '#167178', alpha: 0.14 },
-    { x: 7, y: 28, radiusX: 7, radiusY: 5, color: '#7d4b25', alpha: 0.10 },
-    { x: 14, y: 16, radiusX: 12, radiusY: 6, color: '#476b2c', alpha: 0.11 },
-    { x: 20, y: 28, radiusX: 15, radiusY: 6, color: '#5b5228', alpha: 0.11 },
-];
-const ANCIENT_RUINS = [
-    { tileX: 37, tileY: 3, scale: 1.05 },
-    { tileX: 2, tileY: 16, scale: 0.82 },
-    { tileX: 36, tileY: 34, scale: 0.95 },
-];
-const COMMAND_CENTER_DECORATION = [
-    { type: 'banner', localX: 1.1, localY: -0.9, facing: 'south', phase: 0 },
-    { type: 'banner', localX: 4.8, localY: 0.8, facing: 'north', phase: 1.7 },
-    { type: 'runestone', localX: -0.6, localY: 1.2, phase: 0.2 },
-    { type: 'runestone', localX: 2.2, localY: 0.0, phase: 2.4 },
-    { type: 'runestone', localX: 4.8, localY: 2.4, phase: 4.1 },
-    { type: 'watchfire', localX: 0.5, localY: 1.0, phase: 0.6 },
-    { type: 'watchfire', localX: 5.0, localY: 0.9, phase: 3.5 },
-    { type: 'guardpost', localX: -2.2, localY: 1.0 },
-    { type: 'guardpost', localX: 4.9, localY: 1.0 },
-    { type: 'guardpost', localX: 2.5, localY: -0.2 },
-    { type: 'guardpost', localX: 2.5, localY: 2.5 },
-];
 const VILLAGE_WOOD_PALETTE = Object.freeze({
     shadow: 'rgba(28, 15, 7, 0.34)',
     outline: '#1b1009',
@@ -429,32 +187,6 @@ const VILLAGE_STONE_PALETTE = Object.freeze({
     outline: '#1b1009',
 });
 const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
-const AMBIENT_GROUND_PROPS = [
-    // Forge/mine work yards: ore carts and lanterns clarify production/resource landmarks.
-    { tileX: 24.4, tileY: 29.7, type: 'oreCart' },
-    { tileX: 25.4, tileY: 29.6, type: 'lantern' },
-    { tileX: 13.3, tileY: 34.7, type: 'oreCart' },
-    { tileX: 9.0, tileY: 33.8, type: 'lantern' },
-    { tileX: 15.5, tileY: 34.4, type: 'runestone' },
-    { tileX: 22.5, tileY: 33.6, type: 'noticePillar' },
-
-    // Civic core: utility props around the square, not scattered through the woods.
-    { tileX: 15.3, tileY: 20.4, type: 'well' },
-    { tileX: 12.1, tileY: 20.0, type: 'marketStall' },
-    { tileX: 17.8, tileY: 19.4, type: 'signpost' },
-    { tileX: 19.2, tileY: 16.0, type: 'scrollCrates' },
-    { tileX: 24.8, tileY: 18.6, type: 'noticePillar' },
-
-    // Research edges: fewer, quieter accents near knowledge landmarks.
-    { tileX: 5.8, tileY: 18.9, type: 'lantern' },
-    { tileX: 8.9, tileY: 16.1, type: 'scrollCrates' },
-    { tileX: 9.3, tileY: 18.5, type: 'noticePillar' },
-    { tileX: 22.5, tileY: 18.5, type: 'runestone' },
-    { tileX: 24.5, tileY: 18.9, type: 'lantern' },
-    { tileX: 26.4, tileY: 15.2, type: 'runestone' },
-    { tileX: 5.6, tileY: 25.8, type: 'runestone' },
-    { tileX: 15.0, tileY: 22.2, type: 'runestone' },
-];
 class StaticPropSprite {
     constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null }) {
         this.tileX = tileX;
@@ -1667,21 +1399,8 @@ export class IsometricRenderer {
     }
 
     _getBuildingByType(type) {
-        const normalized = type === 'lighthouse' ? 'watchtower' : type;
+        const normalized = normalizeBuildingType(type);
         return normalized ? this.world?.buildings?.get?.(normalized) || null : null;
-    }
-
-    _visitCandidatesForBuilding(building, intent = null) {
-        if (!building) return null;
-        const canonical = Array.isArray(building.visitTiles) ? building.visitTiles : [];
-        const overflow = VISIT_OVERFLOW_TILES[building.type] || [];
-        if (!overflow.length) return canonical;
-        const intentAwareOverflow = overflow.map((tile, index) => ({
-            ...tile,
-            slotId: tile.slotId || `${building.type}:overflow:${index}`,
-            intentId: intent?.id || null,
-        }));
-        return [...canonical, ...intentAwareOverflow];
     }
 
     _allocateVisitTile(request = {}) {
@@ -1689,7 +1408,6 @@ export class IsometricRenderer {
         return this.visitTileAllocator?.allocate?.({
             ...request,
             building,
-            candidates: this._visitCandidatesForBuilding(building, request.intent),
         }) || null;
     }
 
@@ -2405,10 +2123,13 @@ export class IsometricRenderer {
         if (this._monumentBlockedTilesCache) return this._monumentBlockedTilesCache;
         const out = new Set();
         const grid = this.walkabilityGrid || [];
-        for (let y = 0; y < grid.length; y++) {
-            const row = grid[y] || [];
-            for (let x = 0; x < row.length; x++) {
-                if (!row[x]) out.add(`${x},${y}`);
+        if (!grid.length) {
+            this._monumentBlockedTilesCache = out;
+            return out;
+        }
+        for (let y = 0; y < MAP_SIZE; y++) {
+            for (let x = 0; x < MAP_SIZE; x++) {
+                if (!grid[y * MAP_SIZE + x]) out.add(`${x},${y}`);
             }
         }
         this._monumentBlockedTilesCache = out;
@@ -2734,7 +2455,7 @@ export class IsometricRenderer {
     }
 
     _summarizeCrowdClusters() {
-        const groups = new Map();
+        const entries = [];
         let visibleAgents = 0;
         let movingAgents = 0;
         for (const sprite of this.agentSprites.values()) {
@@ -2743,71 +2464,34 @@ export class IsometricRenderer {
             if (!tile || !Number.isFinite(tile.tileX) || !Number.isFinite(tile.tileY)) continue;
             visibleAgents++;
             if (sprite.moving) movingAgents++;
-            const cellX = Math.floor(tile.tileX / CROWD_CLUSTER_TILE_SIZE);
-            const cellY = Math.floor(tile.tileY / CROWD_CLUSTER_TILE_SIZE);
-            const key = `${cellX},${cellY}`;
-            const group = groups.get(key) || {
-                id: key,
-                count: 0,
-                moving: 0,
-                sumTileX: 0,
-                sumTileY: 0,
-                statuses: {},
-                providers: {},
-                teams: new Set(),
-            };
-            group.count++;
-            if (sprite.moving) group.moving++;
-            group.sumTileX += tile.tileX;
-            group.sumTileY += tile.tileY;
-            const status = sprite.agent?.status || 'unknown';
-            const provider = sprite.agent?.provider || 'unknown';
-            group.statuses[status] = (group.statuses[status] || 0) + 1;
-            group.providers[provider] = (group.providers[provider] || 0) + 1;
-            if (sprite.agent?.teamName) group.teams.add(sprite.agent.teamName);
-            groups.set(key, group);
+            entries.push({
+                tileX: tile.tileX,
+                tileY: tile.tileY,
+                moving: !!sprite.moving,
+                status: sprite.agent?.status || 'unknown',
+                provider: sprite.agent?.provider || 'unknown',
+                teamName: sprite.agent?.teamName || null,
+            });
         }
 
-        const minClusterSize = visibleAgents >= 90 ? 6 : visibleAgents >= 50 ? 5 : 3;
-        const clusters = Array.from(groups.values())
-            .filter(group => group.count >= minClusterSize)
-            .map(group => ({
-                id: group.id,
-                tileX: group.sumTileX / group.count,
-                tileY: group.sumTileY / group.count,
-                count: group.count,
-                moving: group.moving,
-                dominantStatus: this._dominantCountKey(group.statuses),
-                dominantProvider: this._dominantCountKey(group.providers),
-                teamCount: group.teams.size,
-            }))
-            .sort((a, b) => (b.count - a.count) || a.id.localeCompare(b.id))
-            .slice(0, CROWD_CLUSTER_TOP_LIMIT);
+        const summary = summarizeCrowdClusterEntries(entries, {
+            cellSize: CROWD_CLUSTER_TILE_SIZE,
+            topLimit: CROWD_CLUSTER_TOP_LIMIT,
+            includeDominantProvider: true,
+        });
 
         return {
             agentCount: this.agentSprites.size,
             visibleAgents,
             movingAgents,
             clusterCellSize: CROWD_CLUSTER_TILE_SIZE,
-            minClusterSize,
-            denseClusterCount: clusters.length,
-            maxClusterSize: clusters.reduce((max, cluster) => Math.max(max, cluster.count || 0), 0),
-            congestedAgents: clusters.reduce((sum, cluster) => sum + (cluster.count || 0), 0),
-            clusters,
+            minClusterSize: summary.minClusterSize,
+            denseClusterCount: summary.clusters.length,
+            maxClusterSize: summary.maxClusterSize,
+            congestedAgents: summary.congestedAgents,
+            clusters: summary.clusters,
             localAvoidance: { ...this._localAvoidanceMetrics },
         };
-    }
-
-    _dominantCountKey(counts) {
-        let bestKey = null;
-        let bestCount = -1;
-        for (const [key, count] of Object.entries(counts || {})) {
-            if (count > bestCount || (count === bestCount && key.localeCompare(bestKey || '') < 0)) {
-                bestKey = key;
-                bestCount = count;
-            }
-        }
-        return bestKey;
     }
 
     _resolveStationaryOverlaps() {
