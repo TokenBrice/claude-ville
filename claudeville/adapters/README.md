@@ -71,7 +71,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `sessionId` | string | Unique across providers. Codex, Gemini, Kimi, and OpenCode prefix with `codex-` / `gemini-` / `kimi-` / `opencode-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
 | `provider` | `'claude' \| 'codex' \| 'gemini' \| 'kimi' \| 'opencode' \| 'git'` | Adapter-backed sessions use the CLI/source provider id. DeepSeek-backed OpenCode sessions still use `provider: 'opencode'` and expose DeepSeek through `model`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
 | `agentId` | string \| null | Provider-specific agent thread id; nullable for Gemini. |
-| `agentType` | `'main' \| 'sub-agent' \| 'team-member'` | Drives sprite/card grouping. Default `'main'`. |
+| `agentType` | `'main' \| 'sub-agent' \| 'team-member' \| 'repository'` | Drives sprite/card grouping. Default `'main'`. Synthetic git sessions use `'repository'`. |
 | `agentName` | string \| null | Human label when the provider exposes one (Codex `session_index.jsonl` `thread_name` with `agent_nickname` fallback, Claude team launch name). |
 | `project` | string \| null | Absolute working directory. Gemini may resolve this from a SHA-256 hash and return null on failure. |
 | `model` | string | Free-form. UI strips `claude-` and `-2025…` suffixes for display. |

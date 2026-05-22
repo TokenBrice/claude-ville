@@ -21,10 +21,17 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const {
+  createDetailResponse,
+  statCacheKey,
+  summarizeToolInput: summarizeSharedToolInput,
+  trimCache,
+} = require('./shared');
 
 const GEMINI_DIR = path.join(os.homedir(), '.gemini');
 const TMP_DIR = path.join(GEMINI_DIR, 'tmp');
 const SESSION_CACHE_MAX = 256;
+const GEMINI_TOOL_INPUT_FIELDS = Object.freeze(['command', 'file_path']);
 
 const _parsedSessionCache = new Map();
 const _sessionFileById = new Map();
@@ -104,7 +111,7 @@ function resolveProjectPath(projectHash) {
 function getParsedSession(filePath) {
   try {
     const stat = fs.statSync(filePath);
-    const key = `${filePath}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino || 0}`;
+    const key = statCacheKey(filePath, stat);
     const cached = _parsedSessionCache.get(filePath);
     if (cached?.key === key) {
       _parsedSessionCache.delete(filePath);
@@ -115,15 +122,31 @@ function getParsedSession(filePath) {
     const content = fs.readFileSync(filePath, 'utf-8');
     const session = JSON.parse(content);
     _parsedSessionCache.set(filePath, { key, session });
-    while (_parsedSessionCache.size > SESSION_CACHE_MAX) {
-      const oldest = _parsedSessionCache.keys().next().value;
-      if (oldest === undefined) break;
-      _parsedSessionCache.delete(oldest);
-    }
+    trimCache(_parsedSessionCache, SESSION_CACHE_MAX);
     return session;
   } catch {
     return null;
   }
+}
+
+function summarizeGeminiToolArgs(args, { maxLength = 60, basenameFile = true, missingValue = null } = {}) {
+  return summarizeSharedToolInput(args, {
+    fields: GEMINI_TOOL_INPUT_FIELDS,
+    basenameFields: basenameFile ? ['file_path'] : [],
+    maxLength,
+    missingValue,
+    objectFallback: 'json',
+  });
+}
+
+function summarizeGeminiRawInput(input, { maxLength = 60, missingValue = null } = {}) {
+  return summarizeSharedToolInput(input, {
+    fields: [],
+    maxLength,
+    missingValue,
+    stringFallback: 'string',
+    objectFallback: 'json',
+  });
 }
 
 // ─── Session parsing ────────────────────────────────────────
@@ -171,10 +194,7 @@ function parseSession(filePath) {
           for (const tc of msg.toolCalls) {
             detail.lastTool = tc.name || 'function_call';
             if (tc.args) {
-              const args = tc.args;
-              if (args.command) detail.lastToolInput = args.command.substring(0, 60);
-              else if (args.file_path) detail.lastToolInput = args.file_path.split('/').pop();
-              else detail.lastToolInput = JSON.stringify(args).substring(0, 60);
+              detail.lastToolInput = summarizeGeminiToolArgs(tc.args, { maxLength: 60, basenameFile: true });
             }
             break;
           }
@@ -185,9 +205,7 @@ function parseSession(filePath) {
       if (!detail.lastTool && msg.type === 'tool_call') {
         detail.lastTool = msg.name || msg.toolName || 'tool';
         if (msg.input) {
-          detail.lastToolInput = (typeof msg.input === 'string'
-            ? msg.input : JSON.stringify(msg.input)
-          ).substring(0, 60);
+          detail.lastToolInput = summarizeGeminiRawInput(msg.input, { maxLength: 60 });
         }
       }
 
@@ -213,12 +231,9 @@ function getToolHistory(filePath, maxItems = 15) {
       // gemini type: check toolCalls
       if (msg.type === 'gemini' && msg.toolCalls && Array.isArray(msg.toolCalls)) {
         for (const tc of msg.toolCalls) {
-          let detail = '';
-          if (tc.args) {
-            if (tc.args.command) detail = tc.args.command.substring(0, 80);
-            else if (tc.args.file_path) detail = tc.args.file_path;
-            else detail = JSON.stringify(tc.args).substring(0, 80);
-          }
+          const detail = tc.args
+            ? summarizeGeminiToolArgs(tc.args, { maxLength: 80, basenameFile: false, missingValue: '' })
+            : '';
           tools.push({
             tool: tc.name || 'function_call',
             detail,
@@ -229,12 +244,9 @@ function getToolHistory(filePath, maxItems = 15) {
 
       // tool_call type
       if (msg.type === 'tool_call') {
-        let detail = '';
-        if (msg.input) {
-          detail = (typeof msg.input === 'string'
-            ? msg.input : JSON.stringify(msg.input)
-          ).substring(0, 80);
-        }
+        const detail = msg.input
+          ? summarizeGeminiRawInput(msg.input, { maxLength: 80, missingValue: '' })
+          : '';
         tools.push({
           tool: msg.name || msg.toolName || 'tool',
           detail,
@@ -401,11 +413,11 @@ class GeminiAdapter {
     const cleanId = sessionId.replace('gemini-', '');
     const indexedPath = _sessionFileById.get(sessionId);
     if (indexedPath && fs.existsSync(indexedPath)) {
-      return {
+      return createDetailResponse({
         toolHistory: getToolHistory(indexedPath),
         messages: getRecentMessages(indexedPath),
         sessionId,
-      };
+      });
     }
 
     const sessionFiles = scanActiveSessions(30 * 60 * 1000);
@@ -413,15 +425,15 @@ class GeminiAdapter {
       const fileId = fileName.replace('session-', '').replace('.json', '');
       if (fileId === cleanId) {
         _sessionFileById.set(sessionId, filePath);
-        return {
+        return createDetailResponse({
           toolHistory: getToolHistory(filePath),
           messages: getRecentMessages(filePath),
           sessionId,
-        };
+        });
       }
     }
 
-    return { toolHistory: [], messages: [] };
+    return createDetailResponse({ sessionId });
   }
 
   getWatchPaths() {

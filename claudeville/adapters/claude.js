@@ -6,6 +6,15 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const {
+  createDetailResponse,
+  parseJsonLines,
+  readJsonLines: readSharedJsonLines,
+  readTailLines,
+  statCacheKey,
+  summarizeToolInput: summarizeSharedToolInput,
+  trimCache,
+} = require('./shared');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -19,6 +28,27 @@ const MAX_HEAD_BYTES = 512 * 1024;
 const SESSION_ENTRY_CACHE_MAX = 256;
 const AGENT_LAUNCH_CACHE_MAX = 128;
 const TOKEN_USAGE_CACHE_MAX = 128;
+const CLAUDE_TOOL_INPUT_FIELDS = Object.freeze([
+  'command',
+  'file_path',
+  'pattern',
+  'query',
+  'target',
+  'target_agent_id',
+  'targetAgentId',
+  'session_id',
+  'sessionId',
+  'agent_id',
+  'agentId',
+  'thread_id',
+  'threadId',
+  'id',
+  'targets',
+  'recipient',
+  'description',
+  'prompt',
+  'url',
+]);
 
 const _sessionEntryCache = new Map();
 const _agentLaunchCache = new Map();
@@ -31,78 +61,20 @@ const _teamsCache = { signature: '', value: [] };
 // ─── Utilities ─────────────────────────────────────────────
 
 function readLastLines(filePath, lineCount) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      const stat = fs.fstatSync(fd);
-      if (stat.size === 0) return [];
-      const chunks = [];
-      let position = stat.size;
-      let bytesCollected = 0;
-      let newlineCount = 0;
-      while (position > 0 && newlineCount <= lineCount && bytesCollected < MAX_TAIL_BYTES) {
-        const bytesToRead = Math.min(TAIL_CHUNK_BYTES, position, MAX_TAIL_BYTES - bytesCollected);
-        position -= bytesToRead;
-        const buffer = Buffer.allocUnsafe(bytesToRead);
-        const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
-        if (bytesRead <= 0) break;
-        const chunk = buffer.toString('utf-8', 0, bytesRead);
-        chunks.unshift(chunk);
-        bytesCollected += bytesRead;
-        for (let i = 0; i < chunk.length; i++) {
-          if (chunk.charCodeAt(i) === 10) newlineCount++;
-        }
-      }
-      return chunks.join('').trim().split('\n').slice(-lineCount);
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return [];
-  }
-}
-
-function readFirstLines(filePath, lineCount) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      const stat = fs.fstatSync(fd);
-      if (stat.size === 0) return [];
-      const bytesToRead = Math.min(stat.size, MAX_HEAD_BYTES);
-      const buffer = Buffer.allocUnsafe(bytesToRead);
-      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
-      return buffer.toString('utf-8', 0, bytesRead).split('\n').slice(0, lineCount);
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return [];
-  }
-}
-
-function parseJsonLines(lines) {
-  const results = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try { results.push(JSON.parse(line)); } catch { /* ignore */ }
-  }
-  return results;
+  return readTailLines(filePath, lineCount, {
+    chunkBytes: TAIL_CHUNK_BYTES,
+    maxBytes: MAX_TAIL_BYTES,
+  });
 }
 
 function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } = {}) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const lines = from === 'start' ? readFirstLines(filePath, count) : readLastLines(filePath, count);
-    return parseJsonLines(lines);
-  } catch {
-    return [];
-  }
-}
-
-function statCacheKey(filePath, stat) {
-  return `${filePath}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino || 0}`;
+  return readSharedJsonLines(filePath, {
+    from,
+    count,
+    headMaxBytes: MAX_HEAD_BYTES,
+    tailChunkBytes: TAIL_CHUNK_BYTES,
+    tailMaxBytes: MAX_TAIL_BYTES,
+  });
 }
 
 function readClaudeSessionNames() {
@@ -216,11 +188,7 @@ function getSessionEntries(filePath) {
     }
     const entries = readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
     _sessionEntryCache.set(filePath, { key: cacheKey, entries });
-    while (_sessionEntryCache.size > SESSION_ENTRY_CACHE_MAX) {
-      const oldest = _sessionEntryCache.keys().next().value;
-      if (oldest === undefined) break;
-      _sessionEntryCache.delete(oldest);
-    }
+    trimCache(_sessionEntryCache, SESSION_ENTRY_CACHE_MAX);
     return entries;
   } catch {
     return [];
@@ -245,11 +213,7 @@ function getFullSessionEntries(filePath) {
   const raw = fs.readFileSync(filePath, 'utf-8');
   const entries = parseJsonLines(raw ? raw.split('\n') : []);
   _tokenUsageCache.set(filePath, { key: cacheKey, entries, usage: null });
-  while (_tokenUsageCache.size > TOKEN_USAGE_CACHE_MAX) {
-    const oldest = _tokenUsageCache.keys().next().value;
-    if (oldest === undefined) break;
-    _tokenUsageCache.delete(oldest);
-  }
+  trimCache(_tokenUsageCache, TOKEN_USAGE_CACHE_MAX);
   return entries;
 }
 
@@ -262,30 +226,14 @@ function readUsageNumber(usage, keys) {
 }
 
 function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {}) {
-  if (!input) return null;
-
-  let value = null;
-  if (input.command) value = input.command;
-  else if (input.file_path) value = basenameFile ? input.file_path.split('/').pop() : input.file_path;
-  else if (input.pattern) value = input.pattern;
-  else if (input.query) value = input.query;
-  else if (input.target) value = input.target;
-  else if (input.target_agent_id) value = input.target_agent_id;
-  else if (input.targetAgentId) value = input.targetAgentId;
-  else if (input.session_id) value = input.session_id;
-  else if (input.sessionId) value = input.sessionId;
-  else if (input.agent_id) value = input.agent_id;
-  else if (input.agentId) value = input.agentId;
-  else if (input.thread_id) value = input.thread_id;
-  else if (input.threadId) value = input.threadId;
-  else if (input.id) value = input.id;
-  else if (Array.isArray(input.targets)) value = input.targets.join(',');
-  else if (input.recipient) value = input.recipient;
-  else if (input.description) value = input.description;
-  else if (input.prompt) value = input.prompt;
-  else if (input.url) value = input.url;
-
-  return value ? String(value).substring(0, maxLength) : null;
+  return summarizeSharedToolInput(input, {
+    fields: CLAUDE_TOOL_INPUT_FIELDS,
+    basenameFields: basenameFile ? ['file_path'] : [],
+    maxLength,
+    missingValue: null,
+    stringFallback: 'none',
+    objectFallback: 'none',
+  });
 }
 
 function getFirstUserPrompt(filePath) {
@@ -332,11 +280,7 @@ function getAgentLaunches(sessionFilePath) {
     }
 
     _agentLaunchCache.set(sessionFilePath, { key: cacheKey, launches });
-    while (_agentLaunchCache.size > AGENT_LAUNCH_CACHE_MAX) {
-      const oldest = _agentLaunchCache.keys().next().value;
-      if (oldest === undefined) break;
-      _agentLaunchCache.delete(oldest);
-    }
+    trimCache(_agentLaunchCache, AGENT_LAUNCH_CACHE_MAX);
     return launches;
   } catch {
     return [];
@@ -345,16 +289,12 @@ function getAgentLaunches(sessionFilePath) {
 
 // ─── Session parsing ────────────────────────────────────────
 
-function getSessionDetail(sessionId, projectPath) {
+function getClaudeTranscriptSummary(filePath, tailCount) {
   const detail = { model: null, lastTool: null, lastMessage: null, lastToolInput: null };
-  if (!projectPath) return detail;
-
-  const encoded = projectPath.replace(/\//g, '-');
-  const sessionFile = path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`);
-  if (!fs.existsSync(sessionFile)) return detail;
+  if (!filePath || !fs.existsSync(filePath)) return detail;
 
   try {
-    const entries = tailEntries(sessionFile, 30);
+    const entries = tailEntries(filePath, tailCount);
 
     for (let i = entries.length - 1; i >= 0; i--) {
       const msg = entries[i].message;
@@ -382,33 +322,14 @@ function getSessionDetail(sessionId, projectPath) {
   return detail;
 }
 
+function getClaudeMainSessionSummary(sessionId, projectPath) {
+  if (!projectPath) return getClaudeTranscriptSummary(null, 30);
+  const encoded = projectPath.replace(/\//g, '-');
+  return getClaudeTranscriptSummary(path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`), 30);
+}
+
 function getSubAgentDetail(filePath) {
-  const detail = { model: null, lastTool: null, lastMessage: null, lastToolInput: null };
-  try {
-    const entries = tailEntries(filePath, 20);
-
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const msg = entries[i].message;
-      if (!msg || msg.role !== 'assistant') continue;
-
-      if (!detail.model && msg.model) detail.model = msg.model;
-      const content = msg.content;
-      if (!Array.isArray(content)) continue;
-
-      for (const block of content) {
-        if (!detail.lastTool && block.type === 'tool_use') {
-          detail.lastTool = block.name || null;
-          detail.lastToolInput = summarizeToolInput(block.input, { maxLength: 60, basenameFile: true });
-        }
-        if (!detail.lastMessage && block.type === 'text' && block.text) {
-          const text = block.text.trim();
-          if (text.length > 0) detail.lastMessage = text.substring(0, 80);
-        }
-      }
-      if (detail.model && detail.lastTool && detail.lastMessage) break;
-    }
-  } catch { /* ignore */ }
-  return detail;
+  return getClaudeTranscriptSummary(filePath, 20);
 }
 
 function getToolHistory(sessionFilePath, maxItems = 15) {
@@ -660,7 +581,7 @@ class ClaudeAdapter {
       if (now - lastActive > activeThresholdMs) continue;
 
       session.lastActivity = lastActive;
-      const detail = getSessionDetail(session.sessionId, session.project);
+      const detail = getClaudeMainSessionSummary(session.sessionId, session.project);
       const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
       const sessionName = sessionNames.get(session.sessionId) || null;
       const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
@@ -854,13 +775,13 @@ class ClaudeAdapter {
 
   getSessionDetail(sessionId, project) {
     const filePath = resolveSessionFilePath(sessionId, project);
-    if (!filePath) return { toolHistory: [], messages: [], tokenUsage: null };
-    return {
+    if (!filePath) return createDetailResponse({ sessionId });
+    return createDetailResponse({
       toolHistory: getToolHistory(filePath),
       messages: getRecentMessages(filePath),
       tokenUsage: getTokenUsage(filePath),
       sessionId,
-    };
+    });
   }
 
   getWatchPaths() {

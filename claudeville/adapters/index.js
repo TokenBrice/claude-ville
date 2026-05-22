@@ -11,6 +11,8 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { trimCache } = require('./shared');
+const { decorateSessionPresentation } = require('./sessionPresentation');
 const {
   getGitEnrichmentPerfStats,
   invalidateGitStatusCaches,
@@ -65,7 +67,7 @@ function normalizeProviderId(provider, fallback = 'claude') {
 
 function normalizeSession(session, context = {}) {
   const provider = normalizeProviderId(session?.provider, context.provider || 'unknown');
-  return {
+  return decorateSessionPresentation({
     ...session,
     sessionId: String(session?.sessionId || ''),
     provider,
@@ -83,7 +85,7 @@ function normalizeSession(session, context = {}) {
     parentSessionId: session?.parentSessionId ?? null,
     reasoningEffort: session?.reasoningEffort ?? null,
     gitEvents: Array.isArray(session?.gitEvents) ? session.gitEvents : [],
-  };
+  });
 }
 
 function normalizeDetail(detail, context = {}) {
@@ -320,13 +322,7 @@ function invalidateSessionCaches({ details = true, provider = null } = {}) {
 }
 
 function _trimSessionDetailCache() {
-  if (_sessionDetailCache.size <= SESSION_DETAIL_MAX_CACHE) return;
-  const removeCount = _sessionDetailCache.size - SESSION_DETAIL_MAX_CACHE;
-  for (let i = 0; i < removeCount; i++) {
-    const oldest = _sessionDetailCache.keys().next().value;
-    if (oldest === undefined) break;
-    _sessionDetailCache.delete(oldest);
-  }
+  trimCache(_sessionDetailCache, SESSION_DETAIL_MAX_CACHE);
 }
 
 /**
@@ -352,14 +348,8 @@ function getAllWatchPaths() {
  * Active adapter list
  */
 function getActiveProviders() {
-  return adapters.filter(a => a.isAvailable()).map(a => ({
-    name: a.name,
-    provider: a.provider,
-    homeDir: a.homeDir,
-    synthetic: false,
-    supportsDetail: typeof a.getSessionDetail === 'function',
-    supportsWatchPaths: typeof a.getWatchPaths === 'function',
-  }));
+  return getAdapterMetadata({ includeUnavailable: false })
+    .filter((metadata) => !metadata.synthetic);
 }
 
 function getAdapterPerfStats() {

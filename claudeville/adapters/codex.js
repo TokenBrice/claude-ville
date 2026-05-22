@@ -12,6 +12,14 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const {
+  createDetailResponse,
+  fileSignature,
+  parseJsonLines,
+  readHeadText: readSharedHeadText,
+  readLines: readSharedLines,
+  summarizeToolInput: summarizeSharedToolInput,
+} = require('./shared');
 
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
@@ -47,96 +55,18 @@ let _rolloutDiscoveryStats = {
   warning: null,
 };
 
-function readHeadLines(filePath, count) {
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const stat = fs.fstatSync(fd);
-    if (stat.size === 0) return [];
-
-    const bytesToRead = Math.min(stat.size, MAX_HEAD_BYTES);
-    const buffer = Buffer.allocUnsafe(bytesToRead);
-    const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
-    return buffer.toString('utf-8', 0, bytesRead).split('\n').slice(0, count);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
 function readHeadText(filePath, maxBytes = MAX_METADATA_BYTES) {
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const stat = fs.fstatSync(fd);
-    if (stat.size === 0) return '';
-
-    const bytesToRead = Math.min(stat.size, maxBytes);
-    const buffer = Buffer.allocUnsafe(bytesToRead);
-    const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
-    return buffer.toString('utf-8', 0, bytesRead);
-  } finally {
-    fs.closeSync(fd);
-  }
-}
-
-function readTailLines(filePath, count) {
-  const fd = fs.openSync(filePath, 'r');
-  try {
-    const stat = fs.fstatSync(fd);
-    if (stat.size === 0) return [];
-
-    const chunks = [];
-    let position = stat.size;
-    let bytesCollected = 0;
-    let newlineCount = 0;
-
-    while (position > 0 && newlineCount <= count && bytesCollected < MAX_TAIL_BYTES) {
-      const bytesToRead = Math.min(TAIL_CHUNK_BYTES, position, MAX_TAIL_BYTES - bytesCollected);
-      position -= bytesToRead;
-
-      const buffer = Buffer.allocUnsafe(bytesToRead);
-      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
-      if (bytesRead <= 0) break;
-
-      const chunk = buffer.toString('utf-8', 0, bytesRead);
-      chunks.unshift(chunk);
-      bytesCollected += bytesRead;
-
-      for (let i = 0; i < chunk.length; i++) {
-        if (chunk.charCodeAt(i) === 10) newlineCount++;
-      }
-    }
-
-    return chunks.join('').trim().split('\n').slice(-count);
-  } finally {
-    fs.closeSync(fd);
-  }
+  return readSharedHeadText(filePath, maxBytes);
 }
 
 function readLines(filePath, { from = 'end', count = 50 } = {}) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    if (from === 'start') return readHeadLines(filePath, count);
-    return readTailLines(filePath, count);
-  } catch {
-    return [];
-  }
-}
-
-function parseJsonLines(lines) {
-  const results = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try { results.push(JSON.parse(line)); } catch { /* ignore */ }
-  }
-  return results;
-}
-
-function fileSignature(filePath) {
-  try {
-    const stat = fs.statSync(filePath);
-    return `${filePath}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino || 0}`;
-  } catch {
-    return 'missing';
-  }
+  return readSharedLines(filePath, {
+    from,
+    count,
+    headMaxBytes: MAX_HEAD_BYTES,
+    tailChunkBytes: TAIL_CHUNK_BYTES,
+    tailMaxBytes: MAX_TAIL_BYTES,
+  });
 }
 
 function parseTimestampMs(value) {
@@ -240,6 +170,27 @@ function applyTurnMetadata(detail, metadata) {
   if (!detail.project && metadata.project) detail.project = metadata.project;
 }
 
+function summarizeCodexToolPayload(payload, { maxLength = MAX_CURRENT_TOOL_INPUT_CHARS, missingValue = null } = {}) {
+  if (payload.arguments) {
+    const input = typeof payload.arguments === 'string'
+      ? payload.arguments
+      : JSON.stringify(payload.arguments);
+    return summarizeSharedToolInput(input, {
+      maxLength,
+      missingValue,
+      stringFallback: 'string',
+    });
+  }
+  if (payload.command) {
+    return summarizeSharedToolInput(payload.command, {
+      maxLength,
+      missingValue,
+      stringFallback: 'string',
+    });
+  }
+  return missingValue;
+}
+
 function parseEarlyMetadata(filePath, detail) {
   let headText = '';
   try {
@@ -313,13 +264,7 @@ function parseRollout(filePath) {
       // Tool use (function_call)
       if (!detail.lastTool && (payload.type === 'function_call' || payload.type === 'command_execution')) {
         detail.lastTool = payload.name || payload.type;
-        if (payload.arguments) {
-          detail.lastToolInput = (typeof payload.arguments === 'string'
-            ? payload.arguments : JSON.stringify(payload.arguments)
-          ).substring(0, MAX_CURRENT_TOOL_INPUT_CHARS);
-        } else if (payload.command) {
-          detail.lastToolInput = payload.command.substring(0, MAX_CURRENT_TOOL_INPUT_CHARS);
-        }
+        detail.lastToolInput = summarizeCodexToolPayload(payload);
       }
 
       // Text message (assistant)
@@ -369,14 +314,7 @@ function getToolHistory(filePath, maxItems = 15) {
       const payload = entry.payload;
 
       if (payload.type === 'function_call' || payload.type === 'command_execution') {
-        let detail = '';
-        if (payload.arguments) {
-          detail = (typeof payload.arguments === 'string'
-            ? payload.arguments : JSON.stringify(payload.arguments)
-          ).substring(0, 80);
-        } else if (payload.command) {
-          detail = payload.command.substring(0, 80);
-        }
+        const detail = summarizeCodexToolPayload(payload, { maxLength: 80, missingValue: '' });
         tools.push({
           tool: payload.name || payload.type,
           detail,
@@ -895,12 +833,12 @@ class CodexAdapter {
     const cleanId = sessionId.replace('codex-', '');
     const indexedPath = _rolloutFileBySessionId.get(sessionId);
     if (indexedPath && fs.existsSync(indexedPath)) {
-      return {
+      return createDetailResponse({
         toolHistory: getToolHistory(indexedPath),
         messages: getRecentMessages(indexedPath),
         tokenUsage: getTokenUsage(indexedPath),
         sessionId,
-      };
+      });
     }
 
     const rollouts = scanRecentRollouts(30 * 60 * 1000); // expand to a 30-minute range
@@ -909,16 +847,16 @@ class CodexAdapter {
       const fileId = fileName.replace('rollout-', '').replace('.jsonl', '');
       if (fileId === cleanId) {
         _rolloutFileBySessionId.set(sessionId, filePath);
-        return {
+        return createDetailResponse({
           toolHistory: getToolHistory(filePath),
           messages: getRecentMessages(filePath),
           tokenUsage: getTokenUsage(filePath),
           sessionId,
-        };
+        });
       }
     }
 
-    return { toolHistory: [], messages: [], tokenUsage: null };
+    return createDetailResponse({ sessionId });
   }
 
   getWatchPaths() {

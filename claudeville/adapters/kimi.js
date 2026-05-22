@@ -18,6 +18,11 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const {
+  createDetailResponse,
+  readJsonLines: readSharedJsonLines,
+  summarizeToolInput: summarizeSharedToolInput,
+} = require('./shared');
 
 const KIMI_DIR = path.join(os.homedir(), '.kimi');
 const SESSIONS_DIR = path.join(KIMI_DIR, 'sessions');
@@ -28,8 +33,19 @@ const GIT_EVENT_SCAN_LINES = 5000;
 const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_HEAD_BYTES = 512 * 1024;
+const KIMI_TOOL_INPUT_FIELDS = Object.freeze([
+  'command',
+  'file_path',
+  'pattern',
+  'query',
+  'target',
+  'path',
+  'description',
+  'prompt',
+  'url',
+  'content',
+]);
 
-const _sessionCache = new Map();
 const _configCache = { at: 0, value: null };
 const _kimiJsonCache = { at: 0, value: null };
 
@@ -39,75 +55,14 @@ function md5(str) {
   return crypto.createHash('md5').update(str).digest('hex');
 }
 
-function readTailLines(filePath, lineCount) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      const stat = fs.fstatSync(fd);
-      if (stat.size === 0) return [];
-      const chunks = [];
-      let position = stat.size;
-      let bytesCollected = 0;
-      let newlineCount = 0;
-      while (position > 0 && newlineCount <= lineCount && bytesCollected < MAX_TAIL_BYTES) {
-        const bytesToRead = Math.min(TAIL_CHUNK_BYTES, position, MAX_TAIL_BYTES - bytesCollected);
-        position -= bytesToRead;
-        const buffer = Buffer.allocUnsafe(bytesToRead);
-        const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
-        if (bytesRead <= 0) break;
-        const chunk = buffer.toString('utf-8', 0, bytesRead);
-        chunks.unshift(chunk);
-        bytesCollected += bytesRead;
-        for (let i = 0; i < chunk.length; i++) {
-          if (chunk.charCodeAt(i) === 10) newlineCount++;
-        }
-      }
-      return chunks.join('').trim().split('\n').slice(-lineCount);
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return [];
-  }
-}
-
-function readHeadLines(filePath, lineCount) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const fd = fs.openSync(filePath, 'r');
-    try {
-      const stat = fs.fstatSync(fd);
-      if (stat.size === 0) return [];
-      const bytesToRead = Math.min(stat.size, MAX_HEAD_BYTES);
-      const buffer = Buffer.allocUnsafe(bytesToRead);
-      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, 0);
-      return buffer.toString('utf-8', 0, bytesRead).split('\n').slice(0, lineCount);
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch {
-    return [];
-  }
-}
-
-function parseJsonLines(lines) {
-  const results = [];
-  for (const line of lines) {
-    if (!line.trim()) continue;
-    try { results.push(JSON.parse(line)); } catch { /* ignore */ }
-  }
-  return results;
-}
-
 function readJsonLines(filePath, { from = 'end', count = 100 } = {}) {
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const lines = from === 'start' ? readHeadLines(filePath, count) : readTailLines(filePath, count);
-    return parseJsonLines(lines);
-  } catch {
-    return [];
-  }
+  return readSharedJsonLines(filePath, {
+    from,
+    count,
+    headMaxBytes: MAX_HEAD_BYTES,
+    tailChunkBytes: TAIL_CHUNK_BYTES,
+    tailMaxBytes: MAX_TAIL_BYTES,
+  });
 }
 
 function readKimiJson() {
@@ -215,23 +170,15 @@ function getSessionTitle(statePath) {
 }
 
 function summarizeToolInput(argsStr, { maxLength = 60, basenameFile = true } = {}) {
-  if (!argsStr) return null;
-  let args = null;
-  try { args = JSON.parse(argsStr); } catch { return String(argsStr).substring(0, maxLength); }
-
-  let value = null;
-  if (args.command) value = args.command;
-  else if (args.file_path) value = basenameFile ? args.file_path.split('/').pop() : args.file_path;
-  else if (args.pattern) value = args.pattern;
-  else if (args.query) value = args.query;
-  else if (args.target) value = args.target;
-  else if (args.path) value = args.path;
-  else if (args.description) value = args.description;
-  else if (args.prompt) value = args.prompt;
-  else if (args.url) value = args.url;
-  else if (args.content) value = String(args.content).substring(0, maxLength);
-
-  return value ? String(value).substring(0, maxLength) : null;
+  return summarizeSharedToolInput(argsStr, {
+    fields: KIMI_TOOL_INPUT_FIELDS,
+    basenameFields: basenameFile ? ['file_path'] : [],
+    maxLength,
+    missingValue: null,
+    parseJsonStrings: true,
+    stringFallback: 'string',
+    objectFallback: 'none',
+  });
 }
 
 function parseWireDetail(filePath) {
@@ -373,10 +320,6 @@ function getTokenUsage(filePath) {
   return emptyUsage;
 }
 
-function normalizeCommand(command) {
-  return String(command || '').trim().replace(/\s+/g, ' ');
-}
-
 function getGitEvents(filePath, context) {
   const events = [];
   try {
@@ -486,7 +429,7 @@ class KimiAdapter {
     const cleanId = sessionId.replace('kimi-', '');
     // Find the wire file across all project directories
     if (!fs.existsSync(SESSIONS_DIR)) {
-      return { toolHistory: [], messages: [], tokenUsage: null };
+      return createDetailResponse({ sessionId });
     }
 
     try {
@@ -496,17 +439,17 @@ class KimiAdapter {
       for (const projDir of projectDirs) {
         const wirePath = path.join(SESSIONS_DIR, projDir.name, cleanId, 'wire.jsonl');
         if (fs.existsSync(wirePath)) {
-          return {
+          return createDetailResponse({
             toolHistory: getToolHistory(wirePath),
             messages: getRecentMessages(wirePath),
             tokenUsage: getTokenUsage(wirePath),
             sessionId,
-          };
+          });
         }
       }
     } catch { /* ignore */ }
 
-    return { toolHistory: [], messages: [], tokenUsage: null };
+    return createDetailResponse({ sessionId });
   }
 
   getWatchPaths() {
@@ -523,7 +466,6 @@ class KimiAdapter {
   }
 
   invalidateCaches() {
-    _sessionCache.clear();
     _configCache.at = 0;
     _configCache.value = null;
     _kimiJsonCache.at = 0;

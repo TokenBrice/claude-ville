@@ -12,6 +12,10 @@ const path = require('path');
 const os = require('os');
 const { execFileSync } = require('child_process');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const {
+  createDetailResponse,
+  summarizeToolInput: summarizeSharedToolInput,
+} = require('./shared');
 
 const OPENCODE_CONFIG_DIR = process.env.CLAUDEVILLE_OPENCODE_CONFIG_DIR
   || path.join(os.homedir(), '.config', 'opencode');
@@ -27,6 +31,18 @@ const DETAIL_TOOL_LIMIT = 15;
 const DETAIL_MESSAGE_OUTPUT_LIMIT = 5;
 const SQL_TIMEOUT_MS = 3000;
 const SQL_MAX_BUFFER = 4 * 1024 * 1024;
+const OPENCODE_TOOL_INPUT_FIELDS = Object.freeze([
+  'description',
+  'command',
+  'cmd',
+  'path',
+  'filePath',
+  'file_path',
+  'pattern',
+  'query',
+  'prompt',
+  'url',
+]);
 
 let _sqliteModule = undefined;
 let _sqliteCliAvailable = undefined;
@@ -160,26 +176,18 @@ function compactText(value, maxLength = 80) {
 }
 
 function summarizeToolInput(input, { maxLength = 80 } = {}) {
-  if (!input) return '';
-  if (typeof input === 'string') return compactText(input, maxLength);
-  if (typeof input === 'object' && !Object.keys(input).length) return '';
-
-  const fields = [
-    'description',
-    'command',
-    'cmd',
-    'path',
-    'filePath',
-    'file_path',
-    'pattern',
-    'query',
-    'prompt',
-    'url',
-  ];
-  for (const field of fields) {
-    if (input[field] != null) return compactText(input[field], maxLength);
-  }
-  return compactText(JSON.stringify(input), maxLength);
+  return summarizeSharedToolInput(input, {
+    fields: OPENCODE_TOOL_INPUT_FIELDS,
+    maxLength,
+    missingValue: '',
+    emptyObjectValue: '',
+    requireTruthyField: false,
+    compactWhitespace: true,
+    ellipsis: true,
+    falseyAsEmpty: true,
+    stringFallback: 'string',
+    objectFallback: 'json',
+  });
 }
 
 function tokenUsageFromSession(row, parts = []) {
@@ -523,17 +531,17 @@ class OpenCodeAdapter {
 
   getSessionDetail(sessionId, project) {
     if (!this.isAvailable()) {
-      return { provider: 'opencode', sessionId, project, toolHistory: [], messages: [], tokenUsage: null };
+      return createDetailResponse({ provider: 'opencode', sessionId, project });
     }
 
     const cleanId = rawSessionId(sessionId);
     const row = getSessionRow(cleanId);
     if (!row) {
-      return { provider: 'opencode', sessionId, project, toolHistory: [], messages: [], tokenUsage: null };
+      return createDetailResponse({ provider: 'opencode', sessionId, project });
     }
 
     const parts = getAllRecentPartsForSession(cleanId, DETAIL_PART_LIMIT);
-    return {
+    return createDetailResponse({
       provider: 'opencode',
       sessionId,
       project: row.directory || row.worktree || project || '',
@@ -546,7 +554,7 @@ class OpenCodeAdapter {
         sessionId,
         project: row.directory || row.worktree || project || null,
       }),
-    };
+    });
   }
 
   getWatchPaths() {
