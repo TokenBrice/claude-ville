@@ -1,117 +1,184 @@
-const DIRECT_TOOL_CLASSIFICATIONS = Object.freeze({
-    Read: { building: 'archive', reason: 'read-local', confidence: 0.72 },
-    Grep: { building: 'archive', reason: 'search-local', confidence: 0.7 },
-    Glob: { building: 'archive', reason: 'find-local', confidence: 0.68 },
-    LS: { building: 'archive', reason: 'list-local', confidence: 0.64 },
+const TOOL_METADATA = Object.freeze({
+    Read: {
+        classification: { building: 'archive', reason: 'read-local', confidence: 0.72 },
+        icon: '📖',
+        category: 'read',
+        actionLabel: 'Reading',
+        localInspection: true,
+    },
+    Grep: {
+        classification: { building: 'archive', reason: 'search-local', confidence: 0.7 },
+        icon: '🔍',
+        category: 'search',
+        actionLabel: 'Searching',
+        localInspection: true,
+    },
+    Glob: {
+        classification: { building: 'archive', reason: 'find-local', confidence: 0.68 },
+        icon: '📁',
+        category: 'search',
+        actionLabel: 'Finding',
+        localInspection: true,
+    },
+    LS: {
+        classification: { building: 'archive', reason: 'list-local', confidence: 0.64 },
+        localInspection: true,
+    },
 
-    WebSearch: { building: 'observatory', reason: 'web-search', confidence: 0.95 },
-    WebFetch: { building: 'observatory', reason: 'web-fetch', confidence: 0.95 },
-    'web.run': { building: 'observatory', reason: 'web-tool', confidence: 0.95 },
+    WebSearch: {
+        classification: { building: 'observatory', reason: 'web-search', confidence: 0.95 },
+        icon: '🌐',
+        category: 'search',
+        actionLabel: 'Researching',
+        hostLabel: true,
+    },
+    WebFetch: {
+        classification: { building: 'observatory', reason: 'web-fetch', confidence: 0.95 },
+        icon: '🌐',
+        category: 'search',
+        actionLabel: 'Fetching',
+        hostLabel: true,
+    },
+    'web.run': {
+        classification: { building: 'observatory', reason: 'web-tool', confidence: 0.95 },
+        hostLabel: true,
+    },
 
-    Edit: { building: 'forge', reason: 'edit-file', confidence: 0.96 },
-    MultiEdit: { building: 'forge', reason: 'edit-file', confidence: 0.96 },
-    Write: { building: 'forge', reason: 'write-file', confidence: 0.96 },
-    apply_patch: { building: 'forge', reason: 'patch-file', confidence: 0.98 },
-    'functions.apply_patch': { building: 'forge', reason: 'patch-file', confidence: 0.98 },
-    NotebookEdit: { building: 'forge', reason: 'edit-notebook', confidence: 0.86 },
-    'image_gen.imagegen': { building: 'forge', reason: 'generate-asset', confidence: 0.82 },
+    Edit: {
+        classification: { building: 'forge', reason: 'edit-file', confidence: 0.96 },
+        icon: '✏️',
+        category: 'write',
+        actionLabel: 'Editing',
+        fileMutation: true,
+    },
+    MultiEdit: {
+        classification: { building: 'forge', reason: 'edit-file', confidence: 0.96 },
+        category: 'write',
+        actionLabel: 'Editing',
+        fileMutation: true,
+    },
+    Write: {
+        classification: { building: 'forge', reason: 'write-file', confidence: 0.96 },
+        icon: '📝',
+        category: 'write',
+        actionLabel: 'Writing',
+        fileMutation: true,
+    },
+    apply_patch: {
+        classification: { building: 'forge', reason: 'patch-file', confidence: 0.98 },
+        actionLabel: 'Patching',
+        fileMutation: true,
+    },
+    'functions.apply_patch': {
+        classification: { building: 'forge', reason: 'patch-file', confidence: 0.98 },
+        actionLabel: 'Patching',
+        fileMutation: true,
+    },
+    NotebookEdit: {
+        classification: { building: 'forge', reason: 'edit-notebook', confidence: 0.86 },
+        icon: '📓',
+        category: 'write',
+        actionLabel: 'Editing notebook',
+    },
+    'image_gen.imagegen': {
+        classification: { building: 'forge', reason: 'generate-asset', confidence: 0.82 },
+    },
 
-    Task: { building: 'command', reason: 'delegate-task', confidence: 0.82 },
-    TeamCreate: { building: 'command', reason: 'form-team', confidence: 0.96 },
-    SendMessage: { building: 'command', reason: 'message-agent', confidence: 0.98 },
-    'functions.spawn_agent': { building: 'command', reason: 'spawn-agent', confidence: 0.98 },
-    'functions.send_input': { building: 'command', reason: 'send-agent-input', confidence: 0.98 },
-    'functions.wait_agent': { building: 'command', reason: 'wait-agent', confidence: 0.98 },
-    'functions.close_agent': { building: 'command', reason: 'close-agent', confidence: 0.98 },
-    'functions.resume_agent': { building: 'command', reason: 'resume-agent', confidence: 0.98 },
+    Bash: { icon: '⚡', category: 'exec', actionLabel: 'Running' },
 
-    TaskCreate: { building: 'taskboard', reason: 'plan-task', confidence: 0.92 },
-    TaskUpdate: { building: 'taskboard', reason: 'update-task', confidence: 0.92 },
-    TaskList: { building: 'taskboard', reason: 'review-tasks', confidence: 0.88 },
-    TodoWrite: { building: 'taskboard', reason: 'plan-work', confidence: 0.95 },
-    EnterPlanMode: { building: 'taskboard', reason: 'plan-mode-enter', confidence: 0.94 },
-    ExitPlanMode: { building: 'taskboard', reason: 'plan-mode-exit', confidence: 0.94 },
-    'functions.update_plan': { building: 'taskboard', reason: 'plan-work', confidence: 0.95 },
-    'functions.request_user_input': { building: 'taskboard', reason: 'ask-decision', confidence: 0.86 },
+    Task: {
+        classification: { building: 'command', reason: 'delegate-task', confidence: 0.82 },
+        icon: '📋',
+        category: 'task',
+        actionLabel: 'Delegating',
+    },
+    TeamCreate: {
+        classification: { building: 'command', reason: 'form-team', confidence: 0.96 },
+        icon: '👥',
+        category: 'task',
+        actionLabel: 'Forming team',
+    },
+    SendMessage: {
+        classification: { building: 'command', reason: 'message-agent', confidence: 0.98 },
+        icon: '💬',
+        category: 'task',
+        actionLabel: 'Messaging',
+    },
+    'functions.spawn_agent': {
+        classification: { building: 'command', reason: 'spawn-agent', confidence: 0.98 },
+        agentCommand: true,
+    },
+    'functions.send_input': {
+        classification: { building: 'command', reason: 'send-agent-input', confidence: 0.98 },
+        agentCommand: true,
+    },
+    'functions.wait_agent': {
+        classification: { building: 'command', reason: 'wait-agent', confidence: 0.98 },
+        agentCommand: true,
+    },
+    'functions.close_agent': {
+        classification: { building: 'command', reason: 'close-agent', confidence: 0.98 },
+        agentCommand: true,
+    },
+    'functions.resume_agent': {
+        classification: { building: 'command', reason: 'resume-agent', confidence: 0.98 },
+        agentCommand: true,
+    },
+
+    TaskCreate: {
+        classification: { building: 'taskboard', reason: 'plan-task', confidence: 0.92 },
+        icon: '📋',
+        category: 'task',
+        actionLabel: 'Planning',
+    },
+    TaskUpdate: {
+        classification: { building: 'taskboard', reason: 'update-task', confidence: 0.92 },
+        icon: '📋',
+        category: 'task',
+    },
+    TaskList: {
+        classification: { building: 'taskboard', reason: 'review-tasks', confidence: 0.88 },
+        icon: '📋',
+        category: 'task',
+        actionLabel: 'Reviewing tasks',
+    },
+    TodoWrite: {
+        classification: { building: 'taskboard', reason: 'plan-work', confidence: 0.95 },
+        icon: '📋',
+        category: 'task',
+    },
+    EnterPlanMode: {
+        classification: { building: 'taskboard', reason: 'plan-mode-enter', confidence: 0.94 },
+        icon: '📐',
+    },
+    ExitPlanMode: {
+        classification: { building: 'taskboard', reason: 'plan-mode-exit', confidence: 0.94 },
+        icon: '📐',
+    },
+    'functions.update_plan': {
+        classification: { building: 'taskboard', reason: 'plan-work', confidence: 0.95 },
+    },
+    'functions.request_user_input': {
+        classification: { building: 'taskboard', reason: 'ask-decision', confidence: 0.86 },
+    },
+
+    AskUserQuestion: { icon: '❓' },
 });
 
-const TOOL_ICONS = Object.freeze({
-    Read: '📖',
-    Edit: '✏️',
-    Write: '📝',
-    Grep: '🔍',
-    Glob: '📁',
-    Bash: '⚡',
-    Task: '📋',
-    TaskCreate: '📋',
-    TaskUpdate: '📋',
-    TaskList: '📋',
-    TodoWrite: '📋',
-    WebSearch: '🌐',
-    WebFetch: '🌐',
-    SendMessage: '💬',
-    TeamCreate: '👥',
-    NotebookEdit: '📓',
-    EnterPlanMode: '📐',
-    ExitPlanMode: '📐',
-    AskUserQuestion: '❓',
-});
+function toolMetadata(tool) {
+    return TOOL_METADATA[String(tool || '')] || null;
+}
 
-const TOOL_CATEGORIES = Object.freeze({
-    Read: 'read',
-    Grep: 'search',
-    Glob: 'search',
-    WebSearch: 'search',
-    WebFetch: 'search',
-    Edit: 'write',
-    MultiEdit: 'write',
-    Write: 'write',
-    NotebookEdit: 'write',
-    Bash: 'exec',
-    Task: 'task',
-    TaskCreate: 'task',
-    TaskUpdate: 'task',
-    TaskList: 'task',
-    TodoWrite: 'task',
-    SendMessage: 'task',
-    TeamCreate: 'task',
-});
+function toolNamesWhere(predicate) {
+    return new Set(Object.entries(TOOL_METADATA)
+        .filter(([, metadata]) => predicate(metadata))
+        .map(([tool]) => tool));
+}
 
-const TOOL_ACTION_LABELS = Object.freeze({
-    Read: 'Reading',
-    Edit: 'Editing',
-    MultiEdit: 'Editing',
-    Write: 'Writing',
-    Bash: 'Running',
-    Grep: 'Searching',
-    Glob: 'Finding',
-    Task: 'Delegating',
-    TaskCreate: 'Planning',
-    TaskList: 'Reviewing tasks',
-    TeamCreate: 'Forming team',
-    NotebookEdit: 'Editing notebook',
-    apply_patch: 'Patching',
-    'functions.apply_patch': 'Patching',
-    WebSearch: 'Researching',
-    WebFetch: 'Fetching',
-    SendMessage: 'Messaging',
-});
-
-const COMMAND_AGENT_TOOLS = new Set([
-    'functions.spawn_agent',
-    'functions.send_input',
-    'functions.wait_agent',
-    'functions.close_agent',
-    'functions.resume_agent',
-]);
-
-const FILE_MUTATION_TOOLS = new Set([
-    'Edit',
-    'MultiEdit',
-    'Write',
-    'apply_patch',
-    'functions.apply_patch',
-]);
+const COMMAND_AGENT_TOOLS = toolNamesWhere((metadata) => metadata.agentCommand);
+const FILE_MUTATION_TOOLS = toolNamesWhere((metadata) => metadata.fileMutation);
+const LOCAL_INSPECTION_TOOLS = toolNamesWhere((metadata) => metadata.localInspection);
+const HOST_LABEL_TOOLS = toolNamesWhere((metadata) => metadata.hostLabel);
 
 const MULTI_TOOL_NAMES = new Set([
     'multi_tool_use',
@@ -129,28 +196,58 @@ const SHELL_TOOL_NAMES = new Set([
 
 const MULTI_TOOL_PRIORITY = ['harbor', 'taskboard', 'command', 'forge', 'archive', 'portal', 'observatory', 'mine'];
 
+const NORMALIZED_INPUT_FIELDS = Object.freeze([
+    'cmd',
+    'command',
+    'script',
+    'args',
+    'arguments',
+    'url',
+    'path',
+    'file_path',
+    'cwd',
+    'pattern',
+    'query',
+    'prompt',
+    'description',
+    'recipient_name',
+]);
+
+const SHELL_WRAPPER_PREFIXES = new Set(['bash', 'sh', 'zsh', 'fish', 'exec_command', 'shell', 'command_execution']);
+const BOUNDARY_CHARS = ['/', '.', ' ', ':'];
+const SHELL_LIKE_INPUT_PATTERN = /^(?:bash|sh|zsh|fish|exec_command|shell|command_execution|git|gh|wrangler|vercel|npm|node|pnpm|yarn|bun|python|pytest|playwright|curl|wget|rg|grep|find|fd|ls|cat|sed|head|tail|jq|pharos-watch)\b/;
+const DOCUMENTATION_INPUT_PATTERN = /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/;
+const CODE_INPUT_PATTERN = /\b(src|server\.js|adapters|services|widget|claudeville\/src|claudeville\/server\.js)\b|\.([cm]?js|ts|tsx|jsx|css|html|json|yaml|yml)\b/;
+const JSONISH_INPUT_PATTERN = /^[\[{]/;
+const TOOL_REFERENCE_PATTERN = /(?:recipient_name|tool|name)["']?\s*[:=]\s*["']([^"']+)["']/g;
+const URL_PATTERN = /https?:\/\/[^\s"'<>`]+/i;
+const PLAYWRIGHT_PLUGIN_TOOL_PATTERN = /^mcp__plugin_playwright_/;
+const LOCAL_PREVIEW_INPUT_PATTERN = /localhost:|127\.0\.0\.1:/;
+
+const GIT_FLOW_COMMAND_PATTERN = /\b(git\s+(status|diff|show|log|branch|rev-list|fetch|pull|merge|rebase|commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/;
+const VALIDATION_COMMAND_PATTERN = /\b(npm\s+(test|run\s+(test|check|lint|build|sprites:validate|sprites:visual-diff))|node\s+--check|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/;
+const BROWSER_PREVIEW_COMMAND_PATTERN = /\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/;
+const WEB_COMMAND_PATTERN = /\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/;
+const FILE_MUTATION_COMMAND_PATTERN = /\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/;
+const LOCAL_READ_COMMAND_PATTERN = /\b(rg|grep|find|fd|ls|cat|sed|head|tail|nl|wc|jq)\b/;
+const TASK_COMMAND_INPUT_PATTERN = /\b(test|check|lint|build|vitest|pytest|playwright\s+test|node\s+--check|sprites:validate)\b/;
+
+const AGENT_ORCHESTRATION_TOOL_PATTERN = /spawn_agent|send_input|wait_agent|resume_agent|close_agent/;
+const BROWSER_TOOL_NAME_PATTERN = /playwright|browser|chrome/;
+const GITHUB_TOOL_NAME_PATTERN = /github|pull_request| pr_/;
+const WEB_TOOL_NAME_PATTERN = /web|fetch/;
+const FILE_MUTATION_TOOL_NAME_PATTERN = /apply_patch|edit|write|update_file|create_file|delete_file/;
+const TEAM_TOOL_NAME_PATTERN = /team|parallel/;
+const TASK_TOOL_NAME_PATTERN = /task|todo|plan/;
+const READ_TOOL_NAME_PATTERN = /read|grep|glob|find|search/;
+const COMMAND_TOOL_NAME_PATTERN = /spawn_agent|send_input|resume_agent|close_agent|team|parallel/;
+
 export function normalizeToolInput(input) {
     if (input == null) return '';
     if (typeof input === 'string') return input.toLowerCase();
     if (typeof input === 'object') {
-        const fields = [
-            'cmd',
-            'command',
-            'script',
-            'args',
-            'arguments',
-            'url',
-            'path',
-            'file_path',
-            'cwd',
-            'pattern',
-            'query',
-            'prompt',
-            'description',
-            'recipient_name',
-        ];
         const parts = [];
-        for (const field of fields) {
+        for (const field of NORMALIZED_INPUT_FIELDS) {
             if (input[field] == null) continue;
             parts.push(typeof input[field] === 'object' ? JSON.stringify(input[field]) : String(input[field]));
         }
@@ -166,9 +263,6 @@ export function compactToolLabel(value, fallback = '', maxChars = 18) {
     const base = (lastSlash >= 0 ? text.slice(lastSlash + 1) : text).split(/\s+/)[0] || text;
     return base.length > maxChars ? `${base.slice(0, Math.max(1, maxChars - 3))}...` : base;
 }
-
-const SHELL_WRAPPER_PREFIXES = new Set(['bash', 'sh', 'zsh', 'fish', 'exec_command', 'shell', 'command_execution']);
-const BOUNDARY_CHARS = ['/', '.', ' ', ':'];
 
 function snapToBoundary(text, maxLength) {
     if (text.length <= maxLength) return text;
@@ -207,7 +301,7 @@ function isShellLikeTool(input) {
         if (typeof input.cmd === 'string' || typeof input.command === 'string' || typeof input.script === 'string') return true;
     }
     if (typeof input !== 'string') return false;
-    return /^(?:bash|sh|zsh|fish|exec_command|shell|command_execution|git|gh|wrangler|vercel|npm|node|pnpm|yarn|bun|python|pytest|playwright|curl|wget|rg|grep|find|fd|ls|cat|sed|head|tail|jq|pharos-watch)\b/.test(input.trim());
+    return SHELL_LIKE_INPUT_PATTERN.test(input.trim());
 }
 
 export function compactToolInput(input, maxChars = 18) {
@@ -227,19 +321,18 @@ export function compactToolInput(input, maxChars = 18) {
 
 export function isDocumentationToolInput(input) {
     const text = normalizeToolInput(input);
-    return /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/.test(text);
+    return DOCUMENTATION_INPUT_PATTERN.test(text);
 }
 
 export function isCodeToolInput(input) {
     const text = normalizeToolInput(input);
-    return /\b(src|server\.js|adapters|services|widget|claudeville\/src|claudeville\/server\.js)\b|\.([cm]?js|ts|tsx|jsx|css|html|json|yaml|yml)\b/.test(text)
-        && !isDocumentationToolInput(input);
+    return CODE_INPUT_PATTERN.test(text) && !isDocumentationToolInput(input);
 }
 
 function tryParseToolInput(input) {
     if (!input || typeof input !== 'string') return input;
     const text = input.trim();
-    if (!text || !/^[\[{]/.test(text)) return input;
+    if (!text || !JSONISH_INPUT_PATTERN.test(text)) return input;
     try {
         return JSON.parse(text);
     } catch {
@@ -272,19 +365,18 @@ export function extractToolCalls(input) {
     if (calls.length) return calls;
 
     const text = normalizeToolInput(input);
-    const found = [...text.matchAll(/(?:recipient_name|tool|name)["']?\s*[:=]\s*["']([^"']+)["']/g)]
+    const found = [...text.matchAll(TOOL_REFERENCE_PATTERN)]
         .map((match) => ({ tool: match[1], input: text }));
     return found.length ? found : [{ tool: null, input: text }];
 }
 
 function extractFirstUrl(text) {
     if (!text) return null;
-    const match = String(text).match(/https?:\/\/[^\s"'<>`]+/i);
+    const match = String(text).match(URL_PATTERN);
     return match ? match[0] : null;
 }
 
 export function currentToolInputHost(tool, input) {
-    const name = String(tool || '');
     let url = null;
     if (input && typeof input === 'object') {
         const candidate = input.url || input.uri || input.href || input.target;
@@ -301,37 +393,37 @@ export function currentToolInputHost(tool, input) {
 
 function isPlaywrightMcpTool(tool) {
     const name = String(tool || '');
-    return /^mcp__plugin_playwright_/.test(name) || name.startsWith('mcp__playwright__') || name.startsWith('mcp__claude-in-chrome__');
+    return PLAYWRIGHT_PLUGIN_TOOL_PATTERN.test(name) || name.startsWith('mcp__playwright__') || name.startsWith('mcp__claude-in-chrome__');
 }
 
 function isPortalPreviewInput(input) {
     const text = normalizeToolInput(input);
-    return /localhost:|127\.0\.0\.1:/.test(text);
+    return LOCAL_PREVIEW_INPUT_PATTERN.test(text);
 }
 
 export function classifyShellInput(input) {
     const text = normalizeToolInput(input);
     if (!text) return null;
 
-    if (/\b(git\s+(status|diff|show|log|branch|rev-list|fetch|pull|merge|rebase|commit|push|tag)|gh\s+(pr\s+create|release|workflow|run|repo)|wrangler\s+deploy|vercel\s+deploy|npm\s+run\s+deploy)\b/.test(text)) {
+    if (GIT_FLOW_COMMAND_PATTERN.test(text)) {
         return { building: 'harbor', reason: 'git-flow', confidence: 0.9, label: compactToolLabel(text, 'git') };
     }
-    if (/\b(npm\s+(test|run\s+(test|check|lint|build|sprites:validate|sprites:visual-diff))|node\s+--check|xargs\s+-0\s+-n1\s+node\s+--check|pytest|vitest|playwright\s+test)\b/.test(text)) {
+    if (VALIDATION_COMMAND_PATTERN.test(text)) {
         return { building: 'taskboard', reason: 'verify', confidence: 0.94, label: compactToolLabel(text, 'check') };
     }
-    if (/\b(npm\s+run\s+dev|node\s+claudeville\/server\.js|playwright|browser|chrome|chromium|firefox|screenshot|localhost|127\.0\.0\.1)\b/.test(text)) {
+    if (BROWSER_PREVIEW_COMMAND_PATTERN.test(text)) {
         return { building: 'portal', reason: 'browser-preview', confidence: 0.86, label: compactToolLabel(text, 'browser') };
     }
-    if (/\b(curl|wget|web|fetch|search_query|open\s+https?:\/\/)\b/.test(text)) {
+    if (WEB_COMMAND_PATTERN.test(text)) {
         return { building: 'observatory', reason: 'external-research', confidence: 0.86, label: compactToolLabel(text, 'web') };
     }
-    if (/\b(apply_patch|patch|edit|write|create|update|delete|mv|cp|perl\s+-pi)\b/.test(text)) {
+    if (FILE_MUTATION_COMMAND_PATTERN.test(text)) {
         return isDocumentationToolInput(input)
             ? { building: 'archive', reason: 'edit-docs', confidence: 0.78, label: compactToolLabel(text, 'docs') }
             : { building: 'forge', reason: 'modify-files', confidence: 0.9, label: compactToolLabel(text, 'edit') };
     }
-    if (/\b(rg|grep|find|fd|ls|cat|sed|head|tail|nl|wc|jq)\b/.test(text)) {
-        if (/\b(test|check|lint|build|vitest|pytest|playwright\s+test|node\s+--check|sprites:validate)\b/.test(text)) {
+    if (LOCAL_READ_COMMAND_PATTERN.test(text)) {
+        if (TASK_COMMAND_INPUT_PATTERN.test(text)) {
             return { building: 'taskboard', reason: 'inspect-validation', confidence: 0.84, label: compactToolLabel(text, 'check') };
         }
         if (isCodeToolInput(input)) {
@@ -346,6 +438,7 @@ export function classifyShellInput(input) {
 export function classifyTool(toolName, input) {
     const tool = String(toolName || '');
     if (!tool) return null;
+    const metadata = toolMetadata(tool);
 
     if (MULTI_TOOL_NAMES.has(tool)) {
         const calls = extractToolCalls(input);
@@ -400,23 +493,23 @@ export function classifyTool(toolName, input) {
     }
 
     if (COMMAND_AGENT_TOOLS.has(tool)) {
-        return { ...DIRECT_TOOL_CLASSIFICATIONS[tool], label: compactToolLabel(tool, 'agent') };
+        return { ...metadata.classification, label: compactToolLabel(tool, 'agent') };
     }
 
     if (FILE_MUTATION_TOOLS.has(tool) && isDocumentationToolInput(input)) {
         return { building: 'archive', reason: 'edit-docs', confidence: 0.82, label: compactToolLabel(input, 'docs') };
     }
 
-    if (DIRECT_TOOL_CLASSIFICATIONS[tool]) {
-        const base = DIRECT_TOOL_CLASSIFICATIONS[tool];
-        if (['Grep', 'Glob', 'LS', 'Read'].includes(tool)) {
+    if (metadata?.classification) {
+        const base = metadata.classification;
+        if (LOCAL_INSPECTION_TOOLS.has(tool)) {
             const split = classifyShellInput(input);
             if (split && ['forge', 'taskboard', 'harbor'].includes(split.building)) return split;
             if (isCodeToolInput(input)) {
                 return { building: 'forge', reason: 'inspect-code', confidence: 0.78, label: compactToolLabel(input || tool, 'code') };
             }
         }
-        if (['WebFetch', 'WebSearch', 'web.run'].includes(tool)) {
+        if (HOST_LABEL_TOOLS.has(tool)) {
             const host = currentToolInputHost(tool, input);
             return {
                 ...base,
@@ -432,30 +525,30 @@ export function classifyTool(toolName, input) {
     }
 
     const lowerTool = tool.toLowerCase();
-    if (lowerTool.includes('spawn_agent') || lowerTool.includes('send_input') || lowerTool.includes('wait_agent') || lowerTool.includes('resume_agent') || lowerTool.includes('close_agent')) {
+    if (AGENT_ORCHESTRATION_TOOL_PATTERN.test(lowerTool)) {
         return { building: 'command', reason: 'agent-orchestration', confidence: 0.9, label: compactToolLabel(tool, 'agent') };
     }
-    if (lowerTool.includes('playwright') || lowerTool.includes('browser') || lowerTool.includes('chrome')) {
+    if (BROWSER_TOOL_NAME_PATTERN.test(lowerTool)) {
         return { building: 'portal', reason: 'browser-preview', confidence: 0.84, label: compactToolLabel(tool, 'browser') };
     }
-    if (lowerTool.includes('github') || lowerTool.includes('pull_request') || lowerTool.includes(' pr_')) {
+    if (GITHUB_TOOL_NAME_PATTERN.test(lowerTool)) {
         return { building: 'harbor', reason: 'github-flow', confidence: 0.84, label: compactToolLabel(tool, 'git') };
     }
-    if (lowerTool.includes('web') || lowerTool.includes('fetch')) {
+    if (WEB_TOOL_NAME_PATTERN.test(lowerTool)) {
         return { building: 'observatory', reason: 'external-research', confidence: 0.82, label: compactToolLabel(tool, 'web') };
     }
-    if (lowerTool.includes('apply_patch') || lowerTool.includes('edit') || lowerTool.includes('write') || lowerTool.includes('update_file') || lowerTool.includes('create_file') || lowerTool.includes('delete_file')) {
+    if (FILE_MUTATION_TOOL_NAME_PATTERN.test(lowerTool)) {
         return isDocumentationToolInput(input)
             ? { building: 'archive', reason: 'edit-docs', confidence: 0.78, label: compactToolLabel(input, 'docs') }
             : { building: 'forge', reason: 'modify-files', confidence: 0.84, label: compactToolLabel(input || tool, 'edit') };
     }
-    if (lowerTool.includes('team') || lowerTool.includes('parallel')) {
+    if (TEAM_TOOL_NAME_PATTERN.test(lowerTool)) {
         return { building: 'command', reason: 'coordinate-team', confidence: 0.8, label: compactToolLabel(tool, 'team') };
     }
-    if (lowerTool.includes('task') || lowerTool.includes('todo') || lowerTool.includes('plan')) {
+    if (TASK_TOOL_NAME_PATTERN.test(lowerTool)) {
         return { building: 'taskboard', reason: 'plan-work', confidence: 0.8, label: compactToolLabel(tool, 'task') };
     }
-    if (lowerTool.includes('read') || lowerTool.includes('grep') || lowerTool.includes('glob') || lowerTool.includes('find') || lowerTool.includes('search')) {
+    if (READ_TOOL_NAME_PATTERN.test(lowerTool)) {
         const split = classifyShellInput(input);
         if (split) return split;
         return { building: isCodeToolInput(input) ? 'forge' : 'archive', reason: isCodeToolInput(input) ? 'inspect-code' : 'search-local', confidence: 0.68, label: compactToolLabel(input || tool, 'read') };
@@ -473,14 +566,14 @@ export function toolIcon(tool) {
     const name = String(tool);
     if (name.startsWith('mcp__playwright__')) return '🎭';
     if (name.startsWith('mcp__')) return '🔌';
-    return TOOL_ICONS[name] || '🔧';
+    return toolMetadata(name)?.icon || '🔧';
 }
 
 export function toolCategory(tool) {
     if (!tool) return 'other';
     const name = String(tool);
     if (name.startsWith('mcp__')) return 'exec';
-    return TOOL_CATEGORIES[name] || 'other';
+    return toolMetadata(name)?.category || 'other';
 }
 
 export function shortToolName(name) {
@@ -494,22 +587,17 @@ export function toolActionLabel(tool, options) {
         const count = Number(options?.count);
         return count >= 2 ? `Coordinating ×${count}` : 'Coordinating';
     }
-    return TOOL_ACTION_LABELS[name] || name || '';
+    return toolMetadata(name)?.actionLabel || name || '';
 }
 
 export function isTaskCommandInput(input) {
     const text = normalizeToolInput(input);
-    return /\b(test|check|lint|build|vitest|pytest|playwright\s+test|node\s+--check|sprites:validate)\b/.test(text);
+    return TASK_COMMAND_INPUT_PATTERN.test(text);
 }
 
 export function isCommandToolName(toolName) {
     const tool = String(toolName || '').toLowerCase();
-    return tool.includes('spawn_agent') ||
-        tool.includes('send_input') ||
-        tool.includes('resume_agent') ||
-        tool.includes('close_agent') ||
-        tool.includes('team') ||
-        tool.includes('parallel') ||
+    return COMMAND_TOOL_NAME_PATTERN.test(tool) ||
         tool === 'task' ||
         tool === 'multi_tool_use';
 }

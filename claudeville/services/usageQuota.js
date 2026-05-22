@@ -99,7 +99,7 @@ function aggregateHistoryLines(lines, todayStart, weekStart) {
 
 // ─── Credentials (extract subscription information only) ────────────────────────────
 
-function readCredentials() {
+function readClaudeOauthCredentials() {
   const now = Date.now();
   if (cache.credentials.data && now - cache.credentials.ts < CREDENTIALS_TTL) {
     return cache.credentials.data;
@@ -111,12 +111,21 @@ function readCredentials() {
     const result = {
       subscriptionType: oauth.subscriptionType || null,
       rateLimitTier: oauth.rateLimitTier || null,
+      accessToken: oauth.accessToken || null,
     };
     cache.credentials = { data: result, ts: now };
     return result;
   } catch {
-    return { subscriptionType: null, rateLimitTier: null };
+    return { subscriptionType: null, rateLimitTier: null, accessToken: null };
   }
+}
+
+function readCredentials() {
+  const oauth = readClaudeOauthCredentials();
+  return {
+    subscriptionType: oauth.subscriptionType,
+    rateLimitTier: oauth.rateLimitTier,
+  };
 }
 
 // ─── Email (once at server startup) ───────────────────────────────
@@ -213,17 +222,10 @@ function tryFetchQuota() {
   if (now - cache.quota.ts < QUOTA_API_TTL) return;
   cache.quota.ts = now;
 
-  const creds = readCredentials();
+  const creds = readClaudeOauthCredentials();
   if (!creds.subscriptionType) return;
 
-  // Read accessToken from credentials
-  let accessToken;
-  try {
-    const raw = fs.readFileSync(CREDENTIALS_PATH, 'utf-8');
-    const json = JSON.parse(raw);
-    accessToken = json.claudeAiOauth?.accessToken;
-  } catch { return; }
-
+  const accessToken = creds.accessToken;
   if (!accessToken) return;
 
   const options = {

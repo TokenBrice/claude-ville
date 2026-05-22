@@ -2,37 +2,26 @@ const BASE_URL = window.location.origin;
 
 export class ClaudeDataSource {
     async getSessions() {
-        try {
-            const res = await fetch(`${BASE_URL}/api/sessions`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            return data.sessions || [];
-        } catch (err) {
-            console.error('[DataSource] Failed to fetch sessions:', err.message);
-            return [];
-        }
+        return this._getJson('/api/sessions', [], 'sessions', (data) => data.sessions || []);
     }
 
     async getTeams() {
-        try {
-            const res = await fetch(`${BASE_URL}/api/teams`);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            return data.teams || [];
-        } catch (err) {
-            console.error('[DataSource] Failed to fetch teams:', err.message);
-            return [];
-        }
+        return this._getJson('/api/teams', [], 'teams', (data) => data.teams || []);
     }
 
     async getUsage() {
+        return this._getJson('/api/usage', null, 'usage');
+    }
+
+    async _getJson(path, fallback, label, select) {
         try {
-            const res = await fetch(`${BASE_URL}/api/usage`);
+            const res = await fetch(`${BASE_URL}${path}`);
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            return await res.json();
+            const data = await res.json();
+            return typeof select === 'function' ? select(data) : data;
         } catch (err) {
-            console.error('[DataSource] Failed to fetch usage:', err.message);
-            return null;
+            console.error(`[DataSource] Failed to fetch ${label}:`, err.message);
+            return fallback;
         }
     }
 

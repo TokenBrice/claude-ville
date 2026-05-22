@@ -97,6 +97,18 @@ export class AgentManager {
     }
 
     _upsertAgent(session, teamMembers) {
+        const payload = this._sessionToAgentPayload(session, teamMembers);
+        const { id } = payload;
+
+        if (this.world.agents.has(id)) {
+            const { id: _id, projectPath: _projectPath, provider: _provider, lastMessage: _lastMessage, ...agentData } = payload;
+            this.world.updateAgent(id, agentData);
+        } else {
+            this.world.addAgent(new Agent(payload));
+        }
+    }
+
+    _sessionToAgentPayload(session, teamMembers) {
         const id = session.sessionId;
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
         const agentName = teamInfo?.name || session.name || session.agentName || session.nickname || null;
@@ -111,7 +123,8 @@ export class AgentManager {
             || session.teamName
             || null;
 
-        const agentData = {
+        return {
+            id,
             agentId: session.agentId || null,
             agentName,
             agentType: session.agentType || null,
@@ -130,39 +143,12 @@ export class AgentManager {
             lastSessionActivity,
             activityAgeMs,
             _lastMessage: session.lastMessage || null,
+            lastMessage: session.lastMessage,
             name: agentName || null,
             _customName: !!agentName,
+            projectPath: session.project || null,
+            provider: session.provider || 'claude',
         };
-
-        if (this.world.agents.has(id)) {
-            this.world.updateAgent(id, agentData);
-        } else {
-            const agent = new Agent({
-                id,
-                name: agentName,
-                model: agentData.model,
-                effort: agentData.effort,
-                status: agentData.status,
-                role: agentData.role,
-                tokens: agentData.tokens,
-                teamName,
-                projectPath: session.project || null,
-                currentTool: agentData.currentTool,
-                currentToolInput: agentData.currentToolInput,
-                lastTool: agentData.lastTool,
-                lastToolInput: agentData.lastToolInput,
-                gitEvents: agentData.gitEvents,
-                lastMessage: session.lastMessage,
-                provider: session.provider || 'claude',
-                agentId: agentData.agentId,
-                agentName: agentData.agentName,
-                agentType: agentData.agentType,
-                parentSessionId: agentData.parentSessionId,
-                lastSessionActivity,
-                activityAgeMs,
-            });
-            this.world.addAgent(agent);
-        }
     }
 
     _resolveStatus(session) {
