@@ -27,8 +27,10 @@ const claudeAdapter = adapters.find(a => a.provider === 'claude');
 const PORT = 4000;
 const STATIC_DIR = __dirname;
 const STATIC_ROOT = path.resolve(STATIC_DIR);
+const WIDGET_STATIC_ROOT = path.resolve(__dirname, '..', 'widget', 'Resources');
 const realpathSync = fs.realpathSync.native || fs.realpathSync;
 const STATIC_REAL_ROOT = realpathSync(STATIC_ROOT);
+const WIDGET_STATIC_REAL_ROOT = realpathIfExists(WIDGET_STATIC_ROOT);
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
@@ -83,6 +85,15 @@ function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: message });
 }
 
+function sendApiPayload(res, label, buildPayload, errorMessage) {
+  try {
+    sendJson(res, 200, buildPayload());
+  } catch (err) {
+    console.error(`${label}:`, err.message);
+    sendError(res, 500, errorMessage);
+  }
+}
+
 function readJsonBody(req, callback) {
   let body = '';
   let byteLength = 0;
@@ -131,6 +142,14 @@ function isContainedPath(root, candidate) {
 
 function realpathExistingPath(filePath) {
   return realpathSync(filePath);
+}
+
+function realpathIfExists(filePath) {
+  try {
+    return realpathSync(filePath);
+  } catch {
+    return filePath;
+  }
 }
 
 function formatAge(ms) {
@@ -201,16 +220,12 @@ function printStartupStats(providers) {
  * GET /api/sessions
  * Collect sessions from all active adapters
  */
-function handleGetSessions(req, res) {
-  try {
-    const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
-    const force = ['1', 'true', 'yes'].includes(String(url.searchParams.get('force') || '').toLowerCase());
+function handleGetSessions(req, res, parsedUrl) {
+  sendApiPayload(res, 'Failed to fetch sessions', () => {
+    const force = ['1', 'true', 'yes'].includes(String(parsedUrl.searchParams.get('force') || '').toLowerCase());
     const sessions = getAllSessions(ACTIVE_THRESHOLD_MS, { force });
-    sendJson(res, 200, { sessions, count: sessions.length, timestamp: Date.now() });
-  } catch (err) {
-    console.error('Failed to fetch sessions:', err.message);
-    sendError(res, 500, 'Unable to load session information.');
-  }
+    return { sessions, count: sessions.length, timestamp: Date.now() };
+  }, 'Unable to load session information.');
 }
 
 /**
@@ -218,13 +233,10 @@ function handleGetSessions(req, res) {
  * Claude team information (Claude-only)
  */
 function handleGetTeams(req, res) {
-  try {
-    const teams = claudeAdapter ? claudeAdapter.getTeams() : [];
-    sendJson(res, 200, { teams, count: teams.length });
-  } catch (err) {
-    console.error('Failed to fetch teams:', err.message);
-    sendError(res, 500, 'Unable to load team information.');
-  }
+  sendApiPayload(res, 'Failed to fetch teams', () => {
+    const teams = getTeamsCached();
+    return { teams, count: teams.length };
+  }, 'Unable to load team information.');
 }
 
 /**
@@ -232,25 +244,21 @@ function handleGetTeams(req, res) {
  * Claude task information (Claude-only)
  */
 function handleGetTasks(req, res) {
-  try {
+  sendApiPayload(res, 'Failed to fetch tasks', () => {
     const taskGroups = claudeAdapter ? claudeAdapter.getTasks() : [];
-    sendJson(res, 200, { taskGroups, totalGroups: taskGroups.length });
-  } catch (err) {
-    console.error('Failed to fetch tasks:', err.message);
-    sendError(res, 500, 'Unable to load task information.');
-  }
+    return { taskGroups, totalGroups: taskGroups.length };
+  }, 'Unable to load task information.');
 }
 
 /**
  * GET /api/session-detail?sessionId=xxx&project=xxx&provider=claude
  * Return tool history and recent messages for one session
  */
-function handleGetSessionDetail(req, res) {
+function handleGetSessionDetail(req, res, parsedUrl) {
   try {
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const sessionId = url.searchParams.get('sessionId');
-    const project = url.searchParams.get('project') || '';
-    const provider = String(url.searchParams.get('provider') || 'claude').toLowerCase();
+    const sessionId = parsedUrl.searchParams.get('sessionId');
+    const project = parsedUrl.searchParams.get('project') || '';
+    const provider = String(parsedUrl.searchParams.get('provider') || 'claude').toLowerCase();
 
     if (!sessionId) return sendError(res, 400, 'sessionId is required');
     if (!isKnownSessionDetailProvider(provider)) return sendError(res, 400, 'invalid provider');
@@ -302,13 +310,10 @@ function handlePostSessionDetails(req, res) {
  * Active provider list
  */
 function handleGetProviders(req, res) {
-  try {
+  sendApiPayload(res, 'Failed to fetch providers', () => {
     const providers = getActiveProviders();
-    sendJson(res, 200, { providers, count: providers.length });
-  } catch (err) {
-    console.error('Failed to fetch providers:', err.message);
-    sendError(res, 500, 'Unable to load provider information.');
-  }
+    return { providers, count: providers.length };
+  }, 'Unable to load provider information.');
 }
 
 /**
@@ -316,13 +321,7 @@ function handleGetProviders(req, res) {
  * Claude usage/subscription information
  */
 function handleGetUsage(req, res) {
-  try {
-    const usage = usageQuota.fetchUsage();
-    sendJson(res, 200, usage);
-  } catch (err) {
-    console.error('Failed to fetch usage:', err.message);
-    sendError(res, 500, 'Unable to load usage information.');
-  }
+  sendApiPayload(res, 'Failed to fetch usage', () => usageQuota.fetchUsage(), 'Unable to load usage information.');
 }
 
 /**
@@ -330,7 +329,7 @@ function handleGetUsage(req, res) {
  * Lightweight runtime counters for manual performance checks.
  */
 function handleGetPerf(req, res) {
-  sendJson(res, 200, {
+  sendApiPayload(res, 'Failed to fetch perf counters', () => ({
     websocketClients: wsClients.size,
     activeWatchPaths: serverPerf.activeWatchPaths,
     recursiveWatchFallbacks: serverPerf.recursiveWatchFallbacks,
@@ -355,19 +354,19 @@ function handleGetPerf(req, res) {
     cacheStampCounter,
     lastBroadcastStamp,
     timestamp: Date.now(),
-  });
+  }), 'Unable to load performance information.');
 }
 
 // ─── Static file serving ─────────────────────────────────────
 
-function handleStaticFile(req, res) {
+function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Static' }) {
   if (process.env.DEBUG_STATIC) {
-    console.log('[Static] request', req.url);
+    console.log(`[${label}] request`, req.url);
   }
   try {
     let requestedPath;
     try {
-      requestedPath = decodeURIComponent(req.url.split('?')[0] || '/');
+      requestedPath = decodeURIComponent(parsedUrl.pathname || '/');
     } catch {
       return sendError(res, 400, 'Bad Request');
     }
@@ -375,8 +374,8 @@ function handleStaticFile(req, res) {
     const relativePath = requestedPath === '/'
       ? 'index.html'
       : requestedPath.replace(/^\/+/, '');
-    let filePath = path.resolve(STATIC_ROOT, relativePath);
-    if (!isContainedPath(STATIC_ROOT, filePath)) {
+    let filePath = path.resolve(root, relativePath);
+    if (!isContainedPath(root, filePath)) {
       return sendError(res, 403, 'Forbidden');
     }
 
@@ -387,7 +386,7 @@ function handleStaticFile(req, res) {
     const stat = fs.statSync(filePath);
     if (stat.isDirectory()) {
       filePath = path.resolve(filePath, 'index.html');
-      if (!isContainedPath(STATIC_ROOT, filePath)) {
+      if (!isContainedPath(root, filePath)) {
         return sendError(res, 403, 'Forbidden');
       }
       if (!fs.existsSync(filePath)) {
@@ -396,7 +395,7 @@ function handleStaticFile(req, res) {
     }
 
     const realFilePath = realpathExistingPath(filePath);
-    if (!isContainedPath(STATIC_REAL_ROOT, realFilePath)) {
+    if (!isContainedPath(realRoot, realFilePath)) {
       return sendError(res, 403, 'Forbidden');
     }
     filePath = realFilePath;
@@ -409,13 +408,13 @@ function handleStaticFile(req, res) {
                    contentType.includes('svg');
 
     if (process.env.DEBUG_STATIC) {
-      console.log('[Static] resolved', filePath, 'type', contentType);
+      console.log(`[${label}] resolved`, filePath, 'type', contentType);
     }
 
     setCorsHeaders(res);
     fs.readFile(filePath, isText ? 'utf-8' : undefined, (err, data) => {
       if (process.env.DEBUG_STATIC) {
-        console.log('[Static] read callback for', filePath, 'err?', Boolean(err));
+        console.log(`[${label}] read callback for`, filePath, 'err?', Boolean(err));
       }
       if (err) {
         console.error('File read error:', err.message);
@@ -424,7 +423,7 @@ function handleStaticFile(req, res) {
 
       if (process.env.DEBUG_STATIC) {
         const byteLength = Buffer.isBuffer(data) ? data.length : String(data).length;
-        console.log('[Static] serving', filePath, 'bytes', byteLength, 'type', contentType);
+        console.log(`[${label}] serving`, filePath, 'bytes', byteLength, 'type', contentType);
       }
 
       res.writeHead(200, {
@@ -439,6 +438,22 @@ function handleStaticFile(req, res) {
       sendError(res, 500, 'Internal Server Error');
     }
   }
+}
+
+function handleStaticFile(req, res, parsedUrl) {
+  return serveContainedFile(req, res, parsedUrl, {
+    root: STATIC_ROOT,
+    realRoot: STATIC_REAL_ROOT,
+    label: 'Static',
+  });
+}
+
+function handleWidgetStaticFile(req, res, parsedUrl) {
+  return serveContainedFile(req, res, parsedUrl, {
+    root: WIDGET_STATIC_ROOT,
+    realRoot: WIDGET_STATIC_REAL_ROOT,
+    label: 'WidgetStatic',
+  });
 }
 
 // ─── WebSocket implementation (RFC 6455) ──────────────────────────
@@ -488,11 +503,11 @@ function handleWebSocketUpgrade(req, socket, head = Buffer.alloc(0)) {
   });
 
   socket.on('close', () => {
-    wsClients.delete(socket);
+    closeWebSocket(socket, null, { sendFrame: false });
   });
 
   socket.on('error', () => {
-    wsClients.delete(socket);
+    closeWebSocket(socket, null, { sendFrame: false });
   });
 }
 
@@ -566,7 +581,6 @@ function handleWebSocketFrame(socket, buffer) {
       break;
     case 0x8:
       closeWebSocket(socket, 1000);
-      wsClients.delete(socket);
       break;
     case 0x9:
       socket.write(createWebSocketFrame(payload, 0xa));
@@ -578,16 +592,25 @@ function handleWebSocketFrame(socket, buffer) {
   return offset + payloadLength;
 }
 
-function closeWebSocket(socket, code = 1000) {
-  if (!socket || socket.destroyed) return;
-  const payload = Buffer.alloc(2);
-  payload.writeUInt16BE(code, 0);
+function closeWebSocket(socket, code = 1000, { sendFrame = true } = {}) {
+  if (!socket) return;
+  wsClients.delete(socket);
+  socket._cvPendingFrame = null;
+  socket._cvDraining = false;
+  if (!sendFrame || socket.destroyed || !socket.writable) return;
+
+  const frame = code == null
+    ? createWebSocketFrame('', 0x8)
+    : (() => {
+        const payload = Buffer.alloc(2);
+        payload.writeUInt16BE(code, 0);
+        return createWebSocketFrame(payload, 0x8);
+      })();
   try {
-    socket.end(createWebSocketFrame(payload, 0x8));
+    socket.end(frame);
   } catch {
     socket.destroy();
   }
-  wsClients.delete(socket);
 }
 
 function handleTextMessage(socket, message) {
@@ -631,7 +654,7 @@ function wsSend(socket, data) {
     if (err.code !== 'EPIPE' && err.code !== 'ECONNRESET') {
       // Ignore send errors.
     }
-    wsClients.delete(socket);
+    closeWebSocket(socket, null, { sendFrame: false });
   }
 }
 
@@ -644,13 +667,12 @@ function wsBroadcast(data) {
 
 function writeWebSocketFrame(socket, frame, { queueLatest = false } = {}) {
   if (!socket || socket.destroyed || !socket.writable) {
-    wsClients.delete(socket);
+    closeWebSocket(socket, null, { sendFrame: false });
     return false;
   }
   if ((socket.writableLength || 0) > WS_BACKPRESSURE_BYTES) {
     serverPerf.skippedWrites++;
-    try { socket.end(createWebSocketFrame('', 0x8)); } catch { socket.destroy(); }
-    wsClients.delete(socket);
+    closeWebSocket(socket, null);
     return false;
   }
   if (socket._cvDraining) {
@@ -671,7 +693,7 @@ function writeWebSocketFrame(socket, frame, { queueLatest = false } = {}) {
     }
     return ok;
   } catch {
-    wsClients.delete(socket);
+    closeWebSocket(socket, null, { sendFrame: false });
     return false;
   }
 }
@@ -682,12 +704,11 @@ function startWebSocketHeartbeat() {
     const pingFrame = createWebSocketFrame(String(now), 0x9);
     for (const socket of wsClients) {
       if (!socket || socket.destroyed) {
-        wsClients.delete(socket);
+        closeWebSocket(socket, null, { sendFrame: false });
         continue;
       }
       if (now - (socket._cvLastSeen || now) > WS_STALE_AFTER_MS) {
-        try { socket.end(createWebSocketFrame('', 0x8)); } catch { socket.destroy(); }
-        wsClients.delete(socket);
+        closeWebSocket(socket, null);
         continue;
       }
       writeWebSocketFrame(socket, pingFrame);
@@ -827,15 +848,8 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
     }
     stages.signature = Date.now() - sigStart;
 
-    if (!signatureSkipped && signature === lastBroadcastSignature) {
-      providerDataDirty = false;
-      lastBroadcastStamp = stampAtCollect;
-      lastFullBroadcastAt = now;
-      return;
-    }
-
-    if (signatureSkipped) {
-      // Stamp matched — nothing changed since the last broadcast; bail without re-sending.
+    if (signatureSkipped || signature === lastBroadcastSignature) {
+      // Stamp or payload matched; nothing changed since the last broadcast.
       providerDataDirty = false;
       lastBroadcastStamp = stampAtCollect;
       lastFullBroadcastAt = now;
@@ -1374,6 +1388,23 @@ function startFileWatcher(initialWatchPaths = null) {
 
 // ─── HTTP server ──────────────────────────────────────────
 
+const API_ROUTES = {
+  GET: new Map([
+    ['/api/sessions', handleGetSessions],
+    ['/api/teams', handleGetTeams],
+    ['/api/tasks', handleGetTasks],
+    ['/api/session-detail', handleGetSessionDetail],
+    ['/api/providers', handleGetProviders],
+    ['/api/usage', handleGetUsage],
+    ['/api/perf', handleGetPerf],
+  ]),
+  POST: new Map([
+    ['/api/session-details', handlePostSessionDetails],
+  ]),
+};
+
+const WIDGET_STATIC_PATHS = new Set(['/widget.html', '/widget.css']);
+
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     setCorsHeaders(res);
@@ -1382,48 +1413,24 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  const parsedUrl = new URL(req.url, `http://${req.headers.host}`);
+  let parsedUrl;
+  try {
+    parsedUrl = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+  } catch {
+    return sendError(res, 400, 'Bad Request');
+  }
   const pathname = parsedUrl.pathname;
 
-  if (req.method === 'GET') {
-    switch (pathname) {
-      case '/api/sessions':
-        return handleGetSessions(req, res);
-      case '/api/teams':
-        return handleGetTeams(req, res);
-      case '/api/tasks':
-        return handleGetTasks(req, res);
-      case '/api/session-detail':
-        return handleGetSessionDetail(req, res);
-      case '/api/providers':
-        return handleGetProviders(req, res);
-      case '/api/usage':
-        return handleGetUsage(req, res);
-      case '/api/perf':
-        return handleGetPerf(req, res);
-    }
+  const routeHandler = API_ROUTES[req.method]?.get(pathname);
+  if (routeHandler) {
+    return routeHandler(req, res, parsedUrl);
   }
 
-  if (req.method === 'POST') {
-    switch (pathname) {
-      case '/api/session-details':
-        return handlePostSessionDetails(req, res);
-    }
+  if (WIDGET_STATIC_PATHS.has(pathname)) {
+    return handleWidgetStaticFile(req, res, parsedUrl);
   }
 
-  // Serve widget files (/widget.html, /widget.css)
-  if (pathname === '/widget.html' || pathname === '/widget.css') {
-    const widgetFile = path.join(__dirname, '..', 'widget', 'Resources', pathname);
-    if (fs.existsSync(widgetFile)) {
-      const ext = path.extname(widgetFile).toLowerCase();
-      setCorsHeaders(res);
-      res.writeHead(200, { 'Content-Type': MIME_TYPES[ext], 'Cache-Control': cacheControlFor() });
-      fs.createReadStream(widgetFile, { encoding: 'utf-8' }).pipe(res);
-      return;
-    }
-  }
-
-  handleStaticFile(req, res);
+  handleStaticFile(req, res, parsedUrl);
 });
 
 server.on('upgrade', (req, socket, head) => {
@@ -1505,9 +1512,7 @@ process.on('unhandledRejection', (reason) => {
 process.on('SIGINT', () => {
   console.log('\nShutting down server...');
   for (const socket of wsClients) {
-    try {
-      socket.end(createWebSocketFrame('', 0x8));
-    } catch { /* ignore */ }
+    closeWebSocket(socket, null);
   }
   server.close(() => {
     console.log('Server shutdown complete');

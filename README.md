@@ -281,7 +281,6 @@ For macOS widget changes, run `npm run widget:build`, then `npm run widget:check
 - Do not edit generated sprite PNGs without also checking `claudeville/assets/sprites/manifest.yaml` and the sprite validation rules.
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.
 - See `docs/visual-experience-crafting.md` for the transferable design method behind the RPG world model, and `agents/handover/claudeville-type-design-handover.md` for a concrete handover packet template for agents adapting the framework to a different scenery/domain.
-- `demo-server.js` at the repo root is unused/abandoned and not wired into `package.json`; do not run it.
 
 ## Docs Map
 
