@@ -64,7 +64,10 @@ async function main() {
         if (unzip.status !== 0) throw new Error(`unzip failed with exit code ${unzip.status}`);
     }
 
-    const meta = JSON.parse(readFileSync(join(extractDir, 'metadata.json'), 'utf8'));
+    const parsed = JSON.parse(readFileSync(join(extractDir, 'metadata.json'), 'utf8'));
+    // Pixellab export schema bump: character/frames are now nested under
+    // states[0]. Fall back to the legacy flat layout for older ZIPs.
+    const meta = Array.isArray(parsed.states) ? parsed.states[0] : parsed;
     const SOURCE = meta.character.size.width;
     if (SOURCE < CELL) throw new Error(`Source canvas ${SOURCE} smaller than cell ${CELL}`);
 

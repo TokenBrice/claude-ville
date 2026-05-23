@@ -189,7 +189,10 @@ function modelIdentity(model, effort, provider = '') {
     return {
       shortLabel: isPro ? 'DS V4 Pro' : isFlash ? 'DS Flash' : isReasoner ? 'DS Reasoner' : 'DeepSeek',
       effortTier,
-      spriteId: 'agent.gemini.base',
+      spriteId: isPro ? 'agent.deepseek.pro'
+        : isFlash ? 'agent.deepseek.flash'
+        : isReasoner ? 'agent.deepseek.reasoner'
+        : 'agent.deepseek.pro',
       color: isPro ? '#9ee7ff' : '#7cf4c8',
     };
   }

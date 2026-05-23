@@ -16,3 +16,7 @@ kimi:
   robe: ['#f2e4df', '#fff2ee', '#e8d6d2']
   pants: ['#8f4150', '#6f2f42', '#4d1f24']
   trim: ['#f5c36a', '#ff8da8', '#ffeff3']
+deepseek:
+  robe: ['#2f7d5b', '#3a9e72', '#276547']
+  pants: ['#1c3a2e', '#243f33', '#18302a']
+  trim: ['#7cf4c8', '#45dca8', '#c8fff0']

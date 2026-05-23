@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-05-01-kimi-agent-v5"
+  assetVersion: "2026-05-23-deepseek-rogue-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -132,6 +132,39 @@ characters:
     anchor: [46, 80]
     mode: pro
 
+  # DeepSeek rogue/archer class: ranged-heavy -> melee-light ladder, distinct
+  # from Codex warriors and Claude mages. Generated at size 76 (canvas ~106) so
+  # the hood/cloak/slung-bow stays inside the 92-px engine cell after center-crop.
+  - id: agent.deepseek.reasoner
+    tool: create_character
+    prompt: "DeepSeek Reasoner master longbow ranger, deep forest-green layered leather armor with ornate bronze trim, hooded cloak with glowing teal rune edging, large ornate recurve longbow slung across back, full arrow quiver at hip, leather bracers, dark green leggings and boots, commanding seasoned ranger stance, glowing teal accents, heroic high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no plate armor, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: deepseek
+    anchor: [46, 80]
+    mode: pro
+
+  - id: agent.deepseek.pro
+    tool: create_character
+    prompt: "DeepSeek Pro hooded dagger assassin, deep forest-green leather armor with teal-glowing trim, deep pointed hood and face wrap, twin curved daggers sheathed at belt and thigh, leather bracers and belt pouches, dark green leggings and soft boots, agile balanced stance, glowing teal accents, readable high-fantasy RPG rogue silhouette, no mage robe, no wizard hat, no staff, no bow, no plate armor, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: deepseek
+    anchor: [46, 80]
+    mode: pro
+
+  - id: agent.deepseek.flash
+    tool: create_character
+    prompt: "DeepSeek Flash light scout rogue, minimal forest-green leather vest and green headband, single curved dagger sheathed at hip, light bracers, dark green leggings and light boots, lean fast agile runner stance, glowing teal accent trim, compact readable high-fantasy RPG silhouette, no mage robe, no wizard hat, no staff, no bow, no plate armor, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: deepseek
+    anchor: [46, 80]
+    mode: pro
+
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
 # this block for standalone tooling — keep both in sync if you edit either.
@@ -152,6 +185,10 @@ palettes:
     robe: ['#f2e4df', '#fff2ee', '#e8d6d2']
     pants: ['#8f4150', '#6f2f42', '#4d1f24']
     trim: ['#f5c36a', '#ff8da8', '#ffeff3']
+  deepseek:
+    robe: ['#2f7d5b', '#3a9e72', '#276547']
+    pants: ['#1c3a2e', '#243f33', '#18302a']
+    trim: ['#7cf4c8', '#45dca8', '#c8fff0']
 
 # ─── EQUIPMENT ───────────────────────────────────────────────────────────────
 # Runtime-held Codex weapons. Anchors mark the grip point used by AgentSprite,

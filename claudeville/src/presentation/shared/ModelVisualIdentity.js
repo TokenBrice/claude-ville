@@ -329,8 +329,11 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             ...DEFAULT_EFFORT_RENDERING,
             effortAccessory,
             effortFloorRing,
-            spriteId: 'agent.gemini.base',
-            paletteKey: 'gemini',
+            spriteId: isPro ? 'agent.deepseek.pro'
+                : isFlash ? 'agent.deepseek.flash'
+                : isReasoner ? 'agent.deepseek.reasoner'
+                : 'agent.deepseek.pro',
+            paletteKey: 'deepseek',
             trim: isPro
                 ? ['#9ee7ff', '#6dd7ff', '#d9f7ff']
                 : ['#7cf4c8', '#45dca8', '#c8fff0'],
