@@ -103,6 +103,19 @@ const LOCAL_AVOIDANCE = Object.freeze({
 });
 const CROWD_CLUSTER_TILE_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
+const AGENT_NAME_TAG_MAX_WIDTH = 152;
+const AGENT_NAME_TAG_MIN_WIDTH = 40;
+const AGENT_NAME_TAG_CHAR_WIDTH = 4.5;
+const AGENT_NAME_TAG_PADDING_X = 9;
+const AGENT_NAME_TAG_SINGLE_HEIGHT = 16;
+const AGENT_NAME_TAG_DOUBLE_HEIGHT = 23;
+const AGENT_COMPACT_NAME_MAX_WIDTH = 180;
+const AGENT_COMPACT_NAME_MIN_WIDTH = 54;
+const AGENT_COMPACT_NAME_CHAR_WIDTH = 5.5;
+const AGENT_COMPACT_NAME_EXTRA_WIDTH = 38;
+const AGENT_COMPACT_NAME_HEIGHT = 17;
+const AGENT_COMPACT_NAME_SLOT_BASE_Y = 22;
+const AGENT_COMPACT_NAME_SLOT_STEP_Y = 12;
 const WATER_TOKENS = {
     lagoon: {
         shallow: 'rgb(10,180,190)',
@@ -2783,10 +2796,10 @@ export class IsometricRenderer {
     _agentCompactSlotRect(sprite, slot) {
         const s = 1 / ((this.camera?.zoom) || 1);
         const offsetX = sprite.x;
-        const offsetY = sprite.y + (20 + slot * 11) * s;
+        const offsetY = sprite.y + (AGENT_COMPACT_NAME_SLOT_BASE_Y + slot * AGENT_COMPACT_NAME_SLOT_STEP_Y) * s;
         const pad = 2 * s;
-        const halfW = 69 * s;
-        const halfH = 7 * s;
+        const halfW = (this._estimateCompactNameTagWidth(sprite) / 2) * s;
+        const halfH = (AGENT_COMPACT_NAME_HEIGHT / 2) * s;
         return {
             x: offsetX - halfW - pad,
             y: offsetY - halfH - pad,
@@ -2820,13 +2833,25 @@ export class IsometricRenderer {
         const name = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
         // Conservative width approximation in canvas space before zoom correction.
         const rawLen = Math.min(name.length, 28);
-        return Math.min(190, Math.max(52, rawLen * 6 + 12));
+        return Math.min(
+            AGENT_NAME_TAG_MAX_WIDTH,
+            Math.max(AGENT_NAME_TAG_MIN_WIDTH, rawLen * AGENT_NAME_TAG_CHAR_WIDTH + AGENT_NAME_TAG_PADDING_X),
+        );
     }
 
     _estimateNameTagHeight(sprite) {
         const name = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
         const lines = name.length > 17 ? 2 : 1;
-        return lines === 1 ? 16 : 26;
+        return lines === 1 ? AGENT_NAME_TAG_SINGLE_HEIGHT : AGENT_NAME_TAG_DOUBLE_HEIGHT;
+    }
+
+    _estimateCompactNameTagWidth(sprite) {
+        const name = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
+        const rawLen = Math.min(name.length, 24);
+        return Math.min(
+            AGENT_COMPACT_NAME_MAX_WIDTH,
+            Math.max(AGENT_COMPACT_NAME_MIN_WIDTH, rawLen * AGENT_COMPACT_NAME_CHAR_WIDTH + AGENT_COMPACT_NAME_EXTRA_WIDTH),
+        );
     }
 
     _rectsOverlap(a, b) {

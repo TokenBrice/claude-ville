@@ -89,7 +89,24 @@ const TARGET_AGENT_CONTENT_HEIGHT = 92;
 const MIN_AGENT_DRAW_SCALE = 1;
 const MAX_AGENT_DRAW_SCALE = 1.25;
 const ACTION_TRAIL_LIMIT = 2;
-const ACTION_TRAIL_TTL_MS = 30000;
+const ACTIVITY_BUBBLE_TTL_MS = 12000;
+const ACTION_TRAIL_TTL_MS = ACTIVITY_BUBBLE_TTL_MS;
+const NAME_TAG_FONT_PX = 6;
+const NAME_TAG_MAX_TEXT_WIDTH = 134;
+const NAME_TAG_MAX_WIDTH = 152;
+const NAME_TAG_PADDING_X = 20;
+const NAME_TAG_SINGLE_HEIGHT = 16;
+const NAME_TAG_DOUBLE_HEIGHT = 23;
+const NAME_TAG_GLYPH_SIZE = 6;
+const COMPACT_NAME_FONT_PX = 7.5;
+const COMPACT_NAME_MAX_TEXT_WIDTH = 135;
+const COMPACT_NAME_MAX_WIDTH = 180;
+const COMPACT_NAME_MIN_WIDTH = 54;
+const COMPACT_NAME_EXTRA_WIDTH = 38;
+const COMPACT_NAME_HEIGHT = 17;
+const COMPACT_NAME_GLYPH_SIZE = 6;
+const COMPACT_NAME_SLOT_BASE_Y = 22;
+const COMPACT_NAME_SLOT_STEP_Y = 12;
 const STATUS_BUBBLE_MAIN_MAX_WIDTH = Object.freeze({
     anchored: 232,
     floating: 360,
@@ -3203,14 +3220,14 @@ export class AgentSprite {
         ctx.scale(s, s); // fixed size in screen space
         ctx.translate(0, 38 + this._nameTagSlotYOffset());
         const rawName = String(this.agent.name || this.agent.displayName || '').trim() || this.agent.displayName;
-        ctx.font = 'bold 8px "Press Start 2P", monospace';
+        ctx.font = `bold ${NAME_TAG_FONT_PX}px "Press Start 2P", monospace`;
         const layout = this._nameTagLayout(ctx, rawName);
         const lines = layout.lines;
         const contentW = layout.contentW;
-        const w = Math.min(202, contentW + 26);
+        const w = Math.min(NAME_TAG_MAX_WIDTH, contentW + NAME_TAG_PADDING_X);
         const repo = this._repoNameTagProfile();
         ctx.fillStyle = repo.panel;
-        const h = lines.length > 1 ? 30 : 20;
+        const h = lines.length > 1 ? NAME_TAG_DOUBLE_HEIGHT : NAME_TAG_SINGLE_HEIGHT;
         const r = 4;
         ctx.beginPath();
         ctx.moveTo(-w/2 + r, -h/2);
@@ -3232,16 +3249,16 @@ export class AgentSprite {
             ctx.lineWidth = 1;
             ctx.strokeRect(Math.round(-w / 2 + 3) + 0.5, Math.round(-h / 2 + 3) + 0.5, Math.max(1, Math.round(w - 6)), Math.max(1, Math.round(h - 6)));
         }
-        this._drawRepoLabelGlyph(ctx, -w / 2 + 10, 0, 7, repo);
+        this._drawRepoLabelGlyph(ctx, -w / 2 + 8, 0, NAME_TAG_GLYPH_SIZE, repo);
         ctx.fillStyle = repo.labelText || repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._applyReadableTextShadow(ctx);
         if (lines.length === 1) {
-            ctx.fillText(lines[0], 4, 1);
+            ctx.fillText(lines[0], 3, 0.5);
         } else {
-            ctx.fillText(lines[0], 4, -5);
-            ctx.fillText(lines[1], 4, 6);
+            ctx.fillText(lines[0], 3, -4);
+            ctx.fillText(lines[1], 3, 5);
         }
         ctx.restore();
     }
@@ -3293,12 +3310,12 @@ export class AgentSprite {
         ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
         ctx.translate(this.x, this.y);
         ctx.scale(s, s);
-        ctx.translate(0, 26 + slot * 16);
-        ctx.font = 'bold 10px "Press Start 2P", monospace';
+        ctx.translate(0, COMPACT_NAME_SLOT_BASE_Y + slot * COMPACT_NAME_SLOT_STEP_Y);
+        ctx.font = `bold ${COMPACT_NAME_FONT_PX}px "Press Start 2P", monospace`;
         const layout = this._compactNameStatusLayout(ctx, rawName);
         const text = layout.text;
         const w = layout.width;
-        const h = 22;
+        const h = COMPACT_NAME_HEIGHT;
 
         ctx.fillStyle = repo.panel;
         ctx.strokeStyle = repo.panelBorder || repo.accent;
@@ -3312,19 +3329,19 @@ export class AgentSprite {
         ctx.fill();
         ctx.stroke();
 
-        const glyphLeft = -w / 2 + 6;
-        this._drawProviderMarkGlyph(ctx, glyphLeft, 0, 8, providerColor);
-        this._drawModelTierDotGlyph(ctx, glyphLeft + 9, 0, 8, tierColor);
-        this._drawRepoLabelGlyph(ctx, glyphLeft + 18, 0, 8, repo);
+        const glyphLeft = -w / 2 + 5;
+        this._drawProviderMarkGlyph(ctx, glyphLeft, 0, COMPACT_NAME_GLYPH_SIZE, providerColor);
+        this._drawModelTierDotGlyph(ctx, glyphLeft + 7, 0, COMPACT_NAME_GLYPH_SIZE, tierColor);
+        this._drawRepoLabelGlyph(ctx, glyphLeft + 14, 0, COMPACT_NAME_GLYPH_SIZE, repo);
 
-        const textAreaLeft = glyphLeft + 22 + 4;
-        const textAreaRight = w / 2 - 5;
+        const textAreaLeft = glyphLeft + 18 + 3;
+        const textAreaRight = w / 2 - 4;
         const textCenter = (textAreaLeft + textAreaRight) / 2;
         ctx.fillStyle = repo.labelText || repo.accent;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._applyReadableTextShadow(ctx);
-        ctx.fillText(text, textCenter, 1);
+        ctx.fillText(text, textCenter, 0.5);
         ctx.restore();
     }
 
@@ -3498,8 +3515,11 @@ export class AgentSprite {
 
     _activityEntryForAgent(agent = this.agent, timestamp = Date.now()) {
         if (!agent) return null;
+        const entryTimestamp = Number(agent.lastSessionActivity) || timestamp;
+        const activityAge = Number(agent.activityAgeMs);
+        const hasFreshActivity = !Number.isFinite(activityAge) || activityAge <= ACTIVITY_BUBBLE_TTL_MS;
         const currentTool = String(agent.currentTool || '').trim();
-        if (currentTool) {
+        if (currentTool && hasFreshActivity) {
             const toolLabel = this._toolActivityLabel(currentTool);
             const detail = compactToolInput(agent.currentToolInput, TOOL_DETAIL_PREVIEW_CHARS);
             const detailKey = compactToolInput(agent.currentToolInput, TOOL_DETAIL_KEY_CHARS);
@@ -3511,19 +3531,19 @@ export class AgentSprite {
                 accent: this._providerTrimColor(agent),
                 tool: currentTool,
                 category: toolCategory(currentTool),
-                timestamp,
+                timestamp: entryTimestamp,
             };
         }
 
         const rawMessage = String(agent.lastMessage || '').replace(/\s+/g, ' ').trim();
-        if (rawMessage) {
+        if (rawMessage && hasFreshActivity) {
             const quoted = `"${this._truncateActivityText(rawMessage, MESSAGE_TEXT_CAP)}"`;
             return {
                 kind: 'message',
                 key: `message:${rawMessage}`,
                 text: quoted,
                 accent: '#8fc4ff',
-                timestamp,
+                timestamp: entryTimestamp,
             };
         }
 
@@ -3545,7 +3565,7 @@ export class AgentSprite {
         this._pruneActivityTrail(timestamp);
         const latest = this._activityTrail[0];
         if (latest?.key === entry.key) {
-            latest.timestamp = timestamp;
+            latest.timestamp = Number.isFinite(Number(entry.timestamp)) ? Number(entry.timestamp) : timestamp;
             return;
         }
         this._activityTrail.unshift({
@@ -3555,7 +3575,7 @@ export class AgentSprite {
             accent: entry.accent || this._providerTrimColor(),
             tool: entry.tool || null,
             category: entry.category || null,
-            timestamp,
+            timestamp: Number.isFinite(Number(entry.timestamp)) ? Number(entry.timestamp) : timestamp,
         });
         if (this._activityTrail.length > ACTION_TRAIL_LIMIT) {
             this._activityTrail.length = ACTION_TRAIL_LIMIT;
@@ -3630,12 +3650,15 @@ export class AgentSprite {
 
     _compactNameStatusLayout(ctx, rawName) {
         const fontStatus = typeof document !== 'undefined' ? document.fonts?.status || 'unknown' : 'unknown';
-        const key = `${rawName}|${ctx.font}|180|${fontStatus}`;
+        const key = `${rawName}|${ctx.font}|${COMPACT_NAME_MAX_TEXT_WIDTH}|${fontStatus}`;
         if (this._compactNameStatusCacheKey === key && this._compactNameStatusCache) {
             return this._compactNameStatusCache;
         }
-        const text = this._fitText(ctx, rawName, 180);
-        const width = Math.min(240, Math.max(72, ctx.measureText(text).width + 50));
+        const text = this._fitText(ctx, rawName, COMPACT_NAME_MAX_TEXT_WIDTH);
+        const width = Math.min(
+            COMPACT_NAME_MAX_WIDTH,
+            Math.max(COMPACT_NAME_MIN_WIDTH, ctx.measureText(text).width + COMPACT_NAME_EXTRA_WIDTH),
+        );
         const layout = { text, width };
         this._compactNameStatusCacheKey = key;
         this._compactNameStatusCache = layout;
@@ -3923,10 +3946,9 @@ export class AgentSprite {
     }
 
     _wrapNameTagLines(ctx, rawName) {
-        const MAX_WIDTH = 178;
         const name = String(rawName || '').trim();
         if (!name) return ['Agent'];
-        if (ctx.measureText(name).width <= MAX_WIDTH) return [name];
+        if (ctx.measureText(name).width <= NAME_TAG_MAX_TEXT_WIDTH) return [name];
 
         const parts = name
             .replace(/-/g, '- ')
@@ -3938,7 +3960,7 @@ export class AgentSprite {
         for (const part of parts) {
             const joiner = current && !current.endsWith('-') ? ' ' : '';
             const candidate = `${current}${joiner}${part}`;
-            if (!current || ctx.measureText(candidate).width <= MAX_WIDTH) {
+            if (!current || ctx.measureText(candidate).width <= NAME_TAG_MAX_TEXT_WIDTH) {
                 current = candidate;
                 continue;
             }
@@ -3948,16 +3970,16 @@ export class AgentSprite {
         }
         if (current && lines.length < 2) lines.push(current.trim());
 
-        if (lines.length === 0) return [this._truncateNameTagLine(ctx, name, MAX_WIDTH)];
-        if (lines.length === 1) return [this._truncateNameTagLine(ctx, lines[0], MAX_WIDTH)];
+        if (lines.length === 0) return [this._truncateNameTagLine(ctx, name, NAME_TAG_MAX_TEXT_WIDTH)];
+        if (lines.length === 1) return [this._truncateNameTagLine(ctx, lines[0], NAME_TAG_MAX_TEXT_WIDTH)];
 
         const consumed = lines.join(' ').replace(/- /g, '-');
         const normalized = name.replace(/\s+/g, ' ');
         if (consumed.length < normalized.length) {
             const remaining = normalized.slice(consumed.length).trim();
-            lines[1] = this._truncateNameTagLine(ctx, `${lines[1]} ${remaining}`.trim(), MAX_WIDTH);
+            lines[1] = this._truncateNameTagLine(ctx, `${lines[1]} ${remaining}`.trim(), NAME_TAG_MAX_TEXT_WIDTH);
         } else {
-            lines[1] = this._truncateNameTagLine(ctx, lines[1], MAX_WIDTH);
+            lines[1] = this._truncateNameTagLine(ctx, lines[1], NAME_TAG_MAX_TEXT_WIDTH);
         }
         return lines.slice(0, 2).map(line => line.replace(/- /g, '-'));
     }
