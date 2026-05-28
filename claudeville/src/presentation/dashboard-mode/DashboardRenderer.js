@@ -223,6 +223,7 @@ export class DashboardRenderer {
                     <div class="dash-card__meta">
                         <span class="dash-card__provider-badge"></span>
                         <span class="dash-card__model"></span>
+                        <span class="dash-card__workflow-badge"></span>
                         <span class="dash-card__role"></span>
                     </div>
                 </div>
@@ -267,6 +268,7 @@ export class DashboardRenderer {
         card._elements = {
             name: card.querySelector('.dash-card__name'),
             model: card.querySelector('.dash-card__model'),
+            workflowBadge: card.querySelector('.dash-card__workflow-badge'),
             role: card.querySelector('.dash-card__role'),
             providerBadge: card.querySelector('.dash-card__provider-badge'),
             status: card.querySelector('.dash-card__status'),
@@ -294,6 +296,7 @@ export class DashboardRenderer {
             agent.effort || '',
             agent.provider || '',
             agent.role || '',
+            agent.workflowName || '',
             status,
             agent.currentTool || '',
             agent.currentToolInput || '',
@@ -313,7 +316,18 @@ export class DashboardRenderer {
             this._setText(refs.model, model.label);
             this._setStyle(refs.model, 'color', model.color);
             refs.model.title = model.title;
-            this._setText(refs.role, agent.role || '');
+
+            // Workflow swarm members read as one unit via a shared workflow chip;
+            // it stands in for the generic 'workflow-subagent' role text.
+            if (agent.workflowName) {
+                this._setText(refs.workflowBadge, `⚙ ${agent.workflowName}`);
+                refs.workflowBadge.title = `Workflow: ${agent.workflowName}`;
+                this._setStyle(refs.workflowBadge, 'display', '');
+                this._setText(refs.role, '');
+            } else {
+                this._setStyle(refs.workflowBadge, 'display', 'none');
+                this._setText(refs.role, agent.role || '');
+            }
 
             const badge = provider.badge;
             this._setText(refs.providerBadge, badge.label);

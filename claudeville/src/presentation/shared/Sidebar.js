@@ -123,6 +123,7 @@ export class Sidebar {
                 agent.provider,
                 agent.projectPath,
                 agent.teamName,
+                agent.workflowName,
             ].join('|'))
             .join('\n');
         if (signature === this._renderSignature) {
@@ -183,6 +184,15 @@ export class Sidebar {
                             background: team.accent,
                             boxShadow: `0 0 6px ${team.glow}`,
                         },
+                    }));
+                }
+                if (agent.workflowName) {
+                    const workflowLabel = `Workflow ${agent.workflowName}`;
+                    nameChildren.push(el('span', {
+                        className: 'sidebar__workflow-icon',
+                        title: workflowLabel,
+                        ariaLabel: workflowLabel,
+                        text: 'W',
                     }));
                 }
                 nameChildren.push(agent.name || '');

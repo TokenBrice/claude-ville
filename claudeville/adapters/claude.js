@@ -492,8 +492,21 @@ function resolveSessionFilePath(sessionId, project) {
       const sessionDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
         .filter(d => d.isDirectory());
       for (const dir of sessionDirs) {
-        const agentFile = path.join(projectsDir, dir.name, 'subagents', `agent-${agentId}.jsonl`);
+        const subagentsDir = path.join(projectsDir, dir.name, 'subagents');
+        const agentFile = path.join(subagentsDir, `agent-${agentId}.jsonl`);
         if (fs.existsSync(agentFile)) return agentFile;
+
+        // Workflow sub-agents are nested under subagents/workflows/<wfRunId>/.
+        const workflowsDir = path.join(subagentsDir, 'workflows');
+        let runDirs;
+        try {
+          runDirs = fs.readdirSync(workflowsDir, { withFileTypes: true })
+            .filter(d => d.isDirectory());
+        } catch { continue; }
+        for (const runDir of runDirs) {
+          const nested = path.join(workflowsDir, runDir.name, `agent-${agentId}.jsonl`);
+          if (fs.existsSync(nested)) return nested;
+        }
       }
     } catch { /* ignore */ }
     return null;
@@ -516,6 +529,78 @@ function getSessionFileActivity(sessionId, project) {
 function resolveProjectPathFromMap(projectPathMap, encodedProject) {
   return projectPathMap.get(encodedProject)
     || `/${encodedProject.replace(/^-/, '').replace(/-/g, '/')}`;
+}
+
+// ─── Workflow sub-agents ────────────────────────────────────
+// The Workflow tool spawns its sub-agents under
+//   <sessionDir>/subagents/workflows/<wfRunId>/agent-<id>.jsonl
+// (one level deeper than ordinary Task sub-agents) and persists the run's
+// script as <sessionDir>/workflows/scripts/<workflowName>-<wfRunId>.js. The
+// human-facing workflow name is only recoverable from that script filename.
+
+function readWorkflowName(sessionDir, wfRunId) {
+  const scriptsDir = path.join(sessionDir, 'workflows', 'scripts');
+  let files;
+  try { files = fs.readdirSync(scriptsDir); } catch { return null; }
+  const suffix = `-${wfRunId}.js`;
+  for (const file of files) {
+    if (file.endsWith(suffix)) return file.slice(0, -suffix.length);
+  }
+  return null;
+}
+
+// Freshest mtime across a session's ordinary and workflow sub-agent
+// transcripts. A long-running orchestrator can leave its own .jsonl untouched
+// for minutes while its (possibly nested workflow) children write constantly,
+// so the parent's liveness must follow its children.
+function latestSubAgentActivity(sessionDir) {
+  let latest = 0;
+  const subagentsDir = path.join(sessionDir, 'subagents');
+  if (!fs.existsSync(subagentsDir)) return latest;
+  const scan = (dir) => {
+    let names;
+    try { names = fs.readdirSync(dir); } catch { return; }
+    for (const name of names) {
+      if (!name.startsWith('agent-') || !name.endsWith('.jsonl')) continue;
+      try {
+        const m = fs.statSync(path.join(dir, name)).mtimeMs;
+        if (m > latest) latest = m;
+      } catch { /* ignore */ }
+    }
+  };
+  scan(subagentsDir);
+  const workflowsDir = path.join(subagentsDir, 'workflows');
+  let runDirs;
+  try { runDirs = fs.readdirSync(workflowsDir, { withFileTypes: true }); } catch { runDirs = []; }
+  for (const dir of runDirs) {
+    if (dir.isDirectory()) scan(path.join(workflowsDir, dir.name));
+  }
+  return latest;
+}
+
+function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, workflowId = null, workflowName = null, lastActivity }) {
+  const detail = getSubAgentDetail(filePath);
+  const sessionId = `subagent-${agentId}`;
+  return {
+    sessionId,
+    provider: 'claude',
+    agentId,
+    name: name || null,
+    agentName: name || null,
+    agentType,
+    model: detail.model || 'unknown',
+    status: 'active',
+    lastActivity,
+    project: decodedProject,
+    lastMessage: detail.lastMessage,
+    lastTool: detail.lastTool,
+    lastToolInput: detail.lastToolInput,
+    tokenUsage: getTokenUsage(filePath),
+    gitEvents: getGitEvents(filePath, { provider: 'claude', sessionId, project: decodedProject }),
+    parentSessionId,
+    workflowId,
+    workflowName,
+  };
 }
 
 // ─── Adapter class ────────────────────────────────────
@@ -577,7 +662,10 @@ class ClaudeAdapter {
     const mainSessions = [];
     for (const session of sessionsMap.values()) {
       const fileMtime = getSessionFileActivity(session.sessionId, session.project);
-      const lastActive = Math.max(session.lastActivity, fileMtime);
+      const childMtime = session.project
+        ? latestSubAgentActivity(path.join(CLAUDE_DIR, 'projects', session.project.replace(/\//g, '-'), session.sessionId))
+        : 0;
+      const lastActive = Math.max(session.lastActivity, fileMtime, childMtime);
       if (now - lastActive > activeThresholdMs) continue;
 
       session.lastActivity = lastActive;
@@ -638,14 +726,17 @@ class ClaudeAdapter {
         for (const sessionId of sessionIds) {
           const subagentsDir = path.join(projPath, sessionId, 'subagents');
           if (!fs.existsSync(subagentsDir)) continue;
+          const sessionDir = path.join(projPath, sessionId);
           const parentSessionFile = path.join(projPath, `${sessionId}.jsonl`);
           const agentLaunches = getAgentLaunches(parentSessionFile);
+          const decodedProject = resolveProjectPathFromMap(projectPathMap, encodedProject);
 
+          // Ordinary Task sub-agents live directly under subagents/.
           let agentFiles;
           try {
             agentFiles = fs.readdirSync(subagentsDir)
               .filter(f => f.startsWith('agent-') && f.endsWith('.jsonl'));
-          } catch { continue; }
+          } catch { agentFiles = []; }
 
           for (const agentFile of agentFiles) {
             const filePath = path.join(subagentsDir, agentFile);
@@ -655,35 +746,61 @@ class ClaudeAdapter {
             if (now - stat.mtimeMs > activeThresholdMs) continue;
 
             const agentId = agentFile.replace('agent-', '').replace('.jsonl', '');
-            const detail = getSubAgentDetail(filePath);
             const prompt = getFirstUserPrompt(filePath);
             const launch = prompt
               ? agentLaunches.find(item => item.prompt === prompt)
               : null;
-            const decodedProject = resolveProjectPathFromMap(projectPathMap, encodedProject);
 
-            results.push({
-              sessionId: `subagent-${agentId}`,
-              provider: 'claude',
+            results.push(buildSubAgentSession({
+              filePath,
               agentId,
-              name: launch?.name || null,
-              agentName: launch?.name || null,
-              agentType: launch?.agentType || 'sub-agent',
-              model: detail.model || 'unknown',
-              status: 'active',
-              lastActivity: stat.mtimeMs,
-              project: decodedProject,
-              lastMessage: detail.lastMessage,
-              lastTool: detail.lastTool,
-              lastToolInput: detail.lastToolInput,
-              tokenUsage: getTokenUsage(filePath),
-              gitEvents: getGitEvents(filePath, {
-                provider: 'claude',
-                sessionId: `subagent-${agentId}`,
-                project: decodedProject,
-              }),
+              decodedProject,
               parentSessionId: sessionId,
-            });
+              name: launch?.name || null,
+              agentType: launch?.agentType || 'sub-agent',
+              lastActivity: stat.mtimeMs,
+            }));
+          }
+
+          // Workflow sub-agents live one level deeper, grouped per run id.
+          const workflowsDir = path.join(subagentsDir, 'workflows');
+          let runDirs;
+          try {
+            runDirs = fs.readdirSync(workflowsDir, { withFileTypes: true })
+              .filter(d => d.isDirectory());
+          } catch { runDirs = []; }
+
+          for (const runDir of runDirs) {
+            const workflowId = runDir.name;
+            const runPath = path.join(workflowsDir, workflowId);
+            let runFiles;
+            try {
+              runFiles = fs.readdirSync(runPath)
+                .filter(f => f.startsWith('agent-') && f.endsWith('.jsonl'));
+            } catch { continue; }
+            if (!runFiles.length) continue;
+            const workflowName = readWorkflowName(sessionDir, workflowId);
+
+            for (const agentFile of runFiles) {
+              const filePath = path.join(runPath, agentFile);
+              let stat;
+              try { stat = fs.statSync(filePath); } catch { continue; }
+
+              if (now - stat.mtimeMs > activeThresholdMs) continue;
+
+              const agentId = agentFile.replace('agent-', '').replace('.jsonl', '');
+              results.push(buildSubAgentSession({
+                filePath,
+                agentId,
+                decodedProject,
+                parentSessionId: sessionId,
+                name: null,
+                agentType: 'workflow-subagent',
+                workflowId,
+                workflowName,
+                lastActivity: stat.mtimeMs,
+              }));
+            }
           }
         }
       }
@@ -720,22 +837,11 @@ class ClaudeAdapter {
           let stat;
           try { stat = fs.statSync(filePath); } catch { continue; }
 
-          // Long-running parents (e.g., orchestrating 8 audit subagents) can leave their
-          // own .jsonl untouched for minutes while children write constantly. Treat the
-          // session as active if either the parent file or any subagent file is fresh.
-          let lastActivity = stat.mtimeMs;
-          const subagentsDir = path.join(projPath, sessionId, 'subagents');
-          if (fs.existsSync(subagentsDir)) {
-            try {
-              for (const agentFile of fs.readdirSync(subagentsDir)) {
-                if (!agentFile.startsWith('agent-') || !agentFile.endsWith('.jsonl')) continue;
-                try {
-                  const aStat = fs.statSync(path.join(subagentsDir, agentFile));
-                  if (aStat.mtimeMs > lastActivity) lastActivity = aStat.mtimeMs;
-                } catch { /* ignore */ }
-              }
-            } catch { /* ignore */ }
-          }
+          // Long-running parents (e.g., orchestrating audit subagents or a workflow
+          // swarm) can leave their own .jsonl untouched for minutes while children
+          // write constantly. Treat the session as active if either the parent file
+          // or any (possibly nested workflow) subagent file is fresh.
+          const lastActivity = Math.max(stat.mtimeMs, latestSubAgentActivity(path.join(projPath, sessionId)));
 
           if (now - lastActivity > activeThresholdMs) continue;
 

@@ -23,6 +23,9 @@ const PROJECT_MAIN = '/synthetic/project-alpha';
 const PROJECT_TEAM = '/synthetic/project-beta';
 const TEAM_AGENT_NAME = 'atlas';
 const TEAM_NAME = 'squad-alpha';
+const WORKFLOW_RUN_ID = 'wf_smoke-001';
+const WORKFLOW_NAME = 'doc-corpus-audit';
+const WORKFLOW_AGENT_ID = 'bbbbbbbbbbbbbbbbb';
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-smoke-claude-'));
 let failed = false;
@@ -81,6 +84,15 @@ function buildFixture() {
     const subagentFile = path.join(subagentDir, `agent-${SUBAGENT_ID}.jsonl`);
     writeFile(subagentFile, '');
 
+    // Workflow sub-agent: nested one level deeper under subagents/workflows/<wfRunId>/,
+    // with the run script naming the workflow under <parent>/<id>/workflows/scripts/.
+    const workflowAgentFile = path.join(subagentDir, 'workflows', WORKFLOW_RUN_ID, `agent-${WORKFLOW_AGENT_ID}.jsonl`);
+    writeFile(workflowAgentFile, '');
+    writeFile(
+        path.join(parentDir, MAIN_SESSION_ID, 'workflows', 'scripts', `${WORKFLOW_NAME}-${WORKFLOW_RUN_ID}.js`),
+        'export const meta = {};\n',
+    );
+
     // Team-member: a .jsonl under a different project dir, with a session
     // metadata file mapping the sessionId to a name that resolves to a team.
     const teamProjectDir = path.join(projectsDir, encodeProject(PROJECT_TEAM));
@@ -99,7 +111,7 @@ function buildFixture() {
 
     // Touch parent + subagent + team-member files so mtimeMs is fresh.
     const now = new Date(NOW);
-    for (const file of [parentFile, subagentFile, teamMemberFile]) {
+    for (const file of [parentFile, subagentFile, workflowAgentFile, teamMemberFile]) {
         fs.utimesSync(file, now, now);
     }
 
@@ -143,6 +155,16 @@ function runSmoke() {
         assert.ok(subagent, 'expected subagent session in result');
         assert.equal(subagent.parentSessionId, MAIN_SESSION_ID);
         assert.equal(subagent.agentId, SUBAGENT_ID);
+    });
+
+    const workflowAgent = sessions.find((s) => s.sessionId === `subagent-${WORKFLOW_AGENT_ID}`);
+    check('workflow sub-agent is discovered with workflow metadata', () => {
+        assert.ok(workflowAgent, 'expected nested workflow sub-agent in result');
+        assert.equal(workflowAgent.agentType, 'workflow-subagent');
+        assert.equal(workflowAgent.parentSessionId, MAIN_SESSION_ID);
+        assert.equal(workflowAgent.agentId, WORKFLOW_AGENT_ID);
+        assert.equal(workflowAgent.workflowId, WORKFLOW_RUN_ID);
+        assert.equal(workflowAgent.workflowName, WORKFLOW_NAME);
     });
 
     const teamMember = sessions.find((s) => s.sessionId === TEAM_MEMBER_SESSION_ID);

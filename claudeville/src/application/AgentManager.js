@@ -129,6 +129,8 @@ export class AgentManager {
             agentName,
             agentType: session.agentType || null,
             parentSessionId: session.parentSessionId || null,
+            workflowId: session.workflowId || null,
+            workflowName: session.workflowName || null,
             model: teamInfo?.model || session.model || 'unknown',
             effort: session.reasoningEffort || session.effort || null,
             status,

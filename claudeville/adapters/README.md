@@ -71,7 +71,7 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `sessionId` | string | Unique across providers. Codex, Gemini, Kimi, and OpenCode prefix with `codex-` / `gemini-` / `kimi-` / `opencode-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
 | `provider` | `'claude' \| 'codex' \| 'gemini' \| 'kimi' \| 'opencode' \| 'git'` | Adapter-backed sessions use the CLI/source provider id. DeepSeek-backed OpenCode sessions still use `provider: 'opencode'` and expose DeepSeek through `model`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
 | `agentId` | string \| null | Provider-specific agent thread id; nullable for Gemini. |
-| `agentType` | `'main' \| 'sub-agent' \| 'team-member' \| 'repository'` | Drives sprite/card grouping. Default `'main'`. Synthetic git sessions use `'repository'`. |
+| `agentType` | `'main' \| 'sub-agent' \| 'team-member' \| 'workflow-subagent' \| 'repository'` | Drives sprite/card grouping. Default `'main'`. Synthetic git sessions use `'repository'`. Workflow tool sub-agents use `'workflow-subagent'`. |
 | `agentName` | string \| null | Human label when the provider exposes one (Codex `session_index.jsonl` `thread_name` with `agent_nickname` fallback, Claude team launch name). |
 | `project` | string \| null | Absolute working directory. Gemini may resolve this from a SHA-256 hash and return null on failure. |
 | `model` | string | Free-form. UI strips `claude-` and `-2025…` suffixes for display. |
@@ -83,6 +83,8 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `tokenUsage` | object \| null | See "Token normalization" below. Registry normalization sets this to null when adapters omit token data. |
 | `parentSessionId` | string \| null | Set on subagent / spawned-thread sessions. |
 | `reasoningEffort` | string \| null | Codex-only. Pulled from `turn_context` / `event_msg`. |
+| `workflowId` | string \| null | Claude-only. Workflow run id (`wf_<id>`) for sub-agents spawned by the Workflow tool; null otherwise. |
+| `workflowName` | string \| null | Claude-only. Human workflow name recovered from the persisted run-script filename; null otherwise. |
 | `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Registry normalization sets this to `[]` when adapters omit it. Dry-run events are omitted. Events include `id`, `type`, `project`, `provider`, `sessionId`, `sourceId`, `ts`, and `commandHash`; `command`, `targetRef`, `success`, `exitCode`, and `completedAt` are optional metadata when the adapter can derive them. |
 
 ### Git event extraction
@@ -166,6 +168,8 @@ These show the minimal shape each adapter's parser reads. Real files are longer;
 ```
 
 Subagent files at `~/.claude/projects/<encoded-project>/<sessionId>/subagents/agent-<id>.jsonl` follow the standard Claude message-event JSONL schema; the adapter reads `message.role`, `message.content`, and `usage` blocks from each line.
+
+Workflow tool sub-agents use the same JSONL schema but live one level deeper, grouped per run id: `~/.claude/projects/<encoded-project>/<sessionId>/subagents/workflows/<wfRunId>/agent-<id>.jsonl`, each with a `agent-<id>.meta.json` sidecar (`{"agentType":"workflow-subagent"}`). The per-agent TUI label/phase shown in the Workflow runner is not persisted; only the workflow name is recoverable, from the run script at `<sessionId>/workflows/scripts/<workflowName>-<wfRunId>.js`. The adapter tags these sessions `agentType: 'workflow-subagent'` with `workflowId` / `workflowName`, and keeps a quiet orchestrator parent "active" off its (possibly nested) children's mtimes.
 
 ### Codex — `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` (one line per record)
 

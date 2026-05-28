@@ -79,7 +79,7 @@ Adapters are in `adapters/` and registered by `adapters/index.js`.
 - `claude.js`
   - Source: `~/.claude/`.
   - Reads `history.jsonl`, `projects/`, `teams/`, and `tasks/`.
-  - Detects recent main sessions, subagents under `subagents/`, and orphan/team-member project JSONL files.
+  - Detects recent main sessions, subagents under `subagents/`, workflow-tool subagents nested under `subagents/workflows/<wfRunId>/` (tagged `agentType: 'workflow-subagent'` with `workflowId`/`workflowName`), and orphan/team-member project JSONL files.
   - Provides token usage, last tool, last tool input, last message, teams, and tasks.
 - `codex.js`
   - Source: `~/.codex/sessions/`.

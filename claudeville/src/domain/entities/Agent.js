@@ -34,6 +34,8 @@ export class Agent {
         agentName,
         agentType,
         parentSessionId,
+        workflowId,
+        workflowName,
         lastSessionActivity,
         activityAgeMs,
     }) {
@@ -44,6 +46,8 @@ export class Agent {
         this.agentName = agentName || name || null;
         this.agentType = agentType || null;
         this.parentSessionId = parentSessionId || null;
+        this.workflowId = workflowId || null;
+        this.workflowName = workflowName || null;
         this.model = model || 'unknown';
         this.effort = effort || null;
         this.status = normalizeAgentStatus(status);

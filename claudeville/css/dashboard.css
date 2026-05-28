@@ -220,6 +220,18 @@
     font-size: 10px;
 }
 
+.dash-card__workflow-badge {
+    background: rgba(192, 132, 252, 0.16);
+    color: #c084fc;
+    border: 1px solid rgba(192, 132, 252, 0.32);
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 9px;
+    font-weight: bold;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
 .dash-card__status {
     display: flex;
     align-items: center;

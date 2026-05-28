@@ -84,6 +84,8 @@ function normalizeSession(session, context = {}) {
     tokenUsage: session?.tokenUsage ?? session?.tokens ?? session?.usage ?? null,
     parentSessionId: session?.parentSessionId ?? null,
     reasoningEffort: session?.reasoningEffort ?? null,
+    workflowId: session?.workflowId ?? null,
+    workflowName: session?.workflowName ?? null,
     gitEvents: Array.isArray(session?.gitEvents) ? session.gitEvents : [],
   });
 }

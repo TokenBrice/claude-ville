@@ -231,7 +231,8 @@
 }
 
 .sidebar__label-icon,
-.sidebar__team-icon {
+.sidebar__team-icon,
+.sidebar__workflow-icon {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -253,6 +254,16 @@
     margin-right: 4px;
     color: #2a160e;
     border-color: rgba(255, 245, 205, 0.42);
+    vertical-align: middle;
+}
+
+.sidebar__workflow-icon {
+    width: 12px;
+    height: 10px;
+    margin-right: 4px;
+    color: #f3e8ff;
+    background: rgba(192, 132, 252, 0.32);
+    border-color: rgba(192, 132, 252, 0.5);
     vertical-align: middle;
 }
 
