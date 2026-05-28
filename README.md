@@ -4,6 +4,9 @@ ClaudeVille is a local dashboard for AI coding agent activity. It reads session 
 
 The app is intentionally small: a zero-dependency Node.js HTTP/WebSocket server, static browser assets, vanilla ES modules, Canvas 2D rendering, and optional desktop widgets for macOS and KDE Plasma.
 
+<img width="2545" height="1254" alt="image" src="https://github.com/user-attachments/assets/9d9f04f9-cfba-4188-82a8-28e3fbce93e4" />
+
+
 ## Quick Start
 
 ```bash
