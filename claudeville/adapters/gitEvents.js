@@ -50,6 +50,10 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
 // visibility by ≤30s.
 const GIT_STATUS_CACHE_TTL_MS = 30000;
 const RECENT_REPOSITORY_PUSH_TTL_MS = 2 * 60 * 1000;
+const REPOSITORY_UNPUSHED_EVENT_TTL_MS = Math.max(
+  60 * 60 * 1000,
+  Number(process.env.CLAUDEVILLE_REPOSITORY_UNPUSHED_EVENT_TTL_MS || (7 * 24 * 60 * 60 * 1000)) || (7 * 24 * 60 * 60 * 1000)
+);
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const _gitStatusCache = new Map();
 const _currentBranchCache = new Map();
@@ -1169,6 +1173,15 @@ function createRepositoryGitSession(project, gitEvents) {
   };
 }
 
+function recentRepositoryUnpushedEvents(events = [], now = Date.now()) {
+  const cutoff = now - REPOSITORY_UNPUSHED_EVENT_TTL_MS;
+  return (Array.isArray(events) ? events : []).filter((event) => {
+    if (event?.type !== 'commit') return true;
+    const eventTime = Number(event.completedAt || event.ts || 0);
+    return Number.isFinite(eventTime) && eventTime >= cutoff;
+  });
+}
+
 function inferUnpushedGitEventsForSessions(sessions, options = {}) {
   if (!Array.isArray(sessions)) return sessions;
 
@@ -1222,7 +1235,7 @@ function inferUnpushedGitEventsForSessions(sessions, options = {}) {
     const sessionProjects = new Set(sessions.map((session) => session?.project).filter(Boolean));
     for (const project of extraProjects) {
       if (sessionProjects.has(project)) continue;
-      const unpushed = eventsByProject.get(project) || [];
+      const unpushed = recentRepositoryUnpushedEvents(eventsByProject.get(project), now);
       const recentPushes = recentPushesByProject.get(project) || [];
       const events = dedupeGitEvents([...unpushed, ...recentPushes]);
       if (!events.length) continue;
