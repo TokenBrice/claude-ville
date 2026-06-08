@@ -770,6 +770,23 @@ function branchUpstream(project, branch) {
   return tryRunGit(project, ['for-each-ref', '--format=%(upstream:short)', `refs/heads/${normalized}`]);
 }
 
+function sameNameRemoteBranch(project, branch) {
+  const normalized = normalizeLocalBranchName(branch);
+  if (!normalized) return '';
+  const refs = tryRunGit(project, [
+    'for-each-ref',
+    '--format=%(refname:short)',
+    `refs/remotes/*/${normalized}`,
+  ])
+    .split('\n')
+    .map((ref) => ref.trim())
+    .filter(Boolean)
+    .filter((ref) => !ref.endsWith('/HEAD'));
+  if (!refs.length) return '';
+  const originRef = refs.find((ref) => ref === `origin/${normalized}`);
+  return originRef || refs[0];
+}
+
 function defaultComparisonBase(project, branch) {
   const candidates = [
     'origin/HEAD',
@@ -794,6 +811,16 @@ function branchComparison(project, branch, explicitUpstream = '') {
       branch: normalizedBranch,
       baseRef: upstream,
       upstream,
+      hasUpstream: true,
+    };
+  }
+
+  const remoteBranch = sameNameRemoteBranch(project, normalizedBranch);
+  if (remoteBranch) {
+    return {
+      branch: normalizedBranch,
+      baseRef: remoteBranch,
+      upstream: remoteBranch,
       hasUpstream: true,
     };
   }
