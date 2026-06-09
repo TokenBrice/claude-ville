@@ -210,7 +210,9 @@ function tokenUsageFromSession(row, parts = []) {
     contextWindow,
     contextWindowMax: contextLimitForModel(parseModel(row.model).label),
     turnCount,
-    reasoning: Number(row.tokens_reasoning) || 0,
+    // OpenCode stores reasoning separately from output (message totals sum
+    // input + output + reasoning + cache), so it is additional billable spend.
+    reasoningTokens: Number(row.tokens_reasoning) || 0,
     reportedCost: Number(row.cost) || 0,
   };
 }
@@ -396,12 +398,20 @@ function getToolHistory(parts, maxItems = DETAIL_TOOL_LIMIT) {
   const tools = [];
   for (const part of parts) {
     if (part.type !== 'tool') continue;
-    const stateInput = part.data.state?.input || part.data.input || {};
-    tools.push({
+    const state = part.data.state || {};
+    const stateInput = state.input || part.data.input || {};
+    const item = {
       tool: normalizeToolName(part.data.tool),
       detail: summarizeToolInput(stateInput, { maxLength: 80 }),
       ts: part.timeCreated,
-    });
+    };
+    const exitCode = Number(state.metadata?.exit ?? state.exitCode ?? state.exit_code);
+    if (Number.isFinite(exitCode)) {
+      item.toolExitCode = exitCode;
+      const stderr = typeof state.metadata?.stderr === 'string' ? state.metadata.stderr : '';
+      if (exitCode !== 0 && stderr) item.toolStderr = stderr.trim().substring(0, 200);
+    }
+    tools.push(item);
   }
   return tools.slice(-maxItems);
 }

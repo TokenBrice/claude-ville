@@ -29,6 +29,7 @@ import {
 } from '../../config/scenery.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { Camera } from './Camera.js';
 import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
@@ -168,6 +169,11 @@ const ATMOSPHERE_EFFECT_ASSETS = Object.freeze({
 // Archive fade: keep the sprite in the draw loop for this many ms after
 // `agent:removed` so the sibling AgentSprite fade/sparkle animation can play.
 const ARCHIVE_FADE_DURATION_MS = 800;
+// 2.4 — affinity proximity: how often ally pairs are re-evaluated, and how
+// many warm pairs get a shared plaza preference per pass (keeps idle
+// drift bounded in dense worlds).
+const AFFINITY_PROXIMITY_INTERVAL_MS = 5000;
+const MAX_AFFINITY_PROXIMITY_PAIRS = 6;
 const GULL_BASE_POPULATION = OPEN_SEA_FLOCK_ROUTES.reduce((sum, flock) => sum + flock.size, 0);
 const GULL_MAX_POPULATION = GULL_BASE_POPULATION * 3;
 const GULL_MIN_ACTIVE_TARGET = Math.max(1, Math.floor(GULL_BASE_POPULATION / 4));
@@ -288,6 +294,14 @@ export class IsometricRenderer {
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.chronicleStore = options.chronicleStore || null;
         this.modal = options.modal || null;
+        // Application-layer services wired in App.js. All optional: the
+        // renderer degrades to its pre-metaphor behavior when absent.
+        this.moodService = options.moodService || null;
+        this.biographyService = options.biographyService || null;
+        this.affinityService = options.affinityService || null;
+        this._nicknames = new Map(); // identityKey -> earned nickname
+        this._affinityProximityAccumulator = 0;
+        this._chronicleChannelListener = null;
         this.agentEventStream = null;
         this.relationshipState = null;
         this.ritualConductor = null;
@@ -350,6 +364,7 @@ export class IsometricRenderer {
         this._chatMatchAccumulator = 250;
         this._crowdBumpCooldowns = new Map();
         this._stationaryOverlapAccumulator = 0;
+        this._rainSplashAccumulator = 0;
         this._localAvoidanceMetrics = {
             laneCorrections: 0,
             separationPushes: 0,
@@ -1046,7 +1061,45 @@ export class IsometricRenderer {
                 if (!payload) return;
                 this._buildingPresenceMap = new Map(Object.entries(payload));
             }),
+            // 4.8 — earned nicknames garnish agent name tags.
+            eventBus.on('biography:updated', (payload) => {
+                const identityKey = payload?.identityKey;
+                if (!identityKey) return;
+                const nickname = payload?.biography?.nickname || null;
+                if (nickname) this._nicknames.set(identityKey, nickname);
+                else this._nicknames.delete(identityKey);
+                this._applyNicknames();
+            }),
         );
+
+        // 4.8 — surface the village founding record as minimap parchment lore.
+        this.biographyService?.getFounding?.()?.then?.((founding) => {
+            if (!founding?.name) return;
+            const foundedAt = Number(founding.foundedAt);
+            const dateLabel = Number.isFinite(foundedAt) && foundedAt > 0
+                ? new Date(foundedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+                : null;
+            this.minimap?.setFoundingLore?.(dateLabel
+                ? `Founded by ${founding.name} on ${dateLabel}`
+                : `Founded by ${founding.name}`);
+        })?.catch?.(() => {});
+
+        // Cross-tab nickname refresh: when another tab persists a biography,
+        // AgentBiographyService drops its cached copy first (it registered on
+        // the channel earlier), so this re-read sees the fresh record.
+        if (this.biographyService && this.chronicleStore?.channel?.addEventListener) {
+            this._chronicleChannelListener = (event) => {
+                const identityKey = event?.data?.identityKey;
+                if (event?.data?.type !== 'biography-updated' || !identityKey) return;
+                this.biographyService.getBiography(identityKey).then((biography) => {
+                    const nickname = biography?.nickname || null;
+                    if (nickname) this._nicknames.set(identityKey, nickname);
+                    else this._nicknames.delete(identityKey);
+                    this._applyNicknames();
+                }).catch(() => {});
+            };
+            this.chronicleStore.channel.addEventListener('message', this._chronicleChannelListener);
+        }
 
         // Minimap
         this.minimap.attach(canvas.parentNode);
@@ -1073,17 +1126,28 @@ export class IsometricRenderer {
             const hoveredBuilding = this.buildingRenderer?.hitTest(worldPos.x, worldPos.y) ?? null;
             this.buildingRenderer?.setHovered(hoveredBuilding);
             const monument = hoveredBuilding ? null : this.chronicleMonuments?.hitTest?.(worldPos.x, worldPos.y, Date.now());
+            // 3.6 — harbor lore: hovering a ship surfaces its commit subject.
+            const hoveredShip = (hoveredBuilding || monument)
+                ? null
+                : (this.harborTraffic?.hitTestShip?.(worldPos.x, worldPos.y) ?? null);
+            this.harborTraffic?.setHoveredShip?.(hoveredShip ? hoveredShip.id : null);
             canvas.title = hoveredBuilding
                 ? this._buildingVisitorTooltip(hoveredBuilding)
-                : (monument ? this.chronicleMonuments.tooltipFor(monument, Date.now()) : '');
+                : (monument
+                    ? this.chronicleMonuments.tooltipFor(monument, Date.now())
+                    : (hoveredShip ? this.harborTraffic.shipTooltip(hoveredShip) : ''));
         };
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
         this._onMouseLeaveMain = () => {
             this.buildingRenderer?.setHovered(null);
+            this.harborTraffic?.setHoveredShip?.(null);
             canvas.title = '';
         };
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
-        this._onKeyDown = (e) => { if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle(); };
+        this._onKeyDown = (e) => {
+            if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle();
+            if (e.code === 'KeyP' && e.shiftKey) this.debugOverlay.togglePathDebug();
+        };
         window.addEventListener('keydown', this._onKeyDown);
         this._onModeChanged = (mode) => this.setWorldModeActive(mode !== 'dashboard');
         eventBus.on('mode:changed', this._onModeChanged);
@@ -1112,6 +1176,10 @@ export class IsometricRenderer {
         }
         if (this._onKeyDown) window.removeEventListener('keydown', this._onKeyDown);
         this._onKeyDown = null;
+        if (this._chronicleChannelListener && this.chronicleStore?.channel?.removeEventListener) {
+            this.chronicleStore.channel.removeEventListener('message', this._chronicleChannelListener);
+        }
+        this._chronicleChannelListener = null;
         if (this._onModeChanged) {
             eventBus.off('mode:changed', this._onModeChanged);
             this._onModeChanged = null;
@@ -1477,6 +1545,11 @@ export class IsometricRenderer {
             agentSprites: this.agentSprites,
             pathfinder: this.pathfinder,
         });
+        // 3.13 — feed allocator occupancy into domain congestion state.
+        // Building.updateVisitLoad emits 'building:congestion' on level
+        // transitions; sprites read building.congestion directly per frame.
+        const buildingLoads = this.visitTileAllocator?.snapshot?.()?.buildings;
+        if (buildingLoads) this.world?.applyVisitLoads?.(buildingLoads, now);
         return agents;
     }
 
@@ -1529,6 +1602,15 @@ export class IsometricRenderer {
     _canAcceptToolRitual(event) {
         if (!this._worldModeActive) return false;
         return this.ritualConductor?.canAccept?.(event) ?? true;
+    }
+
+    // Mirror active pose-bearing rituals onto agent sprites each frame so
+    // tool-heavy states read on the character (reading / typing / thinking).
+    _syncToolRitualPoses() {
+        const poses = this.ritualConductor?.getAgentPoses?.() || null;
+        for (const [agentId, sprite] of this.agentSprites) {
+            sprite.setToolRitualPose?.(poses?.get(agentId) || null);
+        }
     }
 
     _enqueueSubagentSummonRitual(payload) {
@@ -1642,7 +1724,73 @@ export class IsometricRenderer {
             sprite.addedAt = performance.now();
             this._beginAgentGateArrival(agent, sprite);
             this.agentSprites.set(agent.id, sprite);
+            this._primeNickname(sprite);
             this._markSpritesDirty();
+        }
+    }
+
+    /** 4.8 — push cached earned nicknames onto every live sprite. */
+    _applyNicknames() {
+        if (!this._nicknames) return;
+        for (const sprite of this.agentSprites.values()) {
+            const identityKey = AgentBiography.identityKeyFor(sprite.agent);
+            sprite.setNickname?.(identityKey ? this._nicknames.get(identityKey) || null : null);
+        }
+    }
+
+    /** 4.8 — seed a new sprite's nickname from its persisted biography. */
+    _primeNickname(sprite) {
+        if (!this.biographyService || !sprite?.agent) return;
+        const identityKey = AgentBiography.identityKeyFor(sprite.agent);
+        if (!identityKey) return;
+        if (this._nicknames.has(identityKey)) {
+            sprite.setNickname?.(this._nicknames.get(identityKey));
+            return;
+        }
+        this.biographyService.getBiography(identityKey).then((biography) => {
+            const nickname = biography?.nickname || null;
+            if (!nickname) return;
+            this._nicknames.set(identityKey, nickname);
+            this.agentSprites.get(sprite.agent?.id)?.setNickname?.(nickname);
+        }).catch(() => {});
+    }
+
+    /**
+     * 2.4 — affinity-driven proximity: the warmest 'allies' pairs of idle
+     * villagers share a plaza preference (same 30 s TTL mechanism as
+     * parent/child clustering), so long-standing collaborators idle together
+     * while strangers keep their default spread.
+     */
+    _applyAffinityProximity(now = Date.now()) {
+        const snapshot = this.affinityService?.getSnapshot?.();
+        if (!snapshot?.size) return;
+        const spriteByIdentity = new Map();
+        for (const sprite of this.agentSprites.values()) {
+            if (sprite.agent?.status !== AgentStatus.IDLE) continue;
+            if (sprite.isArrivalPending?.() || this._isGateTransit(sprite)) continue;
+            const identityKey = AgentBiography.identityKeyFor(sprite.agent);
+            if (identityKey && !spriteByIdentity.has(identityKey)) {
+                spriteByIdentity.set(identityKey, sprite);
+            }
+        }
+        if (spriteByIdentity.size < 2) return;
+        const pairs = [];
+        for (const affinity of snapshot.values()) {
+            if (affinity?.tier?.(now) !== 'allies') continue;
+            const a = spriteByIdentity.get(affinity.identityA);
+            const b = spriteByIdentity.get(affinity.identityB);
+            if (!a || !b || a === b) continue;
+            pairs.push({ a, b, score: affinity.decayedScore?.(now) || 0 });
+        }
+        if (!pairs.length) return;
+        pairs.sort((x, y) => y.score - x.score);
+        for (const { a, b } of pairs.slice(0, MAX_AFFINITY_PROXIMITY_PAIRS)) {
+            const tileA = worldToTile(a.x, a.y);
+            const tileB = worldToTile(b.x, b.y);
+            const midX = (tileA.tileX + tileB.tileX) / 2;
+            const midY = (tileA.tileY + tileB.tileY) / 2;
+            a.setFamilyPlazaPreference?.(midX, midY);
+            b.setFamilyPlazaPreference?.(midX, midY);
         }
     }
 
@@ -2037,6 +2185,13 @@ export class IsometricRenderer {
         const agents = this._updateVisitSystems(chronicleNow);
         this.relationshipState?.update?.({ agentSprites: this.agentSprites, now });
         applyTeamPlazaPreferences(this.relationshipState, this.agentSprites);
+        // 2.4 — affinity proximity re-evaluates on a slow cadence; warmth
+        // changes are gradual, so per-frame work would be wasted.
+        this._affinityProximityAccumulator += dt;
+        if (this._affinityProximityAccumulator >= AFFINITY_PROXIMITY_INTERVAL_MS) {
+            this._affinityProximityAccumulator = 0;
+            this._applyAffinityProximity(chronicleNow);
+        }
         this.arrivalDeparture?.update?.(now);
         this.chronicler?.update?.(dt, chronicleNow);
         if (chronicleNow >= this._chronicleNextUpdateAt) {
@@ -2088,6 +2243,7 @@ export class IsometricRenderer {
         const sortedSnapshot = this._snapshotSortedSprites();
         this._replayActiveToolRituals();
         this.ritualConductor?.update?.(dt);
+        this._syncToolRitualPoses();
 
         this.harborTraffic?.update(agents, dt);
         this.landmarkActivity?.update(agents, sortedSnapshot, dt);
@@ -2111,6 +2267,9 @@ export class IsometricRenderer {
         // system, capped at ~4 spawns/sec and gated by reduced motion inside
         // SeasonalAmbience.update().
         this.seasonalAmbience?.update?.(dt);
+
+        // Rain splashes at agent feet, gated by weather + reduced motion.
+        this._updateRainSplashes(dt);
 
         // Update particles
         this.particleSystem.update(dt);
@@ -2600,6 +2759,45 @@ export class IsometricRenderer {
                 this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y - 18, 1);
                 spawned++;
             }
+        }
+    }
+
+    // Weather→agent response: while rain or storm is active, tiny splash
+    // particles pop at agent feet. Atmospheric only — accumulator-rate spawns
+    // capped per frame, skipped when the shared particle pool is near its
+    // budget, and switched off entirely under reduced motion (motionScale 0).
+    _updateRainSplashes(dt = 16) {
+        if (!this.motionScale || this.agentSprites.size === 0) {
+            this._rainSplashAccumulator = 0;
+            return;
+        }
+        const weather = this._lastAtmosphere?.weather || null;
+        const raining = weather && (weather.type === 'rain' || weather.type === 'storm');
+        if (!raining) {
+            this._rainSplashAccumulator = 0;
+            return;
+        }
+
+        const maxParticles = this.particleSystem.maxParticles || 240;
+        if ((this.particleSystem.particles.length || 0) > maxParticles - 60) return;
+
+        const intensity = Math.max(0, Math.min(1, Number(weather.intensity) || 0));
+        const stormBoost = weather.type === 'storm' ? 1.5 : 1;
+        const agentWeight = Math.min(this.agentSprites.size, 16);
+        const splashesPerSecond = (0.4 + intensity * 0.8) * stormBoost * agentWeight * this.motionScale;
+        const frameDt = Math.max(0, Math.min(120, Number(dt) || 0));
+        this._rainSplashAccumulator += splashesPerSecond * (frameDt / 1000);
+
+        const spawns = Math.min(3, Math.floor(this._rainSplashAccumulator));
+        if (spawns <= 0) return;
+        this._rainSplashAccumulator -= spawns;
+
+        const sprites = Array.from(this.agentSprites.values());
+        for (let i = 0; i < spawns; i++) {
+            const sprite = sprites[Math.floor(Math.random() * sprites.length)];
+            if (!sprite || sprite.isArrivalPending?.()) continue;
+            // Feet sit ~7px below the sprite anchor (matches footstep dust).
+            this.particleSystem.spawn('rainSplash', sprite.x, sprite.y + 7, 1, { spread: 5 });
         }
     }
 

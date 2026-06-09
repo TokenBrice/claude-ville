@@ -40,6 +40,7 @@ This directory stores committed agent outputs. Before using any old plan as impl
 | `agents/plans/claudeville-world-enhancement-swarm-2026-05-18.md` | `ready` | 2026-05-18 at `61f10ef0c447e43a1199439fd7d78cdda7fa5b31` | Current World mode code plus this six-agent council synthesis. | Partial | 125-idea backlog and phased plan for agent movement, visuals, harbor, buildings, and map rendering; re-baseline owned paths before executing any phase. |
 | `agents/plans/code-health-enhancement-swarm-2026-05-22.md` | `historical` | 2026-05-22 at `92b5da14cef52a92ad06fe9c6d6b1a44199ee3eb` | Current code after implementation. | No | Implemented code-health simplification plan; keep as execution provenance, not a live task list. |
 | `agents/research/kimi-integration-export/kimi-export-0beb2209-20260501-183644.md` | `historical` | 2026-05-18 doc audit at `9ce51968c422c572930758d6b6f04e3951fe7320` | Current `claudeville/adapters/kimi.js`, `claudeville/adapters/README.md`, and provider docs. | No | Large raw Kimi integration transcript moved out of the repo root; useful only as provenance, not implementation guidance. |
+| `agents/claudeville-upgrade.md` | `ready` | 2026-06-09 at `ec205cacc576572135b0835cf6c802a188bf9490` | This consolidated ranked backlog plus the 2026-05-18 swarm plan for fine-grained world items. | Partial | Cross-area ranked upgrade backlog (visuals, performance, metaphor, backend, widgets) from a five-agent exploration; re-verify file:line refs and in-flight Fable edits before executing any tier. |
 
 ## Templates
 

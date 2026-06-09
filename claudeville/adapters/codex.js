@@ -83,7 +83,7 @@ function readCodexSessionNames() {
   const seenAt = new Map();
   try {
     const lines = fs.readFileSync(SESSION_INDEX_FILE, 'utf-8').split('\n');
-    for (const entry of parseJsonLines(lines)) {
+    for (const entry of parseJsonLines(lines, { source: 'codex', file: SESSION_INDEX_FILE })) {
       const id = typeof entry.id === 'string' ? entry.id.trim() : '';
       const name = typeof entry.thread_name === 'string' ? entry.thread_name.trim() : '';
       if (!id || !name) continue;
@@ -252,7 +252,7 @@ function parseRollout(filePath) {
 
   // Read recent tools/messages from the end of the file
   const lastLines = readLines(filePath, { from: 'end', count: 50 });
-  const entries = parseJsonLines(lastLines);
+  const entries = parseJsonLines(lastLines, { source: 'codex', file: filePath });
 
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -307,19 +307,35 @@ function getToolHistory(filePath, maxItems = 15) {
   const tools = [];
   try {
     const lines = readLines(filePath, { from: 'end', count: 100 });
-    const entries = parseJsonLines(lines);
+    const entries = parseJsonLines(lines, { source: 'codex', file: filePath });
+    const itemsByCallId = new Map();
 
     for (const entry of entries) {
+      const completion = completionFromExecEvent(entry);
+      if (completion) {
+        const item = completion.callId ? itemsByCallId.get(completion.callId) : null;
+        if (item && completion.exitCode !== null) {
+          item.toolExitCode = completion.exitCode;
+          if (completion.exitCode !== 0 && completion.stderr) {
+            item.toolStderr = completion.stderr.trim().substring(0, 200);
+          }
+        }
+        continue;
+      }
+
       if (entry.type !== 'response_item' || !entry.payload) continue;
       const payload = entry.payload;
 
       if (payload.type === 'function_call' || payload.type === 'command_execution') {
         const detail = summarizeCodexToolPayload(payload, { maxLength: 80, missingValue: '' });
-        tools.push({
+        const item = {
           tool: payload.name || payload.type,
           detail,
           ts: entry.timestamp ? new Date(entry.timestamp).getTime() : 0,
-        });
+        };
+        const callId = payload.call_id || payload.id || null;
+        if (callId) itemsByCallId.set(callId, item);
+        tools.push(item);
       }
     }
   } catch { /* ignore */ }
@@ -333,7 +349,7 @@ function getRecentMessages(filePath, maxItems = 5) {
   const messages = [];
   try {
     const lines = readLines(filePath, { from: 'end', count: 60 });
-    const entries = parseJsonLines(lines);
+    const entries = parseJsonLines(lines, { source: 'codex', file: filePath });
 
     for (const entry of entries) {
       if (entry.type !== 'response_item' || !entry.payload) continue;
@@ -389,11 +405,16 @@ function getTokenUsage(filePath) {
     contextWindow: 0,
     contextWindowMax: 0,
     turnCount: 0,
+    // Codex output_tokens already includes reasoning_output_tokens
+    // (total_tokens = input + output), so reasoning is a breakdown of
+    // output and must not be priced again.
+    reasoningTokens: 0,
+    reasoningInOutput: true,
   };
 
   try {
     const lines = readLines(filePath, { from: 'end', count: 500 });
-    const entries = parseJsonLines(lines);
+    const entries = parseJsonLines(lines, { source: 'codex', file: filePath });
     let lastInput = 0;
     let latestTokenCount = null;
 
@@ -434,6 +455,11 @@ function getTokenUsage(filePath) {
       tokenUsage.totalOutput += output;
       tokenUsage.cacheRead += cacheRead;
       tokenUsage.cacheCreate += cacheCreate;
+      tokenUsage.reasoningTokens += readUsageNumber(usage, [
+        'reasoning_output_tokens',
+        'reasoningOutputTokens',
+        'reasoning_tokens',
+      ]);
       tokenUsage.turnCount++;
       lastInput = input + cacheRead + cacheCreate;
     }
@@ -453,6 +479,10 @@ function getTokenUsage(filePath) {
       tokenUsage.totalOutput = readUsageNumber(total, ['output_tokens', 'outputTokens']);
       tokenUsage.cacheRead = cachedInput;
       tokenUsage.cacheCreate = 0;
+      tokenUsage.reasoningTokens = readUsageNumber(total, [
+        'reasoning_output_tokens',
+        'reasoningOutputTokens',
+      ]);
       tokenUsage.contextWindow = latestTokenCount.model_context_window
         ? Math.min(lastTotal, latestTokenCount.model_context_window)
         : lastTotal;
@@ -556,7 +586,7 @@ function getGitEvents(filePath, context) {
   const events = [];
   try {
     const lines = readLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
-    const entries = parseJsonLines(lines);
+    const entries = parseJsonLines(lines, { source: 'codex', file: filePath });
     const eventsBySourceId = new Map();
     const eventsByCommandHash = new Map();
 

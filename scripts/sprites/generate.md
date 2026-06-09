@@ -55,9 +55,9 @@ If the runtime cannot load an image, `AssetManager` falls back to `assets/sprite
 1. Read the current `style.anchor` from `manifest.yaml`.
 2. For entries with `prompt`, prepend the anchor to that prompt.
 3. For tileset entries with `lower` and `upper`, prepend the anchor to both descriptions and pass them as the lower/upper tileset inputs.
-4. Use the entry's `tool`, `size` or `width`/`height`, `n_directions`, `animations`, `composeGrid`, `layers`, and `anchor` fields. Manifest `tool` names are short repo labels; map them to the actual PixelLab surface before calling tools (`create_character`, `isometric_tile`, `create_topdown_tileset`, `create_map_object`, or REST `create-image-pixflux` for large hero assets).
+4. Use the entry's `tool`, `size` or `width`/`height`, `n_directions`, `animations`, `composeGrid`, `layers`, and `anchor` fields. Manifest `tool` names are short repo labels; map them to the actual PixelLab surface before calling tools (`create_character`, `isometric_tile`, `create_topdown_tileset`, `create_map_object`, or REST `create-image-pixflux` for large hero assets). For `agent.*` characters, `size` is the engine cell size (92), not the generation size: honor any per-entry `# NOTE:` comment in the manifest that records a smaller generation size (e.g. `size=76`) used to keep a tall silhouette inside the 92-px cell after center-crop. See "Generation size vs engine cell size" in [`docs/pixellab-reference.md`](../../docs/pixellab-reference.md).
 5. Save output to the path contract above.
-6. Bump `style.assetVersion` when changed PNGs may be browser-cached.
+6. Bump `style.assetVersion` only when PNGs on disk actually change; manifest-only edits (prompts, comments, anchors) must not bump it.
 7. If editing palette keys or colors, keep `manifest.yaml` and `palettes.yaml` synchronized.
 
 Use `curl --fail` when downloading direct Pixellab URLs. Pixellab may return non-PNG JSON while a job is still pending; `--fail` prevents accidentally saving that response as an image.

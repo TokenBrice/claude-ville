@@ -3,10 +3,15 @@ import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 export class DebugOverlay {
     constructor() {
         this.enabled = false;
+        this.pathDebugEnabled = false;
     }
 
     toggle() {
         this.enabled = !this.enabled;
+    }
+
+    togglePathDebug() {
+        this.pathDebugEnabled = !this.pathDebugEnabled;
     }
 
     draw(ctx, { walkabilityGrid, bridgeTiles, agentSprites, buildings, sceneryZones, treeProps, boulderProps, visitIntents, visitReservations }) {
@@ -110,6 +115,86 @@ export class DebugOverlay {
             ctx.fillText(label, point.x + 10, point.y - 10);
         }
         ctx.restore();
+    }
+
+    // Shift-P pathfinding overlay: planned paths as breadcrumb dots plus a
+    // glowing diamond on each agent's destination tile. Independent of the
+    // main shift-D overlay so paths stay readable without the walkability tint.
+    drawPathDebug(ctx, { agentSprites } = {}) {
+        if (!this.pathDebugEnabled || !agentSprites?.size) return;
+        for (const sprite of agentSprites.values()) {
+            const waypoints = Array.isArray(sprite.waypoints) ? sprite.waypoints : [];
+            if (waypoints.length === 0) continue;
+            const points = [{ x: sprite.x, y: sprite.y }, ...waypoints];
+            this._drawDestinationGlow(ctx, points[points.length - 1], sprite.selected);
+            this._drawBreadcrumbs(ctx, points);
+        }
+    }
+
+    _drawDestinationGlow(ctx, point, selected) {
+        const hw = TILE_WIDTH / 2;
+        const hh = TILE_HEIGHT / 2;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.fillStyle = selected ? '#80deea' : '#ffd54f';
+        for (const layer of [
+            { scale: 1.5, alpha: 0.10 },
+            { scale: 1.0, alpha: 0.22 },
+            { scale: 0.55, alpha: 0.32 },
+        ]) {
+            ctx.globalAlpha = layer.alpha;
+            this._traceDiamond(ctx, point.x, point.y, hw * layer.scale, hh * layer.scale);
+            ctx.fill();
+        }
+        ctx.restore();
+        ctx.save();
+        ctx.globalAlpha = 0.85;
+        ctx.strokeStyle = selected ? '#b2ebf2' : '#ffe082';
+        ctx.lineWidth = 1.2;
+        this._traceDiamond(ctx, point.x, point.y, hw, hh);
+        ctx.stroke();
+        ctx.restore();
+    }
+
+    _drawBreadcrumbs(ctx, points, spacing = 22) {
+        ctx.save();
+        ctx.fillStyle = '#80deea';
+        ctx.globalAlpha = 0.8;
+        let carry = 0;
+        for (let i = 1; i < points.length; i++) {
+            const from = points[i - 1];
+            const to = points[i];
+            const dx = to.x - from.x;
+            const dy = to.y - from.y;
+            const length = Math.hypot(dx, dy);
+            if (length < 0.001) continue;
+            // Evenly spaced dots along the segment, carrying remainder across joints.
+            let d = spacing - carry;
+            while (d <= length) {
+                const t = d / length;
+                this._dot(ctx, from.x + dx * t, from.y + dy * t, 1.8);
+                d += spacing;
+            }
+            carry = (carry + length) % spacing;
+            // Slightly larger marker on each raw waypoint.
+            this._dot(ctx, to.x, to.y, 2.6);
+        }
+        ctx.restore();
+    }
+
+    _traceDiamond(ctx, cx, cy, hw, hh) {
+        ctx.beginPath();
+        ctx.moveTo(cx, cy - hh);
+        ctx.lineTo(cx + hw, cy);
+        ctx.lineTo(cx, cy + hh);
+        ctx.lineTo(cx - hw, cy);
+        ctx.closePath();
+    }
+
+    _dot(ctx, x, y, radius) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius, 0, Math.PI * 2);
+        ctx.fill();
     }
 
     drawScreen(ctx, { visitIntents, visitReservations, agentSprites, viewport, panelY = 12, behaviorStats = null, renderStats = null } = {}) {

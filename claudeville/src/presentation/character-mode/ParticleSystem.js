@@ -160,6 +160,14 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'random',
     },
+    rainSplash: {
+        colors: ['#cfe9f7', '#a8d4ee', '#e8f6ff'],
+        size: [1, 2],
+        life: [8, 16],
+        speed: [0.25, 0.6],
+        gravity: true,
+        direction: 'up',
+    },
 };
 
 function rand(min, max) {

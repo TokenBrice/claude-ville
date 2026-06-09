@@ -35,6 +35,10 @@ The registry also exposes provider metadata (`provider`, display `name`, `suppor
 
 The short caches are intentional. The browser, activity panel, dashboard mode, WebSocket loop, and widget all poll near-live state, so the registry absorbs repeated identical reads without making the UI feel stale.
 
+### JSONL parse diagnostics
+
+The shared JSONL parser (`shared.js` `parseJsonLines` / `readJsonLines`) counts lines per adapter source: `parsedLines`, `skippedLines` (malformed lines mid-window — potential silent data loss), and `trailingPartials` (the benign partial final line of an actively-written file). Counts plus the most recent skip (file, byte offset relative to the read window, line size) are exposed via `/api/perf` as `jsonlDiagnostics`. Set `CLAUDEVILLE_DEBUG_JSONL=1` before starting the server to additionally log every skipped line with its offset and a snippet.
+
 ## Contract
 
 Each adapter class must expose the following getters and methods. Getters are JS class getters (no parentheses), not methods.
@@ -50,6 +54,8 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | `getWatchPaths()` | method | `WatchPath[]` (see below) | Consumed by `server.js` in `startFileWatcher()` |
 
 Registry metadata treats adapter-backed providers as detail-capable when `getSessionDetail` exists. Synthetic providers must be declared in the registry metadata instead of hard-coded in `server.js`.
+
+`toolHistory` items are `{ tool, detail, ts }` plus two optional failure fields where the provider payload carries them: `toolExitCode` (number; Codex `exec_command_end` events matched by `call_id`, OpenCode `state.metadata.exit`) and `toolStderr` (string, truncated to 200 chars, only set on non-zero exits). The Activity Panel renders non-zero `toolExitCode` as a warning chip on the tool row.
 
 ### Claude-only optional methods
 
@@ -85,6 +91,8 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 | `reasoningEffort` | string \| null | Codex-only. Pulled from `turn_context` / `event_msg`. |
 | `workflowId` | string \| null | Claude-only. Workflow run id (`wf_<id>`) for sub-agents spawned by the Workflow tool; null otherwise. |
 | `workflowName` | string \| null | Claude-only. Human workflow name recovered from the persisted run-script filename; null otherwise. |
+| `permissionMode` | string \| null | Claude-only. Latest `permissionMode` marker in the transcript tail window (`'default'` / `'plan'` / `'acceptEdits'` / `'bypassPermissions'`); `'plan'` means the session is in plan mode, anything else is act mode. Registry normalization sets this to null when adapters omit it. |
+| `sendMessages` | array | Claude-only sender→recipient edges from `SendMessage` tool calls; the carrying session is the sender. Up to 10 most recent edges of `{ recipient, messageType, summary, ts }`: `recipient` is the raw alias from the tool input (match against `agentName`/`name`/`agentId`), `messageType` is the tool input `type` (default `'message'`), `summary` is truncated to 80 chars or null, `ts` is the transcript entry timestamp. Edges without a resolvable recipient (e.g. `shutdown_response` replies keyed by `request_id`) are skipped. Registry normalization sets this to `[]` when adapters omit it. |
 | `gitEvents` | array | Backend-extracted git `commit` / `push` events from raw tool records. Registry normalization sets this to `[]` when adapters omit it. Dry-run events are omitted. Events include `id`, `type`, `project`, `provider`, `sessionId`, `sourceId`, `ts`, and `commandHash`; `command`, `targetRef`, `success`, `exitCode`, and `completedAt` are optional metadata when the adapter can derive them. |
 
 ### Git event extraction
@@ -115,6 +123,12 @@ Within any of those, the consumer reads sub-fields under multiple aliases:
 - output: `output_tokens` / `outputTokens` / `completion_tokens` / `completionTokens` / `total_output_tokens`
 - cacheRead: `cached_input_tokens` / `cache_read_input_tokens` / `cacheReadInputTokens`
 - cacheCreate: `cache_creation_input_tokens` / `cacheCreationInputTokens`
+- reasoningTokens: `reasoning` / `reasoning_tokens` / `reasoning_output_tokens` / `reasoningOutputTokens` / `tokens_reasoning`
+
+Reasoning-token semantics differ per provider, so usage objects carry a `reasoningInOutput` boolean alongside `reasoningTokens`:
+
+- OpenCode stores `tokens_reasoning` separately from `tokens_output` (message totals sum input + output + reasoning + cache), so reasoning is extra billable spend and `estimateCost` prices it at the model's output rate.
+- Codex `output_tokens` already includes `reasoning_output_tokens` (`total_tokens` = input + output), so the Codex adapter sets `reasoningInOutput: true` and cost estimation skips reasoning to avoid double pricing; the field remains available as an output breakdown.
 
 The fallback chain exists because providers rename fields between releases (Codex switched to cumulative `token_count` events; Gemini varies between camelCase and snake_case; OpenCode stores cumulative totals in SQLite columns). Adapters absorb the variance so the UI does not need provider-specific conditionals.
 

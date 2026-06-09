@@ -11,10 +11,39 @@
     --cv-panel-warm: rgba(31, 22, 18, 0.72);
     --cv-gold: #f2d36b;
     --cv-gold-deep: #c79d4c;
+    --cv-gold-bright: #ffe58d;
+    --cv-gold-warm: #f6da82;
+    --cv-gold-soft: #d7b979;
+    --cv-yellow: #e8d44d;
+    --cv-tan: #c6b08a;
     --cv-text-muted: #a89476;
+    --cv-text-gray: #8b8b9e;
     --cv-border: rgba(199, 157, 76, 0.42);
     --cv-border-soft: rgba(199, 157, 76, 0.16);
     --cv-shadow: rgba(0, 0, 0, 0.38);
+
+    /* Agent status colors (dots, card borders, badges) */
+    --cv-status-working: #4ade80;
+    --cv-status-idle: #60a5fa;
+    --cv-status-waiting: #f97316;
+    --cv-status-rate-limited: #f59e0b;
+    --cv-status-errored: #ef4444;
+    --cv-status-waiting-user: #facc15;
+
+    /* Tool category colors (tool history items) */
+    --cv-tool-read: #60a5fa;
+    --cv-tool-write: #f59e0b;
+    --cv-tool-exec: #ef4444;
+    --cv-tool-search: #a78bfa;
+    --cv-tool-task: #34d399;
+    --cv-tool-other: #a89476;
+
+    /* Accents */
+    --cv-green-soft: #72d071;
+    --cv-blue-soft: #7eb7d6;
+    --cv-purple: #c084fc;
+    --cv-warn-yellow: #eab308;
+    --cv-amber-deep: #d8843a;
 }
 
 html, body {
@@ -25,7 +54,7 @@ html, body {
     background:
         radial-gradient(circle at 50% 12%, rgba(95, 67, 33, 0.16), transparent 36%),
         linear-gradient(180deg, #09070a 0%, #110c0d 100%);
-    color: #f2d36b;
+    color: var(--cv-gold);
     -webkit-font-smoothing: none;
     -moz-osx-font-smoothing: unset;
     image-rendering: pixelated;

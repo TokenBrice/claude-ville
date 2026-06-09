@@ -50,6 +50,14 @@ export class Minimap {
         this.releaseStaticLayer();
     }
 
+    /**
+     * 4.8 — village founding lore ("Founded by <name> on <date>"), surfaced
+     * as the parchment's hover tooltip.
+     */
+    setFoundingLore(text) {
+        this.canvas.title = String(text || '');
+    }
+
     releaseStaticLayer() {
         releaseCanvasBackingStore(this._staticLayer);
         this._staticLayer = null;

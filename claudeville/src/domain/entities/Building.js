@@ -44,6 +44,47 @@ export class Building {
             sightline: scenery.sightline ? { ...scenery.sightline } : null,
             tallPropClearance: scenery.tallPropClearance ?? null,
         } : null;
+        this.congestion = {
+            load: 0,
+            capacity: this._normalizeVisitCapacity(this.visitCapacity),
+            ratio: 0,
+            overBy: 0,
+            level: 'normal',
+            congested: false,
+            updatedAt: 0,
+        };
+    }
+
+    updateVisitLoad({ load = 0, capacity = null, now = Date.now() } = {}) {
+        const resolvedCapacity = this._normalizeVisitCapacity(capacity)
+            ?? this._normalizeVisitCapacity(this.visitCapacity);
+        const resolvedLoad = Math.max(0, Math.floor(Number(load) || 0));
+        let level = 'normal';
+        if (resolvedCapacity) {
+            if (resolvedLoad > resolvedCapacity) level = 'overwhelmed';
+            else if (resolvedLoad === resolvedCapacity) level = 'busy';
+        }
+        const changed = level !== this.congestion.level;
+        this.congestion = {
+            load: resolvedLoad,
+            capacity: resolvedCapacity,
+            ratio: resolvedCapacity ? resolvedLoad / resolvedCapacity : 0,
+            overBy: resolvedCapacity ? Math.max(0, resolvedLoad - resolvedCapacity) : 0,
+            level,
+            congested: level === 'overwhelmed',
+            updatedAt: Number.isFinite(Number(now)) ? Number(now) : Date.now(),
+        };
+        return changed;
+    }
+
+    isCongested() {
+        return !!this.congestion?.congested;
+    }
+
+    _normalizeVisitCapacity(capacity) {
+        const value = Number(capacity);
+        if (!Number.isFinite(value) || value <= 0) return null;
+        return Math.max(1, Math.floor(value));
     }
 
     containsPoint(tileX, tileY) {

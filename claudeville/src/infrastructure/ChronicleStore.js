@@ -1,14 +1,16 @@
 const DB_NAME = 'claudeville-chronicle';
-const DB_VERSION = 2;
+const DB_VERSION = 4;
 const LEASE_KEY = 'claudeville.chronicle.captureLease';
 const DEFAULT_LEASE_TTL_MS = 7000;
 const LIFETIME_COUNTS_META_KEY = 'lifetimeCounts';
+const FOUNDING_META_KEY = 'founding';
 
 const RETENTION_MS = {
     manifests: 24 * 60 * 60 * 1000,
     pinnedManifest: 7 * 24 * 60 * 60 * 1000,
     monuments: 30 * 24 * 60 * 60 * 1000,
     trailSamples: 24 * 60 * 60 * 1000,
+    affinities: 30 * 24 * 60 * 60 * 1000,
 };
 
 function requestToPromise(request) {
@@ -41,6 +43,8 @@ function storeConfig(name) {
         monuments: { keyPath: 'id', indexes: ['district', 'plantedAt', 'ts', 'dedupKey'] },
         trailSamples: { keyPath: 'id', indexes: ['agentId', 'ts'] },
         auroraLog: { keyPath: 'localDate', indexes: ['ts'] },
+        biographies: { keyPath: 'identityKey', indexes: ['firstSeenAt', 'lastSeenAt'] },
+        affinities: { keyPath: 'pairKey', indexes: ['lastInteractionAt'] },
         meta: { keyPath: 'key', indexes: [] },
     }[name];
 }
@@ -72,7 +76,7 @@ export class ChronicleStore {
         request.onupgradeneeded = () => {
             const db = request.result;
             const tx = request.transaction;
-            for (const name of ['manifests', 'monuments', 'trailSamples', 'auroraLog', 'meta']) {
+            for (const name of ['manifests', 'monuments', 'trailSamples', 'auroraLog', 'biographies', 'affinities', 'meta']) {
                 const config = storeConfig(name);
                 this._ensureStore(db, tx, name, config.keyPath, config.indexes);
             }
@@ -194,6 +198,10 @@ export class ChronicleStore {
             )),
             monuments: await this.deleteRange('monuments', { index: 'plantedAt', upper: monumentCutoff }),
             trailSamples: await this.deleteRange('trailSamples', { upper: trailCutoff }),
+            affinities: await this.deleteRange('affinities', {
+                index: 'lastInteractionAt',
+                upper: now - RETENTION_MS.affinities,
+            }),
         };
         await this.put('meta', { key: 'lastPruneAt', value: now });
         return deleted;
@@ -256,6 +264,56 @@ export class ChronicleStore {
         const key = String(projectId || '').trim() || 'unknown';
         const counts = await this._loadLifetimeCounts();
         return counts.get(key)?.commits || 0;
+    }
+
+    async getBiography(identityKey) {
+        return this.get('biographies', identityKey);
+    }
+
+    async putBiography(record) {
+        await this.put('biographies', record);
+        this.channel?.postMessage?.({
+            type: 'biography-updated',
+            identityKey: record.identityKey,
+            schemaVersion: record.schemaVersion,
+        });
+        return record;
+    }
+
+    /** Founding record: `{ identityKey, name, foundedAt }` or null. */
+    async getFounding() {
+        return this.getMeta(FOUNDING_META_KEY, null);
+    }
+
+    /**
+     * Persist the village founding record exactly once. Later calls
+     * return the original record unchanged.
+     */
+    async recordFounding(record) {
+        const existing = await this.getFounding();
+        if (existing) return existing;
+        await this.setMeta(FOUNDING_META_KEY, record);
+        return record;
+    }
+
+    async getAffinity(pairKey) {
+        return this.get('affinities', pairKey);
+    }
+
+    async getAllAffinities() {
+        await this.open();
+        const tx = this.db.transaction('affinities', 'readonly');
+        return requestToPromise(tx.objectStore('affinities').getAll());
+    }
+
+    async putAffinity(record) {
+        await this.put('affinities', record);
+        this.channel?.postMessage?.({
+            type: 'affinity-updated',
+            pairKey: record.pairKey,
+            schemaVersion: record.schemaVersion,
+        });
+        return record;
     }
 
     acquireCaptureLease({ ttlMs = DEFAULT_LEASE_TTL_MS } = {}) {

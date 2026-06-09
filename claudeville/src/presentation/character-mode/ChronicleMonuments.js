@@ -210,7 +210,10 @@ export class ChronicleMonuments {
         const label = record.label || record.kind;
         const repo = projectName(record.project);
         const weight = record.weight ? ` [${record.weight}]` : '';
-        return `${kindIcon(record.kind)} ${record.kind}${weight}\nrepo: ${repo}\n${label}\nplanted ${ageLabel}`;
+        // 4.8 — monument records may carry a chronicle lore line.
+        const lore = String(record.lore || '').trim();
+        const loreSuffix = lore ? `\n${lore}` : '';
+        return `${kindIcon(record.kind)} ${record.kind}${weight}\nrepo: ${repo}\n${label}\nplanted ${ageLabel}${loreSuffix}`;
     }
 
     minimapMarkers() {

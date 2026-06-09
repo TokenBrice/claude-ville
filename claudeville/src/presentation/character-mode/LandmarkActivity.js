@@ -1,6 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { compactToolLabel, isCommandToolName, isTaskCommandInput } from '../../domain/services/ToolIdentity.js';
+import { providerColor } from './ArrivalDeparture.js';
 
 const MAX_ITEMS_PER_KIND = 10;
 const SNAPSHOT_TTL_MS = 18000;
@@ -8,6 +9,9 @@ const FORGE_HANDOFF_WINDOW_MS = 45000;
 const TOKEN_ITEM_TTL_MS = 22000;
 const COMMAND_ITEM_TTL_MS = 16000;
 const RITUAL_TOKEN_DELTA_THRESHOLD = 256;
+// Chat direction lines fade linearly over this window from the last
+// observed message activity, so older messages read as fainter links.
+const CHAT_LINE_MESSAGE_FADE_MS = 8000;
 const PRESENCE_RECENCY_MS = 60000;
 const PRESENCE_EMIT_INTERVAL_MS = 500;
 const PRESENCE_DORMANT_THRESHOLD = 0.1;
@@ -168,7 +172,9 @@ export class LandmarkActivity {
         if (item.type === 'handoff') return this._drawHandoffItem(ctx, item, zoom);
         if (item.type === 'task') return this._drawTaskItem(ctx, item, zoom);
         if (item.type === 'chat') return this._drawChatItem(ctx, item, zoom);
-        if (item.type === 'chat-line') return this._drawConnection(ctx, item, '#f2d36b', zoom);
+        if (item.type === 'chat-line') {
+            return this._drawConnection(ctx, item, item.color || '#f2d36b', zoom, { arrow: true, alphaScale: 0.55 });
+        }
         if (item.type === 'token') return this._drawTokenItem(ctx, item, zoom);
         if (item.type === 'command') return this._drawCommandItem(ctx, item, zoom);
         if (item.type === 'dispatch-line') return this._drawConnection(ctx, item, '#f6c85f', zoom);
@@ -295,19 +301,39 @@ export class LandmarkActivity {
             const agent = sprite.agent;
             if (agent.currentTool === 'SendMessage' && sprite.chatPartner) {
                 const id = `chat-line:${agent.id}:${sprite.chatPartner.agent?.id || 'target'}`;
-                this.items.set(id, {
-                    id,
-                    type: 'chat-line',
-                    building: 'command',
-                    createdAt: now,
-                    expiresAt: now + 2500,
-                    startX: sprite.x,
-                    startY: sprite.y - 48,
-                    endX: sprite.chatPartner.x,
-                    endY: sprite.chatPartner.y - 48,
-                    label: 'MSG',
-                    sortOffset: -60,
-                });
+                const activityStamp = agent.lastSessionActivity || null;
+                const existing = this.items.get(id);
+                if (existing) {
+                    // Track moving sprites and keep the item alive without
+                    // resetting createdAt, so fade-in happens once and the
+                    // message-age fade is measured from real activity.
+                    existing.expiresAt = now + 2500;
+                    existing.startX = sprite.x;
+                    existing.startY = sprite.y - 48;
+                    existing.endX = sprite.chatPartner.x;
+                    existing.endY = sprite.chatPartner.y - 48;
+                    if (activityStamp && activityStamp !== existing.activityStamp) {
+                        existing.activityStamp = activityStamp;
+                        existing.messageAt = now;
+                    }
+                } else {
+                    this.items.set(id, {
+                        id,
+                        type: 'chat-line',
+                        building: 'command',
+                        createdAt: now,
+                        expiresAt: now + 2500,
+                        messageAt: now,
+                        activityStamp,
+                        startX: sprite.x,
+                        startY: sprite.y - 48,
+                        endX: sprite.chatPartner.x,
+                        endY: sprite.chatPartner.y - 48,
+                        color: providerColor(agent.provider),
+                        label: 'MSG',
+                        sortOffset: -60,
+                    });
+                }
             }
         }
     }
@@ -524,7 +550,12 @@ export class LandmarkActivity {
         const remaining = Math.max(0, item.expiresAt - now);
         const fadeIn = this.motionScale === 0 ? 1 : Math.min(1, age / 500);
         const fadeOut = Math.min(1, remaining / Math.min(1600, ttl));
-        return Math.max(0, Math.min(1, fadeIn * fadeOut));
+        let alpha = Math.max(0, Math.min(1, fadeIn * fadeOut));
+        if (item.type === 'chat-line' && item.messageAt) {
+            const messageAge = Math.max(0, now - item.messageAt);
+            alpha *= Math.max(0, 1 - messageAge / CHAT_LINE_MESSAGE_FADE_MS);
+        }
+        return alpha;
     }
 
     _drawForgeItem(ctx, item, zoom) {
@@ -665,10 +696,10 @@ export class LandmarkActivity {
         ctx.restore();
     }
 
-    _drawConnection(ctx, item, color, zoom) {
+    _drawConnection(ctx, item, color, zoom, { arrow = false, alphaScale = 0.82 } = {}) {
         const s = 1 / Math.max(1, zoom || 1);
         ctx.save();
-        ctx.globalAlpha = item.alpha * 0.82;
+        ctx.globalAlpha = item.alpha * alphaScale;
         ctx.strokeStyle = color;
         ctx.lineWidth = Math.max(1, Math.round(2 * s));
         ctx.setLineDash([Math.max(3, 6 * s), Math.max(2, 4 * s)]);
@@ -682,7 +713,18 @@ export class LandmarkActivity {
         ctx.setLineDash([]);
         ctx.fillStyle = color;
         ctx.beginPath();
-        ctx.arc(item.endX, item.endY, 3 * s, 0, Math.PI * 2);
+        if (arrow) {
+            // Arrowhead aligned with the curve tangent at the recipient end
+            // (end minus control point), pointing sender → recipient.
+            const angle = Math.atan2(item.endY - my, item.endX - mx);
+            const ah = 7 * s;
+            ctx.moveTo(item.endX, item.endY);
+            ctx.lineTo(item.endX - ah * Math.cos(angle - 0.45), item.endY - ah * Math.sin(angle - 0.45));
+            ctx.lineTo(item.endX - ah * Math.cos(angle + 0.45), item.endY - ah * Math.sin(angle + 0.45));
+            ctx.closePath();
+        } else {
+            ctx.arc(item.endX, item.endY, 3 * s, 0, Math.PI * 2);
+        }
         ctx.fill();
         ctx.restore();
     }

@@ -14,6 +14,7 @@ const {
   invalidateSessionCaches,
   getAdapterPerfStats,
   getGitEnrichmentPerfStats,
+  getJsonlDiagnostics,
   adapters,
 } = require('./adapters');
 
@@ -344,6 +345,7 @@ function handleGetPerf(req, res) {
     })),
     providers: getAdapterPerfStats(),
     gitEnrichment: getGitEnrichmentPerfStats(),
+    jsonlDiagnostics: getJsonlDiagnostics(),
     watchFailures: serverPerf.watchFailures,
     recentWatchFailures: serverPerf.watchFailureDetails,
     fallbackScans: serverPerf.fallbackScans,
@@ -482,6 +484,7 @@ function handleWebSocketUpgrade(req, socket, head = Buffer.alloc(0)) {
   socket.write(responseStr, () => {
     socket._cvLastSeen = Date.now();
     socket._cvDraining = false;
+    socket._cvSupportsDeltas = false;
     socket._cvFrameBuffer = Buffer.alloc(0);
     wsClients.add(socket);
     if (head.length > 0) {
@@ -618,6 +621,14 @@ function handleTextMessage(socket, message) {
     const data = JSON.parse(message);
     if (data.type === 'ping') {
       wsSend(socket, { type: 'pong', timestamp: Date.now() });
+    } else if (data.type === 'hello') {
+      // Delta-capable clients announce themselves; legacy clients never send
+      // this and keep receiving full update payloads.
+      socket._cvSupportsDeltas = data.deltas === true;
+    } else if (data.type === 'resync') {
+      // A delta client lost its patch baseline (missed frame or seq mismatch)
+      // and needs a fresh full snapshot to resume patching.
+      sendInitialData(socket);
     }
   } catch { /* ignore */ }
 }
@@ -658,10 +669,19 @@ function wsSend(socket, data) {
   }
 }
 
-function wsBroadcast(data) {
-  const frame = createWebSocketFrame(JSON.stringify(data));
+function wsBroadcast(fullMessage, deltaMessage = null) {
+  // Frames are built lazily: a fleet of delta-capable clients never pays for
+  // serializing the full payload, and vice versa.
+  let fullFrame = null;
+  let deltaFrame = null;
   for (const socket of wsClients) {
-    writeWebSocketFrame(socket, frame, { queueLatest: true });
+    if (deltaMessage && socket._cvSupportsDeltas) {
+      if (!deltaFrame) deltaFrame = createWebSocketFrame(JSON.stringify(deltaMessage));
+      writeWebSocketFrame(socket, deltaFrame, { queueLatest: true });
+    } else {
+      if (!fullFrame) fullFrame = createWebSocketFrame(JSON.stringify(fullMessage));
+      writeWebSocketFrame(socket, fullFrame, { queueLatest: true });
+    }
   }
 }
 
@@ -720,11 +740,32 @@ function startWebSocketHeartbeat() {
 
 function sendInitialData(socket) {
   try {
-    wsSend(socket, {
-      type: 'init',
+    // Reuse the canonical broadcast state when other clients are already
+    // synced to it, so every delta client shares the same patch baseline.
+    if (lastBroadcastState && wsClients.size > 1) {
+      wsSend(socket, {
+        type: 'init',
+        sessions: lastBroadcastState.sessions,
+        teams: lastBroadcastState.teams,
+        usage: lastBroadcastState.usage,
+        seq: broadcastSeq,
+        timestamp: Date.now(),
+      });
+      return;
+    }
+    const state = {
       sessions: getAllSessions(ACTIVE_THRESHOLD_MS, { force: true }),
       teams: getTeamsCached({ force: true }),
       usage: usageQuota.fetchUsage(),
+    };
+    broadcastSeq++;
+    lastBroadcastState = state;
+    wsSend(socket, {
+      type: 'init',
+      sessions: state.sessions,
+      teams: state.teams,
+      usage: state.usage,
+      seq: broadcastSeq,
       timestamp: Date.now(),
     });
   } catch (err) {
@@ -744,6 +785,12 @@ let providerDataDirty = true;
 let teamsDirty = true;
 let lastFullDiscoveryAt = 0;
 let lastFullBroadcastAt = 0;
+// Delta broadcasting: canonical {sessions, teams, usage} state matching the
+// last frame sent to clients, plus a monotonic sequence number so delta
+// clients can detect a broken patch chain and ask for a resync.
+let broadcastSeq = 0;
+let lastBroadcastState = null;
+let lastDeltaSnapshotAt = 0;
 const activeProjectGitState = new Map();
 const activeWatchers = new Map();
 const recursiveWatchFallbacks = new Map();
@@ -767,6 +814,9 @@ const BROADCAST_POLL_INTERVAL = 2000;
 const BROADCAST_DEBOUNCE_MS = 100;
 const BROADCAST_FULL_DISCOVERY_INTERVAL = 20_000;
 const TEAMS_CACHE_TTL_MS = 5000;
+// Delta clients still get a periodic full snapshot as a self-healing floor.
+const DELTA_SNAPSHOT_INTERVAL_MS = 20_000;
+const DELTA_MAX_PATCH_OPS = 500;
 
 function markProviderDataDirty(reason = 'watch', provider = null) {
   providerDataDirty = true;
@@ -791,6 +841,57 @@ function getTeamsCached({ force = false } = {}) {
   if (teamsDirty) cacheStampCounter++;
   teamsDirty = false;
   return teams;
+}
+
+function escapeJsonPointerToken(token) {
+  return String(token).replace(/~/g, '~0').replace(/\//g, '~1');
+}
+
+// Minimal JSON-Patch (RFC 6902 subset: add/replace/remove) diff. Arrays are
+// diffed index-wise, which is cheap and correct for our mostly-stable,
+// activity-sorted session lists; heavy reorders just produce a large patch
+// that the size guard below converts back into a full broadcast.
+function appendJsonPatchOps(prev, next, basePath, ops) {
+  if (prev === next || ops.length > DELTA_MAX_PATCH_OPS) return;
+  const prevIsArray = Array.isArray(prev);
+  const nextIsArray = Array.isArray(next);
+  if (prevIsArray && nextIsArray) {
+    const shared = Math.min(prev.length, next.length);
+    for (let i = 0; i < shared; i++) {
+      appendJsonPatchOps(prev[i], next[i], `${basePath}/${i}`, ops);
+    }
+    for (let i = prev.length - 1; i >= next.length; i--) {
+      ops.push({ op: 'remove', path: `${basePath}/${i}` });
+    }
+    for (let i = prev.length; i < next.length; i++) {
+      ops.push({ op: 'add', path: `${basePath}/${i}`, value: next[i] });
+    }
+    return;
+  }
+  const prevIsObject = !prevIsArray && prev !== null && typeof prev === 'object';
+  const nextIsObject = !nextIsArray && next !== null && typeof next === 'object';
+  if (prevIsObject && nextIsObject) {
+    for (const key of Object.keys(prev)) {
+      if (!(key in next)) ops.push({ op: 'remove', path: `${basePath}/${escapeJsonPointerToken(key)}` });
+    }
+    for (const key of Object.keys(next)) {
+      const childPath = `${basePath}/${escapeJsonPointerToken(key)}`;
+      if (key in prev) appendJsonPatchOps(prev[key], next[key], childPath, ops);
+      else ops.push({ op: 'add', path: childPath, value: next[key] });
+    }
+    return;
+  }
+  ops.push({ op: 'replace', path: basePath, value: next });
+}
+
+function createJsonPatch(prevState, nextState) {
+  try {
+    const ops = [];
+    appendJsonPatchOps(prevState, nextState, '', ops);
+    return ops;
+  } catch {
+    return null;
+  }
 }
 
 function collectBroadcastPayload({ force = false } = {}) {
@@ -834,14 +935,16 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
     const sigStart = Date.now();
     let signature = lastBroadcastSignature;
     let signatureSkipped = false;
+    let serializedState = null;
     if (force || stampAtCollect !== lastBroadcastStamp || lastBroadcastSignature === null) {
+      serializedState = JSON.stringify({
+        sessions: payload.sessions,
+        teams: payload.teams,
+        usage: payload.usage,
+      });
       signature = crypto
         .createHash('sha1')
-        .update(JSON.stringify({
-          sessions: payload.sessions,
-          teams: payload.teams,
-          usage: payload.usage,
-        }))
+        .update(serializedState)
         .digest('hex');
     } else {
       signatureSkipped = true;
@@ -856,13 +959,50 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
       return;
     }
 
+    const deltaStart = Date.now();
+    const nextState = { sessions: payload.sessions, teams: payload.teams, usage: payload.usage };
+    const snapshotDue = now - lastDeltaSnapshotAt >= DELTA_SNAPSHOT_INTERVAL_MS;
+    const patch = lastBroadcastState && !snapshotDue
+      ? createJsonPatch(lastBroadcastState, nextState)
+      : null;
+    stages.delta = Date.now() - deltaStart;
+
+    if (patch && patch.length === 0) {
+      // Structurally identical to the last broadcast (e.g. key-order churn
+      // changed the signature); refresh bookkeeping without waking clients.
+      lastBroadcastSignature = signature;
+      lastBroadcastStamp = stampAtCollect;
+      lastBroadcastState = nextState;
+      providerDataDirty = false;
+      lastFullBroadcastAt = now;
+      return;
+    }
+
+    let deltaMessage = null;
+    if (patch && patch.length <= DELTA_MAX_PATCH_OPS) {
+      const serializedPatch = JSON.stringify(patch);
+      if (serializedState === null || serializedPatch.length < serializedState.length) {
+        deltaMessage = {
+          type: 'update-delta',
+          baseSeq: broadcastSeq,
+          seq: broadcastSeq + 1,
+          patch,
+          timestamp: payload.timestamp,
+        };
+      }
+    }
+
+    broadcastSeq++;
+    payload.seq = broadcastSeq;
     lastBroadcastSignature = signature;
     lastBroadcastStamp = stampAtCollect;
-    wsBroadcast(payload);
+    lastBroadcastState = nextState;
+    if (!deltaMessage) lastDeltaSnapshotAt = now;
+    wsBroadcast(payload, deltaMessage);
     providerDataDirty = false;
     lastFullBroadcastAt = now;
     const elapsed = Date.now() - collectStart;
-    serverPerf.lastBroadcast = { elapsed, stages, reason, sessions: payload.sessions.length, clients: wsClients.size, ts: now };
+    serverPerf.lastBroadcast = { elapsed, stages, reason, sessions: payload.sessions.length, clients: wsClients.size, mode: deltaMessage ? 'delta' : 'full', deltaOps: patch ? patch.length : null, ts: now };
     serverPerf.broadcasts.push(serverPerf.lastBroadcast);
     while (serverPerf.broadcasts.length > 25) serverPerf.broadcasts.shift();
     for (const [stage, ms] of Object.entries(stages)) {

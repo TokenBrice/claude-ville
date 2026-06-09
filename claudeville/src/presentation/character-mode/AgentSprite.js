@@ -9,6 +9,7 @@ import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } fr
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
 import { compactToolInput, toolActionLabel, toolCategory, classifyTool } from '../../domain/services/ToolIdentity.js';
+import { pickLoreLine } from '../../config/loreDialogue.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 
 // Hit-test geometry (unchanged from vector version).
@@ -34,12 +35,33 @@ const STATUS_VISUALS = {
         glow: 'rgba(134, 191, 224, 0.22)',
         label: 'IDLE',
     },
+    [AgentStatus.ERRORED]: {
+        color: THEME.error,
+        glow: 'rgba(239, 68, 68, 0.40)',
+        label: 'ERROR',
+    },
+    [AgentStatus.RATE_LIMITED]: {
+        color: '#8fa6bd',
+        glow: 'rgba(143, 166, 189, 0.24)',
+        label: 'RATELIMIT',
+    },
     chatting: {
         color: '#f2d36b',
         glow: 'rgba(242, 211, 107, 0.30)',
         label: 'CHAT',
     },
 };
+// 2.2 — bubble tone tints for mood-flavored lore lines.
+const MOOD_ACCENTS = {
+    distressed: '#ff8a7a',
+    proud: '#ffd87a',
+    tired: '#9fb4c8',
+};
+const LORE_ACCENT_DEFAULT = '#d8c08a';
+// 3.13 — congestion treatment: gait slowdown and bubble accent when the
+// destination/current building is over visit capacity.
+const CONGESTION_GAIT_SCALE = 0.6;
+const CONGESTION_BUBBLE_ACCENT = '#ff9d5c';
 const PROVIDER_TRIM = {
     claude: '#c7a6ff',
     codex: '#67f29a',
@@ -66,6 +88,12 @@ const MODEL_TIER_COLORS = Object.freeze({
     light: '#c47b46',
     swift: '#c47b46',
 });
+// Context-window pressure ring thresholds, highest first. No ring below 0.75.
+const CONTEXT_PRESSURE_LEVELS = Object.freeze([
+    { threshold: 0.95, color: THEME.error, glow: 'rgba(239, 68, 68, 0.30)', pulseRate: 3.4 },
+    { threshold: 0.85, color: THEME.waiting, glow: 'rgba(223, 140, 63, 0.24)', pulseRate: 2.4 },
+    { threshold: 0.75, color: '#f2d36b', glow: 'rgba(242, 211, 107, 0.20)', pulseRate: 1.6 },
+]);
 const MAX_VISIBLE_FAMILIAR_MOTES = 3;
 const AMBIENT_BUILDING_SEQUENCE = [
     'command',
@@ -121,6 +149,8 @@ const TOOL_DETAIL_KEY_CHARS = 56;
 const ACTIVITY_TEXT_CAP = 60;
 const MESSAGE_TEXT_CAP = 56;
 const PROCESSED_SPRITE_CACHE = new Map();
+// Selection-ring asset recolored per provider accent; keyed by accent color.
+const TINTED_SELECTION_RING_CACHE = new Map();
 const TOOL_ACTIVITY_LABEL_OVERRIDES = Object.freeze({
     'functions.spawn_agent': 'Spawning',
     'functions.send_input': 'Directing',
@@ -178,6 +208,24 @@ const EFFORT_FLOOR_RING_VISUALS = Object.freeze({
     medium: { stroke: '#b8c4cc', highlight: '#eef7ff', glow: 'rgba(184, 196, 204, 0.18)', bands: 2, rx: 19, ry: 6 },
     high: { stroke: '#f2d36b', highlight: '#fff1b8', glow: 'rgba(242, 211, 107, 0.22)', bands: 3, rx: 21, ry: 7 },
 });
+// 4.6 — effort-tier aura around the sprite body. Tier resolves from the
+// model's reasoning effort (mythic-tier models always shimmer; max folds into
+// xhigh). Colors echo the floor-ring metals so both effort cues read as one
+// family. Drawn before the grounding pass so the aura sits behind the sprite
+// while the floor/status rings stay in front. Pulse bands per
+// docs/motion-budget.md: glow breathing claims `slow`, mote orbit claims
+// `medium` (permitted claimant).
+const EFFORT_AURA_VISUALS = Object.freeze({
+    low: { kind: 'motes', color: '#d7a456', motes: 3 },
+    medium: { kind: 'glow', color: '#cfd9e4' },
+    high: { kind: 'corona', color: '#f2d36b' },
+    xhigh: { kind: 'field', color: '#ffe9a8' },
+    mythic: { kind: 'shimmer', colors: [MODEL_TIER_COLORS.mythic, '#ffe7a8', '#c8a3ff'], motes: 4 },
+});
+const EFFORT_AURA_MAX_MOTES = 6;
+// Idle/waiting agents keep a dimmed (~35%) aura; full intensity while working.
+const EFFORT_AURA_IDLE_INTENSITY = 0.35;
+const EFFORT_AURA_CENTER_Y = -26; // body-center offset above the feet anchor
 const INTENT_SOURCE_MOTION = Object.freeze({
     chat: { dwell: 1.0, speed: 1.2, stableMs: 3000 },
     alert: { dwell: 1.15, speed: 1.18, stableMs: 9000 },
@@ -230,6 +278,7 @@ export class AgentSprite {
         this.selected = false;
         this.statusAnim = 0;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
+        this.lightingState = null;
         this._lastBuildingType = null;
         this._lastIntentId = null;
         this._lastTargetTile = null;
@@ -247,6 +296,9 @@ export class AgentSprite {
         this.behavior = new AgentBehaviorState();
         this._targetCycle = 0;
         this.nameTagSlot = 0;
+        // 4.8 — earned biography nickname ("the Shipwright"), pushed by the
+        // renderer from AgentBiographyService; rendered as a name-tag suffix.
+        this.nickname = null;
         this.labelAlpha = 1;
         this.bumpFlash = 0;
         this.teamPlazaPreference = false;
@@ -257,6 +309,10 @@ export class AgentSprite {
         this.chatting = false;       // chatting flag
         this.chatTimer = 0;          // chat animation timer
         this.chatBubbleAnim = 0;     // speech bubble animation
+
+        // Active pose-bearing tool ritual record from RitualConductor
+        // (reading / typing / thinking), synced by the renderer per frame.
+        this._toolRitual = null;
 
         this._lastStatus = agent?.status || null;
         this._completedAtMs = 0;
@@ -296,6 +352,7 @@ export class AgentSprite {
         this.spriteSheet = null;     // cached SpriteSheet wrapper, set on first draw
         this._spriteProfileKey = '';
         this._silhouetteCellCache = new Map();
+        this._frozenTintCellCache = new Map();
         this._cellBoundsCache = new Map();
         this._nameTagLayoutCacheKey = '';
         this._nameTagLayoutCache = null;
@@ -305,6 +362,9 @@ export class AgentSprite {
         this._compactNameStatusCache = null;
         this._activityTrail = [];
         this._activitySnapshot = this._captureActivitySnapshot(agent);
+        // 4.6 — pre-allocated effort-aura mote state, built lazily on the
+        // first animated aura draw (never under reduced motion).
+        this._auraMotes = null;
 
         this._pickTarget();
     }
@@ -1073,7 +1133,37 @@ export class AgentSprite {
         if (this.agent.status === AgentStatus.WORKING) base = 1.5;
         if (this.agent.status === AgentStatus.WAITING) base = 1.1;
         if (this.agent.status === AgentStatus.IDLE) base = 0.8;
-        return this._clamp(base * this._intentSpeedMultiplier(this._currentMotionIntent()), 0.62, 2.15);
+        const speed = this._clamp(base * this._intentSpeedMultiplier(this._currentMotionIntent()), 0.62, 2.15);
+        // Mood (2.2) and congestion (3.13) gait modifiers apply after the
+        // tuned clamp so they read as a real slowdown/spring in the step.
+        return speed * this._moodGaitMultiplier() * this._congestionGaitMultiplier();
+    }
+
+    /** 2.2 — tired/distressed villagers drag their feet; proud ones stride. */
+    _moodGaitMultiplier() {
+        const mood = this.agent?.mood;
+        const intensity = Number(mood?.intensity) || 0;
+        if (!mood || intensity <= 0) return 1;
+        if (mood.type === 'tired') return 1 - 0.30 * intensity;
+        if (mood.type === 'distressed') return 1 - 0.18 * intensity;
+        if (mood.type === 'proud') return 1 + 0.12 * intensity;
+        return 1;
+    }
+
+    /** 3.13 — slower gait while heading to/standing in a congested building. */
+    _congestionGaitMultiplier() {
+        return this._congestedBuilding() ? CONGESTION_GAIT_SCALE : 1;
+    }
+
+    /** Destination/current building when over visit capacity, else null. */
+    _congestedBuilding() {
+        const type = this._lastBuildingType
+            || this.agent?.targetBuildingType
+            || this.agent?.lastKnownBuildingType
+            || null;
+        if (!type) return null;
+        const building = this._buildingForType(type);
+        return building?.isCongested?.() ? building : null;
     }
 
     _currentMotionIntent() {
@@ -1108,6 +1198,15 @@ export class AgentSprite {
 
     setMotionScale(scale) {
         this.motionScale = scale;
+    }
+
+    setNickname(nickname) {
+        const value = String(nickname || '').trim();
+        this.nickname = value || null;
+    }
+
+    setLightingState(lighting) {
+        this.lightingState = lighting || null;
     }
 
     setArrivalState(state) {
@@ -1581,6 +1680,11 @@ export class AgentSprite {
     }
 
     /** End chat */
+    // Renderer-synced tool ritual pose (see RitualConductor.getAgentPoses).
+    setToolRitualPose(ritual) {
+        this._toolRitual = ritual && ritual.pose ? ritual : null;
+    }
+
     endChat() {
         this._releaseVisitReservation();
         this.chatPartner = null;
@@ -1676,6 +1780,7 @@ export class AgentSprite {
                 this.spriteSheet = new SpriteSheet(this.spriteCanvas);
                 this._spriteProfileKey = profileKey;
                 this._silhouetteCellCache.clear();
+                this._frozenTintCellCache.clear();
                 this._cellBoundsCache.clear();
             }
         }
@@ -1689,8 +1794,11 @@ export class AgentSprite {
         this.animState = this.moving && this.motionScale > 0 ? 'walk' : 'idle';
 
         // Strong ground language keeps agents readable against dense pixel-art terrain.
+        // 4.6 — effort aura first so it stays behind the sprite and rings.
+        this._drawEffortAura(ctx, identity);
         this._drawGrounding(ctx);
         this._drawEffortFloorRing(ctx, identity);
+        this._drawContextPressureRing(ctx);
 
         if (!this.selected && zoom < 1) {
             this._drawLowZoomImpostor(ctx);
@@ -1726,13 +1834,20 @@ export class AgentSprite {
             cell.sx, cell.sy, cell.sw, cell.sh,
             dx, dy, cell.sw * drawScale, cell.sh * drawScale
         );
+        // Frozen/darkened body tint while rate-limited — static overlay, so it
+        // reads identically under reduced motion.
+        if (this.agent?.status === AgentStatus.RATE_LIMITED) {
+            this._drawFrozenTint(ctx, cell, dx, dy, drawScale);
+        }
         this._drawCodexEquipment(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'front');
         this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
+        this._drawToolRitualOverlay(ctx, { dx, dy, bounds, drawScale });
 
-        // Selection halo (if selected) — outer glow + pulsed ring at feet level.
+        // Selection halo (if selected) — outer glow + pulsed ring at feet level,
+        // tinted with the provider accent so selection reads identity at a glance.
         if (this.selected) {
             ctx.save();
-            ctx.fillStyle = 'rgba(242, 211, 107, 0.18)';
+            ctx.fillStyle = this._rgba(this._providerAccentColor(), 0.18);
             ctx.beginPath();
             ctx.ellipse(Math.round(this.x), Math.round(this.y - 2), 22, 8, 0, 0, Math.PI * 2);
             ctx.fill();
@@ -1977,6 +2092,201 @@ export class AgentSprite {
         ctx.restore();
     }
 
+    // 4.6 — aura tier for this agent: mythic-tier models always shimmer,
+    // otherwise the reasoning-effort tier picks the visual (max → xhigh).
+    // Returns null when no aura applies.
+    _effortAuraTier(identity) {
+        if (identity?.modelTier === 'mythic') return 'mythic';
+        const tier = String(identity?.effortTier || '').toLowerCase();
+        const resolved = tier === 'max' ? 'xhigh' : tier;
+        return EFFORT_AURA_VISUALS[resolved] ? resolved : null;
+    }
+
+    // Pre-allocated drifting-mote state: built once per mote count (rebuilds
+    // only if the tier's count changes), so the per-frame path allocates
+    // nothing. Reduced motion never reaches this.
+    _effortAuraMotes(count) {
+        const capped = Math.min(Number(count) || 0, EFFORT_AURA_MAX_MOTES);
+        if (!this._auraMotes || this._auraMotes.length !== capped) {
+            const seed = Math.abs(this._hash(`${this.agent.id}:aura`));
+            this._auraMotes = [];
+            for (let i = 0; i < capped; i++) {
+                this._auraMotes.push({
+                    phase: this._noise(seed, i * 7) * Math.PI * 2,
+                    speed: 0.5 + this._noise(seed, i * 13) * 0.7,
+                    radiusX: 13 + this._noise(seed, i * 19) * 7,
+                    radiusY: 9 + this._noise(seed, i * 23) * 6,
+                    size: 1 + (i % 2),
+                });
+            }
+        }
+        return this._auraMotes;
+    }
+
+    // 4.6 — effort-tier aura dispatcher. Full intensity while WORKING, dimmed
+    // to ~35% otherwise. Off-screen sprites never reach draw() (the renderer
+    // culls depth-sorted drawables), so the aura skips automatically outside
+    // the viewport. Reduced motion (motionScale 0) renders a static tint ring
+    // at fixed alpha instead of animated particles.
+    _drawEffortAura(ctx, identity) {
+        const tier = this._effortAuraTier(identity);
+        if (!tier) return;
+        const visual = EFFORT_AURA_VISUALS[tier];
+        const intensity = this.agent?.status === AgentStatus.WORKING ? 1 : EFFORT_AURA_IDLE_INTENSITY;
+        ctx.save();
+        ctx.translate(Math.round(this.x), Math.round(this.y + EFFORT_AURA_CENTER_Y));
+        if (this.motionScale <= 0) {
+            ctx.globalAlpha = 0.34 * intensity;
+            ctx.strokeStyle = visual.color || visual.colors[0];
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, 17, 23, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+            return;
+        }
+        if (visual.kind === 'motes') this._drawAuraMotes(ctx, visual, intensity);
+        else if (visual.kind === 'glow') this._drawAuraGlow(ctx, visual, intensity);
+        else if (visual.kind === 'corona') this._drawAuraCorona(ctx, visual, intensity);
+        else if (visual.kind === 'field') this._drawAuraField(ctx, visual, intensity);
+        else this._drawAuraShimmer(ctx, visual, intensity);
+        ctx.restore();
+    }
+
+    // low — a few dim motes drifting around the body (medium band: mote orbit).
+    _drawAuraMotes(ctx, visual, intensity) {
+        const motes = this._effortAuraMotes(visual.motes);
+        ctx.fillStyle = visual.color;
+        for (const mote of motes) {
+            const t = this.statusAnim * 0.7 * mote.speed + mote.phase;
+            const mx = Math.cos(t) * mote.radiusX;
+            const my = Math.sin(t * 0.8) * mote.radiusY - Math.sin(t * 0.31) * 4;
+            ctx.globalAlpha = (0.16 + 0.10 * Math.sin(t * 1.7)) * intensity;
+            ctx.fillRect(Math.round(mx), Math.round(my), mote.size, mote.size);
+        }
+    }
+
+    // medium — steady soft glow behind the body (static band: no pulse).
+    _drawAuraGlow(ctx, visual, intensity) {
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.15 * intensity;
+        ctx.fillStyle = visual.color;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 18, 24, 0, 0, Math.PI * 2);
+        ctx.fill();
+    }
+
+    // high — brighter corona: stacked glow + rim, breathing in the slow band.
+    _drawAuraCorona(ctx, visual, intensity) {
+        const breath = 0.82 + 0.18 * Math.sin(this.statusAnim * 1.1);
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.22 * breath * intensity;
+        ctx.fillStyle = visual.color;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 21, 27, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 0.30 * breath * intensity;
+        ctx.strokeStyle = visual.color;
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 18, 24, 0, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // xhigh — pulsing energy field (medium band): breathing glow plus an
+    // expanding ring that fades as it grows.
+    _drawAuraField(ctx, visual, intensity) {
+        const pulse = 0.5 + 0.5 * Math.sin(this.statusAnim * 2.6);
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = (0.20 + 0.14 * pulse) * intensity;
+        ctx.fillStyle = visual.color;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 20 + pulse * 3, 26 + pulse * 3, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = (0.42 - 0.30 * pulse) * intensity;
+        ctx.strokeStyle = visual.color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 15 + pulse * 9, 20 + pulse * 9, 0, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // mythic — iridescent shimmer: glow crossfades through the tier palette
+    // (slow band) with small color-cycling highlights orbiting the body
+    // (medium band: mote orbit).
+    _drawAuraShimmer(ctx, visual, intensity) {
+        const cycle = this.statusAnim * 0.45;
+        const idx = Math.floor(cycle) % visual.colors.length;
+        const next = (idx + 1) % visual.colors.length;
+        const fade = cycle - Math.floor(cycle);
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.20 * (1 - fade) * intensity;
+        ctx.fillStyle = visual.colors[idx];
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 20, 26, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 0.20 * fade * intensity;
+        ctx.fillStyle = visual.colors[next];
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 20, 26, 0, 0, Math.PI * 2);
+        ctx.fill();
+        const motes = this._effortAuraMotes(visual.motes);
+        for (let i = 0; i < motes.length; i++) {
+            const mote = motes[i];
+            const t = this.statusAnim * 0.8 * mote.speed + mote.phase;
+            ctx.globalAlpha = (0.30 + 0.22 * Math.sin(t * 1.6)) * intensity;
+            ctx.fillStyle = visual.colors[(idx + i) % visual.colors.length];
+            ctx.fillRect(
+                Math.round(Math.cos(t) * (mote.radiusX + 4)),
+                Math.round(Math.sin(t * 0.9) * (mote.radiusY + 6)),
+                mote.size + 1,
+                mote.size + 1,
+            );
+        }
+    }
+
+    // Context-window pressure: mirrors contextRatio() in LandmarkActivity.js /
+    // VisitIntentManager.js. Returns the matching CONTEXT_PRESSURE_LEVELS entry
+    // or null when fullness is unknown or below the lowest threshold.
+    _contextPressureLevel() {
+        const tokens = this.agent?.tokens || {};
+        const current = Number(tokens.contextWindow ?? 0) || 0;
+        const max = Number(tokens.contextWindowMax ?? 0) || 0;
+        if (current <= 0 || max <= 0) return null;
+        const ratio = Math.max(0, Math.min(1, current / max));
+        for (const level of CONTEXT_PRESSURE_LEVELS) {
+            if (ratio >= level.threshold) return level;
+        }
+        return null;
+    }
+
+    // Warning ring at the agent's feet when the context window is nearly full:
+    // yellow ≥ 0.75, orange ≥ 0.85, red ≥ 0.95, pulsing faster as pressure
+    // rises. Drawn outside the grounding and effort rings so it reads as a
+    // separate signal. `statusAnim` freezes under reduced motion, so the ring
+    // then holds a fixed alpha instead of pulsing.
+    _drawContextPressureRing(ctx) {
+        const level = this._contextPressureLevel();
+        if (!level) return;
+        const pulse = 0.72 + 0.28 * Math.sin(this.statusAnim * level.pulseRate);
+        ctx.save();
+        ctx.translate(Math.round(this.x), Math.round(this.y + 4));
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.5 * pulse;
+        ctx.fillStyle = level.glow;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 30, 11, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.5 + 0.4 * pulse;
+        ctx.strokeStyle = level.color;
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 27, 10, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+    }
+
     _drawGrounding(ctx) {
         const visual = this._statusVisual();
         const trim = this._providerTrimColor();
@@ -1989,6 +2299,31 @@ export class AgentSprite {
         const shadowRadiusY = 7 - strideCompression * 0.9;
         ctx.save();
         ctx.translate(Math.round(this.x), Math.round(this.y));
+
+        // Directional sun shadow from the shared atmosphere lighting state:
+        // elongated and tilted at dawn/dusk, tight at noon, gone at night
+        // (ambientLight 0). Reads the same shadowAngleRad/shadowLength/
+        // shadowAlpha fields the building shadows use, so agents and
+        // buildings agree on sun direction.
+        const lighting = this.lightingState;
+        const sunStrength = lighting ? this._clamp(lighting.ambientLight ?? 0, 0, 1) : 0;
+        if (sunStrength > 0.04) {
+            const sunAngle = lighting.shadowAngleRad ?? 0.28;
+            const sunLength = lighting.shadowLength ?? 1;
+            const sunAlpha = Math.min(0.3, lighting.shadowAlpha ?? 0.22) * sunStrength;
+            ctx.fillStyle = `rgba(15, 22, 30, ${sunAlpha.toFixed(3)})`;
+            ctx.beginPath();
+            ctx.ellipse(
+                Math.cos(sunAngle) * 9 * sunLength,
+                6 + Math.sin(sunAngle) * 3.5 * sunLength,
+                shadowRadiusX * (0.62 + sunLength * 0.5),
+                shadowRadiusY * 0.8,
+                sunAngle * 0.22,
+                0,
+                Math.PI * 2
+            );
+            ctx.fill();
+        }
 
         ctx.fillStyle = 'rgba(5, 8, 12, 0.56)';
         ctx.beginPath();
@@ -2003,6 +2338,7 @@ export class AgentSprite {
         if (visual) {
             const isWorking = this.agent?.status === AgentStatus.WORKING;
             const isWaiting = this.agent?.status === AgentStatus.WAITING;
+            const isErrored = this.agent?.status === AgentStatus.ERRORED;
             const flash = this.bumpFlash ? this.bumpFlash * 0.26 : 0;
             let workingAlpha = 0.30 + 0.22 * pulse + flash;
             if (isWorking) {
@@ -2010,13 +2346,25 @@ export class AgentSprite {
                 const burnMul = Math.max(0.6, Math.min(1.4, 0.6 + Math.log10(Math.max(1, totalTokens)) / 6));
                 workingAlpha *= burnMul;
             }
+            if (isErrored) {
+                // Red pulsing glow at the feet so failures read at a glance.
+                // `pulse` derives from statusAnim, which freezes under reduced
+                // motion (motionScale 0) — the glow then holds a fixed alpha.
+                ctx.globalAlpha = 0.30 + 0.34 * pulse + flash;
+                ctx.fillStyle = visual.glow;
+                ctx.beginPath();
+                ctx.ellipse(0, 4, this.selected ? 26 : 21, this.selected ? 9 : 7, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
             ctx.globalAlpha = this.selected
                 ? 0.95
-                : isWorking
-                    ? workingAlpha
-                    : isWaiting
-                        ? 0.30 + flash
-                        : 0.18 + flash;
+                : isErrored
+                    ? 0.40 + 0.30 * pulse + flash
+                    : isWorking
+                        ? workingAlpha
+                        : isWaiting
+                            ? 0.30 + flash
+                            : 0.18 + flash;
             ctx.strokeStyle = visual.color;
             ctx.lineWidth = this.selected ? 2 : 1.2;
             ctx.beginPath();
@@ -2124,6 +2472,34 @@ export class AgentSprite {
         return outline;
     }
 
+    _drawFrozenTint(ctx, cell, dx, dy, drawScale = 1) {
+        const tinted = this._getFrozenTintCell(cell);
+        if (!tinted) return;
+        ctx.save();
+        ctx.globalAlpha *= 0.38;
+        ctx.drawImage(tinted, dx, dy, cell.sw * drawScale, cell.sh * drawScale);
+        ctx.restore();
+    }
+
+    _getFrozenTintCell(cell) {
+        if (!this.spriteCanvas) return null;
+        const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
+        const cached = this._frozenTintCellCache.get(key);
+        if (cached) return cached;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = cell.sw;
+        canvas.height = cell.sh;
+        const tintCtx = canvas.getContext('2d');
+        tintCtx.imageSmoothingEnabled = false;
+        tintCtx.drawImage(this.spriteCanvas, cell.sx, cell.sy, cell.sw, cell.sh, 0, 0, cell.sw, cell.sh);
+        tintCtx.globalCompositeOperation = 'source-in';
+        tintCtx.fillStyle = '#2e4258';   // cold slate; drawn at low alpha over the body
+        tintCtx.fillRect(0, 0, canvas.width, canvas.height);
+        this._frozenTintCellCache.set(key, canvas);
+        return canvas;
+    }
+
     _getCellContentBounds(cell) {
         const key = `${cell.sx},${cell.sy},${cell.sw},${cell.sh}`;
         const cached = this._cellBoundsCache.get(key);
@@ -2179,13 +2555,15 @@ export class AgentSprite {
         if (!this.assets) return;
         // Pulse alpha so the ring breathes (0.7 .. 1.0 sinusoidal).
         const pulseAlpha = 0.7 + 0.3 * Math.sin(this.frame * 0.15);
+        const accent = this._providerAccentColor();
         const ring = this.assets.get('overlay.status.selected');
         if (ring) {
-            const dx = Math.round(this.x - ring.width / 2);
+            const tinted = this._getTintedSelectionRing(ring, accent) || ring;
+            const dx = Math.round(this.x - tinted.width / 2);
             const dy = Math.round(this.y - 6);     // just under feet
             ctx.save();
             ctx.globalAlpha = pulseAlpha;
-            ctx.drawImage(ring, dx, dy);
+            ctx.drawImage(tinted, dx, dy);
             ctx.restore();
             return;
         }
@@ -2194,12 +2572,35 @@ export class AgentSprite {
         ctx.globalAlpha = pulseAlpha;
         ctx.beginPath();
         ctx.ellipse(this.x, this.y + 21, 28, 10, 0, 0, Math.PI * 2);
-        ctx.fillStyle = 'rgba(242, 211, 107, 0.24)';
+        ctx.fillStyle = this._rgba(accent, 0.24);
         ctx.fill();
-        ctx.strokeStyle = '#f2d36b';
+        ctx.strokeStyle = accent;
         ctx.lineWidth = 1.4;
         ctx.stroke();
         ctx.restore();
+    }
+
+    // Recolors the golden selection-ring asset toward the provider accent while
+    // keeping its luminance/shading ('color' composite), then restores the
+    // original alpha. Cached per accent color — the base asset is shared.
+    _getTintedSelectionRing(ring, accent) {
+        if (!ring?.width || !ring?.height) return null;
+        const cached = TINTED_SELECTION_RING_CACHE.get(accent);
+        if (cached) return cached;
+
+        const canvas = document.createElement('canvas');
+        canvas.width = ring.width;
+        canvas.height = ring.height;
+        const tintCtx = canvas.getContext('2d');
+        tintCtx.imageSmoothingEnabled = false;
+        tintCtx.drawImage(ring, 0, 0);
+        tintCtx.globalCompositeOperation = 'color';
+        tintCtx.fillStyle = accent;
+        tintCtx.fillRect(0, 0, canvas.width, canvas.height);
+        tintCtx.globalCompositeOperation = 'destination-in';
+        tintCtx.drawImage(ring, 0, 0);
+        TINTED_SELECTION_RING_CACHE.set(accent, canvas);
+        return canvas;
     }
 
     _drawCodexEquipment(ctx, identity, frameGeometry, layer = 'front') {
@@ -3220,7 +3621,10 @@ export class AgentSprite {
         ctx.translate(this.x, this.y);
         ctx.scale(s, s); // fixed size in screen space
         ctx.translate(0, 38 + this._nameTagSlotYOffset());
-        const rawName = String(this.agent.name || this.agent.displayName || '').trim() || this.agent.displayName;
+        const baseName = String(this.agent.name || this.agent.displayName || '').trim() || this.agent.displayName;
+        // 4.8 — earned nickname renders as a title suffix on the full tag
+        // (compact labels stay nickname-free to avoid clutter).
+        const rawName = this.nickname ? `${baseName} ${this.nickname}` : baseName;
         ctx.font = `bold ${NAME_TAG_FONT_PX}px "Press Start 2P", monospace`;
         const layout = this._nameTagLayout(ctx, rawName);
         const lines = layout.lines;
@@ -3519,6 +3923,40 @@ export class AgentSprite {
         const entryTimestamp = Number(agent.lastSessionActivity) || timestamp;
         const activityAge = Number(agent.activityAgeMs);
         const hasFreshActivity = !Number.isFinite(activityAge) || activityAge <= ACTIVITY_BUBBLE_TTL_MS;
+
+        // 3.13 — congestion outranks everything: an over-capacity building
+        // reads as the villager being overwhelmed by the crowd.
+        const congested = this._congestedBuilding();
+        if (congested) {
+            const overBy = Number(congested.congestion?.overBy) || 0;
+            return {
+                kind: 'status',
+                key: `status:congestion:${congested.type}`,
+                text: overBy > 1 ? 'Overwhelmed!' : 'Overwhelmed…',
+                accent: CONGESTION_BUBBLE_ACCENT,
+                timestamp: entryTimestamp,
+            };
+        }
+
+        // 4.1 — occasionally speak village lore instead of the tool label.
+        // pickLoreLine is deterministic per agent + 45 s bucket, so this is
+        // flicker-free when called every frame; mood (2.2) tints the tone.
+        const moodType = agent.mood?.type || null;
+        const loreLine = pickLoreLine({
+            seedKey: agent.id,
+            buildingType: this._lastBuildingType || agent.lastKnownBuildingType || null,
+            mood: moodType,
+        });
+        if (loreLine) {
+            return {
+                kind: 'lore',
+                key: `lore:${loreLine}`,
+                text: this._truncateActivityText(loreLine, ACTIVITY_TEXT_CAP),
+                accent: MOOD_ACCENTS[moodType] || LORE_ACCENT_DEFAULT,
+                timestamp: entryTimestamp,
+            };
+        }
+
         const currentTool = String(agent.currentTool || '').trim();
         if (currentTool && hasFreshActivity) {
             const toolLabel = this._toolActivityLabel(currentTool);
@@ -3562,7 +4000,8 @@ export class AgentSprite {
 
     _rememberActivitySnapshot(entry, timestamp = Date.now()) {
         if (!entry?.text || !entry?.key) return;
-        if (entry.kind === 'status') return;
+        // Status and lore bubbles are flavor, not work history.
+        if (entry.kind === 'status' || entry.kind === 'lore') return;
         this._pruneActivityTrail(timestamp);
         const latest = this._activityTrail[0];
         if (latest?.key === entry.key) {
@@ -3903,6 +4342,82 @@ export class AgentSprite {
         }
     }
 
+    // Tool ritual pose overlay driven by RitualConductor: a small procedural
+    // prop at hand height — open book (reading), keystroke slate (typing), or
+    // a chin-hand with rising thought dots (thinking). No new image assets;
+    // reduced motion renders each prop as a single static frame.
+    _drawToolRitualOverlay(ctx, frameGeometry) {
+        const ritual = this._toolRitual;
+        if (!ritual?.pose || this.chatting || this.moving) return;
+        const { dx, dy, bounds, drawScale } = frameGeometry || {};
+        if (!bounds || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
+        const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
+        const centerX = dx + (bounds.minX + bounds.maxX) * drawScale / 2;
+        const handY = dy + (bounds.minY + contentHeight * 0.62) * drawScale;
+        const headY = dy + (bounds.minY + contentHeight * 0.18) * drawScale;
+        const directionKey = DIRECTIONS[this.direction] || 's';
+        const sideSign = ['sw', 'w', 'nw', 'n'].includes(directionKey) ? -1 : 1;
+        const animated = this.motionScale > 0 && ritual.motionEnabled !== false;
+        ctx.save();
+        if (ritual.phase === 'fading') ctx.globalAlpha *= 0.5;
+        if (ritual.pose === 'reading') {
+            this._drawReadingPoseProp(ctx, centerX, handY, animated);
+        } else if (ritual.pose === 'typing') {
+            this._drawTypingPoseProp(ctx, centerX, handY, animated);
+        } else if (ritual.pose === 'thinking') {
+            const chinX = centerX + sideSign * contentWidth * 0.22 * drawScale;
+            this._drawThinkingPoseProp(ctx, chinX, headY, sideSign, animated);
+        }
+        ctx.restore();
+    }
+
+    _drawReadingPoseProp(ctx, x, y, animated) {
+        const bx = Math.round(x);
+        const by = Math.round(y);
+        // Dark cover with two light pages held in front of the body.
+        ctx.fillStyle = '#3a2c1c';
+        ctx.fillRect(bx - 4, by - 3, 8, 4);
+        ctx.fillStyle = '#f0e6c8';
+        ctx.fillRect(bx - 3, by - 3, 3, 3);
+        ctx.fillRect(bx + 1, by - 3, 3, 3);
+        // Page glint flicks between pages; static variant pins the left page.
+        const glintX = animated && Math.floor(Date.now() / 700) % 2 ? 2 : -2;
+        ctx.fillStyle = '#fffbe9';
+        ctx.fillRect(bx + glintX, by - 3, 1, 2);
+    }
+
+    _drawTypingPoseProp(ctx, x, y, animated) {
+        const bx = Math.round(x);
+        const by = Math.round(y);
+        // Slim slate keyboard held at hand height.
+        ctx.fillStyle = '#1d2b33';
+        ctx.fillRect(bx - 4, by - 2, 9, 3);
+        ctx.fillStyle = '#5d7886';
+        ctx.fillRect(bx - 3, by - 1, 7, 1);
+        // Keystroke sparks alternate; static variant keeps both keys lit.
+        const phase = animated ? Math.floor(Date.now() / 240) % 2 : -1;
+        ctx.fillStyle = '#9fe8ff';
+        if (phase !== 1) ctx.fillRect(bx - 2, by - 1, 1, 1);
+        if (phase !== 0) ctx.fillRect(bx + 2, by - 1, 1, 1);
+    }
+
+    _drawThinkingPoseProp(ctx, x, y, sideSign, animated) {
+        const bx = Math.round(x);
+        const by = Math.round(y);
+        // Hand raised to the chin.
+        ctx.fillStyle = '#f2d36b';
+        ctx.fillRect(bx - 1, by + 2, 2, 2);
+        // Thought dots stepping up and away; static variant shows the trail.
+        const step = animated ? Math.floor(Date.now() / 420) % 3 : -1;
+        ctx.fillStyle = '#dfe7f2';
+        for (let i = 0; i < 3; i++) {
+            ctx.globalAlpha = step === -1 || step === i ? 0.95 : 0.4;
+            ctx.fillRect(bx + sideSign * (3 + i * 2), by - 2 - i * 3, i === 2 ? 2 : 1, i === 2 ? 2 : 1);
+        }
+        ctx.globalAlpha = 1;
+    }
+
     _snapWorldToScreenPixel(value) {
         const zoom = this._zoom || 1;
         return Math.round(value * zoom) / zoom;
@@ -3934,6 +4449,10 @@ export class AgentSprite {
     _providerTrimColor(agent = this.agent) {
         const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider);
         return identity.trim?.[0] || PROVIDER_TRIM[this._providerKey(agent)] || PROVIDER_TRIM.default;
+    }
+
+    _providerAccentColor(agent = this.agent) {
+        return PROVIDER_BADGE_COLORS[this._providerKey(agent)] || PROVIDER_BADGE_COLORS.default;
     }
 
     _rgba(color, alpha) {

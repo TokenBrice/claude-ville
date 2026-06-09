@@ -1,4 +1,6 @@
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const { execFileSync } = require('child_process');
 
 const GIT_EVENT_TYPES = new Set(['commit', 'push', 'pull', 'fetch']);
@@ -45,10 +47,12 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
   '--repo',
 ]);
 // Raised from 5s to 30s: unpushed-commit scans are idempotent and dominate the
-// per-poll cost when many repos are open. The cache is read-only (no explicit
-// busting); stale entries expire on TTL, so 30s only delays new commit
-// visibility by ≤30s.
+// per-poll cost when many repos are open. Two mechanisms keep commit visibility
+// fast despite the long base TTL: projects with active sessions use the shorter
+// active TTL, and a HEAD/logs-HEAD mtime change busts that project's caches so
+// new commits surface on the next enrichment pass.
 const GIT_STATUS_CACHE_TTL_MS = 30000;
+const GIT_STATUS_ACTIVE_CACHE_TTL_MS = 5000;
 const RECENT_REPOSITORY_PUSH_TTL_MS = 2 * 60 * 1000;
 const REPOSITORY_UNPUSHED_EVENT_TTL_MS = Math.max(
   60 * 60 * 1000,
@@ -57,6 +61,8 @@ const REPOSITORY_UNPUSHED_EVENT_TTL_MS = Math.max(
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const _gitStatusCache = new Map();
 const _currentBranchCache = new Map();
+const _gitStatusActiveProjects = new Map();
+const _gitHeadSignatureByProject = new Map();
 const _lastUnpushedByProjectBranch = new Map();
 const _recentRepositoryPushEvents = new Map();
 const _perf = {
@@ -69,6 +75,7 @@ const _perf = {
   gitCommandErrors: 0,
   gitCommandTimeouts: 0,
   cacheHits: 0,
+  headInvalidations: 0,
   lastRun: null,
   recentRuns: [],
 };
@@ -85,6 +92,65 @@ function invalidateGitStatusCaches({ project = null } = {}) {
     if (key === project || key.startsWith(prefix)) _gitStatusCache.delete(key);
   }
   _currentBranchCache.delete(project);
+}
+
+function markProjectSessionActive(project, now = Date.now()) {
+  if (!project) return;
+  _gitStatusActiveProjects.set(project, now);
+  if (_gitStatusActiveProjects.size > 512) {
+    for (const [key, at] of _gitStatusActiveProjects.entries()) {
+      if (now - at >= GIT_STATUS_CACHE_TTL_MS) _gitStatusActiveProjects.delete(key);
+    }
+  }
+}
+
+function gitStatusCacheTtl(project, now = Date.now()) {
+  const activeAt = _gitStatusActiveProjects.get(project);
+  if (activeAt != null && now - activeAt < GIT_STATUS_CACHE_TTL_MS) {
+    return GIT_STATUS_ACTIVE_CACHE_TTL_MS;
+  }
+  return GIT_STATUS_CACHE_TTL_MS;
+}
+
+function gitHeadFiles(project) {
+  let gitDir = path.join(project, '.git');
+  try {
+    if (fs.statSync(gitDir).isFile()) {
+      // Worktree/submodule checkout: .git is a pointer file to the real git dir.
+      const pointer = fs.readFileSync(gitDir, 'utf8').match(/^gitdir:\s*(.+?)\s*$/m);
+      if (!pointer) return [];
+      gitDir = path.resolve(project, pointer[1]);
+    }
+  } catch {
+    return [];
+  }
+  // logs/HEAD mtime changes on every commit; HEAD mtime changes on checkout.
+  return [path.join(gitDir, 'logs', 'HEAD'), path.join(gitDir, 'HEAD')];
+}
+
+function gitHeadSignature(project) {
+  const files = gitHeadFiles(project);
+  if (!files.length) return null;
+  return files
+    .map((file) => {
+      try {
+        return String(fs.statSync(file).mtimeMs);
+      } catch {
+        return '-';
+      }
+    })
+    .join('|');
+}
+
+function invalidateOnGitHeadChange(project) {
+  if (!project) return;
+  const signature = gitHeadSignature(project);
+  const previous = _gitHeadSignatureByProject.get(project);
+  _gitHeadSignatureByProject.set(project, signature);
+  if (previous !== undefined && signature !== null && previous !== signature) {
+    _perf.headInvalidations++;
+    invalidateGitStatusCaches({ project });
+  }
 }
 
 function isGitEnrichmentDisabled() {
@@ -755,7 +821,7 @@ function currentBranch(project) {
   if (!project) return '';
   const now = Date.now();
   const cached = _currentBranchCache.get(project);
-  if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) {
+  if (cached && now - cached.at < gitStatusCacheTtl(project, now)) {
     _perf.cacheHits++;
     return cached.value;
   }
@@ -854,7 +920,7 @@ function readPushState(project, branch = null) {
   const normalizedBranch = normalizeLocalBranchName(branch);
   const cacheKey = `${project}::${normalizedBranch || 'HEAD'}`;
   const cached = _gitStatusCache.get(cacheKey);
-  if (cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) {
+  if (cached && now - cached.at < gitStatusCacheTtl(project, now)) {
     _perf.cacheHits++;
     return cached.value;
   }
@@ -1202,7 +1268,11 @@ function inferUnpushedGitEventsForSessions(sessions, options = {}) {
   const uniqueProjects = [...new Set(projects.filter(Boolean))];
   return recordGitEnrichment('unpushed', uniqueProjects.length, () => {
     const now = Date.now();
+    for (const session of sessions) {
+      if (session?.project) markProjectSessionActive(session.project, now);
+    }
     for (const project of uniqueProjects) {
+      invalidateOnGitHeadChange(project);
       if (!eventsByProject.has(project)) {
         const unpushed = readUnpushedCommitEvents(project, {
           provider: 'git',

@@ -2113,6 +2113,9 @@ export class HarborTraffic {
         this.harborCrates = new Map();
         this.storageTransfers = new Map();
         this._lastDockLayoutByShipId = new Map();
+        // 3.6 — hover lore: per-frame ship positions for hit testing + hovered ship id.
+        this.hoveredShipId = null;
+        this._shipHitEntries = [];
         this.motionScale = 1;
         this.frame = 0;
         this.waterRouteData = null;
@@ -2632,7 +2635,38 @@ export class HarborTraffic {
         const buoyDrawable = this._lagoonChannelBuoyDrawable(now);
         if (buoyDrawable) visible.push(buoyDrawable);
 
-        return visible.sort((a, b) => a.sortY - b.sortY);
+        const sorted = visible.sort((a, b) => a.sortY - b.sortY);
+        // 3.6 — hover lore: snapshot ship positions in draw order for hit testing.
+        this._shipHitEntries = sorted
+            .filter(drawable => drawable.payload?.type === 'ship')
+            .map(drawable => drawable.payload);
+        return sorted;
+    }
+
+    // 3.6 — hover lore: topmost-drawn ship under a world-space point, or null.
+    hitTestShip(worldX, worldY) {
+        const entries = this._shipHitEntries || [];
+        for (let i = entries.length - 1; i >= 0; i--) {
+            const ship = entries[i];
+            const radius = harborShipCollisionRadius(ship) * 0.8;
+            const dx = worldX - ship.x;
+            // Hull sprites sit slightly above the anchor point; bias the hit center up.
+            const dy = (worldY - (ship.y - 8)) * 1.5;
+            if ((dx * dx + dy * dy) <= radius * radius) return ship;
+        }
+        return null;
+    }
+
+    setHoveredShip(shipId) {
+        this.hoveredShipId = shipId || null;
+    }
+
+    // 3.6 — hover lore: native-tooltip text for a hovered ship (repo + commit subject).
+    shipTooltip(ship = {}) {
+        const repo = trafficLabel(ship.project, ship.branch, 40);
+        const subject = cleanCommitSubject(ship.label || '');
+        const cargo = subject || `commit ${commitPennantLabel(ship)}`;
+        return `${repo} — ${cargo}`;
     }
 
     // 3.7 — lagoon channel buoy: pulses in the repo accent of whichever ship is mid-storage-transfer.
@@ -3426,6 +3460,10 @@ export class HarborTraffic {
         }
         if (ship.showCommitLabel !== false || ship.pushStatus === 'failed' || ship.pushStatus === 'rejected') {
             this._drawCommitPennant(ctx, ship, zoom, alpha, profile, shipClass);
+        }
+        // 3.6 — hover lore: hovered ship surfaces its commit subject as a cargo label.
+        if (ship.id && ship.id === this.hoveredShipId) {
+            this._drawHoverCargoLabel(ctx, ship, zoom, alpha, profile, shipClass);
         }
     }
 
@@ -4229,6 +4267,36 @@ export class HarborTraffic {
         this._fillReadableText(ctx, label, Math.round(x + 15 * s), Math.round(y + height / 2 + 0.5), Math.max(12, width - 18 * s));
         ctx.fillStyle = accent;
         ctx.fillRect(miniX, miniY, Math.max(1, Math.round(3 * s)), Math.max(1, Math.round(11 * s)));
+        ctx.restore();
+    }
+
+    // 3.6 — hover lore: cargo label above the hovered ship carrying the commit subject.
+    _drawHoverCargoLabel(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
+        const subject = cleanCommitSubject(ship.label || '');
+        const label = shortGitLabel(subject || `commit ${commitPennantLabel(ship)}`, 36, '…');
+        if (!label) return;
+        const s = 1 / Math.max(1, zoom || 1);
+        const lift = Math.max(0, Number(shipClass.labelLift || 0));
+        const textSize = Math.max(8, Math.round(9 * s));
+        const height = Math.round(17 * s);
+        const width = Math.round(Math.max(54 * s, label.length * textSize * 0.62 + 26 * s));
+        const x = Math.round(ship.x - width / 2);
+        const y = Math.round(ship.y - (56 + lift) * s);
+        ctx.save();
+        ctx.globalAlpha = Math.min(1, 0.96 * alpha);
+        ctx.fillStyle = profile.panel || 'rgba(24, 42, 39, 0.92)';
+        ctx.fillRect(x, y, width, height);
+        ctx.strokeStyle = profile.accent;
+        ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
+        this._drawRepoLabelIcon(ctx, x + 9 * s, y + height / 2, 6 * s, profile);
+        ctx.fillStyle = profile.labelText || profile.accent;
+        ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        this._fillReadableText(ctx, label, Math.round(x + 17 * s), Math.round(y + height / 2 + 0.5), Math.max(12, width - 22 * s));
+        // Short stem tying the cargo label to its ship.
+        ctx.fillStyle = profile.accent;
+        ctx.fillRect(Math.round(ship.x - s), y + height, Math.max(1, Math.round(2 * s)), Math.round(6 * s));
         ctx.restore();
     }
 

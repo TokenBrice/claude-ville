@@ -26,6 +26,16 @@ export class Camera {
         // Follow mechanism
         this.followTarget = null;      // AgentSprite reference
         this.followSmoothing = 0.08;   // lerp factor (lower is smoother)
+        this._followEase = null;       // timed ease-out glide when follow starts
+        this._snapZoom = null;         // zoom-in animation on far-zoom selection
+
+        // Drag momentum (world px/ms, decays after release)
+        this._momentum = null;
+        this._dragVelX = 0;
+        this._dragVelY = 0;
+        this._lastDragX = 0;
+        this._lastDragY = 0;
+        this._lastDragTime = 0;
 
         this._onMouseDown = this._onMouseDown.bind(this);
         this._onMouseMove = this._onMouseMove.bind(this);
@@ -65,16 +75,36 @@ export class Camera {
     }
 
     followAgent(sprite) {
+        if (this.followTarget === sprite) return;
         this.followTarget = sprite;
+        this._momentum = null;
+        const farZoomedOut = this.zoom < 1.5;
+        if (this._reducedMotion) {
+            if (farZoomedOut) this._setZoomAboutCenter(2);
+            return;
+        }
+        this._followEase = { fromX: this.x, fromY: this.y, elapsed: 0, duration: 650 };
+        if (farZoomedOut) {
+            this._zoomAnimation = null;
+            this._snapZoom = { fromZoom: this.zoom, toZoom: 2, elapsed: 0, duration: 380 };
+        }
     }
 
     stopFollow() {
         this.followTarget = null;
+        this._followEase = null;
+        this._snapZoom = null;
+        this._momentum = null;
     }
 
     setReducedMotion(enabled) {
         this._reducedMotion = Boolean(enabled);
-        if (this._reducedMotion) this._zoomAnimation = null;
+        if (this._reducedMotion) {
+            this._zoomAnimation = null;
+            this._snapZoom = null;
+            this._momentum = null;
+            this._followEase = null;
+        }
     }
 
     updateFollow(dt = 16) {
@@ -82,13 +112,33 @@ export class Camera {
         const focus = this._followFocusPoint(dt);
         const targetX = -focus.x + this._viewportWidth() / (2 * this.zoom);
         const targetY = -focus.y + this._viewportHeight() / (2 * this.zoom);
-        const smoothing = this._reducedMotion ? 1 : this.followSmoothing;
-        this.x += (targetX - this.x) * smoothing;
-        this.y += (targetY - this.y) * smoothing;
+        if (this._reducedMotion) {
+            this.x = targetX;
+            this.y = targetY;
+            this._clampToBounds();
+            return;
+        }
+        if (this._followEase) {
+            // Timed glide: covers the initial distance in a fixed duration
+            // with cubic ease-out, then hands off to the steady lerp.
+            const ease = this._followEase;
+            ease.elapsed += dt;
+            const t = Math.min(1, ease.elapsed / ease.duration);
+            const eased = 1 - Math.pow(1 - t, 3);
+            this.x = ease.fromX + (targetX - ease.fromX) * eased;
+            this.y = ease.fromY + (targetY - ease.fromY) * eased;
+            if (t >= 1) this._followEase = null;
+            this._clampToBounds();
+            return;
+        }
+        this.x += (targetX - this.x) * this.followSmoothing;
+        this.y += (targetY - this.y) * this.followSmoothing;
         this._clampToBounds();
     }
 
     update(dt = 16) {
+        this._updateMomentum(dt);
+        this._updateSnapZoom(dt);
         if (!this._zoomAnimation) return;
         const anim = this._zoomAnimation;
         anim.elapsed += dt;
@@ -113,6 +163,13 @@ export class Camera {
         this.dragStartY = e.clientY;
         this.camStartX = this.x;
         this.camStartY = this.y;
+        this._momentum = null;
+        this._snapZoom = null;
+        this._dragVelX = 0;
+        this._dragVelY = 0;
+        this._lastDragX = e.clientX;
+        this._lastDragY = e.clientY;
+        this._lastDragTime = performance.now();
         this.canvas.style.cursor = 'grabbing';
         // Stop following when dragging starts
         if (this.followTarget) this.stopFollow();
@@ -124,16 +181,40 @@ export class Camera {
         const dy = (e.clientY - this.dragStartY) / this.zoom;
         this.x = this.camStartX + dx;
         this.y = this.camStartY + dy;
+        const now = performance.now();
+        const elapsed = now - this._lastDragTime;
+        if (elapsed > 0) {
+            // Exponentially smoothed screen-space velocity (px/ms).
+            const vx = (e.clientX - this._lastDragX) / elapsed;
+            const vy = (e.clientY - this._lastDragY) / elapsed;
+            this._dragVelX = this._dragVelX * 0.6 + vx * 0.4;
+            this._dragVelY = this._dragVelY * 0.6 + vy * 0.4;
+            this._lastDragX = e.clientX;
+            this._lastDragY = e.clientY;
+            this._lastDragTime = now;
+        }
         this._clampToBounds();
     }
 
     _onMouseUp() {
+        if (!this.dragging) return;
         this.dragging = false;
         this.canvas.style.cursor = 'grab';
+        if (this._reducedMotion) return;
+        // No fling if the pointer rested before release.
+        if (performance.now() - this._lastDragTime > 80) return;
+        const speed = Math.hypot(this._dragVelX, this._dragVelY);
+        if (speed < 0.05) return;
+        this._momentum = {
+            vx: this._dragVelX / this.zoom,
+            vy: this._dragVelY / this.zoom,
+        };
     }
 
     _onWheel(e) {
         e.preventDefault();
+        this._momentum = null;
+        this._snapZoom = null;
         const rect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
@@ -258,6 +339,47 @@ export class Camera {
         const clampedY = Math.max(minY, Math.min(maxY, centerWorldY));
         this.x = w / (2 * this.zoom) - clampedX;
         this.y = h / (2 * this.zoom) - clampedY;
+    }
+
+    _updateMomentum(dt) {
+        if (!this._momentum || this.dragging) return;
+        const momentum = this._momentum;
+        this.x += momentum.vx * dt;
+        this.y += momentum.vy * dt;
+        const beforeX = this.x;
+        const beforeY = this.y;
+        this._clampToBounds();
+        // Kill the velocity component absorbed by the world bounds.
+        if (Math.abs(this.x - beforeX) > 0.5) momentum.vx = 0;
+        if (Math.abs(this.y - beforeY) > 0.5) momentum.vy = 0;
+        const decay = Math.exp(-dt / 320);
+        momentum.vx *= decay;
+        momentum.vy *= decay;
+        if (Math.hypot(momentum.vx, momentum.vy) < 0.01) this._momentum = null;
+    }
+
+    _updateSnapZoom(dt) {
+        if (!this._snapZoom) return;
+        const anim = this._snapZoom;
+        anim.elapsed += dt;
+        const t = Math.min(1, anim.elapsed / anim.duration);
+        const eased = 1 - Math.pow(1 - t, 3);
+        this._setZoomAboutCenter(anim.fromZoom + (anim.toZoom - anim.fromZoom) * eased);
+        if (t >= 1) {
+            this._setZoomAboutCenter(anim.toZoom);
+            this._snapZoom = null;
+        }
+    }
+
+    _setZoomAboutCenter(zoom) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        const centerWorldX = w / (2 * this.zoom) - this.x;
+        const centerWorldY = h / (2 * this.zoom) - this.y;
+        this.zoom = zoom;
+        this.x = w / (2 * zoom) - centerWorldX;
+        this.y = h / (2 * zoom) - centerWorldY;
+        this._clampToBounds();
     }
 
     _followFocusPoint(dt = 16) {

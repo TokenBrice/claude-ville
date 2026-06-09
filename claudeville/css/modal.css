@@ -30,13 +30,13 @@
 
 .modal__title {
     font-size: 12px;
-    color: #e8d44d;
+    color: var(--cv-yellow);
     letter-spacing: 1px;
 }
 
 .modal__close {
     font-size: 11px;
-    color: #8b8b9e;
+    color: var(--cv-text-gray);
     padding: 4px 8px;
     border: 1px solid rgba(139, 139, 158, 0.3);
     border-radius: 3px;
@@ -44,15 +44,15 @@
 }
 
 .modal__close:hover {
-    color: #ef4444;
-    border-color: #ef4444;
+    color: var(--cv-status-errored);
+    border-color: var(--cv-status-errored);
 }
 
 .modal__content {
     padding: 16px;
     overflow-y: auto;
     font-size: 11px;
-    color: #8b8b9e;
+    color: var(--cv-text-gray);
     line-height: 1.8;
 }
 
@@ -81,17 +81,17 @@
 }
 
 .toast--info {
-    color: #60a5fa;
+    color: var(--cv-status-idle);
     border-color: rgba(96, 165, 250, 0.4);
 }
 
 .toast--success {
-    color: #4ade80;
+    color: var(--cv-status-working);
     border-color: rgba(74, 222, 128, 0.4);
 }
 
 .toast--warning {
-    color: #f97316;
+    color: var(--cv-status-waiting);
     border-color: rgba(249, 115, 22, 0.4);
 }
 

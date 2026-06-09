@@ -11,7 +11,7 @@ const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { trimCache } = require('./shared');
+const { getJsonlDiagnostics, trimCache } = require('./shared');
 const { decorateSessionPresentation } = require('./sessionPresentation');
 const {
   getGitEnrichmentPerfStats,
@@ -41,7 +41,9 @@ const SYNTHETIC_PROVIDERS = Object.freeze([
     detailReason: 'Synthetic repository git sessions do not have provider transcript details.',
   },
 ]);
-const SESSION_LIST_CACHE_TTL_MS = 5000;
+// Aligned with the server's 2s BROADCAST_POLL_INTERVAL so interval broadcasts
+// never serve a list staler than one poll tick.
+const SESSION_LIST_CACHE_TTL_MS = 2000;
 const SESSION_DETAIL_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_MAX_CACHE = 256;
 const REPOSITORY_SCAN_CACHE_TTL_MS = 5000;
@@ -86,6 +88,8 @@ function normalizeSession(session, context = {}) {
     reasoningEffort: session?.reasoningEffort ?? null,
     workflowId: session?.workflowId ?? null,
     workflowName: session?.workflowName ?? null,
+    permissionMode: session?.permissionMode ?? null,
+    sendMessages: Array.isArray(session?.sendMessages) ? session.sendMessages : [],
     gitEvents: Array.isArray(session?.gitEvents) ? session.gitEvents : [],
   });
 }
@@ -379,6 +383,7 @@ module.exports = {
   getActiveProviders,
   getAdapterPerfStats,
   getGitEnrichmentPerfStats,
+  getJsonlDiagnostics,
   isKnownSessionDetailProvider,
   invalidateSessionCaches,
   normalizeDetail,

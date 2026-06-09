@@ -1,5 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { drawCouncilRings, drawFamilyTethers, drawTalkArcs } from './CouncilRing.js';
+import { drawCrowdClusterAuras, drawCrowdClusterBadges } from './CrowdClusterOverlay.js';
 import {
     appendDepthSortedDrawables,
     cullDepthSortedDrawables,
@@ -19,6 +20,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     const atmosphere = renderer.atmosphereState.update({
         now: new Date(renderNow),
         motionScale: renderer.motionScale,
+        // 2.2 — village mood nudges the weather (error spikes raise
+        // storminess, push streaks clear the skies). Stateless per-frame read.
+        eventInfluence: renderer.moodService?.getWeatherInfluence?.(renderNow) ?? null,
     });
     renderer._lastAtmosphere = atmosphere;
     const wx = atmosphere?.weather;
@@ -76,10 +80,17 @@ export function renderWorldFrame(renderer, dt = 16) {
         motionScale: renderer.motionScale,
         lighting: atmosphere?.lighting,
     });
+    drawCrowdClusterAuras(ctx, {
+        crowdStats: renderer._crowdStats,
+        zoom: renderer.camera.zoom,
+        lighting: atmosphere?.lighting,
+    });
     markFrameTiming(frameTimer, 'prelayers');
 
     const buildingDrawables = renderer.buildingRenderer?.enumerateDrawables() ?? [];
     const sortedSprites = renderer._snapshotSortedSprites();
+    const agentLighting = atmosphere?.lighting || null;
+    for (const sprite of sortedSprites) sprite.setLightingState?.(agentLighting);
     const propDrawables = renderer._enumeratePropDrawables();
     const harborDrawables = renderer.harborTraffic?.enumerateDrawables() ?? [];
     const harborPendingRepos = renderer.harborTraffic?.getPendingRepoSummaries?.() ?? [];
@@ -128,6 +139,10 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         motionScale: renderer.motionScale,
         lighting: atmosphere?.lighting,
+    });
+    drawCrowdClusterBadges(ctx, {
+        crowdStats: renderer._crowdStats,
+        zoom,
     });
     renderer.arrivalDeparture?.draw?.(ctx, {
         zoom,
@@ -245,11 +260,12 @@ function drawSelectedAgentXray(renderer, ctx, buildingDrawables) {
 }
 
 function drawDebugOverlay(renderer, ctx, atmosphere, viewport) {
-    if (!renderer.debugOverlay?.enabled) return;
-    const visitIntentDebug = renderer.visitIntentManager?.debugSnapshot?.() || null;
-    const visitReservationDebug = renderer.visitTileAllocator?.debug?.() || null;
+    const overlay = renderer.debugOverlay;
+    if (!overlay?.enabled && !overlay?.pathDebugEnabled) return;
+    const visitIntentDebug = overlay.enabled ? (renderer.visitIntentManager?.debugSnapshot?.() || null) : null;
+    const visitReservationDebug = overlay.enabled ? (renderer.visitTileAllocator?.debug?.() || null) : null;
     renderer.camera.applyTransform(ctx);
-    renderer.debugOverlay.draw(ctx, {
+    overlay.draw(ctx, {
         walkabilityGrid: renderer.walkabilityGrid,
         bridgeTiles: renderer.bridgeTiles,
         agentSprites: renderer.agentSprites,
@@ -260,7 +276,9 @@ function drawDebugOverlay(renderer, ctx, atmosphere, viewport) {
         visitIntents: visitIntentDebug,
         visitReservations: visitReservationDebug,
     });
+    overlay.drawPathDebug(ctx, { agentSprites: renderer.agentSprites });
     renderer._resetScreenTransform(ctx);
+    if (!overlay.enabled) return;
     renderer._drawAtmosphereDebug(ctx, atmosphere);
     renderer.debugOverlay.drawScreen(ctx, {
         visitIntents: visitIntentDebug,

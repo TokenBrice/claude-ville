@@ -5,7 +5,7 @@
  *   A) ~/.claude/.credentials.json → subscriptionType, rateLimitTier
  *   B) ~/.claude/stats-cache.json → daily activity (messageCount, sessionCount, toolCallCount)
  *   C) claude auth status (once at server startup) → email
- *   D) api.anthropic.com/api/oauth/usage → 5h/7d quota (currently unavailable; retry periodically)
+ *   D) api.anthropic.com/api/oauth/usage → 5h/7d quota utilization (refreshed every QUOTA_API_TTL)
  */
 
 const fs = require('fs');
@@ -215,7 +215,18 @@ function readHistoryLive() {
   }
 }
 
-// ─── Quota API (currently unavailable; enable later) ────────────────────
+// ─── Quota API ──────────────────────────────────────────────────
+
+/**
+ * Convert one quota window from the OAuth usage response into a 0-1 ratio.
+ * The API reports `utilization` as a 0-100 percentage; all frontend and
+ * widget consumers expect a 0-1 ratio.
+ */
+function quotaRatio(window) {
+  const utilization = Number(window?.utilization);
+  if (!Number.isFinite(utilization)) return null;
+  return Math.min(1, Math.max(0, utilization / 100));
+}
 
 function tryFetchQuota() {
   const now = Date.now();
@@ -245,16 +256,19 @@ function tryFetchQuota() {
     res.on('end', () => {
       if (res.statusCode === 200) {
         try {
+          // Response shape: { five_hour: { utilization, resets_at },
+          //                   seven_day: { utilization, resets_at }, ... }
           const data = JSON.parse(body);
-          cache.quota.data = {
-            fiveHour: data.fiveHourPercent ?? data.five_hour_percent ?? null,
-            sevenDay: data.sevenDayPercent ?? data.seven_day_percent ?? null,
-          };
+          const fiveHour = quotaRatio(data.five_hour);
+          const sevenDay = quotaRatio(data.seven_day);
+          if (fiveHour === null && sevenDay === null) return;
+          cache.quota.data = { fiveHour, sevenDay };
+          if (!cache.quota.available) console.log('[Usage] Quota API available');
           cache.quota.available = true;
-          console.log('[Usage] Quota API enabled!');
-        } catch { /* parse failed */ }
+        } catch { /* parse failed; retry on the next cycle */ }
       }
-      // Ignore failures silently and retry on the next cycle.
+      // On non-200 (expired token, upstream outage) keep the last good
+      // snapshot, if any, and retry after QUOTA_API_TTL.
     });
   });
 

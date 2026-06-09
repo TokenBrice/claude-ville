@@ -100,6 +100,19 @@ function occupiedBuildingTiles(building) {
     return tiles;
 }
 
+// Short narrative line per monument kind, for detail overlays/tooltips.
+const LORE_BY_KIND = {
+    feature: (label, repo) => `Raised when "${label}" came to ${repo}.`,
+    fix: (label, repo) => `Marks the mending of "${label}" in ${repo}.`,
+    performance: (label, repo) => `Honors the quickening of ${repo}: "${label}".`,
+    release: (label, repo) => `Commemorates the launch of ${label} from the ${repo} harbor.`,
+};
+
+function monumentLore(kind, label, repoName) {
+    const template = LORE_BY_KIND[kind];
+    return template ? template(textOf(label) || kind, repoName) : '';
+}
+
 function isTokenEvent(event) {
     const type = textOf(event?.type).toLowerCase();
     const kind = textOf(event?.kind).toLowerCase();
@@ -177,6 +190,7 @@ export class MonumentRules {
             district: normalizeDistrict(result.district),
             weight: result.weight,
             label: result.label,
+            lore: monumentLore(result.kind, result.label, projectName(project)),
             project,
             repoName: projectName(project),
             plantedAt: eventTs(event, now),

@@ -9,10 +9,12 @@ const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = requi
 const {
   createDetailResponse,
   parseJsonLines,
+  readByteRangeText,
   readJsonLines: readSharedJsonLines,
   readTailLines,
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
+  tailGuard,
   trimCache,
 } = require('./shared');
 
@@ -26,6 +28,13 @@ const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 64 * 1024 * 1024;
 const MAX_HEAD_BYTES = 512 * 1024;
 const SESSION_ENTRY_CACHE_MAX = 256;
+const SEND_MESSAGE_MAX_EDGES = 10;
+const SEND_MESSAGE_RECIPIENT_FIELDS = Object.freeze([
+  'recipient',
+  'to',
+  'recipient_name',
+  'recipientName',
+]);
 const AGENT_LAUNCH_CACHE_MAX = 128;
 const TOKEN_USAGE_CACHE_MAX = 128;
 const CLAUDE_TOOL_INPUT_FIELDS = Object.freeze([
@@ -74,6 +83,7 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
     headMaxBytes: MAX_HEAD_BYTES,
     tailChunkBytes: TAIL_CHUNK_BYTES,
     tailMaxBytes: MAX_TAIL_BYTES,
+    source: 'claude',
   });
 }
 
@@ -210,9 +220,58 @@ function getFullSessionEntries(filePath) {
     return cached.entries;
   }
 
-  const raw = fs.readFileSync(filePath, 'utf-8');
-  const entries = parseJsonLines(raw ? raw.split('\n') : []);
-  _tokenUsageCache.set(filePath, { key: cacheKey, entries, usage: null });
+  // Incremental append read: when the file only grew, parse just the new bytes
+  // and carry over the previous partial trailing line.
+  let lineEntries = null;
+  let pending = '';
+  let size = 0;
+  let guard = null;
+  if (cached && cached.ino === (stat.ino || 0) && stat.size > cached.size) {
+    try {
+      // Re-read the guard window just before the cached offset; a mismatch
+      // means the prefix was rewritten in place, so take the full read below.
+      const cachedGuard = Buffer.isBuffer(cached.guard) ? cached.guard : Buffer.alloc(0);
+      const window = readByteRangeText(
+        filePath,
+        cached.size - cachedGuard.length,
+        cachedGuard.length + (stat.size - cached.size)
+      );
+      const prefixIntact = window.bytesRead >= cachedGuard.length
+        && window.buffer.subarray(0, cachedGuard.length).equals(cachedGuard);
+      if (prefixIntact && window.bytesRead > cachedGuard.length) {
+        const appendedBuffer = window.buffer.subarray(cachedGuard.length);
+        const parts = (cached.pending + appendedBuffer.toString('utf-8')).split('\n');
+        pending = parts.pop();
+        lineEntries = cached.lineEntries.concat(parseJsonLines(parts, { source: 'claude', file: filePath }));
+        size = cached.size + appendedBuffer.length;
+        guard = tailGuard(Buffer.concat([cachedGuard, appendedBuffer]));
+      }
+    } catch { /* fall back to a full read below */ }
+  }
+
+  if (!lineEntries) {
+    const raw = fs.readFileSync(filePath);
+    size = raw.length;
+    guard = tailGuard(raw);
+    const parts = raw.length ? raw.toString('utf-8').split('\n') : [];
+    pending = parts.length ? parts.pop() : '';
+    lineEntries = parseJsonLines(parts, { source: 'claude', file: filePath });
+  }
+
+  // A complete final line without a trailing newline still counts as an entry,
+  // but stays in `pending` so a later append can re-read it safely.
+  const pendingEntries = parseJsonLines([pending], { source: 'claude', file: filePath });
+  const entries = pendingEntries.length ? lineEntries.concat(pendingEntries) : lineEntries;
+  _tokenUsageCache.set(filePath, {
+    key: cacheKey,
+    ino: stat.ino || 0,
+    size,
+    guard,
+    pending,
+    lineEntries,
+    entries,
+    usage: null,
+  });
   trimCache(_tokenUsageCache, TOKEN_USAGE_CACHE_MAX);
   return entries;
 }
@@ -263,7 +322,7 @@ function getAgentLaunches(sessionFilePath) {
 
     const launches = [];
     const raw = fs.readFileSync(sessionFilePath, 'utf-8');
-    const entries = parseJsonLines(raw ? raw.split('\n') : []);
+    const entries = parseJsonLines(raw ? raw.split('\n') : [], { source: 'claude', file: sessionFilePath });
 
     for (const entry of entries) {
       const msg = entry.message;
@@ -427,6 +486,62 @@ function getTokenUsage(sessionFilePath) {
     return usage;
   } catch { /* ignore */ }
   return emptyUsage;
+}
+
+// Latest plan/act permission mode for a session. Transcripts carry sparse
+// `permissionMode` markers ('default' | 'plan' | 'acceptEdits' |
+// 'bypassPermissions') on user prompt entries and dedicated
+// `type: 'permission-mode'` lines emitted on mode changes, so the newest
+// marker in the cached tail window is the current mode. Best effort: null
+// when no marker is inside the window.
+function getPermissionMode(sessionFilePath) {
+  try {
+    const entries = getSessionEntries(sessionFilePath);
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const mode = entries[i].permissionMode;
+      if (typeof mode === 'string' && mode) return mode;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+function readSendMessageRecipient(input) {
+  for (const field of SEND_MESSAGE_RECIPIENT_FIELDS) {
+    const value = input?.[field];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+// Sender→recipient edges from SendMessage tool calls. The sender is the
+// session carrying the edge; `recipient` is the raw alias from the tool
+// input (team agent name), left unresolved so consumers can match it
+// against agentName/name/agentId. Edges without a resolvable recipient
+// (e.g. shutdown_response replies keyed by request_id) are skipped.
+function getSendMessageEdges(sessionFilePath, maxItems = SEND_MESSAGE_MAX_EDGES) {
+  const edges = [];
+  try {
+    const entries = getSessionEntries(sessionFilePath);
+
+    for (const entry of entries) {
+      const msg = entry.message;
+      if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
+
+      for (const block of msg.content) {
+        if (block.type !== 'tool_use' || block.name !== 'SendMessage' || !block.input) continue;
+        const recipient = readSendMessageRecipient(block.input);
+        if (!recipient) continue;
+        const summary = typeof block.input.summary === 'string' ? block.input.summary.trim() : '';
+        edges.push({
+          recipient,
+          messageType: typeof block.input.type === 'string' && block.input.type ? block.input.type : 'message',
+          summary: summary ? summary.substring(0, 80) : null,
+          ts: entry.timestamp || 0,
+        });
+      }
+    }
+  } catch { /* ignore */ }
+  return edges.slice(-maxItems);
 }
 
 function getGitEvents(sessionFilePath, context) {
@@ -596,6 +711,8 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
     lastTool: detail.lastTool,
     lastToolInput: detail.lastToolInput,
     tokenUsage: getTokenUsage(filePath),
+    permissionMode: getPermissionMode(filePath),
+    sendMessages: getSendMessageEdges(filePath),
     gitEvents: getGitEvents(filePath, { provider: 'claude', sessionId, project: decodedProject }),
     parentSessionId,
     workflowId,
@@ -616,7 +733,7 @@ class ClaudeAdapter {
 
   getActiveSessions(activeThresholdMs) {
     const lines = readLastLines(HISTORY_FILE, 1000);
-    const entries = parseJsonLines(lines);
+    const entries = parseJsonLines(lines, { source: 'claude', file: HISTORY_FILE });
     const now = Date.now();
     const sessionsMap = new Map();
     const projectPathMap = new Map(); // Encoded directory name to real path
@@ -683,6 +800,8 @@ class ClaudeAdapter {
         lastToolInput: detail.lastToolInput,
         lastMessage: detail.lastMessage || session.lastMessage,
         tokenUsage: sessionFilePath ? getTokenUsage(sessionFilePath) : null,
+        permissionMode: sessionFilePath ? getPermissionMode(sessionFilePath) : null,
+        sendMessages: sessionFilePath ? getSendMessageEdges(sessionFilePath) : [],
         gitEvents: sessionFilePath ? getGitEvents(sessionFilePath, {
           provider: 'claude',
           sessionId: session.sessionId,
@@ -866,6 +985,8 @@ class ClaudeAdapter {
             lastTool: detail.lastTool,
             lastToolInput: detail.lastToolInput,
             tokenUsage: getTokenUsage(filePath),
+            permissionMode: getPermissionMode(filePath),
+            sendMessages: getSendMessageEdges(filePath),
             gitEvents: getGitEvents(filePath, {
               provider: 'claude',
               sessionId,

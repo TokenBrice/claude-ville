@@ -29,6 +29,8 @@ Cards show:
 - Normalized status (`active` becomes `working`).
 - Current tool name/input, recent message, and fetched tool history.
 - Model visual identity from `shared/ModelVisualIdentity.js`.
+- Detail-fetch lifecycle states: a `data-loading` skeleton until the first detail result, an explicit "Session details unavailable" error when a fetch pass returns nothing and no history is cached, and a STALE badge when rendered detail data is older than the `SessionDetailsService` cache TTL.
+- A hover-revealed copy button in the header copies the agent/session id to the clipboard and confirms via the shared `Toast` service (passed in by `App.js`).
 
 Clicking a card emits `agent:selected`, the same event used by the sidebar and World mode. The right activity panel owns deselection/close behavior.
 

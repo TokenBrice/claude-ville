@@ -35,14 +35,14 @@
 
 .sidebar__title {
     font-size: 10px;
-    color: #f2d36b;
+    color: var(--cv-gold);
     letter-spacing: 2px;
     text-shadow: 1px 1px 0 #4b2b19;
 }
 
 .sidebar__count {
     font-size: 9px;
-    color: #d7b979;
+    color: var(--cv-gold-soft);
     background: rgba(57, 37, 24, 0.88);
     border: 1px solid rgba(199, 157, 76, 0.32);
     padding: 2px 8px;
@@ -56,7 +56,7 @@
     border-radius: 2px;
     background:
         linear-gradient(180deg, rgba(74, 50, 29, 0.94), rgba(24, 17, 13, 0.94));
-    color: #ffe58d;
+    color: var(--cv-gold-bright);
     font-size: 13px;
     line-height: 1;
     cursor: pointer;
@@ -129,7 +129,7 @@
 .sidebar__agent--selected {
     background:
         linear-gradient(90deg, rgba(246, 218, 130, 0.18), rgba(92, 57, 27, 0.34));
-    border-left-color: #f6da82;
+    border-left-color: var(--cv-gold-warm);
     box-shadow:
         inset 0 0 0 1px rgba(214, 169, 81, 0.18),
         inset 16px 0 24px rgba(246, 218, 130, 0.06);
@@ -143,36 +143,36 @@
 }
 
 .sidebar__agent-dot--working {
-    background: #4ade80;
+    background: var(--cv-status-working);
     box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
     animation: sidebar-pulse-dot 1.5s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--idle {
-    background: #60a5fa;
+    background: var(--cv-status-idle);
     box-shadow: 0 0 4px rgba(96, 165, 250, 0.3);
 }
 
 .sidebar__agent-dot--waiting {
-    background: #f97316;
+    background: var(--cv-status-waiting);
     box-shadow: 0 0 4px rgba(249, 115, 22, 0.3);
     animation: sidebar-pulse-dot 2s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--rate_limited {
-    background: #f59e0b;
+    background: var(--cv-status-rate-limited);
     box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
     animation: sidebar-pulse-dot 2.4s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--errored {
-    background: #ef4444;
+    background: var(--cv-status-errored);
     box-shadow: 0 0 8px rgba(239, 68, 68, 0.55);
     animation: sidebar-pulse-dot 1.2s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--waiting_on_user {
-    background: #facc15;
+    background: var(--cv-status-waiting-user);
     box-shadow: 0 0 6px rgba(250, 204, 21, 0.5);
     animation: sidebar-pulse-dot 1.6s ease-in-out infinite;
 }
@@ -189,7 +189,7 @@
 
 .sidebar__agent-name {
     font-size: 9px;
-    color: #f2d36b;
+    color: var(--cv-gold);
     display: block;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -198,7 +198,7 @@
 
 .sidebar__agent-model {
     font-size: 7px;
-    color: #a89476;
+    color: var(--cv-text-muted);
     display: block;
     margin-top: 2px;
     overflow: hidden;
@@ -280,7 +280,7 @@
 
 .sidebar__project-count {
     font-size: 7px;
-    color: #d7b979;
+    color: var(--cv-gold-soft);
     background: rgba(57, 37, 24, 0.68);
     border: 1px solid rgba(199, 157, 76, 0.2);
     padding: 1px 6px;
@@ -337,7 +337,7 @@
 }
 
 .sidebar__title {
-    color: #ffe58d;
+    color: var(--cv-gold-bright);
     text-shadow: 1px 1px 0 #2d1a12, 0 0 10px rgba(255, 226, 138, 0.18);
 }
 
@@ -378,7 +378,7 @@
 .sidebar__agent--selected {
     background:
         linear-gradient(90deg, rgba(255, 226, 138, 0.22), rgba(92, 57, 27, 0.38) 62%, rgba(20, 13, 11, 0.2));
-    border-left-color: #ffe58d;
+    border-left-color: var(--cv-gold-bright);
     box-shadow:
         inset 0 1px 0 rgba(255, 226, 138, 0.12),
         inset 0 -1px 0 rgba(0, 0, 0, 0.26),

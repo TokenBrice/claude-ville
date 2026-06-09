@@ -8,6 +8,8 @@ const DEFAULT_TOKEN_USAGE = Object.freeze({
   cacheWrite: 0,
   totalInput: 0,
   totalOutput: 0,
+  reasoningTokens: 0,
+  reasoningInOutput: false,
 });
 
 const FIELD_ALIASES = Object.freeze({
@@ -18,6 +20,7 @@ const FIELD_ALIASES = Object.freeze({
   totalInput: ['totalInput', 'total_input', 'total_input_tokens', 'input'],
   totalOutput: ['totalOutput', 'total_output', 'total_output_tokens', 'output'],
   cacheWrite: ['cacheWrite', 'cache_write'],
+  reasoningTokens: ['reasoningTokens', 'reasoning', 'reasoning_tokens', 'reasoning_output_tokens', 'reasoningOutputTokens', 'tokens_reasoning'],
 });
 
 const EFFORT_LABELS = Object.freeze({
@@ -66,6 +69,8 @@ function normalizeTokenUsage(raw = null) {
       cacheWrite: normalizeNumber(raw.cacheWrite ?? raw.cache_create ?? raw.cacheCreate),
       totalInput: normalizeNumber(raw.totalInput ?? raw.input),
       totalOutput: normalizeNumber(raw.totalOutput ?? raw.output),
+      reasoningTokens: normalizeNumber(raw.reasoningTokens ?? raw.reasoning),
+      reasoningInOutput: raw.reasoningInOutput === true,
     };
   }
 
@@ -81,6 +86,8 @@ function normalizeTokenUsage(raw = null) {
     cacheWrite: coerceTokenField(raw, FIELD_ALIASES.cacheWrite) || cacheCreate,
     totalInput: coerceTokenField(raw, FIELD_ALIASES.totalInput) || input,
     totalOutput: coerceTokenField(raw, FIELD_ALIASES.totalOutput) || output,
+    reasoningTokens: coerceTokenField(raw, FIELD_ALIASES.reasoningTokens),
+    reasoningInOutput: raw.reasoningInOutput === true,
   };
 }
 
@@ -115,9 +122,13 @@ function ratesForModel(model, provider) {
 function estimateCost(rawUsage, model, provider) {
   const usage = normalizeTokenUsage(rawUsage);
   const rates = ratesForModel(model, provider);
+  // Reasoning tokens are billed at the output rate. Skip them when the
+  // provider already counts them inside output (e.g. Codex) to avoid
+  // double pricing.
+  const billableReasoning = usage.reasoningInOutput ? 0 : usage.reasoningTokens;
   return (
     usage.input * rates.input +
-    usage.output * rates.output +
+    (usage.output + billableReasoning) * rates.output +
     usage.cacheRead * rates.cacheRead +
     usage.cacheCreate * rates.cacheCreate
   ) / 1000000;

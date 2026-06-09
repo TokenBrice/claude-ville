@@ -62,6 +62,7 @@ function readJsonLines(filePath, { from = 'end', count = 100 } = {}) {
     headMaxBytes: MAX_HEAD_BYTES,
     tailChunkBytes: TAIL_CHUNK_BYTES,
     tailMaxBytes: MAX_TAIL_BYTES,
+    source: 'kimi',
   });
 }
 

@@ -299,15 +299,21 @@ export class ActivityPanel {
 
     _renderToolHistory(tools) {
         const limited = (tools || []).slice(-PANEL_TOOL_LIMIT);
-        const signature = toolHistorySignature(limited, {
+        const baseSignature = toolHistorySignature(limited, {
             limit: PANEL_TOOL_LIMIT,
             detailLength: 45,
         });
+        // Exit codes can arrive after the tool row itself (Codex completion
+        // events), so fold them into the signature to force a re-render.
+        const exitSignature = limited
+            .map(row => (Number.isFinite(Number(row?.toolExitCode)) ? row.toolExitCode : ''))
+            .join(',');
+        const signature = `${baseSignature}|${exitSignature}`;
         if (signature === this._renderSignatures.toolHistory) return;
         this._renderSignatures.toolHistory = signature;
 
         const container = this.dom.panelToolHistory;
-        replaceChildren(container, toolHistoryNodes(limited, {
+        const nodes = toolHistoryNodes(limited, {
             limit: PANEL_TOOL_LIMIT,
             detailLength: 45,
             emptyText: 'No tool usage',
@@ -316,7 +322,35 @@ export class ActivityPanel {
             iconClass: 'activity-panel__tool-item-icon',
             nameClass: 'activity-panel__tool-item-name',
             detailClass: 'activity-panel__tool-item-detail',
-        }));
+        });
+        if (limited.length) {
+            // Nodes mirror `limited` in reverse order (newest first).
+            const reversed = [...limited].reverse();
+            nodes.forEach((node, index) => {
+                const chip = this._toolExitChip(reversed[index]);
+                if (chip) node.appendChild(chip);
+            });
+        }
+        replaceChildren(container, nodes);
+    }
+
+    _toolExitChip(entry) {
+        const exitCode = Number(entry?.toolExitCode);
+        if (!Number.isFinite(exitCode) || exitCode === 0) return null;
+        return el('span', {
+            className: 'activity-panel__tool-item-exit',
+            text: `⚠ exit ${exitCode}`,
+            title: entry?.toolStderr
+                ? truncateText(entry.toolStderr, 200)
+                : `Exit code ${exitCode}`,
+            style: {
+                color: 'var(--cv-status-errored, #e06c5b)',
+                fontSize: '7px',
+                whiteSpace: 'nowrap',
+                flexShrink: '0',
+                marginLeft: 'auto',
+            },
+        });
     }
 
     _renderMessages(messages) {

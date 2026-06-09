@@ -3,7 +3,9 @@ import { Position } from '../value-objects/Position.js';
 import { Appearance } from '../value-objects/Appearance.js';
 import { i18n } from '../../config/i18n.js';
 import { TokenUsage } from '../value-objects/TokenUsage.js';
+import { normalizeMood } from '../value-objects/AgentMood.js';
 import { buildingForTool, compactToolInput, toolActionLabel } from '../services/ToolIdentity.js';
+import { pickLoreLine } from '../../config/loreDialogue.js';
 
 const AGENT_NAMES_EN = [
     'Atlas', 'Nova', 'Cipher', 'Pixel', 'Spark',
@@ -65,6 +67,8 @@ export class Agent {
         this.lastSessionActivity = lastSessionActivity || null;
         this.activityAgeMs = Number.isFinite(Number(activityAgeMs)) ? Number(activityAgeMs) : null;
         this._lastMessage = lastMessage || null;
+        // Telemetry-derived emotion; kept current by application/MoodService.js.
+        this.mood = normalizeMood(null);
         this.appearance = Appearance.fromHash(id);
         this.position = new Position(20 + Math.random() * 10, 20 + Math.random() * 10);
         this.targetPosition = null;
@@ -153,6 +157,15 @@ export class Agent {
      */
     get bubbleText() {
         const CAP = 24;
+        // Occasionally speak village lore instead of the tool label; the
+        // pick is seeded per agent + time bucket, so it stays stable
+        // across frames and returns null outside lore buckets.
+        const lore = pickLoreLine({
+            seedKey: this.id,
+            buildingType: this.lastKnownBuildingType,
+            mood: this.mood?.type,
+        });
+        if (lore) return Agent._truncate(lore, CAP);
         if (this.currentTool) {
             const toolLabel = toolActionLabel(this.currentTool);
             const detail = compactToolInput(this.currentToolInput, 18);

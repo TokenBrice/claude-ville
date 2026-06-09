@@ -538,6 +538,41 @@ function resolveWeather(date, override, { seedOverride = null, timelineMode = 'a
     return resolveWeatherAt(minutesSinceMidnight(date), buildWeatherTimeline(date, seedOverride));
 }
 
+/**
+ * Blend a village event influence (see domain/value-objects/AgentMood.js
+ * `deriveWeatherInfluence`) into resolved weather. Storminess pushes cloud
+ * cover/precipitation/intensity toward rain/storm; clearing pulls them back
+ * toward clear skies. The weather type is only escalated when the influence
+ * is storm-biased and only de-escalated when clearing-biased, so the
+ * timeline's own narrative stays in charge for neutral influences.
+ */
+function applyWeatherEventInfluence(weather, influence) {
+    if (!weather || !influence) return weather;
+    const storminess = clamp(Number(influence.storminess) || 0);
+    const clearing = clamp(Number(influence.clearing) || 0);
+    if (storminess <= 0 && clearing <= 0) return weather;
+
+    const cloudCover = clamp(weather.cloudCover + storminess * 0.45 - clearing * 0.45 * weather.cloudCover);
+    const precipitation = clamp(weather.precipitation + storminess * 0.40 - clearing * 0.55 * weather.precipitation);
+    const intensity = clamp(weather.intensity + storminess * 0.28 - clearing * 0.25 * weather.intensity);
+    const fog = clamp(weather.fog * (1 - clearing * 0.4));
+
+    let type = weather.type;
+    if (storminess > clearing) {
+        if (precipitation > 0.5 && cloudCover > 0.85) type = 'storm';
+        else if (precipitation > 0.18) type = 'rain';
+        else if (cloudCover > 0.74) type = 'overcast';
+        else if (cloudCover > 0.38 && type === 'clear') type = 'partly-cloudy';
+    } else if (clearing > storminess && type !== 'fog') {
+        if (type === 'storm' && (precipitation <= 0.5 || cloudCover <= 0.85)) type = 'rain';
+        if (type === 'rain' && precipitation <= 0.18) type = 'overcast';
+        if (type === 'overcast' && cloudCover <= 0.74) type = 'partly-cloudy';
+        if (type === 'partly-cloudy' && cloudCover <= 0.34) type = 'clear';
+    }
+
+    return { ...weather, type, intensity, cloudCover, precipitation, fog };
+}
+
 function phaseLight(phase, phaseProgress) {
     if (phase === 'day') return 1;
     if (phase === 'dawn') return smoothstep(phaseProgress);
@@ -786,12 +821,16 @@ export function createAtmosphereSnapshot({
     hourOverride = null,
     seedOverride = null,
     timelineMode = 'auto',
+    eventInfluence = null,
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
     const minute = minutesSinceMidnight(effectiveDate);
     const { phase, phaseProgress } = resolvePhase(minute);
     const dayProgress = minute / DAY_MINUTES;
-    const weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode });
+    let weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode });
+    // Explicit overrides (debug helper, scenario metadata) win over the
+    // village event influence.
+    if (!weatherOverride) weather = applyWeatherEventInfluence(weather, eventInfluence);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
@@ -857,7 +896,7 @@ export class AtmosphereState {
         this._installDebugHelper();
     }
 
-    update({ now = null, motionScale = null } = {}) {
+    update({ now = null, motionScale = null, eventInfluence = null } = {}) {
         const baseNow = now
             ? new Date(now.getTime ? now.getTime() : now)
             : this._frozenDate
@@ -870,6 +909,7 @@ export class AtmosphereState {
             hourOverride: this._hourOverride,
             seedOverride: this._seedOverride,
             timelineMode: this._timelineMode,
+            eventInfluence,
         });
         return this._lastSnapshot;
     }

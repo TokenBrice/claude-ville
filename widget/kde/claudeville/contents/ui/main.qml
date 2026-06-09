@@ -23,6 +23,10 @@ PlasmoidItem {
     property int totalTokens: 0
     property real totalCost: 0
     property string activityText: ""
+    property string tierText: ""
+    property bool quotaAvailable: false
+    property int fiveHourPct: 0
+    property int sevenDayPct: 0
 
     toolTipMainText: "ClaudeVille"
     toolTipSubText: online
@@ -240,6 +244,43 @@ PlasmoidItem {
                 }
             }
 
+            RowLayout {
+                Layout.fillWidth: true
+                visible: root.online && root.tierText !== ""
+                spacing: Kirigami.Units.smallSpacing
+
+                Rectangle {
+                    Layout.preferredWidth: tierLabel.implicitWidth + Kirigami.Units.smallSpacing * 2
+                    Layout.preferredHeight: tierLabel.implicitHeight + Kirigami.Units.smallSpacing
+                    radius: Kirigami.Units.smallSpacing
+                    color: Qt.rgba(0.65, 0.55, 0.98, 0.15)
+                    border.color: Qt.rgba(0.65, 0.55, 0.98, 0.42)
+                    border.width: 1
+
+                    PlasmaComponents.Label {
+                        id: tierLabel
+                        anchors.centerIn: parent
+                        text: root.tierText
+                        font.bold: true
+                        color: "#a78bfa"
+                    }
+                }
+
+                QuotaBar {
+                    Layout.fillWidth: true
+                    visible: root.quotaAvailable
+                    label: i18n("5H")
+                    pct: root.fiveHourPct
+                }
+
+                QuotaBar {
+                    Layout.fillWidth: true
+                    visible: root.quotaAvailable
+                    label: i18n("7D")
+                    pct: root.sevenDayPct
+                }
+            }
+
             PlasmaComponents.Label {
                 Layout.fillWidth: true
                 visible: !root.online
@@ -306,6 +347,42 @@ PlasmoidItem {
         }
     }
 
+    component QuotaBar: RowLayout {
+        id: quotaBar
+        property string label: ""
+        property int pct: 0
+        readonly property int clampedPct: Math.max(0, Math.min(100, pct))
+        readonly property color barColor: clampedPct >= 80 ? "#ef4444" : clampedPct >= 50 ? "#eab308" : "#4ade80"
+
+        spacing: Kirigami.Units.smallSpacing
+
+        PlasmaComponents.Label {
+            text: quotaBar.label
+            opacity: 0.7
+        }
+
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: 5
+            radius: 2
+            color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.12)
+
+            Rectangle {
+                anchors.left: parent.left
+                anchors.top: parent.top
+                anchors.bottom: parent.bottom
+                width: parent.width * quotaBar.clampedPct / 100
+                radius: 2
+                color: quotaBar.barColor
+            }
+        }
+
+        PlasmaComponents.Label {
+            text: quotaBar.clampedPct + "%"
+            opacity: 0.7
+        }
+    }
+
     component StatPill: Rectangle {
         property string label: ""
         property string value: ""
@@ -365,6 +442,21 @@ PlasmoidItem {
         return "#60a5fa"
     }
 
+    function formatTier(account) {
+        var rateLimitTier = String(account.rateLimitTier || "")
+        var match = rateLimitTier.match(/max_(\d+x)/)
+        if (match) return "Max " + match[1]
+        var sub = String(account.subscriptionType || "")
+        if (sub) return sub.charAt(0).toUpperCase() + sub.slice(1)
+        return i18n("Free")
+    }
+
+    function quotaPercent(value) {
+        var raw = Math.max(0, Number(value) || 0)
+        var normalized = raw > 1 ? raw / 100 : raw
+        return Math.round(Math.max(0, Math.min(1, normalized)) * 100)
+    }
+
     function compactNumber(value) {
         var n = Number(value || 0)
         if (n >= 1000000) return (n / 1000000).toFixed(1) + "M"
@@ -375,6 +467,7 @@ PlasmoidItem {
     function spriteFrame(spriteId) {
         var frames = {
             "agent.claude.base": [63, 83],
+            "agent.claude.fable": [73, 86],
             "agent.claude.haiku": [35, 78],
             "agent.claude.opus": [46, 67],
             "agent.claude.sonnet": [39, 63],
@@ -382,6 +475,9 @@ PlasmoidItem {
             "agent.codex.gpt53spark": [30, 56],
             "agent.codex.gpt54": [35, 54],
             "agent.codex.gpt55": [44, 92],
+            "agent.deepseek.flash": [24, 51],
+            "agent.deepseek.pro": [38, 60],
+            "agent.deepseek.reasoner": [47, 63],
             "agent.gemini.base": [64, 78],
             "agent.kimi.base": [46, 80]
         }
@@ -403,6 +499,8 @@ PlasmoidItem {
     }
 
     function spriteAccent(spriteId) {
+        if (spriteId.indexOf("fable") !== -1) return "#ffd6f0"
+        if (spriteId.indexOf("deepseek") !== -1) return "#7cf4c8"
         if (spriteId.indexOf("claude") !== -1) return "#f2d36b"
         if (spriteId.indexOf("gemini") !== -1) return "#9ad7ff"
         if (spriteId.indexOf("kimi") !== -1) return "#ff9f7a"
@@ -550,6 +648,13 @@ PlasmoidItem {
         root.activityText = today
             ? i18n("%1 sessions today, %2 messages", Number(today.sessions || 0), Number(today.messages || 0))
             : i18n("%1 sessions", rows.length)
+
+        var account = usageData && usageData.account ? usageData.account : null
+        root.tierText = account ? formatTier(account) : ""
+        var quotaData = usageData && usageData.quotaAvailable === true && usageData.quota ? usageData.quota : null
+        root.quotaAvailable = !!quotaData
+        root.fiveHourPct = quotaData ? quotaPercent(quotaData.fiveHour) : 0
+        root.sevenDayPct = quotaData ? quotaPercent(quotaData.sevenDay) : 0
     }
 
     Component.onCompleted: refresh()

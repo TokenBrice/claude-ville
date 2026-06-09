@@ -17,6 +17,16 @@ const RITUAL_META = {
     watchtower: { kind: 'watchtower-flare', durationMs: 1800, pulseBand: 'slow' },
 };
 
+// Agent-level pose per ritual building: reading for search/lore work,
+// typing for forge edits, thinking for command chat. Consumed by
+// AgentSprite via getAgentPoses(); reduced motion draws static variants.
+const RITUAL_POSE_BY_BUILDING = {
+    archive: 'reading',
+    observatory: 'reading',
+    forge: 'typing',
+    command: 'thinking',
+};
+
 const COMMAND_LIFECYCLE_ACTIONS = {
     spawn: 'summon',
     send_input: 'familiar-send',
@@ -379,6 +389,7 @@ export class RitualConductor {
             label: meta.label || '',
             angle: meta.angle || 0,
             commandLifecycle: meta.commandLifecycle || event.commandLifecycle || null,
+            pose: RITUAL_POSE_BY_BUILDING[building] || null,
             pulseBand: meta.pulseBand || 'static',
             phase: 'pending',
             count: 1,
@@ -407,6 +418,17 @@ export class RitualConductor {
 
     getActiveRitualsForBuilding(type) {
         return this.rituals.filter(ritual => ritual.building === type);
+    }
+
+    // Newest active pose-bearing ritual per agent, keyed by agentId.
+    getAgentPoses() {
+        const poses = new Map();
+        for (const ritual of this.rituals) {
+            if (!ritual.pose || !ritual.agentId) continue;
+            const existing = poses.get(ritual.agentId);
+            if (!existing || ritual.createdAt > existing.createdAt) poses.set(ritual.agentId, ritual);
+        }
+        return poses;
     }
 
     getSnapshot() {

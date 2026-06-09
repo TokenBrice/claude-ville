@@ -13,6 +13,9 @@ import { ModeManager } from '../application/ModeManager.js';
 import { SessionWatcher } from '../application/SessionWatcher.js';
 import { NotificationService } from '../application/NotificationService.js';
 import { AuroraGate } from '../application/AuroraGate.js';
+import { AgentBiographyService } from '../application/AgentBiographyService.js';
+import { MoodService } from '../application/MoodService.js';
+import { RelationshipAffinityService } from '../application/RelationshipAffinityService.js';
 
 import { TopBar } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
@@ -44,6 +47,9 @@ class App {
         this.assets = null;
         this.chronicleStore = null;
         this.auroraGate = null;
+        this.biographyService = null;
+        this.moodService = null;
+        this.affinityService = null;
         this.latestUsage = null;
         this._chroniclePruneInterval = null;
         this._resizeWorldCanvas = null;
@@ -77,6 +83,10 @@ class App {
             this.dataSource = new ClaudeDataSource();
             this.wsClient = new WebSocketClient();
             this.chronicleStore = new ChronicleStore();
+            // 2.1 / 2.4 — persistent biography and pair-affinity accumulation
+            // (ChronicleStore-backed); both listen on agent:* domain events.
+            this.biographyService = new AgentBiographyService({ store: this.chronicleStore }).start();
+            this.affinityService = new RelationshipAffinityService({ store: this.chronicleStore }).start();
             this.auroraGate = new AuroraGate({ store: this.chronicleStore });
             this.chronicleStore.open()
                 .then(() => {
@@ -102,6 +112,9 @@ class App {
             this.agentManager.setUsageGetter(() => this.latestUsage);
             this.modeManager = new ModeManager();
             this.notificationService = new NotificationService(this.toast);
+            // 2.2 — telemetry → mood mapping; keeps Agent.mood current and
+            // aggregates the village weather influence read by World mode.
+            this.moodService = new MoodService().start();
             this._bindChronicleSignals();
 
             // 4-1. Behavior simulator (?sim=1, dev only — overrides session ingestion)
@@ -154,9 +167,11 @@ class App {
                 harborTraffic: () => this.renderer?.harborTraffic || null,
             });
             this._bindAgentFollow();
+            this._bindDeepLink();
             if (this.renderer?.selectedAgent) {
                 emitAgentSelected(this.renderer.selectedAgent);
             }
+            this._applyDeepLink();
 
             // 10. Apply initial i18n
             this._applyI18n();
@@ -202,6 +217,9 @@ class App {
                 assets: this.assets,
                 chronicleStore: this.chronicleStore,
                 modal: this.modal,
+                moodService: this.moodService,
+                biographyService: this.biographyService,
+                affinityService: this.affinityService,
             });
             this.renderer.show(canvas);
             if (this.latestUsage) this.renderer.setQuotaState?.(this.latestUsage);
@@ -234,7 +252,7 @@ class App {
             const module = await import('./dashboard-mode/DashboardRenderer.js');
             if (this._destroyed) return;
             if (module.DashboardRenderer) {
-                this.dashboardRenderer = new module.DashboardRenderer(this.world);
+                this.dashboardRenderer = new module.DashboardRenderer(this.world, { toast: this.toast });
                 console.log('[App] DashboardRenderer loaded');
             }
         } catch (err) {
@@ -256,6 +274,33 @@ class App {
                 this.renderer.selectAgentById(null);
             }
         }));
+    }
+
+    _bindDeepLink() {
+        // Mirror the current agent selection into the URL fragment so links
+        // like /#agent=<id> can be shared.
+        this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
+            if (!agent?.id) return;
+            history.replaceState(null, '', `#agent=${encodeURIComponent(agent.id)}`);
+        }));
+        this._eventUnsubscribers.push(eventBus.on('agent:deselected', () => {
+            if (location.hash.startsWith('#agent=')) {
+                history.replaceState(null, '', location.pathname + location.search);
+            }
+        }));
+    }
+
+    _applyDeepLink() {
+        const match = /^#agent=(.+)$/.exec(location.hash);
+        if (!match) return;
+        let agentId;
+        try {
+            agentId = decodeURIComponent(match[1]);
+        } catch {
+            return;
+        }
+        const agent = this.world?.agents?.get?.(agentId);
+        if (agent) emitAgentSelected(agent);
     }
 
     _bindChronicleSignals() {
@@ -495,6 +540,9 @@ class App {
         this.topBar?.destroy?.();
         this.modal?.destroy?.();
         this.toast?.destroy?.();
+        this.moodService?.stop?.();
+        this.biographyService?.stop?.();
+        this.affinityService?.stop?.();
         this.chronicleStore?.close?.();
 
         if (typeof window !== 'undefined') {
@@ -517,6 +565,9 @@ class App {
         this.toast = null;
         this.chronicleStore = null;
         this.auroraGate = null;
+        this.biographyService = null;
+        this.moodService = null;
+        this.affinityService = null;
         this._perfDebugCanvasBudget = null;
         this._cameraSetHelper = null;
         this._resizeWorldCanvas = null;

@@ -33,6 +33,32 @@ export class World {
         this.buildings.set(building.type, building);
     }
 
+    applyVisitLoads(loadsByType, now = Date.now()) {
+        if (!loadsByType || typeof loadsByType !== 'object') return;
+        const entries = loadsByType instanceof Map
+            ? loadsByType.entries()
+            : Object.entries(loadsByType);
+        for (const [type, entry] of entries) {
+            const building = this.buildings.get(type);
+            if (!building || typeof building.updateVisitLoad !== 'function') continue;
+            const load = Number.isFinite(Number(entry?.load))
+                ? Number(entry.load)
+                : Math.max(Number(entry?.reserved) || 0, Number(entry?.occupied) || 0);
+            const changed = building.updateVisitLoad({
+                load,
+                capacity: entry?.capacity ?? null,
+                now,
+            });
+            if (changed) {
+                eventBus.emit('building:congestion', {
+                    buildingType: building.type,
+                    building,
+                    congestion: { ...building.congestion },
+                });
+            }
+        }
+    }
+
     getStats() {
         let totalTokens = 0;
         let totalCost = 0;

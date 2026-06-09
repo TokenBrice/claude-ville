@@ -133,6 +133,11 @@ class SessionDetailsService {
         }
     }
 
+    detailCacheState(agent) {
+        if (!agent?.id) return null;
+        return this._cacheStateFor(this.getSessionDetailKey(agent));
+    }
+
     getSessionDetailKey(agent) {
         const provider = (agent?.provider || this._defaultProvider);
         const project = agent?.projectPath || '';

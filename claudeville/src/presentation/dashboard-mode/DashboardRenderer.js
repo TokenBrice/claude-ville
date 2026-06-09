@@ -4,8 +4,10 @@ import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { replaceChildren } from '../shared/DomSafe.js';
-import { normalizeStatus, shortenHomePath, shortProjectName } from '../shared/Formatters.js';
+import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
+import { formatCost, formatTokens, normalizeStatus, shortenHomePath, shortProjectName } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentSelected } from '../shared/AgentSelection.js';
+import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import {
     currentToolPresentation,
     groupAgentsByProject,
@@ -22,12 +24,15 @@ const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const DETAIL_FETCH_LIMIT = 48;
 
 export class DashboardRenderer {
-    constructor(world) {
+    constructor(world, { toast = null } = {}) {
         this.world = world;
+        this.toast = toast;
         this.gridEl = document.getElementById('dashboardGrid');
         this.emptyEl = document.getElementById('dashboardEmpty');
+        this._appendEmptyHints();
         this.cards = new Map();
         this.toolHistories = new Map();
+        this.usageFooters = new Map();
         this.toolHistoryRenderSignatures = new Map();
         this._cardRenderSignatures = new Map();
         this._visibleAgentIds = new Set();
@@ -36,6 +41,8 @@ export class DashboardRenderer {
         this._isFetchingDetails = false;
         this._detailFetchGeneration = 0;
         this._sectionEls = new Map(); // projectPath → section element
+        this._pendingAvatarDraws = new Set();
+        this._avatarDrawFrame = null;
         this._observer = this._createVisibilityObserver();
         this.selection = new AgentSelectionMirror({
             notifyOnRepeat: true,
@@ -51,6 +58,7 @@ export class DashboardRenderer {
         };
         this._onAgentRemoved = (agent) => {
             this.toolHistories.delete(agent.id);
+            this.usageFooters.delete(agent.id);
             this.toolHistoryRenderSignatures.delete(agent.id);
             this._cardRenderSignatures.delete(agent.id);
             this._visibleAgentIds.delete(agent.id);
@@ -134,6 +142,7 @@ export class DashboardRenderer {
                 cardEl.remove();
                 this.cards.delete(id);
                 this.toolHistories.delete(id);
+                this.usageFooters.delete(id);
                 this.toolHistoryRenderSignatures.delete(id);
                 this._cardRenderSignatures.delete(id);
                 this._visibleAgentIds.delete(id);
@@ -186,6 +195,11 @@ export class DashboardRenderer {
                 <span class="dashboard__label-icon">#</span>
                 <span class="dashboard__section-name" style="color: ${profile.labelText || profile.accent}"></span>
                 <span class="dashboard__section-path"></span>
+                <span class="dashboard__section-health">
+                    <span class="dashboard__health-stat dashboard__health-stat--errored" style="display: none"></span>
+                    <span class="dashboard__health-stat dashboard__health-stat--working" style="display: none"></span>
+                    <span class="dashboard__health-stat dashboard__health-stat--idle" style="display: none"></span>
+                </span>
                 <span class="dashboard__section-count" style="color: ${profile.labelText || profile.accent}"></span>
             </div>
             <div class="dashboard__section-grid"></div>
@@ -195,6 +209,9 @@ export class DashboardRenderer {
             path: section.querySelector('.dashboard__section-path'),
             count: section.querySelector('.dashboard__section-count'),
             grid: section.querySelector('.dashboard__section-grid'),
+            healthErrored: section.querySelector('.dashboard__health-stat--errored'),
+            healthWorking: section.querySelector('.dashboard__health-stat--working'),
+            healthIdle: section.querySelector('.dashboard__health-stat--idle'),
         };
         return section;
     }
@@ -208,12 +225,43 @@ export class DashboardRenderer {
         // Display shortened path
         const shortPath = projectPath === '_unknown' ? '' : shortenHomePath(projectPath);
         refs.path.textContent = shortPath;
+
+        this._updateSectionHealth(refs, agents);
+    }
+
+    // Health rollup: errored/working/idle counts for the section's agents.
+    _updateSectionHealth(refs, agents) {
+        const counts = { errored: 0, working: 0, idle: 0 };
+        for (const agent of agents) {
+            const status = normalizeStatus(agent.status);
+            if (status === 'errored') counts.errored++;
+            else if (status === 'working') counts.working++;
+            else counts.idle++;
+        }
+        const stats = [
+            [refs.healthErrored, counts.errored, 'errored'],
+            [refs.healthWorking, counts.working, 'working'],
+            [refs.healthIdle, counts.idle, 'idle'],
+        ];
+        for (const [el, count, label] of stats) {
+            if (!el) continue;
+            if (count > 0) {
+                this._setText(el, count);
+                el.title = `${count} ${label}`;
+                this._setStyle(el, 'display', '');
+            } else {
+                this._setStyle(el, 'display', 'none');
+            }
+        }
     }
 
     _createCard(agent) {
         const card = document.createElement('div');
         card.className = `dash-card dash-card--${agent.status}`;
         card.dataset.agentId = agent.id;
+        card.setAttribute('role', 'button');
+        card.setAttribute('tabindex', '0');
+        card.setAttribute('aria-label', `Select agent ${agent.name || agent.id}`);
 
         card.innerHTML = `
             <div class="dash-card__header">
@@ -224,9 +272,12 @@ export class DashboardRenderer {
                         <span class="dash-card__provider-badge"></span>
                         <span class="dash-card__model"></span>
                         <span class="dash-card__workflow-badge"></span>
+                        <span class="dash-card__team-badge" style="display: none"></span>
                         <span class="dash-card__role"></span>
                     </div>
                 </div>
+                <button type="button" class="dash-card__copy-id" title="Copy session ID" aria-label="Copy session ID">⧉</button>
+                <span class="dash-card__stale-badge" style="display: none" title="Showing cached data; latest refresh did not complete">STALE</span>
                 <div class="dash-card__status">
                     <span class="dash-card__status-dot"></span>
                     <span class="dash-card__status-label"></span>
@@ -245,12 +296,19 @@ export class DashboardRenderer {
             <div class="dash-card__tools">
                 <div class="dash-card__tools-title">${i18n.t('toolHistory')}</div>
                 <div class="dash-card__tool-list">
-                    <div class="dash-card__loading">
-                        <span class="dash-card__loading-spinner"></span>Loading...
+                    <div class="dash-card__skeleton" aria-hidden="true">
+                        <span class="dash-card__skeleton-line"></span>
+                        <span class="dash-card__skeleton-line"></span>
+                        <span class="dash-card__skeleton-line"></span>
                     </div>
                 </div>
             </div>
+            <div class="dash-card__usage" style="display: none">
+                <span class="dash-card__usage-tokens"></span>
+                <span class="dash-card__usage-cost"></span>
+            </div>
         `;
+        card.dataset.loading = 'true';
 
         // Avatar canvas
         const avatarContainer = card.querySelector('.dash-card__avatar');
@@ -259,8 +317,22 @@ export class DashboardRenderer {
         card._avatarCanvas = avatarCanvas;
         card._avatarSignature = '';
 
-        // Click to select agent
+        // Copy session ID without triggering card selection
+        const copyBtn = card.querySelector('.dash-card__copy-id');
+        copyBtn.addEventListener('click', (event) => {
+            event.stopPropagation();
+            this._copyAgentId(card.dataset.agentId);
+        });
+        copyBtn.addEventListener('keydown', (event) => event.stopPropagation());
+
+        // Click or Enter/Space to select agent
         card.addEventListener('click', () => {
+            const current = this.world.agents.get(card.dataset.agentId);
+            emitAgentSelected(current);
+        });
+        card.addEventListener('keydown', (event) => {
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
             const current = this.world.agents.get(card.dataset.agentId);
             emitAgentSelected(current);
         });
@@ -269,16 +341,21 @@ export class DashboardRenderer {
             name: card.querySelector('.dash-card__name'),
             model: card.querySelector('.dash-card__model'),
             workflowBadge: card.querySelector('.dash-card__workflow-badge'),
+            teamBadge: card.querySelector('.dash-card__team-badge'),
             role: card.querySelector('.dash-card__role'),
             providerBadge: card.querySelector('.dash-card__provider-badge'),
             status: card.querySelector('.dash-card__status'),
             statusLabel: card.querySelector('.dash-card__status-label'),
+            staleBadge: card.querySelector('.dash-card__stale-badge'),
             currentTool: card.querySelector('.dash-card__current-tool'),
             toolIcon: card.querySelector('.dash-card__tool-icon'),
             toolName: card.querySelector('.dash-card__tool-name'),
             toolDetail: card.querySelector('.dash-card__tool-detail'),
             message: card.querySelector('.dash-card__message'),
             toolList: card.querySelector('.dash-card__tool-list'),
+            usage: card.querySelector('.dash-card__usage'),
+            usageTokens: card.querySelector('.dash-card__usage-tokens'),
+            usageCost: card.querySelector('.dash-card__usage-cost'),
         };
 
         return card;
@@ -297,6 +374,7 @@ export class DashboardRenderer {
             agent.provider || '',
             agent.role || '',
             agent.workflowName || '',
+            agent.teamName || '',
             status,
             agent.currentTool || '',
             agent.currentToolInput || '',
@@ -311,6 +389,7 @@ export class DashboardRenderer {
 
             const nextClass = `dash-card dash-card--${status}`;
             if (cardEl.className !== nextClass) cardEl.className = nextClass;
+            cardEl.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}`);
 
             this._setText(refs.name, agent.name);
             this._setText(refs.model, model.label);
@@ -327,6 +406,18 @@ export class DashboardRenderer {
             } else {
                 this._setStyle(refs.workflowBadge, 'display', 'none');
                 this._setText(refs.role, agent.role || '');
+            }
+
+            if (agent.teamName) {
+                const team = getTeamColor(agent.teamName);
+                this._setText(refs.teamBadge, `⚑ ${shortTeamName(agent.teamName)}`);
+                refs.teamBadge.title = `Team: ${agent.teamName}`;
+                this._setStyle(refs.teamBadge, 'color', team.accent);
+                this._setStyle(refs.teamBadge, 'borderColor', team.glow);
+                this._setStyle(refs.teamBadge, 'background', team.panel);
+                this._setStyle(refs.teamBadge, 'display', '');
+            } else {
+                this._setStyle(refs.teamBadge, 'display', 'none');
             }
 
             const badge = provider.badge;
@@ -355,7 +446,7 @@ export class DashboardRenderer {
         if (cardEl._avatarCanvas && cardEl._avatarSignature !== avatarSignature) {
             cardEl._avatarSignature = avatarSignature;
             cardEl._avatarCanvas.agent = agent;
-            cardEl._avatarCanvas.draw();
+            this._scheduleAvatarDraw(cardEl);
         }
 
         // Render tool history
@@ -363,9 +454,74 @@ export class DashboardRenderer {
         if (history) {
             this._renderToolHistory(cardEl, agent.id, history);
         }
+
+        // Render cost/token footer from the latest fetched detail
+        this._renderUsageFooter(cardEl, this.usageFooters.get(agent.id));
+
+        this._updateStaleBadge(cardEl, agent);
+    }
+
+    // Coalesce avatar redraws into one requestAnimationFrame per render cycle
+    // so detail polling never redraws avatar canvases synchronously.
+    _scheduleAvatarDraw(cardEl) {
+        this._pendingAvatarDraws.add(cardEl);
+        if (this._avatarDrawFrame !== null) return;
+        this._avatarDrawFrame = requestAnimationFrame(() => {
+            this._avatarDrawFrame = null;
+            const pending = this._pendingAvatarDraws;
+            this._pendingAvatarDraws = new Set();
+            for (const el of pending) {
+                if (el.isConnected) el._avatarCanvas?.draw();
+            }
+        });
+    }
+
+    _usageFooterFor(agent, data) {
+        const raw = data.tokenUsage || data.tokens || data.usage;
+        if (!raw) return null;
+        const usage = TokenUsage.normalize(raw);
+        const totalTokens = usage.totalInput + usage.totalOutput;
+        if (totalTokens <= 0) return null;
+        const cost = TokenUsage.estimateCost(usage, agent.model, agent.provider);
+        return {
+            tokens: `${formatTokens(totalTokens)} tokens`,
+            cost: formatCost(cost),
+        };
+    }
+
+    _renderUsageFooter(cardEl, footer) {
+        const refs = cardEl._elements;
+        if (!refs?.usage) return;
+        if (!footer) {
+            this._setStyle(refs.usage, 'display', 'none');
+            return;
+        }
+        this._setText(refs.usageTokens, footer.tokens);
+        this._setText(refs.usageCost, footer.cost);
+        this._setStyle(refs.usage, 'display', '');
+    }
+
+    _renderDetailError(cardEl, agentId) {
+        delete cardEl.dataset.loading;
+        if (this.toolHistoryRenderSignatures.get(agentId) === '__error__') return;
+        this.toolHistoryRenderSignatures.set(agentId, '__error__');
+        const errorEl = document.createElement('div');
+        errorEl.className = 'dash-card__tool-error';
+        errorEl.textContent = '⚠ Session details unavailable';
+        replaceChildren(cardEl._elements.toolList, [errorEl]);
+    }
+
+    _updateStaleBadge(cardEl, agent) {
+        const badge = cardEl._elements?.staleBadge;
+        if (!badge) return;
+        const hasDetail = this.toolHistories.has(agent.id) || this.usageFooters.has(agent.id);
+        const cacheState = hasDetail ? sessionDetailsService.detailCacheState(agent) : null;
+        const isStale = hasDetail && !cacheState?.isFresh;
+        this._setStyle(badge, 'display', isStale ? '' : 'none');
     }
 
     _renderToolHistory(cardEl, agentId, tools) {
+        delete cardEl.dataset.loading;
         const listEl = cardEl._elements.toolList;
         const limited = (tools || []).slice(-DASHBOARD_TOOL_HISTORY_LIMIT);
 
@@ -419,10 +575,23 @@ export class DashboardRenderer {
             if (!this.active || generation !== this._detailFetchGeneration) return;
             for (const agent of candidates) {
                 const data = detailsByAgentId.get(agent.id);
-                if (!data || !data.toolHistory) continue;
-                this.toolHistories.set(agent.id, data.toolHistory.slice(-DASHBOARD_TOOL_HISTORY_LIMIT));
                 const cardEl = this.cards.get(agent.id);
-                if (cardEl) this._renderToolHistory(cardEl, agent.id, data.toolHistory);
+                if (!data) {
+                    // Fetch failed (or detail unavailable) with nothing cached:
+                    // show an explicit error instead of an eternal spinner.
+                    if (cardEl && !this.toolHistories.has(agent.id)) this._renderDetailError(cardEl, agent.id);
+                    if (cardEl) this._updateStaleBadge(cardEl, agent);
+                    continue;
+                }
+                const footer = this._usageFooterFor(agent, data);
+                if (footer) this.usageFooters.set(agent.id, footer);
+                if (cardEl && footer) this._renderUsageFooter(cardEl, footer);
+                const toolHistory = data.toolHistory || [];
+                this.toolHistories.set(agent.id, toolHistory.slice(-DASHBOARD_TOOL_HISTORY_LIMIT));
+                if (cardEl) {
+                    this._renderToolHistory(cardEl, agent.id, toolHistory);
+                    this._updateStaleBadge(cardEl, agent);
+                }
             }
         } finally {
             this._isFetchingDetails = false;
@@ -437,6 +606,7 @@ export class DashboardRenderer {
             this.cards.delete(id);
         }
         this.toolHistories.clear();
+        this.usageFooters.clear();
         this.toolHistoryRenderSignatures.clear();
         this._cardRenderSignatures.clear();
         this._visibleAgentIds.clear();
@@ -488,6 +658,34 @@ export class DashboardRenderer {
         }
     }
 
+    async _copyAgentId(agentId) {
+        if (!agentId) return;
+        try {
+            await navigator.clipboard.writeText(agentId);
+            this.toast?.show('Session ID copied to clipboard', 'success');
+        } catch {
+            this.toast?.show('Could not copy session ID', 'warning');
+        }
+    }
+
+    // Actionable hints appended below the static empty-state copy in index.html.
+    _appendEmptyHints() {
+        if (!this.emptyEl || this.emptyEl.querySelector('.dashboard__empty-hints')) return;
+        const hints = document.createElement('div');
+        hints.className = 'dashboard__empty-hints';
+        const lines = [
+            '▸ Run a CLI agent (claude, codex, gemini, opencode, kimi) in any terminal',
+            '▸ Or press WORLD in the top bar to watch the village view',
+        ];
+        for (const text of lines) {
+            const el = document.createElement('span');
+            el.className = 'dashboard__empty-hint';
+            el.textContent = text;
+            hints.appendChild(el);
+        }
+        this.emptyEl.appendChild(hints);
+    }
+
     _setText(el, value) {
         const next = value == null ? '' : String(value);
         if (el && el.textContent !== next) el.textContent = next;
@@ -499,6 +697,11 @@ export class DashboardRenderer {
 
     destroy() {
         this._stopDetailFetching();
+        if (this._avatarDrawFrame !== null) {
+            cancelAnimationFrame(this._avatarDrawFrame);
+            this._avatarDrawFrame = null;
+        }
+        this._pendingAvatarDraws.clear();
         this._clearAllCardsAndSections();
         this._observer?.disconnect?.();
         this.selection?.destroy?.();

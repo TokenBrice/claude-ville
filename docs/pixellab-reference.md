@@ -82,6 +82,7 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 - Inputs: `description`, `name`, `image_size` (16-128 width/height), `n_directions` (4 or 8), `view`, `outline`, `shading`, `detail`, `mode` (`standard` / `pro`), `proportions`, `template_id` (`mannequin` for humanoid; `bear`/`cat`/`dog`/`horse`/`lion` for quadrupeds), `seed`.
 - Output: `character_id` + URLs for the 4 or 8 rotation images. **Async.**
 - Canvas auto-pads ~40% — request `92` and the source frame is ~128. Crop in post.
+- Generation size vs engine cell size: the manifest `size: 92` on `agent.*` entries is the **engine cell size** (the 92-px cell `SpriteSheet.js` reads), not the size to pass to `create_character`. For tall silhouettes (crowns, wide hats, hoods) generate at a smaller size — e.g. `size=76` (canvas ~108) — so the silhouette survives the center-crop back to 92×92 without clipping. Per-entry `# NOTE:` comments in `manifest.yaml` record the generation size that worked for a given character (see `agent.claude.fable` and `agent.claude.opus`).
 - Repo usage: ClaudeVille agent characters in `claudeville/assets/sprites/characters/agent.*/sheet.png`.
 
 ### `animate_character`
@@ -235,7 +236,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 
 ## Pitfalls
 
-1. **Character canvas auto-pads ~40%.** `create_character` with `width: 64` returns a ~90×90 source frame. `scripts/sprites/generate-character-mcp.mjs:108` center-crops back to 92×92. Don't fight this; rely on the crop.
+1. **Character canvas auto-pads ~40%.** `create_character` with `width: 64` returns a ~90×90 source frame. `scripts/sprites/generate-character-mcp.mjs:108` center-crops back to 92×92. Don't fight this; rely on the crop. Corollary: the manifest `size` field is the engine cell size, not the generation size — tall silhouettes need a smaller generation size (see the `create_character` section and the `# NOTE:` comments in `manifest.yaml`).
 2. **Isometric tiles cap at 64 px.** Above 64 px you must use REST `create-image-pixflux` or MCP `create_map_object` (32–400 px, but not the isometric tile model).
 3. **Tile sizes <24 px give weaker results** even though 16 is allowed. Prefer 32+ for production assets.
 4. **`'highly detailed'` for `detail` is undocumented.** Pass `high detail` (canonical enum). The pixflux endpoint will not error on the wrong value, but the cue is silently weakly applied.
@@ -243,7 +244,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 6. **MCP returns a job; REST `pixflux` returns the image.** Plan async polling for MCP and synchronous handling for REST. Don't mix patterns.
 7. **`isometric_tile_shape` defaults to `block`.** That gives ~50% canvas height of "depth" and clips small icons. For overlays and floor rings, pass `thin tile` explicitly.
 8. **Direction set must match across `create_character` and `animate_character`.** If create was 8-directional, animate must request the same 8 directions, or the sheet is incomplete.
-9. **Cache busting.** When PNGs change, bump `style.assetVersion` in `manifest.yaml`. Browsers cache aggressively; agents should never claim "the change is live" without confirming the version bump.
+9. **Cache busting / `assetVersion` policy.** Bump `style.assetVersion` in `manifest.yaml` only when PNGs on disk actually change. Manifest-only edits (prompts, `# NOTE:` comments, anchors, palette tweaks that don't touch images) must not bump it — every bump invalidates the browser cache for all sprites. Browsers cache aggressively; agents should never claim "the change is live" without confirming the version bump.
 10. **Response wrapper shape varies.** The API standard wrapper is `{ success, data, error, usage }`, but some endpoints return image data at top level while others put it under `data`. `generate-pixellab-revamp.mjs` handles common variants in `pixflux()` with the fallback chain `json?.image || json?.data?.image || json?.images?.[0] || json?.data?.images?.[0]`. Re-use that pattern for new REST callers.
 
 ## Existing repo scripts
