@@ -158,6 +158,7 @@ function modelIdentity(model, effort, provider = '') {
   const normalizedProvider = String(provider || '').toLowerCase();
   const effortTier = normalizeReasoningEffort(effort);
 
+  if (normalizedModel.includes('fable')) return { shortLabel: 'Fable', effortTier, spriteId: 'agent.claude.fable', color: '#ffd6f0' };
   if (normalizedModel.includes('opus')) return { shortLabel: 'Opus', effortTier, spriteId: 'agent.claude.opus', color: '#ffe7a8' };
   if (normalizedModel.includes('haiku')) return { shortLabel: 'Haiku', effortTier, spriteId: 'agent.claude.haiku', color: '#ffd47a' };
   if (normalizedModel.includes('sonnet') || normalizedProvider.includes('claude')) {

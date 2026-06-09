@@ -306,7 +306,7 @@ export class Minimap {
                 color,
                 x: position.tileX * this.scale,
                 y: position.tileY * this.scale,
-                radius: isSelected ? 3.2 : identity.modelTier === 'apex' ? 2.7 : 2.2,
+                radius: isSelected ? 3.2 : identity.modelTier === 'mythic' ? 3.0 : identity.modelTier === 'apex' ? 2.7 : 2.2,
             });
         }
         return entries;

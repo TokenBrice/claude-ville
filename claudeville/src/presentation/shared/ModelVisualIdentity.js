@@ -143,6 +143,25 @@ export function getModelVisualIdentity(model, effort, provider = '') {
     const effortAccessory = EFFORT_ACCESSORIES[effortTier] || null;
     const effortFloorRing = EFFORT_FLOOR_RINGS[effortTier] || null;
 
+    if (normalizedModel.includes('fable')) {
+        return {
+            family: 'claude',
+            modelClass: 'fable',
+            modelTier: 'mythic',
+            label: 'Claude Fable',
+            shortLabel: 'Fable',
+            effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
+            effortAccessory,
+            effortFloorRing,
+            spriteId: 'agent.claude.fable',
+            paletteKey: 'claude',
+            trim: ['#ffd6f0', '#ffe7a8', '#c8a3ff'],
+            accent: ['#fff0fa', '#fff4cf', '#d8bcff'],
+            minimapColor: '#ffd6f0',
+        };
+    }
+
     if (normalizedModel.includes('opus')) {
         return {
             family: 'claude',

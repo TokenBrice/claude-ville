@@ -59,6 +59,7 @@ const PROVIDER_BADGE_COLORS = Object.freeze({
     default: '#8b8b9e',
 });
 const MODEL_TIER_COLORS = Object.freeze({
+    mythic: '#ffd6f0',
     apex: '#f6d27a',
     balanced: '#cfd6df',
     senior: '#cfd6df',

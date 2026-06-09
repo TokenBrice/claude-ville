@@ -340,6 +340,26 @@ export class AvatarCanvas {
     }
 
     _drawModelInsignia(ctx, identity, accent, trim) {
+        if (identity.modelClass === 'fable') {
+            // four-point radiant star — mythic tier above the opus diamond
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(0, -3);
+            ctx.lineTo(2, 2);
+            ctx.lineTo(6, 3);
+            ctx.lineTo(2, 4);
+            ctx.lineTo(0, 9);
+            ctx.lineTo(-2, 4);
+            ctx.lineTo(-6, 3);
+            ctx.lineTo(-2, 2);
+            ctx.closePath();
+            ctx.stroke();
+            ctx.fillStyle = '#ffd6f0';
+            ctx.fillRect(-1, 2, 2, 2);
+            return;
+        }
+
         if (identity.modelClass === 'opus') {
             ctx.strokeStyle = accent;
             ctx.lineWidth = 1;
