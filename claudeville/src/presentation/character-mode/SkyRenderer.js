@@ -28,6 +28,11 @@ const AURORA_COOLDOWN_MS = 5 * 60 * 1000;
 const SUN_MAP_CLEARANCE_RADIUS = 2.15;
 const SUN_MIN_SCREEN_RADIUS = 3.0;
 const SHOOTING_STAR_DURATION_MS = 1200;
+// Slow sky layers (stars, sun, moon, godrays, clouds) are composed into one
+// cached frame and refreshed at this cadence instead of repainting several
+// full-screen gradients every animation frame. Cloud drift is ~0.0012 px/ms,
+// so a refresh moves clouds well under a pixel — invisible at 5 Hz.
+const SKY_FRAME_REFRESH_MS = 200;
 const SHOOTING_STAR_MAX = 3;
 const SHOOTING_STAR_COOLDOWN_MS = 4000;
 const SHOOTING_STAR_NIGHT_PHASES = new Set(['night', 'dusk']);
@@ -62,6 +67,8 @@ export class SkyRenderer {
         this.assets = assets || null;
         this.cache = null;
         this.cacheKey = '';
+        this._frameCache = null;
+        this._frameCacheKey = '';
         this._decorativeCloudOffset = 0;
         this._fallbackAtmosphere = null;
         this._auroraStartedAt = 0;
@@ -106,21 +113,53 @@ export class SkyRenderer {
         const snapshot = atmosphere || this._getFallbackAtmosphere(motionScale);
         this._currentPhase = snapshot.phase || null;
         this._currentMotionScale = motionScale;
-        const cached = this._getCachedBackground(canvas, snapshot);
-        ctx.drawImage(cached, 0, 0, canvas.width, canvas.height);
-
         if (snapshot.motion?.driftEnabled) {
             this._decorativeCloudOffset = (this._decorativeCloudOffset + dt * CLOUD_DRIFT_PX_PER_MS) % Math.max(1, canvas.width);
         }
 
-        this._drawStars(ctx, canvas, snapshot);
-        this._drawSun(ctx, camera, canvas, snapshot);
-        this._drawMoon(ctx, canvas, snapshot);
-        this._drawGodrays(ctx, camera, canvas, snapshot);
-        this._drawClouds(ctx, camera, canvas, snapshot);
+        const frame = this._getComposedSkyFrame(canvas, camera, snapshot);
+        ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
+        // Transient layers stay live: aurora and shooting stars animate per
+        // frame, the rain veil scrolls too fast for the 5 Hz frame cache.
         this._drawAurora(ctx, canvas, snapshot, motionScale);
         this._drawShootingStars(ctx, canvas, dt, motionScale);
         this._drawBackgroundWeather(ctx, canvas, snapshot);
+    }
+
+    // Compose background + slow layers into one offscreen frame. Refreshes on
+    // atmosphere phase change, viewport resize, camera movement (sun clamp and
+    // cloud parallax read the camera), or every SKY_FRAME_REFRESH_MS.
+    _getComposedSkyFrame(canvas, camera, atmosphere) {
+        const dpr = canvas._claudeVilleDpr || 1;
+        const quantX = Math.round((camera?.x || 0) / 4);
+        const quantY = Math.round((camera?.y || 0) / 4);
+        const zoom = camera?.zoom || 1;
+        const timeBucket = Math.floor(performance.now() / SKY_FRAME_REFRESH_MS);
+        const key = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere.cacheKey}|${quantX},${quantY},${zoom}|${timeBucket}`;
+        if (this._frameCache && this._frameCacheKey === key) return this._frameCache;
+
+        const width = Math.max(1, Math.round(canvas.width * dpr));
+        const height = Math.max(1, Math.round(canvas.height * dpr));
+        let frame = this._frameCache;
+        if (!frame || frame.width !== width || frame.height !== height) {
+            releaseCanvasBackingStore(frame);
+            frame = document.createElement('canvas');
+            frame.width = width;
+            frame.height = height;
+            this._frameCache = frame;
+        }
+        const fctx = frame.getContext('2d');
+        fctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        fctx.globalAlpha = 1;
+        fctx.globalCompositeOperation = 'source-over';
+        fctx.drawImage(this._getCachedBackground(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
+        this._drawStars(fctx, canvas, atmosphere);
+        this._drawSun(fctx, camera, canvas, atmosphere);
+        this._drawMoon(fctx, canvas, atmosphere);
+        this._drawGodrays(fctx, camera, canvas, atmosphere);
+        this._drawClouds(fctx, camera, canvas, atmosphere);
+        this._frameCacheKey = key;
+        return frame;
     }
 
     triggerAurora(now = Date.now()) {
@@ -922,6 +961,9 @@ export class SkyRenderer {
         releaseCanvasBackingStore(this.cache);
         this.cache = null;
         this.cacheKey = '';
+        releaseCanvasBackingStore(this._frameCache);
+        this._frameCache = null;
+        this._frameCacheKey = '';
     }
 
     dispose() {
