@@ -90,7 +90,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     const buildingDrawables = renderer.buildingRenderer?.enumerateDrawables() ?? [];
     const sortedSprites = renderer._snapshotSortedSprites();
     const agentLighting = atmosphere?.lighting || null;
-    for (const sprite of sortedSprites) sprite.setLightingState?.(agentLighting);
+    for (const sprite of sortedSprites) {
+        sprite.setLightingState?.(agentLighting);
+    }
     const propDrawables = renderer._enumeratePropDrawables();
     const harborDrawables = renderer.harborTraffic?.enumerateDrawables() ?? [];
     const harborPendingRepos = renderer.harborTraffic?.getPendingRepoSummaries?.() ?? [];

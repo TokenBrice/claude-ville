@@ -7,6 +7,9 @@ const FLUSH_INTERVAL_MS = 30000;
 const REPAINT_INTERVAL_MS = 2000;
 const RETAIN_MS = 60 * 60 * 1000;
 const MAX_RENDER_SAMPLES_ZOOMED_OUT = 600;
+const DIRECT_SELECTED_TRAIL_BACKING_PIXELS = 1_200_000;
+const DIRECT_SELECTED_TRAIL_MIN_ZOOM = 1.5;
+const MAX_DIRECT_SELECTED_SAMPLES = 900;
 const PHASE_COLORS = {
     morning: '255, 218, 128',
     afternoon: '232, 224, 194',
@@ -140,6 +143,10 @@ export class TrailRenderer {
 
     draw(ctx, camera, viewport, now = Date.now()) {
         if (!ctx || !camera || !viewport) return;
+        if (this._shouldDrawSelectedTrailDirect(camera, viewport)) {
+            this._drawSelectedTrailDirect(ctx, camera, viewport, now);
+            return;
+        }
         if (this._shouldRepaint(camera, viewport, now)) {
             this._repaint(camera, viewport, now);
         }
@@ -181,6 +188,26 @@ export class TrailRenderer {
             volatilePixels: canvasPixelCount(this.cache),
             cacheKey: this.cacheKey,
         };
+    }
+
+    _shouldDrawSelectedTrailDirect(camera, viewport) {
+        if (!this.selectedAgentId) return false;
+        if ((camera?.zoom || 1) < DIRECT_SELECTED_TRAIL_MIN_ZOOM) return false;
+        const { dpr, width, height } = viewportMetrics(viewport);
+        return width * height * dpr * dpr >= DIRECT_SELECTED_TRAIL_BACKING_PIXELS;
+    }
+
+    _drawSelectedTrailDirect(ctx, camera, viewport, now) {
+        const samples = this.samplesByAgent.get(this.selectedAgentId);
+        if (!samples?.length) return;
+        const { dpr } = viewportMetrics(viewport);
+        const renderSamples = samples.length > MAX_DIRECT_SELECTED_SAMPLES
+            ? samples.slice(-MAX_DIRECT_SELECTED_SAMPLES)
+            : samples;
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        this._drawTrail(ctx, renderSamples, camera, now, true);
+        ctx.restore();
     }
 
     _addSample(sample, pending) {

@@ -33,6 +33,9 @@ const SHOOTING_STAR_DURATION_MS = 1200;
 // full-screen gradients every animation frame. Cloud drift is ~0.0012 px/ms,
 // so a refresh moves clouds well under a pixel — invisible at 5 Hz.
 const SKY_FRAME_REFRESH_MS = 200;
+const FAST_SKY_BACKING_PIXELS = 1_500_000;
+const FAST_SKY_FRAME_REFRESH_MS = 1000;
+const FAST_SKY_CAMERA_QUANT_PX = 64;
 const SHOOTING_STAR_MAX = 3;
 const SHOOTING_STAR_COOLDOWN_MS = 4000;
 const SHOOTING_STAR_NIGHT_PHASES = new Set(['night', 'dusk']);
@@ -130,11 +133,14 @@ export class SkyRenderer {
     // atmosphere phase change, viewport resize, camera movement (sun clamp and
     // cloud parallax read the camera), or every SKY_FRAME_REFRESH_MS.
     _getComposedSkyFrame(canvas, camera, atmosphere) {
-        const dpr = canvas._claudeVilleDpr || 1;
-        const quantX = Math.round((camera?.x || 0) / 4);
-        const quantY = Math.round((camera?.y || 0) / 4);
+        const dpr = this._skyCacheDpr(canvas);
+        const fast = this._useFastSkyCache(canvas);
+        const cameraQuant = fast ? FAST_SKY_CAMERA_QUANT_PX : 4;
+        const refreshMs = fast ? FAST_SKY_FRAME_REFRESH_MS : SKY_FRAME_REFRESH_MS;
+        const quantX = Math.round((camera?.x || 0) / cameraQuant);
+        const quantY = Math.round((camera?.y || 0) / cameraQuant);
         const zoom = camera?.zoom || 1;
-        const timeBucket = Math.floor(performance.now() / SKY_FRAME_REFRESH_MS);
+        const timeBucket = Math.floor(performance.now() / refreshMs);
         const key = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere.cacheKey}|${quantX},${quantY},${zoom}|${timeBucket}`;
         if (this._frameCache && this._frameCacheKey === key) return this._frameCache;
 
@@ -276,7 +282,7 @@ export class SkyRenderer {
     }
 
     _getCachedBackground(canvas, atmosphere) {
-        const dpr = canvas._claudeVilleDpr || 1;
+        const dpr = this._skyCacheDpr(canvas);
         const key = `${canvas.width}x${canvas.height}@${dpr}|${atmosphere.cacheKey}`;
         if (this.cache && this.cacheKey === key) return this.cache;
         releaseCanvasBackingStore(this.cache);
@@ -291,6 +297,17 @@ export class SkyRenderer {
         this.cache = off;
         this.cacheKey = key;
         return off;
+    }
+
+    _useFastSkyCache(canvas) {
+        const dpr = canvas?._claudeVilleDpr || 1;
+        const backingPixels = Math.max(1, Number(canvas?.width) || 1) * Math.max(1, Number(canvas?.height) || 1) * dpr * dpr;
+        return backingPixels >= FAST_SKY_BACKING_PIXELS;
+    }
+
+    _skyCacheDpr(canvas) {
+        const dpr = canvas?._claudeVilleDpr || 1;
+        return this._useFastSkyCache(canvas) ? Math.min(dpr, 1) : dpr;
     }
 
     _paintGradient(ctx, canvas, atmosphere) {

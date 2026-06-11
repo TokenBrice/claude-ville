@@ -67,6 +67,7 @@ import { Chronicler } from './Chronicler.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { buildStaticPropDrawables } from './StaticPropDrawables.js';
+import { createDepthDrawable, propDepthDrawable } from './DrawablePass.js';
 import { renderWorldFrame } from './WorldFrameRenderer.js';
 import {
     CANVAS_BUDGET,
@@ -80,6 +81,11 @@ const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
 const MAX_LIGHT_GRADIENT_STAMP_PIXELS = Math.floor(MAX_LIGHT_GRADIENT_CACHE_PIXELS / 5);
+const FAST_ATMOSPHERE_BACKING_PIXELS = 1_500_000;
+const FAST_PROP_BACKING_PIXELS = 1_200_000;
+const FAST_PROP_MIN_ZOOM = 1.5;
+const FAST_PROP_AGENT_MARGIN = 36;
+const FAST_PROP_SCREEN_MARGIN = 96;
 const TERRAIN_CACHE_MARGIN = 360;
 const TERRAIN_CACHE_CHUNK_SIZE = 16;
 const TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS = CANVAS_BUDGET.maxWorldCachePixels;
@@ -218,6 +224,7 @@ class StaticPropSprite {
         this.id = id;
         this.bounds = bounds || { left: -32, right: 32, top: -64, bottom: 12, splitY: -18 };
         this.splitForOcclusion = splitForOcclusion;
+        this._cacheCanvas = null;
     }
     draw(ctx, zoom) {
         this.drawFn(ctx, this.x, this.y, zoom);
@@ -242,6 +249,57 @@ class StaticPropSprite {
         ctx.clip();
         this.draw(ctx, zoom);
         ctx.restore();
+    }
+    drawCached(ctx, zoom) {
+        const cached = this._getCachedCanvas(zoom);
+        if (!cached) {
+            this.draw(ctx, zoom);
+            return;
+        }
+        ctx.drawImage(cached.canvas, cached.x, cached.y);
+    }
+    drawCachedPart(ctx, part, zoom) {
+        if (!this.splitForOcclusion || part === 'whole') {
+            this.drawCached(ctx, zoom);
+            return;
+        }
+        const { left, right, top, bottom, splitY } = this.bounds;
+        const clipTop = part === 'back' ? top : splitY;
+        const clipBottom = part === 'back' ? splitY : bottom;
+        if (clipBottom <= clipTop) return;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(
+            Math.floor(this.x + left) - 2,
+            Math.floor(this.y + clipTop) - 2,
+            Math.ceil(right - left) + 4,
+            Math.ceil(clipBottom - clipTop) + 4
+        );
+        ctx.clip();
+        this.drawCached(ctx, zoom);
+        ctx.restore();
+    }
+    _getCachedCanvas(zoom) {
+        if (this._cacheCanvas) return this._cacheCanvas;
+        if (typeof document === 'undefined') return null;
+        const pad = 8;
+        const { left, right, top, bottom } = this.bounds;
+        const width = Math.max(1, Math.ceil(right - left + pad * 2));
+        const height = Math.max(1, Math.ceil(bottom - top + pad * 2));
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        SpriteRenderer.disableSmoothing(ctx);
+        ctx.translate(-(this.x + left - pad), -(this.y + top - pad));
+        this.drawFn(ctx, this.x, this.y, zoom);
+        this._cacheCanvas = {
+            canvas,
+            x: Math.floor(this.x + left - pad),
+            y: Math.floor(this.y + top - pad),
+        };
+        return this._cacheCanvas;
     }
     propBackSortY() {
         return this.sortY + Math.min(-8, this.bounds.splitY);
@@ -417,6 +475,8 @@ export class IsometricRenderer {
         this.scenery.generateBridges();
         this.bridgeTiles = this.scenery.getBridgeTiles();
         this.bridgeSpans = this._buildBridgeSpans();
+        this._waterTileDescriptors = this._buildWaterTileDescriptors();
+        this._shoreWaterEdgeDescriptors = this._buildShoreWaterEdgeDescriptors();
         for (const key of this.bridgeTiles.keys()) {
             this.pathTiles.add(key);
         }
@@ -519,7 +579,15 @@ export class IsometricRenderer {
             });
         });
         this.districtPropSprites = this._buildDistrictPropSprites();
+        this._staticPropSprites = [
+            ...this.treePropSprites,
+            ...this.boulderPropSprites,
+            ...this.districtPropSprites,
+        ];
         this._staticPropDrawables = this._buildStaticPropDrawables();
+        this._staticPropFastDrawables = this._buildStaticPropFastDrawables();
+        this._staticPropFastFrameDrawables = [];
+        this._staticPropVisibleFrameDrawables = [];
 
         // Walkability grid + Pathfinder (Task 11)
         this.walkabilityGrid = this.scenery.getWalkabilityGrid();
@@ -634,6 +702,82 @@ export class IsometricRenderer {
     _isLagoonWaterTile(tileX, tileY, key = `${tileX},${tileY}`) {
         const meta = this._waterMetaAt(tileX, tileY, key);
         return meta?.region === 'lagoon' || meta?.weatherProfile === 'lagoon' || this.lagoonWaterTiles?.has(key);
+    }
+
+    _buildWaterTileDescriptors() {
+        const descriptors = [];
+        if (!this.waterTiles?.size) return descriptors;
+        for (const key of this.waterTiles) {
+            if (this.bridgeTiles?.has(key)) continue;
+            const tile = this._parseTileKey(key);
+            if (!tile) continue;
+            const { tileX: x, tileY: y } = tile;
+            const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
+            const openness = this._waterOpenness(x, y);
+            const profile = this._waterProfileAt(x, y, key);
+            const token = this._waterTokenAt(x, y, key);
+            descriptors.push({
+                x,
+                y,
+                key,
+                seed,
+                screenX: (x - y) * TILE_WIDTH / 2,
+                screenY: (x + y) * TILE_HEIGHT / 2,
+                edge: this._waterEdgeMask(x, y),
+                openness,
+                profile,
+                token,
+                isDeep: this.deepWaterTiles.has(key),
+                isHarbor: this._isHarborWater(x, y),
+                isLagoon: this._isLagoonWaterTile(x, y, key),
+                isOpenSea: this._isOpenSeaTile(x, y, openness),
+            });
+        }
+        return descriptors;
+    }
+
+    _buildShoreWaterEdgeDescriptors() {
+        const descriptors = [];
+        if (!this.shoreTiles?.size) return descriptors;
+        for (const key of this.shoreTiles) {
+            if (this.bridgeTiles?.has(key)) continue;
+            const tile = this._parseTileKey(key);
+            if (!tile) continue;
+            const { tileX: x, tileY: y } = tile;
+            const edge = this._shoreWaterEdgeMask(x, y);
+            if (!edge) continue;
+            const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
+            const adjacent = this._firstAdjacentWaterMeta(x, y);
+            descriptors.push({
+                x,
+                y,
+                key,
+                seed,
+                edge,
+                screenX: (x - y) * TILE_WIDTH / 2,
+                screenY: (x + y) * TILE_HEIGHT / 2,
+                adjacent,
+                token: adjacent ? this._waterTokenAt(adjacent.x, adjacent.y, adjacent.key) : WATER_TOKENS.water,
+                profile: adjacent ? this._waterProfileAt(adjacent.x, adjacent.y, adjacent.key) : 'water',
+            });
+        }
+        return descriptors;
+    }
+
+    _visibleWaterTileDescriptors(bounds) {
+        if (!bounds || !this._waterTileDescriptors?.length) return [];
+        const { startX, endX, startY, endY } = bounds;
+        return this._waterTileDescriptors.filter((tile) => (
+            tile.x >= startX && tile.x <= endX && tile.y >= startY && tile.y <= endY
+        ));
+    }
+
+    _visibleShoreWaterEdgeDescriptors(bounds) {
+        if (!bounds || !this._shoreWaterEdgeDescriptors?.length) return [];
+        const { startX, endX, startY, endY } = bounds;
+        return this._shoreWaterEdgeDescriptors.filter((tile) => (
+            tile.x >= startX && tile.x <= endX && tile.y >= startY && tile.y <= endY
+        ));
     }
 
     _generatePlannedRoads() {
@@ -1330,7 +1474,10 @@ export class IsometricRenderer {
     }
 
     _enumeratePropDrawables() {
-        return this._staticPropDrawables;
+        if (this._shouldUseFastStaticProps()) {
+            return this._enumerateFastPropDrawables();
+        }
+        return this._enumerateVisibleStaticPropDrawables();
     }
 
     _buildStaticPropDrawables() {
@@ -1339,6 +1486,92 @@ export class IsometricRenderer {
             this.boulderPropSprites,
             this.districtPropSprites
         );
+    }
+
+    _buildStaticPropFastDrawables() {
+        return (this._staticPropSprites || []).map((sprite) => ({
+            sprite,
+            whole: this._cachedPropDepthDrawable(sprite),
+            back: sprite.splitForOcclusion ? this._cachedPropDepthDrawable(sprite, 'back') : null,
+            front: sprite.splitForOcclusion ? this._cachedPropDepthDrawable(sprite, 'front') : null,
+        }));
+    }
+
+    _enumerateVisibleStaticPropDrawables() {
+        const viewport = this._screenViewport();
+        if (!viewport || !this.camera) return this._staticPropDrawables;
+        const out = this._staticPropVisibleFrameDrawables;
+        out.length = 0;
+        for (const drawable of this._staticPropDrawables || []) {
+            const sprite = drawable?.payload?.sprite;
+            if (!sprite || this._propVisibleOnScreen(sprite, viewport)) out.push(drawable);
+        }
+        return out;
+    }
+
+    _cachedPropDepthDrawable(sprite, part = 'whole') {
+        const kind = part === 'whole' ? 'prop' : `prop-${part}`;
+        const sortY = part === 'back'
+            ? sprite.propBackSortY()
+            : part === 'front'
+                ? sprite.propFrontSortY()
+                : sprite.sortY ?? sprite.y;
+        return createDepthDrawable(kind, sortY, { sprite, part }, (ctx, zoom, _context, payload) => {
+            payload?.sprite?.drawCachedPart?.(ctx, payload.part || 'whole', zoom);
+        });
+    }
+
+    _shouldUseFastStaticProps() {
+        if (!this.selectedAgent) return false;
+        if ((this.camera?.zoom || 1) < FAST_PROP_MIN_ZOOM) return false;
+        return canvasPixelCount(this.canvas) >= FAST_PROP_BACKING_PIXELS;
+    }
+
+    _enumerateFastPropDrawables() {
+        const out = this._staticPropFastFrameDrawables;
+        out.length = 0;
+        const agents = this._snapshotSortedSprites();
+        const viewport = this._screenViewport();
+        for (const record of this._staticPropFastDrawables || []) {
+            if (!this._propVisibleOnScreen(record.sprite, viewport)) continue;
+            if (record.sprite?.splitForOcclusion && this._propIntersectsAgentBand(record.sprite, agents)) {
+                if (record.back) out.push(record.back);
+                if (record.front) out.push(record.front);
+            } else if (record.whole) {
+                out.push(record.whole);
+            }
+        }
+        return out;
+    }
+
+    _propVisibleOnScreen(prop, viewport) {
+        if (!prop || !viewport || !this.camera) return true;
+        const bounds = prop.bounds || { left: -48, right: 48, top: -96, bottom: 24 };
+        const topLeft = this.camera.worldToScreen(prop.x + bounds.left, prop.y + bounds.top);
+        const bottomRight = this.camera.worldToScreen(prop.x + bounds.right, prop.y + bounds.bottom);
+        const left = Math.min(topLeft.x, bottomRight.x);
+        const right = Math.max(topLeft.x, bottomRight.x);
+        const top = Math.min(topLeft.y, bottomRight.y);
+        const bottom = Math.max(topLeft.y, bottomRight.y);
+        return right >= -FAST_PROP_SCREEN_MARGIN
+            && left <= viewport.width + FAST_PROP_SCREEN_MARGIN
+            && bottom >= -FAST_PROP_SCREEN_MARGIN
+            && top <= viewport.height + FAST_PROP_SCREEN_MARGIN;
+    }
+
+    _propIntersectsAgentBand(prop, agents) {
+        const bounds = prop?.bounds;
+        if (!bounds || !agents?.length) return false;
+        const left = prop.x + bounds.left - FAST_PROP_AGENT_MARGIN;
+        const right = prop.x + bounds.right + FAST_PROP_AGENT_MARGIN;
+        const top = prop.y + bounds.top - FAST_PROP_AGENT_MARGIN;
+        const bottom = prop.y + bounds.bottom + FAST_PROP_AGENT_MARGIN;
+        for (const sprite of agents) {
+            if (!sprite || this._isGateTransit(sprite, 'departure')) continue;
+            if (sprite.x < left || sprite.x > right || sprite.y < top || sprite.y > bottom) continue;
+            return true;
+        }
+        return false;
     }
 
     _bindMotionPreference() {
@@ -4301,43 +4534,36 @@ export class IsometricRenderer {
     }
 
     _drawDynamicWaterHighlights(ctx) {
-        const { startX, endX, startY, endY } = this._getVisibleTileBounds(3);
-        this._drawPhaseWaterTint(ctx, startX, endX, startY, endY);
-        this._drawWeatherWaterRipples(ctx, startX, endX, startY, endY);
-        this._drawWaterFogEdgeWash(ctx, startX, endX, startY, endY);
+        const bounds = this._getVisibleTileBounds(3);
+        const waterTiles = this._visibleWaterTileDescriptors(bounds);
+        const shoreEdges = this._visibleShoreWaterEdgeDescriptors(bounds);
+        this._drawPhaseWaterTint(ctx, waterTiles);
+        this._drawWeatherWaterRipples(ctx, waterTiles);
+        this._drawWaterFogEdgeWash(ctx, shoreEdges);
         this._drawHarborWakeWaterDescriptors(ctx);
-        this._drawNightWaterReflections(ctx, startX, endX, startY, endY);
+        this._drawNightWaterReflections(ctx, waterTiles);
         if (!this.motionScale) return;
-        this._drawAnimatedCurrentBands(ctx, startX, endX, startY, endY);
+        this._drawAnimatedCurrentBands(ctx, waterTiles);
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                if (seed <= 0.82) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                const isLagoonShimmer = this._isLagoonWaterTile(x, y, key);
-                // B7: in storms, increase shimmer t frequency for lagoon tiles.
-                const stormFreqMult = isLagoonShimmer && this._stormIntensity
-                    ? 1 + 0.5 * this._stormIntensity
-                    : 1;
-                const shimmerT = this.waterFrame * 2.2 * stormFreqMult + seed * 10;
-                const shimmer = 0.035 + Math.max(0, Math.sin(shimmerT)) * 0.045;
-                const token = this._waterTokenAt(x, y, key);
-                const warm = this._atmosphereReactions?.warmGlint || 0;
-                const glintColor = warm > 0.15 ? '255, 212, 142' : token.glint;
-                ctx.strokeStyle = `rgba(${glintColor}, ${shimmer * (1 + warm * 0.42)})`;
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.moveTo(screenX - 12, screenY - 2);
-                ctx.lineTo(screenX + 10, screenY - 6);
-                ctx.stroke();
-            }
+        for (const tile of waterTiles) {
+            if (tile.seed <= 0.82) continue;
+            // B7: in storms, increase shimmer t frequency for lagoon tiles.
+            const stormFreqMult = tile.isLagoon && this._stormIntensity
+                ? 1 + 0.5 * this._stormIntensity
+                : 1;
+            const shimmerT = this.waterFrame * 2.2 * stormFreqMult + tile.seed * 10;
+            const shimmer = 0.035 + Math.max(0, Math.sin(shimmerT)) * 0.045;
+            const warm = this._atmosphereReactions?.warmGlint || 0;
+            const glintColor = warm > 0.15 ? '255, 212, 142' : tile.token.glint;
+            ctx.strokeStyle = `rgba(${glintColor}, ${shimmer * (1 + warm * 0.42)})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(tile.screenX - 12, tile.screenY - 2);
+            ctx.lineTo(tile.screenX + 10, tile.screenY - 6);
+            ctx.stroke();
         }
-        this._drawShorelineReflectionShimmer(ctx, startX, endX, startY, endY);
+        this._drawShorelineReflectionShimmer(ctx, shoreEdges);
         ctx.restore();
     }
 
@@ -4440,11 +4666,11 @@ export class IsometricRenderer {
         };
     }
 
-    _drawWeatherWaterRipples(ctx, startX, endX, startY, endY) {
+    _drawWeatherWaterRipples(ctx, waterTiles) {
         const weather = this._waterWeather || {};
         const reactions = weather.reactions || {};
         const rain = weather.rain || 0;
-        if (rain <= 0.08) return;
+        if (rain <= 0.08 || !waterTiles?.length) return;
 
         // Stamp the manifest-driven rain ripple sprite for a small random
         // fraction of visible water tiles per frame. The WeatherRenderer
@@ -4457,87 +4683,66 @@ export class IsometricRenderer {
         ctx.globalCompositeOperation = 'screen';
         const rippleScale = reactions.waterRippleScale || rain;
         const stride = rain > 0.65 ? 2 : 3;
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                const profile = this._waterProfileAt(x, y, key);
-                const localStride = profile === 'openSea' ? stride + 1 : profile === 'harbor' ? stride : Math.max(1, stride - 1);
-                if (((x * 3 + y * 5 + Math.floor(seed * 11)) % localStride) !== 0) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                if (stampRipples && Math.random() < 1 / 30) {
-                    this.weatherRenderer.maybeStampWaterRipple(ctx, x, y, screenX, screenY);
-                }
-                const phase = (this.motionScale ? this.waterFrame : STATIC_WATER_SHIMMER) * (1.8 + rain * 1.3) + seed * 6.28;
-                const pulse = (Math.sin(phase) + 1) / 2;
-                const profileScale = profile === 'openSea' ? 0.72 : profile === 'harbor' ? 0.90 : 1.14;
-                const radius = (4 + pulse * (5 + rain * 5)) * profileScale * (0.76 + rippleScale * 0.36);
-                const nightReflection = reactions.nightReflection || 0;
-                const alpha = (0.030 + rain * 0.078) * (1 - pulse * 0.45) * (profile === 'openSea' ? 0.72 : 1) * (1 + nightReflection * 0.18);
-                const token = this._waterTokenAt(x, y, key);
-                if (this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.rainRipple, {
-                    x: screenX + (seed - 0.5) * 18,
-                    y: screenY - 2 + (seed - 0.5) * 8,
-                    alpha: Math.min(0.28, alpha * 1.9),
-                    scaleX: (0.62 + pulse * 0.38) * profileScale,
-                    scaleY: (0.52 + pulse * 0.20) * profileScale,
-                    rotation: -0.18,
-                    flipX: seed > 0.5,
-                })) {
-                    continue;
-                }
-                ctx.strokeStyle = `rgba(${token.rainRipple}, ${alpha})`;
-                ctx.lineWidth = 1;
-                ctx.beginPath();
-                ctx.ellipse(
-                    Math.round(screenX + (seed - 0.5) * 18),
-                    Math.round(screenY - 2 + (seed - 0.5) * 8),
-                    radius,
-                    radius * 0.38,
-                    -0.18,
-                    0,
-                    Math.PI * 2,
-                );
-                ctx.stroke();
+        for (const tile of waterTiles) {
+            const localStride = tile.profile === 'openSea' ? stride + 1 : tile.profile === 'harbor' ? stride : Math.max(1, stride - 1);
+            if (((tile.x * 3 + tile.y * 5 + Math.floor(tile.seed * 11)) % localStride) !== 0) continue;
+            if (stampRipples && Math.random() < 1 / 30) {
+                this.weatherRenderer.maybeStampWaterRipple(ctx, tile.x, tile.y, tile.screenX, tile.screenY);
             }
+            const phase = (this.motionScale ? this.waterFrame : STATIC_WATER_SHIMMER) * (1.8 + rain * 1.3) + tile.seed * 6.28;
+            const pulse = (Math.sin(phase) + 1) / 2;
+            const profileScale = tile.profile === 'openSea' ? 0.72 : tile.profile === 'harbor' ? 0.90 : 1.14;
+            const radius = (4 + pulse * (5 + rain * 5)) * profileScale * (0.76 + rippleScale * 0.36);
+            const nightReflection = reactions.nightReflection || 0;
+            const alpha = (0.030 + rain * 0.078) * (1 - pulse * 0.45) * (tile.profile === 'openSea' ? 0.72 : 1) * (1 + nightReflection * 0.18);
+            if (this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.rainRipple, {
+                x: tile.screenX + (tile.seed - 0.5) * 18,
+                y: tile.screenY - 2 + (tile.seed - 0.5) * 8,
+                alpha: Math.min(0.28, alpha * 1.9),
+                scaleX: (0.62 + pulse * 0.38) * profileScale,
+                scaleY: (0.52 + pulse * 0.20) * profileScale,
+                rotation: -0.18,
+                flipX: tile.seed > 0.5,
+            })) {
+                continue;
+            }
+            ctx.strokeStyle = `rgba(${tile.token.rainRipple}, ${alpha})`;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.ellipse(
+                Math.round(tile.screenX + (tile.seed - 0.5) * 18),
+                Math.round(tile.screenY - 2 + (tile.seed - 0.5) * 8),
+                radius,
+                radius * 0.38,
+                -0.18,
+                0,
+                Math.PI * 2,
+            );
+            ctx.stroke();
         }
         ctx.restore();
     }
 
-    _drawWaterFogEdgeWash(ctx, startX, endX, startY, endY) {
+    _drawWaterFogEdgeWash(ctx, shoreEdges) {
         const fogAlpha = this._waterWeather?.reactions?.waterFogAlpha || this._waterWeather?.fog * 0.24 || 0;
-        if (fogAlpha <= 0.025) return;
+        if (fogAlpha <= 0.025 || !shoreEdges?.length) return;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.shoreTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const edge = this._shoreWaterEdgeMask(x, y);
-                if (!edge) continue;
-                const adjacent = this._firstAdjacentWaterMeta(x, y);
-                const token = adjacent ? this._waterTokenAt(adjacent.x, adjacent.y, adjacent.key) : WATER_TOKENS.water;
-                const profile = adjacent ? this._waterProfileAt(adjacent.x, adjacent.y, adjacent.key) : 'water';
-                const profileAlpha = profile === 'openSea' ? 0.54 : profile === 'harbor' ? 1.05 : 1.16;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                ctx.strokeStyle = `rgba(${token.fogWash}, ${Math.min(0.20, fogAlpha * profileAlpha * (0.34 + seed * 0.44))})`;
-                ctx.lineWidth = 2;
-                this._strokeInsetDiamondEdges(ctx, screenX, screenY, edge, 3 + seed * 4);
-                if (seed > 0.58) {
-                    this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.fogWisp, {
-                        x: screenX + (seed - 0.5) * 24,
-                        y: screenY - 5 + (seed - 0.5) * 8,
-                        alpha: Math.min(0.22, fogAlpha * profileAlpha * (0.24 + seed * 0.20)),
-                        scaleX: 0.42 + seed * 0.24,
-                        scaleY: 0.34 + seed * 0.12,
-                        rotation: -0.20 + seed * 0.24,
-                        flipX: seed > 0.5,
-                    });
-                }
+        for (const tile of shoreEdges) {
+            const profileAlpha = tile.profile === 'openSea' ? 0.54 : tile.profile === 'harbor' ? 1.05 : 1.16;
+            ctx.strokeStyle = `rgba(${tile.token.fogWash}, ${Math.min(0.20, fogAlpha * profileAlpha * (0.34 + tile.seed * 0.44))})`;
+            ctx.lineWidth = 2;
+            this._strokeInsetDiamondEdges(ctx, tile.screenX, tile.screenY, tile.edge, 3 + tile.seed * 4);
+            if (tile.seed > 0.58) {
+                this._drawAtmosphereEffectSprite(ctx, ATMOSPHERE_EFFECT_ASSETS.fogWisp, {
+                    x: tile.screenX + (tile.seed - 0.5) * 24,
+                    y: tile.screenY - 5 + (tile.seed - 0.5) * 8,
+                    alpha: Math.min(0.22, fogAlpha * profileAlpha * (0.24 + tile.seed * 0.20)),
+                    scaleX: 0.42 + tile.seed * 0.24,
+                    scaleY: 0.34 + tile.seed * 0.12,
+                    rotation: -0.20 + tile.seed * 0.24,
+                    flipX: tile.seed > 0.5,
+                });
             }
         }
         ctx.restore();
@@ -4546,13 +4751,13 @@ export class IsometricRenderer {
     // Phase-coupled water palette. Tint base water toward the active phase
     // palette's horizon (warm dusk/dawn) or zenith-darkened (night). At noon
     // both reactions are ~0 so this method is a near-noop and water stays teal.
-    _drawPhaseWaterTint(ctx, startX, endX, startY, endY) {
+    _drawPhaseWaterTint(ctx, waterTiles) {
         const reactions = this._atmosphereReactions || {};
         const warmGlint = reactions.warmGlint || 0;
         const nightReflection = reactions.nightReflection || 0;
         const warmActive = warmGlint > 0.05;
         const nightActive = nightReflection > 0.10;
-        if (!warmActive && !nightActive) return;
+        if ((!warmActive && !nightActive) || !waterTiles?.length) return;
         const palette = this._lastAtmosphere?.sky?.palette;
         if (!palette) return;
         const cap = THEME.waterTint?.alphaCap ?? 0.22;
@@ -4575,17 +4780,11 @@ export class IsometricRenderer {
         if (!tints.length) return;
         ctx.save();
         // source-over: this is a base tint, not an additive highlight.
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                for (const tint of tints) {
-                    ctx.fillStyle = this._withAlpha(tint.color, tint.alpha);
-                    this._drawDiamond(ctx, screenX, screenY);
-                    ctx.fill();
-                }
+        for (const tile of waterTiles) {
+            for (const tint of tints) {
+                ctx.fillStyle = this._withAlpha(tint.color, tint.alpha);
+                this._drawDiamond(ctx, tile.screenX, tile.screenY);
+                ctx.fill();
             }
         }
         ctx.restore();
@@ -4601,31 +4800,22 @@ export class IsometricRenderer {
         return `#${hh(r)}${hh(g)}${hh(b)}`;
     }
 
-    _drawNightWaterReflections(ctx, startX, endX, startY, endY) {
+    _drawNightWaterReflections(ctx, waterTiles) {
         const nightReflection = this._atmosphereReactions?.nightReflection || 0;
-        if (nightReflection <= 0.05) return;
+        if (nightReflection <= 0.05 || !waterTiles?.length) return;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                if (seed < 0.46) continue;
-                const profile = this._waterProfileAt(x, y, key);
-                if (profile === 'lagoon' && seed < 0.68) continue;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                const token = this._waterTokenAt(x, y, key);
-                const width = 8 + seed * (profile === 'openSea' ? 20 : 14);
-                const alpha = Math.min(0.16, nightReflection * (0.032 + seed * 0.052));
-                ctx.strokeStyle = `rgba(${token.glint}, ${alpha})`;
-                ctx.lineWidth = profile === 'openSea' ? 1.4 : 1;
-                ctx.beginPath();
-                ctx.moveTo(Math.round(screenX - width), Math.round(screenY - 7 + seed * 3));
-                ctx.lineTo(Math.round(screenX + width * 0.72), Math.round(screenY - 10 - seed * 2));
-                ctx.stroke();
-            }
+        for (const tile of waterTiles) {
+            if (tile.seed < 0.46) continue;
+            if (tile.profile === 'lagoon' && tile.seed < 0.68) continue;
+            const width = 8 + tile.seed * (tile.profile === 'openSea' ? 20 : 14);
+            const alpha = Math.min(0.16, nightReflection * (0.032 + tile.seed * 0.052));
+            ctx.strokeStyle = `rgba(${tile.token.glint}, ${alpha})`;
+            ctx.lineWidth = tile.profile === 'openSea' ? 1.4 : 1;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(tile.screenX - width), Math.round(tile.screenY - 7 + tile.seed * 3));
+            ctx.lineTo(Math.round(tile.screenX + width * 0.72), Math.round(tile.screenY - 10 - tile.seed * 2));
+            ctx.stroke();
         }
         ctx.restore();
     }
@@ -4694,23 +4884,15 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawShorelineReflectionShimmer(ctx, startX, endX, startY, endY) {
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.shoreTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const edge = this._shoreWaterEdgeMask(x, y);
-                if (edge === 0) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                if (seed < 0.32) continue;
-                const frame = this.motionScale ? this.waterFrame : 0;
-                const alpha = 0.05 + Math.max(0, Math.sin(frame * 1.9 + seed * 6.28)) * 0.08;
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                ctx.strokeStyle = `rgba(197, 252, 236, ${alpha})`;
-                ctx.lineWidth = 1;
-                this._strokeInsetDiamondEdges(ctx, screenX, screenY, edge, 9);
-            }
+    _drawShorelineReflectionShimmer(ctx, shoreEdges) {
+        if (!shoreEdges?.length) return;
+        for (const tile of shoreEdges) {
+            if (tile.seed < 0.32) continue;
+            const frame = this.motionScale ? this.waterFrame : 0;
+            const alpha = 0.05 + Math.max(0, Math.sin(frame * 1.9 + tile.seed * 6.28)) * 0.08;
+            ctx.strokeStyle = `rgba(197, 252, 236, ${alpha})`;
+            ctx.lineWidth = 1;
+            this._strokeInsetDiamondEdges(ctx, tile.screenX, tile.screenY, tile.edge, 9);
         }
     }
 
@@ -4856,48 +5038,37 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
-    _drawAnimatedCurrentBands(ctx, startX, endX, startY, endY) {
+    _drawAnimatedCurrentBands(ctx, waterTiles) {
+        if (!waterTiles?.length) return;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         ctx.lineCap = 'round';
-        for (let y = startY; y <= endY; y++) {
-            for (let x = startX; x <= endX; x++) {
-                const key = `${x},${y}`;
-                if (!this.waterTiles.has(key) || this.bridgeTiles?.has(key)) continue;
-                const openness = this._waterOpenness(x, y);
-                const harbor = this._isHarborWater(x, y);
-                const openSea = this._isOpenSeaTile(x, y, openness);
-                if (openness < 0.56 && !harbor && !openSea) continue;
-                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
-                const roughness = this._waterWeather?.storm || 0;
-                const primary = Math.sin(this.waterFrame * 0.82 + x * 0.42 - y * 0.28 + seed * 2.6);
-                const secondary = Math.sin(this.waterFrame * 1.17 - x * 0.24 - y * 0.36 + seed * 5.1);
-                const crest = ((primary * 0.72 + secondary * 0.28) + 1) / 2;
-                const threshold = (openSea ? 0.73 : 0.76) - roughness * (openSea ? 0.10 : harbor ? 0.055 : 0.075);
-                if (crest < threshold) continue;
-                const isDeep = this.deepWaterTiles.has(key);
-                const alpha = Math.min(
-                    openSea ? 0.24 + roughness * 0.08 : 0.16 + roughness * 0.04,
-                    (crest - threshold) * (isDeep ? (openSea ? 0.62 : 0.48) : 0.32) * (0.62 + openness * 0.5) * (1 + roughness * 0.35)
-                );
-                const screenX = (x - y) * TILE_WIDTH / 2;
-                const screenY = (x + y) * TILE_HEIGHT / 2;
-                const drift = Math.sin(this.waterFrame * 0.45 + seed * 6.28) * 2;
-                const token = this._waterTokenAt(x, y, key);
-                const warm = this._atmosphereReactions?.warmGlint || 0;
-                const glintColor = warm > 0.18 ? '255, 210, 136' : token.glint;
-                ctx.strokeStyle = `rgba(${glintColor}, ${alpha})`;
-                ctx.lineWidth = openSea ? 1.7 + roughness * 0.6 : (isDeep ? 1.4 : 1);
-                ctx.beginPath();
-                ctx.moveTo(screenX - TILE_WIDTH * (openSea ? 0.48 : 0.40), screenY - 2 + drift);
-                ctx.quadraticCurveTo(
-                    screenX - TILE_WIDTH * 0.02,
-                    screenY - (openSea ? 10 : 8) + drift * 0.35,
-                    screenX + TILE_WIDTH * (openSea ? 0.48 : 0.40),
-                    screenY - 5 - drift * 0.25
-                );
-                ctx.stroke();
-            }
+        for (const tile of waterTiles) {
+            if (tile.openness < 0.56 && !tile.isHarbor && !tile.isOpenSea) continue;
+            const roughness = this._waterWeather?.storm || 0;
+            const primary = Math.sin(this.waterFrame * 0.82 + tile.x * 0.42 - tile.y * 0.28 + tile.seed * 2.6);
+            const secondary = Math.sin(this.waterFrame * 1.17 - tile.x * 0.24 - tile.y * 0.36 + tile.seed * 5.1);
+            const crest = ((primary * 0.72 + secondary * 0.28) + 1) / 2;
+            const threshold = (tile.isOpenSea ? 0.73 : 0.76) - roughness * (tile.isOpenSea ? 0.10 : tile.isHarbor ? 0.055 : 0.075);
+            if (crest < threshold) continue;
+            const alpha = Math.min(
+                tile.isOpenSea ? 0.24 + roughness * 0.08 : 0.16 + roughness * 0.04,
+                (crest - threshold) * (tile.isDeep ? (tile.isOpenSea ? 0.62 : 0.48) : 0.32) * (0.62 + tile.openness * 0.5) * (1 + roughness * 0.35)
+            );
+            const drift = Math.sin(this.waterFrame * 0.45 + tile.seed * 6.28) * 2;
+            const warm = this._atmosphereReactions?.warmGlint || 0;
+            const glintColor = warm > 0.18 ? '255, 210, 136' : tile.token.glint;
+            ctx.strokeStyle = `rgba(${glintColor}, ${alpha})`;
+            ctx.lineWidth = tile.isOpenSea ? 1.7 + roughness * 0.6 : (tile.isDeep ? 1.4 : 1);
+            ctx.beginPath();
+            ctx.moveTo(tile.screenX - TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40), tile.screenY - 2 + drift);
+            ctx.quadraticCurveTo(
+                tile.screenX - TILE_WIDTH * 0.02,
+                tile.screenY - (tile.isOpenSea ? 10 : 8) + drift * 0.35,
+                tile.screenX + TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40),
+                tile.screenY - 5 - drift * 0.25
+            );
+            ctx.stroke();
         }
         ctx.restore();
     }
@@ -7036,6 +7207,10 @@ export class IsometricRenderer {
 
     _drawAtmosphere(ctx, atmosphere = null, dt = 16, ambientLightSources = null) {
         const canvas = this._screenViewport();
+        if (this._shouldUseFastAtmosphere()) {
+            this._drawFastAtmosphereWash(ctx, canvas, atmosphere, dt);
+            return;
+        }
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
@@ -7068,6 +7243,47 @@ export class IsometricRenderer {
             ctx.restore();
         }
 
+        ctx.restore();
+    }
+
+    _shouldUseFastAtmosphere() {
+        const backingPixels = canvasPixelCount(this.canvas);
+        return backingPixels >= FAST_ATMOSPHERE_BACKING_PIXELS && (this.camera?.zoom || 1) >= 1.5;
+    }
+
+    _drawFastAtmosphereWash(ctx, canvas, atmosphere = null, dt = 16) {
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        const zoom = this.camera?.zoom || 1;
+        const grade = atmosphere?.grade || {};
+        const zoomAlpha = Math.max(0.16, Math.min(0.46, (3.1 - zoom) / 3.2));
+        const alpha = this._quantizedAlpha(Math.min(0.38, (zoomAlpha + (grade.overlayAlpha || 0)) * 0.42));
+        if (alpha > 0.01) {
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = grade.worldTint || 'rgba(160, 215, 245, 0.05)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const phase = atmosphere?.phase || 'day';
+            const wash = ctx.createLinearGradient(0, 0, 0, canvas.height);
+            if (phase === 'night') {
+                wash.addColorStop(0, 'rgba(44, 78, 126, 0.16)');
+                wash.addColorStop(1, 'rgba(2, 6, 14, 0.28)');
+            } else if (phase === 'dawn') {
+                wash.addColorStop(0, 'rgba(85, 132, 178, 0.10)');
+                wash.addColorStop(1, 'rgba(85, 111, 137, 0.14)');
+            } else if (phase === 'dusk') {
+                wash.addColorStop(0, 'rgba(73, 89, 139, 0.12)');
+                wash.addColorStop(1, 'rgba(32, 31, 63, 0.20)');
+            } else {
+                wash.addColorStop(0, 'rgba(175, 222, 248, 0.05)');
+                wash.addColorStop(1, 'rgba(18, 36, 52, 0.07)');
+            }
+            ctx.globalAlpha = Math.min(0.24, alpha * 0.75);
+            ctx.fillStyle = wash;
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+        ctx.globalAlpha = 1;
+        this.weatherRenderer?.drawForeground(ctx, { canvas, atmosphere, dt });
         ctx.restore();
     }
 

@@ -7,7 +7,7 @@ const AUX_CACHE_PIXEL_RESERVE = 250_000;
 
 export const CANVAS_BUDGET = Object.freeze({
     maxRendererCanvasPixels: 25_000_000,
-    maxMainCanvasPixels: 8_500_000,
+    maxMainCanvasPixels: 1_250_000,
     maxScreenCachePixels: 8_500_000,
     maxWorldCachePixels: WORLD_CACHE_PIXEL_RESERVE,
     maxLightCachePixels: LIGHT_CACHE_PIXEL_RESERVE,
