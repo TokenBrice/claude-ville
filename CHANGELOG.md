@@ -2,6 +2,12 @@
 
 ---
 
+## v0.9.1.1 · Jun 11, 2026 — Hotfix
+
+- Restore the World canvas backing-store budget so unzoomed harbor signs and other pixel text render at full desktop resolution again
+
+---
+
 ## v0.9.1 — *The Chronicle* · Jun 11, 2026
 
 The village gets a memory. Click the version chip to browse the full history.
