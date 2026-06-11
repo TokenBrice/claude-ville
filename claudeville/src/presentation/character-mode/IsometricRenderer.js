@@ -81,8 +81,8 @@ const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
 const MAX_LIGHT_GRADIENT_STAMP_PIXELS = Math.floor(MAX_LIGHT_GRADIENT_CACHE_PIXELS / 5);
-const FAST_ATMOSPHERE_BACKING_PIXELS = 1_500_000;
-const FAST_PROP_BACKING_PIXELS = 1_200_000;
+const FAST_ATMOSPHERE_BACKING_PIXELS = 800_000;
+const FAST_PROP_BACKING_PIXELS = 800_000;
 const FAST_PROP_MIN_ZOOM = 1.5;
 const FAST_PROP_AGENT_MARGIN = 36;
 const FAST_PROP_SCREEN_MARGIN = 96;
@@ -1522,7 +1522,6 @@ export class IsometricRenderer {
     }
 
     _shouldUseFastStaticProps() {
-        if (!this.selectedAgent) return false;
         if ((this.camera?.zoom || 1) < FAST_PROP_MIN_ZOOM) return false;
         return canvasPixelCount(this.canvas) >= FAST_PROP_BACKING_PIXELS;
     }

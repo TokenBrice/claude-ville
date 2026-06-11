@@ -33,7 +33,7 @@ const SHOOTING_STAR_DURATION_MS = 1200;
 // full-screen gradients every animation frame. Cloud drift is ~0.0012 px/ms,
 // so a refresh moves clouds well under a pixel — invisible at 5 Hz.
 const SKY_FRAME_REFRESH_MS = 200;
-const FAST_SKY_BACKING_PIXELS = 1_500_000;
+const FAST_SKY_BACKING_PIXELS = 800_000;
 const FAST_SKY_FRAME_REFRESH_MS = 1000;
 const FAST_SKY_CAMERA_QUANT_PX = 64;
 const SHOOTING_STAR_MAX = 3;
