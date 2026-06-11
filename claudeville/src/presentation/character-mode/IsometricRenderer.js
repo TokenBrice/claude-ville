@@ -1233,6 +1233,9 @@ export class IsometricRenderer {
             cancelAnimationFrame(this.frameId);
             this.frameId = null;
         }
+        this._fpsFrames = 0;
+        this._fpsWindowStart = null;
+        eventBus.emit('fps:updated', null);
     }
 
     setWorldModeActive(active) {
@@ -2091,7 +2094,20 @@ export class IsometricRenderer {
         this._lastFrameTime = now;
         this._update(dt);
         this._render(dt);
+        this._trackFps(now);
         this._startLoop();
+    }
+
+    // Emit a smoothed FPS reading roughly twice a second; TopBar renders it.
+    _trackFps(now) {
+        this._fpsFrames = (this._fpsFrames || 0) + 1;
+        if (!this._fpsWindowStart) this._fpsWindowStart = now;
+        const elapsed = now - this._fpsWindowStart;
+        if (elapsed >= 500) {
+            eventBus.emit('fps:updated', Math.round((this._fpsFrames * 1000) / elapsed));
+            this._fpsFrames = 0;
+            this._fpsWindowStart = now;
+        }
     }
 
     _updateChatMatching() {

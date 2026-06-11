@@ -7,6 +7,7 @@
 //   building:active-agents                      // map<type,{count,recencyScore,tier}> from LandmarkActivity (~500ms)
 //   tool:invoked, subagent:dispatched, subagent:completed
 //   mode:changed, usage:updated
+//   fps:updated                                 // number (~2/s) from IsometricRenderer loop, null when loop stops
 //   ws:connected, ws:disconnected, ws:init, ws:update, ws:message
 export const BUILDING_EVENTS = Object.freeze({
     SELECTED: 'building:selected',

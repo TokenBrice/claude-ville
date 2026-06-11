@@ -80,7 +80,7 @@ See `AGENTS.md` § Validation Checklist for the canonical syntax/runtime/widget 
 
 ## Event Bus
 
-Singleton at `src/domain/events/DomainEvent.js`, exports `eventBus`; no replay or persistence; subscriptions are global. Events: `agent:added`/`agent:updated`/`agent:removed` (`Agent`, from `domain/entities/World.js`); `agent:selected` (`Agent`); `agent:deselected`; `mode:changed` (`'character' | 'dashboard'`, from `application/ModeManager.js`); `usage:updated`; `ws:connected`/`ws:disconnected`/`ws:init`/`ws:update`/`ws:message` (from `infrastructure/WebSocketClient.js`). `ws:message` currently has no subscribers.
+Singleton at `src/domain/events/DomainEvent.js`, exports `eventBus`; no replay or persistence; subscriptions are global. Events: `agent:added`/`agent:updated`/`agent:removed` (`Agent`, from `domain/entities/World.js`); `agent:selected` (`Agent`); `agent:deselected`; `mode:changed` (`'character' | 'dashboard'`, from `application/ModeManager.js`); `usage:updated`; `fps:updated` (number ~2/s from `character-mode/IsometricRenderer.js`, `null` when the World loop stops); `ws:connected`/`ws:disconnected`/`ws:init`/`ws:update`/`ws:message` (from `infrastructure/WebSocketClient.js`). `ws:message` currently has no subscribers.
 
 ## Development Constraints
 

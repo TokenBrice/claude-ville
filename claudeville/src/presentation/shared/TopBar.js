@@ -8,6 +8,7 @@ export class TopBar {
             tokens: document.getElementById('statTokens'),
             cost: document.getElementById('statCost'),
             time: document.getElementById('statTime'),
+            fps: document.getElementById('statFps'),
             working: document.getElementById('badgeWorking'),
             idle: document.getElementById('badgeIdle'),
             waiting: document.getElementById('badgeWaiting'),
@@ -30,6 +31,9 @@ export class TopBar {
         this._onUsage = (usage) => this.renderQuota(usage);
         eventBus.on('usage:updated', this._onUsage);
 
+        this._onFps = (fps) => this.renderFps(fps);
+        eventBus.on('fps:updated', this._onFps);
+
         this._startTimer();
         this.render();
     }
@@ -42,6 +46,19 @@ export class TopBar {
         this.els.working.textContent = stats.working;
         this.els.idle.textContent = stats.idle;
         this.els.waiting.textContent = stats.waiting;
+    }
+
+    // fps is a number while the World render loop runs, null when it stops.
+    renderFps(fps) {
+        if (!this.els.fps) return;
+        if (fps == null) {
+            this.els.fps.textContent = '-- FPS';
+            this.els.fps.classList.remove('topbar__fps--warn', 'topbar__fps--danger');
+            return;
+        }
+        this.els.fps.textContent = `${fps} FPS`;
+        this.els.fps.classList.toggle('topbar__fps--danger', fps < 25);
+        this.els.fps.classList.toggle('topbar__fps--warn', fps >= 25 && fps < 45);
     }
 
     renderQuota(usage) {
@@ -132,5 +149,6 @@ export class TopBar {
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('usage:updated', this._onUsage);
+        eventBus.off('fps:updated', this._onFps);
     }
 }

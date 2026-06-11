@@ -39,6 +39,25 @@
     border-radius: 1px;
 }
 
+.topbar__fps {
+    font-size: 8px;
+    color: #9fc78a;
+    padding: 2px 6px;
+    border: 1px solid rgba(199, 157, 76, 0.45);
+    background: rgba(36, 24, 17, 0.9);
+    border-radius: 1px;
+    min-width: 40px;
+    text-align: center;
+}
+
+.topbar__fps--warn {
+    color: #e3b65e;
+}
+
+.topbar__fps--danger {
+    color: #e0705a;
+}
+
 .topbar__center {
     display: flex;
     align-items: center;
