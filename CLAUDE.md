@@ -27,6 +27,7 @@ Local dev-server (maintained): http://localhost:4000
 | Shared UI | `claudeville/src/presentation/shared/` | [`shared/README.md`](claudeville/src/presentation/shared/README.md) |
 | Domain / application / config / infra | `claudeville/src/{domain,application,config,infrastructure}/` | [`claudeville/CLAUDE.md`](claudeville/CLAUDE.md) |
 | Sprite assets | `claudeville/assets/sprites/` | [`scripts/sprites/generate.md`](scripts/sprites/generate.md), [`docs/pixellab-reference.md`](docs/pixellab-reference.md) |
+| Documentation | `docs/` | [`docs/README.md`](docs/README.md) |
 | macOS widget | `widget/` | `README.md` § macOS Menu Bar Widget |
 | KDE Plasma widget | `widget/kde/` | [`widget/kde/README.md`](widget/kde/README.md), `README.md` § KDE Plasma Widget |
 
@@ -38,12 +39,13 @@ Committed agent outputs go under `/agents/`:
 - `/agents/research/<slug>/` — research notes, proofs, image dumps
 - `/agents/handover/<slug>.md` — handover memos
 
-Before using an old artifact as implementation input, check [`agents/README.md`](agents/README.md) for status, supersession notes, and reusable templates.
+Before using or adding a retained artifact, check [`agents/README.md`](agents/README.md) for current policy and status. Do not treat deleted historical artifacts as implementation guidance.
 
 ## Workflow
 
-- Multi-part work or explicit swarm requests → follow [`docs/swarm-orchestration-procedure.md`](docs/swarm-orchestration-procedure.md) (quick modes, ownership, baselines, destructive-command and commit/push gates).
-- Single-file / single-owner tasks → direct execution unless swarm is requested.
+- Multi-part work: identify owned paths, record a short plan when useful, and keep validation matched to touched files.
+- Explicit swarm or handoff requests: coordinate ownership in the conversation, preserve independent baselines, and create `/agents/` artifacts only when they will remain useful after the task.
+- Single-file / single-owner tasks: execute directly unless coordination is requested.
 
 ## Browser Verification
 

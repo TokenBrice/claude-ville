@@ -84,7 +84,7 @@ rg -n -P "[\\x{1100}-\\x{11FF}\\x{3130}-\\x{318F}\\x{AC00}-\\x{D7AF}]" $(rg --fi
 
 The source-script scan exists because earlier revisions of the codebase mixed non-English copy with English. The rule is now uniform English. Run the scan after edits that touch user-visible copy.
 
-If you change this, update: `claudeville/CLAUDE.md`, `AGENTS.md`, and `docs/swarm-orchestration-procedure.md` ("Visible docs or locale-sensitive copy changes").
+If you change this, update: `claudeville/CLAUDE.md`, root `AGENTS.md`/`CLAUDE.md`, and `docs/README.md`.
 
 ## Hand-written WebSocket framing
 
@@ -96,7 +96,7 @@ If you change this, audit close handling, masking, and the 64-bit length path be
 
 ## Multi-agent shared checkout
 
-The repo is meant to be edited by several agents in parallel. `claudeville/CLAUDE.md` calls this out and `docs/swarm-orchestration-procedure.md` defines the workflow. The discipline:
+The repo is meant to be edited by several agents in parallel. Root `AGENTS.md`/`CLAUDE.md` define the workflow. The discipline:
 
 - Run `git status --short` before and after edits.
 - Do not revert or absorb unrelated changes.
@@ -104,7 +104,7 @@ The repo is meant to be edited by several agents in parallel. `claudeville/CLAUD
 
 This avoids accidental rollback when one agent integrates work and another is mid-edit.
 
-If you change this, update: `claudeville/CLAUDE.md`, `AGENTS.md`, `docs/swarm-orchestration-procedure.md`.
+If you change this, update: root `AGENTS.md`/`CLAUDE.md`, `claudeville/CLAUDE.md`, and `docs/README.md`.
 
 ## Platform-specific widgets
 

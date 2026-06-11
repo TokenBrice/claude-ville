@@ -91,6 +91,8 @@ Widget changes:
 Docs-only changes:
 
 ```bash
+git diff -- docs README.md AGENTS.md CLAUDE.md claudeville/CLAUDE.md
 git status --short
-npm run validate:quick
 ```
+
+Run `npm run validate:quick` only when a documentation change also changes a command, generated asset policy, validation matrix, or code-facing contract.

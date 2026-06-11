@@ -280,7 +280,7 @@ Accessibility validation:
 - Motion is not required to understand state.
 - Labels and controls remain readable at expected zoom levels.
 
-## 13. Implementation Checklist
+## 14. Implementation Checklist
 
 Use this as a starting blueprint:
 
@@ -297,7 +297,7 @@ Use this as a starting blueprint:
 - Add lifecycle cleanup for animation frames, listeners, subscriptions, and particles.
 - Validate with no data, one entity, many entities, and mixed providers.
 
-## 14. The North Star
+## 15. The North Star
 
 The goal is not to gamify the product for its own sake. The goal is to give data a memorable spatial structure.
 

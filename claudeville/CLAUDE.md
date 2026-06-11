@@ -8,7 +8,7 @@ This file is for agents working inside `claudeville/`. Keep it current when arch
 - This checkout may be edited by multiple agents. Run `git status --short` before changes and do not revert or absorb unrelated edits.
 - For documentation-only tasks scoped to `README.md`, root `AGENTS.md`/`CLAUDE.md`, or `claudeville/CLAUDE.md`, edit only those files.
 - Prefer `rg` and `rg --files` for discovery.
-- Workflow, git hygiene, and subagent orchestration are controlled by the root `AGENTS.md` and [docs/swarm-orchestration-procedure.md](../docs/swarm-orchestration-procedure.md); this file provides implementation context and validation details for `claudeville/`.
+- Workflow, git hygiene, and multi-agent coordination are controlled by the root `AGENTS.md`; this file provides implementation context and validation details for `claudeville/`.
 
 ## Project Shape
 
@@ -202,13 +202,13 @@ Motion-bearing World mode work must follow [`../docs/motion-budget.md`](../docs/
 
 ## Sprite Generation
 
-Pixel-art sprites are generated through the [pixellab MCP server](https://mcpservers.org/servers/pixellab-code/pixellab-mcp). The asset manifest at `claudeville/assets/sprites/manifest.yaml` is the single source of truth — every sprite the renderer references must have a corresponding manifest entry, and every PNG on disk must correspond to a manifest entry.
+Pixel-art sprites are generated through the [PixelLab MCP server](https://mcpservers.org/servers/pixellab-code/pixellab-mcp). The asset manifest at `claudeville/assets/sprites/manifest.yaml` is the single source of truth — every sprite the renderer references must have a corresponding manifest entry, and every PNG on disk must correspond to a manifest entry.
 
 `AssetManager` fetches `manifest.yaml` and `palettes.yaml`, appends `style.assetVersion` as a cache-busting query parameter for PNG loads, and falls back to `assets/sprites/_placeholder/checker-64.png` when an image is missing or invalid. If a renderer shows checkerboard assets, check the manifest ID, path mapping, and asset version first.
 
 Workflow:
 
-1. User installs the pixellab MCP server with their API token (`claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`).
+1. User installs the PixelLab MCP server with their API token (`claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`).
 2. Claude Code session reads `manifest.yaml`, maps each entry's short `tool` value to the appropriate MCP or REST call, and uses the matching PixelLab surface (`mcp__pixellab__create_character`, `mcp__pixellab__animate_character`, `mcp__pixellab__create_topdown_tileset`, `mcp__pixellab__create_isometric_tile`, `mcp__pixellab__create_map_object`, or REST `create-image-pixflux` for large hero assets).
 3. Resulting PNGs are saved to the manifest-implied path (see `AssetManager._pathFor` for the mapping).
 4. Run `npm run sprites:validate` to confirm every manifest entry resolves to a real PNG and no orphan PNGs exist.
@@ -217,7 +217,7 @@ The `style.anchor` field at the top of `manifest.yaml` is concatenated into ever
 The `palettes` block in `manifest.yaml` is mirrored in `claudeville/assets/sprites/palettes.yaml`; keep both in sync if editing either.
 
 For full asset generation steps see `scripts/sprites/generate.md`.
-For pixellab tool selection, parameter enums, animation templates, async lifecycle, and pitfalls, see [`../docs/pixellab-reference.md`](../docs/pixellab-reference.md).
+For PixelLab tool selection, parameter enums, animation templates, async lifecycle, and pitfalls, see [`../docs/pixellab-reference.md`](../docs/pixellab-reference.md).
 
 ## Dashboard Mode
 

@@ -1,13 +1,13 @@
-# PixelLab Reference for ClaudeVille Agents
+# PixelLab Reference
 
 ## When to read this
 
-- You are picking a pixellab tool to bake or edit a sprite and the choice is not obvious.
+- You are picking a PixelLab tool to bake or edit a sprite and the choice is not obvious.
 - You hit a parameter enum (`outline`, `shading`, `detail`, `view`, `isometric_tile_shape`, `tile_type`) and need the valid values.
 - You see an unfamiliar HTTP status (423, 429) or an unexpected ZIP layout and need to know what's normal.
 - You need to know whether a capability lives in the MCP server or only in the REST API.
 
-For tactical "how do I run the validation script" questions, stay in `scripts/sprites/generate.md`. For the pixellab subscription / quota question, see the next section.
+For tactical "how do I run the validation script" questions, stay in `scripts/sprites/generate.md`. For the PixelLab subscription / quota question, see the next section.
 
 ## Tier-3 budget
 
@@ -46,7 +46,7 @@ Re-fetch when an MCP call returns an error you do not recognize, when a paramete
 
 ## MCP vs REST boundary
 
-The pixellab MCP server (configured via `claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`) exposes a curated **asset-creation** subset. ClaudeVille uses both surfaces.
+The PixelLab MCP server (configured via `claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`) exposes a curated **asset-creation** subset. ClaudeVille uses both surfaces.
 
 **Available via MCP (`mcp__pixellab__*`):**
 
