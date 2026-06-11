@@ -1,6 +1,7 @@
 export class Modal {
     constructor() {
         this.overlay = document.getElementById('modalOverlay');
+        this.box = this.overlay.querySelector('.modal');
         this.titleEl = document.getElementById('modalTitle');
         this.contentEl = document.getElementById('modalContent');
         this.closeBtn = document.getElementById('modalClose');
@@ -16,9 +17,10 @@ export class Modal {
         });
     }
 
-    open(title, contentHTML) {
+    open(title, contentHTML, { wide = false } = {}) {
         this.titleEl.textContent = title;
         this.contentEl.innerHTML = contentHTML;
+        this.box.classList.toggle('modal--wide', wide);
         this.overlay.style.display = 'flex';
         document.addEventListener('keydown', this._onKeydown);
     }
@@ -27,6 +29,7 @@ export class Modal {
         this.overlay.style.display = 'none';
         this.titleEl.textContent = '';
         this.contentEl.innerHTML = '';
+        this.box.classList.remove('modal--wide');
         document.removeEventListener('keydown', this._onKeydown);
     }
 

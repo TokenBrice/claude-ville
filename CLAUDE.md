@@ -85,3 +85,25 @@ First-hour failure modes: [`docs/troubleshooting.md`](docs/troubleshooting.md). 
 - Re-run `git status --short` before editing, before committing, and before final response.
 - Preserve unrelated local modifications and untracked files. Do not revert, stage, commit, delete, or format files outside the task scope.
 - Do not run destructive commands (`git reset --hard`, `git checkout --`, `git restore`, `git clean`, `rm -rf`, `git stash drop/clear`, bulk formatters, `kill`/`pkill`/`killall`, port-killing pipelines) without explicit approval.
+
+## Changelog
+
+`CHANGELOG.md` (project root) is displayed in-app when the user clicks the version chip. **Before pushing**, prepend a new entry and update the version wherever it appears.
+
+**Entry format:**
+
+| Tier | When | Header syntax |
+| --- | --- | --- |
+| Named release | New feature or meaningful addition | `## v0.X.Y — *Release Name* · Mon DD, YYYY` |
+| Hotfix | Bug fix or tiny patch | `## v0.X.Y.Z · Mon DD, YYYY — Hotfix` |
+
+**Versioning rules:**
+- `0.X.0` — major milestone (new provider, new rendering system, large feature set)
+- `0.X.Y` — named minor release (smaller feature, meaningful UX addition)
+- `0.X.Y.Z` — hotfix (bug fix, one-liner patch, no new behaviour)
+
+**Release names** should be short, evocative, and fit the medieval/RPG village theme (examples: *The Founding*, *Harbor Lights*, *Swift Roads*). Hotfixes get no name.
+
+**Version locations to update:**
+- `claudeville/index.html` — `.topbar__version` text (`v0.X`)
+- `package.json` — `"version"` field (`0.X.Y`)

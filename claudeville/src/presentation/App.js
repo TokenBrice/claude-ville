@@ -104,7 +104,7 @@ class App {
             // 3. Initialize UI components
             this.toast = new Toast();
             this.modal = new Modal();
-            this.topBar = new TopBar(this.world);
+            this.topBar = new TopBar(this.world, { modal: this.modal });
             this.sidebar = new Sidebar(this.world);
 
             // 4. Initialize application services

@@ -20,6 +20,10 @@
     box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
 }
 
+.modal--wide {
+    max-width: 720px;
+}
+
 .modal__header {
     display: flex;
     align-items: center;
@@ -107,4 +111,107 @@
 @keyframes toast-out {
     from { opacity: 1; transform: translateX(0); }
     to { opacity: 0; transform: translateX(20px); }
+}
+
+/* ── Changelog ──────────────────────────────────────────────── */
+
+.cl-release {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 0 8px;
+    border-bottom: 1px solid rgba(232, 212, 77, 0.15);
+    margin-bottom: 10px;
+}
+
+.cl-release + .cl-release {
+    margin-top: 6px;
+}
+
+.cl-release--hotfix {
+    opacity: 0.65;
+    padding: 8px 0 4px;
+}
+
+.cl-ver {
+    font-size: 8px;
+    color: var(--cv-yellow);
+    border: 1px solid rgba(232, 212, 77, 0.45);
+    background: rgba(36, 24, 17, 0.9);
+    padding: 2px 6px;
+    border-radius: 2px;
+    white-space: nowrap;
+    font-family: 'Press Start 2P', monospace;
+}
+
+.cl-release--hotfix .cl-ver {
+    color: #c0a172;
+    border-color: rgba(192, 161, 114, 0.35);
+}
+
+.cl-name {
+    font-size: 11px;
+    color: #e8d4a0;
+    letter-spacing: 0.3px;
+}
+
+.cl-date {
+    font-size: 8px;
+    color: #5a5a6a;
+    margin-left: auto;
+    white-space: nowrap;
+    font-style: italic;
+}
+
+.cl-hotfix-badge {
+    font-size: 7px;
+    color: #c0a172;
+    border: 1px solid rgba(192, 161, 114, 0.35);
+    padding: 1px 5px;
+    border-radius: 2px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+}
+
+.cl-list {
+    margin: 0 0 8px 4px;
+    padding: 0;
+    list-style: none;
+}
+
+.cl-list li {
+    position: relative;
+    padding-left: 14px;
+    margin-bottom: 3px;
+    line-height: 1.6;
+}
+
+.cl-list li::before {
+    content: '—';
+    position: absolute;
+    left: 0;
+    color: rgba(192, 161, 114, 0.4);
+}
+
+.modal__content p {
+    margin: 0 0 6px;
+    line-height: 1.7;
+}
+
+.modal__content strong {
+    color: #c0a172;
+}
+
+.modal__content em {
+    color: #e8d4a0;
+    font-style: italic;
+}
+
+.modal__content code {
+    font-family: monospace;
+    font-size: 9px;
+    color: #9fc78a;
+    background: rgba(0, 0, 0, 0.35);
+    padding: 0 3px;
+    border-radius: 2px;
 }

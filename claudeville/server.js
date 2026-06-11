@@ -359,6 +359,22 @@ function handleGetPerf(req, res) {
   }), 'Unable to load performance information.');
 }
 
+/**
+ * GET /api/changelog
+ * Returns CHANGELOG.md as plain text for the in-app changelog viewer.
+ */
+function handleGetChangelog(req, res) {
+  const changelogPath = path.join(__dirname, '..', 'CHANGELOG.md');
+  try {
+    const content = fs.readFileSync(changelogPath, 'utf-8');
+    setCorsHeaders(res);
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(content);
+  } catch (err) {
+    sendError(res, 404, 'Changelog not found');
+  }
+}
+
 // ─── Static file serving ─────────────────────────────────────
 
 function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Static' }) {
@@ -1537,6 +1553,7 @@ const API_ROUTES = {
     ['/api/providers', handleGetProviders],
     ['/api/usage', handleGetUsage],
     ['/api/perf', handleGetPerf],
+    ['/api/changelog', handleGetChangelog],
   ]),
   POST: new Map([
     ['/api/session-details', handlePostSessionDetails],

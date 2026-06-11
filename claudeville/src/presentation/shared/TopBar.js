@@ -2,8 +2,9 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { formatCost, formatNumber } from './Formatters.js';
 
 export class TopBar {
-    constructor(world) {
+    constructor(world, { modal } = {}) {
         this.world = world;
+        this.modal = modal || null;
         this.els = {
             tokens: document.getElementById('statTokens'),
             cost: document.getElementById('statCost'),
@@ -12,6 +13,7 @@ export class TopBar {
             working: document.getElementById('badgeWorking'),
             idle: document.getElementById('badgeIdle'),
             waiting: document.getElementById('badgeWaiting'),
+            version: document.querySelector('.topbar__version'),
             // Account & Quota
             accountTier: document.getElementById('accountTier'),
             accountActivity: document.getElementById('accountActivity'),
@@ -22,6 +24,7 @@ export class TopBar {
             quota7dPct: document.getElementById('quota7dPct'),
         };
         this.timeInterval = null;
+        this._changelogHtml = null;
 
         this._onUpdate = () => this.render();
         eventBus.on('agent:added', this._onUpdate);
@@ -33,6 +36,12 @@ export class TopBar {
 
         this._onFps = (fps) => this.renderFps(fps);
         eventBus.on('fps:updated', this._onFps);
+
+        if (this.modal && this.els.version) {
+            this.els.version.title = 'View changelog';
+            this._onVersionClick = () => this._openChangelog();
+            this.els.version.addEventListener('click', this._onVersionClick);
+        }
 
         this._startTimer();
         this.render();
@@ -143,6 +152,78 @@ export class TopBar {
         }, 1000);
     }
 
+    async _openChangelog() {
+        if (!this.modal) return;
+        if (!this._changelogHtml) {
+            try {
+                const res = await fetch('/api/changelog');
+                if (!res.ok) throw new Error(res.statusText);
+                this._changelogHtml = this._changelogToHtml(await res.text());
+            } catch {
+                this._changelogHtml = '<p>Failed to load changelog.</p>';
+            }
+        }
+        this.modal.open('Changelog', this._changelogHtml, { wide: true });
+    }
+
+    _changelogToHtml(md) {
+        const lines = md.split('\n');
+        const parts = [];
+        let inList = false;
+
+        const closeList = () => {
+            if (inList) { parts.push('</ul>'); inList = false; }
+        };
+
+        for (const line of lines) {
+            if (line.startsWith('# ') || line === '---') {
+                closeList();
+            } else if (line.startsWith('## ')) {
+                closeList();
+                const text = line.slice(3).trim();
+                const hotfixM = text.match(/^(v[\d.]+)\s+·\s+(.+?)\s+—\s+Hotfix/);
+                const namedM  = text.match(/^(v[\d.]+)\s+—\s+\*(.+?)\*\s+·\s+(.+)/);
+                if (namedM) {
+                    const [, ver, name, date] = namedM;
+                    parts.push(
+                        `<div class="cl-release">` +
+                        `<span class="cl-ver">${ver}</span>` +
+                        `<span class="cl-name">${name}</span>` +
+                        `<span class="cl-date">${date}</span>` +
+                        `</div>`
+                    );
+                } else if (hotfixM) {
+                    const [, ver, date] = hotfixM;
+                    parts.push(
+                        `<div class="cl-release cl-release--hotfix">` +
+                        `<span class="cl-ver">${ver}</span>` +
+                        `<span class="cl-hotfix-badge">Hotfix</span>` +
+                        `<span class="cl-date">${date}</span>` +
+                        `</div>`
+                    );
+                }
+            } else if (line.startsWith('- ')) {
+                if (!inList) { parts.push('<ul class="cl-list">'); inList = true; }
+                parts.push(`<li>${this._inline(line.slice(2))}</li>`);
+            } else if (line.trim() === '') {
+                closeList();
+            } else {
+                closeList();
+                parts.push(`<p>${this._inline(line)}</p>`);
+            }
+        }
+        closeList();
+        return parts.join('');
+    }
+
+    _inline(text) {
+        return text
+            .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+            .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*(.+?)\*/g, '<em>$1</em>')
+            .replace(/`(.+?)`/g, '<code>$1</code>');
+    }
+
     destroy() {
         if (this.timeInterval) clearInterval(this.timeInterval);
         eventBus.off('agent:added', this._onUpdate);
@@ -150,5 +231,8 @@ export class TopBar {
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('usage:updated', this._onUsage);
         eventBus.off('fps:updated', this._onFps);
+        if (this._onVersionClick && this.els.version) {
+            this.els.version.removeEventListener('click', this._onVersionClick);
+        }
     }
 }
