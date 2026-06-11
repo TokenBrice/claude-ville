@@ -19,3 +19,5 @@ scripts/sprites/baselines/*-fresh.png
 .env.*
 .dev.var
 .dev.vars
+
+# local impeccable skill removed; design skills come from the globally enabled impeccable plugin

@@ -1,305 +1,86 @@
 # ClaudeVille Agent Notes
 
-This file is for agents working inside `claudeville/`. Keep it current when architecture, runtime behavior, or validation paths change.
-
 ## Scope
 
 - Work from the repo root: `/home/ahirice/Documents/git/claude-ville`.
 - This checkout may be edited by multiple agents. Run `git status --short` before changes and do not revert or absorb unrelated edits.
 - For documentation-only tasks scoped to `README.md`, root `AGENTS.md`/`CLAUDE.md`, or `claudeville/CLAUDE.md`, edit only those files.
-- Prefer `rg` and `rg --files` for discovery.
-- Workflow, git hygiene, and multi-agent coordination are controlled by the root `AGENTS.md`; this file provides implementation context and validation details for `claudeville/`.
+- Workflow, git hygiene, and multi-agent coordination are controlled by the root `AGENTS.md`.
 
 ## Project Shape
 
-ClaudeVille is a local AI coding agent dashboard. Runtime has no dependency install step, no bundler, no transpiler, and no app test runner. The browser app is static HTML, CSS, and vanilla ES modules. The backend is `server.js` using only Node built-in modules.
-
-The repo does have `package-lock.json` and dev dependencies for sprite validation, Playwright screenshot capture, and pixelmatch visual diffs. Run `npm install` only when those development scripts are in scope.
-
-Top-level scripts:
-
-```bash
-npm run dev           # node claudeville/server.js
-npm run widget:build  # cd widget && bash build.sh
-npm run widget        # build, then open widget/ClaudeVilleWidget.app
-```
+Static HTML/CSS/vanilla ES modules; `server.js` uses only Node built-ins; no bundler, transpiler, or app test runner. Dev dependencies exist only for sprite validation, Playwright capture, and pixelmatch diffs — run `npm install` only when those scripts are in scope. Dev server: `npm run dev` (node claudeville/server.js).
 
 ## Server
 
-`server.js` is the local HTTP/WebSocket server.
+`server.js`: port hardcoded to `4000`; static files from `claudeville/`; `/widget.html` and `/widget.css` from `widget/Resources/`; watch paths come from active provider adapters; updates debounce on fs events plus a 2 s poll that no-ops with no WS clients.
 
-- Port is hardcoded to `4000`.
-- Static files are served from `claudeville/`.
-- `/widget.html` and `/widget.css` are served from `widget/Resources/`.
-- WebSocket upgrades are handled directly with an RFC 6455 frame implementation.
-- CORS headers are permissive for local tooling.
-- Watch paths come from active provider adapters.
-- Updates are debounced on filesystem events. A 2-second polling interval also runs continuously; the broadcast no-ops when no WebSocket clients are connected.
-
-Current API surface:
-
-| Endpoint | Purpose |
-| --- | --- |
-| `GET /api/sessions` | Active sessions from every available provider. |
-| `GET /api/session-detail?sessionId=&project=&provider=` | Tool history, messages, and token usage for one session when available. |
-| `POST /api/session-details` | Batch detail fetch for visible or selected sessions. Request body max is 256 KiB, up to 100 items are read, invalid providers are skipped, and `count` is the returned detail count. |
-| `GET /api/teams` | Claude Code team metadata. |
-| `GET /api/tasks` | Claude Code task metadata. |
-| `GET /api/providers` | Active provider adapters. |
-| `GET /api/usage` | Account, activity, and quota data from `services/usageQuota.js`. |
-| `GET /api/perf` | Runtime counters for manual performance checks. |
-| `ws://localhost:4000` | Initial payload, update broadcasts, and ping/pong. |
+API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf`; `ws://localhost:4000` (init payload, updates, ping/pong).
 
 Do not change port `4000` casually. The README, widget, and local workflows assume it.
 
-## Polling and Cache Cadence
-
-The data path layers a client-side poll fallback, a server broadcast loop, and TTL caches in adapters. The current cadence:
-
-| Layer | Constant | Where | Value |
-| --- | --- | --- | --- |
-| Client poll fallback | `REFRESH_INTERVAL` | `src/config/constants.js` | 2000 ms |
-| Activity panel detail poll | `SESSION_DETAIL_PANEL_REFRESH_INTERVAL` | `src/config/constants.js` | 2000 ms |
-| Dashboard detail poll | `SESSION_DETAIL_REFRESH_INTERVAL` | `src/config/constants.js` | 3000 ms |
-| WS reconnect base | `WS_RECONNECT_INTERVAL` | `src/config/constants.js` | 3000 ms |
-| Server broadcast poll | `BROADCAST_POLL_INTERVAL` | `server.js` | 2000 ms |
-| Server full discovery | `BROADCAST_FULL_DISCOVERY_INTERVAL` | `server.js` | 20000 ms |
-| Teams cache TTL | `TEAMS_CACHE_TTL_MS` | `server.js` | 5000 ms |
-| WS heartbeat | `WS_HEARTBEAT_INTERVAL_MS` | `server.js` | 30000 ms |
-| Session list cache TTL | `SESSION_LIST_CACHE_TTL_MS` | `adapters/index.js` | 5000 ms |
-| Widget poll | hardcoded `withTimeInterval: 5.0` | `widget/Sources/main.swift` | 5000 ms |
-| Unpushed-commit infer cache TTL | `GIT_STATUS_CACHE_TTL_MS` | `adapters/gitEvents.js` | 30000 ms |
+Cadence constants live in `src/config/constants.js`, `server.js`, `adapters/index.js`, `adapters/gitEvents.js`, and `widget/Sources/main.swift`.
 
 Invariant: client poll fallback runs at 2 s; server cache TTL is 5 s; WS heartbeat is 30 s; widget poll is 5 s — never lower client poll under server cache TTL/2 or the cache becomes useless.
 
 ## Provider Adapters
 
-Adapters are in `adapters/` and registered by `adapters/index.js`.
+In `adapters/`, registered by `adapters/index.js`.
 
-- `claude.js`
-  - Source: `~/.claude/`.
-  - Reads `history.jsonl`, `projects/`, `teams/`, and `tasks/`.
-  - Detects recent main sessions, subagents under `subagents/`, workflow-tool subagents nested under `subagents/workflows/<wfRunId>/` (tagged `agentType: 'workflow-subagent'` with `workflowId`/`workflowName`), and orphan/team-member project JSONL files.
-  - Provides token usage, last tool, last tool input, last message, teams, and tasks.
-- `codex.js`
-  - Source: `~/.codex/sessions/`.
-  - Reads recent `rollout-*.jsonl` files under `YYYY/MM/DD/`.
-  - Extracts session metadata, model, cwd, tool calls, messages, token count events, and usage fallbacks.
-- `gemini.js`
-  - Source: `~/.gemini/tmp/`.
-  - Reads `tmp/<project_hash>/chats/session-*.json`.
-  - Extracts model, tool calls, messages, and attempts to reverse-map project hashes to local paths.
-- `kimi.js`
-  - Source: `~/.kimi/`.
-  - Reads Kimi session wire/state files and config.
-  - Extracts model, tool calls, messages, token usage, and project paths.
-- `opencode.js`
-  - Source: `~/.local/share/opencode/opencode.db`.
-  - Reads OpenCode SQLite sessions, messages, and parts in read-only mode.
-  - Extracts model provider/id, subagent parent links, tool calls, text messages, token totals, and git events from shell tools.
-- `gitEvents.js`
-  - Shared parser for git `commit` and `push` commands seen in provider tool logs.
-  - Dry-runs are omitted.
-  - Events are attached to active session objects as `gitEvents`; detail payloads currently focus on tools/messages/tokens.
-  - The registry can synthesize repository-only `provider: 'git'` sessions for unpushed/pushed GitHub repository activity. Scans default to `~/Documents/git`, can be tuned with `CLAUDEVILLE_REPOSITORY_SCAN_ROOT` and `CLAUDEVILLE_REPOSITORY_SCAN_MAX`, and can be disabled with `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`.
+- `claude.js`: `~/.claude/` — `history.jsonl`, `projects/`, `teams/`, `tasks/`; subagents under `subagents/`, workflow-tool subagents under `subagents/workflows/<wfRunId>/` (tagged `agentType: 'workflow-subagent'`), orphan/team-member project JSONL files.
+- `codex.js`: `~/.codex/sessions/` — recent `rollout-*.jsonl` under `YYYY/MM/DD/`.
+- `gemini.js`: `~/.gemini/tmp/` — `tmp/<project_hash>/chats/session-*.json`; reverse-maps project hashes to local paths.
+- `kimi.js`: `~/.kimi/` — session wire/state files and config.
+- `opencode.js`: `~/.local/share/opencode/opencode.db` — SQLite read-only; includes subagent parent links and git events from shell tools.
+- `gitEvents.js`: parses git `commit`/`push` from provider tool logs (dry-runs omitted) into session `gitEvents`; the registry can synthesize repository-only `provider: 'git'` sessions. Scans default to `~/Documents/git`; tune `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`/`CLAUDEVILLE_REPOSITORY_SCAN_MAX`; disable `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`.
 
-Adapter availability is automatic. A machine can have any subset of providers installed, and empty provider output is not necessarily an error.
+Adapter availability is automatic; empty provider output is not necessarily an error. Treat all provider session files as read-only inputs. `adapters/index.js` caches lists and details for 5 s; detail failures return stale cache when present, else `{ toolHistory: [], messages: [] }`.
 
-Treat all provider session files as read-only inputs.
+## Frontend
 
-`adapters/index.js` also protects the live polling path with short TTL caches:
+`src/presentation/App.js` owns startup. The app exposes English UI strings only. Documentation should also stay English.
 
-- Session lists are cached for 5 seconds.
-- Session details are cached for 5 seconds with a small LRU-style trim.
-- Detail failures return the stale cached payload when one exists, otherwise `{ toolHistory: [], messages: [] }`.
-
-## Frontend Boot Path
-
-`src/presentation/App.js` owns startup:
-
-1. Creates the domain `World` and adds buildings from `src/config/buildings.js`.
-2. Creates `ClaudeDataSource` and `WebSocketClient`.
-3. Creates shared UI: `Toast`, `Modal`, `TopBar`, `Sidebar`.
-4. Creates application services: `AgentManager`, `ModeManager`, `NotificationService`.
-5. Loads initial sessions through `AgentManager.loadInitialData()` and seeds usage data.
-6. Starts `SessionWatcher`.
-7. Binds canvas resizing with `ResizeObserver`.
-8. Loads `character-mode/IsometricRenderer.js`, then `dashboard-mode/DashboardRenderer.js`.
-9. Constructs `ActivityPanel` and binds agent-follow event handlers.
-10. Applies initial English UI strings.
-
-The app exposes English UI strings only. Documentation should also stay English.
-
-## Layout Rules
-
-The page shell is a full-height flex layout:
-
-```text
-body
-  header.topbar
-  div.main
-    div.main__body
-      aside.sidebar
-      div.content
-        section#characterMode
-        section#dashboardMode
-      aside#activityPanel
-```
-
-- `header.topbar` is fixed-height.
-- `aside.sidebar` is fixed-width.
-- `.content` takes remaining space.
-- `#activityPanel` is 320px wide and shrinks `.content` when open.
-- World mode canvas fills the remaining content area.
-- Dashboard mode scrolls vertically.
-- Do not use `position: fixed` for normal UI panels. Modals and toasts are the exceptions.
+Layout: `header.topbar` fixed-height; `aside.sidebar` fixed-width; `.content` takes remaining space (holds `section#characterMode`, `section#dashboardMode`); `#activityPanel` is 320px wide and shrinks `.content` when open. World canvas fills remaining content; Dashboard scrolls vertically. Do not use `position: fixed` for normal UI panels. Modals and toasts are the exceptions.
 
 ## World Mode
 
-World mode is the current RPG visual direction. It is sprite-based pixel-art Canvas 2D isometric rendering under `src/presentation/character-mode/`.
+Sprite-based pixel-art Canvas 2D isometric rendering under `src/presentation/character-mode/`. Invariants: `Camera.js` zoom is clamped to integer steps {1,2,3} for pixel-perfect blits. `SpriteRenderer.js` is the sole entry point for sprite blits (integer snap, smoothing off); `AgentSprite.js` is state and animation only. `Minimap.js` is intentionally vector parchment art, out of scope for the pixel-art migration.
 
-Key files:
+Buildings (nine) come from `src/config/buildings.js`. Agent clicks select, open the activity panel via domain events, and start camera follow; empty-space clicks clear selection and stop follow, but the panel closes only via its own close action or when the selected agent is removed.
 
-- `IsometricRenderer.js`: render loop orchestration; routes terrain, buildings, and agents through sprite renderers.
-- `CanvasBudget.js`: effective DPR and canvas backing-store guardrails.
-- `Camera.js`: pan, zoom (clamped to integer steps {1,2,3} for pixel-perfect blits), follow.
-- `AtmosphereState.js`, `SkyRenderer.js`, `WeatherRenderer.js`: phase/weather snapshots, sky layers, and foreground weather.
-- `AgentSprite.js`: state and animation only; drawing delegated to `SpriteRenderer`, `Compositor`, and `SpriteSheet`.
-- `AgentBehaviorState.js`, `VisitIntentManager.js`, `VisitTileAllocator.js`: visit intent, building capacity, and agent destination allocation.
-- `BuildingSprite.js`: building sprite blits with occlusion split for hero buildings; replaces the legacy building renderer.
-- `ParticleSystem.js`: particles and ambient effects; emitter hooks now driven by manifest-declared coordinates.
-- `Minimap.js`: intentionally vector parchment art, out of scope for the pixel-art migration.
-- `AssetManager.js`: manifest loader, PNG cache, alpha mask + outline cache.
-- `SpriteRenderer.js`: sole entry point for sprite blits; integer snap, smoothing off.
-- `SpriteSheet.js`: frame strip lookup and 8-direction velocity-to-direction mapping.
-- `Compositor.js`: palette swap with ΔE tolerance and accessory overlay compositing.
-- `TerrainTileset.js`: Wang-tile neighbor mask lookup and isometric transform.
-- `SceneryEngine.js`: authored and generated water, shore, bridges, vegetation, boulders, and walkability.
-- `Pathfinder.js`: grid pathfinding over the walkability map.
-- `HarborTraffic.js`: ship/harbor motion and git-event-aware harbor activity.
-- `LightSourceRegistry.js`: shared light records for world grading.
-- `AgentEventStream.js`: shared presentation observer that derives tool, subagent, team, and chat semantic events from `agent:*` updates.
-- `RelationshipState.js`: debounced relationship snapshot for parent/child, team, arrival/departure, and chat-pair consumers.
-- `ArrivalDeparture.js`, `TrailRenderer.js`, `Chronicler.js`, `ChronicleEvents.js`, `ChronicleMonuments.js`: relationship arrivals/departures, path trails, and chronicle monument visuals.
-- `CouncilRing.js`, `LandmarkActivity.js`, `PulsePolicy.js`, `DebugOverlay.js`: team rings, landmark activity, pulse priority, and debug overlay helpers.
-- `RitualConductor.js`: capped, reduced-motion-aware scheduler for future tool ritual visuals.
-
-Buildings from `src/config/buildings.js` (nine total):
-
-- Command Center: team status.
-- Task Board: task status.
-- Code Forge: code work.
-- Token Mine: token usage.
-- Grand Lore Archive: reading and search.
-- Research Observatory: external research.
-- Portal Gate: browser and remote tools.
-- Pharos Lighthouse: sea watch and beacon.
-- Harbor Master: commit ships and push departures.
-
-Clicking an agent selects it, opens the right activity panel through domain events, and starts camera follow. Clicking empty world space clears renderer selection and stops follow, but the activity panel closes through its own close action or when the selected agent is removed. Agents using `SendMessage` can move toward a matched recipient and show chat state.
-
-Motion-bearing World mode work must follow [`../docs/motion-budget.md`](../docs/motion-budget.md): check `motionScale` before allocating animation resources, declare a pulse band, and ship a static reduced-motion fallback.
+Motion-bearing World mode work must follow `../docs/motion-budget.md`: check `motionScale` before allocating animation resources, declare a pulse band, and ship a static reduced-motion fallback.
 
 ## Sprite Generation
 
-Pixel-art sprites are generated through the [PixelLab MCP server](https://mcpservers.org/servers/pixellab-code/pixellab-mcp). The asset manifest at `claudeville/assets/sprites/manifest.yaml` is the single source of truth — every sprite the renderer references must have a corresponding manifest entry, and every PNG on disk must correspond to a manifest entry.
+Via the PixelLab MCP server. `claudeville/assets/sprites/manifest.yaml` is the single source of truth — every sprite the renderer references must have a corresponding manifest entry, and every PNG on disk must correspond to a manifest entry. PNGs go to the manifest-implied path (`AssetManager._pathFor`). `AssetManager` cache-busts PNG loads with `style.assetVersion` and falls back to `assets/sprites/_placeholder/checker-64.png` for missing/invalid images. `style.anchor` is concatenated into every prompt; bump `style.assetVersion` when PNGs change and browser cache matters. The `palettes` block is mirrored in `claudeville/assets/sprites/palettes.yaml`; keep both in sync. Then run `npm run sprites:validate`. Steps: `scripts/sprites/generate.md`; PixelLab: `../docs/pixellab-reference.md`.
 
-`AssetManager` fetches `manifest.yaml` and `palettes.yaml`, appends `style.assetVersion` as a cache-busting query parameter for PNG loads, and falls back to `assets/sprites/_placeholder/checker-64.png` when an image is missing or invalid. If a renderer shows checkerboard assets, check the manifest ID, path mapping, and asset version first.
+## Dashboard and Activity Panel
 
-Workflow:
+`src/presentation/dashboard-mode/DashboardRenderer.js` groups agents by project; listens for `agent:added`/`agent:updated`/`agent:removed`/`mode:changed`; detail fetching runs only while Dashboard mode is active; card clicks emit `agent:selected`. Details flow through `shared/SessionDetailsService.js` (dedupe + short-lived cache).
 
-1. User installs the PixelLab MCP server with their API token (`claude mcp add --transport http pixellab https://api.pixellab.ai/mcp --header "Authorization: Bearer YOUR_TOKEN"`).
-2. Claude Code session reads `manifest.yaml`, maps each entry's short `tool` value to the appropriate MCP or REST call, and uses the matching PixelLab surface (`mcp__pixellab__create_character`, `mcp__pixellab__animate_character`, `mcp__pixellab__create_topdown_tileset`, `mcp__pixellab__create_isometric_tile`, `mcp__pixellab__create_map_object`, or REST `create-image-pixflux` for large hero assets).
-3. Resulting PNGs are saved to the manifest-implied path (see `AssetManager._pathFor` for the mapping).
-4. Run `npm run sprites:validate` to confirm every manifest entry resolves to a real PNG and no orphan PNGs exist.
-
-The `style.anchor` field at the top of `manifest.yaml` is concatenated into every prompt at generation time, locking the visual tone across all assets. `style.assetVersion` should be bumped when PNGs change and browser cache behavior matters.
-The `palettes` block in `manifest.yaml` is mirrored in `claudeville/assets/sprites/palettes.yaml`; keep both in sync if editing either.
-
-For full asset generation steps see `scripts/sprites/generate.md`.
-For PixelLab tool selection, parameter enums, animation templates, async lifecycle, and pitfalls, see [`../docs/pixellab-reference.md`](../docs/pixellab-reference.md).
-
-## Dashboard Mode
-
-Dashboard mode is DOM/card rendering under `src/presentation/dashboard-mode/`.
-
-- `DashboardRenderer.js` groups agents by project.
-- Cards show avatar, provider badge, model, role, status, current tool, recent message, and fetched tool history.
-- It listens for `agent:added`, `agent:updated`, `agent:removed`, and `mode:changed`.
-- Detail fetching runs while Dashboard mode is active and stops when leaving Dashboard mode.
-- Existing project sections and cards are reused across updates; stale cards and sections are removed after each render.
-- Card clicks emit `agent:selected`, matching sidebar/canvas selection behavior.
-- Session details flow through `shared/SessionDetailsService.js`, which dedupes in-flight requests and serves short-lived cached data.
-
-## Activity Panel
-
-`src/presentation/shared/ActivityPanel.js` is the 320px right panel for selected-agent and selected-building detail. `agent:selected` opens agent mode; `BUILDING_EVENTS.SELECTED` opens building mode and clears agent selection.
-
-It polls session detail every 2 seconds for the selected agent and shows tool history, recent messages, and token usage when the provider adapter exposes those fields. In building mode it renders purpose/status/occupants and refreshes occupants every 5 seconds.
-
-The panel shares `SessionDetailsService.js` with Dashboard mode. It renders only when detail signatures change, so stale-looking output can be caused by cached detail data or an unchanged signature rather than a missed DOM update.
+`src/presentation/shared/ActivityPanel.js`: `agent:selected` opens agent mode; `BUILDING_EVENTS.SELECTED` opens building mode and clears agent selection. Polls session detail every 2 s, building occupants every 5 s; renders only when detail signatures change.
 
 ## Widget
 
-The optional macOS widget lives outside `claudeville/` in `widget/`.
-
-- `widget/Sources/main.swift` creates an `NSStatusItem` and a `WKWebView` popover.
-- It polls `/api/sessions` and `/api/usage` every 5 seconds.
-- The native menu popover is generated inline in Swift (`buildHTML()` and `loadHTMLString(...)`).
-- `widget/Resources/widget.html` and `widget.css` are static resources served by `server.js` and copied into the app bundle, but editing them does not automatically change the native Swift-generated popover.
-- It can start `claudeville/server.js` using the project path and Node path recorded in the app bundle.
-- The dashboard menu/window opens `http://localhost:4000`.
-- `widget/build.sh` compiles Swift, recreates `ClaudeVilleWidget.app`, copies resources, and writes `project_path` and `node_path`.
-
-Widget changes require macOS validation with:
-
-```bash
-npm run widget:build
-npm run widget
-```
+`widget/Sources/main.swift` polls `/api/sessions` and `/api/usage` every 5 s. The native popover is generated inline in Swift (`buildHTML()`); editing `widget/Resources/widget.html`/`widget.css` does not automatically change it. Widget changes require macOS validation: `npm run widget:build` then `npm run widget`.
 
 ## Validation
 
-In-app specifics (run after rendering/layout/event-bus changes):
+In-app (after rendering/layout/event-bus changes): open `http://localhost:4000`; switch World/Dashboard modes; select/deselect an agent — `agent:selected`/`agent:deselected` must open/close the activity panel and toggle camera follow; the world canvas must resize with `.content` (not `position: fixed`).
 
-- Open `http://localhost:4000`, switch between World and Dashboard modes.
-- Select and deselect an agent to confirm `agent:selected`/`agent:deselected` open and close the right activity panel and toggle camera follow.
-- Confirm the world canvas resizes with `.content` (not via `position: fixed`).
+Assets (`npm install` first if `node_modules/` is missing): `npm run sprites:validate` (manifest ↔ PNG bidirectional check); `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` (pixelmatch baselines).
 
-Asset validation:
-
-- Run `npm install` first if `node_modules/` is missing and asset validation is in scope.
-- `npm run sprites:validate` — manifest ↔ PNG bidirectional check.
-- `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` — pixelmatch baseline comparison.
-
-Documentation validation (project-wide, English-only):
+Docs (English-only; must return no matches):
 
 ```bash
 rg -n -P "[\\x{1100}-\\x{11FF}\\x{3130}-\\x{318F}\\x{AC00}-\\x{D7AF}]" $(rg --files -g '*.md' --glob '!node_modules')
 ```
 
-That command should return no matches.
-
 See `AGENTS.md` § Validation Checklist for the canonical syntax/runtime/widget smoke list.
 
 ## Event Bus
 
-The singleton bus lives at `src/domain/events/DomainEvent.js` and exports `eventBus`. It is a plain in-memory observer with `on/off/emit`; there is no replay or persistence. Modules import the same instance, so subscriptions are global.
-
-| Event | Payload | Primary emitters | Primary subscribers |
-| --- | --- | --- | --- |
-| `agent:added` | `Agent` | `domain/entities/World.js` | World renderer, Dashboard renderer, Sidebar, TopBar, NotificationService |
-| `agent:updated` | `Agent` | `domain/entities/World.js` | World renderer, Dashboard renderer, Sidebar, TopBar, ActivityPanel |
-| `agent:removed` | `Agent` | `domain/entities/World.js` | World renderer, Dashboard renderer, Sidebar, TopBar, ActivityPanel, NotificationService |
-| `agent:selected` | `Agent` | `presentation/App.js`, `shared/Sidebar.js`, `dashboard-mode/DashboardRenderer.js` | `App.js` renderer-follow bridge, ActivityPanel, Dashboard selection state, Sidebar selection state |
-| `agent:deselected` | none | `shared/ActivityPanel.js`, `shared/Sidebar.js` | `App.js` renderer-follow bridge, Dashboard selection state, Sidebar selection state |
-| `mode:changed` | `'character' \| 'dashboard'` | `application/ModeManager.js` | World renderer active-state bridge, Dashboard renderer, NotificationService |
-| `usage:updated` | usage object from `/api/usage` | `App.js`, `SessionWatcher.js`, `WebSocketClient.js` | TopBar, App quota/chronicle bridge |
-| `ws:connected` | none | `infrastructure/WebSocketClient.js` | SessionWatcher, NotificationService |
-| `ws:disconnected` | none | `WebSocketClient.js` | SessionWatcher, NotificationService |
-| `ws:init` | initial server payload (`sessions`, `teams`, `usage`) | `WebSocketClient.js` | SessionWatcher |
-| `ws:update` | server update payload | `WebSocketClient.js` | SessionWatcher |
-| `ws:message` | unknown WS message | `WebSocketClient.js` | none currently; kept for future hooks |
+Singleton at `src/domain/events/DomainEvent.js`, exports `eventBus`; no replay or persistence; subscriptions are global. Events: `agent:added`/`agent:updated`/`agent:removed` (`Agent`, from `domain/entities/World.js`); `agent:selected` (`Agent`); `agent:deselected`; `mode:changed` (`'character' | 'dashboard'`, from `application/ModeManager.js`); `usage:updated`; `ws:connected`/`ws:disconnected`/`ws:init`/`ws:update`/`ws:message` (from `infrastructure/WebSocketClient.js`). `ws:message` currently has no subscribers.
 
 ## Development Constraints
 
