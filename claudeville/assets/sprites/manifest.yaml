@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-06-11-fable-mythweaver-v3"
+  assetVersion: "2026-06-13-harbor-stacks-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -663,6 +663,24 @@ props:
     prompt: "mythic flagship fantasy galleon, colossal sails, ornate prow, magical lanterns, transparent background"
     size: 144
     anchor: [72, 110]
+
+  - id: prop.harborShip.stack5
+    tool: map_object
+    prompt: "compact isometric stack of about five tiny fantasy harbor commit cargo boats lashed together, dark wood hulls, cream triangular sails, gold branch sigils, a few glowing sealed cargo crates, transparent background, no text, no numbers"
+    size: 104
+    anchor: [52, 80]
+
+  - id: prop.harborShip.stack10
+    tool: map_object
+    prompt: "large isometric stack of about ten fantasy harbor commit cargo boats packed into one broad flotilla marker, dark wood hulls, staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
+    size: 132
+    anchor: [66, 102]
+
+  - id: prop.harborShip.stack30
+    tool: map_object
+    prompt: "heavy isometric fleet-stack marker for about twenty to thirty fantasy harbor commit cargo boats, central flagship hull with smaller dark wood boats around it, dense staggered cream sails, gold branch sigils, transparent background, no text, no numbers"
+    size: 168
+    anchor: [84, 130]
 
   - id: prop.harborCrates
     tool: isometric_tile
