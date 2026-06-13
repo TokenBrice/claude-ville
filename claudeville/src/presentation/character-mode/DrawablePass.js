@@ -41,7 +41,7 @@ export function createDepthDrawable(kind, sortY, payload, draw) {
 }
 
 function drawAgent(ctx, zoom, context, sprite) {
-    sprite?.draw?.(ctx, zoom);
+    sprite?.draw?.(ctx, zoom, context.agentRenderMode || 'full');
 }
 
 function drawBuilding(ctx, zoom, context, drawable) {

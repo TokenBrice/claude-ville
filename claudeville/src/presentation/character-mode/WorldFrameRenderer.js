@@ -106,7 +106,8 @@ export function renderWorldFrame(renderer, dt = 16) {
     const chroniclerDrawables = renderer.chronicler?.enumerateDrawables?.() ?? [];
     const familiarDrawables = renderer._enumerateFamiliarMoteDrawables?.(atmosphere) ?? [];
     const zoom = renderer.camera.zoom;
-    renderer._assignAgentOverlaySlots(sortedSprites, zoom);
+    const agentRenderMode = renderer._agentRenderMode?.(viewport, sortedSprites) || 'full';
+    renderer._assignAgentOverlaySlots(sortedSprites, zoom, { agentRenderMode });
     markFrameTiming(frameTimer, 'collect');
 
     const drawables = renderer._drawables;
@@ -132,6 +133,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         landmarkActivity: renderer.landmarkActivity,
         chronicleMonuments: renderer.chronicleMonuments,
         chronicler: renderer.chronicler,
+        agentRenderMode,
     });
     markFrameTiming(frameTimer, 'drawables');
     drawTalkArcs(ctx, {
@@ -183,6 +185,7 @@ export function renderWorldFrame(renderer, dt = 16) {
             chronicler: chroniclerDrawables.length,
             familiars: familiarDrawables.length,
         },
+        agentRenderMode,
     });
     markFrameTiming(frameTimer, 'labels');
 
@@ -293,7 +296,7 @@ function drawDebugOverlay(renderer, ctx, atmosphere, viewport) {
     });
 }
 
-function buildRenderStats(renderer, { drawableStats, cullingStats, harborPendingRepos, inputCounts }) {
+function buildRenderStats(renderer, { drawableStats, cullingStats, harborPendingRepos, inputCounts, agentRenderMode = 'full' }) {
     const pendingRepos = Array.isArray(harborPendingRepos) ? harborPendingRepos : [];
     return {
         drawables: drawableStats,
@@ -308,6 +311,9 @@ function buildRenderStats(renderer, { drawableStats, cullingStats, harborPending
             particles: renderer.particleSystem?.particles?.length || 0,
             lightGradients: renderer.lightGradientCache?.size || 0,
             lightSources: renderer._frameLightSources?.ambient?.length || 0,
+        },
+        quality: {
+            agentRenderMode,
         },
         terrainCache: renderer.getTerrainCacheDiagnostics?.() || null,
         timings: renderer._lastRenderStats?.timings || null,

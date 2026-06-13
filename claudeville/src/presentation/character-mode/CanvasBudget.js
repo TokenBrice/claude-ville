@@ -1,5 +1,5 @@
 const MIN_BACKING_DPR = 0.25;
-const MAX_DEVICE_DPR = 2;
+const MAX_DEVICE_DPR = 1;
 const SCREEN_SURFACE_COUNT = 4; // visible canvas, sky cache, trail cache, atmosphere cache
 const WORLD_CACHE_PIXEL_RESERVE = 7_000_000;
 const LIGHT_CACHE_PIXEL_RESERVE = 1_250_000;
@@ -7,7 +7,7 @@ const AUX_CACHE_PIXEL_RESERVE = 250_000;
 
 export const CANVAS_BUDGET = Object.freeze({
     maxRendererCanvasPixels: 25_000_000,
-    maxMainCanvasPixels: 8_500_000,
+    maxMainCanvasPixels: 1_500_000,
     maxScreenCachePixels: 8_500_000,
     maxWorldCachePixels: WORLD_CACHE_PIXEL_RESERVE,
     maxLightCachePixels: LIGHT_CACHE_PIXEL_RESERVE,

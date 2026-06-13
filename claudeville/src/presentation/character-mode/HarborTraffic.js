@@ -46,7 +46,9 @@ const PUSH_SIGNAL_EXPIRY_MS = 8000;
 const HARBOR_BEACON_BUOY_TILE = { tileX: 26.0, tileY: 6.0 };
 const REPO_DOCK_SHIP_Y_OFFSET = 236;
 const REPO_DOCK_SHIP_SORT_OFFSET = 8;
-const MAX_HARBOR_SHIP_PACK_SIZE = 10;
+const MAX_HARBOR_SHIP_PACK_SIZE = 30;
+const HARBOR_DOCKED_VISUAL_PACK_THRESHOLD = 5;
+const HARBOR_DOCKED_VISUAL_PACK_SIZE = 30;
 const HARBOR_SQUAD_REUSE_OFFSETS = Object.freeze([
     { tileX: 0.70, tileY: 0.48 },
     { tileX: -0.56, tileY: 0.56 },
@@ -62,7 +64,13 @@ const HARBOR_SHIP_CLASSES = Object.freeze([
     { key: 'cutter', spriteId: 'prop.harborShip.cutter', minCommits: 2, scale: 0.88, wakeScale: 1.15, cargoRows: 1, mastCount: 1, labelLift: 16, flagOffsetX: 8, flagOffsetY: 16, badge: '2+' },
     { key: 'skiff', spriteId: 'prop.harborShip.skiff', minCommits: 1, scale: 0.82, wakeScale: 0.88, cargoRows: 0, mastCount: 1, labelLift: 0, flagOffsetX: 0, flagOffsetY: 0, badge: '' },
 ]);
-const HARBOR_SHIP_PACK_SEQUENCE = Object.freeze([10, 8, 6, 4, 3, 2, 1, 8, 6, 4, 3, 2, 1, 6, 4, 2, 1]);
+const HARBOR_SHIP_STACK_CLASSES = Object.freeze([
+    { key: 'stack30', spriteId: 'prop.harborShip.stack30', minCommits: 25, scale: 0.82, wakeScale: 2.34, cargoRows: 8, mastCount: 6, labelLift: 54, flagOffsetX: 34, flagOffsetY: 52 },
+    { key: 'stack20', spriteId: 'prop.harborShip.stack30', minCommits: 15, scale: 0.72, wakeScale: 2.02, cargoRows: 7, mastCount: 5, labelLift: 46, flagOffsetX: 30, flagOffsetY: 46 },
+    { key: 'stack10', spriteId: 'prop.harborShip.stack10', minCommits: 8, scale: 0.76, wakeScale: 1.66, cargoRows: 5, mastCount: 4, labelLift: 36, flagOffsetX: 24, flagOffsetY: 36 },
+    { key: 'stack5', spriteId: 'prop.harborShip.stack5', minCommits: 5, scale: 0.80, wakeScale: 1.30, cargoRows: 3, mastCount: 3, labelLift: 26, flagOffsetX: 17, flagOffsetY: 28 },
+]);
+const HARBOR_SHIP_PACK_SEQUENCE = Object.freeze([20, 10, 5, 1, 10, 5, 1, 5, 1]);
 const HARBOR_DOCK_WATER_BOUNDS = Object.freeze({
     minTileX: 31.05,
     maxTileX: MAP_SIZE - 1.95,
@@ -1385,6 +1393,10 @@ function commitIdFragment(value = '') {
 }
 
 function commitPennantLabel(ship = {}) {
+    const visualPackSize = Number(ship.visualPackSize);
+    if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
+        return `${Math.round(visualPackSize)}x`;
+    }
     const eventIds = Array.isArray(ship.eventIds) ? ship.eventIds : [];
     const candidates = [
         ship.sha,
@@ -1571,6 +1583,94 @@ function pendingRepoSummariesFromDockSummaries(summaries) {
             || a.repoName.localeCompare(b.repoName));
 }
 
+function dockedShipNeedsIndividualVisual(ship = {}) {
+    return ship.pushStatus === 'failed'
+        || ship.pushStatus === 'rejected'
+        || ship.pushStatus === 'cancelled'
+        || ship.pushStatus === 'canceled'
+        || ship.untetheredFlag
+        || ship.detachedHead;
+}
+
+function buildDockedVisualPackMap(dockLayout) {
+    const groups = new Map();
+    for (const squad of dockLayout?.squads || []) {
+        for (const ship of squad.ships || []) {
+            const meta = dockLayout.byShipId?.get?.(ship.id);
+            if (!meta) continue;
+            const waitingZone = meta.waitingZone || squad.waitingZone || 'harbor';
+            const key = `${squad.key}\x1f${waitingZone}`;
+            const group = groups.get(key) || [];
+            group.push({ ship, meta });
+            groups.set(key, group);
+        }
+    }
+
+    const visible = new Map();
+    for (const entries of groups.values()) {
+        entries.sort((a, b) => (a.meta.repoDockIndex - b.meta.repoDockIndex)
+            || ((a.ship.eventTime || 0) - (b.ship.eventTime || 0))
+            || a.ship.id.localeCompare(b.ship.id));
+
+        const regular = [];
+        const special = [];
+        for (const entry of entries) {
+            if (dockedShipNeedsIndividualVisual(entry.ship)) special.push(entry);
+            else regular.push(entry);
+        }
+
+        const visualEntries = [];
+        for (let start = 0; start < regular.length;) {
+            const remaining = regular.length - start;
+            if (remaining < HARBOR_DOCKED_VISUAL_PACK_THRESHOLD) {
+                for (const entry of regular.slice(start)) {
+                    visualEntries.push({
+                        entry,
+                        visualPackSize: 1,
+                        visualPackStartIndex: entry.meta.repoDockIndex,
+                        visualPackEndIndex: entry.meta.repoDockIndex,
+                        visualPackHiddenCount: 0,
+                    });
+                }
+                break;
+            }
+
+            const chunk = regular.slice(start, start + HARBOR_DOCKED_VISUAL_PACK_SIZE);
+            const last = chunk[chunk.length - 1];
+            visualEntries.push({
+                entry: chunk[0],
+                visualPackSize: chunk.length,
+                visualPackStartIndex: chunk[0].meta.repoDockIndex,
+                visualPackEndIndex: last?.meta?.repoDockIndex ?? chunk[0].meta.repoDockIndex + chunk.length - 1,
+                visualPackHiddenCount: Math.max(0, chunk.length - 1),
+            });
+            start += chunk.length;
+        }
+
+        for (const entry of special) {
+            visualEntries.push({
+                entry,
+                visualPackSize: 1,
+                visualPackStartIndex: entry.meta.repoDockIndex,
+                visualPackEndIndex: entry.meta.repoDockIndex,
+                visualPackHiddenCount: 0,
+            });
+        }
+
+        visualEntries.sort((a, b) => (a.visualPackStartIndex - b.visualPackStartIndex)
+            || a.entry.ship.id.localeCompare(b.entry.ship.id));
+        const visibleCount = visualEntries.length;
+        visualEntries.forEach((item, visualIndex) => {
+            visible.set(item.entry.ship.id, {
+                ...item,
+                visualIndex,
+                visibleCount,
+            });
+        });
+    }
+    return visible;
+}
+
 function distributedHarborShipPackSize(fleetCount, fleetIndex) {
     const count = Math.max(1, Math.round(Number(fleetCount) || 1));
     const index = Math.max(0, Math.min(count - 1, Math.round(Number(fleetIndex) || 0)));
@@ -1584,6 +1684,12 @@ function distributedHarborShipPackSize(fleetCount, fleetIndex) {
 }
 
 function harborShipPackSize(ship = {}) {
+    if (ship.status === 'docked') {
+        const visualPackSize = Number(ship.visualPackSize);
+        if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
+            return Math.max(1, Math.min(MAX_HARBOR_SHIP_PACK_SIZE, Math.round(visualPackSize)));
+        }
+    }
     if (ship.status === 'departing') {
         const departIndex = Number.isFinite(Number(ship.departSquadIndex))
             ? Math.max(0, Number(ship.departSquadIndex))
@@ -1602,6 +1708,18 @@ function harborShipPackSize(ship = {}) {
     return distributedHarborShipPackSize(repoCount, repoIndex);
 }
 
+function harborShipStackClass(packSize) {
+    const count = Math.max(1, Math.min(MAX_HARBOR_SHIP_PACK_SIZE, Math.round(Number(packSize) || 1)));
+    const variant = HARBOR_SHIP_STACK_CLASSES.find(item => count >= item.minCommits);
+    if (!variant) return null;
+    return {
+        ...variant,
+        packSize: count,
+        trim: 0,
+        badge: `${count}x`,
+    };
+}
+
 function harborShipClass(ship = {}) {
     // 3.2 — inbound ships use a small fixed class so the inbound ramp is visually consistent.
     if (ship.isInbound) {
@@ -1614,6 +1732,8 @@ function harborShipClass(ship = {}) {
         };
     }
     const packSize = harborShipPackSize(ship);
+    const stackVariant = harborShipStackClass(packSize);
+    if (stackVariant) return stackVariant;
     const variant = HARBOR_SHIP_CLASSES.find(item => packSize >= item.minCommits)
         || HARBOR_SHIP_CLASSES[HARBOR_SHIP_CLASSES.length - 1];
     const trim = stableHash(`${ship.project || ''}:${ship.branch || ''}:${ship.id || ''}:harbor-ship-trim`) % 4;
@@ -2501,6 +2621,7 @@ export class HarborTraffic {
 
     enumerateDrawables(now = Date.now()) {
         const dockLayout = buildDockSquadLayout(this.state);
+        const visualPackByShipId = buildDockedVisualPackMap(dockLayout);
         const repoSummaries = this._repoDockSummaries(dockLayout);
         const markers = this._repoQuayDrawables(repoSummaries);
         const markerByRepo = new Map();
@@ -2539,9 +2660,11 @@ export class HarborTraffic {
             // we can wire a `buntingNext` field onto each drawable (the next
             // sibling's anchor). Bunting renders only when squad.ships.length >= 2.
             const squadAnchors = squad.ships
-                .map(ship => ({ id: ship.id, meta: dockLayout.byShipId.get(ship.id) }))
-                .filter(entry => entry.meta);
+                .map(ship => ({ id: ship.id, meta: dockLayout.byShipId.get(ship.id), pack: visualPackByShipId.get(ship.id) }))
+                .filter(entry => entry.meta && entry.pack);
             for (const ship of squad.ships) {
+                const pack = visualPackByShipId.get(ship.id);
+                if (!pack) continue;
                 const drawable = byId.get(ship.id);
                 const meta = dockLayout.byShipId.get(ship.id);
                 if (!drawable || !meta) continue;
@@ -2550,21 +2673,27 @@ export class HarborTraffic {
                 drawable.payload.repoDockIndex = meta.repoDockIndex;
                 drawable.payload.repoDockCount = meta.repoDockCount;
                 drawable.payload.repoTotalDockCount = meta.repoTotalDockCount;
-                drawable.payload.repoDockVisibleCount = meta.repoDockVisibleCount;
+                drawable.payload.repoDockVisibleCount = pack.visibleCount || meta.repoDockVisibleCount;
                 drawable.payload.squadKey = meta.squadKey;
                 drawable.payload.squadIndex = meta.squadIndex;
                 drawable.payload.squadCount = meta.squadCount;
-                drawable.payload.squadShipIndex = meta.squadShipIndex;
-                drawable.payload.squadShipCount = meta.squadShipCount;
+                drawable.payload.squadShipIndex = Number.isFinite(Number(pack.visualIndex))
+                    ? Number(pack.visualIndex)
+                    : meta.squadShipIndex;
+                drawable.payload.squadShipCount = pack.visibleCount || meta.squadShipCount;
                 drawable.payload.squadDensity = meta.squadDensity;
-                drawable.payload.compactCommitLabel = meta.compactCommitLabel;
-                drawable.payload.showCommitLabel = meta.showCommitLabel;
+                drawable.payload.compactCommitLabel = meta.compactCommitLabel || pack.visualPackSize > 1;
+                drawable.payload.showCommitLabel = pack.visualPackSize > 1 ? false : meta.showCommitLabel;
                 drawable.payload.waitingZone = meta.waitingZone;
                 drawable.payload.zoneSquadIndex = meta.zoneSquadIndex;
                 drawable.payload.anchorageName = meta.anchorageName;
                 drawable.payload.anchorageIndex = meta.anchorageIndex;
                 drawable.payload.formationColumn = meta.column;
                 drawable.payload.formationRow = meta.row;
+                drawable.payload.visualPackSize = pack.visualPackSize;
+                drawable.payload.visualPackStartIndex = pack.visualPackStartIndex;
+                drawable.payload.visualPackEndIndex = pack.visualPackEndIndex;
+                drawable.payload.visualPackHiddenCount = pack.visualPackHiddenCount;
                 const transfer = this._storageTransferPosition(ship.id, meta, now);
                 if (transfer) {
                     drawable.payload.x = transfer.x;
@@ -2585,8 +2714,9 @@ export class HarborTraffic {
                 // 4.17: bunting neighbor anchor (next docked ship in the same
                 // squad). Read by _drawShip to draw a thin arc between the two
                 // adjacent ships when squadAnchors.length >= 2.
-                if (squadAnchors.length >= 2 && meta.squadShipIndex < squadAnchors.length - 1) {
-                    const next = squadAnchors[meta.squadShipIndex + 1];
+                const visibleAnchorIndex = squadAnchors.findIndex(entry => entry.id === ship.id);
+                if (squadAnchors.length >= 2 && visibleAnchorIndex >= 0 && visibleAnchorIndex < squadAnchors.length - 1) {
+                    const next = squadAnchors[visibleAnchorIndex + 1];
                     if (next?.meta) {
                         drawable.payload.buntingNext = { x: next.meta.x, y: next.meta.y };
                     }
@@ -2664,9 +2794,19 @@ export class HarborTraffic {
     // 3.6 — hover lore: native-tooltip text for a hovered ship (repo + commit subject).
     shipTooltip(ship = {}) {
         const repo = trafficLabel(ship.project, ship.branch, 40);
+        const visualPackSize = Number(ship.visualPackSize);
+        if (Number.isFinite(visualPackSize) && visualPackSize > 1) {
+            const start = Number.isFinite(Number(ship.visualPackStartIndex))
+                ? Number(ship.visualPackStartIndex) + 1
+                : 1;
+            const end = Number.isFinite(Number(ship.visualPackEndIndex))
+                ? Number(ship.visualPackEndIndex) + 1
+                : start + visualPackSize - 1;
+            return `${repo} - ${Math.round(visualPackSize)} pending commits (${start}-${end})`;
+        }
         const subject = cleanCommitSubject(ship.label || '');
         const cargo = subject || `commit ${commitPennantLabel(ship)}`;
-        return `${repo} — ${cargo}`;
+        return `${repo} - ${cargo}`;
     }
 
     // 3.7 — lagoon channel buoy: pulses in the repo accent of whichever ship is mid-storage-transfer.

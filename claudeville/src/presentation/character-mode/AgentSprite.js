@@ -1729,11 +1729,10 @@ export class AgentSprite {
         };
     }
 
-    draw(ctx, zoom = 1) {
+    draw(ctx, zoom = 1, renderMode = 'full') {
         this._zoom = zoom;
 
         if (this.isArrivalPending()) return;
-        if (!this.compositor) return;       // defensive: no compositor → render nothing
 
         // Archive fade. The renderer sets `_archiveAnim = { startedAt }` on
         // agent:removed and disposes the sprite when progress >= 1; our job is
@@ -1754,6 +1753,21 @@ export class AgentSprite {
         if (currentStatus !== this._lastStatus) {
             if (currentStatus === AgentStatus.COMPLETED) this._completedAtMs = Date.now();
             this._lastStatus = currentStatus;
+        }
+
+        const budgetMode = renderMode !== 'full' && !this.selected;
+        if (budgetMode) {
+            this._drawBudgetImpostor(ctx);
+            if (renderMode === 'compact' && this.overlaySlot != null) {
+                this._drawCompactAgentBadge(ctx);
+            }
+            if (archivePushed) ctx.restore();
+            return;
+        }
+
+        if (!this.compositor) {
+            if (archivePushed) ctx.restore();
+            return;
         }
 
         const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
@@ -4442,6 +4456,38 @@ export class AgentSprite {
         ctx.fillStyle = visual?.color || trim;
         ctx.beginPath();
         ctx.arc(0, -3, 3, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    _drawBudgetImpostor(ctx) {
+        const visual = this._statusVisual();
+        const trim = this._providerTrimColor();
+        const provider = this._providerAccentColor();
+        const x = Math.round(this.x);
+        const y = Math.round(this.y);
+        ctx.save();
+        ctx.translate(x, y);
+        ctx.fillStyle = 'rgba(5, 8, 12, 0.48)';
+        ctx.beginPath();
+        ctx.ellipse(0, 5, 13, 4, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(7, 10, 12, 0.86)';
+        ctx.strokeStyle = trim;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, -13);
+        ctx.lineTo(8, 0);
+        ctx.lineTo(0, 7);
+        ctx.lineTo(-8, 0);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = provider;
+        ctx.fillRect(-2, -8, 4, 3);
+        ctx.fillStyle = visual?.color || trim;
+        ctx.beginPath();
+        ctx.arc(0, -2, 3, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
     }

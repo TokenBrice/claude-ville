@@ -108,6 +108,13 @@ const LOCAL_AVOIDANCE = Object.freeze({
     denseStrengthPx: 0.62,
     bucketPx: 40,
 });
+const AGENT_RENDER_COMPACT_COUNT = 80;
+const AGENT_RENDER_COMPACT_ZOOM = 2.2;
+const AGENT_RENDER_COMPACT_CSS_PIXELS = 1_450_000;
+const AGENT_RENDER_COMPACT_CANVAS_PIXELS = 1_900_000;
+const AGENT_RENDER_MINIMAL_COUNT = 96;
+const AGENT_RENDER_MINIMAL_CSS_PIXELS = 1_700_000;
+const AGENT_RENDER_MINIMAL_CANVAS_PIXELS = 1_700_000;
 const CROWD_CLUSTER_TILE_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
 const AGENT_NAME_TAG_MAX_WIDTH = 152;
@@ -3142,9 +3149,43 @@ export class IsometricRenderer {
         return drawables;
     }
 
-    _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1) {
+    _agentRenderMode(viewport = this._screenViewport(), sprites = this._snapshotSortedSprites()) {
+        const count = sprites?.length || 0;
+        if (count < 50) return 'full';
+        const zoom = this.camera?.zoom || 1;
+        const cssPixels = Math.max(0, (viewport?.width || 0) * (viewport?.height || 0));
+        const backingPixels = canvasPixelCount(this.canvas);
+        if (
+            count >= AGENT_RENDER_MINIMAL_COUNT &&
+            (cssPixels >= AGENT_RENDER_MINIMAL_CSS_PIXELS || backingPixels >= AGENT_RENDER_MINIMAL_CANVAS_PIXELS)
+        ) {
+            return 'minimal';
+        }
+        if (
+            count >= AGENT_RENDER_COMPACT_COUNT &&
+            (zoom <= AGENT_RENDER_COMPACT_ZOOM ||
+                cssPixels >= AGENT_RENDER_COMPACT_CSS_PIXELS ||
+                backingPixels >= AGENT_RENDER_COMPACT_CANVAS_PIXELS)
+        ) {
+            return 'compact';
+        }
+        return 'full';
+    }
+
+    _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1, { agentRenderMode = 'full' } = {}) {
+        if (agentRenderMode === 'minimal') {
+            for (const sprite of sprites) {
+                sprite.overlaySlot = null;
+                sprite.nameTagSlot = sprite.selected ? 0 : null;
+                sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
+            }
+            return;
+        }
+
         const compactOccupied = [];
         const nameOccupied = [];
+        const compactLabelCap = agentRenderMode === 'compact' ? 36 : Infinity;
+        let compactLabels = 0;
         const prioritized = sprites
             .filter((sprite) => sprite.agent)
             .sort((a, b) => this._agentLabelPriority(b) - this._agentLabelPriority(a));
@@ -3161,6 +3202,7 @@ export class IsometricRenderer {
                 nameOccupied.push(this._agentNameSlotRect(sprite, 0));
                 sprite.overlaySlot = 0;
                 sprite.nameTagSlot = 0;
+                compactLabels++;
                 continue;
             }
 
@@ -3168,14 +3210,15 @@ export class IsometricRenderer {
             while (compactSlot < 4 && compactOccupied.some((item) => this._rectsOverlap(this._agentCompactSlotRect(sprite, compactSlot), item))) {
                 compactSlot++;
             }
-            if (compactSlot >= 4) {
+            if (compactSlot >= 4 || compactLabels >= compactLabelCap) {
                 sprite.overlaySlot = null;
             } else {
                 sprite.overlaySlot = compactSlot;
                 compactOccupied.push(this._agentCompactSlotRect(sprite, compactSlot));
+                compactLabels++;
             }
 
-            if (zoom < 3) {
+            if (agentRenderMode !== 'full' || zoom < 3) {
                 if (sprite.overlaySlot === null) continue;
                 sprite.nameTagSlot = null;
                 continue;
