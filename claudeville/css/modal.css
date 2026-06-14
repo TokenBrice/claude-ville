@@ -36,6 +36,7 @@
     font-size: 12px;
     color: var(--cv-yellow);
     letter-spacing: 1px;
+    font-family: var(--font-display);
 }
 
 .modal__close {
@@ -58,6 +59,7 @@
     font-size: 11px;
     color: var(--cv-text-gray);
     line-height: 1.8;
+    font-family: var(--font-body);
 }
 
 /* Toast */
@@ -72,10 +74,15 @@
     pointer-events: none;
 }
 
+body.cv-panel-open .toast-container {
+    right: 336px;
+}
+
 .toast {
     padding: 10px 16px;
     border-radius: 4px;
-    font-size: 9px;
+    font-size: 10px;
+    font-family: var(--font-body);
     border: 1px solid;
     background: rgba(15, 15, 25, 0.95);
     pointer-events: auto;
@@ -141,7 +148,7 @@
     padding: 2px 6px;
     border-radius: 2px;
     white-space: nowrap;
-    font-family: 'Press Start 2P', monospace;
+    font-family: var(--font-display);
 }
 
 .cl-release--hotfix .cl-ver {
@@ -153,24 +160,27 @@
     font-size: 11px;
     color: #e8d4a0;
     letter-spacing: 0.3px;
+    font-family: var(--font-display);
 }
 
 .cl-date {
-    font-size: 8px;
+    font-size: 10px;
     color: #5a5a6a;
     margin-left: auto;
     white-space: nowrap;
     font-style: italic;
+    font-family: var(--font-body);
 }
 
 .cl-hotfix-badge {
-    font-size: 7px;
+    font-size: 10px;
     color: #c0a172;
     border: 1px solid rgba(192, 161, 114, 0.35);
     padding: 1px 5px;
     border-radius: 2px;
     letter-spacing: 1px;
     text-transform: uppercase;
+    font-family: var(--font-display);
 }
 
 .cl-list {
@@ -184,6 +194,7 @@
     padding-left: 14px;
     margin-bottom: 3px;
     line-height: 1.6;
+    font-family: var(--font-body);
 }
 
 .cl-list li::before {
@@ -196,6 +207,7 @@
 .modal__content p {
     margin: 0 0 6px;
     line-height: 1.7;
+    font-family: var(--font-body);
 }
 
 .modal__content strong {
@@ -209,7 +221,7 @@
 
 .modal__content code {
     font-family: monospace;
-    font-size: 9px;
+    font-size: 10px;
     color: #9fc78a;
     background: rgba(0, 0, 0, 0.35);
     padding: 0 3px;
