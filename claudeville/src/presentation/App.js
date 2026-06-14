@@ -165,6 +165,7 @@ class App {
                 world: () => this.world,
                 renderer: () => this.renderer,
                 harborTraffic: () => this.renderer?.harborTraffic || null,
+                biographyService: () => this.biographyService,
             });
             this._bindAgentFollow();
             this._bindDeepLink();

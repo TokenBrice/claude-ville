@@ -1,9 +1,10 @@
 import { eventBus, BUILDING_EVENTS } from '../../domain/events/DomainEvent.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
+import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { el, replaceChildren } from './DomSafe.js';
-import { formatCost, formatTokens, hashRows, truncateText } from './Formatters.js';
+import { formatCost, formatRelative, formatTokens, hashRows, truncateText } from './Formatters.js';
 import { emitAgentDeselected, emitAgentSelected } from './AgentSelection.js';
 import {
     currentToolPresentation,
@@ -12,12 +13,17 @@ import {
     toolHistoryNodes,
     toolHistorySignature,
 } from './AgentPresentation.js';
+import { normalizeGitEvent } from './GitEventIdentity.js';
 import { contextWindowLimitForModel } from './ModelVisualIdentity.js';
 
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
+const PANEL_INTER_AGENT_MESSAGE_LIMIT = 5;
+const PANEL_GIT_EVENT_LIMIT = 6;
 const BUILDING_OCCUPANT_REFRESH_INTERVAL = 5000;
 const JOURNEY_BREADCRUMB_LIMIT = 5;
+const PIN_COMPARE_LIMIT = 2;
+const PINNED_AGENTS_STORAGE_KEY = 'claudeville.pinnedAgents';
 
 const BEHAVIOR_STATE_LABELS = Object.freeze({
     blocked: 'Blocked',
@@ -59,7 +65,7 @@ const REASON_LABELS = Object.freeze({
 });
 
 export class ActivityPanel {
-    constructor({ world = null, renderer = null, harborTraffic = null } = {}) {
+    constructor({ world = null, renderer = null, harborTraffic = null, biographyService = null } = {}) {
         const getterFor = (value) => (typeof value === 'function' ? value : () => value);
         this.panelEl = document.getElementById('activityPanel');
         this.closeBtn = document.getElementById('panelClose');
@@ -67,6 +73,7 @@ export class ActivityPanel {
             world: getterFor(world),
             renderer: getterFor(renderer),
             harborTraffic: getterFor(harborTraffic),
+            biographyService: getterFor(biographyService),
         };
         this.currentAgent = null;
         this._mode = null;
@@ -82,6 +89,10 @@ export class ActivityPanel {
             panelRole: document.getElementById('panelRole'),
             panelLevel: document.getElementById('panelLevel'),
             panelTeam: document.getElementById('panelTeam'),
+            panelMood: document.getElementById('panelMood'),
+            panelLastActive: document.getElementById('panelLastActive'),
+            panelModeRow: document.getElementById('panelModeRow'),
+            panelMode: document.getElementById('panelMode'),
             panelCurrentTool: document.getElementById('panelCurrentTool'),
             panelToolHistory: document.getElementById('panelToolHistory'),
             panelMessages: document.getElementById('panelMessages'),
@@ -90,6 +101,8 @@ export class ActivityPanel {
             panelInputTokens: document.getElementById('panelInputTokens'),
             panelOutputTokens: document.getElementById('panelOutputTokens'),
             panelCacheRead: document.getElementById('panelCacheRead'),
+            panelCacheCreate: document.getElementById('panelCacheCreate'),
+            panelCacheHit: document.getElementById('panelCacheHit'),
             panelTurnCount: document.getElementById('panelTurnCount'),
             panelEstCost: document.getElementById('panelEstCost'),
         };
@@ -103,32 +116,60 @@ export class ActivityPanel {
         this._journeyWhyEl = null;
         this._journeyDetailsEl = null;
         this._journeyDetailsBodyEl = null;
+        this._harborLogSectionEl = null;
+        this._harborLogBodyEl = null;
+        this._chronicleSectionEl = null;
+        this._chronicleBodyEl = null;
+        this._chronicleFetchSeq = 0;
+        this._messageEdgesSectionEl = null;
+        this._messageEdgesBodyEl = null;
+        this._pinStripEl = null;
+        this._pinToggleBtn = null;
+        this._pinFetchSeq = 0;
+        this._pinned = new Set(this._loadPinnedAgentIds());
+        this._pinnedDetails = new Map();
+        this._agentSections = [];
+        this._ensurePinCompare();
         this._ensureJourneySection();
+        this._ensureHarborLogSection();
+        this._ensureChronicleSection();
+        this._ensureMessageEdgesSection();
         // Sections that belong to agent mode and must be hidden when a building is selected.
-        this._agentSections = Array.from(this.panelEl?.querySelectorAll('.activity-panel__meta, .activity-panel__section') || []);
+        for (const node of this.panelEl?.querySelectorAll('.activity-panel__meta, .activity-panel__section') || []) {
+            this._registerAgentSection(node);
+        }
         // Building-mode content container is created on demand and inserted after the header.
         this._buildingContentEl = null;
-        this._renderSignatures = {
-            journey: '',
-            toolHistory: '',
-            messages: '',
-            tokenUsage: '',
-        };
+        this._renderSignatures = this._emptyRenderSignatures();
 
         this._bind();
+        this._renderPinCompare();
     }
 
     _bind() {
         this._onCloseClick = () => this.hide();
+        this._onPinToggleClick = () => {
+            if (this._mode === 'agent' && this.currentAgent) {
+                this._togglePinnedAgent(this.currentAgent);
+            }
+        };
         this._onAgentSelected = (agent) => {
             if (agent) this.show(agent);
         };
         this._onAgentUpdated = (agent) => {
+            if (agent?.id && this._pinned.has(agent.id)) {
+                this._renderPinCompare();
+                this._fetchPinnedDetails();
+            }
             if (this._mode === 'agent' && this.currentAgent && agent.id === this.currentAgent.id) {
                 this.currentAgent = agent;
                 this._updateInfo(agent);
                 this._updateCurrentTool(agent);
                 this._updateJourney(agent);
+                this._updateHarborLog(agent);
+                this._updateMessageEdges(agent);
+                this._fetchAndRenderChronicle(agent);
+                this._updatePinToggle(agent);
             }
         };
         this._onAgentRemoved = (agent) => {
@@ -136,6 +177,7 @@ export class ActivityPanel {
             if (this._mode === 'agent' && this.currentAgent && agent.id === this.currentAgent.id) {
                 this.hide();
             }
+            this._renderPinCompare();
         };
         this._onBuildingSelected = (building) => {
             if (building) this.showBuilding(building);
@@ -147,14 +189,243 @@ export class ActivityPanel {
             this._latestUsage = usage || null;
             if (this._mode === 'building') this._renderBuildingState();
         };
+        this._onMoodChanged = ({ agent } = {}) => {
+            if (agent?.id && this._pinned.has(agent.id)) this._renderPinCompare();
+            if (this._mode === 'agent' && this.currentAgent && agent?.id === this.currentAgent.id) {
+                this.currentAgent = agent;
+                this._updateInfo(agent);
+            }
+        };
+        this._onBiographyUpdated = ({ identityKey, biography } = {}) => {
+            if (this._mode !== 'agent' || !this.currentAgent) return;
+            if (identityKey !== this._biographyIdentityKey(this.currentAgent)) return;
+            this._renderChronicleBody(biography);
+        };
 
         this.closeBtn.addEventListener('click', this._onCloseClick);
+        this._pinToggleBtn?.addEventListener('click', this._onPinToggleClick);
         eventBus.on('agent:selected', this._onAgentSelected);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on(BUILDING_EVENTS.SELECTED, this._onBuildingSelected);
         eventBus.on(BUILDING_EVENTS.DESELECTED, this._onBuildingDeselected);
         eventBus.on('usage:updated', this._onUsageUpdated);
+        eventBus.on('mood:changed', this._onMoodChanged);
+        eventBus.on('biography:updated', this._onBiographyUpdated);
+    }
+
+    _emptyRenderSignatures() {
+        return {
+            journey: '',
+            toolHistory: '',
+            messages: '',
+            tokenUsage: '',
+            harborLog: '',
+            chronicle: '',
+            messageEdges: '',
+            pins: '',
+            buildingOccupants: '',
+            buildingState: '',
+        };
+    }
+
+    _registerAgentSection(node) {
+        if (!node || this._agentSections.includes(node)) return;
+        this._agentSections.push(node);
+    }
+
+    _loadPinnedAgentIds() {
+        if (typeof localStorage === 'undefined') return [];
+        try {
+            const parsed = JSON.parse(localStorage.getItem(PINNED_AGENTS_STORAGE_KEY) || '[]');
+            if (!Array.isArray(parsed)) return [];
+            return parsed
+                .map(id => String(id || '').trim())
+                .filter(Boolean)
+                .slice(0, PIN_COMPARE_LIMIT);
+        } catch {
+            return [];
+        }
+    }
+
+    _persistPinnedAgentIds() {
+        if (typeof localStorage === 'undefined') return;
+        try {
+            localStorage.setItem(PINNED_AGENTS_STORAGE_KEY, JSON.stringify([...this._pinned].slice(0, PIN_COMPARE_LIMIT)));
+        } catch { /* ignore */ }
+    }
+
+    _ensurePinCompare() {
+        if (this._pinStripEl && this._pinToggleBtn) return;
+        const header = this.panelEl?.querySelector('.activity-panel__header');
+        if (!this._pinStripEl) {
+            const strip = el('div', {
+                className: 'activity-panel__pin-strip',
+                style: { display: 'none' },
+            });
+            if (header) this.panelEl.insertBefore(strip, header);
+            else this.panelEl?.appendChild(strip);
+            this._pinStripEl = strip;
+        }
+        if (!this._pinToggleBtn && this.closeBtn?.parentNode) {
+            const button = el('button', {
+                className: 'activity-panel__pin-toggle',
+                text: 'Pin',
+                title: 'Pin agent for comparison',
+                style: { display: 'none' },
+            });
+            button.type = 'button';
+            button.setAttribute('aria-pressed', 'false');
+            this.closeBtn.parentNode.insertBefore(button, this.closeBtn);
+            this._pinToggleBtn = button;
+        }
+    }
+
+    _togglePinnedAgent(agent) {
+        if (!agent?.id) return;
+        if (this._pinned.has(agent.id)) {
+            this._pinned.delete(agent.id);
+        } else {
+            while (this._pinned.size >= PIN_COMPARE_LIMIT) {
+                const [oldest] = this._pinned;
+                this._pinned.delete(oldest);
+                this._pinnedDetails.delete(oldest);
+            }
+            this._pinned.add(agent.id);
+        }
+        this._persistPinnedAgentIds();
+        this._renderPinCompare();
+        this._updatePinToggle(agent);
+        this._fetchPinnedDetails();
+    }
+
+    _updatePinToggle(agent) {
+        if (!this._pinToggleBtn) return;
+        if (this._mode !== 'agent' || !agent?.id) {
+            this._pinToggleBtn.style.display = 'none';
+            this._pinToggleBtn.setAttribute('aria-pressed', 'false');
+            return;
+        }
+        const pinned = this._pinned.has(agent.id);
+        this._pinToggleBtn.style.display = '';
+        this._pinToggleBtn.textContent = pinned ? 'Pinned' : 'Pin';
+        this._pinToggleBtn.classList.toggle('activity-panel__pin-toggle--active', pinned);
+        this._pinToggleBtn.setAttribute('aria-pressed', pinned ? 'true' : 'false');
+        this._pinToggleBtn.title = pinned
+            ? 'Remove agent from comparison'
+            : 'Pin agent for comparison';
+    }
+
+    async _fetchPinnedDetails() {
+        const pinnedAgents = [...this._pinned]
+            .map(id => this._getWorld()?.agents?.get?.(id))
+            .filter(Boolean);
+        if (!pinnedAgents.length) {
+            this._renderPinCompare();
+            return;
+        }
+        const seq = ++this._pinFetchSeq;
+        try {
+            const details = await sessionDetailsService.fetchSessionDetailsBatch(pinnedAgents);
+            if (seq !== this._pinFetchSeq) return;
+            for (const [agentId, detail] of details) {
+                if (this._pinned.has(agentId) && detail) this._pinnedDetails.set(agentId, detail);
+            }
+            this._renderPinCompare();
+        } catch {
+            this._renderPinCompare();
+        }
+    }
+
+    _renderPinCompare() {
+        if (!this._pinStripEl) return;
+        const ids = [...this._pinned].slice(0, PIN_COMPARE_LIMIT);
+        if (!ids.length) {
+            this._pinStripEl.style.display = 'none';
+            replaceChildren(this._pinStripEl, []);
+            this._renderSignatures.pins = '';
+            return;
+        }
+
+        const world = this._getWorld();
+        const rows = ids.map(id => {
+            const agent = world?.agents?.get?.(id) || null;
+            const detail = this._pinnedDetails.get(id) || null;
+            const tool = currentToolPresentation(agent);
+            const status = agent ? statusPresentation(agent.status) : null;
+            const tokenUsage = this._tokenUsageForPin(agent, detail);
+            const maxContext = tokenUsage.contextWindowMax || contextWindowLimitForModel(agent?.model, agent?.provider);
+            const contextPct = maxContext ? Math.min(100, (tokenUsage.contextWindow / maxContext) * 100) : 0;
+            const cost = agent
+                ? TokenUsage.estimateCost(tokenUsage, agent.model, agent.provider)
+                : 0;
+            return {
+                id,
+                agent,
+                status,
+                tool,
+                contextPct,
+                cost,
+            };
+        });
+
+        const signature = hashRows(rows, [
+            row => row.id,
+            row => row.agent?.name || '',
+            row => row.agent?.status || '',
+            row => row.tool?.icon || '',
+            row => row.tool?.name || '',
+            row => Math.round(row.contextPct),
+            row => row.cost.toFixed(6),
+        ]);
+        this._pinStripEl.style.display = '';
+        if (signature === this._renderSignatures.pins) return;
+        this._renderSignatures.pins = signature;
+        replaceChildren(this._pinStripEl, rows.map(row => this._pinCell(row)));
+    }
+
+    _tokenUsageForPin(agent, detail) {
+        return TokenUsage.normalize(
+            detail?.tokenUsage
+            || detail?.tokens
+            || detail?.usage
+            || agent?.tokens
+            || null
+        );
+    }
+
+    _pinCell(row) {
+        if (!row.agent) {
+            return el('div', {
+                className: ['activity-panel__pin-cell', 'activity-panel__pin-cell--missing'],
+                title: 'Pinned agent is not loaded',
+            }, [
+                el('span', { className: 'activity-panel__pin-dot' }),
+                el('span', { className: 'activity-panel__pin-name', text: '-' }),
+                el('span', { className: 'activity-panel__pin-tool', text: '-' }),
+            ]);
+        }
+        const name = truncateText(row.agent.displayName || row.agent.name || row.id, 8);
+        const pct = Math.max(0, Math.min(100, row.contextPct));
+        const statusColor = row.status?.color || '#8b8b9e';
+        return el('div', {
+            className: 'activity-panel__pin-cell',
+            title: row.agent.name || row.id,
+        }, [
+            el('span', {
+                className: 'activity-panel__pin-dot',
+                style: { background: statusColor, boxShadow: `0 0 5px ${statusColor}` },
+            }),
+            el('span', { className: 'activity-panel__pin-name', text: name }),
+            el('span', { className: 'activity-panel__pin-tool', text: row.tool?.icon || '-' }),
+            el('span', { className: 'activity-panel__pin-cost', text: formatCost(row.cost) }),
+            el('span', { className: 'activity-panel__pin-context' }, [
+                el('span', {
+                    className: 'activity-panel__pin-context-fill',
+                    style: { width: `${pct}%` },
+                }),
+            ]),
+        ]);
     }
 
     show(agent) {
@@ -164,18 +435,19 @@ export class ActivityPanel {
         }
         this._mode = 'agent';
         this.currentAgent = agent;
-        this._renderSignatures = {
-            journey: '',
-            toolHistory: '',
-            messages: '',
-            tokenUsage: '',
-        };
+        this._renderSignatures = this._emptyRenderSignatures();
         this._showAgentSections();
         this.panelEl.style.display = '';
         document.body.classList.add('cv-panel-open');
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
         this._updateJourney(agent);
+        this._updateHarborLog(agent);
+        this._updateMessageEdges(agent);
+        this._fetchAndRenderChronicle(agent);
+        this._updatePinToggle(agent);
+        this._renderPinCompare();
+        this._fetchPinnedDetails();
         this._startPolling();
     }
 
@@ -189,7 +461,11 @@ export class ActivityPanel {
         }
         this._mode = 'building';
         this._selectedBuilding = building;
+        this._renderSignatures.buildingOccupants = '';
+        this._renderSignatures.buildingState = '';
         this._hideAgentSections();
+        this._updatePinToggle(null);
+        this._renderPinCompare();
         this._ensureBuildingContentEl();
         this.panelEl.style.display = '';
         document.body.classList.add('cv-panel-open');
@@ -203,12 +479,8 @@ export class ActivityPanel {
         this.panelEl.style.display = 'none';
         document.body.classList.remove('cv-panel-open');
         this.currentAgent = null;
-        this._renderSignatures = {
-            journey: '',
-            toolHistory: '',
-            messages: '',
-            tokenUsage: '',
-        };
+        this._renderSignatures = this._emptyRenderSignatures();
+        this._updatePinToggle(null);
         this._stopPolling();
         this._stopBuildingPolling();
         if (wasBuilding) this._teardownBuildingView();
@@ -232,6 +504,22 @@ export class ActivityPanel {
         this.dom.panelLevel.textContent = this._formatAgentLevel(model.identity);
         this.dom.panelLevel.style.color = model.identity.accent?.[1] || model.identity.accent?.[0] || '';
         this.dom.panelTeam.textContent = agent.teamName || '-';
+        this.dom.panelMood.textContent = this._formatMood(agent.mood);
+        this.dom.panelLastActive.textContent = this._formatLastActive(agent);
+        const modeLabel = this._formatPermissionMode(agent.permissionMode);
+        if (modeLabel) {
+            this.dom.panelModeRow.style.display = '';
+            this.dom.panelMode.textContent = modeLabel;
+            this.dom.panelMode.className = [
+                'activity-panel__value',
+                'activity-panel__mode-chip',
+                `activity-panel__mode-chip--${modeLabel.toLowerCase()}`,
+            ].join(' ');
+        } else {
+            this.dom.panelModeRow.style.display = 'none';
+            this.dom.panelMode.textContent = '';
+            this.dom.panelMode.className = 'activity-panel__value';
+        }
     }
 
     _formatAgentLevel(identity) {
@@ -244,6 +532,26 @@ export class ActivityPanel {
             xhigh: 'Extra High',
             max: 'Max',
         }[tier] || tier;
+    }
+
+    _formatMood(mood) {
+        const type = String(mood?.type || '').trim();
+        if (!type || type === 'neutral') return '-';
+        return this._titleize(type);
+    }
+
+    _formatLastActive(agent) {
+        const age = Number(agent?.activityAgeMs);
+        const ts = Number.isFinite(age)
+            ? Date.now() - Math.max(0, age)
+            : Number(agent?.lastSessionActivity || 0);
+        return formatRelative(ts) || '-';
+    }
+
+    _formatPermissionMode(mode) {
+        const text = String(mode || '').trim();
+        if (!text) return '';
+        return text.toLowerCase().includes('plan') ? 'PLAN' : 'ACT';
     }
 
     _updateCurrentTool(agent) {
@@ -264,7 +572,11 @@ export class ActivityPanel {
     _startPolling() {
         this._stopPolling();
         this._fetchDetail();
-        this._pollTimer = setInterval(() => this._fetchDetail(), SESSION_DETAIL_PANEL_REFRESH_INTERVAL);
+        this._fetchPinnedDetails();
+        this._pollTimer = setInterval(() => {
+            this._fetchDetail();
+            this._fetchPinnedDetails();
+        }, SESSION_DETAIL_PANEL_REFRESH_INTERVAL);
     }
 
     _stopPolling() {
@@ -280,6 +592,7 @@ export class ActivityPanel {
             if (this._mode !== 'building') return;
             this._renderBuildingOccupants();
             this._renderBuildingState();
+            this._fetchPinnedDetails();
         }, BUILDING_OCCUPANT_REFRESH_INTERVAL);
     }
 
@@ -294,6 +607,8 @@ export class ActivityPanel {
         if (!this.currentAgent) return;
         const agent = this.currentAgent;
         this._updateJourney(agent);
+        this._updateHarborLog(agent);
+        this._updateMessageEdges(agent);
         const data = await sessionDetailsService.fetchSessionDetail(agent);
         if (!data || !this.currentAgent || this.currentAgent.id !== agent.id) return;
         this._renderToolHistory(data.toolHistory || []);
@@ -420,6 +735,12 @@ export class ActivityPanel {
             formatTokens(normalizedUsage.totalOutput);
         this.dom.panelCacheRead.textContent =
             formatTokens(normalizedUsage.cacheRead);
+        this.dom.panelCacheCreate.textContent =
+            formatTokens(normalizedUsage.cacheCreate);
+        const cacheHitDenominator = normalizedUsage.totalInput + normalizedUsage.cacheRead;
+        this.dom.panelCacheHit.textContent = cacheHitDenominator > 0
+            ? `${Math.round((normalizedUsage.cacheRead / cacheHitDenominator) * 100)}%`
+            : '-';
         this.dom.panelTurnCount.textContent =
             normalizedUsage.turnCount.toLocaleString();
 
@@ -433,6 +754,299 @@ export class ActivityPanel {
 
     _emptyState(text) {
         return el('div', { className: 'activity-panel__empty', text });
+    }
+
+    // ─── Agent enrichment sections ──────────────────────
+
+    _ensureHarborLogSection() {
+        if (this._harborLogSectionEl && this._harborLogBodyEl) return;
+        const body = el('div', { className: 'activity-panel__token-usage' });
+        const details = el('details', { className: 'activity-panel__journey-details' }, [
+            el('summary', { className: 'activity-panel__journey-summary', text: 'Recent shipments' }),
+            body,
+        ]);
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Harbor Log' }),
+            details,
+        ]);
+        this._insertAgentSectionAfterMeta(section);
+        this._harborLogSectionEl = section;
+        this._harborLogBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    _updateHarborLog(agent) {
+        if (!this._harborLogSectionEl || !this._harborLogBodyEl) return;
+        if (this._mode !== 'agent' || !agent) {
+            this._harborLogSectionEl.style.display = 'none';
+            return;
+        }
+        const events = (Array.isArray(agent.gitEvents) ? agent.gitEvents : [])
+            .map((event, index) => normalizeGitEvent(event, agent, index, {
+                maxLabelChars: 42,
+                ellipsis: '...',
+                subjectBeforeMessage: true,
+            }))
+            .filter(Boolean)
+            .sort((a, b) => (b.timestamp - a.timestamp) || b.id.localeCompare(a.id))
+            .slice(0, PANEL_GIT_EVENT_LIMIT);
+        if (!events.length) {
+            this._harborLogSectionEl.style.display = 'none';
+            this._renderSignatures.harborLog = '';
+            return;
+        }
+        const signature = hashRows(events, [
+            event => event.id,
+            event => event.type,
+            event => event.status,
+            event => event.label,
+            event => event.sha,
+            event => event.force,
+            event => event.inferred,
+        ]);
+        this._harborLogSectionEl.style.display = '';
+        if (signature === this._renderSignatures.harborLog) return;
+        this._renderSignatures.harborLog = signature;
+        replaceChildren(this._harborLogBodyEl, events.map(event => this._harborLogRow(event)));
+    }
+
+    _harborLogRow(event) {
+        const status = this._gitEventStatus(event);
+        const shortSha = event.sha ? event.sha.slice(0, 7) : event.type;
+        const label = [this._titleize(event.type), shortSha].filter(Boolean).join(' ');
+        const row = el('div', {
+            className: 'activity-panel__token-row activity-panel__harbor-row',
+            title: event.project || '',
+            style: event.inferred ? { opacity: '0.68' } : undefined,
+        }, [
+            el('span', { className: 'activity-panel__token-label' }, [
+                el('span', {
+                    className: 'activity-panel__harbor-dot',
+                    style: { background: status.color },
+                }),
+                el('span', { text: label }),
+            ]),
+            el('span', { className: 'activity-panel__token-value activity-panel__harbor-subject' }, [
+                el('span', { text: event.label || shortSha || event.id }),
+            ]),
+        ]);
+        if (event.force) {
+            row.querySelector('.activity-panel__harbor-subject')?.appendChild(
+                el('span', { className: 'activity-panel__harbor-chip', text: 'force' }),
+            );
+        }
+        return row;
+    }
+
+    _gitEventStatus(event) {
+        const status = String(event?.status || '').toLowerCase();
+        if (status === 'failed' || status === 'rejected') {
+            return { label: 'failed', color: 'var(--cv-status-errored)' };
+        }
+        if (status === 'cancelled' || status === 'canceled' || status === 'unknown') {
+            return { label: 'pending', color: 'var(--cv-status-waiting)' };
+        }
+        return { label: 'ok', color: 'var(--cv-green-soft)' };
+    }
+
+    _ensureChronicleSection() {
+        if (this._chronicleSectionEl && this._chronicleBodyEl) return;
+        const body = el('div', { className: 'activity-panel__chronicle-body' });
+        const details = el('details', { className: 'activity-panel__journey-details' }, [
+            el('summary', { className: 'activity-panel__journey-summary', text: 'Lifetime dossier' }),
+            body,
+        ]);
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Chronicle' }),
+            details,
+        ]);
+        this._insertAgentSectionAfterMeta(section);
+        this._chronicleSectionEl = section;
+        this._chronicleBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    async _fetchAndRenderChronicle(agent) {
+        if (!this._chronicleSectionEl || !agent) return;
+        const service = this._getBiographyService();
+        const identityKey = this._biographyIdentityKey(agent);
+        if (!service || !identityKey) {
+            this._chronicleSectionEl.style.display = 'none';
+            return;
+        }
+        const seq = ++this._chronicleFetchSeq;
+        try {
+            const biography = await service.getBiography(identityKey);
+            if (
+                seq !== this._chronicleFetchSeq
+                || this._mode !== 'agent'
+                || !this.currentAgent
+                || this.currentAgent.id !== agent.id
+            ) return;
+            this._renderChronicleBody(biography);
+        } catch {
+            if (seq === this._chronicleFetchSeq) this._chronicleSectionEl.style.display = 'none';
+        }
+    }
+
+    _renderChronicleBody(biography) {
+        if (!this._chronicleSectionEl || !this._chronicleBodyEl) return;
+        if (!this._hasBiographyContent(biography)) {
+            this._chronicleSectionEl.style.display = 'none';
+            this._renderSignatures.chronicle = '';
+            return;
+        }
+        const latest = this._latestBiographyMilestone(biography);
+        const signature = [
+            biography.identityKey,
+            biography.nickname || '',
+            biography.sessionsCompleted,
+            biography.lifetimeTokens,
+            biography.commitsPushed,
+            biography.errorsRecovered,
+            latest?.id || '',
+            latest?.at || 0,
+        ].join('|');
+        this._chronicleSectionEl.style.display = '';
+        if (signature === this._renderSignatures.chronicle) return;
+        this._renderSignatures.chronicle = signature;
+
+        const nodes = [];
+        if (biography.nickname) {
+            nodes.push(el('div', { className: 'activity-panel__chronicle-nickname', text: biography.nickname }));
+        }
+        nodes.push(el('div', { className: 'activity-panel__token-grid' }, [
+            this._tokenCell('Sessions', biography.sessionsCompleted.toLocaleString()),
+            this._tokenCell('Tokens', formatTokens(biography.lifetimeTokens)),
+            this._tokenCell('Pushes', biography.commitsPushed.toLocaleString()),
+            this._tokenCell('Recovered', biography.errorsRecovered.toLocaleString()),
+        ]));
+        if (latest) {
+            nodes.push(this._buildingRow('Milestone', latest.label || latest.id));
+        }
+        replaceChildren(this._chronicleBodyEl, nodes);
+    }
+
+    _hasBiographyContent(biography) {
+        if (!biography) return false;
+        const statTotal = (
+            Number(biography.sessionsCompleted) ||
+            Number(biography.lifetimeTokens) ||
+            Number(biography.commitsPushed) ||
+            Number(biography.errorsRecovered)
+        );
+        return !!(statTotal || biography.nickname || (Array.isArray(biography.milestones) && biography.milestones.length > 1));
+    }
+
+    _latestBiographyMilestone(biography) {
+        const milestones = Array.isArray(biography?.milestones) ? biography.milestones : [];
+        return milestones
+            .filter(milestone => milestone?.id && milestone.id !== 'first-seen')
+            .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0] || null;
+    }
+
+    _ensureMessageEdgesSection() {
+        if (this._messageEdgesSectionEl && this._messageEdgesBodyEl) return;
+        const body = el('div', { className: 'activity-panel__messages' });
+        const details = el('details', { className: 'activity-panel__journey-details' }, [
+            el('summary', { className: 'activity-panel__journey-summary', text: 'Outgoing edges' }),
+            body,
+        ]);
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Team Messages' }),
+            details,
+        ]);
+        this._insertAgentSectionAfterMeta(section);
+        this._messageEdgesSectionEl = section;
+        this._messageEdgesBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    _updateMessageEdges(agent) {
+        if (!this._messageEdgesSectionEl || !this._messageEdgesBodyEl) return;
+        if (this._mode !== 'agent' || !agent) {
+            this._messageEdgesSectionEl.style.display = 'none';
+            return;
+        }
+        const messages = (Array.isArray(agent.sendMessages) ? agent.sendMessages : [])
+            .slice(-PANEL_INTER_AGENT_MESSAGE_LIMIT);
+        if (!messages.length) {
+            this._messageEdgesSectionEl.style.display = 'none';
+            this._renderSignatures.messageEdges = '';
+            return;
+        }
+        const signature = hashRows(messages, [
+            row => row?.ts || 0,
+            row => row?.recipient || row?.to || row?.recipientName || row?.recipient_name || row?.target || row?.targetAgentId || '',
+            row => row?.summary || row?.text || row?.message || '',
+        ]);
+        this._messageEdgesSectionEl.style.display = '';
+        if (signature === this._renderSignatures.messageEdges) return;
+        this._renderSignatures.messageEdges = signature;
+        replaceChildren(this._messageEdgesBodyEl, [...messages].reverse().map(message => this._messageEdgeRow(message)));
+    }
+
+    _messageEdgeRow(message) {
+        const target = this._messageTargetName(message);
+        const text = message?.summary || message?.text || message?.message || message?.messageType || 'message';
+        return el('div', { className: ['activity-panel__msg', 'activity-panel__msg--assistant'] }, [
+            el('div', { className: 'activity-panel__msg-role', text: target }),
+            el('div', { text: truncateText(text, 70) }),
+        ]);
+    }
+
+    _messageTargetName(message) {
+        const raw = String(
+            message?.recipient
+            || message?.to
+            || message?.recipientName
+            || message?.recipient_name
+            || message?.target
+            || message?.targetAgentId
+            || message?.target_agent_id
+            || ''
+        ).trim();
+        if (!raw) return 'Unknown';
+        const normalized = raw.toLowerCase();
+        const world = this._getWorld();
+        for (const agent of world?.agents?.values?.() || []) {
+            const candidates = [
+                agent.id,
+                agent.agentId,
+                agent.agentName,
+                agent.name,
+                agent.displayName,
+            ].map(value => String(value || '').trim().toLowerCase()).filter(Boolean);
+            if (candidates.includes(normalized)) return agent.name || raw;
+        }
+        return raw;
+    }
+
+    _insertAgentSectionAfterMeta(section) {
+        const meta = this.panelEl?.querySelector('.activity-panel__meta');
+        if (meta?.nextSibling) {
+            this.panelEl.insertBefore(section, meta.nextSibling);
+        } else if (meta) {
+            this.panelEl.appendChild(section);
+        } else {
+            this.panelEl?.appendChild(section);
+        }
+    }
+
+    _tokenCell(label, value) {
+        return el('div', { className: 'activity-panel__token-cell' }, [
+            el('span', { className: 'activity-panel__token-cell-label', text: label }),
+            el('span', { className: 'activity-panel__token-cell-value', text: String(value) }),
+        ]);
     }
 
     // ─── Selected-agent journey ────────────────────────
@@ -466,6 +1080,7 @@ export class ActivityPanel {
         this._journeyWhyEl = whyEl;
         this._journeyDetailsEl = details;
         this._journeyDetailsBodyEl = detailsBody;
+        this._registerAgentSection(section);
     }
 
     _updateJourney(agent) {
@@ -807,7 +1422,12 @@ export class ActivityPanel {
     _renderBuildingBody() {
         if (!this._buildingContentEl) return;
         const building = this._selectedBuilding;
-        const description = building?.description || '';
+        const occupants = this._buildingOccupants(building);
+        const description = building?.description || 'No description';
+        const district = this._titleize(building?.district || 'village');
+        const capacity = this._buildingCapacity(building);
+        this._renderSignatures.buildingOccupants = '';
+        this._renderSignatures.buildingState = '';
         const occupantsSection = el('div', {
             className: 'activity-panel__section',
             dataset: { role: 'occupants' },
@@ -830,7 +1450,11 @@ export class ActivityPanel {
             className: 'activity-panel__section activity-panel__section--grow',
         }, [
             el('div', { className: 'activity-panel__section-title', text: 'Purpose' }),
-            el('div', { className: 'activity-panel__tool-input', text: description || 'No description' }),
+            el('div', { className: 'activity-panel__token-usage' }, [
+                this._buildingRow('Purpose', description),
+                this._buildingRow('District', district),
+                this._buildingRow('Capacity', capacity ? `${occupants.length}/${capacity}` : `${occupants.length}`),
+            ]),
         ]);
         replaceChildren(this._buildingContentEl, [occupantsSection, stateSection, aboutSection]);
     }
@@ -841,30 +1465,52 @@ export class ActivityPanel {
         if (!building) return;
         const list = this._buildingContentEl.querySelector('[data-role="occupants-list"]');
         if (!list) return;
-        const world = this._getWorld();
-        const occupants = [];
-        if (world?.agents?.values) {
-            for (const agent of world.agents.values()) {
-                if (typeof building.isAgentVisiting === 'function' && building.isAgentVisiting(agent)) {
-                    occupants.push(agent);
-                }
-            }
-        }
+        const occupants = this._buildingOccupants(building);
+        const rowsData = occupants.map(agent => {
+            const tool = currentToolPresentation(agent);
+            return {
+                id: agent.id,
+                name: agent.name || agent.id,
+                status: agent.status,
+                toolName: tool.name,
+                toolDetail: tool.detail,
+            };
+        });
+        const signature = `${building.type || ''}|${hashRows(rowsData, [
+            row => row.id,
+            row => row.name,
+            row => row.status,
+            row => row.toolName,
+            row => row.toolDetail,
+        ])}`;
+        if (signature === this._renderSignatures.buildingOccupants) return;
+        this._renderSignatures.buildingOccupants = signature;
         if (!occupants.length) {
             replaceChildren(list, [this._emptyState('No agents currently here')]);
             return;
         }
         const rows = occupants.map((agent) => {
             const statusInfo = statusPresentation(agent.status);
+            const tool = currentToolPresentation(agent);
             const row = el('div', {
-                className: ['activity-panel__msg', 'activity-panel__msg--assistant'],
-                style: { cursor: 'pointer' },
+                className: ['activity-panel__msg', 'activity-panel__msg--assistant', 'activity-panel__occupant'],
                 title: 'Switch to agent details',
             }, [
                 el('div', { className: 'activity-panel__msg-role', text: statusInfo.label }),
-                el('div', { text: agent.name || agent.id }),
+                el('div', { className: 'activity-panel__occupant-main' }, [
+                    el('span', { className: 'activity-panel__occupant-name', text: agent.name || agent.id }),
+                    el('span', { className: 'activity-panel__occupant-tool', text: tool.name }),
+                ]),
             ]);
+            row.tabIndex = 0;
+            row.setAttribute('role', 'button');
+            row.setAttribute('aria-label', `Switch to ${agent.name || agent.id}`);
             row.addEventListener('click', () => emitAgentSelected(agent));
+            row.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                event.preventDefault();
+                emitAgentSelected(agent);
+            });
             return row;
         });
         replaceChildren(list, rows);
@@ -877,11 +1523,39 @@ export class ActivityPanel {
         const body = this._buildingContentEl.querySelector('[data-role="state-body"]');
         if (!body) return;
         const rows = this._buildingStateRows(building);
+        const signature = `${building.type || ''}|${hashRows(rows, [
+            row => row.textContent || '',
+        ])}`;
+        if (signature === this._renderSignatures.buildingState) return;
+        this._renderSignatures.buildingState = signature;
         if (!rows.length) {
             replaceChildren(body, [this._emptyState('-')]);
             return;
         }
         replaceChildren(body, rows);
+    }
+
+    _buildingOccupants(building) {
+        const occupants = [];
+        const world = this._getWorld();
+        if (!building || !world?.agents?.values || typeof building.isAgentVisiting !== 'function') return occupants;
+        for (const agent of world.agents.values()) {
+            if (building.isAgentVisiting(agent)) occupants.push(agent);
+        }
+        return occupants;
+    }
+
+    _buildingCapacity(building) {
+        const capacity = building?.capacity;
+        if (capacity && typeof capacity === 'object') {
+            const total = Object.values(capacity).reduce((sum, value) => {
+                const number = Number(value);
+                return Number.isFinite(number) && number > 0 ? sum + number : sum;
+            }, 0);
+            if (total > 0) return total;
+        }
+        if (Array.isArray(building?.visitTiles)) return building.visitTiles.length;
+        return 0;
     }
 
     _buildingStateRows(building) {
@@ -956,6 +1630,14 @@ export class ActivityPanel {
         return this._dependencies.harborTraffic?.() || this._getRenderer()?.harborTraffic || null;
     }
 
+    _getBiographyService() {
+        return this._dependencies.biographyService?.() || null;
+    }
+
+    _biographyIdentityKey(agent) {
+        return this._getBiographyService()?.identityKeyFor?.(agent) || AgentBiography.identityKeyFor(agent);
+    }
+
     _getHarborRepoSummaries() {
         const harbor = this._getHarborTraffic();
         if (!harbor) return [];
@@ -973,11 +1655,14 @@ export class ActivityPanel {
         this._stopBuildingPolling();
         this._teardownBuildingView();
         this.closeBtn.removeEventListener('click', this._onCloseClick);
+        this._pinToggleBtn?.removeEventListener('click', this._onPinToggleClick);
         eventBus.off('agent:selected', this._onAgentSelected);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off(BUILDING_EVENTS.SELECTED, this._onBuildingSelected);
         eventBus.off(BUILDING_EVENTS.DESELECTED, this._onBuildingDeselected);
         eventBus.off('usage:updated', this._onUsageUpdated);
+        eventBus.off('mood:changed', this._onMoodChanged);
+        eventBus.off('biography:updated', this._onBiographyUpdated);
     }
 }
