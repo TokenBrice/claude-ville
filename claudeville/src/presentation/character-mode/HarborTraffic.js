@@ -3237,15 +3237,10 @@ export class HarborTraffic {
         const screen = camera?.worldToScreen
             ? camera.worldToScreen(origin.x, origin.y)
             : { x: canvas.width - width - 18, y: 72 };
-        const minimapW = 150 + 28;
-        const minimapH = 150 + 28;
         const maxX = canvas.width - width - 14;
         const maxY = canvas.height - height - 14;
         let x = Math.round(Math.max(14, Math.min(maxX, screen.x - width / 2)));
         let y = Math.round(Math.max(14, Math.min(maxY, screen.y - height - 26)));
-        if (x + width > canvas.width - minimapW && y + height > canvas.height - minimapH) {
-            y = Math.max(14, canvas.height - minimapH - height - 12);
-        }
 
         ctx.save();
         ctx.globalAlpha = fade;
