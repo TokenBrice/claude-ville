@@ -11,14 +11,15 @@
 /* ═══ Project section ═══ */
 .dashboard__section {
     background:
-        radial-gradient(circle at 8% 0%, rgba(246, 218, 130, 0.1), transparent 30%),
-        linear-gradient(180deg, rgba(50, 33, 23, 0.92), rgba(16, 11, 10, 0.94)),
-        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.02) 0 1px, transparent 1px 18px);
-    border: 1px solid var(--cv-border-soft);
+        radial-gradient(circle at 8% -8%, rgba(255, 226, 138, 0.13), transparent 32%),
+        linear-gradient(180deg, rgba(55, 36, 24, 0.95), rgba(15, 10, 9, 0.96)),
+        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.024) 0 1px, transparent 1px 18px);
+    border: 1px solid rgba(214, 169, 81, 0.26);
     border-radius: 3px;
     box-shadow:
-        inset 0 0 0 1px rgba(0, 0, 0, 0.32),
-        0 8px 22px rgba(0, 0, 0, 0.2);
+        inset 0 1px 0 rgba(255, 226, 138, 0.09),
+        inset 0 0 0 1px rgba(0, 0, 0, 0.34),
+        var(--cv-elev-2);
     overflow: hidden;
     contain: layout style;
     content-visibility: auto;
@@ -30,9 +31,10 @@
     align-items: center;
     gap: 8px;
     padding: 10px 14px;
-    background: rgba(20, 13, 11, 0.58);
+    background: linear-gradient(180deg, rgba(38, 24, 17, 0.82), rgba(18, 12, 10, 0.68));
     border-left: 3px solid transparent;
-    border-bottom: 1px solid rgba(199, 157, 76, 0.18);
+    border-bottom: 1px solid rgba(214, 169, 81, 0.24);
+    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
 }
 
 .dashboard__section-dot {
@@ -53,20 +55,21 @@
     border-radius: 2px;
     background: rgba(34, 22, 15, 0.72);
     color: #f4d983;
-    font: 700 8px 'Press Start 2P', monospace;
+    font: 700 10px var(--font-display);
     text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.76);
 }
 
 .dashboard__section-name {
-    font-size: 12px;
+    font-size: var(--fs-title);
     font-weight: bold;
-    color: var(--cv-gold);
-    font-family: 'Press Start 2P', monospace;
-    text-shadow: 1px 1px 0 #4b2b19;
+    color: var(--cv-gold-bright);
+    font-family: var(--font-display);
+    text-shadow: 1px 1px 0 #2d1a12, 0 0 10px rgba(255, 226, 138, 0.16);
 }
 
 .dashboard__section-path {
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     color: var(--cv-text-muted);
     flex: 1;
     overflow: hidden;
@@ -75,7 +78,7 @@
 }
 
 .dashboard__section-count {
-    font-size: 10px;
+    font-size: var(--fs-label);
     color: var(--cv-gold-soft);
     background: rgba(57, 37, 24, 0.78);
     border: 1px solid rgba(199, 157, 76, 0.22);
@@ -95,7 +98,7 @@
     display: inline-flex;
     align-items: center;
     gap: 3px;
-    font-size: 10px;
+    font-size: var(--fs-label);
     font-weight: bold;
 }
 
@@ -138,21 +141,21 @@
 .dashboard__empty-icon {
     font-size: 36px;
     color: var(--cv-text-gray);
-    font-family: 'Press Start 2P', monospace;
+    font-family: var(--font-display);
 }
 
 .dashboard__empty-text {
     font-size: 13px;
     color: var(--cv-yellow);
     letter-spacing: 3px;
-    font-family: 'Press Start 2P', monospace;
+    font-family: var(--font-display);
 }
 
 .dashboard__empty-sub {
-    font-size: 10px;
+    font-size: var(--fs-label);
     color: var(--cv-text-gray);
     letter-spacing: 1px;
-    font-family: 'Press Start 2P', monospace;
+    font-family: var(--font-display);
 }
 
 .dashboard__empty-hints {
@@ -168,32 +171,37 @@
 }
 
 .dashboard__empty-hint {
-    font-size: 9px;
+    font-size: var(--fs-label);
     color: var(--cv-tan);
     letter-spacing: 1px;
-    font-family: 'Press Start 2P', monospace;
+    font-family: var(--font-display);
 }
 
 /* ═══ Agent cards ═══ */
 .dash-card {
+    position: relative;
     background:
-        linear-gradient(180deg, rgba(54, 38, 25, 0.98), rgba(20, 13, 11, 0.98)),
-        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.022) 0 1px, transparent 1px 16px);
-    border: 1px solid rgba(214, 169, 81, 0.24);
+        radial-gradient(circle at 10% 0%, rgba(255, 226, 138, 0.09), transparent 30%),
+        linear-gradient(180deg, rgba(58, 40, 25, 0.99), rgba(19, 13, 11, 0.99)),
+        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.024) 0 1px, transparent 1px 16px);
+    border: 1px solid rgba(214, 169, 81, 0.3);
     border-radius: 3px;
     box-shadow:
+        inset 0 1px 0 rgba(255, 226, 138, 0.08),
         inset 0 0 0 1px rgba(0, 0, 0, 0.34),
-        0 6px 16px rgba(0, 0, 0, 0.18);
+        var(--cv-elev-1);
     overflow: hidden;
     contain: layout style;
     transition: border-color 0.2s, box-shadow 0.2s, transform 0.2s;
 }
 
 .dash-card:hover {
-    border-color: rgba(242, 211, 107, 0.5);
+    border-color: rgba(255, 226, 138, 0.58);
     box-shadow:
-        inset 0 0 0 1px rgba(255, 226, 138, 0.12),
-        0 8px 18px rgba(0, 0, 0, 0.26);
+        inset 0 1px 0 rgba(255, 226, 138, 0.12),
+        inset 0 0 0 1px rgba(255, 226, 138, 0.11),
+        0 9px 20px rgba(0, 0, 0, 0.28),
+        0 0 18px rgba(214, 169, 81, 0.08);
     transform: translateY(-1px);
 }
 
@@ -215,8 +223,9 @@
     align-items: center;
     gap: 10px;
     padding: 10px 12px;
-    background: linear-gradient(180deg, rgba(33, 22, 16, 0.78), rgba(20, 13, 11, 0.68));
-    border-bottom: 1px solid rgba(214, 169, 81, 0.2);
+    background: linear-gradient(180deg, rgba(38, 25, 17, 0.88), rgba(20, 13, 11, 0.72));
+    border-bottom: 1px solid rgba(214, 169, 81, 0.24);
+    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
 }
 
 .dash-card__avatar {
@@ -236,10 +245,11 @@
 }
 
 .dash-card__name {
-    font-size: 12px;
+    font-size: var(--fs-title);
     font-weight: bold;
-    color: var(--cv-yellow);
-    font-family: 'Press Start 2P', monospace;
+    color: var(--cv-gold-bright);
+    font-family: var(--font-display);
+    text-shadow: 1px 1px 0 #2d1a12;
 }
 
 .dash-card__meta {
@@ -247,14 +257,16 @@
     align-items: center;
     gap: 8px;
     margin-top: 4px;
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     color: var(--cv-text-muted);
 }
 
 .dash-card__provider-badge {
     padding: 1px 6px;
     border-radius: 3px;
-    font-size: 9px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     font-weight: bold;
     letter-spacing: 0.5px;
 }
@@ -265,12 +277,14 @@
     border: 1px solid rgba(126, 183, 214, 0.18);
     padding: 1px 6px;
     border-radius: 3px;
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
 }
 
 .dash-card__role {
     color: var(--cv-text-muted);
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
 }
 
 .dash-card__workflow-badge {
@@ -279,7 +293,8 @@
     border: 1px solid rgba(192, 132, 252, 0.32);
     padding: 1px 6px;
     border-radius: 3px;
-    font-size: 9px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     font-weight: bold;
     letter-spacing: 0.3px;
     white-space: nowrap;
@@ -290,7 +305,8 @@
     border: 1px solid;
     padding: 1px 6px;
     border-radius: 3px;
-    font-size: 9px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     font-weight: bold;
     letter-spacing: 0.3px;
     white-space: nowrap;
@@ -300,7 +316,12 @@
     display: flex;
     align-items: center;
     gap: 4px;
-    font-size: 10px;
+    padding: 3px 7px;
+    border: 1px solid rgba(214, 169, 81, 0.26);
+    border-radius: 2px;
+    background: linear-gradient(180deg, rgba(57, 37, 24, 0.82), rgba(22, 15, 13, 0.82));
+    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
+    font-size: var(--fs-label);
     font-weight: bold;
     text-transform: uppercase;
     flex-shrink: 0;
@@ -310,6 +331,10 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
+    border: 1px solid rgba(255, 245, 205, 0.46);
+    box-shadow:
+        inset 0 1px 1px rgba(255, 255, 255, 0.28),
+        0 0 6px currentColor;
 }
 
 .dash-card__status--working .dash-card__status-dot          { background: var(--cv-status-working); box-shadow: 0 0 6px var(--cv-status-working); }
@@ -334,6 +359,7 @@
 /* ─ Current activity ─ */
 .dash-card__activity {
     padding: 8px 12px;
+    background: linear-gradient(180deg, rgba(255, 226, 138, 0.02), transparent 42%);
     border-bottom: 1px solid rgba(199, 157, 76, 0.12);
 }
 
@@ -342,9 +368,12 @@
     align-items: center;
     gap: 8px;
     padding: 6px 10px;
-    background: rgba(80, 143, 64, 0.12);
-    border: 1px solid rgba(74, 222, 128, 0.2);
+    background:
+        radial-gradient(circle at 0% 0%, rgba(114, 208, 113, 0.13), transparent 40%),
+        linear-gradient(180deg, rgba(63, 44, 27, 0.72), rgba(27, 19, 16, 0.72));
+    border: 1px solid rgba(214, 169, 81, 0.24);
     border-radius: 2px;
+    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.07);
 }
 
 .dash-card__current-tool--idle {
@@ -365,13 +394,15 @@
 }
 
 .dash-card__tool-name {
-    font-size: 11px;
+    font-size: var(--fs-data);
+    font-family: var(--font-body);
     font-weight: bold;
     color: #f5df8a;
 }
 
 .dash-card__tool-detail {
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     color: var(--cv-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -382,10 +413,11 @@
 .dash-card__message {
     margin-top: 6px;
     padding: 5px 8px;
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     color: var(--cv-tan);
-    background: rgba(54, 38, 24, 0.58);
-    border: 1px solid rgba(214, 169, 81, 0.12);
+    background: linear-gradient(180deg, rgba(54, 38, 24, 0.7), rgba(31, 22, 17, 0.64));
+    border: 1px solid rgba(214, 169, 81, 0.16);
     border-radius: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -398,6 +430,7 @@
     padding: 6px 12px 10px;
     max-height: 180px;
     overflow-y: auto;
+    background: linear-gradient(180deg, rgba(20, 13, 11, 0.08), rgba(0, 0, 0, 0.08));
 }
 
 .dash-card__tools::-webkit-scrollbar {
@@ -410,7 +443,8 @@
 }
 
 .dash-card__tools-title {
-    font-size: 9px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     color: var(--cv-text-muted);
     letter-spacing: 2px;
     text-transform: uppercase;
@@ -444,14 +478,16 @@
 }
 
 .dash-card__tool-item-name {
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     color: var(--cv-gold-soft);
     flex-shrink: 0;
     min-width: 50px;
 }
 
 .dash-card__tool-item-detail {
-    font-size: 9px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     color: #8d7659;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -472,7 +508,8 @@
     padding: 12px;
     text-align: center;
     color: var(--cv-text-muted);
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
 }
 
 /* ─ First-fetch skeleton (card carries data-loading until first detail result) ─ */
@@ -503,7 +540,8 @@
 .dash-card__tool-error {
     padding: 12px;
     text-align: center;
-    font-size: 10px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     color: #e08f8f;
 }
 
@@ -542,7 +580,8 @@
     border-radius: 2px;
     background: rgba(120, 72, 16, 0.35);
     color: #f5b54b;
-    font-size: 8px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     letter-spacing: 1px;
 }
 
@@ -552,8 +591,9 @@
     align-items: center;
     gap: 6px;
     padding: 5px 12px 7px;
-    border-top: 1px solid rgba(214, 169, 81, 0.16);
-    font-size: 10px;
+    border-top: 1px solid var(--cv-divider);
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
     white-space: nowrap;
 }
 
@@ -567,120 +607,6 @@
     margin-left: auto;
     color: var(--cv-gold-soft);
     flex-shrink: 0;
-}
-
-/* Worker C adventurer dossier refinement layer */
-.dashboard__section {
-    background:
-        radial-gradient(circle at 8% -8%, rgba(255, 226, 138, 0.13), transparent 32%),
-        linear-gradient(180deg, rgba(55, 36, 24, 0.95), rgba(15, 10, 9, 0.96)),
-        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.024) 0 1px, transparent 1px 18px);
-    border-color: rgba(214, 169, 81, 0.26);
-    box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.09),
-        inset 0 0 0 1px rgba(0, 0, 0, 0.34),
-        0 8px 22px rgba(0, 0, 0, 0.22);
-}
-
-.dashboard__section-header {
-    background:
-        linear-gradient(180deg, rgba(38, 24, 17, 0.82), rgba(18, 12, 10, 0.68));
-    border-bottom-color: rgba(214, 169, 81, 0.24);
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
-}
-
-.dashboard__section-name {
-    color: var(--cv-gold-bright);
-    text-shadow: 1px 1px 0 #2d1a12, 0 0 10px rgba(255, 226, 138, 0.16);
-}
-
-.dashboard__section-count,
-.dash-card__provider-badge,
-.dash-card__model {
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
-}
-
-.dash-card {
-    position: relative;
-    background:
-        radial-gradient(circle at 10% 0%, rgba(255, 226, 138, 0.09), transparent 30%),
-        linear-gradient(180deg, rgba(58, 40, 25, 0.99), rgba(19, 13, 11, 0.99)),
-        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.024) 0 1px, transparent 1px 16px);
-    border-color: rgba(214, 169, 81, 0.3);
-    box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.08),
-        inset 0 0 0 1px rgba(0, 0, 0, 0.34),
-        0 6px 16px rgba(0, 0, 0, 0.2);
-}
-
-.dash-card::after {
-    content: "";
-    position: absolute;
-    inset: 3px;
-    border: 1px solid rgba(255, 226, 138, 0.06);
-    pointer-events: none;
-}
-
-.dash-card:hover {
-    border-color: rgba(255, 226, 138, 0.58);
-    box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.12),
-        inset 0 0 0 1px rgba(255, 226, 138, 0.11),
-        0 9px 20px rgba(0, 0, 0, 0.28),
-        0 0 18px rgba(214, 169, 81, 0.08);
-}
-
-.dash-card__header {
-    background:
-        linear-gradient(180deg, rgba(38, 25, 17, 0.88), rgba(20, 13, 11, 0.72));
-    border-bottom-color: rgba(214, 169, 81, 0.24);
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
-}
-
-.dash-card__name {
-    color: var(--cv-gold-bright);
-    text-shadow: 1px 1px 0 #2d1a12;
-}
-
-.dash-card__status {
-    padding: 3px 7px;
-    border: 1px solid rgba(214, 169, 81, 0.26);
-    border-radius: 2px;
-    background:
-        linear-gradient(180deg, rgba(57, 37, 24, 0.82), rgba(22, 15, 13, 0.82));
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
-}
-
-.dash-card__status-dot {
-    border: 1px solid rgba(255, 245, 205, 0.46);
-    box-shadow:
-        inset 0 1px 1px rgba(255, 255, 255, 0.28),
-        0 0 6px currentColor;
-}
-
-.dash-card__activity {
-    background:
-        linear-gradient(180deg, rgba(255, 226, 138, 0.02), transparent 42%);
-}
-
-.dash-card__current-tool {
-    background:
-        radial-gradient(circle at 0% 0%, rgba(114, 208, 113, 0.13), transparent 40%),
-        linear-gradient(180deg, rgba(63, 44, 27, 0.72), rgba(27, 19, 16, 0.72));
-    border-color: rgba(214, 169, 81, 0.24);
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.07);
-}
-
-.dash-card__message {
-    background:
-        linear-gradient(180deg, rgba(54, 38, 24, 0.7), rgba(31, 22, 17, 0.64));
-    border-color: rgba(214, 169, 81, 0.16);
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.05);
-}
-
-.dash-card__tools {
-    background:
-        linear-gradient(180deg, rgba(20, 13, 11, 0.08), rgba(0, 0, 0, 0.08));
 }
 
 /* ─ Reduced motion ─ */
