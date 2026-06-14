@@ -58,10 +58,9 @@ const MOOD_ACCENTS = {
     tired: '#9fb4c8',
 };
 const LORE_ACCENT_DEFAULT = '#d8c08a';
-// 3.13 — congestion treatment: gait slowdown and bubble accent when the
-// destination/current building is over visit capacity.
+// 3.13 — congestion treatment: gait slowdown when the destination/current
+// building is over visit capacity.
 const CONGESTION_GAIT_SCALE = 0.6;
-const CONGESTION_BUBBLE_ACCENT = '#ff9d5c';
 const PROVIDER_TRIM = {
     claude: '#c7a6ff',
     codex: '#67f29a',
@@ -3937,20 +3936,6 @@ export class AgentSprite {
         const entryTimestamp = Number(agent.lastSessionActivity) || timestamp;
         const activityAge = Number(agent.activityAgeMs);
         const hasFreshActivity = !Number.isFinite(activityAge) || activityAge <= ACTIVITY_BUBBLE_TTL_MS;
-
-        // 3.13 — congestion outranks everything: an over-capacity building
-        // reads as the villager being overwhelmed by the crowd.
-        const congested = this._congestedBuilding();
-        if (congested) {
-            const overBy = Number(congested.congestion?.overBy) || 0;
-            return {
-                kind: 'status',
-                key: `status:congestion:${congested.type}`,
-                text: overBy > 1 ? 'Overwhelmed!' : 'Overwhelmed…',
-                accent: CONGESTION_BUBBLE_ACCENT,
-                timestamp: entryTimestamp,
-            };
-        }
 
         // 4.1 — occasionally speak village lore instead of the tool label.
         // pickLoreLine is deterministic per agent + 45 s bucket, so this is
