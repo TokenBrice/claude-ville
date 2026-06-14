@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { AmbientAudioController } from './AmbientAudioController.js';
 import { formatCost, formatNumber } from './Formatters.js';
 
 export class TopBar {
@@ -19,6 +20,7 @@ export class TopBar {
             attentionWrap: document.getElementById('badgeAttentionWrap'),
             connection: document.getElementById('topbarConnection'),
             version: document.querySelector('.topbar__version'),
+            soundToggle: document.getElementById('topbarSoundToggle'),
             // Account & Quota
             accountTier: document.getElementById('accountTier'),
             accountActivity: document.getElementById('accountActivity'),
@@ -30,6 +32,7 @@ export class TopBar {
         };
         this.timeInterval = null;
         this._changelogHtml = null;
+        this.audio = new AmbientAudioController({ button: this.els.soundToggle });
 
         this._onUpdate = () => this.render();
         eventBus.on('agent:added', this._onUpdate);
@@ -268,5 +271,6 @@ export class TopBar {
         if (this._onVersionKeydown && this.els.version) {
             this.els.version.removeEventListener('keydown', this._onVersionKeydown);
         }
+        this.audio?.destroy();
     }
 }

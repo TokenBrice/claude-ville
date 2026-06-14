@@ -2,6 +2,19 @@
 
 ---
 
+## v0.12.0 — *The Grand Faire* · Jun 14, 2026
+
+ClaudeVille gets a village-wide stage manager. The world now turns routine CLI state into short readable scenes while keeping the app local, opt-in, and smooth.
+
+- **Village Director** — a bounded scene controller now coordinates team huddles, handoff trails, arrival/departure sparks, incident rings, release parades, building signals, and work-driven weather nudges
+- **Last-minute replay** — World mode can show the past 60 seconds of agent movement as lightweight trails, with `R` toggling the view and a quiet screen badge while replay is active
+- **Inspectable buildings** — building mode now opens with a Signal panel that summarizes load, queues, inbound routes, recent tools, and Director events before the occupant and state rows
+- **Buildings feel busier** — footprints pulse with load pips, while the mine, forge, command center, harbor, and watchtower gain status-specific markers driven by existing presence, quota, and harbor state
+- **Optional sound** — the top bar adds an opt-in Web Audio toggle; audio stays off by default, waits for a user gesture, and plays subtle cues for agent and village events
+- **Final polish** — label text snaps to whole pixels for crisper unzoomed rendering, and sidebar header type now respects the 10px legibility floor
+
+---
+
 ## v0.11.0 — *Watchtower Bells* · Jun 14, 2026
 
 The village gets clearer signals, richer dossiers, and faster world controls. This release combines the UI legibility pass with a full world/dashboard enhancement wave.

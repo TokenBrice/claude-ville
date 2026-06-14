@@ -7,6 +7,11 @@ import {
     drawDepthSortedDrawables,
     summarizeDrawableLayers,
 } from './DrawablePass.js';
+import {
+    drawVillageDirectorGround,
+    drawVillageDirectorOverlays,
+    drawVillageDirectorScreen,
+} from './VillageDirectorOverlay.js';
 
 // Follow-up after layer extraction: move private renderer calls used here into
 // explicit layer/context methods so this module stays a frame orchestrator.
@@ -17,12 +22,16 @@ export function renderWorldFrame(renderer, dt = 16) {
     if (!canvas.width || !canvas.height) return;
     const frameTimer = beginFrameTiming(renderer);
     const renderNow = Date.now();
+    const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const atmosphere = renderer.atmosphereState.update({
         now: new Date(renderNow),
         motionScale: renderer.motionScale,
         // 2.2 — village mood nudges the weather (error spikes raise
         // storminess, push streaks clear the skies). Stateless per-frame read.
-        eventInfluence: renderer.moodService?.getWeatherInfluence?.(renderNow) ?? null,
+        eventInfluence: combineWeatherInfluence(
+            renderer.moodService?.getWeatherInfluence?.(renderNow) ?? null,
+            renderer.villageDirector?.getWeatherInfluence?.(renderNow) ?? null,
+        ),
     });
     renderer._lastAtmosphere = atmosphere;
     const wx = atmosphere?.weather;
@@ -59,6 +68,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._drawTropicalWaterfalls(ctx);
     renderer._drawOpenSeaGulls(ctx);
     renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
+    drawVillageDirectorGround(ctx, villageSnapshot, renderNow);
 
     drawBuildingLightReflections(renderer, ctx, atmosphere);
     markFrameTiming(frameTimer, 'terrain');
@@ -153,6 +163,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         lighting: atmosphere?.lighting,
     });
+    drawVillageDirectorOverlays(ctx, villageSnapshot, perfNow);
 
     drawSelectedAgentXray(renderer, ctx, buildingDrawables);
 
@@ -193,10 +204,25 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.particleSystem.draw(ctx, { layer: 'screen' });
     renderer.seasonalAmbience?.drawStatic?.(ctx);
     renderer.harborTraffic?.drawScreenSummary(ctx, viewport, renderer.camera, renderNow);
+    drawVillageDirectorScreen(ctx, villageSnapshot, viewport);
     drawDebugOverlay(renderer, ctx, atmosphere, viewport);
     renderer._lastRenderStats = {
         ...renderer._lastRenderStats,
         timings: finishFrameTiming(renderer, frameTimer),
+    };
+}
+
+function combineWeatherInfluence(a, b) {
+    if (!a && !b) return null;
+    return {
+        storminess: Math.max(
+            Number(a?.storminess) || 0,
+            Number(b?.storminess) || 0,
+        ),
+        clearing: Math.max(
+            Number(a?.clearing) || 0,
+            Number(b?.clearing) || 0,
+        ),
     };
 }
 

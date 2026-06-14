@@ -64,6 +64,7 @@ import { BUILDING_EVENTS } from '../../domain/events/DomainEvent.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
+import { VillageDirector } from './VillageDirector.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { buildStaticPropDrawables } from './StaticPropDrawables.js';
@@ -375,6 +376,7 @@ export class IsometricRenderer {
         this.chronicleMonuments = null;
         this.trailRenderer = null;
         this.chronicler = null;
+        this.villageDirector = new VillageDirector(this.world);
         this.pulsePriority = getPulsePriority();
         this.agentSprites = new Map();
         this.gateTransits = new Map();
@@ -1157,6 +1159,11 @@ export class IsometricRenderer {
             console.warn('[IsometricRenderer] show skipped: failed to get 2d context');
             return;
         }
+        if (!this.villageDirector) {
+            this.villageDirector = new VillageDirector(this.world);
+            this.villageDirector.setMotionScale?.(this.motionScale);
+            if (this.quotaState) this.villageDirector.setQuotaState?.(this.quotaState);
+        }
         this._ensureTrailRenderer();
         this._contextLost = false;
         this.camera = new Camera(canvas);
@@ -1197,6 +1204,7 @@ export class IsometricRenderer {
             window.__buildingCrowds = () => this.visitTileAllocator?.snapshot?.()?.buildings || {};
             window.__agentBehaviorStats = () => this._agentBehaviorStats();
             window.__agentCrowds = () => this._crowdStats || this._summarizeCrowdClusters();
+            window.__villageDirector = () => this.villageDirector?.getSnapshot?.() || null;
         }
 
         // Subscribe to domain events
@@ -1361,9 +1369,11 @@ export class IsometricRenderer {
         this.agentEventStream?.dispose?.();
         this.relationshipState?.dispose?.();
         this.ritualConductor?.dispose?.();
+        this.villageDirector?.dispose?.();
         this.agentEventStream = null;
         this.relationshipState = null;
         this.ritualConductor = null;
+        this.villageDirector = null;
         if (typeof window !== 'undefined' && window.__relationshipState) {
             delete window.__relationshipState;
         }
@@ -1374,6 +1384,7 @@ export class IsometricRenderer {
             delete window.__buildingCrowds;
             delete window.__agentBehaviorStats;
             delete window.__agentCrowds;
+            delete window.__villageDirector;
         }
         this.visitIntentManager?.dispose?.();
         this.visitTileAllocator?.updateContext?.({ agentSprites: [] });
@@ -1622,6 +1633,7 @@ export class IsometricRenderer {
         this.arrivalDeparture?.setMotionScale(scale);
         this.trailRenderer?.setMotionScale(scale);
         this.chronicler?.setMotionScale(scale);
+        this.villageDirector?.setMotionScale(scale);
         this.harborTraffic?.setMotionScale(scale);
         this.landmarkActivity?.setMotionScale(scale);
         this.camera?.setReducedMotion?.(scale <= 0);
@@ -1648,6 +1660,7 @@ export class IsometricRenderer {
         const quota = state?.quota || state || null;
         this.quotaState = quota;
         this.buildingRenderer?.setQuotaState?.(quota);
+        this.villageDirector?.setQuotaState?.(quota);
     }
 
     setCameraPose({ x, y, camX, camY, zoom } = {}) {
@@ -1964,6 +1977,11 @@ export class IsometricRenderer {
         if (event.code === 'KeyF') {
             this.camera.stopFollow();
             this.camera.centerOnMap();
+            event.preventDefault();
+            return;
+        }
+        if (event.code === 'KeyR') {
+            this.villageDirector?.toggleReplay?.();
             event.preventDefault();
             return;
         }
@@ -2626,8 +2644,11 @@ export class IsometricRenderer {
 
         this.harborTraffic?.update(agents, dt);
         this.landmarkActivity?.update(agents, sortedSnapshot, dt);
-        const failedPushState = this.harborTraffic?.getFailedPushState?.(Date.now()) || null;
+        const updateNow = Date.now();
+        const failedPushState = this.harborTraffic?.getFailedPushState?.(updateNow) || null;
         const activeWorkingCount = agents.filter(agent => agent?.status === AgentStatus.WORKING).length;
+        this.villageDirector?.setHarborState?.(failedPushState);
+        this.villageDirector?.update?.(this, dt, updateNow);
 
         // Update building renderer (pass agent sprite positions)
         this.buildingRenderer?.setAgentSprites(sortedSnapshot);

@@ -59,6 +59,7 @@
 .topbar__stat,
 .topbar__badge,
 .topbar__account-tier,
+.topbar__sound-btn,
 .topbar__mode-btn {
     border: 1px solid rgba(214, 169, 81, 0.28);
     box-shadow:
@@ -309,7 +310,37 @@
 
 .topbar__right {
     display: flex;
+    align-items: center;
     gap: 4px;
+}
+
+/* Audio toggle (opt-in, tertiary) */
+.topbar__sound-btn {
+    font-family: var(--font-display);
+    font-size: 8px;
+    min-width: 76px;
+    padding: 6px 10px;
+    border-color: rgba(199, 157, 76, 0.28);
+    border-radius: 2px;
+    color: rgba(187, 161, 122, 0.78);
+    background: linear-gradient(180deg, rgba(43, 28, 20, 0.86), rgba(18, 12, 11, 0.9));
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.topbar__sound-btn:hover:not(:disabled) {
+    color: var(--cv-gold-soft);
+    border-color: rgba(242, 211, 107, 0.58);
+}
+
+.topbar__sound-btn--on {
+    color: #241812;
+    border-color: rgba(242, 211, 107, 0.72);
+    background: linear-gradient(180deg, #efd780, #c7953e 70%, #765026);
+}
+
+.topbar__sound-btn:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
 }
 
 /* ── Mode buttons (primary) ── */

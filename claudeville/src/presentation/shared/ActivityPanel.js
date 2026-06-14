@@ -22,8 +22,12 @@ const PANEL_INTER_AGENT_MESSAGE_LIMIT = 5;
 const PANEL_GIT_EVENT_LIMIT = 6;
 const BUILDING_OCCUPANT_REFRESH_INTERVAL = 5000;
 const JOURNEY_BREADCRUMB_LIMIT = 5;
+const BUILDING_ROUTE_HINT_LIMIT = 3;
+const BUILDING_RECENT_WORK_LIMIT = 3;
 const PIN_COMPARE_LIMIT = 2;
 const PINNED_AGENTS_STORAGE_KEY = 'claudeville.pinnedAgents';
+const VILLAGE_DIRECTOR_EVENT = 'village:director';
+const VILLAGE_BUILDING_SIGNAL_EVENT = 'village:building-signal';
 
 const BEHAVIOR_STATE_LABELS = Object.freeze({
     blocked: 'Blocked',
@@ -79,6 +83,9 @@ export class ActivityPanel {
         this._mode = null;
         this._selectedBuilding = null;
         this._latestUsage = null;
+        this._buildingPresenceByType = new Map();
+        this._buildingSignalByType = new Map();
+        this._villageDirectorByType = new Map();
         this._pollTimer = null;
         this._buildingPollTimer = null;
         this.dom = {
@@ -185,9 +192,34 @@ export class ActivityPanel {
         this._onBuildingDeselected = () => {
             if (this._mode === 'building') this.hide();
         };
+        this._onBuildingPresence = (payload) => {
+            this._cacheBuildingPresence(payload);
+            if (this._mode === 'building') {
+                this._renderBuildingSignal();
+                this._renderBuildingState();
+            }
+        };
+        this._onBuildingSignal = (payload) => {
+            this._cacheBuildingPayload(payload, this._buildingSignalByType);
+            if (this._mode === 'building') {
+                this._renderBuildingSignal();
+                this._renderBuildingState();
+            }
+        };
+        this._onVillageDirector = (payload) => {
+            this._cacheVillageDirectorPayload(payload);
+            if (this._mode === 'building') {
+                this._renderBuildingSignal();
+                this._renderBuildingOccupants();
+                this._renderBuildingState();
+            }
+        };
         this._onUsageUpdated = (usage) => {
             this._latestUsage = usage || null;
-            if (this._mode === 'building') this._renderBuildingState();
+            if (this._mode === 'building') {
+                this._renderBuildingSignal();
+                this._renderBuildingState();
+            }
         };
         this._onMoodChanged = ({ agent } = {}) => {
             if (agent?.id && this._pinned.has(agent.id)) this._renderPinCompare();
@@ -209,6 +241,9 @@ export class ActivityPanel {
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on(BUILDING_EVENTS.SELECTED, this._onBuildingSelected);
         eventBus.on(BUILDING_EVENTS.DESELECTED, this._onBuildingDeselected);
+        eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, this._onBuildingPresence);
+        eventBus.on(VILLAGE_BUILDING_SIGNAL_EVENT, this._onBuildingSignal);
+        eventBus.on(VILLAGE_DIRECTOR_EVENT, this._onVillageDirector);
         eventBus.on('usage:updated', this._onUsageUpdated);
         eventBus.on('mood:changed', this._onMoodChanged);
         eventBus.on('biography:updated', this._onBiographyUpdated);
@@ -224,6 +259,7 @@ export class ActivityPanel {
             chronicle: '',
             messageEdges: '',
             pins: '',
+            buildingSignal: '',
             buildingOccupants: '',
             buildingState: '',
         };
@@ -461,6 +497,7 @@ export class ActivityPanel {
         }
         this._mode = 'building';
         this._selectedBuilding = building;
+        this._renderSignatures.buildingSignal = '';
         this._renderSignatures.buildingOccupants = '';
         this._renderSignatures.buildingState = '';
         this._hideAgentSections();
@@ -590,6 +627,7 @@ export class ActivityPanel {
         this._stopBuildingPolling();
         this._buildingPollTimer = setInterval(() => {
             if (this._mode !== 'building') return;
+            this._renderBuildingSignal();
             this._renderBuildingOccupants();
             this._renderBuildingState();
             this._fetchPinnedDetails();
@@ -1415,6 +1453,7 @@ export class ActivityPanel {
         statusEl.style.color = '';
 
         this._renderBuildingBody();
+        this._renderBuildingSignal();
         this._renderBuildingOccupants();
         this._renderBuildingState();
     }
@@ -1426,8 +1465,18 @@ export class ActivityPanel {
         const description = building?.description || 'No description';
         const district = this._titleize(building?.district || 'village');
         const capacity = this._buildingCapacity(building);
+        this._renderSignatures.buildingSignal = '';
         this._renderSignatures.buildingOccupants = '';
         this._renderSignatures.buildingState = '';
+        const signalSection = el('div', {
+            className: 'activity-panel__section',
+            dataset: { role: 'signal' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Signal' }),
+            el('div', { className: 'activity-panel__building-signal', dataset: { role: 'signal-body' } }, [
+                this._emptyState('-'),
+            ]),
+        ]);
         const occupantsSection = el('div', {
             className: 'activity-panel__section',
             dataset: { role: 'occupants' },
@@ -1456,7 +1505,39 @@ export class ActivityPanel {
                 this._buildingRow('Capacity', capacity ? `${occupants.length}/${capacity}` : `${occupants.length}`),
             ]),
         ]);
-        replaceChildren(this._buildingContentEl, [occupantsSection, stateSection, aboutSection]);
+        replaceChildren(this._buildingContentEl, [signalSection, occupantsSection, stateSection, aboutSection]);
+    }
+
+    _renderBuildingSignal() {
+        if (!this._buildingContentEl) return;
+        const building = this._selectedBuilding;
+        if (!building) return;
+        const body = this._buildingContentEl.querySelector('[data-role="signal-body"]');
+        if (!body) return;
+        const context = this._buildingContext(building);
+        const signal = this._buildingSignalModel(context);
+        const signature = `${context.type}|${signal.headline}|${signal.detail}|${hashRows(signal.chips, [
+            chip => chip.label,
+            chip => chip.value,
+            chip => chip.tone || '',
+        ])}`;
+        if (signature === this._renderSignatures.buildingSignal) return;
+        this._renderSignatures.buildingSignal = signature;
+        const nodes = [
+            el('div', { className: 'activity-panel__signal-headline', text: signal.headline }),
+        ];
+        if (signal.detail) {
+            nodes.push(el('div', { className: 'activity-panel__signal-detail', text: signal.detail }));
+        }
+        if (signal.chips.length) {
+            nodes.push(el('div', { className: 'activity-panel__signal-chips' }, signal.chips.map(chip => (
+                el('span', {
+                    className: ['activity-panel__signal-chip', chip.tone ? `activity-panel__signal-chip--${chip.tone}` : ''],
+                    text: chip.value ? `${chip.label} ${chip.value}` : chip.label,
+                })
+            ))));
+        }
+        replaceChildren(body, nodes);
     }
 
     _renderBuildingOccupants() {
@@ -1468,12 +1549,15 @@ export class ActivityPanel {
         const occupants = this._buildingOccupants(building);
         const rowsData = occupants.map(agent => {
             const tool = currentToolPresentation(agent);
+            const activity = this._buildingOccupantActivity(agent, building);
             return {
                 id: agent.id,
                 name: agent.name || agent.id,
                 status: agent.status,
                 toolName: tool.name,
                 toolDetail: tool.detail,
+                detail: activity.detail,
+                hint: activity.hint,
             };
         });
         const signature = `${building.type || ''}|${hashRows(rowsData, [
@@ -1482,6 +1566,8 @@ export class ActivityPanel {
             row => row.status,
             row => row.toolName,
             row => row.toolDetail,
+            row => row.detail,
+            row => row.hint,
         ])}`;
         if (signature === this._renderSignatures.buildingOccupants) return;
         this._renderSignatures.buildingOccupants = signature;
@@ -1492,15 +1578,25 @@ export class ActivityPanel {
         const rows = occupants.map((agent) => {
             const statusInfo = statusPresentation(agent.status);
             const tool = currentToolPresentation(agent);
+            const activity = this._buildingOccupantActivity(agent, building);
+            const bodyNodes = [
+                el('div', { className: 'activity-panel__occupant-main' }, [
+                    el('span', { className: 'activity-panel__occupant-name', text: agent.name || agent.id }),
+                    el('span', { className: 'activity-panel__occupant-tool', text: tool.name }),
+                ]),
+            ];
+            if (activity.detail) {
+                bodyNodes.push(el('div', { className: 'activity-panel__occupant-detail', text: activity.detail }));
+            }
+            if (activity.hint) {
+                bodyNodes.push(el('div', { className: 'activity-panel__occupant-hint', text: activity.hint }));
+            }
             const row = el('div', {
                 className: ['activity-panel__msg', 'activity-panel__msg--assistant', 'activity-panel__occupant'],
                 title: 'Switch to agent details',
             }, [
                 el('div', { className: 'activity-panel__msg-role', text: statusInfo.label }),
-                el('div', { className: 'activity-panel__occupant-main' }, [
-                    el('span', { className: 'activity-panel__occupant-name', text: agent.name || agent.id }),
-                    el('span', { className: 'activity-panel__occupant-tool', text: tool.name }),
-                ]),
+                el('div', { className: 'activity-panel__occupant-body' }, bodyNodes),
             ]);
             row.tabIndex = 0;
             row.setAttribute('role', 'button');
@@ -1558,7 +1654,154 @@ export class ActivityPanel {
         return 0;
     }
 
+    _buildingContext(building) {
+        const type = this._buildingKey(building);
+        const occupants = this._buildingOccupants(building);
+        const allocator = this._buildingAllocatorSnapshot();
+        const loads = allocator?.buildings || {};
+        const load = loads[type] || loads[building?.type] || null;
+        const reservations = (Array.isArray(allocator?.reservations) ? allocator.reservations : [])
+            .filter(reservation => this._buildingKey(reservation?.buildingType || reservation?.building) === type);
+        const queuedReservations = reservations.filter(reservation => (
+            reservation?.queueOverflow
+            || Number(reservation?.queueIndex) > 0
+            || Number(reservation?.queued) > 0
+        ));
+        const routeAgents = this._buildingRouteAgents(building, occupants);
+        const recentWork = this._buildingRecentWork(building, occupants, routeAgents);
+        const external = this._buildingExternalData(type);
+        return {
+            building,
+            type,
+            label: this._buildingDisplayName(building),
+            occupants,
+            load,
+            reservations,
+            queuedReservations,
+            routeAgents,
+            recentWork,
+            external,
+            presence: this._buildingPresenceFor(type, { occupants, load }),
+        };
+    }
+
+    _buildingSignalModel(context) {
+        const externalHeadline = this._externalText(context.external, [
+            'headline',
+            'title',
+            'label',
+            'message',
+            'summary',
+            'signal',
+            'state',
+            'status',
+            'phase',
+        ]);
+        const externalDetail = this._externalFieldText(context.external, [
+            'detail',
+            'description',
+            'note',
+            'reason',
+        ]);
+        return {
+            headline: truncateText(
+                externalHeadline
+                    ? this._formatExternalSignalText(externalHeadline)
+                    : this._derivedBuildingHeadline(context),
+                58,
+            ),
+            detail: truncateText(externalDetail || this._derivedBuildingSignalDetail(context), 96),
+            chips: this._buildingSignalChips(context),
+        };
+    }
+
+    _derivedBuildingHeadline(context) {
+        const queueCount = this._buildingQueueCount(context);
+        if (queueCount > 0) return `${context.label} has a queue`;
+        const tier = String(context.presence?.tier || '').toLowerCase();
+        if (tier === 'busy') return `${context.label} at capacity`;
+        const activeCount = this._buildingActiveCount(context);
+        if (activeCount > 0) return `${context.label} active`;
+        if (context.recentWork.length) return `${context.label} recently active`;
+        return `${context.label} quiet`;
+    }
+
+    _derivedBuildingSignalDetail(context) {
+        const parts = [];
+        const occupantCount = context.occupants.length;
+        const routeCount = context.routeAgents.length;
+        const queueCount = this._buildingQueueCount(context);
+        if (occupantCount) parts.push(`${occupantCount} ${occupantCount === 1 ? 'occupant' : 'occupants'} on site`);
+        const tools = this._buildingToolSummary(context.occupants);
+        if (tools) parts.push(tools);
+        if (queueCount) parts.push(`${queueCount} waiting`);
+        if (routeCount) {
+            const names = context.routeAgents
+                .slice(0, BUILDING_ROUTE_HINT_LIMIT)
+                .map(agent => agent.displayName || agent.name || agent.id)
+                .filter(Boolean)
+                .join(', ');
+            parts.push(names ? `${names} inbound` : `${routeCount} inbound`);
+        }
+        if (!parts.length && context.recentWork.length) {
+            parts.push(`Recent: ${context.recentWork.slice(0, 2).join('; ')}`);
+        }
+        return parts.join('; ');
+    }
+
+    _buildingSignalChips(context) {
+        const chips = [];
+        const tier = String(context.presence?.tier || '').toLowerCase();
+        if (tier) {
+            chips.push({
+                label: this._titleize(tier),
+                value: '',
+                tone: tier === 'busy' ? 'warning' : (tier === 'dormant' ? 'muted' : 'active'),
+            });
+        }
+        const load = this._formatBuildingLoad(context);
+        if (load) chips.push({ label: 'Load', value: load, tone: tier === 'busy' ? 'warning' : '' });
+        const queueCount = this._buildingQueueCount(context);
+        if (queueCount > 0) chips.push({ label: 'Queue', value: String(queueCount), tone: 'warning' });
+        if (context.routeAgents.length) {
+            chips.push({ label: 'Routes', value: String(context.routeAgents.length), tone: 'active' });
+        }
+        return chips.slice(0, 4);
+    }
+
+    _buildingOccupantActivity(agent, building) {
+        const tool = currentToolPresentation(agent);
+        const snapshot = this._getAgentBehaviorSnapshot(agent);
+        const reservation = this._getVisitReservation(agent, snapshot);
+        const hints = [];
+        const queue = this._formatReservationQueueHint(reservation);
+        if (queue) hints.push(queue);
+        const route = this._formatAgentRouteHint(snapshot);
+        if (route) hints.push(route);
+        const recent = this._formatAgentRecentBuildingHint(snapshot, building);
+        if (recent) hints.push(recent);
+        return {
+            detail: truncateText(tool.detail || '', 72),
+            hint: truncateText(hints.slice(0, 2).join('; '), 86),
+        };
+    }
+
     _buildingStateRows(building) {
+        const context = this._buildingContext(building);
+        const rows = [];
+        const load = this._formatBuildingLoad(context);
+        if (load) rows.push(this._buildingRow('Load', load));
+        const queue = this._formatBuildingQueue(context);
+        if (queue) rows.push(this._buildingRow('Queue', queue));
+        const routes = this._formatBuildingRoutes(context);
+        if (routes) rows.push(this._buildingRow('Routes', routes));
+        const recent = this._formatBuildingRecentWork(context);
+        if (recent) rows.push(this._buildingRow('Recent work', recent));
+        rows.push(...this._buildingSpecificStateRows(building));
+        return rows;
+    }
+
+    _buildingSpecificStateRows(building) {
         const type = building.type;
         if (type === 'mine') {
             const fiveHour = Number(this._latestUsage?.quota?.fiveHour);
@@ -1581,6 +1824,446 @@ export class ActivityPanel {
             ));
         }
         return [];
+    }
+
+    _formatBuildingLoad(context) {
+        const capacity = Number(context.load?.capacity) || this._buildingCapacity(context.building);
+        const occupied = this._buildingActiveCount(context);
+        const reserved = Number(context.load?.reserved);
+        const parts = [];
+        if (capacity > 0) parts.push(`${occupied}/${capacity} occupied`);
+        else if (occupied > 0) parts.push(`${occupied} occupied`);
+        if (Number.isFinite(reserved) && reserved > occupied) parts.push(`${reserved} reserved`);
+        return parts.join(', ');
+    }
+
+    _formatBuildingQueue(context) {
+        const external = this._externalFieldText(context.external, ['queue', 'queues', 'line', 'waiting']);
+        if (external) return truncateText(this._formatExternalSignalText(external), 70);
+        const externalCount = this._externalNumber(context.external?.queue || context.external, [
+            'waiting',
+            'queued',
+            'queueDepth',
+            'queue',
+            'count',
+        ]);
+        const count = Number.isFinite(externalCount) ? externalCount : this._buildingQueueCount(context);
+        if (count <= 0) return '';
+        return `${count} ${count === 1 ? 'agent' : 'agents'} waiting`;
+    }
+
+    _formatBuildingRoutes(context) {
+        const external = this._externalFieldText(context.external, ['route', 'routes', 'inbound', 'path']);
+        if (external) return truncateText(this._formatExternalSignalText(external), 74);
+        if (context.routeAgents.length) {
+            const names = context.routeAgents
+                .slice(0, BUILDING_ROUTE_HINT_LIMIT)
+                .map(agent => agent.displayName || agent.name || agent.id)
+                .filter(Boolean);
+            const suffix = context.routeAgents.length > names.length ? ` +${context.routeAgents.length - names.length}` : '';
+            return `${names.join(', ')}${suffix} inbound`;
+        }
+        const reservedOnly = Math.max(0, context.reservations.length - context.occupants.length);
+        if (reservedOnly > 0) return `${reservedOnly} reserved ${reservedOnly === 1 ? 'path' : 'paths'}`;
+        return '';
+    }
+
+    _formatBuildingRecentWork(context) {
+        const external = this._externalFieldText(context.external, [
+            'recent',
+            'recentWork',
+            'work',
+            'activity',
+            'lastWork',
+        ]);
+        if (external) return truncateText(this._formatExternalSignalText(external), 80);
+        if (!context.recentWork.length) return '';
+        return truncateText(context.recentWork.slice(0, BUILDING_RECENT_WORK_LIMIT).join('; '), 86);
+    }
+
+    _buildingToolSummary(occupants) {
+        const tools = [];
+        for (const agent of occupants) {
+            const tool = currentToolPresentation(agent);
+            if (tool.isIdle || !tool.name) continue;
+            if (!tools.includes(tool.name)) tools.push(tool.name);
+        }
+        if (!tools.length) return '';
+        return `${tools.slice(0, 3).join(', ')} underway`;
+    }
+
+    _buildingQueueCount(context) {
+        const loadQueued = Number(context.load?.queued ?? context.load?.overflowReserved);
+        if (Number.isFinite(loadQueued) && loadQueued > 0) return loadQueued;
+        return context.queuedReservations.length;
+    }
+
+    _buildingActiveCount(context) {
+        const presenceCount = Number(context.presence?.count);
+        if (Number.isFinite(presenceCount)) return Math.max(0, presenceCount);
+        const occupied = Number(context.load?.occupied);
+        if (Number.isFinite(occupied)) return Math.max(0, occupied);
+        return context.occupants.length;
+    }
+
+    _formatReservationQueueHint(reservation) {
+        if (!reservation) return '';
+        const index = Number(reservation.queueIndex);
+        const depth = Number(reservation.queueDepth);
+        if (Number.isFinite(index) && index > 0) {
+            const position = index + 1;
+            const total = Number.isFinite(depth) && depth >= 0 ? Math.max(position, depth + 1) : null;
+            return total ? `Queue ${position}/${total}` : `Queue ${position}`;
+        }
+        if (reservation.queueOverflow || reservation.overflow) return 'Overflow slot';
+        return '';
+    }
+
+    _formatAgentRouteHint(snapshot) {
+        if (!snapshot) return '';
+        const state = String(snapshot.behaviorState || snapshot.behavior?.state || '').toLowerCase();
+        const moving = snapshot.moving || state === 'traveling';
+        const waypoints = Number(snapshot.waypointCount);
+        if (!moving && !Number.isFinite(waypoints)) return '';
+        const parts = [];
+        if (moving) parts.push('On route');
+        if (Number.isFinite(waypoints) && waypoints > 0) {
+            parts.push(`${waypoints} waypoint${waypoints === 1 ? '' : 's'}`);
+        }
+        return parts.join(', ');
+    }
+
+    _formatAgentRecentBuildingHint(snapshot, building) {
+        const breadcrumb = this._formatBreadcrumb(snapshot?.recentBuildings);
+        if (!breadcrumb || !breadcrumb.includes('>')) return '';
+        const label = this._buildingDisplayName(building);
+        if (breadcrumb.endsWith(label)) return '';
+        return `Recent ${breadcrumb}`;
+    }
+
+    _buildingRouteAgents(building, occupants = []) {
+        const type = this._buildingKey(building);
+        const occupantIds = new Set(occupants.map(agent => agent?.id).filter(Boolean));
+        const routes = [];
+        const world = this._getWorld();
+        for (const agent of world?.agents?.values?.() || []) {
+            if (!agent?.id || occupantIds.has(agent.id)) continue;
+            const snapshot = this._getAgentBehaviorSnapshot(agent);
+            const target = this._agentTargetBuildingKey(agent, snapshot);
+            const state = String(snapshot?.behaviorState || snapshot?.behavior?.state || '').toLowerCase();
+            if (target !== type) continue;
+            if (snapshot?.moving || state === 'traveling') routes.push(agent);
+        }
+        return routes;
+    }
+
+    _buildingRecentWork(building, occupants = [], routeAgents = []) {
+        const type = this._buildingKey(building);
+        const candidates = new Map();
+        for (const agent of occupants) if (agent?.id) candidates.set(agent.id, agent);
+        for (const agent of routeAgents) if (agent?.id) candidates.set(agent.id, agent);
+        const world = this._getWorld();
+        for (const agent of world?.agents?.values?.() || []) {
+            if (!agent?.id || candidates.has(agent.id)) continue;
+            const snapshot = this._getAgentBehaviorSnapshot(agent);
+            if (this._agentTouchesBuilding(agent, snapshot, type)) candidates.set(agent.id, agent);
+        }
+        const rows = [];
+        for (const agent of candidates.values()) {
+            const tool = currentToolPresentation(agent);
+            const age = Number(agent.activityAgeMs);
+            if (tool.isIdle && Number.isFinite(age) && age > 300000) continue;
+            if (tool.isIdle && !agent.currentTool) continue;
+            const name = agent.displayName || agent.name || agent.id;
+            rows.push(`${truncateText(name, 14)}: ${truncateText(tool.name || 'Work', 18)}`);
+            if (rows.length >= BUILDING_RECENT_WORK_LIMIT) break;
+        }
+        return rows;
+    }
+
+    _agentTouchesBuilding(agent, snapshot, type) {
+        const behavior = snapshot?.behavior || {};
+        const intent = behavior.currentIntent || snapshot?.routeIntent || {};
+        const recent = Array.isArray(behavior.recentBuildings)
+            ? behavior.recentBuildings
+            : (Array.isArray(snapshot?.recentBuildings) ? snapshot.recentBuildings : []);
+        const candidates = [
+            snapshot?.building,
+            behavior.building,
+            intent.building,
+            agent?.targetBuildingType,
+            agent?.lastKnownBuildingType,
+            ...recent.slice(-2),
+        ];
+        return candidates.some(candidate => this._buildingKey(candidate) === type);
+    }
+
+    _agentTargetBuildingKey(agent, snapshot) {
+        const behavior = snapshot?.behavior || {};
+        const intent = behavior.currentIntent || snapshot?.routeIntent || {};
+        return this._buildingKey(
+            intent.building
+            || snapshot?.routeIntent?.building
+            || agent?.targetBuildingType
+            || snapshot?.building
+            || agent?.lastKnownBuildingType,
+        );
+    }
+
+    _buildingPresenceFor(type, { occupants = [], load = null } = {}) {
+        const cached = this._buildingPresenceByType.get(type) || null;
+        if (cached) return cached;
+        const occupied = Number(load?.occupied);
+        const count = Number.isFinite(occupied) ? occupied : occupants.length;
+        const capacity = Number(load?.capacity);
+        const tier = count > 0
+            ? (Number.isFinite(capacity) && capacity > 0 && count >= capacity ? 'busy' : 'occupied')
+            : 'dormant';
+        return { count, tier, recencyScore: count > 0 ? 1 : 0 };
+    }
+
+    _buildingAllocatorSnapshot() {
+        const allocator = this._getRenderer()?.visitTileAllocator;
+        if (!allocator || typeof allocator.snapshot !== 'function') return null;
+        try {
+            return allocator.snapshot() || null;
+        } catch {
+            return null;
+        }
+    }
+
+    _buildingExternalData(type) {
+        const director = this._villageDirectorByType.get(type) || null;
+        const signal = this._buildingSignalByType.get(type) || null;
+        if (!director && !signal) return null;
+        return this._mergeBuildingPayload(director || {}, signal || {});
+    }
+
+    _buildingKey(value) {
+        const raw = value && typeof value === 'object'
+            ? (value.type || value.buildingType || value.building || value.id || value.key)
+            : value;
+        return String(raw || '').trim().toLowerCase();
+    }
+
+    _buildingDisplayName(building) {
+        const raw = building?.shortLabel || building?.label || building?.type || 'Building';
+        return this._titleize(String(raw).toLowerCase());
+    }
+
+    _cacheBuildingPresence(payload) {
+        this._buildingPresenceByType.clear();
+        for (const [type, value] of this._buildingPayloadEntries(payload)) {
+            const key = this._buildingKey(type);
+            if (!key) continue;
+            this._buildingPresenceByType.set(key, this._normalizeBuildingPresence(value));
+        }
+    }
+
+    _cacheBuildingPayload(payload, targetMap) {
+        if (!targetMap) return;
+        for (const [type, value] of this._buildingPayloadEntries(payload)) {
+            const key = this._buildingKey(type);
+            if (!key || !value || typeof value !== 'object') continue;
+            const previous = targetMap.get(key) || {};
+            targetMap.set(key, this._mergeBuildingPayload(previous, value));
+        }
+    }
+
+    _cacheVillageDirectorPayload(payload) {
+        this._cacheBuildingPayload(payload, this._villageDirectorByType);
+    }
+
+    _buildingPayloadEntries(payload, depth = 0) {
+        if (!payload || depth > 3) return [];
+        if (Array.isArray(payload)) {
+            return payload.flatMap(item => this._buildingPayloadEntries(item, depth + 1));
+        }
+        if (typeof payload !== 'object') return [];
+
+        const directKey = this._payloadBuildingKey(payload);
+        if (directKey) return [[directKey, payload]];
+
+        const entries = [];
+        const containerKeys = [
+            'buildings',
+            'buildingSignals',
+            'building_signals',
+            'signals',
+            'selectedBuildingSignal',
+            'directives',
+            'director',
+            'payload',
+            'data',
+        ];
+        for (const containerKey of containerKeys) {
+            const container = payload[containerKey];
+            if (!container || typeof container !== 'object') continue;
+            const directContainerKey = this._payloadBuildingKey(container);
+            if (directContainerKey) {
+                entries.push([directContainerKey, container]);
+                continue;
+            }
+            if (Array.isArray(container)) {
+                entries.push(...container.flatMap(item => this._buildingPayloadEntries(item, depth + 1)));
+                continue;
+            }
+            for (const [key, value] of Object.entries(container)) {
+                if (value && typeof value === 'object') {
+                    const mapKey = this._buildingKey(key);
+                    if (mapKey) entries.push([mapKey, value]);
+                    else entries.push(...this._buildingPayloadEntries(value, depth + 1));
+                }
+            }
+        }
+        if (entries.length) return entries;
+
+        for (const [key, value] of Object.entries(payload)) {
+            if (this._looksLikeBuildingPayloadMapEntry(key, value)) {
+                entries.push([this._buildingKey(key), value]);
+            }
+        }
+        return entries;
+    }
+
+    _payloadBuildingKey(payload) {
+        for (const key of ['building', 'buildingType', 'targetBuilding', 'targetBuildingType']) {
+            const value = payload?.[key];
+            if (value) return this._buildingKey(value);
+        }
+        for (const key of ['type', 'id', 'key']) {
+            const value = payload?.[key];
+            const buildingKey = this._buildingKey(value);
+            if (buildingKey && (this._getBuildingByType(buildingKey) || this._buildingKey(this._selectedBuilding) === buildingKey)) {
+                return buildingKey;
+            }
+        }
+        return '';
+    }
+
+    _looksLikeBuildingPayloadMapEntry(key, value) {
+        const buildingKey = this._buildingKey(key);
+        if (!buildingKey || !value || typeof value !== 'object' || Array.isArray(value)) return false;
+        if (this._getBuildingByType(buildingKey) || this._buildingKey(this._selectedBuilding) === buildingKey) return true;
+        return this._hasAnyKey(value, [
+            'count',
+            'tier',
+            'recencyScore',
+            'headline',
+            'summary',
+            'message',
+            'signal',
+            'queue',
+            'queued',
+            'routes',
+            'recentWork',
+            'status',
+            'state',
+        ]);
+    }
+
+    _normalizeBuildingPresence(value) {
+        const source = value && typeof value === 'object' ? value : {};
+        const agentCount = Array.isArray(source.agents) ? source.agents.length : NaN;
+        const count = this._firstFiniteNumber([
+            source.count,
+            source.active,
+            source.activeAgents,
+            source.occupied,
+            agentCount,
+        ]);
+        const recencyScore = this._firstFiniteNumber([source.recencyScore, source.recency, source.score]);
+        const tier = String(source.tier || source.state || source.status || '').trim().toLowerCase();
+        return {
+            ...source,
+            ...(Number.isFinite(count) ? { count } : {}),
+            ...(Number.isFinite(recencyScore) ? { recencyScore } : {}),
+            tier: tier || (Number.isFinite(count) && count > 0 ? 'occupied' : 'dormant'),
+        };
+    }
+
+    _mergeBuildingPayload(base, overlay) {
+        const merged = { ...(base || {}), ...(overlay || {}) };
+        for (const key of ['signal', 'status', 'state', 'queue', 'route', 'routes', 'recent', 'recentWork', 'activity']) {
+            const left = base?.[key];
+            const right = overlay?.[key];
+            if (left && right && typeof left === 'object' && typeof right === 'object' && !Array.isArray(left) && !Array.isArray(right)) {
+                merged[key] = { ...left, ...right };
+            }
+        }
+        return merged;
+    }
+
+    _externalText(source, keys) {
+        return this._externalFieldText(source, keys);
+    }
+
+    _externalFieldText(source, keys, depth = 0) {
+        if (source === null || source === undefined || depth > 3) return '';
+        if (typeof source !== 'object') return this._formatExternalSignalText(source);
+        for (const key of keys) {
+            if (!this._hasOwn(source, key)) continue;
+            const text = this._formatExternalSignalText(source[key]);
+            if (text) return text;
+        }
+        for (const key of ['signal', 'status', 'state', 'detail', 'queue', 'route', 'routes', 'recent', 'work', 'activity', 'payload', 'data']) {
+            const nested = source[key];
+            if (!nested || typeof nested !== 'object') continue;
+            const text = this._externalFieldText(nested, keys, depth + 1);
+            if (text) return text;
+        }
+        return '';
+    }
+
+    _externalNumber(source, keys) {
+        if (Number.isFinite(Number(source))) return Number(source);
+        if (!source || typeof source !== 'object') return NaN;
+        for (const key of keys) {
+            const number = Number(source[key]);
+            if (Number.isFinite(number)) return number;
+        }
+        return NaN;
+    }
+
+    _formatExternalSignalText(value) {
+        if (value === null || value === undefined) return '';
+        if (typeof value === 'string') return value.trim();
+        if (typeof value === 'number') return Number.isFinite(value) ? String(value) : '';
+        if (typeof value === 'boolean') return value ? 'active' : '';
+        if (Array.isArray(value)) {
+            return value
+                .map(item => this._formatExternalSignalText(item))
+                .filter(Boolean)
+                .slice(0, 3)
+                .join('; ');
+        }
+        if (typeof value !== 'object') return '';
+        for (const key of ['headline', 'summary', 'message', 'label', 'text', 'name', 'status', 'state', 'phase', 'detail']) {
+            if (!this._hasOwn(value, key)) continue;
+            const text = this._formatExternalSignalText(value[key]);
+            if (text) return text;
+        }
+        const waiting = this._firstFiniteNumber([value.waiting, value.queued, value.queueDepth]);
+        if (Number.isFinite(waiting)) return `${waiting} waiting`;
+        const count = this._firstFiniteNumber([value.count, Array.isArray(value.agents) ? value.agents.length : NaN]);
+        return Number.isFinite(count) ? String(count) : '';
+    }
+
+    _firstFiniteNumber(values) {
+        for (const value of values) {
+            const number = Number(value);
+            if (Number.isFinite(number)) return number;
+        }
+        return NaN;
+    }
+
+    _hasAnyKey(source, keys) {
+        if (!source || typeof source !== 'object') return false;
+        return keys.some(key => this._hasOwn(source, key));
+    }
+
+    _hasOwn(source, key) {
+        return Object.prototype.hasOwnProperty.call(source, key);
     }
 
     _formatRepoLedger(repo) {
@@ -1661,6 +2344,9 @@ export class ActivityPanel {
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off(BUILDING_EVENTS.SELECTED, this._onBuildingSelected);
         eventBus.off(BUILDING_EVENTS.DESELECTED, this._onBuildingDeselected);
+        eventBus.off(BUILDING_EVENTS.ACTIVE_AGENTS, this._onBuildingPresence);
+        eventBus.off(VILLAGE_BUILDING_SIGNAL_EVENT, this._onBuildingSignal);
+        eventBus.off(VILLAGE_DIRECTOR_EVENT, this._onVillageDirector);
         eventBus.off('usage:updated', this._onUsageUpdated);
         eventBus.off('mood:changed', this._onMoodChanged);
         eventBus.off('biography:updated', this._onBiographyUpdated);

@@ -1,0 +1,760 @@
+import { normalizeBuildingType } from '../../config/buildings.js';
+import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
+import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { buildingCenterToWorld } from './Projection.js';
+
+const SCENE_LIMIT = 8;
+const TOOL_EVENT_LIMIT = 40;
+const REPLAY_RETENTION_MS = 60_000;
+const REPLAY_SAMPLE_INTERVAL_MS = 750;
+const SNAPSHOT_EMIT_INTERVAL_MS = 650;
+const BUILDING_SIGNAL_TTL_MS = 45_000;
+const SOCIAL_TTL_MS = 14_000;
+const INCIDENT_TTL_MS = 18_000;
+const RELEASE_TTL_MS = 26_000;
+const LIFE_TTL_MS = 12_000;
+const MAX_REPLAY_AGENTS = 72;
+const MAX_SELECTED_ROUTES = 9;
+
+function clamp(value, min = 0, max = 1) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return min;
+    return Math.max(min, Math.min(max, n));
+}
+
+function nowMs() {
+    if (typeof performance !== 'undefined' && performance.now) return performance.now();
+    return Date.now();
+}
+
+function displayName(agent) {
+    return agent?.agentName
+        || agent?.name
+        || agent?.displayName
+        || agent?.agentId
+        || agent?.id
+        || 'Agent';
+}
+
+function compactToolName(tool) {
+    const text = String(tool || '').trim();
+    if (!text) return '';
+    const parts = text.split(/[.:/]/).filter(Boolean);
+    return (parts.at(-1) || text).replace(/_/g, ' ').slice(0, 28);
+}
+
+function agentBuilding(agent) {
+    return normalizeBuildingType(
+        agent?.targetBuildingType
+        || agent?.lastKnownBuildingType
+        || agent?.buildingType
+        || agent?.building,
+    );
+}
+
+function sceneId(prefix, payload = {}) {
+    return `${prefix}:${payload.agentId || payload.parentId || payload.childId || payload.building || payload.kind || 'scene'}:${payload.ts || Date.now()}`;
+}
+
+function sceneProgress(scene, now) {
+    if (!scene) return 1;
+    const start = scene.startedAt || scene.ts || now;
+    const end = scene.expiresAt || (start + 1);
+    return clamp((now - start) / Math.max(1, end - start));
+}
+
+export class VillageDirector {
+    constructor(world) {
+        this.world = world;
+        this.motionScale = 1;
+        this.selectedBuilding = null;
+        this.quotaState = null;
+        this.harborState = null;
+        this.replayActive = false;
+        this.replaySamples = [];
+        this.toolEvents = [];
+        this.scenes = [];
+        this.buildingPresence = new Map();
+        this.lastSnapshot = this._emptySnapshot(Date.now());
+        this._lastReplaySampleAt = 0;
+        this._lastSnapshotEmitAt = 0;
+        this._lastSceneSignatures = new Set();
+        this._unsubscribers = [
+            eventBus.on('agent:added', (agent) => this._onAgentAdded(agent)),
+            eventBus.on('agent:updated', (agent) => this._onAgentUpdated(agent)),
+            eventBus.on('agent:removed', (agent) => this._onAgentRemoved(agent)),
+            eventBus.on('tool:invoked', (event) => this._onToolInvoked(event)),
+            eventBus.on('subagent:dispatched', (event) => this._onSubagentDispatched(event)),
+            eventBus.on('subagent:completed', (event) => this._onSubagentCompleted(event)),
+            eventBus.on('team:joined', (event) => this._onTeamJoined(event)),
+            eventBus.on('chat:started', (event) => this._onChatStarted(event)),
+            eventBus.on('quota:throttled', (event) => this._onQuotaThrottled(event)),
+            eventBus.on('harbor:updated', (repos) => this._onHarborUpdated(repos)),
+            eventBus.on('harbor:release-burst', (event) => this.triggerReleaseParade(event)),
+            eventBus.on('chronicle:milestone', (event) => {
+                if (event?.kind === 'release') this.triggerReleaseParade(event);
+            }),
+            eventBus.on(BUILDING_EVENTS.SELECTED, (building) => this.setSelectedBuilding(building)),
+            eventBus.on(BUILDING_EVENTS.DESELECTED, () => this.setSelectedBuilding(null)),
+            eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, (payload) => this._onBuildingPresence(payload)),
+        ];
+    }
+
+    dispose() {
+        for (const off of this._unsubscribers) off?.();
+        this._unsubscribers = [];
+        this.replaySamples = [];
+        this.toolEvents = [];
+        this.scenes = [];
+        this.buildingPresence.clear();
+    }
+
+    setMotionScale(scale) {
+        this.motionScale = scale === 0 ? 0 : 1;
+    }
+
+    setQuotaState(state) {
+        const quota = state?.quota || state || null;
+        this.quotaState = quota;
+        const ratio = this._quotaRatio(quota);
+        if (ratio >= 0.86) {
+            this._addScene({
+                type: 'incident',
+                kind: 'quota',
+                building: 'mine',
+                label: ratio >= 0.95 ? 'Quota storm' : 'Quota watch',
+                intensity: clamp((ratio - 0.78) / 0.22),
+                startedAt: Date.now(),
+                expiresAt: Date.now() + INCIDENT_TTL_MS,
+            });
+        }
+    }
+
+    setHarborState(state = null) {
+        const active = Boolean(state?.hasFailedPush || state?.status === 'failed');
+        this.harborState = state || null;
+        if (!active) return;
+        this._addScene({
+            type: 'incident',
+            kind: 'failed-push',
+            building: 'watchtower',
+            label: 'Push failed',
+            intensity: clamp(state?.intensity ?? 0.8),
+            startedAt: Date.now(),
+            expiresAt: Date.now() + INCIDENT_TTL_MS,
+        });
+    }
+
+    setSelectedBuilding(building) {
+        this.selectedBuilding = building || null;
+        if (building?.type) {
+            this._touchBuildingSignal(building.type, {
+                reason: 'selected',
+                label: 'Inspected',
+                intensity: 0.55,
+            });
+        }
+    }
+
+    toggleReplay() {
+        this.replayActive = !this.replayActive;
+        eventBus.emit('village:replay', {
+            active: this.replayActive,
+            ts: Date.now(),
+        });
+        return this.replayActive;
+    }
+
+    triggerReleaseParade(payload = {}) {
+        const label = payload?.label || payload?.release || payload?.targetRef || payload?.ref || payload?.version || 'Release';
+        this._addScene({
+            type: 'release',
+            kind: 'parade',
+            building: 'harbor',
+            label: String(label).replace(/^refs\/tags\//, '').slice(0, 34),
+            intensity: clamp(payload?.weight === 'major' ? 1 : 0.78, 0.45, 1),
+            startedAt: Date.now(),
+            expiresAt: Date.now() + RELEASE_TTL_MS,
+        });
+    }
+
+    update(renderer, dt = 16, now = Date.now()) {
+        const perfNow = nowMs();
+        this._sampleReplay(renderer, now);
+        this._prune(now);
+        const agents = this._agentSnapshots(renderer);
+        const teams = this._teamClusters(agents, perfNow);
+        const handoffs = this._handoffScenes(agents, now);
+        const incidents = this._incidentScenes(agents, now);
+        const lifecycle = this._lifecycleScenes(agents, now);
+        const buildingSignals = this._buildingSignals(agents, now);
+        const selectedBuildingSignal = this._selectedBuildingSignal(agents, buildingSignals);
+        const weatherInfluence = this._weatherInfluence(agents, incidents, now);
+        const releaseParade = this._releaseScene(now);
+
+        this.lastSnapshot = {
+            now,
+            perfNow,
+            dt,
+            motionScale: this.motionScale,
+            replayActive: this.replayActive,
+            replaySamples: this.replayActive ? this._recentReplaySamples(now) : [],
+            teams,
+            handoffs,
+            incidents,
+            lifecycle,
+            buildingSignals,
+            selectedBuildingSignal,
+            releaseParade,
+            weatherInfluence,
+            activeSceneCount: this.scenes.length,
+        };
+
+        if (now - this._lastSnapshotEmitAt >= SNAPSHOT_EMIT_INTERVAL_MS) {
+            this._lastSnapshotEmitAt = now;
+            eventBus.emit('village:director', this.lastSnapshot);
+            if (selectedBuildingSignal) eventBus.emit('village:building-signal', selectedBuildingSignal);
+        }
+
+        return this.lastSnapshot;
+    }
+
+    getSnapshot() {
+        return this.lastSnapshot;
+    }
+
+    getWeatherInfluence() {
+        return this.lastSnapshot?.weatherInfluence || null;
+    }
+
+    _emptySnapshot(now) {
+        return {
+            now,
+            perfNow: nowMs(),
+            dt: 16,
+            motionScale: this.motionScale,
+            replayActive: false,
+            replaySamples: [],
+            teams: [],
+            handoffs: [],
+            incidents: [],
+            lifecycle: [],
+            buildingSignals: [],
+            selectedBuildingSignal: null,
+            releaseParade: null,
+            weatherInfluence: null,
+            activeSceneCount: 0,
+        };
+    }
+
+    _onAgentAdded(agent) {
+        const building = agentBuilding(agent) || 'command';
+        this._touchBuildingSignal(building, {
+            reason: 'arrival',
+            label: 'Arrived',
+            intensity: 0.56,
+            agentId: agent?.id,
+        });
+        this._addScene({
+            type: 'lifecycle',
+            kind: 'arrival',
+            agentId: agent?.id,
+            building,
+            label: displayName(agent),
+            startedAt: Date.now(),
+            expiresAt: Date.now() + LIFE_TTL_MS,
+        });
+    }
+
+    _onAgentUpdated(agent) {
+        const status = String(agent?.status || '');
+        const building = agentBuilding(agent) || 'command';
+        if (status === AgentStatus.RATE_LIMITED || status === AgentStatus.WAITING_ON_USER || status === AgentStatus.ERRORED) {
+            this._addScene({
+                type: 'incident',
+                kind: status,
+                agentId: agent?.id,
+                building,
+                label: status === AgentStatus.WAITING_ON_USER ? 'Bell waiting' : status.replace(/_/g, ' '),
+                intensity: status === AgentStatus.ERRORED ? 0.92 : 0.7,
+                startedAt: Date.now(),
+                expiresAt: Date.now() + INCIDENT_TTL_MS,
+            });
+        }
+    }
+
+    _onAgentRemoved(agent) {
+        const building = agentBuilding(agent) || 'gate';
+        this._addScene({
+            type: 'lifecycle',
+            kind: 'departure',
+            agentId: agent?.id,
+            building,
+            lastTile: agent?.position || null,
+            label: displayName(agent),
+            startedAt: Date.now(),
+            expiresAt: Date.now() + LIFE_TTL_MS,
+        });
+    }
+
+    _onToolInvoked(event) {
+        if (!event) return;
+        const now = Date.now();
+        const building = normalizeBuildingType(event.building) || 'command';
+        const record = {
+            ...event,
+            ts: Number(event.ts) || now,
+            building,
+            label: event.label || compactToolName(event.tool),
+        };
+        this.toolEvents.push(record);
+        if (this.toolEvents.length > TOOL_EVENT_LIMIT) {
+            this.toolEvents.splice(0, this.toolEvents.length - TOOL_EVENT_LIMIT);
+        }
+        this._touchBuildingSignal(building, {
+            reason: record.reason || 'tool',
+            label: record.label || 'Tool',
+            intensity: 0.48,
+            agentId: record.agentId,
+        });
+
+        const lifecycle = record.commandLifecycle || null;
+        if (lifecycle?.kind && lifecycle.kind !== 'spawn') {
+            this._addScene({
+                type: 'social',
+                kind: 'handoff',
+                agentId: record.agentId,
+                targetAgentId: lifecycle.targetAgentId || null,
+                targetRef: lifecycle.targetRef || null,
+                building,
+                label: lifecycle.kind.replace(/_/g, ' '),
+                startedAt: now,
+                expiresAt: now + SOCIAL_TTL_MS,
+            });
+        }
+    }
+
+    _onSubagentDispatched(event) {
+        this._addScene({
+            type: 'social',
+            kind: 'summon',
+            parentId: event?.parentId,
+            childId: event?.childId,
+            building: 'command',
+            label: event?.childSubagentType || event?.childAgentName || 'Subagent',
+            startedAt: Date.now(),
+            expiresAt: Date.now() + SOCIAL_TTL_MS,
+        });
+    }
+
+    _onSubagentCompleted(event) {
+        this._addScene({
+            type: 'social',
+            kind: 'return',
+            parentId: event?.parentId,
+            childId: event?.childId,
+            building: 'taskboard',
+            label: 'Returned',
+            startedAt: Date.now(),
+            expiresAt: Date.now() + SOCIAL_TTL_MS,
+        });
+    }
+
+    _onTeamJoined(event) {
+        this._addScene({
+            type: 'social',
+            kind: 'team-huddle',
+            agentId: event?.agentId,
+            teamName: event?.teamName,
+            building: 'command',
+            label: event?.teamName || 'Team',
+            startedAt: Date.now(),
+            expiresAt: Date.now() + SOCIAL_TTL_MS,
+        });
+    }
+
+    _onChatStarted(event) {
+        this._addScene({
+            type: 'social',
+            kind: 'handoff',
+            agentId: event?.aId,
+            targetAgentId: event?.bId,
+            building: 'command',
+            label: 'handoff',
+            startedAt: Date.now(),
+            expiresAt: Date.now() + SOCIAL_TTL_MS,
+        });
+    }
+
+    _onQuotaThrottled(event) {
+        const ratio = Number(event?.fiveHour);
+        this._addScene({
+            type: 'incident',
+            kind: 'quota',
+            building: 'mine',
+            label: 'Rate limit watch',
+            intensity: clamp(ratio || 0.9),
+            startedAt: Date.now(),
+            expiresAt: Date.now() + INCIDENT_TTL_MS,
+        });
+    }
+
+    _onHarborUpdated(repos = []) {
+        const failed = Array.isArray(repos) && repos.some(repo => Number(repo?.failedPushes || 0) > 0);
+        if (!failed) return;
+        this._touchBuildingSignal('harbor', {
+            reason: 'failed-push',
+            label: 'Push failed',
+            intensity: 0.9,
+        });
+        this._addScene({
+            type: 'incident',
+            kind: 'failed-push',
+            building: 'watchtower',
+            label: 'Harbor alert',
+            intensity: 0.9,
+            startedAt: Date.now(),
+            expiresAt: Date.now() + INCIDENT_TTL_MS,
+        });
+    }
+
+    _onBuildingPresence(payload) {
+        this.buildingPresence.clear();
+        for (const [type, entry] of Object.entries(payload || {})) {
+            if (!entry) continue;
+            this.buildingPresence.set(normalizeBuildingType(type), {
+                ...entry,
+                updatedAt: Date.now(),
+            });
+        }
+    }
+
+    _addScene(scene) {
+        if (!scene) return;
+        const now = Date.now();
+        const normalized = {
+            ...scene,
+            id: scene.id || sceneId(scene.type || 'scene', scene),
+            startedAt: scene.startedAt || now,
+            expiresAt: scene.expiresAt || now + SOCIAL_TTL_MS,
+        };
+        const signature = `${normalized.type}:${normalized.kind}:${normalized.agentId || ''}:${normalized.targetAgentId || ''}:${normalized.building || ''}:${normalized.label || ''}`;
+        if (this._lastSceneSignatures.has(signature)) {
+            const existing = this.scenes.find(item => (
+                `${item.type}:${item.kind}:${item.agentId || ''}:${item.targetAgentId || ''}:${item.building || ''}:${item.label || ''}` === signature
+            ));
+            if (existing) {
+                existing.expiresAt = Math.max(existing.expiresAt || 0, normalized.expiresAt || 0);
+                existing.intensity = Math.max(existing.intensity || 0, normalized.intensity || 0);
+                return;
+            }
+        }
+        this._lastSceneSignatures.add(signature);
+        this.scenes.push(normalized);
+        if (this.scenes.length > SCENE_LIMIT) {
+            this.scenes.splice(0, this.scenes.length - SCENE_LIMIT);
+        }
+        eventBus.emit('village:scene', normalized);
+    }
+
+    _touchBuildingSignal(type, patch = {}) {
+        const building = normalizeBuildingType(type);
+        if (!building) return;
+        const current = this.buildingPresence.get(building) || {};
+        this.buildingPresence.set(building, {
+            ...current,
+            ...patch,
+            tier: patch.tier || current.tier || (patch.intensity > 0.65 ? 'busy' : 'active'),
+            updatedAt: Date.now(),
+        });
+    }
+
+    _sampleReplay(renderer, now) {
+        if (!renderer?.agentSprites?.size) return;
+        if (now - this._lastReplaySampleAt < REPLAY_SAMPLE_INTERVAL_MS) return;
+        this._lastReplaySampleAt = now;
+        const points = [];
+        for (const sprite of renderer.agentSprites.values()) {
+            const agent = sprite?.agent;
+            if (!agent?.id) continue;
+            points.push({
+                id: agent.id,
+                provider: agent.provider || '',
+                status: agent.status || '',
+                teamName: agent.teamName || null,
+                tool: compactToolName(agent.currentTool),
+                x: Number(sprite.x) || 0,
+                y: Number(sprite.y) || 0,
+            });
+            if (points.length >= MAX_REPLAY_AGENTS) break;
+        }
+        if (points.length) this.replaySamples.push({ ts: now, points });
+        this._pruneReplay(now);
+    }
+
+    _prune(now) {
+        this._pruneReplay(now);
+        this.scenes = this.scenes.filter(scene => (scene.expiresAt || 0) > now);
+        this.toolEvents = this.toolEvents.filter(event => now - (Number(event.ts) || 0) <= BUILDING_SIGNAL_TTL_MS);
+        for (const [type, entry] of this.buildingPresence.entries()) {
+            if (now - (Number(entry.updatedAt) || 0) > BUILDING_SIGNAL_TTL_MS) this.buildingPresence.delete(type);
+        }
+        if (this._lastSceneSignatures.size > SCENE_LIMIT * 2) {
+            this._lastSceneSignatures = new Set(this.scenes.map(scene => (
+                `${scene.type}:${scene.kind}:${scene.agentId || ''}:${scene.targetAgentId || ''}:${scene.building || ''}:${scene.label || ''}`
+            )));
+        }
+    }
+
+    _pruneReplay(now) {
+        while (this.replaySamples.length && now - this.replaySamples[0].ts > REPLAY_RETENTION_MS) {
+            this.replaySamples.shift();
+        }
+    }
+
+    _recentReplaySamples(now) {
+        return this.replaySamples.filter(sample => now - sample.ts <= REPLAY_RETENTION_MS);
+    }
+
+    _agentSnapshots(renderer) {
+        const out = [];
+        const sprites = renderer?.agentSprites?.values ? renderer.agentSprites.values() : [];
+        for (const sprite of sprites) {
+            const agent = sprite?.agent;
+            if (!agent?.id) continue;
+            out.push({
+                id: agent.id,
+                name: displayName(agent),
+                provider: agent.provider || '',
+                status: agent.status || '',
+                teamName: agent.teamName || null,
+                parentSessionId: agent.parentSessionId || null,
+                currentTool: compactToolName(agent.currentTool),
+                building: agentBuilding(agent) || null,
+                x: Number(sprite.x) || 0,
+                y: Number(sprite.y) || 0,
+                moving: Boolean(sprite.moving),
+            });
+        }
+        return out;
+    }
+
+    _teamClusters(agents, now) {
+        const clusters = new Map();
+        for (const agent of agents) {
+            const key = agent.teamName || (agent.parentSessionId ? `parent:${agent.parentSessionId}` : null);
+            if (!key) continue;
+            const cluster = clusters.get(key) || {
+                id: key,
+                label: String(agent.teamName || 'Subagents').slice(0, 30),
+                members: [],
+                x: 0,
+                y: 0,
+                pulse: 0,
+            };
+            cluster.members.push(agent.id);
+            cluster.x += agent.x;
+            cluster.y += agent.y;
+            clusters.set(key, cluster);
+        }
+        const out = [];
+        for (const cluster of clusters.values()) {
+            if (cluster.members.length < 2) continue;
+            cluster.x /= cluster.members.length;
+            cluster.y /= cluster.members.length;
+            cluster.radius = 26 + Math.min(5, cluster.members.length) * 6;
+            cluster.pulse = this.motionScale ? (0.5 + Math.sin(now / 420 + cluster.members.length) * 0.5) : 0.55;
+            out.push(cluster);
+        }
+        return out.slice(0, 8);
+    }
+
+    _handoffScenes(agents, now) {
+        const byId = new Map(agents.map(agent => [agent.id, agent]));
+        const out = [];
+        for (const scene of this.scenes) {
+            if (scene.type !== 'social' || (scene.kind !== 'handoff' && scene.kind !== 'summon' && scene.kind !== 'return')) continue;
+            const from = byId.get(scene.agentId || scene.parentId);
+            const to = byId.get(scene.targetAgentId || scene.childId);
+            if (!from && !to) continue;
+            out.push({
+                ...scene,
+                progress: sceneProgress(scene, now),
+                from: from ? { id: from.id, x: from.x, y: from.y, label: from.name } : null,
+                to: to ? { id: to.id, x: to.x, y: to.y, label: to.name } : null,
+            });
+        }
+        return out.slice(-8);
+    }
+
+    _incidentScenes(agents, now) {
+        const byId = new Map(agents.map(agent => [agent.id, agent]));
+        const out = [];
+        for (const scene of this.scenes) {
+            if (scene.type !== 'incident') continue;
+            const agent = byId.get(scene.agentId);
+            const building = this._buildingFor(scene.building);
+            out.push({
+                ...scene,
+                progress: sceneProgress(scene, now),
+                agent: agent ? { id: agent.id, x: agent.x, y: agent.y, label: agent.name } : null,
+                center: building ? buildingCenterToWorld(building) : null,
+            });
+        }
+        return out.slice(-6);
+    }
+
+    _lifecycleScenes(agents, now) {
+        const byId = new Map(agents.map(agent => [agent.id, agent]));
+        const out = [];
+        for (const scene of this.scenes) {
+            if (scene.type !== 'lifecycle') continue;
+            const agent = byId.get(scene.agentId);
+            const center = agent
+                ? { x: agent.x, y: agent.y }
+                : scene.lastTile
+                    ? buildingCenterToWorld({ position: scene.lastTile, width: 1, height: 1 })
+                    : null;
+            out.push({
+                ...scene,
+                progress: sceneProgress(scene, now),
+                center,
+            });
+        }
+        return out.slice(-8);
+    }
+
+    _buildingSignals(agents, now) {
+        const counts = new Map();
+        for (const agent of agents) {
+            const building = agent.building;
+            if (!building) continue;
+            const entry = counts.get(building) || { occupied: 0, working: 0, waiting: 0, errored: 0 };
+            entry.occupied += 1;
+            if (agent.status === AgentStatus.WORKING) entry.working += 1;
+            else if (agent.status === AgentStatus.WAITING || agent.status === AgentStatus.WAITING_ON_USER) entry.waiting += 1;
+            else if (agent.status === AgentStatus.ERRORED || agent.status === AgentStatus.RATE_LIMITED) entry.errored += 1;
+            counts.set(building, entry);
+        }
+
+        const out = [];
+        const types = new Set([...this.buildingPresence.keys(), ...counts.keys()]);
+        for (const type of types) {
+            const building = this._buildingFor(type);
+            if (!building) continue;
+            const presence = this.buildingPresence.get(type) || {};
+            const count = counts.get(type) || {};
+            const recentTools = this.toolEvents
+                .filter(event => event.building === type && now - (Number(event.ts) || 0) <= 25_000)
+                .slice(-4);
+            const heat = clamp(
+                (presence.recencyScore || 0) * 0.52
+                + (count.working || 0) * 0.14
+                + (count.errored || 0) * 0.22
+                + recentTools.length * 0.08
+                + (presence.intensity || 0) * 0.36,
+                0,
+                1,
+            );
+            if (heat <= 0.05 && !recentTools.length) continue;
+            out.push({
+                type,
+                label: this._buildingSignalLabel(type, presence, count, recentTools),
+                reason: presence.reason || recentTools.at(-1)?.reason || null,
+                tier: presence.tier || (heat > 0.66 ? 'busy' : heat > 0.28 ? 'active' : 'dormant'),
+                heat,
+                counts: count,
+                recentTools: recentTools.map(event => ({
+                    agentId: event.agentId,
+                    label: event.label || compactToolName(event.tool),
+                    reason: event.reason || null,
+                    ts: event.ts,
+                })),
+                center: buildingCenterToWorld(building),
+                updatedAt: presence.updatedAt || now,
+            });
+        }
+        return out.sort((a, b) => b.heat - a.heat).slice(0, 12);
+    }
+
+    _selectedBuildingSignal(agents, buildingSignals) {
+        if (!this.selectedBuilding?.type) return null;
+        const type = normalizeBuildingType(this.selectedBuilding.type);
+        const building = this._buildingFor(type) || this.selectedBuilding;
+        const center = buildingCenterToWorld(building);
+        const signal = buildingSignals.find(entry => entry.type === type) || {
+            type,
+            label: this.selectedBuilding.shortLabel || this.selectedBuilding.label || type,
+            heat: 0.35,
+            counts: {},
+            recentTools: [],
+            center,
+        };
+        const routes = agents
+            .filter(agent => agent.building === type)
+            .slice(0, MAX_SELECTED_ROUTES)
+            .map(agent => ({
+                agentId: agent.id,
+                label: agent.name,
+                status: agent.status,
+                from: { x: agent.x, y: agent.y },
+                to: center,
+            }));
+        return {
+            ...signal,
+            selected: true,
+            routes,
+            center,
+        };
+    }
+
+    _weatherInfluence(agents, incidents, now) {
+        const total = Math.max(1, agents.length);
+        const stormAgents = agents.filter(agent => (
+            agent.status === AgentStatus.RATE_LIMITED
+            || agent.status === AgentStatus.ERRORED
+            || agent.status === AgentStatus.WAITING_ON_USER
+        )).length;
+        const failedPush = incidents.some(scene => scene.kind === 'failed-push') ? 0.38 : 0;
+        const quota = clamp((this._quotaRatio(this.quotaState) - 0.72) / 0.28) * 0.42;
+        const recentCompleted = this.scenes.filter(scene => scene.type === 'lifecycle'
+            && scene.kind === 'departure'
+            && now - (scene.startedAt || 0) < 25_000).length;
+        const storminess = clamp((stormAgents / total) * 0.55 + failedPush + quota);
+        const clearing = clamp(storminess > 0 ? 0 : recentCompleted * 0.16);
+        if (storminess <= 0.02 && clearing <= 0.02) return null;
+        return { storminess, clearing };
+    }
+
+    _releaseScene(now) {
+        const scene = [...this.scenes].reverse().find(item => item.type === 'release');
+        if (!scene) return null;
+        const building = this._buildingFor(scene.building || 'harbor');
+        return {
+            ...scene,
+            progress: sceneProgress(scene, now),
+            center: building ? buildingCenterToWorld(building) : null,
+        };
+    }
+
+    _buildingFor(type) {
+        const normalized = normalizeBuildingType(type);
+        if (!normalized || !this.world?.buildings?.get) return null;
+        return this.world.buildings.get(normalized) || null;
+    }
+
+    _buildingSignalLabel(type, presence, count, recentTools) {
+        if (presence?.label) return presence.label;
+        if ((count?.errored || 0) > 0) return 'Needs attention';
+        if (type === 'mine' && this._quotaRatio(this.quotaState) >= 0.86) return 'Quota heat';
+        if (type === 'watchtower' && this.harborState?.hasFailedPush) return 'Alert lit';
+        if ((count?.waiting || 0) > 0) return 'Queue forming';
+        if (recentTools.length) return recentTools.at(-1)?.label || 'Tool work';
+        if ((count?.working || 0) > 1) return 'Busy';
+        return 'Active';
+    }
+
+    _quotaRatio(quota) {
+        return clamp(quota?.fiveHour ?? quota?.fiveHourRatio ?? quota?.usageRatio ?? 0, 0, 1);
+    }
+}

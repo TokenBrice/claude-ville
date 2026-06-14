@@ -232,6 +232,15 @@ export class BuildingSprite {
         return this._presenceByType.get(type)?.tier || 'dormant';
     }
 
+    _buildingAlertFor(building) {
+        return Boolean(this.harborStatus?.failedPushActive
+            && (building?.type === 'watchtower' || building?.type === 'harbor'));
+    }
+
+    _quotaFiveHourRatio() {
+        return clamp01(this.quotaState?.fiveHour ?? this.quotaState?.fiveHourRatio ?? 0);
+    }
+
     setMotionScale(s) { this.motionScale = s; }
 
     setLightingState(state) {
@@ -343,6 +352,7 @@ export class BuildingSprite {
             );
             ctx.fill();
             this._drawFootprintContactPad(ctx, b, { isLandmark, isHovered });
+            this._drawBuildingActivityFootprint(ctx, b, { isLandmark, isHovered });
             if (isLandmark || isHovered) {
                 ctx.globalAlpha = isHovered ? 0.82 : 0.46;
                 ctx.strokeStyle = isHovered ? 'rgba(255, 232, 166, 0.75)' : 'rgba(213, 169, 88, 0.38)';
@@ -1300,6 +1310,7 @@ export class BuildingSprite {
             ctx.lineTo(mouth.x + 30, mouth.y + 14);
             ctx.stroke();
             this._drawMineRitual(ctx, mouth, mineRitual);
+            this._drawMineLoadMarkers(ctx, mouth, building);
         } else if (building.type === 'portal') {
             if (!shouldDrawLocalY(60)) {
                 ctx.restore();
@@ -1335,13 +1346,16 @@ export class BuildingSprite {
                 this._drawWatchtowerRitual(ctx, beacon);
             }
         } else if (building.type === 'harbor') {
-            if (splitPass !== 'back') this._drawHarborMasterOffice(ctx, localPoint, pulse);
+            if (splitPass !== 'back') this._drawHarborMasterOffice(ctx, localPoint, pulse, building);
         } else if (building.type === 'archive') {
             if (splitPass !== 'back') this._drawArchiveEnhancement(ctx, localPoint, pulse);
         } else if (building.type === 'taskboard') {
             if (splitPass !== 'back') this._drawTaskboardRitual(ctx, localPoint, building);
         } else if (building.type === 'command') {
-            if (splitPass !== 'back') this._drawCommandRitual(ctx, localPoint, building);
+            if (splitPass !== 'back') {
+                this._drawCommandActivityDetails(ctx, localPoint, building, pulse);
+                this._drawCommandRitual(ctx, localPoint, building);
+            }
         }
         ctx.restore();
     }
@@ -1700,7 +1714,7 @@ export class BuildingSprite {
         }
     }
 
-    _drawHarborMasterOffice(ctx, localPoint, pulse) {
+    _drawHarborMasterOffice(ctx, localPoint, pulse, building = null) {
         const signal = localPoint(74, 37);
         const lantern = localPoint(171, 96);
         const quayLight = localPoint(102, 151);
@@ -1747,6 +1761,56 @@ export class BuildingSprite {
         ctx.ellipse(pier.x, pier.y, 32, 10, -0.2, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
+        this._drawHarborActivityMarkers(ctx, { signal, lantern, quayLight, pier }, building, pulse);
+    }
+
+    _drawHarborActivityMarkers(ctx, points, building, pulse) {
+        const activity = building ? this._buildingActivityInfo(building) : { intensity: 0, occupancy: { ratio: 0 }, alert: false };
+        const activeWorking = this._watchtowerActiveCount();
+        const failed = this.harborStatus?.failedPushActive;
+        const signal = Math.max(activity.intensity, activity.occupancy.ratio, Math.min(1, activeWorking / 6));
+        if (signal <= 0.16 && !failed) return;
+
+        const cargoCount = Math.max(1, Math.min(4, Math.ceil(signal * 4)));
+        const cargoColor = failed ? '#ff755d' : '#ffd37a';
+        const bob = this.motionScale ? Math.sin(this.frame * 0.11) * 1.2 : 0.5;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        for (let i = 0; i < cargoCount; i++) {
+            const x = Math.round(points.pier.x - 28 + i * 16);
+            const y = Math.round(points.pier.y - 15 + (i % 2) * 5 + bob * 0.35);
+            ctx.globalAlpha = 0.78;
+            ctx.fillStyle = i < activeWorking ? '#8a5a32' : '#5e4228';
+            ctx.strokeStyle = 'rgba(31, 20, 12, 0.86)';
+            ctx.lineWidth = 1;
+            ctx.fillRect(x - 5, y - 5, 10, 8);
+            ctx.strokeRect(x - 4.5, y - 4.5, 9, 7);
+            ctx.globalAlpha = 0.38 + signal * 0.28;
+            ctx.fillStyle = cargoColor;
+            ctx.fillRect(x - 3, y - 7, 6, 2);
+        }
+
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.12 + signal * 0.22 + pulse * 0.08;
+        ctx.fillStyle = cargoColor;
+        ctx.beginPath();
+        ctx.ellipse(points.lantern.x, points.lantern.y, 30 + signal * 12, 14 + signal * 4, -0.2, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (failed) {
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 0.92;
+            ctx.strokeStyle = '#ff755d';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(points.signal.x + 29, points.signal.y - 24);
+            ctx.lineTo(points.signal.x + 43, points.signal.y - 10);
+            ctx.moveTo(points.signal.x + 43, points.signal.y - 24);
+            ctx.lineTo(points.signal.x + 29, points.signal.y - 10);
+            ctx.stroke();
+        }
+        ctx.restore();
     }
 
     _drawArchiveEnhancement(ctx, localPoint, pulse) {
@@ -1828,7 +1892,8 @@ export class BuildingSprite {
         const hearth = localPoint(51, 66);
         const chimney = localPoint(39, 8);
         const anvil = localPoint(26, 76);
-        const activityIntensity = this._forgeGlowIntensity();
+        const activity = building ? this._buildingActivityInfo(building) : { intensity: 0, occupancy: { ratio: 0 } };
+        const activityIntensity = Math.max(this._forgeGlowIntensity(), activity.intensity * 0.76);
         const ritual = this._latestRitual('forge');
         this._drawForgeHeatBloom(ctx, hearth, pulse, activityIntensity);
 
@@ -1846,6 +1911,36 @@ export class BuildingSprite {
         ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
+        this._drawForgeActivityMarks(ctx, hearth, anvil, activity, pulse);
+    }
+
+    _drawForgeActivityMarks(ctx, hearth, anvil, activity, pulse) {
+        const signal = Math.max(activity?.intensity || 0, activity?.occupancy?.ratio || 0);
+        if (signal <= 0.14) return;
+        const count = Math.max(1, Math.min(4, Math.ceil(signal * 4)));
+        const shimmer = this.motionScale ? Math.sin(this.frame * 0.18) * 1.4 : 0.6;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = Math.min(0.72, 0.22 + signal * 0.36 + pulse * 0.1);
+        ctx.strokeStyle = activity?.alert ? '#ff755d' : '#ffd36a';
+        ctx.lineWidth = 1.5;
+        for (let i = 0; i < count; i++) {
+            const x = anvil.x - 18 + i * 10;
+            const y = anvil.y + 14 - i * 2;
+            ctx.beginPath();
+            ctx.moveTo(x - 4, y + 2);
+            ctx.lineTo(x + 6, y - 4 - shimmer * 0.35);
+            ctx.stroke();
+        }
+        if (signal > 0.68) {
+            ctx.globalAlpha = 0.16 + signal * 0.18;
+            ctx.fillStyle = '#ff8a33';
+            ctx.beginPath();
+            ctx.ellipse(hearth.x + 6, hearth.y + 9, 38, 11, -0.22, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
     }
 
     _drawForgeStoneApron(ctx, hearth, trough) {
@@ -2396,6 +2491,59 @@ export class BuildingSprite {
         }
     }
 
+    _drawMineLoadMarkers(ctx, mouth, building) {
+        const activity = this._buildingActivityInfo(building);
+        const quotaPressure = this._quotaFiveHourRatio();
+        const signal = Math.max(activity.intensity, activity.occupancy.ratio, quotaPressure);
+        if (signal <= 0.16) return;
+
+        const seamColor = this._mineSeamColor();
+        const cartCount = Math.max(1, Math.min(4, Math.ceil(signal * 4)));
+        const barWidth = 36;
+        const barX = Math.round(mouth.x - barWidth / 2);
+        const barY = Math.round(mouth.y + 33);
+        const fillWidth = Math.round(barWidth * signal);
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.74;
+        ctx.fillStyle = 'rgba(34, 24, 15, 0.82)';
+        ctx.fillRect(barX, barY, barWidth, 4);
+        ctx.strokeStyle = 'rgba(244, 214, 139, 0.38)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(barX + 0.5, barY + 0.5, barWidth - 1, 3);
+
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = quotaPressure > 0.82 ? 0.82 : 0.58;
+        ctx.fillStyle = seamColor;
+        ctx.fillRect(barX + 1, barY + 1, Math.max(2, fillWidth - 2), 2);
+
+        ctx.globalCompositeOperation = 'source-over';
+        for (let i = 0; i < cartCount; i++) {
+            const x = mouth.x - 22 + i * 15;
+            const y = mouth.y + 18 - (i % 2) * 3;
+            ctx.globalAlpha = 0.78;
+            this._drawActivityDiamond(ctx, x, y, 4.5, '#3a2819', 'rgba(255, 210, 128, 0.34)');
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.44 + quotaPressure * 0.28;
+            this._drawActivityDiamond(ctx, x, y - 1, 3.1, seamColor);
+            ctx.globalCompositeOperation = 'source-over';
+        }
+
+        if (quotaPressure > 0.8 || activity.occupancy.state === 'full') {
+            ctx.globalAlpha = 0.82;
+            ctx.strokeStyle = quotaPressure > 0.8 ? '#ff755d' : seamColor;
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(barX - 5, barY - 2);
+            ctx.lineTo(barX - 1, barY + 6);
+            ctx.moveTo(barX + barWidth + 5, barY - 2);
+            ctx.lineTo(barX + barWidth + 1, barY + 6);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
     _drawObservatoryRitual(ctx, localPoint, building) {
         const ritual = this._latestRitual('observatory');
         if (!ritual) return;
@@ -2642,6 +2790,52 @@ export class BuildingSprite {
         });
     }
 
+    _drawCommandActivityDetails(ctx, localPoint, building, pulse) {
+        const activity = this._buildingActivityInfo(building);
+        const activeWorking = this._watchtowerActiveCount();
+        const signal = Math.max(activity.intensity, activity.occupancy.ratio, Math.min(1, activeWorking / 6));
+        if (signal <= 0.16) return;
+
+        const keep = localPoint(155, 34);
+        const hall = localPoint(155, 98);
+        const count = Math.max(1, Math.min(5, Math.ceil(signal * 5)));
+        const beaconPulse = this.motionScale ? Math.sin(this.frame * 0.13) * 0.5 + 0.5 : 0.55;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.12 + signal * 0.22 + pulse * 0.08;
+        ctx.fillStyle = '#f6c85f';
+        ctx.beginPath();
+        ctx.ellipse(hall.x, hall.y, 44 + signal * 10, 20 + signal * 4, -0.12, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = '#ffe59a';
+        ctx.lineWidth = 1.5;
+        ctx.globalAlpha = 0.16 + signal * 0.18;
+        for (let i = 0; i < 2; i++) {
+            const grow = this.motionScale ? ((beaconPulse + i * 0.44) % 1) : 0.48 + i * 0.12;
+            ctx.beginPath();
+            ctx.ellipse(keep.x + 14, keep.y - 18, 16 + grow * 16, 8 + grow * 6, -0.18, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
+        for (let i = 0; i < count; i++) {
+            const x = Math.round(hall.x - 22 + i * 11);
+            const y = Math.round(hall.y + 16 + (i % 2) * 2);
+            ctx.globalAlpha = 0.72;
+            ctx.fillStyle = 'rgba(39, 26, 15, 0.86)';
+            ctx.strokeStyle = 'rgba(255, 226, 142, 0.32)';
+            ctx.lineWidth = 1;
+            ctx.fillRect(x - 4, y - 4, 8, 7);
+            ctx.strokeRect(x - 3.5, y - 3.5, 7, 6);
+            ctx.globalAlpha = 0.68 + signal * 0.24;
+            ctx.fillStyle = i < activeWorking ? '#ffe59a' : '#f6c85f';
+            ctx.fillRect(x - 2, y - 6, 4, 2);
+        }
+        ctx.restore();
+    }
+
     _drawCommandRitual(ctx, localPoint) {
         const rituals = this._ritualsFor('command');
         if (!rituals.length) return;
@@ -2779,7 +2973,7 @@ export class BuildingSprite {
     }
 
     _mineSeamColor() {
-        const ratio = clamp01(this.quotaState?.fiveHour ?? this.quotaState?.fiveHourRatio ?? 0);
+        const ratio = this._quotaFiveHourRatio();
         if (ratio <= 0.5) return MINE_SEAM_COLORS[0];
         if (ratio <= 0.8) return mixHex(MINE_SEAM_COLORS[0], MINE_SEAM_COLORS[1], (ratio - 0.5) / 0.3);
         return mixHex(MINE_SEAM_COLORS[1], MINE_SEAM_COLORS[2], (ratio - 0.8) / 0.2);
@@ -2915,6 +3109,48 @@ export class BuildingSprite {
         };
     }
 
+    _buildingActivityInfo(building, { alert = this._buildingAlertFor(building) } = {}) {
+        const type = building?.type || '';
+        const occupancy = this._buildingOccupancyInfo(building, { alert });
+        const presence = this._presenceByType.get(type) || {};
+        const recency = clamp01(presence.recencyScore || 0);
+        let ritualFade = 0;
+        for (const ritual of this._ritualsFor(type)) {
+            ritualFade = Math.max(ritualFade, this._ritualFade(ritual));
+        }
+
+        const stateWeight = BUILDING_ACTIVITY_STATE_WEIGHT[occupancy.state] || 0;
+        let intensity = Math.max(stateWeight, recency * 0.48, ritualFade * 0.9);
+
+        if (type === 'forge') {
+            const forgeHeat = clamp01((this._forgeGlowIntensity() - FORGE_GLOW_BASELINE) / (1 - FORGE_GLOW_BASELINE));
+            intensity = Math.max(intensity, forgeHeat * 0.85);
+        } else if (type === 'mine') {
+            const quotaPressure = this._quotaFiveHourRatio();
+            const pressureBoost = quotaPressure > 0.42 ? 0.22 + (quotaPressure - 0.42) * 1.05 : 0;
+            intensity = Math.max(intensity, pressureBoost);
+        } else if (type === 'archive') {
+            intensity = Math.max(intensity, (this._archiveReadIntensity || 0) * 0.82);
+        } else if (type === 'command') {
+            intensity = Math.max(intensity, Math.min(0.82, this._watchtowerActiveCount() / 6 * 0.72));
+        } else if (type === 'harbor') {
+            const harborWork = Math.min(0.74, this._watchtowerActiveCount() / 6 * 0.56);
+            intensity = Math.max(intensity, harborWork + (alert ? 0.24 : 0));
+        } else if (type === 'watchtower') {
+            intensity = Math.max(intensity, this._watchtowerIntensity());
+        }
+
+        return {
+            alert,
+            intensity: clamp01(intensity),
+            occupancy,
+            overload: occupancy.capacity > 0 ? Math.max(0, occupancy.count - occupancy.capacity) : 0,
+            presence,
+            recency,
+            ritualFade,
+        };
+    }
+
     _occupancyAccent(baseAccent, state) {
         if (state === 'alert') return '#ff755d';
         if (state === 'full') return mixHex(brightenHex(baseAccent, 1.25, 1.18), '#ffcf6a', 0.42);
@@ -2961,6 +3197,128 @@ export class BuildingSprite {
             ctx.fillRect(x0 + width + 2, y0, 2, pipH);
         }
         ctx.restore();
+    }
+
+    _activityPulseFor(building, visual = null) {
+        const fallback = visual?.reducedMotionFallback || {};
+        if (!this.motionScale) {
+            return Number.isFinite(fallback.pulse) ? fallback.pulse : 0.55;
+        }
+        const seed = hashText(`${building?.type || 'building'}|${building?.position?.tileX ?? 0}|${building?.position?.tileY ?? 0}`);
+        return (Math.sin(this.frame * 0.058 + seed * 0.013) + 1) / 2;
+    }
+
+    _drawBuildingActivityFootprint(ctx, building, { isLandmark = false, isHovered = false } = {}) {
+        const info = this._buildingActivityInfo(building);
+        if (info.intensity <= 0.12 && info.occupancy.state === 'idle' && !info.alert) return;
+
+        const visual = getBuildingVisual(building.type);
+        const band = visual?.pulseBand || {};
+        const accent = info.alert
+            ? '#ff755d'
+            : (band.color || getBuildingLabelAccent(building.type, '#d6a951'));
+        const pulse = this._activityPulseFor(building, visual);
+        const c = this._buildingScreenCenter(building);
+        const tileHalfW = (building.width + building.height) * TILE_WIDTH / 4;
+        const tileHalfH = (building.width + building.height) * TILE_HEIGHT / 4;
+        const ringCount = info.alert || info.intensity > 0.78 ? 2 : 1;
+        const baseAlpha = Math.min(
+            0.54,
+            0.08 + info.intensity * 0.34 + (isHovered ? 0.06 : 0) + (isLandmark ? 0.03 : 0),
+        );
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = info.alert ? 2 : 1.25;
+        for (let i = 0; i < ringCount; i++) {
+            const phase = this.motionScale ? (pulse + i * 0.42) % 1 : 0.42 + i * 0.12;
+            const grow = (info.alert ? 0.24 : 0.16) * phase + i * 0.08;
+            ctx.globalAlpha = baseAlpha * (this.motionScale ? (1 - phase * 0.5) : (0.78 - i * 0.14));
+            ctx.beginPath();
+            ctx.ellipse(
+                Math.round(c.x),
+                Math.round(c.y + 4),
+                tileHalfW * (1.04 + grow),
+                Math.max(12, tileHalfH * (0.74 + grow * 0.45)),
+                0,
+                0,
+                Math.PI * 2,
+            );
+            ctx.stroke();
+        }
+
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = Math.min(0.5, 0.16 + info.intensity * 0.22 + (info.alert ? 0.08 : 0));
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = info.alert ? 1.8 : 1.15;
+        this._traceFootprint(ctx, this._buildingFootprintCorners(building));
+        ctx.stroke();
+        this._drawBuildingLoadPips(ctx, building, info, accent);
+        ctx.restore();
+    }
+
+    _drawBuildingLoadPips(ctx, building, info, accent) {
+        const occupancy = info.occupancy || {};
+        const capacity = Math.max(0, Number(occupancy.capacity) || 0);
+        const signal = Math.max(occupancy.ratio || 0, info.intensity, info.ritualFade || 0);
+        if (signal <= 0.16 && !info.alert) return;
+
+        const total = capacity > 0 ? Math.max(1, Math.min(5, capacity)) : 3;
+        const filled = info.alert
+            ? total
+            : Math.max(0, Math.min(total, Math.ceil(signal * total)));
+        if (filled <= 0) return;
+
+        const corners = this._buildingFootprintCorners(building);
+        const startT = total === 1 ? 0.5 : 0.28;
+        const endT = total === 1 ? 0.5 : 0.72;
+        const markerSize = info.alert ? 4.2 : 3.6;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.lineWidth = 1;
+        for (let i = 0; i < total; i++) {
+            const t = total === 1 ? 0.5 : lerp(startT, endT, i / (total - 1));
+            const x = Math.round(lerp(corners.sw.x, corners.se.x, t));
+            const y = Math.round(lerp(corners.sw.y, corners.se.y, t) + 6);
+            ctx.globalAlpha = 0.62;
+            this._drawActivityDiamond(ctx, x, y, markerSize, 'rgba(28, 20, 13, 0.72)', 'rgba(245, 217, 146, 0.2)');
+            if (i < filled) {
+                ctx.globalAlpha = 0.82 + Math.min(0.14, info.intensity * 0.14);
+                this._drawActivityDiamond(ctx, x, y, markerSize - 0.6, accent, 'rgba(42, 27, 15, 0.72)');
+            }
+        }
+
+        if (info.overload > 0 || info.alert || occupancy.state === 'full') {
+            const edgeX = Math.round(lerp(corners.sw.x, corners.se.x, 0.82));
+            const edgeY = Math.round(lerp(corners.sw.y, corners.se.y, 0.82) + 7);
+            ctx.globalAlpha = info.alert ? 0.95 : 0.76;
+            ctx.strokeStyle = info.alert ? '#ff755d' : accent;
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.moveTo(edgeX - 5, edgeY + 3);
+            ctx.lineTo(edgeX, edgeY - 2);
+            ctx.lineTo(edgeX + 5, edgeY + 3);
+            ctx.moveTo(edgeX - 5, edgeY + 8);
+            ctx.lineTo(edgeX, edgeY + 3);
+            ctx.lineTo(edgeX + 5, edgeY + 8);
+            ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    _drawActivityDiamond(ctx, x, y, radius, fillStyle, strokeStyle = null) {
+        ctx.fillStyle = fillStyle;
+        if (strokeStyle) ctx.strokeStyle = strokeStyle;
+        ctx.beginPath();
+        ctx.moveTo(x, y - radius);
+        ctx.lineTo(x + radius, y);
+        ctx.lineTo(x, y + radius);
+        ctx.lineTo(x - radius, y);
+        ctx.closePath();
+        ctx.fill();
+        if (strokeStyle) ctx.stroke();
     }
 
     _drawFootprintContactPad(ctx, building, { isLandmark = false, isHovered = false } = {}) {
