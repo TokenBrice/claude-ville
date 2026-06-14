@@ -1,6 +1,12 @@
 import { AgentStatus, normalizeAgentStatus } from '../../domain/value-objects/AgentStatus.js';
 
 const HOME_ROOTS = Object.freeze(['Users', 'home']);
+const RELATIVE_TIME_THRESHOLDS = [
+    [60_000, 'just now'],
+    [60 * 60_000, (ms) => `${Math.floor(ms / 60_000)}m ago`],
+    [24 * 60 * 60_000, (ms) => `${Math.floor(ms / (60 * 60_000))}h ago`],
+    [7 * 24 * 60 * 60_000, (ms) => `${Math.floor(ms / (24 * 60 * 60_000))}d ago`],
+];
 
 export function hashRows(rows, fields) {
     let hash = 2166136261;
@@ -46,6 +52,15 @@ export function formatNumber(num) {
 
 export function formatTokens(value) {
     return formatNumber(value);
+}
+
+export function formatRelative(ts, now = Date.now()) {
+    if (!Number.isFinite(ts) || ts <= 0) return '';
+    const ms = Math.max(0, now - ts);
+    for (const [bound, fmt] of RELATIVE_TIME_THRESHOLDS) {
+        if (ms < bound) return typeof fmt === 'function' ? fmt(ms) : fmt;
+    }
+    return `${Math.floor(ms / (7 * 24 * 60 * 60_000))}w ago`;
 }
 
 export function formatCost(cost) {

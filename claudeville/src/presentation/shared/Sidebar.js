@@ -3,7 +3,7 @@ import { i18n } from '../../config/i18n.js';
 import { getTeamColor, shortTeamName } from './TeamColor.js';
 import { repoBranchProfile } from './RepoColor.js';
 import { el, replaceChildren } from './DomSafe.js';
-import { hashRows, shortProjectName, statusClass } from './Formatters.js';
+import { formatRelative, hashRows, shortProjectName, statusClass } from './Formatters.js';
 import {
     AgentSelectionMirror,
     toggleAgentSelection,
@@ -14,22 +14,6 @@ import {
     projectProfile,
     providerPresentation,
 } from './AgentPresentation.js';
-
-const RELATIVE_TIME_THRESHOLDS = [
-    [60_000, 'just now'],
-    [60 * 60_000, (ms) => `${Math.floor(ms / 60_000)}m ago`],
-    [24 * 60 * 60_000, (ms) => `${Math.floor(ms / (60 * 60_000))}h ago`],
-    [7 * 24 * 60 * 60_000, (ms) => `${Math.floor(ms / (24 * 60 * 60_000))}d ago`],
-];
-
-function formatRelative(ts, now = Date.now()) {
-    if (!Number.isFinite(ts) || ts <= 0) return '';
-    const ms = Math.max(0, now - ts);
-    for (const [bound, fmt] of RELATIVE_TIME_THRESHOLDS) {
-        if (ms < bound) return typeof fmt === 'function' ? fmt(ms) : fmt;
-    }
-    return `${Math.floor(ms / (7 * 24 * 60 * 60_000))}w ago`;
-}
 
 export class Sidebar {
     constructor(world) {

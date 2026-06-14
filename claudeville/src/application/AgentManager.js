@@ -142,6 +142,8 @@ export class AgentManager {
             lastTool: session.lastTool || null,
             lastToolInput: session.lastToolInput || null,
             gitEvents: Array.isArray(session.gitEvents) ? session.gitEvents : [],
+            permissionMode: session.permissionMode ?? null,
+            sendMessages: Array.isArray(session.sendMessages) ? session.sendMessages : [],
             lastSessionActivity,
             activityAgeMs,
             _lastMessage: session.lastMessage || null,

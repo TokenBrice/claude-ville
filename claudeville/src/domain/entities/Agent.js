@@ -31,6 +31,8 @@ export class Agent {
         lastToolInput,
         lastMessage,
         gitEvents,
+        permissionMode,
+        sendMessages,
         provider,
         agentId,
         agentName,
@@ -64,6 +66,8 @@ export class Agent {
         this.lastTool = lastTool || currentTool || null;
         this.lastToolInput = lastToolInput || currentToolInput || null;
         this.gitEvents = Array.isArray(gitEvents) ? gitEvents : [];
+        this.permissionMode = permissionMode ?? null;
+        this.sendMessages = Array.isArray(sendMessages) ? sendMessages : [];
         this.lastSessionActivity = lastSessionActivity || null;
         this.activityAgeMs = Number.isFinite(Number(activityAgeMs)) ? Number(activityAgeMs) : null;
         this._lastMessage = lastMessage || null;
