@@ -45,6 +45,11 @@ const STATUS_VISUALS = {
         glow: 'rgba(143, 166, 189, 0.24)',
         label: 'RATELIMIT',
     },
+    [AgentStatus.WAITING_ON_USER]: {
+        color: '#facc15',
+        glow: 'rgba(250, 204, 21, 0.34)',
+        label: 'INPUT',
+    },
     chatting: {
         color: '#f2d36b',
         glow: 'rgba(242, 211, 107, 0.30)',
@@ -147,6 +152,9 @@ const TOOL_DETAIL_PREVIEW_CHARS = 36;
 const TOOL_DETAIL_KEY_CHARS = 56;
 const ACTIVITY_TEXT_CAP = 60;
 const MESSAGE_TEXT_CAP = 56;
+const TOOL_CONFIDENCE_THRESHOLD = 0.72;
+const TOOL_CLASSIFICATION_CACHE_LIMIT = 160;
+const TOOL_CLASSIFICATION_CACHE = new Map();
 const PROCESSED_SPRITE_CACHE = new Map();
 // Selection-ring asset recolored per provider accent; keyed by accent color.
 const TINTED_SELECTION_RING_CACHE = new Map();
@@ -251,6 +259,33 @@ const MIN_INTENT_STABLE_MS = 2200;
 const MAX_INTENT_STABLE_MS = 12000;
 const SAME_INTENT_BUILDING_PRIORITY_DELTA = 10;
 const LOCAL_DIRECT_PATH_TILE_DISTANCE = 4.5;
+
+function toolInputCacheKey(input) {
+    if (input == null) return '';
+    if (typeof input === 'string') return input;
+    if (typeof input === 'number' || typeof input === 'boolean') return String(input);
+    try {
+        return JSON.stringify(input);
+    } catch {
+        return String(input);
+    }
+}
+
+function memoizedToolClassification(tool, input) {
+    const key = `${String(tool || '')}\u0000${toolInputCacheKey(input)}`;
+    if (TOOL_CLASSIFICATION_CACHE.has(key)) return TOOL_CLASSIFICATION_CACHE.get(key);
+    let classified = null;
+    try {
+        classified = classifyTool(tool, input) || null;
+    } catch {
+        classified = null;
+    }
+    TOOL_CLASSIFICATION_CACHE.set(key, classified);
+    if (TOOL_CLASSIFICATION_CACHE.size > TOOL_CLASSIFICATION_CACHE_LIMIT) {
+        TOOL_CLASSIFICATION_CACHE.delete(TOOL_CLASSIFICATION_CACHE.keys().next().value);
+    }
+    return classified;
+}
 
 export class AgentSprite {
     constructor(agent, {
@@ -715,6 +750,15 @@ export class AgentSprite {
         if (this.agent.status === AgentStatus.WAITING) {
             return lastKnown || 'taskboard';
         }
+        if (this.agent.status === AgentStatus.ERRORED) {
+            return 'watchtower';
+        }
+        if (this.agent.status === AgentStatus.RATE_LIMITED) {
+            return 'watchtower';
+        }
+        if (this.agent.status === AgentStatus.WAITING_ON_USER) {
+            return 'command';
+        }
 
         if (lastKnown && (seed % 100) < this._lastKnownRevisitWeight()) return lastKnown;
         if (this.teamPlazaPreference && this.agent.teamName && (seed % 6) < 4) return 'command';
@@ -1147,6 +1191,24 @@ export class AgentSprite {
         if (mood.type === 'distressed') return 1 - 0.18 * intensity;
         if (mood.type === 'proud') return 1 + 0.12 * intensity;
         return 1;
+    }
+
+    _moodPostureCue() {
+        const mood = this.agent?.mood;
+        const intensity = this._clamp(Number(mood?.intensity) || 0, 0, 1);
+        if (!mood || intensity <= 0) return { bobScale: 1, staticDy: 0 };
+        if (mood.type === 'tired') return { bobScale: 1 - 0.5 * intensity, staticDy: 1 };
+        if (mood.type === 'proud') return { bobScale: 1 + 0.25 * intensity, staticDy: -1 };
+        return { bobScale: 1, staticDy: 0 };
+    }
+
+    _moodShadowTint() {
+        if (this.motionScale <= 0 || this.agent?.status === AgentStatus.ERRORED) return null;
+        const mood = this.agent?.mood;
+        const intensity = this._clamp(Number(mood?.intensity) || 0, 0, 1);
+        const color = MOOD_ACCENTS[mood?.type];
+        if (!color || intensity <= 0) return null;
+        return this._rgba(color, 0.06 * intensity);
     }
 
     /** 3.13 — slower gait while heading to/standing in a congested building. */
@@ -1827,12 +1889,17 @@ export class AgentSprite {
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
         // IDLE-status agents bob slower and shallower to read as "resting".
         const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
-        const bobY = this.animState === 'idle' && this.motionScale > 0
-            ? Math.round(
-                isIdleStatus
-                    ? Math.sin(this.frame * 0.25) * 0.4
-                    : Math.sin(this.frame * 0.4) * 0.6,
-            )
+        const posture = this._moodPostureCue();
+        const bobY = this.animState === 'idle'
+            ? this.motionScale > 0
+                ? Math.round(
+                    (
+                        isIdleStatus
+                            ? Math.sin(this.frame * 0.25) * 0.4
+                            : Math.sin(this.frame * 0.4) * 0.6
+                    ) * posture.bobScale,
+                )
+                : posture.staticDy
             : 0;
         const drawX = this._snapWorldToScreenPixel(this.x);
         const drawY = this._snapWorldToScreenPixel(this.y);
@@ -2342,6 +2409,15 @@ export class AgentSprite {
         ctx.beginPath();
         ctx.ellipse(0, 6, shadowRadiusX, shadowRadiusY, 0, 0, Math.PI * 2);
         ctx.fill();
+        const moodShadowTint = this._moodShadowTint();
+        if (moodShadowTint) {
+            ctx.globalCompositeOperation = 'screen';
+            ctx.fillStyle = moodShadowTint;
+            ctx.beginPath();
+            ctx.ellipse(0, 6, shadowRadiusX, shadowRadiusY, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalCompositeOperation = 'source-over';
+        }
 
         ctx.fillStyle = 'rgba(246, 218, 130, 0.10)';
         ctx.beginPath();
@@ -3395,7 +3471,7 @@ export class AgentSprite {
         if (useClock) {
             this._drawLongWaitClockBubble(ctx, head.accent || visual.color, contentTopY);
         } else {
-            this._drawBubble(ctx, head.text, head.accent || visual.color, contentTopY);
+            this._drawBubble(ctx, head.text, head.accent || visual.color, contentTopY, head.confidence);
         }
         if (thread.length > 1) {
             this._drawHistoryBubbles(ctx, thread.slice(1), contentTopY);
@@ -3458,7 +3534,7 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _drawBubble(ctx, text, accentColor, contentTopY = null) {
+    _drawBubble(ctx, text, accentColor, contentTopY = null, confidence = null) {
         ctx.save();
         const s = 1 / (this._zoom || 1); // inverse zoom correction
 
@@ -3469,7 +3545,10 @@ export class AgentSprite {
         const anchored = Number.isFinite(contentTopY);
         ctx.font = `bold ${anchored ? 7 : 10}px "Press Start 2P", monospace`;
         const maxWidth = anchored ? STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored : STATUS_BUBBLE_MAIN_MAX_WIDTH.floating;
-        const layout = this._bubbleLayout(ctx, text, maxWidth, anchored);
+        const confidenceValue = Number(confidence);
+        const lowConfidence = Number.isFinite(confidenceValue) && confidenceValue < TOOL_CONFIDENCE_THRESHOLD;
+        const bubbleText = lowConfidence && text && !String(text).endsWith('?') ? `${text}?` : text;
+        const layout = this._bubbleLayout(ctx, bubbleText, maxWidth, anchored);
         const displayText = layout.displayText;
         const textWidth = layout.textWidth;
         const bubbleW = textWidth + (anchored ? 18 : 24);
@@ -3958,6 +4037,8 @@ export class AgentSprite {
 
         const currentTool = String(agent.currentTool || '').trim();
         if (currentTool && hasFreshActivity) {
+            const classified = memoizedToolClassification(currentTool, agent.currentToolInput);
+            const confidence = Number(classified?.confidence);
             const toolLabel = this._toolActivityLabel(currentTool);
             const detail = compactToolInput(agent.currentToolInput, TOOL_DETAIL_PREVIEW_CHARS);
             const detailKey = compactToolInput(agent.currentToolInput, TOOL_DETAIL_KEY_CHARS);
@@ -3969,6 +4050,7 @@ export class AgentSprite {
                 accent: this._providerTrimColor(agent),
                 tool: currentTool,
                 category: toolCategory(currentTool),
+                confidence: Number.isFinite(confidence) ? confidence : null,
                 timestamp: entryTimestamp,
             };
         }
@@ -4005,6 +4087,7 @@ export class AgentSprite {
         const latest = this._activityTrail[0];
         if (latest?.key === entry.key) {
             latest.timestamp = Number.isFinite(Number(entry.timestamp)) ? Number(entry.timestamp) : timestamp;
+            latest.confidence = Number.isFinite(Number(entry.confidence)) ? Number(entry.confidence) : null;
             return;
         }
         this._activityTrail.unshift({
@@ -4014,6 +4097,7 @@ export class AgentSprite {
             accent: entry.accent || this._providerTrimColor(),
             tool: entry.tool || null,
             category: entry.category || null,
+            confidence: Number.isFinite(Number(entry.confidence)) ? Number(entry.confidence) : null,
             timestamp: Number.isFinite(Number(entry.timestamp)) ? Number(entry.timestamp) : timestamp,
         });
         if (this._activityTrail.length > ACTION_TRAIL_LIMIT) {

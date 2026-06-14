@@ -432,7 +432,9 @@ export function classifyShellInput(input) {
         return { building: 'archive', reason: isDocumentationToolInput(input) ? 'read-docs' : 'search-local', confidence: 0.74, label: compactToolLabel(text, 'read') };
     }
 
-    return null;
+    return isCodeToolInput(input)
+        ? { building: 'forge', reason: 'run-shell', confidence: 0.6, label: compactToolLabel(text, 'run') }
+        : { building: 'command', reason: 'run-shell', confidence: 0.55, label: compactToolLabel(text, 'run') };
 }
 
 export function classifyTool(toolName, input) {
