@@ -6,6 +6,7 @@ import { el, replaceChildren } from './DomSafe.js';
 import { formatRelative, hashRows, shortProjectName, statusClass } from './Formatters.js';
 import {
     AgentSelectionMirror,
+    emitAgentSelected,
     toggleAgentSelection,
 } from './AgentSelection.js';
 import {
@@ -82,6 +83,14 @@ export class Sidebar {
             this.render();
         };
         this.filterEl.addEventListener('input', this._onFilterInput);
+        // Enter routes to the single matching agent (select + camera focus).
+        this._onFilterKeydown = (event) => {
+            if (event.key !== 'Enter') return;
+            const matches = Array.from(this.world.agents.values())
+                .filter(agent => this._matchesFilter(agent, modelPresentation(agent)));
+            if (matches.length === 1) emitAgentSelected(matches[0]);
+        };
+        this.filterEl.addEventListener('keydown', this._onFilterKeydown);
     }
 
     _matchesFilter(agent, model) {
@@ -253,9 +262,40 @@ export class Sidebar {
             nodes.push(groupEl);
         }
 
-        replaceChildren(this.listEl, nodes);
+        if (agents.length === 0) {
+            replaceChildren(this.listEl, this._emptyLegendNodes());
+        } else if (nodes.length === 0) {
+            replaceChildren(this.listEl, [
+                el('div', { className: 'sidebar__empty-nomatch', text: 'No agents match your filter' }),
+            ]);
+        } else {
+            replaceChildren(this.listEl, nodes);
+        }
         this._applyWorkflowToggleState();
         this._syncSelection(null, this.selection.selectedId);
+    }
+
+    // Empty-world onboarding: name the village and teach the building metaphor.
+    _emptyLegendNodes() {
+        const legend = [
+            ['Forge', 'Code work'],
+            ['Archive', 'Reading & search'],
+            ['Harbor', 'Commit ships'],
+            ['Mine', 'Token usage'],
+        ].map(([name, desc]) => el('div', { className: 'sidebar__empty-legend-row' }, [
+            el('span', { className: 'sidebar__empty-legend-name', text: name }),
+            el('span', { className: 'sidebar__empty-legend-desc', text: desc }),
+        ]));
+        return [
+            el('div', { className: 'sidebar__empty' }, [
+                el('div', { className: 'sidebar__empty-title', text: 'THE VILLAGE AWAITS' }),
+                el('div', { className: 'sidebar__empty-legend' }, legend),
+                el('div', {
+                    className: 'sidebar__empty-cta',
+                    text: 'Start a coding session to populate the village.',
+                }),
+            ]),
+        ];
     }
 
     _buildAgentRow(agent, profile) {
@@ -407,5 +447,6 @@ export class Sidebar {
         if (this._onToggleClick) this.toggleEl?.removeEventListener('click', this._onToggleClick);
         if (this._onListClick) this.listEl?.removeEventListener('click', this._onListClick);
         if (this._onFilterInput) this.filterEl?.removeEventListener('input', this._onFilterInput);
+        if (this._onFilterKeydown) this.filterEl?.removeEventListener('keydown', this._onFilterKeydown);
     }
 }

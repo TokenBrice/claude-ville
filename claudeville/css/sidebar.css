@@ -420,7 +420,7 @@
 
 .sidebar__workflow-count {
     flex-shrink: 0;
-    font-size: 9px;
+    font-size: var(--fs-label);
     color: var(--cv-gold-soft);
     background: var(--cv-surface-2);
     border: 1px solid rgba(192, 132, 252, 0.42);
@@ -437,4 +437,62 @@
 
 .sidebar__workflow-group--collapsed .sidebar__workflow-members {
     display: none;
+}
+
+/* ─── Empty-world onboarding legend ─── */
+.sidebar__empty {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-3);
+    padding: var(--sp-4) var(--sp-3);
+}
+
+.sidebar__empty-title {
+    font-family: var(--font-display);
+    font-size: var(--fs-label);
+    line-height: 1.6;
+    letter-spacing: 1px;
+    text-align: center;
+    color: var(--cv-gold-bright);
+    text-shadow: 1px 1px 0 #2d1a12;
+}
+
+.sidebar__empty-legend {
+    display: flex;
+    flex-direction: column;
+    gap: var(--sp-2);
+    padding: var(--sp-3);
+    background: var(--cv-surface-3);
+    border: 1px solid var(--cv-divider);
+    border-radius: 3px;
+}
+
+.sidebar__empty-legend-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--sp-2);
+    font-size: var(--fs-label);
+}
+
+.sidebar__empty-legend-name {
+    color: var(--cv-gold);
+}
+
+.sidebar__empty-legend-desc {
+    color: var(--cv-text-muted);
+}
+
+.sidebar__empty-cta {
+    font-size: var(--fs-label);
+    line-height: 1.6;
+    text-align: center;
+    color: var(--cv-text-muted);
+}
+
+.sidebar__empty-nomatch {
+    padding: var(--sp-3) var(--sp-3);
+    font-size: var(--fs-label);
+    font-style: italic;
+    color: var(--cv-text-muted);
 }
