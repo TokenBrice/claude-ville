@@ -2,6 +2,19 @@
 
 ---
 
+## v0.11.0 — *Watchtower Bells* · Jun 14, 2026
+
+The village gets clearer signals, richer dossiers, and faster world controls. This release combines the UI legibility pass with a full world/dashboard enhancement wave.
+
+- **World signals sharpened** — waiting-for-user agents now read as amber `INPUT`, errored and rate-limited agents route to the watchtower, low-confidence tool bubbles show `?`, and mood posture adds subtle tired/proud body language
+- **Keyboard world control** — Tab cycles agents, arrow keys pan, `+/-` zoom, `F` recenters, and `Esc` deselects in World mode
+- **Activity panel deepens** — mood, last-active, PLAN/ACT mode, cache write, cache hit ratio, harbor logs, chronicle dossiers, team message edges, building purpose/capacity, and two-agent pin comparison are now visible
+- **Dashboard attention chips** — cards show last-active age, non-zero tool exit codes, clickable parent lineage, and section health counts rate-limited / waiting-for-user sessions as attention
+- **Village metaphors extended** — mine lore, winter snow, chronicler pilgrimages, status-colored crowd clusters, forge refactor monuments, and richer building semantics make state easier to read at a glance
+- **World render economy** — reused spatial-pair scratch collections, cached water/shore visibility, throttled crowd summaries, and render-mode-aware ritual pose sync reduce hot-path work
+
+---
+
 ## v0.10.0 — *Fair Hand* · Jun 14, 2026
 
 A legibility and restraint pass across the whole interface. The pixel font stays where it belongs (the village, the brand), and the data you actually read gets a clear hand.
