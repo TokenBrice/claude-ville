@@ -14,7 +14,7 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    font-family: 'Press Start 2P', monospace;
+    font-family: var(--font-body);
     animation: ap-fade-in 0.16s ease;
 }
 
@@ -44,6 +44,7 @@
 }
 
 .activity-panel__name {
+    font-family: var(--font-display);
     font-size: 10px;
     color: var(--cv-gold);
     white-space: nowrap;
@@ -52,7 +53,7 @@
 }
 
 .activity-panel__status {
-    font-size: 7px;
+    font-size: var(--fs-label);
     padding: 2px 6px;
     border-radius: 2px;
     background: rgba(57, 37, 24, 0.88);
@@ -61,7 +62,7 @@
 }
 
 .activity-panel__close {
-    font-size: 9px;
+    font-size: var(--fs-label);
     color: #bba17a;
     background: rgba(25, 17, 15, 0.86);
     border: 1px solid rgba(199, 157, 76, 0.48);
@@ -90,23 +91,33 @@
 
 .activity-panel__meta-row {
     display: flex;
-    flex-direction: column;
-    gap: 2px;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
 }
 
 .activity-panel__label {
-    font-size: 6px;
+    font-size: var(--fs-label);
     color: var(--cv-text-muted);
-    letter-spacing: 1px;
+    letter-spacing: 0.5px;
     text-transform: uppercase;
+    flex-shrink: 0;
+}
+
+.activity-panel__label::after {
+    content: '·';
+    margin-left: 5px;
+    color: var(--cv-divider);
 }
 
 .activity-panel__value {
-    font-size: 8px;
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
     color: var(--cv-gold);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    min-width: 0;
 }
 
 /* ─── Shared section styles ────────────────────────────────── */
@@ -126,7 +137,8 @@
 }
 
 .activity-panel__section-title {
-    font-size: 7px;
+    font-family: var(--font-display);
+    font-size: var(--fs-label);
     color: var(--cv-text-muted);
     letter-spacing: 1px;
     text-transform: uppercase;
@@ -165,12 +177,12 @@
 }
 
 .activity-panel__tool-name {
-    font-size: 8px;
+    font-size: var(--fs-data);
     color: var(--cv-gold);
 }
 
 .activity-panel__tool-input {
-    font-size: 7px;
+    font-size: var(--fs-data);
     color: var(--cv-text-muted);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -201,7 +213,7 @@
     align-items: center;
     gap: 6px;
     padding: 4px 8px;
-    font-size: 7px;
+    font-size: var(--fs-label);
     border-radius: 2px;
     background: rgba(45, 31, 20, 0.52);
     border: 1px solid rgba(214, 169, 81, 0.08);
@@ -219,13 +231,13 @@
 
 .activity-panel__tool-item-name {
     color: var(--cv-gold);
-    font-size: 7px;
+    font-size: var(--fs-data);
     white-space: nowrap;
 }
 
 .activity-panel__tool-item-detail {
     color: var(--cv-text-muted);
-    font-size: 6px;
+    font-size: var(--fs-label);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -253,7 +265,7 @@
 
 .activity-panel__msg {
     padding: 6px 8px;
-    font-size: 7px;
+    font-size: var(--fs-data);
     color: var(--cv-text-muted);
     background: rgba(54, 38, 24, 0.52);
     border-radius: 2px;
@@ -272,7 +284,7 @@
 }
 
 .activity-panel__msg-role {
-    font-size: 6px;
+    font-size: var(--fs-label);
     color: var(--cv-gold);
     text-transform: uppercase;
     letter-spacing: 0.5px;
@@ -294,12 +306,13 @@
 }
 
 .activity-panel__token-label {
-    font-size: 7px;
+    font-size: var(--fs-label);
     color: var(--cv-text-muted);
 }
 
 .activity-panel__token-value {
-    font-size: 9px;
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
     color: var(--cv-gold);
     font-weight: bold;
 }
@@ -308,13 +321,63 @@
     gap: 4px;
 }
 
-.activity-panel__journey-row {
+.activity-panel__journey-body {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 8px;
     min-width: 0;
-    padding: 7px 0 8px;
-    border-top: 1px solid rgba(214, 169, 81, 0.08);
+}
+
+/* Always-visible headline sentence. */
+.activity-panel__journey-why {
+    min-width: 0;
+    color: var(--cv-gold-bright);
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
+    line-height: 1.6;
+    overflow-wrap: anywhere;
+    text-shadow: 1px 1px 0 #2d1a12;
+}
+
+/* Closed-by-default disclosure for secondary detail. */
+.activity-panel__journey-details {
+    min-width: 0;
+}
+
+.activity-panel__journey-summary {
+    color: var(--cv-text-muted);
+    font-family: var(--font-display);
+    font-size: var(--fs-label);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    cursor: pointer;
+    list-style: none;
+}
+
+.activity-panel__journey-summary::-webkit-details-marker {
+    display: none;
+}
+
+.activity-panel__journey-summary::before {
+    content: '▸';
+    margin-right: 5px;
+}
+
+.activity-panel__journey-details[open] .activity-panel__journey-summary::before {
+    content: '▾';
+}
+
+.activity-panel__journey-details[open] .activity-panel__journey {
+    margin-top: 6px;
+}
+
+.activity-panel__journey-row {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    min-width: 0;
+    padding: 5px 0 6px;
+    border-top: 1px solid var(--cv-divider);
 }
 
 .activity-panel__journey-row:first-child {
@@ -323,23 +386,27 @@
 }
 
 .activity-panel__journey-label {
-    display: block;
-    min-width: 0;
+    flex-shrink: 0;
     color: var(--cv-text-muted);
-    font-size: 6px;
-    line-height: 1.65;
+    font-size: var(--fs-label);
+    line-height: 1.5;
     text-transform: uppercase;
-    overflow-wrap: anywhere;
+}
+
+.activity-panel__journey-label::after {
+    content: '·';
+    margin-left: 5px;
+    color: var(--cv-divider);
 }
 
 .activity-panel__journey-value {
-    display: block;
     min-width: 0;
     max-width: 100%;
     color: var(--cv-gold-bright);
-    font-size: 7px;
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
     font-weight: normal;
-    line-height: 1.9;
+    line-height: 1.5;
     text-align: left;
     white-space: normal;
     overflow-wrap: anywhere;
@@ -383,108 +450,39 @@
 
 .activity-panel__token-cell {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 5px;
     padding: 4px 6px;
     background: rgba(54, 38, 24, 0.52);
     border: 1px solid rgba(214, 169, 81, 0.12);
     border-radius: 2px;
+    min-width: 0;
 }
 
 .activity-panel__token-cell-label {
-    font-size: 5px;
+    font-size: var(--fs-label);
     color: var(--cv-text-muted);
     text-transform: uppercase;
     letter-spacing: 0.5px;
+    flex-shrink: 0;
 }
 
 .activity-panel__token-cell-value {
-    font-size: 8px;
+    font-family: var(--font-body);
+    font-size: var(--fs-data);
     color: var(--cv-gold);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* ─── Empty ────────────────────────────────── */
 
 .activity-panel__empty {
     color: #755f44;
-    font-size: 7px;
+    font-size: var(--fs-label);
     padding: 4px 0;
-}
-
-/* Worker C quest log refinement layer */
-.activity-panel {
-    background:
-        radial-gradient(circle at 50% -4%, rgba(255, 226, 138, 0.12), transparent 30%),
-        linear-gradient(270deg, rgba(255, 226, 138, 0.055), transparent 20%),
-        linear-gradient(180deg, rgba(48, 31, 22, 0.99), rgba(14, 10, 9, 0.99)),
-        repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.028) 0 1px, transparent 1px 18px);
-    border-left-color: rgba(235, 184, 82, 0.78);
-    box-shadow:
-        inset 1px 0 0 rgba(255, 226, 138, 0.1),
-        inset 5px 0 16px rgba(0, 0, 0, 0.2),
-        -8px 0 20px rgba(0, 0, 0, 0.2);
-}
-
-.activity-panel__header {
-    background:
-        linear-gradient(180deg, rgba(38, 24, 17, 0.86), rgba(18, 12, 10, 0.68));
-    border-bottom-color: rgba(214, 169, 81, 0.42);
-    box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.1),
-        inset 0 -1px 0 rgba(0, 0, 0, 0.32);
-}
-
-.activity-panel__name {
-    color: var(--cv-gold-bright);
-    text-shadow: 1px 1px 0 #2d1a12, 0 0 10px rgba(255, 226, 138, 0.16);
-}
-
-.activity-panel__status,
-.activity-panel__close {
-    background:
-        linear-gradient(180deg, rgba(74, 50, 29, 0.9), rgba(25, 17, 14, 0.9));
-    border-color: rgba(214, 169, 81, 0.42);
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.1);
-}
-
-.activity-panel__meta {
-    background:
-        linear-gradient(180deg, rgba(35, 23, 17, 0.42), rgba(16, 11, 10, 0.22));
-    border-bottom-color: rgba(214, 169, 81, 0.18);
-}
-
-.activity-panel__section {
-    background:
-        linear-gradient(180deg, rgba(255, 226, 138, 0.018), transparent 40%);
-}
-
-.activity-panel__section-title {
-    color: #cbb183;
-    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.68);
-}
-
-.activity-panel__current-tool {
-    background:
-        radial-gradient(circle at 0% 0%, rgba(114, 208, 113, 0.13), transparent 40%),
-        linear-gradient(180deg, rgba(63, 44, 27, 0.78), rgba(27, 19, 16, 0.78));
-    border-color: rgba(214, 169, 81, 0.3);
-    box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.08),
-        inset 0 -1px 0 rgba(0, 0, 0, 0.28);
-}
-
-.activity-panel__tool-item,
-.activity-panel__msg {
-    background:
-        linear-gradient(180deg, rgba(54, 38, 24, 0.64), rgba(31, 22, 17, 0.58));
-    border-color: rgba(214, 169, 81, 0.12);
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.05);
-}
-
-.activity-panel__tool-item:first-child {
-    background:
-        linear-gradient(180deg, rgba(83, 91, 45, 0.34), rgba(31, 22, 17, 0.64));
-    border-color: rgba(114, 208, 113, 0.22);
 }
 
 /* ─── Reduced motion ─────────────────────────────── */

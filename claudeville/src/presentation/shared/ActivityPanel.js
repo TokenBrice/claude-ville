@@ -100,6 +100,9 @@ export class ActivityPanel {
         };
         this._journeySectionEl = null;
         this._journeyBodyEl = null;
+        this._journeyWhyEl = null;
+        this._journeyDetailsEl = null;
+        this._journeyDetailsBodyEl = null;
         this._ensureJourneySection();
         // Sections that belong to agent mode and must be hidden when a building is selected.
         this._agentSections = Array.from(this.panelEl?.querySelectorAll('.activity-panel__meta, .activity-panel__section') || []);
@@ -169,6 +172,7 @@ export class ActivityPanel {
         };
         this._showAgentSections();
         this.panelEl.style.display = '';
+        document.body.classList.add('cv-panel-open');
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
         this._updateJourney(agent);
@@ -188,6 +192,7 @@ export class ActivityPanel {
         this._hideAgentSections();
         this._ensureBuildingContentEl();
         this.panelEl.style.display = '';
+        document.body.classList.add('cv-panel-open');
         this._renderBuildingView();
         this._startBuildingPolling();
     }
@@ -196,6 +201,7 @@ export class ActivityPanel {
         const wasAgent = this._mode === 'agent';
         const wasBuilding = this._mode === 'building';
         this.panelEl.style.display = 'none';
+        document.body.classList.remove('cv-panel-open');
         this.currentAgent = null;
         this._renderSignatures = {
             journey: '',
@@ -345,7 +351,7 @@ export class ActivityPanel {
                 : `Exit code ${exitCode}`,
             style: {
                 color: 'var(--cv-status-errored, #e06c5b)',
-                fontSize: '7px',
+                fontSize: 'var(--fs-label)',
                 whiteSpace: 'nowrap',
                 flexShrink: '0',
                 marginLeft: 'auto',
@@ -433,7 +439,15 @@ export class ActivityPanel {
 
     _ensureJourneySection() {
         if (this._journeySectionEl && this._journeyBodyEl) return;
-        const body = el('div', { className: ['activity-panel__token-usage', 'activity-panel__journey'] });
+        // Always-visible headline sentence.
+        const whyEl = el('div', { className: 'activity-panel__journey-why' });
+        // Secondary rows live in a closed-by-default native disclosure.
+        const detailsBody = el('div', { className: ['activity-panel__token-usage', 'activity-panel__journey'] });
+        const details = el('details', { className: 'activity-panel__journey-details' }, [
+            el('summary', { className: 'activity-panel__journey-summary', text: 'More detail' }),
+            detailsBody,
+        ]);
+        const body = el('div', { className: 'activity-panel__journey-body' }, [whyEl, details]);
         const section = el('div', {
             className: 'activity-panel__section',
             style: { display: 'none' },
@@ -449,6 +463,9 @@ export class ActivityPanel {
         }
         this._journeySectionEl = section;
         this._journeyBodyEl = body;
+        this._journeyWhyEl = whyEl;
+        this._journeyDetailsEl = details;
+        this._journeyDetailsBodyEl = detailsBody;
     }
 
     _updateJourney(agent) {
@@ -459,12 +476,12 @@ export class ActivityPanel {
         }
 
         const snapshot = this._getAgentBehaviorSnapshot(agent);
-        const rows = this._agentJourneyRows(agent, snapshot);
-        const signature = hashRows(rows, [
+        const { why, rows } = this._agentJourneyRows(agent, snapshot);
+        const signature = `${why}|${hashRows(rows, [
             row => row.label,
             row => row.value,
-        ]);
-        if (!rows.length) {
+        ])}`;
+        if (!why && !rows.length) {
             this._journeySectionEl.style.display = 'none';
             this._renderSignatures.journey = '';
             return;
@@ -472,11 +489,23 @@ export class ActivityPanel {
         this._journeySectionEl.style.display = '';
         if (signature === this._renderSignatures.journey) return;
         this._renderSignatures.journey = signature;
-        replaceChildren(this._journeyBodyEl, rows.map(row => this._journeyRow(row.label, row.value)));
+
+        // Headline sentence stays outside the disclosure, always visible.
+        this._journeyWhyEl.textContent = why || '';
+        this._journeyWhyEl.style.display = why ? '' : 'none';
+
+        // Secondary rows live inside the closed-by-default disclosure.
+        if (rows.length) {
+            this._journeyDetailsEl.style.display = '';
+            replaceChildren(this._journeyDetailsBodyEl, rows.map(row => this._journeyRow(row.label, row.value)));
+        } else {
+            this._journeyDetailsEl.style.display = 'none';
+            replaceChildren(this._journeyDetailsBodyEl, []);
+        }
     }
 
     _agentJourneyRows(agent, snapshot) {
-        if (!snapshot) return [];
+        if (!snapshot) return { why: '', rows: [] };
         const behavior = snapshot.behavior || {};
         const currentIntent = behavior.currentIntent || {};
         const buildingType = behavior.building
@@ -510,8 +539,6 @@ export class ActivityPanel {
                 || snapshot.itinerary
                 || snapshot.routeIntent?.itinerary,
         );
-        const rows = [];
-        if (goal) rows.push({ label: 'Goal', value: goal });
         const why = this._journeyExplanation({
             state,
             moving: snapshot.moving,
@@ -519,18 +546,30 @@ export class ActivityPanel {
             phase,
             reason,
         });
-        if (why) rows.push({ label: 'Why', value: why });
-        if (buildingLabel) rows.push({ label: 'Building', value: buildingLabel });
 
-        const route = this._formatRoute({ state, moving: snapshot.moving, targetTile, waypointCount: snapshot.waypointCount });
+        // The Why sentence is the always-visible headline; everything else is
+        // secondary detail. Drop rows the sentence already conveys.
+        const rows = [];
+        if (goal) rows.push({ label: 'Goal', value: goal });
+        // Only surface the standalone Building row when Why does not already name it.
+        const whyNamesBuilding = !!(buildingLabel && why && why.includes(buildingLabel));
+        if (buildingLabel && !whyNamesBuilding) rows.push({ label: 'Building', value: buildingLabel });
+
+        // Reservation owns the target tile; suppress it in Route to avoid printing
+        // the same tile twice.
+        const reservationText = this._formatReservation(reservation, snapshot);
+        const route = this._formatRoute({
+            state,
+            moving: snapshot.moving,
+            targetTile: reservationText ? null : targetTile,
+            waypointCount: snapshot.waypointCount,
+        });
         if (route) rows.push({ label: 'Route', value: route });
         if (itinerary) rows.push({ label: 'Itinerary', value: itinerary });
         if (reason) rows.push({ label: 'Reason', value: reason });
-
-        const reservationText = this._formatReservation(reservation, snapshot);
         if (reservationText) rows.push({ label: 'Reservation', value: reservationText });
         if (breadcrumb) rows.push({ label: 'Breadcrumb', value: breadcrumb });
-        return rows;
+        return { why, rows };
     }
 
     _journeyExplanation({ state, moving, buildingLabel, phase, reason }) {
@@ -595,7 +634,9 @@ export class ActivityPanel {
             .slice(-JOURNEY_BREADCRUMB_LIMIT)
             .map(type => this._buildingLabel(type))
             .filter(Boolean);
-        return labels.join(' > ');
+        // Collapse consecutive duplicates (PORTAL > PORTAL > MINE > MINE → PORTAL > MINE).
+        const deduped = labels.filter((label, index) => label !== labels[index - 1]);
+        return deduped.join(' > ');
     }
 
     _formatGoalLabel(goal) {
@@ -646,6 +687,8 @@ export class ActivityPanel {
         if (!raw) return '';
         const reasonKey = raw.toLowerCase().replace(/[_\s]+/g, '-');
         if (REASON_LABELS[reasonKey]) return REASON_LABELS[reasonKey];
+        // Suppress raw/unmapped numeric codes (+135490, bare numbers, +/- digits).
+        if (/^[+-]?\d+$/.test(raw)) return '';
         const normalized = raw.toLowerCase().replace(/[\/_-]+/g, ' ');
         const pushMatch = normalized.match(/\bpush\s+(failed|rejected|cancelled|canceled)\b/)
             || normalized.match(/\b(failed|rejected|cancelled|canceled)\s+push\b/);
