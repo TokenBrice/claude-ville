@@ -2,6 +2,21 @@
 
 ---
 
+## v0.10.0 — *Fair Hand* · Jun 14, 2026
+
+A legibility and restraint pass across the whole interface. The pixel font stays where it belongs (the village, the brand), and the data you actually read gets a clear hand.
+
+- **Two-face type system** — `Press Start 2P` is now the display/brand face only; a new self-hosted companion, **Departure Mono**, carries all dense data (panel values, tool history, messages, dashboard card bodies, the agent list). A fixed type scale enforces a 10px floor, so nothing renders sub-legible anymore
+- **Design-token foundation** — shared surface, elevation, spacing, divider, and focus-ring tokens in `reset.css`; a single global focus ring replaces the inconsistent per-control styles
+- **Lighter chrome** — removed the duplicated second decoration pass ("refinement layer" blocks) that every surface carried; topbar, sidebar, dashboard cards, and the activity panel now use one consistent, token-driven treatment
+- **Activity panel rebuilt** — leads with one plain-language line of what the agent is doing; the rest of the journey (route, reservation, breadcrumb, goal) moves into a collapsed "More detail" disclosure. Redundant rows removed, consecutive-duplicate breadcrumbs collapsed, and raw reason codes suppressed. Meta and token cells use compact `label · value` rows
+- **Topbar tiered** — one unified chip style; status badges read as primary, with FPS and version quieted into a calm tertiary cluster
+- **Sidebar** — a live filter input plus collapsible grouping of workflow subagents (collapsed by default), and a far more legible agent list
+- **Minimap removed** — the parchment overlay is gone; pan and zoom are unchanged, and the per-frame draw returns canvas budget
+- **Toasts** no longer overlap the open activity panel
+
+---
+
 ## v0.9.1.1 · Jun 11, 2026 — Hotfix
 
 - Restore the World canvas backing-store budget so unzoomed harbor signs and other pixel text render at full desktop resolution again
