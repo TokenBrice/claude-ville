@@ -301,6 +301,7 @@ export class RitualConductor {
             isAgentVisible: null,
         };
         this.rituals = [];
+        this._overflowCount = 0;
         this.unsubscribers = [
             eventBus.on('tool:invoked', (event) => this.enqueue(event)),
         ];
@@ -310,6 +311,7 @@ export class RitualConductor {
         for (const unsubscribe of this.unsubscribers) unsubscribe();
         this.unsubscribers = [];
         this.rituals = [];
+        this._overflowCount = 0;
         this.context = { world: null, agentSprites: null, isAgentVisible: null };
     }
 
@@ -373,6 +375,7 @@ export class RitualConductor {
         }
 
         if (this.rituals.length >= MAX_CONCURRENT_RITUALS) {
+            this._overflowCount++;
             this.rituals.sort((a, b) => a.createdAt - b.createdAt);
             this.rituals.shift();
         }
@@ -433,6 +436,14 @@ export class RitualConductor {
 
     getSnapshot() {
         return this.rituals.map(ritual => ({ ...ritual }));
+    }
+
+    getOverflowCount() {
+        return this._overflowCount;
+    }
+
+    resetOverflowCount() {
+        this._overflowCount = 0;
     }
 }
 

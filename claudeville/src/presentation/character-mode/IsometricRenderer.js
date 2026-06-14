@@ -783,19 +783,39 @@ export class IsometricRenderer {
     }
 
     _visibleWaterTileDescriptors(bounds) {
-        if (!bounds || !this._waterTileDescriptors?.length) return [];
+        const out = this._visibleWaterFrame;
+        if (!bounds || !this._waterTileDescriptors?.length) {
+            out.length = 0;
+            this._visibleWaterCullKey = '';
+            return out;
+        }
         const { startX, endX, startY, endY } = bounds;
-        return this._waterTileDescriptors.filter((tile) => (
-            tile.x >= startX && tile.x <= endX && tile.y >= startY && tile.y <= endY
-        ));
+        const key = `${startX},${endX},${startY},${endY}|${this._waterTileDescriptors.length}`;
+        if (key === this._visibleWaterCullKey) return out;
+        this._visibleWaterCullKey = key;
+        out.length = 0;
+        for (const tile of this._waterTileDescriptors) {
+            if (tile.x >= startX && tile.x <= endX && tile.y >= startY && tile.y <= endY) out.push(tile);
+        }
+        return out;
     }
 
     _visibleShoreWaterEdgeDescriptors(bounds) {
-        if (!bounds || !this._shoreWaterEdgeDescriptors?.length) return [];
+        const out = this._visibleShoreFrame;
+        if (!bounds || !this._shoreWaterEdgeDescriptors?.length) {
+            out.length = 0;
+            this._visibleShoreCullKey = '';
+            return out;
+        }
         const { startX, endX, startY, endY } = bounds;
-        return this._shoreWaterEdgeDescriptors.filter((tile) => (
-            tile.x >= startX && tile.x <= endX && tile.y >= startY && tile.y <= endY
-        ));
+        const key = `${startX},${endX},${startY},${endY}|${this._shoreWaterEdgeDescriptors.length}`;
+        if (key === this._visibleShoreCullKey) return out;
+        this._visibleShoreCullKey = key;
+        out.length = 0;
+        for (const tile of this._shoreWaterEdgeDescriptors) {
+            if (tile.x >= startX && tile.x <= endX && tile.y >= startY && tile.y <= endY) out.push(tile);
+        }
+        return out;
     }
 
     _generatePlannedRoads() {
@@ -1167,7 +1187,7 @@ export class IsometricRenderer {
             shouldEmitEvent: () => this._worldModeActive,
         });
         this.relationshipState = new RelationshipState(this.world);
-        this._replayActiveToolRituals();
+        this._replayActiveToolRituals({ force: true });
         this._updateVisitSystems(Date.now());
         if (typeof window !== 'undefined') {
             window.__relationshipState = () => this.relationshipState?.getSnapshot?.();
@@ -1815,6 +1835,7 @@ export class IsometricRenderer {
             byState,
             intentSources,
             behaviorMetrics: derivedMetrics,
+            ritualOverflow: this.ritualConductor?.getOverflowCount?.() || 0,
             allocatorMetrics: reservations.metrics || {},
             reservationCount: reservations.reservationCount || 0,
             buildingCrowds: reservations.buildings || {},
@@ -1842,6 +1863,18 @@ export class IsometricRenderer {
     // Mirror active pose-bearing rituals onto agent sprites each frame so
     // tool-heavy states read on the character (reading / typing / thinking).
     _syncToolRitualPoses() {
+        const renderMode = this._lastRenderStats?.quality?.agentRenderMode || 'full';
+        if (renderMode === 'minimal') {
+            if (this._lastRitualPoseMode !== 'minimal') {
+                for (const sprite of this.agentSprites.values()) {
+                    sprite.setToolRitualPose?.(null);
+                }
+            }
+            this._lastRitualPoseMode = 'minimal';
+            return;
+        }
+        if (renderMode === 'compact' && this._ritualSyncFrame % 2 !== 0) return;
+        this._lastRitualPoseMode = renderMode;
         const poses = this.ritualConductor?.getAgentPoses?.() || null;
         for (const [agentId, sprite] of this.agentSprites) {
             sprite.setToolRitualPose?.(poses?.get(agentId) || null);
@@ -1883,11 +1916,103 @@ export class IsometricRenderer {
     }
 
     _replayActiveToolRituals({ force = false } = {}) {
+        const renderMode = this._lastRenderStats?.quality?.agentRenderMode || 'full';
+        if (!force && renderMode !== 'full' && this._ritualSyncFrame % 4 !== 0) return 0;
         this._syncRitualContext();
         return this.agentEventStream?.emitInitialToolEvents?.({
             force,
             shouldEmit: (event, agent) => this._canAcceptToolRitual(event, agent),
         }) || 0;
+    }
+
+    _handleWorldKeyboardCommand(event) {
+        if (!event || !this._worldModeActive || !this.camera) return;
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        const activeElement = typeof document !== 'undefined' ? document.activeElement : null;
+        if (this._isKeyboardEditTarget(activeElement)) return;
+        if (this._isModalOpen()) return;
+
+        if (event.code === 'Tab') {
+            if (this._cycleAgentSelection(event.shiftKey ? -1 : 1)) event.preventDefault();
+            return;
+        }
+
+        const panDeltas = {
+            ArrowLeft: { x: KEYBOARD_PAN_STEP, y: 0 },
+            ArrowRight: { x: -KEYBOARD_PAN_STEP, y: 0 },
+            ArrowUp: { x: 0, y: KEYBOARD_PAN_STEP },
+            ArrowDown: { x: 0, y: -KEYBOARD_PAN_STEP },
+        };
+        const delta = panDeltas[event.code];
+        if (delta) {
+            this.camera.stopFollow();
+            this.camera.x += delta.x / Math.max(0.1, this.camera.zoom || 1);
+            this.camera.y += delta.y / Math.max(0.1, this.camera.zoom || 1);
+            this.camera._clampToBounds?.();
+            event.preventDefault();
+            return;
+        }
+
+        if (event.code === 'Equal' || event.code === 'NumpadAdd') {
+            if (this._zoomByKeyboard(1)) event.preventDefault();
+            return;
+        }
+        if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
+            if (this._zoomByKeyboard(-1)) event.preventDefault();
+            return;
+        }
+        if (event.code === 'KeyF') {
+            this.camera.stopFollow();
+            this.camera.centerOnMap();
+            event.preventDefault();
+            return;
+        }
+        if (event.code === 'Escape') {
+            this.selectAgentById(null);
+            this.onAgentSelect?.(null);
+            event.preventDefault();
+        }
+    }
+
+    _isKeyboardEditTarget(element) {
+        if (!element) return false;
+        const tagName = String(element.tagName || '').toUpperCase();
+        return tagName === 'INPUT' || tagName === 'TEXTAREA' || tagName === 'SELECT' || element.isContentEditable;
+    }
+
+    _isModalOpen() {
+        return this.modal?.overlay?.style?.display === 'flex';
+    }
+
+    _cycleAgentSelection(direction = 1) {
+        const ids = Array.from(this.agentSprites.entries())
+            .filter(([, sprite]) => sprite && !this._isGateTransit(sprite, 'departure') && !sprite.isArrivalPending?.())
+            .map(([id]) => id);
+        if (!ids.length) return false;
+        const currentIndex = this.selectedAgent?.id ? ids.indexOf(this.selectedAgent.id) : -1;
+        const nextIndex = currentIndex >= 0
+            ? (currentIndex + direction + ids.length) % ids.length
+            : (direction < 0 ? ids.length - 1 : 0);
+        this.selectAgentById(ids[nextIndex]);
+        this.onAgentSelect?.(this.selectedAgent || null);
+        return Boolean(this.selectedAgent);
+    }
+
+    _zoomByKeyboard(direction = 1) {
+        const camera = this.camera;
+        const steps = Array.isArray(camera?.zoomSteps) && camera.zoomSteps.length
+            ? camera.zoomSteps
+            : [camera?.minZoom || 1, camera?.maxZoom || 3];
+        const zoom = camera?.zoom || 1;
+        const currentIndex = steps.reduce((bestIndex, step, index) => (
+            Math.abs(step - zoom) < Math.abs(steps[bestIndex] - zoom) ? index : bestIndex
+        ), 0);
+        const nextIndex = Math.max(0, Math.min(steps.length - 1, currentIndex + direction));
+        const targetZoom = steps[nextIndex];
+        if (!camera || targetZoom === zoom) return false;
+        camera.stopFollow();
+        camera._setZoomAboutCenter?.(targetZoom);
+        return true;
     }
 
     invalidateViewportCaches() {
@@ -2414,6 +2539,7 @@ export class IsometricRenderer {
 
     _update(dt = 16) {
         this.waterFrame += WATER_FRAME_STEP * this.motionScale;
+        this._ritualSyncFrame = (this._ritualSyncFrame + 1) % 1000000;
 
         // Update camera follow
         if (this.camera) {
@@ -2481,7 +2607,12 @@ export class IsometricRenderer {
         }
         this._applyLaneDiscipline(movingSprites, dt);
         this._applyLocalAvoidance(movingSprites, dt);
-        this._crowdStats = this._summarizeCrowdClusters();
+        this._crowdStatsAccumulator += dt;
+        if (this._crowdStatsAccumulator >= 250 || this.agentSprites.size !== this._lastAgentCount) {
+            this._crowdStatsAccumulator = 0;
+            this._lastAgentCount = this.agentSprites.size;
+            this._crowdStats = this._summarizeCrowdClusters();
+        }
         this._stationaryOverlapAccumulator += dt;
         if (this._stationaryOverlapAccumulator >= 420) {
             this._stationaryOverlapAccumulator = 0;
@@ -2804,8 +2935,12 @@ export class IsometricRenderer {
 
     _forEachNearbySpritePair(sprites, cellSize, visitor) {
         const size = Math.max(1, Number(cellSize) || LOCAL_AVOIDANCE.bucketPx);
-        const buckets = new Map();
-        const ids = new Map();
+        const buckets = this._pairBuckets;
+        const ids = this._pairIds;
+        const visited = this._pairVisited;
+        buckets.clear();
+        ids.clear();
+        visited.clear();
         for (let index = 0; index < sprites.length; index++) {
             const sprite = sprites[index];
             if (!sprite) continue;
@@ -2816,7 +2951,6 @@ export class IsometricRenderer {
             buckets.set(key, bucket);
         }
 
-        const visited = new Set();
         for (const [key, bucket] of buckets.entries()) {
             const [cellX, cellY] = key.split(',').map(Number);
             for (let ox = -1; ox <= 1; ox++) {
@@ -2870,7 +3004,6 @@ export class IsometricRenderer {
             maxClusterSize: 0,
             congestedAgents: 0,
             clusters: [],
-            localAvoidance: { ...this._localAvoidanceMetrics },
         };
     }
 
@@ -2910,7 +3043,6 @@ export class IsometricRenderer {
             maxClusterSize: summary.maxClusterSize,
             congestedAgents: summary.congestedAgents,
             clusters: summary.clusters,
-            localAvoidance: { ...this._localAvoidanceMetrics },
         };
     }
 
@@ -7071,37 +7203,48 @@ export class IsometricRenderer {
     }
 
     _drawEmptyStateWorldCue(ctx) {
-        const command = this._getCommandBuilding();
-        if (!command) return;
-        const portal = this.world?.buildings?.get?.('portal') || command;
-        const plaza = {
-            tileX: command.position.tileX + command.width / 2,
-            tileY: command.position.tileY + command.height + 0.8,
-        };
-        const portalGate = {
-            tileX: portal.position.tileX + portal.width / 2,
-            tileY: portal.position.tileY + portal.height / 2,
-        };
-
-        ctx.save();
         const visibleAgentCount = Array.from(this.agentSprites.values())
             .filter(sprite => !this._isGateTransit(sprite, 'departure'))
             .length;
-        if (visibleAgentCount <= 1) {
-            const start = this._tileToWorld(plaza.tileX, plaza.tileY);
-            const end = this._tileToWorld(portalGate.tileX, portalGate.tileY);
-            const midX = (start.x + end.x) / 2;
-            const midY = (start.y + end.y) / 2 - 44;
-            ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = visibleAgentCount === 0 ? 0.10 : 0.055;
-            ctx.strokeStyle = '#8bd7ff';
-            ctx.lineWidth = 1.2;
-            ctx.setLineDash(visibleAgentCount === 0 ? [5, 7] : [4, 10]);
-            ctx.beginPath();
-            ctx.moveTo(start.x, start.y - 8);
-            ctx.quadraticCurveTo(midX, midY, end.x, end.y - 8);
-            ctx.stroke();
-            ctx.setLineDash([]);
+        if (visibleAgentCount !== 0) return;
+
+        const viewport = this._screenViewport();
+        if (!viewport.width || !viewport.height) return;
+        const cardWidth = 536;
+        const cardHeight = 166;
+        const x = Math.round((viewport.width - cardWidth) / 2);
+        const y = Math.round(viewport.height * 0.5 - cardHeight / 2);
+        const rows = [
+            ['Forge', 'Code work'],
+            ['Archive', 'Reading/search'],
+            ['Harbor', 'Commit ships'],
+            ['Mine', 'Token usage'],
+        ];
+
+        ctx.save();
+        this._resetScreenTransform(ctx);
+        ctx.globalAlpha = 0.85;
+        ctx.fillStyle = '#121822';
+        ctx.fillRect(x, y, cardWidth, cardHeight);
+        ctx.strokeStyle = 'rgba(242, 211, 107, 0.72)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, cardWidth, cardHeight);
+        ctx.globalAlpha = 1;
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = '#f5e6a8';
+        ctx.font = '12px "Press Start 2P", monospace';
+        ctx.fillText('THE VILLAGE AWAITS', x + 24, y + 22, cardWidth - 48);
+        ctx.font = '13px monospace';
+        ctx.fillStyle = '#d6e7ee';
+        ctx.fillText('Start an AI coding session to summon a villager.', x + 24, y + 52, cardWidth - 48);
+        ctx.font = '12px monospace';
+        for (let i = 0; i < rows.length; i++) {
+            const [label, value] = rows[i];
+            const rowY = y + 86 + i * 18;
+            ctx.fillStyle = '#8bd7ff';
+            ctx.fillText(label, x + 24, rowY, 92);
+            ctx.fillStyle = '#d6e7ee';
+            ctx.fillText(value, x + 120, rowY, cardWidth - 144);
         }
         ctx.restore();
     }
@@ -7685,6 +7828,7 @@ export class IsometricRenderer {
             `LIGHT A${(lighting.ambientLight ?? 1).toFixed(2)} S${(lighting.shadowAlpha ?? 0).toFixed(2)} B${(lighting.lightBoost ?? 1).toFixed(2)}`,
             `REACT P${(reactions.puddleAlpha || 0).toFixed(2)} W${(reactions.windowWarmth || 0).toFixed(2)} G${(reactions.warmGlint || 0).toFixed(2)}`,
             `MOTION D${motion.driftEnabled ? 1 : 0} P${motion.particleEnabled ? 1 : 0}`,
+            `RITUALS ${(this.ritualConductor?.getSnapshot?.() || []).length} OVER ${this.ritualConductor?.getOverflowCount?.() || 0}`,
             `SKY ${atmosphere.cacheKey}`,
         ];
         const panelHeight = 16 + lines.length * 14;
