@@ -46,6 +46,29 @@ function textWidth(ctx, text) {
     return Math.ceil(ctx.measureText(String(text || '')).width);
 }
 
+function hashText(value) {
+    const text = String(value || '');
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) {
+        hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    }
+    return Math.abs(hash);
+}
+
+function agentTrailColor(point = {}) {
+    if (point.status === 'errored') return '248, 113, 113';
+    if (point.status === 'waiting_on_user' || point.status === 'rate_limited') return '250, 204, 21';
+    if (point.status === 'waiting') return '251, 146, 60';
+    const palette = [
+        '125, 211, 252',
+        '134, 239, 172',
+        '216, 180, 254',
+        '94, 234, 212',
+        '244, 196, 93',
+    ];
+    return palette[hashText(point.teamName || point.provider || point.id) % palette.length];
+}
+
 function drawWorldPill(ctx, x, y, text, rgb = '226, 232, 240', alpha = 1) {
     const label = String(text || '').trim();
     if (!label) return;
@@ -98,7 +121,7 @@ function drawSignalHalo(ctx, signal, now, motionScale) {
     ctx.restore();
 }
 
-function drawReplay(ctx, samples, now) {
+function drawReplay(ctx, samples, now, selectedAgentId = null) {
     if (!samples?.length) return;
     const byAgent = new Map();
     for (const sample of samples) {
@@ -120,13 +143,10 @@ function drawReplay(ctx, samples, now) {
     for (const points of byAgent.values()) {
         if (points.length < 2) continue;
         const latest = points.at(-1);
-        const rgb = latest?.status === 'errored'
-            ? '248, 113, 113'
-            : latest?.status === 'waiting_on_user'
-                ? '250, 204, 21'
-                : '125, 211, 252';
-        ctx.lineWidth = 1.3;
-        ctx.strokeStyle = rgba(rgb, 0.34);
+        const rgb = agentTrailColor(latest);
+        const selected = latest?.id && latest.id === selectedAgentId;
+        ctx.lineWidth = selected ? 2.6 : 1.25;
+        ctx.strokeStyle = rgba(rgb, selected ? 0.62 : 0.30);
         ctx.beginPath();
         for (let i = 0; i < points.length; i++) {
             const p = points[i];
@@ -135,26 +155,39 @@ function drawReplay(ctx, samples, now) {
         }
         ctx.stroke();
 
+        const tickEvery = selected ? 2 : 4;
+        ctx.fillStyle = rgba(rgb, selected ? 0.52 : 0.24);
+        for (let i = Math.max(0, points.length - 16); i < points.length; i += tickEvery) {
+            const p = points[i];
+            const age = clamp((now - p.ts) / 60_000);
+            const size = selected ? 2.6 : 1.7;
+            ctx.globalAlpha = selected ? 0.8 * (1 - age * 0.45) : 0.42 * (1 - age * 0.55);
+            ctx.beginPath();
+            ctx.ellipse(p.x, p.y - 2, size, size * 0.7, 0, 0, TAU);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+
         const tail = points.at(-1);
         const age = clamp((now - tail.ts) / 60_000);
         ctx.fillStyle = rgba(rgb, 0.35 * (1 - age) + 0.12);
         ctx.beginPath();
-        ctx.ellipse(tail.x, tail.y - 2, 3.5, 2.2, 0, 0, TAU);
+        ctx.ellipse(tail.x, tail.y - 2, selected ? 5 : 3.5, selected ? 3.2 : 2.2, 0, 0, TAU);
         ctx.fill();
     }
     ctx.restore();
 }
 
-function drawSelectedRoutes(ctx, selected) {
+function drawSignalRoutes(ctx, selected, { alphaScale = 1, dash = [6, 7], lineWidth = 1.2 } = {}) {
     if (!selected?.routes?.length) return;
     const rgb = signalColor(selected.type);
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
-    ctx.lineWidth = 1.2;
-    ctx.setLineDash([6, 7]);
+    ctx.lineWidth = lineWidth;
+    ctx.setLineDash(dash);
     for (const route of selected.routes) {
         if (!route?.from || !route?.to) continue;
-        ctx.strokeStyle = rgba(rgb, route.status === 'working' ? 0.40 : 0.24);
+        ctx.strokeStyle = rgba(rgb, (route.status === 'working' ? 0.40 : 0.24) * alphaScale);
         ctx.beginPath();
         const midX = (route.from.x + route.to.x) / 2;
         const midY = Math.min(route.from.y, route.to.y) - 26;
@@ -282,11 +315,15 @@ function drawReleaseParade(ctx, parade, now, motionScale) {
 
 export function drawVillageDirectorGround(ctx, snapshot, now = Date.now()) {
     if (!ctx || !snapshot) return;
-    drawReplay(ctx, snapshot.replaySamples, now);
+    drawReplay(ctx, snapshot.replaySamples, now, snapshot.selectedAgentId);
     for (const signal of snapshot.buildingSignals || []) drawSignalHalo(ctx, signal, now, snapshot.motionScale);
+    if (snapshot.hoverBuildingSignal) {
+        drawSignalHalo(ctx, snapshot.hoverBuildingSignal, now, snapshot.motionScale);
+        drawSignalRoutes(ctx, snapshot.hoverBuildingSignal, { alphaScale: 0.52, dash: [3, 9], lineWidth: 1 });
+    }
     if (snapshot.selectedBuildingSignal) {
         drawSignalHalo(ctx, { ...snapshot.selectedBuildingSignal, heat: Math.max(0.52, snapshot.selectedBuildingSignal.heat || 0) }, now, snapshot.motionScale);
-        drawSelectedRoutes(ctx, snapshot.selectedBuildingSignal);
+        drawSignalRoutes(ctx, snapshot.selectedBuildingSignal);
     }
     drawTeams(ctx, snapshot.teams, snapshot.perfNow || now, snapshot.motionScale);
     drawIncidents(ctx, snapshot.incidents, snapshot.perfNow || now, snapshot.motionScale);
@@ -302,6 +339,11 @@ export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now()) {
     if (selected?.center) {
         const rgb = signalColor(selected.type);
         drawWorldPill(ctx, selected.center.x, selected.center.y - 56, selected.label || selected.type, rgb, 0.92);
+    }
+    const hover = snapshot.hoverBuildingSignal;
+    if (hover?.center) {
+        const rgb = signalColor(hover.type);
+        drawWorldPill(ctx, hover.center.x, hover.center.y - 48, hover.label || hover.type, rgb, 0.58);
     }
 
     for (const incident of snapshot.incidents || []) {
@@ -323,7 +365,7 @@ export function drawVillageDirectorScreen(ctx, snapshot, viewport) {
     ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    const text = 'REPLAY 60S';
+    const text = `REPLAY 60S · ${snapshot.replayAgentCount || 0} AGENTS`;
     const width = Math.ceil(ctx.measureText(text).width) + 18;
     const x = 18;
     const y = Math.max(76, Math.round(viewport.height - 34));

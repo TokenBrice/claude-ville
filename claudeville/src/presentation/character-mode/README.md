@@ -132,6 +132,10 @@ Selection events (`agent:selected`, `agent:deselected`) are bridged in `App.js`,
 
 `mode:changed` is consumed by `IsometricRenderer` to call `setWorldModeActive(mode !== 'dashboard')`. When Dashboard mode is active, the World render loop stops and volatile renderer caches are released; when World mode becomes active again, dirty sprite state is reconciled and the loop restarts. Browser visibility and canvas context loss/restoration also pause, resume, and rebuild canvas-owned caches.
 
+`VillageDirector` emits `village:director`, `village:building-signal`, `village:scene`, and `village:replay` as read-only presentation signals. Canvas overlays use the snapshot for huddles, handoffs, incidents, replay trails, release parades, building hover previews, and selected-building route lines; DOM surfaces such as Activity Panel may consume the same events defensively.
+
+Deterministic QA scenarios for these states are available at `?sim=1&scenario=<id>`; the most relevant Director fixtures are `waiting-on-user`, `quota-rate-limit`, `failed-push`, `release-parade`, and `building-inspection-replay`.
+
 ## Adding a building
 
 1. Add an entry to `BUILDING_DEFS` in `claudeville/src/config/buildings.js`. Copy a neighboring entry for the validated field shape:

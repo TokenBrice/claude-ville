@@ -1516,24 +1516,40 @@ export class ActivityPanel {
         if (!body) return;
         const context = this._buildingContext(building);
         const signal = this._buildingSignalModel(context);
-        const signature = `${context.type}|${signal.headline}|${signal.detail}|${hashRows(signal.chips, [
-            chip => chip.label,
-            chip => chip.value,
-            chip => chip.tone || '',
+        const signature = `${context.type}|${signal.headline}|${hashRows(signal.rows, [
+            row => row.label,
+            row => row.value,
+            row => row.tone || '',
+        ])}|${hashRows(signal.alerts, [
+            alert => alert.label,
+            alert => alert.value,
+            alert => alert.tone || '',
         ])}`;
         if (signature === this._renderSignatures.buildingSignal) return;
         this._renderSignatures.buildingSignal = signature;
         const nodes = [
             el('div', { className: 'activity-panel__signal-headline', text: signal.headline }),
         ];
-        if (signal.detail) {
-            nodes.push(el('div', { className: 'activity-panel__signal-detail', text: signal.detail }));
+        if (signal.rows.length) {
+            nodes.push(el('div', { className: 'activity-panel__signal-rows' }, signal.rows.map(row => (
+                el('div', {
+                    className: ['activity-panel__signal-row', row.tone ? `activity-panel__signal-row--${row.tone}` : ''],
+                }, [
+                    el('span', { className: 'activity-panel__signal-row-label', text: row.label }),
+                    el('span', {
+                        className: 'activity-panel__signal-row-value',
+                        text: row.value,
+                        title: row.value,
+                    }),
+                ])
+            ))));
         }
-        if (signal.chips.length) {
-            nodes.push(el('div', { className: 'activity-panel__signal-chips' }, signal.chips.map(chip => (
+        if (signal.alerts.length) {
+            nodes.push(el('div', { className: 'activity-panel__signal-chips' }, signal.alerts.map(alert => (
                 el('span', {
-                    className: ['activity-panel__signal-chip', chip.tone ? `activity-panel__signal-chip--${chip.tone}` : ''],
-                    text: chip.value ? `${chip.label} ${chip.value}` : chip.label,
+                    className: ['activity-panel__signal-chip', alert.tone ? `activity-panel__signal-chip--${alert.tone}` : ''],
+                    text: alert.value ? `${alert.label} ${alert.value}` : alert.label,
+                    title: alert.value ? `${alert.label} ${alert.value}` : alert.label,
                 })
             ))));
         }
@@ -1697,22 +1713,20 @@ export class ActivityPanel {
             'status',
             'phase',
         ]);
-        const externalDetail = this._externalFieldText(context.external, [
-            'detail',
-            'description',
-            'note',
-            'reason',
-        ]);
         return {
-            headline: truncateText(
-                externalHeadline
-                    ? this._formatExternalSignalText(externalHeadline)
-                    : this._derivedBuildingHeadline(context),
-                58,
-            ),
-            detail: truncateText(externalDetail || this._derivedBuildingSignalDetail(context), 96),
-            chips: this._buildingSignalChips(context),
+            headline: this._buildingSignalHeadline(context, externalHeadline),
+            rows: this._buildingSignalRows(context),
+            alerts: this._buildingSignalAlerts(context),
         };
+    }
+
+    _buildingSignalHeadline(context, externalHeadline) {
+        const external = externalHeadline ? this._formatExternalSignalText(externalHeadline) : '';
+        const fallback = this._derivedBuildingHeadline(context);
+        const text = external || fallback;
+        const label = context.label || '';
+        const needsLabel = external && label && !text.toLowerCase().includes(label.toLowerCase());
+        return truncateText(needsLabel ? `${label}: ${text}` : text, 64);
     }
 
     _derivedBuildingHeadline(context) {
@@ -1726,47 +1740,92 @@ export class ActivityPanel {
         return `${context.label} quiet`;
     }
 
-    _derivedBuildingSignalDetail(context) {
-        const parts = [];
-        const occupantCount = context.occupants.length;
-        const routeCount = context.routeAgents.length;
+    _buildingSignalRows(context) {
+        const tier = String(context.presence?.tier || '').toLowerCase();
+        const load = this._formatBuildingLoad(context) || this._formatBuildingIdleLoad(context);
         const queueCount = this._buildingQueueCount(context);
-        if (occupantCount) parts.push(`${occupantCount} ${occupantCount === 1 ? 'occupant' : 'occupants'} on site`);
-        const tools = this._buildingToolSummary(context.occupants);
-        if (tools) parts.push(tools);
-        if (queueCount) parts.push(`${queueCount} waiting`);
-        if (routeCount) {
-            const names = context.routeAgents
-                .slice(0, BUILDING_ROUTE_HINT_LIMIT)
-                .map(agent => agent.displayName || agent.name || agent.id)
-                .filter(Boolean)
-                .join(', ');
-            parts.push(names ? `${names} inbound` : `${routeCount} inbound`);
-        }
-        if (!parts.length && context.recentWork.length) {
-            parts.push(`Recent: ${context.recentWork.slice(0, 2).join('; ')}`);
-        }
-        return parts.join('; ');
+        const queue = this._formatBuildingQueue(context);
+        const routes = this._formatBuildingRoutes(context);
+        const recent = this._formatBuildingRecentWork(context);
+        return [
+            {
+                label: 'Load',
+                value: truncateText(load, 40),
+                tone: tier === 'busy' ? 'warning' : (this._buildingActiveCount(context) > 0 ? 'active' : 'muted'),
+            },
+            {
+                label: 'Queue',
+                value: truncateText(queue || 'clear', 40),
+                tone: queueCount > 0 ? 'warning' : 'muted',
+            },
+            {
+                label: 'Inbound',
+                value: truncateText(routes || 'none', 44),
+                tone: routes ? 'active' : 'muted',
+            },
+            {
+                label: 'Recent',
+                value: truncateText(recent || 'none', 48),
+                tone: recent ? '' : 'muted',
+            },
+        ];
     }
 
-    _buildingSignalChips(context) {
-        const chips = [];
-        const tier = String(context.presence?.tier || '').toLowerCase();
-        if (tier) {
-            chips.push({
-                label: this._titleize(tier),
-                value: '',
-                tone: tier === 'busy' ? 'warning' : (tier === 'dormant' ? 'muted' : 'active'),
-            });
+    _formatBuildingIdleLoad(context) {
+        const capacity = Number(context.load?.capacity) || this._buildingCapacity(context.building);
+        if (capacity > 0) return `0/${capacity} occupied`;
+        return 'idle';
+    }
+
+    _buildingSignalAlerts(context) {
+        const alerts = [];
+        const externalAlert = this._externalFieldText(context.external, [
+            'alert',
+            'alerts',
+            'warning',
+            'warnings',
+            'issue',
+            'issues',
+            'incident',
+            'incidents',
+            'error',
+            'errors',
+            'problem',
+            'problems',
+        ]);
+        if (externalAlert) {
+            alerts.push({ label: 'Alert', value: truncateText(externalAlert, 54), tone: 'warning' });
         }
-        const load = this._formatBuildingLoad(context);
-        if (load) chips.push({ label: 'Load', value: load, tone: tier === 'busy' ? 'warning' : '' });
-        const queueCount = this._buildingQueueCount(context);
-        if (queueCount > 0) chips.push({ label: 'Queue', value: String(queueCount), tone: 'warning' });
-        if (context.routeAgents.length) {
-            chips.push({ label: 'Routes', value: String(context.routeAgents.length), tone: 'active' });
+
+        const counts = context.external?.counts || {};
+        const errored = [
+            counts.errored,
+            counts.errors,
+            context.external?.errored,
+            context.external?.errorCount,
+        ].map(value => Number(value)).find(value => Number.isFinite(value) && value > 0);
+        if (Number.isFinite(errored) && errored > 0) {
+            alerts.push({ label: 'Errored', value: String(errored), tone: 'warning' });
         }
-        return chips.slice(0, 4);
+
+        if (context.type === 'watchtower') {
+            const failed = this._getHarborTraffic()?.getFailedPushState?.();
+            if (failed?.hasFailedPush) {
+                const repoCount = Array.isArray(failed.repos) ? failed.repos.length : 0;
+                const value = repoCount > 0 ? this._formatPushIssueCount(repoCount, 'failed') : 'Push failed';
+                alerts.push({ label: 'Harbor', value: truncateText(value, 44), tone: 'warning' });
+            }
+        }
+
+        if (context.type === 'mine') {
+            const fiveHour = Number(this._latestUsage?.quota?.fiveHour);
+            if (Number.isFinite(fiveHour) && fiveHour >= 0.86) {
+                alerts.push({ label: 'Quota', value: `${Math.round(fiveHour * 100)}% 5h`, tone: 'warning' });
+            }
+        }
+
+        if (!alerts.length) return [{ label: 'Alerts', value: 'clear', tone: 'muted' }];
+        return alerts.slice(0, 3);
     }
 
     _buildingOccupantActivity(agent, building) {
@@ -1879,17 +1938,6 @@ export class ActivityPanel {
         if (external) return truncateText(this._formatExternalSignalText(external), 80);
         if (!context.recentWork.length) return '';
         return truncateText(context.recentWork.slice(0, BUILDING_RECENT_WORK_LIMIT).join('; '), 86);
-    }
-
-    _buildingToolSummary(occupants) {
-        const tools = [];
-        for (const agent of occupants) {
-            const tool = currentToolPresentation(agent);
-            if (tool.isIdle || !tool.name) continue;
-            if (!tools.includes(tool.name)) tools.push(tool.name);
-        }
-        if (!tools.length) return '';
-        return `${tools.slice(0, 3).join(', ')} underway`;
     }
 
     _buildingQueueCount(context) {

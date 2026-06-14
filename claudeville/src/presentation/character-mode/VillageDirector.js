@@ -15,6 +15,8 @@ const RELEASE_TTL_MS = 26_000;
 const LIFE_TTL_MS = 12_000;
 const MAX_REPLAY_AGENTS = 72;
 const MAX_SELECTED_ROUTES = 9;
+const MAX_HOVER_ROUTES = 3;
+const RELEASE_PARADE_VERSION_KEY = 'claudeville.releaseParade.seenVersion';
 
 function clamp(value, min = 0, max = 1) {
     const n = Number(value);
@@ -63,11 +65,25 @@ function sceneProgress(scene, now) {
     return clamp((now - start) / Math.max(1, end - start));
 }
 
+function isIncidentStatus(status) {
+    return status === AgentStatus.RATE_LIMITED
+        || status === AgentStatus.WAITING_ON_USER
+        || status === AgentStatus.ERRORED;
+}
+
+function incidentLabel(status) {
+    if (status === AgentStatus.WAITING_ON_USER) return 'Bell waiting';
+    if (status === AgentStatus.RATE_LIMITED) return 'Rate limited';
+    if (status === AgentStatus.ERRORED) return 'Error';
+    return String(status || 'Incident').replace(/_/g, ' ');
+}
+
 export class VillageDirector {
     constructor(world) {
         this.world = world;
         this.motionScale = 1;
         this.selectedBuilding = null;
+        this.hoveredBuilding = null;
         this.quotaState = null;
         this.harborState = null;
         this.replayActive = false;
@@ -76,6 +92,8 @@ export class VillageDirector {
         this.scenes = [];
         this.buildingPresence = new Map();
         this.lastSnapshot = this._emptySnapshot(Date.now());
+        this._lastStats = this._emptyStats();
+        this._sceneDropCount = 0;
         this._lastReplaySampleAt = 0;
         this._lastSnapshotEmitAt = 0;
         this._lastSceneSignatures = new Set();
@@ -107,6 +125,7 @@ export class VillageDirector {
         this.toolEvents = [];
         this.scenes = [];
         this.buildingPresence.clear();
+        this.hoveredBuilding = null;
     }
 
     setMotionScale(scale) {
@@ -156,13 +175,40 @@ export class VillageDirector {
         }
     }
 
-    toggleReplay() {
-        this.replayActive = !this.replayActive;
+    setHoveredBuilding(building) {
+        this.hoveredBuilding = building || null;
+    }
+
+    setReplayActive(active) {
+        const next = Boolean(active);
+        if (this.replayActive === next) return this.replayActive;
+        this.replayActive = next;
         eventBus.emit('village:replay', {
             active: this.replayActive,
             ts: Date.now(),
         });
         return this.replayActive;
+    }
+
+    toggleReplay() {
+        return this.setReplayActive(!this.replayActive);
+    }
+
+    triggerReleaseParadeOnceForVersion(versionText = '') {
+        const version = String(versionText || '').trim();
+        if (!version) return false;
+        let seen = '';
+        try {
+            seen = window.localStorage?.getItem(RELEASE_PARADE_VERSION_KEY) || '';
+        } catch {
+            seen = '';
+        }
+        if (seen === version) return false;
+        try {
+            window.localStorage?.setItem(RELEASE_PARADE_VERSION_KEY, version);
+        } catch { /* best effort; the parade still fires for this session */ }
+        this.triggerReleaseParade({ label: version, version, weight: version.endsWith('.0') ? 'major' : 'minor' });
+        return true;
     }
 
     triggerReleaseParade(payload = {}) {
@@ -189,8 +235,10 @@ export class VillageDirector {
         const lifecycle = this._lifecycleScenes(agents, now);
         const buildingSignals = this._buildingSignals(agents, now);
         const selectedBuildingSignal = this._selectedBuildingSignal(agents, buildingSignals);
+        const hoverBuildingSignal = this._hoverBuildingSignal(agents, buildingSignals);
         const weatherInfluence = this._weatherInfluence(agents, incidents, now);
         const releaseParade = this._releaseScene(now);
+        const replaySamples = this.replayActive ? this._recentReplaySamples(now) : [];
 
         this.lastSnapshot = {
             now,
@@ -198,17 +246,21 @@ export class VillageDirector {
             dt,
             motionScale: this.motionScale,
             replayActive: this.replayActive,
-            replaySamples: this.replayActive ? this._recentReplaySamples(now) : [],
+            replaySamples,
+            replayAgentCount: this._replayAgentCount(replaySamples),
+            selectedAgentId: renderer?.selectedAgent?.id || null,
             teams,
             handoffs,
             incidents,
             lifecycle,
             buildingSignals,
             selectedBuildingSignal,
+            hoverBuildingSignal,
             releaseParade,
             weatherInfluence,
             activeSceneCount: this.scenes.length,
         };
+        this._lastStats = this._statsForSnapshot(this.lastSnapshot);
 
         if (now - this._lastSnapshotEmitAt >= SNAPSHOT_EMIT_INTERVAL_MS) {
             this._lastSnapshotEmitAt = now;
@@ -227,6 +279,10 @@ export class VillageDirector {
         return this.lastSnapshot?.weatherInfluence || null;
     }
 
+    getStats() {
+        return { ...this._lastStats };
+    }
+
     _emptySnapshot(now) {
         return {
             now,
@@ -235,15 +291,34 @@ export class VillageDirector {
             motionScale: this.motionScale,
             replayActive: false,
             replaySamples: [],
+            replayAgentCount: 0,
+            selectedAgentId: null,
             teams: [],
             handoffs: [],
             incidents: [],
             lifecycle: [],
             buildingSignals: [],
             selectedBuildingSignal: null,
+            hoverBuildingSignal: null,
             releaseParade: null,
             weatherInfluence: null,
             activeSceneCount: 0,
+        };
+    }
+
+    _emptyStats() {
+        return {
+            activeScenes: 0,
+            sceneDrops: 0,
+            buildingSignals: 0,
+            hoverPreview: 0,
+            selectedRoutes: 0,
+            replaySamples: 0,
+            replayPoints: 0,
+            replayAgents: 0,
+            replayActive: false,
+            handoffs: 0,
+            incidents: 0,
         };
     }
 
@@ -269,13 +344,13 @@ export class VillageDirector {
     _onAgentUpdated(agent) {
         const status = String(agent?.status || '');
         const building = agentBuilding(agent) || 'command';
-        if (status === AgentStatus.RATE_LIMITED || status === AgentStatus.WAITING_ON_USER || status === AgentStatus.ERRORED) {
+        if (isIncidentStatus(status)) {
             this._addScene({
                 type: 'incident',
                 kind: status,
                 agentId: agent?.id,
                 building,
-                label: status === AgentStatus.WAITING_ON_USER ? 'Bell waiting' : status.replace(/_/g, ' '),
+                label: incidentLabel(status),
                 intensity: status === AgentStatus.ERRORED ? 0.92 : 0.7,
                 startedAt: Date.now(),
                 expiresAt: Date.now() + INCIDENT_TTL_MS,
@@ -452,6 +527,7 @@ export class VillageDirector {
         this._lastSceneSignatures.add(signature);
         this.scenes.push(normalized);
         if (this.scenes.length > SCENE_LIMIT) {
+            this._sceneDropCount += this.scenes.length - SCENE_LIMIT;
             this.scenes.splice(0, this.scenes.length - SCENE_LIMIT);
         }
         eventBus.emit('village:scene', normalized);
@@ -514,6 +590,16 @@ export class VillageDirector {
 
     _recentReplaySamples(now) {
         return this.replaySamples.filter(sample => now - sample.ts <= REPLAY_RETENTION_MS);
+    }
+
+    _replayAgentCount(samples = []) {
+        const ids = new Set();
+        for (const sample of samples) {
+            for (const point of sample.points || []) {
+                if (point?.id) ids.add(point.id);
+            }
+        }
+        return ids.size;
     }
 
     _agentSnapshots(renderer) {
@@ -590,14 +676,39 @@ export class VillageDirector {
     _incidentScenes(agents, now) {
         const byId = new Map(agents.map(agent => [agent.id, agent]));
         const out = [];
+        const explicitKeys = new Set();
         for (const scene of this.scenes) {
             if (scene.type !== 'incident') continue;
             const agent = byId.get(scene.agentId);
             const building = this._buildingFor(scene.building);
+            if (scene.agentId && scene.kind) explicitKeys.add(`${scene.agentId}:${scene.kind}`);
             out.push({
                 ...scene,
                 progress: sceneProgress(scene, now),
                 agent: agent ? { id: agent.id, x: agent.x, y: agent.y, label: agent.name } : null,
+                center: building ? buildingCenterToWorld(building) : null,
+            });
+        }
+        for (const agent of agents) {
+            if (!agent?.id || !isIncidentStatus(agent.status)) continue;
+            const key = `${agent.id}:${agent.status}`;
+            if (explicitKeys.has(key)) continue;
+            const buildingType = agent.building || agentBuilding(agent) || 'command';
+            const building = this._buildingFor(buildingType);
+            const startedAt = Number(agent.lastActive || agent.lastSessionActivity || now);
+            out.push({
+                id: sceneId('incident-live', { agentId: agent.id, kind: agent.status, ts: startedAt }),
+                type: 'incident',
+                kind: agent.status,
+                agentId: agent.id,
+                building: buildingType,
+                label: incidentLabel(agent.status),
+                intensity: agent.status === AgentStatus.ERRORED ? 0.88 : 0.68,
+                synthetic: true,
+                startedAt,
+                expiresAt: now + INCIDENT_TTL_MS,
+                progress: 0.25,
+                agent: { id: agent.id, x: agent.x, y: agent.y, label: agent.name },
                 center: building ? buildingCenterToWorld(building) : null,
             });
         }
@@ -708,6 +819,40 @@ export class VillageDirector {
         };
     }
 
+    _hoverBuildingSignal(agents, buildingSignals) {
+        if (!this.hoveredBuilding?.type) return null;
+        const type = normalizeBuildingType(this.hoveredBuilding.type);
+        if (!type) return null;
+        if (this.selectedBuilding?.type && normalizeBuildingType(this.selectedBuilding.type) === type) return null;
+        const building = this._buildingFor(type) || this.hoveredBuilding;
+        const center = buildingCenterToWorld(building);
+        const signal = buildingSignals.find(entry => entry.type === type) || {
+            type,
+            label: this.hoveredBuilding.shortLabel || this.hoveredBuilding.label || type,
+            heat: 0.22,
+            counts: {},
+            recentTools: [],
+            center,
+        };
+        const routes = agents
+            .filter(agent => agent.building === type)
+            .slice(0, MAX_HOVER_ROUTES)
+            .map(agent => ({
+                agentId: agent.id,
+                label: agent.name,
+                status: agent.status,
+                from: { x: agent.x, y: agent.y },
+                to: center,
+            }));
+        return {
+            ...signal,
+            hover: true,
+            heat: Math.max(0.28, Math.min(0.58, signal.heat || 0.28)),
+            routes,
+            center,
+        };
+    }
+
     _weatherInfluence(agents, incidents, now) {
         const total = Math.max(1, agents.length);
         const stormAgents = agents.filter(agent => (
@@ -752,6 +897,25 @@ export class VillageDirector {
         if (recentTools.length) return recentTools.at(-1)?.label || 'Tool work';
         if ((count?.working || 0) > 1) return 'Busy';
         return 'Active';
+    }
+
+    _statsForSnapshot(snapshot) {
+        const replayPoints = (snapshot.replaySamples || []).reduce((sum, sample) => (
+            sum + (Array.isArray(sample.points) ? sample.points.length : 0)
+        ), 0);
+        return {
+            activeScenes: snapshot.activeSceneCount || 0,
+            sceneDrops: this._sceneDropCount,
+            buildingSignals: snapshot.buildingSignals?.length || 0,
+            hoverPreview: snapshot.hoverBuildingSignal ? 1 : 0,
+            selectedRoutes: snapshot.selectedBuildingSignal?.routes?.length || 0,
+            replaySamples: snapshot.replaySamples?.length || 0,
+            replayPoints,
+            replayAgents: snapshot.replayAgentCount || 0,
+            replayActive: Boolean(snapshot.replayActive),
+            handoffs: snapshot.handoffs?.length || 0,
+            incidents: snapshot.incidents?.length || 0,
+        };
     }
 
     _quotaRatio(quota) {

@@ -1297,6 +1297,7 @@ export class IsometricRenderer {
             const worldPos = this.camera.screenToWorld(screenX, screenY);
             const hoveredBuilding = this.buildingRenderer?.hitTest(worldPos.x, worldPos.y) ?? null;
             this.buildingRenderer?.setHovered(hoveredBuilding);
+            this.villageDirector?.setHoveredBuilding?.(hoveredBuilding);
             const monument = hoveredBuilding ? null : this.chronicleMonuments?.hitTest?.(worldPos.x, worldPos.y, Date.now());
             // 3.6 — harbor lore: hovering a ship surfaces its commit subject.
             const hoveredShip = (hoveredBuilding || monument)
@@ -1312,6 +1313,7 @@ export class IsometricRenderer {
         canvas.addEventListener('mousemove', this._onMouseMoveMain);
         this._onMouseLeaveMain = () => {
             this.buildingRenderer?.setHovered(null);
+            this.villageDirector?.setHoveredBuilding?.(null);
             this.harborTraffic?.setHoveredShip?.(null);
             canvas.title = '';
         };
@@ -1324,6 +1326,7 @@ export class IsometricRenderer {
         window.addEventListener('keydown', this._onKeyDown);
         this._onModeChanged = (mode) => this.setWorldModeActive(mode !== 'dashboard');
         eventBus.on('mode:changed', this._onModeChanged);
+        this._triggerReleaseParadeForVersion();
 
         this.running = true;
         this._startLoop();
@@ -1696,6 +1699,12 @@ export class IsometricRenderer {
         };
     }
 
+    _triggerReleaseParadeForVersion() {
+        if (typeof document === 'undefined') return false;
+        const version = document.querySelector('.topbar__version')?.textContent || '';
+        return this.villageDirector?.triggerReleaseParadeOnceForVersion?.(version) || false;
+    }
+
     applyScenarioMetadata(metadata = {}) {
         if (!metadata || typeof metadata !== 'object') return false;
         this._scenarioMetadata = JSON.parse(JSON.stringify(metadata));
@@ -1742,6 +1751,22 @@ export class IsometricRenderer {
         if (metadata.selectedAgentId) {
             this.selectAgentById(metadata.selectedAgentId);
             if (this.selectedAgent && this.onAgentSelect) this.onAgentSelect(this.selectedAgent);
+        }
+
+        const selectedBuildingType = metadata.selectedBuildingType || metadata.selectedBuilding || null;
+        if (selectedBuildingType) {
+            const building = this._getBuildingByType(selectedBuildingType);
+            if (building) {
+                this.villageDirector?.setSelectedBuilding?.(building);
+                eventBus.emit(BUILDING_EVENTS.SELECTED, building);
+            }
+        }
+
+        if (metadata.replayActive === true) {
+            this.villageDirector?.setReplayActive?.(true);
+        }
+        if (metadata.releaseParade) {
+            this.villageDirector?.triggerReleaseParade?.(metadata.releaseParade);
         }
 
         return true;

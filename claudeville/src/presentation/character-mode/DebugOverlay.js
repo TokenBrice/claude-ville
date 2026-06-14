@@ -211,6 +211,7 @@ export class DebugOverlay {
             renderStats?.drawables ? `drawables: ${renderStats.drawables.total} drawn / ${renderStats.drawables.culling?.culled || 0} culled` : null,
             renderStats?.harbor ? `harbor: pending ${renderStats.harbor.pendingRepos || 0} commits ${renderStats.harbor.pendingCommits || 0}` : null,
             renderStats?.canvas ? `light/cache: ${renderStats.canvas.lightGradients || 0} gradients / particles ${renderStats.canvas.particles || 0}` : null,
+            renderStats?.director ? `director: scenes ${renderStats.director.activeScenes || 0}/${renderStats.director.sceneDrops || 0} drops · signals ${renderStats.director.buildingSignals || 0} · replay ${renderStats.director.replaySamples || 0}/${renderStats.director.replayPoints || 0}` : null,
             ...timingRows,
             ...layerRows,
             behaviorStats?.metricsScope ? `metrics: ${behaviorStats.metricsScope}` : null,

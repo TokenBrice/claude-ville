@@ -15,12 +15,21 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 - `dense-100-agents`: stress scenario for label, trail, drawable-culling, and terrain-cache readability at high agent counts.
 - `team-gather`: team members cluster around intended Command/Task Board areas with readable chat pairing.
 - `parent-subagents`: parent/child agents are visually distinguishable; completed child cleanup leaves no stale label or marker.
+- `building-inspection-replay`: Command building opens selected, replay is active, and selected-building route lines are more prominent than hover previews.
 
 ## Harbor And Git
 
 - `git-harbor`: commit, push, fetch, and pull fixture events are available for harbor reducer and ship checks.
 - `failed-push`: failed/rejected push state is visible at the harbor/watchtower and does not look like a successful departure.
+- `release-parade`: harbor release ribbons and parade label appear from scenario metadata without requiring a real tag push.
 - Harbor labels, dock tiles, ships, wakes, and building labels remain readable at desktop viewport widths.
+
+## Director Incidents And Signals
+
+- `waiting-on-user`: Command-side amber wait state appears as an input/attention scene and remains inspectable in the Activity Panel.
+- `quota-rate-limit`: mine-side quota/rate-limit pressure creates a Director incident, building Signal rows, and a subtle work-weather nudge.
+- Building hover should show a light signal/route preview; clicking the building should promote that to the full selected-building route treatment and Signal panel.
+- Press `R` in any World scenario to toggle the last-minute replay badge and trails; `building-inspection-replay` starts with replay already enabled.
 
 ## Occlusion And Selection
 

@@ -328,6 +328,7 @@ function buildRenderStats(renderer, { drawableStats, cullingStats, harborPending
             lightGradients: renderer.lightGradientCache?.size || 0,
             lightSources: renderer._frameLightSources?.ambient?.length || 0,
         },
+        director: renderer.villageDirector?.getStats?.() || null,
         quality: {
             agentRenderMode,
         },

@@ -678,6 +678,216 @@ export const FAILED_PUSH_SCENARIO = {
     },
 };
 
+export const WAITING_ON_USER_SCENARIO = {
+    id: 'waiting-on-user',
+    label: 'Waiting on user',
+    description: 'Command-side input wait for amber bell, Director incident, and ActivityPanel attention checks.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'sim-user-bell',
+            name: 'Bellkeep',
+            status: AgentStatus.WAITING_ON_USER,
+            currentTool: 'request_user_input',
+            currentToolInput: 'question=Approve the deployment window?',
+            position: { tileX: 16, tileY: 21 },
+            projectPath: '/sim/repos/input-wait',
+        }),
+        agentSpec({
+            id: 'sim-user-support',
+            name: 'Scribe',
+            status: AgentStatus.WORKING,
+            currentTool: 'Read',
+            currentToolInput: 'file_path=docs/release-notes.md',
+            position: { tileX: 9, tileY: 18 },
+            projectPath: '/sim/repos/input-wait',
+        }),
+    ],
+    timeline: [
+        {
+            ts: 1200,
+            agentId: 'sim-user-bell',
+            tool: 'request_user_input',
+            input: 'question=Approve the deployment window?',
+            status: AgentStatus.WAITING_ON_USER,
+            lastMessage: 'Waiting for approval',
+        },
+    ],
+    metadata: {
+        qaTags: ['waiting-on-user', 'director-incident', 'command-bell'],
+        selectedAgentId: 'sim-user-bell',
+        camera: { centerTile: { tileX: 18, tileY: 22 }, zoom: 2.7 },
+    },
+};
+
+export const QUOTA_RATE_LIMIT_SCENARIO = {
+    id: 'quota-rate-limit',
+    label: 'Quota rate limit',
+    description: 'Mine-side quota pressure and rate-limit state for weather, incident, and building-signal checks.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'sim-quota-watch',
+            name: 'Gauge',
+            status: AgentStatus.RATE_LIMITED,
+            currentTool: 'Bash',
+            currentToolInput: 'command=claude usage --quota --tokens --rate-limit',
+            position: { tileX: 12, tileY: 34 },
+            projectPath: '/sim/repos/quota',
+            tokens: { input: 180000, output: 24000, contextWindow: 176000, contextWindowMax: 200000 },
+        }),
+        agentSpec({
+            id: 'sim-quota-runner',
+            name: 'Runner',
+            status: AgentStatus.WORKING,
+            currentTool: 'Bash',
+            currentToolInput: 'command=check token burn and usage budget',
+            position: { tileX: 14, tileY: 35 },
+            projectPath: '/sim/repos/quota',
+            tokens: { input: 120000, output: 12000, contextWindow: 150000, contextWindowMax: 200000 },
+        }),
+    ],
+    timeline: [
+        {
+            ts: 1000,
+            agentId: 'sim-quota-watch',
+            tool: 'Bash',
+            input: 'command=claude usage --quota --tokens --rate-limit',
+            status: AgentStatus.RATE_LIMITED,
+            lastMessage: 'Rate limit window active',
+        },
+        {
+            ts: 2200,
+            agentId: 'sim-quota-runner',
+            tool: 'Bash',
+            input: 'command=check token burn and usage budget',
+            status: AgentStatus.WORKING,
+        },
+    ],
+    metadata: {
+        qaTags: ['quota', 'rate-limited', 'mine', 'director-incident', 'weather-nudge'],
+        selectedAgentId: 'sim-quota-watch',
+        selectedBuildingType: 'mine',
+        camera: { centerTile: { tileX: 13, tileY: 34 }, zoom: 2.75 },
+    },
+};
+
+export const RELEASE_PARADE_SCENARIO = {
+    id: 'release-parade',
+    label: 'Release parade',
+    description: 'Harbor release celebration triggered from scenario metadata for parade and banner checks.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'sim-release-captain',
+            name: 'Banneret',
+            status: AgentStatus.WORKING,
+            currentTool: 'Bash',
+            currentToolInput: 'command=git tag v0.12.0 && git push origin v0.12.0',
+            position: { tileX: 30, tileY: 19 },
+            projectPath: '/sim/repos/release',
+        }),
+    ],
+    timeline: [
+        {
+            ts: 1600,
+            agentId: 'sim-release-captain',
+            tool: 'Bash',
+            input: 'command=git tag v0.12.0 && git push origin v0.12.0',
+            status: AgentStatus.WORKING,
+            gitEvent: gitEvent({
+                id: 'git-release-tag-1',
+                type: 'push',
+                timestampOffset: 1600,
+                command: 'git push origin v0.12.0',
+                targetRef: 'refs/tags/v0.12.0',
+                success: true,
+                exitCode: 0,
+            }),
+        },
+    ],
+    metadata: {
+        qaTags: ['release', 'parade', 'harbor', 'director-scene'],
+        selectedAgentId: 'sim-release-captain',
+        releaseParade: { label: 'v0.12.0', version: 'v0.12.0', weight: 'major' },
+        camera: { centerTile: { tileX: 31, tileY: 20 }, zoom: 2.55 },
+    },
+};
+
+export const BUILDING_INSPECTION_REPLAY_SCENARIO = {
+    id: 'building-inspection-replay',
+    label: 'Building inspection replay',
+    description: 'Selected Command building plus active replay trails for route preview and Signal panel QA.',
+    timeBase: SCENARIO_TIME_BASE,
+    agents: [
+        agentSpec({
+            id: 'sim-inspect-lead',
+            name: 'Marshal',
+            teamName: 'Inspection',
+            status: AgentStatus.WORKING,
+            currentTool: 'spawn_agent',
+            currentToolInput: 'agent_type=worker, task=review command queue',
+            position: { tileX: 16, tileY: 21 },
+            projectPath: '/sim/repos/inspection',
+        }),
+        agentSpec({
+            id: 'sim-inspect-runner',
+            name: 'Courier',
+            teamName: 'Inspection',
+            status: AgentStatus.WORKING,
+            currentTool: 'SendMessage',
+            currentToolInput: 'recipient_name=Marshal, message=Command queue is ready',
+            position: { tileX: 15, tileY: 22 },
+            targetPosition: { tileX: 16, tileY: 21 },
+            projectPath: '/sim/repos/inspection',
+        }),
+        agentSpec({
+            id: 'sim-inspect-scribe',
+            name: 'Ledger',
+            teamName: 'Inspection',
+            status: AgentStatus.WAITING,
+            currentTool: 'wait_agent',
+            currentToolInput: 'targets=[sim-inspect-runner]',
+            position: { tileX: 18, tileY: 21 },
+            targetPosition: { tileX: 16, tileY: 21 },
+            projectPath: '/sim/repos/inspection',
+        }),
+    ],
+    timeline: [
+        {
+            ts: 900,
+            agentId: 'sim-inspect-lead',
+            tool: 'spawn_agent',
+            input: 'agent_type=worker, task=review command queue',
+            status: AgentStatus.WORKING,
+            position: { tileX: 16, tileY: 21 },
+        },
+        {
+            ts: 1700,
+            agentId: 'sim-inspect-runner',
+            tool: 'SendMessage',
+            input: 'recipient_name=Marshal, message=Command queue is ready',
+            status: AgentStatus.WORKING,
+            position: { tileX: 16.5, tileY: 21.4 },
+        },
+        {
+            ts: 2500,
+            agentId: 'sim-inspect-scribe',
+            tool: 'wait_agent',
+            input: 'targets=[sim-inspect-runner]',
+            status: AgentStatus.WAITING,
+            position: { tileX: 17.2, tileY: 21.6 },
+        },
+    ],
+    metadata: {
+        qaTags: ['building-signal', 'inspection', 'replay', 'routes', 'handoff'],
+        selectedAgentId: 'sim-inspect-lead',
+        selectedBuildingType: 'command',
+        replayActive: true,
+        camera: { centerTile: { tileX: 16, tileY: 21 }, zoom: 2.8 },
+    },
+};
+
 export const SELECTED_BEHIND_BUILDING_SCENARIO = {
     id: 'selected-behind-building',
     label: 'Selected behind building',
@@ -791,6 +1001,10 @@ export const WORLD_SCENARIOS = [
     MIXED_TOOLS_SCENARIO,
     GIT_HARBOR_SCENARIO,
     FAILED_PUSH_SCENARIO,
+    WAITING_ON_USER_SCENARIO,
+    QUOTA_RATE_LIMIT_SCENARIO,
+    RELEASE_PARADE_SCENARIO,
+    BUILDING_INSPECTION_REPLAY_SCENARIO,
     SELECTED_BEHIND_BUILDING_SCENARIO,
     STORM_NIGHT_REDUCED_MOTION_SCENARIO,
 ];
