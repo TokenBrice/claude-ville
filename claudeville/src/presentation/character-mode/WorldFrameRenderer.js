@@ -194,16 +194,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.seasonalAmbience?.drawStatic?.(ctx);
     renderer.harborTraffic?.drawScreenSummary(ctx, viewport, renderer.camera, renderNow);
     drawDebugOverlay(renderer, ctx, atmosphere, viewport);
-    renderer.minimap.draw(renderer.world, renderer.camera, canvas, {
-        pathTiles: renderer.pathTiles,
-        waterTiles: renderer.waterTiles,
-        bridgeTiles: renderer.bridgeTiles,
-        agentSprites: renderer.agentSprites,
-        selectedAgent: renderer.selectedAgent,
-        chronicleMonuments: renderer.chronicleMonuments?.minimapMarkers?.() || [],
-        harborPendingRepos,
-    });
-    markFrameTiming(frameTimer, 'minimap');
     renderer._lastRenderStats = {
         ...renderer._lastRenderStats,
         timings: finishFrameTiming(renderer, frameTimer),

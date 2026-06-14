@@ -34,7 +34,7 @@ import { Camera } from './Camera.js';
 import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
 import { BuildingSprite } from './BuildingSprite.js';
-import { Minimap } from './Minimap.js';
+
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
@@ -375,7 +375,6 @@ export class IsometricRenderer {
         this.trailRenderer = null;
         this.chronicler = null;
         this.pulsePriority = getPulsePriority();
-        this.minimap = new Minimap();
         this.agentSprites = new Map();
         this.gateTransits = new Map();
         this.gateDoorsOpen = false;
@@ -1223,18 +1222,6 @@ export class IsometricRenderer {
             }),
         );
 
-        // 4.8 — surface the village founding record as minimap parchment lore.
-        this.biographyService?.getFounding?.()?.then?.((founding) => {
-            if (!founding?.name) return;
-            const foundedAt = Number(founding.foundedAt);
-            const dateLabel = Number.isFinite(foundedAt) && foundedAt > 0
-                ? new Date(foundedAt).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-                : null;
-            this.minimap?.setFoundingLore?.(dateLabel
-                ? `Founded by ${founding.name} on ${dateLabel}`
-                : `Founded by ${founding.name}`);
-        })?.catch?.(() => {});
-
         // Cross-tab nickname refresh: when another tab persists a biography,
         // AgentBiographyService drops its cached copy first (it registered on
         // the channel earlier), so this re-read sees the fresh record.
@@ -1251,12 +1238,6 @@ export class IsometricRenderer {
             };
             this.chronicleStore.channel.addEventListener('message', this._chronicleChannelListener);
         }
-
-        // Minimap
-        this.minimap.attach(canvas.parentNode);
-        this.minimap.onNavigate = (tileX, tileY) => {
-            this.camera.centerOnTile(tileX, tileY);
-        };
 
         // Click handler for agent selection
         this._onClick = (e) => {
@@ -1314,7 +1295,6 @@ export class IsometricRenderer {
             this.camera.detach();
         }
         this._unbindMotionPreference();
-        this.minimap.detach();
         for (const unsub of this._unsubscribers) {
             unsub();
         }
@@ -1444,7 +1424,6 @@ export class IsometricRenderer {
         this.skyRenderer?.releaseCache?.();
         this.trailRenderer?.pause?.();
         this.weatherRenderer?.dispose?.();
-        this.minimap?.releaseStaticLayer?.();
     }
 
     _ensureTrailRenderer() {
@@ -7651,14 +7630,12 @@ export class IsometricRenderer {
     getCanvasBudget() {
         const sky = this.skyRenderer?.getCanvasBudget?.() || {};
         const trail = this.trailRenderer?.getCanvasBudget?.() || {};
-        const minimap = this.minimap?.getCanvasBudget?.() || {};
         const volatile = {
             terrain: canvasPixelCount(this.terrainCache),
             sky: sky.volatilePixels || 0,
             trail: trail.volatilePixels || 0,
             atmosphere: canvasPixelCount(this.atmosphereVignetteCache),
             lightGradients: canvasMapPixelCount(this.lightGradientCache),
-            minimapStatic: minimap.volatilePixels || 0,
         };
         const volatilePixels = Object.values(volatile).reduce((sum, value) => sum + value, 0);
         return {
@@ -7671,7 +7648,7 @@ export class IsometricRenderer {
             volatile,
             volatilePixels,
             retainedAssetPixels: canvasMapPixelCount(this.fantasyForestTreeCache),
-            domCanvasPixels: minimap.domPixels || 0,
+            domCanvasPixels: 0,
             cacheCounts: {
                 lightGradients: this.lightGradientCache?.size || 0,
                 fantasyForestTrees: this.fantasyForestTreeCache?.size || 0,
