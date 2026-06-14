@@ -216,6 +216,16 @@
 .dash-card--rate_limited     { border-left: 3px solid var(--cv-status-rate-limited); }
 .dash-card--errored          { border-left: 3px solid var(--cv-status-errored); }
 .dash-card--waiting_on_user  { border-left: 3px solid var(--cv-status-waiting-user); }
+.dash-card--idle.dash-card--aged { opacity: 0.7; }
+.dash-card--parent-flash {
+    border-color: rgba(245, 181, 75, 0.78);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 226, 138, 0.16),
+        inset 0 0 0 1px rgba(245, 181, 75, 0.2),
+        0 0 0 2px rgba(245, 181, 75, 0.28),
+        0 0 18px rgba(245, 181, 75, 0.18),
+        var(--cv-elev-1);
+}
 
 /* ─ Card header ─ */
 .dash-card__header {
@@ -298,6 +308,50 @@
     font-weight: bold;
     letter-spacing: 0.3px;
     white-space: nowrap;
+}
+
+.dash-card__parent-chip,
+.dash-card__activity-age {
+    border: 1px solid rgba(245, 181, 75, 0.3);
+    border-radius: 3px;
+    background: rgba(120, 72, 16, 0.22);
+    color: #f5b54b;
+    padding: 1px 6px;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
+    font-weight: bold;
+    letter-spacing: 0.3px;
+    white-space: nowrap;
+}
+
+.dash-card__parent-chip {
+    max-width: 140px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dash-card__parent-chip--clickable {
+    cursor: pointer;
+}
+
+.dash-card__parent-chip--clickable:hover,
+.dash-card__parent-chip--clickable:focus-visible {
+    border-color: rgba(245, 181, 75, 0.6);
+    background: rgba(120, 72, 16, 0.36);
+    color: var(--cv-gold-bright);
+    outline: none;
+}
+
+.dash-card__parent-chip--muted {
+    cursor: default;
+    opacity: 0.62;
+}
+
+.dash-card__activity-age {
+    color: #d8b77a;
+    background: rgba(57, 37, 24, 0.62);
+    border-color: rgba(199, 157, 76, 0.22);
+    font-weight: normal;
 }
 
 /* Team badge: colors come inline from shared/TeamColor.js per team name */
@@ -493,6 +547,20 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
+}
+
+.dash-card__tool-item-exit {
+    flex-shrink: 0;
+    margin-left: auto;
+    padding: 1px 5px;
+    border: 1px solid rgba(239, 68, 68, 0.36);
+    border-radius: 2px;
+    background: rgba(127, 29, 29, 0.24);
+    color: var(--cv-status-errored);
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
+    font-weight: bold;
+    white-space: nowrap;
 }
 
 /* ─ Tool category colors ─ */

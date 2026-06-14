@@ -5,7 +5,7 @@ import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { replaceChildren } from '../shared/DomSafe.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
-import { formatCost, formatTokens, normalizeStatus, shortenHomePath, shortProjectName } from '../shared/Formatters.js';
+import { formatCost, formatRelative, formatTokens, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentSelected } from '../shared/AgentSelection.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import {
@@ -235,6 +235,7 @@ export class DashboardRenderer {
         for (const agent of agents) {
             const status = normalizeStatus(agent.status);
             if (status === 'errored') counts.errored++;
+            else if (status === 'rate_limited' || status === 'waiting_on_user') counts.errored++;
             else if (status === 'working') counts.working++;
             else counts.idle++;
         }
@@ -272,8 +273,10 @@ export class DashboardRenderer {
                         <span class="dash-card__provider-badge"></span>
                         <span class="dash-card__model"></span>
                         <span class="dash-card__workflow-badge"></span>
+                        <span class="dash-card__parent-chip" style="display: none"></span>
                         <span class="dash-card__team-badge" style="display: none"></span>
                         <span class="dash-card__role"></span>
+                        <span class="dash-card__activity-age" style="display: none"></span>
                     </div>
                 </div>
                 <button type="button" class="dash-card__copy-id" title="Copy session ID" aria-label="Copy session ID">⧉</button>
@@ -325,6 +328,28 @@ export class DashboardRenderer {
         });
         copyBtn.addEventListener('keydown', (event) => event.stopPropagation());
 
+        const parentChip = card.querySelector('.dash-card__parent-chip');
+        const selectParent = (event) => {
+            event.stopPropagation();
+            const parentId = parentChip.dataset.parentId;
+            if (!parentId || parentChip.classList.contains('dash-card__parent-chip--muted')) return;
+            const parent = this.world.agents.get(parentId);
+            if (!parent) return;
+            emitAgentSelected(parent);
+            const parentCard = this.cards.get(parent.id);
+            if (parentCard) {
+                parentCard.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+                this._flashParentCard(parentCard);
+            }
+        };
+        parentChip.addEventListener('click', selectParent);
+        parentChip.addEventListener('keydown', (event) => {
+            event.stopPropagation();
+            if (event.key !== 'Enter' && event.key !== ' ') return;
+            event.preventDefault();
+            selectParent(event);
+        });
+
         // Click or Enter/Space to select agent
         card.addEventListener('click', () => {
             const current = this.world.agents.get(card.dataset.agentId);
@@ -341,8 +366,10 @@ export class DashboardRenderer {
             name: card.querySelector('.dash-card__name'),
             model: card.querySelector('.dash-card__model'),
             workflowBadge: card.querySelector('.dash-card__workflow-badge'),
+            parentChip: card.querySelector('.dash-card__parent-chip'),
             teamBadge: card.querySelector('.dash-card__team-badge'),
             role: card.querySelector('.dash-card__role'),
+            activityAge: card.querySelector('.dash-card__activity-age'),
             providerBadge: card.querySelector('.dash-card__provider-badge'),
             status: card.querySelector('.dash-card__status'),
             statusLabel: card.querySelector('.dash-card__status-label'),
@@ -374,6 +401,7 @@ export class DashboardRenderer {
             agent.provider || '',
             agent.role || '',
             agent.workflowName || '',
+            agent.parentSessionId || '',
             agent.teamName || '',
             status,
             agent.currentTool || '',
@@ -442,6 +470,10 @@ export class DashboardRenderer {
                 this._setStyle(refs.message, 'display', 'none');
             }
         }
+
+        this._updateParentChip(cardEl, agent);
+        this._updateActivityAge(cardEl, agent);
+
         const avatarSignature = `${agent.model || ''}|${agent.effort || ''}|${agent.provider || ''}`;
         if (cardEl._avatarCanvas && cardEl._avatarSignature !== avatarSignature) {
             cardEl._avatarSignature = avatarSignature;
@@ -459,6 +491,63 @@ export class DashboardRenderer {
         this._renderUsageFooter(cardEl, this.usageFooters.get(agent.id));
 
         this._updateStaleBadge(cardEl, agent);
+    }
+
+    _updateParentChip(cardEl, agent) {
+        const chip = cardEl._elements?.parentChip;
+        if (!chip) return;
+        const parentId = agent.parentSessionId || '';
+        if (!parentId) {
+            this._setStyle(chip, 'display', 'none');
+            delete chip.dataset.parentId;
+            chip.removeAttribute('role');
+            chip.removeAttribute('tabindex');
+            chip.classList.remove('dash-card__parent-chip--clickable', 'dash-card__parent-chip--muted');
+            return;
+        }
+
+        const parent = this.world.agents.get(parentId);
+        const label = parent?.name || 'ended';
+        this._setText(chip, `parent: ${label}`);
+        chip.dataset.parentId = parentId;
+        chip.title = parent ? `Select parent ${parent.name || parent.id}` : 'Parent session ended';
+        chip.classList.toggle('dash-card__parent-chip--clickable', !!parent);
+        chip.classList.toggle('dash-card__parent-chip--muted', !parent);
+        if (parent) {
+            chip.setAttribute('role', 'button');
+            chip.setAttribute('tabindex', '0');
+        } else {
+            chip.removeAttribute('role');
+            chip.removeAttribute('tabindex');
+        }
+        this._setStyle(chip, 'display', '');
+    }
+
+    _updateActivityAge(cardEl, agent) {
+        const chip = cardEl._elements?.activityAge;
+        const ageMs = Number(agent.activityAgeMs);
+        const isAged = Number.isFinite(ageMs) && ageMs > 15 * 60_000;
+        cardEl.classList.toggle('dash-card--aged', isAged);
+        if (!chip) return;
+
+        const relative = formatRelative(Number(agent.lastSessionActivity) || 0);
+        if (!relative) {
+            this._setStyle(chip, 'display', 'none');
+            return;
+        }
+        this._setText(chip, `last active ${relative}`);
+        this._setStyle(chip, 'display', '');
+    }
+
+    _flashParentCard(cardEl) {
+        cardEl.classList.remove('dash-card--parent-flash');
+        void cardEl.offsetWidth;
+        cardEl.classList.add('dash-card--parent-flash');
+        clearTimeout(cardEl._parentFlashTimer);
+        cardEl._parentFlashTimer = setTimeout(() => {
+            cardEl.classList.remove('dash-card--parent-flash');
+            cardEl._parentFlashTimer = null;
+        }, 900);
     }
 
     // Coalesce avatar redraws into one requestAnimationFrame per render cycle
@@ -529,11 +618,15 @@ export class DashboardRenderer {
             limit: DASHBOARD_TOOL_HISTORY_LIMIT,
             detailLength: 60,
         });
+        const exitSignature = limited
+            .map(row => (Number.isFinite(Number(row?.toolExitCode)) ? row.toolExitCode : ''))
+            .join(',');
+        const historySignature = `${signature}|${exitSignature}`;
 
-        if (this.toolHistoryRenderSignatures.get(agentId) === signature) return;
-        this.toolHistoryRenderSignatures.set(agentId, signature);
+        if (this.toolHistoryRenderSignatures.get(agentId) === historySignature) return;
+        this.toolHistoryRenderSignatures.set(agentId, historySignature);
 
-        replaceChildren(listEl, toolHistoryNodes(limited, {
+        const nodes = toolHistoryNodes(limited, {
             limit: DASHBOARD_TOOL_HISTORY_LIMIT,
             detailLength: 60,
             emptyText: i18n.t('noToolUsage'),
@@ -544,7 +637,27 @@ export class DashboardRenderer {
             nameClass: 'dash-card__tool-item-name',
             detailClass: 'dash-card__tool-item-detail',
             includeCategoryClasses: true,
-        }));
+        });
+        if (limited.length) {
+            const newestFirst = [...limited].reverse();
+            nodes.forEach((node, index) => {
+                const chip = this._toolExitChip(newestFirst[index]);
+                if (chip) node.appendChild(chip);
+            });
+        }
+        replaceChildren(listEl, nodes);
+    }
+
+    _toolExitChip(entry) {
+        const exitCode = Number(entry?.toolExitCode);
+        if (!Number.isFinite(exitCode) || exitCode === 0) return null;
+        const chip = document.createElement('span');
+        chip.className = 'dash-card__tool-item-exit';
+        chip.textContent = `exit ${exitCode}`;
+        chip.title = entry?.toolStderr
+            ? truncateText(entry.toolStderr, 200)
+            : `Exit code ${exitCode}`;
+        return chip;
     }
 
     _startDetailFetching() {
