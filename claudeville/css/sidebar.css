@@ -289,7 +289,7 @@
 
 .sidebar__project-name {
     font-family: var(--font-display);
-    font-size: 8px;
+    font-size: var(--fs-label);
     color: #b9a27f;
     letter-spacing: 1px;
     text-transform: uppercase;
@@ -300,7 +300,7 @@
 }
 
 .sidebar__project-count {
-    font-size: 9px;
+    font-size: var(--fs-label);
     color: var(--cv-gold-soft);
     background:
         linear-gradient(180deg, rgba(74, 50, 29, 0.88), rgba(29, 20, 16, 0.88));
@@ -325,14 +325,14 @@
 .sidebar__harbor-count {
     flex: 0 0 auto;
     margin-left: 6px;
-    font-size: 8px;
+    font-size: var(--fs-label);
     font-weight: bold;
 }
 
 .sidebar__harbor-empty {
     cursor: default;
     color: rgba(168, 148, 118, 0.74);
-    font-size: 8px;
+    font-size: var(--fs-label);
     font-style: italic;
 }
 
