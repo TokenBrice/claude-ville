@@ -1,4 +1,5 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const WAYPOINTS = [
     { tileX: 8, tileY: 17 },
@@ -27,6 +28,8 @@ export class Chronicler {
         this.targetIndex = 1;
         this.pauseUntil = 0;
         this.frame = 0;
+        this._pilgrimQueue = [];
+        this._unsubscribeMilestone = eventBus.on('chronicle:milestone', (record) => this._onMilestone(record));
     }
 
     setMotionScale(scale) {
@@ -36,21 +39,32 @@ export class Chronicler {
     update(dt = 16, now = Date.now()) {
         if (this.motionScale === 0) return;
         if (now < this.pauseUntil) return;
-        const target = WAYPOINTS[this.targetIndex % WAYPOINTS.length];
+        const target = this._pilgrimQueue[0] || WAYPOINTS[this.targetIndex % WAYPOINTS.length];
         const dx = target.tileX - this.tileX;
         const dy = target.tileY - this.tileY;
         const distance = Math.hypot(dx, dy);
         if (distance < 0.04) {
             this.tileX = target.tileX;
             this.tileY = target.tileY;
-            this.targetIndex = (this.targetIndex + 1) % WAYPOINTS.length;
-            this.pauseUntil = now + PAUSE_MS;
+            if (this._pilgrimQueue.length) {
+                this._pilgrimQueue.shift();
+                this.pauseUntil = now + PAUSE_MS * 0.6;
+            } else {
+                this.targetIndex = (this.targetIndex + 1) % WAYPOINTS.length;
+                this.pauseUntil = now + PAUSE_MS;
+            }
             return;
         }
         const step = SPEED_TILES_PER_FRAME * (dt / 16);
         this.tileX += dx / distance * Math.min(step, distance);
         this.tileY += dy / distance * Math.min(step, distance);
         this.frame += dt / 120;
+    }
+
+    destroy() {
+        this._unsubscribeMilestone?.();
+        this._unsubscribeMilestone = null;
+        this._pilgrimQueue.length = 0;
     }
 
     enumerateDrawables() {
@@ -102,5 +116,17 @@ export class Chronicler {
         ctx.arc(0, -20, 6, 0, Math.PI * 2);
         ctx.fill();
         ctx.restore();
+    }
+
+    _onMilestone(record) {
+        const tileX = Number(record?.tileX);
+        const tileY = Number(record?.tileY);
+        if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return;
+        const target = { tileX, tileY };
+        if (this._pilgrimQueue.length >= 2) {
+            this._pilgrimQueue.splice(1, this._pilgrimQueue.length - 1, target);
+        } else {
+            this._pilgrimQueue.push(target);
+        }
     }
 }

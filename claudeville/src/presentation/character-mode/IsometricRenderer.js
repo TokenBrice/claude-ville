@@ -92,6 +92,7 @@ const TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS = CANVAS_BUDGET.maxWorldCachePixel
 const ACTIVE_BUILDING_EMITTER_GATE = 'active-building-agents';
 const WORLD_EDGE_PAD_X = TILE_WIDTH / 2;
 const WORLD_EDGE_PAD_Y = TILE_HEIGHT / 2;
+const KEYBOARD_PAN_STEP = 90;
 const LANE_STEERING = Object.freeze({
     correctionPx: 0.55,
     denseCorrectionPx: 0.42,
@@ -381,6 +382,9 @@ export class IsometricRenderer {
         this._gateDoorsOpenUntilMs = 0;
         this._sortedSprites = [];
         this._movingSprites = [];
+        this._pairBuckets = new Map();
+        this._pairIds = new Map();
+        this._pairVisited = new Set();
         this._spritesNeedSort = true;
         this._laneTiles = new Map();
         this._staticPropDrawables = [];
@@ -435,6 +439,10 @@ export class IsometricRenderer {
             zeroDistancePairs: 0,
         };
         this._crowdStats = this._emptyCrowdStats();
+        this._crowdStatsAccumulator = 0;
+        this._lastAgentCount = 0;
+        this._ritualSyncFrame = 0;
+        this._lastRitualPoseMode = 'full';
         this.behaviorMetrics = {
             stationaryRetargets: 0,
             stationaryOverlapChecks: 0,
@@ -483,6 +491,10 @@ export class IsometricRenderer {
         this.bridgeSpans = this._buildBridgeSpans();
         this._waterTileDescriptors = this._buildWaterTileDescriptors();
         this._shoreWaterEdgeDescriptors = this._buildShoreWaterEdgeDescriptors();
+        this._visibleWaterFrame = [];
+        this._visibleShoreFrame = [];
+        this._visibleWaterCullKey = '';
+        this._visibleShoreCullKey = '';
         for (const key of this.bridgeTiles.keys()) {
             this.pathTiles.add(key);
         }
@@ -1279,6 +1291,7 @@ export class IsometricRenderer {
         this._onKeyDown = (e) => {
             if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle();
             if (e.code === 'KeyP' && e.shiftKey) this.debugOverlay.togglePathDebug();
+            this._handleWorldKeyboardCommand(e);
         };
         window.addEventListener('keydown', this._onKeyDown);
         this._onModeChanged = (mode) => this.setWorldModeActive(mode !== 'dashboard');
@@ -1315,6 +1328,7 @@ export class IsometricRenderer {
             eventBus.off('mode:changed', this._onModeChanged);
             this._onModeChanged = null;
         }
+        this.chronicler?.destroy?.();
         this._sortedSprites = [];
         this._spritesNeedSort = true;
         this.agentSprites.clear();

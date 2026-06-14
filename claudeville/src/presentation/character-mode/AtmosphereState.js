@@ -169,6 +169,11 @@ const CLOUD_LAYER_BANDS = [
     { yFrac: 0.35, parallax: 0.105, driftMul: 1.08, alphaMul: 0.38, scaleBase: 1.22 },
 ];
 
+const _cloudLayerCache = {
+    key: '',
+    layers: null,
+};
+
 function clamp(value, min = 0, max = 1) {
     return Math.max(min, Math.min(max, value));
 }
@@ -685,6 +690,14 @@ function buildCloudLayers({ date, weather, assetIds, cloudDensity, cloudAlpha })
     return out;
 }
 
+function memoizedCloudLayers(key, args) {
+    if (_cloudLayerCache.key === key && _cloudLayerCache.layers) return _cloudLayerCache.layers;
+    const layers = buildCloudLayers(args);
+    _cloudLayerCache.key = key;
+    _cloudLayerCache.layers = layers;
+    return layers;
+}
+
 function buildGrade(phase, phaseProgress, weather) {
     const light = phaseLight(phase, phaseProgress);
     const dark = 1 - light;
@@ -845,6 +858,7 @@ export function createAtmosphereSnapshot({
     const cloudBucket = Math.round((weather.cloudCover || 0) * 10);
     const precipitationBucket = Math.round((weather.precipitation || 0) * 10);
     const fogBucket = Math.round((weather.fog || 0) * 10);
+    const cloudLayerKey = `${localDateKey(effectiveDate)}|${weather.type}|${cloudBucket}`;
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
     const clockDriftPx = Math.round(dayProgress * 4096) * weather.windX;
@@ -865,7 +879,7 @@ export function createAtmosphereSnapshot({
             cloudAlpha,
             cloudDensity,
             cloudCover,
-            cloudLayers: buildCloudLayers({ date: effectiveDate, weather, assetIds, cloudDensity, cloudAlpha }),
+            cloudLayers: memoizedCloudLayers(cloudLayerKey, { date: effectiveDate, weather, assetIds, cloudDensity, cloudAlpha }),
         },
         grade: buildGrade(phase, phaseProgress, weather),
         lighting,
