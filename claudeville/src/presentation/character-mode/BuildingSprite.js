@@ -82,6 +82,13 @@ const PRESENCE_TIER_TABLE = Object.freeze({
 const OBSERVATORY_WEB_RITUAL_TOOLS = new Set(['WebFetch', 'WebSearch', 'web.run']);
 const OBSERVATORY_SPIN_RATE_RAD_PER_S = 0.9;
 const OBSERVATORY_SPIN_EASE_MS = 1500;
+const BUILDING_ACTIVITY_STATE_WEIGHT = Object.freeze({
+    idle: 0,
+    occupied: 0.42,
+    busy: 0.72,
+    full: 0.9,
+    alert: 1,
+});
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
@@ -622,10 +629,13 @@ export class BuildingSprite {
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
             this._applyReadableLabelShadow(ctx);
-            const textX = tagLeft + padX + iconSize + iconGap + (isLandmark ? 2 : 0);
+            // Pixel-font labels (Press Start 2P) blur when drawn at fractional
+            // coordinates; snap the text origin and per-row baselines to whole
+            // pixels so the harbor ledger and building labels stay crisp unzoomed.
+            const textX = Math.round(tagLeft + padX + iconSize + iconGap + (isLandmark ? 2 : 0));
             if (displaySubRows.length) {
-                const titleY = isHarborLedger ? by - 14 : by - 5;
-                const rowStartY = isHarborLedger ? by + 1 : by + 6;
+                const titleY = Math.round(isHarborLedger ? by - 14 : by - 5);
+                const rowStartY = Math.round(isHarborLedger ? by + 1 : by + 6);
                 const rowGap = isHarborLedger ? 10 : 8;
                 ctx.fillText(displayText, textX, titleY);
                 ctx.font = subFont || chosenFont;
@@ -636,10 +646,10 @@ export class BuildingSprite {
                     ctx.fillText(row.label, textX + 11, rowY);
                 });
             } else if (displaySubText) {
-                ctx.fillText(displayText, textX, by - 5);
+                ctx.fillText(displayText, textX, Math.round(by - 5));
                 ctx.fillStyle = isHarborLedger ? '#f6d384' : textColor;
                 ctx.font = subFont || chosenFont;
-                ctx.fillText(displaySubText, textX, by + 6);
+                ctx.fillText(displaySubText, textX, Math.round(by + 6));
             } else {
                 ctx.fillText(displayText, textX, by + 0.5);
             }
