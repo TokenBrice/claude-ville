@@ -65,6 +65,8 @@ export class World {
         let working = 0;
         let idle = 0;
         let waiting = 0;
+        let errored = 0;
+        let attention = 0;
 
         for (const agent of this.agents.values()) {
             totalTokens += (agent.tokens.input || 0) + (agent.tokens.output || 0);
@@ -73,9 +75,11 @@ export class World {
             if (status === AgentStatus.WORKING) working++;
             else if (status === AgentStatus.IDLE) idle++;
             else if (status === AgentStatus.WAITING) waiting++;
+            if (status === AgentStatus.ERRORED) errored++;
+            if (status === AgentStatus.RATE_LIMITED || status === AgentStatus.WAITING_ON_USER) attention++;
         }
 
-        return { totalTokens, totalCost, working, idle, waiting, total: this.agents.size };
+        return { totalTokens, totalCost, working, idle, waiting, errored, attention, total: this.agents.size };
     }
 
     get activeTime() {

@@ -55,6 +55,7 @@
    share one border + one subtle inset shadow. No nested ::before double-border. */
 .topbar__version,
 .topbar__fps,
+.topbar__conn,
 .topbar__stat,
 .topbar__badge,
 .topbar__account-tier,
@@ -100,6 +101,27 @@
 
 .topbar__fps--danger {
     color: #e0705a;
+}
+
+/* ── Connection chip (tertiary, no animation) ── */
+.topbar__conn {
+    font-size: 8px;
+    padding: 2px 6px;
+    border-radius: 1px;
+    background: rgba(36, 24, 17, 0.7);
+    letter-spacing: 1px;
+}
+
+.topbar__conn--connected {
+    color: var(--cv-status-working);
+    border-color: rgba(199, 157, 76, 0.2);
+    opacity: 0.7;
+}
+
+.topbar__conn--disconnected {
+    color: var(--cv-status-errored);
+    border-color: rgba(224, 112, 90, 0.5);
+    opacity: 1;
 }
 
 .topbar__center {
@@ -168,20 +190,38 @@
     color: var(--cv-status-working);
 }
 
+/* idle = hollow ring (shape differs from working so it doesn't rely on color alone) */
 .topbar__badge--idle .topbar__badge-dot {
-    background: var(--cv-status-idle);
+    background: transparent;
+    border: 2px solid currentColor;
 }
 
 .topbar__badge--idle {
     color: var(--cv-status-idle);
 }
 
+/* waiting = rounded square */
 .topbar__badge--waiting .topbar__badge-dot {
     background: var(--cv-status-waiting);
+    border-radius: 1px;
 }
 
 .topbar__badge--waiting {
     color: var(--cv-status-waiting);
+}
+
+/* ── Exception badges (errored/attention) — primary tier, glyph-coded ── */
+.topbar__badge--errored {
+    color: var(--cv-status-errored);
+}
+
+.topbar__badge--attention {
+    color: var(--cv-status-rate-limited);
+}
+
+.topbar__badge-glyph {
+    font-weight: bold;
+    line-height: 1;
 }
 
 /* ── Divider ── */

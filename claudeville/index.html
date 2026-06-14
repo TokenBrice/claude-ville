@@ -23,8 +23,9 @@
     <header id="topbar" class="topbar">
         <div class="topbar__left">
             <span class="topbar__logo">ClaudeVille</span>
-            <span class="topbar__version">v0.10</span>
+            <span class="topbar__version" tabindex="0" role="button">v0.10</span>
             <span id="statFps" class="topbar__fps">-- FPS</span>
+            <span id="topbarConnection" class="topbar__conn topbar__conn--connected">LIVE</span>
         </div>
         <div class="topbar__center">
             <div class="topbar__stat">
@@ -52,6 +53,8 @@
                     <span class="topbar__badge-dot"></span>
                     <span id="badgeWaiting">0</span> <span data-i18n="waiting">WAITING</span>
                 </span>
+                <span class="topbar__badge topbar__badge--errored" id="badgeErroredWrap" style="display:none"><span class="topbar__badge-glyph">!</span> <span id="badgeErrored">0</span> ERRORED</span>
+                <span class="topbar__badge topbar__badge--attention" id="badgeAttentionWrap" style="display:none"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> ATTN</span>
             </div>
             <div class="topbar__divider"></div>
             <div class="topbar__account" id="accountSection">
@@ -160,6 +163,18 @@
                         <span class="activity-panel__label" data-i18n="team">TEAM</span>
                         <span id="panelTeam" class="activity-panel__value"></span>
                     </div>
+                    <div class="activity-panel__meta-row">
+                        <span class="activity-panel__label">Mood</span>
+                        <span id="panelMood" class="activity-panel__value">-</span>
+                    </div>
+                    <div class="activity-panel__meta-row">
+                        <span class="activity-panel__label">Last active</span>
+                        <span id="panelLastActive" class="activity-panel__value">-</span>
+                    </div>
+                    <div class="activity-panel__meta-row" id="panelModeRow" style="display: none;">
+                        <span class="activity-panel__label">Mode</span>
+                        <span id="panelMode" class="activity-panel__value"></span>
+                    </div>
                 </div>
                 <div class="activity-panel__section">
                     <div class="activity-panel__section-title">Token Usage</div>
@@ -183,6 +198,14 @@
                             <div class="activity-panel__token-cell">
                                 <span class="activity-panel__token-cell-label">Cache Read</span>
                                 <span id="panelCacheRead" class="activity-panel__token-cell-value">0</span>
+                            </div>
+                            <div class="activity-panel__token-cell">
+                                <span class="activity-panel__token-cell-label">Cache Write</span>
+                                <span id="panelCacheCreate" class="activity-panel__token-cell-value">0</span>
+                            </div>
+                            <div class="activity-panel__token-cell">
+                                <span class="activity-panel__token-cell-label">Cache Hit</span>
+                                <span id="panelCacheHit" class="activity-panel__token-cell-value">-</span>
                             </div>
                             <div class="activity-panel__token-cell">
                                 <span class="activity-panel__token-cell-label">Turns</span>

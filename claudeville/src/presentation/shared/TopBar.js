@@ -13,6 +13,11 @@ export class TopBar {
             working: document.getElementById('badgeWorking'),
             idle: document.getElementById('badgeIdle'),
             waiting: document.getElementById('badgeWaiting'),
+            badgeErrored: document.getElementById('badgeErrored'),
+            badgeAttention: document.getElementById('badgeAttention'),
+            erroredWrap: document.getElementById('badgeErroredWrap'),
+            attentionWrap: document.getElementById('badgeAttentionWrap'),
+            connection: document.getElementById('topbarConnection'),
             version: document.querySelector('.topbar__version'),
             // Account & Quota
             accountTier: document.getElementById('accountTier'),
@@ -37,10 +42,22 @@ export class TopBar {
         this._onFps = (fps) => this.renderFps(fps);
         eventBus.on('fps:updated', this._onFps);
 
+        this._onWsConnected = () => this._setConnection(true);
+        this._onWsDisconnected = () => this._setConnection(false);
+        eventBus.on('ws:connected', this._onWsConnected);
+        eventBus.on('ws:disconnected', this._onWsDisconnected);
+
         if (this.modal && this.els.version) {
             this.els.version.title = 'View changelog';
             this._onVersionClick = () => this._openChangelog();
             this.els.version.addEventListener('click', this._onVersionClick);
+            this._onVersionKeydown = (e) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                    if (e.key === ' ') e.preventDefault();
+                    this._openChangelog();
+                }
+            };
+            this.els.version.addEventListener('keydown', this._onVersionKeydown);
         }
 
         this._startTimer();
@@ -55,6 +72,18 @@ export class TopBar {
         this.els.working.textContent = stats.working;
         this.els.idle.textContent = stats.idle;
         this.els.waiting.textContent = stats.waiting;
+
+        this.els.badgeErrored.textContent = stats.errored;
+        this.els.erroredWrap.style.display = stats.errored > 0 ? '' : 'none';
+        this.els.badgeAttention.textContent = stats.attention;
+        this.els.attentionWrap.style.display = stats.attention > 0 ? '' : 'none';
+    }
+
+    _setConnection(connected) {
+        if (!this.els.connection) return;
+        this.els.connection.textContent = connected ? 'LIVE' : 'OFFLINE';
+        this.els.connection.classList.toggle('topbar__conn--connected', connected);
+        this.els.connection.classList.toggle('topbar__conn--disconnected', !connected);
     }
 
     // fps is a number while the World render loop runs, null when it stops.
@@ -231,8 +260,13 @@ export class TopBar {
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('usage:updated', this._onUsage);
         eventBus.off('fps:updated', this._onFps);
+        eventBus.off('ws:connected', this._onWsConnected);
+        eventBus.off('ws:disconnected', this._onWsDisconnected);
         if (this._onVersionClick && this.els.version) {
             this.els.version.removeEventListener('click', this._onVersionClick);
+        }
+        if (this._onVersionKeydown && this.els.version) {
+            this.els.version.removeEventListener('keydown', this._onVersionKeydown);
         }
     }
 }
