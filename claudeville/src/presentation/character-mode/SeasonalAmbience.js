@@ -20,12 +20,12 @@
 // supplied (x, y) coordinates are canvas-space pixels.
 //
 // Particle types per season:
-//   winter (Dec–Feb): 'firefly' (white-leaning proxy for snow)
+//   winter (Dec–Feb): 'snow'
 //   spring (Mar–May): 'leaf'    (proxy for cherry petals; no color override)
 //   summer (Jun–Aug): 'firefly'
 //   autumn (Sep–Nov): 'leaf'
 //
-// We pass `type: 'leaf'` / `'firefly'` directly. ParticleSystem supports
+// We pass `type: 'snow'` / `'leaf'` / `'firefly'` directly. ParticleSystem supports
 // per-spawn overrides, but the seasonal palettes stay restrained until a
 // stronger art direction lands.
 
@@ -38,7 +38,7 @@ const FALLBACK_SCATTER_H = 720;
 // fallback can't go through spawn(). Each season carries a representative
 // color + size pair used by the direct-canvas drawStatic() pass.
 const SEASONS = {
-    winter: { type: 'firefly', label: 'snow',        staticColor: '#fff1a8', staticSize: 2 },
+    winter: { type: 'snow',    label: 'snow',        staticColor: '#d0eaff', staticSize: 2 },
     spring: { type: 'leaf',    label: 'cherryPetal', staticColor: '#8fbf58', staticSize: 2 },
     summer: { type: 'firefly', label: 'firefly',     staticColor: '#fff1a8', staticSize: 2 },
     autumn: { type: 'leaf',    label: 'leaf',        staticColor: '#b8914b', staticSize: 2 },

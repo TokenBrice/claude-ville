@@ -88,6 +88,14 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'random',
     },
+    snow: {
+        colors: ['#e8f4ff', '#cce8ff', '#ffffff'],
+        size: [1, 2],
+        life: [60, 120],
+        speed: [0.06, 0.18],
+        gravity: false,
+        direction: 'down',
+    },
     leaf: {
         colors: ['#8fbf58', '#b8914b', '#6f8f3e'],
         size: [1.4, 3],

@@ -8,7 +8,7 @@ import { eventBus } from '../domain/events/DomainEvent.js';
 const DISTRICT_BY_TYPE = {
     feat: 'forge',
     fix: 'taskboard',
-    refactor: 'archive',
+    refactor: 'forge',
     perf: 'mine',
 };
 
