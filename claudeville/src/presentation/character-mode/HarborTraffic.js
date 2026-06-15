@@ -133,6 +133,27 @@ const QUAY_GROUPS = [
     { name: 'Outer Quay', berthIndexes: [9, 10, 11] },
 ];
 
+// Home Waters — persistent per-repo anchorages. Each active repo (a repo with
+// a live agent, or with docked commit ships) gets a stable buoy + crest +
+// tinted-water marker in the glanceable harbor basin, so the harbor reads as a
+// map of which projects are alive. Slots sit in open water among the squad
+// anchorages where commit ships dock. Repos beyond the pool share an overflow
+// chip (no silent drop).
+const REPO_ANCHORAGE_SLOTS = Object.freeze([
+    { tileX: 35.6, tileY: 22.2 },
+    { tileX: 37.4, tileY: 20.6 },
+    { tileX: 37.8, tileY: 17.6 },
+    { tileX: 38.1, tileY: 14.2 },
+    { tileX: 38.6, tileY: 16.4 },
+    { tileX: 38.4, tileY: 21.4 },
+    { tileX: 37.0, tileY: 19.0 },
+    { tileX: 36.2, tileY: 21.4 },
+]);
+const REPO_ANCHORAGE_OVERFLOW_TILE = Object.freeze({ tileX: 38.5, tileY: 23.6 });
+const MAX_REPO_ANCHORAGES = REPO_ANCHORAGE_SLOTS.length;
+// An agent's repo stays "home" (a lit anchorage) this long after its last update.
+const REPO_ANCHORAGE_ACTIVE_MS = 5 * 60 * 1000;
+
 const SEA_LANES = [
     [
         { tileX: 36.2, tileY: 21.1 },
@@ -2308,7 +2329,27 @@ export class HarborTraffic {
         this._observeStorageTransfers(dockLayout, now);
         this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaries(dockLayout));
         this._observeHarborCrates(agents, events, now);
+        this._observeRepoAnchorages(agents, now);
         this._observePeakDensity(now);
+    }
+
+    /**
+     * Track which repos are currently "home" — those with a live agent. The
+     * set is merged with docked-ship repos at draw time so a repo that just
+     * shipped a commit keeps its anchorage even after its agent departs.
+     */
+    _observeRepoAnchorages(agents, now = Date.now()) {
+        const active = this._activeRepoAnchorages || (this._activeRepoAnchorages = new Map());
+        for (const agent of agents || []) {
+            const project = agent?.projectPath || agent?.project;
+            if (!project) continue;
+            const profile = repoProfile(project);
+            if (!profile?.key) continue;
+            active.set(profile.key, { project, profile, lastActive: now });
+        }
+        for (const [key, entry] of active) {
+            if (now - (entry.lastActive || 0) > REPO_ANCHORAGE_ACTIVE_MS) active.delete(key);
+        }
     }
 
     getPendingRepoSummaries() {
@@ -2765,6 +2806,11 @@ export class HarborTraffic {
         const buoyDrawable = this._lagoonChannelBuoyDrawable(now);
         if (buoyDrawable) visible.push(buoyDrawable);
 
+        // Home Waters — persistent per-repo anchorages.
+        for (const drawable of this._repoAnchorageDrawables(repoSummaries, now)) {
+            visible.push(drawable);
+        }
+
         const sorted = visible.sort((a, b) => a.sortY - b.sortY);
         // 3.6 — hover lore: snapshot ship positions in draw order for hit testing.
         this._shipHitEntries = sorted
@@ -3081,6 +3127,120 @@ export class HarborTraffic {
         return drawables;
     }
 
+    /**
+     * Home Waters anchorages: one persistent buoy per active repo, allocated a
+     * stable slot in the harbor basin. Live-agent repos and docked-ship repos
+     * are merged; the busiest get their own anchorage, the rest fold into an
+     * overflow chip.
+     */
+    _repoAnchorageDrawables(repoSummaries = new Map(), now = Date.now()) {
+        const active = this._activeRepoAnchorages || new Map();
+        const repos = new Map();
+        for (const [key, entry] of active) {
+            repos.set(key, {
+                key,
+                project: entry.project,
+                profile: entry.profile,
+                docked: 0,
+                failed: 0,
+                lastActive: entry.lastActive || 0,
+                live: true,
+            });
+        }
+        for (const summary of repoSummaries.values()) {
+            const profile = repoProfile(summary.project);
+            const key = profile.key;
+            const existing = repos.get(key) || {
+                key,
+                project: summary.project,
+                profile,
+                docked: 0,
+                failed: 0,
+                lastActive: 0,
+                live: false,
+            };
+            existing.docked += Number(summary.count) || 0;
+            existing.failed += Number(summary.failedCount) || 0;
+            existing.lastActive = Math.max(existing.lastActive, summary.latestEventTime || 0);
+            repos.set(key, existing);
+        }
+        const slots = this._repoAnchorageSlots || (this._repoAnchorageSlots = new Map());
+        if (!repos.size) {
+            slots.clear();
+            return [];
+        }
+        const ordered = [...repos.values()].sort((a, b) =>
+            (b.docked - a.docked)
+            || (Number(b.live) - Number(a.live))
+            || (b.lastActive - a.lastActive)
+            || a.profile.name.localeCompare(b.profile.name));
+        const shown = ordered.slice(0, MAX_REPO_ANCHORAGES);
+        const overflow = ordered.length - shown.length;
+
+        // Keep each repo on its previous slot when possible so anchorages do
+        // not shuffle between frames; fill gaps in slot order otherwise.
+        const used = new Set();
+        for (const repo of shown) {
+            const prev = slots.get(repo.key);
+            if (prev != null && prev < REPO_ANCHORAGE_SLOTS.length && !used.has(prev)) {
+                repo.slot = prev;
+                used.add(prev);
+            }
+        }
+        let nextSlot = 0;
+        for (const repo of shown) {
+            if (repo.slot != null) continue;
+            while (nextSlot < REPO_ANCHORAGE_SLOTS.length && used.has(nextSlot)) nextSlot++;
+            if (nextSlot >= REPO_ANCHORAGE_SLOTS.length) break;
+            repo.slot = nextSlot;
+            used.add(nextSlot);
+            nextSlot++;
+        }
+        slots.clear();
+        for (const repo of shown) {
+            if (repo.slot != null) slots.set(repo.key, repo.slot);
+        }
+
+        const drawables = [];
+        for (const repo of shown) {
+            const tile = REPO_ANCHORAGE_SLOTS[repo.slot];
+            if (!tile) continue;
+            const pos = toWorld(tile.tileX, tile.tileY);
+            const lively = repo.docked > 0 || (now - repo.lastActive) < REPO_ANCHORAGE_ACTIVE_MS;
+            drawables.push({
+                kind: 'harbor-traffic',
+                sortY: pos.y - 2,
+                payload: {
+                    type: 'repo-anchorage',
+                    project: repo.project,
+                    profile: repo.profile,
+                    repoName: repo.profile.shortName,
+                    docked: repo.docked,
+                    failed: repo.failed,
+                    live: repo.live,
+                    lively,
+                    x: pos.x,
+                    y: pos.y,
+                },
+            });
+        }
+        if (overflow > 0) {
+            const pos = toWorld(REPO_ANCHORAGE_OVERFLOW_TILE.tileX, REPO_ANCHORAGE_OVERFLOW_TILE.tileY);
+            drawables.push({
+                kind: 'harbor-traffic',
+                sortY: pos.y - 2,
+                payload: {
+                    type: 'repo-anchorage',
+                    overflowMore: overflow,
+                    repoName: `+${overflow}`,
+                    x: pos.x,
+                    y: pos.y,
+                },
+            });
+        }
+        return drawables;
+    }
+
     activeFinaleEffects(now = Date.now()) {
         const effects = [];
         for (const batch of this.state.batches.values()) {
@@ -3184,6 +3344,10 @@ export class HarborTraffic {
         }
         if (drawable.payload.type === 'repo-quay') {
             this._drawRepoQuayMarker(ctx, drawable.payload, zoom);
+            return;
+        }
+        if (drawable.payload.type === 'repo-anchorage') {
+            this._drawRepoAnchorage(ctx, drawable.payload, zoom);
             return;
         }
         if (drawable.payload.type === 'commit-lagoon-sign') {
@@ -4627,6 +4791,94 @@ export class HarborTraffic {
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         this._fillReadableText(ctx, label, Math.round(x + 20 * s), Math.round(y + height / 2 + 0.5), Math.max(24, width - 24 * s));
+        ctx.restore();
+    }
+
+    _drawRepoAnchorage(ctx, payload, zoom) {
+        const s = 1 / Math.max(1, zoom || 1);
+        const x = payload.x;
+        const y = payload.y;
+
+        // Overflow chip — repos that did not get their own anchorage slot.
+        if (payload.overflowMore) {
+            const text = payload.repoName || `+${payload.overflowMore}`;
+            const textSize = Math.max(7, Math.round(8 * s));
+            const w = Math.max(30 * s, text.length * textSize * 0.62 + 12 * s);
+            const h = 13 * s;
+            ctx.save();
+            ctx.globalAlpha = 0.78;
+            ctx.fillStyle = 'rgba(20, 30, 34, 0.82)';
+            ctx.fillRect(Math.round(x - w / 2), Math.round(y - h / 2), Math.round(w), Math.round(h));
+            ctx.strokeStyle = 'rgba(159, 185, 181, 0.7)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(Math.round(x - w / 2) + 0.5, Math.round(y - h / 2) + 0.5, Math.round(w) - 1, Math.round(h) - 1);
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = '#cdd9d6';
+            ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            this._fillReadableText(ctx, text, Math.round(x), Math.round(y + 0.5), w - 6 * s);
+            ctx.restore();
+            return;
+        }
+
+        const profile = payload.profile || repoProfile(payload.project);
+        const lively = payload.lively !== false;
+        const failed = Number(payload.failed || 0) > 0;
+
+        ctx.save();
+        // Tinted water patch — the repo's "sea area".
+        const rx = (lively ? 17 : 13) * s;
+        const ry = rx * 0.5;
+        const grad = ctx.createRadialGradient(x, y, 0, x, y, rx);
+        grad.addColorStop(0, profile.glow || 'rgba(122, 200, 216, 0.32)');
+        grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.globalAlpha = lively ? 0.85 : 0.45;
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        // Mooring buoy post + pennant in the repo accent.
+        const postH = 13 * s;
+        const topY = y - postH;
+        ctx.strokeStyle = 'rgba(24, 16, 10, 0.7)';
+        ctx.lineWidth = Math.max(1, 1.4 * s);
+        ctx.beginPath();
+        ctx.moveTo(x, y);
+        ctx.lineTo(x, topY);
+        ctx.stroke();
+        ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
+        ctx.beginPath();
+        ctx.moveTo(x, topY);
+        ctx.lineTo(x + 9 * s, topY + 3 * s);
+        ctx.lineTo(x, topY + 6 * s);
+        ctx.closePath();
+        ctx.fill();
+
+        // Crest float at the waterline.
+        this._drawRepoLabelIcon(ctx, x, y - 1.5 * s, (lively ? 9 : 8) * s, profile);
+
+        // Name + docked count label.
+        const name = payload.repoName || profile.shortName || 'repo';
+        const label = payload.docked > 0 ? `${name} (${payload.docked})` : name;
+        const textSize = Math.max(7, Math.round(8 * s));
+        const labelY = y + 9 * s;
+        const w = Math.max(40 * s, label.length * textSize * 0.6 + 12 * s);
+        const h = 13 * s;
+        ctx.globalAlpha = lively ? 0.95 : 0.7;
+        ctx.fillStyle = profile.panel || 'rgba(20, 30, 34, 0.85)';
+        ctx.fillRect(Math.round(x - w / 2), Math.round(labelY), Math.round(w), Math.round(h));
+        ctx.strokeStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.panelBorder || profile.accent);
+        ctx.lineWidth = 1;
+        ctx.strokeRect(Math.round(x - w / 2) + 0.5, Math.round(labelY) + 0.5, Math.round(w) - 1, Math.round(h) - 1);
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = lively ? (profile.labelText || profile.accent) : 'rgba(180, 196, 192, 0.78)';
+        ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        this._fillReadableText(ctx, label, Math.round(x), Math.round(labelY + h / 2 + 0.5), w - 8 * s);
         ctx.restore();
     }
 

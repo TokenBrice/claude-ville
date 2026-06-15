@@ -1,5 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { drawCouncilRings, drawFamilyTethers, drawTalkArcs } from './CouncilRing.js';
+import { drawCouncilRings, drawFamilyTethers, drawAllyTethers, drawTalkArcs } from './CouncilRing.js';
 import { drawCrowdClusterAuras, drawCrowdClusterBadges } from './CrowdClusterOverlay.js';
 import {
     appendDepthSortedDrawables,
@@ -88,6 +88,13 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawFamilyTethers(ctx, {
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,
+        zoom: renderer.camera.zoom,
+        now: perfNow,
+        motionScale: renderer.motionScale,
+        lighting: atmosphere?.lighting,
+    });
+    drawAllyTethers(ctx, {
+        pairs: renderer._allyTetherPairs,
         zoom: renderer.camera.zoom,
         now: perfNow,
         motionScale: renderer.motionScale,

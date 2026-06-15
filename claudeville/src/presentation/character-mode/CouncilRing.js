@@ -254,6 +254,55 @@ export function drawFamilyTethers(ctx, {
     }
 }
 
+/**
+ * Warm tethers between idle allies that the village has long paired up.
+ * Unlike family tethers (which read the live relationship snapshot), this
+ * takes a precomputed list of `{ a, b }` sprite pairs from the renderer's
+ * affinity proximity pass, so no per-frame affinity scan happens here.
+ */
+export function drawAllyTethers(ctx, {
+    pairs,
+    zoom = 1,
+    now = performance.now(),
+    motionScale = 1,
+    lighting = null,
+} = {}) {
+    if (!ctx || !Array.isArray(pairs) || !pairs.length) return;
+
+    const boost = lightBoost(lighting);
+    const pulse = motionScale === 0 ? 1 : 0.78 + 0.22 * Math.sin(now * 0.0026);
+    const alpha = Math.min(0.26, Math.max(0.16, 0.2 * boost * pulse));
+    const stroke = rgba(THEME.ally || '#f0b27a', alpha);
+
+    for (const pair of pairs) {
+        const a = pair?.a;
+        const b = pair?.b;
+        if (!a || !b || a === b) continue;
+        if (a.isArrivalPending?.() || b.isArrivalPending?.()) continue;
+
+        const start = { x: a.x, y: a.y - 4 };
+        const end = { x: b.x, y: b.y - 4 };
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < 1) continue;
+        const control = {
+            x: (start.x + end.x) / 2,
+            y: (start.y + end.y) / 2 - Math.min(22, dist * 0.16),
+        };
+
+        ctx.save();
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = 1.2 / (zoom || 1);
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
+        ctx.stroke();
+        ctx.restore();
+    }
+}
+
 function prioritizedChatPairs(pairs, agentSprites) {
     return [...(pairs || [])]
         .sort((a, b) => {

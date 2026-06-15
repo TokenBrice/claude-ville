@@ -20,6 +20,7 @@ const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
 const PANEL_INTER_AGENT_MESSAGE_LIMIT = 5;
 const PANEL_GIT_EVENT_LIMIT = 6;
+const PANEL_RELATIONSHIP_LIMIT = 6;
 const BUILDING_OCCUPANT_REFRESH_INTERVAL = 5000;
 const JOURNEY_BREADCRUMB_LIMIT = 5;
 const BUILDING_ROUTE_HINT_LIMIT = 3;
@@ -69,7 +70,7 @@ const REASON_LABELS = Object.freeze({
 });
 
 export class ActivityPanel {
-    constructor({ world = null, renderer = null, harborTraffic = null, biographyService = null } = {}) {
+    constructor({ world = null, renderer = null, harborTraffic = null, biographyService = null, affinityService = null } = {}) {
         const getterFor = (value) => (typeof value === 'function' ? value : () => value);
         this.panelEl = document.getElementById('activityPanel');
         this.closeBtn = document.getElementById('panelClose');
@@ -78,6 +79,7 @@ export class ActivityPanel {
             renderer: getterFor(renderer),
             harborTraffic: getterFor(harborTraffic),
             biographyService: getterFor(biographyService),
+            affinityService: getterFor(affinityService),
         };
         this.currentAgent = null;
         this._mode = null;
@@ -128,6 +130,8 @@ export class ActivityPanel {
         this._chronicleSectionEl = null;
         this._chronicleBodyEl = null;
         this._chronicleFetchSeq = 0;
+        this._relationshipsSectionEl = null;
+        this._relationshipsBodyEl = null;
         this._messageEdgesSectionEl = null;
         this._messageEdgesBodyEl = null;
         this._pinStripEl = null;
@@ -140,6 +144,7 @@ export class ActivityPanel {
         this._ensureJourneySection();
         this._ensureHarborLogSection();
         this._ensureChronicleSection();
+        this._ensureRelationshipsSection();
         this._ensureMessageEdgesSection();
         // Sections that belong to agent mode and must be hidden when a building is selected.
         for (const node of this.panelEl?.querySelectorAll('.activity-panel__meta, .activity-panel__section') || []) {
@@ -176,6 +181,7 @@ export class ActivityPanel {
                 this._updateHarborLog(agent);
                 this._updateMessageEdges(agent);
                 this._fetchAndRenderChronicle(agent);
+                this._renderRelationships(agent);
                 this._updatePinToggle(agent);
             }
         };
@@ -257,6 +263,7 @@ export class ActivityPanel {
             tokenUsage: '',
             harborLog: '',
             chronicle: '',
+            relationships: '',
             messageEdges: '',
             pins: '',
             buildingSignal: '',
@@ -481,6 +488,7 @@ export class ActivityPanel {
         this._updateHarborLog(agent);
         this._updateMessageEdges(agent);
         this._fetchAndRenderChronicle(agent);
+        this._renderRelationships(agent);
         this._updatePinToggle(agent);
         this._renderPinCompare();
         this._fetchPinnedDetails();
@@ -987,6 +995,120 @@ export class ActivityPanel {
         return milestones
             .filter(milestone => milestone?.id && milestone.id !== 'first-seen')
             .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0] || null;
+    }
+
+    _ensureRelationshipsSection() {
+        if (this._relationshipsSectionEl && this._relationshipsBodyEl) return;
+        const body = el('div', { className: 'activity-panel__rel-list' });
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Kinship' }),
+            body,
+        ]);
+        this._insertAgentSectionAfterMeta(section);
+        this._relationshipsSectionEl = section;
+        this._relationshipsBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    /**
+     * Surface the affinity the village already tracks: the selected agent's
+     * allies and acquaintances (strangers omitted), warmest first. Reads the
+     * in-memory affinity snapshot synchronously — no fetch needed.
+     */
+    _renderRelationships(agent) {
+        if (!this._relationshipsSectionEl || !this._relationshipsBodyEl || !agent) return;
+        const service = this._getAffinityService();
+        const identityKey = this._biographyIdentityKey(agent);
+        const snapshot = service?.getSnapshot?.();
+        if (!service || !identityKey || !snapshot?.size) {
+            this._relationshipsSectionEl.style.display = 'none';
+            this._renderSignatures.relationships = '';
+            return;
+        }
+        const now = Date.now();
+        const bonds = [];
+        for (const affinity of snapshot.values()) {
+            if (!affinity?.involves?.(identityKey)) continue;
+            const tier = affinity.tier?.(now);
+            if (tier !== 'allies' && tier !== 'acquaintances') continue;
+            const otherKey = affinity.otherIdentity?.(identityKey);
+            if (!otherKey) continue;
+            bonds.push({
+                otherKey,
+                tier,
+                score: affinity.decayedScore?.(now) || 0,
+                meetings: affinity.meetings || 0,
+                chats: affinity.chats || 0,
+                sharedCommits: affinity.sharedCommits || 0,
+                lastInteractionAt: affinity.lastInteractionAt || 0,
+            });
+        }
+        if (!bonds.length) {
+            this._relationshipsSectionEl.style.display = 'none';
+            this._renderSignatures.relationships = '';
+            return;
+        }
+        const tierRank = { allies: 0, acquaintances: 1 };
+        bonds.sort((a, b) => (tierRank[a.tier] - tierRank[b.tier]) || (b.score - a.score));
+        const shown = bonds.slice(0, PANEL_RELATIONSHIP_LIMIT);
+        const nameByKey = this._identityDisplayNameMap();
+        for (const bond of shown) {
+            bond.name = nameByKey.get(bond.otherKey) || this._identityKeyDisplayName(bond.otherKey);
+        }
+        const overflow = bonds.length - shown.length;
+        const signature = shown
+            .map(b => `${b.otherKey}:${b.tier}:${b.meetings}:${b.chats}:${b.sharedCommits}:${b.lastInteractionAt}`)
+            .join('|') + `+${overflow}`;
+        this._relationshipsSectionEl.style.display = '';
+        if (signature === this._renderSignatures.relationships) return;
+        this._renderSignatures.relationships = signature;
+        const rows = shown.map(bond => this._relationshipRow(bond, now));
+        if (overflow > 0) {
+            rows.push(el('div', { className: 'activity-panel__rel-more', text: `+${overflow} more` }));
+        }
+        replaceChildren(this._relationshipsBodyEl, rows);
+    }
+
+    _relationshipRow(bond, now = Date.now()) {
+        const bits = [];
+        if (bond.meetings) bits.push(`${bond.meetings} met`);
+        if (bond.chats) bits.push(`${bond.chats} chats`);
+        if (bond.sharedCommits) bits.push(`${bond.sharedCommits} commits`);
+        const ago = formatRelative(bond.lastInteractionAt, now);
+        if (ago) bits.push(ago);
+        const tierLabel = bond.tier === 'allies' ? 'ally' : 'acquaintance';
+        return el('div', { className: ['activity-panel__rel-row', `activity-panel__rel-row--${bond.tier}`] }, [
+            el('div', { className: 'activity-panel__rel-head' }, [
+                el('span', { className: `activity-panel__rel-dot activity-panel__rel-dot--${bond.tier}` }),
+                el('span', { className: 'activity-panel__rel-name', text: bond.name }),
+                el('span', { className: `activity-panel__rel-tier activity-panel__rel-tier--${bond.tier}`, text: tierLabel }),
+            ]),
+            el('div', { className: 'activity-panel__rel-meta', text: bits.join(' · ') }),
+        ]);
+    }
+
+    /** Map live agents' biography identity keys to a display name, to resolve the other party. */
+    _identityDisplayNameMap() {
+        const map = new Map();
+        const agents = this._getWorld()?.agents;
+        if (agents?.values) {
+            for (const agent of agents.values()) {
+                const key = this._biographyIdentityKey(agent);
+                if (!key || map.has(key)) continue;
+                const name = agent.agentName || agent.name || agent.displayName || agent.id;
+                if (name) map.set(key, String(name));
+            }
+        }
+        return map;
+    }
+
+    /** Fallback display name parsed from an identity key (`named:provider:slug`). */
+    _identityKeyDisplayName(identityKey) {
+        const slug = String(identityKey || '').split(':').at(-1) || 'someone';
+        return slug.replace(/-/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
     }
 
     _ensureMessageEdgesSection() {
@@ -2363,6 +2485,10 @@ export class ActivityPanel {
 
     _getBiographyService() {
         return this._dependencies.biographyService?.() || null;
+    }
+
+    _getAffinityService() {
+        return this._dependencies.affinityService?.() || null;
     }
 
     _biographyIdentityKey(agent) {

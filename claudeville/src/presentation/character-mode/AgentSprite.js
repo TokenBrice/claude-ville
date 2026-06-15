@@ -2429,6 +2429,22 @@ export class AgentSprite {
         ctx.ellipse(0, 2, 17, 5, 0, 0, Math.PI * 2);
         ctx.fill();
 
+        // Home colors — a faint repo-tinted ring ties each villager on the
+        // mainland to its offshore anchorage. Drawn below the status glow so it
+        // never masks state.
+        const repoProject = this.agent?.projectPath || this.agent?.project;
+        if (repoProject) {
+            const repo = this._repoGroundProfile(repoProject);
+            ctx.save();
+            ctx.globalAlpha = 0.28;
+            ctx.strokeStyle = repo.accent;
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.ellipse(0, 3, 19, 6, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+        }
+
         if (visual) {
             const isWorking = this.agent?.status === AgentStatus.WORKING;
             const isWaiting = this.agent?.status === AgentStatus.WAITING;
@@ -3886,6 +3902,15 @@ export class AgentSprite {
     _repoNameTagProfile() {
         const project = this.agent?.projectPath || this.agent?.project || this.agent?.teamName || this.agent?.provider || 'unknown';
         return repoProfile(project);
+    }
+
+    /** Repo color profile for the home-color ground ring, cached per projectPath. */
+    _repoGroundProfile(project) {
+        if (this._repoGroundProfileKey !== project) {
+            this._repoGroundProfileKey = project;
+            this._repoGroundProfileCache = repoProfile(project);
+        }
+        return this._repoGroundProfileCache;
     }
 
     // Returns the team accent (#rrggbb) used as the secondary trim/sash swap

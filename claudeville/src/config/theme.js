@@ -8,6 +8,7 @@ export const THEME = {
     idle: '#86bfe0',
     waiting: '#df8c3f',
     error: '#ef4444',
+    ally: '#f0b27a',
     border: 'rgba(214, 169, 81, 0.48)',
     grass: ['#2c542d', '#315b31', '#386337', '#335a2f', '#3b6838'],
     path: ['#755f3c', '#866d45', '#987f54', '#624d32'],

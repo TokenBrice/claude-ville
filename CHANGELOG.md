@@ -2,6 +2,23 @@
 
 ---
 
+## v0.16.0 — *Home Waters* · Jun 15, 2026
+
+The village gains a memory of its **people** and its **place**: the bonds it has always quietly tracked become visible, and your repositories surface as named anchorages out in the harbor.
+
+### Kith — relationships made visible
+
+- **Kinship panel** — selecting a villager now shows a *Kinship* section listing their allies and acquaintances, warmest first: each bond shows a tier badge, the meetings / chats / shared-commits behind it, and how long since they last worked together. This surfaces the affinity the village already computed (and persisted across sessions) but never displayed.
+- **Ally tethers** — when long-standing allies idle near one another in the world, a warm thread is drawn between them, the visible counterpart to the parent/child family tethers.
+
+### Home — repos as harbor anchorages
+
+- **Repo anchorages** — every active repository (one with a live agent, or with commit ships in the harbor) now gets a persistent **anchorage** in the harbor sea: a crest buoy in the repo's signature colour, a name label, and a softly tinted patch of water. Busy repos read as lit and lively; quiet ones dim. The harbor becomes a glanceable map of which projects are alive.
+- **Overflow anchorage** — when more repos are active than the harbor has slots, the remainder fold into a single "+N" chip rather than being dropped silently.
+- **House colours** — each villager on the mainland wears a faint ground ring in their repo's colour, tying the agents at the forge, archive, and mine back to their home waters offshore. Repo identity is a layer *over* the activity metaphor — agents still walk to buildings by what they are doing.
+
+---
+
 ## v0.15.0 — *The Living Village* · Jun 15, 2026
 
 A two-part release that makes Claudeville cohere *and* come alive: every landmark rebuilt to one art standard, then the world between them filled with flora, fauna, and a real coastline.

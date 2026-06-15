@@ -634,6 +634,93 @@
     white-space: nowrap;
 }
 
+/* ─── Kinship (relationships) ─────────────────────── */
+
+.activity-panel__rel-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.activity-panel__rel-row {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 5px 8px;
+    background: var(--cv-surface-3);
+    border: 1px solid rgba(214, 169, 81, 0.18);
+    border-radius: 2px;
+    border-left: 3px solid var(--cv-text-gray);
+}
+
+.activity-panel__rel-row--allies {
+    border-left-color: #f0b27a;
+}
+
+.activity-panel__rel-row--acquaintances {
+    border-left-color: var(--cv-blue-soft);
+}
+
+.activity-panel__rel-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.activity-panel__rel-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--cv-text-gray);
+}
+
+.activity-panel__rel-dot--allies {
+    background: #f0b27a;
+    box-shadow: 0 0 5px rgba(240, 178, 122, 0.6);
+}
+
+.activity-panel__rel-dot--acquaintances {
+    background: var(--cv-blue-soft);
+}
+
+.activity-panel__rel-name {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--fs-data);
+    color: var(--cv-gold);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.activity-panel__rel-tier {
+    flex-shrink: 0;
+    font-family: var(--font-display);
+    font-size: var(--fs-label);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: var(--cv-text-muted);
+}
+
+.activity-panel__rel-tier--allies {
+    color: #f0b27a;
+}
+
+.activity-panel__rel-meta {
+    padding-left: 13px;
+    font-size: var(--fs-label);
+    color: var(--cv-text-muted);
+}
+
+.activity-panel__rel-more {
+    padding-top: 2px;
+    font-size: var(--fs-label);
+    color: var(--cv-text-muted);
+    text-align: center;
+}
+
 .activity-panel__harbor-dot {
     width: 6px;
     height: 6px;

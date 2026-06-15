@@ -375,6 +375,8 @@ export class IsometricRenderer {
         this.affinityService = options.affinityService || null;
         this._nicknames = new Map(); // identityKey -> earned nickname
         this._affinityProximityAccumulator = 0;
+        this._allyTetherPairs = []; // warmest idle ally pairs, drawn as tethers
+
         this._chronicleChannelListener = null;
         this.agentEventStream = null;
         this.relationshipState = null;
@@ -2173,6 +2175,7 @@ export class IsometricRenderer {
      * while strangers keep their default spread.
      */
     _applyAffinityProximity(now = Date.now()) {
+        this._allyTetherPairs = [];
         const snapshot = this.affinityService?.getSnapshot?.();
         if (!snapshot?.size) return;
         const spriteByIdentity = new Map();
@@ -2195,7 +2198,11 @@ export class IsometricRenderer {
         }
         if (!pairs.length) return;
         pairs.sort((x, y) => y.score - x.score);
-        for (const { a, b } of pairs.slice(0, MAX_AFFINITY_PROXIMITY_PAIRS)) {
+        const top = pairs.slice(0, MAX_AFFINITY_PROXIMITY_PAIRS);
+        // Hold the warmest idle pairs so the frame renderer can draw their
+        // tethers; the sprite refs stay live, so endpoints track movement.
+        this._allyTetherPairs = top;
+        for (const { a, b } of top) {
             const tileA = worldToTile(a.x, a.y);
             const tileB = worldToTile(b.x, b.y);
             const midX = (tileA.tileX + tileB.tileX) / 2;

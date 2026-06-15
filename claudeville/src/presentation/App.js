@@ -166,6 +166,7 @@ class App {
                 renderer: () => this.renderer,
                 harborTraffic: () => this.renderer?.harborTraffic || null,
                 biographyService: () => this.biographyService,
+                affinityService: () => this.affinityService,
             });
             this._bindAgentFollow();
             this._bindDeepLink();
