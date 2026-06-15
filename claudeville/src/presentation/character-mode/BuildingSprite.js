@@ -644,11 +644,14 @@ export class BuildingSprite {
             // pixels so the harbor ledger and building labels stay crisp unzoomed.
             const textX = Math.round(tagLeft + padX + iconSize + iconGap + (isLandmark ? 2 : 0));
             if (displaySubRows.length) {
-                const titleY = Math.round(isHarborLedger ? by - 14 : by - 5);
-                const rowStartY = Math.round(isHarborLedger ? by + 1 : by + 6);
-                const rowGap = isHarborLedger ? 10 : 8;
+                const titleY = Math.round(isHarborLedger ? by - 15 : by - 5);
+                const rowStartY = Math.round(isHarborLedger ? by + 2 : by + 6);
+                const rowGap = isHarborLedger ? 12 : 8;
                 ctx.fillText(displayText, textX, titleY);
                 ctx.font = subFont || chosenFont;
+                // Departure Mono ledger rows: vertical-only shadow so the diagonal
+                // offset doesn't smear the hairline strokes / the (N) commit count.
+                if (isHarborLedger) ctx.shadowOffsetX = 0;
                 displaySubRows.forEach((row, index) => {
                     const rowY = rowStartY + index * rowGap;
                     this._drawRepoRowIcon(ctx, textX + 3, rowY, row.profile);
@@ -718,7 +721,7 @@ export class BuildingSprite {
             {
                 text: isHarborLedger ? compactText : baseText,
                 subRows: isHarborLedger ? harborLedgerRows : [],
-                subFont: isHarborLedger ? 'bold 8px "Press Start 2P", monospace' : '7px "Press Start 2P", monospace',
+                subFont: isHarborLedger ? '11px "Departure Mono", ui-monospace, SFMono-Regular, Menlo, monospace' : '7px "Press Start 2P", monospace',
                 subMaxTextWidth: Math.round((isHarborLedger ? (isHovered ? 214 : 184) : (isHovered ? 158 : 132)) * widthScale),
                 labelFont,
                 maxTextWidth: Math.round((isHarborLedger ? (isHovered ? 220 : 180) : isHovered ? 190 : isLandmark ? 132 : 96) * widthScale),

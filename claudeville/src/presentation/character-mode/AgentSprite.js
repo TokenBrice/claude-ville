@@ -124,14 +124,19 @@ const MAX_AGENT_DRAW_SCALE = 1.25;
 const ACTION_TRAIL_LIMIT = 2;
 const ACTIVITY_BUBBLE_TTL_MS = 12000;
 const ACTION_TRAIL_TTL_MS = ACTIVITY_BUBBLE_TTL_MS;
-const NAME_TAG_FONT_PX = 6;
+// Companion/body face for mixed-case world text (names, bubbles, ledgers).
+// Departure Mono stays legible far below Press Start 2P's ~10px floor and is
+// narrower per glyph, so labels read cleaner AND pack tighter when dezoomed.
+// Single-weight face: never request "bold" (synthetic bold smears the pixels).
+const WORLD_BODY_FONT = '"Departure Mono", ui-monospace, SFMono-Regular, Menlo, monospace';
+const NAME_TAG_FONT_PX = 11;
 const NAME_TAG_MAX_TEXT_WIDTH = 134;
 const NAME_TAG_MAX_WIDTH = 152;
 const NAME_TAG_PADDING_X = 20;
 const NAME_TAG_SINGLE_HEIGHT = 16;
 const NAME_TAG_DOUBLE_HEIGHT = 23;
 const NAME_TAG_GLYPH_SIZE = 6;
-const COMPACT_NAME_FONT_PX = 7.5;
+const COMPACT_NAME_FONT_PX = 11;
 const COMPACT_NAME_MAX_TEXT_WIDTH = 135;
 const COMPACT_NAME_MAX_WIDTH = 180;
 const COMPACT_NAME_MIN_WIDTH = 54;
@@ -3543,7 +3548,7 @@ export class AgentSprite {
 
         // Measure text size and auto-truncate
         const anchored = Number.isFinite(contentTopY);
-        ctx.font = `bold ${anchored ? 7 : 10}px "Press Start 2P", monospace`;
+        ctx.font = `${anchored ? 10 : 13}px ${WORLD_BODY_FONT}`;
         const maxWidth = anchored ? STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored : STATUS_BUBBLE_MAIN_MAX_WIDTH.floating;
         const confidenceValue = Number(confidence);
         const lowConfidence = Number.isFinite(confidenceValue) && confidenceValue < TOOL_CONFIDENCE_THRESHOLD;
@@ -3614,10 +3619,10 @@ export class AgentSprite {
         const s = 1 / (this._zoom || 1);
         const anchored = Number.isFinite(contentTopY);
         const maxWidth = anchored ? STATUS_BUBBLE_HISTORY_MAX_WIDTH.anchored : STATUS_BUBBLE_HISTORY_MAX_WIDTH.floating;
-        const fontPx = anchored ? 6 : 8;
+        const fontPx = anchored ? 9 : 11;
         ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
         ctx.scale(s, s);
-        ctx.font = `bold ${fontPx}px "Press Start 2P", monospace`;
+        ctx.font = `${fontPx}px ${WORLD_BODY_FONT}`;
 
         let offsetY = anchored ? -32 : -66;
         const shown = entries.slice(0, ACTION_TRAIL_LIMIT);
@@ -3717,7 +3722,7 @@ export class AgentSprite {
         // 4.8 — earned nickname renders as a title suffix on the full tag
         // (compact labels stay nickname-free to avoid clutter).
         const rawName = this.nickname ? `${baseName} ${this.nickname}` : baseName;
-        ctx.font = `bold ${NAME_TAG_FONT_PX}px "Press Start 2P", monospace`;
+        ctx.font = `${NAME_TAG_FONT_PX}px ${WORLD_BODY_FONT}`;
         const layout = this._nameTagLayout(ctx, rawName);
         const lines = layout.lines;
         const contentW = layout.contentW;
@@ -3751,6 +3756,7 @@ export class AgentSprite {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._applyReadableTextShadow(ctx);
+        ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
         if (lines.length === 1) {
             ctx.fillText(lines[0], 3, 0.5);
         } else {
@@ -3808,7 +3814,7 @@ export class AgentSprite {
         ctx.translate(this.x, this.y);
         ctx.scale(s, s);
         ctx.translate(0, COMPACT_NAME_SLOT_BASE_Y + slot * COMPACT_NAME_SLOT_STEP_Y);
-        ctx.font = `bold ${COMPACT_NAME_FONT_PX}px "Press Start 2P", monospace`;
+        ctx.font = `${COMPACT_NAME_FONT_PX}px ${WORLD_BODY_FONT}`;
         const layout = this._compactNameStatusLayout(ctx, rawName);
         const text = layout.text;
         const w = layout.width;
@@ -3838,7 +3844,8 @@ export class AgentSprite {
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._applyReadableTextShadow(ctx);
-        ctx.fillText(text, textCenter, 0.5);
+        ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
+        ctx.fillText(text, Math.round(textCenter), 0.5);
         ctx.restore();
     }
 
