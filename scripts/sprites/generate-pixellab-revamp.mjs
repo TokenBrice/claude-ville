@@ -28,31 +28,17 @@ const idFilter = idsArg
     ? new Set(idsArg.slice('--ids='.length).split(',').map((id) => id.trim()).filter(Boolean))
     : null;
 
-const STYLE = [
-    'old-school 16-bit fantasy RPG pixel art',
-    'isometric game asset',
-    'single color black outline',
-    'medium shading',
-    'highly detailed',
-    'transparent background',
-    'strong readable silhouette',
-    'warm torchlit palette',
-    'no text, no logo, no UI',
-].join(', ');
+// Style anchor is single-sourced from manifest.yaml — no divergent hardcoded
+// style constant (the manifest is the one source of truth). Per generate.md,
+// the anchor is prepended to each entry's subject-only prompt.
+const MANIFEST = yaml.load(readFileSync(manifestPath, 'utf8'));
+const STYLE = MANIFEST?.style?.anchor
+    || 'high-fantasy pixel art, transparent background, no text, no logo, no UI';
 
-const BUILDINGS = [
-    hero('building.command', 'grand guild command keep, carved stone fortress, blue domed council roof, dragon banners, golden watchfire braziers, ceremonial stair, reads instantly as town command center', 312, 208),
-    hero('building.watchtower', 'monumental Great Lighthouse of Alexandria Pharos, tall white limestone square podium, tapering stacked tower stages, bronze lantern crown, attached stone quay and narrow causeway, heroic harbor landmark, readable from far zoom, no crimson roof', 400, 300, 4, 3),
-    hero('building.observatory', 'scholarly stone clock tower observatory, blue slate roof, copper-blue accents, large circular clock face on the front, no text, no logo, readable village time landmark', 312, 208),
-    hero('building.portal', 'ancient portal gate, freestanding rune-carved stone arch on small plinth, violet energy vortex in open center, glowing crystals, dramatic arcane landmark, no mountain, narrow readable silhouette', 312, 208),
-    standard('building.forge', 'code forge smithy, glowing furnace mouth, tall iron chimney, rune anvil outside, soot-dark stone, amber molten light, unmistakable forge', 112),
-    standard('building.mine', 'token mine entrance, reinforced timber pit head, mine cart tracks, lanterns, glowing ore veins in rock, unmistakable mine', 112),
-    standard('building.taskboard', 'task board guild pavilion, open timber frame, many scrolls pinned to notice boards, guild pennant, civic work hub', 112),
-    standard('building.chathall', 'fantasy city hall council house, steep slate roof, messenger balcony, civic banner, warm windows, speech-rune sign', 112),
-    standard('building.archive', 'lore archive library, book-shaped stone tower, stained glass windows, stacked shelves visible, open-book crest', 112),
-    standard('building.alchemy', 'prompt alchemy workshop, bubbling cauldron visible, colored vapor chimney, shelves of jars, arcane round window', 96),
-    standard('building.sanctuary', 'quiet sanctuary chapel, ivy stone walls, peaceful glowing rune over doorway, tiny garden shrine, calm fantasy refuge', 96),
-];
+// Buildings are read from the manifest: subject-only prompt + target dims taken
+// from the current on-disk base.png. All buildings are single-image (composeGrid
+// retired), so a regen preserves the sprite footprint.
+const BUILDINGS = buildBuildingSpecsFromManifest(MANIFEST);
 
 const CHARACTERS = [
     character('agent.claude.opus', 'Claude Opus archmage scholar, ivory and amber robe, broad gold rune mantle, high collar, glowing tome, short staff, powerful mage silhouette'),
@@ -100,12 +86,33 @@ async function main() {
     }
 }
 
-function hero(id, description, width, height, cols = 3, rows = 2) {
-    return { id, kind: 'hero', description, width, height, cols, rows };
+// Build single-image building specs from the manifest: subject-only prompt from
+// the entry, target dims from the current on-disk base.png (falls back to 256²).
+function buildBuildingSpecsFromManifest(manifest) {
+    const specs = [];
+    for (const entry of manifest?.buildings || []) {
+        if (!entry?.id || !entry.prompt) continue;
+        const dims = baseDimsFor(entry.id);
+        specs.push({
+            id: entry.id,
+            kind: 'standard',
+            description: entry.prompt,
+            width: dims?.w || 256,
+            height: dims?.h || 256,
+        });
+    }
+    return specs;
 }
 
-function standard(id, description, size) {
-    return { id, kind: 'standard', description, width: size, height: size };
+function baseDimsFor(id) {
+    const path = join(spritesRoot, 'buildings', id, 'base.png');
+    if (!existsSync(path)) return null;
+    try {
+        const png = PNG.sync.read(readFileSync(path));
+        return { w: png.width, h: png.height };
+    } catch {
+        return null;
+    }
 }
 
 function character(id, description) {

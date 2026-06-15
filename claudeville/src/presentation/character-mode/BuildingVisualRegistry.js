@@ -60,9 +60,9 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         labelPriority: 'landmark',
         effectAnchors: {
             clockFace: {
-                compositeRef: { w: 312, h: 208 },
-                center: [133, 73],
-                radius: 30,
+                compositeRef: { w: 256, h: 288 },
+                center: [96, 108],
+                radius: 18,
                 sourceSize: 40,
                 sourceCenter: 20,
                 sourceRadius: 18,
@@ -90,9 +90,9 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         labelPriority: 'landmark',
         effectAnchors: {
             lanternFire: {
-                flame: [200, 68],
-                light: [200, 66],
-                particle: [200, 66],
+                flame: [144, 68],
+                light: [144, 68],
+                particle: [144, 68],
             },
         },
     },
@@ -111,13 +111,13 @@ const WATCHTOWER_LANTERN_FIRE = BUILDING_VISUAL_REGISTRY.watchtower.effectAnchor
 
 export const BUILDING_EMITTER_FALLBACKS = {
     forge: [
-        { type: 'forgeEmber', at: [51, 66], chance: 0.06, count: 1 },
-        { type: 'forgeSpark', at: [50, 70], chance: 0.032, count: 1 },
-        { type: 'smoke', at: [39, 8], chance: 0.035, count: 1 },
+        { type: 'forgeEmber', at: [75, 118], chance: 0.06, count: 1 },
+        { type: 'forgeSpark', at: [76, 112], chance: 0.032, count: 1 },
+        { type: 'smoke', at: [175, 28], chance: 0.035, count: 1 },
     ],
     mine: [
-        { type: 'mineDust', at: [73, 95], chance: 0.035, count: 1 },
-        { type: 'mining', at: [78, 122], chance: 0.026, count: 1 },
+        { type: 'mineDust', at: [128, 158], chance: 0.035, count: 1 },
+        { type: 'mining', at: [138, 165], chance: 0.026, count: 1 },
     ],
     portal: [
         { type: 'portalRune', at: [144, 60], chance: 0.05, count: 1 },
@@ -131,7 +131,7 @@ export const BUILDING_EMITTER_FALLBACKS = {
         { type: 'sparkle', at: [70, 58], chance: 0.014, count: 1 },
     ],
     taskboard: [
-        { type: 'questPing', at: [56, 58], chance: 0.024, count: 1 },
+        { type: 'questPing', at: [128, 90], chance: 0.024, count: 1 },
     ],
     archive: [
         { type: 'archiveMote', at: [168, 82], chance: 0.034, count: 1 },
@@ -141,9 +141,9 @@ export const BUILDING_EMITTER_FALLBACKS = {
 };
 
 export const BUILDING_LIGHT_FALLBACKS = {
-    forge: { at: [51, 66], color: '#ff8a33', radius: 62, overlay: 'atmosphere.light.fire-glow' },
-    mine: { at: [73, 95], color: '#ffb84d', radius: 68, overlay: 'atmosphere.light.lantern-glow' },
-    taskboard: { at: [56, 58], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
+    forge: { at: [75, 118], color: '#ff8a33', radius: 80, overlay: 'atmosphere.light.fire-glow' },
+    mine: { at: [128, 158], color: '#ffb84d', radius: 80, overlay: 'atmosphere.light.lantern-glow' },
+    taskboard: { at: [128, 95], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
     archive: { at: [168, 88], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
     harbor: { at: [48, 42], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };

@@ -1,10 +1,24 @@
 # ClaudeVille Building Harmonization & Upgrade Plan
 
-- **Status:** `ready` (re-baseline source line refs before executing)
-- **Author:** Claude (Opus 4.8) — research + plan
+- **Status:** `completed` (executed 2026-06-15)
+- **Author:** Claude (Opus 4.8) — research + plan + execution
 - **Date:** 2026-06-15
 - **Scope:** The nine World-mode building sprites and their generation/render coupling.
 - **Goal:** One coherent, high-fantasy pixel-art building set — consistent style, consistent size logic, consistent grounding — with no regression in the animated overlays, occlusion split, or light system.
+
+## Execution status (2026-06-15)
+
+Done and verified in the live app (`sprites:validate` + `world:validate-buildings` pass, 0 console errors):
+
+- **Regenerated on-contract (single-image, grounded base, recalibrated overlays/lights):** Task Board, Forge, Mine, Watchtower (narrowed/heightened), Observatory (added base + recalibrated animated clock).
+- **`composeGrid` fully retired:** Command, Portal, Observatory, Watchtower converted to single-image (Command/Portal losslessly from their existing tiles). Dead `_loadComposedBuilding` removed from `AssetManager`; `AssetManager` now loads building overlay layers (watchfire/banner/beacon/portalGlow) from `buildings/<id>/<name>.png` for single-image entries.
+- **Kept:** Command, Portal, Harbor (warm-waterfront variant — meets craft rules), Archive. Archive de-violet polish was **skipped** (optional in plan; already on-contract — not worth the emitter/horizon recalibration risk).
+- **Style contract** authored at `docs/building-style-contract.md`.
+- **Style source unified (Decision 7):** `generate-pixellab-revamp.mjs` now reads `style.anchor` + subject-only building prompts from the manifest; no divergent hardcoded `STYLE`.
+- **New tool:** `scripts/sprites/key-out-bg.mjs` — `create_map_object` downloads arrive flattened on grey; this keys the background out (edge flood-fill). This was the cause of the "grey background" issue.
+- **Asset version:** bumped to `2026-06-15-building-harmonization-v3`.
+
+Remaining/optional follow-ups: Archive de-violet (cosmetic), Harbor optional cool-shift (declined — kept as variant), and live in-app occlusion fine-tuning of `horizonY` per building if any agent-clipping is spotted.
 
 ---
 

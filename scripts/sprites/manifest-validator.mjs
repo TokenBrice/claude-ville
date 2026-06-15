@@ -27,12 +27,6 @@ const orphanAllowlist = new Set([
 ]);
 const duplicatePngAllowlist = new Set([
     duplicateGroupKey([
-        'buildings/building.watchtower/base-0-0.png',
-        'buildings/building.watchtower/base-0-1.png',
-        'buildings/building.watchtower/base-0-2.png',
-        'buildings/building.watchtower/base-3-1.png',
-    ]),
-    duplicateGroupKey([
         'props/prop.gullFlight.png',
         'props/prop.gullFlight.level.png',
     ]),

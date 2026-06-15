@@ -79,12 +79,7 @@ export class AssetManager {
     }
 
     async _loadEntry(entry) {
-        // For composed buildings: stitch quadrant PNGs into one canvas.
-        if (entry.composeGrid && entry.layers?.base) {
-            await this._loadComposedBuilding(entry);
-            return;
-        }
-        // Standard single-PNG entry.
+        // Single-PNG entry (buildings are all single-image; composeGrid retired).
         const path = this._pathFor(entry);
         const { img: loadedImg, ok } = await this._loadImage(path);
         if (!ok) {
@@ -103,7 +98,13 @@ export class AssetManager {
             for (const [name, layer] of Object.entries(entry.layers)) {
                 if (name === 'base') continue;
                 const layerId = `${entry.id}.${name}`;
-                const layerPath = this._pathFor({ id: layerId, ...layer });
+                // Building overlay layers (e.g. watchfire, beacon) live beside the
+                // base PNG at buildings/<id>/<name>.png — same convention the
+                // composed-building loader uses. Without this, single-image
+                // buildings with layers would misroute through _pathFor.
+                const layerPath = entry.id.startsWith('building.')
+                    ? `assets/sprites/buildings/${entry.id}/${name}.png`
+                    : this._pathFor({ id: layerId, ...layer });
                 await this._loadLayer(layerId, layer, layerPath);
             }
         }
@@ -130,42 +131,6 @@ export class AssetManager {
             anchor: layer.anchor || null,
             buildMask: false,
         });
-    }
-
-    async _loadComposedBuilding(entry) {
-        const [cols, rows] = entry.composeGrid;
-        const sourceCellSize = entry.layers.base.size || 64;
-        const cellSize = entry.layers.base.displaySize || sourceCellSize * 2;
-        const canvas = document.createElement('canvas');
-        canvas.width = cols * cellSize;
-        canvas.height = rows * cellSize;
-        const ctx = canvas.getContext('2d');
-        ctx.imageSmoothingEnabled = false;
-        for (let r = 0; r < rows; r++) {
-            for (let c = 0; c < cols; c++) {
-                const cellPath = `assets/sprites/buildings/${entry.id}/base-${c}-${r}.png`;
-                const { img, ok } = await this._loadImage(cellPath);
-                if (!ok) {
-                    this._loadMisses.push({ id: `${entry.id}#cell[${c},${r}]`, path: cellPath });
-                }
-                ctx.drawImage(img, c * cellSize, r * cellSize, cellSize, cellSize);
-            }
-        }
-        // Composed hero buildings without an explicit manifest anchor land their
-        // bottom-of-footprint near the iso tile center: bottom-center horizontally,
-        // 7/8 down vertically (lower band ≈ ground footprint, upper band ≈ tower).
-        const anchor = entry.anchor || [Math.floor(canvas.width / 2), Math.floor(canvas.height * 7 / 8)];
-        const mask = this._buildAlphaMaskFromCanvas(canvas);
-        this._storeBitmap(entry.id, canvas, { anchor, mask });
-        // Layer overlays (beacon, banner, etc.)
-        if (entry.layers) {
-            for (const [name, layer] of Object.entries(entry.layers)) {
-                if (name === 'base') continue;
-                const layerId = `${entry.id}.${name}`;
-                const layerPath = `assets/sprites/buildings/${entry.id}/${name}.png`;
-                await this._loadLayer(layerId, layer, layerPath);
-            }
-        }
     }
 
     _pathFor(entry) {

@@ -56,13 +56,13 @@ const PARTICLE_ALIASES = {
     torch4: 'torch',
 };
 const OBSERVATORY_CLOCK_FACE = Object.freeze(getBuildingEffectAnchor('observatory', 'clockFace', {
-    // Calibrated against the generated 312x208 clock observatory base.
+    // Calibrated against the generated 256x288 single-image clock observatory base.
     // Composite reference is asserted at first draw so a regenerated sprite
     // with different dimensions logs a visible warning instead of silently
     // misplacing the clock hands.
-    compositeRef: Object.freeze({ w: 312, h: 208 }),
-    center: [133, 73],
-    radius: 30,
+    compositeRef: Object.freeze({ w: 256, h: 288 }),
+    center: [96, 108],
+    radius: 18,
     sourceSize: 40,
     sourceCenter: 20,
     sourceRadius: 18,
@@ -1287,13 +1287,13 @@ export class BuildingSprite {
             return;
         }
         if (building.type === 'forge') {
-            if (shouldDrawLocalY(66)) this._drawForgeEnhancement(ctx, localPoint, pulse, building);
+            if (shouldDrawLocalY(118)) this._drawForgeEnhancement(ctx, localPoint, pulse, building);
         } else if (building.type === 'mine') {
-            if (!shouldDrawLocalY(95)) {
+            if (!shouldDrawLocalY(158)) {
                 ctx.restore();
                 return;
             }
-            const mouth = localPoint(73, 95);
+            const mouth = localPoint(128, 158);
             const seamColor = this._mineSeamColor();
             const mineRitual = this._latestRitual('mine');
             // Cave-mouth ore glow brightens with remaining reserves: a full mine
@@ -1535,7 +1535,7 @@ export class BuildingSprite {
                     sources.push(normalizeLightSource({
                         id: `ritual:${ritual.id}:spark`,
                         kind: 'spark',
-                        origin: toOrigin([26, 76]),
+                        origin: toOrigin([195, 150]),
                         color: '#ffcf6a',
                         radius: 24 + this._ritualProgress(ritual) * 34,
                         alpha: fade * 0.5 * lightBoost,
@@ -1547,7 +1547,7 @@ export class BuildingSprite {
                     sources.push(normalizeLightSource({
                         id: `ritual:${ritual.id}:ore`,
                         kind: 'spark',
-                        origin: toOrigin([73, 95]),
+                        origin: toOrigin([128, 158]),
                         color: this._mineSeamColor(),
                         radius: 44 + fade * 24,
                         alpha: fade * 0.3 * lightBoost,
@@ -1895,9 +1895,9 @@ export class BuildingSprite {
     }
 
     _drawForgeEnhancement(ctx, localPoint, pulse, building = null) {
-        const hearth = localPoint(51, 66);
-        const chimney = localPoint(39, 8);
-        const anvil = localPoint(26, 76);
+        const hearth = localPoint(75, 118);
+        const chimney = localPoint(175, 28);
+        const anvil = localPoint(195, 150);
         const activity = building ? this._buildingActivityInfo(building) : { intensity: 0, occupancy: { ratio: 0 } };
         const activityIntensity = Math.max(this._forgeGlowIntensity(), activity.intensity * 0.76);
         const ritual = this._latestRitual('forge');
@@ -2760,7 +2760,7 @@ export class BuildingSprite {
             .sort((a, b) => a.createdAt - b.createdAt)
             .slice(-MAX_TASKBOARD_PAPERS);
         if (!papers.length) return;
-        const board = localPoint(56, 58);
+        const board = localPoint(128, 90);
         const now = Date.now();
         papers.forEach((paper, index) => {
             const col = index % 2;

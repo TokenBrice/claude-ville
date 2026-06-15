@@ -125,8 +125,7 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 You need to bake or edit X. Use this branching:
 
 - **New character with directional walk + idle:** MCP `create_character` (size 92, n_directions 8, view `low top-down`, detail `medium detail`, shading `basic shading`, outline `single color black outline`) → `animate_character` template `walking-6-frames` → `animate_character` template `breathing-idle` → poll `get_character` until both at 100% → download ZIP → `node scripts/sprites/generate-character-mcp.mjs --id=<sprite-id> --zip=<path>`.
-- **Hero building (>64 px any side):** REST `create-image-pixflux` via `scripts/sprites/generate-pixellab-revamp.mjs`. Compose into grid tiles in post (the script does this for `kind: hero` entries).
-- **Standard building (≤64 px isometric tile):** MCP `create_isometric_tile` size 32-64, `isometric_tile_shape: thick tile` for buildings or `block` for chunky landmarks.
+- **Building (single-image, ≤400 px):** MCP `create_map_object` (`view: low top-down`, `outline: selective outline`, `shading: detailed shading`, `detail: high detail`) per the building style contract (`docs/building-style-contract.md`); or REST `create-image-pixflux` via `scripts/sprites/generate-pixellab-revamp.mjs`. `create_map_object` downloads arrive flattened on grey — run `node scripts/sprites/key-out-bg.mjs <base.png>` to key out the background. `composeGrid` tile-slicing is retired; every building is one `base.png`.
 - **Floor ring / status overlay (small isometric icon, transparent BG):** MCP `create_isometric_tile` size 32-64, `isometric_tile_shape: thin tile`. Use shape language in the description ("single-band ring", "triple-band").
 - **Head accessory overlay (32 px, on top of head):** MCP `create_isometric_tile` size 32, `isometric_tile_shape: thin tile`. Differentiate with explicit shape words ("vertical pillar", "wreath", "halo") so overlays read distinctly at small size.
 - **Terrain transition (Wang):** MCP `create_topdown_tileset` with `lower_description` + `upper_description` + optional `transition_description`. Pick `tile_size: 32` for 24+px legibility.
@@ -214,7 +213,7 @@ Known `template_animation_id` values, confirmed across docs and repo as of 2026-
 
 The `manifest.yaml` `style.anchor` field is the intended source of truth for generation prompt tone. Use it when making MCP calls manually or writing new generators, and do not duplicate its content into per-asset prompts.
 
-Current implementation caveat: `scripts/sprites/generate-pixellab-revamp.mjs` still uses a hardcoded `STYLE` constant rather than reading `manifest.yaml`. If you update the manifest style anchor and rely on the REST revamp script, either update that constant too or factor style-anchor loading into shared code first.
+`scripts/sprites/generate-pixellab-revamp.mjs` now reads `style.anchor` (and per-building subject-only prompts) directly from `manifest.yaml` — there is no longer a divergent hardcoded `STYLE` constant. Building specs are built from the manifest with target dims taken from the current on-disk `base.png`; all buildings are single-image (`composeGrid` is retired).
 
 **Encode in the prompt (description):**
 
