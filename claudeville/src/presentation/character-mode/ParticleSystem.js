@@ -88,6 +88,24 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'random',
     },
+    // Daytime ambient insects. Longer life + slow wander so they linger and
+    // drift like butterflies rather than sparking like fireflies.
+    butterfly: {
+        colors: ['#f4a93c', '#f6d35a', '#e8743b', '#7ab8ec', '#f2f2f2'],
+        size: [2, 3.4],
+        life: [120, 240],
+        speed: [0.10, 0.30],
+        gravity: false,
+        direction: 'random',
+    },
+    dragonfly: {
+        colors: ['#5fd6c4', '#7fe0a8', '#9fe8ff', '#c8f0e0'],
+        size: [1.6, 2.8],
+        life: [90, 180],
+        speed: [0.30, 0.62],
+        gravity: false,
+        direction: 'random',
+    },
     snow: {
         colors: ['#e8f4ff', '#cce8ff', '#ffffff'],
         size: [1, 2],

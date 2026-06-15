@@ -17,6 +17,9 @@ import {
     GULL_OFFMAP_GATEWAYS,
     GULL_ROUTE_SPEED_SCALE,
     GULL_STAGING_WAYPOINTS,
+    LAND_BIRD_ROUTES,
+    CALM_WATER_FAUNA,
+    SHORE_FAUNA,
     MARINE_FISH_SCHOOLS,
     OPEN_SEA_FLOCK_FORMATION,
     OPEN_SEA_FLOCK_ROUTES,
@@ -121,8 +124,12 @@ const CROWD_CLUSTER_TILE_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
 const AGENT_NAME_TAG_MAX_WIDTH = 152;
 const AGENT_NAME_TAG_MIN_WIDTH = 40;
-const AGENT_NAME_TAG_CHAR_WIDTH = 4.5;
-const AGENT_NAME_TAG_PADDING_X = 9;
+// Must track the real name-tag pill in AgentSprite._drawNameTag: Departure Mono
+// at NAME_TAG_FONT_PX (11) is ~7px/char monospace, and NAME_TAG_PADDING_X is 20.
+// The old 4.5/9 estimate was ~60% of the real width, so the de-overlap rects
+// were too narrow and horizontally-close name tags collided on the same slot.
+const AGENT_NAME_TAG_CHAR_WIDTH = 7;
+const AGENT_NAME_TAG_PADDING_X = 20;
 const AGENT_NAME_TAG_SINGLE_HEIGHT = 16;
 const AGENT_NAME_TAG_DOUBLE_HEIGHT = 23;
 const AGENT_COMPACT_NAME_MAX_WIDTH = 180;
@@ -521,6 +528,7 @@ export class IsometricRenderer {
         this.scenery.generateFlatVegetation(this.pathTiles, this.bridgeTiles);
         this.bushTiles = this.scenery.getBushTiles();
         this.grassTuftTiles = this.scenery.getGrassTuftTiles();
+        this.flowerTiles = this.scenery.getFlowerTiles();
 
         // Trees (Y-sorted props)
         this.scenery.generateTrees(this.pathTiles, this.bridgeTiles);
@@ -3490,9 +3498,10 @@ export class IsometricRenderer {
     }
 
     _estimateNameTagWidth(sprite) {
-        const name = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
-        // Conservative width approximation in canvas space before zoom correction.
-        const rawLen = Math.min(name.length, 28);
+        const baseName = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
+        // Match the real pill: nickname renders as a suffix on the full tag.
+        const fullName = sprite.nickname ? `${baseName} ${sprite.nickname}` : baseName;
+        const rawLen = Math.min(fullName.length, 28);
         return Math.min(
             AGENT_NAME_TAG_MAX_WIDTH,
             Math.max(AGENT_NAME_TAG_MIN_WIDTH, rawLen * AGENT_NAME_TAG_CHAR_WIDTH + AGENT_NAME_TAG_PADDING_X),
@@ -3500,8 +3509,11 @@ export class IsometricRenderer {
     }
 
     _estimateNameTagHeight(sprite) {
-        const name = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
-        const lines = name.length > 17 ? 2 : 1;
+        const baseName = String(sprite.agent?.name || sprite.agent?.displayName || '').trim() || 'Agent';
+        const fullName = sprite.nickname ? `${baseName} ${sprite.nickname}` : baseName;
+        // The real pill wraps to two lines once it exceeds ~MAX_WIDTH (≈21 chars
+        // at 7px/char), matching AgentSprite._nameTagLayout.
+        const lines = fullName.length > 21 ? 2 : 1;
         return lines === 1 ? AGENT_NAME_TAG_SINGLE_HEIGHT : AGENT_NAME_TAG_DOUBLE_HEIGHT;
     }
 
@@ -3848,6 +3860,8 @@ export class IsometricRenderer {
         this._drawVillageGateTower(ctx, rightBase.x, rightBase.y, 1);
         this._drawVillageGateArch(ctx, leftBase, rightBase);
         this._drawVillageGateDoors(ctx, leftBase, rightBase);
+        this._drawGateBrazier(ctx, leftBase.x - 9, leftBase.y + 13);
+        this._drawGateBrazier(ctx, rightBase.x + 9, rightBase.y + 13);
     }
 
     _drawVillageGateThreshold(ctx, leftBase, rightBase) {
@@ -3855,6 +3869,49 @@ export class IsometricRenderer {
         // route in townPlan.js. Tower foot shadows are drawn inside
         // _drawVillageGateTower. This method is intentionally a no-op; the
         // call site in _drawVillageGatehouse is kept for future hooks.
+    }
+
+    // Iron fire-basket flanking the gate mouth — frames the coastal gate with
+    // warm light. Gentle flicker when motion is on; steady under reduced motion.
+    _drawGateBrazier(ctx, x, y) {
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+        ctx.fillStyle = '#3a2a1a';
+        ctx.fillRect(Math.round(x - 2), Math.round(y - 18), 4, 18);
+        ctx.fillStyle = '#4a4a52';
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x - 7), Math.round(y - 18));
+        ctx.lineTo(Math.round(x + 7), Math.round(y - 18));
+        ctx.lineTo(Math.round(x + 4), Math.round(y - 24));
+        ctx.lineTo(Math.round(x - 4), Math.round(y - 24));
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = '#1a1410';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        const flick = this.motionScale ? (Math.sin(this.waterFrame * 3.2 + x) * 0.5 + 0.5) : 0.5;
+        const fh = 10 + flick * 5;
+        ctx.fillStyle = 'rgba(255, 140, 36, 0.96)';
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x - 5), Math.round(y - 24));
+        ctx.lineTo(Math.round(x), Math.round(y - 24 - fh));
+        ctx.lineTo(Math.round(x + 5), Math.round(y - 24));
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = 'rgba(255, 224, 130, 0.96)';
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x - 2.5), Math.round(y - 24));
+        ctx.lineTo(Math.round(x), Math.round(y - 24 - fh * 0.6));
+        ctx.lineTo(Math.round(x + 2.5), Math.round(y - 24));
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalCompositeOperation = 'screen';
+        const glow = ctx.createRadialGradient(x, y - 26, 2, x, y - 26, 34);
+        glow.addColorStop(0, 'rgba(255, 175, 75, 0.50)');
+        glow.addColorStop(1, 'rgba(255, 175, 75, 0)');
+        ctx.fillStyle = glow;
+        ctx.fillRect(Math.round(x - 36), Math.round(y - 60), 72, 72);
+        ctx.restore();
     }
 
     _drawVillageGateTower(ctx, x, y, side = 1) {
@@ -4519,6 +4576,74 @@ export class IsometricRenderer {
             ctx.fillStyle = '#d8c79a';
             ctx.fillRect(Math.round(p.x + 6), Math.round(p.y + 4), 2, 2);
             ctx.fillRect(Math.round(p.x - 7), Math.round(p.y + 11), 2, 2);
+        }
+
+        // Trailing ivy down the wall face — breaks up the bare planks.
+        for (let d = 58 + offset; d < length - 16; d += 116) {
+            const ix = x1 + ux * d;
+            const iy = y1 + uy * d;
+            ctx.strokeStyle = 'rgba(74, 110, 46, 0.9)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(ix), Math.round(iy - wallHeight + 10));
+            for (let k = 0; k <= 5; k++) {
+                ctx.lineTo(Math.round(ix + Math.sin(k * 1.3 + d) * 4), Math.round(iy - wallHeight + 10 + k * 9));
+            }
+            ctx.stroke();
+            ctx.fillStyle = 'rgba(96, 140, 60, 0.92)';
+            for (let k = 1; k <= 4; k++) {
+                const yy = iy - wallHeight + 12 + k * 11;
+                const xx = ix + Math.sin(k * 1.3 + d) * 4;
+                ctx.fillRect(Math.round(xx - 2), Math.round(yy), 3, 2);
+                ctx.fillRect(Math.round(xx + 1), Math.round(yy + 3), 3, 2);
+            }
+        }
+
+        // Low shrubs tucked against the wall footing.
+        for (let d = 30 + offset; d < length - 10; d += 52) {
+            const sx = x1 + ux * d + nx * 4;
+            const sy = y1 + uy * d + ny * 4 + 4;
+            ctx.fillStyle = 'rgba(44, 76, 30, 0.95)';
+            ctx.beginPath();
+            ctx.ellipse(Math.round(sx), Math.round(sy), 7, 4, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = 'rgba(74, 116, 50, 0.92)';
+            ctx.beginPath();
+            ctx.ellipse(Math.round(sx - 2), Math.round(sy - 1), 4, 2.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        // Mounted torches — warm pools of light along the palisade. Gentle
+        // flicker when motion is enabled; steady glow under reduced motion.
+        for (let d = 50 + offset * 2; d < length - 18; d += 92) {
+            const bx = x1 + ux * d;
+            const topY = y1 + uy * d - wallHeight + 9;
+            ctx.fillStyle = palette.dark;
+            ctx.fillRect(Math.round(bx - 2), Math.round(topY), 4, 11);
+            const flick = this.motionScale ? (Math.sin(this.waterFrame * 3 + d) * 0.5 + 0.5) : 0.5;
+            const fh = 7 + flick * 3;
+            ctx.fillStyle = 'rgba(255, 150, 40, 0.95)';
+            ctx.beginPath();
+            ctx.moveTo(Math.round(bx - 3), Math.round(topY));
+            ctx.lineTo(Math.round(bx), Math.round(topY - fh));
+            ctx.lineTo(Math.round(bx + 3), Math.round(topY));
+            ctx.closePath();
+            ctx.fill();
+            ctx.fillStyle = 'rgba(255, 226, 130, 0.95)';
+            ctx.beginPath();
+            ctx.moveTo(Math.round(bx - 1.5), Math.round(topY));
+            ctx.lineTo(Math.round(bx), Math.round(topY - fh * 0.6));
+            ctx.lineTo(Math.round(bx + 1.5), Math.round(topY));
+            ctx.closePath();
+            ctx.fill();
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            const glow = ctx.createRadialGradient(bx, topY - 2, 1, bx, topY - 2, 22);
+            glow.addColorStop(0, 'rgba(255, 180, 80, 0.40)');
+            glow.addColorStop(1, 'rgba(255, 180, 80, 0)');
+            ctx.fillStyle = glow;
+            ctx.fillRect(Math.round(bx - 24), Math.round(topY - 26), 48, 48);
+            ctx.restore();
         }
 
         ctx.strokeStyle = palette.outline;
@@ -5309,6 +5434,7 @@ export class IsometricRenderer {
         }
 
         this._drawTerrainTone(ctx, screenX, screenY, key, seed, tileX, tileY);
+        this._drawGroundDecals(ctx, screenX, screenY, key, tileX, tileY);
 
         if (!this.bridgeTiles?.has(key)) {
             if (this.commandCenterRoadTiles.has(key) && this.pathTiles.has(key)) {
@@ -5323,6 +5449,11 @@ export class IsometricRenderer {
                     const gInfo = this.grassTuftTiles.get(key);
                     const tuftId = ['veg.grassTuft.a', 'veg.grassTuft.b'][(gInfo?.variant ?? 0) % 2];
                     if (this.sprites) this.sprites.drawSprite(ctx, tuftId, screenX, screenY);
+                }
+                if (this.flowerTiles?.has(key)) {
+                    const fInfo = this.flowerTiles.get(key);
+                    const flowerId = ['veg.flower.a', 'veg.flower.b', 'veg.flower.c'][(fInfo?.variant ?? 0) % 3];
+                    if (this.sprites) this.sprites.drawSprite(ctx, flowerId, screenX, screenY);
                 }
                 if (this.featureTiles?.get(key) === 'reeds') {
                     const reedId = seed > 0.58 ? 'veg.reed.a' : 'veg.reed.b';
@@ -5352,6 +5483,102 @@ export class IsometricRenderer {
             ctx.fillStyle = `rgba(185, 229, 224, ${shimmer})`;
             ctx.fill();
         }
+    }
+
+    // Procedural ground micro-detail baked into the terrain cache: pebble/soil
+    // flecks on grass, moss in cobble joints, leaf litter under the northern
+    // canopy, and worn dirt where grass meets a road. Deterministic — no motion,
+    // no per-frame cost. Breaks up the flat terrain diamonds between buildings.
+    _drawGroundDecals(ctx, screenX, screenY, key, tileX, tileY) {
+        if (this.waterTiles?.has(key)) return;
+        if (this.bridgeTiles?.has(key)) return;
+        const isPath = this.pathTiles?.has(key);
+        const isRoad = isPath || this.commandCenterRoadTiles?.has(key);
+
+        // Place a speck inside the iso diamond; returns null if it would spill out.
+        const place = (salt, spanX, spanY) => {
+            const u = this._decalRand(tileX, tileY, salt);
+            const v = this._decalRand(tileX, tileY, salt + 911);
+            const ox = (u - 0.5) * spanX;
+            const oy = (v - 0.5) * spanY;
+            if (Math.abs(ox) / 30 + Math.abs(oy) / 14 > 0.92) return null;
+            return { ox: Math.round(screenX + ox), oy: Math.round(screenY + oy) };
+        };
+
+        ctx.save();
+        if (isRoad) {
+            // Moss creeping into cobble/flagstone joints.
+            const mossCount = this._decalRand(tileX, tileY, 17) > 0.55 ? 2 : 1;
+            ctx.fillStyle = 'rgba(86, 120, 52, 0.26)';
+            for (let i = 0; i < mossCount; i++) {
+                const p = place(31 + i * 7, 46, 22);
+                if (p) ctx.fillRect(p.ox, p.oy, 2, 1);
+            }
+        } else {
+            // Land grass/dirt: pebble + tonal flecks so each diamond varies.
+            const fleckNoise = this._decalRand(tileX, tileY, 3);
+            const fleckCount = fleckNoise > 0.72 ? 4 : fleckNoise > 0.4 ? 3 : 2;
+            for (let i = 0; i < fleckCount; i++) {
+                const p = place(40 + i * 13, 48, 24);
+                if (!p) continue;
+                const tone = this._decalRand(tileX, tileY, 200 + i);
+                ctx.fillStyle = tone > 0.66
+                    ? 'rgba(150, 152, 120, 0.20)'   // light pebble
+                    : tone > 0.33
+                        ? 'rgba(44, 40, 30, 0.24)'  // dark soil pebble
+                        : 'rgba(58, 84, 30, 0.20)'; // deep grass fleck
+                ctx.fillRect(p.ox, p.oy, tone > 0.85 ? 2 : 1, 1);
+            }
+
+            // Leaf litter under the northern canopy.
+            if (tileY <= 14 && this._decalRand(tileX, tileY, 71) > 0.62) {
+                ctx.fillStyle = this._decalRand(tileX, tileY, 72) > 0.5
+                    ? 'rgba(156, 112, 48, 0.22)'
+                    : 'rgba(116, 82, 40, 0.20)';
+                const p = place(73, 44, 22);
+                if (p) ctx.fillRect(p.ox, p.oy, 2, 1);
+            }
+
+            // Wildflower dabs — tiny color pops scattered through the grass.
+            if (this._decalRand(tileX, tileY, 90) > 0.84) {
+                const fc = this._decalRand(tileX, tileY, 91);
+                ctx.fillStyle = fc > 0.75 ? 'rgba(246, 234, 122, 0.90)'   // buttercup yellow
+                    : fc > 0.50 ? 'rgba(238, 240, 244, 0.88)'             // white daisy
+                    : fc > 0.25 ? 'rgba(228, 150, 198, 0.84)'             // pink clover
+                    : 'rgba(178, 150, 228, 0.84)';                        // violet
+                const p = place(92, 42, 20);
+                if (p) {
+                    ctx.fillRect(p.ox, p.oy, 1, 1);
+                    if (fc > 0.60) ctx.fillRect(p.ox + 1, p.oy, 1, 1);
+                    if (fc > 0.90) ctx.fillRect(p.ox, p.oy - 1, 1, 1);
+                }
+            }
+
+            // Worn dirt where grass meets a road (threshold wear).
+            if (this._neighborsRoad(tileX, tileY)) {
+                ctx.fillStyle = 'rgba(120, 95, 60, 0.15)';
+                ctx.beginPath();
+                ctx.ellipse(Math.round(screenX), Math.round(screenY + 2), 13, 6, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+        }
+        ctx.restore();
+    }
+
+    // Deterministic per-tile, per-salt value in [0,1) for decal placement.
+    _decalRand(tileX, tileY, salt) {
+        let h = (Math.imul(tileX | 0, 73856093) ^ Math.imul(tileY | 0, 19349663) ^ Math.imul(salt | 0, 83492791)) >>> 0;
+        h = Math.imul(h ^ (h >>> 13), 1274126177);
+        return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+    }
+
+    _neighborsRoad(tileX, tileY) {
+        const p = this.pathTiles;
+        if (!p) return false;
+        return p.has(`${tileX + 1},${tileY}`)
+            || p.has(`${tileX - 1},${tileY}`)
+            || p.has(`${tileX},${tileY + 1}`)
+            || p.has(`${tileX},${tileY - 1}`);
     }
 
     _drawHarborCausewayTile(ctx, screenX, screenY, orientation = 'EW', seed = 0) {
@@ -5947,6 +6174,59 @@ export class IsometricRenderer {
         ctx.lineTo(points[3].x + 2, points[3].y + 1);
         ctx.closePath();
         ctx.stroke();
+        ctx.restore();
+    }
+
+    // Distant sea + horizon beyond the island. Drawn per-frame in world space,
+    // BEHIND the terrain (which is opaque over it), so it only fills the void
+    // around and below the diamond — turning the flat edge into a coastline.
+    // Phase-tinted: the top fades out of the sky's own horizon colour so sea
+    // and sky meet seamlessly. Static under reduced motion (pure gradient).
+    _drawDistantSeaHorizon(ctx, atmosphere) {
+        const points = this._worldDiamondPoints();
+        const equatorY = points[1].y;          // diamond's widest screen row
+        const seaTop = equatorY - 60;          // horizon a touch above the equator
+        const seaBottom = points[2].y + 560;   // deep into the void below the south wall
+        const leftX = points[3].x - 1400;
+        const rightX = points[1].x + 1400;
+
+        const phase = atmosphere?.phase || 'day';
+        const deep = phase === 'night'
+            ? { shallow: '#1a3a5e', deep: '#0a1c34' }
+            : phase === 'dusk'
+                ? { shallow: '#6a6390', deep: '#3b3860' }
+                : phase === 'dawn'
+                    ? { shallow: '#6f8fb8', deep: '#445e8a' }
+                    : { shallow: '#5aa0c8', deep: '#2f6e9b' };
+        const horizon = atmosphere?.sky?.palette?.horizon || '#8fb9cf';
+
+        ctx.save();
+        const grad = ctx.createLinearGradient(0, seaTop, 0, seaBottom);
+        grad.addColorStop(0, horizon);
+        grad.addColorStop(0.16, deep.shallow);
+        grad.addColorStop(1, deep.deep);
+        ctx.fillStyle = grad;
+        ctx.fillRect(leftX, seaTop, rightX - leftX, seaBottom - seaTop);
+
+        // Soft horizon haze band where sea meets sky.
+        const haze = ctx.createLinearGradient(0, seaTop - 30, 0, seaTop + 30);
+        haze.addColorStop(0, 'rgba(255, 255, 255, 0)');
+        haze.addColorStop(0.5, phase === 'night' ? 'rgba(120, 150, 190, 0.18)' : 'rgba(240, 250, 255, 0.34)');
+        haze.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.fillStyle = haze;
+        ctx.fillRect(leftX, seaTop - 30, rightX - leftX, 60);
+
+        // A few faint distant swell lines for depth (skipped under reduced motion
+        // only for the drift; the static lines themselves stay).
+        ctx.strokeStyle = phase === 'night' ? 'rgba(150, 180, 215, 0.10)' : 'rgba(235, 248, 255, 0.16)';
+        ctx.lineWidth = 2;
+        for (let i = 0; i < 4; i++) {
+            const ly = seaTop + 40 + i * 70;
+            ctx.beginPath();
+            ctx.moveTo(leftX, ly);
+            ctx.lineTo(rightX, ly);
+            ctx.stroke();
+        }
         ctx.restore();
     }
 
@@ -6679,6 +6959,78 @@ export class IsometricRenderer {
             const x = (tileX - tileY) * TILE_WIDTH / 2;
             const y = (tileX + tileY) * TILE_HEIGHT / 2;
             this.sprites.drawSprite(ctx, fish.id, x, y, { alpha: 0.48 });
+        }
+        ctx.restore();
+    }
+
+    // Calm-water ducks + shoreline herons. Ducks drift on lagoon water with a
+    // gentle paddle; herons stand at the shore with a small bob. Reduced motion
+    // freezes both in place (still readable).
+    _drawWaterfowl(ctx) {
+        if (!this.sprites) return;
+        const visible = this._getVisibleTileBounds(2);
+        ctx.save();
+        for (const duck of CALM_WATER_FAUNA) {
+            const bx = Math.floor(duck.tileX);
+            const by = Math.floor(duck.tileY);
+            if (bx < visible.startX || bx > visible.endX || by < visible.startY || by > visible.endY) continue;
+            if (!this.waterTiles.has(`${bx},${by}`) || this.bridgeTiles?.has(`${bx},${by}`)) continue;
+            const swim = this.motionScale ? Math.sin(this.waterFrame * 0.7 + duck.phase) * (duck.radius ?? 0.15) : 0;
+            const drift = this.motionScale ? Math.cos(this.waterFrame * 0.5 + duck.phase) * 0.06 : 0;
+            const tileX = duck.tileX + swim;
+            const tileY = duck.tileY + drift;
+            this.sprites.drawSprite(ctx, duck.id, (tileX - tileY) * TILE_WIDTH / 2, (tileX + tileY) * TILE_HEIGHT / 2);
+        }
+        for (const heron of SHORE_FAUNA) {
+            const bx = Math.floor(heron.tileX);
+            const by = Math.floor(heron.tileY);
+            if (bx < visible.startX || bx > visible.endX || by < visible.startY || by > visible.endY) continue;
+            const bob = this.motionScale ? Math.sin(this.waterFrame * 0.4 + heron.tileX) * 0.5 : 0;
+            const x = (heron.tileX - heron.tileY) * TILE_WIDTH / 2;
+            const y = (heron.tileX + heron.tileY) * TILE_HEIGHT / 2 + bob;
+            this.sprites.drawSprite(ctx, heron.id, x, y);
+        }
+        ctx.restore();
+    }
+
+    // Songbirds flitting on small looping flight paths between the trees of the
+    // inhabited belt — the land analogue of the sea gulls. Wing frames cycle
+    // when motion is on; a single gliding frame is shown under reduced motion.
+    _drawLandBirds(ctx) {
+        if (!this.sprites || !LAND_BIRD_ROUTES.length) return;
+        if (!this._landBirdRoutes) {
+            this._landBirdRoutes = LAND_BIRD_ROUTES.map((r) => ({
+                route: this._normalizeGullRoute(r.points),
+                speed: r.speed ?? 0.018,
+                altitude: r.altitude ?? 26,
+                phase: r.phase ?? 0,
+                wingRate: r.wingRate ?? 6,
+            }));
+        }
+        const visible = this._getVisibleTileBounds(3);
+        ctx.save();
+        for (const bird of this._landBirdRoutes) {
+            const progress = this.motionScale
+                ? ((this.waterFrame * bird.speed + bird.phase) % 1 + 1) % 1
+                : bird.phase % 1;
+            const p = this._pointOnGullRoute(bird.route, progress);
+            const bx = Math.floor(p.tileX);
+            const by = Math.floor(p.tileY);
+            if (bx < visible.startX - 2 || bx > visible.endX + 2 || by < visible.startY - 2 || by > visible.endY + 2) continue;
+            const gx = (p.tileX - p.tileY) * TILE_WIDTH / 2;
+            const gy = (p.tileX + p.tileY) * TILE_HEIGHT / 2;
+            ctx.globalAlpha = 0.16;
+            ctx.fillStyle = '#000000';
+            ctx.beginPath();
+            ctx.ellipse(gx, gy, 4, 2, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            let frame = 'prop.songbird';
+            if (this.motionScale) {
+                const f = Math.floor(this.waterFrame * bird.wingRate + bird.phase * 11) % 4;
+                frame = f === 0 ? 'prop.songbird.up' : f === 2 ? 'prop.songbird.down' : 'prop.songbird';
+            }
+            this.sprites.drawSprite(ctx, frame, gx, gy - bird.altitude);
         }
         ctx.restore();
     }

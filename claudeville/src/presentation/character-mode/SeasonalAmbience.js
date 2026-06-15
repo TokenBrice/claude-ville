@@ -42,6 +42,10 @@ const SEASONS = {
     spring: { type: 'leaf',    label: 'cherryPetal', staticColor: '#8fbf58', staticSize: 2 },
     summer: { type: 'firefly', label: 'firefly',     staticColor: '#fff1a8', staticSize: 2 },
     autumn: { type: 'leaf',    label: 'leaf',        staticColor: '#b8914b', staticSize: 2 },
+    // Daytime variant of summer: butterflies by day, fireflies after dark. The
+    // base season stays `summer`; _effectiveSeason swaps to this when the
+    // atmosphere phase is not night.
+    summerDay: { type: 'butterfly', label: 'butterfly', staticColor: '#f4a93c', staticSize: 3 },
 };
 
 export class SeasonalAmbience {
@@ -83,8 +87,9 @@ export class SeasonalAmbience {
 
         const atmosphere = this.atmosphereStateGetter() || null;
         const month = monthFromAtmosphere(atmosphere);
-        const season = seasonForMonth(month);
-        if (!season) return;
+        const baseSeason = seasonForMonth(month);
+        if (!baseSeason) return;
+        const season = this._effectiveSeason(baseSeason, atmosphere);
 
         const seasonKey = `${season.type}|${season.label}`;
         if (seasonKey !== this._lastSeasonKey) {
@@ -107,6 +112,14 @@ export class SeasonalAmbience {
             this._spawnAccumulator -= 1;
             this._spawnDriftParticle(season);
         }
+    }
+
+    // Summer splits by time of day: butterflies while the sun is up,
+    // fireflies once it is night. Other seasons pass through unchanged.
+    _effectiveSeason(season, atmosphere) {
+        if (season !== SEASONS.summer) return season;
+        const phase = atmosphere?.phase || atmosphere?.clock?.phase || 'day';
+        return phase === 'night' ? SEASONS.summer : SEASONS.summerDay;
     }
 
     _spawnDriftParticle(season) {

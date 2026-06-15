@@ -353,12 +353,15 @@ export const BOULDERS = [
 // uniformly sprinkling props. Radius is radial falloff in tiles; the engine
 // clamps blocked/path/water/building tiles after applying these weights.
 export const VEGETATION_DISTRICTS = [
-    { name: 'northern-elderwood', centerX: 17, centerY: 8, radius: 15.0, bushBoost: 0.044, grassBoost: 0.060, treeBoost: 0.120 },
-    { name: 'scholars-ridge', centerX: 17, centerY: 18, radius: 10.0, bushBoost: 0.022, grassBoost: 0.048, treeBoost: 0.040 },
-    { name: 'west-river-frame', centerX: 7, centerY: 22, radius: 7.0, bushBoost: 0.04, grassBoost: 0.045, treeBoost: 0.065 },
-    { name: 'portal-grove', centerX: 7.5, centerY: 28.5, radius: 5.0, bushBoost: 0.032, grassBoost: 0.023, treeBoost: 0.018 },
-    { name: 'south-wildwood', centerX: 22, centerY: 35, radius: 12, bushBoost: 0.04, grassBoost: 0.05, treeBoost: 0.08 },
-    { name: 'harbor-windbreak', centerX: 35, centerY: 22, radius: 5.2, bushBoost: 0.020, grassBoost: 0.014, treeBoost: 0.008 },
+    { name: 'northern-elderwood', centerX: 17, centerY: 8, radius: 15.0, bushBoost: 0.044, grassBoost: 0.060, treeBoost: 0.120, flowerBoost: 0.050 },
+    { name: 'scholars-ridge', centerX: 17, centerY: 18, radius: 10.0, bushBoost: 0.022, grassBoost: 0.048, treeBoost: 0.040, flowerBoost: 0.110 },
+    { name: 'west-river-frame', centerX: 7, centerY: 22, radius: 7.0, bushBoost: 0.04, grassBoost: 0.045, treeBoost: 0.065, flowerBoost: 0.085 },
+    { name: 'portal-grove', centerX: 7.5, centerY: 28.5, radius: 5.0, bushBoost: 0.032, grassBoost: 0.023, treeBoost: 0.018, flowerBoost: 0.045 },
+    { name: 'south-wildwood', centerX: 22, centerY: 35, radius: 12, bushBoost: 0.04, grassBoost: 0.05, treeBoost: 0.08, flowerBoost: 0.080 },
+    { name: 'harbor-windbreak', centerX: 35, centerY: 22, radius: 5.2, bushBoost: 0.020, grassBoost: 0.014, treeBoost: 0.008, flowerBoost: 0.040 },
+    // Civic heart — the inhabited belt between the landmarks. Flowers here are
+    // the core of the "living ground" pass; flat so they never block sightlines.
+    { name: 'civic-meadow', centerX: 17, centerY: 22, radius: 9.0, bushBoost: 0.0, grassBoost: 0.030, treeBoost: 0.0, flowerBoost: 0.120 },
 ];
 
 // Shoreline accents are deterministic bands near water. They add readable
@@ -367,6 +370,7 @@ export const SHORELINE_VEGETATION = {
     bushBoost: 0.04,
     grassBoost: 0.09,
     treeBoost: 0.015,
+    flowerBoost: 0.060,
     maxWaterDistance: 1,
 };
 
@@ -461,6 +465,17 @@ export const DISTRICT_PROPS = [
     // Mine ↔ Portal corridor along west-production-road.
     { tileX: 9.0, tileY: 31.3, id: 'prop.runestone', layer: 'sorted', district: 'arcane' },
     { tileX: 10.0, tileY: 32.0, id: 'prop.lantern', layer: 'sorted', district: 'arcane' },
+    // Birdsong & Bloom (v0.16): cultivated garden plants in the lived-in
+    // districts. layer 'sorted' so any that land on a footprint/path/sightline
+    // are auto-culled by _buildDistrictPropSprites rather than drawn wrongly.
+    { tileX: 17.0, tileY: 28.8, id: 'veg.flowerBed', layer: 'sorted', district: 'gate' },
+    { tileX: 20.6, tileY: 28.2, id: 'veg.planter', layer: 'sorted', district: 'gate' },
+    { tileX: 18.8, tileY: 33.2, id: 'veg.hedge', layer: 'sorted', district: 'gate' },
+    { tileX: 8.4, tileY: 23.6, id: 'veg.flowerBed', layer: 'sorted', district: 'civic' },
+    { tileX: 7.2, tileY: 21.4, id: 'veg.planter', layer: 'sorted', district: 'civic' },
+    { tileX: 19.4, tileY: 19.8, id: 'veg.planter', layer: 'sorted', district: 'civic' },
+    { tileX: 26.4, tileY: 31.2, id: 'veg.flowerBed', layer: 'sorted', district: 'workshop' },
+    { tileX: 28.8, tileY: 30.2, id: 'veg.hedge', layer: 'sorted', district: 'workshop' },
 ];
 
 export const AMBIENT_GROUND_PROPS = [
@@ -666,9 +681,39 @@ export const MARINE_FISH_SCHOOLS = [
     { tileX: 17.0, tileY: 22.0, id: 'prop.fishSchoolKoi', radius: 0.20, phase: 1.4 },
 ];
 
+// Birdsong & Bloom (v0.16): land + water fauna.
+// Songbirds flit on small looping flight paths between the trees of the
+// inhabited belt. `points` are tile waypoints; the loop closes automatically.
+export const LAND_BIRD_ROUTES = [
+    { speed: 0.020, altitude: 28, phase: 0.00, wingRate: 6, points: [
+        { tileX: 14, tileY: 19 }, { tileX: 17, tileY: 17.5 }, { tileX: 19.5, tileY: 19.5 }, { tileX: 16, tileY: 22 } ] },
+    { speed: 0.016, altitude: 24, phase: 0.40, wingRate: 5, points: [
+        { tileX: 8, tileY: 20 }, { tileX: 10.5, tileY: 22 }, { tileX: 7, tileY: 24 }, { tileX: 5.5, tileY: 21 } ] },
+    { speed: 0.023, altitude: 30, phase: 0.72, wingRate: 7, points: [
+        { tileX: 25, tileY: 30 }, { tileX: 28.5, tileY: 28.5 }, { tileX: 27, tileY: 32 }, { tileX: 24, tileY: 31 } ] },
+];
+
+// Ducks drifting on calm lagoon water (central lily basin + NW lagoon).
+export const CALM_WATER_FAUNA = [
+    { tileX: 16.6, tileY: 22.2, id: 'prop.duck', radius: 0.16, phase: 0.3 },
+    { tileX: 17.6, tileY: 21.6, id: 'prop.duck', radius: 0.14, phase: 2.1 },
+    { tileX: 13.2, tileY: 8.2, id: 'prop.duck', radius: 0.18, phase: 4.0 },
+    { tileX: 14.8, tileY: 9.0, id: 'prop.duck', radius: 0.13, phase: 1.2 },
+];
+
+// Herons wading at the shoreline (mostly still, gentle bob).
+export const SHORE_FAUNA = [
+    { tileX: 11.4, tileY: 10.6, id: 'prop.heron' },
+    { tileX: 6.4, tileY: 9.0, id: 'prop.heron' },
+];
+
 // Density thresholds for noise-driven flat features.
 // `BUSH_DENSITY` and `GRASS_TUFT_DENSITY` are noise thresholds in [0, 1] —
 // a tile becomes a bush/tuft when its noise value falls in the band.
 // Tuned to roughly match the existing 'flowers'/'mushrooms' densities.
 export const BUSH_DENSITY = { min: 0.05, max: 0.13 };
 export const GRASS_TUFT_DENSITY = { min: 0.18, max: 0.30 };
+// Flower-clump scatter. Sparse base everywhere (a light meadow dusting), much
+// denser where VEGETATION_DISTRICTS set a `flowerBoost`. Flowers are flat and
+// never block building sightlines, so they fill the lived-in zone safely.
+export const FLOWER_DENSITY = { min: 0.02, max: 0.075 };

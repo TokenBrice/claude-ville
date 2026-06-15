@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-06-13-harbor-stacks-v1"
+  assetVersion: "2026-06-16-birdsong-bloom-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -337,22 +337,19 @@ statusOverlays:
     anchor: [32, 36]
 
 # ─── BUILDINGS ───────────────────────────────────────────────────────────────
-# HERO buildings: composeGrid [3,2] = 3 cols × 2 rows of 104px cells → 312×208 composed.
-# The harbor Pharos uses [4,3] so it reads as a true sea landmark at full-map zoom.
-# STANDARD buildings: single 96-112px isometric tile.
+# All buildings are single-image PNGs (buildings/<id>/base.png) per the building
+# style contract (docs/building-style-contract.md): true 2:1 iso, slate-blue roofs,
+# baked grass-cobble/stone/water iso base (nothing floats), ≤400px. composeGrid is
+# retired. Overlay layers (watchfire/banner/beacon/portalGlow) sit beside base.png.
 
 buildings:
-  # ── HERO: Command Center ──
+  # ── HERO: Command Center ── (single-image; was composeGrid [3,2], converted losslessly)
   - id: building.command
-    composeGrid: [3, 2]
+    tool: map_object
+    prompt: "epic command center castle keep, grand stone walls with arched gates, dual dragon banners on parapets, golden flame torches, imposing isometric fortress, on a square isometric grass-and-cobblestone base tile"
     splitForOcclusion: true
     horizonY: 130
     layers:
-      base:
-        tool: isometric_tile
-        prompt: "epic command center castle keep, grand stone walls with arched gates, dual dragon banners on parapets, golden flame torches, imposing isometric fortress"
-        size: 64
-        displaySize: 104
       watchfire:
         tool: isometric_tile
         prompt: "roaring golden watchfire on stone brazier, dancing flame, transparent background, isometric"
@@ -379,27 +376,27 @@ buildings:
     lightRadius: 80
 
   # ── HERO: Harbor Lighthouse (watchtower) ──
+  # Single-image (was composeGrid [4,3]); narrow/tall Pharos per the building
+  # style contract. Beacon flame is the procedural _drawWatchtowerFire +
+  # beacon.png overlay anchored at the dark lantern crown (144,68).
   - id: building.watchtower
-    composeGrid: [4, 3]
+    tool: map_object
+    prompt: "Pharos Lighthouse — tall narrow heroic cool-grey stone lighthouse tower with strong light-to-shadow contrast, tapering stacked circular stages, small arched windows, bronze lantern crown with the flame area left dark for the beacon overlay, lower stone podium with short stair and quay, on a square isometric stone-and-water base tile. Narrow vertical silhouette, much taller than wide. No pale pastel, no modern beam."
+    anchor: [144, 320]
     splitForOcclusion: true
-    horizonY: 198
+    horizonY: 300
     layers:
-      base:
-        tool: isometric_tile
-        prompt: "Great Lighthouse of Alexandria Pharos, white limestone square podium, tapering stacked tower stages, bronze lantern crown, attached stone quay and narrow causeway, heroic isometric harbor landmark, dramatic warm dawn light"
-        size: 64
-        displaySize: 100
       beacon:
-        tool: isometric_tile
+        tool: map_object
         prompt: "open brazier fire in the Pharos lantern crown, orange amber flame, warm magical glow, no modern beam, transparent background, isometric"
         size: 64
-        anchor: [196, 42]
+        anchor: [144, 68]
         animation: pulse
     emitters:
-      torch: [196, 32]
+      torch: [144, 68]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [196, 32]
+    lightSource: [144, 68]
     lightColor: '#ffb347'
     lightRadius: 96
     lightOverlay: 'atmosphere.light.fire-glow'
@@ -419,36 +416,29 @@ buildings:
     lightRadius: 96
     lightOverlay: 'atmosphere.light.lantern-glow'
 
-  # ── HERO: Clock Observatory ──
+  # ── HERO: Clock Observatory ── (single-image; was composeGrid [3,2])
+  # Blank clock dial on the sprite; the animated hands are drawn procedurally
+  # by _drawObservatoryClock at BUILDING_VISUAL_REGISTRY.observatory clockFace.
   - id: building.observatory
-    composeGrid: [3, 2]
+    tool: map_object
+    prompt: "Scholarly grey stone clock tower observatory, blue slate tiled roof, a large blank circular clock dial on the front face with no clock hands, copper-blue scholarly accents, tall arched windows glowing soft gold, arched wooden door, stone buttresses, a small brass telescope angled from the rooftop, on a square isometric grass-and-cobblestone base tile. Bold readable landmark, taller than wide. No clock hands, no text, no numbers, no logo."
     splitForOcclusion: true
-    horizonY: 130
-    layers:
-      base:
-        tool: map_object
-        prompt: "scholarly stone clock tower observatory for a fantasy village, blue slate roof, copper-blue scholarly accents, large circular clock face on the front, no text, no logo, transparent background, low top-down isometric"
-        size: 64
-        displaySize: 104
+    horizonY: 235
     emitters:
-      sparkle: [126, 62]
+      sparkle: [150, 60]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [126, 62]
+    lightSource: [120, 150]
     lightColor: '#9fd1ff'
     lightRadius: 58
 
-  # ── HERO: Portal Gate ──
+  # ── HERO: Portal Gate ── (single-image; was composeGrid [3,2], converted losslessly)
   - id: building.portal
-    composeGrid: [3, 2]
+    tool: map_object
+    prompt: "epic portal gate archway, ancient stone arch with swirling arcane energy, violet and gold runes, massive scale, isometric, on a square isometric dark stone-floor base tile"
     splitForOcclusion: true
     horizonY: 130
     layers:
-      base:
-        tool: isometric_tile
-        prompt: "epic portal gate archway, ancient stone arch with swirling arcane energy, violet and gold runes, massive scale, isometric"
-        size: 64
-        displaySize: 104
       portalGlow:
         tool: isometric_tile
         prompt: "swirling violet portal vortex energy, arcane rune ring, transparent background, isometric"
@@ -466,51 +456,45 @@ buildings:
 
   # ── STANDARD: Code Forge ──
   - id: building.forge
-    tool: isometric_tile
-    prompt: "old-school 16-bit fantasy RPG isometric code forge landmark, compact soot-dark stone smithy with oversized glowing orange arched furnace mouth, tall black iron chimney with crown, red-orange timber canopy roof, rune anvil and forge tools outside, molten sparks, warm firelight, transparent background, strong readable silhouette, no sci-fi reactor, no generic house"
-    size: 64
-    displaySize: 112
+    tool: map_object
+    prompt: "Code Forge — compact medieval stone blacksmith's forge landmark, soot-darkened cool-grey stone walls, oversized glowing orange arched furnace mouth spilling warm firelight, tall dark iron chimney with a crown wisping smoke, dark slate-grey tiled roof, rune anvil and blacksmith tools on the cobblestone yard, molten sparks, on a square isometric grass-and-cobblestone base tile. Bold readable landmark, no terracotta-red roof, no plain cottage."
     emitters:
-      smoke: [39, 8]
-      forgeEmber: [51, 66]
-      forgeSpark: [50, 70]
-      sparkle: [26, 76]
-    lightSource: [51, 66]
+      smoke: [175, 28]
+      forgeEmber: [75, 118]
+      forgeSpark: [76, 112]
+      sparkle: [195, 150]
+    lightSource: [75, 118]
     lightColor: '#ff8a33'
-    lightRadius: 62
+    lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'
 
   # ── STANDARD: Token Mine ──
   - id: building.mine
-    tool: isometric_tile
-    prompt: "old-school 16-bit fantasy RPG isometric token mine landmark, dark craggy mountain gate with heavy timber headframe and pulley wheel, amber-lit arched cave mouth, mine cart rails and small cart emerging, glowing blue token ore veins and crystal clusters, lanterns, rubble, moss, bold readable silhouette, transparent background, no sci-fi pod, no generic ruin"
-    size: 64
-    displaySize: 160
+    tool: map_object
+    prompt: "Token Mine — craggy cool grey-blue mountain mine-gate landmark with deep but not black shadows, heavy timber headframe with a pulley wheel over an amber-lit arched cave mouth, a small mine cart on rails emerging, glowing cyan crystal token-ore veins and clusters, hanging iron lanterns with warm glow, on a square isometric grass-and-cobblestone diamond base tile. Bold readable landmark, no hexagonal base, no pure-black rock, no sci-fi pod."
     emitters:
-      sparkle: [94, 47]
-      sparkle2: [34, 86]
-      mining: [78, 122]
-    lightSource: [73, 95]
+      sparkle: [90, 95]
+      sparkle2: [60, 120]
+      mining: [138, 165]
+    lightSource: [128, 158]
     lightColor: '#ffb84d'
-    lightRadius: 68
+    lightRadius: 80
     lightOverlay: 'atmosphere.light.lantern-glow'
 
   # ── HERO: Task Board (Town Quest Board) ──
   - id: building.taskboard
     tool: map_object
-    prompt: "fantasy RPG town task board landmark rotated toward the harbor sea, wooden quest notice board and signpost, broad timber board covered with parchment quest notes and colored wax seals on the seaward-facing side, crossed beams, blue slate roof cap, hanging lanterns, small guild pennants, arrow signposts, rope ties, stout posts on cobblestone-and-dirt base, cozy village square job board, bold readable isometric RPG landmark, no castle facade, no door, no large stone towers"
-    size: 176
-    displaySize: 176
+    prompt: "Quest Notice Board — grand open-air timber quest board landmark, weathered grey-brown oak frame with crossed support beams, the board face densely covered with pinned parchment quest notes and colored wax seals, a small slate-blue tiled roof cap, carved corner posts topped with crimson-and-gold guild pennants, two hanging iron lanterns with warm amber glow, on a square isometric grass-and-cobblestone base tile. Bold readable landmark, taller than wide, no enclosed house, no walls, no door."
     splitForOcclusion: true
-    horizonY: 94
+    horizonY: 150
     emitters:
-      torch: [48, 105]
-      torch2: [128, 105]
-      sparkle: [88, 74]
-      sparkle2: [88, 48]
+      torch: [55, 80]
+      torch2: [200, 80]
+      sparkle: [128, 90]
+      sparkle2: [128, 70]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [88, 74]
+    lightSource: [128, 95]
     lightColor: '#ffb347'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'
@@ -742,6 +726,38 @@ props:
     size: 32
     anchor: [16, 18]
 
+  # Birdsong & Bloom (v0.16): land + water fauna.
+  - id: prop.songbird
+    tool: map_object
+    prompt: "tiny songbird in flight, warm orange and brown plumage, wings level spread gliding, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no branch, no perch, no square base, empty transparent corners"
+    size: 32
+    anchor: [16, 16]
+
+  - id: prop.songbird.up
+    tool: map_object
+    prompt: "tiny songbird in flight, warm orange and brown plumage, wings raised high upward flap, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no branch, no perch, no square base, empty transparent corners"
+    size: 32
+    anchor: [16, 16]
+
+  - id: prop.songbird.down
+    tool: map_object
+    prompt: "tiny songbird in flight, warm orange and brown plumage, wings swept downward flap, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no branch, no perch, no square base, empty transparent corners"
+    size: 32
+    anchor: [16, 16]
+
+  - id: prop.duck
+    tool: map_object
+    prompt: "small mallard duck floating on calm water, green head and brown body, gentle wake, readable 32 pixel fantasy sprite, transparent background only, no water tile, no square base, empty transparent corners"
+    size: 32
+    anchor: [16, 18]
+
+  - id: prop.heron
+    tool: map_object
+    prompt: "tall slender grey heron wading, long thin legs, curved neck, folded wings, readable fantasy sprite, transparent background only, no water tile, no ground tile, no square base, empty transparent corners"
+    width: 32
+    height: 48
+    anchor: [16, 42]
+
   - id: prop.runeFountain
     tool: isometric_tile
     prompt: "small ancient stone fountain basin, glowing blue rune water, mossy carved rim, heroic fantasy RPG town prop, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
@@ -917,6 +933,44 @@ vegetation:
     prompt: "small floating lily pad cluster, three round flat dark green pads on calm water, one with a tiny pink lotus bud, transparent background, no water tile, no square base, soft pixel art shadow on the underside"
     size: 32
     anchor: [16, 18]
+
+  # Birdsong & Bloom (v0.16): living-ground flower scatter + cultivated plants.
+  - id: veg.flower.a
+    tool: isometric_tile
+    prompt: "small clump of wild garden flowers, mixed red and gold blooms on bright green stems, isometric"
+    size: 32
+    anchor: [16, 20]
+
+  - id: veg.flower.b
+    tool: isometric_tile
+    prompt: "cluster of blue and white wildflowers with green foliage, isometric"
+    size: 32
+    anchor: [16, 20]
+
+  - id: veg.flower.c
+    tool: isometric_tile
+    prompt: "patch of pink and violet meadow flowers, soft petals and green leaves, isometric"
+    size: 32
+    anchor: [16, 20]
+
+  - id: veg.flowerBed
+    tool: map_object
+    prompt: "tended garden flower bed, dark soil edged with small stones, rows of bright red yellow and pink blooms, transparent background, no ground tile, no square base, isometric"
+    width: 48
+    height: 40
+    anchor: [24, 30]
+
+  - id: veg.planter
+    tool: isometric_tile
+    prompt: "wooden planter box overflowing with colorful flowers and trailing green vines, isometric"
+    size: 32
+    anchor: [16, 24]
+
+  - id: veg.hedge
+    tool: isometric_tile
+    prompt: "neatly trimmed dense green garden hedge, flat top, tiny berries, isometric"
+    size: 32
+    anchor: [16, 22]
 
 # ─── TERRAIN ─────────────────────────────────────────────────────────────────
 # Wang 4-bit tilesets — each produces 16 adjacency variants.

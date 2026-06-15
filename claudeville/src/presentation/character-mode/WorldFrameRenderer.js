@@ -61,12 +61,15 @@ export function renderWorldFrame(renderer, dt = 16) {
     markFrameTiming(frameTimer, 'sky');
 
     renderer.camera.applyTransform(ctx);
+    renderer._drawDistantSeaHorizon(ctx, atmosphere);
     renderer._drawTerrain(ctx);
     renderer._drawSkyCanopy(ctx, atmosphere, dt);
     renderer.camera.applyTransform(ctx);
     renderer._drawFishSchools(ctx);
+    renderer._drawWaterfowl(ctx);
     renderer._drawTropicalWaterfalls(ctx);
     renderer._drawOpenSeaGulls(ctx);
+    renderer._drawLandBirds(ctx);
     renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
     drawVillageDirectorGround(ctx, villageSnapshot, renderNow);
 

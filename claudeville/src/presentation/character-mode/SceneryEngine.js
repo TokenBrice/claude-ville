@@ -11,6 +11,7 @@ import {
     SCENERY_CLEARINGS,
     BUSH_DENSITY,
     GRASS_TUFT_DENSITY,
+    FLOWER_DENSITY,
 } from '../../config/scenery.js';
 
 const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -29,6 +30,7 @@ export class SceneryEngine {
         this.bridgeTiles = new Map(); // key -> { orientation: 'NS' | 'EW' }
         this.bushTiles = new Map();    // key -> { variant: 0..2 }
         this.grassTuftTiles = new Map(); // key -> { variant: 0..1 }
+        this.flowerTiles = new Map();  // key -> { variant: 0..2 }
         this.smallRockTiles = new Set();
         this.treeProps = [];           // { tileX, tileY, variant, scale }
         this.boulderProps = [];        // { tileX, tileY, variant, scale }
@@ -53,6 +55,7 @@ export class SceneryEngine {
     getBridgeTiles() { return this.bridgeTiles; }
     getBushTiles() { return this.bushTiles; }
     getGrassTuftTiles() { return this.grassTuftTiles; }
+    getFlowerTiles() { return this.flowerTiles; }
     getTreeProps() { return this.treeProps; }
     getBoulderProps() { return this.boulderProps; }
 
@@ -583,6 +586,19 @@ export class SceneryEngine {
                     this.bushTiles.set(key, { variant });
                 } else if (noise >= GRASS_TUFT_DENSITY.min && noise < grassMax && this._passesFlatPropSpacing(x, y, 'grass')) {
                     this.grassTuftTiles.set(key, { variant: Math.floor(this.tileNoise(x + 21, y + 5) * 2) });
+                }
+
+                // Flower clumps: independent of bushes/tufts, denser in the
+                // lived-in districts (flowerBoost). Flat, so sightline-safe.
+                if (!this.bushTiles.has(key) && !this.grassTuftTiles.has(key)) {
+                    const fNoise = this.tileNoise(x + 131, y + 89);
+                    const flowerMax = Math.min(0.30, FLOWER_DENSITY.max
+                        + this._districtBias(x, y, 'flowerBoost')
+                        + this._shorelineBias(x, y, 'flowerBoost')
+                        - clearing * 0.4);
+                    if (fNoise >= FLOWER_DENSITY.min && fNoise < flowerMax && this._passesFlatPropSpacing(x, y, 'grass')) {
+                        this.flowerTiles.set(key, { variant: Math.floor(this.tileNoise(x + 53, y + 29) * 3) });
+                    }
                 }
             }
         }
