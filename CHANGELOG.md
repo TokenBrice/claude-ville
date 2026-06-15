@@ -2,6 +2,27 @@
 
 ---
 
+## v0.14.0 — *Deep Reserves* · Jun 15, 2026
+
+The token limit indicator becomes a place in the world: the Token Mine now shows how much limit is left as ore in the ground, and the crowded top bar gets a slim chip in place of its twin progress bars.
+
+- **Mine reserves** — the mine renders remaining 5-hour limit as a stockpile of glowing ore crystals over a five-segment gauge, across five tiers from brimming to depleted. More limit left means a richer, brighter mine; a depleted reserve raises a pulsing red warning (with a static reduced-motion fallback)
+- **Slimmer top bar** — the twin 5H/7D quota progress bars collapse into a single compact chip that still reports both windows' usage (the familiar figures), colored by whichever window sits closest to its limit, so the readout stays available in Dashboard mode too
+- **Top bar tidy** — the redundant subscription tier and message-count chips are removed, the working/idle/waiting counts merge into one segmented status tag, and the LIVE indicator tucks neatly under the ClaudeVille wordmark
+- **Consistent signal** — the mine glow and the building signal label now speak in terms of reserves remaining rather than usage pressure
+
+---
+
+## v0.13.0 — *Hearthsong* · Jun 14, 2026
+
+The village gets a calmer sonic backdrop. v0.12's per-event beeps are replaced by a gentle procedural ambience that stays local, opt-in, and off by default.
+
+- **Gentle ambient bed** — the sound toggle now starts a small Web Audio graph with warm low pads, filtered air/water texture, and quiet bell tones. There are no samples, build steps, or external assets
+- **No reactive pile-up** — agent updates, tool calls, and village scenes no longer spawn sounds, so busy sessions cannot turn into a wall of beeps or motifs
+- **Safer audio lifecycle** — ambience fades in and out, pauses when the tab is hidden, resumes only after a user gesture, and keeps the top-bar opt-in behavior from v0.12
+
+---
+
 ## v0.12.0 — *The Grand Faire* · Jun 14, 2026
 
 ClaudeVille gets a village-wide stage manager. The world now turns routine CLI state into short readable scenes while keeping the app local, opt-in, and smooth.
