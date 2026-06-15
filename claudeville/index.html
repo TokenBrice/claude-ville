@@ -22,10 +22,12 @@
     <!-- Top bar -->
     <header id="topbar" class="topbar">
         <div class="topbar__left">
-            <span class="topbar__logo">ClaudeVille</span>
-            <span class="topbar__version" tabindex="0" role="button">v0.12</span>
+            <div class="topbar__brand">
+                <span class="topbar__logo">ClaudeVille</span>
+                <span id="topbarConnection" class="topbar__conn topbar__conn--connected">LIVE</span>
+            </div>
+            <span class="topbar__version" tabindex="0" role="button">v0.14</span>
             <span id="statFps" class="topbar__fps">-- FPS</span>
-            <span id="topbarConnection" class="topbar__conn topbar__conn--connected">LIVE</span>
         </div>
         <div class="topbar__center">
             <div class="topbar__stat">
@@ -41,41 +43,34 @@
                 <span id="statTime" class="topbar__stat-value">00:00:00</span>
             </div>
             <div class="topbar__badges">
-                <span class="topbar__badge topbar__badge--working">
-                    <span class="topbar__badge-dot"></span>
-                    <span id="badgeWorking">0</span> <span data-i18n="working">WORKING</span>
-                </span>
-                <span class="topbar__badge topbar__badge--idle">
-                    <span class="topbar__badge-dot"></span>
-                    <span id="badgeIdle">0</span> <span data-i18n="idle">IDLE</span>
-                </span>
-                <span class="topbar__badge topbar__badge--waiting">
-                    <span class="topbar__badge-dot"></span>
-                    <span id="badgeWaiting">0</span> <span data-i18n="waiting">WAITING</span>
-                </span>
+                <div class="topbar__status">
+                    <span class="topbar__seg topbar__seg--working">
+                        <span class="topbar__badge-dot"></span>
+                        <span id="badgeWorking">0</span> <span data-i18n="working">WORKING</span>
+                    </span>
+                    <span class="topbar__seg topbar__seg--idle">
+                        <span class="topbar__badge-dot"></span>
+                        <span id="badgeIdle">0</span> <span data-i18n="idle">IDLE</span>
+                    </span>
+                    <span class="topbar__seg topbar__seg--waiting">
+                        <span class="topbar__badge-dot"></span>
+                        <span id="badgeWaiting">0</span> <span data-i18n="waiting">WAITING</span>
+                    </span>
+                </div>
                 <span class="topbar__badge topbar__badge--errored" id="badgeErroredWrap" style="display:none"><span class="topbar__badge-glyph">!</span> <span id="badgeErrored">0</span> ERRORED</span>
                 <span class="topbar__badge topbar__badge--attention" id="badgeAttentionWrap" style="display:none"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> ATTN</span>
             </div>
             <div class="topbar__divider"></div>
-            <div class="topbar__account" id="accountSection">
-                <span id="accountTier" class="topbar__account-tier"></span>
-                <span id="accountActivity" class="topbar__account-activity"></span>
-            </div>
-            <div id="quotaSection" class="topbar__quota" style="display: none;">
-                <div class="topbar__quota-bar">
-                    <span class="topbar__quota-label">5H</span>
-                    <div class="topbar__quota-track">
-                        <div id="quota5hBar" class="topbar__quota-fill"></div>
-                    </div>
-                    <span id="quota5hPct" class="topbar__quota-pct">0%</span>
-                </div>
-                <div class="topbar__quota-bar">
-                    <span class="topbar__quota-label">7D</span>
-                    <div class="topbar__quota-track">
-                        <div id="quota7dBar" class="topbar__quota-fill"></div>
-                    </div>
-                    <span id="quota7dPct" class="topbar__quota-pct">0%</span>
-                </div>
+            <div id="quotaSection" class="topbar__quota-chip" style="display: none;" title="Token limit used">
+                <span class="topbar__quota-chip-icon" aria-hidden="true">&#9935;</span>
+                <span class="topbar__quota-chip-win">
+                    <span class="topbar__quota-chip-lbl">5H</span>
+                    <span id="quota5hPct" class="topbar__quota-chip-pct">--</span>
+                </span>
+                <span class="topbar__quota-chip-win">
+                    <span class="topbar__quota-chip-lbl">7D</span>
+                    <span id="quota7dPct" class="topbar__quota-chip-pct">--</span>
+                </span>
             </div>
         </div>
         <div class="topbar__right">

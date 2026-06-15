@@ -1296,8 +1296,11 @@ export class BuildingSprite {
             const mouth = localPoint(73, 95);
             const seamColor = this._mineSeamColor();
             const mineRitual = this._latestRitual('mine');
+            // Cave-mouth ore glow brightens with remaining reserves: a full mine
+            // catches the lantern light, a depleted one barely smoulders.
+            const reserve = this._mineReserveRatio();
             ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = 0.16 + pulse * 0.12 + (mineRitual ? 0.12 : 0);
+            ctx.globalAlpha = 0.14 + pulse * 0.1 + reserve * 0.16 + (mineRitual ? 0.1 : 0);
             ctx.fillStyle = seamColor;
             ctx.beginPath();
             ctx.ellipse(mouth.x, mouth.y - 1, 28, 13, -0.22, 0, Math.PI * 2);
@@ -1313,7 +1316,7 @@ export class BuildingSprite {
             ctx.lineTo(mouth.x + 30, mouth.y + 14);
             ctx.stroke();
             this._drawMineRitual(ctx, mouth, mineRitual);
-            this._drawMineLoadMarkers(ctx, mouth, building);
+            this._drawMineReserve(ctx, mouth, building);
         } else if (building.type === 'portal') {
             if (!shouldDrawLocalY(60)) {
                 ctx.restore();
@@ -2494,20 +2497,41 @@ export class BuildingSprite {
         }
     }
 
-    _drawMineLoadMarkers(ctx, mouth, building) {
-        const activity = this._buildingActivityInfo(building);
-        const quotaPressure = this._quotaFiveHourRatio();
-        const signal = Math.max(activity.intensity, activity.occupancy.ratio, quotaPressure);
-        if (signal <= 0.16) return;
+    // Mine reserves = remaining 5-hour quota, rendered as a stockpile of glowing
+    // ore crystals (count = reserve tier 0..4) above a five-segment reserve
+    // gauge. The higher the remaining limit, the richer the mine. A depleted
+    // reserve raises a pulsing red warning; without quota data the mine makes no
+    // reserve claim at all.
+    _drawMineReserve(ctx, mouth, building) {
+        if (!this._hasMineQuota()) return;
 
-        const seamColor = this._mineSeamColor();
-        const cartCount = Math.max(1, Math.min(4, Math.ceil(signal * 4)));
-        const barWidth = 36;
+        const reserve = this._mineReserveRatio();
+        const tier = this._mineReserveTier();   // 0 depleted .. 4 brimming
+        const depleted = tier === 0;
+        const seamColor = this._mineSeamColor(); // gold (rich) -> red (depleted)
+
+        const barWidth = 40;
         const barX = Math.round(mouth.x - barWidth / 2);
         const barY = Math.round(mouth.y + 33);
-        const fillWidth = Math.round(barWidth * signal);
+        const fillWidth = Math.round(barWidth * reserve);
 
         ctx.save();
+
+        // Ore stockpile: one crystal per filled tier, piled at the cave mouth.
+        for (let i = 0; i < tier; i++) {
+            const col = i % 3;
+            const row = i < 3 ? 0 : 1;
+            const x = mouth.x - 15 + col * 15 + row * 7;
+            const y = mouth.y + 17 - row * 7;
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 0.8;
+            this._drawActivityDiamond(ctx, x, y, 4.6, '#3a2819', 'rgba(255, 210, 128, 0.34)');
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = 0.5 + reserve * 0.3;
+            this._drawActivityDiamond(ctx, x, y - 1, 3.1, seamColor);
+        }
+
+        // Reserve gauge: dark track, four tier ticks, reserve fill.
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 0.74;
         ctx.fillStyle = 'rgba(34, 24, 15, 0.82)';
@@ -2515,27 +2539,23 @@ export class BuildingSprite {
         ctx.strokeStyle = 'rgba(244, 214, 139, 0.38)';
         ctx.lineWidth = 1;
         ctx.strokeRect(barX + 0.5, barY + 0.5, barWidth - 1, 3);
-
-        ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = quotaPressure > 0.82 ? 0.82 : 0.58;
-        ctx.fillStyle = seamColor;
-        ctx.fillRect(barX + 1, barY + 1, Math.max(2, fillWidth - 2), 2);
-
-        ctx.globalCompositeOperation = 'source-over';
-        for (let i = 0; i < cartCount; i++) {
-            const x = mouth.x - 22 + i * 15;
-            const y = mouth.y + 18 - (i % 2) * 3;
-            ctx.globalAlpha = 0.78;
-            this._drawActivityDiamond(ctx, x, y, 4.5, '#3a2819', 'rgba(255, 210, 128, 0.34)');
-            ctx.globalCompositeOperation = 'screen';
-            ctx.globalAlpha = 0.44 + quotaPressure * 0.28;
-            this._drawActivityDiamond(ctx, x, y - 1, 3.1, seamColor);
-            ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = 'rgba(20, 13, 7, 0.85)';
+        for (let i = 1; i < 5; i++) {
+            ctx.fillRect(barX + Math.round((barWidth / 5) * i), barY, 1, 4);
         }
 
-        if (quotaPressure > 0.8 || activity.occupancy.state === 'full') {
-            ctx.globalAlpha = 0.82;
-            ctx.strokeStyle = quotaPressure > 0.8 ? '#ff755d' : seamColor;
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = 0.58 + reserve * 0.3;
+        ctx.fillStyle = seamColor;
+        ctx.fillRect(barX + 1, barY + 1, Math.max(0, fillWidth - 2), 2);
+
+        // Depleted reserves: pulsing red warning chevrons at the gauge ends.
+        if (depleted) {
+            ctx.globalCompositeOperation = 'source-over';
+            const warn = this.motionScale ? 0.55 + Math.sin(this.frame * 0.18) * 0.27 : 0.6;
+            ctx.globalAlpha = warn;
+            ctx.strokeStyle = '#ff755d';
             ctx.lineWidth = 1.4;
             ctx.beginPath();
             ctx.moveTo(barX - 5, barY - 2);
@@ -2980,6 +3000,27 @@ export class BuildingSprite {
         if (ratio <= 0.5) return MINE_SEAM_COLORS[0];
         if (ratio <= 0.8) return mixHex(MINE_SEAM_COLORS[0], MINE_SEAM_COLORS[1], (ratio - 0.5) / 0.3);
         return mixHex(MINE_SEAM_COLORS[1], MINE_SEAM_COLORS[2], (ratio - 0.8) / 0.2);
+    }
+
+    _hasMineQuota() {
+        return Number.isFinite(Number(this.quotaState?.fiveHour ?? this.quotaState?.fiveHourRatio));
+    }
+
+    // Remaining 5-hour limit as a 0..1 reserve (inverse of usage). Higher means
+    // more "ore" left in the mine.
+    _mineReserveRatio() {
+        return clamp01(1 - this._quotaFiveHourRatio());
+    }
+
+    // Discrete reserve tier 0..4 (depleted / low / medium / high / brimming).
+    // The 0.2 depleted floor mirrors the top-bar danger threshold (usage >= 0.8).
+    _mineReserveTier() {
+        const reserve = this._mineReserveRatio();
+        if (reserve < 0.2) return 0;
+        if (reserve < 0.4) return 1;
+        if (reserve < 0.6) return 2;
+        if (reserve < 0.8) return 3;
+        return 4;
     }
 
     _drawWatchtowerFire(ctx, beacon, pulse) {

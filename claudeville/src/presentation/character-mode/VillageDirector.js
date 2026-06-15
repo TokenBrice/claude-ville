@@ -891,7 +891,7 @@ export class VillageDirector {
     _buildingSignalLabel(type, presence, count, recentTools) {
         if (presence?.label) return presence.label;
         if ((count?.errored || 0) > 0) return 'Needs attention';
-        if (type === 'mine' && this._quotaRatio(this.quotaState) >= 0.86) return 'Quota heat';
+        if (type === 'mine' && this._quotaRatio(this.quotaState) >= 0.86) return 'Low reserves';
         if (type === 'watchtower' && this.harborState?.hasFailedPush) return 'Alert lit';
         if ((count?.waiting || 0) > 0) return 'Queue forming';
         if (recentTools.length) return recentTools.at(-1)?.label || 'Tool work';
