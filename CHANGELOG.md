@@ -2,6 +2,37 @@
 
 ---
 
+## v0.15.0 — *The Living Village* · Jun 15, 2026
+
+A two-part release that makes Claudeville cohere *and* come alive: every landmark rebuilt to one art standard, then the world between them filled with flora, fauna, and a real coastline.
+
+### Buildings — harmonized
+
+Every building was rebuilt to one art standard — cool stone, slate-blue roofs, painterly shading, and a grounded base under each — so the village reads as one place instead of a patchwork.
+
+- **Rebuilt landmarks** — the Task Board (now an open-air quest board, not a cottage), Code Forge (slate roof, glowing furnace), Token Mine (cyan ore veins on a proper isometric base, no more hexagon), Pharos Lighthouse (taller, cool stone, no more washed-out lilac), and Research Observatory (now grounded, with its live clock hands re-aligned) were regenerated to a new building style contract
+- **Everything is grounded** — each building sits on a baked isometric base tile; nothing floats anymore
+- **One rendering path** — buildings are now single-image sprites (the old tile-grid `composeGrid` system is retired), simpler to generate and validate
+- **Single style source** — the sprite bake script reads its style and prompts from the manifest, so there is one source of truth
+- Regenerated buildings no longer render inside a grey rectangle (their transparent backgrounds are keyed out)
+
+### Atmosphere & life
+
+The world between the buildings now feels alive and tended, and the island reads as a real coastline.
+
+- **Living ground.** The grass between buildings is no longer a flat fill: a procedural micro-detail layer bakes pebble and soil flecks, moss into the cobble joints, leaf litter under the northern canopy, and worn dirt where grass meets the roads — with wildflowers dabbing the meadows in colour.
+- **Flower meadows & gardens.** New flower-clump scatter blooms across the lived-in districts, plus cultivated plants — flower beds, planters, and hedges — framing the civic plaza, the gate avenue, and the workshop row.
+- **Butterflies by day, fireflies by night.** Summer ambience now drifts butterflies over the village while the sun is up and fireflies after dark.
+- **Songbirds & waterfowl.** Songbirds flit on looping paths between the trees of the inhabited belt; ducks paddle the calm lagoon and herons wade at the shoreline — the land and lagoon now carry the same life the open sea always had.
+- **A real coastline.** Beyond the walls the flat void is gone: a distant sea now stretches to a hazy horizon, tinted to the time of day, so Claudeville sits on a coast rather than floating on nothing.
+- **The wall, lit and overgrown.** The southern palisade gained mounted torches with warm light, trailing ivy, and shrubs at its footing; the gate is now framed by flanking fire-baskets.
+
+### Fixes
+
+- Clustered agent **name tags no longer overlap** — the label de-overlap was measuring each tag at ~60% of its real pill width, so neighbouring name pills collided on the same slot (e.g. two "RATE-LIMIT WATCH" tags mashing over the Mine). The width estimate now matches the rendered pill, so close tags stack onto clear, separated slots while distant ones stay put.
+
+---
+
 ## v0.14.0 — *Deep Reserves* · Jun 15, 2026
 
 The token limit indicator becomes a place in the world: the Token Mine now shows how much limit is left as ore in the ground, and the crowded top bar gets a slim chip in place of its twin progress bars.
