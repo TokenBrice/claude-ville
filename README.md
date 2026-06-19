@@ -66,7 +66,7 @@ For an unfamiliar agent, read these first:
   - Claude Code: `~/.claude/`
   - Codex CLI: `~/.codex/` (sessions are read from `~/.codex/sessions/`)
   - Gemini CLI: `~/.gemini/` (sessions are read from `~/.gemini/tmp/`)
-  - Kimi: `~/.kimi/` (sessions are read from `~/.kimi/sessions/`)
+  - Kimi: `~/.kimi/` or `~/.kimi-code/` (legacy sessions are read from `~/.kimi/sessions/`; Kimi Code sessions from `~/.kimi-code/sessions/`)
   - OpenCode: `~/.local/share/opencode/opencode.db` with Node `node:sqlite` support or the `sqlite3` CLI available for read-only access.
 - macOS widget only: macOS with the Xcode Command Line Tools available for `swiftc`.
 - KDE widget only: KDE Plasma 6 with `kpackagetool6`.
@@ -156,7 +156,7 @@ Adapters live in `claudeville/adapters/` and are registered in `adapters/index.j
 | Claude Code | `~/.claude/` | `history.jsonl`, `projects/*/*.jsonl`, subagent files, teams, tasks | Supports main sessions, subagents, orphan/team-member sessions, token usage, teams, tasks, and git commit/push extraction. |
 | Codex CLI | `~/.codex/sessions/` | Recent `rollout-*.jsonl` files under date folders | Reads recent rollouts, session metadata, tools, messages, token count events, reasoning effort, and git commit/push extraction. |
 | Gemini CLI | `~/.gemini/tmp/` | `tmp/<project_hash>/chats/session-*.json` | Reads recent chat JSON files, attempts to reverse-map project hashes to local paths, and extracts git commit/push events where commands are present. |
-| Kimi | `~/.kimi/` | `sessions/<project_hash>/<session_uuid>/wire.jsonl`, `state.json`, `kimi.json` | Reads tool/message/status events, resolves project hashes, extracts token usage, and extracts git commit/push events. |
+| Kimi | `~/.kimi/`, `~/.kimi-code/` | Legacy `sessions/<project_hash>/<session_uuid>/wire.jsonl`; Kimi Code `sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl` plus `session_index.jsonl` | Reads tool/message/status events, resolves projects from legacy hashes or the Kimi Code index, extracts token usage, surfaces Kimi Code child agents, and extracts git commit/push events. |
 | OpenCode | `~/.local/share/opencode/opencode.db` | SQLite session/message/part rows | Opens the database read-only via `node:sqlite` or `sqlite3 -readonly`, preserves OpenCode as the provider, exposes model families such as DeepSeek through `model`, and extracts git commit/push events from shell tools. |
 
 Only active adapters are used. Claude-only concepts such as teams and tasks are optional and return empty arrays when unavailable.

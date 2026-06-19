@@ -2,6 +2,22 @@
 
 ---
 
+## v0.16.1 — *Moonlit Envoys* · Jun 19, 2026
+
+Kimi's newer home is now part of the village, with its child agents and context usage visible alongside legacy Kimi sessions.
+
+- **Kimi Code sessions** — ClaudeVille now scans `~/.kimi-code/` in addition to legacy `~/.kimi/`, reading indexed projects by session id or directory with `state.json` homedir and `config.update.cwd` fallbacks, main sessions, child agents, recent tools, user prompts, assistant messages, token usage, and git commit/push activity with tool-result success/failure metadata from the new wire format
+- **Detail parity** — Kimi Code detail responses now carry the same resolved project path used by the session list, and recent tool rows include tool-result exit codes/stderr so failed shell commands get the same warning chips as Codex and OpenCode
+- **Child-agent lineage** — Kimi Code `agents/<agent>/wire.jsonl` entries now appear as linked sub-agents, including nested child-to-child lineage from persisted `parentAgentId` metadata when Kimi provides it
+- **Quiet parent continuity** — when a Kimi Code child agent is active but the main wire is quiet or missing, the main session remains visible with child-derived model/context metadata and parent detail lookups fall back to the newest child wire so sidebar grouping, tethers, and parent selection keep working
+- **Context limits** — Kimi Code model config and per-session `config.update` aliases are read for context-window capacity, so session cards and details can show the same normalized token pressure as other providers before the first usage record arrives
+- **Usage normalization** — Kimi Code `usage.record` token fields now tolerate both camelCase and snake_case spellings before being normalized into ClaudeVille's shared input/output/cache counters
+- **Live config watching** — legacy Kimi and Kimi Code config files are now part of the watch set, so display-name and context-limit changes refresh through the same near-live path as session updates
+- **Detail lookup hardening** — Kimi transcript details, indexed session directories, and child-detail fallback paths now verify resolved paths stay inside known Kimi session roots before reading or trusting them
+- **Lunar Kimi look** — the Kimi villager sprite has been refreshed from a horned executor into a lunar oracle silhouette that better matches the provider's softer moonlit identity
+
+---
+
 ## v0.16.0 — *Home Waters* · Jun 15, 2026
 
 The village gains a memory of its **people** and its **place**: the bonds it has always quietly tracked become visible, and your repositories surface as named anchorages out in the harbor.

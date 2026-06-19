@@ -28,7 +28,7 @@ Provider scan windows also matter:
 - Claude uses recent `history.jsonl` entries to find active sessions, then checks recent project/session files.
 - Codex scans recent date folders under `~/.codex/sessions/YYYY/MM/DD/` and filters by file activity.
 - Gemini reads recent chat JSON files under `~/.gemini/tmp/<project_hash>/chats/`.
-- Kimi reads recent `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl` data and resolves project hashes from Kimi config and common local work directories.
+- Kimi reads recent legacy `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl` data and resolves project hashes from Kimi config and common local work directories. Kimi Code sessions are read from `~/.kimi-code/sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl` and mapped back to projects through `~/.kimi-code/session_index.jsonl`.
 - OpenCode reads recent rows from `~/.local/share/opencode/opencode.db` in read-only mode.
 - Some detail lookups can search a wider window than the active-session list, so a detail URL may work for a session that no longer appears as active.
 

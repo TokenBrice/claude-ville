@@ -69,7 +69,7 @@ Different providers report cache hits differently. The adapters normalize them i
 - Claude adapter (`claudeville/adapters/claude.js:253-254`) reads `cache_read_input_tokens` and `cache_creation_input_tokens` from each turn's `usage` and sums them.
 - Codex adapter (`claudeville/adapters/codex.js:317-349`) reads `cache_read_input_tokens` / `cacheReadInputTokens` and `cache_creation_input_tokens`. Codex has no separate cache-create concept in some payloads, so `cacheCreate` is set to 0 in those branches.
 - Gemini does not currently report cache tokens; the field is left at 0.
-- Kimi reads cache token fields from status updates and normalizes cache reads/creation into the same shape.
+- Kimi reads cache token fields from legacy status updates and Kimi Code `usage.record` entries, then normalizes cache reads/creation into the same shape.
 - OpenCode reads SQLite token totals for cache read/write; frontend token normalization treats cache write aliases as `cacheCreate`.
 
 If a provider format changes, update only the relevant adapter. The frontend keeps using the normalized shape.

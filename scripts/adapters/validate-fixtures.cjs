@@ -6,6 +6,12 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+const kimiFixture = buildKimiCodeFixture();
+if (kimiFixture) {
+  process.env.HOME = kimiFixture.root;
+  delete process.env.USERPROFILE;
+}
+
 const fixture = buildOpenCodeFixture();
 if (fixture) {
   process.env.CLAUDEVILLE_OPENCODE_STATE_DIR = fixture.stateDir;
@@ -19,6 +25,7 @@ const {
   normalizeDetail,
   normalizeSession,
 } = require('../../claudeville/adapters');
+const { KimiAdapter } = require('../../claudeville/adapters/kimi');
 const { OpenCodeAdapter } = require('../../claudeville/adapters/opencode');
 
 const now = Date.now();
@@ -78,6 +85,181 @@ assert.deepEqual(gitDetail.toolHistory, []);
 assert.deepEqual(gitDetail.messages, []);
 assert.equal(typeof gitDetail.reason, 'string');
 
+if (kimiFixture) {
+  const adapter = new KimiAdapter();
+  assert.equal(adapter.isAvailable(), true);
+  assert.equal(adapter.homeDir, kimiFixture.kimiDir);
+
+  const sessions = adapter.getActiveSessions(10 * 60 * 1000);
+  const main = sessions.find((session) => session.sessionId === 'kimi-session_fixture');
+  const child = sessions.find((session) => session.sessionId === 'kimi-session_fixture::agent-0');
+  const nestedChild = sessions.find((session) => session.sessionId === 'kimi-session_fixture::agent-1');
+  const childFreshParent = sessions.find((session) => session.sessionId === 'kimi-session_child_fresh');
+  const childFreshChild = sessions.find((session) => session.sessionId === 'kimi-session_child_fresh::agent-0');
+  const childOnlyParent = sessions.find((session) => session.sessionId === 'kimi-session_child_only');
+  const childOnlyChild = sessions.find((session) => session.sessionId === 'kimi-session_child_only::agent-0');
+  const aliasMain = sessions.find((session) => session.sessionId === 'kimi-session_alias_dir');
+  const stateOnlyMain = sessions.find((session) => session.sessionId === 'kimi-session_state_project');
+  const configModelMain = sessions.find((session) => session.sessionId === 'kimi-session_config_model');
+  const cwdOnlyMain = sessions.find((session) => session.sessionId === 'kimi-session_cwd_project');
+
+  assert.ok(main);
+  assert.equal(main.provider, 'kimi');
+  assert.equal(main.agentId, 'main');
+  assert.equal(main.agentName, 'Fixture Kimi');
+  assert.equal(main.agentType, 'main');
+  assert.equal(main.project, '/tmp/claude-ville');
+  assert.equal(main.model, 'K2.7 Code');
+  assert.equal(main.lastTool, 'Bash');
+  assert.equal(main.lastToolInput, 'git commit -m "fixture"');
+  assert.equal(main.lastMessage, 'Done.');
+  assert.equal(main.tokenUsage.input, 100);
+  assert.equal(main.tokenUsage.output, 20);
+  assert.equal(main.tokenUsage.cacheRead, 400);
+  assert.equal(main.tokenUsage.cacheCreate, 5);
+  assert.equal(main.tokenUsage.contextWindow, 505);
+  assert.equal(main.tokenUsage.contextWindowMax, 262144);
+  assert.equal(main.gitEvents.length, 1);
+  assert.equal(main.gitEvents[0].type, 'commit');
+  assert.equal(main.gitEvents[0].success, true);
+  assert.equal(main.gitEvents[0].exitCode, 0);
+  assert.ok(main.gitEvents[0].completedAt > 0);
+
+  assert.ok(child);
+  assert.equal(child.agentId, 'agent-0');
+  assert.equal(child.agentName, 'agent-0');
+  assert.equal(child.agentType, 'sub-agent');
+  assert.equal(child.parentSessionId, 'kimi-session_fixture');
+  assert.equal(child.model, 'K2.7 Code');
+  assert.equal(child.lastTool, 'Edit');
+  assert.equal(child.lastToolInput, 'index.js');
+
+  assert.ok(nestedChild);
+  assert.equal(nestedChild.agentId, 'agent-1');
+  assert.equal(nestedChild.agentType, 'sub-agent');
+  assert.equal(nestedChild.parentSessionId, 'kimi-session_fixture::agent-0');
+  assert.equal(nestedChild.lastTool, 'Read');
+
+  assert.ok(childFreshParent);
+  assert.equal(childFreshParent.agentId, 'main');
+  assert.equal(childFreshParent.agentType, 'main');
+  assert.equal(childFreshParent.parentSessionId, null);
+  assert.equal(childFreshParent.lastTool, 'Read');
+  assert.ok(childFreshChild);
+  assert.equal(childFreshChild.agentType, 'sub-agent');
+  assert.equal(childFreshChild.parentSessionId, 'kimi-session_child_fresh');
+  assert.equal(childFreshChild.lastTool, 'Bash');
+  assert.equal(childFreshChild.gitEvents.length, 1);
+  assert.equal(childFreshChild.gitEvents[0].type, 'push');
+  assert.equal(childFreshChild.gitEvents[0].success, false);
+  assert.equal(childFreshChild.gitEvents[0].exitCode, 1);
+  assert.match(childFreshChild.gitEvents[0].stderr, /rejected/);
+  assert.ok(childFreshParent.lastActivity >= childFreshChild.lastActivity);
+
+  assert.ok(childOnlyParent);
+  assert.equal(childOnlyParent.agentId, 'main');
+  assert.equal(childOnlyParent.agentType, 'main');
+  assert.equal(childOnlyParent.agentName, 'Child Only Kimi');
+  assert.equal(childOnlyParent.lastTool, null);
+  assert.equal(childOnlyParent.model, 'K2 Thinking');
+  assert.equal(childOnlyParent.tokenUsage.contextWindowMax, 131072);
+  assert.ok(childOnlyChild);
+  assert.equal(childOnlyChild.agentType, 'sub-agent');
+  assert.equal(childOnlyChild.parentSessionId, 'kimi-session_child_only');
+  assert.equal(childOnlyChild.model, 'K2 Thinking');
+  assert.equal(childOnlyChild.lastTool, 'Bash');
+  assert.equal(childOnlyChild.tokenUsage.contextWindowMax, 131072);
+  assert.ok(childOnlyParent.lastActivity >= childOnlyChild.lastActivity);
+
+  assert.ok(aliasMain);
+  assert.equal(aliasMain.project, '/tmp/claude-ville-alias');
+  assert.equal(aliasMain.agentName, 'Aliased Kimi');
+  assert.equal(aliasMain.lastTool, 'Bash');
+
+  assert.ok(stateOnlyMain);
+  assert.equal(stateOnlyMain.project, '/tmp/claude-ville-state');
+  assert.equal(stateOnlyMain.agentName, 'State Project Kimi');
+  assert.equal(stateOnlyMain.lastTool, 'Read');
+
+  assert.ok(configModelMain);
+  assert.equal(configModelMain.project, '/tmp/claude-ville');
+  assert.equal(configModelMain.model, 'K2 Thinking');
+  assert.equal(configModelMain.tokenUsage.contextWindowMax, 131072);
+  assert.equal(configModelMain.tokenUsage.turnCount, 0);
+
+  assert.ok(cwdOnlyMain);
+  assert.equal(cwdOnlyMain.project, '/tmp/claude-ville-cwd');
+  assert.equal(cwdOnlyMain.agentName, 'Cwd Project Kimi');
+  assert.equal(cwdOnlyMain.lastTool, 'Read');
+
+  const detail = adapter.getSessionDetail('kimi-session_fixture', '/tmp/claude-ville');
+  assert.equal(detail.sessionId, 'kimi-session_fixture');
+  assert.equal(detail.project, '/tmp/claude-ville');
+  assert.equal(detail.toolHistory.length, 1);
+  assert.equal(detail.toolHistory[0].tool, 'Bash');
+  assert.equal(detail.toolHistory[0].toolExitCode, 0);
+  assert.equal(detail.messages.at(-1).text, 'Done.');
+  assert.ok(detail.messages.some((message) => message.role === 'user' && message.text === 'Please commit the fixture.'));
+  assert.equal(detail.tokenUsage.contextWindowMax, 262144);
+
+  const childDetail = adapter.getSessionDetail('kimi-session_fixture::agent-0', '/tmp/claude-ville');
+  assert.equal(childDetail.sessionId, 'kimi-session_fixture::agent-0');
+  assert.equal(childDetail.project, '/tmp/claude-ville');
+  assert.equal(childDetail.toolHistory.length, 1);
+  assert.equal(childDetail.toolHistory[0].tool, 'Edit');
+  assert.equal(childDetail.tokenUsage.contextWindowMax, 262144);
+
+  const childOnlyParentDetail = adapter.getSessionDetail('kimi-session_child_only', '/tmp/claude-ville');
+  assert.equal(childOnlyParentDetail.sessionId, 'kimi-session_child_only');
+  assert.equal(childOnlyParentDetail.project, '/tmp/claude-ville');
+  assert.equal(childOnlyParentDetail.toolHistory.length, 1);
+  assert.equal(childOnlyParentDetail.toolHistory[0].tool, 'Bash');
+  assert.equal(childOnlyParentDetail.tokenUsage.contextWindowMax, 131072);
+
+  const childFreshChildDetail = adapter.getSessionDetail('kimi-session_child_fresh::agent-0', '/tmp/claude-ville');
+  assert.equal(childFreshChildDetail.toolHistory.length, 2);
+  assert.equal(childFreshChildDetail.toolHistory[0].toolExitCode, 1);
+  assert.match(childFreshChildDetail.toolHistory[0].toolStderr, /rejected/);
+
+  const stateOnlyDetail = adapter.getSessionDetail('kimi-session_state_project', '/tmp/claude-ville');
+  assert.equal(stateOnlyDetail.project, '/tmp/claude-ville-state');
+
+  const configModelDetail = adapter.getSessionDetail('kimi-session_config_model', '/tmp/claude-ville');
+  assert.equal(configModelDetail.tokenUsage.contextWindowMax, 131072);
+
+  const cwdOnlyDetail = adapter.getSessionDetail('kimi-session_cwd_project', '/tmp/claude-ville');
+  assert.equal(cwdOnlyDetail.project, '/tmp/claude-ville-cwd');
+  assert.equal(cwdOnlyDetail.toolHistory.length, 1);
+  assert.equal(cwdOnlyDetail.toolHistory[0].tool, 'Read');
+
+  const registryDetail = getSessionDetailByProvider('kimi', 'kimi-session_fixture', '/tmp/claude-ville', { force: true });
+  assert.equal(registryDetail.provider, 'kimi');
+  assert.equal(registryDetail.sessionId, 'kimi-session_fixture');
+  assert.equal(registryDetail.project, '/tmp/claude-ville');
+  assert.equal(registryDetail.tokenUsage.contextWindowMax, 262144);
+
+  const registryChildDetail = getSessionDetailByProvider('kimi', 'kimi-session_fixture::agent-0', '/tmp/claude-ville', { force: true });
+  assert.equal(registryChildDetail.provider, 'kimi');
+  assert.equal(registryChildDetail.sessionId, 'kimi-session_fixture::agent-0');
+  assert.equal(registryChildDetail.toolHistory[0].tool, 'Edit');
+
+  const escapedFallbackDetail = adapter.getSessionDetail('kimi-../../outside/escaped', '/tmp/claude-ville');
+  assert.equal(escapedFallbackDetail.sessionId, 'kimi-../../outside/escaped');
+  assert.deepEqual(escapedFallbackDetail.toolHistory, []);
+  assert.deepEqual(escapedFallbackDetail.messages, []);
+
+  const escapedIndexDetail = adapter.getSessionDetail('kimi-session_escape_index', '/tmp/claude-ville');
+  assert.equal(escapedIndexDetail.sessionId, 'kimi-session_escape_index');
+  assert.deepEqual(escapedIndexDetail.toolHistory, []);
+  assert.deepEqual(escapedIndexDetail.messages, []);
+
+  const watchPaths = adapter.getWatchPaths();
+  assert.ok(watchPaths.some((watchPath) => watchPath.type === 'file' && watchPath.path.endsWith('.kimi-code/session_index.jsonl')));
+  assert.ok(watchPaths.some((watchPath) => watchPath.type === 'file' && watchPath.path.endsWith('.kimi-code/config.toml')));
+
+  fs.rmSync(kimiFixture.root, { recursive: true, force: true });
+}
+
 if (fixture) {
   const adapter = new OpenCodeAdapter();
   assert.equal(adapter.isAvailable(), true);
@@ -131,6 +313,517 @@ if (fixture) {
 }
 
 console.log('adapter fixture normalization checks passed');
+
+function writeTextFile(target, contents) {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, contents);
+}
+
+function writeJsonl(target, entries) {
+  writeTextFile(target, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
+}
+
+function buildKimiCodeFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-kimi-code-fixture-'));
+  const kimiDir = path.join(root, '.kimi-code');
+  const sessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_fixture');
+  const childFreshSessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_child_fresh');
+  const childOnlySessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_child_only');
+  const aliasSessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_alias_dir');
+  const stateOnlySessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_state_project');
+  const configModelSessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_config_model');
+  const cwdOnlySessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_cwd_project');
+  const mainWire = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
+  const childWire = path.join(sessionDir, 'agents', 'agent-0', 'wire.jsonl');
+  const nestedChildWire = path.join(sessionDir, 'agents', 'agent-1', 'wire.jsonl');
+  const childFreshMainWire = path.join(childFreshSessionDir, 'agents', 'main', 'wire.jsonl');
+  const childFreshChildWire = path.join(childFreshSessionDir, 'agents', 'agent-0', 'wire.jsonl');
+  const childOnlyChildWire = path.join(childOnlySessionDir, 'agents', 'agent-0', 'wire.jsonl');
+  const aliasMainWire = path.join(aliasSessionDir, 'agents', 'main', 'wire.jsonl');
+  const stateOnlyMainWire = path.join(stateOnlySessionDir, 'agents', 'main', 'wire.jsonl');
+  const configModelMainWire = path.join(configModelSessionDir, 'agents', 'main', 'wire.jsonl');
+  const cwdOnlyMainWire = path.join(cwdOnlySessionDir, 'agents', 'main', 'wire.jsonl');
+  const cwdOnlyChildWire = path.join(cwdOnlySessionDir, 'agents', 'agent-0', 'wire.jsonl');
+  const escapedFallbackWire = path.join(kimiDir, 'outside', 'escaped', 'agents', 'main', 'wire.jsonl');
+  const escapedFallbackChildWire = path.join(kimiDir, 'outside', 'escaped', 'agents', 'agent-0', 'wire.jsonl');
+  const escapedIndexDir = path.join(kimiDir, 'outside-indexed', 'session_escape_index');
+  const escapedIndexWire = path.join(escapedIndexDir, 'agents', 'main', 'wire.jsonl');
+  const now = Date.now();
+
+  writeTextFile(
+    path.join(kimiDir, 'config.toml'),
+    [
+      'default_model = "kimi-code/kimi-for-coding"',
+      '',
+      '  [models."kimi-code/kimi-for-coding"]',
+      '  model = "kimi-for-coding"',
+      '  display_name = "K2.7 Code"',
+      '  provider = "kimi"',
+      '  max_context_size = 262144',
+      '',
+      '  [models."kimi-code/kimi-thinking"]',
+      '  model = "kimi-thinking"',
+      '  display_name = "K2 Thinking"',
+      '  provider = "kimi"',
+      '  max_context_size = 131072',
+      '',
+    ].join('\n'),
+  );
+
+  writeJsonl(path.join(kimiDir, 'session_index.jsonl'), [
+    {
+      sessionId: 'session_fixture',
+      sessionDir,
+      workDir: '/tmp/claude-ville',
+    },
+    {
+      sessionId: 'session_child_fresh',
+      sessionDir: childFreshSessionDir,
+      workDir: '/tmp/claude-ville',
+    },
+    {
+      sessionId: 'session_child_only',
+      sessionDir: childOnlySessionDir,
+      workDir: '/tmp/claude-ville',
+    },
+    {
+      sessionId: 'session_config_model',
+      sessionDir: configModelSessionDir,
+      workDir: '/tmp/claude-ville',
+    },
+    {
+      sessionId: 'persisted_alias_id',
+      sessionDir: aliasSessionDir,
+      workDir: '/tmp/claude-ville-alias',
+    },
+    {
+      sessionId: 'session_escape_index',
+      sessionDir: escapedIndexDir,
+      workDir: '/tmp/claude-ville',
+    },
+  ]);
+
+  writeTextFile(path.join(sessionDir, 'state.json'), JSON.stringify({
+    title: 'Fixture Kimi',
+    isCustomTitle: true,
+    agents: {
+      main: { type: 'main', parentAgentId: null },
+      'agent-0': { type: 'sub', parentAgentId: 'main' },
+      'agent-1': { type: 'sub', parentAgentId: 'agent-0' },
+    },
+    createdAt: new Date(now - 5000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+  writeTextFile(path.join(childFreshSessionDir, 'state.json'), JSON.stringify({
+    title: 'Child Active Kimi',
+    isCustomTitle: true,
+    agents: {
+      main: { type: 'main', parentAgentId: null },
+      'agent-0': { type: 'sub', parentAgentId: 'main' },
+    },
+    createdAt: new Date(now - 60 * 60_000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+  writeTextFile(path.join(childOnlySessionDir, 'state.json'), JSON.stringify({
+    title: 'Child Only Kimi',
+    isCustomTitle: true,
+    agents: {
+      'agent-0': { type: 'sub', parentAgentId: 'main' },
+    },
+    createdAt: new Date(now - 30_000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+  writeTextFile(path.join(aliasSessionDir, 'state.json'), JSON.stringify({
+    title: 'Aliased Kimi',
+    isCustomTitle: true,
+    agents: {
+      main: { type: 'main', parentAgentId: null },
+    },
+    createdAt: new Date(now - 10_000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+  writeTextFile(path.join(stateOnlySessionDir, 'state.json'), JSON.stringify({
+    title: 'State Project Kimi',
+    isCustomTitle: true,
+    agents: {
+      main: { type: 'main', parentAgentId: null, homedir: '/tmp/claude-ville-state' },
+    },
+    createdAt: new Date(now - 9000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+  writeTextFile(path.join(configModelSessionDir, 'state.json'), JSON.stringify({
+    title: 'Config Model Kimi',
+    isCustomTitle: true,
+    agents: {
+      main: { type: 'main', parentAgentId: null },
+    },
+    createdAt: new Date(now - 8000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+  writeTextFile(path.join(cwdOnlySessionDir, 'state.json'), JSON.stringify({
+    title: 'Cwd Project Kimi',
+    isCustomTitle: true,
+    agents: {
+      main: { type: 'main', parentAgentId: null },
+    },
+    createdAt: new Date(now - 7000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+
+  writeJsonl(mainWire, [
+    {
+      type: 'context.append_message',
+      time: now - 4000,
+      message: {
+        role: 'user',
+        origin: 'user',
+        content: [{ type: 'text', text: 'Please commit the fixture.' }],
+        toolCalls: [],
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 3000,
+      event: {
+        type: 'content.part',
+        part: { type: 'text', text: 'Done.' },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 2000,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        toolCallId: 'call_kimi_fixture',
+        args: { command: 'git commit -m "fixture"' },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 1500,
+      event: {
+        type: 'tool.result',
+        toolCallId: 'call_kimi_fixture',
+        result: { output: '[main abc123] fixture' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 1000,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: null,
+        input_other: 100,
+        inputCacheRead: null,
+        input_cache_read: 400,
+        inputCacheCreation: '',
+        input_cache_creation: 5,
+        output: 20,
+      },
+    },
+  ]);
+
+  writeJsonl(childWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 1800,
+      event: {
+        type: 'tool.call',
+        name: 'Edit',
+        toolCallId: 'call_kimi_child_fixture',
+        args: { file_path: '/tmp/claude-ville/src/index.js' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 900,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: 7,
+        inputCacheRead: 11,
+        inputCacheCreation: 0,
+        output: 3,
+      },
+    },
+  ]);
+
+  writeJsonl(nestedChildWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 1500,
+      event: {
+        type: 'tool.call',
+        name: 'Read',
+        toolCallId: 'call_kimi_nested_child_fixture',
+        args: { file_path: '/tmp/claude-ville/claudeville/adapters/kimi.js' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 700,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: 3,
+        inputCacheRead: 9,
+        inputCacheCreation: 0,
+        output: 2,
+      },
+    },
+  ]);
+
+  writeJsonl(childFreshMainWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 30 * 60_000,
+      event: {
+        type: 'tool.call',
+        name: 'Read',
+        toolCallId: 'call_kimi_stale_main_fixture',
+        args: { file_path: '/tmp/claude-ville/README.md' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 30 * 60_000,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: 20,
+        inputCacheRead: 0,
+        inputCacheCreation: 0,
+        output: 2,
+      },
+    },
+  ]);
+
+  writeJsonl(childFreshChildWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 1800,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        uuid: 'call_kimi_failed_push_fixture',
+        args: { command: 'git push origin main' },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 1600,
+      event: {
+        type: 'tool.result',
+        uuid: 'call_kimi_failed_push_fixture',
+        result: {
+          is_error: true,
+          stderr: 'error: failed to push some refs: rejected',
+        },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 1200,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        toolCallId: 'call_kimi_fresh_child_fixture',
+        args: { command: 'npm run check:adapter-fixtures' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 900,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: 10,
+        inputCacheRead: 25,
+        inputCacheCreation: 0,
+        output: 4,
+      },
+    },
+  ]);
+
+  writeJsonl(childOnlyChildWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 1100,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        toolCallId: 'call_kimi_child_only_fixture',
+        args: { command: 'node --check claudeville/adapters/kimi.js' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 800,
+      model: 'kimi-code/kimi-thinking',
+      usage: {
+        inputOther: 8,
+        inputCacheRead: 13,
+        inputCacheCreation: 0,
+        output: 5,
+      },
+    },
+  ]);
+
+  writeJsonl(aliasMainWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 1000,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        toolCallId: 'call_kimi_alias_fixture',
+        args: { command: 'git status --short' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 600,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: 6,
+        inputCacheRead: 4,
+        inputCacheCreation: 0,
+        output: 1,
+      },
+    },
+  ]);
+
+  writeJsonl(stateOnlyMainWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 1000,
+      event: {
+        type: 'tool.call',
+        name: 'Read',
+        toolCallId: 'call_kimi_state_project_fixture',
+        args: { file_path: '/tmp/claude-ville-state/README.md' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 600,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: 4,
+        inputCacheRead: 2,
+        inputCacheCreation: 0,
+        output: 1,
+      },
+    },
+  ]);
+
+  writeJsonl(configModelMainWire, [
+    {
+      type: 'config.update',
+      time: now - 1300,
+      modelAlias: 'kimi-code/kimi-thinking',
+      thinkingLevel: 'high',
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 1000,
+      event: {
+        type: 'tool.call',
+        name: 'Read',
+        toolCallId: 'call_kimi_config_model_fixture',
+        args: { file_path: '/tmp/claude-ville/package.json' },
+      },
+    },
+  ]);
+
+  writeJsonl(cwdOnlyMainWire, [
+    {
+      type: 'config.update',
+      time: now - 1300,
+      cwd: '/tmp/claude-ville-cwd',
+      modelAlias: 'kimi-code/kimi-for-coding',
+      thinkingLevel: 'high',
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 1000,
+      event: {
+        type: 'tool.call',
+        name: 'Read',
+        toolCallId: 'call_kimi_cwd_project_fixture',
+        args: { file_path: '/tmp/claude-ville-cwd/README.md' },
+      },
+    },
+  ]);
+
+  writeJsonl(cwdOnlyChildWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 500,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        toolCallId: 'call_kimi_cwd_child_fixture',
+        args: { command: 'git status --short' },
+      },
+    },
+  ]);
+
+  writeJsonl(escapedFallbackWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 500,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        toolCallId: 'call_kimi_escape_fallback',
+        args: { command: 'cat /tmp/should-not-read' },
+      },
+    },
+  ]);
+
+  writeJsonl(escapedFallbackChildWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 450,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        toolCallId: 'call_kimi_escape_child_fallback',
+        args: { command: 'cat /tmp/should-not-read-child' },
+      },
+    },
+  ]);
+
+  writeJsonl(escapedIndexWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 400,
+      event: {
+        type: 'tool.call',
+        name: 'Bash',
+        toolCallId: 'call_kimi_escape_index',
+        args: { command: 'cat /tmp/should-not-read-index' },
+      },
+    },
+  ]);
+
+  const fileDate = new Date(now);
+  const staleDate = new Date(now - 30 * 60_000);
+  fs.utimesSync(mainWire, fileDate, fileDate);
+  fs.utimesSync(childWire, fileDate, fileDate);
+  fs.utimesSync(nestedChildWire, fileDate, fileDate);
+  fs.utimesSync(childFreshMainWire, staleDate, staleDate);
+  fs.utimesSync(childFreshChildWire, fileDate, fileDate);
+  fs.utimesSync(childOnlyChildWire, fileDate, fileDate);
+  fs.utimesSync(aliasMainWire, fileDate, fileDate);
+  fs.utimesSync(stateOnlyMainWire, fileDate, fileDate);
+  fs.utimesSync(configModelMainWire, fileDate, fileDate);
+  fs.utimesSync(cwdOnlyMainWire, fileDate, fileDate);
+  fs.utimesSync(cwdOnlyChildWire, fileDate, fileDate);
+  fs.utimesSync(escapedFallbackWire, fileDate, fileDate);
+  fs.utimesSync(escapedFallbackChildWire, fileDate, fileDate);
+  fs.utimesSync(escapedIndexWire, fileDate, fileDate);
+
+  return { root, kimiDir };
+}
 
 function buildOpenCodeFixture() {
   let sqlite = null;

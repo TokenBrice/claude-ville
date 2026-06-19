@@ -55,7 +55,7 @@ Each adapter class must expose the following getters and methods. Getters are JS
 
 Registry metadata treats adapter-backed providers as detail-capable when `getSessionDetail` exists. Synthetic providers must be declared in the registry metadata instead of hard-coded in `server.js`.
 
-`toolHistory` items are `{ tool, detail, ts }` plus two optional failure fields where the provider payload carries them: `toolExitCode` (number; Codex `exec_command_end` events matched by `call_id`, OpenCode `state.metadata.exit`) and `toolStderr` (string, truncated to 200 chars, only set on non-zero exits). The Activity Panel renders non-zero `toolExitCode` as a warning chip on the tool row.
+`toolHistory` items are `{ tool, detail, ts }` plus two optional failure fields where the provider payload carries them: `toolExitCode` (number; Codex `exec_command_end` events matched by `call_id`, Kimi Code `tool.result.result.isError` / `is_error` / exit fields, OpenCode `state.metadata.exit`) and `toolStderr` (string, truncated to 200 chars, only set on non-zero exits). The Activity Panel renders non-zero `toolExitCode` as a warning chip on the tool row.
 
 ### Claude-only optional methods
 
@@ -228,7 +228,7 @@ The adapter reads `session_meta` from the first metadata lines, prefers `session
 
 `projectHash` is `sha256(cwd)`. The adapter attempts to reverse-map known candidate paths back to a real `project` string.
 
-### Kimi — `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl`
+### Kimi legacy — `~/.kimi/sessions/<project_hash>/<session_uuid>/wire.jsonl`
 
 ```jsonc
 // shape only — fields the adapter reads
@@ -238,6 +238,20 @@ The adapter reads `session_meta` from the first metadata lines, prefers `session
 ```
 
 The adapter resolves project hashes from `~/.kimi/kimi.json` and common local work directories, then reads `state.json` for a user-facing title when present.
+
+### Kimi Code — `~/.kimi-code/sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl`
+
+```jsonc
+// shape only — fields the adapter reads
+{"type":"context.append_loop_event","time":1737567890000,"event":{"type":"tool.call","name":"Bash","toolCallId":"call_123","args":{"command":"ls"}}}
+{"type":"context.append_loop_event","time":1737567890500,"event":{"type":"tool.result","toolCallId":"call_123","result":{"output":"ok"}}}
+{"type":"context.append_loop_event","time":1737567891000,"event":{"type":"content.part","part":{"type":"text","text":"Done."}}}
+{"type":"context.append_message","time":1737567891500,"message":{"role":"user","content":[{"type":"text","text":"Continue."}]}}
+{"type":"config.update","time":1737567891750,"cwd":"/repo/path","modelAlias":"kimi-code/kimi-for-coding","thinkingLevel":"high"}
+{"type":"usage.record","time":1737567892000,"model":"kimi-code/kimi-for-coding","usage":{"inputOther":100,"output":20,"inputCacheRead":50,"inputCacheCreation":0}}
+```
+
+Kimi Code also writes `~/.kimi-code/session_index.jsonl` entries shaped like `{ "sessionId", "sessionDir", "workDir" }`. The adapter uses both the persisted id and root-validated `sessionDir`/basename keys so project mapping survives if Kimi's stored id differs from the folder name, and falls back to `state.json` agent `homedir`, then `config.update.cwd`, when the index is missing. Detail responses use the same project resolution. The adapter scans every `agents/<agent>/wire.jsonl`: `main` remains a primary session, while numbered or named agent dirs become `sub-agent` sessions. `config.update.modelAlias` is used as an early model/context signal before `usage.record` lines exist, and usage token fields accept both camelCase and snake_case spellings. `tool.result.result.isError` / `is_error` and exit fields are paired back to shell tool calls by `toolCallId` / `uuid` / related call-id aliases, so git events and tool-history rows can distinguish successful and failed pushes/commits. Child rows use persisted `state.json` `agents.<agent>.parentAgentId` metadata for nested child-to-child lineage when that parent row is active, and otherwise fall back to the main Kimi session. If child wires are active while `main` is stale or absent, the parent stays visible with child-derived activity; parent detail lookups also fall back to the newest child wire when no `main` wire exists, so UI lineage is not orphaned.
 
 ### OpenCode — `~/.local/share/opencode/opencode.db` (SQLite)
 
