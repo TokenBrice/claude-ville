@@ -126,6 +126,7 @@ export class VillageDirector {
         this.scenes = [];
         this.buildingPresence.clear();
         this.hoveredBuilding = null;
+        this._lastCueSignatures?.clear?.();
     }
 
     setMotionScale(scale) {
@@ -266,6 +267,9 @@ export class VillageDirector {
             this._lastSnapshotEmitAt = now;
             eventBus.emit('village:director', this.lastSnapshot);
             if (selectedBuildingSignal) eventBus.emit('village:building-signal', selectedBuildingSignal);
+            // #21 — surface the frame-worthy moments to the CameraDirector. The
+            // camera layer owns cooldowns/abort; here we only resolve targets.
+            this._emitCameraCues(this.lastSnapshot, now);
         }
 
         return this.lastSnapshot;
@@ -273,6 +277,72 @@ export class VillageDirector {
 
     getSnapshot() {
         return this.lastSnapshot;
+    }
+
+    // #21 — resolve frame-worthy moments into camera cues. We dedupe per cue
+    // signature so a long-lived scene only fires once; the CameraDirector
+    // applies cooldown/priority/abort. Cues carry a world box plus an
+    // art-directed grade hint (vignette + worldTint) for the frame pass.
+    _emitCameraCues(snapshot, now) {
+        if (!snapshot) return;
+        if (!this._lastCueSignatures) this._lastCueSignatures = new Map();
+
+        // Incident cluster: frame the spread of all live incident points. The
+        // most urgent, and the only cue that bundles a crowd into one shot.
+        const incidentPoints = [];
+        for (const incident of snapshot.incidents || []) {
+            const point = incident.agent || incident.center;
+            if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+                incidentPoints.push({ x: point.x, y: point.y });
+            }
+        }
+        if (incidentPoints.length) {
+            const sig = `incident:${incidentPoints.length}`;
+            this._fireCue('incident', sig, now, {
+                box: this._boxForPoints(incidentPoints, 90),
+                grade: { vignette: 0.42, worldTint: '#c0392b' },
+            });
+        }
+
+        // Release parade: frame the harbor as a ship sets sail.
+        const release = snapshot.releaseParade;
+        if (release?.center && Number.isFinite(release.center.x)) {
+            const sig = `release:${release.id || release.label || ''}`;
+            this._fireCue('release', sig, now, {
+                box: this._boxForPoints([release.center], 120),
+                grade: { vignette: 0.30, worldTint: '#f5c451' },
+            });
+        }
+
+        // Arrival: a gentle nudge toward the freshest new villager.
+        const arrival = (snapshot.lifecycle || [])
+            .filter(scene => scene.kind === 'arrival' && scene.center && (scene.progress ?? 1) < 0.5)
+            .at(-1);
+        if (arrival?.center && Number.isFinite(arrival.center.x)) {
+            const sig = `arrival:${arrival.id || arrival.agentId || ''}`;
+            this._fireCue('arrival', sig, now, {
+                box: this._boxForPoints([arrival.center], 80),
+                grade: { vignette: 0.22, worldTint: '#7fc7c0' },
+            });
+        }
+    }
+
+    _fireCue(kind, signature, now, payload) {
+        const last = this._lastCueSignatures.get(kind);
+        if (last === signature) return;
+        this._lastCueSignatures.set(kind, signature);
+        eventBus.emit('village:camera-cue', { kind, ts: now, ...payload });
+    }
+
+    _boxForPoints(points, halfExtent = 90) {
+        const xs = points.map(p => p.x);
+        const ys = points.map(p => p.y);
+        return {
+            minX: Math.min(...xs) - halfExtent,
+            maxX: Math.max(...xs) + halfExtent,
+            minY: Math.min(...ys) - halfExtent,
+            maxY: Math.max(...ys) + halfExtent,
+        };
     }
 
     getWeatherInfluence() {

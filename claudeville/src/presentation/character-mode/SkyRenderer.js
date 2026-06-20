@@ -430,6 +430,20 @@ export class SkyRenderer {
         g.addColorStop(1, `rgba(${color}, 0)`);
         ctx.fillStyle = g;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // Storm canopy: a deeper bruised zenith band baked over the plate so
+        // the top of the sky reads as a heavy storm ceiling. Baked into the
+        // background cache (folds into atmosphere.cacheKey) — zero per-frame
+        // cost, and present regardless of motionScale (static fallback too).
+        if (weather.type === 'storm') {
+            const stormAlpha = 0.14 + clamp(Math.max(weather.intensity ?? 0, precipitation), 0, 1) * 0.18;
+            const zenith = ctx.createLinearGradient(0, 0, 0, canvas.height * 0.6);
+            zenith.addColorStop(0, `rgba(46, 50, 70, ${stormAlpha})`);
+            zenith.addColorStop(0.5, `rgba(54, 60, 78, ${stormAlpha * 0.5})`);
+            zenith.addColorStop(1, 'rgba(54, 60, 78, 0)');
+            ctx.fillStyle = zenith;
+            ctx.fillRect(0, 0, canvas.width, canvas.height * 0.6);
+        }
     }
 
     _drawStars(ctx, canvas, atmosphere) {

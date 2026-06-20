@@ -8,6 +8,8 @@ import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { gradeColor } from './AtmosphereState.js';
 
 const MAX_TALK_ARCS = 8;
+// #27 — slow band: one full mote traversal per ~1.8s travelling along the arc.
+const TALK_MOTE_PERIOD_MS = 1800;
 const COMMAND_PLAZA = { tileX: 16, tileY: 21 };
 const TEAM_GATHER_COOLDOWN_MS = 5 * 60 * 1000;
 const TEAM_GATHER_RADIUS_TILES = 12;
@@ -375,14 +377,31 @@ export function drawTalkArcs(ctx, {
             y: (start.y + end.y) / 2 - Math.min(60, dist * 0.35),
         };
 
+        const arcColor = gradeColor(THEME.chatting || '#f2d36b', grade);
+
         ctx.save();
-        ctx.strokeStyle = rgba(gradeColor(THEME.chatting || '#f2d36b', grade), alpha * gate.alpha);
+        ctx.strokeStyle = rgba(arcColor, alpha * gate.alpha);
         ctx.lineWidth = 1.4 / (zoom || 1);
         if (motionScale === 0) ctx.setLineDash([2 / (zoom || 1), 4 / (zoom || 1)]);
         ctx.beginPath();
         ctx.moveTo(start.x, start.y);
         ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
         ctx.stroke();
+
+        // #27 — a travelling mote runs along the arc so the live conversation is
+        // visible: the dot shows which way the talk is flowing. Skipped entirely
+        // under reduced motion (the dashed static arc already reads as "talking").
+        if (motionScale !== 0) {
+            const t = (now % TALK_MOTE_PERIOD_MS) / TALK_MOTE_PERIOD_MS;
+            const mt = 1 - t;
+            const mx = mt * mt * start.x + 2 * mt * t * control.x + t * t * end.x;
+            const my = mt * mt * start.y + 2 * mt * t * control.y + t * t * end.y;
+            ctx.setLineDash([]);
+            ctx.fillStyle = rgba(arcColor, Math.min(1, (0.55 + alpha) * gate.alpha));
+            ctx.beginPath();
+            ctx.arc(mx, my, 1.8 / (zoom || 1), 0, Math.PI * 2);
+            ctx.fill();
+        }
         ctx.restore();
     }
 }

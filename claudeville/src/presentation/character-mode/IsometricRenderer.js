@@ -34,6 +34,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { Camera } from './Camera.js';
+import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
 import { BuildingSprite } from './BuildingSprite.js';
@@ -336,6 +337,7 @@ export class IsometricRenderer {
         this.canvas = null;
         this.ctx = null;
         this.camera = null;
+        this.cameraDirector = null;
         this.particleSystem = new ParticleSystem();
         this.buildingRenderer = this.assets
             ? new BuildingSprite(this.assets, this.sprites, this.particleSystem)
@@ -1185,6 +1187,10 @@ export class IsometricRenderer {
         this._contextLost = false;
         this.camera = new Camera(canvas);
         this.camera.attach();
+        // #21 — cinematic director listens for VillageDirector camera cues and
+        // drives time-boxed glides on the camera (abort-on-input is in Camera).
+        this.cameraDirector?.dispose?.();
+        this.cameraDirector = new CameraDirector(this.camera, { motionScale: this.motionScale });
         // Re-arm SkyRenderer aurora/shooting-star event wiring; mode toggles
         // detach in hide() and would otherwise leave these subscriptions dead.
         this.skyRenderer?.attach?.();
@@ -1355,6 +1361,8 @@ export class IsometricRenderer {
         if (this.camera) {
             this.camera.detach();
         }
+        this.cameraDirector?.dispose?.();
+        this.cameraDirector = null;
         this._unbindMotionPreference();
         for (const unsub of this._unsubscribers) {
             unsub();
@@ -1657,6 +1665,7 @@ export class IsometricRenderer {
         this.harborTraffic?.setMotionScale(scale);
         this.landmarkActivity?.setMotionScale(scale);
         this.camera?.setReducedMotion?.(scale <= 0);
+        this.cameraDirector?.setMotionScale?.(scale);
         this.particleSystem.setMotionEnabled(scale > 0);
         for (const sprite of this.agentSprites.values()) {
             sprite.setMotionScale(scale);
@@ -2035,6 +2044,7 @@ export class IsometricRenderer {
         };
         const delta = panDeltas[event.code];
         if (delta) {
+            this.camera.abortDirectorGlide?.();
             this.camera.stopFollow();
             this.camera._userAdjusted = true;
             this.camera.x += delta.x / Math.max(0.1, this.camera.zoom || 1);
@@ -2045,11 +2055,11 @@ export class IsometricRenderer {
         }
 
         if (event.code === 'Equal' || event.code === 'NumpadAdd') {
-            if (this._zoomByKeyboard(1)) { this.camera._userAdjusted = true; event.preventDefault(); }
+            if (this._zoomByKeyboard(1)) { this.camera.abortDirectorGlide?.(); this.camera._userAdjusted = true; event.preventDefault(); }
             return;
         }
         if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
-            if (this._zoomByKeyboard(-1)) { this.camera._userAdjusted = true; event.preventDefault(); }
+            if (this._zoomByKeyboard(-1)) { this.camera.abortDirectorGlide?.(); this.camera._userAdjusted = true; event.preventDefault(); }
             return;
         }
         if (event.code === 'KeyF') {

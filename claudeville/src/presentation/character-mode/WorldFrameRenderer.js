@@ -221,11 +221,58 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.seasonalAmbience?.drawStatic?.(ctx);
     renderer.harborTraffic?.drawScreenSummary(ctx, viewport, renderer.camera, renderNow);
     drawVillageDirectorScreen(ctx, villageSnapshot, viewport);
+    // #21 — director glide grade pass: a momentary vignette + worldTint wash that
+    // fades in and out with the cinematic move. Reduced motion yields no grade
+    // (the camera cut leaves nothing to fade), so this is a no-op there.
+    drawDirectorGlideGrade(ctx, renderer.camera?.getDirectorGlideGrade?.(), viewport);
     drawDebugOverlay(renderer, ctx, atmosphere, viewport);
     renderer._lastRenderStats = {
         ...renderer._lastRenderStats,
         timings: finishFrameTiming(renderer, frameTimer),
     };
+}
+
+function hexToRgb(hex) {
+    const value = String(hex || '').replace('#', '');
+    if (value.length !== 6) return null;
+    const n = Number.parseInt(value, 16);
+    if (!Number.isFinite(n)) return null;
+    return { r: (n >> 16) & 0xff, g: (n >> 8) & 0xff, b: n & 0xff };
+}
+
+// #21 — screen-space cinematic grade for an active director glide. A radial
+// vignette pulls focus to the framed subject and a faint worldTint wash colours
+// the moment (red for incidents, gold for a parade, teal for an arrival). Both
+// scale with the glide's bell-curve weight so they never linger after the move.
+function drawDirectorGlideGrade(ctx, grade, viewport) {
+    if (!grade || !(grade.weight > 0.01) || !viewport?.width || !viewport?.height) return;
+    const w = viewport.width;
+    const h = viewport.height;
+    const weight = Math.max(0, Math.min(1, grade.weight));
+    const tint = hexToRgb(grade.worldTint);
+
+    ctx.save();
+    if (tint) {
+        ctx.globalCompositeOperation = 'soft-light';
+        ctx.globalAlpha = 0.5 * weight;
+        ctx.fillStyle = `rgb(${tint.r}, ${tint.g}, ${tint.b})`;
+        ctx.fillRect(0, 0, w, h);
+    }
+    const vignette = Math.max(0, Math.min(1, Number(grade.vignette) || 0)) * weight;
+    if (vignette > 0.01) {
+        const cx = w / 2;
+        const cy = h / 2;
+        const inner = Math.min(w, h) * 0.32;
+        const outer = Math.hypot(w, h) / 2;
+        const gradient = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
+        gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+        gradient.addColorStop(1, `rgba(0, 0, 0, ${vignette})`);
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, w, h);
+    }
+    ctx.restore();
 }
 
 function combineWeatherInfluence(a, b) {

@@ -200,6 +200,16 @@ export class WeatherRenderer {
 
         ctx.restore();
 
+        // Traveling rain curtains: a few broad translucent sheets drifting on
+        // the wind, only in heavy storms. `intensity` here is already scaled
+        // by the legibility gate (legibility.rain), so a pressured/foggy scene
+        // drops below the 0.7 threshold and the curtains never draw — keeping
+        // the busy scene legible. Reduced motion skips this whole branch
+        // (caller gates _drawStormFlash & curtains on particleEnabled).
+        if (weather.type === 'storm' && intensity > 0.7 && particleEnabled) {
+            this._drawRainCurtains(ctx, canvas, { intensity, windX, phaseMs, seed });
+        }
+
         if (weather.precipitation > SPLASH_PRECIP_THRESHOLD || intensity > SPLASH_PRECIP_THRESHOLD) {
             this._drawRainSplashes(ctx, canvas, {
                 intensity,
@@ -208,6 +218,39 @@ export class WeatherRenderer {
                 seed,
             });
         }
+    }
+
+    // 2–3 broad, soft vertical sheets drifting horizontally on the wind, each
+    // phase-offset, to give a storm a sense of moving weather fronts crossing
+    // the viewport. Cheap (one gradient fill per curtain), screen-composited,
+    // alpha-capped to stay under the labels. Storm-only, animated-only.
+    _drawRainCurtains(ctx, canvas, { intensity, windX, phaseMs, seed }) {
+        const count = intensity > 0.86 ? 3 : 2;
+        const baseAlpha = Math.min(0.12, 0.05 + (intensity - 0.7) * 0.22);
+        if (baseAlpha <= 0.005) return;
+        const span = canvas.width + canvas.width * 0.6;
+        const drift = clamp(Number.isFinite(windX) ? windX : -0.46, -1.4, 1.4);
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (let i = 0; i < count; i++) {
+            const curtainSeed = i * 311;
+            const width = canvas.width * (0.32 + random01(seed, curtainSeed + 7) * 0.22);
+            const speed = 0.018 + random01(seed, curtainSeed + 13) * 0.014;
+            const phase = random01(seed, curtainSeed + 19);
+            // Move with the wind; wrap across an extended span so a curtain
+            // re-enters from the upwind edge.
+            const travel = (phaseMs * speed * drift) + phase * span;
+            const cx = wrap(travel, -width, span) - width * 0.5;
+            const alpha = baseAlpha * (0.7 + random01(seed, curtainSeed + 29) * 0.5);
+            const grad = ctx.createLinearGradient(cx, 0, cx + width, 0);
+            grad.addColorStop(0, 'rgba(186, 210, 230, 0)');
+            grad.addColorStop(0.5, `rgba(196, 218, 236, ${alpha})`);
+            grad.addColorStop(1, 'rgba(186, 210, 230, 0)');
+            ctx.fillStyle = grad;
+            ctx.fillRect(Math.round(cx), 0, Math.round(width), canvas.height);
+        }
+        ctx.restore();
     }
 
     _drawRainSplashes(ctx, canvas, { intensity, precipitation, particleEnabled, seed }) {
@@ -425,7 +468,8 @@ export class WeatherRenderer {
         if (flashAge < 0) return;
 
         const windowMs = flashAge === age ? 110 : 70;
-        const alpha = (1 - flashAge / windowMs) * clamp(intensity, 0, 1) * 0.18;
+        const flashT = 1 - flashAge / windowMs;
+        const alpha = flashT * clamp(intensity, 0, 1) * 0.18;
         if (alpha <= 0.005) return;
 
         const flash = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
@@ -434,6 +478,96 @@ export class WeatherRenderer {
         flash.addColorStop(1, 'rgba(220, 236, 255, 0)');
         ctx.fillStyle = flash;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // The primary strike of each flash pair carries a forked bolt; the
+        // dimmer afterglow (secondAge) is sky-glow only. Brighter at the peak
+        // of the flash envelope so the bolt reads as the source of the light.
+        if (flashAge === age && flashT > 0.32) {
+            this._drawLightningBolt(ctx, canvas, flashT * clamp(intensity, 0, 1), seed, cycle);
+        }
+    }
+
+    // Procedural forked bolt via midpoint displacement. Deterministic per
+    // strike (seed + cycle) so it is identical across the brief multi-frame
+    // flash window. Drawn screen-composite over the flash wash.
+    _drawLightningBolt(ctx, canvas, strength, seed, cycle) {
+        const boltSeed = (seed + Math.imul(cycle + 1, 0x27d4eb2f)) >>> 0;
+        const startX = Math.round(canvas.width * (0.32 + random01(boltSeed, 11) * 0.36));
+        const endX = startX + Math.round((random01(boltSeed, 23) - 0.5) * canvas.width * 0.22);
+        const endY = Math.round(canvas.height * (0.46 + random01(boltSeed, 37) * 0.18));
+        const points = this._displaceBolt(
+            { x: startX, y: 0 },
+            { x: endX, y: endY },
+            boltSeed,
+            5,
+            canvas.width * 0.05,
+        );
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+
+        // Soft outer glow, then a crisp bright core.
+        const drawPath = (pts) => {
+            ctx.beginPath();
+            ctx.moveTo(Math.round(pts[0].x), Math.round(pts[0].y));
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(Math.round(pts[i].x), Math.round(pts[i].y));
+            ctx.stroke();
+        };
+
+        ctx.strokeStyle = `rgba(176, 206, 255, ${Math.min(0.5, strength * 0.55)})`;
+        ctx.lineWidth = 5;
+        drawPath(points);
+
+        // 2 short branches forking off interior nodes.
+        const branchCount = 2 + (random01(boltSeed, 53) > 0.6 ? 1 : 0);
+        for (let b = 0; b < branchCount; b++) {
+            const anchor = points[1 + ((b + 1) % (points.length - 2))];
+            if (!anchor) continue;
+            const len = canvas.height * (0.06 + random01(boltSeed, b + 61) * 0.08);
+            const ang = (random01(boltSeed, b + 71) - 0.5) * 1.4 + Math.PI / 2;
+            const branch = this._displaceBolt(
+                anchor,
+                { x: anchor.x + Math.cos(ang) * len, y: anchor.y + Math.sin(ang) * len },
+                (boltSeed + b * 131) >>> 0,
+                3,
+                canvas.width * 0.02,
+            );
+            ctx.strokeStyle = `rgba(190, 216, 255, ${Math.min(0.34, strength * 0.36)})`;
+            ctx.lineWidth = 2.5;
+            drawPath(branch);
+        }
+
+        ctx.strokeStyle = `rgba(244, 250, 255, ${Math.min(0.92, 0.4 + strength * 0.55)})`;
+        ctx.lineWidth = 1.6;
+        drawPath(points);
+        ctx.restore();
+    }
+
+    // Recursive midpoint displacement between two endpoints.
+    _displaceBolt(a, b, seed, depth, jitter) {
+        let segments = [a, b];
+        let amplitude = jitter;
+        for (let d = 0; d < depth; d++) {
+            const next = [segments[0]];
+            for (let i = 0; i < segments.length - 1; i++) {
+                const p = segments[i];
+                const q = segments[i + 1];
+                const mx = (p.x + q.x) / 2;
+                const my = (p.y + q.y) / 2;
+                const off = (random01(seed, d * 211 + i * 17 + 3) - 0.5) * amplitude;
+                // Displace perpendicular to the segment so the bolt zig-zags.
+                const dx = q.x - p.x;
+                const dy = q.y - p.y;
+                const len = Math.hypot(dx, dy) || 1;
+                next.push({ x: mx + (-dy / len) * off, y: my + (dx / len) * off });
+                next.push(q);
+            }
+            segments = next;
+            amplitude *= 0.5;
+        }
+        return segments;
     }
 }
 

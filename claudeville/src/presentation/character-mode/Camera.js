@@ -29,6 +29,12 @@ export class Camera {
         this._followEase = null;       // timed ease-out glide when follow starts
         this._snapZoom = null;         // zoom-in animation on far-zoom selection
 
+        // #21 — director-driven cinematic glide. A time-boxed cubic-ease move to
+        // a framed world box, triggered by CameraDirector. It clears
+        // `_userAdjusted` for its own duration and aborts the instant the user
+        // touches the camera (drag/wheel/keyboard) so the cinema never fights.
+        this._directorGlide = null;
+
         // Drag momentum (world px/ms, decays after release)
         this._momentum = null;
         this._dragVelX = 0;
@@ -92,6 +98,90 @@ export class Camera {
         this._clampToBounds();
     }
 
+    // #21 — solve the largest integer zoom (pixel-perfect) that fits a world box,
+    // shared by fitToWorldBox and the director glide so framing stays consistent.
+    _zoomForWorldBox(box, paddingPx = 96, maxZoom = 2) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (!w || !h || !box) return this.minZoom;
+        const boxW = Math.max(1, box.maxX - box.minX);
+        const boxH = Math.max(1, box.maxY - box.minY);
+        const hi = Math.min(Math.floor(maxZoom), this.maxZoom);
+        for (let z = hi; z >= this.minZoom; z--) {
+            if (boxW * z + paddingPx * 2 <= w && boxH * z + paddingPx * 2 <= h) return z;
+        }
+        return this.minZoom;
+    }
+
+    // #21 — start a director glide to frame `box`. Reduced motion (or a missing
+    // viewport) cuts directly. The move releases `_userAdjusted` only while it
+    // runs, then re-frames cleanly. `grade` is a {vignette, worldTint} hint the
+    // frame renderer fades in/out with the glide.
+    glideToWorld(box, { duration = 1400, paddingPx = 96, maxZoom = 2, grade = null } = {}) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (!w || !h || !box) return false;
+        const centerX = (box.minX + box.maxX) / 2;
+        const centerY = (box.minY + box.maxY) / 2;
+        const toZoom = this._zoomForWorldBox(box, paddingPx, maxZoom);
+        const targetX = -centerX + w / (2 * toZoom);
+        const targetY = -centerY + h / (2 * toZoom);
+
+        this.stopFollow();
+        this._momentum = null;
+        this._zoomAnimation = null;
+        this._snapZoom = null;
+
+        if (this._reducedMotion) {
+            // Reduced-motion: cut directly to the framed view, no glide, no grade.
+            this.zoom = toZoom;
+            this.x = targetX;
+            this.y = targetY;
+            this._directorGlide = null;
+            this._userAdjusted = false;
+            this._clampToBounds();
+            return true;
+        }
+
+        this._userAdjusted = false;
+        this._directorGlide = {
+            fromX: this.x,
+            fromY: this.y,
+            fromZoom: this.zoom,
+            toX: targetX,
+            toY: targetY,
+            toZoom,
+            elapsed: 0,
+            duration: Math.max(1, Number(duration) || 1400),
+            grade: grade || null,
+        };
+        return true;
+    }
+
+    abortDirectorGlide() {
+        if (!this._directorGlide) return;
+        this._directorGlide = null;
+        // The user is now in control; stop auto-framing from fighting them.
+        this._userAdjusted = true;
+    }
+
+    isDirectorGliding() {
+        return Boolean(this._directorGlide);
+    }
+
+    // #21 — grade weight (0..1) plus the active glide's grade hint, for the
+    // WorldFrameRenderer vignette/worldTint pass. Ramps up at the head of the
+    // move and eases back out at the tail so it never lingers.
+    getDirectorGlideGrade() {
+        const glide = this._directorGlide;
+        if (!glide || !glide.grade) return null;
+        // Reduced motion cuts directly to the framed view; no lingering overlay.
+        if (this._reducedMotion) return null;
+        const t = Math.min(1, glide.elapsed / glide.duration);
+        const weight = Math.sin(Math.PI * t); // 0 → 1 → 0 across the move
+        return { ...glide.grade, weight: Math.max(0, weight) };
+    }
+
     attach() {
         this.canvas.addEventListener('mousedown', this._onMouseDown);
         window.addEventListener('mousemove', this._onMouseMove);
@@ -108,6 +198,7 @@ export class Camera {
 
     followAgent(sprite) {
         if (this.followTarget === sprite) return;
+        this._directorGlide = null;
         this.followTarget = sprite;
         this._momentum = null;
         const farZoomedOut = this.zoom < 1.5;
@@ -136,6 +227,7 @@ export class Camera {
             this._snapZoom = null;
             this._momentum = null;
             this._followEase = null;
+            this._directorGlide = null;
         }
     }
 
@@ -169,6 +261,7 @@ export class Camera {
     }
 
     update(dt = 16) {
+        if (this._updateDirectorGlide(dt)) return;
         this._updateMomentum(dt);
         this._updateSnapZoom(dt);
         if (!this._zoomAnimation) return;
@@ -190,6 +283,7 @@ export class Camera {
 
     _onMouseDown(e) {
         if (e.button !== 0) return;
+        this.abortDirectorGlide();
         this.dragging = true;
         this._userAdjusted = true;
         this.dragStartX = e.clientX;
@@ -246,6 +340,7 @@ export class Camera {
 
     _onWheel(e) {
         e.preventDefault();
+        this.abortDirectorGlide();
         this._momentum = null;
         this._snapZoom = null;
         const rect = this.canvas.getBoundingClientRect();
@@ -390,6 +485,31 @@ export class Camera {
         momentum.vx *= decay;
         momentum.vy *= decay;
         if (Math.hypot(momentum.vx, momentum.vy) < 0.01) this._momentum = null;
+    }
+
+    // #21 — advance the director glide. Returns true while it owns the camera so
+    // momentum/snap-zoom stay parked. Holds `_userAdjusted` false for the move's
+    // duration, then sets it true so subsequent resizes keep the framed view.
+    _updateDirectorGlide(dt) {
+        const glide = this._directorGlide;
+        if (!glide) return false;
+        glide.elapsed += dt;
+        const t = Math.min(1, glide.elapsed / glide.duration);
+        const eased = 1 - Math.pow(1 - t, 3);
+        this.zoom = glide.fromZoom + (glide.toZoom - glide.fromZoom) * eased;
+        this.x = glide.fromX + (glide.toX - glide.fromX) * eased;
+        this.y = glide.fromY + (glide.toY - glide.fromY) * eased;
+        this._userAdjusted = false;
+        this._clampToBounds();
+        if (t >= 1) {
+            this.zoom = glide.toZoom;
+            this.x = glide.toX;
+            this.y = glide.toY;
+            this._clampToBounds();
+            this._directorGlide = null;
+            this._userAdjusted = true;
+        }
+        return true;
     }
 
     _updateSnapZoom(dt) {

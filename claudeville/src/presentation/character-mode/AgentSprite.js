@@ -3758,36 +3758,65 @@ export class AgentSprite {
         ctx.translate(this.x, this.y);
         ctx.scale(s, s);
 
-        const t = this.chatBubbleAnim;
-
-        // Speech bubble (alternating effect)
-        const phase = Math.floor(t * 1.5) % 3;
+        // #27 — the bare ellipsis is replaced by a small parchment speech-scroll
+        // showing what the conversation is actually about: the live tool-category
+        // glyph (#9's ToolIdentity classification), tinted by status color. When
+        // no tool is active it degrades to the classic animated dots.
+        const visual = this._statusVisual();
+        const accent = visual?.color || '#72d071';
         const bubbleY = -50;
+        const w = 30;
+        const h = 24;
+        const r = 5;
 
-        // Background circle
+        // Parchment backplate (rounded scroll), with a small downward tail.
         ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
-        ctx.strokeStyle = '#72d071';
+        ctx.strokeStyle = accent;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(0, bubbleY, 14, 0, Math.PI * 2);
+        if (ctx.roundRect) {
+            ctx.roundRect(-w / 2, bubbleY - h / 2, w, h, r);
+        } else {
+            ctx.rect(-w / 2, bubbleY - h / 2, w, h);
+        }
         ctx.fill();
         ctx.stroke();
 
         // Tail
         ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
         ctx.beginPath();
-        ctx.moveTo(-3, bubbleY + 12);
-        ctx.lineTo(0, bubbleY + 18);
-        ctx.lineTo(3, bubbleY + 12);
+        ctx.moveTo(-3, bubbleY + h / 2 - 1);
+        ctx.lineTo(0, bubbleY + h / 2 + 6);
+        ctx.lineTo(3, bubbleY + h / 2 - 1);
         ctx.fill();
 
-        // Chat icon (ellipsis animation inside the speech bubble)
-        ctx.fillStyle = '#72d071';
-        ctx.font = 'bold 12px "Press Start 2P", monospace';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const dots = ['.', '..', '...'][phase];
-        ctx.fillText(dots, 0, bubbleY - 1);
+        const tool = String(this.agent?.currentTool || '').trim();
+        if (tool) {
+            // Live tool glyph: the conversation reads as topically meaningful.
+            const building = memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null;
+            const glyph = toolGlyphKey(tool, building);
+            ctx.save();
+            ctx.translate(0, bubbleY);
+            drawToolGlyphBadge(ctx, {
+                glyph,
+                color: accent,
+                panel: 'rgba(0, 0, 0, 0)',
+                border: 'rgba(0, 0, 0, 0)',
+                size: 11,
+                frame: this.frame,
+                motionScale: this.motionScale,
+            });
+            ctx.restore();
+        } else {
+            // No active tool — fall back to the animated ellipsis (static under
+            // reduced motion: holds the full ellipsis instead of cycling).
+            const phase = this.motionScale === 0 ? 2 : Math.floor(this.chatBubbleAnim * 1.5) % 3;
+            ctx.fillStyle = accent;
+            ctx.font = 'bold 12px "Press Start 2P", monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(['.', '..', '...'][phase], 0, bubbleY - 1);
+        }
 
         ctx.restore();
     }
