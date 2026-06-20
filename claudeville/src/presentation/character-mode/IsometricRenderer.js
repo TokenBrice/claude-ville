@@ -211,6 +211,9 @@ const GULL_BASE_POPULATION = OPEN_SEA_FLOCK_ROUTES.reduce((sum, flock) => sum + 
 const GULL_MAX_POPULATION = GULL_BASE_POPULATION * 3;
 const GULL_MIN_ACTIVE_TARGET = Math.max(1, Math.floor(GULL_BASE_POPULATION / 4));
 const GULL_MAX_ACTIVE_TARGET = Math.max(GULL_MIN_ACTIVE_TARGET, Math.floor(GULL_MAX_POPULATION / 2));
+// #39 — how long a celebratory flock scatter holds the active-gull target at
+// its maximum after a harbor push-success / git push.
+const GULL_SCATTER_DURATION_MS = 6000;
 const BRIDGE_SPRITE_MIN_WIDTH = 390;
 const BRIDGE_SPRITE_MAX_WIDTH = 500;
 const VILLAGE_WOOD_PALETTE = Object.freeze({
@@ -376,6 +379,10 @@ export class IsometricRenderer {
                 width: (this.canvas?.width ?? 0) / (this._screenDpr?.() || 1),
                 height: (this.canvas?.height ?? 0) / (this._screenDpr?.() || 1),
             }),
+            // #39 — hush decorative seasonal drift while a real git reward is on
+            // screen (the celebratory gull scatter window) so it doesn't compete
+            // with the live event.
+            suppressGetter: () => this._gullScatterActive(),
         });
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.chronicleStore = options.chronicleStore || null;
@@ -1283,6 +1290,13 @@ export class IsometricRenderer {
                 if (!payload) return;
                 this._buildingPresenceMap = new Map(Object.entries(payload));
             }),
+            // #39 — celebratory gull scatter: a harbor push-success scatters
+            // the flock skyward for a few seconds by lifting the active-gull
+            // target toward GULL_MAX_ACTIVE_TARGET. Also records the moment so
+            // SeasonalAmbience suppresses decorative drift while the real git
+            // reward is on screen.
+            eventBus.on('harbor:push-success', () => this._triggerGullScatter()),
+            eventBus.on('git:pushed', () => this._triggerGullScatter()),
             // 4.8 — earned nicknames garnish agent name tags.
             eventBus.on('biography:updated', (payload) => {
                 const identityKey = payload?.identityKey;
@@ -7377,14 +7391,49 @@ export class IsometricRenderer {
                 altitude: r.altitude ?? 26,
                 phase: r.phase ?? 0,
                 wingRate: r.wingRate ?? 6,
+                // #39 — flutter-pause: songbirds flutter along the route, then
+                // perch-hold for 1–3s at the route point before fluttering on.
+                // `progress` advances only while fluttering; held position is
+                // captured at the moment a perch begins. State seeds vary so the
+                // three birds don't perch in unison.
+                progress: (r.phase ?? 0) % 1,
+                state: 'flutter',
+                stateUntil: 0,
+                perchProgress: (r.phase ?? 0) % 1,
             }));
         }
+        const now = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now()
+            : Date.now();
+        const dtMs = this._landBirdLastNow ? Math.max(0, Math.min(120, now - this._landBirdLastNow)) : 0;
+        this._landBirdLastNow = now;
         const visible = this._getVisibleTileBounds(3);
         ctx.save();
         for (const bird of this._landBirdRoutes) {
-            const progress = this.motionScale
-                ? ((this.waterFrame * bird.speed + bird.phase) % 1 + 1) % 1
-                : bird.phase % 1;
+            let progress;
+            let perched;
+            if (!this.motionScale) {
+                // Reduced motion: every songbird is a static perched bird, held
+                // at a deterministic point on its route.
+                progress = bird.phase % 1;
+                perched = true;
+            } else {
+                if (now >= bird.stateUntil) {
+                    if (bird.state === 'flutter') {
+                        bird.state = 'perch';
+                        bird.perchProgress = bird.progress;
+                        bird.stateUntil = now + 1000 + this._gullUnitNoise(bird.phase * 17.3 + now * 0.0001) * 2000;
+                    } else {
+                        bird.state = 'flutter';
+                        bird.stateUntil = now + 1400 + this._gullUnitNoise(bird.phase * 23.9 + now * 0.0002) * 2600;
+                    }
+                }
+                if (bird.state === 'flutter') {
+                    bird.progress = ((bird.progress + bird.speed * (dtMs / 16)) % 1 + 1) % 1;
+                }
+                progress = bird.state === 'perch' ? bird.perchProgress : bird.progress;
+                perched = bird.state === 'perch';
+            }
             const p = this._pointOnGullRoute(bird.route, progress);
             const bx = Math.floor(p.tileX);
             const by = Math.floor(p.tileY);
@@ -7398,11 +7447,14 @@ export class IsometricRenderer {
             ctx.fill();
             ctx.globalAlpha = 1;
             let frame = 'prop.songbird';
-            if (this.motionScale) {
+            if (this.motionScale && !perched) {
                 const f = Math.floor(this.waterFrame * bird.wingRate + bird.phase * 11) % 4;
                 frame = f === 0 ? 'prop.songbird.up' : f === 2 ? 'prop.songbird.down' : 'prop.songbird';
             }
-            this.sprites.drawSprite(ctx, frame, gx, gy - bird.altitude);
+            // Perched birds settle lower (drop the flight altitude toward a
+            // rooftop sit) and use the level wings-folded frame.
+            const altitude = perched ? bird.altitude * 0.18 : bird.altitude;
+            this.sprites.drawSprite(ctx, frame, gx, gy - altitude);
         }
         ctx.restore();
     }
@@ -7513,7 +7565,28 @@ export class IsometricRenderer {
         return value - Math.floor(value);
     }
 
+    // #39 — record a push-success so the gull flock scatters skyward for a
+    // few seconds. Bounded by performance.now(); read by `_gullActiveTarget`
+    // and (via the renderer-supplied getter) by SeasonalAmbience suppression.
+    _triggerGullScatter() {
+        const now = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now()
+            : Date.now();
+        this._gullScatterUntil = now + GULL_SCATTER_DURATION_MS;
+    }
+
+    _gullScatterActive() {
+        if (!this._gullScatterUntil) return false;
+        const now = (typeof performance !== 'undefined' && performance.now)
+            ? performance.now()
+            : Date.now();
+        return now < this._gullScatterUntil;
+    }
+
     _gullActiveTarget(cycleIndex) {
+        // While a push-success scatter is live, drive every route to the max
+        // active target so the whole flock takes wing at once.
+        if (this._gullScatterActive()) return GULL_MAX_ACTIVE_TARGET;
         const range = GULL_MAX_ACTIVE_TARGET - GULL_MIN_ACTIVE_TARGET;
         return GULL_MIN_ACTIVE_TARGET + Math.floor(this._gullUnitNoise(cycleIndex + 19.37) * (range + 1));
     }
@@ -7639,6 +7712,24 @@ export class IsometricRenderer {
             const tileY = routePoint.tileY + sideY * gull.sideOffset * spread + tangentY * wander;
             const waterY = (tileX + tileY) * TILE_HEIGHT / 2;
             const bob = this.motionScale ? Math.sin(time * 1.1 + gull.memberPhase) * 2.4 : 0;
+            // #39 — fishing dive: over the open-water midsection a gull folds
+            // and plunges toward the surface, then climbs back to cruise. A
+            // half-sine well over [0.40, 0.62] of the journey reduces altitude
+            // by up to ~80% (a near-surface skim) and recovers. Lighthouse
+            // visitors keep their orbit altitude; dives skip under reduced
+            // motion (held cruise snapshot).
+            let diveDrop = 0;
+            let diving = false;
+            if (this.motionScale && !this._gullVisitsLighthouse(gull, cycleIndex)) {
+                const DIVE_START = 0.40;
+                const DIVE_END = 0.62;
+                if (journeyT >= DIVE_START && journeyT <= DIVE_END) {
+                    const dt = (journeyT - DIVE_START) / (DIVE_END - DIVE_START);
+                    const well = Math.sin(dt * Math.PI);
+                    diveDrop = well * gull.altitude * 0.80;
+                    diving = well > 0.45;
+                }
+            }
             const screenVx = (dx - dy) * TILE_WIDTH / 2;
             const screenVy = (dx + dy) * TILE_HEIGHT / 2;
             const orbiting = this._gullVisitsLighthouse(gull, cycleIndex)
@@ -7659,10 +7750,10 @@ export class IsometricRenderer {
                 tileX,
                 tileY,
                 x: (tileX - tileY) * TILE_WIDTH / 2,
-                y: waterY - gull.altitude + bob,
+                y: waterY - (gull.altitude - diveDrop) + bob,
                 waterY,
                 wing: this.motionScale ? Math.sin(time * 3.2 + gull.memberPhase) * 1.7 : 0.6,
-                frameId: banking ? GULL_BANK_FRAME : GULL_FLIGHT_FRAMES[flapFrame],
+                frameId: diving ? 'prop.gullFlight.down' : (banking ? GULL_BANK_FRAME : GULL_FLIGHT_FRAMES[flapFrame]),
                 fallbackFrameId: 'prop.gullFlight',
                 facing: screenVx < 0 ? -1 : 1,
                 screenSpeed: Math.hypot(screenVx, screenVy),

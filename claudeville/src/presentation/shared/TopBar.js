@@ -7,6 +7,7 @@ export class TopBar {
         this.world = world;
         this.modal = modal || null;
         this.els = {
+            root: document.getElementById('topbar'),
             tokens: document.getElementById('statTokens'),
             cost: document.getElementById('statCost'),
             time: document.getElementById('statTime'),
@@ -76,6 +77,33 @@ export class TopBar {
         this.els.erroredWrap.style.display = stats.errored > 0 ? '' : 'none';
         this.els.badgeAttention.textContent = stats.attention;
         this.els.attentionWrap.style.display = stats.attention > 0 ? '' : 'none';
+
+        this._renderActivityRail(stats);
+    }
+
+    // Living activity rail: a 2px strip along the topbar bottom whose hue and
+    // intensity echo the fleet's status mix. Mostly-working reads as a warm
+    // gold; any errored agent bleeds red in from the left, weighted by how much
+    // of the fleet is failing. Driven by CSS custom props the rail strip reads.
+    _renderActivityRail(stats) {
+        if (!this.els.root) return;
+        const total = stats.total || 0;
+        const erroredRatio = total > 0 ? stats.errored / total : 0;
+        const activeRatio = total > 0 ? (stats.working + stats.waiting) / total : 0;
+
+        // Hue: 45deg warm gold by default, pulled toward 8deg red as the
+        // errored fraction climbs. Alpha rises with both trouble and activity
+        // so an idle/empty village rests dim.
+        const hue = Math.round(45 - 37 * erroredRatio);
+        const alpha = (0.18 + 0.42 * activeRatio + 0.4 * erroredRatio).toFixed(3);
+        // Red bleed origin: 100% (offscreen right) when calm, sliding left as
+        // more agents error so the red enters from the left edge.
+        const bleed = Math.round(100 - 100 * erroredRatio);
+
+        const style = this.els.root.style;
+        style.setProperty('--cv-rail-hue', `${hue}`);
+        style.setProperty('--cv-rail-alpha', `${alpha}`);
+        style.setProperty('--cv-rail-bleed', `${bleed}%`);
     }
 
     _setConnection(connected) {

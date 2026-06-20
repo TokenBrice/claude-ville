@@ -236,6 +236,16 @@ export class BuildingSprite {
         this._observatoryClockSpin = 0;
         // #17 — watchtower searchlight sweep angle (rad), advanced in update().
         this._watchtowerSearchlightAngle = -0.34;
+        // #40 — transient beam flare (0..1) kicked when an agent newly storms the
+        // Pharos (errored/rate-limited); decays in _updateWatchtowerSearchlight so
+        // the beam pulses brighter as a fresh incident arrives, then settles back
+        // to the steady fleet-distress level. Held flat under reduced motion.
+        this._watchtowerFlare = 0;
+        this._onDistress = (event) => {
+            if (event?.kind === 'recovered') return;
+            this._watchtowerFlare = 1;
+        };
+        eventBus.on('distress:watchtower', this._onDistress);
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -246,6 +256,7 @@ export class BuildingSprite {
         this._motionMq?.removeEventListener?.('change', this._onMotionChange);
         eventBus.off(BUILDING_EVENTS.ACTIVE_AGENTS, this._onPresence);
         eventBus.off('building:read-intensity', this._onReadIntensity);
+        eventBus.off('distress:watchtower', this._onDistress);
     }
 
     _presenceTierFor(type) {
@@ -368,6 +379,10 @@ export class BuildingSprite {
         const distress = this._fleetDistressRatio();
         const rate = lerp(SEARCHLIGHT_SPIN_CALM_RAD_PER_S, SEARCHLIGHT_SPIN_DISTRESS_RAD_PER_S, distress);
         this._watchtowerSearchlightAngle = (this._watchtowerSearchlightAngle + seconds * rate) % (Math.PI * 2);
+        // #40 — ease the incident flare back to rest over ~1.4s.
+        if (this._watchtowerFlare > 0) {
+            this._watchtowerFlare = Math.max(0, this._watchtowerFlare - seconds / 1.4);
+        }
     }
 
     // Soft drop shadows under each building footprint. Hero buildings use the
@@ -3258,7 +3273,10 @@ export class BuildingSprite {
         const haze = mixHex('#ffb347', '#ff3a2a', distress);
         // Glow breathes gently; reduced motion holds a steady alpha.
         const breathe = this.motionScale ? 0.86 + pulse * 0.14 : 0.9;
-        const beamAlpha = (0.16 + distress * 0.22) * breathe;
+        // #40 — a fresh incident flares the beam brighter for ~1.4s. Held at 0
+        // under reduced motion so the static wedge keeps a steady alpha.
+        const flare = this.motionScale ? clamp01(this._watchtowerFlare) : 0;
+        const beamAlpha = (0.16 + distress * 0.22 + flare * 0.26) * breathe;
 
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
@@ -3304,7 +3322,7 @@ export class BuildingSprite {
         const bloom = ctx.createRadialGradient(pivot.x, pivot.y, 1, pivot.x, pivot.y, 16 + distress * 6);
         bloom.addColorStop(0, core);
         bloom.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        ctx.globalAlpha = 0.5 + distress * 0.3;
+        ctx.globalAlpha = clamp01(0.5 + distress * 0.3 + flare * 0.3);
         ctx.fillStyle = bloom;
         ctx.beginPath();
         ctx.arc(pivot.x, pivot.y, 16 + distress * 6, 0, Math.PI * 2);

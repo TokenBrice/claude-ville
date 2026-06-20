@@ -36,6 +36,32 @@
     flex-shrink: 0;
 }
 
+/* #31 Selection echo: top accent bar on the panel header */
+.activity-panel__header {
+    position: relative;
+}
+
+.activity-panel__header::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--cv-selected-accent, transparent);
+    opacity: 0;
+}
+
+body[data-cv-selected] .activity-panel__header::before {
+    opacity: 1;
+    animation: ap-selected-bar 2.4s ease-in-out infinite;
+}
+
+@keyframes ap-selected-bar {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+
 .activity-panel__agent-info {
     display: flex;
     align-items: center;
@@ -915,5 +941,11 @@
 
     .activity-panel__context-bar {
         transition: none;
+    }
+
+    /* #31 static accent bar fallback */
+    body[data-cv-selected] .activity-panel__header::before {
+        animation: none;
+        opacity: 1;
     }
 }

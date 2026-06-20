@@ -13,6 +13,9 @@ const SOCIAL_TTL_MS = 14_000;
 const INCIDENT_TTL_MS = 18_000;
 const RELEASE_TTL_MS = 26_000;
 const LIFE_TTL_MS = 12_000;
+// #40 — how long a recovery relief cue stays on the snapshot so the overlay
+// can fire one straighten-and-spark beat per healed incident.
+const RECOVERY_TTL_MS = 2_400;
 const MAX_REPLAY_AGENTS = 72;
 const MAX_SELECTED_ROUTES = 9;
 const MAX_HOVER_ROUTES = 3;
@@ -90,6 +93,10 @@ export class VillageDirector {
         this.replaySamples = [];
         this.toolEvents = [];
         this.scenes = [];
+        // #40 — agents currently storming the watchtower (errored / rate-limited),
+        // and short-lived relief cues for ones that just recovered. Keyed by id.
+        this._distressedAgents = new Map();
+        this._recoveries = new Map();
         this.buildingPresence = new Map();
         this.lastSnapshot = this._emptySnapshot(Date.now());
         this._lastStats = this._emptyStats();
@@ -124,6 +131,8 @@ export class VillageDirector {
         this.replaySamples = [];
         this.toolEvents = [];
         this.scenes = [];
+        this._distressedAgents.clear();
+        this._recoveries.clear();
         this.buildingPresence.clear();
         this.hoveredBuilding = null;
         this._lastCueSignatures?.clear?.();
@@ -233,6 +242,7 @@ export class VillageDirector {
         const teams = this._teamClusters(agents, perfNow);
         const handoffs = this._handoffScenes(agents, now);
         const incidents = this._incidentScenes(agents, now);
+        const recoveries = this._recoveryScenes(agents, now);
         const lifecycle = this._lifecycleScenes(agents, now);
         const buildingSignals = this._buildingSignals(agents, now);
         const selectedBuildingSignal = this._selectedBuildingSignal(agents, buildingSignals);
@@ -253,6 +263,7 @@ export class VillageDirector {
             teams,
             handoffs,
             incidents,
+            recoveries,
             lifecycle,
             buildingSignals,
             selectedBuildingSignal,
@@ -366,6 +377,7 @@ export class VillageDirector {
             teams: [],
             handoffs: [],
             incidents: [],
+            recoveries: [],
             lifecycle: [],
             buildingSignals: [],
             selectedBuildingSignal: null,
@@ -426,9 +438,45 @@ export class VillageDirector {
                 expiresAt: Date.now() + INCIDENT_TTL_MS,
             });
         }
+        this._trackDistressTransition(agent, status);
+    }
+
+    // #40 — error/recovery story. An agent entering ERRORED or RATE_LIMITED is
+    // logged as storming the Pharos and announced via `distress:watchtower` so
+    // the watchtower beam can flare; when it leaves that state we emit a relief
+    // cue (consumed by the overlay's straighten-and-spark on recovery) and clear
+    // the distress flag. WAITING_ON_USER is an incident but not a Pharos storm.
+    _trackDistressTransition(agent, status) {
+        const id = agent?.id;
+        if (!id) return;
+        const distressed = status === AgentStatus.ERRORED || status === AgentStatus.RATE_LIMITED;
+        const was = this._distressedAgents.has(id);
+        if (distressed) {
+            if (!was) {
+                this._distressedAgents.set(id, { kind: status, since: Date.now() });
+                eventBus.emit('distress:watchtower', {
+                    agentId: id,
+                    kind: status,
+                    label: incidentLabel(status),
+                    ts: Date.now(),
+                });
+            }
+        } else if (was) {
+            this._distressedAgents.delete(id);
+            this._recoveries.set(id, { recoveredAt: Date.now() });
+            eventBus.emit('distress:watchtower', {
+                agentId: id,
+                kind: 'recovered',
+                ts: Date.now(),
+            });
+        }
     }
 
     _onAgentRemoved(agent) {
+        if (agent?.id) {
+            this._distressedAgents.delete(agent.id);
+            this._recoveries.delete(agent.id);
+        }
         const building = agentBuilding(agent) || 'gate';
         this._addScene({
             type: 'lifecycle',
@@ -640,6 +688,9 @@ export class VillageDirector {
 
     _prune(now) {
         this._pruneReplay(now);
+        for (const [id, entry] of this._recoveries) {
+            if (now - (entry.recoveredAt || 0) > RECOVERY_TTL_MS) this._recoveries.delete(id);
+        }
         this.scenes = this.scenes.filter(scene => (scene.expiresAt || 0) > now);
         this.toolEvents = this.toolEvents.filter(event => now - (Number(event.ts) || 0) <= BUILDING_SIGNAL_TTL_MS);
         for (const [type, entry] of this.buildingPresence.entries()) {
@@ -783,6 +834,27 @@ export class VillageDirector {
             });
         }
         return out.slice(-6);
+    }
+
+    // #40 — short-lived relief cues for agents that just left an incident
+    // state. The overlay reads `progress` (0→1 over RECOVERY_TTL_MS) to fade a
+    // green straighten-and-spark beat at the agent's current position.
+    _recoveryScenes(agents, now) {
+        if (!this._recoveries.size) return [];
+        const byId = new Map(agents.map(agent => [agent.id, agent]));
+        const out = [];
+        for (const [id, entry] of this._recoveries) {
+            const age = now - (entry.recoveredAt || now);
+            if (age > RECOVERY_TTL_MS) continue;
+            const agent = byId.get(id);
+            if (!agent) continue;
+            out.push({
+                agentId: id,
+                progress: clamp(age / RECOVERY_TTL_MS),
+                center: { x: agent.x, y: agent.y },
+            });
+        }
+        return out;
     }
 
     _lifecycleScenes(agents, now) {

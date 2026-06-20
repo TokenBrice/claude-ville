@@ -330,6 +330,12 @@ export class AgentSprite {
 
         this._lastStatus = agent?.status || null;
         this._completedAtMs = 0;
+        // #40 — error-distress story. While ERRORED/RATE_LIMITED the villager
+        // storms the Pharos with a head-down distressed gait; on recovery it
+        // straightens and sheds one relief spark. `_stormingLast` tracks the
+        // prior storm state so the recovery beat fires exactly once.
+        this._stormingLast = this._isStorming();
+        this._reliefSparkAt = 0;
 
         const screen = tileToWorld(agent.position);
         this.x = screen.x;
@@ -1198,6 +1204,24 @@ export class AgentSprite {
         return { bobScale: 1, staticDy: 0, idleFrame: null };
     }
 
+    // #40 — true when the agent is in an error/limit incident and storming the
+    // Pharos. Errored/rate-limited agents already route to the watchtower (see
+    // `_ambientBuildingTypeForState`); this drives the distinct distressed gait
+    // and the recovery relief beat.
+    _isStorming() {
+        const status = this.agent?.status;
+        return status === AgentStatus.ERRORED || status === AgentStatus.RATE_LIMITED;
+    }
+
+    // #40 — extra head-down drop (px) layered on the resting posture while
+    // storming, so a distressed villager reads as hunched even apart from mood.
+    // Errored hunches deepest. Used as both the animated bob bias and, under
+    // reduced motion, the static head offset — the standing distress tableau.
+    _distressPostureDrop() {
+        if (!this._isStorming()) return 0;
+        return this.agent?.status === AgentStatus.ERRORED ? 3 : 2;
+    }
+
     _moodShadowTint() {
         if (this.motionScale <= 0 || this.agent?.status === AgentStatus.ERRORED) return null;
         const mood = this.agent?.mood;
@@ -1388,6 +1412,7 @@ export class AgentSprite {
         this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
         this._advanceToolRitualGesture(particleSystem);
         this._advanceMoodPostureMotes(particleSystem);
+        this._advanceDistressRecovery(particleSystem);
 
         // Handle chatting state
         if (this.chatting) {
@@ -1909,6 +1934,11 @@ export class AgentSprite {
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
         // IDLE-status agents bob slower and shallower to read as "resting".
         const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
+        // #40 — distressed villagers carry a head-down drop while storming the
+        // Pharos, layered on the idle bob (animated) or the static posture
+        // offset (reduced motion). Walking keeps the drop so the gait reads
+        // hunched all the way to the watchtower.
+        const distressDrop = this._distressPostureDrop();
         const bobY = this.animState === 'idle'
             ? this.motionScale > 0
                 ? Math.round(
@@ -1917,9 +1947,9 @@ export class AgentSprite {
                             ? Math.sin(this.frame * 0.25) * 0.4
                             : Math.sin(this.frame * 0.4) * 0.6
                     ) * posture.bobScale,
-                )
-                : posture.staticDy
-            : 0;
+                ) + distressDrop
+                : posture.staticDy + distressDrop
+            : distressDrop;
         // #28 — handoff acknowledgement: a single 180ms upward dip-and-settle so
         // the baton landing reads as the child nodding back. Half-sine envelope;
         // never fires under reduced motion (setHandoffAck guards motionScale 0).
@@ -4655,6 +4685,20 @@ export class AgentSprite {
         if (beat === this._moodMoteBeat) return;
         this._moodMoteBeat = beat;
         particleSystem.spawn(preset, this.x, this.y + dy, 1);
+    }
+
+    // #40 — fire one relief spark when the villager leaves the storm state
+    // (ERRORED/RATE_LIMITED → recovered). The straighten is carried by the bob
+    // (distress drop releases as the status changes); this adds a single rising
+    // green-gold burst at the head. Reduced motion (motionScale 0) spawns
+    // nothing — the upright static posture is the recovery cue on its own.
+    _advanceDistressRecovery(particleSystem) {
+        const storming = this._isStorming();
+        if (this._stormingLast && !storming && this.motionScale > 0 && particleSystem) {
+            this._reliefSparkAt = Date.now();
+            particleSystem.spawn('distressRelief', this.x, this.y - 30, 7);
+        }
+        this._stormingLast = storming;
     }
 
     // Building work-gesture downbeat: spawn one particle per gesture cycle so

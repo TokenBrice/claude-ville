@@ -312,6 +312,34 @@ function drawHandoffSpark(ctx, x, y, rgb, alpha) {
     ctx.stroke();
 }
 
+// #40 — error-recovery relief beat. As an agent leaves ERRORED/RATE_LIMITED it
+// gives one green straighten-and-spark over RECOVERY_TTL_MS: a rising gilt-green
+// diamond (the relief vocabulary mirrors the handoff spark) over a soft halo
+// that fades as the tension releases. Reduced motion shows a single static
+// frame held at the recovery point — the spark vocabulary, no decay term.
+function drawRecoveries(ctx, recoveries, motionScale, grade = null) {
+    if (!recoveries?.length) return;
+    const rgb = gradeRgb('134, 239, 172', grade);
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    for (const recovery of recoveries) {
+        const center = recovery.center;
+        if (!center || !Number.isFinite(center.x)) continue;
+        const progress = clamp(recovery.progress ?? 0);
+        const fade = motionScale ? (1 - progress) : 1;
+        if (fade <= 0.02) continue;
+        // The relief lifts as it fades, echoing the agent straightening up.
+        const lift = motionScale ? progress * 12 : 0;
+        const y = center.y - 16 - lift;
+        ctx.fillStyle = rgba(rgb, 0.18 * fade);
+        ctx.beginPath();
+        ctx.ellipse(center.x, y, 13, 8, 0, 0, TAU);
+        ctx.fill();
+        drawHandoffSpark(ctx, center.x, y, rgb, fade);
+    }
+    ctx.restore();
+}
+
 function drawHandoffs(ctx, handoffs, now, motionScale, grade = null) {
     if (!handoffs?.length) return;
     const handoffRgb = gradeRgb('244, 196, 93', grade);
@@ -421,6 +449,7 @@ export function drawVillageDirectorGround(ctx, snapshot, now = Date.now(), grade
     }
     drawTeams(ctx, snapshot.teams, snapshot.perfNow || now, snapshot.motionScale, grade);
     drawIncidents(ctx, snapshot.incidents, snapshot.perfNow || now, snapshot.motionScale, grade);
+    drawRecoveries(ctx, snapshot.recoveries, snapshot.motionScale, grade);
     drawReleaseParade(ctx, snapshot.releaseParade, snapshot.perfNow || now, snapshot.motionScale, grade);
 }
 

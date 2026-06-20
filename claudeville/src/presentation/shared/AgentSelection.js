@@ -21,6 +21,58 @@ export function toggleAgentSelection(world, agentId, selectedId) {
     emitAgentSelected(agent);
 }
 
+// #31 Selection echo: a single global mirror that paints "the one you're
+// watching" across every surface. On selection it sets `--cv-selected-accent`
+// on <body> and toggles a `--selected` marker on the matching dashboard card
+// and sidebar row (queried live from the DOM), so World, Dashboard and Sidebar
+// all share one accent halo. CSS owns the visual treatment + reduced-motion.
+const SELECTED_ACCENT = '#ffe58d'; // matches --cv-gold-bright
+
+function _markSelectedElements(nextId, previousId) {
+    if (typeof document === 'undefined') return;
+    const clear = (id) => {
+        if (!id) return;
+        const sel = `[data-agent-id="${(window.CSS?.escape || String)(id)}"]`;
+        document.querySelectorAll(sel).forEach((el) => {
+            el.classList.remove('dash-card--selected', 'sidebar__agent--selected');
+        });
+    };
+    clear(previousId);
+    if (!nextId) {
+        document.body?.style.removeProperty('--cv-selected-accent');
+        document.body?.removeAttribute('data-cv-selected');
+        return;
+    }
+    document.body?.style.setProperty('--cv-selected-accent', SELECTED_ACCENT);
+    document.body?.setAttribute('data-cv-selected', '');
+    const sel = `[data-agent-id="${(window.CSS?.escape || String)(nextId)}"]`;
+    document.querySelectorAll(sel).forEach((el) => {
+        if (el.classList.contains('dash-card')) el.classList.add('dash-card--selected');
+        if (el.classList.contains('sidebar__agent')) el.classList.add('sidebar__agent--selected');
+    });
+}
+
+let _echoInstalled = false;
+export function installSelectionEcho() {
+    if (_echoInstalled || typeof document === 'undefined') return;
+    _echoInstalled = true;
+    let current = null;
+    eventBus.on(AGENT_SELECTED_EVENT, (agent) => {
+        const next = agent?.id || null;
+        if (next === current) return;
+        _markSelectedElements(next, current);
+        current = next;
+    });
+    eventBus.on(AGENT_DESELECTED_EVENT, () => {
+        if (current === null) return;
+        _markSelectedElements(null, current);
+        current = null;
+    });
+}
+
+// Self-install on import; harmless under SSR/tests via the document guard.
+installSelectionEcho();
+
 export class AgentSelectionMirror {
     constructor({ onChange, notifyOnRepeat = false } = {}) {
         this.selectedId = null;

@@ -442,16 +442,49 @@ function blendRgb(from, to, weight) {
     };
 }
 
-function blendPalette(phase, phaseProgress) {
+// #29 — Weather-coupled sky palette. Under rain/storm the zenith bruises
+// toward purple-grey and the horizon turns sickly olive, weighted by how much
+// of the sky the storm actually covers. Pure color transform, no time
+// component, so it is identical under prefers-reduced-motion.
+const STORM_ZENITH = '#3d3050';
+const STORM_HORIZON = '#8a8b5c';
+const STORM_WORLD_TINT = 'rgba(60, 45, 80, 0.28)';
+const STORM_BIAS = { rain: 0.42, storm: 0.62 };
+
+function stormPaletteShift(weather) {
+    const bias = STORM_BIAS[weather?.type];
+    if (!bias) return 0;
+    const cloudCover = clamp(Number(weather.cloudCover) || 0);
+    return clamp(cloudCover * bias);
+}
+
+// Lerp two `rgba(...)` strings (including alpha) by weight, returning an
+// `rgba(...)` string. Falls back to the source on unparseable input.
+function lerpRgbaString(from, to, weight) {
+    const a = parseRgbaString(from);
+    const b = parseRgbaString(to);
+    if (!a || !b) return from;
+    const w = clamp(weight);
+    const r = Math.round(interpolateNumber(a.r, b.r, w));
+    const g = Math.round(interpolateNumber(a.g, b.g, w));
+    const bl = Math.round(interpolateNumber(a.b, b.b, w));
+    const al = Number(interpolateNumber(a.a, b.a, w).toFixed(3));
+    return `rgba(${r}, ${g}, ${bl}, ${al})`;
+}
+
+function blendPalette(phase, phaseProgress, weather) {
     const transition = phaseTransition(phase, phaseProgress);
     const from = PALETTES[transition.from] || PALETTES[phase] || PALETTES.day;
     const to = PALETTES[transition.to] || PALETTES[phase] || PALETTES.day;
     const weight = transition.weight;
+    const storm = stormPaletteShift(weather);
+    const zenith = blendRgb(hexToRgb(from.zenith), hexToRgb(to.zenith), weight);
+    const horizon = blendRgb(hexToRgb(from.horizon), hexToRgb(to.horizon), weight);
     return {
-        zenith: rgbToHex(blendRgb(hexToRgb(from.zenith), hexToRgb(to.zenith), weight)),
+        zenith: rgbToHex(storm > 0 ? blendRgb(zenith, hexToRgb(STORM_ZENITH), storm) : zenith),
         upperBand: rgbToHex(blendRgb(hexToRgb(from.upperBand), hexToRgb(to.upperBand), weight)),
         midBand: rgbToHex(blendRgb(hexToRgb(from.midBand), hexToRgb(to.midBand), weight)),
-        horizon: rgbToHex(blendRgb(hexToRgb(from.horizon), hexToRgb(to.horizon), weight)),
+        horizon: rgbToHex(storm > 0 ? blendRgb(horizon, hexToRgb(STORM_HORIZON), storm) : horizon),
         horizonGlow: Object.values(blendRgb(rgbStringToRgb(from.horizonGlow), rgbStringToRgb(to.horizonGlow), weight)).join(', '),
         starWarm: rgbToHex(blendRgb(hexToRgb(from.starWarm), hexToRgb(to.starWarm), weight)),
         starHot: rgbToHex(blendRgb(hexToRgb(from.starHot), hexToRgb(to.starHot), weight)),
@@ -740,16 +773,22 @@ function buildGrade(phase, phaseProgress, weather) {
             ? weather.intensity * 0.16
             : 0;
 
+    const baseTint = phase === 'night'
+        ? 'rgba(50, 92, 140, 0.22)'
+        : phase === 'dawn'
+            ? 'rgba(140, 175, 210, 0.10)'
+            : phase === 'dusk'
+                ? 'rgba(130, 116, 160, 0.13)'
+                : 'rgba(160, 215, 245, 0.05)';
+    // #29 — under rain/storm the world tint agrees with the bruised sky, pulled
+    // toward the storm cast by how much of the sky the storm covers.
+    const storm = stormPaletteShift(weather);
+    const worldTint = storm > 0 ? lerpRgbaString(baseTint, STORM_WORLD_TINT, storm) : baseTint;
+
     return {
         overlayAlpha: clamp(dark * 0.30 + weatherWeight, 0, 0.46),
         vignetteAlpha: clamp(dark * 0.34 + weatherWeight * 0.6, 0.04, 0.52),
-        worldTint: phase === 'night'
-            ? 'rgba(50, 92, 140, 0.22)'
-            : phase === 'dawn'
-                ? 'rgba(140, 175, 210, 0.10)'
-                : phase === 'dusk'
-                    ? 'rgba(130, 116, 160, 0.13)'
-                    : 'rgba(160, 215, 245, 0.05)',
+        worldTint,
         horizonWash: clamp((phase === 'day' ? 0.10 : 0.18) + weatherWeight, 0, 0.28),
         buildingGlowScale: clamp(0.55 + dark * 0.85 + weatherWeight, 0.45, 1.5),
     };
@@ -904,7 +943,7 @@ export function createAtmosphereSnapshot({
         cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}`,
         weather,
         sky: {
-            palette: blendPalette(phase, phaseProgress),
+            palette: blendPalette(phase, phaseProgress, weather),
             assetIds,
             sun: buildSun(minute, phase, phaseProgress, weather),
             moon: buildMoon(minute, phase, phaseProgress, weather, effectiveDate),

@@ -217,6 +217,19 @@ const PARTICLE_PRESETS = {
         gravity: true,
         direction: 'up',
     },
+    // #40 — distress-recovery relief spark. A short warm green-gold burst that
+    // rises as an errored agent straightens under the Pharos, signalling the
+    // incident has cleared. Brighter and faster than a fret mote so the relief
+    // reads as a release of tension, not lingering worry. Reduced motion never
+    // spawns it — the agent's static upright posture is the recovery cue.
+    distressRelief: {
+        colors: ['#b8f58a', '#fff1a8', '#86efac', '#fffbe6'],
+        size: [1.4, 3],
+        life: [16, 34],
+        speed: [0.4, 1.1],
+        gravity: false,
+        direction: 'up',
+    },
 };
 
 // #18 — exported so HarborTraffic's inline buoy flame stays colour-matched to

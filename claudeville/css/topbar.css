@@ -22,6 +22,48 @@
     z-index: 100;
 }
 
+/* ── Living activity rail ──
+   A 2px strip along the topbar bottom whose hue/brightness echo the fleet's
+   status mix. JS sets --cv-rail-hue (45 gold → 8 red), --cv-rail-alpha
+   (intensity), and --cv-rail-bleed (red enters from the left as errors climb).
+   A slow background-position shimmer gives a warm gold heartbeat. */
+.topbar::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    height: 2px;
+    pointer-events: none;
+    z-index: -1;
+    background-image:
+        linear-gradient(90deg,
+            hsla(8, 78%, 52%, calc(var(--cv-rail-alpha, 0.18) + 0.15)) 0%,
+            transparent var(--cv-rail-bleed, 100%)),
+        linear-gradient(90deg,
+            transparent 0%,
+            hsla(var(--cv-rail-hue, 45), 82%, 60%, var(--cv-rail-alpha, 0.18)) 30%,
+            hsla(var(--cv-rail-hue, 45), 88%, 70%, calc(var(--cv-rail-alpha, 0.18) + 0.18)) 50%,
+            hsla(var(--cv-rail-hue, 45), 82%, 60%, var(--cv-rail-alpha, 0.18)) 70%,
+            transparent 100%);
+    background-size: 100% 100%, 220% 100%;
+    background-repeat: no-repeat;
+    background-position: 0 0, 0 0;
+    animation: topbar-rail-shimmer 5.5s linear infinite;
+}
+
+@keyframes topbar-rail-shimmer {
+    from { background-position: 0 0, 0% 0; }
+    to   { background-position: 0 0, -220% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .topbar::before {
+        animation: none;
+        background-position: 0 0, 0 0;
+    }
+}
+
 /* Subtle bottom glow line */
 .topbar::after {
     content: "";

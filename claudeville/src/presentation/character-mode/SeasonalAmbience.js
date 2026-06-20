@@ -54,6 +54,7 @@ export class SeasonalAmbience {
         atmosphereStateGetter = null,
         motionScaleGetter = null,
         viewportProvider = null,
+        suppressGetter = null,
     } = {}) {
         this.particleSystem = particleSystem;
         this.atmosphereStateGetter = typeof atmosphereStateGetter === 'function'
@@ -65,6 +66,12 @@ export class SeasonalAmbience {
         this.viewportProvider = typeof viewportProvider === 'function'
             ? viewportProvider
             : null;
+        // #39 — when this returns true (a real git event / gull scatter is on
+        // screen), decorative drift spawning is suppressed so the ambient layer
+        // yields to the live event.
+        this.suppressGetter = typeof suppressGetter === 'function'
+            ? suppressGetter
+            : () => false;
         this.enabled = true;
         this._spawnAccumulator = 0;
         this._lastSeasonKey = '';
@@ -101,6 +108,14 @@ export class SeasonalAmbience {
 
         if (motionScale === 0) {
             this._seedStaticFallback(season, seasonKey);
+            return;
+        }
+
+        // suppressDuringEvents — a live git reward (the celebratory gull
+        // scatter) is on screen; hold off decorative spawns and drain the
+        // accumulator so nothing bursts when suppression lifts.
+        if (this.suppressGetter()) {
+            this._spawnAccumulator = 0;
             return;
         }
 
