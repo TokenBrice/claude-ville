@@ -1,6 +1,13 @@
 import { MAP_SIZE } from '../../config/constants.js';
 import { mapWorldCorners, tileToWorld, worldToTile } from './Projection.js';
 
+// #50 — idle Ken-Burns drift tuning. Begins after this much input-free time,
+// then breathes along a slow detuned Lissajous loop with a sub-pixel amplitude.
+const IDLE_DRIFT_DELAY_MS = 45000;
+const IDLE_DRIFT_AMPLITUDE_PX = 8;
+const IDLE_DRIFT_PERIOD_X_MS = 38000;
+const IDLE_DRIFT_PERIOD_Y_MS = 47000;
+
 export class Camera {
     constructor(canvas) {
         this.canvas = canvas;
@@ -47,6 +54,14 @@ export class Camera {
         // stops fighting their chosen view. Cleared by an explicit re-frame.
         this._userAdjusted = false;
 
+        // #50 — inertial idle drift. After ~45s with no input (and nothing else
+        // owning the camera) the view breathes along a tiny bounded Lissajous
+        // path so a left-open ClaudeVille feels alive, not frozen. The offset is
+        // applied on top of a captured base position and fully removed the
+        // instant any input arrives. Reduced motion skips it entirely.
+        this._lastInputAt = performance.now();
+        this._idleDrift = null;       // { baseX, baseY, phase }
+
         this._onMouseDown = this._onMouseDown.bind(this);
         this._onMouseMove = this._onMouseMove.bind(this);
         this._onMouseUp = this._onMouseUp.bind(this);
@@ -59,6 +74,7 @@ export class Camera {
         // Frame the village core while giving the right-side harbor sea lanes more room.
         const tx = 33, ty = 18;
         const screen = tileToWorld(tx, ty);
+        this._idleDrift = null;
         this.zoom = 1;
         if (!this.canvas) return;
         this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
@@ -92,6 +108,7 @@ export class Camera {
         this._zoomAnimation = null;
         this._snapZoom = null;
         this._momentum = null;
+        this._idleDrift = null;
         this.zoom = zoom;
         this.x = -centerX + w / (2 * zoom);
         this.y = -centerY + h / (2 * zoom);
@@ -249,6 +266,7 @@ export class Camera {
             this._momentum = null;
             this._followEase = null;
             this._directorGlide = null;
+            this._idleDrift = null;
         }
     }
 
@@ -281,10 +299,11 @@ export class Camera {
         this._clampToBounds();
     }
 
-    update(dt = 16) {
+    update(dt = 16, renderNow = performance.now()) {
         if (this._updateDirectorGlide(dt)) return;
         this._updateMomentum(dt);
         this._updateSnapZoom(dt);
+        this._updateIdleDrift(dt, renderNow);
         if (!this._zoomAnimation) return;
         const anim = this._zoomAnimation;
         anim.elapsed += dt;
@@ -304,7 +323,9 @@ export class Camera {
 
     _onMouseDown(e) {
         if (e.button !== 0) return;
+        this._lastInputAt = performance.now();
         this.abortDirectorGlide();
+        this._endIdleDrift();
         this.dragging = true;
         this._userAdjusted = true;
         this.dragStartX = e.clientX;
@@ -361,7 +382,9 @@ export class Camera {
 
     _onWheel(e) {
         e.preventDefault();
+        this._lastInputAt = performance.now();
         this.abortDirectorGlide();
+        this._endIdleDrift();
         this._momentum = null;
         this._snapZoom = null;
         const rect = this.canvas.getBoundingClientRect();
@@ -443,6 +466,7 @@ export class Camera {
 
     centerOnTile(tileX, tileY) {
         const screen = tileToWorld(tileX, tileY);
+        this._idleDrift = null;
         this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
         this.y = -screen.y + this._viewportHeight() / (2 * this.zoom);
         this._clampToBounds();
@@ -506,6 +530,48 @@ export class Camera {
         momentum.vx *= decay;
         momentum.vy *= decay;
         if (Math.hypot(momentum.vx, momentum.vy) < 0.01) this._momentum = null;
+    }
+
+    // #50 — drift the view along a tiny bounded Lissajous path once the world
+    // has sat idle ~45s. Skipped entirely under reduced motion, and yielded the
+    // moment anything else (drag, momentum, follow, zoom) wants the camera. The
+    // offset rides on top of a captured base position so it is fully reversible.
+    _updateIdleDrift(dt, renderNow = performance.now()) {
+        if (this._reducedMotion) { this._endIdleDrift(); return; }
+        // Anything else owning the camera defers the drift and resets the clock.
+        if (this.dragging || this._momentum || this._directorGlide
+            || this.followTarget || this._zoomAnimation || this._snapZoom) {
+            this._endIdleDrift();
+            this._lastInputAt = renderNow;
+            return;
+        }
+        if (renderNow - this._lastInputAt < IDLE_DRIFT_DELAY_MS) {
+            this._endIdleDrift();
+            return;
+        }
+        if (!this._idleDrift) {
+            // Enter drift: capture the resting position as the path origin.
+            this._idleDrift = { baseX: this.x, baseY: this.y, phase: 0 };
+        }
+        const drift = this._idleDrift;
+        drift.phase += dt;
+        // Two slightly detuned frequencies trace an open Lissajous loop; the
+        // sub-pixel amplitude keeps it a breath, not a pan.
+        const ax = Math.sin(drift.phase / IDLE_DRIFT_PERIOD_X_MS * (Math.PI * 2));
+        const ay = Math.sin(drift.phase / IDLE_DRIFT_PERIOD_Y_MS * (Math.PI * 2));
+        this.x = drift.baseX + ax * IDLE_DRIFT_AMPLITUDE_PX;
+        this.y = drift.baseY + ay * IDLE_DRIFT_AMPLITUDE_PX;
+        this._clampToBounds();
+    }
+
+    // Restore the captured base position and clear the drift state. No-op when
+    // not drifting, so input handlers can call it unconditionally.
+    _endIdleDrift() {
+        if (!this._idleDrift) return;
+        this.x = this._idleDrift.baseX;
+        this.y = this._idleDrift.baseY;
+        this._idleDrift = null;
+        this._clampToBounds();
     }
 
     // #21 — advance the director glide. Returns true while it owns the camera so

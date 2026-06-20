@@ -328,6 +328,10 @@ export class ParticleSystem {
         // particle's vx so a rising smoke column leans downwind. Defaults to 0
         // so existing callers are unaffected.
         const windDrift = Number.isFinite(Number(options.windX)) ? Number(options.windX) : 0;
+        // #34 — signed vertical drift paired with `windX`, letting a caller bias
+        // particles toward an arbitrary point (token-flow motes drifting from a
+        // working agent toward its bound building). Defaults to 0.
+        const driftY = Number.isFinite(Number(options.driftY)) ? Number(options.driftY) : 0;
 
         for (let i = 0; i < spawnCount; i++) {
             let seedIndex = i * 11;
@@ -361,6 +365,7 @@ export class ParticleSystem {
             }
 
             vx += windDrift;
+            vy += driftY;
 
             this.particles.push(new Particle(
                 x + randFrom(rng, -spread, spread),

@@ -204,6 +204,11 @@ export class DashboardRenderer {
                 </span>
                 <span class="dashboard__section-count" style="color: ${profile.labelText || profile.accent}"></span>
             </div>
+            <div class="dashboard__section-healthbar" aria-hidden="true">
+                <span class="dashboard__healthbar-seg dashboard__healthbar-seg--errored"></span>
+                <span class="dashboard__healthbar-seg dashboard__healthbar-seg--working"></span>
+                <span class="dashboard__healthbar-seg dashboard__healthbar-seg--idle"></span>
+            </div>
             <div class="dashboard__section-grid"></div>
         `;
         section._sectionRefs = {
@@ -214,7 +219,11 @@ export class DashboardRenderer {
             healthErrored: section.querySelector('.dashboard__health-stat--errored'),
             healthWorking: section.querySelector('.dashboard__health-stat--working'),
             healthIdle: section.querySelector('.dashboard__health-stat--idle'),
+            healthBarErrored: section.querySelector('.dashboard__healthbar-seg--errored'),
+            healthBarWorking: section.querySelector('.dashboard__healthbar-seg--working'),
+            healthBarIdle: section.querySelector('.dashboard__healthbar-seg--idle'),
         };
+        section._erroredCount = 0;
         return section;
     }
 
@@ -228,11 +237,11 @@ export class DashboardRenderer {
         const shortPath = projectPath === '_unknown' ? '' : shortenHomePath(projectPath);
         refs.path.textContent = shortPath;
 
-        this._updateSectionHealth(refs, agents);
+        this._updateSectionHealth(sectionEl, refs, agents);
     }
 
     // Health rollup: errored/working/idle counts for the section's agents.
-    _updateSectionHealth(refs, agents) {
+    _updateSectionHealth(sectionEl, refs, agents) {
         const counts = { errored: 0, working: 0, idle: 0 };
         for (const agent of agents) {
             const status = normalizeStatus(agent.status);
@@ -256,6 +265,30 @@ export class DashboardRenderer {
                 this._setStyle(el, 'display', 'none');
             }
         }
+
+        // #44 — composite health pulse-bar: 2px segments sized by status counts,
+        // one-shot red edge-flash when a section gains an errored card.
+        const total = counts.errored + counts.working + counts.idle;
+        const pct = (n) => (total > 0 ? `${(n / total) * 100}%` : '0%');
+        this._setStyle(refs.healthBarErrored, 'flexBasis', pct(counts.errored));
+        this._setStyle(refs.healthBarWorking, 'flexBasis', pct(counts.working));
+        this._setStyle(refs.healthBarIdle, 'flexBasis', pct(counts.idle));
+
+        if (counts.errored > (sectionEl._erroredCount || 0)) {
+            this._flashSectionErrored(sectionEl);
+        }
+        sectionEl._erroredCount = counts.errored;
+    }
+
+    _flashSectionErrored(sectionEl) {
+        sectionEl.classList.remove('dashboard__section--errored-flash');
+        void sectionEl.offsetWidth;
+        sectionEl.classList.add('dashboard__section--errored-flash');
+        clearTimeout(sectionEl._erroredFlashTimer);
+        sectionEl._erroredFlashTimer = setTimeout(() => {
+            sectionEl.classList.remove('dashboard__section--errored-flash');
+            sectionEl._erroredFlashTimer = null;
+        }, 600);
     }
 
     _createCard(agent) {

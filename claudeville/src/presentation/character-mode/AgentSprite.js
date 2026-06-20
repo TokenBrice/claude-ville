@@ -344,6 +344,15 @@ export class AgentSprite {
         // each distressed/proud beat fires a single mote (never under reduced
         // motion, never while moving — the static posture carries the cue then).
         this._moodMoteBeat = -1;
+        // #34 — token-flow motes. While WORKING, tiny archive/beacon motes rise
+        // off the villager and drift toward its bound building, density set by
+        // recent token burn (the same total LandmarkActivity._observeTokens
+        // tracks). `_tokenFlowTotal` is the last observed token total, `_tokenFlowBurn`
+        // a decaying burn accumulator, and `_tokenFlowBeat` the last cadence cycle
+        // a mote fired. Reduced motion never emits — token life stays invisible.
+        this._tokenFlowTotal = null;
+        this._tokenFlowBurn = 0;
+        this._tokenFlowBeat = -1;
 
         this._lastStatus = agent?.status || null;
         this._completedAtMs = 0;
@@ -1451,6 +1460,7 @@ export class AgentSprite {
         this._advanceMoodPostureMotes(particleSystem);
         this._advanceDistressRecovery(particleSystem);
         this._advanceArrivalCeremony(particleSystem);
+        this._advanceTokenFlowMotes(particleSystem, frameScale);
 
         // Handle chatting state
         if (this.chatting) {
@@ -4789,6 +4799,90 @@ export class AgentSprite {
         if (beat === this._moodMoteBeat) return;
         this._moodMoteBeat = beat;
         particleSystem.spawn(preset, this.x, this.y + dy, 1);
+    }
+
+    // #34 — token-flow motes. While the villager is WORKING and parked, recent
+    // token burn (delta of the same total LandmarkActivity._observeTokens reads)
+    // becomes ambient visible life: tiny motes rise off the chest and drift
+    // toward the bound building's centre, denser when the burn is hot. The
+    // building palette picks the mote — beacon-gold for command/observatory/
+    // portal/watchtower, parchment-green archive motes elsewhere. Pulse band:
+    // these claim the `medium` particle-emission budget alongside the mood/ritual
+    // motes (mutually exclusive sources, gated below). Reduced motion (motionScale
+    // 0) or any in-motion/chat/ritual state emits nothing.
+    _advanceTokenFlowMotes(particleSystem, frameScale = 1) {
+        // Decay the burn accumulator every frame so a burst fades over ~3 s.
+        this._tokenFlowBurn *= Math.pow(0.985, Math.max(0, frameScale));
+        if (this._tokenFlowBurn < 0.01) this._tokenFlowBurn = 0;
+
+        // Fold this frame's token delta into the accumulator regardless of draw
+        // gating, so the burn rate reflects real work even mid-walk.
+        const total = this._tokenFlowTotalNow();
+        if (this._tokenFlowTotal != null && total > this._tokenFlowTotal) {
+            this._tokenFlowBurn = Math.min(1, this._tokenFlowBurn + (total - this._tokenFlowTotal) / 6000);
+        }
+        this._tokenFlowTotal = total;
+
+        if (!particleSystem || this.motionScale <= 0) return;
+        if (this.agent?.status !== AgentStatus.WORKING || this.moving || this.chatting) return;
+        // Defer to the building work-gesture / mood beats so one mote source
+        // leads; token motes fill the quiet stretches between gestures.
+        if (this._toolRitual?.pose && this._toolRitual.phase !== 'fading') return;
+        if (this._tokenFlowBurn <= 0.04) return;
+
+        // Cadence shortens as burn rises (~620 ms hot → ~1500 ms cool); stagger
+        // per agent so a busy crowd does not pulse in unison.
+        const period = 1500 - Math.round(this._clamp(this._tokenFlowBurn, 0, 1) * 880);
+        const offset = Math.abs(this._hash(`${this.agent?.id || ''}:token-flow`)) % period;
+        const beat = Math.floor((Date.now() + offset) / period);
+        if (beat === this._tokenFlowBeat) return;
+        this._tokenFlowBeat = beat;
+
+        const type = String(this._lastBuildingType || '').toLowerCase();
+        const beacon = type === 'command' || type === 'observatory' || type === 'portal' || type === 'watchtower';
+        const preset = beacon ? 'beaconMote' : 'archiveMote';
+
+        // Drift toward the bound building centre (world space). The mote rises
+        // off the chest, so bias velocity along the chest→building vector.
+        const originX = this.x;
+        const originY = this.y - 24;
+        let driftX = 0;
+        let driftY = -0.18; // gentle default rise when the building is unknown
+        const center = this._tokenFlowBuildingCenter();
+        if (center) {
+            const dvx = center.x - originX;
+            const dvy = center.y - originY;
+            const mag = Math.hypot(dvx, dvy);
+            if (mag > 1) {
+                driftX = (dvx / mag) * 0.28;
+                driftY = (dvy / mag) * 0.28;
+            }
+        }
+
+        const count = this._tokenFlowBurn > 0.5 ? 2 : 1;
+        particleSystem.spawn(preset, originX, originY, count, {
+            spread: 4,
+            windX: driftX,
+            driftY,
+            layer: 'effects',
+        });
+    }
+
+    _tokenFlowTotalNow() {
+        const tokens = this.agent?.tokens || {};
+        const input = Number(tokens.input ?? tokens.totalInput ?? 0) || 0;
+        const output = Number(tokens.output ?? tokens.totalOutput ?? 0) || 0;
+        const cacheRead = Number(tokens.cacheRead ?? 0) || 0;
+        const cacheCreate = Number(tokens.cacheCreate ?? tokens.cacheWrite ?? 0) || 0;
+        return input + output + cacheRead + cacheCreate;
+    }
+
+    _tokenFlowBuildingCenter() {
+        const building = this._buildingForType(this._lastBuildingType);
+        const point = this._buildingFacingPoint(building);
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) return null;
+        const world = tileToWorld(point.x, point.y);
+        return Number.isFinite(world?.x) && Number.isFinite(world?.y) ? world : null;
     }
 
     // #40 — fire one relief spark when the villager leaves the storm state

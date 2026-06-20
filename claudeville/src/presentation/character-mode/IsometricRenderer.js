@@ -2707,7 +2707,9 @@ export class IsometricRenderer {
 
         // Update camera follow
         if (this.camera) {
-            this.camera.update(dt);
+            // #50 — pass wall-clock time so the camera can measure idle duration
+            // for the Ken-Burns drift independently of accumulated dt.
+            this.camera.update(dt, performance.now());
             this.camera.updateFollow(dt);
         }
 

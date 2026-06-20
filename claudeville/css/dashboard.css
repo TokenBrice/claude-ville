@@ -124,6 +124,46 @@
 .dashboard__health-stat--working::before { box-shadow: 0 0 6px rgba(74, 222, 128, 0.5); }
 .dashboard__health-stat--idle    { color: var(--cv-status-idle); }
 
+/* ─ #44 composite health pulse-bar: 2px strip under the header, segments
+   sized by working/waiting/errored counts; one-shot red edge-flash on a
+   newly-errored card (project accent already carried on the header rail). ─ */
+.dashboard__section-healthbar {
+    display: flex;
+    height: 2px;
+    width: 100%;
+    background: rgba(0, 0, 0, 0.34);
+    overflow: hidden;
+}
+
+.dashboard__healthbar-seg {
+    height: 100%;
+    flex-grow: 0;
+    flex-shrink: 0;
+    flex-basis: 0;
+    transition: flex-basis 240ms ease;
+}
+
+.dashboard__healthbar-seg--errored {
+    background: var(--cv-status-errored);
+    box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+}
+.dashboard__healthbar-seg--working {
+    background: var(--cv-status-working);
+    box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+}
+.dashboard__healthbar-seg--idle {
+    background: var(--cv-status-idle);
+}
+
+@keyframes dashboard-section-errored-flash {
+    0%   { box-shadow: inset 4px 0 0 rgba(239, 68, 68, 0), inset 0 1px 0 rgba(255, 226, 138, 0.08); }
+    35%  { box-shadow: inset 4px 0 0 rgba(239, 68, 68, 0.9), inset 0 1px 0 rgba(255, 226, 138, 0.08); }
+    100% { box-shadow: inset 4px 0 0 rgba(239, 68, 68, 0), inset 0 1px 0 rgba(255, 226, 138, 0.08); }
+}
+.dashboard__section--errored-flash .dashboard__section-header {
+    animation: dashboard-section-errored-flash 600ms ease-out;
+}
+
 .dashboard__section-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(380px, 1fr));
@@ -828,6 +868,14 @@
     .cv-reconnect-sweep .dash-card::before {
         animation: none;
         background: none;
+    }
+
+    /* #44 static health-bar fallback: no segment-grow transition, no flash */
+    .dashboard__healthbar-seg {
+        transition: none;
+    }
+    .dashboard__section--errored-flash .dashboard__section-header {
+        animation: none;
     }
 
     /* #31 static halo fallback */
