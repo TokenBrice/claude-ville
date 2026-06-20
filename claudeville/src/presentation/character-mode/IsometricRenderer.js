@@ -3721,7 +3721,7 @@ export class IsometricRenderer {
             return null;
         }
         const dpr = 1;
-        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}`;
+        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|edge`;
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
@@ -3764,6 +3764,7 @@ export class IsometricRenderer {
             this._drawLandmarkBridgeSpans(ctx);
             this._drawAmbientGroundProps(ctx);
             this._drawWorldEdgeRim(ctx);
+            this._bakePerimeterCliffShelf(ctx);
         } finally {
             this.motionScale = previousMotionScale;
         }
@@ -6453,6 +6454,51 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
+    // #25 — baked sand/cliff shelf along the two lower-facing diamond edges
+    // (SE and SW). Turns the hard void cut into a sunlit sand strip dropping
+    // into a shaded cliff face, so the island reads as resting on a coastline
+    // rather than being sliced off. Baked into the terrain cache — zero
+    // per-frame cost, and static by construction (reduced-motion safe).
+    _bakePerimeterCliffShelf(ctx) {
+        const points = this._worldDiamondPoints();
+        const east = points[1];
+        const south = points[2];
+        const west = points[3];
+        const sandH = 16;   // sunlit beach lip
+        const cliffH = 46;   // shaded face dropping to the void
+
+        for (const side of [{ a: east, b: south, dir: -1 }, { a: south, b: west, dir: 1 }]) {
+            ctx.save();
+            // Sunlit sand lip hugging the diamond edge.
+            const sand = ctx.createLinearGradient(0, side.a.y, 0, side.a.y + sandH);
+            sand.addColorStop(0, 'rgba(226, 196, 142, 0.92)');
+            sand.addColorStop(1, 'rgba(196, 162, 108, 0.85)');
+            ctx.fillStyle = sand;
+            ctx.beginPath();
+            ctx.moveTo(side.a.x, side.a.y);
+            ctx.lineTo(side.b.x, side.b.y);
+            ctx.lineTo(side.b.x + side.dir * 6, side.b.y + sandH);
+            ctx.lineTo(side.a.x + side.dir * 6, side.a.y + sandH);
+            ctx.closePath();
+            ctx.fill();
+
+            // Shaded cliff face beneath, dissolving into the distant-sea void.
+            const cliff = ctx.createLinearGradient(0, side.a.y + sandH, 0, side.a.y + sandH + cliffH);
+            cliff.addColorStop(0, 'rgba(120, 92, 58, 0.82)');
+            cliff.addColorStop(0.6, 'rgba(70, 52, 34, 0.62)');
+            cliff.addColorStop(1, 'rgba(34, 24, 17, 0)');
+            ctx.fillStyle = cliff;
+            ctx.beginPath();
+            ctx.moveTo(side.a.x + side.dir * 6, side.a.y + sandH);
+            ctx.lineTo(side.b.x + side.dir * 6, side.b.y + sandH);
+            ctx.lineTo(side.b.x + side.dir * 14, side.b.y + sandH + cliffH);
+            ctx.lineTo(side.a.x + side.dir * 14, side.a.y + sandH + cliffH);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
+        }
+    }
+
     // Distant sea + horizon beyond the island. Drawn per-frame in world space,
     // BEHIND the terrain (which is opaque over it), so it only fills the void
     // around and below the diamond — turning the flat edge into a coastline.
@@ -6502,6 +6548,27 @@ export class IsometricRenderer {
             ctx.moveTo(leftX, ly);
             ctx.lineTo(rightX, ly);
             ctx.stroke();
+        }
+
+        // #25 — stacked haze bands dissolve the hard void boundary into
+        // atmospheric distance. 3–4 staggered bands fade up toward the sky's
+        // own horizon colour, deepening with weather fog so a foggy day melts
+        // the diamond edge further into the white. Pure stacked gradients —
+        // already static, so the reduced-motion fallback is identical.
+        const fog = Math.max(0, Math.min(1, atmosphere?.weather?.fog ?? 0));
+        const bands = 4;
+        const bandSpan = 150;
+        const baseAlpha = (phase === 'night' ? 0.07 : 0.12) + fog * 0.26;
+        for (let i = 0; i < bands; i++) {
+            const top = seaTop + 24 + i * (bandSpan * 0.62);
+            const alpha = baseAlpha * (1 - i / bands) * 0.9;
+            if (alpha <= 0.004) continue;
+            const band = ctx.createLinearGradient(0, top, 0, top + bandSpan);
+            band.addColorStop(0, this._withAlpha(horizon, 0));
+            band.addColorStop(0.5, this._withAlpha(horizon, alpha));
+            band.addColorStop(1, this._withAlpha(horizon, 0));
+            ctx.fillStyle = band;
+            ctx.fillRect(leftX, top, rightX - leftX, bandSpan);
         }
         ctx.restore();
     }
