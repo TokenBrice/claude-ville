@@ -27,23 +27,27 @@
         <div class="topbar__left">
             <div class="topbar__brand">
                 <span class="topbar__logo">ClaudeVille</span>
-                <span id="topbarConnection" class="topbar__conn topbar__conn--connected">LIVE</span>
+                <div class="topbar__meta">
+                    <span id="topbarConnection" class="topbar__conn topbar__conn--connected">LIVE</span>
+                    <span class="topbar__version" tabindex="0" role="button">v0.17</span>
+                    <span id="statFps" class="topbar__fps">-- FPS</span>
+                </div>
             </div>
-            <span class="topbar__version" tabindex="0" role="button">v0.17</span>
-            <span id="statFps" class="topbar__fps">-- FPS</span>
         </div>
         <div class="topbar__center">
-            <div class="topbar__stat">
-                <span data-i18n="tokens" class="topbar__stat-label">TOKENS</span>
-                <span id="statTokens" class="topbar__stat-value">0</span>
-            </div>
-            <div class="topbar__stat">
-                <span data-i18n="cost" class="topbar__stat-label">COST</span>
-                <span id="statCost" class="topbar__stat-value">$0.0000</span>
-            </div>
-            <div class="topbar__stat">
-                <span data-i18n="time" class="topbar__stat-label">TIME</span>
-                <span id="statTime" class="topbar__stat-value">00:00:00</span>
+            <div class="topbar__ledger">
+                <span class="topbar__seg-stat">
+                    <span data-i18n="tokens" class="topbar__stat-label">TOKENS</span>
+                    <span id="statTokens" class="topbar__stat-value">0</span>
+                </span>
+                <span class="topbar__seg-stat">
+                    <span data-i18n="cost" class="topbar__stat-label">COST</span>
+                    <span id="statCost" class="topbar__stat-value">$0.0000</span>
+                </span>
+                <span class="topbar__seg-stat">
+                    <span data-i18n="time" class="topbar__stat-label">TIME</span>
+                    <span id="statTime" class="topbar__stat-value">00:00:00</span>
+                </span>
             </div>
             <div class="topbar__badges">
                 <div class="topbar__status">
@@ -62,18 +66,6 @@
                 </div>
                 <span class="topbar__badge topbar__badge--errored" id="badgeErroredWrap" style="display:none"><span class="topbar__badge-glyph">!</span> <span id="badgeErrored">0</span> ERRORED</span>
                 <span class="topbar__badge topbar__badge--attention" id="badgeAttentionWrap" style="display:none"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> ATTN</span>
-            </div>
-            <div class="topbar__divider"></div>
-            <div id="quotaSection" class="topbar__quota-chip" style="display: none;" title="Token limit used">
-                <span class="topbar__quota-chip-icon" aria-hidden="true">&#9935;</span>
-                <span class="topbar__quota-chip-win">
-                    <span class="topbar__quota-chip-lbl">5H</span>
-                    <span id="quota5hPct" class="topbar__quota-chip-pct">--</span>
-                </span>
-                <span class="topbar__quota-chip-win">
-                    <span class="topbar__quota-chip-lbl">7D</span>
-                    <span id="quota7dPct" class="topbar__quota-chip-pct">--</span>
-                </span>
             </div>
         </div>
         <div class="topbar__right">

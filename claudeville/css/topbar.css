@@ -84,16 +84,17 @@
     flex-shrink: 0;
 }
 
-/* Brand stack: logo with the LIVE chip tucked directly beneath it. */
+/* Brand block: the wordmark is the hero; a single quiet meta sub-line beneath
+   it carries connection · version · FPS so they cost no horizontal width. */
 .topbar__brand {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 2px;
+    gap: 4px;
 }
 
 .topbar__logo {
-    font-size: 13px;
+    font-size: 14px;
     color: var(--cv-gold-bright);
     letter-spacing: 2px;
     line-height: 1;
@@ -102,20 +103,26 @@
         0 0 12px rgba(255, 222, 117, 0.32);
 }
 
-/* LIVE sits under the logo: shrunk and quiet so the brand reads first. */
-.topbar__brand .topbar__conn {
-    font-size: 6px;
-    padding: 1px 4px;
-    letter-spacing: 1.5px;
+/* Meta sub-line — legible mono (the app's data face), middot-separated, no
+   chrome. One quiet line instead of three competing bordered chips. */
+.topbar__meta {
+    display: flex;
+    align-items: center;
+    font-family: var(--font-body);
+    font-size: 10px;
+    line-height: 1;
+    color: var(--cv-text-muted);
+}
+
+.topbar__meta > * + *::before {
+    content: "\00B7";
+    margin: 0 7px;
+    color: rgba(199, 157, 76, 0.5);
 }
 
 /* ── Shared chip base ── */
-/* All bordered chips (.topbar__stat, .topbar__badge, .topbar__mode-btn)
-   share one border + one subtle inset shadow. No nested ::before double-border. */
-.topbar__version,
-.topbar__fps,
-.topbar__conn,
-.topbar__stat,
+/* Framed tags (.topbar__badge, mode + sound buttons) share one border + one
+   subtle inset shadow. No nested ::before double-border. */
 .topbar__badge,
 .topbar__sound-btn,
 .topbar__mode-btn {
@@ -125,62 +132,68 @@
         inset 0 -2px 0 rgba(0, 0, 0, 0.26);
 }
 
-/* ── Tertiary cluster (version, FPS) — quiet, de-emphasized ── */
+/* ── Version (meta sub-line, clickable → changelog) ── */
 .topbar__version {
-    font-size: 8px;
-    color: rgba(160, 130, 90, 0.7);
-    padding: 2px 6px;
-    border-color: rgba(199, 157, 76, 0.25);
-    background: rgba(36, 24, 17, 0.7);
-    border-radius: 1px;
+    color: var(--cv-text-muted);
     cursor: pointer;
-    transition: color 0.15s, border-color 0.15s;
+    transition: color 0.15s;
 }
 
 .topbar__version:hover {
-    color: #e8d4a0;
-    border-color: rgba(199, 157, 76, 0.8);
+    color: var(--cv-gold-bright);
+    text-decoration: underline;
+    text-underline-offset: 2px;
 }
 
+/* ── FPS (meta sub-line); warn/danger color states kept for JS hooks ── */
 .topbar__fps {
-    font-size: 8px;
-    color: rgba(159, 199, 138, 0.6);
-    padding: 2px 6px;
-    border-color: rgba(199, 157, 76, 0.2);
-    background: rgba(36, 24, 17, 0.7);
-    border-radius: 1px;
-    min-width: 40px;
-    text-align: center;
+    color: rgba(150, 195, 130, 0.85);
 }
 
-/* FPS warn/danger states kept for JS hooks, but default is quiet */
 .topbar__fps--warn {
-    color: #e3b65e;
+    color: var(--cv-warn-yellow);
 }
 
 .topbar__fps--danger {
-    color: #e0705a;
+    color: var(--cv-status-errored);
 }
 
-/* ── Connection chip (tertiary, no animation) ── */
+/* ── Connection (meta sub-line) with a soft live heartbeat dot ── */
 .topbar__conn {
-    font-size: 8px;
-    padding: 2px 6px;
-    border-radius: 1px;
-    background: rgba(36, 24, 17, 0.7);
+    display: inline-flex;
+    align-items: center;
     letter-spacing: 1px;
+}
+
+.topbar__conn::before {
+    content: "";
+    width: 5px;
+    height: 5px;
+    margin-right: 5px;
+    border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 6px currentColor;
+    animation: topbar-live-pulse 2.4s ease-in-out infinite;
+}
+
+@keyframes topbar-live-pulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .topbar__conn::before {
+        animation: none;
+        opacity: 1;
+    }
 }
 
 .topbar__conn--connected {
     color: var(--cv-status-working);
-    border-color: rgba(199, 157, 76, 0.2);
-    opacity: 0.7;
 }
 
 .topbar__conn--disconnected {
     color: var(--cv-status-errored);
-    border-color: rgba(224, 112, 90, 0.5);
-    opacity: 1;
 }
 
 /* ── #48 Connection-loss chrome ── */
@@ -247,28 +260,47 @@
     overflow: hidden;
 }
 
-/* ── Secondary stats (tokens/cost/time) ── */
-.topbar__stat {
+/* ── Metrics ledger (tokens/cost/time) ──
+   One segmented tag with hairline-divided cells, deliberately matching the
+   status tag below so the center reads as two members of one family. */
+.topbar__ledger {
     display: flex;
-    flex-direction: column;
+    align-items: stretch;
+    border: 1px solid rgba(236, 187, 89, 0.46);
+    border-radius: 2px;
+    background: linear-gradient(180deg, rgba(66, 43, 25, 0.96), rgba(18, 12, 11, 0.96));
+    box-shadow:
+        inset 0 1px 0 rgba(255, 231, 150, 0.08),
+        inset 0 -2px 0 rgba(0, 0, 0, 0.26);
+    overflow: hidden;
+}
+
+.topbar__seg-stat {
+    display: flex;
     align-items: center;
-    gap: 2px;
-    min-width: 48px;
-    padding: 4px 6px;
-    background: linear-gradient(180deg, rgba(72, 47, 27, 0.78), rgba(26, 17, 14, 0.72));
+    gap: 6px;
+    padding: 5px 9px;
+}
+
+.topbar__seg-stat + .topbar__seg-stat {
+    border-left: 1px solid rgba(214, 169, 81, 0.3);
 }
 
 .topbar__stat-label {
-    font-size: 7px;
+    font-size: 8px;
     color: var(--cv-text-muted);
     letter-spacing: 1px;
-    opacity: 0.75;
+    opacity: 0.78;
+    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
 }
 
+/* Values use the legible data face (Departure Mono), sized up from the pixel
+   labels so the numbers read first. */
 .topbar__stat-value {
-    font-size: 10px;
-    color: rgba(242, 211, 107, 0.72);
-    text-shadow: 0 0 8px rgba(242, 211, 107, 0.12);
+    font-family: var(--font-body);
+    font-size: 13px;
+    color: rgba(244, 214, 120, 0.92);
+    text-shadow: 0 0 8px rgba(242, 211, 107, 0.16);
 }
 
 .topbar__badges {
@@ -365,67 +397,6 @@
 .topbar__badge-glyph {
     font-weight: bold;
     line-height: 1;
-}
-
-/* ── Divider ── */
-.topbar__divider {
-    width: 1px;
-    height: 24px;
-    background: var(--cv-divider, rgba(199, 157, 76, 0.35));
-}
-
-/* ── Token limit chip ── */
-/* Slim, always-on echo of the mine: both quota windows' usage in one tag, no
-   progress tracks. The pick icon ties it to the mine and carries the health
-   colour (green low usage -> red near the limit). */
-.topbar__quota-chip {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 2px 6px;
-    background: rgba(0, 0, 0, 0.28);
-    border: 1px solid var(--cv-border-soft);
-    border-radius: 3px;
-    line-height: 1;
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
-}
-
-.topbar__quota-chip-icon {
-    font-size: var(--fs-label);
-    color: var(--cv-green-soft);
-    transition: color 0.3s;
-}
-
-.topbar__quota-chip-win {
-    display: flex;
-    align-items: baseline;
-    gap: 3px;
-}
-
-.topbar__quota-chip-lbl {
-    font-size: var(--fs-label);
-    color: var(--cv-text-muted);
-    letter-spacing: 0.4px;
-}
-
-.topbar__quota-chip-pct {
-    font-size: var(--fs-label);
-    color: var(--cv-gold-soft);
-    letter-spacing: 0.4px;
-    min-width: 26px;
-    text-align: right;
-}
-
-.topbar__quota-chip--warn .topbar__quota-chip-icon {
-    color: var(--cv-warn-yellow);
-}
-
-.topbar__quota-chip--danger {
-    border-color: rgba(239, 68, 68, 0.45);
-}
-
-.topbar__quota-chip--danger .topbar__quota-chip-icon {
-    color: var(--cv-status-errored);
 }
 
 .topbar__right {

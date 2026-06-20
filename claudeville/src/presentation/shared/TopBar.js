@@ -23,10 +23,6 @@ export class TopBar {
             version: document.querySelector('.topbar__version'),
             soundToggle: document.getElementById('topbarSoundToggle'),
             cinemaToggle: document.getElementById('topbarCinemaToggle'),
-            // Token limit chip
-            quotaSection: document.getElementById('quotaSection'),
-            quota5hPct: document.getElementById('quota5hPct'),
-            quota7dPct: document.getElementById('quota7dPct'),
         };
         this.timeInterval = null;
         this._changelogHtml = null;
@@ -37,9 +33,6 @@ export class TopBar {
         eventBus.on('agent:added', this._onUpdate);
         eventBus.on('agent:updated', this._onUpdate);
         eventBus.on('agent:removed', this._onUpdate);
-
-        this._onUsage = (usage) => this.renderQuota(usage);
-        eventBus.on('usage:updated', this._onUsage);
 
         this._onFps = (fps) => this.renderFps(fps);
         eventBus.on('fps:updated', this._onFps);
@@ -182,58 +175,6 @@ export class TopBar {
         this.els.fps.classList.toggle('topbar__fps--warn', fps >= 25 && fps < 45);
     }
 
-    renderQuota(usage) {
-        if (!usage) {
-            this._hideQuotaChip();
-            return;
-        }
-
-        // Token limit chip (shown only when the API succeeds)
-        if (usage.quotaAvailable && usage.quota) {
-            this._updateQuotaChip(usage.quota);
-        } else {
-            this._hideQuotaChip();
-        }
-    }
-
-    // World mode's mine renders remaining reserves as ore; this chip is the
-    // always-on, cross-mode echo and reports usage of both windows (the familiar
-    // figures, matching the OS widget), colored by whichever window sits closest
-    // to its limit.
-    _updateQuotaChip(quota) {
-        const five = Number(quota.fiveHour);
-        const seven = Number(quota.sevenDay);
-        if (!Number.isFinite(five) && !Number.isFinite(seven)) {
-            this._hideQuotaChip();
-            return;
-        }
-        const fivePct = Number.isFinite(five) ? `${Math.round(five * 100)}%` : '--';
-        const sevenPct = Number.isFinite(seven) ? `${Math.round(seven * 100)}%` : '--';
-        this.els.quotaSection.style.display = 'flex';
-        this.els.quota5hPct.textContent = fivePct;
-        this.els.quota7dPct.textContent = sevenPct;
-        this.els.quotaSection.title = `Token limit used · 5h ${fivePct} · 7d ${sevenPct}`;
-
-        const worst = Math.max(
-            Number.isFinite(five) ? five : 0,
-            Number.isFinite(seven) ? seven : 0,
-        );
-        this.els.quotaSection.classList.remove('topbar__quota-chip--warn', 'topbar__quota-chip--danger');
-        if (worst >= 0.8) {
-            this.els.quotaSection.classList.add('topbar__quota-chip--danger');
-        } else if (worst >= 0.5) {
-            this.els.quotaSection.classList.add('topbar__quota-chip--warn');
-        }
-    }
-
-    _hideQuotaChip() {
-        if (!this.els.quotaSection) return;
-        this.els.quotaSection.style.display = 'none';
-        this.els.quotaSection.classList.remove('topbar__quota-chip--warn', 'topbar__quota-chip--danger');
-        if (this.els.quota5hPct) this.els.quota5hPct.textContent = '--';
-        if (this.els.quota7dPct) this.els.quota7dPct.textContent = '--';
-    }
-
     _startTimer() {
         this.timeInterval = setInterval(() => {
             const seconds = this.world.activeTime;
@@ -322,7 +263,6 @@ export class TopBar {
         eventBus.off('agent:added', this._onUpdate);
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
-        eventBus.off('usage:updated', this._onUsage);
         eventBus.off('fps:updated', this._onFps);
         eventBus.off('ws:connected', this._onWsConnected);
         eventBus.off('ws:disconnected', this._onWsDisconnected);
