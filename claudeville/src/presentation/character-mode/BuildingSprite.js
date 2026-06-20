@@ -1121,7 +1121,49 @@ export class BuildingSprite {
         });
         for (const source of this._ritualLightSources(lightBoost)) out.push(source);
         for (const source of this._forgeSpillLightSources(lightBoost)) out.push(source);
+        for (const source of this._archiveSpillLightSources(lightBoost)) out.push(source);
         return out;
+    }
+
+    // Ground-spill light from the archive doorway: when reading is busy the warm
+    // lamplight bleeds out the door and across the entrance steps via the
+    // screen-composite light path (overlay sprite). Brightness tracks the read
+    // counter (_archiveReadIntensity); flicker rides the slow building pulse and
+    // holds steady under reduced motion (#12).
+    _archiveSpillLightSources(lightBoost = 1) {
+        const readIntensity = this._archiveReadIntensity || 0;
+        if (readIntensity <= 0.4) return [];
+        const strength = clamp01((readIntensity - 0.4) / 0.6);
+        const flicker = this.motionScale ? 0.9 + Math.sin(this.frame * 0.06) * 0.1 : 0.9;
+        const sources = [];
+        for (const building of this.buildings) {
+            if (building.type !== 'archive') continue;
+            const entry = this.assets.getEntry(`building.${building.type}`);
+            const center = this._buildingScreenCenter(building);
+            const baseAnchor = this.assets.getAnchor(entry?.id || `building.${building.type}`);
+            sources.push(normalizeLightSource({
+                id: `archive:${building.position?.tileX ?? 0}.${building.position?.tileY ?? 0}:spill`,
+                kind: 'spark',
+                origin: {
+                    x: center.x - baseAnchor[0] + 168,
+                    y: center.y - baseAnchor[1] + 142,
+                },
+                color: '#ffd98a',
+                radius: 40 + strength * 16,
+                // WorldFrameRenderer's reflection pass scales overlay alpha by
+                // `intensity`; drive it from the read counter so the spill
+                // brightens with reading. `alpha` is kept for any alpha-aware path.
+                intensity: 0.6 + strength * 0.9,
+                alpha: (0.18 + strength * 0.30) * flicker * lightBoost,
+                overlay: 'atmosphere.light.lantern-glow',
+                buildingType: building.type,
+                building,
+            }, {
+                buildingType: building.type,
+                building,
+            }));
+        }
+        return sources;
     }
 
     // Ground-spill light from the forge molten pool: when the smithy is hot and
@@ -2059,6 +2101,13 @@ export class BuildingSprite {
             ctx.fill();
         }
         ctx.globalCompositeOperation = 'source-over';
+        // Warm lamplight cone spilling out the doorway onto the entrance steps
+        // when reading is busy (>0.4). Screen-composite so it sits as light, not
+        // paint; brightness tracks the read counter and the slow building pulse.
+        // The same intensity also drifts `archiveMote` dust through the door in
+        // `_spawnEmittersFor`, and registers a ground `'spark'` light in
+        // `_archiveSpillLightSources` so the spill bleeds onto adjacent tiles.
+        this._drawArchiveDoorwaySpill(ctx, doorway, localPoint, readIntensity, pulse);
         // Reduced motion: ParticleSystem is muted so the high-intensity
         // doorway archiveMote burst would be invisible. Stamp a small fixed
         // dot cluster so the read signal still reads at the door.
@@ -2066,6 +2115,32 @@ export class BuildingSprite {
             this._drawArchiveStaticDoorBurst(ctx, doorway);
         }
         this._drawArchiveRitual(ctx, doorway, ritual);
+    }
+
+    _drawArchiveDoorwaySpill(ctx, doorway, localPoint, readIntensity, pulse) {
+        if (readIntensity <= 0.4) return;
+        const strength = clamp01((readIntensity - 0.4) / 0.6);
+        // Slow building pulse modulates the flicker; static at reduced motion.
+        const flicker = this.motionScale ? 0.88 + pulse * 0.12 : 0.92;
+        const step = localPoint(168, 142);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        // A short cone fanning from the doorway down onto the steps.
+        const grad = ctx.createLinearGradient(doorway.x, doorway.y, step.x, step.y + 6);
+        grad.addColorStop(0, `rgba(255, 224, 150, ${(0.26 + strength * 0.34) * flicker})`);
+        grad.addColorStop(0.6, `rgba(255, 206, 120, ${(0.12 + strength * 0.20) * flicker})`);
+        grad.addColorStop(1, 'rgba(255, 196, 110, 0)');
+        ctx.fillStyle = grad;
+        const halfTop = 9 + strength * 4;
+        const halfBottom = 22 + strength * 12;
+        ctx.beginPath();
+        ctx.moveTo(doorway.x - halfTop, doorway.y);
+        ctx.lineTo(doorway.x + halfTop, doorway.y);
+        ctx.lineTo(step.x + halfBottom, step.y + 6);
+        ctx.lineTo(step.x - halfBottom, step.y + 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
     }
 
     _drawArchiveStaticDoorBurst(ctx, doorway) {

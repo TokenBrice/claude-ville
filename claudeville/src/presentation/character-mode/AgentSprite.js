@@ -9,6 +9,7 @@ import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } fr
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { RITUAL_GESTURE_PERIOD_MS } from './RitualConductor.js';
 import { pulseAlpha } from './PulsePolicy.js';
+import { drawToolGlyphBadge, toolGlyphKey } from './ToolGlyphBadge.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
 import { compactToolInput, toolActionLabel, toolCategory, classifyTool } from '../../domain/services/ToolIdentity.js';
@@ -102,6 +103,9 @@ const COMPACT_NAME_HEIGHT = 17;
 const COMPACT_NAME_GLYPH_SIZE = 6;
 const COMPACT_NAME_SLOT_BASE_Y = 22;
 const COMPACT_NAME_SLOT_STEP_Y = 12;
+// #9 — compact activity glyph badge emblem size (the ~9x9 illuminated icon
+// that replaces the dark name pill when not selected and zoomed out).
+const TOOL_GLYPH_BADGE_SIZE = 9;
 const STATUS_BUBBLE_MAIN_MAX_WIDTH = Object.freeze({
     anchored: 232,
     floating: 360,
@@ -1874,7 +1878,7 @@ export class AgentSprite {
             if (this.agent?.status === AgentStatus.WAITING_ON_USER) {
                 this._drawWaitingOnUserBeacon(ctx, null);
             }
-            this._drawCompactNameStatus(ctx);
+            this._drawToolGlyphBadge(ctx);
             if (archivePushed) ctx.restore();
             return;
         }
@@ -3793,12 +3797,15 @@ export class AgentSprite {
         // building's status-tally chip (set in IsometricRenderer); suppress its
         // own name pill so busy buildings stay legible at low zoom.
         if (this.foldedIntoBuilding && !this.selected) return;
+        // #9 — below the full-pill threshold (not selected, zoomed out, or
+        // unslotted) fly the compact activity glyph badge instead of the dark
+        // name pill; full pills are reserved for selected/zoom >= 1.5.
         if (!this.selected && this._zoom < 1.5) {
-            this._drawCompactNameStatus(ctx);
+            this._drawToolGlyphBadge(ctx);
             return;
         }
         if (!this.selected && this.nameTagSlot == null) {
-            this._drawCompactNameStatus(ctx);
+            this._drawToolGlyphBadge(ctx);
             return;
         }
         ctx.save();
@@ -3935,6 +3942,43 @@ export class AgentSprite {
         this._applyReadableTextShadow(ctx);
         ctx.shadowOffsetX = 0; // vertical-only: avoid doubling Departure Mono's hairlines
         ctx.fillText(text, Math.round(textCenter), 0.5);
+        ctx.restore();
+    }
+
+    // #9 — Activity glyph badge: the compact replacement for the dark name pill.
+    // A tiny illuminated tool-category emblem tinted by status, so a busy scene
+    // reads as a constellation of glowing trade-icons that never overlap into
+    // mush. Pills are reserved for the selected agent and zoom >= 1.5 (the full
+    // tag path); this draws in the otherwise-compact case. The emblem itself is
+    // SECONDARY (status color carries the read) and never overlaps text.
+    // Reduced-motion: the glyph's lit glow freezes to a steady mid-intensity.
+    _drawToolGlyphBadge(ctx) {
+        const visual = this._statusVisual();
+        const repo = this._repoNameTagProfile();
+        const tool = String(this.agent?.currentTool || '').trim();
+        // Reuse the live tool classification so the glyph picks the same building
+        // the agent is routing toward (web -> globe, mine -> pick, etc.).
+        const building = tool
+            ? (memoizedToolClassification(tool, this.agent?.currentToolInput)?.building || null)
+            : null;
+        const glyph = toolGlyphKey(tool, building);
+        const s = 1 / (this._zoom || 1);
+        const slot = this.overlaySlot ?? this.nameTagSlot ?? 0;
+
+        ctx.save();
+        ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
+        ctx.translate(this.x, this.y);
+        ctx.scale(s, s);
+        ctx.translate(0, COMPACT_NAME_SLOT_BASE_Y + slot * COMPACT_NAME_SLOT_STEP_Y);
+        drawToolGlyphBadge(ctx, {
+            glyph,
+            color: visual?.color || repo.accent || '#f2d36b',
+            panel: repo.panel,
+            border: repo.panelBorder || repo.accent,
+            size: TOOL_GLYPH_BADGE_SIZE,
+            frame: this.frame,
+            motionScale: this.motionScale,
+        });
         ctx.restore();
     }
 
