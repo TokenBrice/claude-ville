@@ -2,6 +2,40 @@
 
 ---
 
+## v0.17.0 — *Lanternlight* · Jun 20, 2026
+
+The village becomes **one lit place, breathing with its fleet** — and every new flicker of light, motion, or colour is a true word about a real session. A 50-item visual upgrade, distilled by a design council and built in dependency-ordered, file-disjoint waves.
+
+### Coherence — one village, under pressure
+
+- **One palette.** A single colour authority in `theme.js` (building accents, status set, provider hues) now feeds the world overlays, council rings, harbor, avatars, and the dashboard — the World and Dashboard finally read as two windows onto the same town.
+- **Value hierarchy + grade.** A mark governor keeps the busy scene legible (the one errored agent is never lost in a crowd of twenty-four), and every overlay now tints toward the time-of-day grade instead of floating "day-cold" over a dusk scene.
+
+### The world, lit and honest
+
+- **Dormant promises wired.** Values the engine already computed and threw away now drive the scene: building **beacons breathe** together, **puddles / roof-glint / water-warmth** follow the weather to the ground, building fire **reflects on the night lagoon**, and the **whole sky storms when the fleet struggles** and clears to gold when it's healthy.
+- **Forge & archive glow.** Molten light spills from the forge onto the cobble yard; lamplight leaks from the archive doorway when reading is heavy. A **Pharos searchlight** sweeps faster and shifts amber→red as distress rises.
+
+### Legible at a glance
+
+- **Glyph badges** replace the always-dark name pills, busy buildings fold their crowds into a **status tally**, labels **fade by zoom & density**, and overflow crowds raise a **heraldic standard** instead of silently dropping agents.
+
+### Alive
+
+- **Real body language** (distressed hunches, tired slumps, proud uprights), **working rituals at all nine buildings**, drifting **chimney smoke**, **token-flow motes**, **animated surf**, **cloud-shadow parallax**, directional **dawn/dusk shadows**, idle **gossip clusters**, and **seabirds with intent**.
+
+### Epic moments
+
+- **Director-driven cinematic camera** (frames parades, incidents, arrivals; aborts instantly on input), a **session-driven storm** with forked lightning, an **error distress arc** to the watchtower, an **opening establishing shot**, and an idle **Ken-Burns drift**.
+
+### Surface polish
+
+- Dashboard **reskinned to the village house style** with district washes and status rails, a **selection echo** that lights the same agent across panel/card/sidebar, an Activity-Panel **hero portrait** and **director scene-log ribbon**, a **topbar activity rail**, and **felt connection-loss** chrome.
+
+*Built via a council-designed plan ([`agents/claudeville-visual-upgrade-top-50.md`](agents/claudeville-visual-upgrade-top-50.md)) and an orchestrated, file-disjoint parallel build (23 waves). Runtime-verified — zero console errors across World and the 24-agent stress sim, `validate:quick` green; every motion feature ships a reduced-motion fallback. Per-item visual polish QA is ongoing.*
+
+---
+
 ## v0.16.1 — *Moonlit Envoys* · Jun 19, 2026
 
 Kimi's newer home is now part of the village, with its child agents and context usage visible alongside legacy Kimi sessions.
