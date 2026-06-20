@@ -60,6 +60,11 @@ export class Camera {
         // applied on top of a captured base position and fully removed the
         // instant any input arrives. Reduced motion skips it entirely.
         this._lastInputAt = performance.now();
+        // #attract — last GENUINE operator input (drag/zoom/keyboard nav). Distinct
+        // from _lastInputAt, which the idle-drift logic bumps while a glide runs;
+        // the auto-camera measures true idle time from this so its own glides don't
+        // count as activity.
+        this._lastUserInputAt = performance.now();
         this._idleDrift = null;       // { baseX, baseY, phase }
 
         this._onMouseDown = this._onMouseDown.bind(this);
@@ -207,6 +212,16 @@ export class Camera {
         return Boolean(this._directorGlide);
     }
 
+    // #attract — record genuine operator input and report how long since the last.
+    // Used by the CameraDirector's idle-attract mode for engage/yield decisions.
+    noteUserInput() {
+        this._lastUserInputAt = performance.now();
+    }
+
+    getUserIdleMs(now = performance.now()) {
+        return now - this._lastUserInputAt;
+    }
+
     // #21 — grade weight (0..1) plus the active glide's grade hint, for the
     // WorldFrameRenderer vignette/worldTint pass. Ramps up at the head of the
     // move and eases back out at the tail so it never lingers.
@@ -328,6 +343,7 @@ export class Camera {
         this._endIdleDrift();
         this.dragging = true;
         this._userAdjusted = true;
+        this._lastUserInputAt = performance.now();
         this.dragStartX = e.clientX;
         this.dragStartY = e.clientY;
         this.camStartX = this.x;
@@ -346,6 +362,7 @@ export class Camera {
 
     _onMouseMove(e) {
         if (!this.dragging) return;
+        this._lastUserInputAt = performance.now();
         const dx = (e.clientX - this.dragStartX) / this.zoom;
         const dy = (e.clientY - this.dragStartY) / this.zoom;
         this.x = this.camStartX + dx;
@@ -387,6 +404,7 @@ export class Camera {
         this._endIdleDrift();
         this._momentum = null;
         this._snapZoom = null;
+        this._lastUserInputAt = performance.now();
         const rect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;

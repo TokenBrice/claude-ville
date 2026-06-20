@@ -22,6 +22,7 @@ export class TopBar {
             connection: document.getElementById('topbarConnection'),
             version: document.querySelector('.topbar__version'),
             soundToggle: document.getElementById('topbarSoundToggle'),
+            cinemaToggle: document.getElementById('topbarCinemaToggle'),
             // Token limit chip
             quotaSection: document.getElementById('quotaSection'),
             quota5hPct: document.getElementById('quota5hPct'),
@@ -30,6 +31,7 @@ export class TopBar {
         this.timeInterval = null;
         this._changelogHtml = null;
         this.audio = new AmbientAudioController({ button: this.els.soundToggle });
+        this._initCinemaToggle();
 
         this._onUpdate = () => this.render();
         eventBus.on('agent:added', this._onUpdate);
@@ -62,6 +64,32 @@ export class TopBar {
 
         this._startTimer();
         this.render();
+    }
+
+    // #attract — topbar toggle for the idle-attract camera (on by default,
+    // persisted). Emits `camera:auto-camera` which the World renderer consumes;
+    // also reflects the state if it is flipped elsewhere.
+    _initCinemaToggle() {
+        const btn = this.els.cinemaToggle;
+        if (!btn) return;
+        const read = () => {
+            try { return window.localStorage?.getItem('cv-auto-camera') !== '0'; } catch (_) { return true; }
+        };
+        const apply = (on) => {
+            btn.classList.toggle('topbar__cinema-btn--on', on);
+            btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+            btn.textContent = on ? 'CINEMA ON' : 'CINEMA OFF';
+            btn.title = on ? 'Auto-camera on: roams to the action when idle' : 'Auto-camera off';
+        };
+        apply(read());
+        btn.addEventListener('click', () => {
+            const next = !read();
+            try { window.localStorage?.setItem('cv-auto-camera', next ? '1' : '0'); } catch (_) { /* storage unavailable */ }
+            apply(next);
+            eventBus.emit('camera:auto-camera', { enabled: next });
+        });
+        this._onAutoCamera = (payload) => apply(payload?.enabled !== false);
+        eventBus.on('camera:auto-camera', this._onAutoCamera);
     }
 
     render() {

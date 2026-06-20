@@ -1208,6 +1208,10 @@ export class IsometricRenderer {
         // drives time-boxed glides on the camera (abort-on-input is in Camera).
         this.cameraDirector?.dispose?.();
         this.cameraDirector = new CameraDirector(this.camera, { motionScale: this.motionScale });
+        // #attract — idle attract camera defaults on; honor the persisted toggle.
+        let autoCam = true;
+        try { autoCam = window.localStorage?.getItem('cv-auto-camera') !== '0'; } catch (_) { /* storage unavailable */ }
+        this.cameraDirector.setAutoMode(autoCam);
         // Re-arm SkyRenderer aurora/shooting-star event wiring; mode toggles
         // detach in hide() and would otherwise leave these subscriptions dead.
         this.skyRenderer?.attach?.();
@@ -1298,6 +1302,8 @@ export class IsometricRenderer {
             // reward is on screen.
             eventBus.on('harbor:push-success', () => this._triggerGullScatter()),
             eventBus.on('git:pushed', () => this._triggerGullScatter()),
+            // #attract — topbar toggle flips the idle-attract camera live.
+            eventBus.on('camera:auto-camera', (payload) => this.cameraDirector?.setAutoMode?.(payload?.enabled !== false)),
             // 4.8 — earned nicknames garnish agent name tags.
             eventBus.on('biography:updated', (payload) => {
                 const identityKey = payload?.identityKey;
@@ -2708,6 +2714,13 @@ export class IsometricRenderer {
 
         // Update camera follow
         if (this.camera) {
+            // #attract — let the idle-attract director consider a move before the
+            // camera ticks, so any glide it starts advances this same frame.
+            this.cameraDirector?.update({
+                now: performance.now(),
+                agentSprites: this.agentSprites,
+                snapshot: this.villageDirector?.getSnapshot?.() || null,
+            });
             // #50 — pass wall-clock time so the camera can measure idle duration
             // for the Ken-Burns drift independently of accumulated dt.
             this.camera.update(dt, performance.now());
