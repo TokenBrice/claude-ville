@@ -54,6 +54,12 @@ const STATUS_AURA = Object.freeze({
     }),
 });
 
+const PIP_RADIUS = 3;
+const PIP_GAP = 4;
+const PIP_ROW_HEIGHT = 8;
+const STANDARD_PADDING_TOP = 3;
+const MAX_PIPS = 3;
+
 const _badgeTextCache = new Map();
 
 function badgeText(count) {
@@ -63,6 +69,21 @@ function badgeText(count) {
         _badgeTextCache.set(count, text);
     }
     return text;
+}
+
+// Pick up to MAX_PIPS status categories present in a cluster, ranked by share
+// (count desc, then status key for a stable order). Returns aura entries so the
+// standard's pips reuse the same heraldic palette as the ground aura.
+function topStatusPips(statuses) {
+    if (!statuses) return null;
+    const keys = Object.keys(statuses);
+    if (keys.length === 0) return null;
+    keys.sort((a, b) => (statuses[b] - statuses[a]) || a.localeCompare(b));
+    const pips = [];
+    for (let i = 0; i < keys.length && pips.length < MAX_PIPS; i++) {
+        pips.push(statusAura(keys[i]));
+    }
+    return pips;
 }
 
 function lightBoost(lighting) {
@@ -117,9 +138,12 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, zoom = 1, lighting = nu
     ctx.restore();
 }
 
-// Overlay pass: a small "×N" pill above each dense cluster, drawn after the
-// depth-sorted sprite pass so it stays readable over the crowd. Scaled by
-// 1/zoom so the badge keeps a constant on-screen size.
+// Overlay pass: a heraldic standard above each dense cluster, drawn after the
+// depth-sorted sprite pass so it stays readable over the crowd. Shows the total
+// "×N" count plus up to 3 status pips (working/waiting/errored, …) so hidden
+// overflow agents are summarized by colour rather than silently dropped. Scaled
+// by 1/zoom so the standard keeps a constant on-screen size. Static — no motion,
+// so the prefers-reduced-motion rendering is identical.
 export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1 } = {}) {
     const clusters = crowdStats?.clusters;
     if (!ctx || !clusters || clusters.length === 0) return;
@@ -133,7 +157,16 @@ export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1 } = {}) {
     for (let i = 0; i < clusters.length; i++) {
         const cluster = clusters[i];
         const text = badgeText(cluster.count || 0);
-        const w = BADGE_PADDING_X + text.length * BADGE_CHAR_WIDTH;
+        const pips = topStatusPips(cluster.statuses);
+        const pipCount = pips ? pips.length : 0;
+        const countWidth = BADGE_PADDING_X + text.length * BADGE_CHAR_WIDTH;
+        const pipRowWidth = pipCount > 0
+            ? pipCount * PIP_RADIUS * 2 + (pipCount - 1) * PIP_GAP
+            : 0;
+        const w = Math.max(countWidth, pipRowWidth + BADGE_PADDING_X);
+        const h = pipCount > 0
+            ? BADGE_HEIGHT + STANDARD_PADDING_TOP + PIP_ROW_HEIGHT
+            : BADGE_HEIGHT;
         const x = clusterWorldX(cluster);
         const y = clusterWorldY(cluster) - auraRadiusX(cluster) * 0.5 - 12;
         const aura = statusAura(cluster.dominantStatus);
@@ -145,14 +178,31 @@ export function drawCrowdClusterBadges(ctx, { crowdStats, zoom = 1 } = {}) {
         ctx.strokeStyle = aura.badge;
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(-w / 2, -BADGE_HEIGHT / 2, w, BADGE_HEIGHT, 4);
+            ctx.roundRect(-w / 2, -h / 2, w, h, 4);
         } else {
-            ctx.rect(-w / 2, -BADGE_HEIGHT / 2, w, BADGE_HEIGHT);
+            ctx.rect(-w / 2, -h / 2, w, h);
         }
         ctx.fill();
         ctx.stroke();
+
+        const countY = pipCount > 0 ? -h / 2 + BADGE_HEIGHT / 2 : 0.5;
         ctx.fillStyle = BADGE_TEXT;
-        ctx.fillText(text, 0, 0.5);
+        ctx.fillText(text, 0, countY);
+
+        if (pipCount > 0) {
+            const pipY = h / 2 - PIP_ROW_HEIGHT / 2;
+            let pipX = -pipRowWidth / 2 + PIP_RADIUS;
+            for (let p = 0; p < pipCount; p++) {
+                const pip = pips[p];
+                ctx.beginPath();
+                ctx.arc(pipX, pipY, PIP_RADIUS, 0, Math.PI * 2);
+                ctx.fillStyle = pip.fill;
+                ctx.fill();
+                ctx.strokeStyle = pip.stroke;
+                ctx.stroke();
+                pipX += PIP_RADIUS * 2 + PIP_GAP;
+            }
+        }
         ctx.restore();
     }
     ctx.restore();

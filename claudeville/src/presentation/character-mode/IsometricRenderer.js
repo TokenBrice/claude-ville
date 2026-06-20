@@ -3135,6 +3135,7 @@ export class IsometricRenderer {
             cellSize: CROWD_CLUSTER_TILE_SIZE,
             topLimit: CROWD_CLUSTER_TOP_LIMIT,
             includeDominantProvider: true,
+            includeStatusCounts: true,
         });
 
         return {
