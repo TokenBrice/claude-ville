@@ -2,6 +2,16 @@
 
 ---
 
+## v0.17.1 — *The Ledger* · Jun 20, 2026
+
+The town banner becomes **one cohesive ledger** — compact, legible, and quiet where it should be.
+
+- **Brand block.** `ClaudeVille` leads; version, FPS, and a live-connection heartbeat now share one quiet meta line beneath the wordmark instead of three competing chips, giving the bar back its horizontal width.
+- **One family at the centre.** Tokens / cost / time fold into a single segmented **ledger tag** built to match the working / idle / waiting status tag, and the metric values move to the legible data face (Departure Mono) so the numbers read first.
+- **Less to read.** The redundant 5h / 7d quota chip leaves the bar — those figures already live in the mine and the OS widget — while the living activity rail and reconnect sweep stay.
+
+---
+
 ## v0.17.0 — *Lanternlight* · Jun 20, 2026
 
 The village becomes **one lit place, breathing with its fleet** — and every new flicker of light, motion, or colour is a true word about a real session. A 50-item visual upgrade, distilled by a design council and built in dependency-ordered, file-disjoint waves.
