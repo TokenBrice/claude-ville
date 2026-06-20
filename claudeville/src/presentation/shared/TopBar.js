@@ -111,6 +111,34 @@ export class TopBar {
         this.els.connection.textContent = connected ? 'LIVE' : 'OFFLINE';
         this.els.connection.classList.toggle('topbar__conn--connected', connected);
         this.els.connection.classList.toggle('topbar__conn--disconnected', !connected);
+        this._applyConnectionChrome(connected);
+    }
+
+    // Connection-loss as a felt chrome event: while offline the whole app
+    // desaturates and dashboard cards freeze to a muted, shimmering opacity.
+    // On reconnect a single warm gold sweep washes color back across the
+    // chrome. The sweep is a one-shot class cleared by its animationend (and
+    // by a fallback timer for reduced-motion, where the animation never fires).
+    _applyConnectionChrome(connected) {
+        const body = document.body;
+        if (!body) return;
+        const wasOffline = body.classList.contains('cv-offline');
+        body.classList.toggle('cv-offline', !connected);
+        if (connected && wasOffline) {
+            this._fireRecoverySweep(body);
+        }
+    }
+
+    _fireRecoverySweep(body) {
+        if (this._sweepTimer) clearTimeout(this._sweepTimer);
+        body.classList.remove('cv-reconnect-sweep');
+        // Force reflow so re-adding the class restarts the animation.
+        void body.offsetWidth;
+        body.classList.add('cv-reconnect-sweep');
+        this._sweepTimer = setTimeout(() => {
+            body.classList.remove('cv-reconnect-sweep');
+            this._sweepTimer = null;
+        }, 1100);
     }
 
     // fps is a number while the World render loop runs, null when it stops.
@@ -262,6 +290,7 @@ export class TopBar {
 
     destroy() {
         if (this.timeInterval) clearInterval(this.timeInterval);
+        if (this._sweepTimer) clearTimeout(this._sweepTimer);
         eventBus.off('agent:added', this._onUpdate);
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);

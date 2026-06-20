@@ -117,7 +117,7 @@ export class Camera {
     // viewport) cuts directly. The move releases `_userAdjusted` only while it
     // runs, then re-frames cleanly. `grade` is a {vignette, worldTint} hint the
     // frame renderer fades in/out with the glide.
-    glideToWorld(box, { duration = 1400, paddingPx = 96, maxZoom = 2, grade = null } = {}) {
+    glideToWorld(box, { duration = 1400, paddingPx = 96, maxZoom = 2, grade = null, holdMs = 0 } = {}) {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
         if (!w || !h || !box) return false;
@@ -153,9 +153,30 @@ export class Camera {
             toZoom,
             elapsed: 0,
             duration: Math.max(1, Number(duration) || 1400),
+            // #45 — optional hold (the establishing shot lingers on the wide frame
+            // before the glide begins). Counts down before `elapsed` advances.
+            hold: Math.max(0, Number(holdMs) || 0),
             grade: grade || null,
         };
         return true;
+    }
+
+    // #45 — opening establishing shot on first World paint. Snap to the wide
+    // full-island frame, hold it ~1.2s, then cubic-ease glide+zoom in to settle
+    // on the active cluster over ~2.8s. Reduced motion (or a missing viewport)
+    // cuts directly to the target frame, matching the prior instant behavior.
+    establishingShot(wideBox, targetBox, { holdMs = 1200, glideMs = 2800, maxZoom = 2 } = {}) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (!w || !h || !targetBox) return false;
+        if (this._reducedMotion) {
+            this.fitToWorldBox(targetBox, { maxZoom });
+            this._userAdjusted = false;
+            return true;
+        }
+        // Snap to the island-wide overview so the glide departs from it.
+        this.fitToWorldBox(wideBox || targetBox, { maxZoom: 1 });
+        return this.glideToWorld(targetBox, { duration: glideMs, maxZoom, holdMs });
     }
 
     abortDirectorGlide() {
@@ -493,6 +514,12 @@ export class Camera {
     _updateDirectorGlide(dt) {
         const glide = this._directorGlide;
         if (!glide) return false;
+        // #45 — hold on the wide establishing frame before the glide proper begins.
+        if (glide.hold > 0) {
+            glide.hold -= dt;
+            this._userAdjusted = false;
+            return true;
+        }
         glide.elapsed += dt;
         const t = Math.min(1, glide.elapsed / glide.duration);
         const eased = 1 - Math.pow(1 - t, 3);

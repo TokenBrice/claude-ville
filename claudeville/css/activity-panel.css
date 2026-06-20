@@ -983,6 +983,55 @@ body[data-cv-selected] .activity-panel__header::before {
     padding: 4px 0;
 }
 
+/* ─── Director scene-log ribbon (#47) ────────────── */
+
+.activity-panel__director-feed {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 168px;
+    overflow-y: auto;
+}
+
+.activity-panel__feed-row {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: var(--fs-data);
+    line-height: 1.4;
+    min-width: 0;
+}
+
+.activity-panel__feed-tick {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--cv-text-muted);
+    box-shadow: 0 0 4px rgba(0, 0, 0, 0.3);
+}
+
+.activity-panel__feed-tick--parade { background: var(--cv-gold-bright); }
+.activity-panel__feed-tick--handoff { background: var(--cv-blue-soft); }
+.activity-panel__feed-tick--incident { background: var(--cv-status-errored); }
+.activity-panel__feed-tick--arrival { background: var(--cv-status-working, #72d071); }
+.activity-panel__feed-tick--departure { background: var(--cv-text-muted); }
+
+.activity-panel__feed-label {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--cv-text-soft, #d8c9a8);
+}
+
+.activity-panel__feed-time {
+    flex-shrink: 0;
+    font-size: var(--fs-label);
+    color: var(--cv-text-muted);
+}
+
 /* ─── Reduced motion ─────────────────────────────── */
 
 @media (prefers-reduced-motion: reduce) {

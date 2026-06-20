@@ -226,6 +226,58 @@
 .dash-card--waiting_on_user  { border-left: 3px solid var(--cv-status-waiting-user); }
 .dash-card--idle.dash-card--aged { opacity: 0.7; }
 
+/* #48 Connection-loss: cards freeze to a muted, desaturated opacity while the
+   WebSocket is down, with a slow "reconnecting" shimmer sweeping across them so
+   the frozen state reads as waiting rather than broken. */
+.cv-offline .dash-card {
+    filter: saturate(0.4) brightness(0.82);
+    opacity: 0.66;
+    transition: filter 0.4s ease, opacity 0.4s ease;
+}
+
+.cv-offline .dash-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    background: linear-gradient(
+        100deg,
+        transparent 35%,
+        rgba(255, 226, 138, 0.07) 50%,
+        transparent 65%);
+    background-size: 240% 100%;
+    background-repeat: no-repeat;
+    animation: dash-offline-shimmer 2.6s linear infinite;
+}
+
+@keyframes dash-offline-shimmer {
+    from { background-position: 160% 0; }
+    to   { background-position: -160% 0; }
+}
+
+/* Reconnect: a single warm gold wash restores color across the cards. */
+.cv-reconnect-sweep .dash-card::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    pointer-events: none;
+    background: linear-gradient(
+        100deg,
+        transparent 40%,
+        rgba(255, 234, 160, 0.22) 50%,
+        transparent 60%);
+    background-size: 240% 100%;
+    background-repeat: no-repeat;
+    animation: dash-reconnect-sweep 0.9s ease-out 1;
+}
+
+@keyframes dash-reconnect-sweep {
+    from { background-position: 160% 0; }
+    to   { background-position: -160% 0; }
+}
+
 /* #30 District identity: faint building-tinted radial wash + corner emblem so a
    card visually belongs to the same World district its agent works in. No
    motion; purely a static surface tint keyed to --cv-building-rgb. */
@@ -766,6 +818,16 @@
     .dash-card__status-dot,
     .dash-card__skeleton-line {
         animation: none;
+    }
+
+    /* #48 instant swap: muted offline state, no shimmer or sweep */
+    .cv-offline .dash-card {
+        transition: none;
+    }
+    .cv-offline .dash-card::before,
+    .cv-reconnect-sweep .dash-card::before {
+        animation: none;
+        background: none;
     }
 
     /* #31 static halo fallback */

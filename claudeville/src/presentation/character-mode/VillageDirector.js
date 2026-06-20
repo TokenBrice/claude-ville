@@ -1068,3 +1068,63 @@ export class VillageDirector {
         return clamp(quota?.fiveHour ?? quota?.fiveHourRatio ?? quota?.usageRatio ?? 0, 0, 1);
     }
 }
+
+// #47 — translate a `village:director` snapshot into normalized narrative
+// entries for the Activity Panel chronicle ribbon. Each entry is
+// `{ id, kind, label, ts }`; `id` is stable per scene so the panel can dedupe
+// across the 650ms snapshot cadence. Phrasing lives here, in the director's
+// own module, so the panel only buffers and renders.
+function narrativeLabelPair(label) {
+    const text = String(label || '').trim();
+    return text || 'someone';
+}
+
+export function narrativeFeedEntries(snapshot) {
+    if (!snapshot) return [];
+    const out = [];
+
+    const release = snapshot.releaseParade;
+    if (release?.label) {
+        out.push({
+            id: release.id || `parade:${release.label}`,
+            kind: 'parade',
+            label: `Parade — ${narrativeLabelPair(release.label)} sets sail`,
+            ts: Number(release.startedAt) || snapshot.now || Date.now(),
+        });
+    }
+
+    for (const scene of snapshot.handoffs || []) {
+        if (scene.kind !== 'handoff') continue;
+        const from = narrativeLabelPair(scene.from?.label);
+        const to = narrativeLabelPair(scene.to?.label);
+        out.push({
+            id: scene.id || `handoff:${scene.agentId || from}:${to}`,
+            kind: 'handoff',
+            label: `Handoff — ${from} → ${to}`,
+            ts: Number(scene.startedAt) || snapshot.now || Date.now(),
+        });
+    }
+
+    for (const scene of snapshot.incidents || []) {
+        const who = narrativeLabelPair(scene.agent?.label);
+        out.push({
+            id: scene.id || `incident:${scene.agentId}:${scene.kind}`,
+            kind: 'incident',
+            label: `${incidentLabel(scene.kind)} — ${who}`,
+            ts: Number(scene.startedAt) || snapshot.now || Date.now(),
+        });
+    }
+
+    for (const scene of snapshot.lifecycle || []) {
+        if (scene.kind !== 'arrival' && scene.kind !== 'departure') continue;
+        const who = narrativeLabelPair(scene.label);
+        out.push({
+            id: scene.id || `${scene.kind}:${scene.agentId}`,
+            kind: scene.kind,
+            label: scene.kind === 'arrival' ? `Arrival — ${who}` : `Departure — ${who}`,
+            ts: Number(scene.startedAt) || snapshot.now || Date.now(),
+        });
+    }
+
+    return out;
+}

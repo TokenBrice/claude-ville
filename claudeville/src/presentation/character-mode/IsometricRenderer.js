@@ -1775,13 +1775,42 @@ export class IsometricRenderer {
         }
         const xs = points.map(p => p.x);
         const ys = points.map(p => p.y);
-        this.camera.fitToWorldBox({
+        const targetBox = {
             minX: Math.min(...xs),
             maxX: Math.max(...xs),
             minY: Math.min(...ys),
             maxY: Math.max(...ys),
-        });
+        };
+
+        // #45 — first World paint gets a cinematic establishing shot: hold the
+        // island-wide frame, then glide+zoom in to settle on the active cluster.
+        // Subsequent calls (resize re-frame, the F key) snap directly as before.
+        if (!this._didEstablishingShot) {
+            this._didEstablishingShot = true;
+            if (this.camera.establishingShot(this._fullIslandWorldBox(), targetBox)) return;
+        }
+
+        this.camera.fitToWorldBox(targetBox);
         this.camera._userAdjusted = false;
+    }
+
+    // #45 — the full island's axis-aligned world box, framing the whole iso
+    // diamond for the opening overview hold.
+    _fullIslandWorldBox() {
+        const corners = [
+            tileToWorld(0, 0),
+            tileToWorld(MAP_SIZE, 0),
+            tileToWorld(MAP_SIZE, MAP_SIZE),
+            tileToWorld(0, MAP_SIZE),
+        ];
+        const xs = corners.map(c => c.x);
+        const ys = corners.map(c => c.y);
+        return {
+            minX: Math.min(...xs),
+            maxX: Math.max(...xs),
+            minY: Math.min(...ys),
+            maxY: Math.max(...ys),
+        };
     }
 
     _triggerReleaseParadeForVersion() {

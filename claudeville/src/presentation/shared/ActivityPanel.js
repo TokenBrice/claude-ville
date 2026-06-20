@@ -16,12 +16,14 @@ import {
 import { normalizeGitEvent } from './GitEventIdentity.js';
 import { contextWindowLimitForModel } from './ModelVisualIdentity.js';
 import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
+import { narrativeFeedEntries } from '../character-mode/VillageDirector.js';
 
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
 const PANEL_INTER_AGENT_MESSAGE_LIMIT = 5;
 const PANEL_GIT_EVENT_LIMIT = 6;
 const PANEL_RELATIONSHIP_LIMIT = 6;
+const DIRECTOR_FEED_LIMIT = 12;
 const BUILDING_OCCUPANT_REFRESH_INTERVAL = 5000;
 const JOURNEY_BREADCRUMB_LIMIT = 5;
 const BUILDING_ROUTE_HINT_LIMIT = 3;
@@ -133,6 +135,10 @@ export class ActivityPanel {
         this._chronicleSectionEl = null;
         this._chronicleBodyEl = null;
         this._chronicleFetchSeq = 0;
+        this._directorFeedSectionEl = null;
+        this._directorFeedBodyEl = null;
+        this._directorFeed = [];
+        this._directorFeedIds = new Set();
         this._relationshipsSectionEl = null;
         this._relationshipsBodyEl = null;
         this._messageEdgesSectionEl = null;
@@ -147,6 +153,7 @@ export class ActivityPanel {
         this._ensureJourneySection();
         this._ensureHarborLogSection();
         this._ensureChronicleSection();
+        this._ensureDirectorFeedSection();
         this._ensureRelationshipsSection();
         this._ensureMessageEdgesSection();
         // Sections that belong to agent mode and must be hidden when a building is selected.
@@ -217,6 +224,13 @@ export class ActivityPanel {
         };
         this._onVillageDirector = (payload) => {
             this._cacheVillageDirectorPayload(payload);
+            // #47 — fold the snapshot's narrative scenes into the bounded feed
+            // regardless of mode, so the chronicle ribbon carries history once
+            // an agent is opened.
+            this._accumulateDirectorFeed(payload);
+            if (this._mode === 'agent') {
+                this._renderDirectorFeed();
+            }
             if (this._mode === 'building') {
                 this._renderBuildingSignal();
                 this._renderBuildingOccupants();
@@ -266,6 +280,7 @@ export class ActivityPanel {
             tokenUsage: '',
             harborLog: '',
             chronicle: '',
+            directorFeed: '',
             relationships: '',
             messageEdges: '',
             pins: '',
@@ -492,6 +507,7 @@ export class ActivityPanel {
         this._updateHarborLog(agent);
         this._updateMessageEdges(agent);
         this._fetchAndRenderChronicle(agent);
+        this._renderDirectorFeed();
         this._renderRelationships(agent);
         this._updatePinToggle(agent);
         this._renderPinCompare();
@@ -1042,6 +1058,77 @@ export class ActivityPanel {
         return milestones
             .filter(milestone => milestone?.id && milestone.id !== 'first-seen')
             .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0] || null;
+    }
+
+    // ─── Director scene-log narrative ribbon (#47) ──────
+    // A live Chronicle feed consuming the `village:director` snapshot. Entries
+    // ("Handoff — Aria → Bren", "Parade — v0.16.0 sets sail") carry a
+    // kind-colored tick and a relative timestamp. No motion; the disclosure
+    // scrolls. Buffered as a bounded ring across snapshots, deduped by scene id.
+
+    _ensureDirectorFeedSection() {
+        if (this._directorFeedSectionEl && this._directorFeedBodyEl) return;
+        const body = el('div', { className: 'activity-panel__director-feed' });
+        const details = el('details', { className: 'activity-panel__journey-details' }, [
+            el('summary', { className: 'activity-panel__journey-summary', text: 'Village chronicle' }),
+            body,
+        ]);
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Scene Log' }),
+            details,
+        ]);
+        this._insertAgentSectionAfterMeta(section);
+        this._directorFeedSectionEl = section;
+        this._directorFeedBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    _accumulateDirectorFeed(payload) {
+        const entries = narrativeFeedEntries(payload);
+        if (!entries.length) return;
+        for (const entry of entries) {
+            if (!entry?.id || this._directorFeedIds.has(entry.id)) continue;
+            this._directorFeedIds.add(entry.id);
+            this._directorFeed.push(entry);
+        }
+        if (this._directorFeed.length > DIRECTOR_FEED_LIMIT) {
+            const dropped = this._directorFeed.splice(0, this._directorFeed.length - DIRECTOR_FEED_LIMIT);
+            for (const entry of dropped) this._directorFeedIds.delete(entry.id);
+        }
+    }
+
+    _renderDirectorFeed() {
+        if (!this._directorFeedSectionEl || !this._directorFeedBodyEl) return;
+        if (this._mode !== 'agent') {
+            this._directorFeedSectionEl.style.display = 'none';
+            return;
+        }
+        if (!this._directorFeed.length) {
+            this._directorFeedSectionEl.style.display = 'none';
+            this._renderSignatures.directorFeed = '';
+            return;
+        }
+        // Newest first. Timestamps fold into the signature so the relative
+        // labels refresh as scenes age.
+        const ordered = [...this._directorFeed].sort((a, b) => (b.ts || 0) - (a.ts || 0));
+        const now = Date.now();
+        const signature = ordered.map(entry => `${entry.id}:${formatRelative(entry.ts, now) || ''}`).join('|');
+        this._directorFeedSectionEl.style.display = '';
+        if (signature === this._renderSignatures.directorFeed) return;
+        this._renderSignatures.directorFeed = signature;
+        replaceChildren(this._directorFeedBodyEl, ordered.map(entry => this._directorFeedRow(entry, now)));
+    }
+
+    _directorFeedRow(entry, now = Date.now()) {
+        const ago = formatRelative(entry.ts, now) || 'just now';
+        return el('div', { className: ['activity-panel__feed-row', `activity-panel__feed-row--${entry.kind}`] }, [
+            el('span', { className: `activity-panel__feed-tick activity-panel__feed-tick--${entry.kind}` }),
+            el('span', { className: 'activity-panel__feed-label', text: entry.label }),
+            el('span', { className: 'activity-panel__feed-time', text: ago }),
+        ]);
     }
 
     _ensureRelationshipsSection() {

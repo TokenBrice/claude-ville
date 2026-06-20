@@ -26,6 +26,16 @@ const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
 // Status visuals, mood tones, and model-tier crests now live in theme.js (#1
 // House Palette) so World and Dashboard share one color authority.
 const LORE_ACCENT_DEFAULT = '#d8c08a';
+// #32 — arrival ceremony: a ~300ms scale-up "pop" with a portal-rune ring +
+// dust-puff the instant a villager lands (the ArrivalDeparture approach
+// finishes and setArrivalState flips pending → visible). Reduced motion skips
+// the ceremony entirely (instant appear).
+const ARRIVAL_CEREMONY_MS = 300;
+
+function easeOutCubic(t) {
+    const c = Math.max(0, Math.min(1, t));
+    return 1 - Math.pow(1 - c, 3);
+}
 // #15 — one-shot particle fired on each building work-gesture downbeat. Offsets
 // are relative to the agent anchor (feet at 0,0; the gesture prop sits near
 // y -18). Presets are the shared ParticleSystem palette so each gesture lands a
@@ -310,6 +320,13 @@ export class AgentSprite {
         this._handoffAckStart = 0;
         this.teamPlazaPreference = false;
         this._arrivalState = 'visible';
+        // #32 — arrival ceremony. `_arrivalCeremonyAt` timestamps the landing
+        // (pending → visible) so draw() can play the scale-up pop + rune ring;
+        // `_arrivalBurstPending` defers the one-shot dust/rune particle burst to
+        // update() where the shared ParticleSystem pool is available. Both stay
+        // inert under reduced motion (the transition never arms them).
+        this._arrivalCeremonyAt = 0;
+        this._arrivalBurstPending = false;
 
         // Chat system
         this.chatPartner = null;     // Chat partner AgentSprite
@@ -1313,6 +1330,7 @@ export class AgentSprite {
     }
 
     setArrivalState(state) {
+        const wasPending = this._arrivalState === 'pending';
         this._arrivalState = state === 'pending' ? 'pending' : 'visible';
         if (this._arrivalState === 'pending') {
             this._releaseVisitReservation();
@@ -1321,6 +1339,12 @@ export class AgentSprite {
             this.waitTimer = 0;
             this.waypoints = [];
             this._lastPathTileKey = null;
+        } else if (wasPending && this.motionScale > 0) {
+            // #32 — the approach just finished and the villager is materializing
+            // at its landing tile: arm the arrival ceremony (scale-up pop + rune
+            // ring in draw(), one-shot dust/rune burst on the next update()).
+            this._arrivalCeremonyAt = Date.now();
+            this._arrivalBurstPending = true;
         }
     }
 
@@ -1426,6 +1450,7 @@ export class AgentSprite {
         this._advanceToolRitualGesture(particleSystem);
         this._advanceMoodPostureMotes(particleSystem);
         this._advanceDistressRecovery(particleSystem);
+        this._advanceArrivalCeremony(particleSystem);
 
         // Handle chatting state
         if (this.chatting) {
@@ -1854,6 +1879,13 @@ export class AgentSprite {
             // Reduced-motion (motionScale === 0): hard cut, no ramp.
             const fadeAlpha = this.motionScale > 0 ? Math.max(0, 1 - archiveProgress) : 0;
             ctx.globalAlpha *= fadeAlpha;
+            // #32 — departure dissolves upward: lift the whole sprite a few
+            // pixels as it fades so it reads as rising away, not vanishing in
+            // place. Eased so the drift accelerates with the fade. Reduced
+            // motion already hard-cuts (fadeAlpha 0), so the shift is unseen.
+            if (this.motionScale > 0) {
+                ctx.translate(0, -easeOutCubic(archiveProgress) * 9);
+            }
             archivePushed = true;
         }
 
@@ -1993,6 +2025,21 @@ export class AgentSprite {
         const dx = drawX - contentCenterX * drawScale;
         const dy = drawY - bounds.maxY * drawScale + 2 + bobY + ackBobY;
         const contentTopY = dy + bounds.minY * drawScale;
+        // #32 — arrival ceremony scale-up "pop": the body springs from ~0.6→1.0
+        // over ~300ms, anchored at the feet so it grows up out of the landing
+        // tile. Wraps only the body blit (silhouette + sprite + tints +
+        // equipment) so rings/labels/beacons keep their normal scale. Reduced
+        // motion never arms the ceremony, so this is a no-op then.
+        const arrivalProgress = this._arrivalCeremonyProgress();
+        let arrivalPushed = false;
+        if (arrivalProgress > 0) {
+            const popScale = 0.6 + 0.4 * easeOutCubic(arrivalProgress);
+            ctx.save();
+            ctx.translate(drawX, drawY);
+            ctx.scale(popScale, popScale);
+            ctx.translate(-drawX, -drawY);
+            arrivalPushed = true;
+        }
         this._drawCodexEquipment(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'back');
         this._drawSpriteSilhouette(ctx, cell, dx, dy, drawScale);
         ctx.drawImage(
@@ -2006,6 +2053,8 @@ export class AgentSprite {
             this._drawFrozenTint(ctx, cell, dx, dy, drawScale);
         }
         this._drawCodexEquipment(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'front');
+        if (arrivalPushed) ctx.restore();
+        if (arrivalProgress > 0) this._drawArrivalRuneRing(ctx, arrivalProgress);
         this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
         this._drawToolRitualOverlay(ctx, { dx, dy, bounds, drawScale });
 
@@ -4189,6 +4238,36 @@ export class AgentSprite {
         ctx.restore();
     }
 
+    // #32 — arrival rune ring. A portal-cyan ring of rune ticks expanding at the
+    // feet over the ceremony window, fading as it grows. Procedural and self-
+    // contained (no ParticleSystem access from draw), mirroring _drawArchiveSparkle.
+    _drawArrivalRuneRing(ctx, progress) {
+        const eased = easeOutCubic(progress);
+        const cx = Math.round(this.x);
+        const cy = Math.round(this.y - 2);
+        const radius = 8 + eased * 20;
+        const alpha = (1 - progress) * 0.8;
+        if (alpha <= 0) return;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = alpha;
+        ctx.strokeStyle = '#8feaff';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, radius, radius * 0.5, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        // Rune ticks around the ring spinning slowly as it rises.
+        ctx.fillStyle = '#d7b8ff';
+        const spin = progress * 1.4;
+        for (let i = 0; i < 6; i++) {
+            const angle = (i / 6) * Math.PI * 2 + spin;
+            const rx = cx + Math.cos(angle) * radius;
+            const ry = cy + Math.sin(angle) * radius * 0.5;
+            ctx.fillRect(rx - 1, ry - 1, 2, 2);
+        }
+        ctx.restore();
+    }
+
     _activityThread() {
         const now = Date.now();
         // When archiving, pin a synthetic FINAL entry at the head of the
@@ -4724,6 +4803,31 @@ export class AgentSprite {
             particleSystem.spawn('distressRelief', this.x, this.y - 30, 7);
         }
         this._stormingLast = storming;
+    }
+
+    // #32 — arrival ceremony particle burst. Fires once when the villager lands
+    // (setArrivalState armed `_arrivalBurstPending`): a portal-rune ring rising
+    // around the feet plus a low dust puff kicked up by the materialization.
+    // Runs in update() where the pool is live; reduced motion never arms it.
+    _advanceArrivalCeremony(particleSystem) {
+        if (!this._arrivalBurstPending) return;
+        this._arrivalBurstPending = false;
+        if (!particleSystem || this.motionScale <= 0) return;
+        particleSystem.spawn('portalRune', this.x, this.y - 14, 6, { spread: 10 });
+        particleSystem.spawn('footstep', this.x, this.y + 6, 5, { spread: 9 });
+    }
+
+    // Arrival ceremony progress in [0, 1] over ARRIVAL_CEREMONY_MS, or 0 when
+    // inactive. Drives the draw() scale-up pop + rune ring.
+    _arrivalCeremonyProgress(now = Date.now()) {
+        if (!this._arrivalCeremonyAt) return 0;
+        const elapsed = now - this._arrivalCeremonyAt;
+        if (elapsed < 0) return 0;
+        if (elapsed >= ARRIVAL_CEREMONY_MS) {
+            this._arrivalCeremonyAt = 0;
+            return 0;
+        }
+        return elapsed / ARRIVAL_CEREMONY_MS;
     }
 
     // Building work-gesture downbeat: spawn one particle per gesture cycle so

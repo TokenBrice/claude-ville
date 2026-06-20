@@ -183,6 +183,60 @@
     opacity: 1;
 }
 
+/* ── #48 Connection-loss chrome ── */
+/* While the WebSocket is down, body.cv-offline desaturates and dims the topbar
+   so the lost link is felt, not alarmed. A slow shimmer keeps it from reading
+   as a dead/static error state. On reconnect, body.cv-reconnect-sweep washes a
+   single warm gold band across the chrome to restore color. */
+.cv-offline .topbar {
+    filter: saturate(0.32) brightness(0.86);
+    transition: filter 0.4s ease;
+}
+
+.cv-offline .topbar__conn--disconnected {
+    animation: topbar-offline-shimmer 1.8s ease-in-out infinite;
+}
+
+@keyframes topbar-offline-shimmer {
+    0%, 100% { opacity: 0.55; }
+    50%      { opacity: 1; }
+}
+
+.cv-reconnect-sweep .topbar::after {
+    background: linear-gradient(
+        100deg,
+        transparent 0%,
+        rgba(255, 226, 138, 0.85) 48%,
+        rgba(255, 244, 198, 0.95) 50%,
+        rgba(255, 226, 138, 0.85) 52%,
+        transparent 100%);
+    background-size: 220% 100%;
+    background-repeat: no-repeat;
+    height: 100%;
+    animation: topbar-reconnect-sweep 0.9s ease-out 1;
+}
+
+@keyframes topbar-reconnect-sweep {
+    from { background-position: -120% 0; }
+    to   { background-position: 220% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    /* Instant state swap: no shimmer, no sweep. */
+    .cv-offline .topbar {
+        transition: none;
+    }
+    .cv-offline .topbar__conn--disconnected {
+        animation: none;
+        opacity: 1;
+    }
+    .cv-reconnect-sweep .topbar::after {
+        animation: none;
+        background: linear-gradient(90deg, transparent, rgba(255, 226, 138, 0.62), rgba(126, 82, 39, 0.5), transparent);
+        height: 3px;
+    }
+}
+
 .topbar__center {
     display: flex;
     align-items: center;
