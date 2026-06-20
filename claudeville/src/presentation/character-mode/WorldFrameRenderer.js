@@ -23,6 +23,21 @@ export function renderWorldFrame(renderer, dt = 16) {
     const frameTimer = beginFrameTiming(renderer);
     const renderNow = Date.now();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
+    // #28 integration — fire the child sprite's one-shot handoff ack-bob once the
+    // director's baton reaches it (progress near terminus), deduped per scene id.
+    if (villageSnapshot?.handoffs?.length) {
+        const acked = (renderer._handoffAcked ||= new Set());
+        const live = new Set();
+        for (const h of villageSnapshot.handoffs) {
+            if (h?.kind !== 'handoff' || !h?.to?.id) continue;
+            live.add(h.id);
+            if ((h.progress ?? 0) >= 0.9 && !acked.has(h.id)) {
+                acked.add(h.id);
+                renderer.agentSprites.get(h.to.id)?.setHandoffAck?.(true);
+            }
+        }
+        for (const id of acked) if (!live.has(id)) acked.delete(id);
+    }
     const atmosphere = renderer.atmosphereState.update({
         now: new Date(renderNow),
         motionScale: renderer.motionScale,
