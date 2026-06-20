@@ -43,6 +43,8 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.buildingRenderer?.setLightingState(atmosphere?.lighting);
     renderer.buildingRenderer?.setClockState?.(atmosphere?.clock);
     renderer.buildingRenderer?.setAtmosphereState?.(atmosphere);
+    // #3 — grade authority: harbor anchorage glows lerp toward the time-of-day tint.
+    renderer.harborTraffic?.setGradeState?.(atmosphere?.grade);
     const perfNow = performance.now();
     renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow);
     renderer._updateGateDoorState?.(perfNow);
@@ -71,7 +73,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._drawOpenSeaGulls(ctx);
     renderer._drawLandBirds(ctx);
     renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
-    drawVillageDirectorGround(ctx, villageSnapshot, renderNow);
+    drawVillageDirectorGround(ctx, villageSnapshot, renderNow, atmosphere?.grade);
 
     drawBuildingLightReflections(renderer, ctx, atmosphere);
     markFrameTiming(frameTimer, 'terrain');
@@ -84,6 +86,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         motionScale: renderer.motionScale,
         lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
     });
     drawFamilyTethers(ctx, {
         relationship: renderer.relationshipState,
@@ -92,6 +95,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         motionScale: renderer.motionScale,
         lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
     });
     drawAllyTethers(ctx, {
         pairs: renderer._allyTetherPairs,
@@ -99,6 +103,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         motionScale: renderer.motionScale,
         lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
     });
     drawCrowdClusterAuras(ctx, {
         crowdStats: renderer._crowdStats,
@@ -163,6 +168,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         motionScale: renderer.motionScale,
         lighting: atmosphere?.lighting,
+        grade: atmosphere?.grade,
     });
     drawCrowdClusterBadges(ctx, {
         crowdStats: renderer._crowdStats,
@@ -173,7 +179,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         lighting: atmosphere?.lighting,
     });
-    drawVillageDirectorOverlays(ctx, villageSnapshot, perfNow);
+    drawVillageDirectorOverlays(ctx, villageSnapshot, perfNow, atmosphere?.grade);
 
     drawSelectedAgentXray(renderer, ctx, buildingDrawables);
 

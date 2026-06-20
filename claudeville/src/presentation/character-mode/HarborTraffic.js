@@ -432,6 +432,42 @@ function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
 }
 
+function parseColorRgba(value) {
+    const text = String(value || '').trim();
+    const hex = text.match(/^#([0-9a-f]{6})$/i);
+    if (hex) {
+        const n = parseInt(hex[1], 16);
+        return { r: (n >> 16) & 255, g: (n >> 8) & 255, b: n & 255, a: 1 };
+    }
+    const match = text.match(/rgba?\(([^)]+)\)/i);
+    if (!match) return null;
+    const parts = match[1].split(',').map(part => Number(part.trim()));
+    if (parts.length < 3) return null;
+    return {
+        r: clamp(parts[0] || 0, 0, 255),
+        g: clamp(parts[1] || 0, 0, 255),
+        b: clamp(parts[2] || 0, 0, 255),
+        a: Number.isFinite(parts[3]) ? clamp(parts[3], 0, 1) : 1,
+    };
+}
+
+// #3 — Grade authority. Lerp a color string (hex or rgba) toward the active
+// `grade.worldTint`, preserving the source alpha, so harbor anchorage glows
+// pick up the time-of-day cast. Pure color transform with no time component —
+// identical under reduced motion. Returns the input unchanged when it can't
+// parse, or when no grade is supplied.
+function gradeColorString(value, grade) {
+    const base = parseColorRgba(value);
+    const tint = parseColorRgba(grade?.worldTint);
+    if (!base || !tint) return value;
+    const w = clamp(tint.a, 0, 1);
+    if (w <= 0) return value;
+    const r = Math.round(base.r + (tint.r - base.r) * w);
+    const g = Math.round(base.g + (tint.g - base.g) * w);
+    const b = Math.round(base.b + (tint.b - base.b) * w);
+    return `rgba(${r}, ${g}, ${b}, ${base.a})`;
+}
+
 function stableHash(input) {
     const text = String(input || '');
     let hash = 0;
@@ -2260,6 +2296,8 @@ export class HarborTraffic {
         this.motionScale = 1;
         this.frame = 0;
         this.waterRouteData = null;
+        // #3 — active atmosphere grade; anchorage glows lerp toward worldTint.
+        this._grade = null;
         if (typeof window !== 'undefined' && window.localStorage?.getItem('claudeVilleDebug') === '1') {
             window.__harbor = this;
         }
@@ -2313,6 +2351,10 @@ export class HarborTraffic {
     setMotionScale(scale) {
         this.motionScale = scale === 0 ? 0 : 1;
         if (this.motionScale <= 0) this.storageTransfers.clear();
+    }
+
+    setGradeState(grade) {
+        this._grade = grade || null;
     }
 
     update(agents, dt = 16, now = Date.now()) {
@@ -4831,7 +4873,7 @@ export class HarborTraffic {
         const rx = (lively ? 17 : 13) * s;
         const ry = rx * 0.5;
         const grad = ctx.createRadialGradient(x, y, 0, x, y, rx);
-        grad.addColorStop(0, profile.glow || 'rgba(122, 200, 216, 0.32)');
+        grad.addColorStop(0, gradeColorString(profile.glow || 'rgba(122, 200, 216, 0.32)', this._grade));
         grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
         ctx.globalAlpha = lively ? 0.85 : 0.45;
         ctx.fillStyle = grad;

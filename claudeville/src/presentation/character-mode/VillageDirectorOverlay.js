@@ -17,6 +17,35 @@ function rgba(rgb, alpha) {
     return `rgba(${rgb}, ${clamp(alpha)})`;
 }
 
+function parseTintRgb(grade) {
+    const match = String(grade?.worldTint || '').match(/rgba?\(([^)]+)\)/i);
+    if (!match) return null;
+    const parts = match[1].split(',').map(part => Number(part.trim()));
+    if (parts.length < 3) return null;
+    return {
+        r: clamp(parts[0] ?? 255, 0, 255),
+        g: clamp(parts[1] ?? 255, 0, 255),
+        b: clamp(parts[2] ?? 255, 0, 255),
+        a: Number.isFinite(parts[3]) ? clamp(parts[3]) : 1,
+    };
+}
+
+// #3 — Grade authority. Lerp an `r, g, b` overlay string toward the active
+// `grade.worldTint` so director halos pick up the time-of-day cast. Pure color
+// transform with no time component — identical under reduced motion.
+function gradeRgb(rgbString, grade) {
+    const tint = parseTintRgb(grade);
+    if (!tint) return rgbString;
+    const parts = String(rgbString || '').split(',').map(part => Number(part.trim()));
+    if (parts.length < 3) return rgbString;
+    const w = clamp(tint.a, 0, 1);
+    if (w <= 0) return rgbString;
+    const r = Math.round(parts[0] + (tint.r - parts[0]) * w);
+    const g = Math.round(parts[1] + (tint.g - parts[1]) * w);
+    const b = Math.round(parts[2] + (tint.b - parts[2]) * w);
+    return `${r}, ${g}, ${b}`;
+}
+
 function signalColor(type) {
     return BUILDING_COLORS[type] || '226, 232, 240';
 }
@@ -90,9 +119,9 @@ function drawIsoRing(ctx, x, y, radius, rgb, alpha, lineWidth = 2, skew = 0.45) 
     ctx.restore();
 }
 
-function drawSignalHalo(ctx, signal, now, motionScale) {
+function drawSignalHalo(ctx, signal, now, motionScale, grade = null) {
     if (!signal?.center) return;
-    const rgb = signalColor(signal.type);
+    const rgb = gradeRgb(signalColor(signal.type), grade);
     const heat = clamp(signal.heat ?? 0.35);
     // #2 — building signal halos are AMBIENT (selected halos stay PRIMARY).
     const governor = getActiveMarkGovernor();
@@ -175,9 +204,9 @@ function drawReplay(ctx, samples, now, selectedAgentId = null) {
     ctx.restore();
 }
 
-function drawSignalRoutes(ctx, selected, { alphaScale = 1, dash = [6, 7], lineWidth = 1.2 } = {}) {
+function drawSignalRoutes(ctx, selected, { alphaScale = 1, dash = [6, 7], lineWidth = 1.2, grade = null } = {}) {
     if (!selected?.routes?.length) return;
-    const rgb = signalColor(selected.type);
+    const rgb = gradeRgb(signalColor(selected.type), grade);
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     ctx.lineWidth = lineWidth;
@@ -196,10 +225,11 @@ function drawSignalRoutes(ctx, selected, { alphaScale = 1, dash = [6, 7], lineWi
     ctx.restore();
 }
 
-function drawTeams(ctx, teams, now, motionScale) {
+function drawTeams(ctx, teams, now, motionScale, grade = null) {
     if (!teams?.length) return;
     // #2 — team aura washes are AMBIENT: the first marks to dim in a busy region.
     const governor = getActiveMarkGovernor();
+    const teamRgb = gradeRgb('125, 211, 252', grade);
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const team of teams) {
@@ -209,23 +239,23 @@ function drawTeams(ctx, teams, now, motionScale) {
         if (!gate.draw) continue;
         const pulse = motionPulse(now, motionScale, team.members?.length || 1, 760);
         const radius = (team.radius || 36) + pulse * 4;
-        ctx.fillStyle = rgba('125, 211, 252', 0.055 * gate.alpha);
+        ctx.fillStyle = rgba(teamRgb, 0.055 * gate.alpha);
         ctx.beginPath();
         ctx.ellipse(team.x, team.y + 4, radius, radius * 0.46, -0.03, 0, TAU);
         ctx.fill();
-        drawIsoRing(ctx, team.x, team.y + 4, radius, '125, 211, 252', (0.16 + pulse * 0.08) * gate.alpha, 1.2);
+        drawIsoRing(ctx, team.x, team.y + 4, radius, teamRgb, (0.16 + pulse * 0.08) * gate.alpha, 1.2);
     }
     ctx.restore();
 }
 
-function drawIncidents(ctx, incidents, now, motionScale) {
+function drawIncidents(ctx, incidents, now, motionScale, grade = null) {
     if (!incidents?.length) return;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const incident of incidents) {
         const center = incident.agent || incident.center;
         if (!center) continue;
-        const rgb = incidentColor(incident.kind);
+        const rgb = gradeRgb(incidentColor(incident.kind), grade);
         const intensity = clamp(incident.intensity ?? 0.7, 0.2, 1);
         const fade = 1 - clamp(incident.progress ?? 0);
         const pulse = motionPulse(now, motionScale, intensity * 8, 420);
@@ -239,8 +269,9 @@ function drawIncidents(ctx, incidents, now, motionScale) {
     ctx.restore();
 }
 
-function drawHandoffs(ctx, handoffs, now, motionScale) {
+function drawHandoffs(ctx, handoffs, now, motionScale, grade = null) {
     if (!handoffs?.length) return;
+    const handoffRgb = gradeRgb('244, 196, 93', grade);
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const handoff of handoffs) {
@@ -249,7 +280,7 @@ function drawHandoffs(ctx, handoffs, now, motionScale) {
         if (!from || !to) continue;
         const fade = 1 - clamp(handoff.progress ?? 0);
         const pulse = motionPulse(now, motionScale, handoff.startedAt || 0, 520);
-        ctx.strokeStyle = rgba('244, 196, 93', 0.38 * fade);
+        ctx.strokeStyle = rgba(handoffRgb, 0.38 * fade);
         ctx.lineWidth = 1.2 + pulse * 0.8;
         ctx.setLineDash([4, 5]);
         const midX = (from.x + to.x) / 2;
@@ -263,7 +294,7 @@ function drawHandoffs(ctx, handoffs, now, motionScale) {
         const inv = 1 - t;
         const x = inv * inv * from.x + 2 * inv * t * midX + t * t * to.x;
         const y = inv * inv * (from.y - 16) + 2 * inv * t * midY + t * t * (to.y - 16);
-        ctx.fillStyle = rgba('244, 196, 93', 0.55 * fade);
+        ctx.fillStyle = rgba(handoffRgb, 0.55 * fade);
         ctx.beginPath();
         ctx.ellipse(x, y, 4.5, 2.5, -0.2, 0, TAU);
         ctx.fill();
@@ -271,7 +302,7 @@ function drawHandoffs(ctx, handoffs, now, motionScale) {
     ctx.restore();
 }
 
-function drawLifecycle(ctx, lifecycle, now, motionScale) {
+function drawLifecycle(ctx, lifecycle, now, motionScale, grade = null) {
     if (!lifecycle?.length) return;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
@@ -279,7 +310,7 @@ function drawLifecycle(ctx, lifecycle, now, motionScale) {
         const center = scene.center;
         if (!center) continue;
         const fade = 1 - clamp(scene.progress ?? 0);
-        const rgb = scene.kind === 'arrival' ? '134, 239, 172' : '216, 180, 254';
+        const rgb = gradeRgb(scene.kind === 'arrival' ? '134, 239, 172' : '216, 180, 254', grade);
         const pulse = motionPulse(now, motionScale, scene.startedAt || 0, 520);
         drawIsoRing(ctx, center.x, center.y - 4, 16 + pulse * 9, rgb, 0.25 * fade, 1.4);
         ctx.fillStyle = rgba(rgb, 0.18 * fade);
@@ -290,7 +321,7 @@ function drawLifecycle(ctx, lifecycle, now, motionScale) {
     ctx.restore();
 }
 
-function drawReleaseParade(ctx, parade, now, motionScale) {
+function drawReleaseParade(ctx, parade, now, motionScale, grade = null) {
     if (!parade?.center) return;
     const fadeIn = clamp((parade.progress || 0) / 0.18);
     const fadeOut = 1 - clamp(((parade.progress || 0) - 0.78) / 0.22);
@@ -301,13 +332,13 @@ function drawReleaseParade(ctx, parade, now, motionScale) {
     const y = parade.center.y - 60;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
-    ctx.strokeStyle = rgba('94, 234, 212', 0.32 * alpha);
+    ctx.strokeStyle = rgba(gradeRgb('94, 234, 212', grade), 0.32 * alpha);
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.moveTo(x - 92, y + 38);
     ctx.quadraticCurveTo(x - 18, y - 14 - pulse * 8, x + 92, y + 28);
     ctx.stroke();
-    ctx.strokeStyle = rgba('244, 196, 93', 0.28 * alpha);
+    ctx.strokeStyle = rgba(gradeRgb('244, 196, 93', grade), 0.28 * alpha);
     ctx.lineWidth = 2;
     ctx.beginPath();
     ctx.moveTo(x - 78, y + 50);
@@ -316,27 +347,27 @@ function drawReleaseParade(ctx, parade, now, motionScale) {
     ctx.restore();
 }
 
-export function drawVillageDirectorGround(ctx, snapshot, now = Date.now()) {
+export function drawVillageDirectorGround(ctx, snapshot, now = Date.now(), grade = null) {
     if (!ctx || !snapshot) return;
     drawReplay(ctx, snapshot.replaySamples, now, snapshot.selectedAgentId);
-    for (const signal of snapshot.buildingSignals || []) drawSignalHalo(ctx, signal, now, snapshot.motionScale);
+    for (const signal of snapshot.buildingSignals || []) drawSignalHalo(ctx, signal, now, snapshot.motionScale, grade);
     if (snapshot.hoverBuildingSignal) {
-        drawSignalHalo(ctx, snapshot.hoverBuildingSignal, now, snapshot.motionScale);
-        drawSignalRoutes(ctx, snapshot.hoverBuildingSignal, { alphaScale: 0.52, dash: [3, 9], lineWidth: 1 });
+        drawSignalHalo(ctx, snapshot.hoverBuildingSignal, now, snapshot.motionScale, grade);
+        drawSignalRoutes(ctx, snapshot.hoverBuildingSignal, { alphaScale: 0.52, dash: [3, 9], lineWidth: 1, grade });
     }
     if (snapshot.selectedBuildingSignal) {
-        drawSignalHalo(ctx, { ...snapshot.selectedBuildingSignal, heat: Math.max(0.52, snapshot.selectedBuildingSignal.heat || 0) }, now, snapshot.motionScale);
-        drawSignalRoutes(ctx, snapshot.selectedBuildingSignal);
+        drawSignalHalo(ctx, { ...snapshot.selectedBuildingSignal, heat: Math.max(0.52, snapshot.selectedBuildingSignal.heat || 0) }, now, snapshot.motionScale, grade);
+        drawSignalRoutes(ctx, snapshot.selectedBuildingSignal, { grade });
     }
-    drawTeams(ctx, snapshot.teams, snapshot.perfNow || now, snapshot.motionScale);
-    drawIncidents(ctx, snapshot.incidents, snapshot.perfNow || now, snapshot.motionScale);
-    drawReleaseParade(ctx, snapshot.releaseParade, snapshot.perfNow || now, snapshot.motionScale);
+    drawTeams(ctx, snapshot.teams, snapshot.perfNow || now, snapshot.motionScale, grade);
+    drawIncidents(ctx, snapshot.incidents, snapshot.perfNow || now, snapshot.motionScale, grade);
+    drawReleaseParade(ctx, snapshot.releaseParade, snapshot.perfNow || now, snapshot.motionScale, grade);
 }
 
-export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now()) {
+export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now(), grade = null) {
     if (!ctx || !snapshot) return;
-    drawHandoffs(ctx, snapshot.handoffs, now, snapshot.motionScale);
-    drawLifecycle(ctx, snapshot.lifecycle, now, snapshot.motionScale);
+    drawHandoffs(ctx, snapshot.handoffs, now, snapshot.motionScale, grade);
+    drawLifecycle(ctx, snapshot.lifecycle, now, snapshot.motionScale, grade);
 
     const selected = snapshot.selectedBuildingSignal;
     if (selected?.center) {

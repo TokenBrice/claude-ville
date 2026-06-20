@@ -698,6 +698,39 @@ function memoizedCloudLayers(key, args) {
     return layers;
 }
 
+function parseRgbaString(value) {
+    const match = String(value || '').match(/rgba?\(([^)]+)\)/i);
+    if (!match) return null;
+    const parts = match[1].split(',').map(part => Number(part.trim()));
+    if (parts.length < 3) return null;
+    return {
+        r: clamp(parts[0] ?? 255, 0, 255),
+        g: clamp(parts[1] ?? 255, 0, 255),
+        b: clamp(parts[2] ?? 255, 0, 255),
+        a: Number.isFinite(parts[3]) ? clamp(parts[3]) : 1,
+    };
+}
+
+/**
+ * #3 — Grade authority. Lerp a `#rrggbb` overlay color toward the active
+ * `grade.worldTint` so halos, tethers, and harbor glows pick up the
+ * time-of-day cast (golden dusk, cool night) instead of floating day-cold
+ * above the scene. The tint's own alpha is the lerp strength, scaled by
+ * `strength` for callers that want a gentler pull. Returns a `#rrggbb` hex;
+ * non-hex inputs are returned unchanged so callers can pass through. This is a
+ * pure color transform with no time component — identical under reduced motion.
+ */
+export function gradeColor(hex, grade, strength = 1) {
+    const text = String(hex || '');
+    if (!/^#[0-9a-f]{6}$/i.test(text)) return text;
+    const tint = parseRgbaString(grade?.worldTint);
+    if (!tint) return text;
+    const weight = clamp(tint.a * clamp(strength, 0, 2), 0, 1);
+    if (weight <= 0) return text;
+    const blended = blendRgb(hexToRgb(text), { r: tint.r, g: tint.g, b: tint.b }, weight);
+    return rgbToHex(blended);
+}
+
 function buildGrade(phase, phaseProgress, weather) {
     const light = phaseLight(phase, phaseProgress);
     const dark = 1 - light;

@@ -5,6 +5,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { gradeColor } from './AtmosphereState.js';
 
 const MAX_TALK_ARCS = 8;
 const COMMAND_PLAZA = { tileX: 16, tileY: 21 };
@@ -153,6 +154,7 @@ export function drawCouncilRings(ctx, {
     now = performance.now(),
     motionScale = 1,
     lighting = null,
+    grade = null,
 } = {}) {
     const snapshot = relationshipSnapshot(relationship);
     if (!ctx || !snapshot?.teamToMembers || !agentSprites) return;
@@ -172,7 +174,7 @@ export function drawCouncilRings(ctx, {
             : { draw: true, alpha: 1 };
         if (!gate.draw) continue;
         ctx.save();
-        ctx.strokeStyle = rgba(color.accent, Math.min(0.42, 0.26 * boost * shimmer) * gate.alpha);
+        ctx.strokeStyle = rgba(gradeColor(color.accent, grade), Math.min(0.42, 0.26 * boost * shimmer) * gate.alpha);
         ctx.lineWidth = 1.4 / (zoom || 1);
         ctx.setLineDash([]);
         ctx.beginPath();
@@ -214,6 +216,7 @@ export function drawFamilyTethers(ctx, {
     now = performance.now(),
     motionScale = 1,
     lighting = null,
+    grade = null,
     projectIsoToScreen = null, // reserved; world transform already applied by caller
 } = {}) {
     void projectIsoToScreen;
@@ -229,7 +232,7 @@ export function drawFamilyTethers(ctx, {
     for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
         const parent = agentSprites.get(parentId);
         if (!parent || parent.isArrivalPending?.()) continue;
-        const trim = parent._providerTrimColor?.() || parent.providerTrimColor || '#8b8b9e';
+        const trim = gradeColor(parent._providerTrimColor?.() || parent.providerTrimColor || '#8b8b9e', grade);
 
         for (const childId of childIds) {
             const child = agentSprites.get(childId);
@@ -277,6 +280,7 @@ export function drawAllyTethers(ctx, {
     now = performance.now(),
     motionScale = 1,
     lighting = null,
+    grade = null,
 } = {}) {
     if (!ctx || !Array.isArray(pairs) || !pairs.length) return;
 
@@ -301,7 +305,7 @@ export function drawAllyTethers(ctx, {
             ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
             : { draw: true, alpha: 1 };
         if (!gate.draw) continue;
-        const stroke = rgba(THEME.ally || '#f0b27a', alpha * gate.alpha);
+        const stroke = rgba(gradeColor(THEME.ally || '#f0b27a', grade), alpha * gate.alpha);
         const control = {
             x: (start.x + end.x) / 2,
             y: (start.y + end.y) / 2 - Math.min(22, dist * 0.16),
@@ -342,6 +346,7 @@ export function drawTalkArcs(ctx, {
     now = performance.now(),
     motionScale = 1,
     lighting = null,
+    grade = null,
 } = {}) {
     const snapshot = relationshipSnapshot(relationship);
     if (!ctx || !snapshot?.chatPairs || !agentSprites) return;
@@ -371,7 +376,7 @@ export function drawTalkArcs(ctx, {
         };
 
         ctx.save();
-        ctx.strokeStyle = rgba(THEME.chatting || '#f2d36b', alpha * gate.alpha);
+        ctx.strokeStyle = rgba(gradeColor(THEME.chatting || '#f2d36b', grade), alpha * gate.alpha);
         ctx.lineWidth = 1.4 / (zoom || 1);
         if (motionScale === 0) ctx.setLineDash([2 / (zoom || 1), 4 / (zoom || 1)]);
         ctx.beginPath();
