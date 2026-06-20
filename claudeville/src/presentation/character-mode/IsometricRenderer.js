@@ -3505,8 +3505,43 @@ export class IsometricRenderer {
         return 120;
     }
 
+    // #16 — distance-and-density-aware label fade. PRIMARY-tier agents (selected,
+    // waiting-on-user, errored, rate-limited) never fade — their labels carry true
+    // action-demanding state. Everyone else fades toward 0 at zoom 1 inside a dense
+    // crowd cell (glyphs #9 + cluster banners #19 carry the overview read there) and
+    // resolves to full names at zoom 3. Static: no motion, no pulse band.
     _agentLabelAlpha(sprite, zoom) {
-        return 1;
+        if (sprite.selected) return 1;
+        const status = sprite.agent?.status;
+        if (
+            status === AgentStatus.WAITING_ON_USER ||
+            status === AgentStatus.ERRORED ||
+            status === AgentStatus.RATE_LIMITED
+        ) {
+            return 1;
+        }
+
+        const z = Number(zoom) || 1;
+        if (z >= 3) return 1;
+
+        // Base fade by zoom: calm at the overview zoom, fuller as the operator leans in.
+        const zoomFloor = z >= 2 ? 0.65 : 0.18;
+        if (!this._spriteInDenseCluster(sprite)) return 1;
+        return zoomFloor;
+    }
+
+    // True when the sprite shares a crowd cell with a dense cluster summarized this
+    // frame (same cellX,cellY bucket the CrowdClusters summary keys on).
+    _spriteInDenseCluster(sprite) {
+        const clusters = this._crowdStats?.clusters;
+        if (!Array.isArray(clusters) || clusters.length === 0) return false;
+        const tile = worldToTile(sprite.x, sprite.y);
+        if (!tile || !Number.isFinite(tile.tileX) || !Number.isFinite(tile.tileY)) return false;
+        const size = this._crowdStats.clusterCellSize || CROWD_CLUSTER_TILE_SIZE;
+        const cellX = Math.floor(tile.tileX / size);
+        const cellY = Math.floor(tile.tileY / size);
+        const id = `${cellX},${cellY}`;
+        return clusters.some((cluster) => cluster?.id === id);
     }
 
     _collectAgentLabelHitRects(sprites) {
