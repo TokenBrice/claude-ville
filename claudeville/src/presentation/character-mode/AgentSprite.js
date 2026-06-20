@@ -7,6 +7,7 @@ import { getTeamColor } from '../shared/TeamColor.js';
 import { runtimeRoleAccessory } from '../shared/RoleAccessory.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { pulseAlpha } from './PulsePolicy.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
 import { compactToolInput, toolActionLabel, toolCategory, classifyTool } from '../../domain/services/ToolIdentity.js';
@@ -1822,6 +1823,11 @@ export class AgentSprite {
 
         if (!this.selected && zoom < 1) {
             this._drawLowZoomImpostor(ctx);
+            // #4 — the beacon must survive the low-zoom busy overview, the exact
+            // scene where a waiting agent is otherwise lost in the cluster.
+            if (this.agent?.status === AgentStatus.WAITING_ON_USER) {
+                this._drawWaitingOnUserBeacon(ctx, null);
+            }
             this._drawCompactNameStatus(ctx);
             if (archivePushed) ctx.restore();
             return;
@@ -1867,6 +1873,14 @@ export class AgentSprite {
         this._drawCodexEquipment(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'front');
         this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
         this._drawToolRitualOverlay(ctx, { dx, dy, bounds, drawScale });
+
+        // #4 — waiting-on-user amber beacon pillar. PRIMARY tier (never culled):
+        // the action-demanding state must be visible from across the map even
+        // when buried in a cluster. Drawn before the selection focus pillar so a
+        // selected, waiting agent shows both.
+        if (this.agent?.status === AgentStatus.WAITING_ON_USER) {
+            this._drawWaitingOnUserBeacon(ctx, contentTopY);
+        }
 
         // Selection halo (if selected) — outer glow + pulsed ring at feet level,
         // tinted with the provider accent so selection reads identity at a glance.
@@ -2462,6 +2476,56 @@ export class AgentSprite {
         ctx.lineTo(this.x + 13, this.y + 8);
         ctx.closePath();
         ctx.fill();
+        ctx.restore();
+    }
+
+    // #4 — a tall amber light-pillar topped with a `!` pennant above any
+    // WAITING_ON_USER agent, rising over the crowd so the action-demanding read
+    // is never lost in a cluster. PRIMARY tier (never culled). Height and
+    // brightness scale with wait duration. Pulse: 'alert' band (medium).
+    // Reduced motion (motionScale 0): pulseAlpha returns the band base, so the
+    // pillar holds a fixed alpha at fixed height — a static amber beacon.
+    _drawWaitingOnUserBeacon(ctx, contentTopY) {
+        const governor = getActiveMarkGovernor();
+        // PRIMARY always admits at full alpha; consulted for contract symmetry.
+        if (governor && !governor.admit(MarkTier.PRIMARY, this.x, this.y).draw) return;
+
+        const amber = THEME.waitingOnUser || '#facc15';
+        // Wait-duration ramp: a fresh wait is a modest pillar; a long wait grows
+        // taller and brighter so a stale prompt visibly looms.
+        const age = Number(this.agent?.activityAgeMs);
+        const waitT = Number.isFinite(age) ? Math.max(0, Math.min(1, age / 120_000)) : 0;
+        const headY = Number.isFinite(contentTopY) ? contentTopY : this.y - 36;
+        const baseHeight = 46 + waitT * 40;
+        const top = headY - 10 - baseHeight;
+        const brightness = pulseAlpha('alert', this.frame, this.motionScale, 0.55, 1);
+        const peakAlpha = (0.30 + waitT * 0.22) * brightness;
+        const halfW = 5 + waitT * 2;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const gradient = ctx.createLinearGradient(this.x, top, this.x, headY - 6);
+        gradient.addColorStop(0, this._rgba(amber, 0));
+        gradient.addColorStop(0.5, this._rgba(amber, peakAlpha));
+        gradient.addColorStop(1, this._rgba(amber, peakAlpha * 0.45));
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.moveTo(this.x - 2, headY - 6);
+        ctx.lineTo(this.x - halfW, top);
+        ctx.lineTo(this.x + halfW, top);
+        ctx.lineTo(this.x + 2, headY - 6);
+        ctx.closePath();
+        ctx.fill();
+        ctx.restore();
+
+        // `!` pennant cap at the pillar's tip — solid amber so it reads against
+        // the sky regardless of the screen-blend gradient below it.
+        ctx.save();
+        ctx.translate(Math.round(this.x), Math.round(top));
+        ctx.globalAlpha = 0.7 + 0.3 * brightness;
+        ctx.fillStyle = amber;
+        ctx.fillRect(-1, -7, 2, 4);
+        ctx.fillRect(-1, -1, 2, 2);
         ctx.restore();
     }
 

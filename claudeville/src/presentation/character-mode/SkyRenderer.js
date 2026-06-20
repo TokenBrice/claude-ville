@@ -39,6 +39,19 @@ const FAST_SKY_CAMERA_QUANT_PX = 64;
 const SHOOTING_STAR_MAX = 3;
 const SHOOTING_STAR_COOLDOWN_MS = 4000;
 const SHOOTING_STAR_NIGHT_PHASES = new Set(['night', 'dusk']);
+// Daytime counterparts of the night-only aurora / shooting-star rewards so
+// push & subagent hero moments stay visible in daytime sessions (most of them).
+const DAY_REWARD_PHASES = new Set(['day', 'dawn', 'dusk']);
+const SKY_FLARE_DURATION_MS = 4200;
+const SKY_FLARE_FADE_IN_MS = 700;
+const SKY_FLARE_HOLD_MS = 1600;
+const SKY_FLARE_COOLDOWN_MS = 5 * 60 * 1000;
+const SUN_GLINT_DURATION_MS = 1500;
+const SUN_GLINT_COOLDOWN_MS = 4000;
+const SUN_GLINT_MAX = 3;
+// Below this cloud cover the sky is clear enough for god-rays / daytime
+// rewards to break through; above it the overcast plate swallows them.
+const DAY_REWARD_CLOUD_COVER_MAX = 0.74;
 
 const CONSTELLATIONS = [
     {
@@ -78,7 +91,12 @@ export class SkyRenderer {
         this._lastAuroraTriggerAt = 0;
         this._lastShootingStarAt = 0;
         this._shootingStars = [];
+        this._skyFlareStartedAt = 0;
+        this._lastSkyFlareAt = 0;
+        this._lastSunGlintAt = 0;
+        this._sunGlints = [];
         this._currentPhase = null;
+        this._currentCloudCover = 0;
         this._currentMotionScale = 1;
         this._unsubscribers = [];
         this.attach();
@@ -89,17 +107,28 @@ export class SkyRenderer {
     attach() {
         if (this._unsubscribers.length) this.detach();
         if (!eventBus || typeof eventBus.on !== 'function') return;
-        const onPush = () => this.maybeTriggerAuroraForPushSuccess(this._currentPhase);
+        const onPush = () => {
+            // Night → aurora; daytime → golden sky-flare. One reward fires.
+            if (!this.maybeTriggerAuroraForPushSuccess(this._currentPhase)) {
+                this.maybeTriggerSkyFlareForPushSuccess(this._currentPhase);
+            }
+        };
         this._unsubscribers.push(eventBus.on('git:pushed', onPush));
         this._unsubscribers.push(eventBus.on('harbor:push-success', onPush));
         this._unsubscribers.push(eventBus.on('subagent:completed', () => {
             const now = Date.now();
-            if (now - this._lastShootingStarAt < SHOOTING_STAR_COOLDOWN_MS) return;
-            const angle = Math.PI / 3 + Math.random() * (Math.PI / 6);
-            const length = 0.14 + Math.random() * 0.08;
-            if (this.triggerShootingStar({ angle, length })) {
-                this._lastShootingStarAt = now;
+            // Night → shooting star; daytime → a sun-ray glint near the sun.
+            if (SHOOTING_STAR_NIGHT_PHASES.has(this._currentPhase)) {
+                if (now - this._lastShootingStarAt < SHOOTING_STAR_COOLDOWN_MS) return;
+                const angle = Math.PI / 3 + Math.random() * (Math.PI / 6);
+                const length = 0.14 + Math.random() * 0.08;
+                if (this.triggerShootingStar({ angle, length })) {
+                    this._lastShootingStarAt = now;
+                }
+                return;
             }
+            if (now - this._lastSunGlintAt < SUN_GLINT_COOLDOWN_MS) return;
+            if (this.triggerSunGlint()) this._lastSunGlintAt = now;
         }));
     }
 
@@ -116,6 +145,7 @@ export class SkyRenderer {
         const snapshot = atmosphere || this._getFallbackAtmosphere(motionScale);
         this._currentPhase = snapshot.phase || null;
         this._currentMotionScale = motionScale;
+        this._currentCloudCover = clamp(snapshot.weather?.cloudCover ?? 0, 0, 1);
         if (snapshot.motion?.driftEnabled) {
             this._decorativeCloudOffset = (this._decorativeCloudOffset + dt * CLOUD_DRIFT_PX_PER_MS) % Math.max(1, canvas.width);
         }
@@ -126,6 +156,8 @@ export class SkyRenderer {
         // frame, the rain veil scrolls too fast for the 5 Hz frame cache.
         this._drawAurora(ctx, canvas, snapshot, motionScale);
         this._drawShootingStars(ctx, canvas, dt, motionScale);
+        this._drawSkyFlare(ctx, canvas, snapshot, motionScale);
+        this._drawSunGlints(ctx, camera, canvas, snapshot, dt, motionScale);
         this._drawBackgroundWeather(ctx, canvas, snapshot);
     }
 
@@ -198,6 +230,32 @@ export class SkyRenderer {
             startYFrac,
             elapsed: 0,
         });
+        return true;
+    }
+
+    triggerSkyFlare(now = Date.now()) {
+        this._skyFlareStartedAt = now;
+        this._lastSkyFlareAt = now;
+    }
+
+    // Daytime counterpart of the aurora: a brief golden flare washes the sky
+    // on push success. Blocked under heavy cloud cover (no break-through).
+    maybeTriggerSkyFlareForPushSuccess(phase = this._currentPhase) {
+        if (!DAY_REWARD_PHASES.has(phase)) return false;
+        if (this._currentCloudCover > DAY_REWARD_CLOUD_COVER_MAX) return false;
+        const now = Date.now();
+        if (now - this._lastSkyFlareAt < SKY_FLARE_COOLDOWN_MS) return false;
+        this.triggerSkyFlare(now);
+        return true;
+    }
+
+    // Daytime counterpart of the shooting star: a quick ray glint flares out
+    // from the sun on subagent completion.
+    triggerSunGlint() {
+        if (!DAY_REWARD_PHASES.has(this._currentPhase)) return false;
+        if (this._currentCloudCover > DAY_REWARD_CLOUD_COVER_MAX) return false;
+        if (this._sunGlints.length >= SUN_GLINT_MAX) return false;
+        this._sunGlints.push({ elapsed: 0, twist: (Math.random() - 0.5) * 0.5 });
         return true;
     }
 
@@ -512,7 +570,11 @@ export class SkyRenderer {
         const lighting = atmosphere.lighting || {};
         const warmth = lighting.sunWarmth ?? 0;
         if (!sun?.visible) return;
-        if (warmth <= 0.18) return;
+        // Loosened from 0.18 so rays break through on a clearing transition
+        // (the warm-up before dawn/after dusk), but only under clear-enough sky.
+        const cloudCover = clamp(atmosphere.weather?.cloudCover ?? 0, 0, 1);
+        const warmthGate = cloudCover > DAY_REWARD_CLOUD_COVER_MAX ? 0.18 : 0.08;
+        if (warmth <= warmthGate) return;
         if ((sun.alpha ?? 0) <= 0.04) return;
 
         const radius = Math.max(22, Math.min(canvas.width, canvas.height) * 0.042);
@@ -899,6 +961,114 @@ export class SkyRenderer {
         this._shootingStars = next;
     }
 
+    // Golden sky-flare — daytime push reward. Pulse band: a single envelope
+    // (fade-in → hold → fade-out) over SKY_FLARE_DURATION_MS, no looping
+    // oscillation. Reduced motion (motionScale 0): a static brief brightening
+    // held at peak alpha for the same window, no animated envelope.
+    _drawSkyFlare(ctx, canvas, atmosphere, motionScale = 1) {
+        if (!this._skyFlareStartedAt) return;
+        const elapsed = Date.now() - this._skyFlareStartedAt;
+        if (elapsed > SKY_FLARE_DURATION_MS) {
+            this._skyFlareStartedAt = 0;
+            return;
+        }
+        const envelope = motionScale === 0 ? 0.62 : this._skyFlareEnvelope(elapsed);
+        if (envelope <= 0.005) return;
+        const warmth = atmosphere?.lighting?.sunWarmth ?? 0;
+        const peak = 0.30 * envelope;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        const grad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        const topG = Math.round(228 - warmth * 30);
+        const topB = Math.round(150 - warmth * 50);
+        grad.addColorStop(0, `rgba(255, ${topG}, ${topB}, ${peak})`);
+        grad.addColorStop(0.45, `rgba(255, 214, 150, ${peak * 0.5})`);
+        grad.addColorStop(1, 'rgba(255, 206, 138, 0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        ctx.restore();
+    }
+
+    _skyFlareEnvelope(elapsed) {
+        if (elapsed < SKY_FLARE_FADE_IN_MS) return elapsed / SKY_FLARE_FADE_IN_MS;
+        if (elapsed < SKY_FLARE_FADE_IN_MS + SKY_FLARE_HOLD_MS) return 1;
+        const fadeElapsed = elapsed - SKY_FLARE_FADE_IN_MS - SKY_FLARE_HOLD_MS;
+        const fadeLen = SKY_FLARE_DURATION_MS - SKY_FLARE_FADE_IN_MS - SKY_FLARE_HOLD_MS;
+        return Math.max(0, 1 - fadeElapsed / fadeLen);
+    }
+
+    // Sun-ray glint — daytime subagent reward. Pulse band: a single one-shot
+    // envelope per glint over SUN_GLINT_DURATION_MS (rays bloom out then fade),
+    // no looping oscillation. Reduced motion: glints are not queued (the event
+    // handler still fires, but with motionScale 0 we draw one static rim flash
+    // held at peak instead of the expanding sweep).
+    _drawSunGlints(ctx, camera, canvas, atmosphere, dt, motionScale = 1) {
+        if (!this._sunGlints.length) return;
+        const sun = atmosphere.sky?.sun;
+        if (!sun?.visible || (sun.alpha ?? 0) <= 0.04) {
+            this._sunGlints.length = 0;
+            return;
+        }
+        const radius = Math.max(22, Math.min(canvas.width, canvas.height) * 0.042);
+        const position = this._resolveSunPosition(camera, canvas, sun, radius);
+        if (!Number.isFinite(position.x) || !Number.isFinite(position.y)) return;
+        const { x, y } = position;
+        const sunAlpha = sun.alpha ?? 0;
+        const next = [];
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const glint of this._sunGlints) {
+            glint.elapsed += dt;
+            // Reduced motion: hold one static rim flash at peak for the full
+            // window, no expanding sweep; then drop it.
+            if (motionScale === 0) {
+                if (glint.elapsed >= SUN_GLINT_DURATION_MS) continue;
+            } else if (glint.elapsed >= SUN_GLINT_DURATION_MS) {
+                continue;
+            }
+            const t = motionScale === 0 ? 0.5 : glint.elapsed / SUN_GLINT_DURATION_MS;
+            const fade = t < 0.22 ? t / 0.22 : 1 - (t - 0.22) / 0.78;
+            const alpha = Math.max(0, fade) * sunAlpha * 0.55;
+            if (alpha <= 0.01) {
+                next.push(glint);
+                continue;
+            }
+            const reach = motionScale === 0
+                ? radius * 4.2
+                : radius * (2.0 + t * 3.2);
+            const rays = 8;
+            ctx.strokeStyle = `rgba(255, 236, 178, ${alpha})`;
+            ctx.lineWidth = Math.max(2, Math.round(radius * 0.1));
+            ctx.lineCap = 'round';
+            for (let i = 0; i < rays; i++) {
+                const angle = (Math.PI * 2 * i) / rays + glint.twist;
+                const inner = radius * 1.2;
+                ctx.beginPath();
+                ctx.moveTo(
+                    Math.round(x + Math.cos(angle) * inner),
+                    Math.round(y + Math.sin(angle) * inner),
+                );
+                ctx.lineTo(
+                    Math.round(x + Math.cos(angle) * reach),
+                    Math.round(y + Math.sin(angle) * reach),
+                );
+                ctx.stroke();
+            }
+            const halo = ctx.createRadialGradient(x, y, radius * 0.4, x, y, reach);
+            halo.addColorStop(0, `rgba(255, 244, 198, ${alpha * 0.7})`);
+            halo.addColorStop(1, 'rgba(255, 230, 170, 0)');
+            ctx.fillStyle = halo;
+            ctx.beginPath();
+            ctx.arc(x, y, reach, 0, Math.PI * 2);
+            ctx.fill();
+            next.push(glint);
+        }
+        ctx.restore();
+        this._sunGlints = next;
+    }
+
     _drawBackgroundWeather(ctx, canvas, atmosphere) {
         const weather = atmosphere.weather;
         if (!weather) return;
@@ -988,6 +1158,8 @@ export class SkyRenderer {
         this._decorativeCloudOffset = 0;
         this._auroraStartedAt = 0;
         this._shootingStars.length = 0;
+        this._skyFlareStartedAt = 0;
+        this._sunGlints.length = 0;
         this.detach();
         this._fallbackAtmosphere?.dispose?.();
         this._fallbackAtmosphere = null;

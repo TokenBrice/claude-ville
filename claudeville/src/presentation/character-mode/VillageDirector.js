@@ -865,8 +865,12 @@ export class VillageDirector {
         const recentCompleted = this.scenes.filter(scene => scene.type === 'lifecycle'
             && scene.kind === 'departure'
             && now - (scene.startedAt || 0) < 25_000).length;
-        const storminess = clamp((stormAgents / total) * 0.55 + failedPush + quota);
-        const clearing = clamp(storminess > 0 ? 0 : recentCompleted * 0.16);
+        const rawStorminess = clamp((stormAgents / total) * 0.55 + failedPush + quota);
+        const rawClearing = clamp(rawStorminess > 0 ? 0 : recentCompleted * 0.16);
+        // Bucket the floats at the source so per-frame jitter in aggregate
+        // health does not thrash AtmosphereState's weather cacheKey downstream.
+        const storminess = Math.round(rawStorminess * 10) / 10;
+        const clearing = Math.round(rawClearing * 10) / 10;
         if (storminess <= 0.02 && clearing <= 0.02) return null;
         return { storminess, clearing };
     }

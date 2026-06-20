@@ -27,6 +27,7 @@ export class SceneryEngine {
         this.lagoonWaterTiles = new Set(); // river-kind basin/polyline water tiles
         this.waterMeta = new Map(); // key -> { source, kind, region, depth, surface, weatherProfile }
         this.shoreTiles = new Set();
+        this.wetShoreTiles = new Set(); // deterministic shore subset that glistens after rain (#7)
         this.bridgeTiles = new Map(); // key -> { orientation: 'NS' | 'EW' }
         this.bushTiles = new Map();    // key -> { variant: 0..2 }
         this.grassTuftTiles = new Map(); // key -> { variant: 0..1 }
@@ -52,6 +53,10 @@ export class SceneryEngine {
     getLagoonWaterTiles() { return this.lagoonWaterTiles; }
     getWaterMeta() { return this.waterMeta; }
     getShoreTiles() { return this.shoreTiles; }
+    // Low-lying shore tiles where rain pools into a wet sheen (#7). A stable
+    // ~40% subset keyed off terrainSeed so puddles land on the same tiles every
+    // frame and never strobe.
+    getWetShoreTiles() { return this.wetShoreTiles; }
     getBridgeTiles() { return this.bridgeTiles; }
     getBushTiles() { return this.bushTiles; }
     getGrassTuftTiles() { return this.grassTuftTiles; }
@@ -358,6 +363,10 @@ export class SceneryEngine {
                 const nKey = `${nx},${ny}`;
                 if (!this.waterTiles.has(nKey) && !this._buildingFootprints.has(nKey)) {
                     this.shoreTiles.add(nKey);
+                    // Deterministic wet subset: the lower, smoother shore tiles
+                    // (high terrainSeed) hold rain longest. Stable across frames.
+                    const seed = this.terrainSeed[ny * MAP_SIZE + nx] || 0;
+                    if (seed > 0.6) this.wetShoreTiles.add(nKey);
                 }
             }
         }

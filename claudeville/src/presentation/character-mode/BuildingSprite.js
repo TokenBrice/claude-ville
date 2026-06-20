@@ -1141,6 +1141,7 @@ export class BuildingSprite {
         const reactions = this.atmosphereState?.reactions || {};
         const windowWarmth = reactions.windowWarmth || 0;
         const roofGlint = reactions.roofGlintAlpha || 0;
+        const warmGlint = reactions.warmGlint || 0;
         if (windowWarmth <= 0.035 && roofGlint <= 0.025) return;
         const baseAnchor = this.assets.getAnchor(entry.id);
         const dims = this.assets.getDims(entry.id);
@@ -1179,17 +1180,26 @@ export class BuildingSprite {
         }
 
         if (roofGlint > 0.025) {
-            const count = roofGlint > 0.16 ? 2 : 1;
-            ctx.strokeStyle = `rgba(255, 231, 166, ${Math.min(0.22, roofGlint * (0.48 + pulse * 0.34))})`;
-            ctx.lineWidth = 1;
+            // Golden hour lays a warm rim-light along the ridgeline; a wet roof
+            // adds a brighter rain sheen. `warmGlint` (dawn/dusk) tilts the hue
+            // from cool wet silver toward gold and lengthens the highlight.
+            const goldTilt = Math.min(1, warmGlint * 1.4);
+            const rimColor = goldTilt > 0.2
+                ? `rgba(255, 214, 138, ${Math.min(0.30, roofGlint * (0.5 + goldTilt * 0.4 + pulse * 0.24))})`
+                : `rgba(255, 231, 166, ${Math.min(0.22, roofGlint * (0.48 + pulse * 0.34))})`;
+            const count = roofGlint > 0.16 || goldTilt > 0.4 ? 2 : 1;
+            const span = 7 + goldTilt * 6;
+            ctx.strokeStyle = rimColor;
+            ctx.lineWidth = 1 + (goldTilt > 0.4 ? 0.6 : 0);
+            ctx.lineCap = 'round';
             for (let i = 0; i < count; i++) {
                 const lx = dims.w * (0.28 + ((seed >> (i * 5)) % 42) / 100);
                 const ly = dims.h * (0.22 + ((seed >> (i * 7 + 3)) % 18) / 100);
                 if (!shouldDrawLocalY(ly)) continue;
                 const p = localPoint(lx, ly);
                 ctx.beginPath();
-                ctx.moveTo(p.x - 7, p.y + 1);
-                ctx.lineTo(p.x + 7, p.y - 3);
+                ctx.moveTo(p.x - span, p.y + 1);
+                ctx.lineTo(p.x + span, p.y - 3 - goldTilt * 1.5);
                 ctx.stroke();
             }
         }

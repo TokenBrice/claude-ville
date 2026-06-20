@@ -497,6 +497,7 @@ export class IsometricRenderer {
         });
         this.waterTiles = this.scenery.getWaterTiles();
         this.shoreTiles = this.scenery.getShoreTiles();
+        this.wetShoreTiles = this.scenery.getWetShoreTiles?.() || new Set();
         this.deepWaterTiles = this.scenery.getDeepWaterTiles();
         this.lagoonWaterTiles = this.scenery.getLagoonWaterTiles();
         this.waterMeta = this.scenery.getWaterMeta?.() || new Map();
@@ -5009,7 +5010,46 @@ export class IsometricRenderer {
                 }
             }
         }
+        this._drawShorePuddles(ctx, reactions, alphaBase, pulseFrame);
         ctx.restore();
+    }
+
+    // Wet-cobble shore sheen: after rain the low shore tiles glisten with a
+    // cool puddle film that warms toward gold at dawn/dusk. Tiles come from the
+    // deterministic SceneryEngine subset so the sheen never strobes; per-frame
+    // cost is only the pulse, and `STATIC_WATER_SHIMMER` carries the reduced-
+    // motion path with a steady sheen.
+    _drawShorePuddles(ctx, reactions, alphaBase, pulseFrame) {
+        if (!this.wetShoreTiles?.size) return;
+        const { startX, endX, startY, endY } = this._getVisibleTileBounds(2);
+        const warm = reactions.warmGlint || 0;
+        const night = reactions.nightReflection || 0;
+        for (let y = startY; y <= endY; y++) {
+            for (let x = startX; x <= endX; x++) {
+                const key = `${x},${y}`;
+                if (!this.wetShoreTiles.has(key)) continue;
+                if (this._isVisualWaterTile(x, y, key) || this.bridgeTiles?.has(key)) continue;
+                const seed = this.terrainSeed[y * MAP_SIZE + x] || 0;
+                const screenX = (x - y) * TILE_WIDTH / 2;
+                const screenY = (x + y) * TILE_HEIGHT / 2;
+                const pulse = this.motionScale ? (Math.sin(pulseFrame * 1.2 + seed * 6.3) + 1) / 2 : 0.55;
+                const alpha = Math.min(0.16, alphaBase * (0.14 + seed * 0.2 + pulse * 0.1) * (1 + night * 0.2));
+                ctx.fillStyle = warm > 0.12
+                    ? `rgba(255, 208, 142, ${alpha * 0.7})`
+                    : `rgba(168, 222, 230, ${alpha})`;
+                ctx.beginPath();
+                ctx.ellipse(
+                    Math.round(screenX + (seed - 0.5) * 16),
+                    Math.round(screenY + 3 + (seed - 0.5) * 4),
+                    6 + seed * 7,
+                    2.1 + seed * 1.8,
+                    -0.16 + seed * 0.3,
+                    0,
+                    Math.PI * 2,
+                );
+                ctx.fill();
+            }
+        }
     }
 
     _getAtmosphereEffectSprite(id) {
