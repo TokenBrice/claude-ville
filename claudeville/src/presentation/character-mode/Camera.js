@@ -37,6 +37,10 @@ export class Camera {
         this._lastDragY = 0;
         this._lastDragTime = 0;
 
+        // Set once the user manually pans/zooms, so auto-framing on resize
+        // stops fighting their chosen view. Cleared by an explicit re-frame.
+        this._userAdjusted = false;
+
         this._onMouseDown = this._onMouseDown.bind(this);
         this._onMouseMove = this._onMouseMove.bind(this);
         this._onMouseUp = this._onMouseUp.bind(this);
@@ -57,6 +61,34 @@ export class Camera {
     }
 
     onViewportResize() {
+        this._clampToBounds();
+    }
+
+    // Frame an axis-aligned world box so it fits the viewport, centered on the
+    // box, at the largest *integer* zoom (pixel-perfect) up to `maxZoom`. Used
+    // for the initial "overview of my active agents" framing.
+    fitToWorldBox(box, { paddingPx = 96, maxZoom = 2 } = {}) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (!w || !h || !box) return;
+        const boxW = Math.max(1, box.maxX - box.minX);
+        const boxH = Math.max(1, box.maxY - box.minY);
+        const centerX = (box.minX + box.maxX) / 2;
+        const centerY = (box.minY + box.maxY) / 2;
+        const hi = Math.min(Math.floor(maxZoom), this.maxZoom);
+        let zoom = this.minZoom;
+        for (let z = hi; z >= this.minZoom; z--) {
+            if (boxW * z + paddingPx * 2 <= w && boxH * z + paddingPx * 2 <= h) {
+                zoom = z;
+                break;
+            }
+        }
+        this._zoomAnimation = null;
+        this._snapZoom = null;
+        this._momentum = null;
+        this.zoom = zoom;
+        this.x = -centerX + w / (2 * zoom);
+        this.y = -centerY + h / (2 * zoom);
         this._clampToBounds();
     }
 
@@ -159,6 +191,7 @@ export class Camera {
     _onMouseDown(e) {
         if (e.button !== 0) return;
         this.dragging = true;
+        this._userAdjusted = true;
         this.dragStartX = e.clientX;
         this.dragStartY = e.clientY;
         this.camStartX = this.x;
@@ -230,6 +263,7 @@ export class Camera {
         const nextIndex = Math.max(0, Math.min(steps.length - 1, currentIndex + direction));
         const targetZoom = steps[nextIndex];
         if (targetZoom === this.zoom) return;
+        this._userAdjusted = true;
 
         if (this._reducedMotion) {
             this.zoom = targetZoom;

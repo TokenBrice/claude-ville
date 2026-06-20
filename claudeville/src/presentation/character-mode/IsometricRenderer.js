@@ -68,7 +68,7 @@ import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
 import { Chronicler } from './Chronicler.js';
 import { VillageDirector } from './VillageDirector.js';
-import { tileToWorld, worldToTile } from './Projection.js';
+import { tileToWorld, worldToTile, buildingCenterToWorld } from './Projection.js';
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { buildStaticPropDrawables } from './StaticPropDrawables.js';
 import { createDepthDrawable, propDepthDrawable } from './DrawablePass.js';
@@ -1709,6 +1709,41 @@ export class IsometricRenderer {
         };
     }
 
+    // Frame the camera on the active agents (fallback: building centers, then
+    // map core) so opening ClaudeVille in a small pane shows the live village
+    // at a glance. Leaves the camera in auto-frame state until the user pans/zooms.
+    frameContent() {
+        if (!this.camera) return;
+        const points = [];
+        for (const sprite of this.agentSprites.values()) {
+            if (Number.isFinite(sprite?.x) && Number.isFinite(sprite?.y)) {
+                points.push({ x: sprite.x, y: sprite.y });
+            }
+        }
+        if (points.length === 0 && this.world?.buildings) {
+            for (const building of this.world.buildings.values()) {
+                const center = buildingCenterToWorld(building);
+                if (Number.isFinite(center?.x) && Number.isFinite(center?.y)) {
+                    points.push(center);
+                }
+            }
+        }
+        if (points.length === 0) {
+            this.camera.centerOnMap();
+            this.camera._userAdjusted = false;
+            return;
+        }
+        const xs = points.map(p => p.x);
+        const ys = points.map(p => p.y);
+        this.camera.fitToWorldBox({
+            minX: Math.min(...xs),
+            maxX: Math.max(...xs),
+            minY: Math.min(...ys),
+            maxY: Math.max(...ys),
+        });
+        this.camera._userAdjusted = false;
+    }
+
     _triggerReleaseParadeForVersion() {
         if (typeof document === 'undefined') return false;
         const version = document.querySelector('.topbar__version')?.textContent || '';
@@ -1994,6 +2029,7 @@ export class IsometricRenderer {
         const delta = panDeltas[event.code];
         if (delta) {
             this.camera.stopFollow();
+            this.camera._userAdjusted = true;
             this.camera.x += delta.x / Math.max(0.1, this.camera.zoom || 1);
             this.camera.y += delta.y / Math.max(0.1, this.camera.zoom || 1);
             this.camera._clampToBounds?.();
@@ -2002,16 +2038,16 @@ export class IsometricRenderer {
         }
 
         if (event.code === 'Equal' || event.code === 'NumpadAdd') {
-            if (this._zoomByKeyboard(1)) event.preventDefault();
+            if (this._zoomByKeyboard(1)) { this.camera._userAdjusted = true; event.preventDefault(); }
             return;
         }
         if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
-            if (this._zoomByKeyboard(-1)) event.preventDefault();
+            if (this._zoomByKeyboard(-1)) { this.camera._userAdjusted = true; event.preventDefault(); }
             return;
         }
         if (event.code === 'KeyF') {
             this.camera.stopFollow();
-            this.camera.centerOnMap();
+            this.frameContent();
             event.preventDefault();
             return;
         }

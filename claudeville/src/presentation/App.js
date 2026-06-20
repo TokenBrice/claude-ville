@@ -237,7 +237,11 @@ class App {
                 this._centerCameraHandle = requestAnimationFrame(() => {
                     this._centerCameraHandle = null;
                     if (this.renderer && this.renderer.camera) {
-                        this.renderer.camera.centerOnMap();
+                        if (typeof this.renderer.frameContent === 'function') {
+                            this.renderer.frameContent();
+                        } else {
+                            this.renderer.camera.centerOnMap();
+                        }
                     }
                 });
             }
@@ -390,7 +394,14 @@ class App {
                 this.renderer.invalidateViewportCaches();
             }
             if (this.renderer && this.renderer.camera) {
-                this.renderer.camera.onViewportResize();
+                const cam = this.renderer.camera;
+                // Re-frame to the live village on relayout, unless the user has
+                // taken manual control of the camera or is following an agent.
+                if (!cam._userAdjusted && !cam.followTarget && typeof this.renderer.frameContent === 'function') {
+                    this.renderer.frameContent();
+                } else {
+                    cam.onViewportResize();
+                }
             }
         };
 
