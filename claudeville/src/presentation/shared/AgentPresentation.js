@@ -1,4 +1,5 @@
 import { i18n } from '../../config/i18n.js';
+import { PROVIDER_HUES, STATUS_VISUALS } from '../../config/theme.js';
 import { toolCategory, toolIcon, shortToolName } from '../../domain/services/ToolIdentity.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
@@ -23,15 +24,23 @@ const UNKNOWN_PROJECT_SIDEBAR_PROFILE = Object.freeze({
 });
 
 const PROVIDER_ICONS = Object.freeze({ claude: 'C', codex: 'X', gemini: 'G', git: '#', kimi: 'K', opencode: 'O' });
-const PROVIDER_COLORS = Object.freeze({ claude: '#a78bfa', codex: '#4ade80', gemini: '#60a5fa', git: '#f6cf60', kimi: '#ff9f7a', opencode: '#7cf4c8' });
-const PROVIDER_BADGES = Object.freeze({
-    claude: { label: 'Claude', color: '#a78bfa', bg: 'rgba(167,139,250,0.15)' },
-    codex:  { label: 'Codex',  color: '#4ade80', bg: 'rgba(74,222,128,0.15)' },
-    gemini: { label: 'Gemini', color: '#60a5fa', bg: 'rgba(96,165,250,0.15)' },
-    git:    { label: 'Git',    color: '#f6cf60', bg: 'rgba(246,207,96,0.15)' },
-    kimi:   { label: 'Kimi',   color: '#ff9f7a', bg: 'rgba(255,159,122,0.15)' },
-    opencode: { label: 'OpenCode', color: '#7cf4c8', bg: 'rgba(124,244,200,0.15)' },
+// Provider hues come from the theme.js House Palette (#1); only icons/labels
+// are presentation-local.
+const PROVIDER_COLORS = Object.freeze(Object.fromEntries(
+    Object.entries(PROVIDER_HUES)
+        .filter(([key]) => key !== 'default')
+        .map(([key, hue]) => [key, hue.badge]),
+));
+const PROVIDER_LABELS = Object.freeze({
+    claude: 'Claude', codex: 'Codex', gemini: 'Gemini', git: 'Git', kimi: 'Kimi', opencode: 'OpenCode',
 });
+const PROVIDER_BADGES = Object.freeze(Object.fromEntries(
+    Object.keys(PROVIDER_LABELS).map(key => [key, {
+        label: PROVIDER_LABELS[key],
+        color: PROVIDER_HUES[key].badge,
+        bg: PROVIDER_HUES[key].badgeBg,
+    }]),
+));
 
 export function projectKeyForAgent(agent) {
     return agent?.projectPath || UNKNOWN_PROJECT_KEY;
@@ -95,14 +104,7 @@ export function statusPresentation(status, translator = i18n) {
         label: statusOverrideLabel[normalized]
             || translator?.t?.(statusKey[normalized] || normalized)
             || fallbackLabel,
-        color: {
-            working: '#4ade80',
-            idle: '#60a5fa',
-            waiting: '#f97316',
-            rate_limited: '#f59e0b',
-            errored: '#ef4444',
-            waiting_on_user: '#facc15',
-        }[normalized] || '#8b8b9e',
+        color: STATUS_VISUALS[normalized]?.color || '#8b8b9e',
     };
 }
 

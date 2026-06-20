@@ -1,6 +1,6 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
-import { THEME } from '../../config/theme.js';
+import { THEME, STATUS_VISUALS, MOOD_ACCENTS, MODEL_TIER_COLORS, PROVIDER_HUES } from '../../config/theme.js';
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
 import { getTeamColor } from '../shared/TeamColor.js';
@@ -19,79 +19,18 @@ const SPRITE_HIT_BOTTOM = 24;
 const WALK_PIXELS_PER_FRAME = 4.5;
 const DIRECTION_HOLD_MS = 70;
 const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
-const STATUS_VISUALS = {
-    [AgentStatus.WORKING]: {
-        color: THEME.working,
-        glow: 'rgba(121, 217, 117, 0.32)',
-        label: 'WORK',
-    },
-    [AgentStatus.WAITING]: {
-        color: THEME.waiting,
-        glow: 'rgba(223, 140, 63, 0.34)',
-        label: 'WAIT',
-    },
-    [AgentStatus.IDLE]: {
-        color: THEME.idle,
-        glow: 'rgba(134, 191, 224, 0.22)',
-        label: 'IDLE',
-    },
-    [AgentStatus.ERRORED]: {
-        color: THEME.error,
-        glow: 'rgba(239, 68, 68, 0.40)',
-        label: 'ERROR',
-    },
-    [AgentStatus.RATE_LIMITED]: {
-        color: '#8fa6bd',
-        glow: 'rgba(143, 166, 189, 0.24)',
-        label: 'RATELIMIT',
-    },
-    [AgentStatus.WAITING_ON_USER]: {
-        color: '#facc15',
-        glow: 'rgba(250, 204, 21, 0.34)',
-        label: 'INPUT',
-    },
-    chatting: {
-        color: '#f2d36b',
-        glow: 'rgba(242, 211, 107, 0.30)',
-        label: 'CHAT',
-    },
-};
-// 2.2 — bubble tone tints for mood-flavored lore lines.
-const MOOD_ACCENTS = {
-    distressed: '#ff8a7a',
-    proud: '#ffd87a',
-    tired: '#9fb4c8',
-};
+// Status visuals, mood tones, and model-tier crests now live in theme.js (#1
+// House Palette) so World and Dashboard share one color authority.
 const LORE_ACCENT_DEFAULT = '#d8c08a';
 // 3.13 — congestion treatment: gait slowdown when the destination/current
 // building is over visit capacity.
 const CONGESTION_GAIT_SCALE = 0.6;
-const PROVIDER_TRIM = {
-    claude: '#c7a6ff',
-    codex: '#67f29a',
-    gemini: '#7fc7ff',
-    kimi: '#ff8da8',
-    opencode: '#7cf4c8',
-    deepseek: '#7cf4c8',
-    default: '#f2d36b',
-};
-const PROVIDER_BADGE_COLORS = Object.freeze({
-    claude: '#a78bfa',
-    codex: '#4ade80',
-    gemini: '#60a5fa',
-    kimi: '#ff9f7a',
-    opencode: '#7cf4c8',
-    deepseek: '#7cf4c8',
-    default: '#8b8b9e',
-});
-const MODEL_TIER_COLORS = Object.freeze({
-    mythic: '#ffd6f0',
-    apex: '#f6d27a',
-    balanced: '#cfd6df',
-    senior: '#cfd6df',
-    light: '#c47b46',
-    swift: '#c47b46',
-});
+const PROVIDER_TRIM = Object.freeze(Object.fromEntries(
+    Object.entries(PROVIDER_HUES).map(([key, hue]) => [key, hue.trim]),
+));
+const PROVIDER_BADGE_COLORS = Object.freeze(Object.fromEntries(
+    Object.entries(PROVIDER_HUES).map(([key, hue]) => [key, hue.badge]),
+));
 // Context-window pressure ring thresholds, highest first. No ring below 0.75.
 const CONTEXT_PRESSURE_LEVELS = Object.freeze([
     { threshold: 0.95, color: THEME.error, glow: 'rgba(239, 68, 68, 0.30)', pulseRate: 3.4 },

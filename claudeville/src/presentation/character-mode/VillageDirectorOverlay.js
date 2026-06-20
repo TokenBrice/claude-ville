@@ -1,23 +1,10 @@
+import { BUILDING_ACCENTS_RGB, INCIDENT_COLORS_RGB } from '../../config/theme.js';
+
 const TAU = Math.PI * 2;
 
-const BUILDING_COLORS = Object.freeze({
-    command: '244, 196, 93',
-    taskboard: '125, 211, 252',
-    archive: '192, 132, 252',
-    mine: '251, 146, 60',
-    forge: '248, 113, 113',
-    harbor: '94, 234, 212',
-    watchtower: '250, 204, 21',
-    observatory: '129, 140, 248',
-});
+const BUILDING_COLORS = BUILDING_ACCENTS_RGB;
 
-const INCIDENT_COLORS = Object.freeze({
-    quota: '251, 146, 60',
-    'failed-push': '248, 113, 113',
-    rate_limited: '250, 204, 21',
-    waiting_on_user: '250, 204, 21',
-    errored: '248, 113, 113',
-});
+const INCIDENT_COLORS = INCIDENT_COLORS_RGB;
 
 function clamp(value, min = 0, max = 1) {
     const n = Number(value);
