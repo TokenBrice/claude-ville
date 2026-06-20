@@ -17,14 +17,37 @@ const RITUAL_META = {
     watchtower: { kind: 'watchtower-flare', durationMs: 1800, pulseBand: 'slow' },
 };
 
-// Agent-level pose per ritual building: reading for search/lore work,
-// typing for forge edits, thinking for command chat. Consumed by
-// AgentSprite via getAgentPoses(); reduced motion draws static variants.
+// Agent-level work-gesture pose per ritual building. Each of the nine
+// buildings gets a small repeated gesture (hammer-tick at the forge,
+// page-turn at the archive, pick-swing at the mine, scroll-unfurl at the
+// taskboard, …) drawn procedurally by AgentSprite._drawToolRitualOverlay.
+// `period` is the gesture cadence in ms; AgentSprite fires one downbeat
+// particle per cycle. Consumed via getAgentPoses(); reduced motion draws
+// the static posed frame and emits no particle.
 const RITUAL_POSE_BY_BUILDING = {
-    archive: 'reading',
-    observatory: 'reading',
-    forge: 'typing',
-    command: 'thinking',
+    forge: 'hammer',
+    archive: 'page',
+    mine: 'pick',
+    taskboard: 'scroll',
+    observatory: 'gaze',
+    portal: 'conjure',
+    command: 'signal',
+    harbor: 'haul',
+    watchtower: 'scan',
+};
+
+// Gesture cadence (ms per downbeat) keyed by pose. AgentSprite reads this to
+// time both the procedural animation and the one-shot particle on the peak.
+const RITUAL_GESTURE_PERIOD_MS = {
+    hammer: 460,
+    page: 900,
+    pick: 540,
+    scroll: 1100,
+    gaze: 1400,
+    conjure: 760,
+    signal: 820,
+    haul: 980,
+    scan: 1300,
 };
 
 const COMMAND_LIFECYCLE_ACTIONS = {
@@ -447,4 +470,4 @@ export class RitualConductor {
     }
 }
 
-export { MAX_CONCURRENT_RITUALS };
+export { MAX_CONCURRENT_RITUALS, RITUAL_GESTURE_PERIOD_MS };

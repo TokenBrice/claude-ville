@@ -7,6 +7,7 @@ import { getTeamColor } from '../shared/TeamColor.js';
 import { runtimeRoleAccessory } from '../shared/RoleAccessory.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { RITUAL_GESTURE_PERIOD_MS } from './RitualConductor.js';
 import { pulseAlpha } from './PulsePolicy.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
@@ -24,6 +25,21 @@ const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
 // Status visuals, mood tones, and model-tier crests now live in theme.js (#1
 // House Palette) so World and Dashboard share one color authority.
 const LORE_ACCENT_DEFAULT = '#d8c08a';
+// #15 — one-shot particle fired on each building work-gesture downbeat. Offsets
+// are relative to the agent anchor (feet at 0,0; the gesture prop sits near
+// y -18). Presets are the shared ParticleSystem palette so each gesture lands a
+// theme-matched mark (forge spark, archive mote, mine dust, …).
+const RITUAL_GESTURE_PARTICLE = Object.freeze({
+    hammer: { preset: 'forgeSpark', dx: 0, dy: -18, count: 3 },
+    page: { preset: 'archiveMote', dx: 0, dy: -16, count: 2 },
+    pick: { preset: 'mineDust', dx: 0, dy: -14, count: 3 },
+    scroll: { preset: 'questPing', dx: 0, dy: -18, count: 2 },
+    gaze: { preset: 'sparkle', dx: 0, dy: -22, count: 1 },
+    conjure: { preset: 'portalRune', dx: 0, dy: -20, count: 2 },
+    signal: { preset: 'beaconMote', dx: 0, dy: -24, count: 1 },
+    haul: { preset: 'footstep', dx: 0, dy: -14, count: 3 },
+    scan: { preset: 'beaconMote', dx: 0, dy: -24, count: 1 },
+});
 // 3.13 — congestion treatment: gait slowdown when the destination/current
 // building is over visit capacity.
 const CONGESTION_GAIT_SCALE = 0.6;
@@ -293,9 +309,12 @@ export class AgentSprite {
         this.chatTimer = 0;          // chat animation timer
         this.chatBubbleAnim = 0;     // speech bubble animation
 
-        // Active pose-bearing tool ritual record from RitualConductor
-        // (reading / typing / thinking), synced by the renderer per frame.
+        // Active pose-bearing tool ritual record from RitualConductor (per
+        // building work gesture: hammer / page / pick / scroll / …), synced by
+        // the renderer per frame. `_ritualDownbeat` is the last gesture-cycle
+        // index a one-shot particle was fired on, so each downbeat fires once.
         this._toolRitual = null;
+        this._ritualDownbeat = -1;
 
         this._lastStatus = agent?.status || null;
         this._completedAtMs = 0;
@@ -1330,6 +1349,7 @@ export class AgentSprite {
         const frameScale = Math.max(0, Math.min(3, dt / 16));
         this.statusAnim += 0.05 * this.motionScale * frameScale;
         this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
+        this._advanceToolRitualGesture(particleSystem);
 
         // Handle chatting state
         if (this.chatting) {
@@ -1692,7 +1712,9 @@ export class AgentSprite {
     /** End chat */
     // Renderer-synced tool ritual pose (see RitualConductor.getAgentPoses).
     setToolRitualPose(ritual) {
-        this._toolRitual = ritual && ritual.pose ? ritual : null;
+        const next = ritual && ritual.pose ? ritual : null;
+        if ((next?.id || null) !== (this._toolRitual?.id || null)) this._ritualDownbeat = -1;
+        this._toolRitual = next;
     }
 
     endChat() {
@@ -4482,10 +4504,31 @@ export class AgentSprite {
         }
     }
 
+    // Building work-gesture downbeat: spawn one particle per gesture cycle so
+    // the swing/turn/unfurl lands a spark, page mote, dust puff, etc. on its
+    // peak. Runs in update() (where the pool is available); reduced motion
+    // (motionScale 0 / paused ritual) fires nothing — the draw path shows a
+    // static posed frame instead.
+    _advanceToolRitualGesture(particleSystem) {
+        const ritual = this._toolRitual;
+        if (!ritual?.pose || !particleSystem || this.chatting || this.moving) return;
+        if (this.motionScale <= 0 || ritual.motionEnabled === false || ritual.phase === 'fading') return;
+        const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose];
+        if (!period) return;
+        const cycle = Math.floor(Date.now() / period);
+        if (cycle === this._ritualDownbeat) return;
+        this._ritualDownbeat = cycle;
+        const emit = RITUAL_GESTURE_PARTICLE[ritual.pose];
+        if (!emit) return;
+        particleSystem.spawn(emit.preset, this.x + (emit.dx || 0), this.y + (emit.dy || 0), emit.count || 2);
+    }
+
     // Tool ritual pose overlay driven by RitualConductor: a small procedural
-    // prop at hand height — open book (reading), keystroke slate (typing), or
-    // a chin-hand with rising thought dots (thinking). No new image assets;
-    // reduced motion renders each prop as a single static frame.
+    // work gesture at hand/tool height — hammer-tick at the forge, page-turn at
+    // the archive, pick-swing at the mine, scroll-unfurl at the taskboard, plus
+    // a gaze (observatory), conjure (portal), signal (command), haul (harbor),
+    // and scan (watchtower). No new image assets; reduced motion renders each
+    // gesture as a single static frame (no swing offset, no particle).
     _drawToolRitualOverlay(ctx, frameGeometry) {
         const ritual = this._toolRitual;
         if (!ritual?.pose || this.chatting || this.moving) return;
@@ -4499,63 +4542,154 @@ export class AgentSprite {
         const directionKey = DIRECTIONS[this.direction] || 's';
         const sideSign = ['sw', 'w', 'nw', 'n'].includes(directionKey) ? -1 : 1;
         const animated = this.motionScale > 0 && ritual.motionEnabled !== false;
+        const period = RITUAL_GESTURE_PERIOD_MS[ritual.pose] || 700;
+        // Triangle 0..1..0 over the gesture cycle drives the swing/lift amount;
+        // static variant pins the gesture at its rest (0).
+        const phase = animated ? (Date.now() % period) / period : 0;
+        const swing = animated ? (phase < 0.5 ? phase * 2 : (1 - phase) * 2) : 0;
         ctx.save();
         if (ritual.phase === 'fading') ctx.globalAlpha *= 0.5;
-        if (ritual.pose === 'reading') {
-            this._drawReadingPoseProp(ctx, centerX, handY, animated);
-        } else if (ritual.pose === 'typing') {
-            this._drawTypingPoseProp(ctx, centerX, handY, animated);
-        } else if (ritual.pose === 'thinking') {
-            const chinX = centerX + sideSign * contentWidth * 0.22 * drawScale;
-            this._drawThinkingPoseProp(ctx, chinX, headY, sideSign, animated);
+        switch (ritual.pose) {
+            case 'hammer':
+                this._drawHammerGesture(ctx, centerX, handY, sideSign, swing);
+                break;
+            case 'page':
+                this._drawPageGesture(ctx, centerX, handY, animated, phase);
+                break;
+            case 'pick':
+                this._drawPickGesture(ctx, centerX, handY, sideSign, swing);
+                break;
+            case 'scroll':
+                this._drawScrollGesture(ctx, centerX, handY, swing);
+                break;
+            case 'gaze':
+                this._drawGazeGesture(ctx, centerX, headY, sideSign, swing);
+                break;
+            case 'conjure':
+                this._drawConjureGesture(ctx, centerX, handY, swing);
+                break;
+            case 'signal':
+                this._drawSignalGesture(ctx, centerX, headY, sideSign, swing);
+                break;
+            case 'haul':
+                this._drawHaulGesture(ctx, centerX, handY, swing);
+                break;
+            case 'scan':
+                this._drawScanGesture(ctx, centerX, headY, sideSign, swing);
+                break;
         }
         ctx.restore();
     }
 
-    _drawReadingPoseProp(ctx, x, y, animated) {
+    // Forge: a hammer head that lifts and strikes down on the downbeat.
+    _drawHammerGesture(ctx, x, y, sideSign, swing) {
+        const bx = Math.round(x + sideSign * 3);
+        const lift = Math.round(swing * 5);
+        ctx.fillStyle = '#6b4a2a';
+        ctx.fillRect(bx - 1, y - 6 - lift, 2, 6);
+        ctx.fillStyle = '#9aa3ad';
+        ctx.fillRect(bx + sideSign * 1 - 2, y - 8 - lift, 4, 3);
+        if (swing > 0.9) {
+            ctx.fillStyle = '#fff3a3';
+            ctx.fillRect(bx + sideSign * 1 - 1, y - 5, 2, 2);
+        }
+    }
+
+    // Archive: two pages with a turning leaf sweeping across the open book.
+    _drawPageGesture(ctx, x, y, animated, phase) {
         const bx = Math.round(x);
         const by = Math.round(y);
-        // Dark cover with two light pages held in front of the body.
         ctx.fillStyle = '#3a2c1c';
         ctx.fillRect(bx - 4, by - 3, 8, 4);
         ctx.fillStyle = '#f0e6c8';
         ctx.fillRect(bx - 3, by - 3, 3, 3);
         ctx.fillRect(bx + 1, by - 3, 3, 3);
-        // Page glint flicks between pages; static variant pins the left page.
-        const glintX = animated && Math.floor(Date.now() / 700) % 2 ? 2 : -2;
+        // Turning leaf slides from right page to left across the cycle.
+        const leafX = animated ? Math.round(bx + 3 - phase * 6) : bx - 2;
         ctx.fillStyle = '#fffbe9';
-        ctx.fillRect(bx + glintX, by - 3, 1, 2);
+        ctx.fillRect(leafX, by - 3, 1, 3);
     }
 
-    _drawTypingPoseProp(ctx, x, y, animated) {
-        const bx = Math.round(x);
-        const by = Math.round(y);
-        // Slim slate keyboard held at hand height.
-        ctx.fillStyle = '#1d2b33';
-        ctx.fillRect(bx - 4, by - 2, 9, 3);
-        ctx.fillStyle = '#5d7886';
-        ctx.fillRect(bx - 3, by - 1, 7, 1);
-        // Keystroke sparks alternate; static variant keeps both keys lit.
-        const phase = animated ? Math.floor(Date.now() / 240) % 2 : -1;
-        ctx.fillStyle = '#9fe8ff';
-        if (phase !== 1) ctx.fillRect(bx - 2, by - 1, 1, 1);
-        if (phase !== 0) ctx.fillRect(bx + 2, by - 1, 1, 1);
-    }
-
-    _drawThinkingPoseProp(ctx, x, y, sideSign, animated) {
-        const bx = Math.round(x);
-        const by = Math.round(y);
-        // Hand raised to the chin.
-        ctx.fillStyle = '#f2d36b';
-        ctx.fillRect(bx - 1, by + 2, 2, 2);
-        // Thought dots stepping up and away; static variant shows the trail.
-        const step = animated ? Math.floor(Date.now() / 420) % 3 : -1;
-        ctx.fillStyle = '#dfe7f2';
-        for (let i = 0; i < 3; i++) {
-            ctx.globalAlpha = step === -1 || step === i ? 0.95 : 0.4;
-            ctx.fillRect(bx + sideSign * (3 + i * 2), by - 2 - i * 3, i === 2 ? 2 : 1, i === 2 ? 2 : 1);
+    // Mine: a pickaxe arcing up then chipping down on the downbeat.
+    _drawPickGesture(ctx, x, y, sideSign, swing) {
+        const bx = Math.round(x + sideSign * 2);
+        const lift = Math.round(swing * 4);
+        ctx.fillStyle = '#5a4326';
+        ctx.fillRect(bx - 1, y - 6 - lift, 2, 6);
+        ctx.fillStyle = '#8a8f96';
+        ctx.fillRect(bx - 3, y - 7 - lift, 6, 1);
+        if (swing > 0.9) {
+            ctx.fillStyle = '#ffec99';
+            ctx.fillRect(bx - 1, y - 1, 2, 1);
         }
-        ctx.globalAlpha = 1;
+    }
+
+    // Taskboard: a scroll that unfurls (grows) toward the downbeat.
+    _drawScrollGesture(ctx, x, y, swing) {
+        const bx = Math.round(x);
+        const by = Math.round(y);
+        const open = 2 + Math.round(swing * 4);
+        ctx.fillStyle = '#caa54a';
+        ctx.fillRect(bx - 4, by - 2, 1, 4);
+        ctx.fillRect(bx + 3, by - 2, 1, 4);
+        ctx.fillStyle = '#f0e6c8';
+        ctx.fillRect(bx - 3, by - open / 2, 6, open);
+    }
+
+    // Observatory: a spyglass held to the eye, lens glinting on the downbeat.
+    _drawGazeGesture(ctx, x, y, sideSign, swing) {
+        const bx = Math.round(x + sideSign * 2);
+        const by = Math.round(y + 2);
+        ctx.fillStyle = '#2b2030';
+        ctx.fillRect(bx, by, sideSign * 6, 2);
+        ctx.fillStyle = swing > 0.85 ? '#fff1a8' : '#8feaff';
+        ctx.fillRect(bx + sideSign * 6 - (sideSign < 0 ? 1 : 0), by, 1, 2);
+    }
+
+    // Portal: a rune ring conjured, brightening on the downbeat.
+    _drawConjureGesture(ctx, x, y, swing) {
+        const bx = Math.round(x);
+        const by = Math.round(y - 2);
+        const r = 2 + swing * 2;
+        ctx.globalAlpha *= 0.4 + swing * 0.6;
+        ctx.strokeStyle = '#9feaff';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(bx, by, r, 0, Math.PI * 2);
+        ctx.stroke();
+    }
+
+    // Command: a small banner waving side to side.
+    _drawSignalGesture(ctx, x, y, sideSign, swing) {
+        const bx = Math.round(x + sideSign * 2);
+        const by = Math.round(y);
+        ctx.fillStyle = '#6b4a2a';
+        ctx.fillRect(bx, by - 5, 1, 6);
+        ctx.fillStyle = '#f2d36b';
+        const wave = Math.round((swing - 0.5) * 2 * sideSign);
+        ctx.fillRect(bx + sideSign, by - 5, sideSign * 4 + wave, 3);
+    }
+
+    // Harbor: a crate lifted on the downbeat, set down between beats.
+    _drawHaulGesture(ctx, x, y, swing) {
+        const bx = Math.round(x);
+        const lift = Math.round(swing * 4);
+        ctx.fillStyle = '#7a5a32';
+        ctx.fillRect(bx - 3, y - 4 - lift, 6, 5);
+        ctx.fillStyle = '#5a4326';
+        ctx.fillRect(bx - 3, y - 2 - lift, 6, 1);
+    }
+
+    // Watchtower: a hand raised to shade the eyes, scanning the horizon.
+    _drawScanGesture(ctx, x, y, sideSign, swing) {
+        const bx = Math.round(x + sideSign * 1);
+        const by = Math.round(y + 1);
+        ctx.fillStyle = '#f2d36b';
+        ctx.fillRect(bx, by - 1, sideSign * 4, 2);
+        if (swing > 0.85) {
+            ctx.fillStyle = '#fff2a3';
+            ctx.fillRect(bx + sideSign * 4, by - 2, 1, 1);
+        }
     }
 
     _snapWorldToScreenPixel(value) {

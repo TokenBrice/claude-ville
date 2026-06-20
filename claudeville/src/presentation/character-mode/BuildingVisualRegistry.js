@@ -102,6 +102,13 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
                 light: [144, 68],
                 particle: [144, 68],
             },
+            // #17 — pivot for the rotating distress searchlight beam. Anchored at
+            // the lantern fire so the wedge appears to sweep out from the flame.
+            searchlight: {
+                pivot: [144, 68],
+                length: 320,
+                width: 58,
+            },
         },
     },
     harbor: {

@@ -4956,6 +4956,7 @@ export class IsometricRenderer {
         this._drawWaterFogEdgeWash(ctx, shoreEdges);
         this._drawHarborWakeWaterDescriptors(ctx);
         this._drawNightWaterReflections(ctx, waterTiles);
+        this._drawBuildingLightReflections(ctx, waterTiles);
         if (!this.motionScale) return;
         this._drawAnimatedCurrentBands(ctx, waterTiles);
         ctx.save();
@@ -5269,6 +5270,74 @@ export class IsometricRenderer {
             ctx.moveTo(Math.round(tile.screenX - width), Math.round(tile.screenY - 7 + tile.seed * 3));
             ctx.lineTo(Math.round(tile.screenX + width * 0.72), Math.round(tile.screenY - 10 - tile.seed * 2));
             ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    // #10 — Night water light reflections. Building fire (forge glow, harbor
+    // torches, lighthouse lantern) bleeds onto adjacent water as wavering
+    // vertical reflection columns at dusk/night. Origins and tile centers share
+    // the same unzoomed world-screen space, so a reflection falls on water that
+    // sits just below a light source in screen Y. Scaled by `nightReflection`
+    // and the atmosphere `buildingGlowScale`/source intensity; shimmer rides the
+    // slow intrinsic pulse band. Reduced-motion (`motionScale<=0`) collapses
+    // `pulseValue` to its band base, leaving a static reflection column.
+    _drawBuildingLightReflections(ctx, waterTiles) {
+        const nightReflection = this._atmosphereReactions?.nightReflection || 0;
+        if (nightReflection <= 0.05 || !waterTiles?.length || !this.buildingRenderer) return;
+        const lighting = this._lastAtmosphere?.lighting || null;
+        const glowScale = lighting?.lightBoost ?? this._lastAtmosphere?.grade?.buildingGlowScale ?? 1;
+        const sources = (this.buildingRenderer.getLightSources?.(lighting) || [])
+            .filter(s => (s.kind || 'point') === 'point' && Number.isFinite(s.x) && Number.isFinite(s.y));
+        if (!sources.length) return;
+
+        // Slow intrinsic band shimmer; static base under reduced motion.
+        const shimmer = pulseValue('intrinsic', this.waterFrame, this.motionScale);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        let drawn = 0;
+        for (const tile of waterTiles) {
+            if (drawn >= 48) break;
+            let best = null;
+            let bestDist = Infinity;
+            for (const source of sources) {
+                const dx = tile.screenX - source.x;
+                if (Math.abs(dx) > 22) continue;
+                const dy = tile.screenY - source.y;
+                // Reflection only reads on water below the emitter within reach.
+                if (dy < 4 || dy > 96) continue;
+                const dist = Math.abs(dx) + dy * 0.5;
+                if (dist < bestDist) { bestDist = dist; best = { source, dx, dy }; }
+            }
+            if (!best) continue;
+            const { source, dx, dy } = best;
+            // Fade with vertical distance from the emitter and lateral offset.
+            const reach = (1 - dy / 96) * (1 - Math.abs(dx) / 22);
+            const intensity = Math.max(0, Math.min(1.6, source.intensity || 1));
+            const alpha = Math.min(
+                0.20,
+                nightReflection * glowScale * intensity * reach * (0.10 + shimmer * 0.10),
+            );
+            if (alpha <= 0.01) continue;
+            const colX = Math.round(tile.screenX - dx * 0.5);
+            const top = Math.round(tile.screenY - 9);
+            const bottom = Math.round(tile.screenY + 8);
+            // Lateral sway tracks the same shimmer so the column wavers on water.
+            const sway = (shimmer - 0.55) * 6 * (this.motionScale ? 1 : 0);
+            const grad = ctx.createLinearGradient(colX, top, colX + sway, bottom);
+            grad.addColorStop(0, this._withAlpha(source.color, alpha));
+            grad.addColorStop(0.55, this._withAlpha(source.color, alpha * 0.6));
+            grad.addColorStop(1, this._withAlpha(source.color, 0));
+            ctx.fillStyle = grad;
+            const halfW = 2.2 + reach * 3.4;
+            ctx.beginPath();
+            ctx.moveTo(colX - halfW, top);
+            ctx.lineTo(colX + halfW, top);
+            ctx.lineTo(colX + halfW + sway, bottom);
+            ctx.lineTo(colX - halfW + sway, bottom);
+            ctx.closePath();
+            ctx.fill();
+            drawn++;
         }
         ctx.restore();
     }

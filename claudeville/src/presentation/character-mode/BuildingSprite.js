@@ -56,6 +56,15 @@ const WATCHTOWER_LANTERN_FIRE = Object.freeze(getBuildingEffectAnchor('watchtowe
     light: [200, 66],
     particle: [200, 66],
 }));
+// #17 — Pharos searchlight: rotating distress beam pivot/length/width.
+const WATCHTOWER_SEARCHLIGHT = Object.freeze(getBuildingEffectAnchor('watchtower', 'searchlight', {
+    pivot: [200, 68],
+    length: 320,
+    width: 58,
+}));
+// Sweep angular velocity (rad/s) scales from calm→distressed across this range.
+const SEARCHLIGHT_SPIN_CALM_RAD_PER_S = 0.45;
+const SEARCHLIGHT_SPIN_DISTRESS_RAD_PER_S = 1.7;
 const PARTICLE_ALIASES = {
     sparkle2: 'sparkle',
     sparkle3: 'sparkle',
@@ -225,6 +234,8 @@ export class BuildingSprite {
         eventBus.on('building:read-intensity', this._onReadIntensity);
         // Observatory clock extra rotation while a web ritual is active.
         this._observatoryClockSpin = 0;
+        // #17 — watchtower searchlight sweep angle (rad), advanced in update().
+        this._watchtowerSearchlightAngle = -0.34;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this._motionMq = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this._onMotionChange = (e) => this.setMotionScale(e.matches ? 0 : 1);
@@ -300,6 +311,7 @@ export class BuildingSprite {
         this._syncTaskboardPapers(Date.now());
         this._updateForgeGlow(dt);
         this._updateObservatoryClockSpin(dt);
+        this._updateWatchtowerSearchlight(dt);
         for (const b of this.buildings) this._spawnEmittersFor(b, dt);
     }
 
@@ -327,6 +339,35 @@ export class BuildingSprite {
             if (OBSERVATORY_WEB_RITUAL_TOOLS.has(ritual?.tool)) return true;
         }
         return false;
+    }
+
+    // #17 — Fleet distress barometer (0..1): share of the fleet that is errored
+    // or rate-limited, with a floor while a push has failed at the harbor. Drives
+    // the watchtower searchlight's sweep speed and amber→red colour shift.
+    _fleetDistressRatio() {
+        const sprites = this.agentSprites || [];
+        let total = 0;
+        let distressed = 0;
+        for (const sprite of sprites) {
+            const status = sprite?.agent?.status;
+            if (!status) continue;
+            total += 1;
+            if (status === AgentStatus.ERRORED || status === AgentStatus.RATE_LIMITED) distressed += 1;
+        }
+        const share = total > 0 ? distressed / total : 0;
+        const floor = this.harborStatus?.failedPushActive ? 0.34 : 0;
+        return clamp01(Math.max(share, floor));
+    }
+
+    // Advance the searchlight sweep; angular velocity rises with fleet distress
+    // so a troubled fleet visibly spins the beam faster. Held still under reduced
+    // motion (the static directional wedge is drawn at the last angle instead).
+    _updateWatchtowerSearchlight(dt) {
+        if (!this.motionScale) return;
+        const seconds = Math.max(0, Number(dt) || 0) / 1000;
+        const distress = this._fleetDistressRatio();
+        const rate = lerp(SEARCHLIGHT_SPIN_CALM_RAD_PER_S, SEARCHLIGHT_SPIN_DISTRESS_RAD_PER_S, distress);
+        this._watchtowerSearchlightAngle = (this._watchtowerSearchlightAngle + seconds * rate) % (Math.PI * 2);
     }
 
     // Soft drop shadows under each building footprint. Hero buildings use the
@@ -1455,6 +1496,8 @@ export class BuildingSprite {
         } else if (building.type === 'watchtower') {
             if (shouldDrawLocalY(WATCHTOWER_LANTERN_FIRE.flame[1])) {
                 const beacon = localPoint(...WATCHTOWER_LANTERN_FIRE.flame);
+                const pivot = localPoint(...WATCHTOWER_SEARCHLIGHT.pivot);
+                this._drawWatchtowerSearchlight(ctx, pivot, pulse, this._fleetDistressRatio());
                 this._drawWatchtowerFire(ctx, beacon, pulse);
                 this._drawWatchtowerRitual(ctx, beacon);
             }
@@ -3053,6 +3096,81 @@ export class BuildingSprite {
             ctx.ellipse(beacon.x, beacon.y, 42, 20, -0.12, 0, Math.PI * 2);
             ctx.fill();
         }
+        ctx.restore();
+    }
+
+    // #17 — Pharos rotating searchlight: a soft wedge sweeping from the lantern
+    // pivot, composited `screen`. Sweep speed (driven by _updateWatchtowerSearchlight)
+    // and colour both read fleet distress — amber when calm, shifting to red as
+    // errored/rate-limited agents mount. The beam is clipped to the sky above the
+    // pivot so it never spills onto the terrain below the tower.
+    //
+    // Pulse band: slow/variable — the sweep angle is the primary motion; the glow
+    // alpha breathes gently on this.frame (held static under reduced motion).
+    // Reduced-motion fallback: no rotation (angle frozen at last value) and a
+    // single static directional wedge at a steady alpha.
+    _drawWatchtowerSearchlight(ctx, pivot, pulse, fleetDistressRatio = 0) {
+        const distress = clamp01(fleetDistressRatio);
+        const angle = this._watchtowerSearchlightAngle;
+        const length = WATCHTOWER_SEARCHLIGHT.length || 320;
+        const farWidth = WATCHTOWER_SEARCHLIGHT.width || 58;
+        // Amber (calm) → red (distressed) for the lit core and the soft halo.
+        const core = mixHex('#ffe6a0', '#ff5a3c', distress);
+        const haze = mixHex('#ffb347', '#ff3a2a', distress);
+        // Glow breathes gently; reduced motion holds a steady alpha.
+        const breathe = this.motionScale ? 0.86 + pulse * 0.14 : 0.9;
+        const beamAlpha = (0.16 + distress * 0.22) * breathe;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+
+        // Clip to the sky above the pivot so the wedge never paints the ground.
+        ctx.beginPath();
+        ctx.rect(pivot.x - length, pivot.y - length, length * 2, length + 6);
+        ctx.clip();
+
+        const drawWedge = (theta, len, far, alpha) => {
+            if (alpha <= 0) return;
+            const dx = Math.cos(theta);
+            const dy = Math.sin(theta);
+            const px = -dy;
+            const py = dx;
+            const tipX = pivot.x + dx * len;
+            const tipY = pivot.y + dy * len;
+            const grad = ctx.createLinearGradient(pivot.x, pivot.y, tipX, tipY);
+            grad.addColorStop(0, core);
+            grad.addColorStop(0.5, haze);
+            grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.moveTo(pivot.x + px * 4, pivot.y + py * 4);
+            ctx.lineTo(pivot.x - px * 4, pivot.y - py * 4);
+            ctx.lineTo(tipX - px * (far / 2), tipY - py * (far / 2));
+            ctx.lineTo(tipX + px * (far / 2), tipY + py * (far / 2));
+            ctx.closePath();
+            ctx.fill();
+        };
+
+        if (!this.motionScale) {
+            // Static directional wedge — single fixed sweep, no opposing beam.
+            drawWedge(angle, length, farWidth, beamAlpha);
+        } else {
+            drawWedge(angle, length, farWidth, beamAlpha);
+            // Faint trailing counter-beam, like a real twin-lamp lighthouse.
+            drawWedge(angle + Math.PI, length * 0.7, farWidth * 0.7, beamAlpha * 0.5);
+        }
+
+        // Bright pivot bloom so the lamp reads as the beam's origin.
+        const bloom = ctx.createRadialGradient(pivot.x, pivot.y, 1, pivot.x, pivot.y, 16 + distress * 6);
+        bloom.addColorStop(0, core);
+        bloom.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.globalAlpha = 0.5 + distress * 0.3;
+        ctx.fillStyle = bloom;
+        ctx.beginPath();
+        ctx.arc(pivot.x, pivot.y, 16 + distress * 6, 0, Math.PI * 2);
+        ctx.fill();
+
         ctx.restore();
     }
 
