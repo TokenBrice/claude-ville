@@ -1,4 +1,5 @@
 import { BUILDING_ACCENTS_RGB, INCIDENT_COLORS_RGB } from '../../config/theme.js';
+import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 
 const TAU = Math.PI * 2;
 
@@ -93,10 +94,19 @@ function drawSignalHalo(ctx, signal, now, motionScale) {
     if (!signal?.center) return;
     const rgb = signalColor(signal.type);
     const heat = clamp(signal.heat ?? 0.35);
+    // #2 — building signal halos are AMBIENT (selected halos stay PRIMARY).
+    const governor = getActiveMarkGovernor();
+    const tier = signal.selected ? MarkTier.PRIMARY : MarkTier.AMBIENT;
+    const gate = governor
+        ? governor.admit(tier, signal.center.x, signal.center.y)
+        : { draw: true, alpha: 1 };
+    if (!gate.draw) return;
+    const markAlpha = gate.alpha;
     const pulse = motionPulse(now, motionScale, heat * 3.1);
     const radius = 28 + heat * 26 + pulse * 5;
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
+    ctx.globalAlpha = markAlpha;
     ctx.fillStyle = rgba(rgb, 0.055 + heat * 0.07);
     ctx.beginPath();
     ctx.ellipse(signal.center.x, signal.center.y + 4, radius, radius * 0.42, -0.04, 0, TAU);
@@ -188,16 +198,22 @@ function drawSignalRoutes(ctx, selected, { alphaScale = 1, dash = [6, 7], lineWi
 
 function drawTeams(ctx, teams, now, motionScale) {
     if (!teams?.length) return;
+    // #2 — team aura washes are AMBIENT: the first marks to dim in a busy region.
+    const governor = getActiveMarkGovernor();
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const team of teams) {
+        const gate = governor
+            ? governor.admit(MarkTier.AMBIENT, team.x, team.y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
         const pulse = motionPulse(now, motionScale, team.members?.length || 1, 760);
         const radius = (team.radius || 36) + pulse * 4;
-        ctx.fillStyle = rgba('125, 211, 252', 0.055);
+        ctx.fillStyle = rgba('125, 211, 252', 0.055 * gate.alpha);
         ctx.beginPath();
         ctx.ellipse(team.x, team.y + 4, radius, radius * 0.46, -0.03, 0, TAU);
         ctx.fill();
-        drawIsoRing(ctx, team.x, team.y + 4, radius, '125, 211, 252', 0.16 + pulse * 0.08, 1.2);
+        drawIsoRing(ctx, team.x, team.y + 4, radius, '125, 211, 252', (0.16 + pulse * 0.08) * gate.alpha, 1.2);
     }
     ctx.restore();
 }

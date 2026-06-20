@@ -4,6 +4,7 @@ import { getTeamColor } from '../shared/TeamColor.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { tileToWorld, worldToTile } from './Projection.js';
+import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 
 const MAX_TALK_ARCS = 8;
 const COMMAND_PLAZA = { tileX: 16, tileY: 21 };
@@ -159,14 +160,19 @@ export function drawCouncilRings(ctx, {
     const boost = lightBoost(lighting);
     const plaza = tileToScreen(COMMAND_PLAZA);
     const shimmer = motionScale === 0 ? 1 : 0.84 + Math.sin(now * 0.002) * 0.16;
+    const governor = getActiveMarkGovernor();
 
     for (const [teamName, memberIds] of snapshot.teamToMembers.entries()) {
         const sprites = sortedSpritesForTeam(memberIds, agentSprites);
         if (sprites.length < 2) continue;
 
         const color = getTeamColor(teamName);
+        const gate = governor
+            ? governor.admit(MarkTier.SECONDARY, sprites[0].x, sprites[0].y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
         ctx.save();
-        ctx.strokeStyle = rgba(color.accent, Math.min(0.42, 0.26 * boost * shimmer));
+        ctx.strokeStyle = rgba(color.accent, Math.min(0.42, 0.26 * boost * shimmer) * gate.alpha);
         ctx.lineWidth = 1.4 / (zoom || 1);
         ctx.setLineDash([]);
         ctx.beginPath();
@@ -218,12 +224,12 @@ export function drawFamilyTethers(ctx, {
     const flicker = motionScale === 0 ? 1 : 0.85 + 0.15 * Math.sin(now * 0.003);
     const alpha = Math.min(0.28, Math.max(0.18, 0.22 * boost * flicker));
     const dashOffset = motionScale === 0 ? 0 : -(Math.floor(now * 0.06) % 9);
+    const governor = getActiveMarkGovernor();
 
     for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
         const parent = agentSprites.get(parentId);
         if (!parent || parent.isArrivalPending?.()) continue;
         const trim = parent._providerTrimColor?.() || parent.providerTrimColor || '#8b8b9e';
-        const stroke = rgba(trim, alpha);
 
         for (const childId of childIds) {
             const child = agentSprites.get(childId);
@@ -235,6 +241,11 @@ export function drawFamilyTethers(ctx, {
             const dy = end.y - start.y;
             const dist = Math.hypot(dx, dy);
             if (dist < 1) continue;
+            const gate = governor
+                ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
+                : { draw: true, alpha: 1 };
+            if (!gate.draw) continue;
+            const stroke = rgba(trim, alpha * gate.alpha);
             const control = {
                 x: (start.x + end.x) / 2,
                 y: (start.y + end.y) / 2 - Math.min(28, dist * 0.18),
@@ -272,7 +283,7 @@ export function drawAllyTethers(ctx, {
     const boost = lightBoost(lighting);
     const pulse = motionScale === 0 ? 1 : 0.78 + 0.22 * Math.sin(now * 0.0026);
     const alpha = Math.min(0.26, Math.max(0.16, 0.2 * boost * pulse));
-    const stroke = rgba(THEME.ally || '#f0b27a', alpha);
+    const governor = getActiveMarkGovernor();
 
     for (const pair of pairs) {
         const a = pair?.a;
@@ -286,6 +297,11 @@ export function drawAllyTethers(ctx, {
         const dy = end.y - start.y;
         const dist = Math.hypot(dx, dy);
         if (dist < 1) continue;
+        const gate = governor
+            ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
+        const stroke = rgba(THEME.ally || '#f0b27a', alpha * gate.alpha);
         const control = {
             x: (start.x + end.x) / 2,
             y: (start.y + end.y) / 2 - Math.min(22, dist * 0.16),
@@ -333,6 +349,7 @@ export function drawTalkArcs(ctx, {
     const boost = lightBoost(lighting);
     const shimmer = motionScale === 0 ? 1 : 0.55 + 0.2 * Math.sin(now * 0.004);
     const alpha = Math.min(0.95, shimmer * boost);
+    const governor = getActiveMarkGovernor();
 
     for (const pair of prioritizedChatPairs(snapshot.chatPairs, agentSprites)) {
         const a = agentSprites.get(pair.aId);
@@ -344,13 +361,17 @@ export function drawTalkArcs(ctx, {
         const dx = end.x - start.x;
         const dy = end.y - start.y;
         const dist = Math.hypot(dx, dy);
+        const gate = governor
+            ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
         const control = {
             x: (start.x + end.x) / 2,
             y: (start.y + end.y) / 2 - Math.min(60, dist * 0.35),
         };
 
         ctx.save();
-        ctx.strokeStyle = rgba(THEME.chatting || '#f2d36b', alpha);
+        ctx.strokeStyle = rgba(THEME.chatting || '#f2d36b', alpha * gate.alpha);
         ctx.lineWidth = 1.4 / (zoom || 1);
         if (motionScale === 0) ctx.setLineDash([2 / (zoom || 1), 4 / (zoom || 1)]);
         ctx.beginPath();

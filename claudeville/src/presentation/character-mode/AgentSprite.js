@@ -6,6 +6,7 @@ import { repoProfile } from '../shared/RepoColor.js';
 import { getTeamColor } from '../shared/TeamColor.js';
 import { runtimeRoleAccessory } from '../shared/RoleAccessory.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
+import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
 import { compactToolInput, toolActionLabel, toolCategory, classifyTool } from '../../domain/services/ToolIdentity.js';
@@ -2156,7 +2157,21 @@ export class AgentSprite {
         const tier = this._effortAuraTier(identity);
         if (!tier) return;
         const visual = EFFORT_AURA_VISUALS[tier];
-        const intensity = this.agent?.status === AgentStatus.WORKING ? 1 : EFFORT_AURA_IDLE_INTENSITY;
+        let intensity = this.agent?.status === AgentStatus.WORKING ? 1 : EFFORT_AURA_IDLE_INTENSITY;
+        // #2 — the effort aura is an AMBIENT mark: it dims, then culls, first in
+        // dense regions so the eye lands on PRIMARY agents (errored / waiting-on-
+        // user / selected), whose auras bypass the governor and stay full.
+        const isPrimary = this.selected
+            || this.agent?.status === AgentStatus.ERRORED
+            || this.agent?.status === AgentStatus.WAITING_ON_USER;
+        if (!isPrimary) {
+            const governor = getActiveMarkGovernor();
+            if (governor) {
+                const gate = governor.admit(MarkTier.AMBIENT, this.x, this.y);
+                if (!gate.draw) return;
+                intensity *= gate.alpha;
+            }
+        }
         ctx.save();
         ctx.translate(Math.round(this.x), Math.round(this.y + EFFORT_AURA_CENTER_Y));
         if (this.motionScale <= 0) {

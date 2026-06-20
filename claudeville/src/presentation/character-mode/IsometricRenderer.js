@@ -56,6 +56,7 @@ import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
 import VisitTileAllocator from './VisitTileAllocator.js';
 import { getPulsePriority } from './PulsePolicy.js';
+import { MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
 import { lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import {
     applyTeamPlazaPreferences,
@@ -387,6 +388,11 @@ export class IsometricRenderer {
         this.chronicler = null;
         this.villageDirector = new VillageDirector(this.world);
         this.pulsePriority = getPulsePriority();
+        // #2 — value-hierarchy mark governor. Published as the active singleton
+        // so the decorative draw paths (AgentSprite/CouncilRing/director overlay)
+        // can consult it without the frame orchestrator threading it through.
+        this.markGovernor = new MarkGovernor();
+        setActiveMarkGovernor(this.markGovernor);
         this.agentSprites = new Map();
         this.gateTransits = new Map();
         this.gateDoorsOpen = false;
@@ -3287,6 +3293,13 @@ export class IsometricRenderer {
     }
 
     _render(dt = 16) {
+        // #2 — reset the mark governor once per frame before any draw pass runs.
+        // Region size scales with zoom so a "screen region" stays roughly fixed
+        // in screen pixels regardless of the integer zoom level.
+        this.markGovernor.beginFrame({
+            regionSize: 200 / (this.camera?.zoom || 1),
+            motionScale: this.motionScale,
+        });
         renderWorldFrame(this, dt);
     }
 
