@@ -357,6 +357,10 @@ export class AgentSprite {
         // each distressed/proud beat fires a single mote (never under reduced
         // motion, never while moving — the static posture carries the cue then).
         this._moodMoteBeat = -1;
+        // #36 — last cadence cycle a context-strain sweat bead was emitted on, so
+        // each beat fires a single drop above 0.85 pressure (never under reduced
+        // motion / while moving — the static arc + chip carry the cue then).
+        this._strainSweatBeat = -1;
         // #34 — token-flow motes. While WORKING, tiny archive/beacon motes rise
         // off the villager and drift toward its bound building, density set by
         // recent token burn (the same total LandmarkActivity._observeTokens
@@ -1478,6 +1482,7 @@ export class AgentSprite {
         this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
         this._advanceToolRitualGesture(particleSystem);
         this._advanceMoodPostureMotes(particleSystem);
+        this._advanceContextStrainSweat(particleSystem);
         this._advanceDistressRecovery(particleSystem);
         this._advanceArrivalCeremony(particleSystem);
         this._advanceTokenFlowMotes(particleSystem, frameScale);
@@ -2136,8 +2141,13 @@ export class AgentSprite {
         }
         const drawX = this._snapWorldToScreenPixel(this.x);
         const drawY = this._snapWorldToScreenPixel(this.y);
+        // #36 — context-strain tremble: a tiny ±1px horizontal shiver once the
+        // context window is nearly full (ratio >= 0.85), so the body language
+        // reads as strain alongside the gauge arc. Reduced motion (motionScale 0)
+        // skips the shiver — the static arc + chip carry the cue instead.
+        const trembleX = this._contextStrainTremble();
         const contentCenterX = (bounds.minX + bounds.maxX) / 2;
-        const dx = drawX - contentCenterX * drawScale;
+        const dx = drawX - contentCenterX * drawScale + trembleX;
         const dy = drawY - bounds.maxY * drawScale + 2 + bobY + ackBobY;
         const contentTopY = dy + bounds.minY * drawScale;
         // #32 — arrival ceremony scale-up "pop": the body springs from ~0.6→1.0
@@ -2607,36 +2617,116 @@ export class AgentSprite {
         if (current <= 0 || max <= 0) return null;
         const ratio = Math.max(0, Math.min(1, current / max));
         for (const level of CONTEXT_PRESSURE_LEVELS) {
-            if (ratio >= level.threshold) return level;
+            if (ratio >= level.threshold) return { ...level, ratio };
         }
         return null;
     }
 
-    // Warning ring at the agent's feet when the context window is nearly full:
-    // yellow ≥ 0.75, orange ≥ 0.85, red ≥ 0.95, pulsing faster as pressure
-    // rises. Drawn outside the grounding and effort rings so it reads as a
-    // separate signal. `statusAnim` freezes under reduced motion, so the ring
-    // then holds a fixed alpha instead of pulsing.
+    // #36 — context-window pressure as a filling gauge: a thin radial arc at the
+    // agent's feet sweeping clockwise from 12 o'clock through `ratio` of the full
+    // circle (0→100%), tinted amber at 0.75 → red at 0.95. A faint backing track
+    // shows the unfilled remainder so the fill reads as a gauge, not a stray mark.
+    // Pulse band: `alert` (pulseAlpha) — declared so the budget stays accounted.
+    // Reduced motion (motionScale 0) holds the band base alpha, so the arc is a
+    // static gauge with no throb. The selected agent also gets a `78%` chip.
     _drawContextPressureRing(ctx) {
         const level = this._contextPressureLevel();
         if (!level) return;
-        const pulse = 0.72 + 0.28 * Math.sin(this.statusAnim * level.pulseRate);
+        const pulse = pulseAlpha('alert', this.frame, this.motionScale, 0.7, 1);
+        const ratio = level.ratio;
+        const rx = 27;
+        const ry = 10;
+        const start = -Math.PI / 2;            // 12 o'clock
+        const sweep = Math.PI * 2 * ratio;     // clockwise fill proportional to fullness
         ctx.save();
         ctx.translate(Math.round(this.x), Math.round(this.y + 4));
+        // Soft inner glow behind the filled portion so the gauge reads on busy terrain.
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = 0.5 * pulse;
-        ctx.fillStyle = level.glow;
+        ctx.globalAlpha = 0.42 * pulse;
+        ctx.strokeStyle = level.glow;
+        ctx.lineWidth = 4;
         ctx.beginPath();
-        ctx.ellipse(0, 0, 30, 11, 0, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.ellipse(0, 0, rx, ry, 0, start, start + sweep);
+        ctx.stroke();
         ctx.globalCompositeOperation = 'source-over';
-        ctx.globalAlpha = 0.5 + 0.4 * pulse;
-        ctx.strokeStyle = level.color;
-        ctx.lineWidth = 1.5;
+        // Unfilled remainder — a dim full track so the fill ratio is legible.
+        ctx.globalAlpha = 0.22;
+        ctx.strokeStyle = 'rgba(180, 188, 200, 0.6)';
+        ctx.lineWidth = 1;
         ctx.beginPath();
-        ctx.ellipse(0, 0, 27, 10, 0, 0, Math.PI * 2);
+        ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI * 2);
+        ctx.stroke();
+        // Filled arc — the gauge needle made line.
+        ctx.globalAlpha = 0.55 + 0.4 * pulse;
+        ctx.strokeStyle = level.color;
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, rx, ry, 0, start, start + sweep);
         ctx.stroke();
         ctx.restore();
+
+        // Percentage chip for the selected agent only, so the exact pressure is
+        // legible on demand without cluttering every villager. Static (no pulse).
+        if (this.selected) {
+            const pct = `${Math.round(ratio * 100)}%`;
+            ctx.save();
+            ctx.translate(Math.round(this.x), Math.round(this.y + 4));
+            ctx.font = `bold 8px ${WORLD_BODY_FONT}`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            const w = ctx.measureText(pct).width + 8;
+            const h = 11;
+            const cy = ry + 8;
+            ctx.globalAlpha = 0.9;
+            ctx.fillStyle = 'rgba(12, 16, 22, 0.78)';
+            ctx.beginPath();
+            if (ctx.roundRect) {
+                ctx.roundRect(-w / 2, cy - h / 2, w, h, 3);
+            } else {
+                ctx.rect(-w / 2, cy - h / 2, w, h);
+            }
+            ctx.fill();
+            ctx.lineWidth = 1;
+            ctx.strokeStyle = level.color;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+            ctx.fillStyle = level.color;
+            ctx.fillText(pct, 0, cy + 0.5);
+            ctx.restore();
+        }
+    }
+
+    // #36 — strain body language: once context pressure crosses 0.85 the body
+    // gains a tiny ±1px horizontal shiver, deepening slightly toward 1.0. Driven
+    // by `statusAnim` so it freezes (returns 0) under reduced motion (motionScale
+    // 0), where the static arc + chip carry the cue instead.
+    _contextStrainTremble() {
+        if (this.motionScale <= 0) return 0;
+        const level = this._contextPressureLevel();
+        if (!level || level.ratio < 0.85) return 0;
+        const intensity = this._clamp((level.ratio - 0.85) / 0.15, 0.3, 1);
+        return Math.round(Math.sin(this.statusAnim * 9) * intensity);
+    }
+
+    // #36 — sweat-drop emission at context-pressure ratio >= 0.85: a single cool
+    // bead beads off the brow on a slow stagger, faster as fullness rises. Runs in
+    // update() (pool live). Reduced motion (motionScale 0) emits nothing — the
+    // static arc + chip + held posture are the strain cue then.
+    _advanceContextStrainSweat(particleSystem) {
+        if (!particleSystem || this.motionScale <= 0) return;
+        if (this.moving || this.chatting) return;
+        const level = this._contextPressureLevel();
+        if (!level || level.ratio < 0.85) return;
+        // Cadence shortens as pressure rises (~1800 ms at 0.85 → ~900 ms near 1.0);
+        // stagger per agent so a strained crowd does not bead in unison.
+        const intensity = this._clamp((level.ratio - 0.85) / 0.15, 0, 1);
+        const period = Math.round(1800 - intensity * 900);
+        const offset = Math.abs(this._hash(`${this.agent?.id || ''}:strain-sweat`)) % period;
+        const beat = Math.floor((Date.now() + offset) / period);
+        if (beat === this._strainSweatBeat) return;
+        this._strainSweatBeat = beat;
+        // Bead off the temple (slightly off-centre, head height).
+        particleSystem.spawn('sweatDrop', this.x + 5, this.y - 30, 1, { spread: 1.5 });
     }
 
     _drawGrounding(ctx) {

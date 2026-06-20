@@ -255,6 +255,18 @@ const PARTICLE_PRESETS = {
         gravity: true,
         direction: 'up',
     },
+    // #36 — context-pressure strain sweat. A single cool bead that beads off the
+    // brow and falls when the context window is nearly full (ratio >= 0.85). Pale
+    // blue-white, gravity-fed so it arcs down past the temple. Never spawned under
+    // reduced motion — the static arc + chip carry the strain cue in that case.
+    sweatDrop: {
+        colors: ['#cfe9f7', '#bfe0f2', '#e8f6ff'],
+        size: [1, 2],
+        life: [16, 30],
+        speed: [0.12, 0.32],
+        gravity: true,
+        direction: 'down',
+    },
     // #35 — ship wake foam. Short-lived white spray flecks flung outward when a
     // force-pushed hull lists and sinks; the burst widens with the foam ring so
     // hull class stays viscerally readable. The renderer owns the widening ring
