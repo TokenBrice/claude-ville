@@ -334,6 +334,18 @@ export class AgentSprite {
         this.chatTimer = 0;          // chat animation timer
         this.chatBubbleAnim = 0;     // speech bubble animation
 
+        // #38 — idle gossip cluster. RelationshipState groups loitering IDLE
+        // villagers near a scenic point; the renderer's CouncilRing pass calls
+        // enterGossip() with the knot centroid. While gossiping the sprite faces
+        // the centroid, reuses the chat speech-bubble effect (chatting=true), and
+        // disperses after a short timer, then enters a cooldown so it doesn't
+        // immediately re-cluster. Under reduced motion it just stands and faces
+        // the centroid (timer/cooldown still advance; no bubble cycling).
+        this._gossiping = false;
+        this._gossipCenter = null;
+        this._gossipDisperseMs = 0;
+        this._gossipCooldownUntil = 0;
+
         // Active pose-bearing tool ritual record from RitualConductor (per
         // building work gesture: hammer / page / pick / scroll / …), synced by
         // the renderer per frame. `_ritualDownbeat` is the last gesture-cycle
@@ -1389,6 +1401,9 @@ export class AgentSprite {
         this.chatPartner = null;
         this.chatting = false;
         this.chatBubbleAnim = 0;
+        this._gossiping = false;
+        this._gossipCenter = null;
+        this._gossipDisperseMs = 0;
         this.setArrivalState('visible');
         this._lastPathTileKey = null;
         this._assignTarget(screen.x, screen.y, tileX, tileY);
@@ -1461,6 +1476,24 @@ export class AgentSprite {
         this._advanceDistressRecovery(particleSystem);
         this._advanceArrivalCeremony(particleSystem);
         this._advanceTokenFlowMotes(particleSystem, frameScale);
+
+        // #38 — gossip knot: stand, face the cluster centroid, run the speech
+        // bubble, and disperse after the timer. Checked before the pairwise chat
+        // branch because enterGossip sets chatting=true without a chatPartner.
+        if (this._gossiping) {
+            // Disperse early if the villager is no longer idle (e.g. work resumed)
+            // or got pulled into a pairwise SendMessage chat.
+            if (this.agent?.status !== AgentStatus.IDLE || this.chatPartner) {
+                this.leaveGossip();
+            } else {
+                this._faceGossipCenter();
+                this.chatBubbleAnim += 0.06 * this.motionScale * frameScale;
+                this._gossipDisperseMs -= dt;
+                if (this._gossipDisperseMs <= 0) this.leaveGossip();
+                this._advanceIdleAnimation(dt);
+                return; // Do not move while gossiping
+            }
+        }
 
         // Handle chatting state
         if (this.chatting) {
@@ -1836,6 +1869,58 @@ export class AgentSprite {
         this.behavior.finishVisit();
         this.behavior.transition('cooldown', 'chat-ended');
         this._pickTarget(); // resume normal behavior
+    }
+
+    // #38 — gossip cluster lifecycle (driven from CouncilRing.applyGossipClusters).
+    isGossiping() {
+        return this._gossiping;
+    }
+
+    isGossipCoolingDown() {
+        return this._gossipCooldownUntil > Date.now();
+    }
+
+    /** Join a standing gossip knot centred on (centerX, centerY). */
+    enterGossip(centerX, centerY) {
+        if (this._gossiping) {
+            this._gossipCenter = { x: centerX, y: centerY };
+            this._faceGossipCenter();
+            return;
+        }
+        if (this.chatPartner || this.chatting || this.isArrivalPending()) return;
+        if (this.agent?.status !== AgentStatus.IDLE) return;
+        this._releaseVisitReservation();
+        this._gossiping = true;
+        this.chatting = true; // reuse the speech-bubble effect in draw()
+        this.chatBubbleAnim = 0;
+        this.moving = false;
+        this.waitTimer = 0;
+        this._gossipCenter = { x: centerX, y: centerY };
+        // 4-8 s standing knot, then disperse.
+        this._gossipDisperseMs = 4000 + Math.random() * 4000;
+        this.behavior?.transition?.('chatting', 'gossip');
+        this._resetWalkCycle();
+        this._faceGossipCenter();
+    }
+
+    /** Leave the gossip knot and cool down before re-clustering. */
+    leaveGossip() {
+        if (!this._gossiping) return;
+        this._gossiping = false;
+        this.chatting = false;
+        this.chatBubbleAnim = 0;
+        this._gossipCenter = null;
+        this._gossipDisperseMs = 0;
+        this._gossipCooldownUntil = Date.now() + 12000 + Math.random() * 8000;
+        this.behavior?.finishVisit?.();
+        this.behavior?.transition?.('cooldown', 'gossip-ended');
+        this._pickTarget();
+    }
+
+    _faceGossipCenter() {
+        if (!this._gossipCenter) return;
+        const dir = dirFromVelocity(this._gossipCenter.x - this.x, this._gossipCenter.y - this.y);
+        if (dir != null) this.direction = dir;
     }
 
     getBehaviorDebugSnapshot() {

@@ -222,6 +222,19 @@ const PARTICLE_PRESETS = {
         gravity: true,
         direction: 'up',
     },
+    // #35 — ship wake foam. Short-lived white spray flecks flung outward when a
+    // force-pushed hull lists and sinks; the burst widens with the foam ring so
+    // hull class stays viscerally readable. The renderer owns the widening ring
+    // procedurally; this preset is the shared white-foam palette for the fleck
+    // burst so the colours stay matched. Never spawned under reduced motion.
+    wakeFoam: {
+        colors: ['#ffffff', '#e8fcff', '#cdeef0', '#bfe6e8'],
+        size: [1, 2.6],
+        life: [10, 22],
+        speed: [0.4, 1.4],
+        gravity: false,
+        direction: 'random',
+    },
     // #40 — distress-recovery relief spark. A short warm green-gold burst that
     // rises as an errored agent straightens under the Pharos, signalling the
     // incident has cleared. Brighter and faster than a fret mote so the relief
@@ -246,6 +259,10 @@ export const BUOY_TORCH_COLORS = Object.freeze([...PARTICLE_PRESETS.buoyTorch.co
 // ember-lit smoke while a banked forge stays grey.
 export const SMOKE_COOL_COLORS = Object.freeze([...PARTICLE_PRESETS.smoke.colors]);
 export const SMOKE_WARM_COLORS = Object.freeze(['#6b5240', '#8a6a4c', '#a8806b']);
+
+// #35 — exported so the wake renderer's sink-ring foam burst stays colour-matched
+// to the shared `wakeFoam` preset.
+export const WAKE_FOAM_COLORS = Object.freeze([...PARTICLE_PRESETS.wakeFoam.colors]);
 
 function rand(min, max) {
     return min + Math.random() * (max - min);

@@ -2978,6 +2978,8 @@ export class HarborTraffic {
                 continue;
             }
             if (drawable.status === 'departing' && drawable.progress > 0.002 && drawable.progress < 0.94) {
+                // #35 — wakeScale lets the water layer scale the diverging stern
+                // arcs + V bow ripple by hull class (skiff faint → flagship broad).
                 wakes.push({
                     type: 'departing',
                     x: drawable.x,
@@ -2987,9 +2989,33 @@ export class HarborTraffic {
                     alpha: Math.max(0.05, 0.18 * (1 - drawable.progress)),
                     spread: (0.35 + drawable.progress * 0.75) * shipClass.wakeScale,
                     progress: drawable.progress,
+                    wakeScale: shipClass.wakeScale,
+                    bowRipple: true,
                     waterRegion,
                     projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
                 });
+                // #35 — force-push hulls list and sink in the last 4s of departure;
+                // emit a widening foam ring scaled by hull class so the size of the
+                // doomed push is viscerally readable. Renderer draws the ring + a
+                // white-foam fleck burst; no per-frame particle pool here.
+                if (drawable.pushForce === true) {
+                    const departMs = Math.max(1, Number(drawable.departMsOverride) || FORCE_DEPARTURE_MS);
+                    const sinkWindow = Math.min(4000, departMs * 0.5);
+                    const elapsed = Math.max(0, Number(drawable.elapsed) || 0);
+                    const sinkProgress = Math.max(0, Math.min(1, (elapsed - (departMs - sinkWindow)) / sinkWindow));
+                    if (sinkProgress > 0) {
+                        wakes.push({
+                            type: 'sinkRing',
+                            x: drawable.x,
+                            y: drawable.y,
+                            sinkProgress,
+                            wakeScale: shipClass.wakeScale,
+                            alpha: 0.22 * (1 - sinkProgress * 0.6),
+                            waterRegion,
+                            projectAccent: trafficProfile(drawable.project, drawable.branch).accent,
+                        });
+                    }
+                }
             }
         }
         return wakes;

@@ -36,7 +36,7 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { Camera } from './Camera.js';
 import { CameraDirector } from './CameraDirector.js';
-import { ParticleSystem } from './ParticleSystem.js';
+import { ParticleSystem, WAKE_FOAM_COLORS } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
 import { BuildingSprite } from './BuildingSprite.js';
 
@@ -5492,12 +5492,22 @@ export class IsometricRenderer {
         const descriptors = this.harborTraffic?.enumerateWakeDescriptors?.(Date.now()) || [];
         if (!descriptors.length) return;
         const roughness = this._waterWeather?.storm || 0;
+        // #35 — reduced motion ships a static stern foam dab only: no diverging
+        // arcs, no V bow ripple, no widening sink ring or fleck burst.
+        const reduced = !(this.motionScale > 0);
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         for (const wake of descriptors.slice(0, 16)) {
             const alpha = Math.min(0.22, (wake.alpha ?? 0.12) * (1 + roughness * 0.28));
             if (alpha <= 0.01) continue;
             const token = WATER_TOKENS[wake.waterRegion] || WATER_TOKENS.harbor;
+            // #35 — hull class scales every wake feature so push size reads at a
+            // glance (skiff ~0.88 → flagship ~2.38).
+            const hullScale = Math.max(0.85, Number(wake.wakeScale) || 1);
+            if (wake.type === 'sinkRing') {
+                this._drawWakeSinkRing(ctx, wake, token, alpha, hullScale, reduced);
+                continue;
+            }
             const dx = wake.x - (wake.tailX ?? wake.x - 1);
             const dy = wake.y - (wake.tailY ?? wake.y);
             const wakeRotation = wake.type === 'departing' ? Math.atan2(dy, dx) * 0.55 : -0.18;
@@ -5505,7 +5515,7 @@ export class IsometricRenderer {
                 x: wake.type === 'departing' ? wake.x - dx * 0.42 : wake.x,
                 y: wake.type === 'departing' ? wake.y - dy * 0.42 + 5 : wake.y + 4,
                 alpha: alpha * 0.70,
-                scaleX: wake.type === 'departing' ? 0.54 + (wake.spread || 0) * 0.24 : 0.48,
+                scaleX: (wake.type === 'departing' ? 0.54 + (wake.spread || 0) * 0.24 : 0.48) * (0.7 + hullScale * 0.22),
                 scaleY: wake.type === 'departing' ? 0.44 + (wake.progress || 0) * 0.18 : 0.36,
                 rotation: wakeRotation,
                 flipX: dx < 0,
@@ -5513,14 +5523,23 @@ export class IsometricRenderer {
             if (drewWakeSprite) continue;
             ctx.strokeStyle = `rgba(${token.wake}, ${alpha})`;
             ctx.fillStyle = `rgba(${token.wake}, ${alpha * 0.24})`;
-            ctx.lineWidth = wake.type === 'departing' ? 1.6 : 1;
+            ctx.lineWidth = wake.type === 'departing' ? 1.2 + hullScale * 0.5 : 1;
             if (wake.type === 'departing') {
                 const len = Math.max(1, Math.hypot(dx, dy));
                 const ux = dx / len;
                 const uy = dy / len;
                 const px = -uy;
                 const py = ux;
-                const spread = 10 + (wake.spread || 0) * 18;
+                if (reduced) {
+                    // Static stern foam dab — a single short crescent behind the bow.
+                    ctx.beginPath();
+                    ctx.moveTo(wake.x - ux * 8 + px * 5, wake.y - uy * 8 + py * 5);
+                    ctx.quadraticCurveTo(wake.x - ux * 14, wake.y - uy * 14, wake.x - ux * 8 - px * 5, wake.y - uy * 8 - py * 5);
+                    ctx.stroke();
+                    continue;
+                }
+                // Diverging stern arcs, widened by hull class.
+                const spread = (10 + (wake.spread || 0) * 18) * (0.6 + hullScale * 0.34);
                 const back = 18 + (wake.progress || 0) * 22;
                 ctx.beginPath();
                 ctx.moveTo(wake.x - ux * 8 + px * 5, wake.y - uy * 8 + py * 5);
@@ -5528,6 +5547,18 @@ export class IsometricRenderer {
                 ctx.moveTo(wake.x - ux * 8 - px * 5, wake.y - uy * 8 - py * 5);
                 ctx.quadraticCurveTo(wake.x - ux * back, wake.y - uy * back, wake.x - ux * (back + 18) - px * spread, wake.y - uy * (back + 18) - py * spread * 0.55);
                 ctx.stroke();
+                // V-shaped bow ripple thrown ahead of the bow, scaled by hull class.
+                if (wake.bowRipple) {
+                    const bowReach = (5 + hullScale * 6);
+                    const bowSpread = (4 + hullScale * 5);
+                    const bx = wake.x + ux * 6;
+                    const by = wake.y + uy * 6;
+                    ctx.beginPath();
+                    ctx.moveTo(bx - ux * bowReach * 0.4 + px * bowSpread, by - uy * bowReach * 0.4 + py * bowSpread * 0.55);
+                    ctx.lineTo(bx + ux * bowReach, by + uy * bowReach);
+                    ctx.lineTo(bx - ux * bowReach * 0.4 - px * bowSpread, by - uy * bowReach * 0.4 - py * bowSpread * 0.55);
+                    ctx.stroke();
+                }
             } else {
                 ctx.beginPath();
                 ctx.ellipse(Math.round(wake.x), Math.round(wake.y + 4), wake.radiusX || 30, wake.radiusY || 13, -0.18, 0, Math.PI * 2);
@@ -5536,6 +5567,44 @@ export class IsometricRenderer {
             }
         }
         ctx.restore();
+    }
+
+    // #35 — widening foam ring on a force-push sink, broader for larger hulls, plus
+    // a short white-foam fleck burst (shared `wakeFoam` palette). The ring expands
+    // and fades over `sinkProgress`; reduced motion collapses it to a single static
+    // stern foam dab and never spawns the burst.
+    _drawWakeSinkRing(ctx, wake, token, alpha, hullScale, reduced) {
+        const cx = Math.round(wake.x);
+        const cy = Math.round(wake.y + 4);
+        if (reduced) {
+            ctx.strokeStyle = `rgba(${token.wake}, ${alpha})`;
+            ctx.lineWidth = 1.4;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, 9 * hullScale, 4.5 * hullScale, -0.18, 0, Math.PI * 2);
+            ctx.stroke();
+            return;
+        }
+        const t = Math.max(0, Math.min(1, Number(wake.sinkProgress) || 0));
+        const radiusX = (10 + t * 30) * hullScale;
+        const radiusY = radiusX * 0.5;
+        ctx.strokeStyle = `rgba(${token.wake}, ${alpha})`;
+        ctx.fillStyle = `rgba(${token.wake}, ${alpha * 0.3})`;
+        ctx.lineWidth = 1.2 + hullScale * 0.6;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, radiusX, radiusY, -0.18, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        // White-foam fleck burst flung outward, widening with the ring. Throttled
+        // to ~every 6th frame so the short-lived flecks read as spray, not a flood.
+        if ((Math.floor(this.waterFrame) % 6) !== 0) return;
+        const burst = Math.round(2 + hullScale * 2);
+        this.particleSystem?.spawn?.('wakeFoam', wake.x, wake.y + 4, burst, {
+            colors: WAKE_FOAM_COLORS,
+            speed: [0.5, 0.6 + hullScale * 0.8],
+            spread: radiusX * 0.4,
+            alpha: [0.4, 0.85 * (1 - t * 0.4)],
+            layer: 'effects',
+        });
     }
 
     _drawShorelineReflectionShimmer(ctx, shoreEdges) {
