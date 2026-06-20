@@ -13,6 +13,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.58, alpha: 0.9 },
         occupancyThresholds: { occupiedMax: 0.45, busyMax: 0.8 },
         labelPriority: 'landmark',
+        beaconBase: 0.85,
     },
     taskboard: {
         labelAccent: '#8bd7ff',
@@ -22,6 +23,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.52, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
+        beaconBase: 0.8,
     },
     forge: {
         labelAccent: '#f08a4b',
@@ -31,6 +33,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.6, alpha: 0.88 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
+        beaconBase: 1,
     },
     mine: {
         labelAccent: '#ffab47',
@@ -40,6 +43,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.54, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.55, busyMax: 0.9 },
         labelPriority: 'landmark',
+        beaconBase: 0.78,
     },
     archive: {
         labelAccent: '#b3d68c',
@@ -49,6 +53,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.5, alpha: 0.84 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.82 },
         labelPriority: 'landmark',
+        beaconBase: 0.82,
     },
     observatory: {
         labelAccent: '#bda7ff',
@@ -58,6 +63,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.56, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
+        beaconBase: 0.7,
         effectAnchors: {
             clockFace: {
                 compositeRef: { w: 256, h: 288 },
@@ -79,6 +85,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.58, alpha: 0.9 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
+        beaconBase: 0.92,
     },
     watchtower: {
         labelAccent: '#ffe59a',
@@ -88,6 +95,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.62, alpha: 0.92 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.9 },
         labelPriority: 'landmark',
+        beaconBase: 1,
         effectAnchors: {
             lanternFire: {
                 flame: [144, 68],
@@ -104,6 +112,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         reducedMotionFallback: { pulse: 0.54, alpha: 0.86 },
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
+        beaconBase: 0.9,
     },
 });
 
@@ -185,6 +194,14 @@ export function getBuildingLabelPriority(type, fallback = 'normal') {
 
 export function getBuildingEffectAnchor(type, key, fallback = null) {
     return getBuildingVisual(type)?.effectAnchors?.[key] || fallback;
+}
+
+// Per-building responsiveness to the global beacon intensity (0..1). Strong
+// emitters (forge/watchtower) react fully; quieter buildings hold back so the
+// village dims/brightens in unison without flattening to one brightness.
+export function getBuildingBeaconBase(type, fallback = 0.85) {
+    const value = getBuildingVisual(type)?.beaconBase;
+    return Number.isFinite(value) ? value : fallback;
 }
 
 export function getBuildingOccupancyState(type, { count = 0, capacity = 0, alert = false } = {}) {

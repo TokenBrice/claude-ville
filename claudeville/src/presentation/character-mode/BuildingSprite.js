@@ -17,6 +17,7 @@ import {
     BUILDING_EMITTER_FALLBACKS,
     BUILDING_LIGHT_FALLBACKS,
     EMITTER_LIGHTS,
+    getBuildingBeaconBase,
     getBuildingEffectAnchor,
     getBuildingLabelAccent,
     getBuildingLabelEmblem,
@@ -936,6 +937,24 @@ export class BuildingSprite {
         return clamp01(this._forgeGlow);
     }
 
+    // Global beacon intensity (0..1): emitters/window-warmth/light glow all
+    // breathe with it as night deepens or a storm rolls in. Slow band, driven by
+    // AtmosphereState's time-of-day/weather lighting. Reduced motion holds a
+    // static mid value so the village stays lit without per-frame change.
+    _beaconIntensity(lightingState = this.lightingState) {
+        if (!this.motionScale) return 0.5;
+        const value = lightingState?.beaconIntensity
+            ?? this.atmosphereState?.lighting?.beaconIntensity;
+        return Number.isFinite(value) ? clamp01(value) : 0.5;
+    }
+
+    // Per-building beacon multiplier (0..1) blending the global intensity with a
+    // per-type base so strong emitters react fully and quiet ones hold back.
+    _beaconScaleFor(buildingType, lightingState = this.lightingState) {
+        if (!buildingType) return 1;
+        return this._beaconIntensity(lightingState) * getBuildingBeaconBase(buildingType);
+    }
+
     _watchtowerActiveCount() {
         const wiredCount = this.harborStatus?.activeWorkingCount;
         if (Number.isFinite(wiredCount)) return Math.max(0, wiredCount);
@@ -968,14 +987,19 @@ export class BuildingSprite {
                 if (this.harborStatus?.failedPushActive) color = '#ff755d';
             }
             const warmthBoost = source.kind === 'beam' ? 0 : windowWarmth * 0.16;
+            // Beacon breathing: every emitter glow brightens/widens in unison as
+            // night deepens or a storm dims the world, scaled per building type.
+            const beaconScale = source.kind === 'beam' ? 0 : this._beaconScaleFor(source.buildingType, lightingState);
+            const beaconBoost = beaconScale * 0.34;
             const presenceRadiusMult = source.buildingType
                 ? PRESENCE_TIER_TABLE[this._presenceTierFor(source.buildingType)].radius
                 : 1;
-            const radius = source.radius * Math.min(1.68, 0.72 + lightBoost * 0.28 + warmthBoost + (activity - 1) * 0.18) * presenceRadiusMult;
+            const radius = source.radius * Math.min(1.84, 0.72 + lightBoost * 0.28 + warmthBoost + beaconScale * 0.22 + (activity - 1) * 0.18) * presenceRadiusMult;
+            if (alpha != null) alpha *= 1 + beaconBoost;
             return normalizeLightSource({
                 ...source,
                 color,
-                intensity: activity + warmthBoost,
+                intensity: activity + warmthBoost + beaconBoost,
                 radius,
                 alpha,
                 origin: source.origin || { x: source.x, y: source.y },
@@ -1163,7 +1187,10 @@ export class BuildingSprite {
             // stay dim, packed ones stay lit regardless of hour.
             const occupancy = PRESENCE_TIER_TABLE[this._presenceTierFor(building.type)].occupancy;
             const buildingWarmth = windowWarmth * (0.45 + 0.55 * occupancy);
-            const warmthAlpha = Math.min(0.28, buildingWarmth * (0.12 + pulse * 0.05));
+            // Window warmth breathes with the building beacon so lit windows
+            // brighten together as night deepens (static floor under reduced motion).
+            const beaconWarm = 0.82 + this._beaconScaleFor(building.type) * 0.4;
+            const warmthAlpha = Math.min(0.3, buildingWarmth * (0.12 + pulse * 0.05) * beaconWarm);
             const lightPoints = this._buildingReactionLightPoints(building, entry, dims);
             for (const point of lightPoints) {
                 if (!shouldDrawLocalY(point.y)) continue;
@@ -3092,6 +3119,10 @@ export class BuildingSprite {
             this._spawnBuildingParticle(normalizedType, center, baseAnchor, at, 0.035, 1, dt);
         }
         const presenceMult = PRESENCE_TIER_TABLE[this._presenceTierFor(b.type)].emitter;
+        // Beacon breathing: emitter density rises with the global beacon
+        // intensity so every building's fire/spark/mote flow quickens together as
+        // night deepens. Held at the static-0.5 floor under reduced motion.
+        const beaconMult = 0.72 + this._beaconScaleFor(b.type) * 0.5;
         // Door-region archiveMote emitters (at y≈128) burst more when read
         // intensity passes 0.6. Crest emitter (y≈82) is unaffected.
         const archiveReadIntensity = b.type === 'archive' ? (this._archiveReadIntensity || 0) : 0;
@@ -3102,7 +3133,7 @@ export class BuildingSprite {
             if (archiveReadIntensity > 0.6 && Array.isArray(emitter.at) && emitter.at[1] >= 120) {
                 chanceBoost *= 1 + (archiveReadIntensity - 0.6) * 5;
             }
-            const chance = emitter.chance * chanceBoost * presenceMult;
+            const chance = emitter.chance * chanceBoost * presenceMult * beaconMult;
             this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt);
         }
     }
