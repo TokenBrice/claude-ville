@@ -56,7 +56,7 @@ import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
 import VisitTileAllocator from './VisitTileAllocator.js';
-import { getPulsePriority } from './PulsePolicy.js';
+import { getPulsePriority, pulseValue } from './PulsePolicy.js';
 import { MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
 import { lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import {
@@ -85,6 +85,15 @@ import {
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
+// Staggered foam-line bands for the animated coastline surf wash (item #23).
+// Band 0 is the innermost crest (also the reduced-motion static line); outer
+// bands sit further into the water with lower base alpha and offset phases so
+// crests roll rather than pulse in unison.
+const SURF_WASH_BANDS = Object.freeze([
+    { inset: 4, alpha: 0.16, width: 1.2, phase: 0, seedFloor: 0 },
+    { inset: 9, alpha: 0.11, width: 1.0, phase: 9, seedFloor: 0.22 },
+    { inset: 14, alpha: 0.08, width: 1.0, phase: 18, seedFloor: 0.48 },
+]);
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
 const MAX_LIGHT_GRADIENT_STAMP_PIXELS = Math.floor(MAX_LIGHT_GRADIENT_CACHE_PIXELS / 5);
 const FAST_ATMOSPHERE_BACKING_PIXELS = 800_000;
@@ -5003,6 +5012,7 @@ export class IsometricRenderer {
         this._drawHarborWakeWaterDescriptors(ctx);
         this._drawNightWaterReflections(ctx, waterTiles);
         this._drawBuildingLightReflections(ctx, waterTiles);
+        this._drawSurfWashBands(ctx, shoreEdges);
         if (!this.motionScale) return;
         this._drawAnimatedCurrentBands(ctx, waterTiles);
         ctx.save();
@@ -5462,6 +5472,42 @@ export class IsometricRenderer {
             ctx.lineWidth = 1;
             this._strokeInsetDiamondEdges(ctx, tile.screenX, tile.screenY, tile.edge, 9);
         }
+    }
+
+    // Animated surf wash: 2-3 staggered foam-line bands hug each shore tile's
+    // water-facing edges, pulsing in/out on PulsePolicy's slow `intrinsic` band
+    // (one phase-offset per band so crests stagger). Crest brightness scales
+    // with `reactions.stormRoughness` so troubled fleets get heavier surf.
+    // Reduced motion (`motionScale<=0`) collapses `pulseValue` to its band base,
+    // so only the innermost static foam line draws (`SURF_WASH_BANDS[0]`).
+    _drawSurfWashBands(ctx, shoreEdges) {
+        if (!shoreEdges?.length) return;
+        const stormRoughness = this._atmosphereReactions?.stormRoughness || 0;
+        const reduced = !this.motionScale;
+        const bands = reduced ? SURF_WASH_BANDS.slice(0, 1) : SURF_WASH_BANDS;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.lineCap = 'round';
+        for (let b = 0; b < bands.length; b++) {
+            const band = bands[b];
+            // Per-band phase offset staggers crests; slow `intrinsic` band.
+            const frame = this.waterFrame + band.phase;
+            const pulse = pulseValue('intrinsic', frame, this.motionScale);
+            for (const tile of shoreEdges) {
+                if (tile.seed < band.seedFloor) continue;
+                // Phase the pulse per tile so the wash never strobes in unison.
+                const tilePulse = this.motionScale
+                    ? Math.max(0, Math.sin(frame * 0.04 + tile.seed * 6.28)) * pulse
+                    : pulse;
+                const crest = band.alpha * (0.55 + 0.45 * tilePulse) * (1 + stormRoughness * 0.9);
+                const alpha = Math.min(0.34, crest);
+                if (alpha <= 0.012) continue;
+                ctx.strokeStyle = `rgba(232, 252, 255, ${alpha})`;
+                ctx.lineWidth = band.width + stormRoughness * 0.6;
+                this._strokeInsetDiamondEdges(ctx, tile.screenX, tile.screenY, tile.edge, band.inset);
+            }
+        }
+        ctx.restore();
     }
 
     _drawOpenWaterDepthWash(ctx, startX, endX, startY, endY) {

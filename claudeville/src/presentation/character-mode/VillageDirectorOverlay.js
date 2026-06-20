@@ -269,6 +269,49 @@ function drawIncidents(ctx, incidents, now, motionScale, grade = null) {
     ctx.restore();
 }
 
+// #28 — a glowing scroll baton drawn at (x, y): a warm halo, a small scroll
+// body, and two end-roll ticks so the travelling mote reads as a passed scroll
+// rather than a bare dot. Static-safe (no time term).
+function drawScrollMote(ctx, x, y, rgb, alpha, scale = 1) {
+    ctx.fillStyle = rgba(rgb, 0.22 * alpha);
+    ctx.beginPath();
+    ctx.ellipse(x, y, 9 * scale, 6 * scale, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = rgba('255, 243, 191', 0.85 * alpha);
+    ctx.beginPath();
+    ctx.ellipse(x, y, 4.5 * scale, 2.6 * scale, -0.2, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = rgba(rgb, 0.7 * alpha);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x - 4.5 * scale, y - 2.4 * scale);
+    ctx.lineTo(x - 4.5 * scale, y + 2.4 * scale);
+    ctx.moveTo(x + 4.5 * scale, y - 2.4 * scale);
+    ctx.lineTo(x + 4.5 * scale, y + 2.4 * scale);
+    ctx.stroke();
+}
+
+// #28 — terminal landing spark fired as the baton reaches the child (progress
+// ~1). A four-point gilt diamond over a radial glow, mirroring ArrivalDeparture's
+// subagent-completion cue so handoff and subagent payoffs share one vocabulary.
+// Reduced motion shows a single static spark frame (size held, no decay).
+function drawHandoffSpark(ctx, x, y, rgb, alpha) {
+    if (alpha <= 0) return;
+    ctx.fillStyle = rgba(rgb, 0.28 * alpha);
+    ctx.beginPath();
+    ctx.arc(x, y, 11, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = rgba('255, 243, 191', 0.85 * alpha);
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, y - 9);
+    ctx.lineTo(x + 7, y);
+    ctx.lineTo(x, y + 9);
+    ctx.lineTo(x - 7, y);
+    ctx.closePath();
+    ctx.stroke();
+}
+
 function drawHandoffs(ctx, handoffs, now, motionScale, grade = null) {
     if (!handoffs?.length) return;
     const handoffRgb = gradeRgb('244, 196, 93', grade);
@@ -280,24 +323,41 @@ function drawHandoffs(ctx, handoffs, now, motionScale, grade = null) {
         if (!from || !to) continue;
         const fade = 1 - clamp(handoff.progress ?? 0);
         const pulse = motionPulse(now, motionScale, handoff.startedAt || 0, 520);
+        // Baton travel along the arc: 0 at parent, 1 at child. Reduced motion
+        // pins it at the terminus (static arc + landed dot).
+        const t = motionScale ? clamp((now - (handoff.startedAt || now)) / 1100) : 1;
+        // #28 — transient parent→child lean over arc 0–0.4: the source endpoint
+        // nudges toward the child as if the parent steps in to pass the baton,
+        // then settles back. Purely a draw-time offset — the sprite x/y the
+        // director reported are read, never mutated.
+        const lean = motionScale ? Math.sin(clamp(t / 0.4) * Math.PI) * 6 : 0;
+        const leanX = (to.x - from.x);
+        const leanY = (to.y - from.y);
+        const leanLen = Math.hypot(leanX, leanY) || 1;
+        const fromX = from.x + (leanX / leanLen) * lean;
+        const fromY = (from.y - 16) + (leanY / leanLen) * lean;
         ctx.strokeStyle = rgba(handoffRgb, 0.38 * fade);
         ctx.lineWidth = 1.2 + pulse * 0.8;
         ctx.setLineDash([4, 5]);
-        const midX = (from.x + to.x) / 2;
-        const midY = Math.min(from.y, to.y) - 38;
+        const midX = (fromX + to.x) / 2;
+        const midY = Math.min(fromY, to.y - 16) - 22;
         ctx.beginPath();
-        ctx.moveTo(from.x, from.y - 16);
+        ctx.moveTo(fromX, fromY);
         ctx.quadraticCurveTo(midX, midY, to.x, to.y - 16);
         ctx.stroke();
         ctx.setLineDash([]);
-        const t = motionScale ? clamp((now - (handoff.startedAt || now)) / 1100) : 1;
         const inv = 1 - t;
-        const x = inv * inv * from.x + 2 * inv * t * midX + t * t * to.x;
-        const y = inv * inv * (from.y - 16) + 2 * inv * t * midY + t * t * (to.y - 16);
-        ctx.fillStyle = rgba(handoffRgb, 0.55 * fade);
-        ctx.beginPath();
-        ctx.ellipse(x, y, 4.5, 2.5, -0.2, 0, TAU);
-        ctx.fill();
+        const x = inv * inv * fromX + 2 * inv * t * midX + t * t * to.x;
+        const y = inv * inv * fromY + 2 * inv * t * midY + t * t * (to.y - 16);
+        drawScrollMote(ctx, x, y, handoffRgb, fade);
+        // Terminal spark as the baton lands (last stretch of travel). Under
+        // reduced motion t is pinned at 1, so the spark holds as a static frame.
+        const sparkAlpha = motionScale
+            ? clamp((t - 0.82) / 0.18) * fade
+            : fade;
+        if (sparkAlpha > 0.02) {
+            drawHandoffSpark(ctx, to.x, to.y - 16, handoffRgb, sparkAlpha);
+        }
     }
     ctx.restore();
 }

@@ -304,6 +304,10 @@ export class AgentSprite {
         this.nickname = null;
         this.labelAlpha = 1;
         this.bumpFlash = 0;
+        // #28 — handoff acknowledgement bob. A child agent gives a short upward
+        // dip when a parent's handoff baton lands on it. Timestamp of the most
+        // recent ack; 0 means inactive. Reduced motion never sets it.
+        this._handoffAckStart = 0;
         this.teamPlazaPreference = false;
         this._arrivalState = 'visible';
 
@@ -1258,6 +1262,15 @@ export class AgentSprite {
         this.nickname = value || null;
     }
 
+    // #28 — acknowledge a landed handoff baton. The renderer calls this on the
+    // child sprite when the director's handoff arc terminates, producing a short
+    // 180ms upward bob applied in draw(). Reduced motion (motionScale 0) shows no
+    // bob, matching the static-arc fallback in the overlay.
+    setHandoffAck(active) {
+        if (!active || this.motionScale <= 0) return;
+        this._handoffAckStart = Date.now();
+    }
+
     setLightingState(lighting) {
         this.lightingState = lighting || null;
     }
@@ -1907,11 +1920,23 @@ export class AgentSprite {
                 )
                 : posture.staticDy
             : 0;
+        // #28 — handoff acknowledgement: a single 180ms upward dip-and-settle so
+        // the baton landing reads as the child nodding back. Half-sine envelope;
+        // never fires under reduced motion (setHandoffAck guards motionScale 0).
+        let ackBobY = 0;
+        if (this._handoffAckStart) {
+            const ackAge = Date.now() - this._handoffAckStart;
+            if (ackAge >= 0 && ackAge < 180) {
+                ackBobY = -Math.round(Math.sin((ackAge / 180) * Math.PI) * 2.4);
+            } else {
+                this._handoffAckStart = 0;
+            }
+        }
         const drawX = this._snapWorldToScreenPixel(this.x);
         const drawY = this._snapWorldToScreenPixel(this.y);
         const contentCenterX = (bounds.minX + bounds.maxX) / 2;
         const dx = drawX - contentCenterX * drawScale;
-        const dy = drawY - bounds.maxY * drawScale + 2 + bobY;
+        const dy = drawY - bounds.maxY * drawScale + 2 + bobY + ackBobY;
         const contentTopY = dy + bounds.minY * drawScale;
         this._drawCodexEquipment(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'back');
         this._drawSpriteSilhouette(ctx, cell, dx, dy, drawScale);

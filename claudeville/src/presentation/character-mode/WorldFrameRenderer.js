@@ -65,6 +65,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.camera.applyTransform(ctx);
     renderer._drawDistantSeaHorizon(ctx, atmosphere);
     renderer._drawTerrain(ctx);
+    // #24 — cloud-shadow parallax: feathered shadows slide across the baked
+    // terrain on the wind, giving the flat iso plane depth under the live sky.
+    drawCloudShadows(renderer, ctx, atmosphere, perfNow);
     renderer._drawSkyCanopy(ctx, atmosphere, dt);
     renderer.camera.applyTransform(ctx);
     renderer._drawFishSchools(ctx);
@@ -287,6 +290,78 @@ function combineWeatherInfluence(a, b) {
             Number(b?.clearing) || 0,
         ),
     };
+}
+
+// #24 — slow band. 2–3 feathered dark ellipses drift across the baked terrain
+// at a fractional parallax of the wind, so cloud shadows visibly slide over the
+// village. Clipped to the iso diamond so shadows only fall on land/water, and
+// folded under a `multiply` composite at ~12% alpha. Reduced motion (motionScale
+// === 0) freezes the drift to static positions rather than dropping the layer.
+const CLOUD_SHADOW_MAX = 3;
+const CLOUD_SHADOW_DRIFT_RATE = 0.012; // world-px per ms at parallax 1, windX 1
+const CLOUD_SHADOW_ALPHA = 0.12;
+
+function drawCloudShadows(renderer, ctx, atmosphere, perfNow) {
+    const layers = atmosphere?.sky?.cloudLayers;
+    if (!Array.isArray(layers) || !layers.length) return;
+    const cloudCover = Math.max(0, Math.min(1, Number(atmosphere?.weather?.cloudCover) || 0));
+    if (cloudCover <= 0.04) return; // a clear sky casts no shadows
+    const points = renderer._worldDiamondPoints?.();
+    if (!points || points.length < 4) return;
+
+    const top = points[0];
+    const right = points[1];
+    const bottom = points[2];
+    const left = points[3];
+    const boundsW = right.x - left.x;
+    const boundsH = bottom.y - top.y;
+    if (!(boundsW > 0) || !(boundsH > 0)) return;
+
+    // The widest, lowest layers read best as ground shadows — take the largest.
+    const ranked = [...layers].sort((a, b) => (b.scale || 0) - (a.scale || 0));
+    const count = Math.min(CLOUD_SHADOW_MAX, ranked.length);
+    const windX = Number(atmosphere?.motion?.windX) || 1;
+    const drifting = renderer.motionScale > 0;
+    // A generous span so shadows wrap fully off either edge before reappearing.
+    const span = boundsW + boundsH;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(top.x, top.y);
+    ctx.lineTo(right.x, right.y);
+    ctx.lineTo(bottom.x, bottom.y);
+    ctx.lineTo(left.x, left.y);
+    ctx.closePath();
+    ctx.clip();
+    ctx.globalCompositeOperation = 'multiply';
+
+    for (let i = 0; i < count; i++) {
+        const layer = ranked[i];
+        const parallax = Number(layer.parallax) || 0.5;
+        const drift = drifting
+            ? windX * perfNow * CLOUD_SHADOW_DRIFT_RATE * parallax
+            : 0;
+        // Wrap the layer's seeded fraction + drift across the bounding span.
+        const baseX = left.x + (((Number(layer.xFrac) || 0) * span + drift) % span + span) % span;
+        const cy = top.y + (Number(layer.yFrac) || 0.3) * boundsH;
+        const rx = Math.max(48, (Number(layer.scale) || 1) * boundsW * 0.22);
+        const ry = rx * 0.5;
+        const alpha = CLOUD_SHADOW_ALPHA * cloudCover * (0.6 + (Number(layer.alpha) || 0.3));
+
+        // Draw at the wrapped position and one span to the left so a shadow
+        // crossing the seam is never clipped to a hard edge.
+        for (const cx of [baseX - span, baseX]) {
+            const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, rx);
+            grad.addColorStop(0, `rgba(28, 32, 46, ${alpha.toFixed(3)})`);
+            grad.addColorStop(0.7, `rgba(28, 32, 46, ${(alpha * 0.5).toFixed(3)})`);
+            grad.addColorStop(1, 'rgba(28, 32, 46, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+    }
+    ctx.restore();
 }
 
 function drawBuildingLightReflections(renderer, ctx, atmosphere) {
