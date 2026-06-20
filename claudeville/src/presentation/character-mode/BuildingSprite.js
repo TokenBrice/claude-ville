@@ -1120,7 +1120,44 @@ export class BuildingSprite {
             });
         });
         for (const source of this._ritualLightSources(lightBoost)) out.push(source);
+        for (const source of this._forgeSpillLightSources(lightBoost)) out.push(source);
         return out;
+    }
+
+    // Ground-spill light from the forge molten pool: when the smithy is hot and
+    // the world is dark, the apron glow bleeds onto adjacent tiles/water via the
+    // screen-composite light path. Brightness tracks _forgeGlow (#11).
+    _forgeSpillLightSources(lightBoost = 1) {
+        const night = clamp01(this.atmosphereState?.reactions?.nightReflection ?? 0);
+        const heat = clamp01((this._forgeGlowIntensity() - FORGE_GLOW_BASELINE) / (1 - FORGE_GLOW_BASELINE));
+        const strength = night * heat;
+        if (strength <= 0.05) return [];
+        const flicker = this.motionScale ? 0.9 + Math.sin(this.frame * 0.07) * 0.1 : 0.9;
+        const sources = [];
+        for (const building of this.buildings) {
+            if (building.type !== 'forge') continue;
+            const entry = this.assets.getEntry(`building.${building.type}`);
+            const center = this._buildingScreenCenter(building);
+            const baseAnchor = this.assets.getAnchor(entry?.id || `building.${building.type}`);
+            sources.push(normalizeLightSource({
+                id: `forge:${building.position?.tileX ?? 0}.${building.position?.tileY ?? 0}:spill`,
+                kind: 'spark',
+                origin: {
+                    x: center.x - baseAnchor[0] + 77,
+                    y: center.y - baseAnchor[1] + 138,
+                },
+                color: '#ff9a4d',
+                radius: 52 + strength * 18,
+                alpha: strength * 0.4 * flicker * lightBoost,
+                overlay: 'atmosphere.light.fire-glow',
+                buildingType: building.type,
+                building,
+            }, {
+                buildingType: building.type,
+                building,
+            }));
+        }
+        return sources;
     }
 
     _staticLightSources() {
@@ -2187,8 +2224,35 @@ export class BuildingSprite {
         ctx.beginPath();
         ctx.ellipse(hearth.x + 2, hearth.y - 1, 55, 32, -0.24, 0, Math.PI * 2);
         ctx.fill();
+        this._drawForgeMoltenSpill(ctx, hearth, intensity);
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
+    }
+
+    // Molten-glow pool that spills onto the cobble apron in front of the forge
+    // when the smithy is hot and the world is dark. Brightness signals real
+    // smithing activity (_forgeGlow). Flicker rides the slow building pulse
+    // band; reduced motion holds a steady, non-flickering fill (#11).
+    _drawForgeMoltenSpill(ctx, hearth, intensity) {
+        const night = clamp01(this.atmosphereState?.reactions?.nightReflection ?? 0);
+        const heat = clamp01((this._forgeGlowIntensity() - FORGE_GLOW_BASELINE) / (1 - FORGE_GLOW_BASELINE));
+        const strength = night * Math.max(heat, intensity * 0.6);
+        if (strength <= 0.04) return;
+        const flicker = this.motionScale
+            ? 0.86 + Math.sin(this.frame * 0.07) * 0.10 + Math.sin(this.frame * 0.17) * 0.04
+            : 0.9;
+        const cx = hearth.x + 2;
+        const cy = hearth.y + 20;
+        const rx = 46 + strength * 14;
+        const pool = ctx.createRadialGradient(cx, cy, 1, cx, cy, rx);
+        pool.addColorStop(0, `rgba(255, 178, 86, ${0.26 + strength * 0.30})`);
+        pool.addColorStop(0.5, `rgba(255, 120, 40, ${0.12 + strength * 0.18})`);
+        pool.addColorStop(1, 'rgba(255, 70, 20, 0)');
+        ctx.globalAlpha = (0.18 + strength * 0.46) * flicker;
+        ctx.fillStyle = pool;
+        ctx.beginPath();
+        ctx.ellipse(cx, cy, rx, 16 + strength * 6, -0.18, 0, Math.PI * 2);
+        ctx.fill();
     }
 
     _drawForgeRoofAndStack(ctx, chimney, hearth, flicker, pulse) {

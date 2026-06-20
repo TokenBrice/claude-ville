@@ -315,6 +315,10 @@ export class AgentSprite {
         // index a one-shot particle was fired on, so each downbeat fires once.
         this._toolRitual = null;
         this._ritualDownbeat = -1;
+        // #13 — last mood-mote cadence cycle a fret/sparkle was emitted on, so
+        // each distressed/proud beat fires a single mote (never under reduced
+        // motion, never while moving — the static posture carries the cue then).
+        this._moodMoteBeat = -1;
 
         this._lastStatus = agent?.status || null;
         this._completedAtMs = 0;
@@ -1161,13 +1165,29 @@ export class AgentSprite {
         return 1;
     }
 
+    // #13 — mood body language. `staticDy` is the resting head offset (also the
+    // reduced-motion fallback: +down = hunch/slump, -up = proud lift), `bobScale`
+    // scales the idle bob, and `idleFrame` (when set) pins a held idle frame so
+    // the slump/hunch reads as a posture, not a mid-cycle pose. Distressed hunch
+    // and tired slump both drop the head; proud lifts it.
     _moodPostureCue() {
         const mood = this.agent?.mood;
         const intensity = this._clamp(Number(mood?.intensity) || 0, 0, 1);
-        if (!mood || intensity <= 0) return { bobScale: 1, staticDy: 0 };
-        if (mood.type === 'tired') return { bobScale: 1 - 0.5 * intensity, staticDy: 1 };
-        if (mood.type === 'proud') return { bobScale: 1 + 0.25 * intensity, staticDy: -1 };
-        return { bobScale: 1, staticDy: 0 };
+        if (!mood || intensity <= 0) return { bobScale: 1, staticDy: 0, idleFrame: null };
+        if (mood.type === 'distressed') {
+            // Head-down hunch with a tighter, faster fret in the bob.
+            return { bobScale: 1 - 0.35 * intensity, staticDy: Math.round(2 * intensity) || 1, idleFrame: null };
+        }
+        if (mood.type === 'tired') {
+            // Deeper slump; at strong fatigue hold the eye-shut idle frame.
+            return {
+                bobScale: 1 - 0.5 * intensity,
+                staticDy: Math.round(3 * intensity) || 1,
+                idleFrame: intensity >= 0.5 ? (IDLE_FRAMES - 1) : null,
+            };
+        }
+        if (mood.type === 'proud') return { bobScale: 1 + 0.25 * intensity, staticDy: -Math.round(2 * intensity) || -1, idleFrame: null };
+        return { bobScale: 1, staticDy: 0, idleFrame: null };
     }
 
     _moodShadowTint() {
@@ -1350,6 +1370,7 @@ export class AgentSprite {
         this.statusAnim += 0.05 * this.motionScale * frameScale;
         this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
         this._advanceToolRitualGesture(particleSystem);
+        this._advanceMoodPostureMotes(particleSystem);
 
         // Handle chatting state
         if (this.chatting) {
@@ -1858,14 +1879,19 @@ export class AgentSprite {
             return;
         }
 
-        const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
+        // #13 — tired villagers hold an eye-shut idle frame; the posture cue
+        // supplies the override so the slump reads as a held rest, not motion.
+        const posture = this._moodPostureCue();
+        const renderFrame = (this.animState === 'idle' && posture.idleFrame != null)
+            ? posture.idleFrame
+            : this.frame;
+        const cell = this.spriteSheet.cell(this.animState, this.direction, renderFrame);
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(cell);
         const drawScale = this._spriteDrawScale(bounds);
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
         // IDLE-status agents bob slower and shallower to read as "resting".
         const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
-        const posture = this._moodPostureCue();
         const bobY = this.animState === 'idle'
             ? this.motionScale > 0
                 ? Math.round(
@@ -4502,6 +4528,35 @@ export class AgentSprite {
             ctx.restore();
             return;
         }
+    }
+
+    // #13 — mood body-language motes on a slow cadence: distressed sheds a
+    // sinking fret speck near the head, proud lets a sparkle rise above it. One
+    // mote per beat (a single medium pulse per agent) and never while a tool
+    // ritual is mid-gesture, so it does not stack on the working glow. Reduced
+    // motion (motionScale 0) or movement fires nothing — the static head-drop /
+    // lift posture is the standing cue in that case.
+    _advanceMoodPostureMotes(particleSystem) {
+        if (!particleSystem || this.motionScale <= 0 || this.moving || this.chatting) return;
+        // Defer to the building work-gesture so only one mote source is active.
+        if (this._toolRitual?.pose && this._toolRitual.phase !== 'fading') return;
+        const mood = this.agent?.mood;
+        const intensity = this._clamp(Number(mood?.intensity) || 0, 0, 1);
+        if (!mood || intensity <= 0) return;
+
+        let preset = null;
+        let period = 0;
+        let dy = -28;
+        if (mood.type === 'distressed') { preset = 'fretMote'; period = 2200; dy = -34; }
+        else if (mood.type === 'proud') { preset = 'sparkle'; period = 3400; dy = -40; }
+        else return;
+
+        // Stagger beats per agent so a crowd does not pulse in unison.
+        const offset = Math.abs(this._hash(`${this.agent?.id || ''}:mood-mote`)) % period;
+        const beat = Math.floor((Date.now() + offset) / period);
+        if (beat === this._moodMoteBeat) return;
+        this._moodMoteBeat = beat;
+        particleSystem.spawn(preset, this.x, this.y + dy, 1);
     }
 
     // Building work-gesture downbeat: spawn one particle per gesture cycle so

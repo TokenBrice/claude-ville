@@ -198,6 +198,17 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'random',
     },
+    // #13 — distressed-mood fret mote: a small, faint, slow-sinking worry speck
+    // (mood accent `distressed` #ff8a7a). Sinks rather than rises so the cue
+    // reads as a sagging fret, not a celebratory spark.
+    fretMote: {
+        colors: ['#ff8a7a', '#e57a6c', '#d9a08f'],
+        size: [1, 2],
+        life: [22, 40],
+        speed: [0.1, 0.28],
+        gravity: false,
+        direction: 'down',
+    },
     rainSplash: {
         colors: ['#cfe9f7', '#a8d4ee', '#e8f6ff'],
         size: [1, 2],
