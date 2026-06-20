@@ -3721,7 +3721,7 @@ export class IsometricRenderer {
             return null;
         }
         const dpr = 1;
-        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|edge`;
+        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|edge|atmo-persp`;
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
@@ -3765,9 +3765,38 @@ export class IsometricRenderer {
             this._drawAmbientGroundProps(ctx);
             this._drawWorldEdgeRim(ctx);
             this._bakePerimeterCliffShelf(ctx);
+            this._bakeAtmosphericPerspective(ctx);
         } finally {
             this.motionScale = previousMotionScale;
         }
+    }
+
+    // Atmospheric perspective: a faint top-to-bottom cool-lighter wash baked into
+    // the terrain cache so far rows (low tileY, high on screen) read hazier than
+    // near rows (high tileY, low on screen) — the painterly "distant things recede"
+    // trick at zero per-frame cost. Clipped to the world diamond, multiply-blended,
+    // ~8% at the far apex fading to 0 across the near half. No motion (baked).
+    _bakeAtmosphericPerspective(ctx) {
+        const points = this._worldDiamondPoints();
+        const topY = points[0].y;       // far apex (tileY≈0)
+        const bottomY = points[2].y;    // near apex (tileY≈MAP_SIZE)
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(points[0].x, points[0].y);
+        for (let i = 1; i < points.length; i++) ctx.lineTo(points[i].x, points[i].y);
+        ctx.closePath();
+        ctx.clip();
+        ctx.globalCompositeOperation = 'multiply';
+        const haze = ctx.createLinearGradient(0, topY, 0, bottomY);
+        // Cool, high-value haze tint — multiply leaves near rows untouched (white→1x)
+        // and gently desaturates/cools the far rows toward atmospheric distance.
+        haze.addColorStop(0, 'rgb(196, 214, 232)');
+        haze.addColorStop(0.5, 'rgb(232, 240, 248)');
+        haze.addColorStop(1, 'rgb(255, 255, 255)');
+        ctx.fillStyle = haze;
+        ctx.globalAlpha = 0.5;          // peak ~8% effective cool wash at the far apex
+        ctx.fillRect(points[3].x, topY, points[1].x - points[3].x, bottomY - topY);
+        ctx.restore();
     }
 
     _buildDistrictPropSprites() {
