@@ -50,6 +50,28 @@ const RITUAL_GESTURE_PERIOD_MS = {
     scan: 1300,
 };
 
+// #41 — place-specific idle posture for villagers loitering at a scenic point.
+// Keyed by AMBIENT_SCENIC_POINTS id; AgentSprite consults this while parked-idle
+// at an `ambient:<id>` destination and folds the offsets into its posture path.
+// `staticDy` (+down lean, -up lift) is also the reduced-motion resting offset;
+// `bobScale` scales the idle bob; `idleFrame` (when set) pins a held rest frame
+// (IDLE_FRAMES-1 = settled/eyes-low) so a reading or resting stance reads as a
+// pose, not mid-cycle motion. No particles, no new pulse — purely postural.
+const SCENIC_POINT_POSTURE = Object.freeze({
+    'bridge-west': { staticDy: 1, bobScale: 0.8 },        // leaning on the rail
+    'bridge-east': { staticDy: 1, bobScale: 0.8 },
+    'harbor-rail': { staticDy: 1, bobScale: 0.75 },       // watching the water
+    'harbor-ledger': { staticDy: 1, bobScale: 0.7, idleFrame: 3 }, // bent over the ledger
+    'portal-ruins': { staticDy: -1, bobScale: 0.85 },     // craning at the arch
+    'mine-cart': { staticDy: 1, bobScale: 0.8 },
+    'forest-edge': { staticDy: 2, bobScale: 0.6, idleFrame: 3 },   // resting on the stone
+    'archive-alcove': { staticDy: 1, bobScale: 0.65, idleFrame: 3 }, // reading, head low
+    'observatory-view': { staticDy: -2, bobScale: 0.9 },  // skywatch, head up
+    'lighthouse-shore': { staticDy: 1, bobScale: 0.75 },  // gazing out to sea
+    'plaza-corner': { staticDy: 0, bobScale: 0.85 },
+    'forge-handoff': { staticDy: 0, bobScale: 0.9 },
+});
+
 const COMMAND_LIFECYCLE_ACTIONS = {
     spawn: 'summon',
     send_input: 'familiar-send',
@@ -470,4 +492,4 @@ export class RitualConductor {
     }
 }
 
-export { MAX_CONCURRENT_RITUALS, RITUAL_GESTURE_PERIOD_MS };
+export { MAX_CONCURRENT_RITUALS, RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE };

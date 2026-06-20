@@ -1,6 +1,6 @@
 import { i18n } from '../../config/i18n.js';
-import { PROVIDER_HUES, STATUS_VISUALS } from '../../config/theme.js';
-import { toolCategory, toolIcon, shortToolName } from '../../domain/services/ToolIdentity.js';
+import { BUILDING_ACCENTS, BUILDING_ACCENTS_RGB, PROVIDER_HUES, STATUS_VISUALS } from '../../config/theme.js';
+import { buildingForTool, toolCategory, toolIcon, shortToolName } from '../../domain/services/ToolIdentity.js';
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
@@ -135,6 +135,51 @@ export function currentToolPresentation(agent, translator = i18n) {
             ? statusInfo.label
             : `${translator?.t?.('statusWaiting') || 'Waiting'}...`,
         detail: '',
+    };
+}
+
+// #30 — Dashboard cards carry their World building identity.
+// Each building's emblem glyph + accent so a card visually echoes the village
+// district its agent works in (Archive = cool blue, Forge = ember, ...).
+const BUILDING_EMBLEMS = Object.freeze({
+    command: '⚑',     // pennant — orchestration
+    taskboard: '\u{1F4CB}', // clipboard — planning
+    archive: '\u{1F4D6}',  // open book — reading
+    mine: '⛏',        // pick — extraction
+    forge: '\u{1F528}',    // hammer — editing
+    harbor: '⚓',      // anchor — git flow
+    watchtower: '\u{1F3F0}', // tower — watch
+    observatory: '\u{1F52D}', // telescope — research
+    portal: '\u{1F310}',   // globe — preview
+});
+
+// Derive an agent's World building from its live tool (via RitualConductor's
+// tool->building map in ToolIdentity), falling back to the most recent tool
+// in history. Returns null when no district can be inferred.
+export function buildingClassForAgent(agent) {
+    if (!agent) return null;
+    if (agent.currentTool) {
+        const fromCurrent = buildingForTool(agent.currentTool, agent.currentToolInput);
+        if (fromCurrent && BUILDING_EMBLEMS[fromCurrent]) return fromCurrent;
+    }
+    const history = agent.toolHistory;
+    if (Array.isArray(history)) {
+        for (let i = history.length - 1; i >= 0; i--) {
+            const entry = history[i];
+            const building = buildingForTool(entry?.tool, entry?.detail ?? entry?.input);
+            if (building && BUILDING_EMBLEMS[building]) return building;
+        }
+    }
+    return null;
+}
+
+export function buildingPresentation(building) {
+    if (!building || !BUILDING_EMBLEMS[building]) return null;
+    return {
+        building,
+        emblem: BUILDING_EMBLEMS[building],
+        accent: BUILDING_ACCENTS[building] || '#8b8b9e',
+        accentRgb: BUILDING_ACCENTS_RGB[building] || '139, 139, 158',
     };
 }
 

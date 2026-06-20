@@ -124,7 +124,8 @@
     padding: 8px 14px;
     cursor: pointer;
     transition: background 0.15s;
-    border-left: 3px solid transparent;
+    /* #43 repo-tinted left rail: muted so it reads as a quiet accent. */
+    border-left: 3px solid color-mix(in srgb, var(--cv-repo-color, transparent) 62%, transparent);
     border-bottom: 1px solid var(--cv-divider);
     contain: layout style;
 }
@@ -227,6 +228,57 @@
 @keyframes sidebar-pulse-dot {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
+}
+
+/* #43 Working rows breathe a soft inner glow (pulse band: subtle, ~3.2s).
+   Selected rows keep their own #31 glow, so only un-selected working rows breathe. */
+.sidebar__agent--working:not(.sidebar__agent--selected) {
+    animation: sidebar-working-breathe 3.2s ease-in-out infinite;
+}
+
+@keyframes sidebar-working-breathe {
+    0%, 100% {
+        box-shadow: inset 10px 0 16px rgba(74, 222, 128, 0.05);
+    }
+    50% {
+        box-shadow: inset 16px 0 22px rgba(74, 222, 128, 0.14);
+    }
+}
+
+/* Rail: dot + working caret stacked compactly in the left gutter. */
+.sidebar__agent-rail {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
+}
+
+/* Working-caret spinner: a small rotating arc beside the breathing dot. */
+.sidebar__working-caret {
+    width: 8px;
+    height: 8px;
+    flex-shrink: 0;
+    border-radius: 50%;
+    border: 1px solid transparent;
+    border-top-color: var(--cv-status-working, #4ade80);
+    border-right-color: color-mix(in srgb, var(--cv-status-working, #4ade80) 40%, transparent);
+    animation: sidebar-caret-spin 0.9s linear infinite;
+}
+
+@keyframes sidebar-caret-spin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .sidebar__agent--working:not(.sidebar__agent--selected) {
+        animation: none;
+        box-shadow: inset 14px 0 20px rgba(74, 222, 128, 0.12);
+    }
+    .sidebar__working-caret {
+        animation: none;
+        /* Static partial ring still reads as "in progress". */
+        transform: rotate(45deg);
+    }
 }
 
 .sidebar__agent-info {

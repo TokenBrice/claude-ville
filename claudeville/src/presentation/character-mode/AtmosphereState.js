@@ -850,6 +850,21 @@ export function normalizeLightingState(state = {}) {
     };
 }
 
+// #33 — convert an atmosphere snapshot's wind into a signed horizontal drift
+// velocity (world units / 16ms frame) for rising smoke columns. Single source
+// of truth so chimney smoke, mine dust, and the harbor cookfire all lean by the
+// same amount. `weather.windX` is the canonical signed wind (~-1.4..1.4); we
+// scale it to a gentle sub-pixel lean. Returns 0 when particle motion is off
+// (the snapshot's `motion.particleEnabled === false`) so the reduced-motion
+// static wisp never inherits drift.
+const SMOKE_WIND_DRIFT_SCALE = 0.26;
+export function smokeWindDrift(atmosphere) {
+    if (!atmosphere || atmosphere.motion?.particleEnabled === false) return 0;
+    const windX = Number(atmosphere.weather?.windX ?? atmosphere.motion?.windX);
+    if (!Number.isFinite(windX)) return 0;
+    return clamp(windX, -1.4, 1.4) * SMOKE_WIND_DRIFT_SCALE;
+}
+
 function buildReactions(phase, phaseProgress, weather, lighting) {
     const precipitation = clamp(weather.precipitation ?? 0);
     const fog = clamp(weather.fog ?? 0);

@@ -13,7 +13,8 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
-import { normalizeLightingState } from './AtmosphereState.js';
+import { normalizeLightingState, smokeWindDrift } from './AtmosphereState.js';
+import { SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import {
     BUILDING_EMITTER_FALLBACKS,
@@ -1530,6 +1531,11 @@ export class BuildingSprite {
         }
         if (building.type === 'forge') {
             if (shouldDrawLocalY(118)) this._drawForgeEnhancement(ctx, localPoint, pulse, building);
+            // #33 — reduced-motion fallback: a single static smoke wisp above the
+            // chimney, warmed by forge heat, standing in for the live column.
+            if (!this.motionScale && shouldDrawLocalY(28)) {
+                this._drawStaticSmokeWisp(ctx, localPoint(175, 28), { heat: this._forgeGlowIntensity() });
+            }
         } else if (building.type === 'mine') {
             if (!shouldDrawLocalY(158)) {
                 ctx.restore();
@@ -1559,6 +1565,11 @@ export class BuildingSprite {
             ctx.stroke();
             this._drawMineRitual(ctx, mouth, mineRitual);
             this._drawMineReserve(ctx, mouth, building);
+            // #33 — reduced-motion fallback: a single static dust wisp at the
+            // cave mouth, standing in for the live dust plume.
+            if (!this.motionScale) {
+                this._drawStaticSmokeWisp(ctx, localPoint(128, 158), { dust: true });
+            }
         } else if (building.type === 'portal') {
             if (!shouldDrawLocalY(60)) {
                 ctx.restore();
@@ -1596,7 +1607,14 @@ export class BuildingSprite {
                 this._drawWatchtowerRitual(ctx, beacon);
             }
         } else if (building.type === 'harbor') {
-            if (splitPass !== 'back') this._drawHarborMasterOffice(ctx, localPoint, pulse, building);
+            if (splitPass !== 'back') {
+                this._drawHarborMasterOffice(ctx, localPoint, pulse, building);
+                // #33 — reduced-motion fallback: a single static cookfire wisp
+                // above the harbor brazier, standing in for the live smoke.
+                if (!this.motionScale) {
+                    this._drawStaticSmokeWisp(ctx, localPoint(48, 42), { heat: 0.4 });
+                }
+            }
         } else if (building.type === 'archive') {
             if (splitPass !== 'back') this._drawArchiveEnhancement(ctx, localPoint, pulse);
         } else if (building.type === 'taskboard') {
@@ -2456,6 +2474,33 @@ export class BuildingSprite {
         ctx.fill();
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
+    }
+
+    // #33 — static smoke/dust wisp drawn only under reduced motion in place of
+    // the live particle column. A short stack of three softening puffs rising
+    // from the emitter point: no per-frame term, so it's safe in the static
+    // render and reads as a thin column of held smoke rather than a flat blob.
+    _drawStaticSmokeWisp(ctx, point, { heat = 0, dust = false } = {}) {
+        if (!point) return;
+        const baseColor = dust
+            ? '#b79b70'
+            : mixHex('#8a8076', '#a8806b', clamp01(heat) * 0.7);
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.fillStyle = baseColor;
+        const puffs = [
+            { dy: 0, rx: 6, ry: 4, alpha: 0.30 },
+            { dy: -9, rx: 7.5, ry: 5, alpha: 0.22 },
+            { dy: -19, rx: 9, ry: 6, alpha: 0.14 },
+        ];
+        for (const puff of puffs) {
+            ctx.globalAlpha = puff.alpha;
+            ctx.beginPath();
+            ctx.ellipse(point.x, point.y + puff.dy, puff.rx, puff.ry, -0.18, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.globalAlpha = 1;
+        ctx.restore();
     }
 
     _drawForgeMouth(ctx, hearth, flicker, pulse) {
@@ -3471,6 +3516,10 @@ export class BuildingSprite {
         // Door-region archiveMote emitters (at y≈128) burst more when read
         // intensity passes 0.6. Crest emitter (y≈82) is unaffected.
         const archiveReadIntensity = b.type === 'archive' ? (this._archiveReadIntensity || 0) : 0;
+        // #33 — signed wind drift shared by the smoke-family emitters so the
+        // forge chimney column, mine dust, and harbor cookfire all lean downwind
+        // by the same amount.
+        const windDrift = smokeWindDrift(this.atmosphereState);
         for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
             let chanceBoost = b.type === 'forge'
                 ? 0.7 + this._forgeGlowIntensity() * 1.1
@@ -3479,16 +3528,45 @@ export class BuildingSprite {
                 chanceBoost *= 1 + (archiveReadIntensity - 0.6) * 5;
             }
             const chance = emitter.chance * chanceBoost * presenceMult * beaconMult;
-            this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt);
+            const options = this._smokeEmitterOptions(b, emitter.type, windDrift);
+            this._spawnBuildingParticle(emitter.type, center, baseAnchor, emitter.at, chance, emitter.count || 1, dt, options);
         }
     }
 
-    _spawnBuildingParticle(type, center, baseAnchor, at, chance, count, dt = 16) {
+    // #33 — per-emitter spawn options for the volumetric smoke family. Returns
+    // null for non-smoke emitters (unchanged behaviour). Smoke/dust/cookfire get
+    // the shared wind drift; forge smoke additionally warms its palette and grows
+    // its plume as `_forgeGlow` climbs so a hot hearth reads as a denser, browner
+    // column. Wind also widens the spawn spread so a leaning column smears out.
+    _smokeEmitterOptions(building, particleType, windDrift) {
+        const isForgeSmoke = building.type === 'forge' && particleType === 'smoke';
+        const isMineDust = building.type === 'mine' && particleType === 'mineDust';
+        const isHarborCookfire = building.type === 'harbor' && particleType === 'torch';
+        if (!isForgeSmoke && !isMineDust && !isHarborCookfire) return null;
+
+        const options = {};
+        if (windDrift) options.windX = windDrift;
+        const lean = Math.abs(windDrift);
+        if (lean) options.spread = [2.4 + lean * 2.6, 2.4 + lean * 2.6];
+
+        if (isForgeSmoke) {
+            const heat = this._forgeGlowIntensity();
+            // Banked-forge baseline grey blends toward ember-lit soot as the
+            // hearth runs hot; a hot forge also pushes a bigger, taller plume.
+            const warmth = clamp01((heat - FORGE_GLOW_BASELINE) / (1 - FORGE_GLOW_BASELINE));
+            options.colors = SMOKE_COOL_COLORS.map((cool, i) => mixHex(cool, SMOKE_WARM_COLORS[i] || cool, warmth * 0.85));
+            options.size = [3 + heat * 1.6, 6.5 + heat * 2.2];
+        }
+        return options;
+    }
+
+    _spawnBuildingParticle(type, center, baseAnchor, at, chance, count, dt = 16, options = null) {
         if (Math.random() > chanceForDt(chance, dt)) return;
         const [lx, ly] = at;
         const wx = center.x - baseAnchor[0] + lx;
         const wy = center.y - baseAnchor[1] + ly;
-        this.particles.spawn(type, wx, wy, count);
+        if (options) this.particles.spawn(type, wx, wy, count, options);
+        else this.particles.spawn(type, wx, wy, count);
     }
 
     _updateVisitorCounts() {

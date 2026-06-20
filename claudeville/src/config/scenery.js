@@ -520,6 +520,29 @@ export const AMBIENT_SCENIC_POINTS = Object.freeze([
     { id: 'forge-handoff', tileX: 25, tileY: 32, district: 'workshop', reason: 'handoff-path', tags: ['forge', 'taskboard'] },
 ]);
 
+// #41 — Scenic-point storytelling props. Authored detail baked at the
+// AMBIENT_SCENIC_POINTS so each loiter spot reads as an inhabited place: a
+// coiled net at the harbor rail, scroll-bundles in the reading alcove, a mossy
+// resting stone at the forest edge. All `layer: 'cache'` so they fold into the
+// terrain bake with zero per-frame cost. `scenicPoint` links each prop to its
+// point id; `tileX/tileY` are offset slightly off the loiter tile so the
+// standing villager and the prop compose rather than overlap. Existing,
+// manifest-validated sprite ids only — no new PNGs, so no assetVersion bump.
+export const SCENIC_POINT_PROPS = [
+    { scenicPoint: 'bridge-west', tileX: 14.6, tileY: 27.4, id: 'prop.lantern', layer: 'cache' },
+    { scenicPoint: 'bridge-east', tileX: 18.6, tileY: 30.5, id: 'prop.lantern', layer: 'cache' },
+    { scenicPoint: 'harbor-rail', tileX: 31.5, tileY: 23.4, id: 'prop.netRack', layer: 'cache' },
+    { scenicPoint: 'harbor-ledger', tileX: 33.5, tileY: 24.3, id: 'prop.scrollCrates', layer: 'cache' },
+    { scenicPoint: 'portal-ruins', tileX: 4.5, tileY: 35.5, id: 'prop.runestone', layer: 'cache' },
+    { scenicPoint: 'mine-cart', tileX: 15.4, tileY: 36.5, id: 'prop.oreCart', layer: 'cache' },
+    { scenicPoint: 'forest-edge', tileX: 25.5, tileY: 11.4, id: 'veg.standingStone.mossy', layer: 'cache' },
+    { scenicPoint: 'archive-alcove', tileX: 10.4, tileY: 17.6, id: 'prop.scrollCrates', layer: 'cache' },
+    { scenicPoint: 'observatory-view', tileX: 25.4, tileY: 18.5, id: 'prop.runestone', layer: 'cache' },
+    { scenicPoint: 'lighthouse-shore', tileX: 29.6, tileY: 15.4, id: 'prop.driftwood.log', layer: 'cache' },
+    { scenicPoint: 'plaza-corner', tileX: 17.5, tileY: 22.6, id: 'prop.flowerCart', layer: 'cache' },
+    { scenicPoint: 'forge-handoff', tileX: 24.5, tileY: 32.4, id: 'prop.scrollCrates', layer: 'cache' },
+];
+
 export const GULL_FLIGHT_FRAMES = [
     'prop.gullFlight.up',
     'prop.gullFlight.level',

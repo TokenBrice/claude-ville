@@ -15,6 +15,7 @@ import {
 } from './AgentPresentation.js';
 import { normalizeGitEvent } from './GitEventIdentity.js';
 import { contextWindowLimitForModel } from './ModelVisualIdentity.js';
+import { AvatarCanvas } from '../dashboard-mode/AvatarCanvas.js';
 
 const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
@@ -83,6 +84,8 @@ export class ActivityPanel {
         };
         this.currentAgent = null;
         this._mode = null;
+        this._heroAvatar = null;
+        this._heroPortraitEl = null;
         this._selectedBuilding = null;
         this._latestUsage = null;
         this._buildingPresenceByType = new Map();
@@ -482,6 +485,7 @@ export class ActivityPanel {
         this._showAgentSections();
         this.panelEl.style.display = '';
         document.body.classList.add('cv-panel-open');
+        this._mountHeroPortrait(agent);
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
         this._updateJourney(agent);
@@ -503,6 +507,7 @@ export class ActivityPanel {
             // Notify renderer/sidebar/dashboard so highlight clears.
             emitAgentDeselected();
         }
+        this._teardownHeroPortrait();
         this._mode = 'building';
         this._selectedBuilding = building;
         this._renderSignatures.buildingSignal = '';
@@ -523,6 +528,7 @@ export class ActivityPanel {
         const wasBuilding = this._mode === 'building';
         this.panelEl.style.display = 'none';
         document.body.classList.remove('cv-panel-open');
+        this._teardownHeroPortrait();
         this.currentAgent = null;
         this._renderSignatures = this._emptyRenderSignatures();
         this._updatePinToggle(null);
@@ -535,6 +541,7 @@ export class ActivityPanel {
 
     _updateInfo(agent) {
         const statusInfo = statusPresentation(agent.status);
+        this._refreshHeroPortrait(agent, statusInfo);
         this.dom.panelAgentName.textContent = agent.name;
         const statusEl = this.dom.panelAgentStatus;
         statusEl.textContent = statusInfo.label.toUpperCase();
@@ -564,6 +571,46 @@ export class ActivityPanel {
             this.dom.panelModeRow.style.display = 'none';
             this.dom.panelMode.textContent = '';
             this.dom.panelMode.className = 'activity-panel__value';
+        }
+    }
+
+    // ─── Hero portrait (#46) ────────────────────────────
+    // A 96×96 integer-scaled pixel avatar in the panel header, framed by an
+    // effort-aura color and a status-tinted ground. Created on open, destroyed
+    // on close, so only the watched villager ever holds a canvas.
+
+    _mountHeroPortrait(agent) {
+        const info = this.panelEl?.querySelector('.activity-panel__agent-info');
+        if (!info) return;
+        this._teardownHeroPortrait();
+        const frame = el('div', { className: 'activity-panel__hero-portrait' });
+        this._heroAvatar = new AvatarCanvas(agent, 'hero');
+        frame.appendChild(this._heroAvatar.canvas);
+        // Sit the portrait ahead of the name/status text.
+        info.insertBefore(frame, info.firstChild);
+        this._heroPortraitEl = frame;
+    }
+
+    _refreshHeroPortrait(agent, statusInfo = statusPresentation(agent.status)) {
+        if (!this._heroAvatar || !this._heroPortraitEl) return;
+        // AvatarCanvas tracks the same agent reference; redraw for sprite/mood
+        // changes and restyle the aura/status frame.
+        this._heroAvatar.agent = agent;
+        this._heroAvatar.draw();
+        const aura = this._heroAvatar.auraColor();
+        this._heroPortraitEl.style.setProperty('--cv-hero-aura', aura);
+        this._heroPortraitEl.className =
+            `activity-panel__hero-portrait activity-panel__hero-portrait--${statusInfo.status}`;
+    }
+
+    _teardownHeroPortrait() {
+        if (this._heroAvatar) {
+            this._heroAvatar.destroy();
+            this._heroAvatar = null;
+        }
+        if (this._heroPortraitEl) {
+            this._heroPortraitEl.remove();
+            this._heroPortraitEl = null;
         }
     }
 

@@ -23,6 +23,7 @@ import {
     MARINE_FISH_SCHOOLS,
     OPEN_SEA_FLOCK_FORMATION,
     OPEN_SEA_FLOCK_ROUTES,
+    SCENIC_POINT_PROPS,
     TROPICAL_BROADLEAF_TREES,
     TROPICAL_PALMS,
     TROPICAL_WATERFALLS,
@@ -8765,6 +8766,14 @@ export class IsometricRenderer {
                 this.sprites.drawSprite(ctx, `prop.${prop.type}`, x, y);
             }
             for (const prop of DISTRICT_PROPS) {
+                if (prop.layer !== 'cache') continue;
+                const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
+                const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;
+                this.sprites.drawSprite(ctx, prop.id, x, y);
+            }
+            // #41 — scenic-point storytelling props baked alongside the other
+            // cache props so each loiter spot reads as an inhabited place.
+            for (const prop of SCENIC_POINT_PROPS) {
                 if (prop.layer !== 'cache') continue;
                 const x = (prop.tileX - prop.tileY) * TILE_WIDTH / 2;
                 const y = (prop.tileX + prop.tileY) * TILE_HEIGHT / 2;

@@ -7,7 +7,7 @@ import { getTeamColor } from '../shared/TeamColor.js';
 import { runtimeRoleAccessory } from '../shared/RoleAccessory.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
-import { RITUAL_GESTURE_PERIOD_MS } from './RitualConductor.js';
+import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE } from './RitualConductor.js';
 import { pulseAlpha } from './PulsePolicy.js';
 import { drawToolGlyphBadge, toolGlyphKey } from './ToolGlyphBadge.js';
 import { Compositor } from './Compositor.js';
@@ -1204,6 +1204,19 @@ export class AgentSprite {
         return { bobScale: 1, staticDy: 0, idleFrame: null };
     }
 
+    // #41 — place-specific idle posture for a villager parked at a scenic loiter
+    // point (leaning on the harbor rail, reading in the archive alcove, resting
+    // on the forest stone). Applies only while standing still at an `ambient:<id>`
+    // destination; layered on top of the mood cue. Static-only — the offsets are
+    // the same under reduced motion (held frame / lean), so there is nothing to
+    // disable. Returns null when not parked at a known scenic point.
+    _scenicPostureCue() {
+        if (this.moving) return null;
+        const type = this._lastBuildingType;
+        if (typeof type !== 'string' || !type.startsWith('ambient:')) return null;
+        return SCENIC_POINT_POSTURE[type.slice('ambient:'.length)] || null;
+    }
+
     // #40 — true when the agent is in an error/limit incident and storming the
     // Pharos. Errored/rate-limited agents already route to the watchtower (see
     // `_ambientBuildingTypeForState`); this drives the distinct distressed gait
@@ -1924,6 +1937,18 @@ export class AgentSprite {
         // #13 — tired villagers hold an eye-shut idle frame; the posture cue
         // supplies the override so the slump reads as a held rest, not motion.
         const posture = this._moodPostureCue();
+        // #41 — when there is no active mood override, a villager parked at a
+        // scenic loiter point adopts a place-specific resting stance (lean,
+        // read, gaze). Mood always wins; scenic posture only fills the neutral
+        // idle case. Purely static (no pulse), so reduced motion shows the same.
+        if (posture.staticDy === 0 && posture.bobScale === 1 && posture.idleFrame == null) {
+            const scenic = this._scenicPostureCue();
+            if (scenic) {
+                if (Number.isFinite(scenic.staticDy)) posture.staticDy = scenic.staticDy;
+                if (Number.isFinite(scenic.bobScale)) posture.bobScale = scenic.bobScale;
+                if (scenic.idleFrame != null) posture.idleFrame = scenic.idleFrame;
+            }
+        }
         const renderFrame = (this.animState === 'idle' && posture.idleFrame != null)
             ? posture.idleFrame
             : this.frame;

@@ -303,7 +303,8 @@ export class Sidebar {
         const provider = providerPresentation(agent.provider, model.identity);
         const team = agent.teamName ? getTeamColor(agent.teamName) : null;
         const teamLabel = agent.teamName ? `Team ${shortTeamName(agent.teamName)}` : '';
-        const agentClasses = ['sidebar__agent'];
+        const status = statusClass(agent.status);
+        const agentClasses = ['sidebar__agent', `sidebar__agent--${status}`];
         if (this.selection.isSelected(agent.id)) agentClasses.push('sidebar__agent--selected');
         const nameChildren = [];
         if (team) {
@@ -338,13 +339,22 @@ export class Sidebar {
             ` ${model.label}`,
         ]);
 
-        return el('div', {
+        const dotChildren = [
+            el('span', {
+                className: ['sidebar__agent-dot', `sidebar__agent-dot--${status}`],
+            }),
+        ];
+        if (status === 'working') {
+            const caret = el('span', { className: 'sidebar__working-caret' });
+            caret.setAttribute('aria-hidden', 'true');
+            dotChildren.push(caret);
+        }
+
+        const row = el('div', {
             className: agentClasses,
             dataset: { agentId: agent.id },
         }, [
-            el('span', {
-                className: ['sidebar__agent-dot', `sidebar__agent-dot--${statusClass(agent.status)}`],
-            }),
+            el('span', { className: 'sidebar__agent-rail' }, dotChildren),
             el('div', { className: 'sidebar__agent-info' }, [
                 el('span', {
                     className: 'sidebar__agent-name',
@@ -353,6 +363,9 @@ export class Sidebar {
                 modelEl,
             ]),
         ]);
+        // Repo-tinted left rail (color-mix in CSS reads --cv-repo-color).
+        if (profile.accent) row.style.setProperty('--cv-repo-color', profile.accent);
+        return row;
     }
 
     _applyWorkflowToggleState() {

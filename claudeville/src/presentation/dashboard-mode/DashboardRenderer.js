@@ -9,6 +9,8 @@ import { formatCost, formatRelative, formatTokens, normalizeStatus, shortenHomeP
 import { AgentSelectionMirror, emitAgentSelected } from '../shared/AgentSelection.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import {
+    buildingClassForAgent,
+    buildingPresentation,
     currentToolPresentation,
     groupAgentsByProject,
     modelPresentation,
@@ -266,6 +268,7 @@ export class DashboardRenderer {
 
         card.innerHTML = `
             <div class="dash-card__header">
+                <span class="dash-card__building-emblem" aria-hidden="true" style="display: none"></span>
                 <div class="dash-card__avatar"></div>
                 <div class="dash-card__info">
                     <div class="dash-card__name"></div>
@@ -383,6 +386,7 @@ export class DashboardRenderer {
             usage: card.querySelector('.dash-card__usage'),
             usageTokens: card.querySelector('.dash-card__usage-tokens'),
             usageCost: card.querySelector('.dash-card__usage-cost'),
+            buildingEmblem: card.querySelector('.dash-card__building-emblem'),
         };
 
         return card;
@@ -394,7 +398,9 @@ export class DashboardRenderer {
         const model = modelPresentation(agent);
         const provider = providerPresentation(agent.provider, model.identity);
         const statusInfo = statusPresentation(status, i18n);
+        const building = buildingClassForAgent(agent);
         const signature = [
+            building || '',
             agent.name || '',
             agent.model || '',
             agent.effort || '',
@@ -468,6 +474,25 @@ export class DashboardRenderer {
                 this._setStyle(refs.message, 'display', '');
             } else {
                 this._setStyle(refs.message, 'display', 'none');
+            }
+
+            // #30 — district identity: faint radial wash + emblem glyph echoing
+            // the World building this agent works in (no motion).
+            const buildingInfo = buildingPresentation(building);
+            if (buildingInfo) {
+                cardEl.dataset.building = buildingInfo.building;
+                cardEl.style.setProperty('--cv-building', buildingInfo.accent);
+                cardEl.style.setProperty('--cv-building-rgb', buildingInfo.accentRgb);
+                if (refs.buildingEmblem) {
+                    this._setText(refs.buildingEmblem, buildingInfo.emblem);
+                    refs.buildingEmblem.title = `${buildingInfo.building.charAt(0).toUpperCase()}${buildingInfo.building.slice(1)} district`;
+                    this._setStyle(refs.buildingEmblem, 'display', '');
+                }
+            } else {
+                delete cardEl.dataset.building;
+                cardEl.style.removeProperty('--cv-building');
+                cardEl.style.removeProperty('--cv-building-rgb');
+                if (refs.buildingEmblem) this._setStyle(refs.buildingEmblem, 'display', 'none');
             }
         }
 

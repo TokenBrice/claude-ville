@@ -59,13 +59,16 @@ function loadSpriteImage(spriteId) {
 }
 
 export class AvatarCanvas {
-    constructor(agent) {
+    // size: 'card' (44x52 dashboard chip) | 'hero' (96x96 Activity Panel portrait, #46).
+    constructor(agent, size = 'card') {
         this.agent = agent;
+        this.size = size === 'hero' ? 'hero' : 'card';
         this.canvas = document.createElement('canvas');
-        this.canvas.width = 44;
-        this.canvas.height = 52;
-        this.canvas.style.width = '44px';
-        this.canvas.style.height = '52px';
+        const dim = this.size === 'hero' ? { w: 96, h: 96 } : { w: 44, h: 52 };
+        this.canvas.width = dim.w;
+        this.canvas.height = dim.h;
+        this.canvas.style.width = `${dim.w}px`;
+        this.canvas.style.height = `${dim.h}px`;
         this.canvas.style.imageRendering = 'pixelated';
         this.spriteImage = null;
         this.spriteId = null;
@@ -214,18 +217,36 @@ export class AvatarCanvas {
         const bounds = this._spriteFrameBounds(cellSize, sourceRow);
         const sourceW = bounds.maxX - bounds.minX + 1;
         const sourceH = bounds.maxY - bounds.minY + 1;
-        const targetH = 46;
-        const scale = targetH / Math.max(1, sourceH);
-        const targetW = Math.min(40, Math.round(sourceW * scale));
+        const hero = this.size === 'hero';
+        let targetW;
+        let targetH;
+        if (hero) {
+            // Integer-scaled blit for pixel-perfect hero portrait (#46): pick the
+            // largest integer factor that fits the 96px niche above the ellipse.
+            const fitH = Math.floor((this.canvas.height - 14) / Math.max(1, sourceH));
+            const fitW = Math.floor((this.canvas.width - 8) / Math.max(1, sourceW));
+            const factor = Math.max(1, Math.min(fitH, fitW, 4));
+            targetW = sourceW * factor;
+            targetH = sourceH * factor;
+        } else {
+            const baseH = 46;
+            const scale = baseH / Math.max(1, sourceH);
+            targetH = baseH;
+            targetW = Math.min(40, Math.round(sourceW * scale));
+        }
         const dx = Math.round((this.canvas.width - targetW) / 2);
-        const dy = Math.round(this.canvas.height - targetH - 3);
+        const groundPad = hero ? 8 : 3;
+        const dy = Math.round(this.canvas.height - targetH - groundPad);
 
         ctx.save();
         // Warm-tinted ground shadow so the avatar sits in the parchment niche
         // behind it (village house style, #20) rather than on a cold black dab.
+        const ellipseRx = hero ? 24 : 14;
+        const ellipseRy = hero ? 6 : 4;
+        const ellipseY = this.canvas.height - (hero ? 7 : 5);
         ctx.fillStyle = 'rgba(20, 12, 6, 0.34)';
         ctx.beginPath();
-        ctx.ellipse(this.canvas.width / 2, this.canvas.height - 5, 14, 4, 0, 0, Math.PI * 2);
+        ctx.ellipse(this.canvas.width / 2, ellipseY, ellipseRx, ellipseRy, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.drawImage(
             this.spriteImage,
@@ -514,6 +535,18 @@ export class AvatarCanvas {
                 ctx.fillRect(-3, -16, 6, 4);
                 break;
         }
+    }
+
+    /**
+     * Effort-aura color for the hero portrait frame (#46): the agent's model
+     * accent, escalating with reasoning effort tier. Falls back to gold.
+     */
+    auraColor() {
+        const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
+        const accent = identity.accent || [];
+        const byTier = { low: 0, medium: 0, high: 1, xhigh: 2, max: 2 };
+        const idx = byTier[identity.effortTier] ?? 0;
+        return accent[idx] || accent[0] || '#d6a951';
     }
 
     destroy() {

@@ -65,9 +65,60 @@ body[data-cv-selected] .activity-panel__header::before {
 .activity-panel__agent-info {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 10px;
     min-width: 0;
 }
+
+/* ─── Hero portrait (#46) ─────────────────────────── */
+/* A 96×96 pixel avatar framed by an effort-aura ring + status-tinted niche.
+   The aura color arrives as --cv-hero-aura from AvatarCanvas.auraColor(). */
+.activity-panel__hero-portrait {
+    --cv-hero-aura: var(--cv-gold);
+    --cv-hero-status: var(--cv-text-gray);
+    position: relative;
+    flex-shrink: 0;
+    width: 96px;
+    height: 96px;
+    border-radius: 4px;
+    background:
+        radial-gradient(ellipse at 50% 92%, color-mix(in srgb, var(--cv-hero-status) 22%, transparent), transparent 62%),
+        radial-gradient(circle at 50% 30%, rgba(246, 218, 130, 0.1), transparent 60%),
+        linear-gradient(180deg, rgba(54, 38, 24, 0.6), rgba(16, 11, 10, 0.72));
+    border: 1px solid color-mix(in srgb, var(--cv-hero-aura) 52%, rgba(199, 157, 76, 0.4));
+    box-shadow:
+        inset 0 0 0 1px rgba(0, 0, 0, 0.3),
+        0 0 10px color-mix(in srgb, var(--cv-hero-aura) 36%, transparent);
+    overflow: hidden;
+}
+
+/* Slow (>1s) breathing aura ring — declared slow pulse band. */
+.activity-panel__hero-portrait::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border-radius: 4px;
+    box-shadow: inset 0 0 9px color-mix(in srgb, var(--cv-hero-aura) 48%, transparent);
+    pointer-events: none;
+    animation: ap-hero-aura 3.2s ease-in-out infinite;
+}
+
+@keyframes ap-hero-aura {
+    0%, 100% { opacity: 0.55; }
+    50% { opacity: 1; }
+}
+
+.activity-panel__hero-portrait canvas {
+    position: relative;
+    display: block;
+}
+
+/* Status-tinted ground glow under the avatar's feet. */
+.activity-panel__hero-portrait--working { --cv-hero-status: var(--cv-status-working, #72d071); }
+.activity-panel__hero-portrait--waiting,
+.activity-panel__hero-portrait--waiting_on_user { --cv-hero-status: var(--cv-status-waiting, #f97316); }
+.activity-panel__hero-portrait--errored { --cv-hero-status: var(--cv-status-errored, #e06c5b); }
+.activity-panel__hero-portrait--rate_limited { --cv-hero-status: var(--cv-status-waiting, #f97316); }
+.activity-panel__hero-portrait--idle { --cv-hero-status: var(--cv-blue-soft, #7aa6d6); }
 
 .activity-panel__name {
     font-family: var(--font-display);
@@ -945,6 +996,12 @@ body[data-cv-selected] .activity-panel__header::before {
 
     /* #31 static accent bar fallback */
     body[data-cv-selected] .activity-panel__header::before {
+        animation: none;
+        opacity: 1;
+    }
+
+    /* #46 static hero-aura fallback: steady ring, no breathing. */
+    .activity-panel__hero-portrait::after {
         animation: none;
         opacity: 1;
     }

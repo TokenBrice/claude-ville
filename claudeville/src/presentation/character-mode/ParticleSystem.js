@@ -84,11 +84,16 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'up',
     },
+    // #33 — volumetric chimney/forge smoke. A taller, longer-lived column than
+    // the legacy puff so density reads as heat. Callers pass `windX` (a signed
+    // drift velocity) so the column leans downwind, and may override `colors`
+    // with warmer soot tints when the forge runs hot. `warmColors` is the
+    // forge-heat ramp, exported below for BuildingSprite's heat scaling.
     smoke: {
         colors: ['#555555', '#777777', '#999999'],
-        size: [3, 6],
-        life: [40, 80],
-        speed: [0.1, 0.3],
+        size: [3, 6.5],
+        life: [50, 100],
+        speed: [0.12, 0.34],
         gravity: false,
         direction: 'up',
     },
@@ -236,6 +241,12 @@ const PARTICLE_PRESETS = {
 // the shared `buoyTorch` preset without owning a particle pool.
 export const BUOY_TORCH_COLORS = Object.freeze([...PARTICLE_PRESETS.buoyTorch.colors]);
 
+// #33 — cool baseline soot and a warm forge-heat ramp. BuildingSprite blends
+// toward the warm tints as `_forgeGlow` rises so a hot hearth pushes browner,
+// ember-lit smoke while a banked forge stays grey.
+export const SMOKE_COOL_COLORS = Object.freeze([...PARTICLE_PRESETS.smoke.colors]);
+export const SMOKE_WARM_COLORS = Object.freeze(['#6b5240', '#8a6a4c', '#a8806b']);
+
 function rand(min, max) {
     return min + Math.random() * (max - min);
 }
@@ -313,6 +324,10 @@ export class ParticleSystem {
         const direction = options.direction || preset.direction;
         const layer = options.layer || preset.layer || 'effects';
         const seed = options.seed;
+        // #33 — signed horizontal drift (world units / 16ms) added to every
+        // particle's vx so a rising smoke column leans downwind. Defaults to 0
+        // so existing callers are unaffected.
+        const windDrift = Number.isFinite(Number(options.windX)) ? Number(options.windX) : 0;
 
         for (let i = 0; i < spawnCount; i++) {
             let seedIndex = i * 11;
@@ -344,6 +359,8 @@ export class ParticleSystem {
                     vy = Math.sin(angle) * speed;
                     break;
             }
+
+            vx += windDrift;
 
             this.particles.push(new Particle(
                 x + randFrom(rng, -spread, spread),
