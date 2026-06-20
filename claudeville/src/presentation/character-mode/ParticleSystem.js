@@ -40,6 +40,9 @@ class Particle {
 }
 
 const PARTICLE_PRESETS = {
+    // Default dirt-path footfall: a low brown dust kick (the fallback when no
+    // terrain class is resolved). #42 dispatches one of the three terrain-keyed
+    // presets below instead when the tile under the stride is cobble/grass/shallow.
     footstep: {
         colors: ['#6b5b3a', '#7a6a49', '#5a4a2a'],
         size: [1, 2],
@@ -47,6 +50,36 @@ const PARTICLE_PRESETS = {
         speed: [0.2, 0.5],
         gravity: false,
         direction: 'down',
+    },
+    // #42 — cobble/flagstone scuff: a small grit kick with a cool stone-grey
+    // cast and the occasional warm spark glint where a boot grinds the stone.
+    cobbleScuff: {
+        colors: ['#9a948a', '#b5ac9c', '#7d756a', '#ffd98a'],
+        size: [1, 2],
+        life: [8, 16],
+        speed: [0.25, 0.6],
+        gravity: false,
+        direction: 'up',
+    },
+    // #42 — grass footfall: faint green-gold pollen motes that lift and drift
+    // off the blades rather than kicking dust.
+    grassMote: {
+        colors: ['#8fbf58', '#b8d890', '#cfe89a'],
+        size: [1, 2],
+        life: [14, 28],
+        speed: [0.1, 0.32],
+        gravity: false,
+        direction: 'up',
+    },
+    // #42 — shallow-water splash: pale spray flecks flung up where a stride
+    // breaks the surface. Falls back to gravity so the droplets arc and settle.
+    shallowSplash: {
+        colors: ['#cfe9f7', '#a8d4ee', '#e8f6ff'],
+        size: [1, 2],
+        life: [8, 16],
+        speed: [0.3, 0.7],
+        gravity: true,
+        direction: 'up',
     },
     mining: {
         colors: ['#ffd700', '#ff922b', '#ffec99'],

@@ -276,6 +276,7 @@ export class AgentSprite {
         renewVisitReservation = null,
         getAmbientDestination = null,
         getRoadTiles = null,
+        getTileType = null,
     } = {}) {
         this.agent = agent;
         this.x = 0;
@@ -388,6 +389,10 @@ export class AgentSprite {
         this.renewVisitReservation = typeof renewVisitReservation === 'function' ? renewVisitReservation : null;
         this.getAmbientDestination = typeof getAmbientDestination === 'function' ? getAmbientDestination : null;
         this.getRoadTiles = typeof getRoadTiles === 'function' ? getRoadTiles : null;
+        // #42 — renderer-supplied tile-class lookup (dirt/cobble/grass/shallow/
+        // deep) used to key terrain-aware footfall particles to the ground under
+        // each stride.
+        this.getTileType = typeof getTileType === 'function' ? getTileType : null;
         this.waypoints = [];
         this._lastPathTileKey = null;
         this._pathAgeFrames = 0;
@@ -1631,6 +1636,21 @@ export class AgentSprite {
         this._advanceWalkAnimation(step, dx, dy, dt, particleSystem);
     }
 
+    // #42 — resolve the terrain class under the sprite's current world position
+    // and map it to the matching footfall particle preset. No callback (or an
+    // unwalkable deep-water class) yields the default dirt-dust 'footstep'.
+    _footfallPresetForSurface() {
+        if (!this.getTileType) return 'footstep';
+        const { tileX, tileY } = worldToTile(this.x, this.y);
+        const surface = this.getTileType(tileX, tileY);
+        switch (surface) {
+            case 'cobble': return 'cobbleScuff';
+            case 'grass': return 'grassMote';
+            case 'shallow': return 'shallowSplash';
+            default: return 'footstep';
+        }
+    }
+
     _advanceWalkAnimation(distance, dx, dy, dt, particleSystem) {
         this.animState = this.motionScale > 0 ? 'walk' : 'idle';
         this._updateFacingDirection(dx, dy, dt);
@@ -1669,7 +1689,7 @@ export class AgentSprite {
             FOOTFALL_FRAMES.has(this.frame)
         ) {
             const footSide = this.frame === 0 ? -5 : 5;
-            particleSystem.spawn('footstep', this.x + footSide, this.y + 7, 1);
+            particleSystem.spawn(this._footfallPresetForSurface(), this.x + footSide, this.y + 7, 1);
         }
     }
 

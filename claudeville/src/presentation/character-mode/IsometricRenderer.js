@@ -2238,6 +2238,7 @@ export class IsometricRenderer {
                 renewVisitReservation: (agentId) => this.visitTileAllocator?.renew?.(agentId),
                 getAmbientDestination: (request) => this._getAmbientDestination(request),
                 getRoadTiles: () => this.pathTiles,
+                getTileType: (tileX, tileY) => this._surfaceMaterialAt(tileX, tileY),
             });
             sprite.setMotionScale(this.motionScale);
             sprite.addedAt = performance.now();
@@ -2927,6 +2928,22 @@ export class IsometricRenderer {
         if (this.mainAvenueTiles?.has(key) || this.commandCenterRoadTiles?.has(key)) return 'avenue';
         if (this.dirtPathTiles?.has(key)) return 'dirt';
         return 'path';
+    }
+
+    // #42 — surface material under a tile, used to key terrain-aware footfall
+    // particles (dirt→dust, cobble→scuff, grass→motes, shallow→splash). Reuses
+    // the same tile Sets the terrain bake classifies from, so footfalls match
+    // the ground the renderer drew. Bridges read as cobble (planked stone deck);
+    // deep water never receives footfalls (agents don't walk it).
+    _surfaceMaterialAt(tileX, tileY) {
+        const key = `${Math.round(tileX)},${Math.round(tileY)}`;
+        if (this.waterTiles?.has(key) && !this.bridgeTiles?.has(key)) {
+            return this.deepWaterTiles?.has(key) ? 'deep' : 'shallow';
+        }
+        if (this.bridgeTiles?.has(key)) return 'cobble';
+        if (this.mainAvenueTiles?.has(key) || this.commandCenterRoadTiles?.has(key)) return 'cobble';
+        if (this.dirtPathTiles?.has(key) || this.pathTiles?.has(key)) return 'dirt';
+        return 'grass';
     }
 
     _roadNeighborCount(tileX, tileY) {
