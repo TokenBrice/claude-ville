@@ -1,20 +1,28 @@
 /* ═══ Dashboard mode ═══ */
 /* .content__dashboard base layout is managed in layout.css */
 
-/* Grid layout - section-based */
+/* ─ Village house style (#20): one parchment-panel field + gilt world-pill,
+   sourced from the same tokens the World canvas reads (THEME / STATUS_VISUALS),
+   so Dashboard and World read as two windows onto one town. ─ */
 .dashboard__grid {
     display: flex;
     flex-direction: column;
     gap: 16px;
+    /* warm-dark field tokens reused by every parchment surface below */
+    --cv-parchment-glint: rgba(255, 226, 138, 0.13);
+    --cv-parchment-warm: rgba(55, 36, 24, 0.95);
+    --cv-parchment-deep: rgba(15, 10, 9, 0.96);
+    --cv-parchment-rim: rgba(214, 169, 81, 0.3);
+    --cv-parchment-gilt: rgba(236, 201, 123, 0.5);
 }
 
 /* ═══ Project section ═══ */
 .dashboard__section {
     background:
-        radial-gradient(circle at 8% -8%, rgba(255, 226, 138, 0.13), transparent 32%),
-        linear-gradient(180deg, rgba(55, 36, 24, 0.95), rgba(15, 10, 9, 0.96)),
+        radial-gradient(circle at 8% -8%, var(--cv-parchment-glint), transparent 32%),
+        linear-gradient(180deg, var(--cv-parchment-warm), var(--cv-parchment-deep)),
         repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.024) 0 1px, transparent 1px 18px);
-    border: 1px solid rgba(214, 169, 81, 0.26);
+    border: 1px solid var(--cv-parchment-rim);
     border-radius: 3px;
     box-shadow:
         inset 0 1px 0 rgba(255, 226, 138, 0.09),
@@ -184,7 +192,7 @@
         radial-gradient(circle at 10% 0%, rgba(255, 226, 138, 0.09), transparent 30%),
         linear-gradient(180deg, rgba(58, 40, 25, 0.99), rgba(19, 13, 11, 0.99)),
         repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.024) 0 1px, transparent 1px 16px);
-    border: 1px solid rgba(214, 169, 81, 0.3);
+    border: 1px solid var(--cv-parchment-rim);
     border-radius: 3px;
     box-shadow:
         inset 0 1px 0 rgba(255, 226, 138, 0.08),
@@ -242,6 +250,13 @@
     width: 44px;
     height: 52px;
     flex-shrink: 0;
+    /* Portrait niche: a faint parchment ground so the villager reads as framed
+       craft, not a floating sprite. */
+    border-radius: 3px;
+    background:
+        radial-gradient(ellipse at 50% 100%, rgba(255, 226, 138, 0.06), transparent 62%),
+        linear-gradient(180deg, rgba(46, 31, 20, 0.42), rgba(16, 11, 9, 0.42));
+    box-shadow: inset 0 0 0 1px var(--cv-parchment-rim);
 }
 
 .dash-card__avatar canvas {
@@ -272,13 +287,17 @@
     color: var(--cv-text-muted);
 }
 
+/* World-pill: a gilt-framed chip echoing the World canvas name pills. The
+   hue (bg/color) is set inline from PROVIDER_HUES; the gilt frame is shared. */
 .dash-card__provider-badge {
     padding: 1px 6px;
+    border: 1px solid var(--cv-parchment-gilt);
     border-radius: 3px;
     font-size: var(--fs-label);
     font-family: var(--font-body);
     font-weight: bold;
     letter-spacing: 0.5px;
+    box-shadow: inset 0 1px 0 rgba(255, 245, 205, 0.16);
 }
 
 .dash-card__model {

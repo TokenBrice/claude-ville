@@ -631,7 +631,6 @@ export class DashboardRenderer {
             detailLength: 60,
             emptyText: i18n.t('noToolUsage'),
             emptyClass: 'dash-card__loading',
-            emptyStyle: { color: '#666' },
             itemClass: 'dash-card__tool-item',
             iconClass: 'dash-card__tool-item-icon',
             nameClass: 'dash-card__tool-item-name',

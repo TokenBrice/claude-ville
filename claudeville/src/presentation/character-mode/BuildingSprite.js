@@ -8,6 +8,8 @@
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
+import { STATUS_VISUALS } from '../../config/theme.js';
+import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
@@ -34,6 +36,11 @@ const LANDMARK_LABEL_TYPES = new Set(
 );
 const LABEL_VISIBLE_ZOOM = 1;
 const LABEL_DETAIL_ZOOM = 3;
+// #14 — below this zoom, parked occupants fold into a per-building status tally
+// chip under the label instead of each drawing an individual name pill.
+const TALLY_FOLD_ZOOM = 1.5;
+// Order the status pips read, worst-to-best so the errored count anchors left.
+const TALLY_STATUS_ORDER = [AgentStatus.ERRORED, AgentStatus.WAITING_ON_USER, AgentStatus.WORKING];
 const LABEL_OVERLAP_TOLERANCE = 0.45;
 const LABEL_COMPACT_OVERLAP_TOLERANCE = 0.62;
 const MAX_TASKBOARD_PAPERS = 4;
@@ -189,6 +196,7 @@ export class BuildingSprite {
         this._lightSourcesCache = null;
         this._labelMetricsCache = new Map();
         this._visitorCountByType = new Map();
+        this._visitorStatusByType = new Map();
         this._clockCanvas = null;
         this._clockCanvasKey = '';
         this.clockState = null;
@@ -681,8 +689,70 @@ export class BuildingSprite {
             ctx.ellipse(bx, poleBottom + 1, isHovered ? 5 : 3, isHovered ? 2 : 1.5, 0, 0, Math.PI * 2);
             ctx.fill();
 
+            // #14 — at low zoom, fold parked occupants into a status-tally chip
+            // tucked under the label so the busy-building pill-soup stays legible.
+            if (zoom < TALLY_FOLD_ZOOM) {
+                this._drawStatusTallyChip(ctx, b, bx, tagTop + tagH + 3);
+            }
+
             ctx.restore();
         }
+    }
+
+    // Compact working/waiting/errored tally drawn beneath a building label when
+    // occupants' individual name pills are suppressed (IsometricRenderer folds
+    // those slots at the same TALLY_FOLD_ZOOM threshold). Static — no motion.
+    _drawStatusTallyChip(ctx, building, cx, topY) {
+        const tally = this._visitorStatusByType.get(building?.type);
+        if (!tally) return;
+        const pips = TALLY_STATUS_ORDER
+            .map((status) => ({ status, count: tally[status] || 0 }))
+            .filter((pip) => pip.count > 0);
+        if (!pips.length) return;
+
+        ctx.save();
+        ctx.font = '6px "Press Start 2P", monospace';
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+
+        const dot = 4;
+        const gap = 3;
+        const segGap = 7;
+        const padX = 4;
+        const h = 11;
+        // Measure each "● N" segment to size the chip.
+        const segments = pips.map((pip) => {
+            const text = String(pip.count);
+            const tw = Math.ceil(ctx.measureText(text).width);
+            return { ...pip, text, tw, w: dot + gap + tw };
+        });
+        const contentW = segments.reduce((sum, seg) => sum + seg.w, 0) + segGap * (segments.length - 1);
+        const w = contentW + padX * 2;
+        const left = Math.round(cx - w / 2);
+        const top = Math.round(topY);
+
+        ctx.fillStyle = 'rgba(28, 18, 12, 0.86)';
+        ctx.strokeStyle = 'rgba(215, 185, 121, 0.5)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(left, top, w, h, 3);
+        else ctx.rect(left, top, w, h);
+        ctx.fill();
+        ctx.stroke();
+
+        let x = left + padX;
+        const midY = top + h / 2;
+        for (const seg of segments) {
+            const color = STATUS_VISUALS[seg.status]?.color || '#e8c982';
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(Math.round(x + dot / 2), midY, dot / 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.fillStyle = color;
+            ctx.fillText(seg.text, Math.round(x + dot + gap), midY + 0.5);
+            x += seg.w + segGap;
+        }
+        ctx.restore();
     }
 
     _labelLayoutCandidates(isLandmark, isHovered) {
@@ -3148,7 +3218,12 @@ export class BuildingSprite {
 
     _updateVisitorCounts() {
         this._visitorCountByType.clear();
-        if (!this.agentSprites?.length || !this.buildings.length) return;
+        this._visitorStatusByType.clear();
+        if (!this.agentSprites?.length) return;
+        // Clear last frame's fold tags before re-tagging; IsometricRenderer
+        // reads `_foldBuildingType` to suppress folded occupants' name pills.
+        for (const sprite of this.agentSprites) sprite._foldBuildingType = null;
+        if (!this.buildings.length) return;
 
         for (const sprite of this.agentSprites) {
             const position = this._spriteTilePosition(sprite);
@@ -3160,6 +3235,16 @@ export class BuildingSprite {
                     : building.containsPoint(position.tileX, position.tileY);
                 if (!isVisiting) continue;
                 this._visitorCountByType.set(building.type, (this._visitorCountByType.get(building.type) || 0) + 1);
+                let tally = this._visitorStatusByType.get(building.type);
+                if (!tally) {
+                    tally = { working: 0, waiting_on_user: 0, errored: 0 };
+                    this._visitorStatusByType.set(building.type, tally);
+                }
+                const status = sprite.agent?.status;
+                if (status === AgentStatus.WORKING) tally.working++;
+                else if (status === AgentStatus.WAITING_ON_USER) tally.waiting_on_user++;
+                else if (status === AgentStatus.ERRORED) tally.errored++;
+                sprite._foldBuildingType = building.type;
             }
         }
     }

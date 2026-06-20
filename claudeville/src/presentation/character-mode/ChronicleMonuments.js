@@ -90,6 +90,12 @@ export class ChronicleMonuments {
         this._activeFireworks = [];
         this._activeBanners = [];
         this._pendingMilestones = [];
+        // #18 — christening: HarborTraffic fires `harbor:repo-christened` the
+        // first time a repo earns a Home-Waters anchorage. Raise a maiden banner
+        // over its buoy. Track christened repos so duplicate emits are no-ops.
+        this._christenedRepos = new Set();
+        this._onRepoChristened = (event) => this._christenRepo(event);
+        this.eventBus?.on?.('harbor:repo-christened', this._onRepoChristened);
     }
 
     async hydrate(now = Date.now()) {
@@ -445,6 +451,35 @@ export class ChronicleMonuments {
         }
         this._activeBanners.push(banner);
         // Cap banners to keep overdraw bounded.
+        if (this._activeBanners.length > 6) {
+            this._activeBanners.splice(0, this._activeBanners.length - 6);
+        }
+        this.eventBus?.emit?.('chronicle:milestone-banner', banner);
+    }
+
+    // #18 — first-sighting christening. Raises a maiden banner over the repo's
+    // own buoy (the event carries its anchorage tile), distinct from the
+    // commit-count maiden milestone which sits at the inner quay basin.
+    _christenRepo(event = {}) {
+        const project = String(event.project || 'unknown');
+        if (this._christenedRepos.has(project)) return;
+        this._christenedRepos.add(project);
+        const repo = event.repoName || projectName(project);
+        const now = Number(event.ts) || Date.now();
+        const duration = MILESTONE_DURATIONS_MS.maiden || 6000;
+        const tileX = Number.isFinite(Number(event.tileX)) ? Number(event.tileX) : INNER_QUAY_BASIN_TILE.tileX;
+        const tileY = Number.isFinite(Number(event.tileY)) ? Number(event.tileY) : INNER_QUAY_BASIN_TILE.tileY;
+        const banner = {
+            tier: 'maiden',
+            project,
+            repo,
+            startedAt: now,
+            expiresAt: now + duration,
+            tileX,
+            tileY,
+            text: `Maiden Voyage - ${repo}`,
+        };
+        this._activeBanners.push(banner);
         if (this._activeBanners.length > 6) {
             this._activeBanners.splice(0, this._activeBanners.length - 6);
         }

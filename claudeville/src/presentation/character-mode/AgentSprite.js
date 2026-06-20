@@ -276,6 +276,9 @@ export class AgentSprite {
         this.behavior = new AgentBehaviorState();
         this._targetCycle = 0;
         this.nameTagSlot = 0;
+        // #14 — set true by IsometricRenderer when this agent's name pill is
+        // folded into its building's status-tally chip at low zoom.
+        this.foldedIntoBuilding = false;
         // 4.8 — earned biography nickname ("the Shipwright"), pushed by the
         // renderer from AgentBiographyService; rendered as a name-tag suffix.
         this.nickname = null;
@@ -3738,6 +3741,10 @@ export class AgentSprite {
     }
 
     _drawNameTag(ctx) {
+        // #14 — when this agent is parked at a building it folds into that
+        // building's status-tally chip (set in IsometricRenderer); suppress its
+        // own name pill so busy buildings stay legible at low zoom.
+        if (this.foldedIntoBuilding && !this.selected) return;
         if (!this.selected && this._zoom < 1.5) {
             this._drawCompactNameStatus(ctx);
             return;

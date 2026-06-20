@@ -3408,9 +3408,26 @@ export class IsometricRenderer {
         return 'full';
     }
 
+    // #14 — at low zoom, agents parked at a building fold into that building's
+    // status-tally chip (BuildingSprite._drawStatusTallyChip) instead of each
+    // drawing a name pill. `_foldBuildingType` is tagged on the sprite by
+    // BuildingSprite._updateVisitorCounts earlier in the same frame's update.
+    _foldOccupantIntoBuilding(sprite, zoom) {
+        if (sprite.selected || zoom >= 1.5 || !sprite._foldBuildingType) {
+            sprite.foldedIntoBuilding = false;
+            return false;
+        }
+        sprite.foldedIntoBuilding = true;
+        sprite.overlaySlot = null;
+        sprite.nameTagSlot = null;
+        sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
+        return true;
+    }
+
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1, { agentRenderMode = 'full' } = {}) {
         if (agentRenderMode === 'minimal') {
             for (const sprite of sprites) {
+                if (this._foldOccupantIntoBuilding(sprite, zoom)) continue;
                 sprite.overlaySlot = null;
                 sprite.nameTagSlot = sprite.selected ? 0 : null;
                 sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
@@ -3432,6 +3449,8 @@ export class IsometricRenderer {
             sprite.overlaySlot = null;
             sprite.nameTagSlot = null;
             sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
+
+            if (this._foldOccupantIntoBuilding(sprite, zoom)) continue;
 
             if (sprite.selected) {
                 compactOccupied.push(this._agentCompactSlotRect(sprite, 0));

@@ -221,7 +221,9 @@ export class AvatarCanvas {
         const dy = Math.round(this.canvas.height - targetH - 3);
 
         ctx.save();
-        ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+        // Warm-tinted ground shadow so the avatar sits in the parchment niche
+        // behind it (village house style, #20) rather than on a cold black dab.
+        ctx.fillStyle = 'rgba(20, 12, 6, 0.34)';
         ctx.beginPath();
         ctx.ellipse(this.canvas.width / 2, this.canvas.height - 5, 14, 4, 0, 0, Math.PI * 2);
         ctx.fill();

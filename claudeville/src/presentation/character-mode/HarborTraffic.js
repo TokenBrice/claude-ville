@@ -1,4 +1,7 @@
 import { MAP_SIZE } from '../../config/constants.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
+import { pulseValue } from './PulsePolicy.js';
+import { BUOY_TORCH_COLORS } from './ParticleSystem.js';
 import { normalizeRepoBranch, repoBranchProfile, repoProfile } from '../shared/RepoColor.js';
 import {
     cleanCommitSubject,
@@ -2298,6 +2301,9 @@ export class HarborTraffic {
         this.waterRouteData = null;
         // #3 — active atmosphere grade; anchorage glows lerp toward worldTint.
         this._grade = null;
+        // #18 — repos seen at least once, so a brand-new repo's first anchorage
+        // can fire a one-time christening (maiden banner) and skip it thereafter.
+        this._repoFirstSeen = new Map();
         if (typeof window !== 'undefined' && window.localStorage?.getItem('claudeVilleDebug') === '1') {
             window.__harbor = this;
         }
@@ -3249,6 +3255,18 @@ export class HarborTraffic {
             if (!tile) continue;
             const pos = toWorld(tile.tileX, tile.tileY);
             const lively = repo.docked > 0 || (now - repo.lastActive) < REPO_ANCHORAGE_ACTIVE_MS;
+            // #18 — christening: the first time a repo ever earns an anchorage,
+            // emit a one-shot event so ChronicleMonuments raises a maiden banner.
+            if (!this._repoFirstSeen.has(repo.key)) {
+                this._repoFirstSeen.set(repo.key, now);
+                eventBus?.emit?.('harbor:repo-christened', {
+                    project: repo.project,
+                    repoName: repo.profile.shortName,
+                    tileX: tile.tileX,
+                    tileY: tile.tileY,
+                    ts: now,
+                });
+            }
             drawables.push({
                 kind: 'harbor-traffic',
                 sortY: pos.y - 2,
@@ -3261,6 +3279,7 @@ export class HarborTraffic {
                     failed: repo.failed,
                     live: repo.live,
                     lively,
+                    slot: repo.slot,
                     x: pos.x,
                     y: pos.y,
                 },
@@ -4836,6 +4855,28 @@ export class HarborTraffic {
         ctx.restore();
     }
 
+    // #18 — small flickering flame atop an active repo buoy. A couple of
+    // additive ember layers whose height/offset wobble on `this.frame`; colours
+    // come from ParticleSystem's shared `buoyTorch` palette. Callers gate this
+    // on motionScale > 0, so it is never drawn under reduced motion.
+    _drawBuoyTorch(ctx, x, topY, s, slot = 0) {
+        const phase = this.frame * 0.32 + slot * 1.7;
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        for (let i = 0; i < 3; i++) {
+            const flick = Math.sin(phase + i * 1.9);
+            const h = (5 - i * 1.3 + flick * 1.1) * s;
+            const sway = Math.sin(phase * 1.4 + i) * 0.9 * s;
+            const w = (3.4 - i * 0.9) * s;
+            ctx.globalAlpha = 0.5 - i * 0.12;
+            ctx.fillStyle = BUOY_TORCH_COLORS[i] || BUOY_TORCH_COLORS[BUOY_TORCH_COLORS.length - 1];
+            ctx.beginPath();
+            ctx.ellipse(x + sway, topY - h * 0.5, Math.max(1, w), Math.max(1.5, h), 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
+
     _drawRepoAnchorage(ctx, payload, zoom) {
         const s = 1 / Math.max(1, zoom || 1);
         const x = payload.x;
@@ -4867,40 +4908,69 @@ export class HarborTraffic {
         const profile = payload.profile || repoProfile(payload.project);
         const lively = payload.lively !== false;
         const failed = Number(payload.failed || 0) > 0;
+        const moving = this.motionScale > 0;
+
+        // #18 — phase-offset vertical bob so neighbouring buoys never bob in
+        // lockstep. Slot index seeds the phase; failed repos sit low ("droop")
+        // and bob with a smaller, slower amplitude. Reduced motion = no bob.
+        const slot = Number(payload.slot) || 0;
+        const bobBand = pulseValue('harbor', this.frame + slot * 11, this.motionScale) - 0.62;
+        const bobAmp = failed ? 0.7 : 1.6;
+        const bob = moving ? bobBand * bobAmp * s : 0;
+        const droop = failed ? 2.6 * s : 0;
+        const buoyY = y + bob + droop;
 
         ctx.save();
-        // Tinted water patch — the repo's "sea area".
+        // Tinted water patch — the repo's "sea area". Failed repos lose their
+        // colour: a muted grey wash reads as a sunken, troubled anchorage.
         const rx = (lively ? 17 : 13) * s;
         const ry = rx * 0.5;
         const grad = ctx.createRadialGradient(x, y, 0, x, y, rx);
-        grad.addColorStop(0, gradeColorString(profile.glow || 'rgba(122, 200, 216, 0.32)', this._grade));
+        const waterGlow = failed
+            ? 'rgba(96, 104, 110, 0.30)'
+            : gradeColorString(profile.glow || 'rgba(122, 200, 216, 0.32)', this._grade);
+        grad.addColorStop(0, waterGlow);
         grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        ctx.globalAlpha = lively ? 0.85 : 0.45;
+        ctx.globalAlpha = failed ? 0.5 : (lively ? 0.85 : 0.45);
         ctx.fillStyle = grad;
         ctx.beginPath();
         ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.globalAlpha = 1;
 
-        // Mooring buoy post + pennant in the repo accent.
+        // Mooring buoy post + pennant in the repo accent (rides the bob).
         const postH = 13 * s;
-        const topY = y - postH;
+        const topY = buoyY - postH;
         ctx.strokeStyle = 'rgba(24, 16, 10, 0.7)';
         ctx.lineWidth = Math.max(1, 1.4 * s);
         ctx.beginPath();
-        ctx.moveTo(x, y);
+        ctx.moveTo(x, buoyY);
         ctx.lineTo(x, topY);
         ctx.stroke();
+        // Failed pennant droops — a slack triangle hanging off the post tip.
         ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : profile.accent;
         ctx.beginPath();
         ctx.moveTo(x, topY);
-        ctx.lineTo(x + 9 * s, topY + 3 * s);
-        ctx.lineTo(x, topY + 6 * s);
+        if (failed) {
+            ctx.lineTo(x + 6 * s, topY + 6 * s);
+            ctx.lineTo(x, topY + 7 * s);
+        } else {
+            ctx.lineTo(x + 9 * s, topY + 3 * s);
+            ctx.lineTo(x, topY + 6 * s);
+        }
         ctx.closePath();
         ctx.fill();
 
-        // Crest float at the waterline.
-        this._drawRepoLabelIcon(ctx, x, y - 1.5 * s, (lively ? 9 : 8) * s, profile);
+        // #18 — active-repo signal flame: a small flickering torch atop the post
+        // whenever the repo is lively (live agent or fresh push). Drawn inline
+        // (HarborTraffic owns no particle pool) using the shared buoyTorch
+        // palette. Suppressed entirely under reduced motion.
+        if (lively && !failed && moving) {
+            this._drawBuoyTorch(ctx, x, topY, s, slot);
+        }
+
+        // Crest float at the waterline (rides the bob).
+        this._drawRepoLabelIcon(ctx, x, buoyY - 1.5 * s, (lively ? 9 : 8) * s, profile);
 
         // Name + docked count label.
         const name = payload.repoName || profile.shortName || 'repo';

@@ -72,6 +72,18 @@ const PARTICLE_PRESETS = {
         gravity: false,
         direction: 'up',
     },
+    // #18 — active repo-anchorage buoy flame. Smaller, cooler, slower-rising
+    // embers than the building torch so the buoy reads as a signal-light, not a
+    // bonfire. HarborTraffic draws this flame inline (it has no particle pool),
+    // so the palette is exported below as the shared source of truth.
+    buoyTorch: {
+        colors: ['#ffb04a', '#ff7a2f', '#ffe39a'],
+        size: [1.4, 2.6],
+        life: [12, 24],
+        speed: [0.18, 0.5],
+        gravity: false,
+        direction: 'up',
+    },
     smoke: {
         colors: ['#555555', '#777777', '#999999'],
         size: [3, 6],
@@ -195,6 +207,10 @@ const PARTICLE_PRESETS = {
         direction: 'up',
     },
 };
+
+// #18 — exported so HarborTraffic's inline buoy flame stays colour-matched to
+// the shared `buoyTorch` preset without owning a particle pool.
+export const BUOY_TORCH_COLORS = Object.freeze([...PARTICLE_PRESETS.buoyTorch.colors]);
 
 function rand(min, max) {
     return min + Math.random() * (max - min);
