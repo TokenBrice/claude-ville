@@ -2742,29 +2742,43 @@ export class AgentSprite {
         ctx.save();
         ctx.translate(Math.round(this.x), Math.round(this.y));
 
-        // Directional sun shadow from the shared atmosphere lighting state:
+        // #37 — Directional sun shadow from the shared atmosphere lighting
+        // state: a skewed sprite-shaped parallelogram cast along the sun angle,
         // elongated and tilted at dawn/dusk, tight at noon, gone at night
         // (ambientLight 0). Reads the same shadowAngleRad/shadowLength/
-        // shadowAlpha fields the building shadows use, so agents and
-        // buildings agree on sun direction.
+        // shadowAlpha fields the building shadows use, so agents and buildings
+        // agree on sun direction. The cast pools darker where villagers crowd
+        // because it composites with `multiply`. No per-frame animation: the
+        // angle is driven entirely by the (already eased) lighting snapshot, so
+        // the reduced-motion path is the same fixed-angle skew.
         const lighting = this.lightingState;
         const sunStrength = lighting ? this._clamp(lighting.ambientLight ?? 0, 0, 1) : 0;
         if (sunStrength > 0.04) {
             const sunAngle = lighting.shadowAngleRad ?? 0.28;
             const sunLength = lighting.shadowLength ?? 1;
             const sunAlpha = Math.min(0.3, lighting.shadowAlpha ?? 0.22) * sunStrength;
+            // Cast vector: foot anchor (0,6) → tip offset along the sun angle.
+            const tipX = Math.cos(sunAngle) * 9 * sunLength;
+            const tipY = Math.sin(sunAngle) * 3.5 * sunLength;
+            // Half-width of the body footprint at the feet; the tip tapers in so
+            // the cast reads as a body silhouette rather than a slab.
+            const baseHalf = shadowRadiusX * 0.6;
+            const tipHalf = baseHalf * 0.5;
+            // Perpendicular to the cast direction, foreshortened on Y for iso.
+            const perpAngle = sunAngle + Math.PI / 2;
+            const px = Math.cos(perpAngle);
+            const py = Math.sin(perpAngle) * 0.4;
+            ctx.save();
+            ctx.globalCompositeOperation = 'multiply';
             ctx.fillStyle = `rgba(15, 22, 30, ${sunAlpha.toFixed(3)})`;
             ctx.beginPath();
-            ctx.ellipse(
-                Math.cos(sunAngle) * 9 * sunLength,
-                6 + Math.sin(sunAngle) * 3.5 * sunLength,
-                shadowRadiusX * (0.62 + sunLength * 0.5),
-                shadowRadiusY * 0.8,
-                sunAngle * 0.22,
-                0,
-                Math.PI * 2
-            );
+            ctx.moveTo(px * baseHalf, 6 + py * baseHalf);
+            ctx.lineTo(-px * baseHalf, 6 - py * baseHalf);
+            ctx.lineTo(tipX - px * tipHalf, 6 + tipY - py * tipHalf);
+            ctx.lineTo(tipX + px * tipHalf, 6 + tipY + py * tipHalf);
+            ctx.closePath();
             ctx.fill();
+            ctx.restore();
         }
 
         ctx.fillStyle = 'rgba(5, 8, 12, 0.56)';
