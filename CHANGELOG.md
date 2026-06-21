@@ -2,6 +2,20 @@
 
 ---
 
+## v0.18.0 — *Quiet Watch* · Jun 21, 2026
+
+The World camera becomes a **patient village lookout** — calm when the town is calm, quick only when something needs attention, and always ready to frame the action without a hand on the controls.
+
+- **Action-first idle framing.** The idle camera now scores incidents, waiting agents, release moments, handoffs, building activity, arrivals, departures, and working clusters, then picks the most meaningful place in the village to watch.
+- **Calmer cinematic pacing.** Separate urgency profiles let incidents preempt quickly while ordinary work and ambient views dwell longer, so the idle experience feels relaxed instead of restless.
+- **Gentler movement language.** The camera now prefers pans over unnecessary zooms, keeps action in a comfortable safe zone rather than dead centre, and uses wide bridge shots for long jumps across the map.
+- **Soft follow with memory.** Once focused, the camera eases after active clusters at a low speed, while recent agent and building activity lingers briefly so important spots do not vanish the instant a session quiets down.
+- **Clearer control.** The topbar toggle now describes the feature as an idle action camera that frames live action, matching what the automatic view actually does.
+
+Collected from commits `94071c0` through `20127cb`.
+
+---
+
 ## v0.17.1 — *The Ledger* · Jun 20, 2026
 
 The town banner becomes **one cohesive ledger** — compact, legible, and quiet where it should be.
