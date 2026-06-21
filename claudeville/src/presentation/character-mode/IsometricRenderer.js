@@ -1755,38 +1755,109 @@ export class IsometricRenderer {
         };
     }
 
-    // Frame the camera on the active agents (fallback: building centers, then
-    // map core) so opening ClaudeVille in a small pane shows the live village
-    // at a glance. Leaves the camera in auto-frame state until the user pans/zooms.
-    frameContent() {
-        if (!this.camera) return;
-        const points = [];
-        for (const sprite of this.agentSprites.values()) {
-            if (Number.isFinite(sprite?.x) && Number.isFinite(sprite?.y)) {
-                points.push({ x: sprite.x, y: sprite.y });
-            }
+    _cameraAgentFrameWeight(sprite) {
+        const agent = sprite?.agent;
+        if (!agent) return 0;
+        let weight = 0;
+        switch (agent.status) {
+            case AgentStatus.ERRORED:
+            case AgentStatus.RATE_LIMITED:
+            case AgentStatus.WAITING_ON_USER:
+                weight = 4;
+                break;
+            case AgentStatus.WAITING:
+                weight = 3;
+                break;
+            case AgentStatus.WORKING:
+                weight = 2;
+                break;
+            default:
+                weight = 0;
         }
-        if (points.length === 0 && this.world?.buildings) {
-            for (const building of this.world.buildings.values()) {
-                const center = buildingCenterToWorld(building);
-                if (Number.isFinite(center?.x) && Number.isFinite(center?.y)) {
-                    points.push(center);
-                }
-            }
-        }
-        if (points.length === 0) {
-            this.camera.centerOnMap();
-            this.camera._userAdjusted = false;
-            return;
-        }
-        const xs = points.map(p => p.x);
-        const ys = points.map(p => p.y);
-        const targetBox = {
+        if (sprite?.moving) weight += 1;
+        if (agent.currentTool) weight += 1;
+        return weight;
+    }
+
+    _agentBuildingFramePoint(agent) {
+        const type = normalizeBuildingType(
+            agent?.targetBuildingType
+            || agent?.lastKnownBuildingType
+            || agent?.buildingType
+            || agent?.building,
+        );
+        if (!type) return null;
+        const building = this.world?.buildings?.get?.(type);
+        const center = building ? buildingCenterToWorld(building) : null;
+        return Number.isFinite(center?.x) && Number.isFinite(center?.y) ? center : null;
+    }
+
+    _worldBoxForCameraPoints(points) {
+        const finite = (points || []).filter(point => Number.isFinite(point?.x) && Number.isFinite(point?.y));
+        if (!finite.length) return null;
+        const xs = finite.map(p => p.x);
+        const ys = finite.map(p => p.y);
+        return {
             minX: Math.min(...xs),
             maxX: Math.max(...xs),
             minY: Math.min(...ys),
             maxY: Math.max(...ys),
         };
+    }
+
+    _contentFrameBox() {
+        const activePoints = [];
+        const allAgentPoints = [];
+        for (const sprite of this.agentSprites.values()) {
+            if (Number.isFinite(sprite?.x) && Number.isFinite(sprite?.y)) {
+                const point = { x: sprite.x, y: sprite.y };
+                allAgentPoints.push(point);
+                if (this._cameraAgentFrameWeight(sprite) > 0) {
+                    activePoints.push(point);
+                    const buildingPoint = this._agentBuildingFramePoint(sprite.agent);
+                    if (buildingPoint) activePoints.push(buildingPoint);
+                }
+            }
+        }
+
+        const hotBuildingPoints = [];
+        const buildingSignals = this.villageDirector?.getSnapshot?.()?.buildingSignals || [];
+        for (const signal of buildingSignals.slice(0, 3)) {
+            if ((Number(signal?.heat) || 0) < 0.18) continue;
+            if (Number.isFinite(signal?.center?.x) && Number.isFinite(signal?.center?.y)) {
+                hotBuildingPoints.push({ x: signal.center.x, y: signal.center.y });
+            }
+        }
+
+        if (activePoints.length) {
+            return this._worldBoxForCameraPoints([...activePoints, ...hotBuildingPoints.slice(0, 2)]);
+        }
+        if (hotBuildingPoints.length) return this._worldBoxForCameraPoints(hotBuildingPoints);
+        if (allAgentPoints.length) return this._worldBoxForCameraPoints(allAgentPoints);
+
+        const buildingPoints = [];
+        if (this.world?.buildings) {
+            for (const building of this.world.buildings.values()) {
+                const center = buildingCenterToWorld(building);
+                if (Number.isFinite(center?.x) && Number.isFinite(center?.y)) {
+                    buildingPoints.push(center);
+                }
+            }
+        }
+        return this._worldBoxForCameraPoints(buildingPoints);
+    }
+
+    // Frame the camera on live work first (fallback: hot buildings, all agents,
+    // building centers, then map core) so ClaudeVille opens on the village story
+    // rather than a diluted all-sprite overview.
+    frameContent() {
+        if (!this.camera) return;
+        const targetBox = this._contentFrameBox();
+        if (!targetBox) {
+            this.camera.centerOnMap();
+            this.camera._userAdjusted = false;
+            return;
+        }
 
         // #45 — first World paint gets a cinematic establishing shot: hold the
         // island-wide frame, then glide+zoom in to settle on the active cluster.
@@ -2105,7 +2176,7 @@ export class IsometricRenderer {
         if (delta) {
             this.camera.abortDirectorGlide?.();
             this.camera.stopFollow();
-            this.camera._userAdjusted = true;
+            this.camera.noteUserInput?.();
             this.camera.x += delta.x / Math.max(0.1, this.camera.zoom || 1);
             this.camera.y += delta.y / Math.max(0.1, this.camera.zoom || 1);
             this.camera._clampToBounds?.();
@@ -2114,11 +2185,11 @@ export class IsometricRenderer {
         }
 
         if (event.code === 'Equal' || event.code === 'NumpadAdd') {
-            if (this._zoomByKeyboard(1)) { this.camera.abortDirectorGlide?.(); this.camera._userAdjusted = true; event.preventDefault(); }
+            if (this._zoomByKeyboard(1)) { this.camera.abortDirectorGlide?.(); this.camera.noteUserInput?.(); event.preventDefault(); }
             return;
         }
         if (event.code === 'Minus' || event.code === 'NumpadSubtract') {
-            if (this._zoomByKeyboard(-1)) { this.camera.abortDirectorGlide?.(); this.camera._userAdjusted = true; event.preventDefault(); }
+            if (this._zoomByKeyboard(-1)) { this.camera.abortDirectorGlide?.(); this.camera.noteUserInput?.(); event.preventDefault(); }
             return;
         }
         if (event.code === 'KeyF') {

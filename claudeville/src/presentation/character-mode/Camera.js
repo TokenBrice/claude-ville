@@ -53,6 +53,7 @@ export class Camera {
         // Set once the user manually pans/zooms, so auto-framing on resize
         // stops fighting their chosen view. Cleared by an explicit re-frame.
         this._userAdjusted = false;
+        this._cameraOwner = 'system';
 
         // #50 — inertial idle drift. After ~45s with no input (and nothing else
         // owning the camera) the view breathes along a tiny bounded Lissajous
@@ -94,7 +95,7 @@ export class Camera {
     // Frame an axis-aligned world box so it fits the viewport, centered on the
     // box, at the largest *integer* zoom (pixel-perfect) up to `maxZoom`. Used
     // for the initial "overview of my active agents" framing.
-    fitToWorldBox(box, { paddingPx = 96, maxZoom = 2 } = {}) {
+    fitToWorldBox(box, { paddingPx = 96, maxZoom = 2, owner = 'system' } = {}) {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
         if (!w || !h || !box) return;
@@ -114,6 +115,8 @@ export class Camera {
         this._snapZoom = null;
         this._momentum = null;
         this._idleDrift = null;
+        this._cameraOwner = owner;
+        this._userAdjusted = false;
         this.zoom = zoom;
         this.x = -centerX + w / (2 * zoom);
         this.y = -centerY + h / (2 * zoom);
@@ -139,7 +142,15 @@ export class Camera {
     // viewport) cuts directly. The move releases `_userAdjusted` only while it
     // runs, then re-frames cleanly. `grade` is a {vignette, worldTint} hint the
     // frame renderer fades in/out with the glide.
-    glideToWorld(box, { duration = 1400, paddingPx = 96, maxZoom = 2, grade = null, holdMs = 0 } = {}) {
+    glideToWorld(box, {
+        duration = 1400,
+        paddingPx = 96,
+        maxZoom = 2,
+        grade = null,
+        holdMs = 0,
+        owner = 'director',
+        userAdjustedOnComplete = false,
+    } = {}) {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
         if (!w || !h || !box) return false;
@@ -160,11 +171,13 @@ export class Camera {
             this.x = targetX;
             this.y = targetY;
             this._directorGlide = null;
-            this._userAdjusted = false;
+            this._cameraOwner = owner;
+            this._userAdjusted = Boolean(userAdjustedOnComplete);
             this._clampToBounds();
             return true;
         }
 
+        this._cameraOwner = owner;
         this._userAdjusted = false;
         this._directorGlide = {
             fromX: this.x,
@@ -175,6 +188,8 @@ export class Camera {
             toZoom,
             elapsed: 0,
             duration: Math.max(1, Number(duration) || 1400),
+            owner,
+            userAdjustedOnComplete: Boolean(userAdjustedOnComplete),
             // #45 — optional hold (the establishing shot lingers on the wide frame
             // before the glide begins). Counts down before `elapsed` advances.
             hold: Math.max(0, Number(holdMs) || 0),
@@ -192,19 +207,20 @@ export class Camera {
         const h = this._viewportHeight();
         if (!w || !h || !targetBox) return false;
         if (this._reducedMotion) {
-            this.fitToWorldBox(targetBox, { maxZoom });
+            this.fitToWorldBox(targetBox, { maxZoom, owner: 'system' });
             this._userAdjusted = false;
             return true;
         }
         // Snap to the island-wide overview so the glide departs from it.
-        this.fitToWorldBox(wideBox || targetBox, { maxZoom: 1 });
-        return this.glideToWorld(targetBox, { duration: glideMs, maxZoom, holdMs });
+        this.fitToWorldBox(wideBox || targetBox, { maxZoom: 1, owner: 'system' });
+        return this.glideToWorld(targetBox, { duration: glideMs, maxZoom, holdMs, owner: 'system' });
     }
 
     abortDirectorGlide() {
         if (!this._directorGlide) return;
         this._directorGlide = null;
         // The user is now in control; stop auto-framing from fighting them.
+        this._cameraOwner = 'user';
         this._userAdjusted = true;
     }
 
@@ -215,7 +231,11 @@ export class Camera {
     // #attract — record genuine operator input and report how long since the last.
     // Used by the CameraDirector's idle-attract mode for engage/yield decisions.
     noteUserInput() {
-        this._lastUserInputAt = performance.now();
+        const now = performance.now();
+        this._lastInputAt = now;
+        this._lastUserInputAt = now;
+        this._cameraOwner = 'user';
+        this._userAdjusted = true;
     }
 
     getUserIdleMs(now = performance.now()) {
@@ -252,6 +272,7 @@ export class Camera {
     followAgent(sprite) {
         if (this.followTarget === sprite) return;
         this._directorGlide = null;
+        this._cameraOwner = 'follow';
         this.followTarget = sprite;
         this._momentum = null;
         const farZoomedOut = this.zoom < 1.5;
@@ -338,12 +359,10 @@ export class Camera {
 
     _onMouseDown(e) {
         if (e.button !== 0) return;
-        this._lastInputAt = performance.now();
+        this.noteUserInput();
         this.abortDirectorGlide();
         this._endIdleDrift();
         this.dragging = true;
-        this._userAdjusted = true;
-        this._lastUserInputAt = performance.now();
         this.dragStartX = e.clientX;
         this.dragStartY = e.clientY;
         this.camStartX = this.x;
@@ -362,7 +381,7 @@ export class Camera {
 
     _onMouseMove(e) {
         if (!this.dragging) return;
-        this._lastUserInputAt = performance.now();
+        this.noteUserInput();
         const dx = (e.clientX - this.dragStartX) / this.zoom;
         const dy = (e.clientY - this.dragStartY) / this.zoom;
         this.x = this.camStartX + dx;
@@ -399,12 +418,11 @@ export class Camera {
 
     _onWheel(e) {
         e.preventDefault();
-        this._lastInputAt = performance.now();
+        this.noteUserInput();
         this.abortDirectorGlide();
         this._endIdleDrift();
         this._momentum = null;
         this._snapZoom = null;
-        this._lastUserInputAt = performance.now();
         const rect = this.canvas.getBoundingClientRect();
         const mouseX = e.clientX - rect.left;
         const mouseY = e.clientY - rect.top;
@@ -485,6 +503,8 @@ export class Camera {
     centerOnTile(tileX, tileY) {
         const screen = tileToWorld(tileX, tileY);
         this._idleDrift = null;
+        this._cameraOwner = 'system';
+        this._userAdjusted = false;
         this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
         this.y = -screen.y + this._viewportHeight() / (2 * this.zoom);
         this._clampToBounds();
@@ -618,7 +638,8 @@ export class Camera {
             this.y = glide.toY;
             this._clampToBounds();
             this._directorGlide = null;
-            this._userAdjusted = true;
+            this._cameraOwner = glide.owner || 'director';
+            this._userAdjusted = Boolean(glide.userAdjustedOnComplete);
         }
         return true;
     }
