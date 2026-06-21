@@ -59,7 +59,7 @@ export class TopBar {
         this.render();
     }
 
-    // #attract — topbar toggle for the idle-attract camera (on by default,
+    // #attract — topbar toggle for the idle action camera (on by default,
     // persisted). Emits `camera:auto-camera` which the World renderer consumes;
     // also reflects the state if it is flipped elsewhere.
     _initCinemaToggle() {
@@ -72,7 +72,7 @@ export class TopBar {
             btn.classList.toggle('topbar__cinema-btn--on', on);
             btn.setAttribute('aria-pressed', on ? 'true' : 'false');
             btn.textContent = on ? 'CINEMA ON' : 'CINEMA OFF';
-            btn.title = on ? 'Auto-camera on: roams to the action when idle' : 'Auto-camera off';
+            btn.title = on ? 'Auto-camera on: frames live action when idle' : 'Auto-camera off';
         };
         apply(read());
         btn.addEventListener('click', () => {
