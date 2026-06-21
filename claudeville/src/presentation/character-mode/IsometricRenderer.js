@@ -2789,6 +2789,7 @@ export class IsometricRenderer {
             // camera ticks, so any glide it starts advances this same frame.
             this.cameraDirector?.update({
                 now: performance.now(),
+                dt,
                 agentSprites: this.agentSprites,
                 snapshot: this.villageDirector?.getSnapshot?.() || null,
             });

@@ -95,31 +95,18 @@ export class Camera {
     // Frame an axis-aligned world box so it fits the viewport, centered on the
     // box, at the largest *integer* zoom (pixel-perfect) up to `maxZoom`. Used
     // for the initial "overview of my active agents" framing.
-    fitToWorldBox(box, { paddingPx = 96, maxZoom = 2, owner = 'system' } = {}) {
-        const w = this._viewportWidth();
-        const h = this._viewportHeight();
-        if (!w || !h || !box) return;
-        const boxW = Math.max(1, box.maxX - box.minX);
-        const boxH = Math.max(1, box.maxY - box.minY);
-        const centerX = (box.minX + box.maxX) / 2;
-        const centerY = (box.minY + box.maxY) / 2;
-        const hi = Math.min(Math.floor(maxZoom), this.maxZoom);
-        let zoom = this.minZoom;
-        for (let z = hi; z >= this.minZoom; z--) {
-            if (boxW * z + paddingPx * 2 <= w && boxH * z + paddingPx * 2 <= h) {
-                zoom = z;
-                break;
-            }
-        }
+    fitToWorldBox(box, { paddingPx = 96, maxZoom = 2, owner = 'system', composition = null } = {}) {
+        const pose = this._poseForWorldBox(box, { paddingPx, maxZoom, composition });
+        if (!pose) return;
         this._zoomAnimation = null;
         this._snapZoom = null;
         this._momentum = null;
         this._idleDrift = null;
         this._cameraOwner = owner;
         this._userAdjusted = false;
-        this.zoom = zoom;
-        this.x = -centerX + w / (2 * zoom);
-        this.y = -centerY + h / (2 * zoom);
+        this.zoom = pose.zoom;
+        this.x = pose.x;
+        this.y = pose.y;
         this._clampToBounds();
     }
 
@@ -150,15 +137,20 @@ export class Camera {
         holdMs = 0,
         owner = 'director',
         userAdjustedOnComplete = false,
+        composition = null,
+        preferPan = false,
+        zoomHysteresis = 0.85,
+        allowZoomIn = true,
     } = {}) {
-        const w = this._viewportWidth();
-        const h = this._viewportHeight();
-        if (!w || !h || !box) return false;
-        const centerX = (box.minX + box.maxX) / 2;
-        const centerY = (box.minY + box.maxY) / 2;
-        const toZoom = this._zoomForWorldBox(box, paddingPx, maxZoom);
-        const targetX = -centerX + w / (2 * toZoom);
-        const targetY = -centerY + h / (2 * toZoom);
+        const pose = this._poseForWorldBox(box, {
+            paddingPx,
+            maxZoom,
+            composition,
+            preferPan,
+            zoomHysteresis,
+            allowZoomIn,
+        });
+        if (!pose) return false;
 
         this.stopFollow();
         this._momentum = null;
@@ -167,9 +159,9 @@ export class Camera {
 
         if (this._reducedMotion) {
             // Reduced-motion: cut directly to the framed view, no glide, no grade.
-            this.zoom = toZoom;
-            this.x = targetX;
-            this.y = targetY;
+            this.zoom = pose.zoom;
+            this.x = pose.x;
+            this.y = pose.y;
             this._directorGlide = null;
             this._cameraOwner = owner;
             this._userAdjusted = Boolean(userAdjustedOnComplete);
@@ -183,9 +175,9 @@ export class Camera {
             fromX: this.x,
             fromY: this.y,
             fromZoom: this.zoom,
-            toX: targetX,
-            toY: targetY,
-            toZoom,
+            toX: pose.x,
+            toY: pose.y,
+            toZoom: pose.zoom,
             elapsed: 0,
             duration: Math.max(1, Number(duration) || 1400),
             owner,
@@ -510,6 +502,77 @@ export class Camera {
         this._clampToBounds();
     }
 
+    currentCenterWorld() {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (!w || !h || !Number.isFinite(this.zoom) || this.zoom <= 0) return { x: 0, y: 0 };
+        return {
+            x: w / (2 * this.zoom) - this.x,
+            y: h / (2 * this.zoom) - this.y,
+        };
+    }
+
+    softFollowWorldBox(box, {
+        dt = 16,
+        paddingPx = 160,
+        maxZoom = 2,
+        composition = null,
+        owner = 'idle-auto',
+        maxSpeedPxPerMs = 0.035,
+        stiffnessMs = 2200,
+        deadzonePx = 28,
+        preferPan = true,
+        zoomHysteresis = 1.1,
+        allowZoomIn = false,
+    } = {}) {
+        const pose = this._poseForWorldBox(box, {
+            paddingPx,
+            maxZoom,
+            composition,
+            preferPan,
+            zoomHysteresis,
+            allowZoomIn,
+        });
+        if (!pose) return false;
+        this.stopFollow();
+        this._momentum = null;
+        this._zoomAnimation = null;
+        this._snapZoom = null;
+        this._idleDrift = null;
+        this._cameraOwner = owner;
+        this._userAdjusted = false;
+
+        if (this._reducedMotion) {
+            this.zoom = pose.zoom;
+            this.x = pose.x;
+            this.y = pose.y;
+            this._clampToBounds();
+            return true;
+        }
+
+        const frameDt = Math.max(1, Math.min(80, Number(dt) || 16));
+        const dx = pose.x - this.x;
+        const dy = pose.y - this.y;
+        const screenDistance = Math.hypot(dx, dy) * Math.max(0.1, this.zoom || 1);
+        if (screenDistance <= deadzonePx && Math.abs(pose.zoom - this.zoom) < 0.01) return false;
+
+        const eased = 1 - Math.exp(-frameDt / Math.max(1, stiffnessMs));
+        const maxWorldStep = Math.max(1, maxSpeedPxPerMs * frameDt / Math.max(0.1, this.zoom || 1));
+        const worldDistance = Math.hypot(dx, dy);
+        const step = worldDistance > 0 ? Math.min(worldDistance * eased, maxWorldStep) / worldDistance : 0;
+        this.x += dx * step;
+        this.y += dy * step;
+
+        // Zoom drifts even more slowly than pan, and only when hysteresis decided
+        // that a zoom change is genuinely needed.
+        if (Math.abs(pose.zoom - this.zoom) >= 0.01) {
+            const zoomStep = Math.min(0.006 * frameDt, Math.abs(pose.zoom - this.zoom));
+            this.zoom += Math.sign(pose.zoom - this.zoom) * zoomStep;
+        }
+        this._clampToBounds();
+        return true;
+    }
+
     applyTransform(ctx) {
         const dpr = this._dpr();
         ctx.setTransform(
@@ -532,6 +595,67 @@ export class Camera {
 
     _dpr() {
         return this.canvas?._claudeVilleDpr || 1;
+    }
+
+    _poseForWorldBox(box, {
+        paddingPx = 96,
+        maxZoom = 2,
+        composition = null,
+        preferPan = false,
+        zoomHysteresis = 0.85,
+        allowZoomIn = true,
+    } = {}) {
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        if (!w || !h || !box) return null;
+        const centerX = (box.minX + box.maxX) / 2;
+        const centerY = (box.minY + box.maxY) / 2;
+        let zoom = this._zoomForWorldBox(box, paddingPx, maxZoom);
+        if (preferPan) {
+            zoom = this._stableZoomForWorldBox(box, {
+                idealZoom: zoom,
+                paddingPx,
+                maxZoom,
+                zoomHysteresis,
+                allowZoomIn,
+            });
+        }
+        const anchor = this._compositionAnchor(composition);
+        return {
+            zoom,
+            x: -centerX + (w * anchor.x) / zoom,
+            y: -centerY + (h * anchor.y) / zoom,
+            centerX,
+            centerY,
+        };
+    }
+
+    _compositionAnchor(composition = null) {
+        const x = Number(composition?.x);
+        const y = Number(composition?.y);
+        return {
+            x: Number.isFinite(x) ? Math.max(0.32, Math.min(0.68, x)) : 0.5,
+            y: Number.isFinite(y) ? Math.max(0.34, Math.min(0.70, y)) : 0.5,
+        };
+    }
+
+    _stableZoomForWorldBox(box, {
+        idealZoom,
+        paddingPx = 96,
+        maxZoom = 2,
+        zoomHysteresis = 0.85,
+        allowZoomIn = true,
+    } = {}) {
+        const current = Math.max(this.minZoom, Math.min(this.zoom || this.minZoom, Math.min(maxZoom, this.maxZoom)));
+        const boxW = Math.max(1, box.maxX - box.minX);
+        const boxH = Math.max(1, box.maxY - box.minY);
+        const w = this._viewportWidth();
+        const h = this._viewportHeight();
+        const fitsCurrent = boxW * current + paddingPx * 2 <= w && boxH * current + paddingPx * 2 <= h;
+        if (!fitsCurrent) return idealZoom;
+        if (idealZoom > current && !allowZoomIn) return current;
+        if (Math.abs(idealZoom - current) < zoomHysteresis) return current;
+        return idealZoom;
     }
 
     _clampToBounds() {

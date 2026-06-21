@@ -43,17 +43,113 @@ const COOLDOWN_MS = Object.freeze({
 // and live agents. The camera centers that frame only when the current view no
 // longer carries the story, avoiding the previous one-agent-at-a-time tour.
 const MANUAL_CUE_GRACE_MS = 8000;
-const ATTRACT_ENGAGE_MS = 18000; // genuine input-free time before auto framing resumes
-const ATTRACT_DWELL_MS = 6500;   // minimum hold before changing story target
-const ATTRACT_REFRESH_MS = 2800; // fastest same-target correction for moving clusters
-const ATTRACT_GLIDE_MS = 1800;
-const ATTRACT_MAX_ZOOM = 2;
-const ATTRACT_PAD_PX = 150;
-const ATTRACT_PREEMPT_SCORE = 18;
+const ATTRACT_PAD_PX = 170;
 const ATTRACT_CENTER_DEADZONE = 0.15;
 const ATTRACT_VISIBILITY_MARGIN = 0.12;
 const ACTION_CLUSTER_RADIUS = 260;
 const ACTIVE_AGENT_THRESHOLD = 24;
+const HEAT_DECAY_MS = 62_000;
+const HEAT_PRUNE_MS = 110_000;
+const LONG_JUMP_MIN_DISTANCE = 720;
+const LONG_JUMP_MAX_AGE_MS = 12_000;
+
+const URGENCY_RANK = Object.freeze({
+    ambient: 0,
+    calm: 1,
+    celebration: 2,
+    attention: 3,
+    urgent: 4,
+});
+
+const ATTRACT_PROFILE = Object.freeze({
+    urgent: {
+        engageMs: 10_000,
+        dwellMs: 9_000,
+        refreshMs: 3_200,
+        duration: 1450,
+        paddingPx: 122,
+        maxZoom: 2,
+        preemptScore: 8,
+        preferPan: false,
+        allowZoomIn: true,
+        zoomHysteresis: 0.45,
+        softFollow: false,
+        longJump: false,
+        composition: { x: 0.50, y: 0.51 },
+    },
+    attention: {
+        engageMs: 14_000,
+        dwellMs: 14_000,
+        refreshMs: 4_800,
+        duration: 1900,
+        paddingPx: 152,
+        maxZoom: 2,
+        preemptScore: 13,
+        preferPan: true,
+        allowZoomIn: true,
+        zoomHysteresis: 0.85,
+        softFollow: true,
+        softSpeed: 0.052,
+        softStiffness: 2400,
+        longJump: true,
+        bridgeDuration: 1350,
+        composition: { x: 0.49, y: 0.53 },
+    },
+    celebration: {
+        engageMs: 18_000,
+        dwellMs: 18_000,
+        refreshMs: 6_000,
+        duration: 2250,
+        paddingPx: 176,
+        maxZoom: 2,
+        preemptScore: 18,
+        preferPan: true,
+        allowZoomIn: true,
+        zoomHysteresis: 0.95,
+        softFollow: true,
+        softSpeed: 0.044,
+        softStiffness: 2700,
+        longJump: true,
+        bridgeDuration: 1500,
+        composition: { x: 0.52, y: 0.54 },
+    },
+    calm: {
+        engageMs: 24_000,
+        dwellMs: 18_000,
+        refreshMs: 7_000,
+        duration: 2600,
+        paddingPx: 196,
+        maxZoom: 2,
+        preemptScore: 23,
+        preferPan: true,
+        allowZoomIn: true,
+        zoomHysteresis: 1.05,
+        softFollow: true,
+        softSpeed: 0.034,
+        softStiffness: 3200,
+        longJump: true,
+        bridgeDuration: 1700,
+        composition: { x: 0.48, y: 0.55 },
+    },
+    ambient: {
+        engageMs: 46_000,
+        dwellMs: 38_000,
+        refreshMs: 14_000,
+        duration: 3400,
+        paddingPx: 238,
+        maxZoom: 1,
+        preemptScore: 36,
+        preferPan: true,
+        allowZoomIn: false,
+        zoomHysteresis: 1.3,
+        softFollow: true,
+        softSpeed: 0.020,
+        softStiffness: 5200,
+        longJump: true,
+        bridgeDuration: 2100,
+        composition: { x: 0.50, y: 0.56 },
+    },
+});
 
 function nowMs() {
     if (typeof performance !== 'undefined' && performance.now) return performance.now();
@@ -97,7 +193,18 @@ function boxCenter(box) {
     return { x: (box.minX + box.maxX) / 2, y: (box.minY + box.maxY) / 2 };
 }
 
-function candidate({ key, kind, score, box = null, points = null, pad = 96, grade = null, paddingPx = ATTRACT_PAD_PX } = {}) {
+function candidate({
+    key,
+    kind,
+    score,
+    box = null,
+    points = null,
+    pad = 96,
+    grade = null,
+    paddingPx = ATTRACT_PAD_PX,
+    urgency = 'calm',
+    composition = null,
+} = {}) {
     const frameBox = validBox(box) ? box : boxForPoints(points || [], pad);
     if (!key || !validBox(frameBox)) return null;
     return {
@@ -108,7 +215,36 @@ function candidate({ key, kind, score, box = null, points = null, pad = 96, grad
         center: boxCenter(frameBox),
         grade,
         paddingPx,
+        urgency,
+        composition,
     };
+}
+
+function profileFor(candidateLike) {
+    return ATTRACT_PROFILE[candidateLike?.urgency] || ATTRACT_PROFILE.calm;
+}
+
+function urgencyRank(candidateLike) {
+    return URGENCY_RANK[candidateLike?.urgency] ?? URGENCY_RANK.calm;
+}
+
+function decayedHeat(entry, now) {
+    if (!entry) return 0;
+    const age = Math.max(0, now - (Number(entry.lastSeen) || now));
+    return (Number(entry.heat) || 0) * Math.exp(-age / HEAT_DECAY_MS);
+}
+
+function incidentUrgency(incidents = []) {
+    for (const incident of incidents) {
+        const kind = String(incident?.kind || '');
+        if (
+            kind === AgentStatus.ERRORED
+            || kind === AgentStatus.RATE_LIMITED
+            || kind === 'failed-push'
+            || kind === 'quota'
+        ) return 'urgent';
+    }
+    return 'attention';
 }
 
 function agentWeight(agent, sprite) {
@@ -182,6 +318,9 @@ export class CameraDirector {
         this._lastAutoMoveAt = -Infinity;
         this._focusKey = null;
         this._focusScore = 0;
+        this._agentHeat = new Map();
+        this._buildingHeat = new Map();
+        this._bridgeTarget = null;
         this._onCue = (cue) => this._handleCue(cue);
         this._off = eventBus.on('village:camera-cue', this._onCue);
     }
@@ -199,6 +338,7 @@ export class CameraDirector {
         if (!this.autoMode) {
             this._focusKey = null;
             this._focusScore = 0;
+            this._bridgeTarget = null;
         }
     }
 
@@ -209,6 +349,9 @@ export class CameraDirector {
         this._activeKind = null;
         this._focusKey = null;
         this._focusScore = 0;
+        this._bridgeTarget = null;
+        this._agentHeat.clear();
+        this._buildingHeat.clear();
     }
 
     _handleCue(cue) {
@@ -249,47 +392,57 @@ export class CameraDirector {
     // operator has been idle, keep the viewport centered on the strongest current
     // action frame. Reduced motion still participates; Camera cuts instead of
     // gliding.
-    update({ now = nowMs(), agentSprites = null, snapshot = null } = {}) {
+    update({ now = nowMs(), dt = 16, agentSprites = null, snapshot = null } = {}) {
         const camera = this.camera;
         if (!this.autoMode || !camera) return;
         if (camera.followTarget) return;               // never fight a manual follow
         if (camera.isDirectorGliding?.()) return;      // one move at a time
-        const idleFor = camera.getUserIdleMs ? camera.getUserIdleMs(now) : Infinity;
-        if (idleFor < ATTRACT_ENGAGE_MS) return;       // operator may still be looking
 
+        this._updateHeatMemory(agentSprites, snapshot, now);
         const candidates = this._scoreActionFrames(agentSprites, snapshot);
         if (!candidates.length) return;
+
+        if (this._bridgeTarget) {
+            const bridged = this._bridgeTarget;
+            if (now - bridged.queuedAt <= LONG_JUMP_MAX_AGE_MS) {
+                const pending = candidates.find(item => item.key === bridged.key) || bridged.pick;
+                if (pending && this._startActionFrame(pending, { now, dt, forceGlide: true, skipBridge: true })) {
+                    this._bridgeTarget = null;
+                    return;
+                }
+            }
+            this._bridgeTarget = null;
+        }
+
+        const topProfile = profileFor(candidates[0]);
+        const idleFor = camera.getUserIdleMs ? camera.getUserIdleMs(now) : Infinity;
+        if (idleFor < topProfile.engageMs) return;       // operator may still be looking
 
         const pick = this._selectActionFrame(candidates, now);
         if (!pick) return;
 
-        const started = camera.glideToWorld(pick.box, {
-            duration: ATTRACT_GLIDE_MS,
-            maxZoom: ATTRACT_MAX_ZOOM,
-            paddingPx: pick.paddingPx || ATTRACT_PAD_PX,
-            grade: pick.grade || null,
-            owner: 'idle-auto',
-        });
-        if (!started) return;
-        this._focusKey = pick.key;
-        this._focusScore = pick.score;
-        this._lastAutoMoveAt = now;
+        this._startActionFrame(pick, { now, dt });
     }
 
     _selectActionFrame(candidates, now) {
         const top = candidates[0];
         const focused = this._focusKey ? candidates.find(item => item.key === this._focusKey) : null;
         const dwellElapsed = now - this._lastAutoMoveAt;
-        const dwellMet = dwellElapsed >= ATTRACT_DWELL_MS;
+        const reference = focused || top;
+        const profile = profileFor(reference);
+        const topProfile = profileFor(top);
+        const dwellMet = dwellElapsed >= profile.dwellMs;
         const referenceScore = focused?.score ?? this._focusScore ?? 0;
-        const strongerStory = !focused || top.score >= referenceScore + ATTRACT_PREEMPT_SCORE;
+        const strongerStory = !focused
+            || urgencyRank(top) > urgencyRank(reference)
+            || top.score >= referenceScore + topProfile.preemptScore;
         const pick = (!dwellMet && focused && !strongerStory) ? focused : top;
         const sameTarget = pick.key === this._focusKey;
 
         if (!dwellMet && !strongerStory && !sameTarget) return null;
-        if (sameTarget && dwellElapsed < ATTRACT_REFRESH_MS) return null;
+        if (sameTarget && dwellElapsed < profile.refreshMs) return null;
 
-        if (this._isFrameComfortable(pick.box)) {
+        if (this._isFrameComfortable(pick)) {
             this._focusKey = pick.key;
             this._focusScore = pick.score;
             return null;
@@ -297,10 +450,83 @@ export class CameraDirector {
         return pick;
     }
 
-    _isFrameComfortable(box) {
+    _startActionFrame(pick, { now = nowMs(), dt = 16, forceGlide = false, skipBridge = false } = {}) {
+        if (!pick) return false;
+        const camera = this.camera;
+        if (!camera) return false;
+        const profile = profileFor(pick);
+        const sameTarget = pick.key === this._focusKey;
+        const composition = pick.composition || profile.composition || null;
+
+        if (!skipBridge && !sameTarget && profile.longJump && this._startLongJumpBridge(pick, profile, now)) {
+            return true;
+        }
+
+        let started = false;
+        if (profile.softFollow && !forceGlide && sameTarget) {
+            started = camera.softFollowWorldBox?.(pick.box, {
+                dt,
+                paddingPx: pick.paddingPx || profile.paddingPx,
+                maxZoom: profile.maxZoom,
+                composition,
+                owner: 'idle-auto',
+                maxSpeedPxPerMs: profile.softSpeed,
+                stiffnessMs: profile.softStiffness,
+                preferPan: profile.preferPan,
+                zoomHysteresis: profile.zoomHysteresis,
+                allowZoomIn: sameTarget ? false : profile.allowZoomIn,
+            }) || false;
+        }
+
+        if (!started) {
+            started = camera.glideToWorld(pick.box, {
+                duration: profile.duration,
+                maxZoom: profile.maxZoom,
+                paddingPx: pick.paddingPx || profile.paddingPx,
+                grade: pick.grade || null,
+                owner: 'idle-auto',
+                composition,
+                preferPan: profile.preferPan && Boolean(this._focusKey),
+                zoomHysteresis: profile.zoomHysteresis,
+                allowZoomIn: profile.allowZoomIn,
+            });
+        }
+        if (!started) return false;
+        this._focusKey = pick.key;
+        this._focusScore = pick.score;
+        this._lastAutoMoveAt = now;
+        return true;
+    }
+
+    _startLongJumpBridge(pick, profile, now) {
+        const camera = this.camera;
+        if (!camera?.currentCenterWorld || !pick?.center) return false;
+        const current = camera.currentCenterWorld();
+        const distance = Math.hypot(pick.center.x - current.x, pick.center.y - current.y);
+        if (distance < (profile.longJumpDistance || LONG_JUMP_MIN_DISTANCE)) return false;
+        const bridgeBox = boxForPoints([current, pick.center], 260);
+        if (!validBox(bridgeBox)) return false;
+        const started = camera.glideToWorld(bridgeBox, {
+            duration: profile.bridgeDuration || 1600,
+            maxZoom: 1,
+            paddingPx: 220,
+            owner: 'idle-auto-bridge',
+            composition: { x: 0.5, y: 0.54 },
+            preferPan: true,
+            allowZoomIn: false,
+            zoomHysteresis: 1.3,
+        });
+        if (!started) return false;
+        this._bridgeTarget = { key: pick.key, pick, queuedAt: now };
+        this._lastAutoMoveAt = now;
+        return true;
+    }
+
+    _isFrameComfortable(candidateLike) {
         const camera = this.camera;
         const w = camera?._viewportWidth?.() || camera?.canvas?.clientWidth || 0;
         const h = camera?._viewportHeight?.() || camera?.canvas?.clientHeight || 0;
+        const box = candidateLike?.box || candidateLike;
         if (!camera?.worldToScreen || !w || !h || !validBox(box)) return false;
         const a = camera.worldToScreen(box.minX, box.minY);
         const b = camera.worldToScreen(box.maxX, box.maxY);
@@ -312,9 +538,69 @@ export class CameraDirector {
         const visible = minX >= margin && maxX <= w - margin && minY >= margin && maxY <= h - margin;
         const center = boxCenter(box);
         const screenCenter = camera.worldToScreen(center.x, center.y);
-        const centerClose = Math.abs(screenCenter.x - w / 2) <= w * ATTRACT_CENTER_DEADZONE
-            && Math.abs(screenCenter.y - h / 2) <= h * ATTRACT_CENTER_DEADZONE;
+        const profile = profileFor(candidateLike);
+        const composition = candidateLike?.composition || profile.composition || { x: 0.5, y: 0.5 };
+        const anchorX = Math.max(0.32, Math.min(0.68, Number(composition.x) || 0.5));
+        const anchorY = Math.max(0.34, Math.min(0.70, Number(composition.y) || 0.5));
+        const centerClose = Math.abs(screenCenter.x - w * anchorX) <= w * ATTRACT_CENTER_DEADZONE
+            && Math.abs(screenCenter.y - h * anchorY) <= h * ATTRACT_CENTER_DEADZONE;
         return visible && centerClose;
+    }
+
+    _updateHeatMemory(agentSprites, snapshot, now) {
+        if (agentSprites) {
+            for (const sprite of agentSprites.values()) {
+                const agent = sprite?.agent;
+                if (!agent?.id || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+                const live = agentWeight(agent, sprite);
+                const previous = this._agentHeat.get(agent.id);
+                const heat = Math.max(decayedHeat(previous, now), live);
+                this._agentHeat.set(agent.id, {
+                    id: agent.id,
+                    x: sprite.x,
+                    y: sprite.y,
+                    heat,
+                    status: agent.status || '',
+                    lastSeen: now,
+                });
+            }
+        }
+
+        for (const signal of (snapshot?.buildingSignals || [])) {
+            const center = finitePoint(signal.center);
+            const type = signal?.type || signal?.label;
+            if (!type || !center) continue;
+            const counts = signal.counts || {};
+            const live = 24
+                + (Number(signal.heat) || 0) * 76
+                + Number(counts.errored || 0) * 22
+                + Number(counts.waiting || 0) * 12
+                + Number(counts.working || 0) * 6
+                + (signal.recentTools?.length || 0) * 8;
+            const previous = this._buildingHeat.get(type);
+            this._buildingHeat.set(type, {
+                type,
+                x: center.x,
+                y: center.y,
+                heat: Math.max(decayedHeat(previous, now), live),
+                lastSeen: now,
+            });
+        }
+
+        this._pruneHeatMemory(now);
+    }
+
+    _pruneHeatMemory(now) {
+        for (const [id, entry] of this._agentHeat.entries()) {
+            if (now - (entry.lastSeen || 0) > HEAT_PRUNE_MS || decayedHeat(entry, now) < 5) {
+                this._agentHeat.delete(id);
+            }
+        }
+        for (const [type, entry] of this._buildingHeat.entries()) {
+            if (now - (entry.lastSeen || 0) > HEAT_PRUNE_MS || decayedHeat(entry, now) < 10) {
+                this._buildingHeat.delete(type);
+            }
+        }
     }
 
     // Rank frame-worthy action frames. The result is intentionally scene-shaped:
@@ -323,21 +609,27 @@ export class CameraDirector {
     _scoreActionFrames(agentSprites, snapshot) {
         const out = [];
 
+        const incidents = snapshot?.incidents || [];
         const incidentPoints = [];
-        for (const incident of (snapshot?.incidents || [])) {
+        for (const incident of incidents) {
             const agentPoint = finitePoint(incident.agent);
             const centerPoint = finitePoint(incident.center);
             if (agentPoint) incidentPoints.push(agentPoint);
             if (centerPoint) incidentPoints.push(centerPoint);
         }
         if (incidentPoints.length) {
+            const urgency = incidentUrgency(incidents);
             out.push(candidate({
                 key: 'incidents',
                 kind: 'incident',
-                score: 112 + Math.min(24, incidentPoints.length * 4),
+                urgency,
+                score: (urgency === 'urgent' ? 112 : 96) + Math.min(24, incidentPoints.length * 4),
                 points: incidentPoints,
-                pad: 96,
-                grade: { vignette: 0.4, worldTint: '#c0392b' },
+                pad: urgency === 'urgent' ? 92 : 112,
+                grade: urgency === 'urgent'
+                    ? { vignette: 0.4, worldTint: '#c0392b' }
+                    : { vignette: 0.28, worldTint: '#f5a623' },
+                composition: urgency === 'urgent' ? { x: 0.5, y: 0.51 } : { x: 0.49, y: 0.53 },
             }));
         }
 
@@ -346,9 +638,11 @@ export class CameraDirector {
             out.push(candidate({
                 key: `release:${snapshot.releaseParade.id || snapshot.releaseParade.label || 'active'}`,
                 kind: 'release',
+                urgency: 'celebration',
                 score: 82,
                 box: boxAround(releaseCenter.x, releaseCenter.y, 132),
                 grade: { vignette: 0.30, worldTint: '#f5c451' },
+                composition: { x: 0.52, y: 0.54 },
             }));
         }
 
@@ -358,10 +652,12 @@ export class CameraDirector {
             out.push(candidate({
                 key: `handoff:${handoff.id || handoff.agentId || ''}:${handoff.targetAgentId || handoff.childId || ''}`,
                 kind: 'handoff',
+                urgency: 'calm',
                 score: 80 - Math.min(12, (Number(handoff.progress) || 0) * 12),
                 points,
                 pad: 108,
                 grade: { vignette: 0.20, worldTint: '#7ac8d8' },
+                composition: { x: 0.48, y: 0.54 },
             }));
         }
 
@@ -372,17 +668,26 @@ export class CameraDirector {
             out.push(candidate({
                 key: `team:${team.id || team.label || Math.round(center.x)}`,
                 kind: 'team',
+                urgency: 'calm',
                 score: 62 + Math.min(28, memberCount * 5),
                 box: boxAround(center.x, center.y, Math.max(110, (Number(team.radius) || 0) + 82)),
                 grade: { vignette: 0.18, worldTint: '#c084fc' },
+                composition: { x: 0.48, y: 0.55 },
             }));
         }
 
+        const liveBuildingKeys = new Set();
         for (const signal of (snapshot?.buildingSignals || [])) {
             const center = finitePoint(signal.center);
             if (!center) continue;
+            liveBuildingKeys.add(signal.type || signal.label || '');
             const counts = signal.counts || {};
             const occupied = Number(counts.occupied || 0);
+            const urgency = Number(counts.errored || 0) > 0
+                ? 'urgent'
+                : Number(counts.waiting || 0) > 0
+                    ? 'attention'
+                    : 'calm';
             const score = 54
                 + (Number(signal.heat) || 0) * 36
                 + Number(counts.errored || 0) * 20
@@ -392,12 +697,29 @@ export class CameraDirector {
             out.push(candidate({
                 key: `building:${signal.type || signal.label || Math.round(center.x)}`,
                 kind: 'building',
+                urgency,
                 score,
                 box: boxAround(center.x, center.y, 126 + Math.min(86, occupied * 12)),
                 grade: Number(counts.errored || 0) > 0
                     ? { vignette: 0.26, worldTint: '#c0392b' }
                     : null,
                 paddingPx: 164,
+                composition: urgency === 'urgent' ? { x: 0.5, y: 0.52 } : { x: 0.47, y: 0.56 },
+            }));
+        }
+
+        for (const [type, entry] of this._buildingHeat.entries()) {
+            if (liveBuildingKeys.has(type)) continue;
+            const heat = decayedHeat(entry, snapshot?.perfNow || nowMs());
+            if (heat < 28) continue;
+            out.push(candidate({
+                key: `building-memory:${type}`,
+                kind: 'building-memory',
+                urgency: heat > 70 ? 'calm' : 'ambient',
+                score: 22 + Math.min(42, heat * 0.42),
+                box: boxAround(entry.x, entry.y, 138),
+                paddingPx: 190,
+                composition: { x: 0.47, y: 0.56 },
             }));
         }
 
@@ -408,9 +730,11 @@ export class CameraDirector {
             out.push(candidate({
                 key: `life:${life.kind || 'event'}:${life.agentId || life.id || Math.round(center.x)}`,
                 kind: 'lifecycle',
+                urgency: arrival ? 'attention' : 'ambient',
                 score: arrival ? 56 : 42,
                 box: boxAround(center.x, center.y, arrival ? 100 : 82),
                 grade: arrival ? { vignette: 0.18, worldTint: '#7fc7c0' } : null,
+                composition: arrival ? { x: 0.5, y: 0.53 } : { x: 0.5, y: 0.56 },
             }));
         }
 
@@ -419,7 +743,8 @@ export class CameraDirector {
             for (const sprite of agentSprites.values()) {
                 const agent = sprite?.agent;
                 if (!agent || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
-                const weight = agentWeight(agent, sprite);
+                const heat = decayedHeat(this._agentHeat.get(agent.id), snapshot?.perfNow || nowMs());
+                const weight = Math.max(agentWeight(agent, sprite), heat * 0.82);
                 points.push({ id: agent.id, x: sprite.x, y: sprite.y, weight });
             }
             this._pushAgentClusterFrames(out, points);
@@ -442,11 +767,13 @@ export class CameraDirector {
             out.push(candidate({
                 key: clusterKey(active ? 'agents' : 'idle-agents', cluster),
                 kind: active ? 'agent-cluster' : 'agent-overview',
+                urgency: active ? 'calm' : 'ambient',
                 score: (active ? 46 : 24)
                     + Math.min(active ? 44 : 20, cluster.weight / (active ? 5 : 3))
                     + Math.min(14, cluster.points.length * 2),
                 box,
                 paddingPx: active ? 150 : 176,
+                composition: active ? { x: 0.48, y: 0.55 } : { x: 0.5, y: 0.57 },
             }));
         }
 
@@ -457,12 +784,14 @@ export class CameraDirector {
             out.push(candidate({
                 key: `active-fleet:${activePoints.length}:${activePoints.map(point => point.id).sort().slice(0, 8).join('|')}`,
                 kind: 'active-fleet',
+                urgency: 'calm',
                 score: 50
                     + Math.min(34, totalWeight / 9)
                     + Math.min(12, activePoints.length * 2)
                     - Math.max(0, (spread - 780) / 32),
                 box,
                 paddingPx: 170,
+                composition: { x: 0.48, y: 0.55 },
             }));
         }
     }
