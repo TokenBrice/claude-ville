@@ -2,6 +2,17 @@
 
 ---
 
+## v0.18.1 — *Steady Gaze* · Jun 22, 2026
+
+The World idle camera trades cinematic cleverness for a sturdier village watch — slower, simpler, and focused on where agents naturally gather.
+
+- **Central-agent focus.** Auto-camera now scores live villager positions every few seconds, favoring the agent most surrounded by nearby agents with only small bonuses for active work and attention states.
+- **Patient movement.** Ordinary idle moves use broad frames, long dwell windows, slow glides, no long-jump bridge shots, and no automatic zoom-in.
+- **Stronger user control.** Manual camera input, selected-agent context, follow mode, reduced motion, and the Cinema toggle now all gate automatic movement before the director can request a glide.
+- **Event cues kept simple.** Incidents, arrivals, releases, and failed-push incidents still use boxed `village:camera-cue` targets, with longer cooldowns and the existing glide grade passed through.
+
+---
+
 ## v0.18.0 — *Quiet Watch* · Jun 21, 2026
 
 The World camera becomes a **patient village lookout** — calm when the town is calm, quick only when something needs attention, and always ready to frame the action without a hand on the controls.
