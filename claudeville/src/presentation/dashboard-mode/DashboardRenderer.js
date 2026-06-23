@@ -627,7 +627,7 @@ export class DashboardRenderer {
         const raw = data.tokenUsage || data.tokens || data.usage;
         if (!raw) return null;
         const usage = TokenUsage.normalize(raw);
-        const totalTokens = usage.totalInput + usage.totalOutput;
+        const totalTokens = TokenUsage.totalTokens(usage);
         if (totalTokens <= 0) return null;
         const cost = TokenUsage.estimateCost(usage, agent.model, agent.provider);
         return {

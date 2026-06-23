@@ -132,6 +132,11 @@ export class TokenUsage {
         };
     }
 
+    static totalTokens(rawUsage) {
+        const usage = rawUsage instanceof TokenUsage ? rawUsage : TokenUsage.normalize(rawUsage);
+        return usage.totalInput + usage.totalOutput + usage.cacheRead + usage.cacheCreate;
+    }
+
     static pricingForModel(model, provider) {
         const modelCandidates = pricingModelCandidates(model);
         const normalizedModel = modelCandidates[0] || '';

@@ -1,5 +1,6 @@
 import { eventBus } from '../events/DomainEvent.js';
 import { AgentStatus, normalizeAgentStatus } from '../value-objects/AgentStatus.js';
+import { TokenUsage } from '../value-objects/TokenUsage.js';
 
 export class World {
     constructor() {
@@ -69,7 +70,7 @@ export class World {
         let attention = 0;
 
         for (const agent of this.agents.values()) {
-            totalTokens += (agent.tokens.input || 0) + (agent.tokens.output || 0);
+            totalTokens += TokenUsage.totalTokens(agent.tokens);
             totalCost += agent.cost;
             const status = normalizeAgentStatus(agent.status);
             if (status === AgentStatus.WORKING) working++;
