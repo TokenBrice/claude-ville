@@ -2,6 +2,17 @@
 
 ---
 
+## v0.19.0 — *Guild Charter* · Jun 29, 2026
+
+ClaudeVille opens a clearer front gate for GitHub visitors, contributors, and security reporters.
+
+- **Public README front door.** The README now leads with the local/read-only promise, supported providers, zero-build runtime, current version, changelog link, and simulator-backed screenshots instead of a fragile external attachment.
+- **Community trust files.** MIT licensing, contribution guidance, support routing, a security policy, and a code of conduct now live at the repo root so GitHub can surface the project health signals directly.
+- **Structured GitHub intake.** Issue forms, contact links, a pull request template, and area/provider/status labels route bugs, provider parsing reports, widget issues, visual regressions, docs fixes, and feature requests into useful lanes.
+- **Repository discovery metadata.** Package metadata, GitHub topics, the repo description, discussions, Dependabot alerts, and private vulnerability reporting are now aligned with the active local-first AI coding CLI dashboard.
+
+---
+
 ## v0.18.1 — *Steady Gaze* · Jun 22, 2026
 
 The World idle camera trades cinematic cleverness for a sturdier village watch — slower, simpler, and focused on where agents naturally gather.
