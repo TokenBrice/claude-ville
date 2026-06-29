@@ -2,6 +2,12 @@
 
 ---
 
+## v0.19.1 · Jun 29, 2026 — Hotfix
+
+- **Canonical repo note.** The README now states that `TokenBrice/claude-ville` is the active maintained repository while it remains a public fork of `honorstudio/claude-ville`.
+
+---
+
 ## v0.19.0 — *Guild Charter* · Jun 29, 2026
 
 ClaudeVille opens a clearer front gate for GitHub visitors, contributors, and security reporters.
