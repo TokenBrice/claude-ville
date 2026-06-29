@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
 const lockPath = join(repoRoot, 'package-lock.json');
+const sourcePackagePath = join(repoRoot, 'node_modules', 'js-yaml', 'package.json');
 const sourcePath = join(repoRoot, 'node_modules', 'js-yaml', 'dist', 'js-yaml.min.js');
 const vendorPath = join(repoRoot, 'claudeville', 'vendor', 'js-yaml.min.js');
 
@@ -16,11 +17,13 @@ if (!lockedVersion) {
 if (!existsSync(sourcePath)) {
     throw new Error('node_modules/js-yaml/dist/js-yaml.min.js is missing; run npm install before refreshing vendor assets');
 }
+if (!existsSync(sourcePackagePath)) {
+    throw new Error('node_modules/js-yaml/package.json is missing; run npm install before refreshing vendor assets');
+}
 
-const source = readFileSync(sourcePath, 'utf8');
-const header = source.split(/\r?\n/, 1)[0] || '';
-if (!header.includes(`js-yaml ${lockedVersion}`)) {
-    throw new Error(`js-yaml dist header does not match package-lock version ${lockedVersion}: ${header}`);
+const sourcePackage = JSON.parse(readFileSync(sourcePackagePath, 'utf8'));
+if (sourcePackage.version !== lockedVersion) {
+    throw new Error(`node_modules/js-yaml version ${sourcePackage.version} does not match package-lock version ${lockedVersion}`);
 }
 
 copyFileSync(sourcePath, vendorPath);

@@ -2,6 +2,12 @@
 
 ---
 
+## v0.19.2 · Jun 29, 2026 — Hotfix
+
+- **Dependency advisory cleared.** Dev tooling and the browser-vendored YAML parser now use `js-yaml` 4.3.0, closing the moderate Dependabot alert surfaced after GitHub security scanning was enabled.
+
+---
+
 ## v0.19.1 · Jun 29, 2026 — Hotfix
 
 - **Canonical repo note.** The README now states that `TokenBrice/claude-ville` is the active maintained repository while it remains a public fork of `honorstudio/claude-ville`.
