@@ -35,10 +35,17 @@ Read these in order when joining the project:
 
 | Location | Purpose |
 | --- | --- |
+| `PRODUCT.md` | Product purpose, audience, positioning, and brand principles. |
+| `DESIGN.md` | DOM chrome design system and visual design contract. |
+| `CHANGELOG.md` | Named release history shown in-app from the version chip. |
+| `CONTRIBUTING.md` | Public contribution lanes, setup, validation, and pull request expectations. |
+| `SECURITY.md` | Private vulnerability reporting policy and scope. |
+| `SUPPORT.md` | Support routing for setup, provider, widget, and visual issues. |
 | `claudeville/adapters/README.md` | Adapter contract and normalized provider data. |
 | `claudeville/src/presentation/character-mode/README.md` | World mode renderer pipeline and canvas contracts. |
 | `claudeville/src/presentation/dashboard-mode/README.md` | Dashboard renderer lifecycle and detail polling. |
 | `claudeville/src/presentation/shared/README.md` | Top bar, sidebar, activity panel, model identity, and shared detail cache. |
 | `widget/kde/README.md` | KDE Plasma widget package and install workflow. |
+| `widget/README.md` | macOS menu bar widget setup and behavior. |
 | `scripts/sprites/generate.md` | Manifest-first sprite generation and validation workflow. |
 | `agents/README.md` | Current agent-artifact policy and retained artifact index. |

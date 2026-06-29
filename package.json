@@ -1,7 +1,30 @@
 {
   "name": "claude-ville",
   "version": "0.18.1",
+  "description": "Local-first dashboard for watching Claude Code, Codex CLI, Gemini, Kimi, and OpenCode sessions as an isometric pixel village and monitoring dashboard.",
   "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TokenBrice/claude-ville.git"
+  },
+  "bugs": {
+    "url": "https://github.com/TokenBrice/claude-ville/issues"
+  },
+  "homepage": "https://github.com/TokenBrice/claude-ville#readme",
+  "keywords": [
+    "ai-agents",
+    "claude-code",
+    "codex-cli",
+    "gemini-cli",
+    "opencode",
+    "local-first",
+    "dashboard",
+    "observability",
+    "pixel-art",
+    "websocket",
+    "vanilla-js"
+  ],
   "engines": {
     "node": ">=18"
   },

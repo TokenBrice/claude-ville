@@ -1,11 +1,57 @@
 # ClaudeVille
 
-ClaudeVille is a local dashboard for AI coding agent activity. It reads session files from Claude Code, OpenAI Codex CLI, Google Gemini CLI, Kimi, and OpenCode, normalizes them into a shared session model, and displays them in either an isometric RPG-style world or a dense monitoring dashboard.
+[![Version](https://img.shields.io/badge/version-v0.18.1-8a6f2a)](./CHANGELOG.md)
+[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](./package.json)
+[![Runtime](https://img.shields.io/badge/runtime-zero--build-7c3aed)](#quick-start)
+[![Local first](https://img.shields.io/badge/local--first-read--only-0f766e)](#local-and-read-only)
+[![Providers](https://img.shields.io/badge/providers-5-f97316)](#supported-providers)
+
+Watch your local AI coding CLIs work in a living pixel village.
+
+ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google Gemini CLI, Kimi, and OpenCode sessions. It reads provider logs read-only, normalizes them into one session model, and renders active agents as either an isometric RPG village or a dense monitoring dashboard.
+
+![ClaudeVille World mode showing simulated AI coding agents in an isometric pixel village](./docs/assets/github/world-day.png)
+
+- **Local and read-only:** no hosted service, no telemetry, no provider-file writes.
+- **Multi-provider:** Claude Code, Codex CLI, Gemini CLI, Kimi, and OpenCode.
+- **Glanceable:** World mode for second-monitor awareness; Dashboard mode for exact state.
+- **Zero-build runtime:** Node HTTP/WebSocket server plus static browser assets.
+- **Desktop companion:** optional macOS menu bar and KDE Plasma widgets.
+
+Current version: **v0.18.1**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
+
+## Why ClaudeVille
+
+ClaudeVille is a Claude Code dashboard, Codex CLI dashboard, and local AI agent observability tool built for the corner of your eye. It turns invisible local agent activity into a place you can leave open: agents move around the village by what they are doing, while Dashboard mode keeps token usage, cost, tools, status, and session detail available when you need exact state.
 
 The app is intentionally small: a zero-dependency Node.js HTTP/WebSocket server, static browser assets, vanilla ES modules, Canvas 2D rendering, and optional desktop widgets for macOS and KDE Plasma.
 
-<img width="2545" height="1254" alt="image" src="https://github.com/user-attachments/assets/9d9f04f9-cfba-4188-82a8-28e3fbce93e4" />
+## Local And Read-Only
 
+ClaudeVille runs on `localhost:4000` and reads supported CLI session stores from your machine. It does not write provider session files, does not proxy requests to a hosted service, and does not need a build step to run.
+
+Desktop browser viewports 1280px wide and larger are the supported target. Empty provider lists are normal on machines where no supported CLI has local session files yet.
+
+## Supported Providers
+
+| Provider | Local source |
+| --- | --- |
+| Claude Code | `~/.claude/` |
+| Codex CLI | `~/.codex/sessions/` |
+| Gemini CLI | `~/.gemini/tmp/` |
+| Kimi | `~/.kimi/` and `~/.kimi-code/` |
+| OpenCode | `~/.local/share/opencode/opencode.db` |
+
+## Screenshots
+
+| World mode at night | Dashboard mode |
+| --- | --- |
+| ![ClaudeVille World mode at night with weather, lit buildings, and fixture agents](./docs/assets/github/world-night.png) | ![ClaudeVille Dashboard mode grouping simulated AI coding sessions by project](./docs/assets/github/dashboard.png) |
+
+| Activity panel |
+| --- |
+| ![ClaudeVille activity panel showing selected fixture agent state, tool usage, and session detail](./docs/assets/github/activity-panel.png) |
 
 ## Quick Start
 
@@ -285,11 +331,24 @@ For macOS widget changes, run `npm run widget:build`, then `npm run widget:check
 - This repo is often edited by multiple agents. Check `git status --short` before changes and preserve unrelated local edits.
 - See `docs/visual-experience-crafting.md` for the transferable design method behind the RPG world model.
 
+## Contributing And Support
+
+Good public contribution lanes are provider adapter fixes, redacted fixtures, docs fixes, widget fixes, and focused UI or visual quality improvements. Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
+
+For setup and troubleshooting, start with [SUPPORT.md](./SUPPORT.md) and [docs/troubleshooting.md](./docs/troubleshooting.md). Please do not report vulnerabilities or exposed private data in public issues; use [SECURITY.md](./SECURITY.md).
+
 ## Docs Map
 
 | File | Audience | Purpose |
 | --- | --- | --- |
 | `README.md` | Everyone | Project overview, quick start, runtime architecture. |
+| `PRODUCT.md` | Product/design work | Product purpose, users, positioning, brand personality, and design principles. |
+| `DESIGN.md` | Visual/UI work | DOM chrome design system, palette, typography, components, and anti-references. |
+| `CHANGELOG.md` | Everyone | Named release history shown in-app from the version chip. |
+| `CONTRIBUTING.md` | Contributors | Contribution lanes, setup, validation, and pull request expectations. |
+| `SECURITY.md` | Security reporters | Private vulnerability reporting policy and scope. |
+| `SUPPORT.md` | Users and contributors | Where to start for setup, provider, widget, and visual support. |
+| `CODE_OF_CONDUCT.md` | Contributors | Collaboration expectations and enforcement scope. |
 | `AGENTS.md` | Codex CLI and any generic agent harness | Canonical agent-context file: harness map, `/agents/` artifact convention, project shape, conventions, validation, git hygiene. |
 | `CLAUDE.md` | Claude Code | Byte-for-byte mirror of `AGENTS.md` (after the heading) so Claude Code's auto-loader sees the same content. `AGENTS.md` is canonical — when changing one, change both and run the parity diff in either file's Validation Checklist. |
 | `docs/README.md` | Everyone | Current documentation index and task routing. |
@@ -307,7 +366,9 @@ For macOS widget changes, run `npm run widget:build`, then `npm run widget:check
 | `agents/README.md` | Agents | Current artifact policy and retained artifact index. |
 | `scripts/sprites/generate.md` | Sprite work | Manifest-first PixelLab generation and asset validation runbook. |
 | `docs/pixellab-reference.md` | Sprite work | PixelLab tool catalog, parameter enums, animation templates, async lifecycle, and pitfalls. |
+| `widget/README.md` | macOS widget work | Native menu bar widget setup and behavior. |
+| `widget/kde/README.md` | KDE widget work | Plasma widget install, configuration, and validation. |
 
 ## License
 
-MIT
+[MIT](./LICENSE)

@@ -1,0 +1,43 @@
+name: Widget Issue
+description: Report a macOS menu bar or KDE Plasma widget problem.
+title: "[Widget] "
+labels: ["bug", "area:widget"]
+body:
+  - type: dropdown
+    id: widget
+    attributes:
+      label: Widget
+      options:
+        - macOS menu bar widget
+        - KDE Plasma widget
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      placeholder: macOS version or KDE Plasma version
+    validations:
+      required: true
+  - type: input
+    id: server
+    attributes:
+      label: ClaudeVille server URL
+      placeholder: http://localhost:4000
+  - type: textarea
+    id: checks
+    attributes:
+      label: Check command output
+      description: Run the matching widget check and paste redacted output.
+      placeholder: npm run widget:check or npm run widget:kde:check
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Problem behavior
+    validations:
+      required: true
+  - type: textarea
+    id: screenshot
+    attributes:
+      label: Screenshot or extra context
+      description: Redact private content.
