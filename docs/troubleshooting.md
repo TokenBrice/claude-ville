@@ -6,13 +6,13 @@ The dashboard observes local AI CLI session files. It writes nothing back to tho
 
 ## "No providers detected" / `/api/providers` returns `[]`
 
-At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.kimi/`, or `~/.local/share/opencode/opencode.db`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OpenCode is stricter: the database must exist and either Node's `node:sqlite` support or the `sqlite3` CLI must be available for read-only access. A fresh machine with none of these CLIs installed correctly returns an empty list.
+At least one provider source must exist and be readable: `~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi/`, or `~/.local/share/opencode/opencode.db`. Most adapters register by home-directory presence, not by whether session subdirectories already contain data. OpenCode is stricter: the database must exist and either Node's `node:sqlite` support or the `sqlite3` CLI must be available for read-only access. A fresh machine with none of these CLIs installed correctly returns an empty list.
 
 Server log on startup will say:
 
 ```
 [!] No active providers
-    One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.kimi/, or ~/.local/share/opencode/ is required
+    One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.grok/, ~/.kimi/, or ~/.local/share/opencode/ is required
 ```
 
 Fix: install at least one supported CLI and run a session so the provider home and session files are created. Then restart the server.
@@ -85,7 +85,7 @@ Credential and activity sources are cached briefly, and quota checks are best-ef
 
 ## Cost numbers look wrong
 
-Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. Browser-side estimates use `claudeville/src/domain/value-objects/TokenUsage.js`; server-side `/api/sessions` estimates and widget display fields use `claudeville/src/config/model-pricing.json` through the adapter session-presentation helper. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`, `kimi-for-coding`, `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`). DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but match DeepSeek pricing by model string. Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
+Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. Browser-side estimates use `claudeville/src/domain/value-objects/TokenUsage.js`; server-side `/api/sessions` estimates and widget display fields use `claudeville/src/config/model-pricing.json` through the adapter session-presentation helper. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`, `kimi-for-coding`, `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`, `grok-4.5`, `grok-4.3`, `grok-4`, `composer`). DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but match DeepSeek pricing by model string. Grok sessions currently surface a cumulative `contextWindow` occupancy from ACP metadata rather than a full input/output split, so estimated cost often stays near zero until richer usage is written on disk. Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
 
 If a model is missing or its price has changed, update `claudeville/src/config/model-pricing.json` and `TokenUsage.js`; then run `npm run widget:pricing-check` and verify browser, `/api/sessions`, and widget cost displays. Widgets consume the API-provided `estimatedCost`, `displayModel`, `modelColor`, and `spriteId` fields rather than carrying local pricing tables.
 

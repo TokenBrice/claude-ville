@@ -1,6 +1,6 @@
 # Provider Adapters
 
-Read-only readers that pull active session data from local CLI provider stores (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.kimi/`, and `~/.local/share/opencode/`) and normalize it into a single shape the rest of ClaudeVille consumes.
+Read-only readers that pull active session data from local CLI provider stores (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi/`, and `~/.local/share/opencode/`) and normalize it into a single shape the rest of ClaudeVille consumes.
 
 ## Purpose
 
@@ -15,6 +15,7 @@ const adapters = [
   new ClaudeAdapter(),
   new CodexAdapter(),
   new GeminiAdapter(),
+  new GrokAdapter(),
   new KimiAdapter(),
   new OpenCodeAdapter(),
 ];
@@ -46,7 +47,7 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | Member | Kind | Returns | Consumer |
 | --- | --- | --- | --- |
 | `name` | getter | display string (e.g. `'Claude Code'`) | `getActiveProviders()`, surfaced via `/api/providers` |
-| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'` / `'kimi'` / `'opencode'`) | Adapter dispatch and adapter-backed session objects |
+| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'` / `'grok'` / `'kimi'` / `'opencode'`) | Adapter dispatch and adapter-backed session objects |
 | `homeDir` | getter | absolute path to the provider's source dir | `getActiveProviders()` |
 | `isAvailable()` | method | `boolean` | Gates every registry iteration |
 | `getActiveSessions(activeThresholdMs)` | method | `Session[]` (see below) | Called from `server.js` per request and per polling tick |
@@ -74,8 +75,8 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `sessionId` | string | Unique across providers. Codex, Gemini, Kimi, and OpenCode prefix with `codex-` / `gemini-` / `kimi-` / `opencode-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
-| `provider` | `'claude' \| 'codex' \| 'gemini' \| 'kimi' \| 'opencode' \| 'git'` | Adapter-backed sessions use the CLI/source provider id. DeepSeek-backed OpenCode sessions still use `provider: 'opencode'` and expose DeepSeek through `model`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
+| `sessionId` | string | Unique across providers. Codex, Gemini, Grok, Kimi, and OpenCode prefix with `codex-` / `gemini-` / `grok-` / `kimi-` / `opencode-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
+| `provider` | `'claude' \| 'codex' \| 'gemini' \| 'grok' \| 'kimi' \| 'opencode' \| 'git'` | Adapter-backed sessions use the CLI/source provider id. DeepSeek-backed OpenCode sessions still use `provider: 'opencode'` and expose DeepSeek through `model`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
 | `agentId` | string \| null | Provider-specific agent thread id; nullable for Gemini. |
 | `agentType` | `'main' \| 'sub-agent' \| 'team-member' \| 'workflow-subagent' \| 'repository'` | Drives sprite/card grouping. Default `'main'`. Synthetic git sessions use `'repository'`. Workflow tool sub-agents use `'workflow-subagent'`. |
 | `agentName` | string \| null | Human label when the provider exposes one (Codex `session_index.jsonl` `thread_name` with `agent_nickname` fallback, Claude team launch name). |
@@ -252,6 +253,34 @@ The adapter resolves project hashes from `~/.kimi/kimi.json` and common local wo
 ```
 
 Kimi Code also writes `~/.kimi-code/session_index.jsonl` entries shaped like `{ "sessionId", "sessionDir", "workDir" }`. The adapter uses both the persisted id and root-validated `sessionDir`/basename keys so project mapping survives if Kimi's stored id differs from the folder name, and falls back to `state.json` agent `homedir`, then `config.update.cwd`, when the index is missing. Detail responses use the same project resolution. The adapter scans every `agents/<agent>/wire.jsonl`: `main` remains a primary session, while numbered or named agent dirs become `sub-agent` sessions. `config.update.modelAlias` is used as an early model/context signal before `usage.record` lines exist, and usage token fields accept both camelCase and snake_case spellings. `tool.result.result.isError` / `is_error` and exit fields are paired back to shell tool calls by `toolCallId` / `uuid` / related call-id aliases, so git events and tool-history rows can distinguish successful and failed pushes/commits. Child rows use persisted `state.json` `agents.<agent>.parentAgentId` metadata for nested child-to-child lineage when that parent row is active, and otherwise fall back to the main Kimi session. If child wires are active while `main` is stale or absent, the parent stays visible with child-derived activity; parent detail lookups also fall back to the newest child wire when no `main` wire exists, so UI lineage is not orphaned.
+
+### Grok — `~/.grok/sessions/<url-encoded-cwd>/<session-id>/`
+
+```jsonc
+// summary.json — fields the adapter reads
+{
+  "info": { "id": "019f46ac-...", "cwd": "/Users/me/code/proj" },
+  "session_summary": "Implement the feature",
+  "generated_title": "Implement the feature",
+  "current_model_id": "grok-4.5",
+  "agent_name": "grok-build-plan",
+  "reasoning_effort": "high",
+  "created_at": "2026-07-09T11:38:44.476Z",
+  "updated_at": "2026-07-09T11:42:08.151Z",
+  "last_active_at": "2026-07-09T11:42:08.151Z"
+}
+
+// updates.jsonl — ACP session update stream (one line per event)
+{"timestamp":1783597308,"method":"session/update","params":{"sessionId":"019f46ac-...","update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"run_terminal_command","rawInput":{"command":"ls"}},"_meta":{"totalTokens":12000}}}
+{"timestamp":1783597309,"method":"session/update","params":{"update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"Done."}}}}
+
+// chat_history.jsonl — raw model messages
+{"type":"user","content":[{"type":"text","text":"Hello"}]}
+{"type":"assistant","tool_calls":[{"id":"call-1","name":"run_terminal_command","arguments":"{\"command\":\"ls\"}"}],"model_id":"grok-4.5","reasoning_effort":"high"}
+{"type":"tool_result","tool_call_id":"call-1","content":"..."}
+```
+
+The adapter discovers sessions under `~/.grok/sessions/`, uses `summary.json` for model/title/activity, prefers `updates.jsonl` for live tools and message chunks, and falls back to `chat_history.jsonl`. Session ids are prefixed `grok-`. `totalTokens` from ACP update metadata is mapped to `tokenUsage.contextWindow` when present (Grok does not yet expose a full input/output split on disk). Optional `~/.grok/active_sessions.json` is watched but not required for discovery.
 
 ### OpenCode — `~/.local/share/opencode/opencode.db` (SQLite)
 

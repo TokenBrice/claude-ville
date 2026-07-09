@@ -50,6 +50,17 @@ Every generated PNG must land at the path implied by its manifest ID:
 
 If the runtime cannot load an image, `AssetManager` falls back to `assets/sprites/_placeholder/checker-64.png`. Checkerboard output in the browser usually means a manifest/path/PNG problem.
 
+## Procedural Grok characters
+
+When PixelLab is unavailable, Grok agent sheets can be baked without external services:
+
+```bash
+npm run sprites:generate-grok
+# or: node scripts/sprites/generate-grok-procedural.mjs --preview
+```
+
+This writes `agent.grok.base` and `agent.grok.composer` sheets (8×10 × 92px). Manifest `tool: procedural` marks these entries. Prefer a full PixelLab pro bake later using the stored prompts when credits are active.
+
 ## Generation Rules
 
 1. Read the current `style.anchor` from `manifest.yaml`.

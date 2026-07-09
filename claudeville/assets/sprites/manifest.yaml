@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-06-16-lunar-oracle-v1"
+  assetVersion: "2026-07-09-starfall-gate-v3"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -180,6 +180,34 @@ characters:
     anchor: [46, 80]
     mode: pro
 
+  # Grok cosmic truthseeker class: void-black + electric cyan, distinct from
+  # Codex warriors, Claude mages, and DeepSeek rogues.
+  # NOTE: baked 2026-07-09 via PixelLab create_character mode=pro size=76
+  # (canvas ~148/152, center-crop to 92) + walking-6-frames + breathing-idle.
+  # character_ids: base=52a9b493-1cca-44a5-bf87-23e498aee521
+  #                composer=abf469b2-67c5-401d-bb56-3db01f4d8731
+  # Reassemble: node scripts/sprites/generate-character-mcp.mjs --id=<id> --zip=...
+  # Fallback procedural baker: npm run sprites:generate-grok
+  - id: agent.grok.base
+    tool: create_character
+    prompt: "Grok cosmic truthseeker herald, void-black traveler coat with electric cyan constellation trim, short starfield cloak, confident irreverent smirk on a readable face, silver-white hair with a cyan lightning streak, small orbiting star mote near shoulder, leather satchel of cosmic charts at hip, dark boots, open empty hands, lean upright explorer stance, heroic high-fantasy RPG silhouette, identical outfit from every angle, no plate armor, no wizard hat, no staff, no bow, no daggers, no mask, no demon horns, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: grok
+    anchor: [46, 80]
+    mode: pro
+
+  - id: agent.grok.composer
+    tool: create_character
+    prompt: "Grok Composer swift star-messenger scout, lighter void-charcoal jacket with bright cyan trim, cyan headband, lean agile runner stance, small star charm at belt, dark leggings and light boots, readable face with wry grin, open empty hands, compact high-fantasy RPG silhouette, identical outfit from every angle, no plate armor, no wizard hat, no staff, no bow, no daggers, no heavy cloak, 8-direction pixel art"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: grok
+    anchor: [46, 80]
+    mode: pro
+
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
 # this block for standalone tooling — keep both in sync if you edit either.
@@ -204,6 +232,10 @@ palettes:
     robe: ['#2f7d5b', '#3a9e72', '#276547']
     pants: ['#1c3a2e', '#243f33', '#18302a']
     trim: ['#7cf4c8', '#45dca8', '#c8fff0']
+  grok:
+    robe: ['#14141f', '#1c1c2e', '#0a0a14']
+    pants: ['#101018', '#181822', '#0c0c14']
+    trim: ['#7df9ff', '#22d3ee', '#e8f7ff']
 
 # ─── EQUIPMENT ───────────────────────────────────────────────────────────────
 # Runtime-held Codex weapons. Anchors mark the grip point used by AgentSprite,

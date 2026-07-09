@@ -1,25 +1,25 @@
 # ClaudeVille
 
-[![Version](https://img.shields.io/badge/version-v0.19.2-8a6f2a)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.20.0-8a6f2a)](./CHANGELOG.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](./package.json)
 [![Runtime](https://img.shields.io/badge/runtime-zero--build-7c3aed)](#quick-start)
 [![Local first](https://img.shields.io/badge/local--first-read--only-0f766e)](#local-and-read-only)
-[![Providers](https://img.shields.io/badge/providers-5-f97316)](#supported-providers)
+[![Providers](https://img.shields.io/badge/providers-6-f97316)](#supported-providers)
 
 Watch your local AI coding CLIs work in a living pixel village.
 
-ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google Gemini CLI, Kimi, and OpenCode sessions. It reads provider logs read-only, normalizes them into one session model, and renders active agents as either an isometric RPG village or a dense monitoring dashboard.
+ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google Gemini CLI, xAI Grok CLI, Kimi, and OpenCode sessions. It reads provider logs read-only, normalizes them into one session model, and renders active agents as either an isometric RPG village or a dense monitoring dashboard.
 
 ![ClaudeVille World mode showing simulated AI coding agents in an isometric pixel village](./docs/assets/github/world-day.png)
 
 - **Local and read-only:** no hosted service, no telemetry, no provider-file writes.
-- **Multi-provider:** Claude Code, Codex CLI, Gemini CLI, Kimi, and OpenCode.
+- **Multi-provider:** Claude Code, Codex CLI, Gemini CLI, Grok CLI, Kimi, and OpenCode.
 - **Glanceable:** World mode for second-monitor awareness; Dashboard mode for exact state.
 - **Zero-build runtime:** Node HTTP/WebSocket server plus static browser assets.
 - **Desktop companion:** optional macOS menu bar and KDE Plasma widgets.
 
-Current version: **v0.19.2**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
+Current version: **v0.20.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
 
 Active development lives in this repository. It is currently a public fork of `honorstudio/claude-ville`, but `TokenBrice/claude-ville` is the maintained branch for the current multi-provider ClaudeVille work.
 
@@ -42,6 +42,7 @@ Desktop browser viewports 1280px wide and larger are the supported target. Empty
 | Claude Code | `~/.claude/` |
 | Codex CLI | `~/.codex/sessions/` |
 | Gemini CLI | `~/.gemini/tmp/` |
+| Grok CLI | `~/.grok/sessions/` |
 | Kimi | `~/.kimi/` and `~/.kimi-code/` |
 | OpenCode | `~/.local/share/opencode/opencode.db` |
 
@@ -114,6 +115,7 @@ For an unfamiliar agent, read these first:
   - Claude Code: `~/.claude/`
   - Codex CLI: `~/.codex/` (sessions are read from `~/.codex/sessions/`)
   - Gemini CLI: `~/.gemini/` (sessions are read from `~/.gemini/tmp/`)
+  - Grok CLI: `~/.grok/` (sessions are read from `~/.grok/sessions/`)
   - Kimi: `~/.kimi/` or `~/.kimi-code/` (legacy sessions are read from `~/.kimi/sessions/`; Kimi Code sessions from `~/.kimi-code/sessions/`)
   - OpenCode: `~/.local/share/opencode/opencode.db` with Node `node:sqlite` support or the `sqlite3` CLI available for read-only access.
 - macOS widget only: macOS with the Xcode Command Line Tools available for `swiftc`.
@@ -132,6 +134,7 @@ claude-ville/
 |   |   |-- claude.js
 |   |   |-- codex.js
 |   |   |-- gemini.js
+|   |   |-- grok.js
 |   |   |-- kimi.js
 |   |   |-- opencode.js
 |   |   |-- gitEvents.js            # Git commit/push extraction from tool commands
@@ -204,6 +207,7 @@ Adapters live in `claudeville/adapters/` and are registered in `adapters/index.j
 | Claude Code | `~/.claude/` | `history.jsonl`, `projects/*/*.jsonl`, subagent files, teams, tasks | Supports main sessions, subagents, orphan/team-member sessions, token usage, teams, tasks, and git commit/push extraction. |
 | Codex CLI | `~/.codex/sessions/` | Recent `rollout-*.jsonl` files under date folders | Reads recent rollouts, session metadata, tools, messages, token count events, reasoning effort, and git commit/push extraction. |
 | Gemini CLI | `~/.gemini/tmp/` | `tmp/<project_hash>/chats/session-*.json` | Reads recent chat JSON files, attempts to reverse-map project hashes to local paths, and extracts git commit/push events where commands are present. |
+| Grok CLI | `~/.grok/sessions/` | `<url-encoded-cwd>/<session-id>/{summary.json,updates.jsonl,chat_history.jsonl}` | Reads summary metadata (model, title, effort, activity), ACP update streams for tools/messages/context occupancy, chat history fallback, and git commit/push events from shell tools. Session ids are prefixed `grok-`. |
 | Kimi | `~/.kimi/`, `~/.kimi-code/` | Legacy `sessions/<project_hash>/<session_uuid>/wire.jsonl`; Kimi Code `sessions/<workspace>/<session_uuid>/agents/<agent>/wire.jsonl` plus `session_index.jsonl` | Reads tool/message/status events, resolves projects from legacy hashes or the Kimi Code index, extracts token usage, surfaces Kimi Code child agents, and extracts git commit/push events. |
 | OpenCode | `~/.local/share/opencode/opencode.db` | SQLite session/message/part rows | Opens the database read-only via `node:sqlite` or `sqlite3 -readonly`, preserves OpenCode as the provider, exposes model families such as DeepSeek through `model`, and extracts git commit/push events from shell tools. |
 

@@ -26,6 +26,9 @@ const CONTEXT_WINDOW_LIMITS = Object.freeze({
     deepseekV4Pro: 1000000,
     deepseekV4Flash: 256000,
     deepseek: 128000,
+    grok45: 500000,
+    grokComposer: 256000,
+    grok: 500000,
     default: 200000,
 });
 
@@ -117,6 +120,11 @@ export function contextWindowLimitForModel(model, provider = '') {
     const normalizedProvider = String(provider || '').toLowerCase();
     if (normalizedProvider === 'codex' || normalizedModel.includes('gpt')) return CONTEXT_WINDOW_LIMITS.codex;
     if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) return CONTEXT_WINDOW_LIMITS.kimi;
+    if (normalizedProvider === 'grok' || normalizedModel.includes('grok')) {
+        if (normalizedModel.includes('composer')) return CONTEXT_WINDOW_LIMITS.grokComposer;
+        if (normalizedModel.includes('4-5') || normalizedModel.includes('4.5')) return CONTEXT_WINDOW_LIMITS.grok45;
+        return CONTEXT_WINDOW_LIMITS.grok;
+    }
     const isDeepseekProvider = normalizedProvider === 'deepseek';
     if (
         normalizedModel.includes('deepseek-v4-pro')
@@ -331,6 +339,32 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             trim: ['#f5c36a', '#ff8da8', '#ffeff3'],
             accent: ['#ffeff3', '#ff8da8', '#f5c36a'],
             minimapColor: '#ff8da8',
+        };
+    }
+
+    if (normalizedProvider.includes('grok') || normalizedModel.includes('grok')) {
+        const isComposer = normalizedModel.includes('composer');
+        return {
+            family: 'grok',
+            modelClass: isComposer ? 'composer' : 'base',
+            modelTier: isComposer ? 'swift' : 'apex',
+            label: isComposer ? 'Grok Composer' : 'Grok',
+            shortLabel: isComposer
+                ? 'Composer'
+                : (normalizedModel.includes('4-5') || normalizedModel.includes('4.5') ? 'Grok 4.5' : 'Grok'),
+            effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
+            effortAccessory,
+            effortFloorRing,
+            spriteId: isComposer ? 'agent.grok.composer' : 'agent.grok.base',
+            paletteKey: 'grok',
+            trim: isComposer
+                ? ['#a5f3fc', '#67e8f9', '#e0f2fe']
+                : ['#7df9ff', '#e8f7ff', '#22d3ee'],
+            accent: isComposer
+                ? ['#ecfeff', '#a5f3fc', '#67e8f9']
+                : ['#f0fdff', '#7df9ff', '#38bdf8'],
+            minimapColor: isComposer ? '#a5f3fc' : '#7df9ff',
         };
     }
 

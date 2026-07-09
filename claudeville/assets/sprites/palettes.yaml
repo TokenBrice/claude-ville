@@ -20,3 +20,7 @@ deepseek:
   robe: ['#2f7d5b', '#3a9e72', '#276547']
   pants: ['#1c3a2e', '#243f33', '#18302a']
   trim: ['#7cf4c8', '#45dca8', '#c8fff0']
+grok:
+  robe: ['#14141f', '#1c1c2e', '#0a0a14']
+  pants: ['#101018', '#181822', '#0c0c14']
+  trim: ['#7df9ff', '#22d3ee', '#e8f7ff']

@@ -30,6 +30,7 @@ In `adapters/`, registered by `adapters/index.js`.
 - `claude.js`: `~/.claude/` — `history.jsonl`, `projects/`, `teams/`, `tasks/`; subagents under `subagents/`, workflow-tool subagents under `subagents/workflows/<wfRunId>/` (tagged `agentType: 'workflow-subagent'`), orphan/team-member project JSONL files.
 - `codex.js`: `~/.codex/sessions/` — recent `rollout-*.jsonl` under `YYYY/MM/DD/`.
 - `gemini.js`: `~/.gemini/tmp/` — `tmp/<project_hash>/chats/session-*.json`; reverse-maps project hashes to local paths.
+- `grok.js`: `~/.grok/sessions/` — `<url-encoded-cwd>/<session-id>/{summary.json,updates.jsonl,chat_history.jsonl}`; optional `~/.grok/active_sessions.json`.
 - `kimi.js`: `~/.kimi/` — session wire/state files and config.
 - `opencode.js`: `~/.local/share/opencode/opencode.db` — SQLite read-only; includes subagent parent links and git events from shell tools.
 - `gitEvents.js`: parses git `commit`/`push` from provider tool logs (dry-runs omitted) into session `gitEvents`; the registry can synthesize repository-only `provider: 'git'` sessions. Scans default to `~/Documents/git`; tune `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`/`CLAUDEVILLE_REPOSITORY_SCAN_MAX`; disable `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`.

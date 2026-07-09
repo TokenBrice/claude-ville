@@ -5,6 +5,7 @@
 const { ClaudeAdapter } = require('./claude');
 const { CodexAdapter } = require('./codex');
 const { GeminiAdapter } = require('./gemini');
+const { GrokAdapter } = require('./grok');
 const { KimiAdapter } = require('./kimi');
 const { OpenCodeAdapter } = require('./opencode');
 const { execFileSync } = require('child_process');
@@ -25,6 +26,7 @@ const adapters = [
   new ClaudeAdapter(),
   new CodexAdapter(),
   new GeminiAdapter(),
+  new GrokAdapter(),
   new KimiAdapter(),
   new OpenCodeAdapter(),
 ];

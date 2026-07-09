@@ -30,7 +30,7 @@ If you change this, update: `claudeville/CLAUDE.md` and the boot path described 
 
 ## Read-only adapter contract
 
-The provider session files in `~/.claude/`, `~/.codex/sessions/`, `~/.gemini/tmp/`, `~/.kimi/`, and `~/.local/share/opencode/opencode.db` are owned by the upstream CLIs. ClaudeVille adapters open them for reading only. OpenCode support uses read-only SQLite access through `node:sqlite` when available and falls back to `sqlite3 -readonly`; it does not write migrations, checkpoints, vacuums, or config changes. `claudeville/CLAUDE.md` states: "Treat all provider session files as read-only inputs" and "Do not mutate local CLI session files."
+The provider session files in `~/.claude/`, `~/.codex/sessions/`, `~/.gemini/tmp/`, `~/.grok/sessions/`, `~/.kimi/`, and `~/.local/share/opencode/opencode.db` are owned by the upstream CLIs. ClaudeVille adapters open them for reading only. OpenCode support uses read-only SQLite access through `node:sqlite` when available and falls back to `sqlite3 -readonly`; it does not write migrations, checkpoints, vacuums, or config changes. `claudeville/CLAUDE.md` states: "Treat all provider session files as read-only inputs" and "Do not mutate local CLI session files."
 
 The CLIs append to these files concurrently and may change their format in any release. Writing back would create races and version drift. The dashboard's correctness depends on never being a second writer.
 

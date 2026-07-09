@@ -37,10 +37,21 @@ const DEEPSEEK_RATES = [
     { match: 'reasoner', input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 },
 ];
 
+// xAI public API rates (USD per 1M tokens). Cached input is priced when known.
+const GROK_RATES = [
+    { match: 'grok-4.5', input: 2, output: 6, cacheRead: 0.5, cacheCreate: 0 },
+    { match: 'grok-4-5', input: 2, output: 6, cacheRead: 0.5, cacheCreate: 0 },
+    { match: 'composer', input: 0.2, output: 0.5, cacheRead: 0.05, cacheCreate: 0 },
+    { match: 'grok-4.3', input: 1.25, output: 2.5, cacheRead: 0.2, cacheCreate: 0 },
+    { match: 'grok-4-3', input: 1.25, output: 2.5, cacheRead: 0.2, cacheCreate: 0 },
+    { match: 'grok-4', input: 3, output: 15, cacheRead: 0.75, cacheCreate: 0 },
+];
+
 const DEFAULT_CLAUDE_RATES = { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 };
 const DEFAULT_OPEN_AI_RATES = { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 };
 const DEFAULT_KIMI_RATES = { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 };
 const DEFAULT_DEEPSEEK_RATES = { input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 };
+const DEFAULT_GROK_RATES = { input: 2, output: 6, cacheRead: 0.5, cacheCreate: 0 };
 
 const FIELD_ALIASES = {
     input: ['input', 'totalInput', 'input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'total_input_tokens', 'total_input'],
@@ -146,6 +157,9 @@ export class TokenUsage {
         }
         if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) {
             return DEEPSEEK_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_DEEPSEEK_RATES;
+        }
+        if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) {
+            return GROK_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_GROK_RATES;
         }
         const table = (normalizedProvider === 'codex' || normalizedModel.includes('gpt'))
             ? OPEN_AI_RATES

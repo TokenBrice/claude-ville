@@ -2,6 +2,17 @@
 
 ---
 
+## v0.20.0 — *Starfall Gate* · Jul 9, 2026
+
+Grok agents walk into the village as cosmic truthseekers — void-black coats, electric cyan constellation trim, and a wry starfarer smirk.
+
+- **Grok CLI provider.** New read-only adapter for `~/.grok/sessions/` (`summary.json`, `updates.jsonl`, `chat_history.jsonl`) with `grok-` session ids, live tool/message parsing, reasoning effort, context-window occupancy, and git-event extraction from shell tools.
+- **Cosmic truthseeker identity.** Grok maps to the new sprite class (`agent.grok.base` / `agent.grok.composer`), cyan minimap color, effort floor rings, and xAI pricing rates for cost estimates when token splits exist.
+- **Manifest + palette.** `manifest.yaml` and `palettes.yaml` gain the void/cyan Grok palette and character prompts.
+- **Grok sprites (PixelLab pro).** `agent.grok.base` and `agent.grok.composer` are full 8-direction walk/idle sheets (void coat, cyan constellation trim / swift scout). A procedural fallback baker remains at `npm run sprites:generate-grok` if PixelLab is offline.
+
+---
+
 ## v0.19.2 · Jun 29, 2026 — Hotfix
 
 - **Dependency advisory cleared.** Dev tooling and the browser-vendored YAML parser now use `js-yaml` 4.3.0, closing the moderate Dependabot alert surfaced after GitHub security scanning was enabled.

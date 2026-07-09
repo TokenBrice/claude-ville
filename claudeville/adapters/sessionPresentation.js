@@ -115,6 +115,9 @@ function ratesForModel(model, provider) {
   if (normalizedProvider === 'deepseek' || modelCandidates.some((candidate) => candidate.includes('deepseek'))) {
     return pricing.deepseek.rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing.deepseek.default;
   }
+  if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) {
+    return pricing.grok.rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing.grok.default;
+  }
   const tableKey = normalizedProvider === 'codex' || normalizedModel.includes('gpt') ? 'openai' : 'claude';
   return pricing[tableKey].rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing[tableKey].default;
 }
@@ -193,6 +196,15 @@ function modelIdentity(model, effort, provider = '') {
   }
   if (normalizedProvider.includes('kimi') || normalizedModel.includes('kimi')) {
     return { shortLabel: 'Kimi', effortTier, spriteId: 'agent.kimi.base', color: '#ff8da8' };
+  }
+  if (normalizedProvider.includes('grok') || normalizedModel.includes('grok')) {
+    const isComposer = normalizedModel.includes('composer');
+    return {
+      shortLabel: isComposer ? 'Composer' : normalizedModel.includes('4-5') || normalizedModel.includes('4.5') ? 'Grok 4.5' : 'Grok',
+      effortTier,
+      spriteId: isComposer ? 'agent.grok.composer' : 'agent.grok.base',
+      color: isComposer ? '#a5f3fc' : '#7df9ff',
+    };
   }
   if (normalizedProvider.includes('deepseek') || normalizedModel.includes('deepseek')) {
     const isPro = normalizedModel.includes('v4-pro');
