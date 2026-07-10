@@ -118,6 +118,7 @@ function extractSessionMetadataFromText(line) {
   const agentId = extractJsonString(metadataPrefix, 'id');
   const agentName = extractJsonString(metadataPrefix, 'agent_nickname');
   const agentRole = extractJsonString(metadataPrefix, 'agent_role');
+  const agentPath = extractJsonString(metadataPrefix, 'agent_path');
   const parentThreadId = extractJsonString(metadataPrefix, 'parent_thread_id');
   const model = extractJsonString(metadataPrefix, 'model');
   const project = extractJsonString(metadataPrefix, 'cwd');
@@ -126,6 +127,7 @@ function extractSessionMetadataFromText(line) {
     agentId,
     agentName,
     agentType: agentRole || null,
+    agentPath,
     parentThreadId,
     model,
     project,
@@ -158,6 +160,7 @@ function applySessionMetadata(detail, metadata) {
   if (!detail.agentId && metadata.agentId) detail.agentId = metadata.agentId;
   if (!detail.agentName && metadata.agentName) detail.agentName = metadata.agentName;
   if ((detail.agentType === 'main' || !detail.agentType) && metadata.agentType) detail.agentType = metadata.agentType;
+  if (!detail.agentPath && metadata.agentPath) detail.agentPath = metadata.agentPath;
   if (!detail.parentThreadId && metadata.parentThreadId) detail.parentThreadId = metadata.parentThreadId;
   if (!detail.model && metadata.model) detail.model = metadata.model;
   if (!detail.project && metadata.project) detail.project = metadata.project;
@@ -212,6 +215,7 @@ function parseEarlyMetadata(filePath, detail) {
         agentId: entry.payload.id || null,
         agentName: entry.payload.agent_nickname || subagent?.agent_nickname || null,
         agentType: entry.payload.agent_role || subagent?.agent_role || 'main',
+        agentPath: entry.payload.agent_path || subagent?.agent_path || null,
         parentThreadId: subagent?.parent_thread_id || null,
         model: entry.payload.model || null,
         project: entry.payload.cwd || null,
@@ -231,6 +235,21 @@ function parseEarlyMetadata(filePath, detail) {
 }
 
 /**
+ * Codex multi-agent v2 spawn rollouts inherit the parent's model in every
+ * on-disk record (rollout, state DB); the child's variant survives only in
+ * the orchestrator's task naming, e.g. agent_path "/root/luna_nav_responsive".
+ * Infer the GPT-5.6 variant from that leaf prefix.
+ */
+function inferCodexModel(detail) {
+  const model = detail.model;
+  if (!model || !detail.agentPath || !/^gpt-5\.6/i.test(model)) return model;
+  const leaf = String(detail.agentPath).split('/').filter(Boolean).pop() || '';
+  const match = leaf.match(/^(sol|terra|luna)[-_]/i);
+  if (!match) return model;
+  return `gpt-5.6-${match[1].toLowerCase()}`;
+}
+
+/**
  * Extract session metadata/tools/messages from Codex rollout JSONL
  * Actual format: all data is inside entry.payload
  */
@@ -239,6 +258,7 @@ function parseRollout(filePath) {
     agentId: null,
     agentName: null,
     agentType: 'main',
+    agentPath: null,
     parentThreadId: null,
     model: null,
     reasoningEffort: null,
@@ -835,7 +855,7 @@ class CodexAdapter {
         name: sessionName,
         agentName: sessionName,
         agentType: detail.agentType || 'main',
-        model: detail.model || 'codex',
+        model: inferCodexModel(detail) || 'codex',
         reasoningEffort: detail.reasoningEffort,
         status: 'active',
         lastActivity: mtime,

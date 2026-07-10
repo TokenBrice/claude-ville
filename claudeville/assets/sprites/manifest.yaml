@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-07-09-starfall-gate-v3"
+  assetVersion: "2026-07-10-celestial-vanguard-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -80,6 +80,40 @@ characters:
   - id: agent.codex.gpt55.xhigh
     tool: create_character
     prompt: "Codex GPT-5.5 extra-high reasoning arcane warlord paladin, massive navy and steel rune plate armor baked onto body, oversized gold-trimmed pauldrons, crested angular helmet with cyan visor, dramatic dark violet cape trailing behind, bright teal reactor core on chest, empty visible hands held near torso for gripping runtime polearm, no held weapon, no shield, no polearm, no sword, no staff, apex old-school RPG pixel art, 8-direction character sprite"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+    mode: pro
+
+  # GPT-5.6 celestial warrior triad (Sol/Terra/Luna). Generated with mode=pro,
+  # size=76 (canvas ~108, center-crop to 92) so Sol's crest crown stays inside
+  # the cell. Base sprites are empty-handed; signature weapons are runtime
+  # overlays (dawnblade / earthbreaker / crescentSaber).
+  - id: agent.codex.gpt56sol
+    tool: create_character
+    prompt: "Codex GPT-5.6 Sol radiant sun-warlord supreme commander, ornate navy and gold full plate armor baked onto body, molten gold sun reactor core blazing on breastplate, gold crest helmet with short solar ray spikes and cyan visor, broad gold-trimmed pauldrons, white-gold cape behind shoulders, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime greatblade, no held weapon, no sword, no shield, no polearm, no staff, apex old-school RPG pixel art, 8-direction character sprite"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+    mode: pro
+
+  - id: agent.codex.gpt56terra
+    tool: create_character
+    prompt: "Codex GPT-5.6 Terra earth sentinel knight, sturdy navy and bronze full plate armor baked onto body, squared copper-trimmed pauldrons, closed rounded knight helmet with cyan visor, moss-green sash at waist, amber earth-core gem on breastplate, grounded steadfast stance, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime warhammer, no held weapon, no hammer, no sword, no shield, no staff, heroic old-school RPG pixel art, 8-direction character sprite"
+    n_directions: 8
+    size: 92
+    animations: [walk, breathing-idle]
+    palette_layer: codex
+    anchor: [46, 80]
+    mode: pro
+
+  - id: agent.codex.gpt56luna
+    tool: create_character
+    prompt: "Codex GPT-5.6 Luna moonlit skirmisher, sleek silver and pale blue light armor over dark navy under-suit, slim crescent-moon crest on a light open-face helm, short silver-blue scarf, lean agile duelist stance, identical outfit and colors from every viewing angle, empty visible hands held near torso for gripping runtime saber, no held weapon, no sword, no dagger, no shield, no staff, swift readable old-school RPG pixel art, 8-direction character sprite"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -269,6 +303,28 @@ equipment:
     height: 96
     anchor: [34, 70]
 
+  # GPT-5.6 signature weapons (Sol/Terra/Luna).
+  - id: equipment.codex.dawnblade
+    tool: create_map_object
+    prompt: "legendary Codex dawn greatblade, oversized broad radiant steel blade with molten gold glowing rune channel, sunburst gold crossguard, dark navy hilt, amber crystal core, transparent background"
+    width: 112
+    height: 112
+    anchor: [36, 82]
+
+  - id: equipment.codex.earthbreaker
+    tool: create_map_object
+    prompt: "legendary Codex earthbreaker warhammer, massive squared bronze and stone hammer head with cyan glowing rune seams, dark metal handle with gold collars, teal crystal pommel, transparent background"
+    width: 96
+    height: 96
+    anchor: [34, 70]
+
+  - id: equipment.codex.crescentSaber
+    tool: create_map_object
+    prompt: "legendary Codex crescent moon saber, slender curved silver blade with pale blue glowing rune edge, crescent moon guard, dark navy grip, moonstone pommel, transparent background"
+    width: 96
+    height: 96
+    anchor: [31, 70]
+
 # ─── ACCESSORIES ─────────────────────────────────────────────────────────────
 accessories:
   - id: overlay.accessory.effortXhigh
@@ -281,6 +337,13 @@ accessories:
   - id: overlay.accessory.effortMax
     tool: isometric_tile
     prompt: "tall narrow gold triple-pillar star crown head accessory, three vertical star-tipped spires rising from a small laurel base, cyan gems, distinct from a halo ring, readable at 32 pixels, transparent background, no altar, no pedestal, no cross, no floor tile"
+    size: 32
+    n_directions: 8
+    anchor: [16, 20]
+
+  - id: overlay.accessory.effortUltra
+    tool: isometric_tile
+    prompt: "radiant gold and white blazing star crest head accessory, ringed sun-star with four long vertical rays rising from a small gold laurel base, cyan gem center, taller and brighter than a triple-pillar crown, readable at 32 pixels, transparent background, no floor ring, no pedestal, no altar, no cross, no floor tile"
     size: 32
     n_directions: 8
     anchor: [16, 20]

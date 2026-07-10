@@ -147,6 +147,9 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     spark: 'multitool',
     gpt54: 'engineerWrench',
     gpt55: 'runeblade',
+    gpt56sol: 'dawnblade',
+    gpt56terra: 'earthbreaker',
+    gpt56luna: 'crescentSaber',
 });
 const CODEX_WEAPON_ASSETS = Object.freeze({
     runeblade: {
@@ -185,6 +188,32 @@ const CODEX_WEAPON_ASSETS = Object.freeze({
         scale: 0.62,
         hands: 'single',
     },
+    dawnblade: {
+        id: 'equipment.codex.dawnblade',
+        fallback: 'greatsword',
+        pose: 'greatswordShoulder',
+        backLayer: 'always',
+        anchor: [36, 82],
+        scale: 0.56,
+        hands: 'single',
+    },
+    earthbreaker: {
+        id: 'equipment.codex.earthbreaker',
+        fallback: 'wrench',
+        pose: 'shoulderRest',
+        backPose: 'backCarry',
+        anchor: [34, 70],
+        scale: 0.62,
+        hands: 'single',
+    },
+    crescentSaber: {
+        id: 'equipment.codex.crescentSaber',
+        fallback: 'runeblade',
+        pose: 'rightHand',
+        anchor: [31, 70],
+        scale: 0.5,
+        hands: 'single',
+    },
 });
 const EFFORT_FLOOR_RING_VISUALS = Object.freeze({
     low: { stroke: '#d7a456', highlight: '#ffe0a0', glow: 'rgba(215, 164, 86, 0.18)', bands: 1, rx: 17, ry: 5 },
@@ -203,6 +232,7 @@ const EFFORT_AURA_VISUALS = Object.freeze({
     medium: { kind: 'glow', color: '#cfd9e4' },
     high: { kind: 'corona', color: '#f2d36b' },
     xhigh: { kind: 'field', color: '#ffe9a8' },
+    ultra: { kind: 'field', color: '#fff6d8' },
     mythic: { kind: 'shimmer', colors: [MODEL_TIER_COLORS.mythic, '#ffe7a8', '#c8a3ff'], motes: 4 },
 });
 const EFFORT_AURA_MAX_MOTES = 6;
@@ -2247,6 +2277,9 @@ export class AgentSprite {
 
     _shouldScrubBakedCodexWeapon(identity) {
         if (!identity) return false;
+        // Explicit opt-out (GPT-5.6 triad): armor colors overlap the scrub
+        // selectors, and the base sprites are generated empty-handed.
+        if (identity.suppressBakedWeapon === false) return false;
         if (identity.suppressBakedWeapon) return true;
         const modelClass = String(identity.modelClass || '').toLowerCase();
         return Object.prototype.hasOwnProperty.call(CODEX_EQUIPMENT_BY_CLASS, modelClass);

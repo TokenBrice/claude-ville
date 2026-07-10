@@ -334,13 +334,26 @@ export class AvatarCanvas {
         ctx.strokeStyle = '#120d09';
         ctx.fillStyle = accent;
         ctx.lineWidth = 2;
-        if (identity.effortTier === 'xhigh') {
+        if (identity.effortTier === 'xhigh' || identity.effortTier === 'max' || identity.effortTier === 'ultra') {
             ctx.beginPath();
             ctx.arc(cx, cy, 6, 0, Math.PI * 2);
             ctx.stroke();
             ctx.lineWidth = 1;
             ctx.strokeStyle = accent;
             ctx.stroke();
+            if (identity.effortTier !== 'xhigh') {
+                ctx.fillRect(cx - 1, cy - 1, 2, 2);
+            }
+            if (identity.effortTier === 'ultra') {
+                ctx.beginPath();
+                ctx.moveTo(cx, cy - 9);
+                ctx.lineTo(cx, cy - 7);
+                ctx.moveTo(cx - 9, cy);
+                ctx.lineTo(cx - 7, cy);
+                ctx.moveTo(cx + 7, cy);
+                ctx.lineTo(cx + 9, cy);
+                ctx.stroke();
+            }
             return;
         }
         if (identity.effortTier === 'high') {
@@ -459,16 +472,72 @@ export class AvatarCanvas {
             ctx.stroke();
             ctx.fillStyle = trim;
             ctx.fillRect(-1, 1, 2, 6);
+            return;
+        }
+
+        if (identity.modelClass === 'gpt56sol') {
+            // radiant sun disc — 5.6 flagship
+            ctx.fillStyle = trim;
+            ctx.beginPath();
+            ctx.arc(0, 4, 2.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let i = 0; i < 8; i++) {
+                const a = (Math.PI / 4) * i;
+                ctx.moveTo(Math.cos(a) * 4, 4 + Math.sin(a) * 4);
+                ctx.lineTo(Math.cos(a) * 6, 4 + Math.sin(a) * 6);
+            }
+            ctx.stroke();
+            return;
+        }
+
+        if (identity.modelClass === 'gpt56terra') {
+            // twin mountain peaks — earth sentinel
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(-5, 8);
+            ctx.lineTo(-2, 2);
+            ctx.lineTo(0, 5);
+            ctx.lineTo(2, 0);
+            ctx.lineTo(5, 8);
+            ctx.stroke();
+            ctx.fillStyle = trim;
+            ctx.fillRect(-1, 7, 2, 2);
+            return;
+        }
+
+        if (identity.modelClass === 'gpt56luna') {
+            // crescent moon — moonlit skirmisher
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.arc(0, 4, 4, Math.PI * 0.25, Math.PI * 1.75);
+            ctx.arc(1.6, 4, 3, Math.PI * 1.75, Math.PI * 0.25, true);
+            ctx.closePath();
+            ctx.fill();
         }
     }
 
     _drawModelHeadgear(ctx, identity, accent, trim, app) {
-        if (identity.effortTier === 'xhigh') {
+        if (identity.effortTier === 'xhigh' || identity.effortTier === 'max' || identity.effortTier === 'ultra') {
             ctx.strokeStyle = accent;
             ctx.lineWidth = 1.2;
             ctx.beginPath();
             ctx.arc(0, -14, 6, 0, Math.PI * 2);
             ctx.stroke();
+            if (identity.effortTier === 'ultra') {
+                ctx.lineWidth = 1;
+                ctx.beginPath();
+                ctx.moveTo(0, -23);
+                ctx.lineTo(0, -20);
+                ctx.moveTo(-9, -14);
+                ctx.lineTo(-6.5, -14);
+                ctx.moveTo(6.5, -14);
+                ctx.lineTo(9, -14);
+                ctx.stroke();
+            }
         } else if (identity.effortTier === 'high') {
             ctx.fillStyle = accent;
             ctx.beginPath();

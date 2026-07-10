@@ -475,13 +475,16 @@ PlasmoidItem {
             "agent.codex.gpt53spark": [30, 56],
             "agent.codex.gpt54": [35, 54],
             "agent.codex.gpt55": [44, 92],
+            "agent.codex.gpt56sol": [45, 92],
+            "agent.codex.gpt56terra": [36, 92],
+            "agent.codex.gpt56luna": [23, 92],
             "agent.deepseek.flash": [24, 51],
             "agent.deepseek.pro": [38, 60],
             "agent.deepseek.reasoner": [47, 63],
             "agent.gemini.base": [64, 78],
             "agent.kimi.base": [46, 80],
-            "agent.grok.base": [46, 80],
-            "agent.grok.composer": [46, 80]
+            "agent.grok.base": [46, 92],
+            "agent.grok.composer": [17, 92]
         }
         var frame = frames[packagedSpriteId(spriteId)] || frames["agent.codex.gpt54"]
         return {
@@ -506,6 +509,9 @@ PlasmoidItem {
         if (spriteId.indexOf("claude") !== -1) return "#f2d36b"
         if (spriteId.indexOf("gemini") !== -1) return "#9ad7ff"
         if (spriteId.indexOf("kimi") !== -1) return "#ff9f7a"
+        if (spriteId.indexOf("gpt56sol") !== -1) return "#ffd76a"
+        if (spriteId.indexOf("gpt56terra") !== -1) return "#d9a066"
+        if (spriteId.indexOf("gpt56luna") !== -1) return "#cfe4ff"
         if (spriteId.indexOf("gpt55") !== -1) return "#fff1b8"
         if (spriteId.indexOf("gpt53spark") !== -1) return "#f8e36f"
         return "#7be3d7"

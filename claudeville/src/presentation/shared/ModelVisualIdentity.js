@@ -18,10 +18,12 @@ const EFFORT_LABELS = Object.freeze({
     high: 'high',
     xhigh: 'xhigh',
     max: 'max',
+    ultra: 'ultra',
 });
 
 const CONTEXT_WINDOW_LIMITS = Object.freeze({
     codex: 258400,
+    gpt56: 372000,
     kimi: 262144,
     deepseekV4Pro: 1000000,
     deepseekV4Flash: 256000,
@@ -37,6 +39,7 @@ const CONTEXT_WINDOW_LIMITS = Object.freeze({
 const EFFORT_ACCESSORIES = Object.freeze({
     xhigh: 'effortXhigh',
     max: 'effortMax',
+    ultra: 'effortUltra',
 });
 
 // Floor rings (anchored at feet). Used for low/medium/high reasoning tiers.
@@ -52,6 +55,9 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     spark: 'multitool',
     gpt54: 'engineerWrench',
     gpt55: 'runeblade',
+    gpt56sol: 'dawnblade',
+    gpt56terra: 'earthbreaker',
+    gpt56luna: 'crescentSaber',
 });
 
 const CODEX_GPT55_EQUIPMENT_BY_EFFORT = Object.freeze({
@@ -75,7 +81,7 @@ const DEFAULT_EFFORT_RENDERING = Object.freeze({
     allowRuntimeRoleAccessory: false,
 });
 
-function codexEquipment(effortTier, modelClass) {
+function codexEquipment(effortTier, modelClass, { suppressBakedWeapon = true } = {}) {
     const equipment = modelClass === 'gpt55'
         ? CODEX_GPT55_EQUIPMENT_BY_EFFORT[effortTier || 'none'] || CODEX_EQUIPMENT_BY_CLASS.gpt55
         : CODEX_EQUIPMENT_BY_CLASS[modelClass] || null;
@@ -84,7 +90,7 @@ function codexEquipment(effortTier, modelClass) {
         effortFloorRing: EFFORT_FLOOR_RINGS[effortTier] || null,
         equipment,
         effortWeapon: equipment,
-        suppressBakedWeapon: true,
+        suppressBakedWeapon,
     };
 }
 
@@ -106,6 +112,7 @@ function normalizeModel(model) {
 export function normalizeReasoningEffort(effort) {
     const normalized = String(effort || '').toLowerCase();
     if (!normalized || normalized === 'none') return normalized ? 'none' : null;
+    if (normalized.includes('ultra')) return 'ultra';
     if (normalized === 'max' || normalized.includes('maximum')) return 'max';
     if (normalized.includes('xhigh') || normalized.includes('extra')) return 'xhigh';
     if (normalized.includes('high')) return 'high';
@@ -118,6 +125,7 @@ export function normalizeReasoningEffort(effort) {
 export function contextWindowLimitForModel(model, provider = '') {
     const normalizedModel = normalizeModel(model);
     const normalizedProvider = String(provider || '').toLowerCase();
+    if (normalizedModel.includes('gpt-5-6')) return CONTEXT_WINDOW_LIMITS.gpt56;
     if (normalizedProvider === 'codex' || normalizedModel.includes('gpt')) return CONTEXT_WINDOW_LIMITS.codex;
     if (normalizedProvider === 'kimi' || normalizedModel.includes('kimi')) return CONTEXT_WINDOW_LIMITS.kimi;
     if (normalizedProvider === 'grok' || normalizedModel.includes('grok')) {
@@ -266,6 +274,40 @@ export function getModelVisualIdentity(model, effort, provider = '') {
             trim: ['#f8e36f', '#87f7ff', '#c5ff72'],
             accent: ['#fff6a3', '#55e7ff', '#b8ff5c'],
             minimapColor: '#f8e36f',
+        };
+    }
+
+    if (normalizedModel.includes('gpt-5-6')) {
+        // Celestial warrior triad. Base sprites are empty-handed with armor
+        // baked in, so baked-weapon scrubbing must stay off (the gold-hilt
+        // selector would eat Sol's gold plate).
+        const isSol = normalizedModel.includes('sol');
+        const isLuna = normalizedModel.includes('luna');
+        const modelClass = isSol ? 'gpt56sol' : isLuna ? 'gpt56luna' : 'gpt56terra';
+        const variantLabel = isSol ? 'Sol' : isLuna ? 'Luna' : 'Terra';
+        const equipment = codexEquipment(effortTier, modelClass, { suppressBakedWeapon: false });
+        return {
+            family: 'codex',
+            modelClass,
+            modelTier: isSol ? 'mythic' : isLuna ? 'balanced' : 'apex',
+            label: `GPT-5.6 ${variantLabel}`,
+            shortLabel: `5.6 ${variantLabel}`,
+            effortTier,
+            ...DEFAULT_EFFORT_RENDERING,
+            ...equipment,
+            spriteId: isSol ? 'agent.codex.gpt56sol' : isLuna ? 'agent.codex.gpt56luna' : 'agent.codex.gpt56terra',
+            paletteKey: 'codex',
+            trim: isSol
+                ? ['#ffd76a', '#ffedb3', '#7be3d7']
+                : isLuna
+                    ? ['#cfe4ff', '#9db8d9', '#7be3d7']
+                    : ['#d9a066', '#9fce6e', '#7be3d7'],
+            accent: isSol
+                ? ['#fff6d8', '#ffd76a', '#bff7ee']
+                : isLuna
+                    ? ['#f0f7ff', '#cfe4ff', '#bff7ee']
+                    : ['#f0c896', '#c8e8a0', '#bff7ee'],
+            minimapColor: isSol ? '#ffd76a' : isLuna ? '#cfe4ff' : '#d9a066',
         };
     }
 

@@ -18,6 +18,10 @@ const CLAUDE_RATES = [
 ];
 
 const OPEN_AI_RATES = [
+    { match: 'gpt-5.6-sol', input: 5, output: 30, cacheRead: 0.5, cacheCreate: 6.25 },
+    { match: 'gpt-5.6-terra', input: 2.5, output: 15, cacheRead: 0.25, cacheCreate: 3.125 },
+    { match: 'gpt-5.6-luna', input: 1, output: 6, cacheRead: 0.1, cacheCreate: 1.25 },
+    { match: 'gpt-5.6', input: 2.5, output: 15, cacheRead: 0.25, cacheCreate: 3.125 },
     { match: 'gpt-5.5', input: 15, output: 120, cacheRead: 1.5, cacheCreate: 0 },
     { match: 'gpt-5.4', input: 10, output: 80, cacheRead: 1, cacheCreate: 0 },
     { match: 'gpt-5.3', input: 5, output: 40, cacheRead: 0.5, cacheCreate: 0 },

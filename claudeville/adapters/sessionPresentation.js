@@ -30,6 +30,7 @@ const EFFORT_LABELS = Object.freeze({
   high: 'high',
   xhigh: 'xhigh',
   max: 'max',
+  ultra: 'ultra',
 });
 
 const DEFAULT_CODEX_IDENTITY = Object.freeze({
@@ -147,6 +148,7 @@ function normalizeModel(model) {
 function normalizeReasoningEffort(effort) {
   const normalized = String(effort || '').toLowerCase();
   if (!normalized || normalized === 'none') return normalized ? 'none' : null;
+  if (normalized.includes('ultra')) return 'ultra';
   if (normalized === 'max' || normalized.includes('maximum')) return 'max';
   if (normalized.includes('xhigh') || normalized.includes('extra')) return 'xhigh';
   if (normalized.includes('high')) return 'high';
@@ -183,6 +185,16 @@ function modelIdentity(model, effort, provider = '') {
   }
   if (normalizedModel.includes('gpt-5-3-codex')) {
     return { shortLabel: '5.3', effortTier: normalizeCodexEffortTier(effortTier), spriteId: 'agent.codex.gpt53spark', color: '#f8e36f' };
+  }
+  if (normalizedModel.includes('gpt-5-6')) {
+    const isSol = normalizedModel.includes('sol');
+    const isLuna = normalizedModel.includes('luna');
+    return {
+      shortLabel: isSol ? '5.6 Sol' : isLuna ? '5.6 Luna' : '5.6 Terra',
+      effortTier,
+      spriteId: isSol ? 'agent.codex.gpt56sol' : isLuna ? 'agent.codex.gpt56luna' : 'agent.codex.gpt56terra',
+      color: isSol ? '#ffd76a' : isLuna ? '#cfe4ff' : '#d9a066',
+    };
   }
   if (normalizedModel.includes('gpt-5-5')) {
     const codexEffort = normalizeCodexEffortTier(effortTier);

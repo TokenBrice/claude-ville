@@ -35,9 +35,13 @@ requireText(apiPricingSource, apiText, 'function estimateCost(');
 requireText(apiPricingSource, apiText, 'function decorateSessionPresentation(');
 requireText(apiPricingSource, apiText, 'function pricingModelCandidates(');
 requireText(apiPricingSource, apiText, 'gpt-5-(\\d)');
-assertRate('api gpt-5-5', ratesForModel('gpt-5-5', 'codex'), pricing.openai.rates[0]);
-assertRate('api gpt-5-4', ratesForModel('gpt-5-4', 'codex'), pricing.openai.rates[1]);
-assertRate('api gpt-5-3-codex-spark', ratesForModel('gpt-5-3-codex-spark', 'codex'), pricing.openai.rates[2]);
+assertRate('api gpt-5-6-sol', ratesForModel('gpt-5-6-sol', 'codex'), pricing.openai.rates[0]);
+assertRate('api gpt-5-6-terra', ratesForModel('gpt-5-6-terra', 'codex'), pricing.openai.rates[1]);
+assertRate('api gpt-5-6-luna', ratesForModel('gpt-5-6-luna', 'codex'), pricing.openai.rates[2]);
+assertRate('api gpt-5-6', ratesForModel('gpt-5-6', 'codex'), pricing.openai.rates[3]);
+assertRate('api gpt-5-5', ratesForModel('gpt-5-5', 'codex'), pricing.openai.rates[4]);
+assertRate('api gpt-5-4', ratesForModel('gpt-5-4', 'codex'), pricing.openai.rates[5]);
+assertRate('api gpt-5-3-codex-spark', ratesForModel('gpt-5-3-codex-spark', 'codex'), pricing.openai.rates[6]);
 
 const forbiddenWidgetPatterns = [
   /\bpricingForModel\b/,

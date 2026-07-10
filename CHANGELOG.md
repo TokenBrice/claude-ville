@@ -2,6 +2,18 @@
 
 ---
 
+## v0.21.0 — *Celestial Vanguard* · Jul 10, 2026
+
+The GPT-5.6 generation marches through the gate as a celestial warrior triad — Sol the radiant sun-warlord, Terra the earth sentinel knight, and Luna the moonlit skirmisher.
+
+- **GPT-5.6 model identities.** `gpt-5.6-sol` / `gpt-5.6-terra` / `gpt-5.6-luna` get first-class identities (labels, minimap colors, dashboard emblems, context window, pricing) instead of falling back to the GPT-5.4 battle-engineer sprite.
+- **Three new warrior sprites (PixelLab pro).** `agent.codex.gpt56sol`, `agent.codex.gpt56terra`, and `agent.codex.gpt56luna` are full 8-direction walk/idle sheets with signature runtime weapons: dawn greatblade, earthbreaker warhammer, and crescent moon saber.
+- **Ultra reasoning tier.** The new 6th effort level (`ultra`, Sol/Terra only) gets its own radiant star-crest head overlay, aura, dashboard crest, and label — above `max`.
+- **Subagent variant inference.** Codex multi-agent v2 spawns record the parent's model on every child; the Codex adapter now infers the 5.6 variant from the orchestrator's task naming (`/root/luna_*`, `/root/terra_*`), so spawned Luna/Terra agents wear their own colors.
+- **GPT-5.6 pricing.** Static rates per announced API pricing: Sol $5/$30, Terra $2.50/$15, Luna $1/$6 per 1M tokens.
+
+---
+
 ## v0.20.0 — *Starfall Gate* · Jul 9, 2026
 
 Grok agents walk into the village as cosmic truthseekers — void-black coats, electric cyan constellation trim, and a wry starfarer smirk.
