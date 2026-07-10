@@ -107,3 +107,9 @@ First-hour failure modes: [`docs/troubleshooting.md`](docs/troubleshooting.md). 
 **Version locations to update:**
 - `claudeville/index.html` — `.topbar__version` text (`v0.X`)
 - `package.json` — `"version"` field (`0.X.Y`)
+
+**GitHub release flow** (when asked to push a version):
+1. Push `main`, then tag the release commit `v0.X.Y` and push the tag (`git tag v0.X.Y <commit> && git push origin v0.X.Y`).
+2. Create the GitHub release on the tag: `gh release create v0.X.Y --title "v0.X.Y - Release Name" --notes-file <notes>`, where the notes are that version's `CHANGELOG.md` section verbatim.
+3. When backfilling an older version, pass `--latest=false` so the newest version stays marked Latest. `--target` does not accept a raw SHA — push the tag first.
+4. Every pushed version gets a matching tag + GitHub release; no gaps (v0.20.0 was once pushed without one).
