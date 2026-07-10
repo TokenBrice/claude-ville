@@ -21,7 +21,7 @@ let failures = 0;
 
 for (const rel of browserPricingSources) {
   const text = readFileSync(join(repoRoot, rel), 'utf8');
-  for (const provider of ['claude', 'openai', 'kimi', 'deepseek']) {
+  for (const provider of ['claude', 'openai', 'kimi', 'deepseek', 'gemini']) {
     checkRates(rel, text, pricing[provider].rates);
     checkDefault(rel, text, pricing[provider].default);
   }
@@ -42,6 +42,13 @@ assertRate('api gpt-5-6', ratesForModel('gpt-5-6', 'codex'), pricing.openai.rate
 assertRate('api gpt-5-5', ratesForModel('gpt-5-5', 'codex'), pricing.openai.rates[4]);
 assertRate('api gpt-5-4', ratesForModel('gpt-5-4', 'codex'), pricing.openai.rates[5]);
 assertRate('api gpt-5-3-codex-spark', ratesForModel('gpt-5-3-codex-spark', 'codex'), pricing.openai.rates[6]);
+assertRate('api gemini-3-5-flash', ratesForModel('gemini-3-5-flash', 'gemini'), pricing.gemini.rates[0]);
+assertRate('api gemini-3-1-pro', ratesForModel('gemini-3-1-pro', 'gemini'), pricing.gemini.rates[1]);
+assertRate('api gemini-3-1-flash-lite', ratesForModel('gemini-3-1-flash-lite', 'gemini'), pricing.gemini.rates[2]);
+assertRate('api gemini-3-pro', ratesForModel('gemini-3-pro', 'gemini'), pricing.gemini.rates[3]);
+assertRate('api gemini-3-flash', ratesForModel('gemini-3-flash', 'gemini'), pricing.gemini.rates[4]);
+assertRate('api gemini-2-5-pro', ratesForModel('gemini-2-5-pro', 'gemini'), pricing.gemini.rates[5]);
+assertRate('api gemini-2-5-flash', ratesForModel('gemini-2-5-flash', 'gemini'), pricing.gemini.rates[6]);
 
 const forbiddenWidgetPatterns = [
   /\bpricingForModel\b/,

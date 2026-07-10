@@ -22,6 +22,7 @@ const HISTORY_PATH = path.join(CLAUDE_HOME, 'history.jsonl');
 const CREDENTIALS_TTL = 30_000;   // 30 seconds
 const STATS_TTL = 30_000;         // 30 seconds
 const QUOTA_API_TTL = 5 * 60_000; // 5 minutes
+const QUOTA_MAX_STALE_MS = 30 * 60_000; // stop trusting a frozen snapshot after 30 minutes of failures
 const HISTORY_TAIL_CHUNK_BYTES = 64 * 1024;
 const HISTORY_MAX_TAIL_BYTES = 4 * 1024 * 1024;
 
@@ -30,7 +31,7 @@ const cache = {
   credentials: { data: null, ts: 0 },
   stats: { data: null, ts: 0 },
   email: null,
-  quota: { data: null, ts: 0, available: false },
+  quota: { data: null, ts: 0, available: false, lastSuccessTs: 0 },
 };
 
 function readTailLines(filePath, maxBytes = HISTORY_MAX_TAIL_BYTES) {
@@ -134,9 +135,20 @@ function fetchEmail() {
   return new Promise((resolve) => {
     execFile('claude', ['auth', 'status'], { timeout: 10_000 }, (err, stdout) => {
       if (err) { resolve(null); return; }
-      // "Logged in as user@example.com" pattern extraction
-      const match = stdout.match(/(?:as|email[:\s]+)\s*([^\s]+@[^\s]+)/i);
-      cache.email = match ? match[1] : null;
+      // Current CLI emits JSON ({"loggedIn":true,...,"email":"..."}); older builds
+      // printed a plaintext "Logged in as user@example.com" line, so fall back to
+      // the legacy regex when the output is not JSON.
+      let email = null;
+      try {
+        const parsed = JSON.parse(stdout);
+        if (parsed && typeof parsed.email === 'string' && parsed.email.trim()) {
+          email = parsed.email.trim();
+        }
+      } catch {
+        const match = stdout.match(/(?:as|email[:\s]+)\s*([^\s]+@[^\s]+)/i);
+        email = match ? match[1] : null;
+      }
+      cache.email = email;
       resolve(cache.email);
     });
   });
@@ -263,6 +275,7 @@ function tryFetchQuota() {
           const sevenDay = quotaRatio(data.seven_day);
           if (fiveHour === null && sevenDay === null) return;
           cache.quota.data = { fiveHour, sevenDay };
+          cache.quota.lastSuccessTs = Date.now();
           if (!cache.quota.available) console.log('[Usage] Quota API available');
           cache.quota.available = true;
         } catch { /* parse failed; retry on the next cycle */ }
@@ -286,6 +299,11 @@ function fetchUsage() {
   // Try the quota API asynchronously (store results in the cache)
   tryFetchQuota();
 
+  // A snapshot that has not refreshed in QUOTA_MAX_STALE_MS is treated as
+  // unavailable so consumers fall back cleanly instead of trusting frozen numbers.
+  const quotaFresh = cache.quota.available
+    && (Date.now() - cache.quota.lastSuccessTs) <= QUOTA_MAX_STALE_MS;
+
   return {
     provider: 'claude',
     account: {
@@ -293,7 +311,7 @@ function fetchUsage() {
       rateLimitTier: credentials.rateLimitTier,
       email: cache.email,
     },
-    quota: cache.quota.available
+    quota: quotaFresh
       ? cache.quota.data
       : { fiveHour: null, sevenDay: null },
     activity: {
@@ -304,7 +322,7 @@ function fetchUsage() {
       sessions: stats.totalSessions,
       messages: stats.totalMessages,
     },
-    quotaAvailable: cache.quota.available,
+    quotaAvailable: quotaFresh,
   };
 }
 

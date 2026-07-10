@@ -613,7 +613,7 @@ export class AvatarCanvas {
     auraColor() {
         const identity = getModelVisualIdentity(this.agent.model, this.agent.effort, this.agent.provider);
         const accent = identity.accent || [];
-        const byTier = { low: 0, medium: 0, high: 1, xhigh: 2, max: 2 };
+        const byTier = { low: 0, medium: 0, high: 1, xhigh: 2, max: 2, ultra: 2 };
         const idx = byTier[identity.effortTier] ?? 0;
         return accent[idx] || accent[0] || '#d6a951';
     }

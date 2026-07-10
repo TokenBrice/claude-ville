@@ -119,6 +119,9 @@ function ratesForModel(model, provider) {
   if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) {
     return pricing.grok.rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing.grok.default;
   }
+  if (normalizedProvider === 'gemini' || modelCandidates.some((candidate) => candidate.includes('gemini'))) {
+    return pricing.gemini.rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing.gemini.default;
+  }
   const tableKey = normalizedProvider === 'codex' || normalizedModel.includes('gpt') ? 'openai' : 'claude';
   return pricing[tableKey].rates.find((rate) => rateMatches(modelCandidates, rate)) || pricing[tableKey].default;
 }

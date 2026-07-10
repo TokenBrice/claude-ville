@@ -149,6 +149,87 @@ function summarizeGeminiRawInput(input, { maxLength = 60, missingValue = null } 
   });
 }
 
+// ─── Token usage ────────────────────────────────────────────
+
+const GEMINI_TOKEN_ALIASES = Object.freeze({
+  input: ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'promptTokenCount', 'total_input_tokens', 'input'],
+  output: ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens', 'candidatesTokenCount', 'total_output_tokens', 'output'],
+  cacheRead: ['cached_input_tokens', 'cache_read_input_tokens', 'cacheReadInputTokens', 'cachedContentTokenCount', 'cached'],
+  cacheCreate: ['cache_creation_input_tokens', 'cacheCreationInputTokens', 'cache_write'],
+  reasoning: ['reasoning_output_tokens', 'reasoningOutputTokens', 'reasoning_tokens', 'thoughtsTokenCount', 'thoughts'],
+  total: ['totalTokenCount', 'total_tokens', 'totalTokens', 'total'],
+});
+
+function readTokenNumber(obj, keys) {
+  if (!obj || typeof obj !== 'object') return 0;
+  for (const key of keys) {
+    const value = obj[key];
+    if (Number.isFinite(Number(value))) return Number(value);
+  }
+  return 0;
+}
+
+function geminiContextWindowMax(model) {
+  const m = String(model || '').toLowerCase();
+  // Gemini 1.5/2.x/3.x pro & flash families all expose a ~1M-token window.
+  return /gemini-(?:1\.5|2|3)|flash|pro/.test(m) ? 1000000 : 0;
+}
+
+/**
+ * Sum the per-message `tokens` objects the Gemini CLI records on 'gemini' turns.
+ * The file header documents this field, but parseSession never read it, so cost
+ * showed $0.00 for every Gemini session. Values are treated as per-turn deltas;
+ * the largest turn total drives context-window occupancy.
+ */
+function getTokenUsage(filePath) {
+  const tokenUsage = {
+    totalInput: 0,
+    totalOutput: 0,
+    cacheRead: 0,
+    cacheCreate: 0,
+    contextWindow: 0,
+    contextWindowMax: 0,
+    turnCount: 0,
+    reasoningTokens: 0,
+    // Gemini reports thinking (thoughtsTokenCount) separately from output, so it
+    // must be priced rather than treated as already counted inside output.
+    reasoningInOutput: false,
+  };
+
+  try {
+    const session = getParsedSession(filePath);
+    const messages = session?.messages;
+    if (!Array.isArray(messages)) return tokenUsage;
+
+    let model = null;
+    for (const msg of messages) {
+      if (!model && msg?.type === 'gemini' && msg.model) model = msg.model;
+
+      const tokens = msg?.tokens;
+      if (!tokens || typeof tokens !== 'object') continue;
+
+      const input = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.input);
+      const output = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.output);
+      const cacheRead = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.cacheRead);
+      const cacheCreate = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.cacheCreate);
+
+      tokenUsage.totalInput += input;
+      tokenUsage.totalOutput += output;
+      tokenUsage.cacheRead += cacheRead;
+      tokenUsage.cacheCreate += cacheCreate;
+      tokenUsage.reasoningTokens += readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.reasoning);
+      tokenUsage.turnCount++;
+
+      const total = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.total) || (input + output + cacheRead);
+      if (total > tokenUsage.contextWindow) tokenUsage.contextWindow = total;
+    }
+
+    tokenUsage.contextWindowMax = geminiContextWindowMax(model);
+  } catch { /* ignore */ }
+
+  return tokenUsage;
+}
+
 // ─── Session parsing ────────────────────────────────────────
 
 /**
@@ -397,6 +478,7 @@ class GeminiAdapter {
         lastMessage: detail.lastMessage,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
+        tokenUsage: getTokenUsage(filePath),
         gitEvents: getGitEvents(filePath, {
           provider: 'gemini',
           sessionId: `gemini-${sessionId}`,
@@ -416,6 +498,7 @@ class GeminiAdapter {
       return createDetailResponse({
         toolHistory: getToolHistory(indexedPath),
         messages: getRecentMessages(indexedPath),
+        tokenUsage: getTokenUsage(indexedPath),
         sessionId,
       });
     }
@@ -428,6 +511,7 @@ class GeminiAdapter {
         return createDetailResponse({
           toolHistory: getToolHistory(filePath),
           messages: getRecentMessages(filePath),
+          tokenUsage: getTokenUsage(filePath),
           sessionId,
         });
       }

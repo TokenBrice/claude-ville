@@ -76,10 +76,15 @@ export class DashboardRenderer {
                 this._stopDetailFetching();
             }
         };
+        // Pause detail polling while the tab is hidden; refresh once on return.
+        this._onVisibilityChange = () => {
+            if (!document.hidden && this.active) this._fetchAllDetails();
+        };
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on('mode:changed', this._onModeChanged);
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
 
     render() {
@@ -734,7 +739,7 @@ export class DashboardRenderer {
     }
 
     async _fetchAllDetails() {
-        if (!this.active || this._isFetchingDetails) return;
+        if (!this.active || this._isFetchingDetails || document.hidden) return;
         this._isFetchingDetails = true;
         const generation = this._detailFetchGeneration;
 
@@ -875,6 +880,7 @@ export class DashboardRenderer {
         this._clearAllCardsAndSections();
         this._observer?.disconnect?.();
         this.selection?.destroy?.();
+        document.removeEventListener('visibilitychange', this._onVisibilityChange);
         eventBus.off('agent:added', this._onAgentAdded);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);

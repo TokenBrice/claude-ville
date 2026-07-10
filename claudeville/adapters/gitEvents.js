@@ -537,6 +537,22 @@ function extractRemote(type, tokens, subcommandIndex) {
   return remote ? String(remote).trim() || null : null;
 }
 
+// Branch-deletion pushes ("git push origin --delete b", "-d b", "origin :b")
+// look like a normal push to the branch positional; flag them so consumers show
+// a deletion rather than a publish to that ref.
+function isPushDelete(tokens, subcommandIndex) {
+  for (let i = subcommandIndex + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (token === '--delete' || token === '-d' || token.startsWith('--delete=')) return true;
+  }
+  const { positionals, repositoryFromFlag } = pushPositionals(tokens, subcommandIndex);
+  const refspecs = repositoryFromFlag ? positionals : positionals.slice(1);
+  return refspecs.some((refspec) => {
+    const withoutForce = String(refspec).replace(/^\+/, '');
+    return withoutForce.startsWith(':') && withoutForce.length > 1;
+  });
+}
+
 function clampConfidence(value, fallback) {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return fallback;
@@ -590,6 +606,7 @@ function createGitEvent(command, type, dryRun, context, parsed = {}) {
     if (branch) event.branch = branch;
   }
   if (type === 'push' && parsed.force) event.force = parsed.force;
+  if (type === 'push' && parsed.deleted) event.deleted = true;
   if ((type === 'pull' || type === 'fetch')) {
     if (parsed.remote) event.remote = parsed.remote;
     if (Array.isArray(parsed.flags) && parsed.flags.length) event.flags = parsed.flags;
@@ -629,6 +646,7 @@ function parseGitEventsFromCommand(command, context = {}, options = {}) {
     if (match.type === 'push') {
       const pushInfo = pushPositionals(tokens, match.subcommandIndex);
       if (pushInfo.force) parsed.force = pushInfo.force;
+      if (isPushDelete(tokens, match.subcommandIndex)) parsed.deleted = true;
     } else if (match.type === 'pull' || match.type === 'fetch') {
       parsed.remote = extractRemote(match.type, tokens, match.subcommandIndex);
       const pullInfo = pullFetchPositionals(tokens, match.subcommandIndex);

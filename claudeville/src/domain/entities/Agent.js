@@ -8,9 +8,14 @@ import { buildingForTool, compactToolInput, toolActionLabel } from '../services/
 import { pickLoreLine } from '../../config/loreDialogue.js';
 
 const AGENT_NAMES_EN = [
-    'Atlas', 'Nova', 'Cipher', 'Pixel', 'Spark',
-    'Bolt', 'Echo', 'Flux', 'Helix', 'Onyx',
-    'Prism', 'Qubit', 'Rune', 'Sage', 'Vex',
+    'Ada', 'Alden', 'Ansel', 'Bess', 'Bram', 'Cedric', 'Cora', 'Cyril',
+    'Della', 'Dorian', 'Dove', 'Edith', 'Edric', 'Elowen', 'Ember', 'Faye',
+    'Fenn', 'Finn', 'Freya', 'Godric', 'Greta', 'Hazel', 'Hollis', 'Hugh',
+    'Isolde', 'Ivo', 'Ivy', 'Juno', 'Kael', 'Kira', 'Lena', 'Lorne',
+    'Maren', 'Maud', 'Merric', 'Nell', 'Nolan', 'Onyx', 'Opal', 'Orin',
+    'Percy', 'Prue', 'Quill', 'Quince', 'Rosa', 'Rune', 'Sable', 'Sage',
+    'Signe', 'Silas', 'Tamsin', 'Tess', 'Thane', 'Ulric', 'Ursa', 'Vera',
+    'Verity', 'Wren', 'Wystan', 'Yara', 'Yorick', 'Zara', 'Alba', 'Corin',
 ];
 
 export class Agent {
@@ -135,7 +140,9 @@ export class Agent {
             updates.status = normalizeAgentStatus(updates.status, this.status || AgentStatus.IDLE);
         }
         if (Object.prototype.hasOwnProperty.call(updates, 'name') && !updates.name) {
-            updates.name = this.generateName();
+            // Keep the name already assigned (possibly a collision-probed one)
+            // rather than reverting to the base pool pick on every WS update.
+            updates.name = this.name || this.generateName();
         }
         Object.assign(this, updates);
         this.lastActive = Date.now();
@@ -186,14 +193,23 @@ export class Agent {
         return str.slice(0, cap - 1) + '…';
     }
 
-    generateName() {
+    generateName(usedNames = null) {
         const hash = Appearance.hashCode(this.id);
-        return Agent.generateNameForLang(hash, i18n.lang);
+        return Agent.generateNameForLang(hash, i18n.lang, usedNames);
     }
 
-    static generateNameForLang(hash, lang) {
-        const h = Math.abs(hash);
-        return AGENT_NAMES_EN[h % AGENT_NAMES_EN.length];
+    // Deterministic: the hash picks a starting index; when `usedNames` already
+    // holds that name, probe subsequent indices (mod pool size) until a free
+    // one is found, so live agents keep distinct fallback names.
+    static generateNameForLang(hash, lang, usedNames = null) {
+        const pool = AGENT_NAMES_EN;
+        const start = Math.abs(hash) % pool.length;
+        if (!usedNames || usedNames.size === 0) return pool[start];
+        for (let i = 0; i < pool.length; i++) {
+            const candidate = pool[(start + i) % pool.length];
+            if (!usedNames.has(candidate)) return candidate;
+        }
+        return pool[start];
     }
 
 }

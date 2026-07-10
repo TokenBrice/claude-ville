@@ -102,6 +102,7 @@ export const PROVIDER_HUES = Object.freeze({
     codex: { trim: '#67f29a', badge: '#4ade80', badgeBg: 'rgba(74,222,128,0.15)' },
     gemini: { trim: '#7fc7ff', badge: '#60a5fa', badgeBg: 'rgba(96,165,250,0.15)' },
     git: { trim: '#f6cf60', badge: '#f6cf60', badgeBg: 'rgba(246,207,96,0.15)' },
+    grok: { trim: '#7df9ff', badge: '#7df9ff', badgeBg: 'rgba(125,249,255,0.15)' },
     kimi: { trim: '#ff8da8', badge: '#ff9f7a', badgeBg: 'rgba(255,159,122,0.15)' },
     opencode: { trim: '#7cf4c8', badge: '#7cf4c8', badgeBg: 'rgba(124,244,200,0.15)' },
     deepseek: { trim: '#7cf4c8', badge: '#7cf4c8', badgeBg: 'rgba(124,244,200,0.15)' },

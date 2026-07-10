@@ -256,6 +256,19 @@ export class ActivityPanel {
             if (identityKey !== this._biographyIdentityKey(this.currentAgent)) return;
             this._renderChronicleBody(biography);
         };
+        // Pause polling while the tab is hidden; refresh once on return.
+        this._onVisibilityChange = () => {
+            if (document.hidden) return;
+            if (this._mode === 'agent') {
+                this._fetchDetail();
+                this._fetchPinnedDetails();
+            } else if (this._mode === 'building') {
+                this._renderBuildingSignal();
+                this._renderBuildingOccupants();
+                this._renderBuildingState();
+                this._fetchPinnedDetails();
+            }
+        };
 
         this.closeBtn.addEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.addEventListener('click', this._onPinToggleClick);
@@ -270,6 +283,7 @@ export class ActivityPanel {
         eventBus.on('usage:updated', this._onUsageUpdated);
         eventBus.on('mood:changed', this._onMoodChanged);
         eventBus.on('biography:updated', this._onBiographyUpdated);
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
 
     _emptyRenderSignatures() {
@@ -639,6 +653,7 @@ export class ActivityPanel {
             high: 'High',
             xhigh: 'Extra High',
             max: 'Max',
+            ultra: 'Ultra',
         }[tier] || tier;
     }
 
@@ -682,6 +697,7 @@ export class ActivityPanel {
         this._fetchDetail();
         this._fetchPinnedDetails();
         this._pollTimer = setInterval(() => {
+            if (document.hidden) return;
             this._fetchDetail();
             this._fetchPinnedDetails();
         }, SESSION_DETAIL_PANEL_REFRESH_INTERVAL);
@@ -697,6 +713,7 @@ export class ActivityPanel {
     _startBuildingPolling() {
         this._stopBuildingPolling();
         this._buildingPollTimer = setInterval(() => {
+            if (document.hidden) return;
             if (this._mode !== 'building') return;
             this._renderBuildingSignal();
             this._renderBuildingOccupants();
@@ -2658,5 +2675,6 @@ export class ActivityPanel {
         eventBus.off('usage:updated', this._onUsageUpdated);
         eventBus.off('mood:changed', this._onMoodChanged);
         eventBus.off('biography:updated', this._onBiographyUpdated);
+        document.removeEventListener('visibilitychange', this._onVisibilityChange);
     }
 }

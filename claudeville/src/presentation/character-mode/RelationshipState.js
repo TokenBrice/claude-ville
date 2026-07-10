@@ -84,13 +84,14 @@ export class RelationshipState {
 
     update({ agentSprites = null, now = performance.now() } = {}) {
         this._prune(now);
-        this._rememberSpriteTiles(agentSprites);
+        const sprites = agentSprites?.values ? Array.from(agentSprites.values()) : [];
+        this._rememberSpriteTiles(sprites);
         if (this._membershipDirty) {
             this._rebuildMembership();
             this._membershipDirty = false;
         }
-        this._rebuildChatPairs(agentSprites);
-        this._rebuildGossipClusters(agentSprites);
+        this._rebuildChatPairs(sprites);
+        this._rebuildGossipClusters(sprites);
         this._snapshot = {
             parentToChildren: this.parentToChildren,
             childToParent: this.childToParent,
@@ -145,10 +146,9 @@ export class RelationshipState {
         }
     }
 
-    _rebuildChatPairs(agentSprites) {
+    _rebuildChatPairs(sprites) {
         const seen = new Set();
         const out = [];
-        const sprites = agentSprites?.values ? Array.from(agentSprites.values()) : [];
         for (const sprite of sprites) {
             const aId = sprite.agent?.id;
             const bId = sprite.chatPartner?.agent?.id;
@@ -167,8 +167,7 @@ export class RelationshipState {
     // post-gossip cooldown (tracked on the sprite). Each scenic point yields at
     // most one cluster of 2-3 members; clusters carry a screen-space centroid so
     // members can rotate to face it and the renderer can draw the knot triangle.
-    _rebuildGossipClusters(agentSprites) {
-        const sprites = agentSprites?.values ? Array.from(agentSprites.values()) : [];
+    _rebuildGossipClusters(sprites) {
         if (sprites.length < GOSSIP_MIN_MEMBERS) { this.gossipClusters = []; return; }
 
         const taken = new Set();
@@ -200,8 +199,7 @@ export class RelationshipState {
         this.gossipClusters = out;
     }
 
-    _rememberSpriteTiles(agentSprites) {
-        const sprites = agentSprites?.values ? Array.from(agentSprites.values()) : [];
+    _rememberSpriteTiles(sprites) {
         for (const sprite of sprites) {
             const id = sprite.agent?.id;
             if (!id) continue;

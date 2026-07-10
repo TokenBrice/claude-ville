@@ -6,6 +6,8 @@ const DEFAULT_TOKEN_USAGE = {
     cacheWrite: 0,
     totalInput: 0,
     totalOutput: 0,
+    reasoningTokens: 0,
+    reasoningInOutput: false,
     contextWindow: 0,
     contextWindowMax: 0,
     turnCount: 0,
@@ -51,11 +53,24 @@ const GROK_RATES = [
     { match: 'grok-4', input: 3, output: 15, cacheRead: 0.75, cacheCreate: 0 },
 ];
 
+// Google Gemini API rates (USD per 1M tokens). cacheRead is context-cache read
+// pricing; cacheCreate is the documented one-time cache write on the 3.x family.
+const GEMINI_RATES = [
+    { match: 'gemini-3-5-flash', input: 1.5, output: 9, cacheRead: 0.15, cacheCreate: 0.5 },
+    { match: 'gemini-3-1-pro', input: 2, output: 12, cacheRead: 0.2, cacheCreate: 0.5 },
+    { match: 'gemini-3-1-flash-lite', input: 0.25, output: 1.5, cacheRead: 0.025, cacheCreate: 0.5 },
+    { match: 'gemini-3-pro', input: 2, output: 12, cacheRead: 0.2, cacheCreate: 0.5 },
+    { match: 'gemini-3-flash', input: 0.5, output: 3, cacheRead: 0.05, cacheCreate: 0.5 },
+    { match: 'gemini-2-5-pro', input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 },
+    { match: 'gemini-2-5-flash', input: 0.3, output: 2.5, cacheRead: 0.03, cacheCreate: 0 },
+];
+
 const DEFAULT_CLAUDE_RATES = { input: 3, output: 15, cacheRead: 0.3, cacheCreate: 3.75 };
 const DEFAULT_OPEN_AI_RATES = { input: 1.25, output: 10, cacheRead: 0.125, cacheCreate: 0 };
 const DEFAULT_KIMI_RATES = { input: 3, output: 12, cacheRead: 0.3, cacheCreate: 0 };
 const DEFAULT_DEEPSEEK_RATES = { input: 0.14, output: 0.28, cacheRead: 0.028, cacheCreate: 0 };
 const DEFAULT_GROK_RATES = { input: 2, output: 6, cacheRead: 0.5, cacheCreate: 0 };
+const DEFAULT_GEMINI_RATES = { input: 0.5, output: 3, cacheRead: 0.05, cacheCreate: 0.5 };
 
 const FIELD_ALIASES = {
     input: ['input', 'totalInput', 'input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens', 'total_input_tokens', 'total_input'],
@@ -68,6 +83,7 @@ const FIELD_ALIASES = {
     contextWindowMax: ['contextWindowMax', 'contextWindowLimit', 'context_window_max', 'context_window_limit', 'context_max'],
     turnCount: ['turnCount', 'turn_count', 'numTurns'],
     cacheWrite: ['cacheWrite', 'cache_write'],
+    reasoningTokens: ['reasoningTokens', 'reasoning', 'reasoning_tokens', 'reasoning_output_tokens', 'reasoningOutputTokens', 'tokens_reasoning'],
 };
 
 const normalizeNumber = (value) => {
@@ -125,6 +141,8 @@ export class TokenUsage {
                 contextWindowMax: normalizeNumber(raw.contextWindowMax ?? raw.contextWindowLimit ?? raw.context_window_max ?? raw.context_window_limit ?? raw.context_max),
                 turnCount: normalizeNumber(raw.turnCount ?? raw.turn_count ?? raw.numTurns),
                 cacheWrite: normalizeNumber(raw.cacheWrite ?? raw.cache_create ?? raw.cacheCreate),
+                reasoningTokens: normalizeNumber(raw.reasoningTokens ?? raw.reasoning),
+                reasoningInOutput: raw.reasoningInOutput === true,
             };
         }
 
@@ -144,6 +162,8 @@ export class TokenUsage {
             contextWindow: coerceTokenField(raw, FIELD_ALIASES.contextWindow),
             contextWindowMax: coerceTokenField(raw, FIELD_ALIASES.contextWindowMax),
             turnCount: coerceTokenField(raw, FIELD_ALIASES.turnCount),
+            reasoningTokens: coerceTokenField(raw, FIELD_ALIASES.reasoningTokens),
+            reasoningInOutput: raw.reasoningInOutput === true,
         };
     }
 
@@ -165,6 +185,9 @@ export class TokenUsage {
         if (normalizedProvider === 'grok' || modelCandidates.some((candidate) => candidate.includes('grok'))) {
             return GROK_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_GROK_RATES;
         }
+        if (normalizedProvider === 'gemini' || modelCandidates.some((candidate) => candidate.includes('gemini'))) {
+            return GEMINI_RATES.find((rate) => rateMatches(modelCandidates, rate)) || DEFAULT_GEMINI_RATES;
+        }
         const table = (normalizedProvider === 'codex' || normalizedModel.includes('gpt'))
             ? OPEN_AI_RATES
             : CLAUDE_RATES;
@@ -176,9 +199,13 @@ export class TokenUsage {
     static estimateCost(rawUsage, model, provider) {
         const usage = rawUsage instanceof TokenUsage ? rawUsage : TokenUsage.normalize(rawUsage);
         const rates = TokenUsage.pricingForModel(model, provider);
+        // Reasoning tokens are billed at the output rate. Skip them when the
+        // provider already counts them inside output (e.g. Codex) to avoid
+        // double pricing.
+        const billableReasoning = usage.reasoningInOutput ? 0 : usage.reasoningTokens;
         return (
             usage.input * rates.input +
-            usage.output * rates.output +
+            (usage.output + billableReasoning) * rates.output +
             usage.cacheRead * rates.cacheRead +
             usage.cacheCreate * rates.cacheCreate
         ) / 1000000;

@@ -104,8 +104,23 @@ export class AgentManager {
             const { id: _id, projectPath: _projectPath, provider: _provider, lastMessage: _lastMessage, ...agentData } = payload;
             this.world.updateAgent(id, agentData);
         } else {
-            this.world.addAgent(new Agent(payload));
+            const agent = new Agent(payload);
+            // Fallback (non-provider) names come from a shared pool; probe past
+            // names already held by live agents so busy villages stay distinct.
+            if (!agent._customName) {
+                agent.name = agent.generateName(this._usedAgentNames());
+            }
+            this.world.addAgent(agent);
         }
+    }
+
+    _usedAgentNames() {
+        const used = new Set();
+        for (const agent of this.world.agents.values()) {
+            const name = String(agent?.name || '').trim();
+            if (name) used.add(name);
+        }
+        return used;
     }
 
     _sessionToAgentPayload(session, teamMembers) {

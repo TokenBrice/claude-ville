@@ -173,11 +173,35 @@ function applyTurnMetadata(detail, metadata) {
   if (!detail.project && metadata.project) detail.project = metadata.project;
 }
 
+// Orchestration tools (spawn_agent/send_message) carry the routed prompt as a
+// long encrypted `message` blob (gAAAA…). Drop it and keep only the routing
+// identifier so the UI shows e.g. {"task_name":"…"} instead of ciphertext.
+function orchestrationInputSummary(raw) {
+  const parsed = typeof raw === 'string' ? tryParseJsonObject(raw) : raw;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  if (parsed.message == null) return null;
+  const compact = {};
+  for (const key of ['task_name', 'target', 'recipient']) {
+    if (parsed[key] != null) compact[key] = parsed[key];
+  }
+  return Object.keys(compact).length ? JSON.stringify(compact) : null;
+}
+
+function tryParseJsonObject(text) {
+  const trimmed = String(text).trim();
+  if (!trimmed.startsWith('{')) return null;
+  try { return JSON.parse(trimmed); } catch { return null; }
+}
+
 function summarizeCodexToolPayload(payload, { maxLength = MAX_CURRENT_TOOL_INPUT_CHARS, missingValue = null } = {}) {
-  if (payload.arguments) {
-    const input = typeof payload.arguments === 'string'
-      ? payload.arguments
-      : JSON.stringify(payload.arguments);
+  // function_call → arguments; custom_tool_call → input (both JSON/string).
+  const raw = payload.arguments || payload.input;
+  if (raw) {
+    const orchestration = orchestrationInputSummary(raw);
+    if (orchestration) {
+      return summarizeSharedToolInput(orchestration, { maxLength, missingValue, stringFallback: 'string' });
+    }
+    const input = typeof raw === 'string' ? raw : JSON.stringify(raw);
     return summarizeSharedToolInput(input, {
       maxLength,
       missingValue,
@@ -281,8 +305,8 @@ function parseRollout(filePath) {
 
     // response_item
     if (entry.type === 'response_item') {
-      // Tool use (function_call)
-      if (!detail.lastTool && (payload.type === 'function_call' || payload.type === 'command_execution')) {
+      // Tool use (function_call / custom_tool_call)
+      if (!detail.lastTool && (payload.type === 'function_call' || payload.type === 'command_execution' || payload.type === 'custom_tool_call')) {
         detail.lastTool = payload.name || payload.type;
         detail.lastToolInput = summarizeCodexToolPayload(payload);
       }
@@ -346,7 +370,7 @@ function getToolHistory(filePath, maxItems = 15) {
       if (entry.type !== 'response_item' || !entry.payload) continue;
       const payload = entry.payload;
 
-      if (payload.type === 'function_call' || payload.type === 'command_execution') {
+      if (payload.type === 'function_call' || payload.type === 'command_execution' || payload.type === 'custom_tool_call') {
         const detail = summarizeCodexToolPayload(payload, { maxLength: 80, missingValue: '' });
         const item = {
           tool: payload.name || payload.type,

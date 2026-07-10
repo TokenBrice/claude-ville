@@ -151,6 +151,16 @@ const AGENT_COMPACT_NAME_EXTRA_WIDTH = 38;
 const AGENT_COMPACT_NAME_HEIGHT = 17;
 const AGENT_COMPACT_NAME_SLOT_BASE_Y = 22;
 const AGENT_COMPACT_NAME_SLOT_STEP_Y = 12;
+// Full-mode speech/status bubble de-collision. Bubbles are drawn per sprite at
+// a fixed head offset, so clustered agents pile unreadably; these drive the
+// rect-overlap slot search that stacks bubbles and caps how many render.
+const AGENT_BUBBLE_SLOT_CAP = 3;
+const AGENT_BUBBLE_EST_WIDTH = 104;
+const AGENT_BUBBLE_HEIGHT = 22;
+const AGENT_BUBBLE_ANCHOR_Y = 58;
+// Vertical step per stacked slot, in screen pixels; must match AgentSprite
+// STATUS_BUBBLE_STACK_STEP so assigned slots line up with the drawn offset.
+const AGENT_BUBBLE_STACK_STEP = 24;
 const WATER_TOKENS = {
     lagoon: {
         shallow: 'rgb(10,180,190)',
@@ -3658,6 +3668,69 @@ export class IsometricRenderer {
                 nameOccupied.push(this._agentNameSlotRect(sprite, nameSlot));
             }
         }
+
+        // Only full mode draws a bubble per agent; compact/minimal keep at most
+        // the selected agent's bubble (defaults on the sprite already suffice).
+        if (agentRenderMode === 'full') {
+            this._assignAgentBubbleSlots(prioritized, zoom);
+        }
+    }
+
+    // Crowd bubble de-collision. Reuses the overlay-slot rect-overlap technique:
+    // register each intended bubble rect and, when it overlaps an already-placed
+    // one, stack it into the next free slot above; past the cap, suppress it to
+    // an ellipsis dot so at most AGENT_BUBBLE_SLOT_CAP full bubbles render per
+    // cluster. Deterministic priority (selected, then label priority, then stable
+    // id) keeps slots from flickering frame to frame. Pure layout, no motion.
+    _assignAgentBubbleSlots(sprites, zoom = this.camera?.zoom || 1) {
+        const occupied = [];
+        const order = sprites
+            .filter((sprite) => sprite.agent && this._spriteWantsBubble(sprite))
+            .sort((a, b) => {
+                const delta = this._agentLabelPriority(b) - this._agentLabelPriority(a);
+                if (delta !== 0) return delta;
+                return String(a.agent.id) < String(b.agent.id) ? -1 : 1;
+            });
+        for (const sprite of order) {
+            sprite.bubbleSlot = 0;
+            sprite.bubbleSuppressed = false;
+            if (sprite.selected) {
+                occupied.push(this._agentBubbleSlotRect(sprite, 0));
+                continue;
+            }
+            let slot = 0;
+            while (
+                slot < AGENT_BUBBLE_SLOT_CAP &&
+                occupied.some((item) => this._rectsOverlap(this._agentBubbleSlotRect(sprite, slot), item))
+            ) {
+                slot++;
+            }
+            if (slot >= AGENT_BUBBLE_SLOT_CAP) {
+                sprite.bubbleSuppressed = true;
+            } else {
+                sprite.bubbleSlot = slot;
+                occupied.push(this._agentBubbleSlotRect(sprite, slot));
+            }
+        }
+    }
+
+    _spriteWantsBubble(sprite) {
+        if (!sprite || sprite.chatting) return false;
+        if (sprite.isArrivalPending?.()) return false;
+        return true;
+    }
+
+    _agentBubbleSlotRect(sprite, slot) {
+        const s = 1 / ((this.camera?.zoom) || 1);
+        const halfW = (AGENT_BUBBLE_EST_WIDTH / 2) * s;
+        const halfH = (AGENT_BUBBLE_HEIGHT / 2) * s;
+        const centerY = sprite.y - (AGENT_BUBBLE_ANCHOR_Y + slot * AGENT_BUBBLE_STACK_STEP) * s;
+        return {
+            x: sprite.x - halfW,
+            y: centerY - halfH,
+            w: halfW * 2,
+            h: halfH * 2,
+        };
     }
 
     _agentLabelPriority(sprite) {

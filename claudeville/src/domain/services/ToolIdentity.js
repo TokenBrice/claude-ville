@@ -104,7 +104,17 @@ const TOOL_METADATA = Object.freeze({
         category: 'task',
         actionLabel: 'Messaging',
     },
+    send_message: {
+        classification: { building: 'command', reason: 'message-agent', confidence: 0.98 },
+        icon: '💬',
+        category: 'task',
+        actionLabel: 'Messaging',
+    },
     'functions.spawn_agent': {
+        classification: { building: 'command', reason: 'spawn-agent', confidence: 0.98 },
+        agentCommand: true,
+    },
+    spawn_agent: {
         classification: { building: 'command', reason: 'spawn-agent', confidence: 0.98 },
         agentCommand: true,
     },
@@ -116,13 +126,35 @@ const TOOL_METADATA = Object.freeze({
         classification: { building: 'command', reason: 'wait-agent', confidence: 0.98 },
         agentCommand: true,
     },
+    wait_agent: {
+        classification: { building: 'command', reason: 'wait-agent', confidence: 0.98 },
+        agentCommand: true,
+    },
+    wait: {
+        classification: { building: 'command', reason: 'wait-agent', confidence: 0.9 },
+        agentCommand: true,
+    },
     'functions.close_agent': {
+        classification: { building: 'command', reason: 'close-agent', confidence: 0.98 },
+        agentCommand: true,
+    },
+    close_agent: {
         classification: { building: 'command', reason: 'close-agent', confidence: 0.98 },
         agentCommand: true,
     },
     'functions.resume_agent': {
         classification: { building: 'command', reason: 'resume-agent', confidence: 0.98 },
         agentCommand: true,
+    },
+    resume_agent: {
+        classification: { building: 'command', reason: 'resume-agent', confidence: 0.98 },
+        agentCommand: true,
+    },
+    list_agents: {
+        classification: { building: 'command', reason: 'list-agents', confidence: 0.9 },
+        icon: '👥',
+        category: 'task',
+        actionLabel: 'Coordinating',
     },
 
     TaskCreate: {
@@ -188,6 +220,7 @@ const MULTI_TOOL_NAMES = new Set([
 const SHELL_TOOL_NAMES = new Set([
     'Bash',
     'shell',
+    'exec',
     'exec_command',
     'functions.exec_command',
     'functions.write_stdin',

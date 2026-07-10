@@ -23,7 +23,7 @@ const UNKNOWN_PROJECT_SIDEBAR_PROFILE = Object.freeze({
     panelBorder: 'rgba(139, 139, 158, 0.86)',
 });
 
-const PROVIDER_ICONS = Object.freeze({ claude: 'C', codex: 'X', gemini: 'G', git: '#', kimi: 'K', opencode: 'O' });
+const PROVIDER_ICONS = Object.freeze({ claude: 'C', codex: 'X', gemini: 'G', git: '#', grok: 'R', kimi: 'K', opencode: 'O', deepseek: 'D' });
 // Provider hues come from the theme.js House Palette (#1); only icons/labels
 // are presentation-local.
 const PROVIDER_COLORS = Object.freeze(Object.fromEntries(
@@ -32,7 +32,7 @@ const PROVIDER_COLORS = Object.freeze(Object.fromEntries(
         .map(([key, hue]) => [key, hue.badge]),
 ));
 const PROVIDER_LABELS = Object.freeze({
-    claude: 'Claude', codex: 'Codex', gemini: 'Gemini', git: 'Git', kimi: 'Kimi', opencode: 'OpenCode',
+    claude: 'Claude', codex: 'Codex', gemini: 'Gemini', git: 'Git', grok: 'Grok', kimi: 'Kimi', opencode: 'OpenCode', deepseek: 'DeepSeek',
 });
 const PROVIDER_BADGES = Object.freeze(Object.fromEntries(
     Object.keys(PROVIDER_LABELS).map(key => [key, {

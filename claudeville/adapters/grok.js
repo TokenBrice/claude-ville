@@ -53,6 +53,9 @@ const GROK_TOOL_INPUT_FIELDS = Object.freeze([
 const _sessionIndex = new Map(); // sessionId (with prefix) -> { dir, summaryPath, updatesPath, chatPath }
 const _summaryCache = new Map(); // summaryPath -> { key, summary }
 const _tailParseCache = new Map(); // filePath -> { key, detail }
+const _subagentMetaCache = new Map(); // meta.json path -> { key, childId, parentId }
+
+const MAX_SUBAGENT_META_READS = 2000;
 
 // ─── Helpers ────────────────────────────────────────────────
 
@@ -212,6 +215,58 @@ function listSessionDirs() {
     }
   }
   return results;
+}
+
+function readSubagentMeta(metaPath) {
+  try {
+    const stat = fs.statSync(metaPath);
+    const key = statCacheKey(metaPath, stat);
+    const cached = _subagentMetaCache.get(metaPath);
+    if (cached?.key === key) {
+      _subagentMetaCache.delete(metaPath);
+      _subagentMetaCache.set(metaPath, cached);
+      return cached;
+    }
+    const meta = readJsonFile(metaPath);
+    if (!meta) return null;
+    const record = {
+      key,
+      childId: meta.child_session_id || meta.subagent_id || null,
+      parentId: meta.parent_session_id || null,
+    };
+    _subagentMetaCache.set(metaPath, record);
+    trimCache(_subagentMetaCache, SESSION_CACHE_MAX);
+    return record;
+  } catch {
+    return null;
+  }
+}
+
+// Grok records the parent link under <parentDir>/subagents/<childId>/meta.json,
+// not on the child's own summary. Build a child→parent map once per scan so
+// subagent sessions can resolve their owner without rescanning per session.
+function buildSubagentParentIndex(entries) {
+  const childToParent = new Map();
+  let reads = 0;
+  for (const entry of entries) {
+    if (reads >= MAX_SUBAGENT_META_READS) break;
+    const subagentsDir = path.join(entry.dir, 'subagents');
+    let childDirs;
+    try {
+      childDirs = fs.readdirSync(subagentsDir, { withFileTypes: true }).filter((d) => d.isDirectory());
+    } catch {
+      continue;
+    }
+    for (const child of childDirs) {
+      if (reads >= MAX_SUBAGENT_META_READS) break;
+      reads++;
+      const meta = readSubagentMeta(path.join(subagentsDir, child.name, 'meta.json'));
+      const childId = meta?.childId || child.name;
+      const parentId = meta?.parentId || entry.sessionUuid;
+      if (childId && parentId) childToParent.set(childId, parentId);
+    }
+  }
+  return childToParent;
 }
 
 function sessionActivityMs(entry, summary) {
@@ -538,7 +593,10 @@ class GrokAdapter {
     const now = Date.now();
     const sessions = [];
 
-    for (const entry of listSessionDirs()) {
+    const entries = listSessionDirs();
+    const subagentParents = buildSubagentParentIndex(entries);
+
+    for (const entry of entries) {
       const summary = getSummary(entry.summaryPath);
       if (!summary) continue;
 
@@ -555,12 +613,17 @@ class GrokAdapter {
       const projectClean = project ? String(project).replace(/\/$/, '') : null;
       const model = summary.current_model_id || 'grok';
       const agentName = summary.agent_name || summary.generated_title || summary.session_summary || null;
+      const isSubagent = summary.session_kind === 'subagent';
+      const parentUuid = subagentParents.get(sessionUuid)
+        || summary.parent_session_id
+        || summary.parentSessionId
+        || null;
 
       sessions.push({
         sessionId: prefixedId,
         provider: 'grok',
         agentId: sessionUuid,
-        agentType: 'main',
+        agentType: isSubagent ? 'sub-agent' : 'main',
         agentName,
         project: projectClean,
         model,
@@ -570,7 +633,7 @@ class GrokAdapter {
         lastToolInput: live.lastToolInput,
         lastMessage: live.lastMessage,
         tokenUsage: buildTokenUsage(summary, live),
-        parentSessionId: summary.parent_session_id || summary.parentSessionId || null,
+        parentSessionId: parentUuid ? `grok-${parentUuid}` : null,
         reasoningEffort: summary.reasoning_effort || null,
         gitEvents: getGitEvents(entry, {
           provider: 'grok',
@@ -614,6 +677,7 @@ class GrokAdapter {
     _sessionIndex.clear();
     _summaryCache.clear();
     _tailParseCache.clear();
+    _subagentMetaCache.clear();
   }
 }
 

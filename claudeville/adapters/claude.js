@@ -37,6 +37,7 @@ const SEND_MESSAGE_RECIPIENT_FIELDS = Object.freeze([
 ]);
 const AGENT_LAUNCH_CACHE_MAX = 128;
 const TOKEN_USAGE_CACHE_MAX = 128;
+const ORPHAN_DIR_MTIME_EPSILON_MS = 1;
 const CLAUDE_TOOL_INPUT_FIELDS = Object.freeze([
   'command',
   'file_path',
@@ -66,8 +67,35 @@ const _sessionNamesCache = { signature: '', value: new Map() };
 const _teamMembershipCache = { signature: '', value: new Map() };
 const _teamMembershipWarned = new Set();
 const _teamsCache = { signature: '', value: [] };
+// Incremental orphan/team-member scan cache: per project directory, remember its
+// mtime and the .jsonl listing so an unchanged directory skips the readdir on the
+// next poll. Files are still stat'd every poll (appends don't bump the directory
+// mtime), so returned sessions stay identical.
+const _orphanScanCache = {
+  filesByProjectDir: new Map(),
+  projectDirMtimes: new Map(),
+};
 
 // ─── Utilities ─────────────────────────────────────────────
+
+function isPathInside(childPath, rootPath) {
+  const relative = path.relative(rootPath, childPath);
+  return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+}
+
+// Resolve a candidate file only if it stays within rootPath after symlink
+// resolution. Guards the client-supplied sessionId/agentId in session-detail
+// paths against traversal (e.g. '../../../../etc/foo').
+function safeExistingFile(candidatePath, rootPath) {
+  try {
+    if (!fs.existsSync(candidatePath)) return null;
+    const rootReal = fs.realpathSync(rootPath);
+    const fileReal = fs.realpathSync(candidatePath);
+    return isPathInside(fileReal, rootReal) ? fileReal : null;
+  } catch {
+    return null;
+  }
+}
 
 function readLastLines(filePath, lineCount) {
   return readTailLines(filePath, lineCount, {
@@ -608,8 +636,8 @@ function resolveSessionFilePath(sessionId, project) {
         .filter(d => d.isDirectory());
       for (const dir of sessionDirs) {
         const subagentsDir = path.join(projectsDir, dir.name, 'subagents');
-        const agentFile = path.join(subagentsDir, `agent-${agentId}.jsonl`);
-        if (fs.existsSync(agentFile)) return agentFile;
+        const agentFile = safeExistingFile(path.join(subagentsDir, `agent-${agentId}.jsonl`), projectsDir);
+        if (agentFile) return agentFile;
 
         // Workflow sub-agents are nested under subagents/workflows/<wfRunId>/.
         const workflowsDir = path.join(subagentsDir, 'workflows');
@@ -619,16 +647,15 @@ function resolveSessionFilePath(sessionId, project) {
             .filter(d => d.isDirectory());
         } catch { continue; }
         for (const runDir of runDirs) {
-          const nested = path.join(workflowsDir, runDir.name, `agent-${agentId}.jsonl`);
-          if (fs.existsSync(nested)) return nested;
+          const nested = safeExistingFile(path.join(workflowsDir, runDir.name, `agent-${agentId}.jsonl`), projectsDir);
+          if (nested) return nested;
         }
       }
     } catch { /* ignore */ }
     return null;
   }
 
-  const sessionFile = path.join(projectsDir, `${sessionId}.jsonl`);
-  return fs.existsSync(sessionFile) ? sessionFile : null;
+  return safeExistingFile(path.join(projectsDir, `${sessionId}.jsonl`), projectsDir);
 }
 
 function getSessionFileActivity(sessionId, project) {
@@ -644,6 +671,38 @@ function getSessionFileActivity(sessionId, project) {
 function resolveProjectPathFromMap(projectPathMap, encodedProject) {
   return projectPathMap.get(encodedProject)
     || `/${encodedProject.replace(/^-/, '').replace(/-/g, '/')}`;
+}
+
+// Cached .jsonl listing for a project directory. A directory's mtime only
+// changes when entries are added/removed, so an unchanged mtime lets us reuse
+// the previous listing and skip the readdir. Callers still stat each returned
+// file, so freshly appended (active) sessions are detected regardless.
+function listProjectSessionFiles(projPath) {
+  let dirMtime;
+  try {
+    dirMtime = fs.statSync(projPath).mtimeMs;
+  } catch {
+    return [];
+  }
+  const previous = _orphanScanCache.projectDirMtimes.get(projPath);
+  const cached = _orphanScanCache.filesByProjectDir.get(projPath);
+  if (
+    cached
+    && previous !== undefined
+    && Math.abs(dirMtime - previous) <= ORPHAN_DIR_MTIME_EPSILON_MS
+  ) {
+    return cached;
+  }
+  let files;
+  try {
+    files = fs.readdirSync(projPath)
+      .filter(f => f.endsWith('.jsonl') && !f.startsWith('.'));
+  } catch {
+    return cached || [];
+  }
+  _orphanScanCache.projectDirMtimes.set(projPath, dirMtime);
+  _orphanScanCache.filesByProjectDir.set(projPath, files);
+  return files;
 }
 
 // ─── Workflow sub-agents ────────────────────────────────────
@@ -941,11 +1000,7 @@ class ClaudeAdapter {
 
       for (const projDir of projDirs) {
         const projPath = path.join(projectsDir, projDir.name);
-        let files;
-        try {
-          files = fs.readdirSync(projPath)
-            .filter(f => f.endsWith('.jsonl') && !f.startsWith('.'));
-        } catch { continue; }
+        const files = listProjectSessionFiles(projPath);
 
         for (const file of files) {
           const sessionId = file.replace('.jsonl', '');

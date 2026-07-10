@@ -1,6 +1,6 @@
 # ClaudeVille
 
-[![Version](https://img.shields.io/badge/version-v0.20.0-8a6f2a)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.22.0-8a6f2a)](./CHANGELOG.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](./package.json)
 [![Runtime](https://img.shields.io/badge/runtime-zero--build-7c3aed)](#quick-start)
@@ -19,7 +19,7 @@ ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google
 - **Zero-build runtime:** Node HTTP/WebSocket server plus static browser assets.
 - **Desktop companion:** optional macOS menu bar and KDE Plasma widgets.
 
-Current version: **v0.20.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
+Current version: **v0.22.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
 
 Active development lives in this repository. It is currently a public fork of `honorstudio/claude-ville`, but `TokenBrice/claude-ville` is the maintained branch for the current multi-provider ClaudeVille work.
 
@@ -192,6 +192,7 @@ The server is hardcoded to port `4000`.
 | `GET /api/providers` | Detected provider list and home directories. |
 | `GET /api/usage` | Usage, subscription, activity, and quota metadata. |
 | `GET /api/perf` | Lightweight runtime counters for manual performance checks. |
+| `GET /api/changelog` | Raw `CHANGELOG.md` text; rendered by the in-app version-chip modal. |
 | `GET /widget.html` | Widget popover HTML from `widget/Resources/`. |
 | `GET /widget.css` | Widget popover CSS from `widget/Resources/`. |
 | `ws://localhost:4000` | Initial session payload, update broadcasts, and ping/pong. |

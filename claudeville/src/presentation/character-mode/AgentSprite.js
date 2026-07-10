@@ -141,7 +141,20 @@ const TOOL_ACTIVITY_LABEL_OVERRIDES = Object.freeze({
     'functions.resume_agent': 'Resuming',
     'functions.close_agent': 'Closing',
     'multi_tool_use.parallel': 'Coordinating',
+    // Unprefixed orchestration aliases (codex multi-agent tools arrive without
+    // the 'functions.' prefix) so bubbles read as words, not raw snake_case.
+    send_message: 'Messaging',
+    spawn_agent: 'Spawning',
+    wait_agent: 'Waiting On',
+    wait: 'Waiting On',
+    resume_agent: 'Resuming',
+    close_agent: 'Closing',
+    list_agents: 'Coordinating',
 });
+// Vertical step per stacked bubble slot, in screen pixels. Must match
+// IsometricRenderer AGENT_BUBBLE_STACK_STEP so the crowd de-collision slot the
+// renderer assigns lines up with the offset drawn here.
+const STATUS_BUBBLE_STACK_STEP = 24;
 const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     codex: 'engineerWrench',
     spark: 'multitool',
@@ -337,6 +350,11 @@ export class AgentSprite {
         this.behavior = new AgentBehaviorState();
         this._targetCycle = 0;
         this.nameTagSlot = 0;
+        // Crowd bubble de-collision slot + suppression, assigned per frame by
+        // IsometricRenderer._assignAgentBubbleSlots. slot 0 = normal position;
+        // higher slots stack the bubble upward; suppressed collapses it to a dot.
+        this.bubbleSlot = 0;
+        this.bubbleSuppressed = false;
         // #14 — set true by IsometricRenderer when this agent's name pill is
         // folded into its building's status-tally chip at low zoom.
         this.foldedIntoBuilding = false;
@@ -827,7 +845,7 @@ export class AgentSprite {
         if (this.teamPlazaPreference && this.agent.teamName && (seed % 6) < 4) return 'command';
         if (this.agent.isSubagent && (seed % 6) < 2) return 'command';
         const totalTokens = (this.agent.tokens?.input || 0) + (this.agent.tokens?.output || 0);
-        if (totalTokens > 0 && seed % 8 === 0) return 'mine';
+        if (totalTokens > 0 && seed % 8 === 0 && this._recentBuildingCount('mine') < 2) return 'mine';
 
         const providerHome = PROVIDER_HOME_BUILDINGS[this._providerKey()];
         if (providerHome && seed % 11 === 0 && this._recentBuildingCount(providerHome) < 2) return providerHome;
@@ -3916,6 +3934,7 @@ export class AgentSprite {
         if (provider.includes('codex') || model.includes('codex') || model.includes('gpt')) return 'codex';
         if (provider.includes('claude') || model.includes('claude')) return 'claude';
         if (provider.includes('kimi') || model.includes('kimi')) return 'kimi';
+        if (provider.includes('grok') || model.includes('grok')) return 'grok';
         return 'default';
     }
 
@@ -3941,16 +3960,44 @@ export class AgentSprite {
         const visual = this._statusVisual();
         const thread = this._activityThread();
         if (!thread.length) return;
+        // Crowd de-collision (IsometricRenderer._assignAgentBubbleSlots): beyond
+        // the slot cap the bubble collapses to a small ellipsis dot so dense
+        // clusters stay readable. Selected agents always keep their full bubble.
+        if (this.bubbleSuppressed && !this.selected) {
+            this._drawBubbleDotMarker(ctx, visual.color, contentTopY);
+            return;
+        }
+        const stackShift = this.bubbleSlot > 0 ? -this.bubbleSlot * STATUS_BUBBLE_STACK_STEP : 0;
         const head = thread[0];
         const useClock = this._shouldUseLongWaitClock(head);
         if (useClock) {
-            this._drawLongWaitClockBubble(ctx, head.accent || visual.color, contentTopY);
+            this._drawLongWaitClockBubble(ctx, head.accent || visual.color, contentTopY, stackShift);
         } else {
-            this._drawBubble(ctx, head.text, head.accent || visual.color, contentTopY, head.confidence);
+            this._drawBubble(ctx, head.text, head.accent || visual.color, contentTopY, head.confidence, stackShift);
         }
         if (thread.length > 1) {
-            this._drawHistoryBubbles(ctx, thread.slice(1), contentTopY);
+            this._drawHistoryBubbles(ctx, thread.slice(1), contentTopY, stackShift);
         }
+    }
+
+    // Static ellipsis marker shown when the renderer suppresses this agent's
+    // bubble in a crowded slot cluster. Pure layout, no motion — reads the same
+    // under reduced motion.
+    _drawBubbleDotMarker(ctx, accentColor, contentTopY = null) {
+        ctx.save();
+        const s = 1 / (this._zoom || 1);
+        ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
+        ctx.scale(s, s);
+        const anchored = Number.isFinite(contentTopY);
+        ctx.translate(0, anchored ? -18 : -50);
+        ctx.globalAlpha *= 0.82;
+        ctx.fillStyle = accentColor;
+        for (let i = -1; i <= 1; i++) {
+            ctx.beginPath();
+            ctx.arc(i * 4, 0, 1.1, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
     }
 
     _shouldUseLongWaitClock(entry) {
@@ -3960,7 +4007,7 @@ export class AgentSprite {
         return Number.isFinite(age) && age > 60_000;
     }
 
-    _drawLongWaitClockBubble(ctx, accentColor, contentTopY = null) {
+    _drawLongWaitClockBubble(ctx, accentColor, contentTopY = null, stackShift = 0) {
         ctx.save();
         const s = 1 / (this._zoom || 1);
         ctx.translate(this.x, Number.isFinite(contentTopY) ? contentTopY : this.y);
@@ -3969,7 +4016,7 @@ export class AgentSprite {
         const bubbleW = anchored ? 22 : 28;
         const bubbleH = anchored ? 20 : 26;
         const radius = anchored ? 5 : 6;
-        ctx.translate(0, anchored ? -18 : -50);
+        ctx.translate(0, (anchored ? -18 : -50) + stackShift);
         const halfW = bubbleW / 2;
         ctx.fillStyle = 'rgba(34, 24, 19, 0.94)';
         ctx.strokeStyle = accentColor;
@@ -4009,7 +4056,7 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _drawBubble(ctx, text, accentColor, contentTopY = null, confidence = null) {
+    _drawBubble(ctx, text, accentColor, contentTopY = null, confidence = null, stackShift = 0) {
         ctx.save();
         const s = 1 / (this._zoom || 1); // inverse zoom correction
 
@@ -4022,7 +4069,10 @@ export class AgentSprite {
         const maxWidth = anchored ? STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored : STATUS_BUBBLE_MAIN_MAX_WIDTH.floating;
         const confidenceValue = Number(confidence);
         const lowConfidence = Number.isFinite(confidenceValue) && confidenceValue < TOOL_CONFIDENCE_THRESHOLD;
-        const bubbleText = lowConfidence && text && !String(text).endsWith('?') ? `${text}?` : text;
+        // Append the low-confidence '?' only to plain text — skip when the label
+        // already ends in punctuation so we never produce 'uncovered!?'.
+        const trimmedText = String(text ?? '').trimEnd();
+        const bubbleText = lowConfidence && trimmedText && !/[.!?…]$/.test(trimmedText) ? `${text}?` : text;
         const layout = this._bubbleLayout(ctx, bubbleText, maxWidth, anchored);
         const displayText = layout.displayText;
         const textWidth = layout.textWidth;
@@ -4030,7 +4080,7 @@ export class AgentSprite {
         const bubbleH = anchored ? 20 : 26;
         const radius = anchored ? 5 : 6;
 
-        ctx.translate(0, anchored ? -18 : -50);
+        ctx.translate(0, (anchored ? -18 : -50) + stackShift);
 
         // Speech bubble background
         const halfW = bubbleW / 2;
@@ -4083,7 +4133,7 @@ export class AgentSprite {
         ctx.closePath();
     }
 
-    _drawHistoryBubbles(ctx, entries = [], contentTopY = null) {
+    _drawHistoryBubbles(ctx, entries = [], contentTopY = null, stackShift = 0) {
         if (!entries.length) return;
         ctx.save();
         const s = 1 / (this._zoom || 1);
@@ -4094,7 +4144,7 @@ export class AgentSprite {
         ctx.scale(s, s);
         ctx.font = `${fontPx}px ${WORLD_BODY_FONT}`;
 
-        let offsetY = anchored ? -32 : -66;
+        let offsetY = (anchored ? -32 : -66) + stackShift;
         const shown = entries.slice(0, ACTION_TRAIL_LIMIT);
         for (let i = 0; i < shown.length; i++) {
             const entry = shown[i];

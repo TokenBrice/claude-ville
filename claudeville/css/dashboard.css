@@ -430,6 +430,8 @@
     align-items: center;
     gap: 8px;
     margin-top: 4px;
+    min-width: 0;
+    overflow: hidden;
     font-size: var(--fs-label);
     font-family: var(--font-body);
     color: var(--cv-text-muted);
@@ -519,6 +521,9 @@
     background: rgba(57, 37, 24, 0.62);
     border-color: rgba(199, 157, 76, 0.22);
     font-weight: normal;
+    max-width: 150px;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 /* Team badge: colors come inline from shared/TeamColor.js per team name */

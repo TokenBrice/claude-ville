@@ -2,9 +2,36 @@
 
 ---
 
-## v0.21.1 · Jul 10, 2026 — Hotfix
+## v0.22.0 — *Warden's Rounds* · Jul 10, 2026
 
-- **Grok sprites rebaked.** `agent.grok.base` and `agent.grok.composer` regenerated at higher quality in the same cosmic-truthseeker lore — consistent silver hair, starfield cloak, satchel and cyan trim from every angle, crisp rim-lit silhouettes. Fixes the composer sheet's baked-background artifact (several animation cells carried a full ruins-and-grass scene) and the base sheet's per-angle outfit drift. KDE widget stills refreshed to match.
+The wardens swept every district of the village: a broad repo-wide survey (8 parallel review agents + a live-app UX pass) picked the highest-impact fixes and polish, all landed in one round.
+
+**Security & data correctness**
+- **Path-traversal fix.** Claude session-detail resolution now realpath-contains client-supplied ids; `sessionId=../../../../etc/…` can no longer read arbitrary `*.jsonl`-suffixed files.
+- **Account email restored.** `claude auth status` now emits JSON; the usage service parses it (with plaintext fallback), so `/api/usage` reports the account email again.
+- **Quota staleness cap.** After 30 minutes without a successful quota fetch, the API stops serving a frozen snapshot as live data — mine reserves and visit throttling degrade honestly.
+- **Gemini tokens & pricing.** Gemini sessions now report token usage (previously always $0.00) and price against a real Gemini rate table instead of falling through to Claude Sonnet rates.
+- **Reasoning-token billing parity.** The browser cost estimate now includes reasoning tokens exactly like the server, so TopBar totals match `/api/sessions`.
+- **`git push --delete` detection.** Branch deletions (`--delete`, `-d`, `:branch`) are flagged as deletions instead of appearing as ordinary pushes.
+
+**Multi-agent & provider coverage**
+- **Grok subagents parented.** Sessions spawned by Grok orchestrators are marked `sub-agent` and linked to their parent via on-disk `subagents/<id>/meta.json` (37 previously-flat villagers now group correctly).
+- **Codex `custom_tool_call` support.** Tool history and "last tool" now surface custom tool calls — no more "No tool usage yet" on active sessions.
+- **No more ciphertext in the village.** Codex `spawn_agent`/`send_message` inputs are summarized to their routing target/task name; encrypted `gAAAA…` blobs no longer render in bubbles or cards.
+- **Grok & DeepSeek badges.** Dashboard cards and sidebar icons show their own provider identity instead of falling back to the Claude badge; Grok gets its cyan hue in-world too.
+- **`ultra` tier everywhere.** The last two gaps (hero-portrait aura, Activity Panel level label) now recognize the GPT-5.6 `ultra` effort tier.
+
+**World & dashboard polish**
+- **Readable crowds.** Speech/status bubbles de-collide in clusters: bubbles stack into free slots (max 3 per cluster) with deterministic priority; extras collapse to a quiet ellipsis dot.
+- **Human tool labels.** Orchestration tools read as activities — *Messaging*, *Waiting On*, *Spawning*, *Coordinating* — instead of snake_case, and low-confidence bubbles no longer end in `!?`.
+- **Unique villagers.** The fallback name pool grew from 15 to 64 village-flavored names with collision-aware assignment — no more twin Leibnizes.
+- **Dashboard card tidy-up.** Meta chips truncate with ellipses instead of sliding under the status pill.
+- **Quieter, cheaper client.** Detail polling pauses while the tab is hidden (instant refresh on return), the "Server connected" toast only fires on true reconnects, and World relationship tracking drops a 3×-per-frame array rebuild.
+- **Grok sprites rebaked.** `agent.grok.base` and `agent.grok.composer` regenerated at higher quality in the same cosmic-truthseeker lore Grok chose — consistent outfit from every angle, crisp cyan rim light; fixes the composer sheet's baked-background artifact. KDE widget stills refreshed.
+
+**Perf & docs**
+- **Claude session scan bounded.** Orphan/team-member discovery caches per-project listings on directory mtime (was: stat every historical session file every poll).
+- **Docs sweep.** README version/API table (`/api/changelog`), gpt-5.6 in the troubleshooting cost-model list.
 
 ---
 
