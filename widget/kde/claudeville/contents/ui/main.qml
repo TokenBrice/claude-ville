@@ -483,8 +483,8 @@ PlasmoidItem {
             "agent.deepseek.reasoner": [47, 63],
             "agent.gemini.base": [64, 78],
             "agent.kimi.base": [46, 80],
-            "agent.grok.base": [46, 92],
-            "agent.grok.composer": [17, 92]
+            "agent.grok.base": [37, 92],
+            "agent.grok.composer": [30, 92]
         }
         var frame = frames[packagedSpriteId(spriteId)] || frames["agent.codex.gpt54"]
         return {

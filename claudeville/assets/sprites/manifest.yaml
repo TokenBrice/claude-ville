@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-07-10-celestial-vanguard-v1"
+  assetVersion: "2026-07-10-celestial-vanguard-v2"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -216,15 +216,15 @@ characters:
 
   # Grok cosmic truthseeker class: void-black + electric cyan, distinct from
   # Codex warriors, Claude mages, and DeepSeek rogues.
-  # NOTE: baked 2026-07-09 via PixelLab create_character mode=pro size=76
-  # (canvas ~148/152, center-crop to 92) + walking-6-frames + breathing-idle.
-  # character_ids: base=52a9b493-1cca-44a5-bf87-23e498aee521
-  #                composer=abf469b2-67c5-401d-bb56-3db01f4d8731
+  # NOTE: rebaked 2026-07-10 via PixelLab create_character mode=pro size=76
+  # (canvas ~108, center-crop to 92) + walking-6-frames + breathing-idle.
+  # character_ids: base=831e8a22-50bc-4e45-985d-8c32b8e81f6b
+  #                composer=f70b6f4c-b250-40bd-b1ad-fcb1a16a17a2
   # Reassemble: node scripts/sprites/generate-character-mcp.mjs --id=<id> --zip=...
   # Fallback procedural baker: npm run sprites:generate-grok
   - id: agent.grok.base
     tool: create_character
-    prompt: "Grok cosmic truthseeker herald, void-black traveler coat with electric cyan constellation trim, short starfield cloak, confident irreverent smirk on a readable face, silver-white hair with a cyan lightning streak, small orbiting star mote near shoulder, leather satchel of cosmic charts at hip, dark boots, open empty hands, lean upright explorer stance, heroic high-fantasy RPG silhouette, identical outfit from every angle, no plate armor, no wizard hat, no staff, no bow, no daggers, no mask, no demon horns, 8-direction pixel art"
+    prompt: "Grok cosmic truthseeker herald, deep void-black traveler coat with glowing electric cyan constellation embroidery, short navy starfield cloak dusted with tiny white stars, confident irreverent smirk on a readable face, silver-white swept hair with one cyan lightning streak, small cyan star mote orbiting near the shoulder, brown leather satchel of cosmic charts at the hip, dark boots, open empty hands, lean upright heroic explorer stance, strong cyan rim light for a crisp readable silhouette, identical outfit and colors from every viewing angle, isolated character on transparent background, no scenery, no ground tile, no plate armor, no wizard hat, no staff, no bow, no daggers, no mask, no horns, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]
@@ -234,7 +234,7 @@ characters:
 
   - id: agent.grok.composer
     tool: create_character
-    prompt: "Grok Composer swift star-messenger scout, lighter void-charcoal jacket with bright cyan trim, cyan headband, lean agile runner stance, small star charm at belt, dark leggings and light boots, readable face with wry grin, open empty hands, compact high-fantasy RPG silhouette, identical outfit from every angle, no plate armor, no wizard hat, no staff, no bow, no daggers, no heavy cloak, 8-direction pixel art"
+    prompt: "Grok Composer swift star-messenger scout, fitted void-charcoal courier jacket with bright electric cyan trim and small glowing star clasps, cyan headband with short trailing tails, silver-white short hair, wry grin on a readable face, small star charm at the belt, dark leggings, light swift boots, lean agile runner stance, cyan rim light for a crisp readable silhouette, identical outfit and colors from every viewing angle, isolated character on transparent background, no scenery, no ground tile, no plate armor, no wizard hat, no staff, no bow, no daggers, no heavy cloak, 8-direction pixel art"
     n_directions: 8
     size: 92
     animations: [walk, breathing-idle]

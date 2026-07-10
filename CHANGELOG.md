@@ -2,6 +2,12 @@
 
 ---
 
+## v0.21.1 · Jul 10, 2026 — Hotfix
+
+- **Grok sprites rebaked.** `agent.grok.base` and `agent.grok.composer` regenerated at higher quality in the same cosmic-truthseeker lore — consistent silver hair, starfield cloak, satchel and cyan trim from every angle, crisp rim-lit silhouettes. Fixes the composer sheet's baked-background artifact (several animation cells carried a full ruins-and-grass scene) and the base sheet's per-angle outfit drift. KDE widget stills refreshed to match.
+
+---
+
 ## v0.21.0 — *Celestial Vanguard* · Jul 10, 2026
 
 The GPT-5.6 generation marches through the gate as a celestial warrior triad — Sol the radiant sun-warlord, Terra the earth sentinel knight, and Luna the moonlit skirmisher.
