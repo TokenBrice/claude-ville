@@ -183,9 +183,9 @@ export class MusicLayer extends BaseLayer {
 
     _start(ctx) {
         this._waves = {
-            pulse25: this._pulseWave(ctx, 0.25),
-            pulse12: this._pulseWave(ctx, 0.125),
-            flute: this._fluteWave(ctx),
+            pulse25: this.engine.wave('pulse25'),
+            pulse12: this.engine.wave('pulse12'),
+            flute: this.engine.wave('flute'),
         };
 
         const melodyTone = ctx.createBiquadFilter();
@@ -238,24 +238,6 @@ export class MusicLayer extends BaseLayer {
 
     setRestScale(value) {
         this.restScale = Math.max(0.4, Math.min(1.6, Number(value) || 1));
-    }
-
-    // Band-limited pulse wave with the given duty cycle (NES-style).
-    _pulseWave(ctx, duty) {
-        const n = 24;
-        const real = new Float32Array(n);
-        const imag = new Float32Array(n);
-        for (let k = 1; k < n; k++) {
-            imag[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty);
-        }
-        return ctx.createPeriodicWave(real, imag);
-    }
-
-    // Soft flute: sine fundamental with a whisper of upper harmonics.
-    _fluteWave(ctx) {
-        const real = new Float32Array([0, 0, 0, 0, 0]);
-        const imag = new Float32Array([0, 1, 0.22, 0.1, 0.04]);
-        return ctx.createPeriodicWave(real, imag);
     }
 
     _scheduleSong(delayMs) {
@@ -323,9 +305,10 @@ export class MusicLayer extends BaseLayer {
         }
         this.nowPlaying = { song: song.name, section: step.kind, index, variation: step.variation || null };
 
-        // Chain the next section just before this one ends; if the phase
-        // family flipped meanwhile (day → night), jump straight to the outro.
-        const waitMs = Math.max(50, (t0 + duration - ctx.currentTime - 0.4) * 1000);
+        // Chain the next section well before this one ends (browser timers
+        // can be clamped ~1 s in throttled tabs); if the phase family flipped
+        // meanwhile (day → night), jump straight to the outro.
+        const waitMs = Math.max(50, (t0 + duration - ctx.currentTime - 1.5) * 1000);
         this.timer(() => {
             const nowFamily = (ARRANGEMENTS[this.phase] || ARRANGEMENTS.day).family;
             let next = index + 1;
@@ -439,7 +422,11 @@ export class MusicLayer extends BaseLayer {
 
     _playNote(bus, t, hz, dur, timbre, gain, { vibrato = false, staccato = 0.92, pluck = false } = {}) {
         const ctx = this.engine.context;
-        if (!ctx || !bus || t < ctx.currentTime - 0.05) return;
+        if (!ctx || !bus) return;
+        if (t < ctx.currentTime) {
+            if (t < ctx.currentTime - 0.35) return;
+            t = ctx.currentTime + 0.005;
+        }
         const osc = ctx.createOscillator();
         const env = ctx.createGain();
 

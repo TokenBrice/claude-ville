@@ -22,6 +22,7 @@ export class TopBar {
             connection: document.getElementById('topbarConnection'),
             version: document.querySelector('.topbar__version'),
             soundToggle: document.getElementById('topbarSoundToggle'),
+            soundMode: document.getElementById('topbarSoundMode'),
             soundVolume: document.getElementById('topbarSoundVolume'),
             cinemaToggle: document.getElementById('topbarCinemaToggle'),
         };
@@ -29,6 +30,7 @@ export class TopBar {
         this._changelogHtml = null;
         this.audio = new AmbientAudioController({
             button: this.els.soundToggle,
+            modeButton: this.els.soundMode,
             volumeSlider: this.els.soundVolume,
             world: this.world,
         });

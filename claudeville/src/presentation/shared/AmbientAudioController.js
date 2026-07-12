@@ -5,10 +5,13 @@
 
 import { AudioEngine, clamp01 } from './audio/AudioEngine.js';
 import { AudioDirector } from './audio/AudioDirector.js';
+import { BgmDirector } from './audio/BgmDirector.js';
 
 const STORAGE_KEY = 'claudeville.sound.enabled';
 const VOLUME_KEY = 'claudeville.sound.volume';
+const MODE_KEY = 'claudeville.sound.mode';
 const DEFAULT_VOLUME = 0.5;
+const MODES = ['ambient', 'bgm'];
 
 function readStoredPreference() {
     try {
@@ -44,22 +47,45 @@ function writeStoredVolume(volume) {
     }
 }
 
+function readStoredMode() {
+    try {
+        const raw = window.localStorage?.getItem(MODE_KEY);
+        return MODES.includes(raw) ? raw : 'ambient';
+    } catch {
+        return 'ambient';
+    }
+}
+
+function writeStoredMode(mode) {
+    try {
+        window.localStorage?.setItem(MODE_KEY, mode);
+    } catch {
+        // Preference persistence is optional.
+    }
+}
+
 export class AmbientAudioController {
-    constructor({ button, volumeSlider, world } = {}) {
+    constructor({ button, volumeSlider, modeButton, world } = {}) {
         this.button = button || null;
         this.volumeSlider = volumeSlider || null;
+        this.modeButton = modeButton || null;
         this.world = world || null;
         this.available = this._hasAudioSupport();
         this.enabled = readStoredPreference();
         this.volume = readStoredVolume();
+        this.mode = readStoredMode();
         this.userActivated = false;
         this.unlockArmed = false;
 
         this.engine = new AudioEngine();
         this.engine.setVolume(this.volume);
-        this.director = new AudioDirector({ engine: this.engine, world: this.world });
+        this.directors = {
+            ambient: new AudioDirector({ engine: this.engine, world: this.world }),
+            bgm: new BgmDirector({ engine: this.engine }),
+        };
 
         this._onButtonClick = () => this._handleToggle();
+        this._onModeClick = () => this.setMode(this.mode === 'ambient' ? 'bgm' : 'ambient');
         this._onUnlockGesture = (event) => this._handleUnlockGesture(event);
         this._onVisibility = () => this._handleVisibility();
         this._onVolumeInput = (event) => {
@@ -67,6 +93,7 @@ export class AmbientAudioController {
         };
 
         if (this.button) this.button.addEventListener('click', this._onButtonClick);
+        if (this.modeButton) this.modeButton.addEventListener('click', this._onModeClick);
         if (this.volumeSlider) this.volumeSlider.addEventListener('input', this._onVolumeInput);
         if (typeof document !== 'undefined') {
             document.addEventListener('visibilitychange', this._onVisibility);
@@ -104,6 +131,21 @@ export class AmbientAudioController {
         if (this.volumeSlider) this.volumeSlider.value = String(Math.round(this.volume * 100));
     }
 
+    get director() {
+        return this.directors[this.mode] || this.directors.ambient;
+    }
+
+    // Switch between the reactive ambience and continuous town BGM.
+    setMode(mode) {
+        if (!MODES.includes(mode) || mode === this.mode) return;
+        const wasRunning = this.director.running;
+        if (wasRunning) this.director.stop();
+        this.mode = mode;
+        writeStoredMode(mode);
+        this._renderControls();
+        if (wasRunning) this.director.start();
+    }
+
     async _activate() {
         if (!this.enabled || !this.available) return;
         const ready = await this.engine.ensureContext();
@@ -114,7 +156,7 @@ export class AmbientAudioController {
     }
 
     _deactivate() {
-        this.director.stop();
+        for (const director of Object.values(this.directors)) director.stop();
         this.engine.stop();
         setTimeout(() => {
             if (!this.enabled) void this.engine.suspend();
@@ -169,6 +211,16 @@ export class AmbientAudioController {
             this.volumeSlider.hidden = !(this.enabled && this.available);
             this.volumeSlider.value = String(Math.round(this.volume * 100));
         }
+        if (this.modeButton) {
+            this.modeButton.hidden = !(this.enabled && this.available);
+            const bgm = this.mode === 'bgm';
+            this.modeButton.textContent = bgm ? 'BGM' : 'AMBIENT';
+            this.modeButton.title = bgm
+                ? 'Town music mode — click for reactive ambience'
+                : 'Reactive ambience mode — click for continuous town music';
+            this.modeButton.setAttribute('aria-pressed', bgm ? 'true' : 'false');
+            this.modeButton.classList.toggle('topbar__sound-btn--on', bgm);
+        }
     }
 
     _hasAudioSupport() {
@@ -186,19 +238,21 @@ export class AmbientAudioController {
             running: this.director.running,
             volume: this.volume,
             rms: this.engine.rms(),
-            mode: 'reactive-ambient',
+            mode: this.mode,
             ...this.director.snapshot(),
             setVolume: (v) => this.setVolume(v),
-            setLayer: (name, level, holdMs) => this.director.forceLayer(name, level, holdMs),
+            setMode: (m) => this.setMode(m),
+            setLayer: (name, level, holdMs) => this.director.forceLayer?.(name, level, holdMs) ?? false,
             cue: (kind) => this.director.cue(kind),
         };
     }
 
     destroy() {
         this._removeUnlockListeners();
-        this.director.stop();
+        for (const director of Object.values(this.directors)) director.stop();
 
         if (this.button) this.button.removeEventListener('click', this._onButtonClick);
+        if (this.modeButton) this.modeButton.removeEventListener('click', this._onModeClick);
         if (this.volumeSlider) this.volumeSlider.removeEventListener('input', this._onVolumeInput);
         if (typeof document !== 'undefined') {
             document.removeEventListener('visibilitychange', this._onVisibility);

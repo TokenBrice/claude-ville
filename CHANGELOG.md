@@ -21,6 +21,12 @@ The village finds its voice. The old sound toggle played a fixed synth drone tha
 - **Governed one-shot cues.** Arrivals and departures get two-note bells, distress a low muted toll, recovery a resolving pair, council gatherings a three-bell pattern, plus an hour bell (08:00–20:00) and a rare aurora shimmer.
 - **A central cue governor** — per-kind cooldowns, 4-second global spacing, max 6 cues per minute — structurally prevents v0.12's wall-of-beeps from ever returning. Excess cues are dropped, never queued.
 
+**BGM mode — continuous town music, like the handhelds**
+- **A second sound system, switchable in the top bar.** The AMBIENT/BGM button (visible while sound is on) swaps the reactive soundscape for continuous town BGM in the classic handheld tradition: the music never stops. Choice persists across sessions.
+- **Five original town themes** built from analysis of classic game BGM: *Willowbrook* (gentle home-village), *Cobblemarket* (warm market street over constant eighth-note arpeggios), *Millwheel* (brisk workday with soft hats), and after dark *Starfall* and *Moonwell* (slow music-box lullabies with pad chords and long echo).
+- **Seamless loops, rotating playlist.** Pieces loop gap-free 2–3 times, take one short breath, and hand over to a different tune; time of day picks the playlist, and a day tune finishes its loop before the night music takes over. Event cues ring over the score like game jingles, ducking the music briefly.
+- **Console voicing.** Pulse-wave lead (music-box bell at night), pulse arpeggio/counter voice, triangle bass, whisper-level noise percussion — the classic four-channel layout.
+
 **Controls & plumbing**
 - **Volume slider** next to the sound toggle, persisted across sessions.
 - **Ambience continues in Dashboard mode** — the audio director computes its own local-clock atmosphere when the World renderer is stopped.

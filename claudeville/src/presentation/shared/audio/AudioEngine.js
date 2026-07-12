@@ -132,6 +132,34 @@ export class AudioEngine {
         return this._noiseBuffers.get(type);
     }
 
+    // Cached console-style timbres: band-limited pulse waves (NES duty
+    // cycles) and a soft flute (sine plus a whisper of harmonics).
+    wave(name) {
+        if (!this.context) return null;
+        if (!this._waves) this._waves = new Map();
+        if (!this._waves.has(name)) {
+            const ctx = this.context;
+            let wave = null;
+            if (name === 'pulse25' || name === 'pulse12') {
+                const duty = name === 'pulse25' ? 0.25 : 0.125;
+                const n = 24;
+                const real = new Float32Array(n);
+                const imag = new Float32Array(n);
+                for (let k = 1; k < n; k++) {
+                    imag[k] = (2 / (k * Math.PI)) * Math.sin(k * Math.PI * duty);
+                }
+                wave = ctx.createPeriodicWave(real, imag);
+            } else if (name === 'flute') {
+                wave = ctx.createPeriodicWave(
+                    new Float32Array([0, 0, 0, 0, 0]),
+                    new Float32Array([0, 1, 0.22, 0.1, 0.04]),
+                );
+            }
+            this._waves.set(name, wave);
+        }
+        return this._waves.get(name);
+    }
+
     start() {
         if (!this.context || !this.fadeGain) return;
         this.started = true;
@@ -200,5 +228,6 @@ export class AudioEngine {
         this.masterGain = null;
         this.analyser = null;
         this._noiseBuffers.clear();
+        this._waves = null;
     }
 }
