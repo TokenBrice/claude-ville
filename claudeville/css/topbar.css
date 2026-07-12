@@ -434,6 +434,36 @@
     opacity: 0.45;
 }
 
+/* Ambience volume slider — visible only while sound is on. */
+.topbar__sound-vol {
+    width: 72px;
+    height: 4px;
+    appearance: none;
+    -webkit-appearance: none;
+    background: linear-gradient(180deg, rgba(43, 28, 20, 0.86), rgba(18, 12, 11, 0.9));
+    border: 1px solid rgba(199, 157, 76, 0.28);
+    border-radius: 2px;
+    cursor: pointer;
+}
+
+.topbar__sound-vol::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 10px;
+    height: 12px;
+    border-radius: 2px;
+    border: 1px solid rgba(242, 211, 107, 0.72);
+    background: linear-gradient(180deg, #efd780, #c7953e 70%, #765026);
+}
+
+.topbar__sound-vol::-moz-range-thumb {
+    width: 10px;
+    height: 12px;
+    border-radius: 2px;
+    border: 1px solid rgba(242, 211, 107, 0.72);
+    background: linear-gradient(180deg, #efd780, #c7953e 70%, #765026);
+}
+
 /* Auto-camera toggle (#attract) — mirrors the sound toggle's tertiary look. */
 .topbar__cinema-btn {
     font-family: var(--font-display);

@@ -8,6 +8,8 @@
 //   tool:invoked, subagent:dispatched, subagent:completed
 //   mode:changed, usage:updated
 //   fps:updated                                 // number (~2/s) from IsometricRenderer loop, null when loop stops
+//   atmosphere:updated                           // atmosphere snapshot (~2/s) from IsometricRenderer; audio director listens
+//   weather:storm-flash                          // {intensity} per lightning strike from WeatherRenderer; audio thunder listens
 //   ws:connected, ws:disconnected, ws:init, ws:update, ws:message
 export const BUILDING_EVENTS = Object.freeze({
     SELECTED: 'building:selected',

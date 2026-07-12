@@ -2743,6 +2743,10 @@ export class IsometricRenderer {
         const elapsed = now - this._fpsWindowStart;
         if (elapsed >= 500) {
             eventBus.emit('fps:updated', Math.round((this._fpsFrames * 1000) / elapsed));
+            // Broadcast the frame's atmosphere snapshot at the same throttled
+            // cadence; the ambient audio director listens so sound tracks the
+            // same sky the renderer draws (including debug/mood overrides).
+            if (this._lastAtmosphere) eventBus.emit('atmosphere:updated', this._lastAtmosphere);
             this._fpsFrames = 0;
             this._fpsWindowStart = now;
         }

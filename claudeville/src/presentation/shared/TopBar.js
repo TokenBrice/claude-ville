@@ -22,11 +22,16 @@ export class TopBar {
             connection: document.getElementById('topbarConnection'),
             version: document.querySelector('.topbar__version'),
             soundToggle: document.getElementById('topbarSoundToggle'),
+            soundVolume: document.getElementById('topbarSoundVolume'),
             cinemaToggle: document.getElementById('topbarCinemaToggle'),
         };
         this.timeInterval = null;
         this._changelogHtml = null;
-        this.audio = new AmbientAudioController({ button: this.els.soundToggle });
+        this.audio = new AmbientAudioController({
+            button: this.els.soundToggle,
+            volumeSlider: this.els.soundVolume,
+            world: this.world,
+        });
         this._initCinemaToggle();
 
         this._onUpdate = () => this.render();

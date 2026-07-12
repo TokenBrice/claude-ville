@@ -4,6 +4,7 @@
 // particles, before labels and status badges, with the canvas transform reset.
 
 import { WEATHER_PRESETS, WEATHER_TYPES } from './AtmosphereState.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const CLEAR_TYPES = new Set(['clear', 'partly-cloudy']);
 const RAIN_TYPES = new Set(['rain', 'storm']);
@@ -569,6 +570,13 @@ export class WeatherRenderer {
         const flashT = 1 - flashAge / windowMs;
         const alpha = flashT * clamp(intensity, 0, 1) * 0.18;
         if (alpha <= 0.005) return;
+
+        // Announce each strike once (on the primary flash of the pair) so the
+        // ambient audio can roll thunder after the visible lightning.
+        if (flashAge === age && this._lastFlashCycle !== cycle) {
+            this._lastFlashCycle = cycle;
+            eventBus.emit('weather:storm-flash', { intensity: clamp(intensity, 0, 1) });
+        }
 
         const flash = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
         flash.addColorStop(0, `rgba(220, 236, 255, ${alpha})`);
