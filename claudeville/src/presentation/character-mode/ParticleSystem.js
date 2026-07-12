@@ -1,8 +1,32 @@
 const PARTICLE_GRAVITY = 0.05;
 const MAX_PARTICLES = 240;
 
+// C6 — parse a `#rrggbb` string into an `rgba()` string at the given alpha.
+// Used for the firefly halo gradient stops; falls back to a warm glow tint for
+// any non-hex color so custom-palette callers never throw.
+function hexToRgba(hex, a) {
+    const h = String(hex).replace('#', '');
+    if (h.length !== 6) return `rgba(255,241,168,${a})`;
+    const r = parseInt(h.slice(0, 2), 16);
+    const g = parseInt(h.slice(2, 4), 16);
+    const b = parseInt(h.slice(4, 6), 16);
+    if (!Number.isFinite(r + g + b)) return `rgba(255,241,168,${a})`;
+    return `rgba(${r},${g},${b},${a})`;
+}
+
+// C6 — halve a `#rrggbb` color to a darker `rgb()` for the butterfly body seam.
+function darkenHex(hex) {
+    const h = String(hex).replace('#', '');
+    if (h.length !== 6) return 'rgb(40,30,20)';
+    const r = (parseInt(h.slice(0, 2), 16) * 0.5) | 0;
+    const g = (parseInt(h.slice(2, 4), 16) * 0.5) | 0;
+    const b = (parseInt(h.slice(4, 6), 16) * 0.5) | 0;
+    if (!Number.isFinite(r + g + b)) return 'rgb(40,30,20)';
+    return `rgb(${r},${g},${b})`;
+}
+
 class Particle {
-    constructor(x, y, vx, vy, life, color, size, gravity, alpha = 1, layer = 'effects') {
+    constructor(x, y, vx, vy, life, color, size, gravity, alpha = 1, layer = 'effects', opts = {}) {
         this.x = x;
         this.y = y;
         this.vx = vx;
@@ -14,6 +38,14 @@ class Particle {
         this.gravity = gravity;
         this.alpha = alpha;
         this.layer = layer;
+        // C6 — shaped-insect draw hints. `shape`/`glow` key the draw branch;
+        // `phase`/`animRate` give each insect a deterministic, per-particle wing
+        // flap / halo pulse cycle seeded once at spawn (never in draw).
+        this.shape = opts.shape || null;
+        this.glow = !!opts.glow;
+        this.phase = opts.phase || 0;
+        this.animRate = opts.animRate || 0;
+        this.bodyColor = this.shape === 'butterfly' ? darkenHex(color) : null;
     }
 
     update(dt = 16) {
@@ -30,9 +62,49 @@ class Particle {
         return this.life > 0;
     }
 
-    draw(ctx) {
-        const alpha = this.life / this.maxLife;
-        ctx.globalAlpha = alpha * this.alpha;
+    draw(ctx, motionEnabled = true) {
+        const baseAlpha = (this.life / this.maxLife) * this.alpha;
+        const age = this.maxLife - this.life;
+
+        // C6 — butterfly: two mirrored wing rects flapping about a 1px darker
+        // body. Wing x-scale rides |sin| for a 2-frame flutter feel; a fixed
+        // mid-flap pose stands in when motion is disabled.
+        if (this.shape === 'butterfly') {
+            const scale = motionEnabled ? Math.abs(Math.sin(age * this.animRate + this.phase)) : 0.6;
+            const wingW = Math.max(0.5, this.size * scale);
+            const wingH = Math.max(1, this.size * 0.85);
+            const top = this.y - wingH / 2;
+            ctx.globalAlpha = baseAlpha;
+            ctx.fillStyle = this.color;
+            ctx.fillRect(this.x - wingW, top, wingW, wingH);
+            ctx.fillRect(this.x, top, wingW, wingH);
+            ctx.fillStyle = this.bodyColor;
+            ctx.fillRect(this.x - 0.5, top, 1, wingH);
+            ctx.globalAlpha = 1;
+            return;
+        }
+
+        // C6 — firefly: bright core pixel plus a soft radial halo whose alpha
+        // pulses; a constant mid-alpha halo stands in when motion is disabled.
+        if (this.glow) {
+            const pulse = motionEnabled
+                ? 0.3 + 0.4 * Math.sin(age * this.animRate + this.phase)
+                : 0.5;
+            const haloR = 3;
+            const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, haloR);
+            grad.addColorStop(0, hexToRgba(this.color, 0.9));
+            grad.addColorStop(1, hexToRgba(this.color, 0));
+            ctx.globalAlpha = baseAlpha * Math.max(0, pulse);
+            ctx.fillStyle = grad;
+            ctx.fillRect(this.x - haloR, this.y - haloR, haloR * 2, haloR * 2);
+            ctx.globalAlpha = baseAlpha;
+            ctx.fillStyle = this.color;
+            ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
+            ctx.globalAlpha = 1;
+            return;
+        }
+
+        ctx.globalAlpha = baseAlpha;
         ctx.fillStyle = this.color;
         ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);
         ctx.globalAlpha = 1;
@@ -137,6 +209,8 @@ const PARTICLE_PRESETS = {
         speed: [0.08, 0.28],
         gravity: false,
         direction: 'random',
+        // C6 — opt in to the pulsing radial halo in the draw branch.
+        glow: true,
     },
     // Daytime ambient insects. Longer life + slow wander so they linger and
     // drift like butterflies rather than sparking like fireflies.
@@ -147,6 +221,8 @@ const PARTICLE_PRESETS = {
         speed: [0.10, 0.30],
         gravity: false,
         direction: 'random',
+        // C6 — draw as flapping wings rather than a square.
+        shape: 'butterfly',
     },
     dragonfly: {
         colors: ['#5fd6c4', '#7fe0a8', '#9fe8ff', '#c8f0e0'],
@@ -385,6 +461,11 @@ export class ParticleSystem {
         const gravity = options.gravity ?? preset.gravity;
         const direction = options.direction || preset.direction;
         const layer = options.layer || preset.layer || 'effects';
+        // C6 — shaped-insect draw hints carried from the preset. When set, each
+        // particle gets a deterministic flap/pulse phase seeded from its rng
+        // below so animation never calls Math.random in draw.
+        const shape = preset.shape || null;
+        const glow = !!preset.glow;
         const seed = options.seed;
         // #33 — signed horizontal drift (world units / 16ms) added to every
         // particle's vx so a rising smoke column leans downwind. Defaults to 0
@@ -429,6 +510,16 @@ export class ParticleSystem {
             vx += windDrift;
             vy += driftY;
 
+            let opts;
+            if (shape === 'butterfly' || glow) {
+                opts = {
+                    shape,
+                    glow,
+                    phase: rng() * Math.PI * 2,
+                    animRate: (shape === 'butterfly' ? 0.35 : 0.14) * (0.85 + 0.3 * rng()),
+                };
+            }
+
             this.particles.push(new Particle(
                 x + randFrom(rng, -spread, spread),
                 y + randFrom(rng, -spread, spread),
@@ -440,6 +531,7 @@ export class ParticleSystem {
                 gravity,
                 alpha,
                 layer,
+                opts,
             ));
         }
     }
@@ -464,7 +556,7 @@ export class ParticleSystem {
             const particleLayer = p.layer || 'effects';
             if (wantedLayer && particleLayer !== wantedLayer) continue;
             if (excludedLayer && particleLayer === excludedLayer) continue;
-            p.draw(ctx);
+            p.draw(ctx, this.motionEnabled);
         }
     }
 
