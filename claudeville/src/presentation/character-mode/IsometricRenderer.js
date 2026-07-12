@@ -86,6 +86,9 @@ import {
 
 const WATER_FRAME_STEP = 0.03;
 const STATIC_WATER_SHIMMER = 0.08;
+// B1 — river-flow streak cadence: fraction of a full along-tile travel cycle
+// advanced per unit of `waterFrame` (~1.8/s at 60fps → ~1.1s per streak pass).
+const RIVER_FLOW_SPEED = 0.5;
 // Staggered foam-line bands for the animated coastline surf wash (item #23).
 // Band 0 is the innermost crest (also the reduced-motion static line); outer
 // bands sit further into the water with lower base alpha and offset phases so
@@ -782,6 +785,7 @@ export class IsometricRenderer {
             const openness = this._waterOpenness(x, y);
             const profile = this._waterProfileAt(x, y, key);
             const token = this._waterTokenAt(x, y, key);
+            const meta = this._waterMetaAt(x, y, key);
             descriptors.push({
                 x,
                 y,
@@ -797,6 +801,11 @@ export class IsometricRenderer {
                 isHarbor: this._isHarborWater(x, y),
                 isLagoon: this._isLagoonWaterTile(x, y, key),
                 isOpenSea: this._isOpenSeaTile(x, y, openness),
+                // B1 — flowing river/current tiles carry a downstream unit vector
+                // (tile space) so the flow-streak pass can drift highlights along it.
+                isCurrent: meta?.surface === 'current',
+                flowDirX: Number(meta?.flowDirX) || 0,
+                flowDirY: Number(meta?.flowDirY) || 0,
             });
         }
         return descriptors;
@@ -5262,8 +5271,12 @@ export class IsometricRenderer {
         this._drawWaterFogEdgeWash(ctx, shoreEdges);
         this._drawHarborWakeWaterDescriptors(ctx);
         this._drawNightWaterReflections(ctx, waterTiles);
+        this._drawSeaGlitter(ctx, waterTiles);
         this._drawBuildingLightReflections(ctx, waterTiles);
         this._drawSurfWashBands(ctx, shoreEdges);
+        // B1 — river-flow streaks carry their own reduced-motion static fallback,
+        // so they draw before the motion gate below.
+        this._drawRiverFlowStreaks(ctx, waterTiles);
         if (!this.motionScale) return;
         this._drawAnimatedCurrentBands(ctx, waterTiles);
         ctx.save();
@@ -5974,6 +5987,15 @@ export class IsometricRenderer {
 
     _drawAnimatedCurrentBands(ctx, waterTiles) {
         if (!waterTiles?.length) return;
+        // B2 — the plane wave travels along tile-space k=(0.42,-0.28); its
+        // unzoomed world-screen direction is fixed, so precompute the unit
+        // vector once and slide each crest's anchor along it.
+        const wsx = (0.42 - (-0.28)) * TILE_WIDTH / 2;
+        const wsy = (0.42 + (-0.28)) * TILE_HEIGHT / 2;
+        const wlen = Math.hypot(wsx, wsy) || 1;
+        const wux = wsx / wlen;
+        const wuy = wsy / wlen;
+        const slideRange = 0.35 * TILE_HEIGHT;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         ctx.lineCap = 'round';
@@ -5985,24 +6007,120 @@ export class IsometricRenderer {
             const crest = ((primary * 0.72 + secondary * 0.28) + 1) / 2;
             const threshold = (tile.isOpenSea ? 0.73 : 0.76) - roughness * (tile.isOpenSea ? 0.10 : tile.isHarbor ? 0.055 : 0.075);
             if (crest < threshold) continue;
+            // Slide the crest across the tile interior so it reads as travelling,
+            // and taper alpha as the stroke nears the diamond edge.
+            const slide = primary * slideRange;
+            const edgeTaper = 1 - Math.abs(primary) * 0.28;
+            const crestStrength = (crest - threshold) / Math.max(0.001, 1 - threshold);
+            const anchorX = tile.screenX + wux * slide;
+            const anchorY = tile.screenY + wuy * slide;
             const alpha = Math.min(
                 tile.isOpenSea ? 0.24 + roughness * 0.08 : 0.16 + roughness * 0.04,
-                (crest - threshold) * (tile.isDeep ? (tile.isOpenSea ? 0.62 : 0.48) : 0.32) * (0.62 + tile.openness * 0.5) * (1 + roughness * 0.35)
+                (crest - threshold) * (tile.isDeep ? (tile.isOpenSea ? 0.62 : 0.48) : 0.32) * (0.62 + tile.openness * 0.5) * (1 + roughness * 0.35) * edgeTaper
             );
             const drift = Math.sin(this.waterFrame * 0.45 + tile.seed * 6.28) * 2;
             const warm = this._atmosphereReactions?.warmGlint || 0;
             const glintColor = warm > 0.18 ? '255, 210, 136' : tile.token.glint;
             ctx.strokeStyle = `rgba(${glintColor}, ${alpha})`;
-            ctx.lineWidth = tile.isOpenSea ? 1.7 + roughness * 0.6 : (tile.isDeep ? 1.4 : 1);
+            const baseWidth = tile.isOpenSea ? 1.7 + roughness * 0.6 : (tile.isDeep ? 1.4 : 1);
+            ctx.lineWidth = baseWidth * (1 + crestStrength * 0.6);
             ctx.beginPath();
-            ctx.moveTo(tile.screenX - TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40), tile.screenY - 2 + drift);
+            ctx.moveTo(anchorX - TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40), anchorY - 2 + drift);
             ctx.quadraticCurveTo(
-                tile.screenX - TILE_WIDTH * 0.02,
-                tile.screenY - (tile.isOpenSea ? 10 : 8) + drift * 0.35,
-                tile.screenX + TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40),
-                tile.screenY - 5 - drift * 0.25
+                anchorX - TILE_WIDTH * 0.02,
+                anchorY - (tile.isOpenSea ? 10 : 8) + drift * 0.35,
+                anchorX + TILE_WIDTH * (tile.isOpenSea ? 0.48 : 0.40),
+                anchorY - 5 - drift * 0.25
             );
             ctx.stroke();
+        }
+        ctx.restore();
+    }
+
+    // B1 — directional river flow. Each flowing river/current tile drifts 1–2
+    // short elongated highlights along its downstream unit vector; the along-flow
+    // offset wraps every cycle and a sine window fades each streak in/out at the
+    // wrap so nothing pops. Reduced motion draws one static streak at mid-tile.
+    _drawRiverFlowStreaks(ctx, waterTiles) {
+        if (!waterTiles?.length) return;
+        const reduced = !this.motionScale;
+        const warm = this._atmosphereReactions?.warmGlint || 0;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.lineCap = 'round';
+        for (const tile of waterTiles) {
+            if (!tile.isCurrent) continue;
+            const fx = tile.flowDirX;
+            const fy = tile.flowDirY;
+            if (fx === 0 && fy === 0) continue;
+            // Tile-space flow → unzoomed world-screen direction.
+            const sdx = (fx - fy) * TILE_WIDTH / 2;
+            const sdy = (fx + fy) * TILE_HEIGHT / 2;
+            const len = Math.hypot(sdx, sdy) || 1;
+            const ux = sdx / len;
+            const uy = sdy / len;
+            const px = -uy; // screen-space perpendicular for lane separation
+            const py = ux;
+            const span = TILE_WIDTH * 0.42; // travel distance along flow, per tile
+            const half = 3.5 + tile.openness * 3; // streak half-length
+            const glint = warm > 0.15 ? '255, 214, 150' : tile.token.glint;
+            const lanes = reduced ? 1 : 2;
+            for (let l = 0; l < lanes; l++) {
+                const laneSeed = (tile.seed + l * 0.41) % 1;
+                const frac = reduced
+                    ? 0.5
+                    : ((this.waterFrame * RIVER_FLOW_SPEED + laneSeed) % 1 + 1) % 1;
+                const laneOff = (lanes === 1 ? 0 : (l === 0 ? -0.2 : 0.2)) * TILE_WIDTH * 0.5;
+                const win = reduced ? 0.7 : Math.sin(Math.PI * frac);
+                const alpha = Math.min(0.15, (0.05 + tile.openness * 0.05) * win);
+                if (alpha <= 0.012) continue;
+                const cx = tile.screenX + ux * (frac - 0.5) * span + px * laneOff;
+                const cy = tile.screenY - 3 + uy * (frac - 0.5) * span + py * laneOff;
+                ctx.strokeStyle = `rgba(${glint}, ${alpha})`;
+                ctx.lineWidth = 1.1;
+                ctx.beginPath();
+                ctx.moveTo(cx - ux * half, cy - uy * half);
+                ctx.lineTo(cx + ux * half, cy + uy * half);
+                ctx.stroke();
+            }
+        }
+        ctx.restore();
+    }
+
+    // B3 — sun/moon glitter field. Sparse deterministic sub-tile sparkles on
+    // open water: warm-white by day (scaled by the midday `dayGlitter` reaction),
+    // pale blue at night (scaled by `nightReflection`). Sharp `sin^3` twinkle,
+    // `screen` composite. Reduced motion drops to one steady speck per tile.
+    _drawSeaGlitter(ctx, waterTiles) {
+        if (!waterTiles?.length) return;
+        const dayGlitter = this._atmosphereReactions?.dayGlitter || 0;
+        const nightReflection = this._atmosphereReactions?.nightReflection || 0;
+        if (dayGlitter <= 0.04 && nightReflection <= 0.08) return;
+        const isDay = dayGlitter >= nightReflection;
+        const color = isDay ? '255, 246, 214' : '196, 224, 255';
+        const scale = isDay ? dayGlitter : nightReflection;
+        const reduced = !this.motionScale;
+        const frac = (v) => v - Math.floor(v);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        for (const tile of waterTiles) {
+            if (tile.openness <= 0.5) continue;
+            const count = reduced ? 1 : 2 + (Math.floor(tile.seed * 97) % 2);
+            for (let i = 0; i < count; i++) {
+                const hx = frac(Math.sin(tile.seed * 127.1 + i * 311.7) * 43758.5453);
+                const hy = frac(Math.sin(tile.seed * 269.5 + i * 183.3) * 24634.6345);
+                const hp = frac(Math.sin(tile.seed * 419.2 + i * 71.9) * 51294.1234);
+                const ox = (hx - 0.5) * TILE_WIDTH * 0.7;
+                const oy = (hy - 0.5) * TILE_HEIGHT * 0.7;
+                const twinkle = reduced
+                    ? 0.5
+                    : Math.max(0, Math.sin(this.waterFrame * (2.2 + hp * 1.6) + hp * 6.28)) ** 3;
+                const alpha = Math.min(0.5, scale * (0.14 + hy * 0.16) * twinkle);
+                if (alpha <= 0.02) continue;
+                const s = hp > 0.62 ? 2 : 1;
+                ctx.fillStyle = `rgba(${color}, ${alpha})`;
+                ctx.fillRect(Math.round(tile.screenX + ox), Math.round(tile.screenY + oy), s, s);
+            }
         }
         ctx.restore();
     }
@@ -6857,16 +6975,57 @@ export class IsometricRenderer {
         ctx.fillStyle = haze;
         ctx.fillRect(leftX, seaTop - 30, rightX - leftX, 60);
 
-        // A few faint distant swell lines for depth (skipped under reduced motion
-        // only for the drift; the static lines themselves stay).
+        // B5 — a few faint distant swell lines for depth. Motion-on: 3-segment
+        // quadratics whose control-point y bobs and whose x offset drifts, so the
+        // horizon rolls slowly. Reduced motion falls back to the flat lines.
         ctx.strokeStyle = phase === 'night' ? 'rgba(150, 180, 215, 0.10)' : 'rgba(235, 248, 255, 0.16)';
         ctx.lineWidth = 2;
+        const swellReduced = !this.motionScale;
+        const span = rightX - leftX;
+        const x1 = leftX + span / 3;
+        const x2 = leftX + (2 * span) / 3;
+        const c0 = leftX + span / 6;
+        const c1 = leftX + span * 0.5;
+        const c2 = leftX + (5 * span) / 6;
         for (let i = 0; i < 4; i++) {
             const ly = seaTop + 40 + i * 70;
             ctx.beginPath();
-            ctx.moveTo(leftX, ly);
-            ctx.lineTo(rightX, ly);
+            if (swellReduced) {
+                ctx.moveTo(leftX, ly);
+                ctx.lineTo(rightX, ly);
+            } else {
+                const drift = Math.sin(this.waterFrame * 0.12 + i * 1.3) * 60;
+                const bob1 = Math.sin(this.waterFrame * 0.18 + i * 0.9) * 10;
+                const bob2 = Math.sin(this.waterFrame * 0.16 - i * 1.1) * 10;
+                ctx.moveTo(leftX, ly);
+                ctx.quadraticCurveTo(c0 + drift, ly - 12 + bob1, x1 + drift, ly + bob1 * 0.3);
+                ctx.quadraticCurveTo(c1 + drift, ly + 12 + bob2, x2 + drift, ly + bob2 * 0.3);
+                ctx.quadraticCurveTo(c2 + drift, ly - 12 + bob1, rightX, ly);
+            }
             ctx.stroke();
+        }
+
+        // B5 — faint vertical glitter column under the sun/moon's horizontal
+        // position, tinted warm by day and pale blue at night, fading with fog.
+        const glitterBody = atmosphere?.sky?.sun?.visible
+            ? atmosphere.sky.sun
+            : atmosphere?.sky?.moon?.visible
+                ? atmosphere.sky.moon
+                : null;
+        if (glitterBody) {
+            const colFog = Math.max(0, Math.min(1, atmosphere?.weather?.fog ?? 0));
+            const colAlpha = (phase === 'night' ? 0.06 : 0.09) * (1 - colFog * 0.7) * (glitterBody.alpha ?? 0);
+            if (colAlpha > 0.008) {
+                const colColor = phase === 'night' ? '150, 190, 235' : '255, 236, 190';
+                const colX = leftX + (glitterBody.xFrac ?? 0.5) * span;
+                const colW = 46;
+                const colGrad = ctx.createLinearGradient(colX, seaTop, colX, seaBottom);
+                colGrad.addColorStop(0, `rgba(${colColor}, 0)`);
+                colGrad.addColorStop(0.2, `rgba(${colColor}, ${colAlpha})`);
+                colGrad.addColorStop(1, `rgba(${colColor}, 0)`);
+                ctx.fillStyle = colGrad;
+                ctx.fillRect(colX - colW / 2, seaTop, colW, seaBottom - seaTop);
+            }
         }
 
         // #25 — stacked haze bands dissolve the hard void boundary into
@@ -8325,6 +8484,46 @@ export class IsometricRenderer {
             ctx.beginPath();
             ctx.ellipse(0, 7, fall.width * 0.46, 8, 0, 0, Math.PI * 2);
             ctx.fill();
+
+            // B4 — spray mist + pool churn. Two radial mist ellipses breathe on
+            // offset phases, three seed-hashed foam dabs jitter at the plunge
+            // point, and a second ripple ring runs half a cycle behind the first.
+            // Reduced motion keeps the mist + dabs static and drops the rings.
+            const reduced = !this.motionScale;
+            const poolW = fall.width * 0.46;
+            const hashFrac = (v) => v - Math.floor(v);
+            for (let m = 0; m < 2; m++) {
+                const mp = (fall.phase ?? 0) + m * 1.7;
+                const breathe = reduced ? 0.5 : (Math.sin(this.waterFrame * 0.9 + mp) * 0.5 + 0.5);
+                const mr = poolW * (0.7 + m * 0.35) * (0.85 + breathe * 0.3);
+                const ma = Math.min(0.16, (0.10 + m * 0.03) * (reduced ? 0.8 : (0.6 + breathe * 0.5)));
+                const mist = ctx.createRadialGradient(0, 4, 0, 0, 4, mr);
+                mist.addColorStop(0, `rgba(255, 255, 255, ${ma})`);
+                mist.addColorStop(1, 'rgba(255, 255, 255, 0)');
+                ctx.fillStyle = mist;
+                ctx.beginPath();
+                ctx.ellipse(0, 4, mr, mr * 0.5, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            for (let d = 0; d < 3; d++) {
+                const hs = hashFrac(Math.sin((fall.phase ?? 0) * 12.9 + d * 78.233) * 43758.5453);
+                const jitter = reduced ? 0 : Math.sin(this.waterFrame * 2.1 + d * 2 + (fall.phase ?? 0)) * 2;
+                const dx = (hs - 0.5) * poolW * 1.2 + jitter;
+                const dy = 7 + (hashFrac(hs * 7.3) - 0.5) * 4;
+                ctx.fillStyle = `rgba(240, 255, 250, ${0.26 + hs * 0.2})`;
+                ctx.beginPath();
+                ctx.ellipse(dx, dy, 1.6 + hs * 1.4, 1.0 + hs * 0.7, 0, 0, Math.PI * 2);
+                ctx.fill();
+            }
+            if (!reduced) {
+                const t2 = ((this.waterFrame + 30) % 60) / 60;
+                const ringR2 = t2 * poolW * 1.25;
+                ctx.strokeStyle = `rgba(226, 255, 246, ${0.4 * (1 - t2)})`;
+                ctx.lineWidth = 1.2;
+                ctx.beginPath();
+                ctx.ellipse(0, 7, ringR2, ringR2 * (8 / poolW), 0, 0, Math.PI * 2);
+                ctx.stroke();
+            }
             ctx.restore();
         }
         ctx.restore();

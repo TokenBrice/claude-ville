@@ -165,6 +165,10 @@ export class SceneryEngine {
                 const noise = this.tileNoise(tx + 53, ty + 19);
                 const localWidth = width + (noise - 0.5) * 0.45;
                 if (d <= localWidth) {
+                    // B1 — per-tile downstream unit vector from the nearest
+                    // segment (point order is upstream→downstream). Feeds the
+                    // river-flow streak pass in IsometricRenderer.
+                    const dir = this._nearestSegmentDir(tx + 0.5, ty + 0.5, points);
                     this._markWaterTile(key, {
                         source: 'polyline',
                         kind,
@@ -174,6 +178,8 @@ export class SceneryEngine {
                         weatherProfile: weatherProfile || this._defaultWaterWeatherProfile(kind),
                         flowX,
                         flowY,
+                        flowDirX: dir.x,
+                        flowDirY: dir.y,
                     });
                     if (kind === 'lagoon' || region === 'lagoon' || weatherProfile === 'lagoon') this.lagoonWaterTiles.add(key);
                     if (deepRatio && d <= localWidth * deepRatio) {
@@ -204,6 +210,26 @@ export class SceneryEngine {
         const cx = ax + t * dx;
         const cy = ay + t * dy;
         return Math.hypot(x - cx, y - cy);
+    }
+
+    // Downstream unit direction of the polyline segment nearest (x, y).
+    // Points are authored upstream→downstream, so the segment vector already
+    // points the way the water flows. Returns { x: 0, y: 0 } if degenerate.
+    _nearestSegmentDir(x, y, points) {
+        let best = Infinity;
+        let dirX = 0;
+        let dirY = 0;
+        for (let i = 0; i < points.length - 1; i++) {
+            const d = this._distanceToSegment(x, y, points[i], points[i + 1]);
+            if (d < best) {
+                best = d;
+                const sx = points[i + 1][0] - points[i][0];
+                const sy = points[i + 1][1] - points[i][1];
+                const len = Math.hypot(sx, sy);
+                if (len > 0) { dirX = sx / len; dirY = sy / len; }
+            }
+        }
+        return { x: dirX, y: dirY };
     }
 
     _deepRatioForKind(kind, shape = 'polyline') {
@@ -275,6 +301,18 @@ export class SceneryEngine {
                     : region === 'lagoon'
                         ? 'lagoon'
                         : current.kind || 'water';
+            const flowX = Number.isFinite(Number(current.flowX)) ? Number(current.flowX) : this._defaultFlowX(surface, region);
+            const flowY = Number.isFinite(Number(current.flowY)) ? Number(current.flowY) : this._defaultFlowY(surface, region);
+            // B1 — keep the polyline-derived downstream unit vector when present;
+            // otherwise fall back to the normalized default flow so basin/generated
+            // current tiles still carry a coherent direction.
+            let flowDirX = Number(current.flowDirX);
+            let flowDirY = Number(current.flowDirY);
+            if (!Number.isFinite(flowDirX) || !Number.isFinite(flowDirY) || (flowDirX === 0 && flowDirY === 0)) {
+                const len = Math.hypot(flowX, flowY);
+                flowDirX = len > 0 ? flowX / len : 0;
+                flowDirY = len > 0 ? flowY / len : 0;
+            }
             const finalMeta = {
                 source: current.source || 'generated',
                 kind: semanticKind,
@@ -283,8 +321,10 @@ export class SceneryEngine {
                 openness,
                 surface,
                 weatherProfile,
-                flowX: Number.isFinite(Number(current.flowX)) ? Number(current.flowX) : this._defaultFlowX(surface, region),
-                flowY: Number.isFinite(Number(current.flowY)) ? Number(current.flowY) : this._defaultFlowY(surface, region),
+                flowX,
+                flowY,
+                flowDirX,
+                flowDirY,
             };
             this.waterMeta.set(key, finalMeta);
             finalEntries.push([key, finalMeta]);

@@ -888,6 +888,11 @@ function buildReactions(phase, phaseProgress, weather, lighting) {
         stormRoughness: clamp(storm * 0.9 + precipitation * 0.22),
         warmGlint: clamp(warmEdge * (1 - overcast * 0.52)),
         nightReflection: clamp(dark * 0.58 + (phase === 'night' ? 0.20 : 0)),
+        // B3 — midday sun glitter on open water. `light*light` peaks at solar
+        // noon and falls off through dawn/dusk to 0 at night; cloud cover and
+        // fog dim the sparkle. Mirrors nightReflection so the sea-glitter pass
+        // can cross-fade warm-white daytime specks into pale-blue moonlit ones.
+        dayGlitter: clamp((light * light) * (1 - overcast * 0.55) * (1 - fog * 0.4)),
         distantContrast: clamp(1 - fog * 0.32 - overcast * 0.12, 0.55, 1),
     };
 }
