@@ -1795,7 +1795,12 @@ function harborShipClass(ship = {}) {
         };
     }
     const packSize = harborShipPackSize(ship);
-    const stackVariant = harborShipStackClass(packSize);
+    // Stack sprites are reserved for true visual packs — one drawable standing
+    // in for hidden overflow ships. A fleet lead whose flock is individually
+    // visible keeps a commit-count class hull instead, so the harbor never
+    // double-counts (e.g. 12 skiffs plus a "12x" stack).
+    const isTrueVisualPack = Number(ship.visualPackSize) > 1;
+    const stackVariant = isTrueVisualPack ? harborShipStackClass(packSize) : null;
     if (stackVariant) return stackVariant;
     const variant = HARBOR_SHIP_CLASSES.find(item => packSize >= item.minCommits)
         || HARBOR_SHIP_CLASSES[HARBOR_SHIP_CLASSES.length - 1];

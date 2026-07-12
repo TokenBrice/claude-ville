@@ -45,7 +45,9 @@ export class Compositor {
         const canvas = document.createElement('canvas');
         canvas.width = dims.w;
         canvas.height = dims.h;
-        const ctx = canvas.getContext('2d');
+        // Composite-time pixel scans (palette swap, apex anchoring, contact
+        // shadow) read this canvas back several times before caching.
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
         ctx.imageSmoothingEnabled = false;
 
         ctx.drawImage(baseImg, 0, 0);
