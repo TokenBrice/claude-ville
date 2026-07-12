@@ -34,6 +34,18 @@ const DEFAULT_INTENSITY = {
     storm: 0.82,
 };
 
+// Parallax rain: the streak budget is split across three depth layers so rain
+// stops reading as one rigid sheet. Fractions sum to 1 so total segment count
+// stays ~equal to the old single-layer pass. Each layer scrolls on its own
+// fall offset (speedMul) with distinct length/alpha/lineWidth and a slightly
+// different wind multiplier. saltOffset keeps the seeded streak positions
+// disjoint between layers.
+const RAIN_LAYERS = [
+    { frac: 0.45, speedMul: 0.72, lengthMul: 0.78, alphaMul: 0.56, lineWidth: 1, windMul: 0.82, saltOffset: 0 },
+    { frac: 0.35, speedMul: 1.0, lengthMul: 1.0, alphaMul: 0.82, lineWidth: 1, windMul: 1.0, saltOffset: 1300 },
+    { frac: 0.2, speedMul: 1.4, lengthMul: 1.34, alphaMul: 1.0, lineWidth: 1.6, windMul: 1.18, saltOffset: 2600 },
+];
+
 export class WeatherRenderer {
     constructor({ assets = null } = {}) {
         this.assets = assets;
@@ -90,7 +102,13 @@ export class WeatherRenderer {
             const storm = weather.type === 'storm';
             const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * legibility.rain;
             this._drawOvercast(ctx, canvas, Math.min(1, Math.max(cloudCover, weather.intensity) * (storm ? 0.56 : 0.42)) * washBudget);
-            this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
+            // Winter (Dec–Feb) swaps rain streaks for drifting snow — presentation
+            // only; storm flash/lightning below still fires.
+            if (isWinterMonth(atmosphere)) {
+                this._drawSnow(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
+            } else {
+                this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
+            }
             if (storm && particleEnabled) {
                 this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation) * legibility.flash, seed);
             }
@@ -154,33 +172,39 @@ export class WeatherRenderer {
         const pad = 48;
         const travel = canvas.height + pad * 2;
         const speed = particleEnabled ? (0.42 + intensity * 0.34) : 0;
-        const fall = (phaseMs * speed) % travel;
         const alpha = (particleEnabled ? 0.22 : 0.14) + intensity * (weather.type === 'storm' ? 0.18 : 0.12);
+        const strokeAlpha = Math.min(0.48, alpha);
 
         ctx.save();
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = `rgba(190, 218, 230, ${Math.min(0.48, alpha)})`;
-        ctx.beginPath();
-
-        for (let i = 0; i < count; i++) {
-            const length = 8 + Math.floor(random01(seed, i + 17) * 13);
-            const xRand = random01(seed, i + 101);
-            const yRand = random01(seed, i + 211);
-            const y = ((yRand * travel + fall) % travel) - pad;
-            const drift = fall * windX * 0.34;
-            const xSpan = canvas.width + pad * 2;
-            const rawX = xRand * xSpan - pad + drift;
-            const x = wrap(rawX, -pad, canvas.width + pad);
-            const dx = Math.round(windX * length);
-            const dy = length;
-
-            ctx.moveTo(Math.round(x), Math.round(y));
-            ctx.lineTo(Math.round(x + dx), Math.round(y + dy));
+        if (!particleEnabled) {
+            // Reduced motion: a single static streak layer (no parallax).
+            this._drawRainStreakLayer(ctx, canvas, {
+                count, seed, windX, pad, travel, fall: 0,
+                lengthMul: 1, windMul: 1, lineWidth: 1, strokeAlpha, saltOffset: 0,
+            });
+        } else {
+            for (const layer of RAIN_LAYERS) {
+                const layerCount = Math.round(count * layer.frac);
+                if (layerCount <= 0) continue;
+                this._drawRainStreakLayer(ctx, canvas, {
+                    count: layerCount,
+                    seed,
+                    windX,
+                    pad,
+                    travel,
+                    fall: (phaseMs * speed * layer.speedMul) % travel,
+                    lengthMul: layer.lengthMul,
+                    windMul: layer.windMul,
+                    lineWidth: layer.lineWidth,
+                    strokeAlpha: Math.min(0.48, strokeAlpha * layer.alphaMul),
+                    saltOffset: layer.saltOffset,
+                });
+            }
         }
 
-        ctx.stroke();
-
         if (weather.type === 'storm' && intensity > 0.55) {
+            const fall = (phaseMs * speed) % travel;
+            ctx.lineWidth = 1;
             ctx.strokeStyle = `rgba(220, 236, 244, ${Math.min(0.34, intensity * 0.18)})`;
             ctx.beginPath();
             const highlightCount = Math.floor(count * 0.18);
@@ -218,6 +242,75 @@ export class WeatherRenderer {
                 seed,
             });
         }
+    }
+
+    // One parallax streak layer: seeded streaks strokd with the layer's own
+    // fall offset, length, wind drift, lineWidth and alpha. saltOffset keeps
+    // each layer's streak positions disjoint from the others.
+    _drawRainStreakLayer(ctx, canvas, { count, seed, windX, pad, travel, fall, lengthMul, windMul, lineWidth, strokeAlpha, saltOffset }) {
+        ctx.lineWidth = lineWidth;
+        ctx.strokeStyle = `rgba(190, 218, 230, ${strokeAlpha})`;
+        ctx.beginPath();
+        const xSpan = canvas.width + pad * 2;
+        for (let i = 0; i < count; i++) {
+            const s = i + saltOffset;
+            const length = (8 + Math.floor(random01(seed, s + 17) * 13)) * lengthMul;
+            const xRand = random01(seed, s + 101);
+            const yRand = random01(seed, s + 211);
+            const y = ((yRand * travel + fall) % travel) - pad;
+            const drift = fall * windX * 0.34 * windMul;
+            const rawX = xRand * xSpan - pad + drift;
+            const x = wrap(rawX, -pad, canvas.width + pad);
+            const dx = Math.round(windX * length);
+            const dy = length;
+            ctx.moveTo(Math.round(x), Math.round(y));
+            ctx.lineTo(Math.round(x + dx), Math.round(y + dy));
+        }
+        ctx.stroke();
+    }
+
+    // Winter precipitation: deterministic drifting flakes with a per-flake
+    // sinusoidal x-sway and slow fall. No splash stamps, no rain curtains.
+    // Reduced motion (particleEnabled false) snaps to a frozen flake field
+    // (fall/sway zeroed) mirroring the static rain path.
+    _drawSnow(ctx, canvas, weather, phaseMs, seed, particleEnabled) {
+        const intensity = clamp(weather.intensity, 0, 1);
+        const area = canvas.width * canvas.height;
+        const density = weather.type === 'storm' ? 1.18 : 1;
+        const animatedScale = particleEnabled ? 1 : 0.5;
+        const count = Math.min(
+            RAIN_MAX_STREAKS,
+            Math.max(
+                RAIN_MIN_STREAKS,
+                Math.floor((area / (RAIN_AREA_DENSITY * 1.4)) * (0.35 + intensity * 0.85) * density * animatedScale),
+            ),
+        );
+
+        const windValue = Number(weather.windX);
+        const windX = clamp(Number.isFinite(windValue) ? windValue : -0.3, -1.4, 1.4);
+        const pad = 24;
+        const travel = canvas.height + pad * 2;
+        const alpha = Math.min(0.7, (particleEnabled ? 0.42 : 0.3) + intensity * 0.28);
+        const xSpan = canvas.width + pad * 2;
+
+        ctx.save();
+        ctx.fillStyle = `rgba(238, 246, 255, ${alpha})`;
+        for (let i = 0; i < count; i++) {
+            const xRand = random01(seed, i + 101);
+            const yRand = random01(seed, i + 211);
+            const fallSpeed = 0.08 + random01(seed, i + 331) * 0.08; // 0.08–0.16 px/ms
+            const size = random01(seed, i + 419) < 0.3 ? 1 : 2;
+            const fall = particleEnabled ? phaseMs * fallSpeed : 0;
+            const y = ((yRand * travel + fall) % travel) - pad;
+            const swayPhase = random01(seed, i + 521) * Math.PI * 2;
+            const swayAmp = 4 + random01(seed, i + 617) * 6;
+            const sway = particleEnabled ? Math.sin(phaseMs * 0.0016 + swayPhase) * swayAmp : 0;
+            const drift = fall * windX * 0.06;
+            const rawX = xRand * xSpan - pad + sway + drift;
+            const x = wrap(rawX, -pad, canvas.width + pad);
+            ctx.fillRect(Math.round(x), Math.round(y), size, size);
+        }
+        ctx.restore();
     }
 
     // 2–3 broad, soft vertical sheets drifting horizontally on the wind, each
@@ -277,7 +370,9 @@ export class WeatherRenderer {
 
         for (let i = 0; i < count; i++) {
             const x = random01(stampSeed, i + 11) * canvas.width;
-            const y = random01(stampSeed, i + 29) * canvas.height;
+            // Bias into the lower band so splashes land on the ground rather
+            // than floating in the sky.
+            const y = (0.35 + random01(stampSeed, i + 29) * 0.65) * canvas.height;
             const scale = 0.55 + random01(stampSeed, i + 53) * 0.45;
             const rotation = (random01(stampSeed, i + 71) - 0.5) * 0.5;
             this._stampSpriteAt(ctx, RAIN_SPLASH_SPRITE_ID, {
@@ -303,9 +398,12 @@ export class WeatherRenderer {
                 drawn++;
                 const jitterX = (random01(seed, idx + 113) - 0.5) * colStep * 0.18;
                 const jitterY = (random01(seed, idx + 191) - 0.5) * rowStep * 0.18;
+                // Ground the grid into the lower band (rows map to 0.40–0.95 of
+                // canvas height) so static splashes read as sitting on terrain.
+                const y = canvas.height * (0.4 + (r / (rows + 1)) * 0.55) + jitterY;
                 this._stampSpriteAt(ctx, RAIN_SPLASH_SPRITE_ID, {
                     x: c * colStep + jitterX,
-                    y: r * rowStep + jitterY,
+                    y,
                     alpha: 0.22,
                     scale: 0.62,
                     rotation: -0.12,
@@ -332,7 +430,7 @@ export class WeatherRenderer {
         ctx.lineWidth = 1;
         for (let i = 0; i < count; i++) {
             const x = random01(stampSeed, i + 37) * canvas.width;
-            const y = random01(stampSeed, i + 59) * canvas.height;
+            const y = (0.35 + random01(stampSeed, i + 59) * 0.65) * canvas.height;
             const radius = 2 + random01(stampSeed, i + 83) * 2;
             ctx.beginPath();
             ctx.ellipse(Math.round(x), Math.round(y), radius, radius * 0.42, 0, 0, Math.PI * 2);
@@ -625,6 +723,19 @@ function weatherLegibilityGate(weather, atmosphere) {
         rain: clamp(base + 0.08, 0.74, 1),
         flash: clamp(base + 0.16, 0.78, 1),
     };
+}
+
+function isWinterMonth(atmosphere) {
+    const localDate = atmosphere?.clock?.localDate;
+    let month = NaN;
+    if (typeof localDate === 'string' && localDate.length >= 7) {
+        month = Number(localDate.slice(5, 7));
+    }
+    if (!Number.isFinite(month) || month < 1 || month > 12) {
+        const date = atmosphere?.effectiveDate;
+        if (date instanceof Date) month = date.getMonth() + 1;
+    }
+    return month === 12 || month === 1 || month === 2;
 }
 
 function normalizeType(type) {

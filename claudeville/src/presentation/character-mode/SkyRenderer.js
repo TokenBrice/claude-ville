@@ -10,6 +10,10 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const STAR_COUNT = 90;
 const STAR_CEILING_FRAC = 0.60;
+// Live twinkle: this many hot stars are redrawn per frame over the cached
+// (static) night sky with staggered sinusoidal alpha. Positions come from the
+// same deterministic PRNG walk as _drawStars, so they land on baked hot stars.
+const LIVE_TWINKLE_STARS = 12;
 const FALLBACK_CLOUD_IDS = ['atmosphere.cloud.cumulus', 'atmosphere.cloud.wisp'];
 const FALLBACK_MOON_ID = 'atmosphere.moon.crescent';
 const MOON_PHASE_ASSETS = {
@@ -154,6 +158,7 @@ export class SkyRenderer {
         ctx.drawImage(frame, 0, 0, canvas.width, canvas.height);
         // Transient layers stay live: aurora and shooting stars animate per
         // frame, the rain veil scrolls too fast for the 5 Hz frame cache.
+        this._drawLiveStarTwinkle(ctx, canvas, snapshot, motionScale);
         this._drawAurora(ctx, canvas, snapshot, motionScale);
         this._drawShootingStars(ctx, canvas, dt, motionScale);
         this._drawSkyFlare(ctx, canvas, snapshot, motionScale);
@@ -866,6 +871,46 @@ export class SkyRenderer {
             if (x + w < canvas.width + 80) {
                 ctx.drawImage(img, Math.round(x + wrapWidth), Math.round(y), Math.round(w), Math.round(h));
             }
+        }
+        ctx.restore();
+    }
+
+    // Live star twinkle over the cached night sky. Walks the same deterministic
+    // PRNG as _drawStars (same seed / next() sequence / hot test / drift) so the
+    // first LIVE_TWINKLE_STARS hot stars land exactly on their baked positions,
+    // then overdraws them with a staggered sinusoidal alpha. Pulse cadence is a
+    // local sine, matching the aurora / shooting-star live layers (no shared
+    // PulsePolicy). Skipped under reduced motion or when the sky has no stars.
+    _drawLiveStarTwinkle(ctx, canvas, atmosphere, motionScale = 1) {
+        if (motionScale === 0) return;
+        const starsAlpha = atmosphere.sky?.starsAlpha ?? 0;
+        if (starsAlpha <= 0.01) return;
+        const palette = atmosphere.sky?.palette || {};
+        const ceilingY = canvas.height * STAR_CEILING_FRAC;
+        const timeOffset = (atmosphere.dayProgress || 0) * canvas.width;
+        const time = performance.now() * 0.001;
+        let seed = 12345;
+        const next = () => {
+            seed = (seed * 9301 + 49297) % 233280;
+            return seed / 233280;
+        };
+
+        ctx.save();
+        ctx.fillStyle = palette.starHot || '#f2f7ff';
+        let drawn = 0;
+        for (let i = 0; i < STAR_COUNT && drawn < LIVE_TWINKLE_STARS; i++) {
+            const xBase = next() * canvas.width;
+            const y = Math.round(next() * ceilingY);
+            const hot = next() < 0.18;
+            if (!hot) continue;
+            const drift = timeOffset * (0.12 + (i % 5) * 0.018);
+            const x = Math.round(((xBase + drift) % canvas.width + canvas.width) % canvas.width);
+            const rate = 1.6 + (i % 4) * 0.55;
+            const phase = i * 1.7;
+            const pulse = 0.4 + 0.6 * Math.sin(time * rate + phase);
+            ctx.globalAlpha = clamp(starsAlpha * pulse, 0, 1);
+            ctx.fillRect(x, y, 2, 2);
+            drawn++;
         }
         ctx.restore();
     }
