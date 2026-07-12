@@ -105,6 +105,16 @@ const FAST_PROP_BACKING_PIXELS = 800_000;
 const FAST_PROP_MIN_ZOOM = 1.5;
 const FAST_PROP_AGENT_MARGIN = 36;
 const FAST_PROP_SCREEN_MARGIN = 96;
+// E1 — per-phase brightness *multipliers* for the atmosphere grade (blitted
+// with a `multiply` composite). `base` fills the whole overlay; `edge` darkens
+// the vignette corners at `edgeAlpha`. Near-white = identity; night is a cool
+// moonlight floor (~112/255 red) so agents stay readable, dusk/dawn golden.
+const MULTIPLY_GRADE = Object.freeze({
+    day: { base: 'rgb(255, 254, 250)', edge: 'rgb(214, 224, 232)', edgeAlpha: 0.28 },
+    night: { base: 'rgb(112, 138, 190)', edge: 'rgb(66, 90, 138)', edgeAlpha: 0.52 },
+    dusk: { base: 'rgb(236, 190, 158)', edge: 'rgb(150, 96, 96)', edgeAlpha: 0.42 },
+    dawn: { base: 'rgb(226, 202, 200)', edge: 'rgb(126, 118, 150)', edgeAlpha: 0.40 },
+});
 const TERRAIN_CACHE_MARGIN = 360;
 const TERRAIN_CACHE_CHUNK_SIZE = 16;
 const TERRAIN_CACHE_MAX_SINGLE_SURFACE_PIXELS = CANVAS_BUDGET.maxWorldCachePixels;
@@ -1172,6 +1182,11 @@ export class IsometricRenderer {
             { tileX: 23.4, tileY: 17.8, particleType: 'sparkle', chance: 0.012 },
             { tileX: 32.5, tileY: 16.4, particleType: 'beaconMote', chance: 0.014 },
             { tileX: 9.5, tileY: 8.5, particleType: 'firefly', chance: 0.014 },
+            // E7 — extra dusk/night firefly swarms along grass/water edges away
+            // from buildings: the south bank of the central moat and the grassy
+            // fringe of the northwest lagoon stream.
+            { tileX: 13.0, tileY: 27.5, particleType: 'firefly', chance: 0.012 },
+            { tileX: 5.5, tileY: 11.5, particleType: 'firefly', chance: 0.012 },
             // Building-activity gated smoke plumes. Roof anchors raise the
             // spawn point (worldY -= 22) above each building footprint and
             // the active-building gate tells _updateAmbientEffects
@@ -3428,9 +3443,18 @@ export class IsometricRenderer {
             }
 
             if (spawned >= 1) continue;
+
+            // E7 — fireflies only emerge after dusk and swarm hardest at night.
+            let chanceScale = 1;
+            if (emitter.particleType === 'firefly') {
+                const phase = this._lastAtmosphere?.phase;
+                if (phase !== 'dusk' && phase !== 'night') continue;
+                if (phase === 'night') chanceScale = 3;
+            }
+
             const localBudget = this._ambientEmitterBudget(emitter);
             const frameScale = Math.max(0, Math.min(3, dt / 16));
-            const chance = 1 - Math.pow(1 - Math.max(0, Math.min(1, emitter.chance * particleBudget * localBudget)), frameScale);
+            const chance = 1 - Math.pow(1 - Math.max(0, Math.min(1, emitter.chance * particleBudget * localBudget * chanceScale)), frameScale);
             if (Math.random() < chance) {
                 this.particleSystem.spawn(emitter.particleType, emitter.x, emitter.y - 18, 1);
                 spawned++;
@@ -8902,43 +8926,55 @@ export class IsometricRenderer {
     _drawAtmosphere(ctx, atmosphere = null, dt = 16, ambientLightSources = null) {
         const canvas = this._screenViewport();
         if (this._shouldUseFastAtmosphere()) {
-            this._drawFastAtmosphereWash(ctx, canvas, atmosphere, dt);
+            this._drawFastAtmosphereWash(ctx, canvas, atmosphere, dt, ambientLightSources);
             return;
         }
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
 
-        const zoom = this.camera?.zoom || 1;
-        const grade = atmosphere?.grade || {};
-        const zoomAlpha = Math.max(0.16, Math.min(0.46, (3.1 - zoom) / 3.2));
-        ctx.globalAlpha = this._quantizedAlpha(Math.min(0.72, zoomAlpha + (grade.overlayAlpha || 0)));
+        // E1 — grade the scene by multiplying the cached brightness-multiplier
+        // overlay in. Wrapped in its own composite so the passes below stay
+        // source-over / screen.
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
         ctx.drawImage(this._getAtmosphereVignette(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
-        ctx.globalAlpha = 1;
+        ctx.restore();
 
         this.weatherRenderer?.drawForeground(ctx, { canvas, atmosphere, dt });
 
-        // Building light glows: a gentle radial halo, not a saturated disc. The
-        // earlier mix paired full-alpha hex colors with a thin edge fade, which
-        // read as opaque "UFO" blobs over the buildings. Capping the pass with a
-        // low globalAlpha and adding an inner soft step keeps the warm-light
-        // hint without washing out the sprite underneath.
-        if (this.buildingRenderer) {
-            ctx.save();
-            const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
-            ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.12 : 0.18) * glowScale);
-            for (const light of ambientLightSources || this._ambientLightSources(atmosphere)) {
-                if (light.kind && !['point', 'spark', 'orbit', 'arc'].includes(light.kind)) continue;
-                const p = this.camera.worldToScreen(light.x, light.y);
-                if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
-                const radius = light.radius * this.camera.zoom;
-                const stamp = this._getLightGlowStamp(light, radius, glowScale * (light.intensity || 1), atmosphere);
-                ctx.drawImage(stamp, p.x - radius, p.y - radius, radius * 2, radius * 2);
-            }
-            ctx.restore();
-        }
+        // E2/E3 — additive building light glows, shared with the fast path so
+        // both draw lanterns identically.
+        this._drawLightGlowStamps(ctx, canvas, atmosphere, ambientLightSources);
 
         this._drawLanternGlows(ctx, canvas, atmosphere);
 
+        ctx.restore();
+    }
+
+    // E2/E3 — additive building light-glow pass, extracted so both the full
+    // atmosphere path and the fast-atmosphere wash can stamp lanterns. Screen
+    // composite plus a low alpha cap keeps the warm cores incandescent against
+    // the multiply-graded night without washing out the sprites underneath.
+    // `maxCount` bounds the stamp count; the fast path pre-selects the nearest
+    // lights and passes them in, the full path passes them all.
+    _drawLightGlowStamps(ctx, canvas, atmosphere = null, ambientLightSources = null, maxCount = Infinity) {
+        if (!this.buildingRenderer) return;
+        const zoom = this.camera?.zoom || 1;
+        const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.10 : 0.14) * glowScale);
+        let drawn = 0;
+        for (const light of ambientLightSources || this._ambientLightSources(atmosphere)) {
+            if (drawn >= maxCount) break;
+            if (light.kind && !['point', 'spark', 'orbit', 'arc'].includes(light.kind)) continue;
+            const p = this.camera.worldToScreen(light.x, light.y);
+            if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
+            const radius = light.radius * this.camera.zoom;
+            const stamp = this._getLightGlowStamp(light, radius, glowScale * (light.intensity || 1), atmosphere);
+            ctx.drawImage(stamp, p.x - radius, p.y - radius, radius * 2, radius * 2);
+            drawn++;
+        }
         ctx.restore();
     }
 
@@ -8961,7 +8997,8 @@ export class IsometricRenderer {
         const flickerOn = (this.motionScale ?? 1) > 0;
 
         ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
+        // E2 — additive so the warm prop halos punch through the multiply grade.
+        ctx.globalCompositeOperation = 'screen';
         for (const src of sources) {
             const p = this.camera.worldToScreen(src.x, src.y);
             if (p.x < -radius || p.y < -radius || p.x > canvas.width + radius || p.y > canvas.height + radius) continue;
@@ -9037,40 +9074,56 @@ export class IsometricRenderer {
         return backingPixels >= FAST_ATMOSPHERE_BACKING_PIXELS && (this.camera?.zoom || 1) >= 1.5;
     }
 
-    _drawFastAtmosphereWash(ctx, canvas, atmosphere = null, dt = 16) {
+    _drawFastAtmosphereWash(ctx, canvas, atmosphere = null, dt = 16, ambientLightSources = null) {
         ctx.save();
         ctx.globalCompositeOperation = 'source-over';
-        const zoom = this.camera?.zoom || 1;
-        const grade = atmosphere?.grade || {};
-        const zoomAlpha = Math.max(0.16, Math.min(0.46, (3.1 - zoom) / 3.2));
-        const alpha = this._quantizedAlpha(Math.min(0.38, (zoomAlpha + (grade.overlayAlpha || 0)) * 0.42));
-        if (alpha > 0.01) {
-            ctx.globalAlpha = alpha;
-            ctx.fillStyle = grade.worldTint || 'rgba(160, 215, 245, 0.05)';
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            const phase = atmosphere?.phase || 'day';
-            const wash = ctx.createLinearGradient(0, 0, 0, canvas.height);
-            if (phase === 'night') {
-                wash.addColorStop(0, 'rgba(44, 78, 126, 0.16)');
-                wash.addColorStop(1, 'rgba(2, 6, 14, 0.28)');
-            } else if (phase === 'dawn') {
-                wash.addColorStop(0, 'rgba(85, 132, 178, 0.10)');
-                wash.addColorStop(1, 'rgba(85, 111, 137, 0.14)');
-            } else if (phase === 'dusk') {
-                wash.addColorStop(0, 'rgba(73, 89, 139, 0.12)');
-                wash.addColorStop(1, 'rgba(32, 31, 63, 0.20)');
-            } else {
-                wash.addColorStop(0, 'rgba(175, 222, 248, 0.05)');
-                wash.addColorStop(1, 'rgba(18, 36, 52, 0.07)');
-            }
-            ctx.globalAlpha = Math.min(0.24, alpha * 0.75);
-            ctx.fillStyle = wash;
-            ctx.fillRect(0, 0, canvas.width, canvas.height);
-        }
-        ctx.globalAlpha = 1;
-        this.weatherRenderer?.drawForeground(ctx, { canvas, atmosphere, dt });
+        // E1 (fast path) — the same multiply grade as the cached overlay, but
+        // drawn as flat fills each frame (no full-screen offscreen cache on
+        // large viewports). Base multiplier + a transparent→dark vertical fade
+        // for a cheap vignette; wrapped so the passes below stay source-over.
+        const phase = atmosphere?.phase || 'day';
+        const grade = MULTIPLY_GRADE[phase] || MULTIPLY_GRADE.day;
+        ctx.save();
+        ctx.globalCompositeOperation = 'multiply';
+        ctx.fillStyle = grade.base;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        const fade = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        fade.addColorStop(0, this._withAlpha(grade.edge, this._quantizedAlpha(grade.edgeAlpha * 0.5)));
+        fade.addColorStop(0.5, this._withAlpha(grade.edge, 0));
+        fade.addColorStop(1, this._withAlpha(grade.edge, this._quantizedAlpha(grade.edgeAlpha)));
+        ctx.fillStyle = fade;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.restore();
+
+        this.weatherRenderer?.drawForeground(ctx, { canvas, atmosphere, dt });
+
+        // E3 — restore light glows on the fast path (previously dropped exactly
+        // when zoomed into a building at night), capped at the ~12 nearest.
+        this._drawFastPathLightGlows(ctx, canvas, atmosphere, ambientLightSources);
+
+        ctx.restore();
+    }
+
+    // E3 — pick the nearest visible lights to the viewport centre (after
+    // culling) and stamp them via the shared additive helper. No new cache
+    // surfaces; reuses _getLightGlowStamp.
+    _drawFastPathLightGlows(ctx, canvas, atmosphere = null, ambientLightSources = null) {
+        if (!this.buildingRenderer) return;
+        const sources = ambientLightSources || this._ambientLightSources(atmosphere);
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+        const visible = [];
+        for (const light of sources) {
+            if (light.kind && !['point', 'spark', 'orbit', 'arc'].includes(light.kind)) continue;
+            const p = this.camera.worldToScreen(light.x, light.y);
+            if (p.x < -120 || p.y < -120 || p.x > canvas.width + 120 || p.y > canvas.height + 120) continue;
+            visible.push({ light, d2: (p.x - cx) ** 2 + (p.y - cy) ** 2 });
+        }
+        if (!visible.length) return;
+        visible.sort((a, b) => a.d2 - b.d2);
+        const nearest = visible.slice(0, 12).map(v => v.light);
+        this._drawLightGlowStamps(ctx, canvas, atmosphere, nearest);
     }
 
     _getLightGlowStamp(light, radius, glowScale = 1, atmosphere = null) {
@@ -9116,8 +9169,11 @@ export class IsometricRenderer {
         const stampCtx = stamp.getContext('2d');
         stampCtx.setTransform(stampDpr, 0, 0, stampDpr, 0, 0);
         const glow = stampCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);
-        glow.addColorStop(0, this._withAlpha(light.color, this._quantizedAlpha(0.55 * glowScale)));
-        glow.addColorStop(0.42, this._withAlpha(light.color, this._quantizedAlpha(0.18 * glowScale)));
+        // E2 — hot near-white core so the lantern reads incandescent through the
+        // multiply-graded night, fading to the light's own hue and out.
+        const core = this._mixToWhite(light.color, 0.6);
+        glow.addColorStop(0, this._withAlpha(core, this._quantizedAlpha(0.5 * glowScale)));
+        glow.addColorStop(0.35, this._withAlpha(light.color, this._quantizedAlpha(0.25 * glowScale)));
         glow.addColorStop(1, this._withAlpha(light.color, 0));
         stampCtx.fillStyle = glow;
         stampCtx.beginPath();
@@ -9321,51 +9377,16 @@ export class IsometricRenderer {
         overlay.height = Math.max(1, Math.round(canvas.height * dpr));
         const overlayCtx = overlay.getContext('2d');
         overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const grade = atmosphere?.grade || {};
         const phase = atmosphere?.phase || 'day';
 
-        overlayCtx.fillStyle = grade.worldTint || 'rgba(160, 215, 245, 0.05)';
-        overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
-
-        const skyWash = overlayCtx.createLinearGradient(0, 0, 0, canvas.height);
-        if (phase === 'night') {
-            skyWash.addColorStop(0, 'rgba(44, 78, 126, 0.18)');
-            skyWash.addColorStop(0.46, 'rgba(20, 39, 74, 0.04)');
-            skyWash.addColorStop(1, 'rgba(3, 8, 19, 0.34)');
-        } else if (phase === 'dawn') {
-            skyWash.addColorStop(0, 'rgba(85, 132, 178, 0.12)');
-            skyWash.addColorStop(0.45, 'rgba(226, 187, 160, 0.04)');
-            skyWash.addColorStop(1, 'rgba(85, 111, 137, 0.18)');
-        } else if (phase === 'dusk') {
-            skyWash.addColorStop(0, 'rgba(73, 89, 139, 0.14)');
-            skyWash.addColorStop(0.45, 'rgba(179, 139, 160, 0.05)');
-            skyWash.addColorStop(1, 'rgba(32, 31, 63, 0.26)');
-        } else {
-            skyWash.addColorStop(0, 'rgba(175, 222, 248, 0.06)');
-            skyWash.addColorStop(0.42, 'rgba(92, 159, 209, 0)');
-            skyWash.addColorStop(1, 'rgba(60, 111, 150, 0.08)');
-        }
-        overlayCtx.fillStyle = skyWash;
-        overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
-
-        const atmosphericCore = overlayCtx.createRadialGradient(
-            canvas.width * 0.5,
-            canvas.height * 0.46,
-            0,
-            canvas.width * 0.5,
-            canvas.height * 0.50,
-            Math.max(canvas.width, canvas.height) * 0.58,
-        );
-        atmosphericCore.addColorStop(0, phase === 'day'
-            ? 'rgba(220, 245, 255, 0.050)'
-            : phase === 'night'
-                ? 'rgba(90, 134, 190, 0.060)'
-                : 'rgba(199, 195, 220, 0.055)');
-        atmosphericCore.addColorStop(0.55, phase === 'night'
-            ? 'rgba(28, 56, 98, 0.035)'
-            : 'rgba(88, 135, 178, 0.025)');
-        atmosphericCore.addColorStop(1, 'rgba(0, 0, 0, 0)');
-        overlayCtx.fillStyle = atmosphericCore;
+        // E1 — the overlay is a brightness *multiplier*, blitted with a
+        // `multiply` composite in _drawAtmosphere. Every pixel is an opaque
+        // multiplier colour: near-white leaves the scene untouched, darker/warm
+        // values grade it. Painting the opaque base first, then a
+        // transparent→dark radial, keeps the whole overlay opaque while
+        // darkening toward the edges (the vignette).
+        const grade = MULTIPLY_GRADE[phase] || MULTIPLY_GRADE.day;
+        overlayCtx.fillStyle = grade.base;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
         const vignette = overlayCtx.createRadialGradient(
@@ -9376,14 +9397,9 @@ export class IsometricRenderer {
             canvas.height * 0.5,
             Math.max(canvas.width, canvas.height) * 0.72,
         );
-        const vignetteAlpha = this._quantizedAlpha(grade.vignetteAlpha ?? 0.18);
-        vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        vignette.addColorStop(0.62, phase === 'night'
-            ? `rgba(4, 12, 26, ${vignetteAlpha * 0.20})`
-            : `rgba(19, 45, 66, ${vignetteAlpha * 0.12})`);
-        vignette.addColorStop(1, phase === 'night'
-            ? `rgba(2, 6, 14, ${vignetteAlpha})`
-            : `rgba(18, 36, 52, ${vignetteAlpha * 0.62})`);
+        vignette.addColorStop(0, this._withAlpha(grade.edge, 0));
+        vignette.addColorStop(0.62, this._withAlpha(grade.edge, this._quantizedAlpha(grade.edgeAlpha * 0.4)));
+        vignette.addColorStop(1, this._withAlpha(grade.edge, this._quantizedAlpha(grade.edgeAlpha)));
         overlayCtx.fillStyle = vignette;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -9473,6 +9489,26 @@ export class IsometricRenderer {
             if (m) { r = +m[1]; g = +m[2]; b = +m[3]; }
         }
         const out = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        this.lightFadeColorCache.set(key, out);
+        return out;
+    }
+
+    // Mix a colour toward white by `t` (0 = unchanged, 1 = white). Used for the
+    // hot light-glow cores; memoized in the shared colour cache.
+    _mixToWhite(color, t) {
+        const key = `mw|${color}|${t}`;
+        if (this.lightFadeColorCache.has(key)) return this.lightFadeColorCache.get(key);
+        let r = 255, g = 255, b = 255;
+        if (color.startsWith('#') && color.length === 7) {
+            r = parseInt(color.slice(1, 3), 16);
+            g = parseInt(color.slice(3, 5), 16);
+            b = parseInt(color.slice(5, 7), 16);
+        } else {
+            const m = color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (m) { r = +m[1]; g = +m[2]; b = +m[3]; }
+        }
+        const mix = (c) => Math.round(c + (255 - c) * t);
+        const out = `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
         this.lightFadeColorCache.set(key, out);
         return out;
     }
