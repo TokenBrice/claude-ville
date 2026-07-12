@@ -2,6 +2,44 @@
 
 ---
 
+## v0.23.0 — *Tides & Torchlight* · Jul 12, 2026
+
+A visual overhaul of the village: the harbor gets its beloved flock back, the water learns to move, the seasons touch the ground, hats finally sit on heads, and the night gets dark enough for lanterns to matter. Six exploration scouts surveyed the renderer; everything below is procedural canvas work — no new sprite assets.
+
+**The harbor flock returns**
+- **One ship per commit again.** Docked commits render as individual ships (up to 15 per repo, was: collapse into stack sprites at 5) — you can watch the fleet grow as an agent commits. Stack sprites remain only as overflow.
+- **The whole flock sails on push.** Departing ships always render individually: a 12-commit push casts off as a 12-ship flotilla, with ±12% per-ship speed jitter, serpentine sway, and a beacon flare on the channel buoy at cast-off.
+- **Flagship leader.** The lead ship keeps a commit-count class hull with the repo heraldry and a fleet-count `N⚓` banner; every other commit is a skiff.
+- **Living hulls.** Ships bob and roll (phase-seeded per ship, so the flock never moves in lockstep), flags and pennants wave — streaming harder as ships pick up speed — and skiffs vary by hull mirror, gunwale stripe, and deck crates.
+
+**Living water**
+- **Rivers flow.** Downstream flow streaks derived from the river polylines' direction — rivers no longer read as static teal ribbons.
+- **The sea rolls.** Swell crests travel across tiles along the wave direction instead of twinkling in place.
+- **Sun and moon glitter.** A deterministic sparkle field on open water: warm at midday, pale blue under the moon.
+- **Waterfalls churn.** Breathing spray mist, foam dabs, and staggered ripple rings at the plunge pool.
+- **The horizon breathes.** Distant-sea swell lines bob and drift, with a glitter column under the sun/moon.
+
+**Seasons & vegetation**
+- **The ground knows the season.** Terrain rebakes per season: snow flecks in winter, wide warm leaf litter in autumn, blossom dabs in spring.
+- **Leaves fall from trees.** Drift particles anchor to the world — leaves and petals spawn from actual tree canopies, butterflies from flower patches — instead of raining uniformly over open sea and rooftops.
+- **Wind arrives in gusts.** Tree sway is modulated by a spatially-phased gust envelope, so wind travels across the forest in waves instead of a metronome.
+- **Hidden details surfaced.** The terrain generator's stone and mushroom tiles (tagged but never drawn) now render: pebble clusters in open grass, glowing-cap mushrooms under the northern canopy.
+- **Real insects.** Butterflies flap procedural wings; fireflies pulse with a soft halo.
+
+**Hats that fit**
+- **Per-cell head anchoring.** Accessories stamp at each sprite cell's measured head apex, tracking facing direction and walk bob — no more floating, sliding headgear (was: one fixed anchor for all 80 cells).
+- **No more hat teleporting.** Tool-driven accessories switch only after 20s of dominance; effort crowns still apply instantly.
+- **No more shrinking villagers.** Body draw-scale now measures accessory-free bounds, so a tall hat no longer squashes its wearer.
+- **Grounded, harmonized headgear.** Contact shadow under the brim, palette-trim tint toward the wearer's colors, and a cropped darkened back view when facing away.
+
+**Night, light & weather**
+- **Real darkness.** The night/dusk grade composites with `multiply` instead of a milky translucent wash — deep contrasty nights, golden dawns.
+- **Lanterns that glow.** Light stamps draw additively with a hot inner core, punching through the dark; the large-viewport fast path regains a capped glow pass (it previously dropped all lights exactly when zoomed in at night).
+- **Torchlit decor.** Lantern and brazier props get warm flickering night glows; fireflies now only spawn at dusk/night, with extra spawn points by grass and water.
+- **Weather with depth.** Rain falls in three parallax layers, splashes land on the ground instead of the sky, winter precipitation falls as snow, and a dozen hot stars twinkle live over the cached night sky.
+
+---
+
 ## v0.22.0 — *Warden's Rounds* · Jul 10, 2026
 
 The wardens swept every district of the village: a broad repo-wide survey (8 parallel review agents + a live-app UX pass) picked the highest-impact fixes and polish, all landed in one round.
