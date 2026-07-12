@@ -2,6 +2,32 @@
 
 ---
 
+## v0.24.0 — *Bells & Birdsong* · Jul 12, 2026
+
+The village finds its voice. The old sound toggle played a fixed synth drone that ignored everything on screen; it is replaced by a reactive soundscape that scores what the village is actually doing — and a proper tune. Still fully procedural Web Audio: no samples, no assets, no build step. Sound stays opt-in and off by default.
+
+**A town band, like the old games**
+- **A songbook, not a loop.** The music layer is a small generative composer: four authored tunes (two daytime folk songs, two night lullabies), each with A/B sections over real chord progressions, assembled into varying forms (A-A-B-A, A-B-A-A, ...) with a pickup bar and a ring-out outro. Repeated sections vary — the lead swaps timbre or adds a phrase-end flourish — and the next song is always a different tune.
+- **Three console voices.** NES-style 25%/12.5% duty pulse leads and a flute tone (proper band-limited PeriodicWaves), plucked arpeggio/chord accompaniment, triangle bass in root–fifth motion — plus delayed-onset vibrato on held notes, downbeat accents, and humanized timing.
+- **Arrangements follow the day.** Brisk and bright at noon, slower at dawn, warm and an octave lower at dusk, minor-pentatonic lullabies at night. When day turns to night mid-song, the tune finishes with its outro and the night songbook takes over. Storms push the music back and let the weather speak.
+- **One tonal center.** Every pitched element — songs, bed swells, every bell cue — shares the same pentatonic tonal center per phase, so nothing ever clashes.
+
+**The world you hear is the world you see**
+- **Weather is audible.** Wind gusts with the storm intensity and hushes on calm days; rain patter and droplets track precipitation; thunder rolls just after each visible lightning strike. Winter snowfall stays hushed — wind carries the scene.
+- **Time of day is audible.** A dawn chorus of birdsong, quieter daytime birds, and summer-night crickets (two of them, arguing in stereo) that go silent in winter.
+- **The village is audible.** A faint work-hum of wood knocks and hammer taps scales with how many agents are working; an idle village rests near silence.
+
+**Moments ring, but never spam**
+- **Governed one-shot cues.** Arrivals and departures get two-note bells, distress a low muted toll, recovery a resolving pair, council gatherings a three-bell pattern, plus an hour bell (08:00–20:00) and a rare aurora shimmer.
+- **A central cue governor** — per-kind cooldowns, 4-second global spacing, max 6 cues per minute — structurally prevents v0.12's wall-of-beeps from ever returning. Excess cues are dropped, never queued.
+
+**Controls & plumbing**
+- **Volume slider** next to the sound toggle, persisted across sessions.
+- **Ambience continues in Dashboard mode** — the audio director computes its own local-clock atmosphere when the World renderer is stopped.
+- New events: `atmosphere:updated` (renderer snapshot broadcast) and `weather:storm-flash` (per lightning strike). QA helpers: `__claudevilleAudio()` exposes per-layer levels, `setLayer`, `cue`, `setVolume`.
+
+---
+
 ## v0.23.0 — *Tides & Torchlight* · Jul 12, 2026
 
 A visual overhaul of the village: the harbor gets its beloved flock back, the water learns to move, the seasons touch the ground, hats finally sit on heads, and the night gets dark enough for lanterns to matter. Six exploration scouts surveyed the renderer; everything below is procedural canvas work — no new sprite assets.

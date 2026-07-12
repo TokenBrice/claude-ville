@@ -9,6 +9,8 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 | File | Responsibility |
 | --- | --- |
 | `TopBar.js` | Global stats, clock, account/quota usage display, and agent/usage event summaries. Mode button lookup and clicks belong to `application/ModeManager.js`. |
+| `AmbientAudioController.js` | Opt-in sound facade: toggle button + volume slider lifecycle, user-gesture unlock, tab-hidden suspend, localStorage persistence. Delegates all sound to `audio/`. Debug helper: `window.__claudevilleAudio()`. |
+| `audio/` | Reactive village soundscape. `AudioEngine` (context + mix chain + duck), `AudioDirector` (1 Hz world→layer mapping, cue routing; listens to `atmosphere:updated`, `village:scene`, `distress:watchtower`, `team:gather`, `chronicle:aurora`, `weather:storm-flash`), `layers/` (wind, rain, birds, crickets, village hum, tonal bed, and the songbook music composer), `cues/CueKit` + `CueGovernor` (rate-limited one-shots), `MusicalScale` (shared tonal center). Deliberate exception to the no-renderer-imports rule: the director imports the pure, dependency-free `character-mode/AtmosphereState` and `SeasonalAmbience` helpers so ambience keeps tracking time/weather while the World loop is stopped. |
 | `Sidebar.js` | Project-grouped agent list, selection mirror/toggle, persisted collapsed state, and Harbor pending-commit ledger from `harbor:updated`. |
 | `ActivityPanel.js` | Right-side 320px detail panel with selected-agent and selected-building modes. |
 | `AgentSelection.js` | Shared selection event helpers and local selected-agent mirrors for presentation components. |

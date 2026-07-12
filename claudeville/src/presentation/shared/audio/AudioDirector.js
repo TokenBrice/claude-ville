@@ -238,6 +238,7 @@ export class AudioDirector {
             atmosphereSource: this._atmosphereSource,
             levels: { ...this._levels },
             lastCue: this.cueKit?.lastCue || null,
+            nowPlaying: this.layers.music?.nowPlaying || null,
         };
     }
 }
