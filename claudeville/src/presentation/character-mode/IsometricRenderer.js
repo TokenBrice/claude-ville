@@ -108,10 +108,11 @@ const FAST_PROP_SCREEN_MARGIN = 96;
 // E1 — per-phase brightness *multipliers* for the atmosphere grade (blitted
 // with a `multiply` composite). `base` fills the whole overlay; `edge` darkens
 // the vignette corners at `edgeAlpha`. Near-white = identity; night is a cool
-// moonlight floor (~112/255 red) so agents stay readable, dusk/dawn golden.
+// moonlight floor (~128/255 red) so agents and terrain stay readable,
+// dusk/dawn golden.
 const MULTIPLY_GRADE = Object.freeze({
     day: { base: 'rgb(255, 254, 250)', edge: 'rgb(214, 224, 232)', edgeAlpha: 0.28 },
-    night: { base: 'rgb(112, 138, 190)', edge: 'rgb(66, 90, 138)', edgeAlpha: 0.52 },
+    night: { base: 'rgb(128, 150, 196)', edge: 'rgb(82, 108, 154)', edgeAlpha: 0.46 },
     dusk: { base: 'rgb(236, 190, 158)', edge: 'rgb(150, 96, 96)', edgeAlpha: 0.42 },
     dawn: { base: 'rgb(226, 202, 200)', edge: 'rgb(126, 118, 150)', edgeAlpha: 0.40 },
 });
@@ -9014,6 +9015,23 @@ export class IsometricRenderer {
         }));
     }
 
+    _lanternGroundLightSources(lighting = null) {
+        const beaconIntensity = Math.max(0, Math.min(1, Number(lighting?.beaconIntensity) || 0));
+        if (beaconIntensity <= 0.05) return [];
+        return this._lanternGlowSources().map((source) => {
+            const isBrazier = source.fixture === 'brazier';
+            return normalizeLightSource({
+                id: `village.${source.fixture}.${source.tileX}.${source.tileY}`,
+                kind: 'point',
+                x: source.x,
+                y: source.y + 10,
+                color: isBrazier ? '#ffb457' : '#ffd56a',
+                radius: (isBrazier ? 62 : 52) + beaconIntensity * 6,
+                intensity: (isBrazier ? 0.94 : 0.82) + beaconIntensity * 0.12,
+            });
+        });
+    }
+
     _computeFrameLightSources(atmosphere = null, now = performance.now()) {
         const lighting = atmosphere?.lighting || null;
         const building = this.buildingRenderer?.getLightSources?.(lighting) || [];
@@ -9027,6 +9045,7 @@ export class IsometricRenderer {
             ...this._familiarMoteLightSources(lighting),
             ...(this.arrivalDeparture?.getLightSources?.({ now }) || []),
             ...this._villageGateLightSources(lighting),
+            ...this._lanternGroundLightSources(lighting),
         ];
         return { building, ambient };
     }
@@ -9106,7 +9125,7 @@ export class IsometricRenderer {
 
         const stamp = this._getLanternGlowStamp();
         const zoom = this.camera?.zoom || 1;
-        const radius = Math.max(8, Math.round(12 * zoom));
+        const radius = Math.max(9, Math.round(14 * zoom));
         const t = this.waterFrame;
         const flickerOn = (this.motionScale ?? 1) > 0;
 
@@ -9141,21 +9160,23 @@ export class IsometricRenderer {
     _lanternGlowSources() {
         if (this._lanternGlowSourcesCache) return this._lanternGlowSourcesCache;
         const out = [];
-        const push = (tileX, tileY) => {
+        const push = (tileX, tileY, fixture = 'lantern') => {
             if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return;
             const x = (tileX - tileY) * TILE_WIDTH / 2;
             const y = (tileX + tileY) * TILE_HEIGHT / 2 - 10; // lift onto the flame
             const phase = (Math.sin(tileX * 12.9898 + tileY * 78.233) * 43758.5453) % (Math.PI * 2);
-            out.push({ x, y, phase });
+            out.push({ x, y, phase, fixture, tileX, tileY });
         };
         for (const prop of AMBIENT_GROUND_PROPS) {
             if (prop.type === 'lantern') push(prop.tileX, prop.tileY);
         }
         for (const prop of DISTRICT_PROPS) {
-            if (prop.id === 'prop.lantern' || prop.id === 'prop.runeBrazier') push(prop.tileX, prop.tileY);
+            if (prop.id === 'prop.lantern') push(prop.tileX, prop.tileY);
+            if (prop.id === 'prop.runeBrazier') push(prop.tileX, prop.tileY, 'brazier');
         }
         for (const prop of SCENIC_POINT_PROPS) {
-            if (prop.id === 'prop.lantern' || prop.id === 'prop.runeBrazier') push(prop.tileX, prop.tileY);
+            if (prop.id === 'prop.lantern') push(prop.tileX, prop.tileY);
+            if (prop.id === 'prop.runeBrazier') push(prop.tileX, prop.tileY, 'brazier');
         }
         this._lanternGlowSourcesCache = out;
         return out;

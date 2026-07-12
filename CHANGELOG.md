@@ -2,6 +2,17 @@
 
 ---
 
+## v0.24.2 — *Lamplighter's Watch* · Jul 12, 2026
+
+Night stays dark enough for stars, fireflies, and torchlight to matter, but the village no longer disappears into the grade. Moonlight now preserves more terrain detail, while the lanterns already placed around the village cast broader pools of warm light across roads, bridges, work yards, and quiet research paths.
+
+**Brighter nights, warmer roads**
+- **A clearer moonlight floor.** The night grade lifts shadow detail and eases the darkest vignette edges without flattening the cool sky, deep water, or strong building silhouettes.
+- **Lanterns light their surroundings.** Existing lantern and brazier props now act as true ambient point lights, spreading warm ground illumination around the bridge, gate approach, workshop, mine road, and village paths.
+- **Focused flames, restrained glow.** Compact flickering halos remain at each flame while the wider light pools stay soft, keeping agents, labels, and status effects at the top of the visual hierarchy.
+
+---
+
 ## v0.24.1 — *Stoneward* · Jul 12, 2026
 
 ClaudeVille's waterfront boundary has grown into a proper fortified entrance. The old flat palisade and loosely assembled gate are replaced by darker timberwork, continuous masonry, asset-backed watchtowers, and a civic arch that carries the village name as part of the structure.
