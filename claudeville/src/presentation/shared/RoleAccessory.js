@@ -19,19 +19,27 @@ const TOOL_PATTERNS = [
     { id: 'scholarCap', re: /^(Read|Grep|Glob|LS)$/ },
 ];
 
-export function runtimeRoleAccessory(agent) {
+// Resolves the accessory plus its source. `role` accessories are permanent
+// (an agent's role does not change mid-session) while `tool` accessories flip
+// with currentTool — callers debounce the latter to stop hats teleporting.
+export function resolveRoleAccessory(agent) {
     if (!agent) return null;
     const role = String(agent.role || '').toLowerCase();
     if (role) {
         for (const { id, re } of ROLE_PATTERNS) {
-            if (re.test(role)) return id;
+            if (re.test(role)) return { id, source: 'role' };
         }
     }
     const tool = String(agent.currentTool || '');
     if (tool) {
         for (const { id, re } of TOOL_PATTERNS) {
-            if (re.test(tool)) return id;
+            if (re.test(tool)) return { id, source: 'tool' };
         }
     }
     return null;
+}
+
+export function runtimeRoleAccessory(agent) {
+    const resolved = resolveRoleAccessory(agent);
+    return resolved ? resolved.id : null;
 }

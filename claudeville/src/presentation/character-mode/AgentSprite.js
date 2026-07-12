@@ -4,7 +4,7 @@ import { THEME, STATUS_VISUALS, MOOD_ACCENTS, MODEL_TIER_COLORS, PROVIDER_HUES }
 import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
 import { repoProfile } from '../shared/RepoColor.js';
 import { getTeamColor } from '../shared/TeamColor.js';
-import { runtimeRoleAccessory } from '../shared/RoleAccessory.js';
+import { resolveRoleAccessory } from '../shared/RoleAccessory.js';
 import { SpriteSheet, dirFromVelocity, WALK_FRAMES, IDLE_FRAMES, DIRECTIONS } from './SpriteSheet.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { RITUAL_GESTURE_PERIOD_MS, SCENIC_POINT_POSTURE } from './RitualConductor.js';
@@ -89,6 +89,9 @@ const PROVIDER_HOME_BUILDINGS = {
 const TARGET_AGENT_CONTENT_HEIGHT = 92;
 const MIN_AGENT_DRAW_SCALE = 1;
 const MAX_AGENT_DRAW_SCALE = 1.25;
+// A tool-driven head accessory must stay the dominant candidate this long
+// before it replaces the committed one, so hats stop teleporting mid-stride.
+const ACCESSORY_HYSTERESIS_MS = 20000;
 const ACTION_TRAIL_LIMIT = 2;
 const ACTIVITY_BUBBLE_TTL_MS = 12000;
 const ACTION_TRAIL_TTL_MS = ACTIVITY_BUBBLE_TTL_MS;
@@ -469,6 +472,11 @@ export class AgentSprite {
         this._silhouetteCellCache = new Map();
         this._frozenTintCellCache = new Map();
         this._cellBoundsCache = new Map();
+        // Accessory hysteresis state (D2). `undefined` means no accessory has
+        // been committed yet, so the first one applies immediately.
+        this._committedAccessory = undefined;
+        this._accessoryCandidate = null;
+        this._accessoryCandidateSince = 0;
         this._nameTagLayoutCacheKey = '';
         this._nameTagLayoutCache = null;
         this._bubbleLayoutCacheKey = '';
@@ -2155,7 +2163,9 @@ export class AgentSprite {
         const cell = this.spriteSheet.cell(this.animState, this.direction, renderFrame);
         const cellSize = this.spriteSheet?.cellSize || 92;
         const bounds = this._getCellContentBounds(cell);
-        const drawScale = this._spriteDrawScale(bounds);
+        // Scale the body from accessory-free bounds so a hat's extra height does
+        // not shrink the villager (D3); positioning keeps hat-inclusive bounds.
+        const drawScale = this._spriteDrawScale(this._scaleBounds(cell, bounds));
         // Subtle ±0.6px sinusoidal bob while idle so the eye can find still agents.
         // IDLE-status agents bob slower and shallower to read as "resting".
         const isIdleStatus = this.agent?.status === AgentStatus.IDLE;
@@ -2289,6 +2299,9 @@ export class AgentSprite {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(baseCanvas, 0, 0);
         this._clearBakedCodexSidearmPixels(ctx, canvas.width, canvas.height, identity.modelClass);
+        // Carry the compositor's accessory-free content bounds onto the scrubbed
+        // canvas so body draw-scale still reads hat-free measurements (D3).
+        if (baseCanvas.__cvBaseBounds) canvas.__cvBaseBounds = baseCanvas.__cvBaseBounds;
         PROCESSED_SPRITE_CACHE.set(cacheKey, canvas);
         return canvas;
     }
@@ -2991,7 +3004,7 @@ export class AgentSprite {
         if (!this.spriteCanvas || !this.spriteSheet) return;
         const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
         const bounds = this._getCellContentBounds(cell);
-        const drawScale = this._spriteDrawScale(bounds);
+        const drawScale = this._spriteDrawScale(this._scaleBounds(cell, bounds));
         const drawX = this._snapWorldToScreenPixel(this.x);
         const drawY = this._snapWorldToScreenPixel(this.y);
         const contentCenterX = (bounds.minX + bounds.maxX) / 2;
@@ -3118,6 +3131,18 @@ export class AgentSprite {
         const height = Math.max(1, bounds.maxY - bounds.minY + 1);
         const scale = TARGET_AGENT_CONTENT_HEIGHT / height;
         return Math.max(MIN_AGENT_DRAW_SCALE, Math.min(MAX_AGENT_DRAW_SCALE, scale));
+    }
+
+    // Accessory-free content bounds for the cell, published by the compositor
+    // when an accessory was baked in. Falls back to the measured (hat-inclusive)
+    // bounds when none is present. Used only for body draw-scale (D3).
+    _scaleBounds(cell, fallback) {
+        const map = this.spriteCanvas?.__cvBaseBounds;
+        if (map) {
+            const b = map.get(`${cell.sx},${cell.sy},${cell.sw},${cell.sh}`);
+            if (b) return b;
+        }
+        return fallback;
     }
 
     _statusVisual() {
@@ -3260,11 +3285,49 @@ export class AgentSprite {
     }
 
     _runtimeHeadAccessory(identity, agent = this.agent) {
+        // Effort-tier accessories are permanent — apply immediately (D2).
         if (identity?.allowRuntimeEffortAccessory !== false && identity?.effortAccessory) {
-            return identity.effortAccessory;
+            return this._commitAccessoryImmediate(identity.effortAccessory);
         }
-        if (identity?.allowRuntimeRoleAccessory === false) return null;
-        return runtimeRoleAccessory(agent);
+        if (identity?.allowRuntimeRoleAccessory === false) {
+            return this._commitAccessoryImmediate(null);
+        }
+        const resolved = resolveRoleAccessory(agent);
+        // Role-derived accessories are permanent too (role is stable). Only
+        // tool-driven ones flip mid-session, so those go through hysteresis.
+        if (resolved && resolved.source === 'role') {
+            return this._commitAccessoryImmediate(resolved.id);
+        }
+        return this._debouncedToolAccessory(resolved ? resolved.id : null);
+    }
+
+    _commitAccessoryImmediate(id) {
+        this._committedAccessory = id;
+        this._accessoryCandidate = id;
+        this._accessoryCandidateSince = Date.now();
+        return id;
+    }
+
+    _debouncedToolAccessory(candidateId) {
+        const now = Date.now();
+        // First accessory an agent gets applies immediately (nothing committed
+        // yet, or only the "no hat" state).
+        if (!this._committedAccessory) {
+            return this._commitAccessoryImmediate(candidateId);
+        }
+        if (candidateId === this._committedAccessory) {
+            this._accessoryCandidate = candidateId;
+            this._accessoryCandidateSince = now;
+            return this._committedAccessory;
+        }
+        // A different candidate must stay dominant continuously before it wins.
+        if (candidateId !== this._accessoryCandidate) {
+            this._accessoryCandidate = candidateId;
+            this._accessoryCandidateSince = now;
+        } else if (now - this._accessoryCandidateSince >= ACCESSORY_HYSTERESIS_MS) {
+            this._committedAccessory = candidateId;
+        }
+        return this._committedAccessory;
     }
 
     _runtimeEffortFloorRing(identity) {
