@@ -38,15 +38,24 @@ const FALLBACK_SCATTER_H = 720;
 // fallback can't go through spawn(). Each season carries a representative
 // color + size pair used by the direct-canvas drawStatic() pass.
 const SEASONS = {
-    winter: { type: 'snow',    label: 'snow',        staticColor: '#d0eaff', staticSize: 2 },
-    spring: { type: 'leaf',    label: 'cherryPetal', staticColor: '#8fbf58', staticSize: 2 },
-    summer: { type: 'firefly', label: 'firefly',     staticColor: '#fff1a8', staticSize: 2 },
-    autumn: { type: 'leaf',    label: 'leaf',        staticColor: '#b8914b', staticSize: 2 },
+    winter: { type: 'snow',    label: 'snow',        staticColor: '#d0eaff', staticSize: 2, token: 'winter' },
+    spring: { type: 'leaf',    label: 'cherryPetal', staticColor: '#8fbf58', staticSize: 2, token: 'spring' },
+    summer: { type: 'firefly', label: 'firefly',     staticColor: '#fff1a8', staticSize: 2, token: 'summer' },
+    autumn: { type: 'leaf',    label: 'leaf',        staticColor: '#b8914b', staticSize: 2, token: 'autumn' },
     // Daytime variant of summer: butterflies by day, fireflies after dark. The
     // base season stays `summer`; _effectiveSeason swaps to this when the
     // atmosphere phase is not night.
-    summerDay: { type: 'butterfly', label: 'butterfly', staticColor: '#f4a93c', staticSize: 3 },
+    summerDay: { type: 'butterfly', label: 'butterfly', staticColor: '#f4a93c', staticSize: 3, token: 'summer' },
 };
+
+// Season token for the current atmosphere, sharing this module's month→season
+// mapping so the renderer's seasonal terrain rebake stays in lockstep with the
+// drift particles. Returns 'winter' | 'spring' | 'summer' | 'autumn' or '' when
+// the atmosphere carries no usable date.
+export function seasonTokenForAtmosphere(atmosphere) {
+    const season = seasonForMonth(monthFromAtmosphere(atmosphere));
+    return season ? season.token : '';
+}
 
 export class SeasonalAmbience {
     constructor({
@@ -55,6 +64,7 @@ export class SeasonalAmbience {
         motionScaleGetter = null,
         viewportProvider = null,
         suppressGetter = null,
+        anchorsProvider = null,
     } = {}) {
         this.particleSystem = particleSystem;
         this.atmosphereStateGetter = typeof atmosphereStateGetter === 'function'
@@ -72,6 +82,13 @@ export class SeasonalAmbience {
         this.suppressGetter = typeof suppressGetter === 'function'
             ? suppressGetter
             : () => false;
+        // C2 — world-anchored drift. Given a kind ('canopy' | 'flower'), returns
+        // screen-space candidate points (tree canopies / flower tiles). Leaves
+        // and petals emit from canopies, butterflies from flowers; snow and any
+        // type with no visible anchors fall back to viewport-random spawning.
+        this.anchorsProvider = typeof anchorsProvider === 'function'
+            ? anchorsProvider
+            : null;
         this.enabled = true;
         this._spawnAccumulator = 0;
         this._lastSeasonKey = '';
@@ -138,8 +155,33 @@ export class SeasonalAmbience {
     }
 
     _spawnDriftParticle(season) {
-        const { x, y } = this._sampleViewport();
+        const anchor = this._sampleAnchor(season.type);
+        const { x, y } = anchor || this._sampleViewport();
         this.particleSystem.spawn(season.type, x, y, 1, { layer: 'screen' });
+    }
+
+    // Pick a world-anchored spawn point for types that read as coming from the
+    // scenery: leaves/petals from tree canopies, butterflies from flower tiles.
+    // Returns null (→ viewport-random) for snow/fireflies or when no anchor of
+    // the requested kind is currently visible.
+    _sampleAnchor(type) {
+        if (!this.anchorsProvider) return null;
+        let kind = null;
+        if (type === 'leaf') kind = 'canopy';
+        else if (type === 'butterfly') kind = 'flower';
+        else return null;
+
+        let points = null;
+        try {
+            points = this.anchorsProvider(kind);
+        } catch (_err) {
+            points = null;
+        }
+        if (!Array.isArray(points) || points.length === 0) return null;
+
+        const p = points[Math.floor(Math.random() * points.length)];
+        if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+        return { x: Math.round(p.x), y: Math.round(p.y) };
     }
 
     // Reduced motion: ParticleSystem.spawn() is gated by motionEnabled and

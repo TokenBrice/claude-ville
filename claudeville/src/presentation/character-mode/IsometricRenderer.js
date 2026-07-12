@@ -46,7 +46,7 @@ import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState } from './AtmosphereState.js';
 import { WeatherRenderer } from './WeatherRenderer.js';
-import { SeasonalAmbience } from './SeasonalAmbience.js';
+import { SeasonalAmbience, seasonTokenForAtmosphere } from './SeasonalAmbience.js';
 import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
@@ -397,6 +397,9 @@ export class IsometricRenderer {
             // screen (the celebratory gull scatter window) so it doesn't compete
             // with the live event.
             suppressGetter: () => this._gullScatterActive(),
+            // C2 — anchor leaf/petal drift to visible tree canopies and
+            // butterflies to flower tiles; snow keeps its viewport-wide fall.
+            anchorsProvider: (kind) => this._seasonalDriftAnchors(kind),
         });
         this.landmarkActivity = new LandmarkActivity({ world: this.world, sprites: this.sprites });
         this.chronicleStore = options.chronicleStore || null;
@@ -610,6 +613,7 @@ export class IsometricRenderer {
                         ctx,
                         swaySeed,
                         () => this._drawFantasyForestTree(ctx, x, y, t),
+                        t.tileX,
                     ),
                 });
             }
@@ -627,6 +631,7 @@ export class IsometricRenderer {
                     ctx,
                     swaySeed,
                     () => { if (this.sprites) this.sprites.drawSprite(ctx, id, x, y); },
+                    t.tileX,
                 ),
             });
         });
@@ -3940,6 +3945,71 @@ export class IsometricRenderer {
         return this.camera.getViewportTileBounds(margin);
     }
 
+    // Season token for the live atmosphere, using SeasonalAmbience's shared
+    // month→season mapping so the baked ground and the drift particles agree.
+    _currentSeasonToken() {
+        const atmosphere = this._lastAtmosphere ?? this.atmosphereState?.snapshot?.() ?? null;
+        return seasonTokenForAtmosphere(atmosphere) || 'summer';
+    }
+
+    // C2 — screen-space spawn anchors for SeasonalAmbience drift. 'canopy'
+    // returns visible tree-canopy tops (leaves/petals fall from them), 'flower'
+    // returns visible flower tiles (butterflies rise from them). Memoized per
+    // frame (keyed on waterFrame) so ~4 spawns/s don't re-scan the scenery each
+    // time. Returns [] when nothing of that kind is on screen → the caller falls
+    // back to viewport-random spawning.
+    _seasonalDriftAnchors(kind) {
+        const frameToken = this.waterFrame;
+        if (this._driftAnchorFrame !== frameToken || !this._driftAnchorCache) {
+            this._driftAnchorFrame = frameToken;
+            this._driftAnchorCache = { canopy: null, flower: null };
+        }
+        const cache = this._driftAnchorCache;
+        if (cache[kind]) return cache[kind];
+        const points = kind === 'flower'
+            ? this._collectFlowerAnchors()
+            : this._collectCanopyAnchors();
+        cache[kind] = points;
+        return points;
+    }
+
+    _collectCanopyAnchors() {
+        const out = [];
+        const camera = this.camera;
+        if (!camera) return out;
+        const vp = this._screenViewport();
+        const zoom = camera.zoom || 1;
+        for (const tree of this.treePropSprites || []) {
+            const wx = (tree.tileX - tree.tileY) * TILE_WIDTH / 2;
+            const wy = (tree.tileX + tree.tileY) * TILE_HEIGHT / 2;
+            const p = camera.worldToScreen(wx, wy);
+            if (p.x < -20 || p.y < -20 || p.x > vp.width + 20 || p.y > vp.height + 20) continue;
+            out.push({ x: p.x, y: p.y - 30 * zoom }); // offset up onto the canopy
+            if (out.length >= 48) break;
+        }
+        return out;
+    }
+
+    _collectFlowerAnchors() {
+        const out = [];
+        const camera = this.camera;
+        if (!camera || !this.flowerTiles) return out;
+        const vp = this._screenViewport();
+        for (const key of this.flowerTiles.keys()) {
+            const comma = key.indexOf(',');
+            if (comma < 0) continue;
+            const tileX = Number(key.slice(0, comma));
+            const tileY = Number(key.slice(comma + 1));
+            const wx = (tileX - tileY) * TILE_WIDTH / 2;
+            const wy = (tileX + tileY) * TILE_HEIGHT / 2;
+            const p = camera.worldToScreen(wx, wy);
+            if (p.x < -20 || p.y < -20 || p.x > vp.width + 20 || p.y > vp.height + 20) continue;
+            out.push({ x: p.x, y: p.y - 6 });
+            if (out.length >= 48) break;
+        }
+        return out;
+    }
+
     _getTerrainCache() {
         const bounds = this._terrainCacheBounds();
         const meta = this._getTerrainCacheMeta(bounds);
@@ -3951,7 +4021,12 @@ export class IsometricRenderer {
             return null;
         }
         const dpr = 1;
-        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|edge|atmo-persp`;
+        // C1 — a season token keyed into the cache so the ground decals rebake
+        // only when the season actually changes (four discrete values), never
+        // per frame. Stored for _drawGroundDecals / _drawTile to branch on.
+        const season = this._currentSeasonToken();
+        this._terrainSeason = season;
+        const key = `${bounds.x},${bounds.y},${bounds.w},${bounds.h}@${dpr}|${this.assets ? 'assets' : 'fallback'}|edge|atmo-persp|season:${season}`;
         if (this.terrainCache && this.terrainCacheKey === key) {
             return { canvas: this.terrainCache, bounds };
         }
@@ -5156,7 +5231,7 @@ export class IsometricRenderer {
     // Apply a small horizontal offset to a tree drawFn based on the current
     // atmosphere wind. Clamped to ±2 px so pixel-art sprites do not shimmer;
     // skipped under reduced motion (motionScale === 0).
-    _withTreeSway(ctx, seed, drawFn) {
+    _withTreeSway(ctx, seed, drawFn, tileX = 0) {
         if (typeof drawFn !== 'function') return;
         const motionScale = this.motionScale ?? 1;
         const windX = Number(this._lastAtmosphere?.motion?.windX) || 0;
@@ -5167,7 +5242,14 @@ export class IsometricRenderer {
         const t = (typeof performance !== 'undefined' && performance.now
             ? performance.now()
             : Date.now()) * 0.001;
-        let dx = Math.sin(t + seed) * windX * 1.5;
+        // Spatially-phased gust envelope: wind crosses the forest in slow
+        // travelling waves (tileX phase offset) so neighbouring canopies crest a
+        // beat apart instead of swaying in lockstep. The whole sprite still moves
+        // as one unit — the closure-based drawFn can't be cleanly split into
+        // canopy vs trunk without doubling per-tree draw cost — so this stays the
+        // gust-modulated whole-sprite fallback the motion budget prefers.
+        const gust = 0.4 + 0.6 * Math.sin(t * 0.13 + tileX * 0.05);
+        let dx = Math.sin(t + seed) * windX * 1.5 * gust;
         if (dx > 2) dx = 2;
         else if (dx < -2) dx = -2;
         const offset = Math.round(dx);
@@ -6169,9 +6251,14 @@ export class IsometricRenderer {
                     const flowerId = ['veg.flower.a', 'veg.flower.b', 'veg.flower.c'][(fInfo?.variant ?? 0) % 3];
                     if (this.sprites) this.sprites.drawSprite(ctx, flowerId, screenX, screenY);
                 }
-                if (this.featureTiles?.get(key) === 'reeds') {
+                const feature = this.featureTiles?.get(key);
+                if (feature === 'reeds') {
                     const reedId = seed > 0.58 ? 'veg.reed.a' : 'veg.reed.b';
                     if (this.sprites) this.sprites.drawSprite(ctx, reedId, screenX, screenY);
+                } else if (feature === 'stones') {
+                    this._drawFeatureStones(ctx, screenX, screenY, tileX, tileY);
+                } else if (feature === 'mushrooms') {
+                    this._drawFeatureMushrooms(ctx, screenX, screenY, tileX, tileY);
                 }
             }
         }
@@ -6229,6 +6316,11 @@ export class IsometricRenderer {
                 if (p) ctx.fillRect(p.ox, p.oy, 2, 1);
             }
         } else {
+            // Season drives which flecks/litter/blooms bake into the grass. The
+            // token only flips on season boundaries, so this stays a rebake, not
+            // a per-frame cost. Summer keeps the original look.
+            const season = this._terrainSeason || 'summer';
+
             // Land grass/dirt: pebble + tonal flecks so each diamond varies.
             const fleckNoise = this._decalRand(tileX, tileY, 3);
             const fleckCount = fleckNoise > 0.72 ? 4 : fleckNoise > 0.4 ? 3 : 2;
@@ -6236,35 +6328,72 @@ export class IsometricRenderer {
                 const p = place(40 + i * 13, 48, 24);
                 if (!p) continue;
                 const tone = this._decalRand(tileX, tileY, 200 + i);
-                ctx.fillStyle = tone > 0.66
-                    ? 'rgba(150, 152, 120, 0.20)'   // light pebble
-                    : tone > 0.33
-                        ? 'rgba(44, 40, 30, 0.24)'  // dark soil pebble
-                        : 'rgba(58, 84, 30, 0.20)'; // deep grass fleck
+                if (season === 'winter' && tone > 0.5) {
+                    // Pale snow flecks settling over the grass.
+                    ctx.fillStyle = tone > 0.78
+                        ? 'rgba(232, 242, 252, 0.34)'
+                        : 'rgba(206, 222, 238, 0.24)';
+                } else {
+                    ctx.fillStyle = tone > 0.66
+                        ? 'rgba(150, 152, 120, 0.20)'   // light pebble
+                        : tone > 0.33
+                            ? 'rgba(44, 40, 30, 0.24)'  // dark soil pebble
+                            : 'rgba(58, 84, 30, 0.20)'; // deep grass fleck
+                }
                 ctx.fillRect(p.ox, p.oy, tone > 0.85 ? 2 : 1, 1);
             }
 
-            // Leaf litter under the northern canopy.
-            if (tileY <= 14 && this._decalRand(tileX, tileY, 71) > 0.62) {
+            // Leaf litter under the northern canopy — autumn spreads it across
+            // the whole map and lays it down more often, thickened with a second
+            // flake; other seasons keep it to the northern treeline.
+            const litterEverywhere = season === 'autumn';
+            const litterThreshold = litterEverywhere ? 0.42 : 0.62;
+            if ((litterEverywhere || tileY <= 14) && this._decalRand(tileX, tileY, 71) > litterThreshold) {
                 ctx.fillStyle = this._decalRand(tileX, tileY, 72) > 0.5
                     ? 'rgba(156, 112, 48, 0.22)'
                     : 'rgba(116, 82, 40, 0.20)';
                 const p = place(73, 44, 22);
-                if (p) ctx.fillRect(p.ox, p.oy, 2, 1);
+                if (p) {
+                    ctx.fillRect(p.ox, p.oy, 2, 1);
+                    if (litterEverywhere && this._decalRand(tileX, tileY, 74) > 0.5) {
+                        const p2 = place(75, 46, 22);
+                        if (p2) ctx.fillRect(p2.ox, p2.oy, 1, 1);
+                    }
+                }
             }
 
             // Wildflower dabs — tiny color pops scattered through the grass.
-            if (this._decalRand(tileX, tileY, 90) > 0.84) {
+            // Spring blooms harder with a blossom-forward palette; winter keeps
+            // only a few frost-muted survivors.
+            const wildflowerThreshold = season === 'spring' ? 0.70
+                : season === 'winter' ? 0.93
+                : 0.84;
+            if (this._decalRand(tileX, tileY, 90) > wildflowerThreshold) {
                 const fc = this._decalRand(tileX, tileY, 91);
-                ctx.fillStyle = fc > 0.75 ? 'rgba(246, 234, 122, 0.90)'   // buttercup yellow
-                    : fc > 0.50 ? 'rgba(238, 240, 244, 0.88)'             // white daisy
-                    : fc > 0.25 ? 'rgba(228, 150, 198, 0.84)'             // pink clover
-                    : 'rgba(178, 150, 228, 0.84)';                        // violet
+                if (season === 'winter') {
+                    ctx.fillStyle = fc > 0.6
+                        ? 'rgba(214, 220, 228, 0.72)'
+                        : 'rgba(198, 186, 214, 0.66)';
+                } else if (season === 'spring') {
+                    ctx.fillStyle = fc > 0.66 ? 'rgba(248, 206, 224, 0.90)'   // blossom pink
+                        : fc > 0.33 ? 'rgba(240, 242, 246, 0.88)'             // white petal
+                        : 'rgba(246, 234, 122, 0.90)';                        // buttercup yellow
+                } else {
+                    ctx.fillStyle = fc > 0.75 ? 'rgba(246, 234, 122, 0.90)'   // buttercup yellow
+                        : fc > 0.50 ? 'rgba(238, 240, 244, 0.88)'             // white daisy
+                        : fc > 0.25 ? 'rgba(228, 150, 198, 0.84)'             // pink clover
+                        : 'rgba(178, 150, 228, 0.84)';                        // violet
+                }
                 const p = place(92, 42, 20);
                 if (p) {
                     ctx.fillRect(p.ox, p.oy, 1, 1);
                     if (fc > 0.60) ctx.fillRect(p.ox + 1, p.oy, 1, 1);
                     if (fc > 0.90) ctx.fillRect(p.ox, p.oy - 1, 1, 1);
+                    // Spring adds an extra blossom dab for fuller bloom.
+                    if (season === 'spring' && fc > 0.4) {
+                        const pb = place(93, 40, 20);
+                        if (pb) ctx.fillRect(pb.ox, pb.oy, 1, 1);
+                    }
                 }
             }
 
@@ -6274,6 +6403,57 @@ export class IsometricRenderer {
                 ctx.beginPath();
                 ctx.ellipse(Math.round(screenX), Math.round(screenY + 2), 13, 6, 0, 0, Math.PI * 2);
                 ctx.fill();
+            }
+        }
+        ctx.restore();
+    }
+
+    // C5 — pebble clusters on 'stones' feature tiles. 3-4 small grey rects with
+    // a highlight pixel, styled like the ground flecks. Baked into the terrain
+    // cache; deterministic via the per-tile decal seed.
+    _drawFeatureStones(ctx, screenX, screenY, tileX, tileY) {
+        const count = this._decalRand(tileX, tileY, 301) > 0.5 ? 4 : 3;
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const u = this._decalRand(tileX, tileY, 310 + i * 3);
+            const v = this._decalRand(tileX, tileY, 311 + i * 3);
+            const ox = Math.round(screenX + (u - 0.5) * 26);
+            const oy = Math.round(screenY + (v - 0.5) * 12);
+            const w = this._decalRand(tileX, tileY, 312 + i * 3) > 0.6 ? 2 : 1;
+            ctx.fillStyle = 'rgba(118, 120, 116, 0.85)';   // stone body
+            ctx.fillRect(ox, oy, w, 1);
+            ctx.fillStyle = 'rgba(150, 152, 148, 0.90)';   // top highlight
+            ctx.fillRect(ox, oy - 1, 1, 1);
+            ctx.fillStyle = 'rgba(66, 68, 66, 0.60)';      // grounding shadow
+            ctx.fillRect(ox, oy + 1, w, 1);
+        }
+        ctx.restore();
+    }
+
+    // C5 — tiny mushrooms on 'mushrooms' feature tiles: stem + red/tan cap, with
+    // a faint cyan glow dot under the northern canopy (tileY <= 14). Baked;
+    // deterministic via the per-tile decal seed.
+    _drawFeatureMushrooms(ctx, screenX, screenY, tileX, tileY) {
+        const count = this._decalRand(tileX, tileY, 401) > 0.55 ? 3 : 2;
+        const underCanopy = tileY <= 14;
+        ctx.save();
+        for (let i = 0; i < count; i++) {
+            const u = this._decalRand(tileX, tileY, 410 + i * 4);
+            const v = this._decalRand(tileX, tileY, 411 + i * 4);
+            const ox = Math.round(screenX + (u - 0.5) * 22);
+            const oy = Math.round(screenY + (v - 0.5) * 10);
+            ctx.fillStyle = 'rgba(226, 214, 190, 0.90)';   // stem
+            ctx.fillRect(ox, oy, 1, 2);
+            const red = this._decalRand(tileX, tileY, 412 + i * 4) > 0.5;
+            ctx.fillStyle = red ? 'rgba(178, 58, 46, 0.92)' : 'rgba(180, 138, 92, 0.90)'; // cap
+            ctx.fillRect(ox - 1, oy - 1, 3, 1);
+            if (red) {
+                ctx.fillStyle = 'rgba(238, 224, 210, 0.85)'; // cap fleck
+                ctx.fillRect(ox, oy - 1, 1, 1);
+            }
+            if (underCanopy) {
+                ctx.fillStyle = 'rgba(150, 243, 255, 0.50)'; // faint bioluminescent glow
+                ctx.fillRect(ox, oy - 2, 1, 1);
             }
         }
         ctx.restore();
@@ -8757,7 +8937,99 @@ export class IsometricRenderer {
             ctx.restore();
         }
 
+        this._drawLanternGlows(ctx, canvas, atmosphere);
+
         ctx.restore();
+    }
+
+    // C3 — warm halos on the baked lantern/brazier props. They darken with the
+    // terrain cache at night, so a small radial glow per visible prop restores
+    // the torchlight after dusk. Alpha tracks the beacon (night) factor; a faint
+    // deterministic flicker plays under motion, static alpha under reduced
+    // motion. Only runs in the full atmosphere path (the fast path drops glows
+    // by design — that's E3's territory).
+    _drawLanternGlows(ctx, canvas, atmosphere = null) {
+        const nightFactor = this._lanternNightFactor(atmosphere);
+        if (nightFactor <= 0.05) return;
+        const sources = this._lanternGlowSources();
+        if (!sources.length) return;
+
+        const stamp = this._getLanternGlowStamp();
+        const zoom = this.camera?.zoom || 1;
+        const radius = Math.max(8, Math.round(12 * zoom));
+        const t = this.waterFrame;
+        const flickerOn = (this.motionScale ?? 1) > 0;
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'source-over';
+        for (const src of sources) {
+            const p = this.camera.worldToScreen(src.x, src.y);
+            if (p.x < -radius || p.y < -radius || p.x > canvas.width + radius || p.y > canvas.height + radius) continue;
+            const flick = flickerOn ? 0.86 + 0.14 * Math.sin(t * 5 + src.phase) : 1;
+            ctx.globalAlpha = this._quantizedAlpha(Math.min(0.5, 0.42 * nightFactor * flick));
+            ctx.drawImage(stamp, p.x - radius, p.y - radius, radius * 2, radius * 2);
+        }
+        ctx.restore();
+    }
+
+    // Night factor from the atmosphere's beacon intensity (0 in daylight, rising
+    // through dusk to full at night); falls back to inverse ambient light.
+    _lanternNightFactor(atmosphere = null) {
+        const lighting = atmosphere?.lighting || this._lastAtmosphere?.lighting || null;
+        if (!lighting) return 0;
+        const beacon = Number(lighting.beaconIntensity);
+        if (Number.isFinite(beacon)) return Math.max(0, Math.min(1, beacon));
+        const ambient = Number(lighting.ambientLight);
+        return Number.isFinite(ambient) ? Math.max(0, Math.min(1, 1 - ambient)) : 0;
+    }
+
+    // World-space lantern/brazier positions gathered once from the scenery
+    // config (prop.lantern / prop.runeBrazier across the ambient, district, and
+    // scenic-point prop sets), lifted to the flame and given a deterministic
+    // flicker phase. Memoized — the prop layout never changes at runtime.
+    _lanternGlowSources() {
+        if (this._lanternGlowSourcesCache) return this._lanternGlowSourcesCache;
+        const out = [];
+        const push = (tileX, tileY) => {
+            if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return;
+            const x = (tileX - tileY) * TILE_WIDTH / 2;
+            const y = (tileX + tileY) * TILE_HEIGHT / 2 - 10; // lift onto the flame
+            const phase = (Math.sin(tileX * 12.9898 + tileY * 78.233) * 43758.5453) % (Math.PI * 2);
+            out.push({ x, y, phase });
+        };
+        for (const prop of AMBIENT_GROUND_PROPS) {
+            if (prop.type === 'lantern') push(prop.tileX, prop.tileY);
+        }
+        for (const prop of DISTRICT_PROPS) {
+            if (prop.id === 'prop.lantern' || prop.id === 'prop.runeBrazier') push(prop.tileX, prop.tileY);
+        }
+        for (const prop of SCENIC_POINT_PROPS) {
+            if (prop.id === 'prop.lantern' || prop.id === 'prop.runeBrazier') push(prop.tileX, prop.tileY);
+        }
+        this._lanternGlowSourcesCache = out;
+        return out;
+    }
+
+    // Small cached warm-glow stamp reused for every lantern/brazier halo. Core
+    // matches the existing lantern token (#ffd56a) so it reads as torchlight.
+    _getLanternGlowStamp() {
+        if (this._lanternGlowStamp) return this._lanternGlowStamp;
+        const size = 48;
+        const stamp = document.createElement('canvas');
+        stamp.width = size;
+        stamp.height = size;
+        const sctx = stamp.getContext('2d');
+        const r = size / 2;
+        const glow = sctx.createRadialGradient(r, r, 0, r, r, r);
+        glow.addColorStop(0, 'rgba(255, 213, 106, 0.90)');  // #ffd56a warm core
+        glow.addColorStop(0.5, 'rgba(255, 190, 92, 0.32)');
+        glow.addColorStop(1, 'rgba(255, 190, 92, 0)');
+        sctx.fillStyle = glow;
+        sctx.beginPath();
+        sctx.arc(r, r, r, 0, Math.PI * 2);
+        sctx.fill();
+        this._lanternGlowStamp = stamp;
+        return stamp;
     }
 
     _shouldUseFastAtmosphere() {
