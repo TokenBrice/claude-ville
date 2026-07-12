@@ -2,6 +2,25 @@
 
 ---
 
+## v0.24.1 — *Stoneward* · Jul 12, 2026
+
+ClaudeVille's waterfront boundary has grown into a proper fortified entrance. The old flat palisade and loosely assembled gate are replaced by darker timberwork, continuous masonry, asset-backed watchtowers, and a civic arch that carries the village name as part of the structure.
+
+**A gate worthy of the village**
+- **Asset-backed gatehouse.** New hand-finished PixelLab sprites provide matching stone-and-timber watchtowers and a dedicated central arch, with `CLAUDEVILLE` baked into the masonry instead of painted as runtime canvas text.
+- **One coherent structure.** The arch, animated door leaves, and tower jambs now layer in architectural order; the connector follows the world's isometric axis and remains aligned in both open and closed states.
+- **Stronger doors and warmer arrival.** Braced timber leaves replace the flat slabs, while paired gate braziers provide balanced light without a hanging lantern obscuring the entrance.
+
+**The fortified boundary**
+- **Continuous stone footing.** The waterfront wall now sits on cool-grey mortared masonry that matches the gate towers and nearby village buildings.
+- **Purposeful timberwork.** Dark walnut panels, cross braces, calmer stake spacing, stone buttresses, restrained slate caps, ivy, and torch details give the palisade depth without competing with the village interior.
+
+**Every villager stays grounded**
+- **Accessory cells are isolated.** Hats and equipment are clipped to their owning animation cell during composition, preventing tall accessories from leaking into adjacent frames and being mistaken for another frame's feet.
+- **Provider-wide protection.** The grounding correction applies to every agent model and accessory combination, including the GPT-5.6 villagers that first exposed the levitation bug.
+
+---
+
 ## v0.24.0 — *Bells & Birdsong* · Jul 12, 2026
 
 The village finds its voice. The old sound toggle played a fixed synth drone that ignored everything on screen; it is replaced by a reactive soundscape that scores what the village is actually doing — and a proper tune. Still fully procedural Web Audio: no samples, no assets, no build step. Sound stays opt-in and off by default.

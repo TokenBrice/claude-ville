@@ -245,9 +245,9 @@ const VILLAGE_WOOD_PALETTE = Object.freeze({
     outline: '#1b1009',
     deep: '#2b170c',
     dark: '#3f2412',
-    mid: '#6e421f',
-    light: '#a96d34',
-    cut: '#d09652',
+    mid: '#62391d',
+    light: '#8b542a',
+    cut: '#c18345',
     rope: '#c9a15d',
     ropeDark: '#7f5b2b',
     moss: '#4f7b3d',
@@ -258,13 +258,17 @@ const VILLAGE_WOOD_PALETTE = Object.freeze({
     glow: 'rgba(255, 202, 94, 0.26)',
 });
 const VILLAGE_STONE_PALETTE = Object.freeze({
-    light: '#cfc6b3',
-    mid: '#bdb6a8',
-    shadow: '#a59e8d',
-    mortar: '#5b574e',
+    light: '#aaa6ad',
+    mid: '#777480',
+    shadow: '#514b5c',
+    mortar: '#302b37',
     moss: '#4f7b3d',
     outline: '#1b1009',
 });
+const VILLAGE_GATE_TOWER_HALF_TILES = 1.55;
+const VILLAGE_GATE_TOWER_SPRITE_ID = 'prop.villageGateTower';
+const VILLAGE_GATE_ARCH_SPRITE_ID = 'prop.villageGateArch';
+const VILLAGE_GATE_ARCH_COLUMN_SPAN = 104;
 const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
 class StaticPropSprite {
     constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null }) {
@@ -4330,7 +4334,7 @@ export class IsometricRenderer {
         const centerTileX = VILLAGE_GATE.tileX;
         const tileY = VILLAGE_GATE.tileY;
         const halfWidth = VILLAGE_GATE.widthTiles / 2;
-        const towerHalf = 3.18;
+        const towerHalf = VILLAGE_GATE_TOWER_HALF_TILES;
         const sideStubInset = 0.3;
         const center = this._tileToWorld(centerTileX, tileY);
         const localPoint = (tileX) => {
@@ -4349,11 +4353,15 @@ export class IsometricRenderer {
 
         const leftBase = { x: originX + leftTower.x, y: originY + leftTower.y };
         const rightBase = { x: originX + rightTower.x, y: originY + rightTower.y };
+        const hasGateArchSprite = Boolean(this.assets?.get?.(VILLAGE_GATE_ARCH_SPRITE_ID));
         this._drawVillageGateThreshold(ctx, leftBase, rightBase);
+        if (!hasGateArchSprite) this._drawVillageGateArch(ctx, leftBase, rightBase);
+        this._drawVillageGateDoors(ctx, leftBase, rightBase);
+        // Towers mask the animated door endpoints. The asset-backed connector
+        // is cropped to its central masonry, so it can cap that joint cleanly.
         this._drawVillageGateTower(ctx, leftBase.x, leftBase.y, -1);
         this._drawVillageGateTower(ctx, rightBase.x, rightBase.y, 1);
-        this._drawVillageGateArch(ctx, leftBase, rightBase);
-        this._drawVillageGateDoors(ctx, leftBase, rightBase);
+        if (hasGateArchSprite) this._drawVillageGateArch(ctx, leftBase, rightBase);
         this._drawGateBrazier(ctx, leftBase.x - 9, leftBase.y + 13);
         this._drawGateBrazier(ctx, rightBase.x + 9, rightBase.y + 13);
     }
@@ -4409,6 +4417,18 @@ export class IsometricRenderer {
     }
 
     _drawVillageGateTower(ctx, x, y, side = 1) {
+        const tower = this.assets?.get?.(VILLAGE_GATE_TOWER_SPRITE_ID);
+        if (tower) {
+            const [ax, ay] = this.assets.getAnchor(VILLAGE_GATE_TOWER_SPRITE_ID);
+            ctx.save();
+            SpriteRenderer.disableSmoothing(ctx);
+            ctx.translate(Math.round(x), Math.round(y));
+            ctx.scale(0.72, 0.72);
+            ctx.drawImage(tower, Math.round(-ax), Math.round(-ay));
+            ctx.restore();
+            return;
+        }
+
         const wood = VILLAGE_WOOD_PALETTE;
         const stone = VILLAGE_STONE_PALETTE;
         const w = 64;
@@ -4617,23 +4637,41 @@ export class IsometricRenderer {
     }
 
     _drawVillageGateArch(ctx, leftBase, rightBase) {
-        const wood = VILLAGE_WOOD_PALETTE;
-        const stone = VILLAGE_STONE_PALETTE;
         const dx = rightBase.x - leftBase.x;
         const dy = rightBase.y - leftBase.y;
         const length = Math.max(1, Math.hypot(dx, dy));
         const ux = dx / length;
         const uy = dy / length;
+        const arch = this.assets?.get?.(VILLAGE_GATE_ARCH_SPRITE_ID);
+        if (arch) {
+            const [ax, ay] = this.assets.getAnchor(VILLAGE_GATE_ARCH_SPRITE_ID);
+            const scale = length / VILLAGE_GATE_ARCH_COLUMN_SPAN;
+            const midBase = {
+                x: (leftBase.x + rightBase.x) / 2,
+                y: (leftBase.y + rightBase.y) / 2,
+            };
+            ctx.save();
+            SpriteRenderer.disableSmoothing(ctx);
+            ctx.translate(Math.round(midBase.x), Math.round(midBase.y));
+            // Preserve screen-vertical masonry while mapping the baked span
+            // onto the same isometric axis as the gate threshold.
+            ctx.transform(ux * scale, uy * scale, 0, scale, 0, 0);
+            ctx.drawImage(arch, Math.round(-ax), Math.round(-ay));
+            ctx.restore();
+            return;
+        }
+
+        const wood = VILLAGE_WOOD_PALETTE;
+        const stone = VILLAGE_STONE_PALETTE;
         const lintelInset = 22;
         const lintelHeight = 26;
         const start = { x: leftBase.x + ux * lintelInset, y: leftBase.y + uy * lintelInset - 110 };
         const end = { x: rightBase.x - ux * lintelInset, y: rightBase.y - uy * lintelInset - 110 };
-        const mid = { x: (start.x + end.x) / 2, y: (start.y + end.y) / 2 };
 
         ctx.save();
         SpriteRenderer.disableSmoothing(ctx);
 
-        // Lintel main beam
+        // Stone lintel locks the two tower bases into a single civic gateway.
         const trace = (...points) => {
             ctx.beginPath();
             ctx.moveTo(Math.round(points[0].x), Math.round(points[0].y));
@@ -4646,14 +4684,14 @@ export class IsometricRenderer {
             { x: end.x, y: end.y + lintelHeight },
             { x: start.x, y: start.y + lintelHeight },
         );
-        ctx.fillStyle = wood.mid;
+        ctx.fillStyle = stone.mid;
         ctx.fill();
         ctx.strokeStyle = stone.outline;
         ctx.lineWidth = 2;
         ctx.stroke();
 
         // Top edge highlight
-        ctx.strokeStyle = wood.cut;
+        ctx.strokeStyle = stone.light;
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.moveTo(Math.round(start.x), Math.round(start.y + 1));
@@ -4661,7 +4699,7 @@ export class IsometricRenderer {
         ctx.stroke();
 
         // Bottom shadow line
-        ctx.strokeStyle = '#3f2412';
+        ctx.strokeStyle = stone.mortar;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(Math.round(start.x), Math.round(start.y + lintelHeight - 1));
@@ -4669,7 +4707,7 @@ export class IsometricRenderer {
         ctx.stroke();
 
         // Iron straps (two evenly spaced)
-        ctx.fillStyle = '#2c190d';
+        ctx.fillStyle = stone.mortar;
         for (const t of [0.32, 0.68]) {
             const sx = start.x + (end.x - start.x) * t;
             const sy = start.y + (end.y - start.y) * t;
@@ -4678,14 +4716,13 @@ export class IsometricRenderer {
 
         // Corbel brackets at each end (carved support pieces)
         for (const corbel of [
-            { x: start.x, dir: 1 },
-            { x: end.x, dir: -1 },
+            { x: start.x, y: start.y + lintelHeight, dir: 1 },
+            { x: end.x, y: end.y + lintelHeight, dir: -1 },
         ]) {
-            const cy = start.y + lintelHeight;
             trace(
-                { x: corbel.x, y: cy },
-                { x: corbel.x, y: cy + 12 },
-                { x: corbel.x + corbel.dir * 12, y: cy },
+                { x: corbel.x, y: corbel.y },
+                { x: corbel.x, y: corbel.y + 12 },
+                { x: corbel.x + corbel.dir * 12, y: corbel.y },
             );
             ctx.fillStyle = wood.deep;
             ctx.fill();
@@ -4694,55 +4731,59 @@ export class IsometricRenderer {
             ctx.stroke();
         }
 
-        // Plaque mounted on the lintel
-        const plaqueWidth = Math.min(96, length * 0.42);
-        const plaqueHeight = 14;
-        const plaqueY = start.y + lintelHeight + 2;
-        ctx.fillStyle = wood.deep;
-        ctx.fillRect(Math.round(mid.x - plaqueWidth / 2), Math.round(plaqueY), plaqueWidth, plaqueHeight);
-        ctx.strokeStyle = stone.outline;
+        // Recess the village name into the masonry. The shallow arch echoes a
+        // carved entrance panel and keeps the lettering clear of both doors.
+        const plaqueSpan = Math.min(88, length * 0.76);
+        const plaqueHeight = 15;
+        const plaqueInset = (length - plaqueSpan) / 2;
+        const plaqueStart = {
+            x: start.x + ux * plaqueInset,
+            y: start.y + uy * plaqueInset + 3,
+        };
+        const plaqueEnd = {
+            x: end.x - ux * plaqueInset,
+            y: end.y - uy * plaqueInset + 3,
+        };
+        const plaqueMid = {
+            x: (plaqueStart.x + plaqueEnd.x) / 2,
+            y: (plaqueStart.y + plaqueEnd.y) / 2,
+        };
+        ctx.fillStyle = stone.shadow;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(plaqueStart.x), Math.round(plaqueStart.y + plaqueHeight));
+        ctx.lineTo(Math.round(plaqueStart.x), Math.round(plaqueStart.y + 4));
+        ctx.quadraticCurveTo(
+            Math.round(plaqueMid.x),
+            Math.round(plaqueMid.y - 4),
+            Math.round(plaqueEnd.x),
+            Math.round(plaqueEnd.y + 4),
+        );
+        ctx.lineTo(Math.round(plaqueEnd.x), Math.round(plaqueEnd.y + plaqueHeight));
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = stone.light;
         ctx.lineWidth = 1;
-        ctx.strokeRect(Math.round(mid.x - plaqueWidth / 2), Math.round(plaqueY), plaqueWidth, plaqueHeight);
-        // Plaque text
-        ctx.fillStyle = wood.cut;
-        ctx.font = '700 9px ui-monospace, monospace';
+        ctx.stroke();
+        ctx.strokeStyle = stone.mortar;
+        ctx.beginPath();
+        ctx.moveTo(
+            Math.round(plaqueStart.x + ux * 3),
+            Math.round(plaqueStart.y + uy * 3 + plaqueHeight - 2),
+        );
+        ctx.lineTo(
+            Math.round(plaqueEnd.x - ux * 3),
+            Math.round(plaqueEnd.y - uy * 3 + plaqueHeight - 2),
+        );
+        ctx.stroke();
+        ctx.fillStyle = '#d8d2c4';
+        ctx.font = '700 7px ui-monospace, monospace';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText('CLAUDEVILLE', Math.round(mid.x), Math.round(plaqueY + plaqueHeight / 2 + 1));
-
-        // Hanging chain
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(mid.x), Math.round(plaqueY + plaqueHeight));
-        ctx.lineTo(Math.round(mid.x), Math.round(plaqueY + plaqueHeight + 14));
-        ctx.stroke();
-
-        // Iron lantern body
-        const lanternX = mid.x;
-        const lanternY = plaqueY + plaqueHeight + 14;
-        ctx.fillStyle = '#2c190d';
-        ctx.fillRect(Math.round(lanternX - 7), Math.round(lanternY), 14, 16);
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 1.5;
-        ctx.strokeRect(Math.round(lanternX - 7), Math.round(lanternY), 14, 16);
-        // Lantern flame core
-        ctx.fillStyle = wood.lantern;
-        ctx.fillRect(Math.round(lanternX - 4), Math.round(lanternY + 3), 8, 10);
-        // Lantern bars
-        ctx.strokeStyle = stone.outline;
-        ctx.lineWidth = 0.5;
-        ctx.beginPath();
-        ctx.moveTo(Math.round(lanternX), Math.round(lanternY));
-        ctx.lineTo(Math.round(lanternX), Math.round(lanternY + 16));
-        ctx.moveTo(Math.round(lanternX - 7), Math.round(lanternY + 8));
-        ctx.lineTo(Math.round(lanternX + 7), Math.round(lanternY + 8));
-        ctx.stroke();
-        // Glow halo
-        ctx.fillStyle = wood.glow;
-        ctx.beginPath();
-        ctx.ellipse(Math.round(lanternX), Math.round(lanternY + 8), 22, 12, 0, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.save();
+        ctx.translate(Math.round(plaqueMid.x), Math.round(plaqueMid.y + 9));
+        ctx.rotate(Math.atan2(uy, ux));
+        ctx.fillText('CLAUDEVILLE', 0, 0);
+        ctx.restore();
 
         ctx.restore();
     }
@@ -4825,15 +4866,19 @@ export class IsometricRenderer {
             ctx.fill();
         } else {
             // Closed state: two trapezoidal leaves following the iso slope.
+            const doorGradient = ctx.createLinearGradient(0, Math.min(tl.y, tr.y), 0, Math.max(bl.y, br.y));
+            doorGradient.addColorStop(0, wood.light);
+            doorGradient.addColorStop(0.42, wood.mid);
+            doorGradient.addColorStop(1, wood.deep);
             trace(tl, tc, bc, bl);
-            ctx.fillStyle = '#3f2412';
+            ctx.fillStyle = doorGradient;
             ctx.fill();
             ctx.strokeStyle = stone.outline;
             ctx.lineWidth = 1.5;
             ctx.stroke();
 
             trace(tc, tr, br, bc);
-            ctx.fillStyle = '#3f2412';
+            ctx.fillStyle = doorGradient;
             ctx.fill();
             ctx.stroke();
 
@@ -4871,6 +4916,21 @@ export class IsometricRenderer {
                 ctx.stroke();
             }
 
+            // Heavy diagonal straps keep the closed state readable as two
+            // engineered leaves instead of one broad undifferentiated slab.
+            ctx.strokeStyle = '#2c190d';
+            ctx.lineWidth = 2.5;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(tl.x + ux * 4), Math.round(tl.y + uy * 4 + 4));
+            ctx.lineTo(Math.round(bc.x - ux * 4), Math.round(bc.y - uy * 4 - 4));
+            ctx.moveTo(Math.round(tc.x - ux * 4), Math.round(tc.y - uy * 4 + 4));
+            ctx.lineTo(Math.round(bl.x + ux * 4), Math.round(bl.y + uy * 4 - 4));
+            ctx.moveTo(Math.round(tc.x + ux * 4), Math.round(tc.y + uy * 4 + 4));
+            ctx.lineTo(Math.round(br.x - ux * 4), Math.round(br.y - uy * 4 - 4));
+            ctx.moveTo(Math.round(tr.x - ux * 4), Math.round(tr.y - uy * 4 + 4));
+            ctx.lineTo(Math.round(bc.x + ux * 4), Math.round(bc.y + uy * 4 - 4));
+            ctx.stroke();
+
             // Center seam.
             ctx.strokeStyle = stone.outline;
             ctx.lineWidth = 1;
@@ -4896,6 +4956,7 @@ export class IsometricRenderer {
 
     _drawVillageWallSegment(ctx, originX, originY, start, end, phase = 0, footingExtent = null) {
         const palette = VILLAGE_WOOD_PALETTE;
+        const stone = VILLAGE_STONE_PALETTE;
         const x1 = Math.round(originX + start.x);
         const y1 = Math.round(originY + start.y);
         const x2 = Math.round(originX + end.x);
@@ -4911,17 +4972,18 @@ export class IsometricRenderer {
             nx *= -1;
             ny *= -1;
         }
-        const wallHeight = 68;
-        const capWidth = 17;
-        const capLift = 6;
+        const wallHeight = 56;
+        const stoneBandHeight = 18;
+        const capWidth = 14;
+        const capLift = 5;
         const faceTop1 = { x: x1, y: y1 - wallHeight };
         const faceTop2 = { x: x2, y: y2 - wallHeight };
         const capBack1 = { x: faceTop1.x + nx * capWidth, y: faceTop1.y + ny * capWidth - capLift };
         const capBack2 = { x: faceTop2.x + nx * capWidth, y: faceTop2.y + ny * capWidth - capLift };
         const shadowDrop = 14;
-        const postStep = 18;
-        const stakeWidth = 9;
-        const stakeHeight = 18;
+        const postStep = 24;
+        const stakeWidth = 10;
+        const stakeHeight = 11;
         const offset = (phase % 2) * 5;
 
         const traceQuad = (a, b, c, d) => {
@@ -4957,6 +5019,36 @@ export class IsometricRenderer {
         ctx.strokeStyle = palette.outline;
         ctx.lineWidth = 3;
         ctx.stroke();
+
+        // A continuous masonry plinth visually carries the whole perimeter and
+        // ties it to the gate towers. The previous timber-to-ground edge made
+        // the long wall read as a flat fence instead of village fortification.
+        const stoneTop1 = { x: x1, y: y1 - stoneBandHeight };
+        const stoneTop2 = { x: x2, y: y2 - stoneBandHeight };
+        traceQuad({ x: x1, y: y1 }, { x: x2, y: y2 }, stoneTop2, stoneTop1);
+        const stoneGradient = ctx.createLinearGradient(0, Math.min(y1, y2) - stoneBandHeight, 0, Math.max(y1, y2));
+        stoneGradient.addColorStop(0, stone.light);
+        stoneGradient.addColorStop(1, stone.shadow);
+        ctx.fillStyle = stoneGradient;
+        ctx.fill();
+        ctx.strokeStyle = stone.outline;
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.strokeStyle = stone.mortar;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(x1), Math.round(y1 - stoneBandHeight / 2));
+        ctx.lineTo(Math.round(x2), Math.round(y2 - stoneBandHeight / 2));
+        ctx.stroke();
+        for (let d = 18; d < length - 8; d += 28) {
+            const jointX = x1 + ux * d;
+            const jointY = y1 + uy * d;
+            const upperCourse = Math.floor(d / 28) % 2 === 0;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(jointX), Math.round(jointY - (upperCourse ? stoneBandHeight : stoneBandHeight / 2)));
+            ctx.lineTo(Math.round(jointX), Math.round(jointY - (upperCourse ? stoneBandHeight / 2 : 0)));
+            ctx.stroke();
+        }
 
         traceQuad(faceTop1, faceTop2, capBack2, capBack1);
         ctx.fillStyle = palette.dark;
@@ -5006,6 +5098,21 @@ export class IsometricRenderer {
             ctx.lineTo(Math.round(x2), Math.round(y2 - row - 2));
             ctx.stroke();
         }
+        for (let d = 10; d < length - 32; d += 54) {
+            const next = Math.min(length - 4, d + 42);
+            const ax = x1 + ux * d;
+            const ay = y1 + uy * d;
+            const bx = x1 + ux * next;
+            const by = y1 + uy * next;
+            ctx.strokeStyle = palette.dark;
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.moveTo(Math.round(ax), Math.round(ay - stoneBandHeight - 4));
+            ctx.lineTo(Math.round(bx), Math.round(by - wallHeight + 8));
+            ctx.moveTo(Math.round(ax), Math.round(ay - wallHeight + 8));
+            ctx.lineTo(Math.round(bx), Math.round(by - stoneBandHeight - 4));
+            ctx.stroke();
+        }
         ctx.restore();
 
         for (let d = 7 + offset; d < length - 2; d += postStep) {
@@ -5013,7 +5120,7 @@ export class IsometricRenderer {
             const a = { x: x1 + ux * (d - half), y: y1 + uy * (d - half) - wallHeight };
             const b = { x: x1 + ux * (d + half), y: y1 + uy * (d + half) - wallHeight };
             const cadence = Math.floor(d / postStep);
-            const tip = { x: x1 + ux * d, y: y1 + uy * d - wallHeight - stakeHeight - (cadence % 4 === 0 ? 8 : cadence % 2 ? 4 : 0) };
+            const tip = { x: x1 + ux * d, y: y1 + uy * d - wallHeight - stakeHeight - (cadence % 3 === 0 ? 4 : 0) };
             ctx.beginPath();
             ctx.moveTo(Math.round(a.x), Math.round(a.y + 8));
             ctx.lineTo(Math.round(a.x), Math.round(a.y));
@@ -5035,20 +5142,25 @@ export class IsometricRenderer {
         for (let d = 32 + offset; d < length - 12; d += 72) {
             const p = { x: x1 + ux * d, y: y1 + uy * d };
             const w = 13;
-            const h = wallHeight + 17;
+            const h = wallHeight + 13;
             ctx.fillStyle = palette.deep;
-            ctx.fillRect(Math.round(p.x - w / 2), Math.round(p.y - h + 7), w, h);
+            ctx.fillRect(Math.round(p.x - w / 2), Math.round(p.y - h + 7), w, h - stoneBandHeight);
+            ctx.fillStyle = stone.mid;
+            ctx.fillRect(Math.round(p.x - w / 2), Math.round(p.y - stoneBandHeight), w, stoneBandHeight + 7);
             ctx.strokeStyle = palette.outline;
             ctx.lineWidth = 2;
             ctx.strokeRect(Math.round(p.x - w / 2), Math.round(p.y - h + 7), w, h);
             ctx.fillStyle = palette.tealDark;
             ctx.beginPath();
-            ctx.moveTo(Math.round(p.x - 10), Math.round(p.y - h + 7));
-            ctx.lineTo(Math.round(p.x), Math.round(p.y - h - 8));
-            ctx.lineTo(Math.round(p.x + 10), Math.round(p.y - h + 7));
+            ctx.moveTo(Math.round(p.x - 10), Math.round(p.y - h + 6));
+            ctx.lineTo(Math.round(p.x), Math.round(p.y - h));
+            ctx.lineTo(Math.round(p.x + 10), Math.round(p.y - h + 6));
+            ctx.lineTo(Math.round(p.x), Math.round(p.y - h + 11));
             ctx.closePath();
             ctx.fill();
             ctx.stroke();
+            ctx.fillStyle = palette.tealLight;
+            ctx.fillRect(Math.round(p.x - 2), Math.round(p.y - h + 2), 4, 2);
         }
 
         for (let d = 18 + offset; d < length - 8; d += 38) {
@@ -8884,24 +8996,22 @@ export class IsometricRenderer {
 
     _villageGateLightSources(lighting = null) {
         if (!VILLAGE_GATE) return [];
-        const center = this._tileToWorld(VILLAGE_GATE.tileX, VILLAGE_GATE.tileY);
-        const lanternX = center.x;
-        // The lantern body draws at base.y - 54 (start.y - 110 + lintelHeight 26
-        // + 2 plaque margin + plaqueHeight 14 + chain 14 = base.y - 54). Light
-        // source center sits at the lantern body's middle (lanternY + 8 ≈
-        // base.y - 46). Earlier value of -96 floated the halo above the lintel.
-        const lanternY = center.y - 46;
+        const leftBase = this._tileToWorld(VILLAGE_GATE.tileX - VILLAGE_GATE_TOWER_HALF_TILES, VILLAGE_GATE.tileY);
+        const rightBase = this._tileToWorld(VILLAGE_GATE.tileX + VILLAGE_GATE_TOWER_HALF_TILES, VILLAGE_GATE.tileY);
         const phaseBoost = Math.max(0.6, lighting?.lightBoost ?? 1);
-        return [normalizeLightSource({
-            id: 'gate.lantern',
+        return [
+            { id: 'left', x: leftBase.x - 9, y: leftBase.y - 13 },
+            { id: 'right', x: rightBase.x + 9, y: rightBase.y - 13 },
+        ].map((fixture) => normalizeLightSource({
+            id: `gate.brazier.${fixture.id}`,
             kind: 'point',
-            x: lanternX,
-            y: lanternY,
-            radius: 84,
+            x: fixture.x,
+            y: fixture.y,
+            radius: 62,
             color: '#ffd56a',
-            intensity: phaseBoost,
+            intensity: phaseBoost * 0.82,
             buildingType: 'village.gate',
-        })];
+        }));
     }
 
     _computeFrameLightSources(atmosphere = null, now = performance.now()) {

@@ -141,7 +141,7 @@ export class Compositor {
                 const stampX = Math.round(anchorX - ax);
                 const stampY = Math.round(anchorY - ay);
                 const cropH = isBack ? Math.max(1, Math.round(overlayDims.h * cropFrac)) : overlayDims.h;
-                stamps.push({ stampX, stampY, isBack, cropH });
+                stamps.push({ cellX, cellY, stampX, stampY, isBack, cropH });
 
                 // Contact shadow: multiply the ~2 body pixels beneath the
                 // overlay's opaque bottom edge (per column) so the hat reads as
@@ -169,6 +169,12 @@ export class Compositor {
         ctx.putImageData(sheet, 0, 0);
 
         for (const s of stamps) {
+            // Accessories may extend above their owner's cell. Clip each stamp
+            // so those pixels cannot become the preceding frame's false feet.
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(s.cellX, s.cellY, cellSize, cellSize);
+            ctx.clip();
             if (s.isBack) {
                 // Back of the head: top slice only, nudged +1px down and using
                 // the darkened overlay so face-side detail stops showing (D5).
@@ -176,6 +182,7 @@ export class Compositor {
             } else {
                 ctx.drawImage(front, s.stampX, s.stampY, overlayDims.w, overlayDims.h);
             }
+            ctx.restore();
         }
 
         // Expose accessory-free per-cell content bounds so AgentSprite can scale

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-07-10-celestial-vanguard-v2"
+  assetVersion: "2026-07-12-fortified-boundary-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -626,6 +626,20 @@ props:
     width: 384
     height: 280
     anchor: [192, 260]
+
+  - id: prop.villageGateTower
+    tool: map_object
+    prompt: "isolated square fortified village gate tower, cool-grey mortared stone lower story with narrow archer slit, dark walnut timber-framed upper guard room, warm amber windows, steep slate-blue tiled roof, tiny crimson pennant, mossy grounded footing, transparent background, no attached wall, no courtyard, no text, no characters"
+    width: 160
+    height: 240
+    anchor: [80, 224]
+
+  - id: prop.villageGateArch
+    tool: map_object
+    prompt: "isolated vertical medieval fortified gateway architrave, long raised cool-grey stone connector between two guard towers, broad shallow arch opening, dark timber underside, inset burgundy civic inscription band with exact carved capital letters CLAUDEVILLE, slate-blue coping, transparent background, no doors, no ground, no characters"
+    width: 96
+    height: 96
+    anchor: [48, 88]
 
   - id: prop.villageWall
     tool: map_object
