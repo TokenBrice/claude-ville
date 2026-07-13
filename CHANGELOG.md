@@ -2,6 +2,15 @@
 
 ---
 
+## v0.24.2.1 · Jul 13, 2026 — Hotfix
+
+Codex villagers spawned from large forked histories now retain their exact GPT-5.6 identity instead of falling back to the generic Codex model.
+
+- **Correct model identity.** Delayed `turn_context` metadata is recovered with a bounded backward scan, restoring Sol, Terra, and Luna labels, reasoning effort, pricing, colors, and character sprites.
+- **Regression coverage.** Adapter fixtures now cover both directly recorded GPT-5.6 variants and child variants inferred when Codex persists the parent's model.
+
+---
+
 ## v0.24.2 — *Lamplighter's Watch* · Jul 12, 2026
 
 Night stays dark enough for stars, fireflies, and torchlight to matter, but the village no longer disappears into the grade. Moonlight now preserves more terrain detail, while the lanterns already placed around the village cast broader pools of warm light across roads, bridges, work yards, and quiet research paths.

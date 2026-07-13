@@ -30,6 +30,9 @@ const SESSION_INDEX_FILE = path.join(CODEX_DIR, 'session_index.jsonl');
 const MAX_HEAD_BYTES = 64 * 1024;
 const MAX_METADATA_BYTES = 512 * 1024;
 const MAX_METADATA_LINES = 24;
+const METADATA_BACKSCAN_CHUNK_BYTES = 64 * 1024;
+const MAX_METADATA_BACKSCAN_BYTES = 32 * 1024 * 1024;
+const MAX_TURN_METADATA_CACHE_ENTRIES = 256;
 const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const GIT_EVENT_SCAN_LINES = 5000;
@@ -40,6 +43,7 @@ const ROLLOUT_DIR_MTIME_EPSILON_MS = 1;
 
 const _rolloutFileBySessionId = new Map();
 const _sessionNamesCache = { signature: '', value: new Map() };
+const _turnMetadataCache = new Map();
 const _rolloutDiscoveryCache = {
   initialized: false,
   filesByPath: new Map(),
@@ -153,6 +157,83 @@ function extractTurnMetadataFromText(line) {
     reasoningEffort: extractJsonString(metadataPrefix, 'effort') || extractJsonString(metadataPrefix, 'reasoning_effort'),
     project: extractJsonString(metadataPrefix, 'cwd'),
   };
+}
+
+function parseTurnMetadataLine(line) {
+  // The top-level type is near the start of every rollout record. Restricting
+  // the fallback check avoids matching quoted transcript content later in it.
+  if (!/"type"\s*:\s*"turn_context"/.test(line.slice(0, 256))) return null;
+
+  try {
+    const entry = JSON.parse(line);
+    if (entry?.type !== 'turn_context') return null;
+    return extractTurnMetadataFromPayload(entry.payload);
+  } catch {
+    return extractTurnMetadataFromText(line);
+  }
+}
+
+function cacheTurnMetadata(filePath, metadata) {
+  _turnMetadataCache.delete(filePath);
+  _turnMetadataCache.set(filePath, metadata);
+  while (_turnMetadataCache.size > MAX_TURN_METADATA_CACHE_ENTRIES) {
+    _turnMetadataCache.delete(_turnMetadataCache.keys().next().value);
+  }
+  return metadata;
+}
+
+/**
+ * Spawned Codex rollouts can place the child's first turn_context after a
+ * large forked-parent transcript. Search backward for it once, then retain
+ * the session-stable model metadata for subsequent polling passes.
+ */
+function readLatestTurnMetadata(filePath) {
+  const cached = _turnMetadataCache.get(filePath);
+  if (cached) return cacheTurnMetadata(filePath, cached);
+
+  let fd = null;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const stat = fs.fstatSync(fd);
+    let position = stat.size;
+    let bytesScanned = 0;
+    let carry = '';
+
+    while (position > 0 && bytesScanned < MAX_METADATA_BACKSCAN_BYTES) {
+      const bytesToRead = Math.min(
+        METADATA_BACKSCAN_CHUNK_BYTES,
+        position,
+        MAX_METADATA_BACKSCAN_BYTES - bytesScanned,
+      );
+      position -= bytesToRead;
+
+      const buffer = Buffer.allocUnsafe(bytesToRead);
+      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
+      if (bytesRead <= 0) break;
+      bytesScanned += bytesRead;
+
+      const lines = `${buffer.toString('utf-8', 0, bytesRead)}${carry}`.split('\n');
+      const leadingFragment = lines.shift() || '';
+
+      for (let i = lines.length - 1; i >= 0; i--) {
+        const metadata = parseTurnMetadataLine(lines[i]);
+        if (metadata) return cacheTurnMetadata(filePath, metadata);
+      }
+
+      if (position === 0) {
+        const metadata = parseTurnMetadataLine(leadingFragment);
+        if (metadata) return cacheTurnMetadata(filePath, metadata);
+      } else {
+        carry = leadingFragment;
+      }
+    }
+  } catch { /* ignore unreadable or concurrently rotated rollout */ } finally {
+    if (fd !== null) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+
+  return null;
 }
 
 function applySessionMetadata(detail, metadata) {
@@ -293,6 +374,10 @@ function parseRollout(filePath) {
   };
 
   parseEarlyMetadata(filePath, detail);
+
+  if (!detail.model || !detail.reasoningEffort || !detail.project) {
+    applyTurnMetadata(detail, readLatestTurnMetadata(filePath));
+  }
 
   // Read recent tools/messages from the end of the file
   const lastLines = readLines(filePath, { from: 'end', count: 50 });

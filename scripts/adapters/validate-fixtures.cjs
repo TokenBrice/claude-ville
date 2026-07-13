@@ -11,6 +11,7 @@ if (kimiFixture) {
   process.env.HOME = kimiFixture.root;
   delete process.env.USERPROFILE;
 }
+const codexFixture = kimiFixture ? buildCodexFixture(kimiFixture.root) : null;
 
 const fixture = buildOpenCodeFixture();
 if (fixture) {
@@ -26,6 +27,7 @@ const {
   normalizeSession,
 } = require('../../claudeville/adapters');
 const { KimiAdapter } = require('../../claudeville/adapters/kimi');
+const { CodexAdapter } = require('../../claudeville/adapters/codex');
 const { OpenCodeAdapter } = require('../../claudeville/adapters/opencode');
 
 const now = Date.now();
@@ -84,6 +86,27 @@ assert.equal(gitDetail.project, '/tmp/project');
 assert.deepEqual(gitDetail.toolHistory, []);
 assert.deepEqual(gitDetail.messages, []);
 assert.equal(typeof gitDetail.reason, 'string');
+
+if (codexFixture) {
+  const adapter = new CodexAdapter();
+  assert.equal(adapter.isAvailable(), true);
+
+  const sessions = adapter.getActiveSessions(10 * 60 * 1000);
+  const directVariant = sessions.find((session) => session.agentId === 'codex-delayed-luna');
+  const inferredVariant = sessions.find((session) => session.agentId === 'codex-delayed-terra');
+
+  assert.ok(directVariant);
+  assert.equal(directVariant.agentName, 'Curie');
+  assert.equal(directVariant.agentType, 'worker');
+  assert.equal(directVariant.model, 'gpt-5.6-luna');
+  assert.equal(directVariant.reasoningEffort, 'high');
+  assert.equal(directVariant.project, '/tmp/claude-ville-codex');
+
+  assert.ok(inferredVariant);
+  assert.equal(inferredVariant.agentName, 'Gauss');
+  assert.equal(inferredVariant.model, 'gpt-5.6-terra');
+  assert.equal(inferredVariant.reasoningEffort, 'xhigh');
+}
 
 if (kimiFixture) {
   const adapter = new KimiAdapter();
@@ -321,6 +344,90 @@ function writeTextFile(target, contents) {
 
 function writeJsonl(target, entries) {
   writeTextFile(target, `${entries.map((entry) => JSON.stringify(entry)).join('\n')}\n`);
+}
+
+function buildCodexFixture(root) {
+  const sessionsDir = path.join(root, '.codex', 'sessions', '2026', '07', '13');
+  const now = Date.now();
+  const trailingRecords = Array.from({ length: 60 }, (_, index) => ({
+    timestamp: new Date(now - (60 - index) * 10).toISOString(),
+    type: 'event_msg',
+    payload: { type: 'task_progress', index, output: 'x'.repeat(2048) },
+  }));
+
+  const fixtures = [
+    {
+      fileName: 'rollout-2026-07-13T12-00-00-codex-delayed-luna.jsonl',
+      agentId: 'codex-delayed-luna',
+      agentName: 'Curie',
+      agentPath: '/root/delayed_luna_metadata',
+      parentId: 'codex-parent-luna',
+      model: 'gpt-5.6-luna',
+      effort: 'high',
+    },
+    {
+      fileName: 'rollout-2026-07-13T12-01-00-codex-delayed-terra.jsonl',
+      agentId: 'codex-delayed-terra',
+      agentName: 'Gauss',
+      agentPath: '/root/terra_delayed_metadata',
+      parentId: 'codex-parent-terra',
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+    },
+  ];
+
+  for (const fixture of fixtures) {
+    const filePath = path.join(sessionsDir, fixture.fileName);
+    const forkedParentRecords = Array.from({ length: 30 }, (_, index) => ({
+      timestamp: new Date(now - 2000 + index).toISOString(),
+      type: 'event_msg',
+      payload: { type: 'forked_parent_history', index },
+    }));
+    writeJsonl(filePath, [
+      {
+        timestamp: new Date(now - 3000).toISOString(),
+        type: 'session_meta',
+        payload: {
+          id: fixture.agentId,
+          cwd: '/tmp/claude-ville-codex',
+          agent_nickname: fixture.agentName,
+          agent_role: 'worker',
+          agent_path: fixture.agentPath,
+          source: {
+            subagent: {
+              thread_spawn: {
+                parent_thread_id: fixture.parentId,
+                agent_path: fixture.agentPath,
+                agent_nickname: fixture.agentName,
+                agent_role: 'worker',
+              },
+            },
+          },
+        },
+      },
+      ...forkedParentRecords,
+      {
+        timestamp: new Date(now - 1000).toISOString(),
+        type: 'turn_context',
+        payload: {
+          cwd: '/tmp/claude-ville-codex',
+          model: fixture.model,
+          effort: fixture.effort,
+          collaboration_mode: {
+            settings: {
+              model: fixture.model,
+              reasoning_effort: fixture.effort,
+            },
+          },
+        },
+      },
+      ...trailingRecords,
+    ]);
+    const fileDate = new Date(now);
+    fs.utimesSync(filePath, fileDate, fileDate);
+  }
+
+  return { sessionsDir };
 }
 
 function buildKimiCodeFixture() {
