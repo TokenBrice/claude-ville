@@ -23,12 +23,15 @@ import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
 import { ActivityPanel } from './shared/ActivityPanel.js';
 import { el, replaceChildren } from './shared/DomSafe.js';
-import { emitAgentSelected } from './shared/AgentSelection.js';
+import { emitAgentSelected, resetAgentSelection } from './shared/AgentSelection.js';
+import { sessionDetailsService } from './shared/SessionDetailsService.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 
-class App {
+const LIFECYCLE_DRAIN_TIMEOUT_MS = 2000;
+
+export class App {
     constructor() {
         this.world = null;
         this.dataSource = null;
@@ -50,12 +53,17 @@ class App {
         this.biographyService = null;
         this.moodService = null;
         this.affinityService = null;
+        this.agentSimulator = null;
+        this.simMode = false;
         this.latestUsage = null;
         this._chroniclePruneInterval = null;
+        this._chroniclePruneState = { promise: null };
+        this._chronicleTasks = new Set();
         this._resizeWorldCanvas = null;
         this._resizeObserver = null;
         this._resizeHandle = null;
         this._loadRendererRetryHandle = null;
+        this._loadRendererRetryScheduled = false;
         this._centerCameraHandle = null;
         this._onWindowResize = null;
         this._perfDebugCanvasBudget = null;
@@ -65,12 +73,28 @@ class App {
         this._onVisibilityChange = null;
         this._worldCanvas = null;
         this._eventUnsubscribers = [];
+        this._onPageHide = null;
+        this._bootPromise = null;
+        this._bootController = null;
+        this._destroyPromise = null;
+        this._cleanupPromise = null;
+        this._bootState = 'idle';
         this._destroyed = false;
     }
 
-    async boot() {
+    boot() {
+        if (this._bootPromise) return this._bootPromise;
+        if (this._bootState !== 'idle') return Promise.resolve(null);
+        this._destroyed = false;
+        this._bootState = 'booting';
+        this._bootController = new AbortController();
+        this._bindPageExit();
+        this._bootPromise = this._bootOnce();
+        return this._bootPromise;
+    }
+
+    async _bootOnce() {
         try {
-            this._destroyed = false;
             console.log('[App] ClaudeVille boot started...');
 
             // 1. Initialize domain
@@ -83,20 +107,19 @@ class App {
             this.dataSource = new ClaudeDataSource();
             this.wsClient = new WebSocketClient();
             this.chronicleStore = new ChronicleStore();
+            const initialStore = this.chronicleStore;
+            this._trackChronicleTask(this._runChroniclePrune().then(() => {
+                if (!initialStore._closed) window.__chronicle = initialStore;
+            }).catch((err) => {
+                console.warn('[App] ChronicleStore unavailable:', err.message);
+            }));
             // 2.1 / 2.4 — persistent biography and pair-affinity accumulation
             // (ChronicleStore-backed); both listen on agent:* domain events.
             this.biographyService = new AgentBiographyService({ store: this.chronicleStore }).start();
             this.affinityService = new RelationshipAffinityService({ store: this.chronicleStore }).start();
             this.auroraGate = new AuroraGate({ store: this.chronicleStore });
-            this.chronicleStore.open()
-                .then(() => {
-                    if (this._destroyed) return null;
-                    window.__chronicle = this.chronicleStore;
-                    return this.chronicleStore.prune();
-                })
-                .catch((err) => console.warn('[App] ChronicleStore unavailable:', err.message));
             this._chroniclePruneInterval = window.setInterval(() => {
-                this.chronicleStore?.prune?.().catch((err) => {
+                this._runChroniclePrune().catch((err) => {
                     console.warn('[App] ChronicleStore prune failed:', err.message);
                 });
             }, 5 * 60 * 1000);
@@ -122,16 +145,17 @@ class App {
             this.simMode = simMode;
             if (simMode) {
                 const mod = await import('./character-mode/__simfixture__/AgentSimulator.js');
+                if (this._destroyed) return null;
                 this.agentSimulator = new mod.default({ world: this.world, agentManager: this.agentManager, eventBus });
                 this.agentSimulator.start();
             }
 
             // 5. Load initial data
-            if (!simMode) await this.agentManager.loadInitialData();
-            if (this._destroyed) return;
+            if (!simMode) await this.agentManager.loadInitialData({ signal: this._bootController?.signal });
+            if (this._destroyed) return null;
 
             // 5-1. Load initial usage data
-            this.dataSource.getUsage().then(usage => {
+            this.dataSource.getUsage({ signal: this._bootController?.signal }).then(usage => {
                 if (this._destroyed) return;
                 if (usage) {
                     this.latestUsage = usage;
@@ -152,13 +176,15 @@ class App {
 
             // 8. Preload sprite assets, then dynamically load character renderer
             this.assets = new AssetManager();
-            await this.assets.load();
-            if (this._destroyed) return;
+            await this.assets.load({ signal: this._bootController?.signal });
+            if (this._destroyed) return null;
             console.log('[App] sprite assets loaded');
             await this._loadRenderer();
+            if (this._destroyed) return null;
 
             // 8-1. Load dashboard renderer
             await this._loadDashboard();
+            if (this._destroyed) return null;
 
             // 9. right-side live activity panel
             this.activityPanel = new ActivityPanel({
@@ -178,14 +204,48 @@ class App {
             // 10. Apply initial i18n
             this._applyI18n();
 
+            if (this._destroyed) return null;
+            this._bootState = 'ready';
             console.log('[App] ClaudeVille boot complete!');
+            return this;
         } catch (err) {
+            if (this._destroyed) {
+                await this._cleanupOwned();
+                return null;
+            }
             console.error('[App] boot failed:', err);
+            this._destroyed = true;
+            await this._cleanupOwned();
+            this._bootState = 'failed';
             this._showBootError(err);
+            return null;
         }
     }
 
+    _bindPageExit() {
+        if (this._onPageHide) return;
+        this._onPageHide = (event) => {
+            if (!event.persisted) void this.destroy();
+        };
+        window.addEventListener('pagehide', this._onPageHide);
+    }
+
+    _runChroniclePrune() {
+        if (!this.chronicleStore) return Promise.resolve(null);
+        const state = this._chroniclePruneState;
+        if (state.promise) return state.promise;
+        const store = this.chronicleStore;
+        const prunePromise = store.open()
+            .then(() => store.prune())
+            .finally(() => {
+                if (state.promise === prunePromise) state.promise = null;
+            });
+        state.promise = prunePromise;
+        return prunePromise;
+    }
+
     async _loadRenderer() {
+        let candidate = null;
         try {
             if (this._destroyed) return;
             const module = await import('./character-mode/IsometricRenderer.js');
@@ -210,12 +270,7 @@ class App {
                 return;
             }
 
-            if (this.renderer) {
-                // Avoid duplicated subscriptions/render loops if boot/refresh is retried.
-                this.renderer.hide();
-            }
-
-            this.renderer = new module.IsometricRenderer(this.world, {
+            candidate = new module.IsometricRenderer(this.world, {
                 assets: this.assets,
                 chronicleStore: this.chronicleStore,
                 modal: this.modal,
@@ -223,24 +278,33 @@ class App {
                 biographyService: this.biographyService,
                 affinityService: this.affinityService,
             });
-            this.renderer.show(canvas);
-            if (this.latestUsage) this.renderer.setQuotaState?.(this.latestUsage);
-            this._installPerfDebugHelper();
+            if (candidate.show(canvas) === false) {
+                throw new Error('IsometricRenderer failed to mount');
+            }
+            if (this.latestUsage) candidate.setQuotaState?.(this.latestUsage);
 
-            this.renderer.onAgentSelect = (agent) => {
+            candidate.onAgentSelect = (agent) => {
                 emitAgentSelected(agent);
             };
 
             const scenarioMetadata = this.agentSimulator?.getScenario?.()?.metadata || null;
-            const scenarioApplied = this.renderer.applyScenarioMetadata?.(scenarioMetadata) || false;
+            const scenarioApplied = candidate.applyScenarioMetadata?.(scenarioMetadata) || false;
+            if (this._destroyed) {
+                candidate.hide?.();
+                return;
+            }
+            const previous = this.renderer;
+            this.renderer = candidate;
+            previous?.hide?.();
+            this._installPerfDebugHelper();
             if (!scenarioApplied || !scenarioMetadata?.camera) {
                 this._centerCameraHandle = requestAnimationFrame(() => {
                     this._centerCameraHandle = null;
-                    if (this.renderer && this.renderer.camera) {
-                        if (typeof this.renderer.frameContent === 'function') {
-                            this.renderer.frameContent();
+                    if (this.renderer === candidate && candidate.camera) {
+                        if (typeof candidate.frameContent === 'function') {
+                            candidate.frameContent();
                         } else {
-                            this.renderer.camera.centerOnMap();
+                            candidate.camera.centerOnMap();
                         }
                     }
                 });
@@ -248,20 +312,31 @@ class App {
 
             console.log('[App] IsometricRenderer loaded');
         } catch (err) {
+            candidate?.hide?.();
+            if (this.renderer === candidate) this.renderer = null;
             console.warn('[App] IsometricRenderer not available yet (waiting on canvas-artist work):', err.message);
         }
     }
 
     async _loadDashboard() {
+        let candidate = null;
         try {
             if (this._destroyed) return;
             const module = await import('./dashboard-mode/DashboardRenderer.js');
             if (this._destroyed) return;
             if (module.DashboardRenderer) {
-                this.dashboardRenderer = new module.DashboardRenderer(this.world, { toast: this.toast });
+                candidate = new module.DashboardRenderer(this.world, { toast: this.toast });
+                if (this._destroyed) {
+                    candidate.destroy?.();
+                    return;
+                }
+                this.dashboardRenderer?.destroy?.();
+                this.dashboardRenderer = candidate;
                 console.log('[App] DashboardRenderer loaded');
             }
         } catch (err) {
+            candidate?.destroy?.();
+            if (this.dashboardRenderer === candidate) this.dashboardRenderer = null;
             console.warn('[App] DashboardRenderer failed to load:', err.message);
         }
     }
@@ -312,14 +387,14 @@ class App {
     _bindChronicleSignals() {
         this._eventUnsubscribers.push(eventBus.on('chronicle:milestone', (monument) => {
             this.auroraGate?.recordMilestone(monument);
-            this.auroraGate?.evaluate(Date.now(), {
+            this._trackChronicleTask(this.auroraGate?.evaluate(Date.now(), {
                 release: monument?.kind === 'release',
                 majorVerified: monument?.kind === 'verified' && monument?.weight === 'major',
             }).then((result) => {
                 if (result === 'fire') {
                     eventBus.emit('chronicle:aurora', { ts: Date.now(), reason: monument?.kind || 'milestone' });
                 }
-            }).catch(() => {});
+            }).catch(() => {}));
         }));
 
         this._eventUnsubscribers.push(eventBus.on('usage:updated', (usage) => {
@@ -329,16 +404,27 @@ class App {
             if (Number.isFinite(fiveHour) && fiveHour > 0.85) {
                 eventBus.emit('quota:throttled', { fiveHour, ts: Date.now() });
             }
-            this.auroraGate?.handleUsageUpdate(usage).then((result) => {
+            this._trackChronicleTask(this.auroraGate?.handleUsageUpdate(usage).then((result) => {
                 if (result === 'fire') {
                     eventBus.emit('chronicle:aurora', { ts: Date.now(), reason: 'quota-rollover' });
                 }
-            }).catch(() => {});
+            }).catch(() => {}));
         }));
 
         this._eventUnsubscribers.push(eventBus.on('chronicle:aurora', () => {
             this.renderer?.skyRenderer?.triggerAurora?.();
         }));
+    }
+
+    _trackChronicleTask(task) {
+        if (!task || typeof task.finally !== 'function') return task;
+        const tasks = this._chronicleTasks;
+        tasks.add(task);
+        task.then(
+            () => tasks.delete(task),
+            () => tasks.delete(task),
+        );
+        return task;
     }
 
     _bindResize() {
@@ -499,7 +585,27 @@ class App {
     }
 
     destroy() {
+        if (this._destroyPromise) return this._destroyPromise;
         this._destroyed = true;
+        this._destroyPromise = (async () => {
+            await this._cleanupOwned();
+            if (this._bootState !== 'failed') this._bootState = 'destroyed';
+        })();
+        return this._destroyPromise;
+    }
+
+    _cleanupOwned() {
+        if (this._cleanupPromise) return this._cleanupPromise;
+        this._cleanupPromise = this._cleanupOwnedOnce();
+        return this._cleanupPromise;
+    }
+
+    async _cleanupOwnedOnce() {
+        const renderer = this.renderer;
+        const store = this.chronicleStore;
+        const worldCanvas = this._worldCanvas || document.getElementById('worldCanvas');
+
+        this._bootController?.abort?.();
 
         if (this._chroniclePruneInterval) {
             window.clearInterval(this._chroniclePruneInterval);
@@ -513,6 +619,7 @@ class App {
             cancelAnimationFrame(this._loadRendererRetryHandle);
             this._loadRendererRetryHandle = null;
         }
+        this._loadRendererRetryScheduled = false;
         if (this._centerCameraHandle) {
             cancelAnimationFrame(this._centerCameraHandle);
             this._centerCameraHandle = null;
@@ -521,6 +628,7 @@ class App {
         for (const unsubscribe of this._eventUnsubscribers.splice(0)) {
             unsubscribe?.();
         }
+        resetAgentSelection();
 
         if (this._onWindowResize) {
             window.removeEventListener('resize', this._onWindowResize);
@@ -542,24 +650,66 @@ class App {
             this._onVisibilityChange = null;
         }
 
-        this.sessionWatcher?.stop?.();
-        this.notificationService?.destroy?.();
-        this.activityPanel?.destroy?.();
-        this.dashboardRenderer?.destroy?.();
-        this.renderer?.hide?.();
-        // ModeManager does not expose a destroy hook yet; adding one would touch
-        // its button-listener ownership and is left as a narrow follow-up.
-        this.sidebar?.destroy?.();
-        this.topBar?.destroy?.();
-        this.modal?.destroy?.();
-        this.toast?.destroy?.();
-        this.moodService?.stop?.();
-        this.biographyService?.stop?.();
-        this.affinityService?.stop?.();
-        this.chronicleStore?.close?.();
+        if (this._onPageHide) {
+            window.removeEventListener('pagehide', this._onPageHide);
+            this._onPageHide = null;
+        }
+
+        this._callLifecycle('SessionWatcher.stop', () => this.sessionWatcher?.stop?.());
+        this._callLifecycle('AgentSimulator.stop', () => this.agentSimulator?.stop?.());
+        this._callLifecycle('NotificationService.destroy', () => this.notificationService?.destroy?.());
+        this._callLifecycle('ActivityPanel.destroy', () => this.activityPanel?.destroy?.());
+        this._callLifecycle('DashboardRenderer.destroy', () => this.dashboardRenderer?.destroy?.());
+        this._callLifecycle('SessionDetailsService.clear', () => sessionDetailsService.clear());
+        this._callLifecycle('ModeManager.destroy', () => this.modeManager?.destroy?.());
+        this._callLifecycle('Sidebar.destroy', () => this.sidebar?.destroy?.());
+        const topBarStop = this._callLifecycle('TopBar.destroy', () => this.topBar?.destroy?.());
+        this._callLifecycle('Modal.destroy', () => this.modal?.destroy?.());
+        this._callLifecycle('Toast.destroy', () => this.toast?.destroy?.());
+        this._callLifecycle('MoodService.stop', () => this.moodService?.stop?.());
+
+        const biographyStop = this._callLifecycle(
+            'AgentBiographyService.stop',
+            () => this.biographyService?.stop?.(),
+        );
+        const affinityStop = this._callLifecycle(
+            'RelationshipAffinityService.stop',
+            () => this.affinityService?.stop?.(),
+        );
+        const prune = this._chroniclePruneState.promise;
+        const chronicleTasks = [...this._chronicleTasks];
+
+        this._callLifecycle('IsometricRenderer.pauseForVisibility', () => renderer?.pauseForVisibility?.());
+        const chronicleDrain = this._callLifecycle(
+            'IsometricRenderer.drainChronicleUpdates',
+            () => renderer?.drainChronicleUpdates?.(),
+        );
+        const trail = renderer?.trailRenderer || null;
+        const trailDrain = this._callLifecycle('TrailRenderer.dispose', () => {
+            if (typeof trail?.dispose === 'function') return trail.dispose();
+            if (typeof trail?.drain === 'function') return trail.drain();
+            return trail?.flush?.();
+        });
+        await this._settleLifecycleTasks([chronicleDrain, trailDrain]);
+        this._callLifecycle('IsometricRenderer.hide', () => renderer?.hide?.());
+        if (worldCanvas) {
+            worldCanvas.width = 0;
+            worldCanvas.height = 0;
+        }
+        const assetsDispose = this._callLifecycle('AssetManager.dispose', () => this.assets?.dispose?.());
+
+        const storeTasks = [
+            biographyStop,
+            affinityStop,
+            prune,
+            ...chronicleTasks,
+        ].filter(task => task && typeof task.then === 'function');
+        await this._settleLifecycleTasks(storeTasks);
+        await this._settleLifecycleTasks([topBarStop, assetsDispose]);
+        this._callLifecycle('ChronicleStore.close', () => store?.close?.());
 
         if (typeof window !== 'undefined') {
-            if (window.__chronicle === this.chronicleStore) delete window.__chronicle;
+            if (window.__chronicle === store) delete window.__chronicle;
             if (window.__claudeVilleApp === this) delete window.__claudeVilleApp;
             if (window.cameraSet === this._cameraSetHelper) delete window.cameraSet;
             if (window.__claudeVillePerf?.canvasBudget === this._perfDebugCanvasBudget) {
@@ -570,8 +720,11 @@ class App {
         this.renderer = null;
         this.dashboardRenderer = null;
         this.activityPanel = null;
+        this.assets = null;
         this.sessionWatcher = null;
+        this.agentSimulator = null;
         this.notificationService = null;
+        this.modeManager = null;
         this.sidebar = null;
         this.topBar = null;
         this.modal = null;
@@ -581,9 +734,39 @@ class App {
         this.biographyService = null;
         this.moodService = null;
         this.affinityService = null;
+        this.agentManager = null;
+        this.wsClient = null;
+        this.dataSource = null;
+        this.world = null;
+        this.latestUsage = null;
+        this._chroniclePruneState.promise = null;
+        this._chronicleTasks.clear();
         this._perfDebugCanvasBudget = null;
         this._cameraSetHelper = null;
         this._resizeWorldCanvas = null;
+        this._bootController = null;
+    }
+
+    _callLifecycle(label, callback) {
+        try {
+            return callback();
+        } catch (err) {
+            console.warn(`[App] ${label} failed:`, err?.message || err);
+            return null;
+        }
+    }
+
+    async _settleLifecycleTasks(tasks, timeoutMs = LIFECYCLE_DRAIN_TIMEOUT_MS) {
+        const pending = tasks.filter(task => task && typeof task.then === 'function');
+        if (!pending.length) return;
+        let timeoutHandle = null;
+        await Promise.race([
+            Promise.allSettled(pending),
+            new Promise(resolve => {
+                timeoutHandle = window.setTimeout(resolve, timeoutMs);
+            }),
+        ]);
+        if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
     }
 }
 

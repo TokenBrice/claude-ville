@@ -9,13 +9,10 @@ const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = requi
 const {
   createDetailResponse,
   parseJsonLines,
-  readByteRangeText,
   readJsonLines: readSharedJsonLines,
   readTailLines,
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
-  tailGuard,
-  trimCache,
 } = require('./shared');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
@@ -28,6 +25,10 @@ const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 64 * 1024 * 1024;
 const MAX_HEAD_BYTES = 512 * 1024;
 const SESSION_ENTRY_CACHE_MAX = 256;
+const SESSION_ENTRY_CACHE_MAX_BYTES = Math.max(
+  64 * 1024,
+  Number(process.env.CLAUDEVILLE_CLAUDE_PARSED_TAIL_CACHE_MAX_BYTES || 32 * 1024 * 1024) || 32 * 1024 * 1024
+);
 const SEND_MESSAGE_MAX_EDGES = 10;
 const SEND_MESSAGE_RECIPIENT_FIELDS = Object.freeze([
   'recipient',
@@ -35,8 +36,25 @@ const SEND_MESSAGE_RECIPIENT_FIELDS = Object.freeze([
   'recipient_name',
   'recipientName',
 ]);
-const AGENT_LAUNCH_CACHE_MAX = 128;
-const TOKEN_USAGE_CACHE_MAX = 128;
+// A single active pass can legitimately contain more than 128 Claude sessions.
+// Keep the common working set warm, with the byte budget as the hard memory cap.
+const TRANSCRIPT_AGGREGATE_CACHE_MAX = 512;
+const TRANSCRIPT_AGGREGATE_CACHE_MAX_BYTES = Math.max(
+  64 * 1024,
+  Number(process.env.CLAUDEVILLE_CLAUDE_TRANSCRIPT_CACHE_MAX_BYTES || 32 * 1024 * 1024) || 32 * 1024 * 1024
+);
+const TRANSCRIPT_SCAN_CHUNK_BYTES = 64 * 1024;
+const TRANSCRIPT_GUARD_BYTES = 256;
+const TRANSCRIPT_MAX_LINE_BYTES = 4 * 1024 * 1024;
+const TRANSCRIPT_MAX_AGENT_LAUNCHES = 2048;
+const TRANSCRIPT_ASYNC_THRESHOLD_BYTES = Math.max(
+  64 * 1024,
+  Number(process.env.CLAUDEVILLE_TRANSCRIPT_ASYNC_THRESHOLD_BYTES || 8 * 1024 * 1024) || 8 * 1024 * 1024
+);
+const TRANSCRIPT_SCAN_CONCURRENCY = 1;
+const TRANSCRIPT_SCAN_QUEUE_MAX = 128;
+const ORPHAN_SCAN_CACHE_MAX = 512;
+const TEAM_MEMBERSHIP_WARNED_MAX = 256;
 const ORPHAN_DIR_MTIME_EPSILON_MS = 1;
 const CLAUDE_TOOL_INPUT_FIELDS = Object.freeze([
   'command',
@@ -61,8 +79,47 @@ const CLAUDE_TOOL_INPUT_FIELDS = Object.freeze([
 ]);
 
 const _sessionEntryCache = new Map();
-const _agentLaunchCache = new Map();
-const _tokenUsageCache = new Map();
+let _sessionEntryCacheBytes = 0;
+const _sessionEntryCacheStats = {
+  hits: 0,
+  misses: 0,
+  evictions: 0,
+  byteEvictions: 0,
+  entryEvictions: 0,
+  rejectedEntries: 0,
+};
+const _transcriptAggregateCache = new Map();
+let _transcriptAggregateCacheBytes = 0;
+const _transcriptScanQueue = [];
+const _activeTranscriptStreams = new Map();
+let _activeTranscriptScans = 0;
+let _dataReadyCallback = null;
+let _transcriptScanEpoch = 0;
+let _adapterShutdown = false;
+const _transcriptAggregateStats = {
+  bytesRead: 0,
+  guardBytesRead: 0,
+  fullScans: 0,
+  incrementalScans: 0,
+  asyncScans: 0,
+  asyncCompletions: 0,
+  staleAsyncScans: 0,
+  scanErrors: 0,
+  malformedLines: 0,
+  oversizedLines: 0,
+  parsedLines: 0,
+  rotations: 0,
+  truncations: 0,
+  rewrites: 0,
+  guardMismatches: 0,
+  cacheEvictions: 0,
+  cacheByteEvictions: 0,
+  cacheEntryEvictions: 0,
+  cacheRejectedEntries: 0,
+  queueRejections: 0,
+  cancelledQueuedScans: 0,
+  cancelledActiveScans: 0,
+};
 const _sessionNamesCache = { signature: '', value: new Map() };
 const _teamMembershipCache = { signature: '', value: new Map() };
 const _teamMembershipWarned = new Set();
@@ -178,6 +235,9 @@ function readClaudeTeamMembership() {
       const key = `${agentName}|${teams.slice().sort().join(',')}|${winner}`;
       if (_teamMembershipWarned.has(key)) continue;
       _teamMembershipWarned.add(key);
+      while (_teamMembershipWarned.size > TEAM_MEMBERSHIP_WARNED_MAX) {
+        _teamMembershipWarned.delete(_teamMembershipWarned.values().next().value);
+      }
       console.warn(`[claude adapter] agentName "${agentName}" appears in multiple teams: ${teams.join(', ')}; using ${winner}`);
     }
   } catch { /* ignore */ }
@@ -214,19 +274,102 @@ function directorySignature(dirPath, { recursive = false, extension = '' } = {})
   }
 }
 
+function estimateStringBytes(value) {
+  return 16 + (String(value || '').length * 2);
+}
+
+function estimateJsonValueBytes(value) {
+  const seen = new Set();
+  const stack = [value];
+  let bytes = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current == null) {
+      bytes += 8;
+    } else if (typeof current === 'string') {
+      bytes += estimateStringBytes(current);
+    } else if (typeof current === 'number' || typeof current === 'boolean') {
+      bytes += 8;
+    } else if (typeof current === 'object' && !seen.has(current)) {
+      seen.add(current);
+      if (Array.isArray(current)) {
+        bytes += 32 + (current.length * 8);
+        for (const item of current) stack.push(item);
+      } else {
+        const entries = Object.entries(current);
+        bytes += 48 + (entries.length * 16);
+        for (const [key, item] of entries) {
+          bytes += estimateStringBytes(key);
+          stack.push(item);
+        }
+      }
+    }
+  }
+  return bytes;
+}
+
+function estimateSessionEntryRecordBytes(filePath, key, entries) {
+  return 96 + estimateStringBytes(filePath) + estimateStringBytes(key) + estimateJsonValueBytes(entries);
+}
+
+function deleteSessionEntryRecord(filePath, { evicted = false, reason = null } = {}) {
+  const record = _sessionEntryCache.get(filePath);
+  if (!record) return;
+  _sessionEntryCache.delete(filePath);
+  _sessionEntryCacheBytes = Math.max(0, _sessionEntryCacheBytes - (record.estimatedBytes || 0));
+  if (evicted) {
+    _sessionEntryCacheStats.evictions++;
+    if (reason === 'bytes') _sessionEntryCacheStats.byteEvictions++;
+    if (reason === 'entries') _sessionEntryCacheStats.entryEvictions++;
+  }
+}
+
+function clearSessionEntryCache() {
+  _sessionEntryCache.clear();
+  _sessionEntryCacheBytes = 0;
+}
+
+function cacheSessionEntries(filePath, key, entries) {
+  deleteSessionEntryRecord(filePath);
+  const estimatedBytes = estimateSessionEntryRecordBytes(filePath, key, entries);
+  if (estimatedBytes > SESSION_ENTRY_CACHE_MAX_BYTES) {
+    _sessionEntryCacheStats.rejectedEntries++;
+    return;
+  }
+
+  const record = { key, entries, estimatedBytes };
+  _sessionEntryCache.set(filePath, record);
+  _sessionEntryCacheBytes += estimatedBytes;
+  while (
+    _sessionEntryCache.size > SESSION_ENTRY_CACHE_MAX
+    || _sessionEntryCacheBytes > SESSION_ENTRY_CACHE_MAX_BYTES
+  ) {
+    const reason = _sessionEntryCacheBytes > SESSION_ENTRY_CACHE_MAX_BYTES ? 'bytes' : 'entries';
+    const oldestPath = _sessionEntryCache.keys().next().value;
+    if (oldestPath === undefined) break;
+    deleteSessionEntryRecord(oldestPath, { evicted: true, reason });
+  }
+}
+
+function touchSessionEntryRecord(filePath, record) {
+  _sessionEntryCache.delete(filePath);
+  _sessionEntryCache.set(filePath, record);
+}
+
 function getSessionEntries(filePath) {
   try {
     const stat = fs.statSync(filePath);
     const cacheKey = statCacheKey(filePath, stat);
     const cached = _sessionEntryCache.get(filePath);
     if (cached?.key === cacheKey) {
-      _sessionEntryCache.delete(filePath);
-      _sessionEntryCache.set(filePath, cached);
+      _sessionEntryCacheStats.hits++;
+      touchSessionEntryRecord(filePath, cached);
       return cached.entries;
     }
+    _sessionEntryCacheStats.misses++;
+    deleteSessionEntryRecord(filePath);
     const entries = readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
-    _sessionEntryCache.set(filePath, { key: cacheKey, entries });
-    trimCache(_sessionEntryCache, SESSION_ENTRY_CACHE_MAX);
+    cacheSessionEntries(filePath, cacheKey, entries);
     return entries;
   } catch {
     return [];
@@ -238,78 +381,526 @@ function tailEntries(filePath, count) {
   return entries.slice(-count);
 }
 
-function getFullSessionEntries(filePath) {
-  const stat = fs.statSync(filePath);
-  const cacheKey = statCacheKey(filePath, stat);
-  const cached = _tokenUsageCache.get(filePath);
-  if (cached?.key === cacheKey) {
-    _tokenUsageCache.delete(filePath);
-    _tokenUsageCache.set(filePath, cached);
-    return cached.entries;
-  }
-
-  // Incremental append read: when the file only grew, parse just the new bytes
-  // and carry over the previous partial trailing line.
-  let lineEntries = null;
-  let pending = '';
-  let size = 0;
-  let guard = null;
-  if (cached && cached.ino === (stat.ino || 0) && stat.size > cached.size) {
-    try {
-      // Re-read the guard window just before the cached offset; a mismatch
-      // means the prefix was rewritten in place, so take the full read below.
-      const cachedGuard = Buffer.isBuffer(cached.guard) ? cached.guard : Buffer.alloc(0);
-      const window = readByteRangeText(
-        filePath,
-        cached.size - cachedGuard.length,
-        cachedGuard.length + (stat.size - cached.size)
-      );
-      const prefixIntact = window.bytesRead >= cachedGuard.length
-        && window.buffer.subarray(0, cachedGuard.length).equals(cachedGuard);
-      if (prefixIntact && window.bytesRead > cachedGuard.length) {
-        const appendedBuffer = window.buffer.subarray(cachedGuard.length);
-        const parts = (cached.pending + appendedBuffer.toString('utf-8')).split('\n');
-        pending = parts.pop();
-        lineEntries = cached.lineEntries.concat(parseJsonLines(parts, { source: 'claude', file: filePath }));
-        size = cached.size + appendedBuffer.length;
-        guard = tailGuard(Buffer.concat([cachedGuard, appendedBuffer]));
-      }
-    } catch { /* fall back to a full read below */ }
-  }
-
-  if (!lineEntries) {
-    const raw = fs.readFileSync(filePath);
-    size = raw.length;
-    guard = tailGuard(raw);
-    const parts = raw.length ? raw.toString('utf-8').split('\n') : [];
-    pending = parts.length ? parts.pop() : '';
-    lineEntries = parseJsonLines(parts, { source: 'claude', file: filePath });
-  }
-
-  // A complete final line without a trailing newline still counts as an entry,
-  // but stays in `pending` so a later append can re-read it safely.
-  const pendingEntries = parseJsonLines([pending], { source: 'claude', file: filePath });
-  const entries = pendingEntries.length ? lineEntries.concat(pendingEntries) : lineEntries;
-  _tokenUsageCache.set(filePath, {
-    key: cacheKey,
-    ino: stat.ino || 0,
-    size,
-    guard,
-    pending,
-    lineEntries,
-    entries,
-    usage: null,
-  });
-  trimCache(_tokenUsageCache, TOKEN_USAGE_CACHE_MAX);
-  return entries;
-}
-
 function readUsageNumber(usage, keys) {
   for (const key of keys) {
     const value = usage?.[key];
     if (Number.isFinite(Number(value))) return Number(value);
   }
   return 0;
+}
+
+function emptyTokenUsage() {
+  return {
+    input: 0,
+    output: 0,
+    totalInput: 0,
+    totalOutput: 0,
+    cacheRead: 0,
+    cacheCreate: 0,
+    contextWindow: 0,
+    turnCount: 0,
+  };
+}
+
+function createTranscriptAggregate(filePath) {
+  return {
+    filePath,
+    dev: 0,
+    ino: 0,
+    size: 0,
+    mtimeMs: 0,
+    guard: Buffer.alloc(0),
+    trailing: Buffer.alloc(0),
+    discardingLine: false,
+    usage: emptyTokenUsage(),
+    launches: [],
+    displayUsage: null,
+    displayLaunches: null,
+  };
+}
+
+function cloneTranscriptAggregate(aggregate) {
+  if (!aggregate) return null;
+  return {
+    ...aggregate,
+    guard: Buffer.from(aggregate.guard),
+    trailing: Buffer.from(aggregate.trailing),
+    usage: { ...aggregate.usage },
+    launches: aggregate.launches.map((launch) => ({ ...launch })),
+  };
+}
+
+function appendTranscriptGuard(aggregate, chunk) {
+  if (chunk.length >= TRANSCRIPT_GUARD_BYTES) {
+    aggregate.guard = Buffer.from(chunk.subarray(chunk.length - TRANSCRIPT_GUARD_BYTES));
+    return;
+  }
+  const combined = aggregate.guard.length ? Buffer.concat([aggregate.guard, chunk]) : Buffer.from(chunk);
+  aggregate.guard = combined.length > TRANSCRIPT_GUARD_BYTES
+    ? Buffer.from(combined.subarray(combined.length - TRANSCRIPT_GUARD_BYTES))
+    : combined;
+}
+
+function addTranscriptEntry(aggregate, entry) {
+  const msg = entry?.message;
+  if (!msg) return;
+
+  if (msg.usage) {
+    const usage = msg.usage;
+    const input = readUsageNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
+    const output = readUsageNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
+    const cacheRead = readUsageNumber(usage, ['cache_read_input_tokens', 'cached_input_tokens', 'cacheReadInputTokens']);
+    const cacheCreate = readUsageNumber(usage, ['cache_creation_input_tokens', 'cacheCreationInputTokens']);
+    aggregate.usage.totalInput += input;
+    aggregate.usage.totalOutput += output;
+    aggregate.usage.cacheRead += cacheRead;
+    aggregate.usage.cacheCreate += cacheCreate;
+    aggregate.usage.contextWindow = input + cacheRead + cacheCreate;
+    aggregate.usage.turnCount++;
+    aggregate.usage.input = aggregate.usage.totalInput;
+    aggregate.usage.output = aggregate.usage.totalOutput;
+  }
+
+  if (msg.role !== 'assistant' || !Array.isArray(msg.content)) return;
+  for (const block of msg.content) {
+    if (block?.type !== 'tool_use' || block.name !== 'Agent' || !block.input) continue;
+    const prompt = typeof block.input.prompt === 'string' ? block.input.prompt : '';
+    aggregate.launches.push({
+      name: typeof block.input.description === 'string' ? block.input.description.substring(0, 256) : null,
+      agentType: typeof block.input.subagent_type === 'string'
+        ? block.input.subagent_type.substring(0, 128)
+        : 'sub-agent',
+      promptHash: prompt ? stableHash(prompt) : null,
+    });
+    if (aggregate.launches.length > TRANSCRIPT_MAX_AGENT_LAUNCHES) {
+      aggregate.launches.splice(0, aggregate.launches.length - TRANSCRIPT_MAX_AGENT_LAUNCHES);
+    }
+  }
+}
+
+function parseTranscriptLine(aggregate, lineBuffer) {
+  let line = lineBuffer;
+  if (line.length > 0 && line[line.length - 1] === 13) line = line.subarray(0, line.length - 1);
+  if (line.length === 0) return;
+  try {
+    addTranscriptEntry(aggregate, JSON.parse(line.toString('utf8')));
+    _transcriptAggregateStats.parsedLines++;
+  } catch {
+    _transcriptAggregateStats.malformedLines++;
+  }
+}
+
+function appendTranscriptPartial(aggregate, segment) {
+  if (aggregate.discardingLine || segment.length === 0) return;
+  if (aggregate.trailing.length + segment.length > TRANSCRIPT_MAX_LINE_BYTES) {
+    aggregate.trailing = Buffer.alloc(0);
+    aggregate.discardingLine = true;
+    _transcriptAggregateStats.oversizedLines++;
+    return;
+  }
+  aggregate.trailing = aggregate.trailing.length
+    ? Buffer.concat([aggregate.trailing, segment])
+    : Buffer.from(segment);
+}
+
+function processTranscriptChunk(aggregate, chunk) {
+  appendTranscriptGuard(aggregate, chunk);
+  let offset = 0;
+  while (offset < chunk.length) {
+    const newline = chunk.indexOf(10, offset);
+    if (newline === -1) {
+      appendTranscriptPartial(aggregate, chunk.subarray(offset));
+      break;
+    }
+
+    const segment = chunk.subarray(offset, newline);
+    if (aggregate.discardingLine) {
+      aggregate.discardingLine = false;
+      aggregate.trailing = Buffer.alloc(0);
+    } else if (aggregate.trailing.length + segment.length > TRANSCRIPT_MAX_LINE_BYTES) {
+      aggregate.trailing = Buffer.alloc(0);
+      _transcriptAggregateStats.oversizedLines++;
+    } else {
+      const line = aggregate.trailing.length
+        ? Buffer.concat([aggregate.trailing, segment])
+        : segment;
+      aggregate.trailing = Buffer.alloc(0);
+      parseTranscriptLine(aggregate, line);
+    }
+    offset = newline + 1;
+  }
+}
+
+function statIdentity(stat) {
+  return {
+    dev: Number(stat.dev) || 0,
+    ino: Number(stat.ino) || 0,
+    size: Number(stat.size) || 0,
+    mtimeMs: Number(stat.mtimeMs) || 0,
+  };
+}
+
+function sameTranscriptTarget(left, right) {
+  return Boolean(left && right)
+    && left.dev === right.dev
+    && left.ino === right.ino
+    && left.size === right.size
+    && left.mtimeMs === right.mtimeMs;
+}
+
+function estimateTranscriptAggregateBytes(aggregate) {
+  if (!aggregate) return 0;
+  let bytes = 256
+    + estimateStringBytes(aggregate.filePath)
+    + (aggregate.guard?.byteLength || 0)
+    + (aggregate.trailing?.byteLength || 0)
+    + estimateJsonValueBytes(aggregate.usage);
+  if (aggregate.displayUsage && aggregate.displayUsage !== aggregate.usage) {
+    bytes += estimateJsonValueBytes(aggregate.displayUsage);
+  }
+
+  const seenLaunches = new Set();
+  const addLaunches = (launches) => {
+    if (!Array.isArray(launches)) return;
+    bytes += 32 + (launches.length * 8);
+    for (const launch of launches) {
+      if (!launch || seenLaunches.has(launch)) continue;
+      seenLaunches.add(launch);
+      bytes += 64
+        + estimateStringBytes(launch.name)
+        + estimateStringBytes(launch.agentType)
+        + estimateStringBytes(launch.promptHash);
+    }
+  };
+  addLaunches(aggregate.launches);
+  if (aggregate.displayLaunches !== aggregate.launches) addLaunches(aggregate.displayLaunches);
+  return bytes;
+}
+
+function estimateTranscriptRecordBytes(filePath, record) {
+  return 160
+    + estimateStringBytes(filePath)
+    + estimateTranscriptAggregateBytes(record?.aggregate)
+    + (record?.pendingTarget ? 64 : 0);
+}
+
+function deleteTranscriptRecord(filePath, { evicted = false, reason = null } = {}) {
+  const record = _transcriptAggregateCache.get(filePath);
+  if (!record) return;
+  _transcriptAggregateCache.delete(filePath);
+  _transcriptAggregateCacheBytes = Math.max(
+    0,
+    _transcriptAggregateCacheBytes - (record.estimatedBytes || 0)
+  );
+  if (evicted) {
+    _transcriptAggregateStats.cacheEvictions++;
+    if (reason === 'bytes') _transcriptAggregateStats.cacheByteEvictions++;
+    if (reason === 'entries') _transcriptAggregateStats.cacheEntryEvictions++;
+  }
+}
+
+function clearTranscriptAggregateCache() {
+  for (const record of _transcriptAggregateCache.values()) {
+    record.generation = (record.generation || 0) + 1;
+    record.pendingTarget = null;
+  }
+  _transcriptAggregateCache.clear();
+  _transcriptAggregateCacheBytes = 0;
+}
+
+function touchTranscriptRecord(filePath, record) {
+  const existing = _transcriptAggregateCache.get(filePath);
+  if (existing) {
+    _transcriptAggregateCacheBytes = Math.max(
+      0,
+      _transcriptAggregateCacheBytes - (existing.estimatedBytes || 0)
+    );
+    _transcriptAggregateCache.delete(filePath);
+  }
+  record.estimatedBytes = estimateTranscriptRecordBytes(filePath, record);
+  _transcriptAggregateCache.set(filePath, record);
+  _transcriptAggregateCacheBytes += record.estimatedBytes;
+  while (
+    _transcriptAggregateCache.size > TRANSCRIPT_AGGREGATE_CACHE_MAX
+    || _transcriptAggregateCacheBytes > TRANSCRIPT_AGGREGATE_CACHE_MAX_BYTES
+  ) {
+    const reason = _transcriptAggregateCacheBytes > TRANSCRIPT_AGGREGATE_CACHE_MAX_BYTES
+      ? 'bytes'
+      : 'entries';
+    let victim = null;
+    for (const entry of _transcriptAggregateCache.entries()) {
+      if (!entry[1].pendingTarget) {
+        victim = entry;
+        break;
+      }
+    }
+    if (!victim) break;
+    deleteTranscriptRecord(victim[0], { evicted: true, reason });
+  }
+  const retained = _transcriptAggregateCache.get(filePath) === record;
+  if (!retained) _transcriptAggregateStats.cacheRejectedEntries++;
+  return retained
+    && _transcriptAggregateCache.size <= TRANSCRIPT_AGGREGATE_CACHE_MAX
+    && _transcriptAggregateCacheBytes <= TRANSCRIPT_AGGREGATE_CACHE_MAX_BYTES;
+}
+
+function transcriptGuardMatches(filePath, aggregate) {
+  if (!aggregate || aggregate.guard.length === 0) return true;
+  let fd;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    const buffer = Buffer.allocUnsafe(aggregate.guard.length);
+    const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, aggregate.size - buffer.length);
+    _transcriptAggregateStats.guardBytesRead += bytesRead;
+    return bytesRead === aggregate.guard.length && buffer.equals(aggregate.guard);
+  } catch {
+    return false;
+  } finally {
+    if (fd !== undefined) {
+      try { fs.closeSync(fd); } catch { /* ignore */ }
+    }
+  }
+}
+
+function finishTranscriptAggregate(aggregate, target) {
+  aggregate.dev = target.dev;
+  aggregate.ino = target.ino;
+  aggregate.size = target.size;
+  aggregate.mtimeMs = target.mtimeMs;
+  aggregate.displayUsage = aggregate.usage;
+  aggregate.displayLaunches = aggregate.launches;
+  if (!aggregate.discardingLine && aggregate.trailing.length > 0) {
+    let trailing = aggregate.trailing;
+    if (trailing[trailing.length - 1] === 13) trailing = trailing.subarray(0, trailing.length - 1);
+    try {
+      const provisional = {
+        usage: { ...aggregate.usage },
+        launches: aggregate.launches.slice(),
+      };
+      addTranscriptEntry(provisional, JSON.parse(trailing.toString('utf8')));
+      aggregate.displayUsage = provisional.usage;
+      aggregate.displayLaunches = provisional.launches;
+    } catch {
+      // An incomplete trailing record remains pending until a newline arrives.
+    }
+  }
+  return aggregate;
+}
+
+function scanTranscriptRangeSync(filePath, target, mode, baseAggregate, start) {
+  const aggregate = mode === 'append'
+    ? cloneTranscriptAggregate(baseAggregate)
+    : createTranscriptAggregate(filePath);
+  let fd;
+  let position = start;
+  try {
+    fd = fs.openSync(filePath, 'r');
+    while (position < target.size) {
+      const requested = Math.min(TRANSCRIPT_SCAN_CHUNK_BYTES, target.size - position);
+      const chunk = Buffer.allocUnsafe(requested);
+      const bytesRead = fs.readSync(fd, chunk, 0, requested, position);
+      if (bytesRead <= 0) break;
+      const value = bytesRead === chunk.length ? chunk : chunk.subarray(0, bytesRead);
+      processTranscriptChunk(aggregate, value);
+      position += bytesRead;
+      _transcriptAggregateStats.bytesRead += bytesRead;
+    }
+    if (position !== target.size) throw new Error('Transcript changed during scan');
+    return finishTranscriptAggregate(aggregate, target);
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+  }
+}
+
+function notifyTranscriptDataReady(filePath, reason) {
+  if (_adapterShutdown || typeof _dataReadyCallback !== 'function') return;
+  try {
+    _dataReadyCallback({
+      provider: 'claude',
+      path: filePath,
+      kind: 'transcript',
+      reason,
+    });
+  } catch {
+    // Completion notification must not fail the scan worker.
+  }
+}
+
+function runNextTranscriptScan() {
+  if (_adapterShutdown) return;
+  while (_activeTranscriptScans < TRANSCRIPT_SCAN_CONCURRENCY && _transcriptScanQueue.length > 0) {
+    const task = _transcriptScanQueue.shift();
+    if (task.epoch !== _transcriptScanEpoch) continue;
+    const record = _transcriptAggregateCache.get(task.filePath);
+    if (!record || record.generation !== task.generation) continue;
+    _activeTranscriptScans++;
+    const aggregate = task.mode === 'append'
+      ? cloneTranscriptAggregate(task.baseAggregate)
+      : createTranscriptAggregate(task.filePath);
+    let settled = false;
+    let stream = null;
+    const settle = (err = null) => {
+      if (settled) return;
+      settled = true;
+      if (_adapterShutdown || task.epoch !== _transcriptScanEpoch) return;
+      if (stream) _activeTranscriptStreams.delete(stream);
+      _activeTranscriptScans--;
+      const currentRecord = _transcriptAggregateCache.get(task.filePath);
+      if (currentRecord?.generation === task.generation) {
+        currentRecord.pendingTarget = null;
+        if (err) {
+          _transcriptAggregateStats.scanErrors++;
+        } else {
+          let currentTarget = null;
+          try { currentTarget = statIdentity(fs.statSync(task.filePath)); } catch { /* file disappeared */ }
+          if (!sameTranscriptTarget(currentTarget, task.target)) {
+            _transcriptAggregateStats.staleAsyncScans++;
+          } else {
+            currentRecord.aggregate = finishTranscriptAggregate(aggregate, task.target);
+            _transcriptAggregateStats.asyncCompletions++;
+          }
+        }
+        touchTranscriptRecord(task.filePath, currentRecord);
+      }
+      notifyTranscriptDataReady(task.filePath, err ? 'transcript-scan-error' : 'transcript-scan-complete');
+      setImmediate(runNextTranscriptScan);
+    };
+
+    if (task.start >= task.target.size) {
+      settle();
+      continue;
+    }
+    try {
+      stream = fs.createReadStream(task.filePath, {
+        start: task.start,
+        end: task.target.size - 1,
+        highWaterMark: TRANSCRIPT_SCAN_CHUNK_BYTES,
+      });
+    } catch (err) {
+      settle(err);
+      continue;
+    }
+    _activeTranscriptStreams.set(stream, { task, aggregate });
+    stream.on('data', (chunk) => {
+      if (_adapterShutdown || task.epoch !== _transcriptScanEpoch) return;
+      processTranscriptChunk(aggregate, chunk);
+      _transcriptAggregateStats.bytesRead += chunk.length;
+    });
+    stream.once('error', settle);
+    stream.once('end', () => settle());
+  }
+}
+
+function scheduleTranscriptScan(filePath, record, target, mode, baseAggregate, start) {
+  if (_adapterShutdown || _transcriptScanQueue.length >= TRANSCRIPT_SCAN_QUEUE_MAX) {
+    _transcriptAggregateStats.queueRejections++;
+    return false;
+  }
+  record.generation = (record.generation || 0) + 1;
+  record.pendingTarget = target;
+  if (!touchTranscriptRecord(filePath, record)) {
+    record.generation++;
+    record.pendingTarget = null;
+    touchTranscriptRecord(filePath, record);
+    _transcriptAggregateStats.queueRejections++;
+    return false;
+  }
+  _transcriptScanQueue.push({
+    filePath,
+    target,
+    mode,
+    baseAggregate,
+    start,
+    generation: record.generation,
+    epoch: _transcriptScanEpoch,
+  });
+  _transcriptAggregateStats.asyncScans++;
+  setImmediate(runNextTranscriptScan);
+  return true;
+}
+
+function getTranscriptAggregate(filePath) {
+  if (_adapterShutdown) return null;
+  let stat;
+  try {
+    stat = fs.statSync(filePath);
+  } catch {
+    deleteTranscriptRecord(filePath);
+    return null;
+  }
+  const target = statIdentity(stat);
+  let record = _transcriptAggregateCache.get(filePath);
+  if (!record) record = { aggregate: null, pendingTarget: null, generation: 0 };
+  touchTranscriptRecord(filePath, record);
+
+  if (record.pendingTarget) return record.aggregate;
+  const cached = record.aggregate;
+  if (cached && sameTranscriptTarget(cached, target)) return cached;
+
+  let mode = 'full';
+  let start = 0;
+  if (cached) {
+    if (cached.dev !== target.dev || cached.ino !== target.ino) {
+      _transcriptAggregateStats.rotations++;
+    } else if (target.size < cached.size) {
+      _transcriptAggregateStats.truncations++;
+    } else if (target.size === cached.size) {
+      _transcriptAggregateStats.rewrites++;
+    } else if (transcriptGuardMatches(filePath, cached)) {
+      mode = 'append';
+      start = cached.size;
+    } else {
+      _transcriptAggregateStats.guardMismatches++;
+      _transcriptAggregateStats.rewrites++;
+    }
+  }
+
+  if (mode === 'append') _transcriptAggregateStats.incrementalScans++;
+  else _transcriptAggregateStats.fullScans++;
+  const bytesToRead = target.size - start;
+  if (bytesToRead > TRANSCRIPT_ASYNC_THRESHOLD_BYTES) {
+    scheduleTranscriptScan(filePath, record, target, mode, cached, start);
+    return cached;
+  }
+
+  try {
+    record.aggregate = scanTranscriptRangeSync(filePath, target, mode, cached, start);
+    touchTranscriptRecord(filePath, record);
+    return record.aggregate;
+  } catch {
+    _transcriptAggregateStats.scanErrors++;
+    return cached;
+  }
+}
+
+function shutdownClaudeAdapter() {
+  if (_adapterShutdown) return;
+  _adapterShutdown = true;
+  _transcriptScanEpoch++;
+  _dataReadyCallback = null;
+
+  _transcriptAggregateStats.cancelledQueuedScans += _transcriptScanQueue.length;
+  _transcriptAggregateStats.cancelledActiveScans += _activeTranscriptStreams.size;
+  _transcriptScanQueue.length = 0;
+
+  const streams = Array.from(_activeTranscriptStreams.keys());
+  _activeTranscriptStreams.clear();
+  _activeTranscriptScans = 0;
+  clearTranscriptAggregateCache();
+  clearSessionEntryCache();
+  _orphanScanCache.filesByProjectDir.clear();
+  _orphanScanCache.projectDirMtimes.clear();
+  _teamMembershipWarned.clear();
+  _sessionNamesCache.signature = '';
+  _sessionNamesCache.value = new Map();
+  _teamMembershipCache.signature = '';
+  _teamMembershipCache.value = new Map();
+  _teamsCache.signature = '';
+  _teamsCache.value = [];
+
+  for (const stream of streams) {
+    try { stream.destroy(); } catch { /* shutdown is best effort */ }
+  }
 }
 
 function summarizeToolInput(input, { maxLength = 60, basenameFile = true } = {}) {
@@ -339,36 +930,8 @@ function getFirstUserPrompt(filePath) {
 
 function getAgentLaunches(sessionFilePath) {
   try {
-    const stat = fs.statSync(sessionFilePath);
-    const cacheKey = statCacheKey(sessionFilePath, stat);
-    const cached = _agentLaunchCache.get(sessionFilePath);
-    if (cached?.key === cacheKey) {
-      _agentLaunchCache.delete(sessionFilePath);
-      _agentLaunchCache.set(sessionFilePath, cached);
-      return cached.launches;
-    }
-
-    const launches = [];
-    const raw = fs.readFileSync(sessionFilePath, 'utf-8');
-    const entries = parseJsonLines(raw ? raw.split('\n') : [], { source: 'claude', file: sessionFilePath });
-
-    for (const entry of entries) {
-      const msg = entry.message;
-      if (!msg || msg.role !== 'assistant' || !Array.isArray(msg.content)) continue;
-
-      for (const block of msg.content) {
-        if (block.type !== 'tool_use' || block.name !== 'Agent' || !block.input) continue;
-        launches.push({
-          name: block.input.description || null,
-          agentType: block.input.subagent_type || 'sub-agent',
-          prompt: block.input.prompt || null,
-        });
-      }
-    }
-
-    _agentLaunchCache.set(sessionFilePath, { key: cacheKey, launches });
-    trimCache(_agentLaunchCache, AGENT_LAUNCH_CACHE_MAX);
-    return launches;
+    const aggregate = getTranscriptAggregate(sessionFilePath);
+    return aggregate?.displayLaunches || aggregate?.launches || [];
   } catch {
     return [];
   }
@@ -463,57 +1026,11 @@ function getRecentMessages(sessionFilePath, maxItems = 5) {
 }
 
 function getTokenUsage(sessionFilePath) {
-  const emptyUsage = {
-    input: 0,
-    output: 0,
-    totalInput: 0,
-    totalOutput: 0,
-    cacheRead: 0,
-    cacheCreate: 0,
-    contextWindow: 0,  // Context size for the last turn
-    turnCount: 0,
-  };
   try {
-    const stat = fs.statSync(sessionFilePath);
-    const cacheKey = statCacheKey(sessionFilePath, stat);
-    const cached = _tokenUsageCache.get(sessionFilePath);
-    if (cached?.key === cacheKey && cached.usage) {
-      _tokenUsageCache.delete(sessionFilePath);
-      _tokenUsageCache.set(sessionFilePath, cached);
-      return { ...cached.usage };
-    }
-
-    const usage = { ...emptyUsage };
-    const entries = cached?.key === cacheKey ? cached.entries : getFullSessionEntries(sessionFilePath);
-
-    let lastUsage = null;
-    for (const entry of entries) {
-      const msg = entry.message;
-      if (!msg || !msg.usage) continue;
-      const u = msg.usage;
-      usage.totalInput += readUsageNumber(u, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
-      usage.totalOutput += readUsageNumber(u, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
-      usage.cacheRead += readUsageNumber(u, ['cache_read_input_tokens', 'cached_input_tokens', 'cacheReadInputTokens']);
-      usage.cacheCreate += readUsageNumber(u, ['cache_creation_input_tokens', 'cacheCreationInputTokens']);
-      usage.turnCount++;
-      lastUsage = u;
-    }
-    usage.input = usage.totalInput;
-    usage.output = usage.totalOutput;
-
-    // Last turn context = input + cache_read + cache_create
-    if (lastUsage) {
-      usage.contextWindow =
-        readUsageNumber(lastUsage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']) +
-        readUsageNumber(lastUsage, ['cache_read_input_tokens', 'cached_input_tokens', 'cacheReadInputTokens']) +
-        readUsageNumber(lastUsage, ['cache_creation_input_tokens', 'cacheCreationInputTokens']);
-    }
-
-    const latest = _tokenUsageCache.get(sessionFilePath);
-    if (latest?.key === cacheKey) latest.usage = { ...usage };
-    return usage;
+    const aggregate = getTranscriptAggregate(sessionFilePath);
+    return aggregate ? { ...(aggregate.displayUsage || aggregate.usage) } : emptyTokenUsage();
   } catch { /* ignore */ }
-  return emptyUsage;
+  return emptyTokenUsage();
 }
 
 // Latest plan/act permission mode for a session. Transcripts carry sparse
@@ -691,6 +1208,10 @@ function listProjectSessionFiles(projPath) {
     && previous !== undefined
     && Math.abs(dirMtime - previous) <= ORPHAN_DIR_MTIME_EPSILON_MS
   ) {
+    _orphanScanCache.filesByProjectDir.delete(projPath);
+    _orphanScanCache.filesByProjectDir.set(projPath, cached);
+    _orphanScanCache.projectDirMtimes.delete(projPath);
+    _orphanScanCache.projectDirMtimes.set(projPath, previous);
     return cached;
   }
   let files;
@@ -702,6 +1223,11 @@ function listProjectSessionFiles(projPath) {
   }
   _orphanScanCache.projectDirMtimes.set(projPath, dirMtime);
   _orphanScanCache.filesByProjectDir.set(projPath, files);
+  while (_orphanScanCache.filesByProjectDir.size > ORPHAN_SCAN_CACHE_MAX) {
+    const oldest = _orphanScanCache.filesByProjectDir.keys().next().value;
+    _orphanScanCache.filesByProjectDir.delete(oldest);
+    _orphanScanCache.projectDirMtimes.delete(oldest);
+  }
   return files;
 }
 
@@ -787,10 +1313,11 @@ class ClaudeAdapter {
   get homeDir() { return CLAUDE_DIR; }
 
   isAvailable() {
-    return fs.existsSync(CLAUDE_DIR);
+    return !_adapterShutdown && fs.existsSync(CLAUDE_DIR);
   }
 
   getActiveSessions(activeThresholdMs) {
+    if (_adapterShutdown) return [];
     const lines = readLastLines(HISTORY_FILE, 1000);
     const entries = parseJsonLines(lines, { source: 'claude', file: HISTORY_FILE });
     const now = Date.now();
@@ -926,7 +1453,7 @@ class ClaudeAdapter {
             const agentId = agentFile.replace('agent-', '').replace('.jsonl', '');
             const prompt = getFirstUserPrompt(filePath);
             const launch = prompt
-              ? agentLaunches.find(item => item.prompt === prompt)
+              ? agentLaunches.find(item => item.promptHash === stableHash(prompt))
               : null;
 
             results.push(buildSubAgentSession({
@@ -997,6 +1524,12 @@ class ClaudeAdapter {
     try {
       const projDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
         .filter(d => d.isDirectory());
+      const liveProjectDirs = new Set(projDirs.map((projDir) => path.join(projectsDir, projDir.name)));
+      for (const cachedPath of _orphanScanCache.filesByProjectDir.keys()) {
+        if (liveProjectDirs.has(cachedPath)) continue;
+        _orphanScanCache.filesByProjectDir.delete(cachedPath);
+        _orphanScanCache.projectDirMtimes.delete(cachedPath);
+      }
 
       for (const projDir of projDirs) {
         const projPath = path.join(projectsDir, projDir.name);
@@ -1056,6 +1589,7 @@ class ClaudeAdapter {
   }
 
   getSessionDetail(sessionId, project) {
+    if (_adapterShutdown) return createDetailResponse({ sessionId });
     const filePath = resolveSessionFilePath(sessionId, project);
     if (!filePath) return createDetailResponse({ sessionId });
     return createDetailResponse({
@@ -1066,43 +1600,108 @@ class ClaudeAdapter {
     });
   }
 
-  getWatchPaths() {
+  getWatchPaths({ sessions = [] } = {}) {
+    if (_adapterShutdown) return [];
     const paths = [];
+    const projectsDir = path.join(CLAUDE_DIR, 'projects');
 
-    // history.jsonl
+    // Stable roots only discover immediate children. Exact active files and
+    // their shallow parents below provide append and rotation coverage without
+    // subscribing to every historical transcript.
+    if (fs.existsSync(CLAUDE_DIR)) {
+      paths.push({
+        type: 'directory',
+        path: CLAUDE_DIR,
+        filters: ['history.jsonl', 'projects', 'sessions', 'teams'],
+        scope: 'discovery',
+        kind: 'discovery',
+      });
+    }
+
     if (fs.existsSync(HISTORY_FILE)) {
-      paths.push({ type: 'file', path: HISTORY_FILE });
+      paths.push({ type: 'file', path: HISTORY_FILE, scope: 'discovery', kind: 'discovery', probe: true });
     }
 
     if (fs.existsSync(SESSIONS_DIR)) {
-      paths.push({ type: 'directory', path: SESSIONS_DIR, filter: '.json' });
+      paths.push({ type: 'directory', path: SESSIONS_DIR, filters: ['.json'], scope: 'discovery', kind: 'metadata' });
     }
 
-    // Project directory (recursive also detects subagent files)
-    const projectsDir = path.join(CLAUDE_DIR, 'projects');
     if (fs.existsSync(projectsDir)) {
+      paths.push({ type: 'directory', path: projectsDir, scope: 'discovery', kind: 'discovery' });
+    }
+
+    if (fs.existsSync(TEAMS_DIR)) {
+      paths.push({ type: 'directory', path: TEAMS_DIR, scope: 'discovery', kind: 'teams' });
       try {
-        const projDirs = fs.readdirSync(projectsDir, { withFileTypes: true })
-          .filter(d => d.isDirectory());
-        for (const dir of projDirs) {
-          paths.push({
-            type: 'directory',
-            path: path.join(projectsDir, dir.name),
-            filter: '.jsonl',
-            recursive: true,
-          });
+        const teamDirs = fs.readdirSync(TEAMS_DIR, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory())
+          .slice(0, 64);
+        for (const entry of teamDirs) {
+          const teamDir = path.join(TEAMS_DIR, entry.name);
+          paths.push({ type: 'directory', path: teamDir, filters: ['.json'], scope: 'recent', kind: 'teams' });
+          const inboxDir = path.join(teamDir, 'inboxes');
+          if (fs.existsSync(inboxDir)) {
+            paths.push({ type: 'directory', path: inboxDir, filters: ['.json'], scope: 'recent', kind: 'teams' });
+          }
         }
       } catch { /* ignore */ }
     }
 
-    // Watch team directory (detect team creation/changes)
-    if (fs.existsSync(TEAMS_DIR)) {
+    for (const session of sessions) {
+      if (!session?.project || !session.sessionId) continue;
+      const projectDir = path.join(projectsDir, session.project.replace(/\//g, '-'));
+      const parentSessionId = session.parentSessionId || session.sessionId;
+      const parentDir = path.join(projectDir, parentSessionId);
+      const dirtyTarget = {
+        kind: 'transcript',
+        sessionId: session.sessionId,
+        project: session.project,
+      };
       paths.push({
         type: 'directory',
-        path: TEAMS_DIR,
-        recursive: true,
-        filter: '.json',
+        path: projectDir,
+        filters: ['.jsonl'],
+        scope: 'recent',
+        activity: session.lastActivity,
+        ...dirtyTarget,
       });
+
+      let sourcePath;
+      if (session.agentType === 'sub-agent' || session.agentType === 'workflow-subagent') {
+        const agentFile = `agent-${session.agentId}.jsonl`;
+        sourcePath = session.workflowId
+          ? path.join(parentDir, 'subagents', 'workflows', session.workflowId, agentFile)
+          : path.join(parentDir, 'subagents', agentFile);
+        paths.push({
+          type: 'directory',
+          path: path.dirname(sourcePath),
+          filters: ['.jsonl'],
+          scope: 'active',
+          probe: true,
+          activity: session.lastActivity,
+          ...dirtyTarget,
+        });
+      } else {
+        sourcePath = path.join(projectDir, `${session.sessionId}.jsonl`);
+        paths.push({
+          type: 'directory',
+          path: parentDir,
+          scope: 'active',
+          probe: true,
+          activity: session.lastActivity,
+          ...dirtyTarget,
+        });
+      }
+      if (fs.existsSync(sourcePath)) {
+        paths.push({
+          type: 'file',
+          path: sourcePath,
+          scope: 'active',
+          probe: true,
+          activity: session.lastActivity,
+          ...dirtyTarget,
+        });
+      }
     }
 
     return paths;
@@ -1111,6 +1710,7 @@ class ClaudeAdapter {
   // ─── Teams/tasks (Claude-only) ──────────────────────
 
   getTeams() {
+    if (_adapterShutdown) return [];
     const signature = directorySignature(TEAMS_DIR, { recursive: true, extension: '.json' });
     if (_teamsCache.signature === signature) return _teamsCache.value;
     if (!fs.existsSync(TEAMS_DIR)) return [];
@@ -1136,6 +1736,7 @@ class ClaudeAdapter {
   }
 
   getTasks() {
+    if (_adapterShutdown) return [];
     if (!fs.existsSync(TASKS_DIR)) return [];
     const taskGroups = [];
     try {
@@ -1162,16 +1763,98 @@ class ClaudeAdapter {
     return taskGroups;
   }
 
+  setDataReadyCallback(callback) {
+    _dataReadyCallback = !_adapterShutdown && typeof callback === 'function' ? callback : null;
+  }
+
+  invalidateCachesForDirty(dirty = {}) {
+    if (_adapterShutdown) return;
+    if (dirty.path) deleteSessionEntryRecord(dirty.path);
+    if (dirty.kind === 'transcript') return;
+    if (dirty.kind === 'teams') {
+      _teamMembershipCache.signature = '';
+      _teamMembershipCache.value = new Map();
+      _teamsCache.signature = '';
+      _teamsCache.value = [];
+      return;
+    }
+
+    _sessionNamesCache.signature = '';
+    _sessionNamesCache.value = new Map();
+    if (dirty.kind === 'discovery' || dirty.kind === 'reconcile') {
+      clearSessionEntryCache();
+      for (const filePath of _transcriptAggregateCache.keys()) {
+        if (!fs.existsSync(filePath)) deleteTranscriptRecord(filePath);
+      }
+    }
+    if (dirty.kind === 'reconcile') {
+      for (const projectDir of _orphanScanCache.filesByProjectDir.keys()) {
+        if (fs.existsSync(projectDir)) continue;
+        _orphanScanCache.filesByProjectDir.delete(projectDir);
+        _orphanScanCache.projectDirMtimes.delete(projectDir);
+      }
+    }
+  }
+
   invalidateCaches() {
-    _sessionEntryCache.clear();
-    _agentLaunchCache.clear();
-    _tokenUsageCache.clear();
+    if (_adapterShutdown) return;
+    clearSessionEntryCache();
+    clearTranscriptAggregateCache();
     _sessionNamesCache.signature = '';
     _sessionNamesCache.value = new Map();
     _teamMembershipCache.signature = '';
     _teamMembershipCache.value = new Map();
     _teamsCache.signature = '';
     _teamsCache.value = [];
+  }
+
+  shutdown() {
+    shutdownClaudeAdapter();
+  }
+
+  dispose() {
+    shutdownClaudeAdapter();
+  }
+
+  getPerfStats() {
+    let pending = 0;
+    for (const record of _transcriptAggregateCache.values()) {
+      if (record.pendingTarget) pending++;
+    }
+    let workingEstimatedBytes = 0;
+    for (const { aggregate } of _activeTranscriptStreams.values()) {
+      workingEstimatedBytes += estimateTranscriptAggregateBytes(aggregate);
+    }
+    return {
+      parsedTailCache: {
+        ..._sessionEntryCacheStats,
+        entries: _sessionEntryCache.size,
+        estimatedBytes: _sessionEntryCacheBytes,
+        entryLimit: SESSION_ENTRY_CACHE_MAX,
+        byteLimit: SESSION_ENTRY_CACHE_MAX_BYTES,
+      },
+      transcriptAggregate: {
+        ..._transcriptAggregateStats,
+        cacheEntries: _transcriptAggregateCache.size,
+        estimatedBytes: _transcriptAggregateCacheBytes,
+        entryLimit: TRANSCRIPT_AGGREGATE_CACHE_MAX,
+        byteLimit: TRANSCRIPT_AGGREGATE_CACHE_MAX_BYTES,
+        evictions: _transcriptAggregateStats.cacheEvictions,
+        workingEstimatedBytes,
+        totalEstimatedBytes: _transcriptAggregateCacheBytes + workingEstimatedBytes,
+        pending,
+        queued: _transcriptScanQueue.length,
+        active: _activeTranscriptScans,
+        activeStreams: _activeTranscriptStreams.size,
+        shutdown: _adapterShutdown,
+        asyncThresholdBytes: TRANSCRIPT_ASYNC_THRESHOLD_BYTES,
+        maxLineBytes: TRANSCRIPT_MAX_LINE_BYTES,
+      },
+      orphanScan: {
+        projectDirectories: _orphanScanCache.filesByProjectDir.size,
+      },
+      teamMembershipWarnings: _teamMembershipWarned.size,
+    };
   }
 }
 

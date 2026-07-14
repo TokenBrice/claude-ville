@@ -86,12 +86,17 @@ export class WebSocketClient {
     }
 
     connect() {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+        if (this.ws && (
+            this.ws.readyState === WebSocket.CONNECTING
+            || this.ws.readyState === WebSocket.OPEN
+        )) return;
 
         try {
-            this.ws = new WebSocket(this.url);
+            const socket = new WebSocket(this.url);
+            this.ws = socket;
 
-            this.ws.onopen = () => {
+            socket.onopen = () => {
+                if (this.ws !== socket) return;
                 this.connected = true;
                 this._resyncRequested = false;
                 console.log('[WS] Connected');
@@ -101,7 +106,8 @@ export class WebSocketClient {
                 this._clearReconnect();
             };
 
-            this.ws.onmessage = (event) => {
+            socket.onmessage = (event) => {
+                if (this.ws !== socket) return;
                 try {
                     const data = JSON.parse(event.data);
                     this._handleMessage(data);
@@ -110,14 +116,17 @@ export class WebSocketClient {
                 }
             };
 
-            this.ws.onclose = () => {
+            socket.onclose = () => {
+                if (this.ws !== socket) return;
+                this.ws = null;
                 this.connected = false;
                 console.log('[WS] Disconnected');
                 eventBus.emit('ws:disconnected');
                 this._scheduleReconnect();
             };
 
-            this.ws.onerror = (err) => {
+            socket.onerror = () => {
+                if (this.ws !== socket) return;
                 console.error('[WS] Error occurred');
                 this.connected = false;
             };
@@ -129,10 +138,19 @@ export class WebSocketClient {
 
     disconnect() {
         this._clearReconnect();
-        if (this.ws) {
-            this.ws.onclose = null;
-            this.ws.close();
+        const socket = this.ws;
+        if (socket) {
+            socket.onopen = null;
+            socket.onmessage = null;
+            socket.onerror = null;
+            socket.onclose = null;
             this.ws = null;
+            if (
+                socket.readyState === WebSocket.CONNECTING
+                || socket.readyState === WebSocket.OPEN
+            ) {
+                socket.close();
+            }
         }
         this.connected = false;
     }

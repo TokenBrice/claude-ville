@@ -2,6 +2,26 @@
 
 ---
 
+## v0.25.0 — *Steady Hearth* · Jul 14, 2026
+
+ClaudeVille can now stay open through long coding sessions without its history, watchers, canvases, or village state growing without bound. The town keeps its existing look, motion, density, and two-second freshness contract while doing substantially less repeated work.
+
+**A lighter, steadier runtime**
+- **Watch only what is alive.** Historical provider trees no longer expand into tens of thousands of kernel watches; bounded discovery, active-file watches, stat probes, reconciliation, and deterministic shutdown keep the live footprint near 60 watches on the same corpus that previously required 44,669.
+- **Session history stays bounded.** Claude transcript aggregation is incremental, byte-budgeted, cancellable, and cooperative for large first scans; shared tails, usage history, Codex discovery, and provider indexes now retain compact bounded state.
+- **Refresh the part that changed.** Provider and Git invalidation is scoped to the affected session or project, with separate caches and immediate recovery after transient Git failures instead of repeated global rescans.
+
+**A village built for long visits**
+- **World state has firm horizons.** Fade colors, paths, cooldowns, tool events, Harbor replay state, visit intents, biographies, affinities, nicknames, landmarks, and chronicle work now expire or evict without changing what is visible on screen.
+- **Clean starts and clean exits.** App boot, teardown, sockets, polling, details requests, audio visibility, renderer failures, WebGL context loss, canvases, listeners, and IndexedDB-backed work now have explicit ownership and bounded recovery paths.
+- **The same town, less frame work.** Invariant water descriptors, unchanged-state Harbor and visit reconciliation, targeted building masks/outlines, finite sprite variants, and Dashboard geometry reuse reduce CPU and retained pixels without lowering scene quality or animation cadence.
+
+**Desktop companions and diagnostics**
+- **Stable widgets.** The macOS widget reuses its WebViews and single-flights refreshes; KDE guards superseded XHR batches. Both bundles use the self-hosted Press Start 2P font and its license.
+- **Release gates for the long run.** Bounded `/api/perf` diagnostics and focused watcher, transcript, cache, lifecycle, World, widget, and soak smokes make memory and stability regressions reproducible.
+
+---
+
 ## v0.24.2.1 · Jul 13, 2026 — Hotfix
 
 Codex villagers spawned from large forked histories now retain their exact GPT-5.6 identity instead of falling back to the generic Codex model.

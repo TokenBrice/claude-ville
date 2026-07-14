@@ -1,4 +1,10 @@
-@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+@font-face {
+  font-family: 'Press Start 2P';
+  src: url('/assets/fonts/PressStart2P-Regular.woff2?v=16') format('woff2');
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
 
 * {
   box-sizing: border-box;

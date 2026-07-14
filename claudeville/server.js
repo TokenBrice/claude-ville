@@ -2,6 +2,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { monitorEventLoopDelay, performance } = require('perf_hooks');
 
 // ─── Load adapters ─────────────────────────────────────
 const {
@@ -15,8 +16,10 @@ const {
   getAdapterPerfStats,
   getGitEnrichmentPerfStats,
   getJsonlDiagnostics,
+  setAdapterDataReadyCallback,
   adapters,
 } = require('./adapters');
+const { getTailCacheDiagnostics } = require('./adapters/shared');
 
 // ─── Usage quota service ──────────────────────────────
 const usageQuota = require('./services/usageQuota');
@@ -66,6 +69,13 @@ const WS_MAX_BUFFER_BYTES = WS_MAX_PAYLOAD_BYTES + 32;
 const WATCH_FALLBACK_SCAN_INTERVAL_MS = 2000;
 const WATCH_FALLBACK_MAX_ENTRIES = 2000;
 const WATCH_FALLBACK_MAX_DEPTH = 10;
+const WATCH_FALLBACK_MAX_AGE_MS = 60_000;
+const WATCH_DYNAMIC_CAP = Math.max(1, Math.min(2048, Number(process.env.CLAUDEVILLE_WATCH_DYNAMIC_CAP || 512) || 512));
+const WATCH_ACTIVE_PROBE_CAP = Math.max(1, Math.min(4096, Number(process.env.CLAUDEVILLE_WATCH_PROBE_CAP || 1024) || 1024));
+const WATCH_ZERO_CLIENT_GRACE_MS = Math.max(50, Number(process.env.CLAUDEVILLE_WATCH_ZERO_CLIENT_GRACE_MS || 15_000) || 15_000);
+const WATCH_RECONCILIATION_INTERVAL_MS = 30_000;
+const PERF_SAMPLE_INTERVAL_MS = 5000;
+const LINUX_WATCH_SAMPLE_INTERVAL_MS = 15_000;
 const GIT_STATE_MAX_PROJECTS = 40;
 const GIT_STATE_MAX_REF_ENTRIES = 800;
 
@@ -134,7 +144,13 @@ function readJsonBody(req, callback) {
   req.on('error', finish);
 }
 
-function cacheControlFor() {
+function cacheControlFor(parsedUrl, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const versioned = parsedUrl?.searchParams?.has('v');
+  const isFont = ['.woff', '.woff2', '.ttf'].includes(ext);
+  const spriteRoot = path.join(STATIC_ROOT, 'assets', 'sprites');
+  const isSprite = isContainedPath(spriteRoot, filePath);
+  if (versioned && (isFont || isSprite)) return 'public, max-age=31536000, immutable';
   return 'no-cache';
 }
 
@@ -183,9 +199,21 @@ function safeCollect(label, fn, fallback = null, warnMs = STARTUP_STATS_WARNING_
   }
 }
 
+function estimateJsonBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value));
+  } catch {
+    return 0;
+  }
+}
+
 function printStartupStats(providers) {
   const sessions = safeCollect('getAllSessions', () => getAllSessions(ACTIVE_THRESHOLD_MS), []);
-  const watchPaths = safeCollect('getAllWatchPaths', getAllWatchPaths, []);
+  updateCanonicalActiveProjects(sessions);
+  const watchPaths = safeCollect('getAllWatchPaths', () => getAllWatchPaths({
+    sessions,
+    activeThresholdMs: ACTIVE_THRESHOLD_MS,
+  }), []);
 
   const providerCounts = new Map();
   for (const session of sessions) {
@@ -226,6 +254,7 @@ function handleGetSessions(req, res, parsedUrl) {
   sendApiPayload(res, 'Failed to fetch sessions', () => {
     const force = ['1', 'true', 'yes'].includes(String(parsedUrl.searchParams.get('force') || '').toLowerCase());
     const sessions = getAllSessions(ACTIVE_THRESHOLD_MS, { force });
+    updateCanonicalActiveProjects(sessions);
     return { sessions, count: sessions.length, timestamp: Date.now() };
   }, 'Unable to load session information.');
 }
@@ -331,6 +360,7 @@ function handleGetUsage(req, res) {
  * Lightweight runtime counters for manual performance checks.
  */
 function handleGetPerf(req, res) {
+  const gitEnrichment = getGitEnrichmentPerfStats();
   sendApiPayload(res, 'Failed to fetch perf counters', () => ({
     websocketClients: wsClients.size,
     activeWatchPaths: serverPerf.activeWatchPaths,
@@ -338,24 +368,77 @@ function handleGetPerf(req, res) {
     recursiveWatchFallbackDetails: Array.from(recursiveWatchFallbacks.values()).map((fallback) => ({
       path: fallback.wp.path,
       provider: fallback.wp.provider || null,
-      filter: fallback.wp.filter || null,
+      filters: fallback.wp.filters || (fallback.wp.filter ? [fallback.wp.filter] : []),
       baselinePending: Boolean(fallback.baselinePending),
       lastScanAt: fallback.lastScanAt || null,
       lastSignatureAt: fallback.lastSignatureAt || null,
+      lastForcedAt: fallback.lastForcedAt || null,
+      entriesScanned: fallback.entriesScanned || 0,
       lastError: fallback.lastError || null,
     })),
     providers: getAdapterPerfStats(),
-    gitEnrichment: getGitEnrichmentPerfStats(),
+    gitEnrichment,
+    gitRate: perfDiagnostics.gitRate,
     jsonlDiagnostics: getJsonlDiagnostics(),
+    tailCache: getTailCacheDiagnostics(),
     watchFailures: serverPerf.watchFailures,
     recentWatchFailures: serverPerf.watchFailureDetails,
     fallbackScans: serverPerf.fallbackScans,
     fallbackChanges: serverPerf.fallbackChanges,
+    fallbackEntriesScanned: serverPerf.fallbackEntriesScanned,
     skippedWrites: serverPerf.skippedWrites,
     lastBroadcast: serverPerf.lastBroadcast,
     recentBroadcasts: serverPerf.broadcasts,
     cacheStampCounter,
     lastBroadcastStamp,
+    runtime: {
+      pid: process.pid,
+      uptimeSeconds: Math.round(process.uptime()),
+      memory: perfDiagnostics.memory,
+      eventLoop: perfDiagnostics.eventLoop,
+    },
+    watchers: {
+      configured: serverPerf.configuredWatchPaths,
+      canonical: serverPerf.canonicalWatchPaths,
+      installed: serverPerf.activeWatchPaths,
+      stableInstalled: serverPerf.stableWatchPaths,
+      dynamicRequested: serverPerf.dynamicWatchPathsRequested,
+      dynamicInstalled: serverPerf.dynamicWatchPaths,
+      dynamicDropped: serverPerf.dynamicWatchPathsDropped,
+      dynamicCap: WATCH_DYNAMIC_CAP,
+      dynamicEnabled: dynamicWatchersEnabled,
+      probePaths: serverPerf.probeWatchPaths,
+      probeCap: WATCH_ACTIVE_PROBE_CAP,
+      probeScans: serverPerf.probeScans,
+      probeChanges: serverPerf.probeChanges,
+      reconciliations: serverPerf.reconciliations,
+      lastReconciliationAt,
+      linux: perfDiagnostics.linuxWatchers,
+    },
+    caches: {
+      teams: {
+        entries: teamsCache.teams.length,
+        estimatedBytes: estimateJsonBytes(teamsCache.teams),
+      },
+      broadcastState: {
+        entries: Array.isArray(lastBroadcastState?.sessions) ? lastBroadcastState.sessions.length : 0,
+        estimatedBytes: serverPerf.lastBroadcastStateBytes,
+      },
+      activeProjectGitState: { entries: activeProjectGitState.size },
+      watchFallbacks: { entries: recursiveWatchFallbacks.size },
+      watchProbeSignatures: { entries: watchProbeSignatures.size },
+      activeProbeDescriptors: { entries: activeProbeDescriptors.size },
+      watchRetries: { entries: watchRetryTimers.size },
+      gitStatus: {
+        entries: Number(gitEnrichment.statusCacheSize || 0) + Number(gitEnrichment.currentBranchCacheSize || 0),
+      },
+    },
+    dirty: {
+      providerDataDirty,
+      teamsDirty,
+      marks: serverPerf.dirtyMarks,
+      last: serverPerf.lastDirty,
+    },
     timestamp: Date.now(),
   }), 'Unable to load performance information.');
 }
@@ -447,7 +530,7 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
 
       res.writeHead(200, {
         'Content-Type': contentType,
-        'Cache-Control': cacheControlFor(),
+        'Cache-Control': cacheControlFor(parsedUrl, filePath),
       });
       res.end(data);
     });
@@ -503,11 +586,14 @@ function handleWebSocketUpgrade(req, socket, head = Buffer.alloc(0)) {
     socket._cvDraining = false;
     socket._cvSupportsDeltas = false;
     socket._cvFrameBuffer = Buffer.alloc(0);
+    const wasEmpty = wsClients.size === 0;
     wsClients.add(socket);
+    if (wasEmpty) onFirstWebSocketClient();
     if (head.length > 0) {
       processWebSocketData(socket, head);
     }
-    setTimeout(() => {
+    socket._cvInitialTimer = setTimeout(() => {
+      socket._cvInitialTimer = null;
       if (!socket.destroyed && socket.writable && wsClients.has(socket)) {
         sendInitialData(socket);
       }
@@ -614,9 +700,14 @@ function handleWebSocketFrame(socket, buffer) {
 
 function closeWebSocket(socket, code = 1000, { sendFrame = true } = {}) {
   if (!socket) return;
-  wsClients.delete(socket);
+  const removed = wsClients.delete(socket);
+  if (socket._cvInitialTimer) {
+    clearTimeout(socket._cvInitialTimer);
+    socket._cvInitialTimer = null;
+  }
   socket._cvPendingFrame = null;
   socket._cvDraining = false;
+  if (removed && wsClients.size === 0) onLastWebSocketClient();
   if (!sendFrame || socket.destroyed || !socket.writable) return;
 
   const frame = code == null
@@ -736,7 +827,8 @@ function writeWebSocketFrame(socket, frame, { queueLatest = false } = {}) {
 }
 
 function startWebSocketHeartbeat() {
-  setInterval(() => {
+  if (heartbeatTimer) return;
+  heartbeatTimer = setInterval(() => {
     const now = Date.now();
     const pingFrame = createWebSocketFrame(String(now), 0x9);
     for (const socket of wsClients) {
@@ -775,6 +867,7 @@ function sendInitialData(socket) {
       teams: getTeamsCached({ force: true }),
       usage: usageQuota.fetchUsage(),
     };
+    updateCanonicalActiveProjects(state.sessions);
     broadcastSeq++;
     lastBroadcastState = state;
     wsSend(socket, {
@@ -792,6 +885,11 @@ function sendInitialData(socket) {
 
 let watchDebounce = null;
 let watchRefreshDebounce = null;
+let dynamicWatchRetireTimer = null;
+let heartbeatTimer = null;
+let watcherSchedulerTimer = null;
+let perfSampleTimer = null;
+let startupTimer = null;
 const watchRetryTimers = new Map();
 let lastBroadcastSignature = null;
 // Coarse counter bumped on any cache invalidation; used to skip the broadcast
@@ -802,6 +900,7 @@ let providerDataDirty = true;
 let teamsDirty = true;
 let lastFullDiscoveryAt = 0;
 let lastFullBroadcastAt = 0;
+let lastReconciliationAt = 0;
 // Delta broadcasting: canonical {sessions, teams, usage} state matching the
 // last frame sent to clients, plus a monotonic sequence number so delta
 // clients can detect a broken patch chain and ask for a resync.
@@ -809,8 +908,30 @@ let broadcastSeq = 0;
 let lastBroadcastState = null;
 let lastDeltaSnapshotAt = 0;
 const activeProjectGitState = new Map();
+const lastCanonicalActiveProjects = new Set();
 const activeWatchers = new Map();
 const recursiveWatchFallbacks = new Map();
+const watchProbeSignatures = new Map();
+let latestWatchDescriptors = [];
+let selectedWatchDescriptors = new Map();
+let activeProbeDescriptors = new Map();
+let dynamicWatchersEnabled = false;
+const eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
+let lastEventLoopUtilization = performance.eventLoopUtilization();
+let lastGitPerfSample = null;
+let lastLinuxWatchSampleAt = 0;
+const perfDiagnostics = {
+  memory: null,
+  eventLoop: null,
+  gitRate: null,
+  linuxWatchers: {
+    supported: process.platform === 'linux',
+    sampledAt: null,
+    inotifyFds: null,
+    watchEntries: null,
+    error: null,
+  },
+};
 const serverPerf = {
   broadcasts: [],
   skippedWrites: 0,
@@ -821,6 +942,20 @@ const serverPerf = {
   watchFailureDetails: [],
   fallbackScans: 0,
   fallbackChanges: 0,
+  fallbackEntriesScanned: 0,
+  configuredWatchPaths: 0,
+  canonicalWatchPaths: 0,
+  stableWatchPaths: 0,
+  dynamicWatchPathsRequested: 0,
+  dynamicWatchPaths: 0,
+  dynamicWatchPathsDropped: 0,
+  probeWatchPaths: 0,
+  probeScans: 0,
+  probeChanges: 0,
+  reconciliations: 0,
+  dirtyMarks: 0,
+  lastDirty: null,
+  lastBroadcastStateBytes: 0,
 };
 const teamsCache = {
   at: 0,
@@ -829,21 +964,55 @@ const teamsCache = {
 
 const BROADCAST_POLL_INTERVAL = 2000;
 const BROADCAST_DEBOUNCE_MS = 100;
-const BROADCAST_FULL_DISCOVERY_INTERVAL = 20_000;
 const TEAMS_CACHE_TTL_MS = 5000;
 // Delta clients still get a periodic full snapshot as a self-healing floor.
 const DELTA_SNAPSHOT_INTERVAL_MS = 20_000;
 const DELTA_MAX_PATCH_OPS = 500;
 
-function markProviderDataDirty(reason = 'watch', provider = null) {
+function normalizeServerDirtyDescriptor(value = 'watch', provider = null) {
+  const input = value && typeof value === 'object'
+    ? value
+    : { reason: value, provider, kind: 'reconcile' };
+  return {
+    provider: input.provider ? String(input.provider).toLowerCase() : null,
+    path: input.path ? path.resolve(String(input.path)) : null,
+    kind: input.kind || 'reconcile',
+    reason: String(input.reason || 'watch'),
+    sessionId: input.sessionId ? String(input.sessionId) : null,
+    project: input.project ? path.resolve(String(input.project)) : null,
+  };
+}
+
+function markProviderDataDirty(value = 'watch', provider = null) {
+  const dirty = normalizeServerDirtyDescriptor(value, provider);
   providerDataDirty = true;
-  if (!provider || provider === 'claude') teamsDirty = true;
-  cacheStampCounter++;
-  invalidateSessionCaches({ provider });
-  if (process.env.DEBUG_WATCH) {
-    const scope = provider ? ` provider=${provider}` : ' provider=all';
-    console.log(`[Watch] dirty: ${reason}${scope}`);
+  if (dirty.kind === 'teams'
+    || (dirty.provider === 'claude' && ['discovery', 'metadata', 'reconcile'].includes(dirty.kind))
+    || (!dirty.provider && dirty.kind === 'reconcile')) {
+    teamsDirty = true;
   }
+  cacheStampCounter++;
+  serverPerf.dirtyMarks++;
+  serverPerf.lastDirty = { ...dirty, at: Date.now() };
+  invalidateSessionCaches({ provider: dirty.provider, dirty });
+  if (process.env.DEBUG_WATCH) {
+    const scope = dirty.provider ? ` provider=${dirty.provider}` : ' provider=all';
+    console.log(`[Watch] dirty: ${dirty.reason} kind=${dirty.kind}${scope}`);
+  }
+}
+
+function updateCanonicalActiveProjects(sessions = []) {
+  const projects = [];
+  const seen = new Set();
+  for (const session of sessions) {
+    const project = session?.project;
+    if (!project || seen.has(project)) continue;
+    seen.add(project);
+    projects.push(project);
+    if (projects.length >= GIT_STATE_MAX_PROJECTS) break;
+  }
+  lastCanonicalActiveProjects.clear();
+  projects.forEach((project) => lastCanonicalActiveProjects.add(project));
 }
 
 function getTeamsCached({ force = false } = {}) {
@@ -926,28 +1095,19 @@ function collectBroadcastPayload({ force = false } = {}) {
     usage: stage('usage', () => usageQuota.fetchUsage()),
     timestamp: Date.now(),
   };
+  updateCanonicalActiveProjects(payload.sessions);
   return { payload, stages };
 }
 
 function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
   if (wsClients.size === 0) return;
   const now = Date.now();
-  const heartbeatDue = now - lastFullBroadcastAt >= BROADCAST_FULL_DISCOVERY_INTERVAL;
-  if (!force && !providerDataDirty && !heartbeatDue) return;
-
-  // When the cache stamp hasn't moved we can skip a heartbeat-only refresh
-  // without hashing the multi-KB payload. force-paths still flow through.
-  const currentStamp = cacheStampCounter;
-  if (!force && heartbeatDue && !providerDataDirty && currentStamp === lastBroadcastStamp) {
-    lastFullBroadcastAt = now;
-    return;
-  }
+  if (!force && !providerDataDirty) return;
 
   try {
-    if (heartbeatDue) refreshWatchPaths();
     const collectStart = Date.now();
     const stampAtCollect = cacheStampCounter;
-    const { payload, stages } = collectBroadcastPayload({ force: force || heartbeatDue });
+    const { payload, stages } = collectBroadcastPayload({ force });
 
     const sigStart = Date.now();
     let signature = lastBroadcastSignature;
@@ -963,6 +1123,7 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
         .createHash('sha1')
         .update(serializedState)
         .digest('hex');
+      serverPerf.lastBroadcastStateBytes = Buffer.byteLength(serializedState);
     } else {
       signatureSkipped = true;
     }
@@ -1043,14 +1204,22 @@ function debouncedWatchRefresh() {
   }, BROADCAST_DEBOUNCE_MS);
 }
 
+setAdapterDataReadyCallback((dirty) => {
+  if (shutdownStarted) return;
+  markProviderDataDirty(dirty);
+  debouncedBroadcast();
+});
+
 function scheduleWatchRetry(wp, key, attempt = 0) {
   if (activeWatchers.has(key)) return;
   if (watchRetryTimers.has(key)) return;
+  if (!selectedWatchDescriptors.has(key)) return;
 
   const delay = Math.min(5000, 200 * Math.pow(2, attempt));
   const timer = setTimeout(() => {
     watchRetryTimers.delete(key);
     if (activeWatchers.has(key)) return;
+    if (!selectedWatchDescriptors.has(key)) return;
     if (fs.existsSync(wp.path)) {
       refreshWatchPaths();
       if (activeWatchers.has(key)) return;
@@ -1066,7 +1235,7 @@ function recordWatchFailure(wp, key, err, phase = 'setup') {
     phase,
     type: wp.type,
     path: wp.path,
-    provider: wp.provider || null,
+    provider: wp.provider || wp.providers?.[0] || null,
     recursive: Boolean(wp.recursive),
     message: err?.message || 'watch failed',
     ts: Date.now(),
@@ -1078,8 +1247,50 @@ function recordWatchFailure(wp, key, err, phase = 'setup') {
   }
 }
 
-function addRecursiveWatchFallback(wp, key, err) {
-  if (wp.type !== 'directory' || !wp.recursive) return;
+function descriptorProviders(wp) {
+  if (Array.isArray(wp.providers) && wp.providers.length > 0) return wp.providers;
+  return wp.provider ? [wp.provider] : [];
+}
+
+function descriptorEventPath(wp, filename = null) {
+  if (wp.type !== 'directory' || !filename) return wp.path;
+  const candidate = path.resolve(wp.path, String(filename));
+  return isContainedPath(wp.path, candidate) ? candidate : wp.path;
+}
+
+function descriptorDirtyKind(wp, eventPath) {
+  const normalizedPath = String(eventPath || wp.path).toLowerCase();
+  const kinds = Array.isArray(wp.kinds) ? wp.kinds : (wp.kind ? [wp.kind] : []);
+  if (normalizedPath.includes(`${path.sep}teams${path.sep}`) || normalizedPath.endsWith(`${path.sep}teams`)) return 'teams';
+  if (kinds.length === 1) return kinds[0];
+  if (normalizedPath.endsWith('.jsonl') && (wp.scopes?.includes('active') || wp.scopes?.includes('recent'))) {
+    return 'transcript';
+  }
+  if (kinds.includes('transcript') && wp.scopes?.includes('active')) return 'transcript';
+  if (kinds.includes('metadata')) return 'metadata';
+  return kinds[0] || 'discovery';
+}
+
+function dirtyDescriptorForWatch(wp, reason, filename = null) {
+  const providers = descriptorProviders(wp);
+  const sessionIds = Array.isArray(wp.sessionIds) ? wp.sessionIds : (wp.sessionId ? [wp.sessionId] : []);
+  const projects = Array.isArray(wp.projects) ? wp.projects : (wp.project ? [wp.project] : []);
+  const eventPath = descriptorEventPath(wp, filename);
+  return {
+    provider: providers.length === 1 ? providers[0] : null,
+    path: eventPath,
+    kind: descriptorDirtyKind(wp, eventPath),
+    reason,
+    sessionId: sessionIds.length === 1 ? sessionIds[0] : null,
+    project: projects.length === 1 ? projects[0] : null,
+  };
+}
+
+function markWatchDescriptorDirty(wp, reason, filename = null) {
+  markProviderDataDirty(dirtyDescriptorForWatch(wp, reason, filename));
+}
+
+function addWatchFallback(wp, key, err) {
   const now = Date.now();
   if (!recursiveWatchFallbacks.has(key)) {
     const fallback = {
@@ -1088,12 +1299,16 @@ function addRecursiveWatchFallback(wp, key, err) {
       signature: null,
       lastScanAt: 0,
       lastSignatureAt: null,
+      lastForcedAt: now,
+      entriesScanned: 0,
       baselinePending: true,
       lastError: err?.message || null,
     };
     try {
       if (fs.existsSync(wp.path)) {
-        fallback.signature = getWatchFallbackSignature(wp);
+        const sample = getWatchFallbackSignature(wp, WATCH_FALLBACK_MAX_ENTRIES);
+        fallback.signature = sample.signature;
+        fallback.entriesScanned = sample.entriesScanned;
         fallback.lastSignatureAt = now;
         fallback.baselinePending = false;
         fallback.lastError = err?.message || null;
@@ -1110,213 +1325,137 @@ function addRecursiveWatchFallback(wp, key, err) {
   serverPerf.recursiveWatchFallbacks = recursiveWatchFallbacks.size;
 }
 
-// Per-subdirectory signature cache used to keep recursive fallback scans cheap
-// when a user has hundreds of historic project directories.
-const WATCH_FALLBACK_DIR_CACHE_TTL_MS = 10_000;
-const WATCH_FALLBACK_DIR_IDLE_MS = 5 * 60_000;
-const watchFallbackDirCache = new Map();
-let recentlyActiveDirsAt = 0;
-let recentlyActiveDirsCache = null;
-const RECENTLY_ACTIVE_DIRS_TTL_MS = 5000;
-
-function getRecentlyActiveDirs() {
-  const now = Date.now();
-  if (recentlyActiveDirsCache && now - recentlyActiveDirsAt < RECENTLY_ACTIVE_DIRS_TTL_MS) {
-    return recentlyActiveDirsCache;
-  }
-  const dirs = new Set();
-  try {
-    const sessions = getAllSessions(ACTIVE_THRESHOLD_MS);
-    for (const session of sessions) {
-      if (session.project) dirs.add(session.project);
-    }
-  } catch {
-    // Best-effort; if session enumeration fails, fall back to no constraint.
-  }
-  recentlyActiveDirsCache = dirs;
-  recentlyActiveDirsAt = now;
-  return dirs;
+function descriptorMatchesFilename(wp, filename) {
+  const filters = Array.isArray(wp.filters) ? wp.filters : (wp.filter ? [wp.filter] : []);
+  if (filters.length === 0 || !filename) return true;
+  const name = String(filename);
+  return filters.some((filter) => name.endsWith(filter));
 }
 
 function _walkDirForSignature(root, wp, budget) {
   const stack = [{ dir: root, depth: 0 }];
-  let entries = 0;
+  const hash = crypto.createHash('sha1');
+  let entriesScanned = 0;
   let files = 0;
-  let latestMtimeMs = 0;
   let totalSize = 0;
   let truncated = false;
   let errors = 0;
 
-  while (stack.length > 0 && entries < budget) {
+  while (stack.length > 0 && entriesScanned < budget) {
     const current = stack.pop();
     let dirents;
     try {
-      dirents = fs.readdirSync(current.dir, { withFileTypes: true });
+      dirents = fs.readdirSync(current.dir, { withFileTypes: true })
+        .sort((a, b) => a.name.localeCompare(b.name));
     } catch {
       errors++;
       continue;
     }
 
     for (const dirent of dirents) {
-      entries++;
-      if (entries >= budget) {
+      if (entriesScanned >= budget) {
         truncated = true;
         break;
       }
+      entriesScanned++;
 
       const entryPath = path.join(current.dir, dirent.name);
+      let stat = null;
+      try {
+        stat = fs.statSync(entryPath);
+      } catch {
+        errors++;
+      }
+
       if (dirent.isDirectory()) {
-        if (current.depth < WATCH_FALLBACK_MAX_DEPTH) {
+        hash.update(`d:${path.relative(root, entryPath)}:${Math.round(stat?.mtimeMs || 0)}\n`);
+        if (wp.recursive && current.depth < WATCH_FALLBACK_MAX_DEPTH) {
           stack.push({ dir: entryPath, depth: current.depth + 1 });
         }
         continue;
       }
 
       if (!dirent.isFile()) continue;
-      if (wp.filter && !dirent.name.endsWith(wp.filter)) continue;
-
-      try {
-        const stat = fs.statSync(entryPath);
-        files++;
-        latestMtimeMs = Math.max(latestMtimeMs, stat.mtimeMs);
-        totalSize += stat.size;
-      } catch {
-        errors++;
-      }
+      if (!descriptorMatchesFilename(wp, dirent.name)) continue;
+      files++;
+      totalSize += stat?.size || 0;
+      hash.update(`f:${path.relative(root, entryPath)}:${Math.round(stat?.mtimeMs || 0)}:${stat?.size || 0}\n`);
     }
   }
 
   if (stack.length > 0) truncated = true;
-  return { files, latestMtimeMs, totalSize, truncated, errors };
+  return {
+    signature: hash.digest('hex'),
+    entriesScanned,
+    files,
+    totalSize,
+    truncated,
+    errors,
+  };
 }
 
-function getWatchFallbackSignature(wp) {
-  const root = wp.path;
-  const now = Date.now();
-
-  // Try to constrain the scan to immediate children of `root` (e.g.
-  // ~/.claude/projects/*) so we can per-dir cache and skip idle ones.
-  let rootDirents;
-  try {
-    rootDirents = fs.readdirSync(root, { withFileTypes: true });
-  } catch {
-    // Root unreadable — fall back to a single full walk for compatibility.
-    const walk = _walkDirForSignature(root, wp, WATCH_FALLBACK_MAX_ENTRIES);
-    return JSON.stringify({
-      files: walk.files,
-      latestMtimeMs: Math.round(walk.latestMtimeMs),
-      totalSize: walk.totalSize,
-      truncated: walk.truncated,
-      errors: walk.errors + 1,
-    });
-  }
-
-  const activeDirs = getRecentlyActiveDirs();
-  let files = 0;
-  let latestMtimeMs = 0;
-  let totalSize = 0;
-  let truncated = false;
-  let errors = 0;
-  // Total entry budget shared across children so a runaway dir can't starve siblings.
-  let budgetLeft = WATCH_FALLBACK_MAX_ENTRIES;
-
-  for (const dirent of rootDirents) {
-    const childPath = path.join(root, dirent.name);
-    if (!dirent.isDirectory()) {
-      if (dirent.isFile()) {
-        if (wp.filter && !dirent.name.endsWith(wp.filter)) continue;
-        try {
-          const stat = fs.statSync(childPath);
-          files++;
-          latestMtimeMs = Math.max(latestMtimeMs, stat.mtimeMs);
-          totalSize += stat.size;
-        } catch {
-          errors++;
-        }
-      }
-      continue;
-    }
-
-    if (budgetLeft <= 0) {
-      truncated = true;
-      break;
-    }
-
-    const cacheKey = `${wp.provider || 'unknown'}:${wp.filter || ''}:${childPath}`;
-    const cached = watchFallbackDirCache.get(cacheKey);
-
-    // Cheap stat first: if the dir itself hasn't moved and we have a fresh
-    // cached signature, reuse it.
-    let dirMtimeMs = 0;
+function getWatchFallbackSignature(wp, budget = WATCH_FALLBACK_MAX_ENTRIES) {
+  if (wp.type === 'file') {
+    let signature = 'missing';
+    let errors = 0;
+    let entriesScanned = 0;
     try {
-      dirMtimeMs = fs.statSync(childPath).mtimeMs;
+      const stat = fs.statSync(wp.path);
+      entriesScanned = 1;
+      signature = `${stat.dev}:${stat.ino}:${Math.round(stat.mtimeMs)}:${stat.size}`;
     } catch {
-      errors++;
-      continue;
+      errors = 1;
     }
-
-    const isActive = activeDirs.has(childPath);
-    const cacheFresh = cached && (now - cached.at) < WATCH_FALLBACK_DIR_CACHE_TTL_MS;
-    const dirIdle = cached && dirMtimeMs <= cached.dirMtimeMs && (now - cached.lastChangedAt) > WATCH_FALLBACK_DIR_IDLE_MS;
-
-    if (cacheFresh || (cached && !isActive && dirIdle)) {
-      files += cached.files;
-      latestMtimeMs = Math.max(latestMtimeMs, cached.latestMtimeMs);
-      totalSize += cached.totalSize;
-      if (cached.truncated) truncated = true;
-      errors += cached.errors;
-      continue;
-    }
-
-    const childBudget = Math.min(budgetLeft, WATCH_FALLBACK_MAX_ENTRIES);
-    const walk = _walkDirForSignature(childPath, wp, childBudget);
-    budgetLeft -= Math.min(childBudget, walk.files + 1);
-    files += walk.files;
-    latestMtimeMs = Math.max(latestMtimeMs, walk.latestMtimeMs);
-    totalSize += walk.totalSize;
-    if (walk.truncated) truncated = true;
-    errors += walk.errors;
-
-    const changed = !cached
-      || cached.files !== walk.files
-      || cached.totalSize !== walk.totalSize
-      || Math.round(cached.latestMtimeMs) !== Math.round(walk.latestMtimeMs);
-    watchFallbackDirCache.set(cacheKey, {
-      at: now,
-      dirMtimeMs,
-      lastChangedAt: changed ? now : (cached?.lastChangedAt || now),
-      files: walk.files,
-      latestMtimeMs: walk.latestMtimeMs,
-      totalSize: walk.totalSize,
-      truncated: walk.truncated,
-      errors: walk.errors,
-    });
+    return { signature, entriesScanned, files: signature === 'missing' ? 0 : 1, totalSize: 0, truncated: false, errors };
   }
 
-  return JSON.stringify({ files, latestMtimeMs: Math.round(latestMtimeMs), totalSize, truncated, errors });
+  try {
+    const rootStat = fs.statSync(wp.path);
+    const walk = _walkDirForSignature(wp.path, wp, budget);
+    return {
+      ...walk,
+      signature: `${Math.round(rootStat.mtimeMs)}:${walk.signature}:${walk.files}:${walk.totalSize}:${walk.truncated ? 1 : 0}:${walk.errors}`,
+    };
+  } catch {
+    return { signature: 'missing', entriesScanned: 0, files: 0, totalSize: 0, truncated: false, errors: 1 };
+  }
 }
 
 function runRecursiveWatchFallbackChecks() {
   const now = Date.now();
+  let budgetLeft = WATCH_FALLBACK_MAX_ENTRIES;
   for (const fallback of recursiveWatchFallbacks.values()) {
     if (activeWatchers.has(fallback.key)) {
       recursiveWatchFallbacks.delete(fallback.key);
       continue;
     }
+    if (!selectedWatchDescriptors.has(fallback.key)) {
+      recursiveWatchFallbacks.delete(fallback.key);
+      continue;
+    }
     if (now - fallback.lastScanAt < WATCH_FALLBACK_SCAN_INTERVAL_MS) continue;
+    if (budgetLeft <= 0) break;
     fallback.lastScanAt = now;
-    if (!fs.existsSync(fallback.wp.path)) continue;
 
     try {
-      const signature = getWatchFallbackSignature(fallback.wp);
+      const sample = getWatchFallbackSignature(fallback.wp, budgetLeft);
+      budgetLeft -= sample.entriesScanned;
       serverPerf.fallbackScans++;
-      const shouldMarkDirty = fallback.baselinePending || (fallback.signature && signature !== fallback.signature);
+      serverPerf.fallbackEntriesScanned += sample.entriesScanned;
+      const maxAgeDue = now - fallback.lastForcedAt >= WATCH_FALLBACK_MAX_AGE_MS;
+      const shouldMarkDirty = fallback.baselinePending
+        || (fallback.signature && sample.signature !== fallback.signature)
+        || maxAgeDue;
       if (shouldMarkDirty) {
         serverPerf.fallbackChanges++;
-        markProviderDataDirty(`stat-fallback:${path.basename(fallback.wp.path)}`, fallback.wp.provider || null);
+        markWatchDescriptorDirty(fallback.wp, maxAgeDue
+          ? `stat-fallback-max-age:${path.basename(fallback.wp.path)}`
+          : `stat-fallback:${path.basename(fallback.wp.path)}`);
         debouncedBroadcast();
       }
-      fallback.signature = signature;
+      if (maxAgeDue) fallback.lastForcedAt = now;
+      fallback.signature = sample.signature;
+      fallback.entriesScanned = sample.entriesScanned;
       fallback.lastSignatureAt = now;
       fallback.baselinePending = false;
       fallback.lastError = null;
@@ -1333,55 +1472,191 @@ function runRecursiveWatchFallbackChecks() {
 // ─── File watching (multi-provider) ────────────────────────
 
 function watchKey(wp) {
-  return `${wp.provider || 'unknown'}:${wp.type}:${wp.path}:${wp.filter || ''}:${wp.recursive ? 1 : 0}`;
+  return `${wp.type}:${wp.path}`;
 }
 
-function handleWatchEvent(wp, key, eventType, filename) {
+function canonicalWatchPath(filePath) {
+  const resolved = path.resolve(String(filePath || ''));
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
+function canonicalizeWatchDescriptors(watchPaths = []) {
+  const merged = new Map();
+  for (const raw of watchPaths) {
+    if (!raw || !['file', 'directory'].includes(raw.type) || !raw.path) continue;
+    const canonicalPath = canonicalWatchPath(raw.path);
+    const key = `${raw.type}:${canonicalPath}`;
+    const rawFilters = [raw.filter, ...(Array.isArray(raw.filters) ? raw.filters : [])]
+      .map((filter) => String(filter || ''))
+      .filter(Boolean);
+    const rawScopes = Array.isArray(raw.scopes) && raw.scopes.length > 0 ? raw.scopes : [raw.scope];
+    const scopes = rawScopes.filter((scope) => ['active', 'recent', 'discovery', 'static'].includes(scope));
+    if (scopes.length === 0) scopes.push('discovery');
+    const scope = scopes.includes('active') ? 'active' : (scopes.includes('recent') ? 'recent' : scopes[0]);
+    const dynamic = typeof raw.dynamic === 'boolean'
+      ? raw.dynamic
+      : scope === 'active' || scope === 'recent';
+    const defaultPriority = scope === 'active'
+      ? (raw.type === 'file' ? 0 : 1)
+      : (scope === 'recent' ? (raw.type === 'file' ? 2 : 3) : 4);
+    const priority = Number.isFinite(Number(raw.priority)) ? Number(raw.priority) : defaultPriority;
+    const providers = Array.isArray(raw.providers) ? raw.providers : [raw.provider];
+    const rawKinds = Array.isArray(raw.kinds) ? raw.kinds : [raw.kind];
+    const rawSessionIds = Array.isArray(raw.sessionIds) ? raw.sessionIds : [raw.sessionId];
+    const rawProjects = Array.isArray(raw.projects) ? raw.projects : [raw.project];
+    let descriptor = merged.get(key);
+    if (!descriptor) {
+      descriptor = {
+        type: raw.type,
+        path: canonicalPath,
+        filters: new Set(),
+        matchAll: rawFilters.length === 0,
+        providers: new Set(),
+        scopes: new Set(),
+        kinds: new Set(),
+        sessionIds: new Set(),
+        projects: new Set(),
+        dynamic,
+        probe: Boolean(raw.probe),
+        priority,
+        activity: Number(raw.activity) || 0,
+        recursive: false,
+      };
+      merged.set(key, descriptor);
+    } else {
+      descriptor.dynamic = descriptor.dynamic && dynamic;
+      descriptor.probe = descriptor.probe || Boolean(raw.probe);
+      descriptor.priority = Math.min(descriptor.priority, priority);
+      descriptor.activity = Math.max(descriptor.activity, Number(raw.activity) || 0);
+      if (rawFilters.length === 0) descriptor.matchAll = true;
+    }
+    if (!descriptor.matchAll) rawFilters.forEach((filter) => descriptor.filters.add(filter));
+    providers.filter(Boolean).forEach((provider) => descriptor.providers.add(String(provider)));
+    scopes.forEach((value) => descriptor.scopes.add(value));
+    rawKinds.filter(Boolean).forEach((kind) => descriptor.kinds.add(String(kind)));
+    rawSessionIds.filter(Boolean).forEach((sessionId) => descriptor.sessionIds.add(String(sessionId)));
+    rawProjects.filter(Boolean).forEach((project) => descriptor.projects.add(String(project)));
+  }
+
+  return Array.from(merged.values()).map((descriptor) => {
+    const providers = Array.from(descriptor.providers).sort();
+    const scopes = Array.from(descriptor.scopes).sort();
+    const kinds = Array.from(descriptor.kinds).sort();
+    const sessionIds = Array.from(descriptor.sessionIds).sort();
+    const projects = Array.from(descriptor.projects).sort();
+    return {
+      type: descriptor.type,
+      path: descriptor.path,
+      filters: descriptor.matchAll ? [] : Array.from(descriptor.filters).sort(),
+      providers,
+      provider: providers[0] || null,
+      scopes,
+      scope: scopes.includes('active') ? 'active' : (scopes.includes('recent') ? 'recent' : 'discovery'),
+      kinds,
+      kind: kinds.length === 1 ? kinds[0] : null,
+      sessionIds,
+      sessionId: sessionIds.length === 1 ? sessionIds[0] : null,
+      projects,
+      project: projects.length === 1 ? projects[0] : null,
+      dynamic: descriptor.dynamic,
+      probe: descriptor.probe,
+      priority: descriptor.priority,
+      activity: descriptor.activity,
+      recursive: false,
+    };
+  });
+}
+
+function selectWatchDescriptors(descriptors, { includeDynamic = dynamicWatchersEnabled } = {}) {
+  const stable = descriptors.filter((descriptor) => !descriptor.dynamic);
+  const requestedDynamic = descriptors.filter((descriptor) => descriptor.dynamic)
+    .sort((a, b) => a.priority - b.priority || b.activity - a.activity || a.path.localeCompare(b.path));
+  const dynamic = includeDynamic ? requestedDynamic.slice(0, WATCH_DYNAMIC_CAP) : [];
+  return {
+    selected: [...stable, ...dynamic],
+    stable,
+    requestedDynamic,
+    dynamic,
+  };
+}
+
+function selectProbeDescriptors(descriptors, { includeDynamic = dynamicWatchersEnabled } = {}) {
+  return descriptors
+    .filter((descriptor) => descriptor.probe && (!descriptor.dynamic || includeDynamic))
+    .sort((a, b) => a.priority - b.priority || b.activity - a.activity || a.path.localeCompare(b.path))
+    .slice(0, WATCH_ACTIVE_PROBE_CAP);
+}
+
+function closeWatcherEntry(key) {
+  const entry = activeWatchers.get(key);
+  if (!entry) return;
+  try { entry.watcher.close(); } catch { /* ignore */ }
+  activeWatchers.delete(key);
+}
+
+function handleWatchEvent(key, eventType, filename) {
+  const wp = activeWatchers.get(key)?.descriptor || selectedWatchDescriptors.get(key);
+  if (!wp) return;
   const isRelevant = wp.type === 'directory' || eventType === 'change' || eventType === 'rename';
   if (!isRelevant) return;
-  if (wp.type === 'directory' && wp.filter && filename && !filename.endsWith(wp.filter)) return;
+  if (wp.type === 'directory' && !descriptorMatchesFilename(wp, filename)) return;
 
   if (wp.type === 'file' && eventType === 'rename') {
-    const watcher = activeWatchers.get(key);
-    if (watcher) {
-      try { watcher.close(); } catch { /* ignore */ }
-      activeWatchers.delete(key);
-    }
+    closeWatcherEntry(key);
     debouncedWatchRefresh();
     scheduleWatchRetry(wp, key);
   }
 
-  markProviderDataDirty(`${wp.type}:${path.basename(wp.path)}`, wp.provider || null);
+  if (wp.type === 'directory' || eventType === 'rename') debouncedWatchRefresh();
+  markWatchDescriptorDirty(wp, `${wp.type}:${path.basename(wp.path)}`, filename);
   debouncedBroadcast();
 }
 
-function refreshWatchPaths(initialWatchPaths = null) {
-  const watchPaths = Array.isArray(initialWatchPaths) ? initialWatchPaths : safeCollect('getAllWatchPaths', getAllWatchPaths, []);
-  const nextKeys = new Set();
+function refreshWatchPaths(initialWatchPaths = null, { sessions = null } = {}) {
+  let watchPaths = initialWatchPaths;
+  if (!Array.isArray(watchPaths)) {
+    const sessionSnapshot = Array.isArray(sessions)
+      ? sessions
+      : (dynamicWatchersEnabled ? safeCollect('getAllSessions for watch paths', () => getAllSessions(ACTIVE_THRESHOLD_MS), []) : []);
+    watchPaths = safeCollect('getAllWatchPaths', () => getAllWatchPaths({
+      sessions: sessionSnapshot,
+      activeThresholdMs: ACTIVE_THRESHOLD_MS,
+    }), []);
+  }
+  const canonical = canonicalizeWatchDescriptors(watchPaths);
+  const selection = selectWatchDescriptors(canonical);
+  latestWatchDescriptors = canonical;
+  selectedWatchDescriptors = new Map(selection.selected.map((descriptor) => [watchKey(descriptor), descriptor]));
+  const probes = selectProbeDescriptors(canonical);
+  activeProbeDescriptors = new Map(probes.map((descriptor) => [watchKey(descriptor), descriptor]));
+  const nextKeys = new Set(selectedWatchDescriptors.keys());
   let added = 0;
 
-  for (const wp of watchPaths) {
+  for (const wp of selection.selected) {
     const key = watchKey(wp);
-    nextKeys.add(key);
-    if (activeWatchers.has(key)) continue;
+    const existing = activeWatchers.get(key);
+    if (existing) {
+      existing.descriptor = wp;
+      continue;
+    }
+    if (!fs.existsSync(wp.path)) {
+      scheduleWatchRetry(wp, key);
+      continue;
+    }
     try {
-      let watcher = null;
-      if (wp.type === 'file') {
-        if (!fs.existsSync(wp.path)) continue;
-        watcher = fs.watch(wp.path, (eventType, filename) => handleWatchEvent(wp, key, eventType, filename));
-      } else if (wp.type === 'directory') {
-        if (!fs.existsSync(wp.path)) continue;
-        watcher = fs.watch(wp.path, { recursive: wp.recursive || false }, (eventType, filename) => handleWatchEvent(wp, key, eventType, filename));
-      }
-      if (!watcher) continue;
-      watcher.on?.('error', () => {
-        activeWatchers.delete(key);
-        const err = new Error('watcher emitted error');
+      const watcher = fs.watch(wp.path, (eventType, filename) => handleWatchEvent(key, eventType, filename));
+      watcher.on?.('error', (watchError) => {
+        closeWatcherEntry(key);
+        const err = watchError instanceof Error ? watchError : new Error('watcher emitted error');
         recordWatchFailure(wp, key, err, 'runtime');
-        addRecursiveWatchFallback(wp, key, err);
+        addWatchFallback(wp, key, err);
         scheduleWatchRetry(wp, key);
       });
-      activeWatchers.set(key, watcher);
+      activeWatchers.set(key, { watcher, descriptor: wp });
       recursiveWatchFallbacks.delete(key);
       const retryTimer = watchRetryTimers.get(key);
       if (retryTimer) {
@@ -1391,28 +1666,197 @@ function refreshWatchPaths(initialWatchPaths = null) {
       added++;
     } catch (err) {
       recordWatchFailure(wp, key, err, 'setup');
-      addRecursiveWatchFallback(wp, key, err);
+      addWatchFallback(wp, key, err);
+      scheduleWatchRetry(wp, key);
     }
   }
 
-  for (const [key, watcher] of activeWatchers) {
+  for (const key of activeWatchers.keys()) {
     if (nextKeys.has(key)) continue;
-    try { watcher.close(); } catch { /* ignore */ }
-    activeWatchers.delete(key);
+    closeWatcherEntry(key);
   }
 
   for (const key of recursiveWatchFallbacks.keys()) {
     if (nextKeys.has(key)) continue;
     recursiveWatchFallbacks.delete(key);
   }
+  for (const [key, timer] of watchRetryTimers) {
+    if (nextKeys.has(key)) continue;
+    clearTimeout(timer);
+    watchRetryTimers.delete(key);
+  }
+  for (const key of watchProbeSignatures.keys()) {
+    if (!activeProbeDescriptors.has(key)) watchProbeSignatures.delete(key);
+  }
 
   if (added > 0 || serverPerf.activeWatchPaths !== activeWatchers.size) {
     console.log(`[Watch] ${activeWatchers.size} paths are now being watched`);
-    markProviderDataDirty('watch-refresh');
   }
+  serverPerf.configuredWatchPaths = watchPaths.length;
+  serverPerf.canonicalWatchPaths = canonical.length;
   serverPerf.activeWatchPaths = activeWatchers.size;
+  serverPerf.stableWatchPaths = selection.stable.filter((descriptor) => activeWatchers.has(watchKey(descriptor))).length;
+  serverPerf.dynamicWatchPathsRequested = selection.requestedDynamic.length;
+  serverPerf.dynamicWatchPaths = selection.dynamic.filter((descriptor) => activeWatchers.has(watchKey(descriptor))).length;
+  serverPerf.dynamicWatchPathsDropped = Math.max(0, selection.requestedDynamic.length - selection.dynamic.length);
+  serverPerf.probeWatchPaths = probes.length;
   serverPerf.recursiveWatchFallbacks = recursiveWatchFallbacks.size;
   lastFullDiscoveryAt = Date.now();
+}
+
+function watchProbeSignature(wp) {
+  try {
+    const stat = fs.statSync(wp.path);
+    return `${stat.dev}:${stat.ino}:${Math.round(stat.mtimeMs)}:${stat.size}`;
+  } catch {
+    return 'missing';
+  }
+}
+
+function runActiveWatchProbes() {
+  if (wsClients.size === 0) return false;
+  const probes = Array.from(activeProbeDescriptors.entries())
+    .sort(([, a], [, b]) => a.priority - b.priority || b.activity - a.activity)
+    .slice(0, WATCH_ACTIVE_PROBE_CAP);
+  let changed = false;
+  for (const [key, wp] of probes) {
+    const signature = watchProbeSignature(wp);
+    const previous = watchProbeSignatures.get(key);
+    watchProbeSignatures.set(key, signature);
+    serverPerf.probeScans++;
+    if (previous === undefined || previous === signature) continue;
+    serverPerf.probeChanges++;
+    changed = true;
+    markWatchDescriptorDirty(wp, `active-probe:${path.basename(wp.path)}`);
+    if (wp.type === 'directory' || signature === 'missing' || previous === 'missing') debouncedWatchRefresh();
+  }
+  serverPerf.probeWatchPaths = probes.length;
+  return changed;
+}
+
+function onFirstWebSocketClient() {
+  if (dynamicWatchRetireTimer) {
+    clearTimeout(dynamicWatchRetireTimer);
+    dynamicWatchRetireTimer = null;
+  }
+  if (dynamicWatchersEnabled) return;
+  dynamicWatchersEnabled = true;
+  refreshWatchPaths();
+}
+
+function onLastWebSocketClient() {
+  if (shutdownStarted) return;
+  if (dynamicWatchRetireTimer || !dynamicWatchersEnabled) return;
+  dynamicWatchRetireTimer = setTimeout(() => {
+    dynamicWatchRetireTimer = null;
+    if (wsClients.size > 0) return;
+    dynamicWatchersEnabled = false;
+    refreshWatchPaths(latestWatchDescriptors);
+  }, WATCH_ZERO_CLIENT_GRACE_MS);
+}
+
+function watcherTopologySnapshot() {
+  return {
+    installed: activeWatchers.size,
+    stableInstalled: serverPerf.stableWatchPaths,
+    dynamicInstalled: serverPerf.dynamicWatchPaths,
+    dynamicEnabled: dynamicWatchersEnabled,
+    probes: activeProbeDescriptors.size,
+  };
+}
+
+function millisecondsFromNanoseconds(value) {
+  return Number.isFinite(value) ? Math.round((value / 1e6) * 1000) / 1000 : null;
+}
+
+function sampleLinuxWatcherCount(now = Date.now()) {
+  if (process.platform !== 'linux') return;
+  if (now - lastLinuxWatchSampleAt < LINUX_WATCH_SAMPLE_INTERVAL_MS) return;
+  lastLinuxWatchSampleAt = now;
+
+  let inotifyFds = 0;
+  let watchEntries = 0;
+  let error = null;
+  try {
+    const fdInfoDir = '/proc/self/fdinfo';
+    for (const fd of fs.readdirSync(fdInfoDir)) {
+      let content = '';
+      try {
+        content = fs.readFileSync(path.join(fdInfoDir, fd), 'utf8');
+      } catch {
+        continue;
+      }
+      const entries = content.match(/^inotify wd:/gm)?.length || 0;
+      if (entries > 0) inotifyFds++;
+      watchEntries += entries;
+    }
+  } catch (err) {
+    error = err?.message || 'Unable to inspect /proc watcher state';
+  }
+  perfDiagnostics.linuxWatchers = {
+    supported: true,
+    sampledAt: now,
+    inotifyFds,
+    watchEntries,
+    error,
+  };
+}
+
+function sampleRuntimePerf() {
+  const now = Date.now();
+  const memory = process.memoryUsage();
+  perfDiagnostics.memory = {
+    sampledAt: now,
+    rss: memory.rss,
+    heapTotal: memory.heapTotal,
+    heapUsed: memory.heapUsed,
+    external: memory.external,
+    arrayBuffers: memory.arrayBuffers,
+  };
+
+  const currentUtilization = performance.eventLoopUtilization();
+  const utilizationDelta = performance.eventLoopUtilization(currentUtilization, lastEventLoopUtilization);
+  lastEventLoopUtilization = currentUtilization;
+  perfDiagnostics.eventLoop = {
+    sampledAt: now,
+    windowMs: PERF_SAMPLE_INTERVAL_MS,
+    utilization: Math.round((utilizationDelta.utilization || 0) * 10_000) / 10_000,
+    delayMs: {
+      min: millisecondsFromNanoseconds(eventLoopDelayMonitor.min),
+      max: millisecondsFromNanoseconds(eventLoopDelayMonitor.max),
+      mean: millisecondsFromNanoseconds(eventLoopDelayMonitor.mean),
+      p50: millisecondsFromNanoseconds(eventLoopDelayMonitor.percentile(50)),
+      p95: millisecondsFromNanoseconds(eventLoopDelayMonitor.percentile(95)),
+      p99: millisecondsFromNanoseconds(eventLoopDelayMonitor.percentile(99)),
+    },
+  };
+  eventLoopDelayMonitor.reset();
+
+  const git = getGitEnrichmentPerfStats();
+  if (lastGitPerfSample) {
+    const elapsedSeconds = Math.max(0.001, (now - lastGitPerfSample.at) / 1000);
+    perfDiagnostics.gitRate = {
+      sampledAt: now,
+      windowMs: now - lastGitPerfSample.at,
+      commandsPerSecond: Math.round(((git.gitCommandCount - lastGitPerfSample.gitCommandCount) / elapsedSeconds) * 1000) / 1000,
+      commandTimeMsPerSecond: Math.round(((git.gitCommandTimeMs - lastGitPerfSample.gitCommandTimeMs) / elapsedSeconds) * 1000) / 1000,
+      cacheHitsPerSecond: Math.round(((git.cacheHits - lastGitPerfSample.cacheHits) / elapsedSeconds) * 1000) / 1000,
+    };
+  }
+  lastGitPerfSample = {
+    at: now,
+    gitCommandCount: Number(git.gitCommandCount) || 0,
+    gitCommandTimeMs: Number(git.gitCommandTimeMs) || 0,
+    cacheHits: Number(git.cacheHits) || 0,
+  };
+  sampleLinuxWatcherCount(now);
+}
+
+function startRuntimePerfSampling() {
+  if (perfSampleTimer) return;
+  eventLoopDelayMonitor.enable();
+  sampleRuntimePerf();
+  perfSampleTimer = setInterval(sampleRuntimePerf, PERF_SAMPLE_INTERVAL_MS);
 }
 
 function resolveProjectGitDir(project) {
@@ -1489,23 +1933,7 @@ function projectGitStateSignature(project) {
 }
 
 function activeGitProjects() {
-  const projects = [];
-  const seen = new Set();
-  let sessions = [];
-  try {
-    sessions = getAllSessions(ACTIVE_THRESHOLD_MS);
-  } catch {
-    return projects;
-  }
-
-  for (const session of sessions) {
-    const project = session?.project;
-    if (!project || seen.has(project)) continue;
-    seen.add(project);
-    projects.push(project);
-    if (projects.length >= GIT_STATE_MAX_PROJECTS) break;
-  }
-  return projects;
+  return Array.from(lastCanonicalActiveProjects).slice(0, GIT_STATE_MAX_PROJECTS);
 }
 
 function scanActiveProjectGitState() {
@@ -1517,30 +1945,54 @@ function scanActiveProjectGitState() {
     if (!activeProjects.has(project)) activeProjectGitState.delete(project);
   }
 
-  let changed = false;
+  const changedProjects = [];
   for (const project of projects) {
     const signature = projectGitStateSignature(project);
     if (!signature) continue;
     const previous = activeProjectGitState.get(project);
     activeProjectGitState.set(project, signature);
-    if (previous && previous !== signature) changed = true;
+    if (previous && previous !== signature) changedProjects.push(project);
   }
 
-  if (changed) markProviderDataDirty('git-state');
+  for (const project of changedProjects) {
+    markProviderDataDirty({
+      provider: null,
+      path: project,
+      kind: 'git',
+      reason: 'git-state',
+      project,
+    });
+  }
+}
+
+function reconcileWatchTopology() {
+  const now = Date.now();
+  let sessions = [];
+  if (wsClients.size > 0) {
+    markProviderDataDirty({ kind: 'reconcile', reason: 'max-age-reconciliation' });
+    sessions = safeCollect('watch reconciliation', () => getAllSessions(ACTIVE_THRESHOLD_MS, { force: true }), []);
+    updateCanonicalActiveProjects(sessions);
+  }
+  refreshWatchPaths(null, { sessions });
+  lastReconciliationAt = now;
+  serverPerf.reconciliations++;
 }
 
 function startFileWatcher(initialWatchPaths = null) {
   refreshWatchPaths(initialWatchPaths);
-  // Periodic polling (2 seconds) to catch missed changes
-  setInterval(() => {
-    if (Date.now() - lastFullDiscoveryAt >= BROADCAST_FULL_DISCOVERY_INTERVAL) {
-      refreshWatchPaths();
-    }
+  lastReconciliationAt = Date.now();
+  if (watcherSchedulerTimer) return;
+  watcherSchedulerTimer = setInterval(() => {
+    const probeChanged = runActiveWatchProbes();
     runRecursiveWatchFallbackChecks();
     scanActiveProjectGitState();
-    if (wsClients.size > 0) broadcastUpdate({ reason: 'interval' });
+    const reconciliationDue = Date.now() - lastReconciliationAt >= WATCH_RECONCILIATION_INTERVAL_MS;
+    if (reconciliationDue) reconcileWatchTopology();
+    if (wsClients.size > 0) {
+      broadcastUpdate({ reason: reconciliationDue ? 'reconciliation' : (probeChanged ? 'active-probe' : 'interval') });
+    }
   }, BROADCAST_POLL_INTERVAL);
-  console.log('[Watch] Started dirty-driven 2-second scheduler');
+  console.log('[Watch] Started bounded 2-second active probe');
 }
 
 // ─── HTTP server ──────────────────────────────────────────
@@ -1622,32 +2074,36 @@ const ASCII_LOGO = `
 ╚══════════════════════════════════════════════════════╝
 `;
 
-server.listen(PORT, () => {
-  console.log(ASCII_LOGO);
-  console.log(`  Server running: http://localhost:${PORT}`);
-  console.log('');
+function startServer() {
+  if (server.listening) return server;
+  server.listen(PORT, () => {
+    console.log(ASCII_LOGO);
+    console.log(`  Server running: http://localhost:${PORT}`);
+    console.log('');
 
-  // Show active providers
-  const providers = getActiveProviders();
-  if (providers.length === 0) {
-    console.log('  [!] No active providers');
-    console.log('      One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.kimi/, or ~/.local/share/opencode/ is required');
-  } else {
-    console.log('  Active providers:');
-    for (const p of providers) {
-      console.log(`    - ${p.name} (${p.homeDir})`);
+    const providers = getActiveProviders();
+    if (providers.length === 0) {
+      console.log('  [!] No active providers');
+      console.log('      One of ~/.claude/, ~/.codex/, ~/.gemini/, ~/.kimi/, or ~/.local/share/opencode/ is required');
+    } else {
+      console.log('  Active providers:');
+      for (const p of providers) {
+        console.log(`    - ${p.name} (${p.homeDir})`);
+      }
     }
-  }
-  console.log('');
+    console.log('');
 
-  setTimeout(() => {
-    const startupStats = printStartupStats(providers);
-    // Initialize the usage quota service
-    usageQuota.init();
-    startFileWatcher(startupStats.watchPaths);
-    startWebSocketHeartbeat();
-  }, STARTUP_BOOTSTRAP_DELAY_MS);
-});
+    startRuntimePerfSampling();
+    startupTimer = setTimeout(() => {
+      startupTimer = null;
+      const startupStats = printStartupStats(providers);
+      usageQuota.init();
+      startFileWatcher(startupStats.watchPaths);
+      startWebSocketHeartbeat();
+    }, STARTUP_BOOTSTRAP_DELAY_MS);
+  });
+  return server;
+}
 
 // ─── Error handling ────────────────────────────────────────
 
@@ -1659,21 +2115,112 @@ server.on('error', (err) => {
   }
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('Unhandled exception:', err.message);
-});
+let shutdownStarted = false;
 
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled promise rejection:', reason);
-});
+function clearRuntimeTimer(timer) {
+  if (timer) clearTimeout(timer);
+}
 
-process.on('SIGINT', () => {
-  console.log('\nShutting down server...');
-  for (const socket of wsClients) {
-    closeWebSocket(socket, null);
+function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true } = {}) {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
+  console.log(`\nShutting down server (${reason})...`);
+
+  clearRuntimeTimer(startupTimer);
+  clearRuntimeTimer(watchDebounce);
+  clearRuntimeTimer(watchRefreshDebounce);
+  clearRuntimeTimer(dynamicWatchRetireTimer);
+  clearRuntimeTimer(heartbeatTimer);
+  clearRuntimeTimer(watcherSchedulerTimer);
+  clearRuntimeTimer(perfSampleTimer);
+  startupTimer = null;
+  watchDebounce = null;
+  watchRefreshDebounce = null;
+  dynamicWatchRetireTimer = null;
+  heartbeatTimer = null;
+  watcherSchedulerTimer = null;
+  perfSampleTimer = null;
+
+  for (const timer of watchRetryTimers.values()) clearTimeout(timer);
+  watchRetryTimers.clear();
+  for (const key of Array.from(activeWatchers.keys())) closeWatcherEntry(key);
+  recursiveWatchFallbacks.clear();
+  watchProbeSignatures.clear();
+  selectedWatchDescriptors.clear();
+  activeProbeDescriptors.clear();
+  setAdapterDataReadyCallback(null);
+  for (const adapter of adapters) {
+    try {
+      if (typeof adapter.shutdown === 'function') adapter.shutdown();
+      else if (typeof adapter.dispose === 'function') adapter.dispose();
+    } catch (err) {
+      console.warn(`[Shutdown] ${adapter.provider || adapter.name || 'adapter'} cleanup failed:`, err?.message || err);
+    }
   }
-  server.close(() => {
+  eventLoopDelayMonitor.disable();
+
+  for (const socket of Array.from(wsClients)) {
+    closeWebSocket(socket, null);
+    try { socket.destroy(); } catch { /* ignore */ }
+  }
+
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
     console.log('Server shutdown complete');
-    process.exit(0);
+    if (exitProcess) process.exit(exitCode);
+  };
+  const forceTimer = setTimeout(finish, 2000);
+  forceTimer.unref?.();
+  if (server.listening) {
+    server.close(() => {
+      clearTimeout(forceTimer);
+      finish();
+    });
+  } else {
+    clearTimeout(forceTimer);
+    finish();
+  }
+}
+
+function installProcessHandlers() {
+  process.once('uncaughtException', (err) => {
+    console.error('Unhandled exception:', err?.stack || err?.message || err);
+    shutdownRuntime({ reason: 'uncaughtException', exitCode: 1 });
   });
-});
+  process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled promise rejection:', reason);
+  });
+  process.once('SIGINT', () => shutdownRuntime({ reason: 'SIGINT' }));
+  process.once('SIGTERM', () => shutdownRuntime({ reason: 'SIGTERM' }));
+}
+
+if (require.main === module) {
+  installProcessHandlers();
+  startServer();
+}
+
+module.exports = {
+  startServer,
+  shutdownRuntime,
+  _watcherTest: {
+    cacheControlFor,
+    canonicalizeWatchDescriptors,
+    dirtyDescriptorForWatch,
+    getWatchFallbackSignature,
+    installProcessHandlers,
+    onFirstWebSocketClient,
+    onLastWebSocketClient,
+    refreshWatchPaths,
+    selectProbeDescriptors,
+    selectWatchDescriptors,
+    watcherTopologySnapshot,
+    constants: {
+      WATCH_DYNAMIC_CAP,
+      WATCH_ACTIVE_PROBE_CAP,
+      WATCH_FALLBACK_MAX_ENTRIES,
+      WATCH_FALLBACK_MAX_AGE_MS,
+    },
+  },
+};

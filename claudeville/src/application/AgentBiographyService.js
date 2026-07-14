@@ -56,13 +56,17 @@ export class AgentBiographyService {
         this._dirty = new Set();
         this._foundingPromise = null;
         this._flushTimer = null;
+        this._flushTail = Promise.resolve();
+        this._stopPromise = null;
+        this._accepting = false;
         this._leaseToken = randomToken();
         this._unsubscribers = [];
         this._channelListener = null;
     }
 
     start() {
-        if (!this.store || this._unsubscribers.length) return this;
+        if (!this.store || this._accepting || this._stopPromise) return this;
+        this._accepting = true;
         const seen = (agent) => this._handleAgentSeen(agent);
         this._unsubscribers.push(eventBus.on('agent:added', seen));
         this._unsubscribers.push(eventBus.on('agent:updated', seen));
@@ -82,6 +86,8 @@ export class AgentBiographyService {
     }
 
     stop() {
+        if (this._stopPromise) return this._stopPromise;
+        this._accepting = false;
         for (const unsubscribe of this._unsubscribers) unsubscribe();
         this._unsubscribers = [];
         if (this._channelListener && this.store?.channel?.removeEventListener) {
@@ -92,8 +98,17 @@ export class AgentBiographyService {
             clearTimeout(this._flushTimer);
             this._flushTimer = null;
         }
-        this.flush().catch(() => {});
-        this._releaseWriteLease();
+        this._stopPromise = (async () => {
+            try {
+                await Promise.resolve(this._foundingPromise).catch(() => {});
+                await this._drainMutations();
+                await this.flush();
+                await this._flushTail;
+            } finally {
+                this._releaseWriteLease();
+            }
+        })();
+        return this._stopPromise;
     }
 
     identityKeyFor(agent) {
@@ -115,7 +130,13 @@ export class AgentBiographyService {
         return this.store.getFounding();
     }
 
-    async flush() {
+    flush() {
+        const run = this._flushTail.then(() => this._flushDirty());
+        this._flushTail = run.catch(() => {});
+        return run;
+    }
+
+    async _flushDirty() {
         if (!this.store || !this._dirty.size) return;
         const keys = [...this._dirty];
         this._dirty.clear();
@@ -131,7 +152,7 @@ export class AgentBiographyService {
     }
 
     _handleAgentSeen(agent) {
-        if (!agent?.id || !this._holdsWriteLease()) return;
+        if (!this._accepting || !agent?.id || !this._holdsWriteLease()) return;
         const identityKey = AgentBiography.identityKeyFor(agent);
         if (!identityKey) return;
         let session = this._sessions.get(agent.id);
@@ -214,7 +235,7 @@ export class AgentBiographyService {
     }
 
     _handleAgentRemoved(agent) {
-        if (!agent?.id) return;
+        if (!this._accepting || !agent?.id) return;
         const session = this._sessions.get(agent.id);
         this._sessions.delete(agent.id);
         if (!session || session.completed || !this._holdsWriteLease()) return;
@@ -251,6 +272,17 @@ export class AgentBiographyService {
                 console.warn('[AgentBiographyService] mutation failed:', err?.message || err);
             });
         this._mutationTails.set(identityKey, next);
+        next.then(() => {
+            if (this._mutationTails.get(identityKey) === next) {
+                this._mutationTails.delete(identityKey);
+            }
+        });
+    }
+
+    async _drainMutations() {
+        while (this._mutationTails.size) {
+            await Promise.allSettled([...this._mutationTails.values()]);
+        }
     }
 
     async _load(identityKey) {
@@ -264,7 +296,7 @@ export class AgentBiographyService {
     }
 
     _scheduleFlush() {
-        if (this._flushTimer) return;
+        if (!this._accepting || this._flushTimer) return;
         this._flushTimer = setTimeout(() => {
             this._flushTimer = null;
             this.flush().catch(() => {});

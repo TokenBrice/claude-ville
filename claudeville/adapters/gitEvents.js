@@ -52,19 +52,23 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
 // active TTL, and a HEAD/logs-HEAD mtime change busts that project's caches so
 // new commits surface on the next enrichment pass.
 const GIT_STATUS_CACHE_TTL_MS = 30000;
-const GIT_STATUS_ACTIVE_CACHE_TTL_MS = 5000;
+const GIT_STATUS_ACTIVE_CACHE_TTL_MS = 10000;
 const RECENT_REPOSITORY_PUSH_TTL_MS = 2 * 60 * 1000;
 const REPOSITORY_UNPUSHED_EVENT_TTL_MS = Math.max(
   60 * 60 * 1000,
   Number(process.env.CLAUDEVILLE_REPOSITORY_UNPUSHED_EVENT_TTL_MS || (7 * 24 * 60 * 60 * 1000)) || (7 * 24 * 60 * 60 * 1000)
 );
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
+const GIT_TRACKING_TTL_MS = 6 * 60 * 60 * 1000;
+const GIT_TRACKING_MAX_PROJECTS = 512;
 const _gitStatusCache = new Map();
+const _unpushedEventsCache = new Map();
 const _currentBranchCache = new Map();
 const _gitStatusActiveProjects = new Map();
 const _gitHeadSignatureByProject = new Map();
 const _lastUnpushedByProjectBranch = new Map();
 const _recentRepositoryPushEvents = new Map();
+const _gitTrackingLastSeen = new Map();
 const _perf = {
   disabled: false,
   enrichmentCalls: 0,
@@ -83,6 +87,7 @@ const _perf = {
 function invalidateGitStatusCaches({ project = null } = {}) {
   if (!project) {
     _gitStatusCache.clear();
+    _unpushedEventsCache.clear();
     _currentBranchCache.clear();
     return;
   }
@@ -91,15 +96,50 @@ function invalidateGitStatusCaches({ project = null } = {}) {
   for (const key of _gitStatusCache.keys()) {
     if (key === project || key.startsWith(prefix)) _gitStatusCache.delete(key);
   }
+  _unpushedEventsCache.delete(project);
   _currentBranchCache.delete(project);
 }
 
 function markProjectSessionActive(project, now = Date.now()) {
   if (!project) return;
   _gitStatusActiveProjects.set(project, now);
+  _gitTrackingLastSeen.delete(project);
+  _gitTrackingLastSeen.set(project, now);
   if (_gitStatusActiveProjects.size > 512) {
     for (const [key, at] of _gitStatusActiveProjects.entries()) {
       if (now - at >= GIT_STATUS_CACHE_TTL_MS) _gitStatusActiveProjects.delete(key);
+    }
+  }
+}
+
+function pruneGitTrackingState(activeProjects = [], now = Date.now()) {
+  for (const project of activeProjects) {
+    if (!project) continue;
+    _gitTrackingLastSeen.delete(project);
+    _gitTrackingLastSeen.set(project, now);
+  }
+
+  const expiredProjects = new Set();
+  for (const [project, seenAt] of _gitTrackingLastSeen) {
+    if ((now - seenAt) > GIT_TRACKING_TTL_MS) expiredProjects.add(project);
+  }
+  while ((_gitTrackingLastSeen.size - expiredProjects.size) > GIT_TRACKING_MAX_PROJECTS) {
+    const project = [..._gitTrackingLastSeen.keys()].find((candidate) => !expiredProjects.has(candidate));
+    if (!project) break;
+    expiredProjects.add(project);
+  }
+
+  for (const project of expiredProjects) {
+    _gitTrackingLastSeen.delete(project);
+    _gitStatusActiveProjects.delete(project);
+    _gitHeadSignatureByProject.delete(project);
+    invalidateGitStatusCaches({ project });
+  }
+
+  for (const [key, remembered] of _lastUnpushedByProjectBranch) {
+    const observedAt = Number(remembered?.observedAt || 0);
+    if (expiredProjects.has(remembered?.project) || !observedAt || (now - observedAt) > GIT_TRACKING_TTL_MS) {
+      _lastUnpushedByProjectBranch.delete(key);
     }
   }
 }
@@ -206,7 +246,13 @@ function getGitEnrichmentPerfStats() {
     ..._perf,
     disabled: isGitEnrichmentDisabled(),
     statusCacheSize: _gitStatusCache.size,
+    unpushedEventCacheSize: _unpushedEventsCache.size,
     currentBranchCacheSize: _currentBranchCache.size,
+    activeProjectCacheSize: _gitStatusActiveProjects.size,
+    headSignatureCacheSize: _gitHeadSignatureByProject.size,
+    unpushedTransitionCacheSize: _lastUnpushedByProjectBranch.size,
+    trackingProjectCount: _gitTrackingLastSeen.size,
+    trackingProjectLimit: GIT_TRACKING_MAX_PROJECTS,
   };
 }
 
@@ -812,9 +858,15 @@ function runGit(project, args) {
       timeout: 750,
     }).trim();
   } catch (err) {
-    _perf.gitCommandErrors++;
-    if (err?.code === 'ETIMEDOUT' || err?.signal === 'SIGTERM' || /timed? out|timeout/i.test(err?.message || '')) {
-      _perf.gitCommandTimeouts++;
+    const expectedRefMiss = args[0] === 'rev-parse'
+      && args.includes('--verify')
+      && args.includes('--quiet')
+      && Number.isInteger(err?.status);
+    if (!expectedRefMiss) {
+      _perf.gitCommandErrors++;
+      if (err?.code === 'ETIMEDOUT' || err?.signal === 'SIGTERM' || /timed? out|timeout/i.test(err?.message || '')) {
+        _perf.gitCommandTimeouts++;
+      }
     }
     throw err;
   } finally {
@@ -1138,15 +1190,30 @@ function recentRepositoryPushEventsByProject(projects = [], now = Date.now()) {
 
 function readUnpushedCommitEvents(project, context = {}) {
   if (!project) return [];
+  const now = Date.now();
+  const cached = _unpushedEventsCache.get(project);
+  if (cached && now - cached.at < gitStatusCacheTtl(project, now)) {
+    _perf.cacheHits++;
+    return cached.value;
+  }
 
+  let value = [];
+  const commandErrorsBefore = _perf.gitCommandErrors;
   try {
-    if (runGit(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') return [];
+    if (runGit(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
+      _unpushedEventsCache.set(project, { at: now, value });
+      return value;
+    }
     const comparisons = [unpushedComparison(project)].filter((comparison) => comparison.baseRef);
-    if (!comparisons.length) return [];
+    if (!comparisons.length) {
+      if (_perf.gitCommandErrors > commandErrorsBefore) return cached?.value || value;
+      _unpushedEventsCache.set(project, { at: now, value });
+      return value;
+    }
 
     const events = [];
     for (const comparison of comparisons) {
-      const output = tryRunGit(project, [
+      const output = runGit(project, [
         'log',
         '--reverse',
         `--max-count=${MAX_UNPUSHED_COMMITS_PER_BRANCH}`,
@@ -1188,10 +1255,12 @@ function readUnpushedCommitEvents(project, context = {}) {
         });
       }
     }
-    return dedupeGitEvents(events);
+    value = dedupeGitEvents(events);
   } catch {
-    return [];
+    return cached?.value || value;
   }
+  _unpushedEventsCache.set(project, { at: now, value });
+  return value;
 }
 
 function inferPushedGitEvents(events, options = {}) {
@@ -1269,10 +1338,14 @@ function recentRepositoryUnpushedEvents(events = [], now = Date.now()) {
 function inferUnpushedGitEventsForSessions(sessions, options = {}) {
   if (!Array.isArray(sessions)) return sessions;
 
+  const now = Date.now();
   const extraProjects = Array.isArray(options.projects)
     ? options.projects.filter(Boolean)
     : [];
-  if (sessions.length === 0 && extraProjects.length === 0) return sessions;
+  if (sessions.length === 0 && extraProjects.length === 0) {
+    pruneGitTrackingState([], now);
+    return sessions;
+  }
   if (isGitEnrichmentDisabled()) {
     recordGitEnrichment('unpushed', 0, () => sessions);
     return sessions;
@@ -1285,7 +1358,7 @@ function inferUnpushedGitEventsForSessions(sessions, options = {}) {
 
   const uniqueProjects = [...new Set(projects.filter(Boolean))];
   return recordGitEnrichment('unpushed', uniqueProjects.length, () => {
-    const now = Date.now();
+    pruneGitTrackingState(uniqueProjects, now);
     for (const session of sessions) {
       if (session?.project) markProjectSessionActive(session.project, now);
     }

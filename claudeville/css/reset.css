@@ -4,8 +4,15 @@
     padding: 0;
 }
 
-/* Companion body/data face: pixel-adjacent, legible at small sizes.
-   Press Start 2P stays the brand/display face (loaded in index.html). */
+/* Local display/body faces keep the dashboard independent of network fonts. */
+@font-face {
+    font-family: 'Press Start 2P';
+    src: url('../assets/fonts/PressStart2P-Regular.woff2?v=16') format('woff2');
+    font-weight: 400;
+    font-style: normal;
+    font-display: swap;
+}
+
 @font-face {
     font-family: 'Departure Mono';
     src: url('../assets/fonts/DepartureMono-Regular.woff2') format('woff2');

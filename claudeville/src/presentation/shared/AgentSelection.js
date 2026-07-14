@@ -53,21 +53,26 @@ function _markSelectedElements(nextId, previousId) {
 }
 
 let _echoInstalled = false;
+let _echoCurrent = null;
 export function installSelectionEcho() {
     if (_echoInstalled || typeof document === 'undefined') return;
     _echoInstalled = true;
-    let current = null;
     eventBus.on(AGENT_SELECTED_EVENT, (agent) => {
         const next = agent?.id || null;
-        if (next === current) return;
-        _markSelectedElements(next, current);
-        current = next;
+        if (next === _echoCurrent) return;
+        _markSelectedElements(next, _echoCurrent);
+        _echoCurrent = next;
     });
     eventBus.on(AGENT_DESELECTED_EVENT, () => {
-        if (current === null) return;
-        _markSelectedElements(null, current);
-        current = null;
+        if (_echoCurrent === null) return;
+        _markSelectedElements(null, _echoCurrent);
+        _echoCurrent = null;
     });
+}
+
+export function resetAgentSelection() {
+    _markSelectedElements(null, _echoCurrent);
+    _echoCurrent = null;
 }
 
 // Self-install on import; harmless under SSR/tests via the document guard.

@@ -661,14 +661,34 @@ class GrokAdapter {
     });
   }
 
-  getWatchPaths() {
+  getWatchPaths({ sessions = [] } = {}) {
     const paths = [];
+    if (fs.existsSync(GROK_DIR)) {
+      paths.push({ type: 'directory', path: GROK_DIR, filters: ['sessions', 'active_sessions.json'], scope: 'discovery' });
+    }
     if (fs.existsSync(SESSIONS_DIR)) {
-      paths.push({ type: 'directory', path: SESSIONS_DIR, recursive: true, filter: '.jsonl' });
-      paths.push({ type: 'directory', path: SESSIONS_DIR, recursive: true, filter: 'summary.json' });
+      paths.push({ type: 'directory', path: SESSIONS_DIR, scope: 'discovery' });
     }
     if (fs.existsSync(ACTIVE_SESSIONS_FILE)) {
-      paths.push({ type: 'file', path: ACTIVE_SESSIONS_FILE });
+      paths.push({ type: 'file', path: ACTIVE_SESSIONS_FILE, scope: 'discovery', probe: true });
+    }
+    for (const session of sessions) {
+      const entry = _sessionIndex.get(session.sessionId);
+      if (!entry?.dir || !fs.existsSync(entry.dir)) continue;
+      paths.push({ type: 'directory', path: path.dirname(entry.dir), scope: 'recent', activity: session.lastActivity });
+      paths.push({
+        type: 'directory',
+        path: entry.dir,
+        filters: ['summary.json', '.jsonl'],
+        scope: 'active',
+        probe: true,
+        activity: session.lastActivity,
+      });
+      for (const filePath of [entry.summaryPath, entry.updatesPath, entry.chatPath, entry.eventsPath]) {
+        if (filePath && fs.existsSync(filePath)) {
+          paths.push({ type: 'file', path: filePath, scope: 'active', probe: true, activity: session.lastActivity });
+        }
+      }
     }
     return paths;
   }

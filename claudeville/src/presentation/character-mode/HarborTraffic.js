@@ -5,9 +5,10 @@ import { BUOY_TORCH_COLORS } from './ParticleSystem.js';
 import { normalizeRepoBranch, repoBranchProfile, repoProfile } from '../shared/RepoColor.js';
 import {
     cleanCommitSubject,
-    collectGitEventsFromAgents,
     commitMessageFromCommand,
     displayRepoName,
+    gitEventKind,
+    normalizeGitEvent,
     shortGitLabel,
 } from '../shared/GitEventIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
@@ -28,6 +29,20 @@ const FADE_DELAY_MS = 3200;
 const FINALE_EFFECT_MS = 9000;
 const SCREEN_SUMMARY_MS = 16000;
 const RECENT_PUSH_REPLAY_MS = 2 * 60 * 1000;
+const HARBOR_REPLAY_GRACE_MS = 60 * 1000;
+const HARBOR_REPLAY_RETENTION_MS = RECENT_PUSH_REPLAY_MS + HARBOR_REPLAY_GRACE_MS;
+const MAX_HARBOR_SHIPS = 2048;
+const MAX_HARBOR_SEEN_EVENT_IDS = 2048;
+const MAX_HARBOR_PUSH_EVENTS = 1024;
+const MAX_HARBOR_BATCHES = 512;
+const MAX_HARBOR_REPO_QUAYS = 512;
+const MAX_HARBOR_EVENT_TOMBSTONES = 4096;
+const MAX_HARBOR_COMMIT_REPLAY_FLOORS = 1024;
+const MAX_HARBOR_OVERFLOW_DOCK_COUNTS = 512;
+const MAX_HARBOR_EVENT_IDS_PER_SHIP = 64;
+const HARBOR_OVERFLOW_OTHER_KEY = '\x00other-repositories';
+const MAX_REPO_FIRST_SEEN = 512;
+const HARBOR_MAINTENANCE_INTERVAL_MS = 10000;
 const HARBOR_CRATE_TTL_MS = 30000;
 const MAX_LABEL_CHARS = 30;
 const COMMIT_EQUIVALENCE_WINDOW_MS = 10 * 60 * 1000;
@@ -489,8 +504,43 @@ function trafficIdentity(project, branch = '') {
     return `${String(project || 'unknown')}\x1f${normalizeRepoBranch(branch)}`;
 }
 
+const HARBOR_PROFILE_CACHE_LIMIT = 256;
+const HARBOR_CLEAN_LABEL_CACHE_LIMIT = 512;
+const _trafficProfileCache = new Map();
+const _cleanCommitLabelCache = new Map();
+
+function boundedCacheValue(cache, key, create, limit) {
+    if (cache.has(key)) return cache.get(key);
+    const value = create();
+    cache.set(key, value);
+    if (cache.size > limit) cache.delete(cache.keys().next().value);
+    return value;
+}
+
+function cachedRepoProfile(project) {
+    const key = String(project || 'unknown');
+    return boundedCacheValue(_trafficProfileCache, `${key}\x1f`, () => repoProfile(key), HARBOR_PROFILE_CACHE_LIMIT);
+}
+
 function trafficProfile(project, branch = '') {
-    return repoBranchProfile(project, normalizeRepoBranch(branch));
+    const normalizedBranch = normalizeRepoBranch(branch);
+    const key = `${String(project || 'unknown')}\x1f${normalizedBranch}`;
+    return boundedCacheValue(
+        _trafficProfileCache,
+        key,
+        () => repoBranchProfile(project, normalizedBranch),
+        HARBOR_PROFILE_CACHE_LIMIT,
+    );
+}
+
+function cachedCleanCommitSubject(value) {
+    const key = String(value || '');
+    return boundedCacheValue(
+        _cleanCommitLabelCache,
+        key,
+        () => cleanCommitSubject(key),
+        HARBOR_CLEAN_LABEL_CACHE_LIMIT,
+    );
 }
 
 function trafficLabel(project, branch = '', maxChars = 26) {
@@ -568,6 +618,7 @@ function cloneState(previous = {}) {
     for (const [id, ship] of sourceShips) {
         ships.set(id, {
             ...ship,
+            eventIds: Array.isArray(ship.eventIds) ? [...ship.eventIds] : [ship.id].filter(Boolean),
             route: compactRouteMetadata(ship.route),
             convoy: ship.convoy ? { ...ship.convoy } : null,
         });
@@ -602,8 +653,50 @@ function cloneState(previous = {}) {
     for (const [project, quayIndex] of sourceRepoQuays) {
         repoQuays.set(project, Number.isFinite(Number(quayIndex)) ? Number(quayIndex) : 0);
     }
+    const sourceSeenEventTimes = previous.seenEventTimes instanceof Map
+        ? previous.seenEventTimes.entries()
+        : Object.entries(previous.seenEventTimes || {});
+    const seenEventTimes = new Map();
+    for (const [id, timestamp] of sourceSeenEventTimes) {
+        const value = Number(timestamp);
+        if (id && Number.isFinite(value)) seenEventTimes.set(id, value);
+    }
+    const sourceEventTombstones = previous.eventTombstones instanceof Map
+        ? previous.eventTombstones.entries()
+        : Object.entries(previous.eventTombstones || {});
+    const eventTombstones = new Map();
+    for (const [id, tombstone] of sourceEventTombstones) {
+        if (!id) continue;
+        eventTombstones.set(id, typeof tombstone === 'object' && tombstone
+            ? { ...tombstone }
+            : { removedAt: Number(tombstone) || 0 });
+    }
+    const sourceCommitReplayFloors = previous.commitReplayFloors instanceof Map
+        ? previous.commitReplayFloors.entries()
+        : Object.entries(previous.commitReplayFloors || {});
+    const commitReplayFloors = new Map();
+    for (const [identity, floor] of sourceCommitReplayFloors) {
+        const eventTime = Number(typeof floor === 'object' ? floor?.eventTime : floor);
+        if (!identity || !Number.isFinite(eventTime) || eventTime <= 0) continue;
+        commitReplayFloors.set(identity, typeof floor === 'object' && floor
+            ? { ...floor, eventTime }
+            : { eventTime, recordedAt: 0 });
+    }
+    const sourceOverflowDockCounts = previous.overflowDockCounts instanceof Map
+        ? previous.overflowDockCounts.entries()
+        : Object.entries(previous.overflowDockCounts || {});
+    const overflowDockCounts = new Map();
+    for (const [identity, overflow] of sourceOverflowDockCounts) {
+        const count = Math.max(0, Number(overflow?.count || 0));
+        if (!identity || count <= 0) continue;
+        overflowDockCounts.set(identity, { ...overflow, count });
+    }
     return {
         seenEventIds,
+        seenEventTimes,
+        eventTombstones,
+        commitReplayFloors,
+        overflowDockCounts,
         ships,
         batches,
         pushEvents,
@@ -611,6 +704,337 @@ function cloneState(previous = {}) {
         nextSequence: Number.isFinite(previous.nextSequence) ? previous.nextSequence : ships.size,
         nextBatchSequence: Number.isFinite(previous.nextBatchSequence) ? previous.nextBatchSequence : batches.size,
     };
+}
+
+function markHarborEventSeen(state, event, now) {
+    if (!event?.id) return;
+    state.seenEventIds.add(event.id);
+    const eventTime = Number(event.timestamp);
+    state.seenEventTimes.set(event.id, Number.isFinite(eventTime) && eventTime > 0 ? eventTime : now);
+}
+
+function harborEventStatus(event = {}) {
+    return String(event.status || gitEventStatusLabel(event) || 'unknown').toLowerCase();
+}
+
+function tombstoneHarborEvent(state, event, now, overrides = {}) {
+    const id = typeof event === 'string' ? event : event?.id;
+    if (!id) return;
+    const source = typeof event === 'object' && event ? event : {};
+    const eventTime = Number(overrides.eventTime ?? source.timestamp ?? source.eventTime ?? 0) || 0;
+    const tombstone = {
+        type: String(overrides.type || source.type || ''),
+        status: String(overrides.status || source.status || ''),
+        eventTime,
+        removedAt: now,
+    };
+    state.eventTombstones.delete(id);
+    state.eventTombstones.set(id, tombstone);
+    while (state.eventTombstones.size > MAX_HARBOR_EVENT_TOMBSTONES) {
+        state.eventTombstones.delete(state.eventTombstones.keys().next().value);
+    }
+}
+
+function harborEventIsTombstoned(state, event) {
+    const tombstone = state.eventTombstones.get(event?.id);
+    if (!tombstone) return false;
+    if (event.type !== 'push') return true;
+    if (tombstone.type && tombstone.type !== 'push') return false;
+    return String(tombstone.status || 'unknown').toLowerCase() === harborEventStatus(event);
+}
+
+function recordCommitReplayFloor(state, project, branch, eventTime, now) {
+    const timestamp = Number(eventTime);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return;
+    const identity = trafficIdentity(project, branch);
+    const previous = state.commitReplayFloors.get(identity);
+    const next = {
+        eventTime: Math.max(timestamp, Number(previous?.eventTime || 0)),
+        recordedAt: now,
+    };
+    state.commitReplayFloors.delete(identity);
+    state.commitReplayFloors.set(identity, next);
+    while (state.commitReplayFloors.size > MAX_HARBOR_COMMIT_REPLAY_FLOORS) {
+        state.commitReplayFloors.delete(state.commitReplayFloors.keys().next().value);
+    }
+}
+
+function latestProjectCommitReplayFloor(state, project) {
+    const prefix = `${String(project || 'unknown')}\x1f`;
+    let latest = 0;
+    for (const [identity, floor] of state.commitReplayFloors) {
+        if (!identity.startsWith(prefix)) continue;
+        latest = Math.max(latest, Number(floor?.eventTime || 0));
+    }
+    return latest;
+}
+
+function commitIsAtOrBelowReplayFloor(state, event) {
+    const eventTime = Number(event?.timestamp);
+    if (!Number.isFinite(eventTime) || eventTime <= 0) return false;
+    const branch = eventBranch(event);
+    const exact = Number(state.commitReplayFloors.get(trafficIdentity(event.project, branch))?.eventTime || 0);
+    const projectWide = Number(state.commitReplayFloors.get(trafficIdentity(event.project, ''))?.eventTime || 0);
+    const floor = Math.max(exact, projectWide, branch ? 0 : latestProjectCommitReplayFloor(state, event.project));
+    return floor > 0 && eventTime <= floor;
+}
+
+function mergeHarborOverflowRecord(target, source, now) {
+    target.count = Math.max(0, Number(target.count || 0)) + Math.max(0, Number(source.count || 0));
+    target.failedCount = Math.max(0, Number(target.failedCount || 0)) + Math.max(0, Number(source.failedCount || 0));
+    const earliest = [target.earliestEventTime, source.earliestEventTime]
+        .map(Number)
+        .filter(value => Number.isFinite(value) && value > 0);
+    target.earliestEventTime = earliest.length ? Math.min(...earliest) : 0;
+    target.latestEventTime = Math.max(Number(target.latestEventTime || 0), Number(source.latestEventTime || 0));
+    target.updatedAt = now;
+    return target;
+}
+
+function foldHarborOverflowRecord(state, record, now) {
+    const other = state.overflowDockCounts.get(HARBOR_OVERFLOW_OTHER_KEY) || {
+        project: 'Additional repositories',
+        branch: '',
+        waitingZone: 'harbor',
+        quayIndex: 0,
+        count: 0,
+        failedCount: 0,
+        earliestEventTime: 0,
+        latestEventTime: 0,
+        aggregate: true,
+    };
+    state.overflowDockCounts.delete(HARBOR_OVERFLOW_OTHER_KEY);
+    state.overflowDockCounts.set(HARBOR_OVERFLOW_OTHER_KEY, mergeHarborOverflowRecord(other, record, now));
+}
+
+function pruneHarborOverflowDockCounts(state, now) {
+    while (state.overflowDockCounts.size > MAX_HARBOR_OVERFLOW_DOCK_COUNTS) {
+        const entry = [...state.overflowDockCounts.entries()]
+            .find(([identity]) => identity !== HARBOR_OVERFLOW_OTHER_KEY);
+        if (!entry) break;
+        state.overflowDockCounts.delete(entry[0]);
+        foldHarborOverflowRecord(state, entry[1], now);
+    }
+}
+
+function recordHarborDockOverflow(state, ship, now) {
+    const project = String(ship?.project || 'unknown');
+    const branch = normalizeRepoBranch(ship?.branch || ship?.targetRef || '');
+    const waitingZone = ship?.waitingZone || 'harbor';
+    const identity = `${trafficIdentity(project, branch)}\x1f${waitingZone}`;
+    const eventTime = Number(ship?.eventTime || 0);
+    const record = state.overflowDockCounts.get(identity) || {
+        project,
+        branch,
+        waitingZone,
+        quayIndex: Number.isFinite(Number(ship?.quayIndex)) ? Number(ship.quayIndex) : 0,
+        count: 0,
+        failedCount: 0,
+        earliestEventTime: eventTime,
+        latestEventTime: eventTime,
+        aggregate: false,
+    };
+    mergeHarborOverflowRecord(record, {
+        count: 1,
+        failedCount: ship?.pushStatus === 'failed' ? 1 : 0,
+        earliestEventTime: eventTime,
+        latestEventTime: eventTime,
+    }, now);
+    state.overflowDockCounts.delete(identity);
+    if (state.overflowDockCounts.size >= MAX_HARBOR_OVERFLOW_DOCK_COUNTS) {
+        foldHarborOverflowRecord(state, record, now);
+    } else {
+        state.overflowDockCounts.set(identity, record);
+    }
+    pruneHarborOverflowDockCounts(state, now);
+}
+
+function clearHarborDockOverflowForPush(state, event, pushTime) {
+    for (const [identity, record] of state.overflowDockCounts) {
+        if (record.aggregate || !pushEventMatchesShip(event, record)) continue;
+        const latest = Number(record.latestEventTime || 0);
+        if (!pushTime || !latest || latest <= pushTime) state.overflowDockCounts.delete(identity);
+    }
+}
+
+function harborOverflowDockCount(state) {
+    let total = 0;
+    for (const record of state?.overflowDockCounts?.values?.() || []) {
+        total += Math.max(0, Number(record?.count || 0));
+    }
+    return total;
+}
+
+function latestShipEventTime(state, ship) {
+    let latest = Number(ship?.eventTime || 0);
+    for (const id of ship?.eventIds || []) {
+        latest = Math.max(latest, Number(state.seenEventTimes.get(id) || 0));
+    }
+    return latest;
+}
+
+function retireHarborShip(state, id, ship, now, { recordFloor = true } = {}) {
+    if (!ship) return;
+    const ids = new Set([ship.id, ...(ship.eventIds || [])].filter(Boolean));
+    const eventTime = latestShipEventTime(state, ship);
+    const type = ship.gitKind || (ship.isInbound ? ship.arrivingKind : 'commit') || '';
+    for (const eventId of ids) {
+        tombstoneHarborEvent(state, eventId, now, {
+            type,
+            eventTime: Number(state.seenEventTimes.get(eventId) || eventTime || 0),
+        });
+    }
+    if (recordFloor && type === 'commit') {
+        recordCommitReplayFloor(state, ship.project, ship.branch || ship.targetRef || '', eventTime, now);
+    }
+    state.ships.delete(id);
+}
+
+function harborLiveEventIds(state) {
+    const ids = new Set();
+    for (const ship of state.ships.values()) {
+        if (ship.id) ids.add(ship.id);
+        for (const id of ship.eventIds || []) if (id) ids.add(id);
+        if (ship.pushEventId) ids.add(ship.pushEventId);
+        if (ship.departEventId) ids.add(ship.departEventId);
+    }
+    for (const batch of state.batches.values()) {
+        const id = String(batch.id || '').replace(/^push-batch:/, '');
+        if (id) ids.add(id);
+    }
+    return ids;
+}
+
+function pruneHarborReplayState(state, now) {
+    const liveIds = harborLiveEventIds(state);
+    const cutoff = now - HARBOR_REPLAY_RETENTION_MS;
+
+    for (const [id, push] of state.pushEvents) {
+        const timestamp = Number(push.eventTime || push.seenAt || 0);
+        if (!liveIds.has(id) && (!Number.isFinite(timestamp) || timestamp < cutoff)) {
+            tombstoneHarborEvent(state, id, now, { type: 'push', status: push.status, eventTime: timestamp });
+            state.pushEvents.delete(id);
+        }
+    }
+    if (state.pushEvents.size > MAX_HARBOR_PUSH_EVENTS) {
+        const removable = [...state.pushEvents.entries()].sort((a, b) => (
+            Number(liveIds.has(a[0])) - Number(liveIds.has(b[0]))
+            || Number(a[1]?.eventTime || a[1]?.seenAt || 0) - Number(b[1]?.eventTime || b[1]?.seenAt || 0)
+            || a[0].localeCompare(b[0])
+        ));
+        let excess = state.pushEvents.size - MAX_HARBOR_PUSH_EVENTS;
+        for (const [id, push] of removable) {
+            if (excess <= 0) break;
+            excess--;
+            tombstoneHarborEvent(state, id, now, {
+                type: 'push',
+                status: push.status,
+                eventTime: Number(push.eventTime || push.seenAt || 0),
+            });
+            state.pushEvents.delete(id);
+        }
+    }
+
+    for (const id of state.seenEventIds) {
+        const timestamp = Number(state.seenEventTimes.get(id) || 0);
+        if (!liveIds.has(id) && (!Number.isFinite(timestamp) || timestamp < cutoff)) {
+            tombstoneHarborEvent(state, id, now, { eventTime: timestamp });
+            state.seenEventIds.delete(id);
+            state.seenEventTimes.delete(id);
+        }
+    }
+    if (state.seenEventIds.size > MAX_HARBOR_SEEN_EVENT_IDS) {
+        const removable = [...state.seenEventIds].sort((a, b) => (
+            Number(liveIds.has(a)) - Number(liveIds.has(b))
+            || Number(state.seenEventTimes.get(a) || 0) - Number(state.seenEventTimes.get(b) || 0)
+            || a.localeCompare(b)
+        ));
+        let excess = state.seenEventIds.size - MAX_HARBOR_SEEN_EVENT_IDS;
+        for (const id of removable) {
+            if (excess <= 0) break;
+            excess--;
+            tombstoneHarborEvent(state, id, now, { eventTime: Number(state.seenEventTimes.get(id) || 0) });
+            state.seenEventIds.delete(id);
+            state.seenEventTimes.delete(id);
+        }
+    }
+    for (const id of state.seenEventTimes.keys()) {
+        if (!state.seenEventIds.has(id)) state.seenEventTimes.delete(id);
+    }
+    while (state.eventTombstones.size > MAX_HARBOR_EVENT_TOMBSTONES) {
+        state.eventTombstones.delete(state.eventTombstones.keys().next().value);
+    }
+    while (state.commitReplayFloors.size > MAX_HARBOR_COMMIT_REPLAY_FLOORS) {
+        state.commitReplayFloors.delete(state.commitReplayFloors.keys().next().value);
+    }
+    pruneHarborOverflowDockCounts(state, now);
+}
+
+function harborShipRetentionRank(ship) {
+    if (ship?.status === 'departing' || ship?.status === 'rejecting' || ship?.status === 'cancelling') return 3;
+    if (ship?.status === 'docked') return 2;
+    if (ship?.status === 'arriving') return 1;
+    return 0;
+}
+
+function pruneHarborShips(state, now) {
+    for (const ship of state.ships.values()) {
+        if (!Array.isArray(ship.eventIds) || ship.eventIds.length <= MAX_HARBOR_EVENT_IDS_PER_SHIP) continue;
+        const excess = ship.eventIds.splice(0, ship.eventIds.length - MAX_HARBOR_EVENT_IDS_PER_SHIP);
+        for (const id of excess) {
+            tombstoneHarborEvent(state, id, now, { type: ship.gitKind || 'commit', eventTime: state.seenEventTimes.get(id) });
+        }
+    }
+    if (state.ships.size <= MAX_HARBOR_SHIPS) return;
+    const removable = [...state.ships.entries()].sort((a, b) => (
+        harborShipRetentionRank(a[1]) - harborShipRetentionRank(b[1])
+        || Number(a[1]?.eventTime || a[1]?.createdAt || 0) - Number(b[1]?.eventTime || b[1]?.createdAt || 0)
+        || a[0].localeCompare(b[0])
+    ));
+    let excess = state.ships.size - MAX_HARBOR_SHIPS;
+    for (const [id, ship] of removable) {
+        if (excess <= 0) break;
+        excess--;
+        if (ship.status === 'docked' && ship.gitKind === 'commit') {
+            recordHarborDockOverflow(state, ship, now);
+        }
+        retireHarborShip(state, id, ship, now);
+    }
+}
+
+function pruneHarborBatches(state) {
+    for (const batch of state.batches.values()) {
+        batch.shipIds = (batch.shipIds || []).filter(id => state.ships.has(id)).slice(0, MAX_HARBOR_SHIPS);
+        batch.shipCount = batch.shipIds.length;
+    }
+    if (state.batches.size <= MAX_HARBOR_BATCHES) return;
+    const removable = [...state.batches.entries()].sort((a, b) => (
+        Number((a[1]?.shipIds || []).some(id => state.ships.has(id)))
+        - Number((b[1]?.shipIds || []).some(id => state.ships.has(id)))
+        || Number(a[1]?.startedAt || a[1]?.eventTime || 0) - Number(b[1]?.startedAt || b[1]?.eventTime || 0)
+        || a[0].localeCompare(b[0])
+    ));
+    let excess = state.batches.size - MAX_HARBOR_BATCHES;
+    for (const [id] of removable) {
+        if (excess <= 0) break;
+        excess--;
+        state.batches.delete(id);
+    }
+}
+
+function pruneHarborRepoQuays(state) {
+    if (state.repoQuays.size <= MAX_HARBOR_REPO_QUAYS) return;
+    const liveProjects = new Set([...state.ships.values()].map(ship => String(ship.project || 'unknown')));
+    const removable = [...state.repoQuays.keys()].sort((a, b) => (
+        Number(liveProjects.has(String(a))) - Number(liveProjects.has(String(b)))
+        || String(a).localeCompare(String(b))
+    ));
+    let excess = state.repoQuays.size - MAX_HARBOR_REPO_QUAYS;
+    for (const project of removable) {
+        if (excess <= 0) break;
+        excess--;
+        state.repoQuays.delete(project);
+    }
 }
 
 function assignedQuayIndex(state, project) {
@@ -637,15 +1061,26 @@ function assignedQuayIndex(state, project) {
         if (loads[candidate] < loads[chosen]) chosen = candidate;
     }
     state.repoQuays.set(key, chosen);
+    while (state.repoQuays.size > MAX_HARBOR_REPO_QUAYS) {
+        const oldest = state.repoQuays.keys().next().value;
+        if (oldest === key && state.repoQuays.size > 1) {
+            const nextOldest = [...state.repoQuays.keys()][1];
+            state.repoQuays.delete(nextOldest);
+        } else {
+            state.repoQuays.delete(oldest);
+        }
+    }
     return chosen;
 }
 
-function chooseBerthIndex(state, project) {
+function chooseBerthIndex(state, project, occupiedBerths = null) {
     const quayIndex = assignedQuayIndex(state, project);
     const key = String(project || 'unknown');
-    const occupied = new Set();
-    for (const ship of state.ships.values()) {
-        if (Number.isFinite(Number(ship.berthIndex))) occupied.add(Number(ship.berthIndex));
+    const occupied = occupiedBerths || new Set();
+    if (!occupiedBerths) {
+        for (const ship of state.ships.values()) {
+            if (Number.isFinite(Number(ship.berthIndex))) occupied.add(Number(ship.berthIndex));
+        }
     }
     const otherRepoQuays = new Set();
     for (const [assignedProject, assignedQuay] of state.repoQuays.entries()) {
@@ -1357,7 +1792,7 @@ function shipEligibleForPush(ship, event, previousPush, now) {
 }
 
 function commitCompareText(value = '') {
-    return cleanCommitSubject(value)
+    return cachedCleanCommitSubject(value)
         .toLowerCase()
         .replace(/[^a-z0-9]+/g, ' ')
         .trim();
@@ -1367,7 +1802,7 @@ function commitIdentityParts(event = {}) {
     const project = String(event.project || 'unknown');
     const branch = normalizeRepoBranch(event.branch || event.targetRef || '');
     const sha = String(event.sha || '').trim().toLowerCase();
-    const label = cleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
+    const label = cachedCleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
     return {
         project,
         branch,
@@ -1406,16 +1841,59 @@ function sameCommitIdentity(a, b) {
     return commitLabelsEquivalent(left.compareLabel, right.compareLabel, left.timestamp, right.timestamp);
 }
 
-function findExistingCommitShip(state, event) {
-    for (const ship of state.ships.values()) {
-        if (sameCommitIdentity(ship, event)) return ship;
+function commitIdentityIndexLabelKey(parts) {
+    const label = parts.compareLabel || '';
+    if (!label) return '';
+    return `${parts.project}\x1f${label.length >= 18 ? label.slice(0, 18) : label}`;
+}
+
+function addCommitIdentityIndexEntry(map, key, ship) {
+    if (!key) return;
+    const entries = map.get(key) || new Set();
+    entries.add(ship);
+    map.set(key, entries);
+}
+
+function indexCommitShip(index, ship) {
+    if (!ship) return;
+    if (!index.order.has(ship)) index.order.set(ship, index.nextOrder++);
+    const parts = commitIdentityParts(ship);
+    if (parts.sha) addCommitIdentityIndexEntry(index.bySha, `${parts.project}\x1f${parts.sha}`, ship);
+    addCommitIdentityIndexEntry(index.byLabel, commitIdentityIndexLabelKey(parts), ship);
+    if (!parts.sha) addCommitIdentityIndexEntry(index.byLabelWithoutSha, commitIdentityIndexLabelKey(parts), ship);
+}
+
+function buildCommitIdentityIndex(state) {
+    const index = {
+        bySha: new Map(),
+        byLabel: new Map(),
+        byLabelWithoutSha: new Map(),
+        order: new Map(),
+        nextOrder: 0,
+    };
+    for (const ship of state.ships.values()) indexCommitShip(index, ship);
+    return index;
+}
+
+function findIndexedCommitShip(index, event) {
+    const parts = commitIdentityParts(event);
+    const candidates = new Set();
+    if (parts.sha) {
+        for (const ship of index.bySha.get(`${parts.project}\x1f${parts.sha}`) || []) candidates.add(ship);
     }
-    return null;
+    const labelKey = commitIdentityIndexLabelKey(parts);
+    if (labelKey) {
+        const labelIndex = parts.sha ? index.byLabelWithoutSha : index.byLabel;
+        for (const ship of labelIndex.get(labelKey) || []) candidates.add(ship);
+    }
+    return [...candidates]
+        .sort((a, b) => Number(index.order.get(a) || 0) - Number(index.order.get(b) || 0))
+        .find(ship => sameCommitIdentity(ship, event)) || null;
 }
 
 function mergeCommitIntoShip(ship, event, now = Date.now()) {
-    const nextLabel = cleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
-    const currentLabel = cleanCommitSubject(ship.label || '');
+    const nextLabel = cachedCleanCommitSubject(event.label || commitMessageFromCommand(event.command) || '');
+    const currentLabel = cachedCleanCommitSubject(ship.label || '');
     const previousEventIds = Array.isArray(ship.eventIds) ? ship.eventIds : [ship.id].filter(Boolean);
     ship.eventIds = previousEventIds;
     const isNewAmend = !!(event.id && !ship.eventIds.includes(event.id));
@@ -1856,9 +2334,12 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     const now = Number.isFinite(options.now) ? options.now : Date.now();
     const motionScale = options.motionScale === 0 ? 0 : 1;
 
-    const sorted = [...(events || [])]
+    const sortedEvents = [...(events || [])]
         .filter(event => event?.id && event?.type && event?.project)
         .sort((a, b) => (a.timestamp - b.timestamp) || a.id.localeCompare(b.id));
+    // Pushes may sit before a long commit tail while still applying to a live
+    // docked ship, so transition correctness requires the complete ordered tail.
+    const sorted = sortedEvents;
     const latestPushTimes = latestPushTimesByProject(sorted);
     const relevantProjects = new Set(sorted.map(event => String(event.project || 'unknown')));
     for (const ship of state.ships.values()) {
@@ -1867,30 +2348,37 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
     for (const [project] of state.repoQuays.entries()) {
         if (!relevantProjects.has(String(project || 'unknown'))) state.repoQuays.delete(project);
     }
-    for (const project of relevantProjects) {
-        assignedQuayIndex(state, project);
+    if (relevantProjects.size <= MAX_HARBOR_REPO_QUAYS) {
+        for (const project of relevantProjects) assignedQuayIndex(state, project);
+    }
+    const commitIdentityIndex = buildCommitIdentityIndex(state);
+    const occupiedBerths = new Set();
+    for (const ship of state.ships.values()) {
+        if (Number.isFinite(Number(ship.berthIndex))) occupiedBerths.add(Number(ship.berthIndex));
     }
 
     for (const event of sorted) {
         if (event.type !== 'push') {
-            if (state.seenEventIds.has(event.id)) continue;
-            state.seenEventIds.add(event.id);
+            if (state.seenEventIds.has(event.id) || harborEventIsTombstoned(state, event)) continue;
+            markHarborEventSeen(state, event, now);
         }
 
         if (event.type === 'commit') {
+            if (commitIsAtOrBelowReplayFloor(state, event)) continue;
             if (isHistoricalCommittedBeforePush(event, latestPushTimes, now)) continue;
-            const existingShip = findExistingCommitShip(state, event);
+            const existingShip = findIndexedCommitShip(commitIdentityIndex, event);
             if (existingShip) {
-                state.seenEventIds.add(event.id);
+                markHarborEventSeen(state, event, now);
                 mergeCommitIntoShip(existingShip, event, now);
+                indexCommitShip(commitIdentityIndex, existingShip);
                 continue;
             }
             const branch = eventBranch(event);
-            const { berthIndex, quayIndex } = chooseBerthIndex(state, event.project);
+            const { berthIndex, quayIndex } = chooseBerthIndex(state, event.project, occupiedBerths);
             const laneIndex = stableHash(`${event.project}:${branch}:${event.id}`) % SEA_LANES.length;
             const profile = trafficProfile(event.project, branch);
             state.nextSequence++;
-            state.ships.set(event.id, {
+            const ship = {
                 id: event.id,
                 project: event.project,
                 branch,
@@ -1899,7 +2387,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 repoName: profile.shortName,
                 quayIndex,
                 sha: event.sha,
-                label: cleanCommitSubject(event.label || commitMessageFromCommand(event.command)) || event.label,
+                label: cachedCleanCommitSubject(event.label || commitMessageFromCommand(event.command)) || event.label,
                 status: 'docked',
                 route: routeGraphMetadata('berth.assignment'),
                 berthIndex,
@@ -1911,7 +2399,10 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 detachedHead: branch === '',
                 hasUpstreamHint: typeof event.hasUpstream === 'boolean' ? event.hasUpstream : null,
                 amendCount: 0,
-            });
+            };
+            state.ships.set(event.id, ship);
+            occupiedBerths.add(berthIndex);
+            indexCommitShip(commitIdentityIndex, ship);
             continue;
         }
 
@@ -1920,7 +2411,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const inboundStatus = String(event.status || gitEventStatusLabel(event) || '').toLowerCase();
             if (inboundStatus === 'failed' || inboundStatus === 'rejected'
                 || inboundStatus === 'cancelled' || inboundStatus === 'canceled') {
-                state.seenEventIds.add(event.id);
+                markHarborEventSeen(state, event, now);
                 continue;
             }
             if (motionScale === 0) continue;
@@ -1941,9 +2432,9 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 || HARBOR_SQUAD_ANCHORAGES[0];
             const { berthIndex, quayIndex } = isFetch
                 ? { berthIndex: -1, quayIndex: assignedQuayIndex(state, event.project) }
-                : chooseBerthIndex(state, event.project);
+                : chooseBerthIndex(state, event.project, occupiedBerths);
             state.nextSequence++;
-            state.ships.set(inboundId, {
+            const ship = {
                 id: inboundId,
                 project: event.project,
                 branch,
@@ -1968,7 +2459,10 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                 isInbound: true,
                 detachedHead: false,
                 amendCount: 0,
-            });
+            };
+            state.ships.set(inboundId, ship);
+            occupiedBerths.add(ship.berthIndex);
+            indexCommitShip(commitIdentityIndex, ship);
             continue;
         }
 
@@ -1981,12 +2475,17 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
             const pushTime = Number.isFinite(event.timestamp) && event.timestamp > 0 ? event.timestamp : 0;
             const batchId = `push-batch:${event.id}`;
             const previousPush = state.pushEvents.get(event.id);
-            const incomingStatus = event.status || 'unknown';
+            if (!previousPush && harborEventIsTombstoned(state, event)) continue;
+            const incomingStatus = harborEventStatus(event);
             const previousStatus = previousPush?.status || null;
             const status = previousStatus && incomingStatus === 'unknown' ? previousStatus : incomingStatus;
             const existingBatch = state.batches.get(batchId);
             const statusChanged = previousStatus && previousStatus !== status;
             const branch = eventBranch(event);
+            if (status === 'success') {
+                recordCommitReplayFloor(state, event.project, branch, pushTime, now);
+                clearHarborDockOverflowForPush(state, event, pushTime);
+            }
             const profile = trafficProfile(event.project, branch);
             const pushMetadata = gitEventDebugMetadata(event, branch);
             // 3.1 — capture force flag (true / 'lease' / 'includes')
@@ -2250,7 +2749,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         if (ship.status === 'anchored') {
             const startedAt = ship.arrivingStartedAt || now;
             if (now - startedAt > INBOUND_DURATION_MS * 2) {
-                state.ships.delete(id);
+                retireHarborShip(state, id, ship, now, { recordFloor: false });
             }
             continue;
         }
@@ -2278,7 +2777,7 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
                     batch.sealedOriginPoints.push({ x: world.x, y: world.y });
                 }
             }
-            state.ships.delete(id);
+            retireHarborShip(state, id, ship, now);
         }
     }
 
@@ -2289,12 +2788,217 @@ export function reduceHarborTrafficState(previous, events, options = {}) {
         }
     }
 
+    pruneHarborShips(state, now);
+    pruneHarborBatches(state);
+    pruneHarborRepoQuays(state);
+    pruneHarborReplayState(state, now);
+
     return state;
 }
 
 function easedDeparture(progress) {
     const t = Math.max(0, Math.min(1, progress));
     return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+function rawGitEventProject(event, agent) {
+    return String(event?.project
+        || event?.projectPath
+        || event?.repository
+        || event?.repo
+        || event?.workspace
+        || agent?.projectPath
+        || agent?.teamName
+        || agent?.project
+        || 'unknown');
+}
+
+function canonicalRawGitEventKey(event, agent) {
+    const type = gitEventKind(event);
+    if (!type) return '';
+    const project = rawGitEventProject(event, agent);
+    const sha = String(event.sha || event.commit || event.hash || event.commitSha || event.revision || '').trim().toLowerCase();
+    const explicitId = event.id || event.eventId || event.uuid || event.key || event.sourceId || '';
+    if (explicitId) {
+        const discriminator = sha
+            || event.commandHash
+            || `${event.timestamp || event.time || event.ts || event.completedAt || ''}\x1f${event.branch || event.targetRef || event.ref || ''}`;
+        return `${type}\x1f${project}\x1f${String(explicitId)}\x1f${String(discriminator || '')}`;
+    }
+    if (type === 'commit' && sha) return `${type}\x1f${project}\x1f${sha}`;
+    return '';
+}
+
+function rawGitEventTime(event) {
+    const value = event?.completedAt || event?.completed_at || event?.timestamp || event?.time || event?.ts || 0;
+    const numeric = Number(value);
+    if (Number.isFinite(numeric)) return numeric;
+    const parsed = typeof value === 'string' ? Date.parse(value) : NaN;
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function rawGitEventCompletionScore(event) {
+    if (typeof event?.success === 'boolean') return 2;
+    if (Number.isFinite(Number(event?.exitCode ?? event?.exit_code))) return 2;
+    if (event?.status != null || event?.outcome != null || event?.conclusion != null) return 1;
+    return 0;
+}
+
+function preferCanonicalRawGitEvent(previous, candidate) {
+    const type = gitEventKind(candidate.event);
+    const previousTime = rawGitEventTime(previous.event);
+    const candidateTime = rawGitEventTime(candidate.event);
+    if (type === 'commit') {
+        if (!previousTime) return candidateTime > 0;
+        return candidateTime > 0 && candidateTime < previousTime;
+    }
+    if (candidateTime !== previousTime) return candidateTime > previousTime;
+    return rawGitEventCompletionScore(candidate.event) > rawGitEventCompletionScore(previous.event);
+}
+
+function collectHarborGitEvents(agents, options = {}, stats = null) {
+    const candidates = [];
+    const canonicalCandidates = new Map();
+    const normalizedKeys = new Set();
+    const seenSourceArrays = new Set();
+    let rawCount = 0;
+    for (const agent of agents || []) {
+        const sources = [agent?.gitEvents, agent?.git?.events, agent?.vcsEvents].filter(Array.isArray);
+        for (const source of sources) {
+            if (seenSourceArrays.has(source)) continue;
+            seenSourceArrays.add(source);
+            source.forEach((event, index) => {
+                rawCount++;
+                const canonicalKey = canonicalRawGitEventKey(event, agent);
+                const candidate = { event, agent, index, order: candidates.length };
+                if (!canonicalKey) {
+                    candidates.push(candidate);
+                    return;
+                }
+                const previous = canonicalCandidates.get(canonicalKey);
+                if (!previous) {
+                    canonicalCandidates.set(canonicalKey, candidate);
+                    candidates.push(candidate);
+                } else if (preferCanonicalRawGitEvent(previous, candidate)) {
+                    candidate.order = previous.order;
+                    canonicalCandidates.set(canonicalKey, candidate);
+                    candidates[previous.order] = candidate;
+                }
+            });
+        }
+    }
+    const events = [];
+    for (const candidate of candidates) {
+        const normalized = normalizeGitEvent(candidate.event, candidate.agent, candidate.index, options);
+        if (!normalized || (options.type && normalized.type !== options.type)) continue;
+        const normalizedKey = `${normalized.type}\x1f${normalized.project}\x1f${normalized.id}`;
+        if (normalizedKeys.has(normalizedKey)) continue;
+        normalizedKeys.add(normalizedKey);
+        events.push(normalized);
+    }
+    events.sort((a, b) => (a.timestamp - b.timestamp) || a.id.localeCompare(b.id));
+    if (stats) {
+        stats.rawCount = rawCount;
+        stats.normalizedCount = events.length;
+    }
+    return events;
+}
+
+function rawGitEventEdgeVersion(event) {
+    if (!event) return '';
+    return [
+        event.id || event.eventId || event.uuid || event.key || '',
+        event.type || event.kind || event.action || '',
+        event.status || event.outcome || event.conclusion || '',
+        event.success,
+        event.exitCode ?? event.exit_code ?? '',
+        event.timestamp || event.time || event.ts || '',
+        event.completedAt || event.completed_at || '',
+        event.sha || event.commit || event.hash || '',
+        event.branch || event.targetRef || event.ref || '',
+    ].join('\x1f');
+}
+
+function harborEventSourceSnapshot(agents) {
+    const snapshot = [];
+    for (const agent of agents || []) {
+        const sources = [agent?.gitEvents, agent?.git?.events, agent?.vcsEvents].filter(Array.isArray);
+        for (const source of sources) {
+            snapshot.push({
+                agent,
+                source,
+                length: source.length,
+                first: source[0] || null,
+                last: source[source.length - 1] || null,
+                firstVersion: rawGitEventEdgeVersion(source[0]),
+                lastVersion: rawGitEventEdgeVersion(source[source.length - 1]),
+                project: agent?.projectPath || agent?.project || '',
+                sessionId: agent?.sessionId || agent?.agentId || agent?.id || '',
+                provider: agent?.provider || '',
+            });
+        }
+    }
+    return snapshot;
+}
+
+function harborEventSourcesEqual(previous, next) {
+    if (!Array.isArray(previous) || previous.length !== next.length) return false;
+    for (let index = 0; index < next.length; index++) {
+        const left = previous[index];
+        const right = next[index];
+        if (left.agent !== right.agent
+            || left.source !== right.source
+            || left.length !== right.length
+            || left.first !== right.first
+            || left.last !== right.last
+            || left.firstVersion !== right.firstVersion
+            || left.lastVersion !== right.lastVersion
+            || left.project !== right.project
+            || left.sessionId !== right.sessionId
+            || left.provider !== right.provider) return false;
+    }
+    return true;
+}
+
+function harborEventsVersion(events) {
+    let first = 2166136261;
+    let second = 0x9e3779b9;
+    const mix = (value) => {
+        const text = String(value ?? '');
+        for (let i = 0; i < text.length; i++) {
+            const code = text.charCodeAt(i);
+            first = Math.imul(first ^ code, 16777619) >>> 0;
+            second = (Math.imul(second ^ code, 2246822519) + 3266489917) >>> 0;
+        }
+        first = Math.imul(first ^ 31, 16777619) >>> 0;
+        second = Math.imul(second ^ 131, 2246822519) >>> 0;
+    };
+    for (const event of events || []) {
+        mix(event.id);
+        mix(event.type);
+        mix(event.project);
+        mix(event.branch);
+        mix(event.targetRef);
+        mix(event.timestamp);
+        mix(event.completedAt);
+        mix(event.status);
+        mix(event.sha);
+        mix(event.label);
+        mix(event.force);
+        mix(event.success);
+        mix(event.exitCode);
+        mix(event.remote);
+        mix(event.ref);
+    }
+    return `${events?.length || 0}:${first.toString(36)}:${second.toString(36)}`;
+}
+
+function harborStateHasTimedLifecycle(state) {
+    if (state?.batches?.size) return true;
+    for (const ship of state?.ships?.values?.() || []) {
+        if (ship.status !== 'docked') return true;
+    }
+    return false;
 }
 
 export class HarborTraffic {
@@ -2316,7 +3020,23 @@ export class HarborTraffic {
         // #18 — repos seen at least once, so a brand-new repo's first anchorage
         // can fire a one-time christening (maiden banner) and skip it thereafter.
         this._repoFirstSeen = new Map();
+        this._lastEventsVersion = '';
+        this._nextMaintenanceAt = 0;
+        this._stateVersion = 0;
+        this._stateReductions = 0;
+        this._unchangedReconciliations = 0;
+        this._eventSourceSnapshot = null;
+        this._sourceNormalizations = 0;
+        this._sourceCacheHits = 0;
+        this._lastRawEventCount = 0;
+        this._lastNormalizedEventCount = 0;
+        this._hasTimedLifecycle = false;
+        this._dockLayout = buildDockSquadLayout(this.state);
+        this._repoDockSummaryCache = new Map();
+        this._previousDebugHarbor = null;
+        this._disposed = false;
         if (typeof window !== 'undefined' && window.localStorage?.getItem('claudeVilleDebug') === '1') {
+            this._previousDebugHarbor = window.__harbor || null;
             window.__harbor = this;
         }
     }
@@ -2376,21 +3096,129 @@ export class HarborTraffic {
     }
 
     update(agents, dt = 16, now = Date.now()) {
+        if (this._disposed) return;
+        this.advance(dt);
+        this.reconcile(agents, now);
+    }
+
+    advance(dt = 16) {
+        if (this._disposed) return;
         this.frame += (dt / 16) * this.motionScale;
-        const events = collectGitEventsFromAgents(agents, {
-            maxLabelChars: MAX_LABEL_CHARS,
-            ellipsis: '…',
-        });
-        this.state = reduceHarborTrafficState(this.state, events, {
-            now,
-            motionScale: this.motionScale,
-        });
-        const dockLayout = buildDockSquadLayout(this.state);
-        this._observeStorageTransfers(dockLayout, now);
-        this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaries(dockLayout));
-        this._observeHarborCrates(agents, events, now);
+    }
+
+    reconcile(agents, now = Date.now(), { force = false } = {}) {
+        if (this._disposed) return this;
+        const sourceSnapshot = harborEventSourceSnapshot(agents);
+        const sourceChanged = !harborEventSourcesEqual(this._eventSourceSnapshot, sourceSnapshot);
+        let events = [];
+        let eventsVersion = this._lastEventsVersion;
+        if (sourceChanged || force) {
+            const stats = {};
+            events = collectHarborGitEvents(agents, {
+                maxLabelChars: MAX_LABEL_CHARS,
+                ellipsis: '…',
+            }, stats);
+            eventsVersion = harborEventsVersion(events);
+            if (sourceChanged) this._eventSourceSnapshot = sourceSnapshot;
+            this._sourceNormalizations++;
+            this._lastRawEventCount = stats.rawCount || 0;
+            this._lastNormalizedEventCount = stats.normalizedCount || 0;
+        } else {
+            this._sourceCacheHits++;
+        }
+        const eventsChanged = sourceChanged && eventsVersion !== this._lastEventsVersion;
+        const shouldReduce = force
+            || eventsChanged
+            || this._hasTimedLifecycle
+            || now >= this._nextMaintenanceAt;
+        if (shouldReduce) {
+            this.state = reduceHarborTrafficState(this.state, force || eventsChanged ? events : [], {
+                now,
+                motionScale: this.motionScale,
+            });
+            this._lastEventsVersion = eventsVersion;
+            this._nextMaintenanceAt = now + HARBOR_MAINTENANCE_INTERVAL_MS;
+            this._hasTimedLifecycle = harborStateHasTimedLifecycle(this.state);
+            this._stateVersion++;
+            this._stateReductions++;
+            this._dockLayout = buildDockSquadLayout(this.state);
+            this._repoDockSummaryCache = this._repoDockSummaries(this._dockLayout);
+            this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaryCache);
+            this._observeStorageTransfers(this._dockLayout, now);
+        } else {
+            this._unchangedReconciliations++;
+        }
+        this._observeHarborCrates(agents, sourceChanged || force ? events : [], now);
         this._observeRepoAnchorages(agents, now);
         this._observePeakDensity(now);
+        return this;
+    }
+
+    getDiagnostics() {
+        return {
+            stateVersion: this._stateVersion,
+            stateReductions: this._stateReductions,
+            unchangedReconciliations: this._unchangedReconciliations,
+            sourceNormalizations: this._sourceNormalizations,
+            sourceCacheHits: this._sourceCacheHits,
+            rawEventCount: this._lastRawEventCount,
+            normalizedEventCount: this._lastNormalizedEventCount,
+            seenEventIds: this.state.seenEventIds.size,
+            maxSeenEventIds: MAX_HARBOR_SEEN_EVENT_IDS,
+            pushEvents: this.state.pushEvents.size,
+            maxPushEvents: MAX_HARBOR_PUSH_EVENTS,
+            ships: this.state.ships.size,
+            maxShips: MAX_HARBOR_SHIPS,
+            batches: this.state.batches.size,
+            maxBatches: MAX_HARBOR_BATCHES,
+            repoQuays: this.state.repoQuays.size,
+            maxRepoQuays: MAX_HARBOR_REPO_QUAYS,
+            eventTombstones: this.state.eventTombstones.size,
+            maxEventTombstones: MAX_HARBOR_EVENT_TOMBSTONES,
+            commitReplayFloors: this.state.commitReplayFloors.size,
+            maxCommitReplayFloors: MAX_HARBOR_COMMIT_REPLAY_FLOORS,
+            overflowDockCounts: this.state.overflowDockCounts.size,
+            maxOverflowDockCounts: MAX_HARBOR_OVERFLOW_DOCK_COUNTS,
+            overflowDockedCommits: harborOverflowDockCount(this.state),
+            harborCrates: this.harborCrates.size,
+            storageTransfers: this.storageTransfers.size,
+            activeRepoAnchorages: this._activeRepoAnchorages?.size || 0,
+            repoFirstSeen: this._repoFirstSeen.size,
+            maxRepoFirstSeen: MAX_REPO_FIRST_SEEN,
+            profileCache: _trafficProfileCache.size,
+            profileCacheLimit: HARBOR_PROFILE_CACHE_LIMIT,
+            cleanLabelCache: _cleanCommitLabelCache.size,
+            cleanLabelCacheLimit: HARBOR_CLEAN_LABEL_CACHE_LIMIT,
+        };
+    }
+
+    dispose() {
+        if (this._disposed) return;
+        this._disposed = true;
+        if (typeof window !== 'undefined' && window.__harbor === this) {
+            if (this._previousDebugHarbor && !this._previousDebugHarbor._disposed) window.__harbor = this._previousDebugHarbor;
+            else delete window.__harbor;
+        }
+        this._previousDebugHarbor = null;
+        this.state = cloneState();
+        this._pendingRepoSummaries = [];
+        this.harborCrates.clear();
+        this.storageTransfers.clear();
+        this._lastDockLayoutByShipId.clear();
+        this._shipHitEntries = [];
+        this.hoveredShipId = null;
+        this._activeRepoAnchorages?.clear?.();
+        this._repoAnchorageSlots?.clear?.();
+        this._repoFirstSeen.clear();
+        this._eventSourceSnapshot = null;
+        this._lastRawEventCount = 0;
+        this._lastNormalizedEventCount = 0;
+        this._hasTimedLifecycle = false;
+        this._dockLayout = null;
+        this._repoDockSummaryCache?.clear?.();
+        this.waterRouteData = null;
+        this._grade = null;
+        this.sprites = null;
     }
 
     /**
@@ -2403,7 +3231,7 @@ export class HarborTraffic {
         for (const agent of agents || []) {
             const project = agent?.projectPath || agent?.project;
             if (!project) continue;
-            const profile = repoProfile(project);
+            const profile = cachedRepoProfile(project);
             if (!profile?.key) continue;
             active.set(profile.key, { project, profile, lastActive: now });
         }
@@ -2721,9 +3549,11 @@ export class HarborTraffic {
     }
 
     enumerateDrawables(now = Date.now()) {
-        const dockLayout = buildDockSquadLayout(this.state);
+        const dockLayout = this._dockLayout || buildDockSquadLayout(this.state);
         const visualPackByShipId = buildDockedVisualPackMap(dockLayout);
-        const repoSummaries = this._repoDockSummaries(dockLayout);
+        const repoSummaries = this._repoDockSummaryCache?.size
+            ? this._repoDockSummaryCache
+            : this._repoDockSummaries(dockLayout);
         const markers = this._repoQuayDrawables(repoSummaries);
         const markerByRepo = new Map();
         for (const marker of markers) {
@@ -2731,7 +3561,7 @@ export class HarborTraffic {
             const profile = marker.payload?.profile || trafficProfile(marker.payload?.project, marker.payload?.branch);
             const key = profile.key;
             if (key) markerByRepo.set(key, marker.payload);
-            const baseKey = repoProfile(marker.payload?.project).key;
+            const baseKey = cachedRepoProfile(marker.payload?.project).key;
             if (baseKey && !markerByRepo.has(baseKey)) markerByRepo.set(baseKey, marker.payload);
         }
         // 3.6 — compute untethered projects (no upstream, >N docked commits).
@@ -2910,7 +3740,7 @@ export class HarborTraffic {
                 : start + visualPackSize - 1;
             return `${repo} - ${Math.round(visualPackSize)} pending commits (${start}-${end})`;
         }
-        const subject = cleanCommitSubject(ship.label || '');
+        const subject = cachedCleanCommitSubject(ship.label || '');
         const cargo = subject || `commit ${commitPennantLabel(ship)}`;
         return `${repo} - ${cargo}`;
     }
@@ -3102,7 +3932,7 @@ export class HarborTraffic {
     _observeHarborCrates(agents, events, now) {
         for (const event of events || []) {
             if (event?.type !== 'push') continue;
-            const key = repoProfile(event.project).key;
+            const key = cachedRepoProfile(event.project).key;
             this.harborCrates.delete(key);
         }
 
@@ -3111,7 +3941,7 @@ export class HarborTraffic {
             if (!isHarborCrateTool(agent)) continue;
             if (agent.targetBuildingType !== 'harbor' && agent.lastKnownBuildingType !== 'harbor') continue;
             const project = agent.projectPath || agent.project || agent.teamName || 'unknown';
-            const profile = repoProfile(project);
+            const profile = cachedRepoProfile(project);
             this.harborCrates.set(profile.key, {
                 project,
                 profile,
@@ -3128,6 +3958,7 @@ export class HarborTraffic {
     }
 
     _repoDockSummaries(dockLayout = null) {
+        if (!dockLayout && this._repoDockSummaryCache) return this._repoDockSummaryCache;
         const layout = dockLayout || buildDockSquadLayout(this.state);
         const summaries = new Map();
         for (const ship of this.state.ships.values()) {
@@ -3163,6 +3994,31 @@ export class HarborTraffic {
             summary.waitingZone = waitingZone;
             summaries.set(summaryKey, summary);
         }
+        for (const overflow of this.state.overflowDockCounts.values()) {
+            const count = Math.max(0, Number(overflow.count || 0));
+            if (count <= 0) continue;
+            const profile = trafficProfile(overflow.project, overflow.branch);
+            const waitingZone = overflow.waitingZone || 'harbor';
+            const summaryKey = `${profile.key}\x1f${waitingZone}`;
+            const summary = summaries.get(summaryKey) || {
+                project: overflow.project,
+                branch: overflow.branch || '',
+                profile,
+                summaryKey,
+                quayIndex: Number.isFinite(Number(overflow.quayIndex)) ? Number(overflow.quayIndex) : 0,
+                waitingZone,
+                count: 0,
+                failedCount: 0,
+                x: 0,
+                y: 0,
+                latestEventTime: 0,
+            };
+            summary.count += count;
+            summary.failedCount += Math.max(0, Number(overflow.failedCount || 0));
+            summary.latestEventTime = Math.max(summary.latestEventTime, Number(overflow.latestEventTime || 0));
+            summary.overflowCount = Math.max(0, Number(summary.overflowCount || 0)) + count;
+            summaries.set(summaryKey, summary);
+        }
         return summaries;
     }
 
@@ -3192,7 +4048,7 @@ export class HarborTraffic {
                     type: 'commit-lagoon-sign',
                     project: leader?.project || '',
                     branch: leader?.branch || '',
-                    profile: leader?.profile || repoProfile(leader?.project),
+                    profile: leader?.profile || cachedRepoProfile(leader?.project),
                     count: total,
                     repoName: leader ? trafficLabel(leader.project, leader.branch) : '',
                     x: lagoonAnchor.x,
@@ -3252,7 +4108,7 @@ export class HarborTraffic {
             });
         }
         for (const summary of repoSummaries.values()) {
-            const profile = repoProfile(summary.project);
+            const profile = cachedRepoProfile(summary.project);
             const key = profile.key;
             const existing = repos.get(key) || {
                 key,
@@ -3315,6 +4171,9 @@ export class HarborTraffic {
             // emit a one-shot event so ChronicleMonuments raises a maiden banner.
             if (!this._repoFirstSeen.has(repo.key)) {
                 this._repoFirstSeen.set(repo.key, now);
+                if (this._repoFirstSeen.size > MAX_REPO_FIRST_SEEN) {
+                    this._repoFirstSeen.delete(this._repoFirstSeen.keys().next().value);
+                }
                 eventBus?.emit?.('harbor:repo-christened', {
                     project: repo.project,
                     repoName: repo.profile.shortName,
@@ -3472,7 +4331,7 @@ export class HarborTraffic {
             return;
         }
         if (drawable.payload.type === 'crate') {
-            const profile = drawable.payload.profile || repoProfile(drawable.payload.project);
+            const profile = drawable.payload.profile || cachedRepoProfile(drawable.payload.project);
             this._drawHarborCrate(ctx, drawable.payload, zoom, 1, profile);
             return;
         }
@@ -4846,7 +5705,7 @@ export class HarborTraffic {
 
     // 3.6 — hover lore: cargo label above the hovered ship carrying the commit subject.
     _drawHoverCargoLabel(ctx, ship, zoom, alpha = 1, profile = trafficProfile(ship.project, ship.branch), shipClass = harborShipClass(ship)) {
-        const subject = cleanCommitSubject(ship.label || '');
+        const subject = cachedCleanCommitSubject(ship.label || '');
         const label = shortGitLabel(subject || `commit ${commitPennantLabel(ship)}`, 36, '…');
         if (!label) return;
         const s = 1 / Math.max(1, zoom || 1);
@@ -5119,7 +5978,7 @@ export class HarborTraffic {
             return;
         }
 
-        const profile = payload.profile || repoProfile(payload.project);
+        const profile = payload.profile || cachedRepoProfile(payload.project);
         const lively = payload.lively !== false;
         const failed = Number(payload.failed || 0) > 0;
         const moving = this.motionScale > 0;

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const { existsSync } = require('node:fs');
+const { existsSync, readFileSync } = require('node:fs');
 const { join } = require('node:path');
 const { spawnSync } = require('node:child_process');
 
@@ -9,6 +9,8 @@ const required = [
   'widget/Info.plist',
   'widget/Resources/widget.css',
   'widget/Resources/widget.html',
+  'widget/Resources/PressStart2P-Regular.woff2',
+  'widget/Resources/OFL-PressStart2P.txt',
   'widget/Sources/main.swift',
   'widget/build.sh',
 ];
@@ -18,6 +20,30 @@ let failures = 0;
 for (const rel of required) {
   if (!existsSync(join(repoRoot, rel))) {
     console.error(`MISSING: ${rel}`);
+    failures++;
+  }
+}
+
+const swiftSourcePath = join(repoRoot, 'widget', 'Sources', 'main.swift');
+if (existsSync(swiftSourcePath)) {
+  const source = readFileSync(swiftSourcePath, 'utf8');
+  const shellLoads = source.match(/loadHTMLString\s*\(/g) || [];
+  if (shellLoads.length !== 1) {
+    console.error(`INVALID: macOS popover must load exactly one stable HTML shell (found ${shellLoads.length} loadHTMLString calls)`);
+    failures++;
+  }
+  for (const requiredSource of [
+    'evaluateJavaScript(script)',
+    'if let window = dashboardWindow {',
+    'PressStart2P-Regular.woff2',
+  ]) {
+    if (!source.includes(requiredSource)) {
+      console.error(`INVALID: main.swift is missing ${JSON.stringify(requiredSource)}`);
+      failures++;
+    }
+  }
+  if (/fonts\.(?:googleapis|gstatic)\.com/.test(source)) {
+    console.error('INVALID: main.swift must not depend on remote Google Fonts');
     failures++;
   }
 }

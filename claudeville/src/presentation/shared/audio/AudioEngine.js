@@ -63,6 +63,8 @@ export class AudioEngine {
         this.started = false;
         this._noiseBuffers = new Map();
         this._analyserData = null;
+        this._disposed = false;
+        this._disposePromise = null;
     }
 
     get running() {
@@ -74,16 +76,18 @@ export class AudioEngine {
     }
 
     async ensureContext() {
+        if (this._disposed) return false;
         if (!this.context) {
             const Ctor = window.AudioContext || window.webkitAudioContext;
             if (!Ctor) return false;
             this.context = new Ctor();
             this._buildGraph();
         }
-        if (this.context.state === 'suspended') {
-            try { await this.context.resume(); } catch { /* needs a user gesture */ }
+        const context = this.context;
+        if (context.state === 'suspended') {
+            try { await context.resume(); } catch { /* needs a user gesture */ }
         }
-        return this.context.state === 'running';
+        return !this._disposed && this.context === context && context.state === 'running';
     }
 
     _buildGraph() {
@@ -161,7 +165,7 @@ export class AudioEngine {
     }
 
     start() {
-        if (!this.context || !this.fadeGain) return;
+        if (this._disposed || !this.context || !this.fadeGain) return;
         this.started = true;
         const now = this.now();
         this.fadeGain.gain.cancelScheduledValues(now);
@@ -177,8 +181,9 @@ export class AudioEngine {
     }
 
     async suspend() {
-        if (!this.context || this.context.state !== 'running') return;
-        try { await this.context.suspend(); } catch { /* best effort */ }
+        const context = this.context;
+        if (!context || context.state !== 'running') return;
+        try { await context.suspend(); } catch { /* best effort */ }
     }
 
     setVolume(value) {
@@ -215,10 +220,10 @@ export class AudioEngine {
     }
 
     async dispose() {
+        if (this._disposePromise) return this._disposePromise;
+        this._disposed = true;
         this.started = false;
-        if (this.context) {
-            try { await this.context.close(); } catch { /* already closed */ }
-        }
+        const context = this.context;
         this.context = null;
         this.ambienceBus = null;
         this.cueBus = null;
@@ -229,5 +234,11 @@ export class AudioEngine {
         this.analyser = null;
         this._noiseBuffers.clear();
         this._waves = null;
+        this._disposePromise = (async () => {
+            if (context) {
+                try { await context.close(); } catch { /* already closed */ }
+            }
+        })();
+        return this._disposePromise;
     }
 }

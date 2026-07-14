@@ -1126,28 +1126,64 @@ class KimiAdapter {
     return createDetailResponse({ sessionId });
   }
 
-  getWatchPaths() {
+  getWatchPaths({ sessions = [] } = {}) {
     const paths = [];
+    if (fs.existsSync(KIMI_DIR)) {
+      paths.push({ type: 'directory', path: KIMI_DIR, filters: ['sessions', 'kimi.json', 'config.toml'], scope: 'discovery' });
+    }
     if (fs.existsSync(SESSIONS_DIR)) {
-      paths.push({ type: 'directory', path: SESSIONS_DIR, recursive: true, filter: '.jsonl' });
-      // Also watch state.json files
-      paths.push({ type: 'directory', path: SESSIONS_DIR, recursive: true, filter: '.json' });
+      paths.push({ type: 'directory', path: SESSIONS_DIR, scope: 'discovery' });
     }
     if (fs.existsSync(KIMI_JSON)) {
-      paths.push({ type: 'file', path: KIMI_JSON });
+      paths.push({ type: 'file', path: KIMI_JSON, scope: 'discovery', probe: true });
     }
     if (fs.existsSync(CONFIG_TOML)) {
-      paths.push({ type: 'file', path: CONFIG_TOML });
+      paths.push({ type: 'file', path: CONFIG_TOML, scope: 'discovery', probe: true });
+    }
+    if (fs.existsSync(KIMI_CODE_DIR)) {
+      paths.push({ type: 'directory', path: KIMI_CODE_DIR, filters: ['sessions', 'session_index.jsonl', 'config.toml'], scope: 'discovery' });
     }
     if (fs.existsSync(KIMI_CODE_SESSIONS_DIR)) {
-      paths.push({ type: 'directory', path: KIMI_CODE_SESSIONS_DIR, recursive: true, filter: '.jsonl' });
-      paths.push({ type: 'directory', path: KIMI_CODE_SESSIONS_DIR, recursive: true, filter: '.json' });
+      paths.push({ type: 'directory', path: KIMI_CODE_SESSIONS_DIR, scope: 'discovery' });
     }
     if (fs.existsSync(KIMI_CODE_INDEX)) {
-      paths.push({ type: 'file', path: KIMI_CODE_INDEX });
+      paths.push({ type: 'file', path: KIMI_CODE_INDEX, scope: 'discovery', probe: true });
     }
     if (fs.existsSync(KIMI_CODE_CONFIG_TOML)) {
-      paths.push({ type: 'file', path: KIMI_CODE_CONFIG_TOML });
+      paths.push({ type: 'file', path: KIMI_CODE_CONFIG_TOML, scope: 'discovery', probe: true });
+    }
+
+    for (const session of sessions) {
+      const cleanId = stripKimiSessionPrefix(session.sessionId);
+      const baseId = cleanId.split('::', 1)[0];
+      let sourcePath = null;
+
+      if (session.project && !cleanId.includes('::')) {
+        const legacySessionDir = path.join(SESSIONS_DIR, md5(session.project), baseId);
+        const legacyWire = path.join(legacySessionDir, 'wire.jsonl');
+        if (fs.existsSync(legacyWire)) {
+          sourcePath = legacyWire;
+          paths.push({ type: 'directory', path: path.dirname(legacySessionDir), scope: 'recent', activity: session.lastActivity });
+          paths.push({ type: 'directory', path: legacySessionDir, filters: ['.jsonl', '.json'], scope: 'active', probe: true, activity: session.lastActivity });
+        }
+      }
+
+      if (!sourcePath) {
+        sourcePath = findKimiCodeWire(cleanId);
+        if (sourcePath) {
+          const agentDir = path.dirname(sourcePath);
+          const agentsDir = path.dirname(agentDir);
+          const sessionDir = path.dirname(agentsDir);
+          paths.push({ type: 'directory', path: path.dirname(sessionDir), scope: 'recent', activity: session.lastActivity });
+          paths.push({ type: 'directory', path: sessionDir, filters: ['.json'], scope: 'active', probe: true, activity: session.lastActivity });
+          paths.push({ type: 'directory', path: agentsDir, scope: 'active', probe: true, activity: session.lastActivity });
+          paths.push({ type: 'directory', path: agentDir, filters: ['.jsonl'], scope: 'active', probe: true, activity: session.lastActivity });
+        }
+      }
+
+      if (sourcePath && fs.existsSync(sourcePath)) {
+        paths.push({ type: 'file', path: sourcePath, scope: 'active', probe: true, activity: session.lastActivity });
+      }
     }
     return paths;
   }

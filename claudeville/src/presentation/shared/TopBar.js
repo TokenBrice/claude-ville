@@ -28,6 +28,8 @@ export class TopBar {
         };
         this.timeInterval = null;
         this._changelogHtml = null;
+        this._changelogController = null;
+        this._destroyed = false;
         this.audio = new AmbientAudioController({
             button: this.els.soundToggle,
             modeButton: this.els.soundMode,
@@ -82,12 +84,13 @@ export class TopBar {
             btn.title = on ? 'Auto-camera on: frames live action when idle' : 'Auto-camera off';
         };
         apply(read());
-        btn.addEventListener('click', () => {
+        this._onCinemaClick = () => {
             const next = !read();
             try { window.localStorage?.setItem('cv-auto-camera', next ? '1' : '0'); } catch (_) { /* storage unavailable */ }
             apply(next);
             eventBus.emit('camera:auto-camera', { enabled: next });
-        });
+        };
+        btn.addEventListener('click', this._onCinemaClick);
         this._onAutoCamera = (payload) => apply(payload?.enabled !== false);
         eventBus.on('camera:auto-camera', this._onAutoCamera);
     }
@@ -193,16 +196,23 @@ export class TopBar {
     }
 
     async _openChangelog() {
-        if (!this.modal) return;
+        if (!this.modal || this._destroyed) return;
         if (!this._changelogHtml) {
+            this._changelogController?.abort?.();
+            const controller = new AbortController();
+            this._changelogController = controller;
             try {
-                const res = await fetch('/api/changelog');
+                const res = await fetch('/api/changelog', { signal: controller.signal });
                 if (!res.ok) throw new Error(res.statusText);
                 this._changelogHtml = this._changelogToHtml(await res.text());
-            } catch {
+            } catch (err) {
+                if (err?.name === 'AbortError') return;
                 this._changelogHtml = '<p>Failed to load changelog.</p>';
+            } finally {
+                if (this._changelogController === controller) this._changelogController = null;
             }
         }
+        if (this._destroyed) return;
         this.modal.open('Changelog', this._changelogHtml, { wide: true });
     }
 
@@ -265,20 +275,37 @@ export class TopBar {
     }
 
     destroy() {
-        if (this.timeInterval) clearInterval(this.timeInterval);
-        if (this._sweepTimer) clearTimeout(this._sweepTimer);
+        if (this._destroyed) return this._destroyPromise;
+        this._destroyed = true;
+        if (this.timeInterval) {
+            clearInterval(this.timeInterval);
+            this.timeInterval = null;
+        }
+        if (this._sweepTimer) {
+            clearTimeout(this._sweepTimer);
+            this._sweepTimer = null;
+        }
+        this._changelogController?.abort?.();
+        this._changelogController = null;
         eventBus.off('agent:added', this._onUpdate);
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('fps:updated', this._onFps);
         eventBus.off('ws:connected', this._onWsConnected);
         eventBus.off('ws:disconnected', this._onWsDisconnected);
+        if (this._onAutoCamera) eventBus.off('camera:auto-camera', this._onAutoCamera);
+        if (this._onCinemaClick && this.els.cinemaToggle) {
+            this.els.cinemaToggle.removeEventListener('click', this._onCinemaClick);
+        }
         if (this._onVersionClick && this.els.version) {
             this.els.version.removeEventListener('click', this._onVersionClick);
         }
         if (this._onVersionKeydown && this.els.version) {
             this.els.version.removeEventListener('keydown', this._onVersionKeydown);
         }
-        this.audio?.destroy();
+        document.body?.classList.remove('cv-offline', 'cv-reconnect-sweep');
+        this._destroyPromise = Promise.resolve(this.audio?.destroy?.());
+        this.audio = null;
+        return this._destroyPromise;
     }
 }

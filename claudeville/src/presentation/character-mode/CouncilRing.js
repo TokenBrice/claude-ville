@@ -13,7 +13,7 @@ const TALK_MOTE_PERIOD_MS = 1800;
 const COMMAND_PLAZA = { tileX: 16, tileY: 21 };
 const TEAM_GATHER_COOLDOWN_MS = 5 * 60 * 1000;
 const TEAM_GATHER_RADIUS_TILES = 12;
-const _lastTeamGatherEmittedAt = new Map();
+const _teamGatherCooldownsByOwner = new WeakMap();
 const _commandPlazaVisitTiles = (BUILDING_DEFS.find(def => def.type === 'command')?.visitTiles || []).map(tile => ({ ...tile }));
 
 function tileToScreen(tile) {
@@ -23,6 +23,28 @@ function tileToScreen(tile) {
 function relationshipSnapshot(relationship) {
     if (!relationship) return null;
     return typeof relationship.getSnapshot === 'function' ? relationship.getSnapshot() : relationship;
+}
+
+function teamGatherCooldowns(relationship, create = true) {
+    if (!relationship || (typeof relationship !== 'object' && typeof relationship !== 'function')) return null;
+    let cooldowns = _teamGatherCooldownsByOwner.get(relationship);
+    if (!cooldowns && create) {
+        cooldowns = new Map();
+        _teamGatherCooldownsByOwner.set(relationship, cooldowns);
+    }
+    return cooldowns;
+}
+
+export function releaseCouncilRingState(relationship) {
+    if (!relationship || (typeof relationship !== 'object' && typeof relationship !== 'function')) return;
+    _teamGatherCooldownsByOwner.delete(relationship);
+}
+
+export function getCouncilRingDiagnostics(relationship) {
+    return {
+        teamGatherCooldowns: teamGatherCooldowns(relationship, false)?.size || 0,
+        cooldownMs: TEAM_GATHER_COOLDOWN_MS,
+    };
 }
 
 function rgba(hex, alpha) {
@@ -84,7 +106,7 @@ export function applyTeamPlazaPreferences(relationship, agentSprites) {
         }
     }
 
-    applyTeamGatherChoreography(snapshot, agentSprites);
+    applyTeamGatherChoreography(relationship, agentSprites);
     applyGossipClusters(snapshot, agentSprites);
 }
 
@@ -108,9 +130,14 @@ export function applyGossipClusters(snapshot, agentSprites) {
 export function applyTeamGatherChoreography(snapshot, agentSprites, { now = performance.now() } = {}) {
     const data = relationshipSnapshot(snapshot);
     if (!data?.teamToMembers || !agentSprites) return;
+    const cooldowns = teamGatherCooldowns(snapshot);
+    const liveTeams = new Set(data.teamToMembers.keys());
+    for (const teamName of cooldowns?.keys?.() || []) {
+        if (!liveTeams.has(teamName)) cooldowns.delete(teamName);
+    }
 
     for (const [teamName, memberIds] of data.teamToMembers.entries()) {
-        const last = _lastTeamGatherEmittedAt.get(teamName) || 0;
+        const last = cooldowns?.get(teamName) || 0;
         if (now - last < TEAM_GATHER_COOLDOWN_MS) continue;
 
         const idle = [];
@@ -157,7 +184,7 @@ export function applyTeamGatherChoreography(snapshot, agentSprites, { now = perf
             };
         });
 
-        _lastTeamGatherEmittedAt.set(teamName, now);
+        cooldowns?.set(teamName, now);
         eventBus.emit('team:gather', {
             teamName,
             members: sorted.map(entry => entry.sprite.agent.id),

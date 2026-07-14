@@ -56,6 +56,11 @@ export class TrailRenderer {
         this.lease = null;
         this._loaded = false;
         this._needsRepaint = true;
+        this._flushPromise = null;
+        this._drainPromise = null;
+        this._disposePromise = null;
+        this._disposed = false;
+        this._lifecycleGeneration = 0;
         this._unsubscribers = [
             eventBus.on('agent:selected', (agent) => this.setSelectedAgent(agent?.id || null)),
             eventBus.on('agent:deselected', () => this.setSelectedAgent(null)),
@@ -74,17 +79,22 @@ export class TrailRenderer {
     }
 
     async hydrate(now = Date.now()) {
-        if (!this.store || this._loaded) return;
+        if (this._disposed || !this.store || this._loaded) return;
+        const generation = this._lifecycleGeneration;
         try {
             const records = await this.store.queryRange('trailSamples', 'ts', now - RETAIN_MS, now);
+            if (this._disposed || generation !== this._lifecycleGeneration) return;
             for (const record of records || []) this._addSample(record, false);
         } catch { /* empty trail on storage failures */ }
+        if (this._disposed || generation !== this._lifecycleGeneration) return;
         this._loaded = true;
         this._needsRepaint = true;
     }
 
     async update(agents, now = Date.now(), atmosphere = null) {
+        if (this._disposed) return;
         await this.hydrate(now);
+        if (this._disposed) return;
         const visible = pageIsVisible();
         if (!visible && this.lease) {
             this.releaseLease();
@@ -107,6 +117,7 @@ export class TrailRenderer {
     }
 
     capture(agents, now = Date.now(), atmosphere = null) {
+        if (this._disposed) return;
         this.lastCaptureAt = now;
         const list = agents?.values ? agents.values() : (agents || []);
         for (const agent of list) {
@@ -132,13 +143,38 @@ export class TrailRenderer {
 
     async flush(now = Date.now()) {
         this.lastFlushAt = now;
+        if (this._flushPromise) {
+            await this._flushPromise;
+        }
         if (!this.pending.length || !this.store) return 0;
         const batch = this.pending.splice(0, this.pending.length);
+        const store = this.store;
+        const operation = Promise.resolve()
+            .then(() => store.bulkPut('trailSamples', batch))
+            .catch(() => 0);
+        this._flushPromise = operation;
         try {
-            return await this.store.bulkPut('trailSamples', batch);
-        } catch {
-            return 0;
+            return await operation;
+        } finally {
+            if (this._flushPromise === operation) this._flushPromise = null;
         }
+    }
+
+    drain(now = Date.now()) {
+        if (this._drainPromise) return this._drainPromise;
+        const drain = (async () => {
+            let flushed = 0;
+            while (this._flushPromise || (this.pending.length && this.store)) {
+                if (this._flushPromise) await this._flushPromise;
+                if (this.pending.length && this.store) flushed += Number(await this.flush(now)) || 0;
+            }
+            return flushed;
+        })();
+        const wrapped = drain.finally(() => {
+            if (this._drainPromise === wrapped) this._drainPromise = null;
+        });
+        this._drainPromise = wrapped;
+        return wrapped;
     }
 
     draw(ctx, camera, viewport, now = Date.now()) {
@@ -159,11 +195,15 @@ export class TrailRenderer {
     }
 
     dispose() {
-        void this.flush();
+        if (this._disposePromise) return this._disposePromise;
+        this._disposed = true;
+        this._lifecycleGeneration++;
+        this._disposePromise = this.drain();
         this.releaseLease();
         for (const off of this._unsubscribers) off?.();
         this._unsubscribers = [];
         this.releaseCache();
+        return this._disposePromise;
     }
 
     pause() {
@@ -187,6 +227,8 @@ export class TrailRenderer {
         return {
             volatilePixels: canvasPixelCount(this.cache),
             cacheKey: this.cacheKey,
+            pendingSamples: this.pending.length,
+            flushInFlight: this._flushPromise !== null,
         };
     }
 

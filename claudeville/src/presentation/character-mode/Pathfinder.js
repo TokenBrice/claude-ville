@@ -17,6 +17,8 @@ export class Pathfinder {
         this.grid = grid;
         this.walkableTiles = this._buildWalkableList(grid);
         this._pathCache = new Map();
+        this._cacheHits = 0;
+        this._cacheMisses = 0;
     }
 
     _buildWalkableList(grid) {
@@ -65,13 +67,33 @@ export class Pathfinder {
         if (this._pathCache.size >= 256) {
             this._pathCache.delete(this._pathCache.keys().next().value);
         }
-        this._pathCache.set(key, value);
+        // The cache owns both the array and its waypoint objects. AgentSprite
+        // may stitch or trim the returned route, so sharing either would let a
+        // caller corrupt every later lookup for the same endpoints.
+        this._pathCache.set(key, this._copyPath(value));
+    }
+
+    _copyPath(path) {
+        return Array.isArray(path)
+            ? path.map(tile => ({ tileX: tile.tileX, tileY: tile.tileY }))
+            : [];
+    }
+
+    getDiagnostics() {
+        return {
+            cacheEntries: this._pathCache.size,
+            cacheLimit: 256,
+            cacheHits: this._cacheHits,
+            cacheMisses: this._cacheMisses,
+        };
     }
 
     setGrid(grid) {
         this.grid = grid;
         this.walkableTiles = this._buildWalkableList(grid);
         this._pathCache.clear();
+        this._cacheHits = 0;
+        this._cacheMisses = 0;
     }
 
     isWalkable(tileX, tileY) {
@@ -106,7 +128,11 @@ export class Pathfinder {
 
         const cacheKey = `${fx},${fy}|${Math.round(to.tileX)},${Math.round(to.tileY)}${this._pathOptionsCacheKey(pathOptions)}`;
         const cached = this._pathCache.get(cacheKey);
-        if (cached) return cached;
+        if (cached) {
+            this._cacheHits++;
+            return this._copyPath(cached);
+        }
+        this._cacheMisses++;
 
         if (pathOptions.weighted) {
             const weightedResult = this._findWeightedPath(fx, fy, targetCandidates, bridgeTiles, pathOptions);

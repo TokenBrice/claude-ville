@@ -16,6 +16,11 @@ import {
     providerPresentation,
 } from './AgentPresentation.js';
 
+// Preserve a workflow's expanded/collapsed choice through brief ingestion gaps,
+// while bounding remembered state to live workflows plus a small recent tail.
+const WORKFLOW_STATE_GRACE_MS = 60 * 1000;
+const WORKFLOW_STATE_GRACE_LIMIT = 32;
+
 export class Sidebar {
     constructor(world) {
         this.world = world;
@@ -31,13 +36,20 @@ export class Sidebar {
         this._filter = '';
         this._collapsedWorkflows = new Set();
         this._seenWorkflows = new Set();
+        this._workflowLastSeenAt = new Map();
+        this._workflowPruneTimer = null;
+        this._workflowPruneAt = 0;
+        this._destroyed = false;
         this.isCollapsed = localStorage.getItem('claudeville.sidebarCollapsed') === 'true';
         this.selection = new AgentSelectionMirror({
             onChange: (nextId, previousId) => this._syncSelection(previousId, nextId),
         });
 
-        this._onUpdate = () => this.render();
+        this._onUpdate = () => {
+            if (!this._destroyed) this.render();
+        };
         this._onHarborUpdate = (repos = []) => {
+            if (this._destroyed) return;
             const nextRepos = Array.isArray(repos) ? repos : [];
             const signature = hashRows(nextRepos, [
                 repo => repo.project || '',
@@ -73,6 +85,7 @@ export class Sidebar {
                 ariaLabel: 'Filter agents',
             }),
         ]);
+        this._filterWrapEl = wrap;
         this.filterEl = wrap.firstChild;
         this.filterEl.type = 'text';
         this.filterEl.placeholder = 'Filter agents…';
@@ -148,7 +161,9 @@ export class Sidebar {
     }
 
     render() {
+        if (this._destroyed) return;
         const agents = Array.from(this.world.agents.values());
+        this._reconcileWorkflowState(agents);
         this.countEl.textContent = agents.length;
         const signature = [
             this._filter,
@@ -231,10 +246,6 @@ export class Sidebar {
             }
 
             for (const [workflowId, members] of workflows) {
-                if (!this._seenWorkflows.has(workflowId)) {
-                    this._seenWorkflows.add(workflowId);
-                    this._collapsedWorkflows.add(workflowId); // collapsed by default
-                }
                 const workflowName = members[0]?.workflowName || workflowId;
                 const collapsed = this._collapsedWorkflows.has(workflowId);
                 const wfEl = el('div', {
@@ -273,6 +284,65 @@ export class Sidebar {
         }
         this._applyWorkflowToggleState();
         this._syncSelection(null, this.selection.selectedId);
+    }
+
+    _reconcileWorkflowState(agents, now = Date.now()) {
+        const liveIds = new Set();
+        for (const agent of agents) {
+            if (agent.agentType !== 'workflow-subagent' || !agent.workflowId) continue;
+            const workflowId = String(agent.workflowId);
+            liveIds.add(workflowId);
+            if (!this._seenWorkflows.has(workflowId)) {
+                this._seenWorkflows.add(workflowId);
+                this._collapsedWorkflows.add(workflowId);
+            }
+            this._workflowLastSeenAt.set(workflowId, now);
+        }
+
+        const grace = [];
+        for (const workflowId of this._seenWorkflows) {
+            if (liveIds.has(workflowId)) continue;
+            const lastSeenAt = this._workflowLastSeenAt.get(workflowId) || 0;
+            if (now - lastSeenAt >= WORKFLOW_STATE_GRACE_MS) {
+                this._forgetWorkflow(workflowId);
+            } else {
+                grace.push([workflowId, lastSeenAt]);
+            }
+        }
+        grace.sort((a, b) => b[1] - a[1]);
+        for (const [workflowId] of grace.slice(WORKFLOW_STATE_GRACE_LIMIT)) {
+            this._forgetWorkflow(workflowId);
+        }
+        this._scheduleWorkflowPrune(liveIds, now);
+    }
+
+    _forgetWorkflow(workflowId) {
+        this._seenWorkflows.delete(workflowId);
+        this._collapsedWorkflows.delete(workflowId);
+        this._workflowLastSeenAt.delete(workflowId);
+    }
+
+    _scheduleWorkflowPrune(liveIds, now) {
+        let nextAt = Infinity;
+        for (const [workflowId, lastSeenAt] of this._workflowLastSeenAt) {
+            if (!liveIds.has(workflowId)) {
+                nextAt = Math.min(nextAt, lastSeenAt + WORKFLOW_STATE_GRACE_MS);
+            }
+        }
+        if (!Number.isFinite(nextAt)) {
+            if (this._workflowPruneTimer) clearTimeout(this._workflowPruneTimer);
+            this._workflowPruneTimer = null;
+            this._workflowPruneAt = 0;
+            return;
+        }
+        if (this._workflowPruneTimer && this._workflowPruneAt <= nextAt) return;
+        if (this._workflowPruneTimer) clearTimeout(this._workflowPruneTimer);
+        this._workflowPruneAt = nextAt;
+        this._workflowPruneTimer = setTimeout(() => {
+            this._workflowPruneTimer = null;
+            this._workflowPruneAt = 0;
+            if (!this._destroyed) this.render();
+        }, Math.max(0, nextAt - now));
     }
 
     // Empty-world onboarding: name the village and teach the building metaphor.
@@ -391,6 +461,7 @@ export class Sidebar {
     }
 
     renderHarbor() {
+        if (this._destroyed) return;
         if (!this.harborListEl || !this.harborCountEl) return;
 
         const repos = [...this.harborRepos]
@@ -452,6 +523,8 @@ export class Sidebar {
     }
 
     destroy() {
+        if (this._destroyed) return;
+        this._destroyed = true;
         eventBus.off('agent:added', this._onUpdate);
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
@@ -461,5 +534,22 @@ export class Sidebar {
         if (this._onListClick) this.listEl?.removeEventListener('click', this._onListClick);
         if (this._onFilterInput) this.filterEl?.removeEventListener('input', this._onFilterInput);
         if (this._onFilterKeydown) this.filterEl?.removeEventListener('keydown', this._onFilterKeydown);
+        if (this._workflowPruneTimer) clearTimeout(this._workflowPruneTimer);
+        this._workflowPruneTimer = null;
+        this._workflowPruneAt = 0;
+        this._filterWrapEl?.remove?.();
+        this._filterWrapEl = null;
+        this.filterEl = null;
+        this.listEl?.replaceChildren();
+        this.harborListEl?.replaceChildren();
+        if (this.countEl) this.countEl.textContent = '0';
+        if (this.harborCountEl) this.harborCountEl.textContent = '0';
+        this.harborRepos = [];
+        this._harborSignature = '';
+        this._renderSignature = '';
+        this._filter = '';
+        this._seenWorkflows.clear();
+        this._collapsedWorkflows.clear();
+        this._workflowLastSeenAt.clear();
     }
 }

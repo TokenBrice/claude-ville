@@ -38,8 +38,10 @@ export class DashboardRenderer {
         this.toolHistoryRenderSignatures = new Map();
         this._cardRenderSignatures = new Map();
         this._visibleAgentIds = new Set();
+        this._visibilityLayoutDirty = true;
         this._selectedAgentId = null;
         this.active = false;
+        this._destroyed = false;
         this._isFetchingDetails = false;
         this._detailFetchGeneration = 0;
         this._sectionEls = new Map(); // projectPath → section element
@@ -59,17 +61,14 @@ export class DashboardRenderer {
             if (this.active) this._renderAgentUpdate(agent);
         };
         this._onAgentRemoved = (agent) => {
-            this.toolHistories.delete(agent.id);
-            this.usageFooters.delete(agent.id);
-            this.toolHistoryRenderSignatures.delete(agent.id);
-            this._cardRenderSignatures.delete(agent.id);
-            this._visibleAgentIds.delete(agent.id);
+            this._removeCard(agent.id);
             sessionDetailsService.deleteForAgent(agent);
             if (this.active) this.render();
         };
         this._onModeChanged = (mode) => {
             this.active = mode === 'dashboard';
             if (this.active) {
+                this._visibilityLayoutDirty = true;
                 this.render();
                 this._startDetailFetching();
             } else {
@@ -88,6 +87,7 @@ export class DashboardRenderer {
     }
 
     render() {
+        this._visibilityLayoutDirty = true;
         const agents = Array.from(this.world.agents.values());
 
         if (agents.length === 0) {
@@ -144,26 +144,20 @@ export class DashboardRenderer {
         // Remove missing agent cards
         for (const [id, cardEl] of this.cards) {
             if (!existingIds.has(id)) {
-                this._observer?.unobserve?.(cardEl);
-                cardEl._avatarCanvas?.destroy?.();
-                cardEl.remove();
-                this.cards.delete(id);
-                this.toolHistories.delete(id);
-                this.usageFooters.delete(id);
-                this.toolHistoryRenderSignatures.delete(id);
-                this._cardRenderSignatures.delete(id);
-                this._visibleAgentIds.delete(id);
+                this._removeCard(id, { removeEmptySection: false });
             }
         }
 
         // Remove missing sections
         for (const [path, sectionEl] of this._sectionEls) {
             if (!existingSections.has(path)) {
+                if (sectionEl._erroredFlashTimer) clearTimeout(sectionEl._erroredFlashTimer);
                 sectionEl.remove();
                 this._sectionEls.delete(path);
             }
         }
         sessionDetailsService.sweep(agents);
+        if (this.active) this._syncVisibleAgentIdsFromLayout();
     }
 
     _createVisibilityObserver() {
@@ -774,24 +768,50 @@ export class DashboardRenderer {
     }
 
     _clearAllCardsAndSections() {
-        for (const [id, cardEl] of this.cards) {
-            this._observer?.unobserve?.(cardEl);
-            cardEl._avatarCanvas?.destroy?.();
-            cardEl.remove();
-            this.cards.delete(id);
-        }
+        for (const id of [...this.cards.keys()]) this._removeCard(id, { removeEmptySection: false });
         this.toolHistories.clear();
         this.usageFooters.clear();
         this.toolHistoryRenderSignatures.clear();
         this._cardRenderSignatures.clear();
         this._visibleAgentIds.clear();
 
-        for (const [, sectionEl] of this._sectionEls) sectionEl.remove();
+        for (const [, sectionEl] of this._sectionEls) {
+            if (sectionEl._erroredFlashTimer) clearTimeout(sectionEl._erroredFlashTimer);
+            sectionEl.remove();
+        }
         this._sectionEls.clear();
     }
 
+    _removeCard(agentId, { removeEmptySection = true } = {}) {
+        const cardEl = this.cards.get(agentId);
+        const projectPath = cardEl?._projectPath;
+        if (cardEl) {
+            this._observer?.unobserve?.(cardEl);
+            this._pendingAvatarDraws.delete(cardEl);
+            if (cardEl._parentFlashTimer) clearTimeout(cardEl._parentFlashTimer);
+            cardEl._avatarCanvas?.destroy?.();
+            cardEl._avatarCanvas = null;
+            cardEl.remove();
+            this.cards.delete(agentId);
+        }
+        this.toolHistories.delete(agentId);
+        this.usageFooters.delete(agentId);
+        this.toolHistoryRenderSignatures.delete(agentId);
+        this._cardRenderSignatures.delete(agentId);
+        this._visibleAgentIds.delete(agentId);
+
+        if (!removeEmptySection || !projectPath) return;
+        const sectionEl = this._sectionEls.get(projectPath);
+        const grid = sectionEl?._sectionRefs?.grid;
+        if (sectionEl && (!grid || !grid.querySelector('.dash-card'))) {
+            if (sectionEl._erroredFlashTimer) clearTimeout(sectionEl._erroredFlashTimer);
+            sectionEl.remove();
+            this._sectionEls.delete(projectPath);
+        }
+    }
+
     _detailCandidates(agents) {
-        this._syncVisibleAgentIdsFromLayout();
+        if (this._visibilityLayoutDirty) this._syncVisibleAgentIdsFromLayout();
         const selected = [];
         const active = [];
         const visible = [];
@@ -812,10 +832,14 @@ export class DashboardRenderer {
     }
 
     _syncVisibleAgentIdsFromLayout() {
-        if (!this._observer || !this.active || this.cards.size === 0) return;
+        if (!this._observer || !this.active) return false;
+        if (this.cards.size === 0) {
+            this._visibilityLayoutDirty = false;
+            return true;
+        }
         const root = document.getElementById('dashboardMode') || this.gridEl;
         const rootRect = root?.getBoundingClientRect?.();
-        if (!rootRect || rootRect.width <= 0 || rootRect.height <= 0) return;
+        if (!rootRect || rootRect.width <= 0 || rootRect.height <= 0) return false;
 
         const top = rootRect.top - 160;
         const bottom = rootRect.bottom + 160;
@@ -831,14 +855,18 @@ export class DashboardRenderer {
                 this._visibleAgentIds.delete(id);
             }
         }
+        this._visibilityLayoutDirty = false;
+        return true;
     }
 
     async _copyAgentId(agentId) {
-        if (!agentId) return;
+        if (!agentId || this._destroyed) return;
         try {
             await navigator.clipboard.writeText(agentId);
+            if (this._destroyed) return;
             this.toast?.show('Session ID copied to clipboard', 'success');
         } catch {
+            if (this._destroyed) return;
             this.toast?.show('Could not copy session ID', 'warning');
         }
     }
@@ -871,6 +899,9 @@ export class DashboardRenderer {
     }
 
     destroy() {
+        if (this._destroyed) return;
+        this._destroyed = true;
+        this.active = false;
         this._stopDetailFetching();
         if (this._avatarDrawFrame !== null) {
             cancelAnimationFrame(this._avatarDrawFrame);

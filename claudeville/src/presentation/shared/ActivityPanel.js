@@ -135,6 +135,7 @@ export class ActivityPanel {
         this._chronicleSectionEl = null;
         this._chronicleBodyEl = null;
         this._chronicleFetchSeq = 0;
+        this._detailFetchSeq = 0;
         this._directorFeedSectionEl = null;
         this._directorFeedBodyEl = null;
         this._directorFeed = [];
@@ -163,6 +164,7 @@ export class ActivityPanel {
         // Building-mode content container is created on demand and inserted after the header.
         this._buildingContentEl = null;
         this._renderSignatures = this._emptyRenderSignatures();
+        this._destroyed = false;
 
         this._bind();
         this._renderPinCompare();
@@ -392,6 +394,7 @@ export class ActivityPanel {
     }
 
     async _fetchPinnedDetails() {
+        if (this._destroyed) return;
         const pinnedAgents = [...this._pinned]
             .map(id => this._getWorld()?.agents?.get?.(id))
             .filter(Boolean);
@@ -402,13 +405,13 @@ export class ActivityPanel {
         const seq = ++this._pinFetchSeq;
         try {
             const details = await sessionDetailsService.fetchSessionDetailsBatch(pinnedAgents);
-            if (seq !== this._pinFetchSeq) return;
+            if (this._destroyed || seq !== this._pinFetchSeq) return;
             for (const [agentId, detail] of details) {
                 if (this._pinned.has(agentId) && detail) this._pinnedDetails.set(agentId, detail);
             }
             this._renderPinCompare();
         } catch {
-            this._renderPinCompare();
+            if (!this._destroyed && seq === this._pinFetchSeq) this._renderPinCompare();
         }
     }
 
@@ -504,6 +507,9 @@ export class ActivityPanel {
     }
 
     show(agent) {
+        if (this._destroyed) return;
+        this._detailFetchSeq++;
+        this._chronicleFetchSeq++;
         // Agent selection takes over the panel: tear down any building view first.
         if (this._mode === 'building') {
             this._teardownBuildingView();
@@ -530,6 +536,9 @@ export class ActivityPanel {
     }
 
     showBuilding(building) {
+        if (this._destroyed) return;
+        this._detailFetchSeq++;
+        this._chronicleFetchSeq++;
         // Building selection overrides agent selection. Close any agent state first.
         if (this._mode === 'agent') {
             this._stopPolling();
@@ -554,8 +563,12 @@ export class ActivityPanel {
     }
 
     hide() {
+        if (this._destroyed) return;
         const wasAgent = this._mode === 'agent';
         const wasBuilding = this._mode === 'building';
+        this._detailFetchSeq++;
+        this._chronicleFetchSeq++;
+        this._pinFetchSeq++;
         this.panelEl.style.display = 'none';
         document.body.classList.remove('cv-panel-open');
         this._teardownHeroPortrait();
@@ -730,13 +743,20 @@ export class ActivityPanel {
     }
 
     async _fetchDetail() {
-        if (!this.currentAgent) return;
+        if (!this.currentAgent || this._destroyed) return;
         const agent = this.currentAgent;
+        const seq = ++this._detailFetchSeq;
         this._updateJourney(agent);
         this._updateHarborLog(agent);
         this._updateMessageEdges(agent);
         const data = await sessionDetailsService.fetchSessionDetail(agent);
-        if (!data || !this.currentAgent || this.currentAgent.id !== agent.id) return;
+        if (
+            this._destroyed
+            || seq !== this._detailFetchSeq
+            || !data
+            || !this.currentAgent
+            || this.currentAgent.id !== agent.id
+        ) return;
         this._renderToolHistory(data.toolHistory || []);
         this._renderMessages(data.messages || []);
         this._renderTokenUsage(data.tokenUsage || data.tokens || data.usage);
@@ -999,7 +1019,7 @@ export class ActivityPanel {
     }
 
     async _fetchAndRenderChronicle(agent) {
-        if (!this._chronicleSectionEl || !agent) return;
+        if (!this._chronicleSectionEl || !agent || this._destroyed) return;
         const service = this._getBiographyService();
         const identityKey = this._biographyIdentityKey(agent);
         if (!service || !identityKey) {
@@ -1011,13 +1031,16 @@ export class ActivityPanel {
             const biography = await service.getBiography(identityKey);
             if (
                 seq !== this._chronicleFetchSeq
+                || this._destroyed
                 || this._mode !== 'agent'
                 || !this.currentAgent
                 || this.currentAgent.id !== agent.id
             ) return;
             this._renderChronicleBody(biography);
         } catch {
-            if (seq === this._chronicleFetchSeq) this._chronicleSectionEl.style.display = 'none';
+            if (!this._destroyed && seq === this._chronicleFetchSeq) {
+                this._chronicleSectionEl.style.display = 'none';
+            }
         }
     }
 
@@ -2659,10 +2682,21 @@ export class ActivityPanel {
     }
 
     destroy() {
+        if (this._destroyed) return;
+        this._destroyed = true;
+        this._detailFetchSeq++;
+        this._chronicleFetchSeq++;
+        this._pinFetchSeq++;
         this._stopPolling();
         this._stopBuildingPolling();
+        this._teardownHeroPortrait();
         this._teardownBuildingView();
-        this.closeBtn.removeEventListener('click', this._onCloseClick);
+        if (this.panelEl) this.panelEl.style.display = 'none';
+        document.body.classList.remove('cv-panel-open');
+        this.currentAgent = null;
+        this._selectedBuilding = null;
+        this._mode = null;
+        this.closeBtn?.removeEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.removeEventListener('click', this._onPinToggleClick);
         eventBus.off('agent:selected', this._onAgentSelected);
         eventBus.off('agent:updated', this._onAgentUpdated);
@@ -2676,5 +2710,47 @@ export class ActivityPanel {
         eventBus.off('mood:changed', this._onMoodChanged);
         eventBus.off('biography:updated', this._onBiographyUpdated);
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
+
+        const ownedNodes = [
+            this._pinStripEl,
+            this._pinToggleBtn,
+            this._journeySectionEl,
+            this._harborLogSectionEl,
+            this._chronicleSectionEl,
+            this._directorFeedSectionEl,
+            this._relationshipsSectionEl,
+            this._messageEdgesSectionEl,
+        ];
+        for (const node of ownedNodes) node?.remove?.();
+        this._agentSections = [];
+        this._pinnedDetails.clear();
+        this._pinned.clear();
+        this._buildingPresenceByType.clear();
+        this._buildingSignalByType.clear();
+        this._villageDirectorByType.clear();
+        this._directorFeed = [];
+        this._directorFeedIds.clear();
+        this._dependencies = null;
+        this.dom = null;
+        this._toolEls = null;
+        this.panelEl = null;
+        this.closeBtn = null;
+        this._pinStripEl = null;
+        this._pinToggleBtn = null;
+        this._journeySectionEl = null;
+        this._journeyBodyEl = null;
+        this._journeyWhyEl = null;
+        this._journeyDetailsEl = null;
+        this._journeyDetailsBodyEl = null;
+        this._harborLogSectionEl = null;
+        this._harborLogBodyEl = null;
+        this._chronicleSectionEl = null;
+        this._chronicleBodyEl = null;
+        this._directorFeedSectionEl = null;
+        this._directorFeedBodyEl = null;
+        this._relationshipsSectionEl = null;
+        this._relationshipsBodyEl = null;
+        this._messageEdgesSectionEl = null;
+        this._messageEdgesBodyEl = null;
     }
 }

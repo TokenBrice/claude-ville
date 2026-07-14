@@ -38,6 +38,7 @@ export class RelationshipState {
         this._lastMembership = new Map();
         this._cachedSnapshotTeamToMembersArrays = new Map();
         this._snapshot = null;
+        this._disposed = false;
         this.unsubscribers = [
             eventBus.on('agent:added', (agent) => {
                 this.recentArrivals.push({ agentId: agent.id, at: performance.now() });
@@ -75,14 +76,32 @@ export class RelationshipState {
     }
 
     dispose() {
+        if (this._disposed) return;
+        this._disposed = true;
         for (const unsubscribe of this.unsubscribers) unsubscribe();
         this.unsubscribers = [];
+        this.parentToChildren.clear();
+        this.childToParent.clear();
+        this.teamToMembers.clear();
+        this.recentArrivals = [];
+        this.recentDepartures = [];
+        this.chatPairs = [];
+        this.gossipClusters = [];
         this._lastSpriteTiles.clear();
         this._lastMembership.clear();
         this._cachedSnapshotTeamToMembersArrays.clear();
+        this._snapshot = null;
+        this.world = null;
     }
 
     update({ agentSprites = null, now = performance.now() } = {}) {
+        if (this._disposed) return null;
+        this.reconcile({ agentSprites, now });
+        return this._snapshot;
+    }
+
+    reconcile({ agentSprites = null, now = performance.now() } = {}) {
+        if (this._disposed) return this;
         this._prune(now);
         const sprites = agentSprites?.values ? Array.from(agentSprites.values()) : [];
         this._rememberSpriteTiles(sprites);
@@ -104,11 +123,27 @@ export class RelationshipState {
                 memberIds: [...cluster.memberIds],
             })),
         };
-        return this._snapshot;
+        return this;
     }
 
     getSnapshot() {
+        if (this._disposed) return null;
         return this._snapshot || this.update();
+    }
+
+    getDiagnostics() {
+        return {
+            parents: this.parentToChildren.size,
+            children: this.childToParent.size,
+            teams: this.teamToMembers.size,
+            recentArrivals: this.recentArrivals.length,
+            recentDepartures: this.recentDepartures.length,
+            chatPairs: this.chatPairs.length,
+            gossipClusters: this.gossipClusters.length,
+            rememberedSpriteTiles: this._lastSpriteTiles.size,
+            rememberedMemberships: this._lastMembership.size,
+            disposed: this._disposed,
+        };
     }
 
     _rebuildMembership() {

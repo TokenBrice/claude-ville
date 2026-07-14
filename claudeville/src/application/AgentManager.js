@@ -44,12 +44,13 @@ export class AgentManager {
         return teamMembers;
     }
 
-    async loadInitialData() {
+    async loadInitialData({ signal = null } = {}) {
         try {
             const [sessions, teams] = await Promise.all([
-                this.dataSource.getSessions(),
-                this.dataSource.getTeams(),
+                this.dataSource.getSessions({ signal }),
+                this.dataSource.getTeams({ signal }),
             ]);
+            if (signal?.aborted) return;
 
             this._teamMembers = this._buildTeamMembers(teams);
 
@@ -59,6 +60,7 @@ export class AgentManager {
 
             console.log(`[AgentManager] ${this.world.agents.size} agents loaded`);
         } catch (err) {
+            if (signal?.aborted || err?.name === 'AbortError') return;
             console.error('[AgentManager] Failed to load initial data:', err.message);
         }
     }

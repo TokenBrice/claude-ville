@@ -193,12 +193,17 @@ function pairKey(aId, bId) {
     return [aId, bId].sort().join('|');
 }
 
+const MAX_EMITTED_TOOL_KEYS_PER_AGENT = 32;
+const MAX_EMITTED_TOOL_KEYS_TOTAL = 2048;
+
 export class AgentEventStream {
     constructor(world, { shouldEmitToolEvent = null, shouldEmitEvent = null } = {}) {
         this.world = world;
         this.snapshots = new Map();
         this.chatPairs = new Set();
         this.emittedToolKeys = new Set();
+        this._emittedToolKeysByAgent = new Map();
+        this._emittedToolKeyOwners = new Map();
         this.shouldEmitToolEvent = typeof shouldEmitToolEvent === 'function' ? shouldEmitToolEvent : null;
         this.shouldEmitEvent = typeof shouldEmitEvent === 'function' ? shouldEmitEvent : null;
         this.unsubscribers = [];
@@ -220,6 +225,8 @@ export class AgentEventStream {
         this.snapshots.clear();
         this.chatPairs.clear();
         this.emittedToolKeys.clear();
+        this._emittedToolKeysByAgent.clear();
+        this._emittedToolKeyOwners.clear();
         this.shouldEmitToolEvent = null;
         this.shouldEmitEvent = null;
     }
@@ -248,7 +255,7 @@ export class AgentEventStream {
 
             if (!this._canEmit('tool:invoked', event, agent)) continue;
             eventBus.emit('tool:invoked', event);
-            this.emittedToolKeys.add(emittedKey);
+            this._rememberEmittedToolKey(agent.id, emittedKey);
             emitted += 1;
         }
         return emitted;
@@ -307,6 +314,7 @@ export class AgentEventStream {
             if (this._canEmit('subagent:completed', event, agent)) eventBus.emit('subagent:completed', event);
         }
         this._clearChatPairsFor(agent.id);
+        this._retireEmittedToolKeys(agent.id);
     }
 
     _emitToolIfChanged(agent, previous, next) {
@@ -317,7 +325,7 @@ export class AgentEventStream {
         if (!this._canEmit('tool:invoked', event, agent)) return;
         if (typeof this.shouldEmitToolEvent === 'function' && !this.shouldEmitToolEvent(event, agent)) return;
         eventBus.emit('tool:invoked', event);
-        this.emittedToolKeys.add(this._emittedToolKey(agent.id, next.toolKey));
+        this._rememberEmittedToolKey(agent.id, this._emittedToolKey(agent.id, next.toolKey));
     }
 
     _toolEvent(agent, snap, extra = {}) {
@@ -340,6 +348,73 @@ export class AgentEventStream {
 
     _emittedToolKey(agentId, key) {
         return `${agentId || ''}\u001f${key || ''}`;
+    }
+
+    _rememberEmittedToolKey(agentId, key) {
+        const owner = String(agentId || '');
+        let keys = this._emittedToolKeysByAgent.get(owner);
+        if (!keys) {
+            keys = new Set();
+            this._emittedToolKeysByAgent.set(owner, keys);
+        }
+        if (keys.has(key)) keys.delete(key);
+        keys.add(key);
+        if (this.emittedToolKeys.has(key)) this.emittedToolKeys.delete(key);
+        this.emittedToolKeys.add(key);
+        this._emittedToolKeyOwners.set(key, owner);
+
+        while (keys.size > MAX_EMITTED_TOOL_KEYS_PER_AGENT) {
+            const oldestRetired = this._oldestRetiredToolKey(keys);
+            if (oldestRetired == null) break;
+            this._deleteEmittedToolKey(oldestRetired);
+        }
+        while (this.emittedToolKeys.size > MAX_EMITTED_TOOL_KEYS_TOTAL) {
+            const oldestRetired = this._oldestRetiredToolKey(this.emittedToolKeys);
+            if (oldestRetired == null) break;
+            this._deleteEmittedToolKey(oldestRetired);
+        }
+    }
+
+    _oldestRetiredToolKey(keys) {
+        for (const key of keys) {
+            if (!this._isCurrentToolKey(key)) return key;
+        }
+        return null;
+    }
+
+    _isCurrentToolKey(key) {
+        const owner = this._emittedToolKeyOwners.get(key);
+        const snapshot = this.snapshots.get(owner);
+        return Boolean(snapshot?.tool)
+            && key === this._emittedToolKey(owner, snapshot.toolKey);
+    }
+
+    _deleteEmittedToolKey(key) {
+        if (key == null) return;
+        this.emittedToolKeys.delete(key);
+        const owner = this._emittedToolKeyOwners.get(key);
+        this._emittedToolKeyOwners.delete(key);
+        const keys = this._emittedToolKeysByAgent.get(owner);
+        keys?.delete(key);
+        if (keys?.size === 0) this._emittedToolKeysByAgent.delete(owner);
+    }
+
+    _retireEmittedToolKeys(agentId) {
+        const owner = String(agentId || '');
+        const keys = this._emittedToolKeysByAgent.get(owner);
+        if (!keys) return;
+        for (const key of [...keys]) this._deleteEmittedToolKey(key);
+    }
+
+    getDiagnostics() {
+        return {
+            snapshots: this.snapshots.size,
+            chatPairs: this.chatPairs.size,
+            emittedToolKeys: this.emittedToolKeys.size,
+            emittedToolAgents: this._emittedToolKeysByAgent.size,
+            maxEmittedToolKeysPerAgent: MAX_EMITTED_TOOL_KEYS_PER_AGENT,
+            maxEmittedToolKeysTotal: MAX_EMITTED_TOOL_KEYS_TOTAL,
+        };
     }
 
     reconcileChatPairs(agentSprites) {

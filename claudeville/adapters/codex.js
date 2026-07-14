@@ -38,22 +38,32 @@ const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const GIT_EVENT_SCAN_LINES = 5000;
 const MAX_CURRENT_TOOL_INPUT_CHARS = 500;
 const MAX_ROLLOUT_DAY_DIRS = 8192;
-const MAX_ROLLOUT_FILES = 100000;
+const MAX_ROLLOUT_FILES = Math.max(
+  1,
+  Math.floor(Number(process.env.CLAUDEVILLE_CODEX_ROLLOUT_FILE_CAP || 100000) || 100000),
+);
+const MAX_WARM_ROLLOUT_DAY_DIRS = 4;
 const ROLLOUT_DIR_MTIME_EPSILON_MS = 1;
 
 const _rolloutFileBySessionId = new Map();
 const _sessionNamesCache = { signature: '', value: new Map() };
 const _turnMetadataCache = new Map();
+// The bounded historical index is revisited during reconciliation. Ordinary
+// polling stats only warm files plus a small newest-day discovery frontier.
 const _rolloutDiscoveryCache = {
   initialized: false,
   filesByPath: new Map(),
   dayDirMtimes: new Map(),
+  warmFilePaths: new Set(),
+  reconcileRequested: true,
 };
 let _rolloutDiscoveryStats = {
   at: null,
+  mode: null,
   activeThresholdMs: null,
   dayDirsScanned: 0,
   rolloutFilesScanned: 0,
+  cachedFileStats: 0,
   resultCount: 0,
   capped: false,
   warning: null,
@@ -794,30 +804,81 @@ function rememberRolloutFile(filePath, fileName, mtime, dayDir) {
   _rolloutDiscoveryCache.filesByPath.set(filePath, { fileName, mtime, dayDir });
 }
 
-function collectCachedActiveRollouts(activeCutoffMs) {
+function pruneRolloutDiscoveryCache({ validateDayDirs = false } = {}) {
+  if (validateDayDirs) {
+    const missingDayDirs = new Set();
+    for (const dayDir of _rolloutDiscoveryCache.dayDirMtimes.keys()) {
+      if (!fs.existsSync(dayDir)) missingDayDirs.add(dayDir);
+    }
+    for (const dayDir of missingDayDirs) {
+      _rolloutDiscoveryCache.dayDirMtimes.delete(dayDir);
+    }
+    if (missingDayDirs.size > 0) {
+      for (const [filePath, cached] of _rolloutDiscoveryCache.filesByPath) {
+        if (missingDayDirs.has(cached.dayDir)) _rolloutDiscoveryCache.filesByPath.delete(filePath);
+      }
+      for (const filePath of _rolloutDiscoveryCache.warmFilePaths) {
+        if (missingDayDirs.has(path.dirname(filePath))) {
+          _rolloutDiscoveryCache.warmFilePaths.delete(filePath);
+        }
+      }
+    }
+  }
+
+  if (_rolloutDiscoveryCache.filesByPath.size > MAX_ROLLOUT_FILES) {
+    const victims = Array.from(_rolloutDiscoveryCache.filesByPath.entries())
+      .sort((left, right) => {
+        const leftWarm = _rolloutDiscoveryCache.warmFilePaths.has(left[0]) ? 1 : 0;
+        const rightWarm = _rolloutDiscoveryCache.warmFilePaths.has(right[0]) ? 1 : 0;
+        return leftWarm - rightWarm || (left[1].mtime || 0) - (right[1].mtime || 0);
+      });
+    const removeCount = _rolloutDiscoveryCache.filesByPath.size - MAX_ROLLOUT_FILES;
+    for (let index = 0; index < removeCount; index++) {
+      const [filePath] = victims[index];
+      _rolloutDiscoveryCache.filesByPath.delete(filePath);
+    }
+  }
+
+  const warmDayDirs = new Set(
+    Array.from(_rolloutDiscoveryCache.warmFilePaths, filePath => path.dirname(filePath)),
+  );
+  while (_rolloutDiscoveryCache.dayDirMtimes.size > MAX_ROLLOUT_DAY_DIRS) {
+    const dayDirs = Array.from(_rolloutDiscoveryCache.dayDirMtimes.keys());
+    const victim = dayDirs.find(dayDir => !warmDayDirs.has(dayDir)) || dayDirs[0];
+    _rolloutDiscoveryCache.dayDirMtimes.delete(victim);
+  }
+}
+
+function collectWarmRollouts(activeCutoffMs, recentCutoffMs, counters) {
   const results = [];
 
-  for (const [filePath, cached] of _rolloutDiscoveryCache.filesByPath) {
+  for (const filePath of _rolloutDiscoveryCache.warmFilePaths) {
+    counters.cachedFileStats++;
     const mtime = statMtimeMs(filePath);
     if (mtime === null) {
       _rolloutDiscoveryCache.filesByPath.delete(filePath);
+      _rolloutDiscoveryCache.warmFilePaths.delete(filePath);
       continue;
     }
 
-    cached.mtime = mtime;
+    const cached = _rolloutDiscoveryCache.filesByPath.get(filePath);
+    if (cached) cached.mtime = mtime;
+    if (mtime < recentCutoffMs) {
+      _rolloutDiscoveryCache.warmFilePaths.delete(filePath);
+    }
     if (mtime < activeCutoffMs) continue;
 
     results.push({
       filePath,
       mtime,
-      fileName: cached.fileName || path.basename(filePath),
+      fileName: cached?.fileName || path.basename(filePath),
     });
   }
 
   return results;
 }
 
-function scanRolloutDayDir(dayDir, activeCutoffMs, resultsByPath, counters) {
+function scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters) {
   const fileNames = readRolloutFileNames(dayDir);
 
   for (const fileName of fileNames) {
@@ -832,88 +893,158 @@ function scanRolloutDayDir(dayDir, activeCutoffMs, resultsByPath, counters) {
     if (mtime === null) continue;
 
     rememberRolloutFile(filePath, fileName, mtime, dayDir);
+    if (mtime >= recentCutoffMs) {
+      _rolloutDiscoveryCache.warmFilePaths.add(filePath);
+    } else {
+      _rolloutDiscoveryCache.warmFilePaths.delete(filePath);
+    }
     if (mtime < activeCutoffMs) continue;
 
     resultsByPath.set(filePath, { filePath, mtime, fileName });
   }
 }
 
-function scanRecentRollouts(activeThresholdMs) {
+function readNewestRolloutDayDirs(limit = MAX_WARM_ROLLOUT_DAY_DIRS) {
+  const dayDirs = [];
+  const years = readSortedChildDirs(SESSIONS_DIR);
+
+  outer:
+  for (const year of years) {
+    const yearDir = path.join(SESSIONS_DIR, year);
+    const months = readSortedChildDirs(yearDir);
+    for (const month of months) {
+      const monthDir = path.join(yearDir, month);
+      const days = readSortedChildDirs(monthDir);
+      for (const day of days) {
+        dayDirs.push(path.join(monthDir, day));
+        if (dayDirs.length >= limit) break outer;
+      }
+    }
+  }
+
+  return dayDirs;
+}
+
+function collectWarmRolloutDayDirs() {
+  const dayDirs = new Set();
+  for (const filePath of _rolloutDiscoveryCache.warmFilePaths) {
+    dayDirs.add(path.dirname(filePath));
+  }
+  for (const dayDir of readNewestRolloutDayDirs()) dayDirs.add(dayDir);
+  return dayDirs;
+}
+
+function scanRecentRollouts(activeThresholdMs, { force = false } = {}) {
   const startedAt = Date.now();
-  const activeCutoffMs = Date.now() - activeThresholdMs;
+  const normalizedThresholdMs = Number.isFinite(activeThresholdMs)
+    ? Math.max(0, activeThresholdMs)
+    : 0;
+  const activeCutoffMs = startedAt - normalizedThresholdMs;
+  const recentCutoffMs = activeCutoffMs - Math.max(normalizedThresholdMs, 60 * 1000);
   const resultsByPath = new Map();
-  const counters = { dayDirs: 0, files: 0, limited: false };
+  const counters = { dayDirs: 0, files: 0, cachedFileStats: 0, limited: false };
+  const reconcile = force
+    || !_rolloutDiscoveryCache.initialized
+    || _rolloutDiscoveryCache.reconcileRequested;
 
   if (!fs.existsSync(SESSIONS_DIR)) {
     _rolloutDiscoveryCache.initialized = false;
     _rolloutDiscoveryCache.filesByPath.clear();
     _rolloutDiscoveryCache.dayDirMtimes.clear();
-    recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, 0);
+    _rolloutDiscoveryCache.warmFilePaths.clear();
+    _rolloutDiscoveryCache.reconcileRequested = true;
+    recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, 0, 'reconcile');
     return [];
   }
 
-  if (_rolloutDiscoveryCache.initialized) {
-    for (const rollout of collectCachedActiveRollouts(activeCutoffMs)) {
+  if (!reconcile) {
+    for (const rollout of collectWarmRollouts(activeCutoffMs, recentCutoffMs, counters)) {
       resultsByPath.set(rollout.filePath, rollout);
     }
   }
 
   try {
-    const years = readSortedChildDirs(SESSIONS_DIR);
+    if (!reconcile) {
+      for (const dayDir of collectWarmRolloutDayDirs()) {
+        if (counters.dayDirs >= MAX_ROLLOUT_DAY_DIRS) {
+          counters.limited = true;
+          break;
+        }
 
-    yearLoop:
-    for (const year of years) {
-      const yearDir = path.join(SESSIONS_DIR, year);
-      const months = readSortedChildDirs(yearDir);
+        const dayDirMtime = statMtimeMs(dayDir);
+        if (dayDirMtime === null) continue;
 
-      for (const month of months) {
-        const monthDir = path.join(yearDir, month);
-        const days = readSortedChildDirs(monthDir);
+        counters.dayDirs++;
+        const previousDayDirMtime = _rolloutDiscoveryCache.dayDirMtimes.get(dayDir);
+        _rolloutDiscoveryCache.dayDirMtimes.set(dayDir, dayDirMtime);
+        if (
+          previousDayDirMtime !== undefined
+          && Math.abs(dayDirMtime - previousDayDirMtime) <= ROLLOUT_DIR_MTIME_EPSILON_MS
+        ) {
+          continue;
+        }
 
-        for (const day of days) {
-          const dayDir = path.join(monthDir, day);
+        scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters);
+        if (counters.limited) break;
+      }
+    } else {
+      const years = readSortedChildDirs(SESSIONS_DIR);
 
-          if (counters.dayDirs >= MAX_ROLLOUT_DAY_DIRS) {
-            counters.limited = true;
-            break yearLoop;
+      yearLoop:
+      for (const year of years) {
+        const yearDir = path.join(SESSIONS_DIR, year);
+        const months = readSortedChildDirs(yearDir);
+
+        for (const month of months) {
+          const monthDir = path.join(yearDir, month);
+          const days = readSortedChildDirs(monthDir);
+
+          for (const day of days) {
+            const dayDir = path.join(monthDir, day);
+
+            if (counters.dayDirs >= MAX_ROLLOUT_DAY_DIRS) {
+              counters.limited = true;
+              break yearLoop;
+            }
+
+            const dayDirMtime = statMtimeMs(dayDir);
+            if (dayDirMtime === null) continue;
+
+            counters.dayDirs++;
+            _rolloutDiscoveryCache.dayDirMtimes.set(dayDir, dayDirMtime);
+
+            scanRolloutDayDir(dayDir, activeCutoffMs, recentCutoffMs, resultsByPath, counters);
+            if (counters.limited) break yearLoop;
           }
-
-          const dayDirMtime = statMtimeMs(dayDir);
-          if (dayDirMtime === null) continue;
-
-          counters.dayDirs++;
-          const previousDayDirMtime = _rolloutDiscoveryCache.dayDirMtimes.get(dayDir);
-          _rolloutDiscoveryCache.dayDirMtimes.set(dayDir, dayDirMtime);
-
-          if (
-            _rolloutDiscoveryCache.initialized
-            && previousDayDirMtime !== undefined
-            && Math.abs(dayDirMtime - previousDayDirMtime) <= ROLLOUT_DIR_MTIME_EPSILON_MS
-          ) {
-            continue;
-          }
-
-          scanRolloutDayDir(dayDir, activeCutoffMs, resultsByPath, counters);
-          if (counters.limited) break yearLoop;
         }
       }
     }
   } catch { /* ignore */ }
 
   _rolloutDiscoveryCache.initialized = true;
+  _rolloutDiscoveryCache.reconcileRequested = false;
+  pruneRolloutDiscoveryCache({ validateDayDirs: reconcile });
   const rollouts = Array.from(resultsByPath.values()).sort((a, b) => b.mtime - a.mtime);
-  recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, rollouts.length);
+  recordRolloutDiscoveryStats(
+    startedAt,
+    activeThresholdMs,
+    counters,
+    rollouts.length,
+    reconcile ? 'reconcile' : 'warm',
+  );
   return rollouts;
 }
 
-function recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, resultCount) {
+function recordRolloutDiscoveryStats(startedAt, activeThresholdMs, counters, resultCount, mode) {
   const capped = Boolean(counters.limited);
   _rolloutDiscoveryStats = {
     at: Date.now(),
     durationMs: Date.now() - startedAt,
+    mode,
     activeThresholdMs,
     dayDirsScanned: counters.dayDirs,
     rolloutFilesScanned: counters.files,
+    cachedFileStats: counters.cachedFileStats,
     resultCount,
     capped,
     caps: {
@@ -937,8 +1068,8 @@ class CodexAdapter {
     return fs.existsSync(CODEX_DIR);
   }
 
-  getActiveSessions(activeThresholdMs) {
-    const rollouts = scanRecentRollouts(activeThresholdMs);
+  getActiveSessions(activeThresholdMs, { force = false } = {}) {
+    const rollouts = scanRecentRollouts(activeThresholdMs, { force });
     const sessionNames = readCodexSessionNames();
     const sessions = [];
     const parsedRollouts = [];
@@ -953,6 +1084,10 @@ class CodexAdapter {
       const threadId = detail.agentId || sessionId;
       sessionIdByThreadId.set(threadId, fullSessionId);
       parsedRollouts.push({ filePath, mtime, detail, sessionId, fullSessionId, threadId });
+    }
+    const activeSessionIds = new Set(parsedRollouts.map((rollout) => rollout.fullSessionId));
+    for (const sessionId of _rolloutFileBySessionId.keys()) {
+      if (!activeSessionIds.has(sessionId)) _rolloutFileBySessionId.delete(sessionId);
     }
 
     for (const { filePath, mtime, detail, sessionId, fullSessionId, threadId } of parsedRollouts) {
@@ -1018,13 +1153,48 @@ class CodexAdapter {
     return createDetailResponse({ sessionId });
   }
 
-  getWatchPaths() {
+  getWatchPaths({ sessions = [] } = {}) {
     const paths = [];
+    if (fs.existsSync(CODEX_DIR)) {
+      paths.push({ type: 'directory', path: CODEX_DIR, filters: ['sessions', 'session_index.jsonl'], scope: 'discovery', kind: 'discovery' });
+    }
     if (fs.existsSync(SESSIONS_DIR)) {
-      paths.push({ type: 'directory', path: SESSIONS_DIR, recursive: true, filter: '.jsonl' });
+      paths.push({ type: 'directory', path: SESSIONS_DIR, scope: 'discovery', kind: 'discovery' });
     }
     if (fs.existsSync(SESSION_INDEX_FILE)) {
-      paths.push({ type: 'file', path: SESSION_INDEX_FILE });
+      paths.push({ type: 'file', path: SESSION_INDEX_FILE, scope: 'discovery', kind: 'metadata', probe: true });
+    }
+    for (const session of sessions) {
+      const filePath = _rolloutFileBySessionId.get(session.sessionId);
+      if (!filePath || !fs.existsSync(filePath)) continue;
+      const dayDir = path.dirname(filePath);
+      const monthDir = path.dirname(dayDir);
+      const yearDir = path.dirname(monthDir);
+      const dirtyTarget = {
+        sessionId: session.sessionId,
+        project: session.project,
+      };
+      paths.push({ type: 'directory', path: yearDir, scope: 'recent', kind: 'discovery', activity: session.lastActivity });
+      paths.push({ type: 'directory', path: monthDir, scope: 'recent', kind: 'discovery', activity: session.lastActivity });
+      paths.push({
+        type: 'directory',
+        path: dayDir,
+        filters: ['.jsonl'],
+        scope: 'active',
+        kind: 'transcript',
+        probe: true,
+        activity: session.lastActivity,
+        ...dirtyTarget,
+      });
+      paths.push({
+        type: 'file',
+        path: filePath,
+        scope: 'active',
+        kind: 'transcript',
+        probe: true,
+        activity: session.lastActivity,
+        ...dirtyTarget,
+      });
     }
     return paths;
   }
@@ -1038,9 +1208,35 @@ class CodexAdapter {
     // every active-session refresh back into a full historical scan.
   }
 
+  invalidateCachesForDirty(dirty = {}) {
+    if (dirty.path) _turnMetadataCache.delete(dirty.path);
+    if (dirty.kind === 'metadata') {
+      _sessionNamesCache.signature = '';
+      _sessionNamesCache.value = new Map();
+    }
+    if (
+      dirty.kind === 'transcript'
+      && dirty.path
+      && path.basename(dirty.path).startsWith('rollout-')
+      && dirty.path.endsWith('.jsonl')
+    ) {
+      _rolloutDiscoveryCache.warmFilePaths.add(dirty.path);
+    }
+    if (dirty.kind === 'reconcile') {
+      _rolloutDiscoveryCache.reconcileRequested = true;
+    }
+  }
+
   getPerfStats() {
     return {
-      rolloutDiscovery: _rolloutDiscoveryStats,
+      rolloutDiscovery: {
+        ..._rolloutDiscoveryStats,
+        cachedFiles: _rolloutDiscoveryCache.filesByPath.size,
+        cachedDayDirectories: _rolloutDiscoveryCache.dayDirMtimes.size,
+        warmFiles: _rolloutDiscoveryCache.warmFilePaths.size,
+        indexedSessions: _rolloutFileBySessionId.size,
+        turnMetadataEntries: _turnMetadataCache.size,
+      },
     };
   }
 }

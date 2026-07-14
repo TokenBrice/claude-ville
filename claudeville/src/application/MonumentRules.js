@@ -264,14 +264,18 @@ export class MonumentPlanter {
     async processEvents(events = [], context = {}) {
         if (!this.store) return [];
         const planted = [];
+        const isActive = typeof context.isActive === 'function' ? context.isActive : () => true;
         for (const event of events) {
+            if (!isActive()) break;
             const record = this.rules.buildRecord(event, context);
             if (!record || this.seen.has(record.id)) continue;
             this.seen.add(record.id);
             try {
                 const existing = await this.store.get('monuments', record.id);
+                if (!isActive()) break;
                 if (existing) continue;
                 await this.store.put('monuments', record);
+                if (!isActive()) break;
                 planted.push(record);
                 this.eventBus?.emit?.('chronicle:milestone', record);
             } catch {

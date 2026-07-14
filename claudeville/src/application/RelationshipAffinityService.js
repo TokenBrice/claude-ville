@@ -6,6 +6,7 @@ import { extractRecipientName } from '../domain/services/RecipientResolver.js';
 const FLUSH_DEBOUNCE_MS = 3000;
 const WRITE_LEASE_KEY = 'claudeville.affinity.writeLease';
 const WRITE_LEASE_TTL_MS = 15000;
+const AFFINITY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 function randomToken() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -74,6 +75,9 @@ export class RelationshipAffinityService {
         this._metSessionPairs = new Set();
         this._dirty = new Set();
         this._flushTimer = null;
+        this._flushTail = Promise.resolve();
+        this._stopPromise = null;
+        this._accepting = false;
         this._ready = Promise.resolve();
         this._leaseToken = randomToken();
         this._unsubscribers = [];
@@ -81,10 +85,13 @@ export class RelationshipAffinityService {
     }
 
     start() {
-        if (!this.store || this._unsubscribers.length) return this;
+        if (!this.store || this._accepting || this._stopPromise) return this;
+        this._accepting = true;
         this._ready = this._preload();
         const seen = (agent) => {
-            this._ready.then(() => this._handleAgentSeen(agent)).catch(() => {});
+            this._ready.then(() => {
+                if (this._accepting) this._handleAgentSeen(agent);
+            }).catch(() => {});
         };
         this._unsubscribers.push(eventBus.on('agent:added', seen));
         this._unsubscribers.push(eventBus.on('agent:updated', seen));
@@ -102,6 +109,8 @@ export class RelationshipAffinityService {
     }
 
     stop() {
+        if (this._stopPromise) return this._stopPromise;
+        this._accepting = false;
         for (const unsubscribe of this._unsubscribers) unsubscribe();
         this._unsubscribers = [];
         if (this._channelListener && this.store?.channel?.removeEventListener) {
@@ -112,8 +121,16 @@ export class RelationshipAffinityService {
             clearTimeout(this._flushTimer);
             this._flushTimer = null;
         }
-        this.flush().catch(() => {});
-        this._releaseWriteLease();
+        this._stopPromise = (async () => {
+            try {
+                await this._ready.catch(() => {});
+                await this.flush();
+                await this._flushTail;
+            } finally {
+                this._releaseWriteLease();
+            }
+        })();
+        return this._stopPromise;
     }
 
     /**
@@ -138,7 +155,13 @@ export class RelationshipAffinityService {
         return affinity ? affinity.decayedScore(now) : 0;
     }
 
-    async flush() {
+    flush() {
+        const run = this._flushTail.then(() => this._flushDirty());
+        this._flushTail = run.catch(() => {});
+        return run;
+    }
+
+    async _flushDirty() {
         if (!this.store || !this._dirty.size) return;
         const keys = [...this._dirty];
         this._dirty.clear();
@@ -155,7 +178,7 @@ export class RelationshipAffinityService {
     }
 
     _handleAgentSeen(agent) {
-        if (!agent?.id) return;
+        if (!this._accepting || !agent?.id) return;
         let entry = this._roster.get(agent.id);
         if (!entry) {
             entry = { agent, identityKey: null, countedGitKeys: new Set(), lastChatSignature: null };
@@ -170,7 +193,7 @@ export class RelationshipAffinityService {
     }
 
     _handleAgentRemoved(agent) {
-        if (!agent?.id) return;
+        if (!this._accepting || !agent?.id) return;
         this._roster.delete(agent.id);
         // Forget session-pair meeting memory so a future re-arrival counts
         // as a new meeting.
@@ -229,6 +252,7 @@ export class RelationshipAffinityService {
     }
 
     _mutatePair(entryA, entryB, kind) {
+        if (!this._accepting) return;
         const pairKey = affinityPairKey(entryA.identityKey, entryB.identityKey);
         if (!pairKey) return;
         const now = Date.now();
@@ -247,7 +271,9 @@ export class RelationshipAffinityService {
     async _preload() {
         if (!this.store) return;
         try {
-            const records = await this.store.getAllAffinities();
+            const records = await this.store.getAllAffinities({
+                since: Date.now() - AFFINITY_RETENTION_MS,
+            });
             for (const record of records || []) {
                 const affinity = PairAffinity.fromRecord(record);
                 if (affinity) this._affinities.set(affinity.pairKey, affinity);
@@ -258,9 +284,10 @@ export class RelationshipAffinityService {
     }
 
     _refreshFromStore(pairKey) {
-        if (!pairKey || !this.store) return;
+        if (!this._accepting || !pairKey || !this.store) return;
         this.store.getAffinity(pairKey)
             .then((record) => {
+                if (!this._accepting) return;
                 const affinity = PairAffinity.fromRecord(record);
                 if (!affinity) return;
                 this._affinities.set(pairKey, affinity);

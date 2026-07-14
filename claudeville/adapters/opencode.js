@@ -570,13 +570,27 @@ class OpenCodeAdapter {
   getWatchPaths() {
     const paths = [];
     if (fs.existsSync(OPENCODE_STATE_DIR)) {
-      paths.push({ type: 'directory', path: OPENCODE_STATE_DIR, recursive: false, filter: '.db' });
-      paths.push({ type: 'directory', path: OPENCODE_STATE_DIR, recursive: false, filter: '.db-wal' });
-      paths.push({ type: 'directory', path: OPENCODE_STATE_DIR, recursive: false, filter: '.db-shm' });
+      paths.push({
+        type: 'directory',
+        path: OPENCODE_STATE_DIR,
+        // SQLite readers update shared-memory lock state. Watching -shm makes
+        // ClaudeVille's own read trigger another read in a tight feedback loop.
+        filters: ['.db', '.db-wal'],
+        scope: 'discovery',
+        probe: true,
+      });
+      for (const filePath of [OPENCODE_DB, `${OPENCODE_DB}-wal`]) {
+        if (fs.existsSync(filePath)) {
+          paths.push({ type: 'file', path: filePath, scope: 'discovery', probe: true });
+        }
+      }
     }
     if (fs.existsSync(OPENCODE_CONFIG_DIR)) {
-      paths.push({ type: 'directory', path: OPENCODE_CONFIG_DIR, recursive: true, filter: '.json' });
-      paths.push({ type: 'directory', path: path.join(OPENCODE_CONFIG_DIR, 'agents'), recursive: false, filter: '.md' });
+      paths.push({ type: 'directory', path: OPENCODE_CONFIG_DIR, filters: ['.json', 'agents'], scope: 'discovery' });
+      const agentsDir = path.join(OPENCODE_CONFIG_DIR, 'agents');
+      if (fs.existsSync(agentsDir)) {
+        paths.push({ type: 'directory', path: agentsDir, filters: ['.md'], scope: 'discovery' });
+      }
     }
     return paths;
   }

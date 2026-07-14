@@ -62,6 +62,7 @@ export class VisitTileAllocator {
         this._occupancyEntries = [];
         this._occupancyBuckets = new Map();
         this._crowdClusters = [];
+        this._disposed = false;
     }
 
     updateContext({
@@ -69,6 +70,7 @@ export class VisitTileAllocator {
         agentSprites = this.agentSprites,
         pathfinder = this.pathfinder,
     } = {}) {
+        if (this._disposed) return this;
         this.buildings = this._normalizeBuildings(buildings);
         this.agentSprites = this._normalizeAgentSprites(agentSprites);
         this.pathfinder = pathfinder || null;
@@ -211,6 +213,7 @@ export class VisitTileAllocator {
         intent = null,
         candidates = null,
     } = {}) {
+        if (this._disposed) return null;
         const now = Date.now();
         this.cleanup(now);
 
@@ -396,6 +399,40 @@ export class VisitTileAllocator {
         return this;
     }
 
+    getBuildingLoads() {
+        const counts = new Map();
+        for (const reservation of this.reservations.values()) {
+            let entry = counts.get(reservation.buildingType);
+            if (!entry) {
+                entry = { reserved: 0, queued: 0, overflowReserved: 0 };
+                counts.set(reservation.buildingType, entry);
+            }
+            entry.reserved++;
+            if (reservation.queueOverflow) {
+                entry.queued++;
+                entry.overflowReserved++;
+            }
+        }
+
+        const buildings = {};
+        for (const building of this.buildings.values()) {
+            const type = this._buildingType(building, null);
+            if (!type) continue;
+            const candidates = this._candidateTiles({ building, buildingType: type, candidates: null });
+            const capacity = this._buildingCapacity(building, type, candidates.length);
+            const count = counts.get(type) || { reserved: 0, queued: 0, overflowReserved: 0 };
+            buildings[type] = {
+                capacity,
+                visitTiles: candidates.length,
+                occupied: this._buildingOccupancy(building, type, null),
+                reserved: count.reserved,
+                queued: count.queued,
+                overflowReserved: count.overflowReserved,
+            };
+        }
+        return buildings;
+    }
+
     snapshot(now = Date.now()) {
         const time = Number(now) || Date.now();
         const reservations = [...this.reservations.values()]
@@ -431,21 +468,7 @@ export class VisitTileAllocator {
                 facingPoint: reservation.facingPoint,
             }));
 
-        const buildings = {};
-        for (const building of this.buildings.values()) {
-            const type = this._buildingType(building, null);
-            if (!type) continue;
-            const candidates = this._candidateTiles({ building, buildingType: type, candidates: null });
-            const capacity = this._buildingCapacity(building, type, candidates.length);
-            buildings[type] = {
-                capacity,
-                visitTiles: candidates.length,
-                occupied: this._buildingOccupancy(building, type, null),
-                reserved: reservations.filter((reservation) => reservation.buildingType === type).length,
-                queued: reservations.filter((reservation) => reservation.buildingType === type && reservation.queueOverflow).length,
-                overflowReserved: reservations.filter((reservation) => reservation.buildingType === type && reservation.queueOverflow).length,
-            };
-        }
+        const buildings = this.getBuildingLoads();
 
         return {
             reservationTtlMs: this.reservationTtlMs,
@@ -460,6 +483,35 @@ export class VisitTileAllocator {
 
     debug(now = Date.now()) {
         return this.snapshot(now);
+    }
+
+    getDiagnostics() {
+        return {
+            buildings: this.buildings.size,
+            retainedAgentSprites: this.agentSprites.length,
+            reservations: this.reservations.size,
+            reservationAgents: this.agentReservationIds.size,
+            agentMeta: this.agentMeta.size,
+            relatedCache: this._relatedCache.size,
+            occupancyEntries: this._occupancyEntries.length,
+            occupancyBuckets: this._occupancyBuckets.size,
+            disposed: this._disposed,
+        };
+    }
+
+    dispose() {
+        if (this._disposed) return;
+        this._disposed = true;
+        this.buildings.clear();
+        this.agentSprites = [];
+        this.pathfinder = null;
+        this.reservations.clear();
+        this.agentReservationIds.clear();
+        this.agentMeta.clear();
+        this._relatedCache.clear();
+        this._occupancyEntries = [];
+        this._occupancyBuckets.clear();
+        this._crowdClusters = [];
     }
 
     _scoreSlot({

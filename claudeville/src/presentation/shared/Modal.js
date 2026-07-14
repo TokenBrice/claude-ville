@@ -10,14 +10,17 @@ export class Modal {
         this._onKeydown = (e) => {
             if (e.key === 'Escape') this.close();
         };
+        this._onOverlayClick = (e) => {
+            if (e.target === this.overlay) this.close();
+        };
+        this._destroyed = false;
 
         this.closeBtn.addEventListener('click', this._onClose);
-        this.overlay.addEventListener('click', (e) => {
-            if (e.target === this.overlay) this.close();
-        });
+        this.overlay.addEventListener('click', this._onOverlayClick);
     }
 
     open(title, contentHTML, { wide = false } = {}) {
+        if (this._destroyed) return;
         this.titleEl.textContent = title;
         this.contentEl.innerHTML = contentHTML;
         this.box.classList.toggle('modal--wide', wide);
@@ -26,6 +29,7 @@ export class Modal {
     }
 
     close() {
+        if (!this.overlay) return;
         this.overlay.style.display = 'none';
         this.titleEl.textContent = '';
         this.contentEl.innerHTML = '';
@@ -35,7 +39,15 @@ export class Modal {
 
     // Public lifecycle hook for callers that mount/unmount shared UI primitives.
     destroy() {
+        if (this._destroyed) return;
+        this._destroyed = true;
         this.close();
         this.closeBtn.removeEventListener('click', this._onClose);
+        this.overlay.removeEventListener('click', this._onOverlayClick);
+        this.overlay = null;
+        this.box = null;
+        this.titleEl = null;
+        this.contentEl = null;
+        this.closeBtn = null;
     }
 }

@@ -3,7 +3,7 @@ import WebKit
 
 // MARK: - App Delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, WKNavigationDelegate {
     var statusItem: NSStatusItem!
     var popover: NSPopover!
     var webView: WKWebView!
@@ -13,6 +13,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var dashboardWebView: WKWebView?
     var pollTimer: Timer?
     var lastHTML: String = ""
+    var pendingPopoverHTML: String?
+    var popoverShellReady = false
+    var popoverUpdateInFlight = false
     var lastRenderSignature: String = ""
     var isFetching = false
     var fetchGeneration = 0
@@ -32,6 +35,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         pollTimer?.invalidate()
+        pollTimer = nil
+        fetchGeneration += 1
+        webView?.navigationDelegate = nil
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "openDashboard")
+        webView?.configuration.userContentController.removeScriptMessageHandler(forName: "badge")
+        dashboardWebView?.stopLoading()
+        dashboardWebView?.navigationDelegate = nil
+        dashboardWindow?.orderOut(nil)
+        dashboardWebView = nil
+        dashboardWindow = nil
         stopServer()
     }
 
@@ -97,7 +110,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         lastRenderSignature = "offline"
         updateBadge(working: 0)
         let html = Self.buildHTML(agents: [], working: 0, idle: 0, tokens: "0", cost: "$0.00", offline: true)
-        if html != lastHTML { lastHTML = html; webView.loadHTMLString(html, baseURL: nil) }
+        updatePopover(html)
     }
 
     func renderSessions(_ sessions: [[String: Any]], usage: [String: Any]? = nil) {
@@ -206,7 +219,62 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                                   tier: tierStr, activity: activityStr,
                                   quotaAvailable: quotaAvailable,
                                   fiveHourPct: fiveHourPct, sevenDayPct: sevenDayPct)
-        if html != lastHTML { lastHTML = html; webView.loadHTMLString(html, baseURL: nil) }
+        updatePopover(html)
+    }
+
+    func updatePopover(_ html: String) {
+        if html == lastHTML { return }
+        lastHTML = html
+        pendingPopoverHTML = html
+        applyPendingPopoverUpdate()
+    }
+
+    func applyPendingPopoverUpdate() {
+        guard popoverShellReady, !popoverUpdateInFlight, let html = pendingPopoverHTML else { return }
+        guard let data = try? JSONSerialization.data(withJSONObject: ["html": html]),
+              let payload = String(data: data, encoding: .utf8) else { return }
+
+        let script = """
+        (() => {
+          const payload = \(payload);
+          const next = new DOMParser().parseFromString(payload.html, 'text/html');
+          const currentHeader = document.querySelector('.header');
+          const nextHeader = next.querySelector('.header');
+          if (currentHeader && nextHeader) currentHeader.replaceWith(document.importNode(nextHeader, true));
+
+          const currentQuota = document.querySelector('.quota-sec');
+          const nextQuota = next.querySelector('.quota-sec');
+          if (currentQuota && nextQuota) {
+            currentQuota.replaceWith(document.importNode(nextQuota, true));
+          } else if (currentQuota) {
+            currentQuota.remove();
+          } else if (nextQuota) {
+            document.querySelector('.header')?.after(document.importNode(nextQuota, true));
+          }
+
+          const currentList = document.querySelector('.list');
+          const nextList = next.querySelector('.list');
+          if (currentList && nextList) currentList.replaceWith(document.importNode(nextList, true));
+          return true;
+        })();
+        """
+        pendingPopoverHTML = nil
+        popoverUpdateInFlight = true
+        webView.evaluateJavaScript(script) { [weak self] _, error in
+            guard let self = self else { return }
+            self.popoverUpdateInFlight = false
+            if let error = error {
+                if self.pendingPopoverHTML == nil { self.pendingPopoverHTML = html }
+                NSLog("ClaudeVille popover update failed: %@", error.localizedDescription)
+            }
+            self.applyPendingPopoverUpdate()
+        }
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard webView === self.webView else { return }
+        popoverShellReady = true
+        applyPendingPopoverUpdate()
     }
 
     static func formatTier(rateLimitTier: String?, subscriptionType: String?) -> String {
@@ -272,8 +340,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         <!DOCTYPE html>
         <html><head>
         <meta charset="UTF-8">
-        <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
         <style>
+          @font-face { font-family:'Press Start 2P'; font-style:normal; font-weight:400;
+                       font-display:swap; src:url('PressStart2P-Regular.woff2') format('woff2'); }
           * { margin:0; padding:0; box-sizing:border-box; }
           body { background:#0a0a0f; color:#e2e8f0; font-family:-apple-system,sans-serif;
                  width:320px; height:420px; overflow:hidden; }
@@ -608,7 +677,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openDashboard() {
-        if let window = dashboardWindow, window.isVisible {
+        if let window = dashboardWindow {
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
@@ -643,6 +712,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 320, height: 420), configuration: config)
         webView.setValue(false, forKey: "drawsBackground")
+        webView.navigationDelegate = self
 
         let vc = NSViewController()
         vc.view = webView
@@ -652,6 +722,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
         popover.contentViewController = vc
         popover.animates = true
+
+        let shell = Self.buildHTML(agents: [], working: 0, idle: 0, tokens: "0", cost: "$0.00", offline: false)
+        lastHTML = shell
+        webView.loadHTMLString(shell, baseURL: Bundle.main.resourceURL)
     }
 
     func updateBadge(working: Int) {

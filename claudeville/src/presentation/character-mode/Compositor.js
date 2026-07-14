@@ -6,7 +6,8 @@ import { DEFAULT_CELL, DIRECTIONS, WALK_FRAMES, IDLE_FRAMES } from './SpriteShee
 // 3. compositing an allowed runtime effort/accessory overlay over the head pixels.
 // Result is cached per (base sprite, paletteVariant, runtimeAccessory) tuple.
 
-const cache = new Map();
+const CACHE_ENTRY_LIMIT = 24;
+const CACHE_PIXEL_LIMIT = 12_500_000;
 
 // Direction columns that show the back of the head — face-side accessory
 // detail (goggle lenses, veil openings) must not appear here.
@@ -26,6 +27,8 @@ const ACCESSORY_BACK_CROP = {
 export class Compositor {
     constructor(assetManager) {
         this.assets = assetManager;
+        this.cache = new Map();
+        this.cachePixels = 0;
     }
 
     spriteFor(baseSpriteId, paletteKey, paletteVariant, runtimeAccessory, teamTrim = null) {
@@ -36,8 +39,14 @@ export class Compositor {
         // 4.14: include team trim accent in cache key so team-sashed sprites
         // cache independently from solo agents using the same palette variant.
         const teamHash = teamTrim ? String(teamTrim).toLowerCase() : '_';
-        const key = `${baseId}|${palette}|${paletteVariant}|${runtimeAccessory ?? '_'}|${teamHash}`;
-        if (cache.has(key)) return cache.get(key);
+        const variantKey = this._resolvedVariantKey(palette, paletteVariant, teamTrim);
+        const key = `${baseId}|${palette}|${variantKey}|${runtimeAccessory ?? '_'}|${teamHash}`;
+        if (this.cache.has(key)) {
+            const cached = this.cache.get(key);
+            this.cache.delete(key);
+            this.cache.set(key, cached);
+            return cached;
+        }
 
         const baseImg = this.assets.get(baseId);
         if (!baseImg) return null;
@@ -54,8 +63,51 @@ export class Compositor {
         this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant, teamTrim);
         if (runtimeAccessory) this._compositeAccessory(ctx, baseId, runtimeAccessory, palette);
 
-        cache.set(key, canvas);
+        this.cache.set(key, canvas);
+        this.cachePixels += canvas.width * canvas.height;
+        this._trimCache();
         return canvas;
+    }
+
+    _resolvedVariantKey(paletteKey, variant, teamTrim) {
+        const palette = this.assets.palettes?.[paletteKey];
+        if (!palette) return String(variant);
+        const index = Math.max(0, Number(variant) || 0);
+        const robe = palette.robe?.[index % Math.max(1, palette.robe.length)] || '_';
+        const pants = palette.pants?.[index % Math.max(1, palette.pants.length)] || '_';
+        const trim = parseTrimColor(teamTrim)
+            ? String(teamTrim).toLowerCase()
+            : (palette.trim?.[index % Math.max(1, palette.trim.length)] || '_');
+        return `${robe},${pants},${trim}`;
+    }
+
+    _trimCache() {
+        while (this.cache.size > CACHE_ENTRY_LIMIT || this.cachePixels > CACHE_PIXEL_LIMIT) {
+            const oldestKey = this.cache.keys().next().value;
+            if (oldestKey == null) break;
+            const oldest = this.cache.get(oldestKey);
+            this.cache.delete(oldestKey);
+            this.cachePixels -= (oldest?.width || 0) * (oldest?.height || 0);
+        }
+        this.cachePixels = Math.max(0, this.cachePixels);
+    }
+
+    cacheStats() {
+        return {
+            entries: this.cache.size,
+            pixels: this.cachePixels,
+            entryLimit: CACHE_ENTRY_LIMIT,
+            pixelLimit: CACHE_PIXEL_LIMIT,
+        };
+    }
+
+    dispose() {
+        for (const canvas of this.cache.values()) {
+            canvas.width = 0;
+            canvas.height = 0;
+        }
+        this.cache.clear();
+        this.cachePixels = 0;
     }
 
     _applyPaletteSwap(ctx, w, h, provider, variant, teamTrim = null) {

@@ -40,6 +40,7 @@ const DEFAULT_TTLS = Object.freeze({
 const TOKEN_DELTA_THRESHOLD = 128;
 const CONTEXT_PRESSURE_THRESHOLD = 0.82;
 const MAX_SEEN_GIT_EVENTS = 600;
+const MAX_PENDING_GATHERS = 64;
 
 function timeNow() {
     return Date.now();
@@ -207,6 +208,12 @@ export class VisitIntentManager {
         this.throttleAgents = new Set();
         this.pendingGathers = [];
         this._eventUnsubscribers = [];
+        this._disposed = false;
+        this._nextSeenGitEventIds = null;
+        this._gitReplayByAgent = null;
+        this._gitReplaySourceSnapshot = [];
+        this._gitReplayCache = new Map();
+        this._gitReplayStats = { hits: 0, misses: 0, normalized: 0, rawDuplicates: 0 };
         this._subscribeEventBus();
     }
 
@@ -225,13 +232,26 @@ export class VisitIntentManager {
         this._eventUnsubscribers.push(eventBus.on('team:gather', (payload) => {
             if (!payload) return;
             this.pendingGathers.push(payload);
+            if (this.pendingGathers.length > MAX_PENDING_GATHERS) {
+                this.pendingGathers.splice(0, this.pendingGathers.length - MAX_PENDING_GATHERS);
+            }
         }));
     }
 
     update(agents = null, now = this.now()) {
+        if (this._disposed) return this.snapshot(now);
+        const currentNow = Number.isFinite(Number(now)) ? Number(now) : this.now();
+        this.reconcile(agents, currentNow);
+        return this.snapshot(currentNow);
+    }
+
+    reconcile(agents = null, now = this.now()) {
+        if (this._disposed) return this;
         const currentNow = Number.isFinite(Number(now)) ? Number(now) : this.now();
         const activeAgents = agentListFrom(agents, this.world);
         const activeIds = new Set();
+        this._nextSeenGitEventIds = new Set();
+        this._gitReplayByAgent = this._collectGitReplayWindow(activeAgents, currentNow);
 
         for (const agent of activeAgents) {
             if (!agent?.id) continue;
@@ -255,9 +275,11 @@ export class VisitIntentManager {
             if (!activeIds.has(agentId)) this.lastToolBuildingByAgent.delete(agentId);
         }
 
-        this._trimSeenGitEvents();
+        this.seenGitEventIds = this._nextSeenGitEventIds;
+        this._nextSeenGitEventIds = null;
+        this._gitReplayByAgent = null;
         this._expireIntents(currentNow);
-        return this.snapshot(currentNow);
+        return this;
     }
 
     getIntentForAgent(agentId, now = this.now()) {
@@ -298,7 +320,31 @@ export class VisitIntentManager {
         return this.snapshot(now);
     }
 
+    getDiagnostics() {
+        let intentCount = 0;
+        for (const intents of this.intentsByAgent.values()) intentCount += intents.size;
+        return {
+            agents: this.intentsByAgent.size,
+            intents: intentCount,
+            tokenSnapshots: this.tokenSnapshots.size,
+            seenGitEvents: this.seenGitEventIds.size,
+            seenGitEventLimit: MAX_SEEN_GIT_EVENTS,
+            lastForgeAgents: this.lastForgeByAgent.size,
+            lastToolAgents: this.lastToolBuildingByAgent.size,
+            throttleAgents: this.throttleAgents.size,
+            pendingGathers: this.pendingGathers.length,
+            pendingGatherLimit: MAX_PENDING_GATHERS,
+            disposed: this._disposed,
+            gitReplayCacheHits: this._gitReplayStats.hits,
+            gitReplayCacheMisses: this._gitReplayStats.misses,
+            gitReplayNormalized: this._gitReplayStats.normalized,
+            gitReplayRawDuplicates: this._gitReplayStats.rawDuplicates,
+        };
+    }
+
     dispose() {
+        if (this._disposed) return;
+        this._disposed = true;
         this.intentsByAgent.clear();
         this.tokenSnapshots.clear();
         this.seenGitEventIds.clear();
@@ -306,6 +352,10 @@ export class VisitIntentManager {
         this.lastToolBuildingByAgent.clear();
         this.throttleAgents.clear();
         this.pendingGathers.length = 0;
+        this._nextSeenGitEventIds = null;
+        this._gitReplayByAgent = null;
+        this._gitReplaySourceSnapshot = [];
+        this._gitReplayCache.clear();
         for (const unsubscribe of this._eventUnsubscribers.splice(0)) {
             unsubscribe?.();
         }
@@ -424,50 +474,146 @@ export class VisitIntentManager {
     }
 
     _deriveGitIntents(agent, now) {
-        const sources = [agent.gitEvents, agent.git?.events, agent.vcsEvents].filter(Array.isArray);
-        for (const source of sources) {
-            source.forEach((event, index) => {
-                const normalized = normalizeGitEvent(event, agent, index, {
-                    fallbackTimestamp: parseEventTime(agent.lastSessionActivity, now),
-                    maxLabelChars: 18,
-                    ellipsis: '...',
-                });
-                if (!normalized) return;
-                const sourceKey = `${normalized.sessionId}:${normalized.id}`;
-                const ageMs = Math.max(0, now - normalized.timestamp);
-                const isFresh = ageMs < DEFAULT_TTLS.git.ttlMs && !this.seenGitEventIds.has(sourceKey);
-                if (!isFresh) return;
-                this.seenGitEventIds.add(sourceKey);
+        const replayEvents = this._gitReplayByAgent?.get(agent.id) || [];
+        for (const { normalized, sourceKey } of replayEvents) {
+            this._nextSeenGitEventIds?.add(sourceKey);
+            const ageMs = Math.max(0, now - normalized.timestamp);
+            const isFresh = ageMs < DEFAULT_TTLS.git.ttlMs && !this.seenGitEventIds.has(sourceKey);
+            if (!isFresh) continue;
+            this.seenGitEventIds.add(sourceKey);
 
+            this._upsertIntent(agent.id, {
+                source: 'git',
+                sourceKey,
+                building: 'harbor',
+                reason: normalized.type === 'push'
+                    ? 'push'
+                    : (normalized.type === 'pull' || normalized.type === 'fetch' ? normalized.type : 'commit'),
+                phase: 'git',
+                confidence: normalized.type === 'push' ? 0.94 : 0.86,
+                label: normalized.label,
+                payload: normalized,
+                createdAt: normalized.timestamp || now,
+                expiresAt: normalized.timestamp + DEFAULT_TTLS.git.ttlMs,
+                stickyUntil: normalized.timestamp + DEFAULT_TTLS.git.stickyMs,
+            }, now);
+
+            if (normalized.type === 'push' && normalized.status === 'failed') {
                 this._upsertIntent(agent.id, {
-                    source: 'git',
-                    sourceKey,
-                    building: 'harbor',
-                    reason: normalized.type === 'push'
-                        ? 'push'
-                        : (normalized.type === 'pull' || normalized.type === 'fetch' ? normalized.type : 'commit'),
+                    source: 'alert',
+                    sourceKey: `failed-push:${sourceKey}`,
+                    building: 'watchtower',
+                    reason: 'failed-push-watch',
                     phase: 'git',
-                    confidence: normalized.type === 'push' ? 0.94 : 0.86,
-                    label: normalized.label,
+                    confidence: 0.94,
+                    label: normalized.label || 'push failed',
                     payload: normalized,
                     createdAt: normalized.timestamp || now,
+                    expiresAt: normalized.timestamp + DEFAULT_TTLS.alert.ttlMs,
+                    stickyUntil: normalized.timestamp + DEFAULT_TTLS.alert.stickyMs,
                 }, now);
-
-                if (normalized.type === 'push' && normalized.status === 'failed') {
-                    this._upsertIntent(agent.id, {
-                        source: 'alert',
-                        sourceKey: `failed-push:${sourceKey}`,
-                        building: 'watchtower',
-                        reason: 'failed-push-watch',
-                        phase: 'git',
-                        confidence: 0.94,
-                        label: normalized.label || 'push failed',
-                        payload: normalized,
-                        createdAt: normalized.timestamp || now,
-                    }, now);
-                }
-            });
+            }
         }
+    }
+
+    _collectGitReplayWindow(agents, now) {
+        const sourceSnapshot = [];
+        for (const agent of agents) {
+            if (!agent?.id) continue;
+            const sources = [agent.gitEvents, agent.git?.events, agent.vcsEvents].filter(Array.isArray);
+            for (const source of sources) {
+                const last = source.at(-1) || null;
+                sourceSnapshot.push({
+                    agentId: agent.id,
+                    source,
+                    length: source.length,
+                    last,
+                    lastStatus: last?.status ?? last?.success ?? last?.exitCode ?? null,
+                    lastActivity: agent.lastSessionActivity || null,
+                });
+            }
+        }
+        if (this._sameGitReplaySources(sourceSnapshot)) {
+            this._gitReplayStats.hits++;
+            return this._gitReplayCache;
+        }
+        this._gitReplayStats.misses++;
+
+        const rawCandidates = new Map();
+        for (const agent of agents) {
+            if (!agent?.id) continue;
+            const sources = [agent.gitEvents, agent.git?.events, agent.vcsEvents].filter(Array.isArray);
+            for (const source of sources) {
+                const start = Math.max(0, source.length - MAX_SEEN_GIT_EVENTS);
+                source.slice(start).forEach((event, offset) => {
+                    const index = start + offset;
+                    const key = this._rawGitReplayKey(event, agent, index);
+                    if (rawCandidates.has(key)) {
+                        this._gitReplayStats.rawDuplicates++;
+                        return;
+                    }
+                    rawCandidates.set(key, { event, agent, index });
+                });
+            }
+        }
+
+        const candidatesByKey = new Map();
+        for (const { event, agent, index } of rawCandidates.values()) {
+            const normalized = normalizeGitEvent(event, agent, index, {
+                fallbackTimestamp: parseEventTime(agent.lastSessionActivity, now),
+                maxLabelChars: 18,
+                ellipsis: '...',
+            });
+            if (!normalized) continue;
+            this._gitReplayStats.normalized++;
+            const sourceKey = `${normalized.sessionId}:${normalized.id}`;
+            const previous = candidatesByKey.get(sourceKey);
+            if (!previous || normalized.timestamp >= previous.normalized.timestamp) {
+                candidatesByKey.set(sourceKey, { agentId: agent.id, normalized, sourceKey });
+            }
+        }
+
+        const replay = [...candidatesByKey.values()]
+            .sort((a, b) => (a.normalized.timestamp - b.normalized.timestamp) || a.sourceKey.localeCompare(b.sourceKey))
+            .slice(-MAX_SEEN_GIT_EVENTS);
+        const byAgent = new Map();
+        for (const entry of replay) {
+            const list = byAgent.get(entry.agentId) || [];
+            list.push(entry);
+            byAgent.set(entry.agentId, list);
+        }
+        this._gitReplaySourceSnapshot = sourceSnapshot;
+        this._gitReplayCache = byAgent;
+        return byAgent;
+    }
+
+    _sameGitReplaySources(next) {
+        const previous = this._gitReplaySourceSnapshot;
+        if (previous.length !== next.length) return false;
+        for (let index = 0; index < next.length; index++) {
+            const a = previous[index];
+            const b = next[index];
+            if (
+                a.agentId !== b.agentId
+                || a.source !== b.source
+                || a.length !== b.length
+                || a.last !== b.last
+                || a.lastStatus !== b.lastStatus
+                || a.lastActivity !== b.lastActivity
+            ) return false;
+        }
+        return true;
+    }
+
+    _rawGitReplayKey(event, agent, index) {
+        const sessionId = event?.sessionId || event?.session_id || '';
+        const eventId = event?.id || event?.eventId || event?.uuid || event?.key || '';
+        const sha = event?.sha || event?.commit || event?.hash || event?.commitSha || '';
+        const project = event?.project || event?.projectPath || event?.repository || agent?.projectPath || '';
+        const identity = eventId || sha || event?.commandHash || `${event?.type || event?.kind || 'git'}:${index}`;
+        return sessionId
+            ? `${sessionId}:${identity}`
+            : `${agent?.id || 'unknown'}:${project}:${identity}`;
     }
 
     _deriveRelationshipIntents(agent, now) {
@@ -659,11 +805,6 @@ export class VisitIntentManager {
         }
     }
 
-    _trimSeenGitEvents() {
-        if (this.seenGitEventIds.size <= MAX_SEEN_GIT_EVENTS) return;
-        this.seenGitEventIds = new Set([...this.seenGitEventIds].slice(-Math.floor(MAX_SEEN_GIT_EVENTS * 0.75)));
-    }
-
     _upsertIntent(agentId, draft, now) {
         if (!agentId || !draft?.building || !draft?.source) return null;
         const meta = DEFAULT_TTLS[draft.source] || DEFAULT_TTLS.ambient;
@@ -679,6 +820,12 @@ export class VisitIntentManager {
             ? Number(draft.stickyMs)
             : meta.stickyMs;
         const priority = Number.isFinite(Number(draft.priority)) ? Number(draft.priority) : meta.priority;
+        const expiresAt = Number.isFinite(Number(draft.expiresAt))
+            ? Number(draft.expiresAt)
+            : now + ttlMs;
+        const stickyUntil = Number.isFinite(Number(draft.stickyUntil))
+            ? Number(draft.stickyUntil)
+            : now + stickyMs;
         const phase = phaseFromIntentDraft(draft);
         const goal = goalFromIntentDraft(draft, phase);
         const itinerary = itineraryFromIntentDraft(draft, {
@@ -699,8 +846,8 @@ export class VisitIntentManager {
             label: draft.label || '',
             createdAt: previous?.createdAt || createdAt,
             updatedAt: now,
-            expiresAt: Math.max(previous?.expiresAt || 0, now + ttlMs),
-            stickyUntil: Math.max(previous?.stickyUntil || 0, now + stickyMs),
+            expiresAt: Math.max(previous?.expiresAt || 0, expiresAt),
+            stickyUntil: Math.max(previous?.stickyUntil || 0, stickyUntil),
             ttlMs,
             stickyMs,
             phase,

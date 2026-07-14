@@ -45,6 +45,18 @@ try {
 const qmlPath = join(packageRoot, 'contents', 'ui', 'main.qml');
 if (existsSync(qmlPath)) {
   const qml = readFileSync(qmlPath, 'utf8');
+  for (const requiredSource of [
+    'var completed = false',
+    'if (completed) return',
+    'xhr.onreadystatechange = null',
+    'property int requestGeneration: 0',
+    'Component.onDestruction: cancelActiveRequests()',
+  ]) {
+    if (!qml.includes(requiredSource)) {
+      console.error(`INVALID: KDE request lifecycle is missing ${JSON.stringify(requiredSource)}`);
+      failures++;
+    }
+  }
   const ids = new Set([...qml.matchAll(/["'](agent\.[A-Za-z0-9_.-]+)["']/g)].map((match) => match[1]));
   for (const id of [...ids].sort()) {
     const imagePath = join(packageRoot, 'contents', 'images', `${id}.png`);

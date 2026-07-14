@@ -27,6 +27,8 @@ PlasmoidItem {
     property bool quotaAvailable: false
     property int fiveHourPct: 0
     property int sevenDayPct: 0
+    property var activeRequests: []
+    property int requestGeneration: 0
 
     toolTipMainText: "ClaudeVille"
     toolTipSubText: online
@@ -553,34 +555,65 @@ PlasmoidItem {
 
     function requestJson(path, callback) {
         var xhr = new XMLHttpRequest()
+        var completed = false
+
+        function finish(err, data) {
+            if (completed) return
+            completed = true
+            xhr.onreadystatechange = null
+            xhr.onerror = null
+            xhr.ontimeout = null
+            root.activeRequests = root.activeRequests.filter(function(candidate) { return candidate !== xhr })
+            callback(err, data)
+        }
+
         xhr.open("GET", root.serverUrl + path)
         xhr.timeout = 4000
         xhr.onreadystatechange = function() {
             if (xhr.readyState !== 4) return
             if (xhr.status >= 200 && xhr.status < 300) {
                 try {
-                    callback(null, JSON.parse(xhr.responseText))
+                    finish(null, JSON.parse(xhr.responseText))
                 } catch (err) {
-                    callback(i18n("Invalid JSON from %1", path), null)
+                    finish(i18n("Invalid JSON from %1", path), null)
                 }
             } else {
-                callback(i18n("HTTP %1 from %2", xhr.status, path), null)
+                finish(i18n("HTTP %1 from %2", xhr.status, path), null)
             }
         }
-        xhr.onerror = function() { callback(i18n("Unable to reach %1", root.serverUrl), null) }
-        xhr.ontimeout = function() { callback(i18n("Timed out reaching %1", root.serverUrl), null) }
+        xhr.onerror = function() { finish(i18n("Unable to reach %1", root.serverUrl), null) }
+        xhr.ontimeout = function() { finish(i18n("Timed out reaching %1", root.serverUrl), null) }
+        root.activeRequests = root.activeRequests.concat([xhr])
         xhr.send()
+        return xhr
+    }
+
+    function cancelActiveRequests() {
+        root.requestGeneration += 1
+        var requests = root.activeRequests
+        root.activeRequests = []
+        for (var i = 0; i < requests.length; i++) {
+            var xhr = requests[i]
+            xhr.onreadystatechange = null
+            xhr.onerror = null
+            xhr.ontimeout = null
+            try { xhr.abort() } catch (err) {}
+        }
+        root.loading = false
     }
 
     function refresh() {
         if (root.loading) return
         root.loading = true
+        root.requestGeneration += 1
+        var generation = root.requestGeneration
         var pending = 2
         var nextSessions = null
         var nextUsage = null
         var failure = ""
 
         function done(err) {
+            if (generation !== root.requestGeneration) return
             if (err && !failure) failure = String(err)
             pending -= 1
             if (pending > 0) return
@@ -603,6 +636,13 @@ PlasmoidItem {
             done(err)
         })
     }
+
+    onServerUrlChanged: {
+        cancelActiveRequests()
+        refresh()
+    }
+
+    Component.onDestruction: cancelActiveRequests()
 
     function applyData(sessions, usageData) {
         var rows = []

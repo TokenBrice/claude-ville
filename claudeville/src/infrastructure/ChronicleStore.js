@@ -3,6 +3,8 @@ const DB_VERSION = 4;
 const LEASE_KEY = 'claudeville.chronicle.captureLease';
 const DEFAULT_LEASE_TTL_MS = 7000;
 const LIFETIME_COUNTS_META_KEY = 'lifetimeCounts';
+const LIFETIME_COMMIT_ID_LIMIT = 4096;
+const LATEST_COMMIT_IDS_PER_PROJECT_LIMIT = 64;
 const FOUNDING_META_KEY = 'founding';
 
 const RETENTION_MS = {
@@ -59,18 +61,30 @@ export class ChronicleStore {
         this._leaseToken = null;
         this._lastLeaseNotice = 0;
         this._lifetimeCounts = null;
+        this._recentCommitIds = null;
         this._lifetimeCountsLoad = null;
-        this.channel?.addEventListener?.('message', (event) => {
+        this._lifetimeWriteTail = Promise.resolve();
+        this._openPromise = null;
+        this._closed = false;
+        this._onChannelMessage = (event) => {
             if (event.data?.type === 'lease-acquired') {
                 this._lastLeaseNotice = nowMs();
             }
-        });
+            if (event.data?.type === 'lifetime-counts-updated') {
+                this._lifetimeCounts = null;
+                this._recentCommitIds = null;
+                this._lifetimeCountsLoad = null;
+            }
+        };
+        this.channel?.addEventListener?.('message', this._onChannelMessage);
     }
 
-    async open() {
-        if (this.db) return this;
+    open() {
+        if (this._closed) return Promise.reject(new Error('ChronicleStore is closed'));
+        if (this.db) return Promise.resolve(this);
+        if (this._openPromise) return this._openPromise;
         if (typeof indexedDB === 'undefined') {
-            throw new Error('IndexedDB is not available in this browser context');
+            return Promise.reject(new Error('IndexedDB is not available in this browser context'));
         }
         const request = indexedDB.open(this.dbName, DB_VERSION);
         request.onupgradeneeded = () => {
@@ -81,14 +95,30 @@ export class ChronicleStore {
                 this._ensureStore(db, tx, name, config.keyPath, config.indexes);
             }
         };
-        this.db = await requestToPromise(request);
-        return this;
+        const openPromise = requestToPromise(request)
+            .then((db) => {
+                if (this._closed) {
+                    db.close?.();
+                    throw new Error('ChronicleStore closed while opening');
+                }
+                this.db = db;
+                return this;
+            })
+            .finally(() => {
+                if (this._openPromise === openPromise) this._openPromise = null;
+            });
+        this._openPromise = openPromise;
+        return openPromise;
     }
 
     close() {
+        if (this._closed) return;
+        this._closed = true;
         this.db?.close?.();
         this.db = null;
+        this.channel?.removeEventListener?.('message', this._onChannelMessage);
         this.channel?.close?.();
+        this.channel = null;
     }
 
     async put(storeName, record) {
@@ -222,18 +252,34 @@ export class ChronicleStore {
         this._lifetimeCountsLoad = (async () => {
             const raw = await this.getMeta(LIFETIME_COUNTS_META_KEY, null).catch(() => null);
             const map = new Map();
-            if (raw && typeof raw === 'object') {
-                const entries = raw instanceof Map ? raw.entries() : Object.entries(raw);
+            const projects = raw?.version === 2 ? raw.projects : raw;
+            if (projects && typeof projects === 'object') {
+                const entries = projects instanceof Map ? projects.entries() : Object.entries(projects);
                 for (const [project, value] of entries) {
                     const key = String(project || '').trim();
                     if (!key) continue;
                     const commits = Number((value && value.commits) ?? 0);
                     if (!Number.isFinite(commits) || commits <= 0) continue;
                     const lastUpdated = Number((value && value.lastUpdated) ?? 0);
-                    map.set(key, { commits, lastUpdated: Number.isFinite(lastUpdated) ? lastUpdated : 0 });
+                    const latestCommitAt = Number((value && value.latestCommitAt) ?? 0);
+                    const latestCommitIds = Array.isArray(value?.latestCommitIds)
+                        ? value.latestCommitIds.slice(-LATEST_COMMIT_IDS_PER_PROJECT_LIMIT).map(id => String(id))
+                        : [];
+                    map.set(key, {
+                        commits,
+                        lastUpdated: Number.isFinite(lastUpdated) ? lastUpdated : 0,
+                        latestCommitAt: Number.isFinite(latestCommitAt) ? latestCommitAt : 0,
+                        latestCommitIds,
+                        identitySeeded: raw?.version === 2 ? value?.identitySeeded !== false : false,
+                    });
                 }
             }
             this._lifetimeCounts = map;
+            this._recentCommitIds = new Set(
+                (Array.isArray(raw?.recentCommitIds) ? raw.recentCommitIds : [])
+                    .slice(-LIFETIME_COMMIT_ID_LIMIT)
+                    .map(id => String(id)),
+            );
             return map;
         })();
         return this._lifetimeCountsLoad;
@@ -243,21 +289,131 @@ export class ChronicleStore {
         if (!this._lifetimeCounts) return;
         const out = {};
         for (const [project, entry] of this._lifetimeCounts.entries()) {
-            out[project] = { commits: entry.commits, lastUpdated: entry.lastUpdated };
+            out[project] = {
+                commits: entry.commits,
+                lastUpdated: entry.lastUpdated,
+                latestCommitAt: entry.latestCommitAt || 0,
+                latestCommitIds: (entry.latestCommitIds || []).slice(-LATEST_COMMIT_IDS_PER_PROJECT_LIMIT),
+                identitySeeded: entry.identitySeeded !== false,
+            };
         }
         try {
-            await this.setMeta(LIFETIME_COUNTS_META_KEY, out);
+            await this.setMeta(LIFETIME_COUNTS_META_KEY, {
+                version: 2,
+                projects: out,
+                recentCommitIds: [...(this._recentCommitIds || [])],
+            });
+            this.channel?.postMessage?.({ type: 'lifetime-counts-updated' });
         } catch { /* persist is best-effort */ }
     }
 
     async recordCommit(projectId, now = nowMs()) {
-        const key = String(projectId || '').trim() || 'unknown';
+        const [result] = await this.recordCommitEvents([{ projectId, observedAt: now }]);
+        return result?.count || 0;
+    }
+
+    async recordCommitEvent(projectId, commitId, observedAt = nowMs()) {
+        const [result] = await this.recordCommitEvents([{ projectId, commitId, observedAt }]);
+        return result || { count: 0, recorded: false };
+    }
+
+    recordCommitEvents(events = []) {
+        const run = async () => {
+            const execute = () => this._recordCommitEventsLocked(events);
+            if (typeof navigator !== 'undefined' && navigator.locks?.request) {
+                return navigator.locks.request(`claudeville-lifetime-counts:${this.dbName}`, execute);
+            }
+            return execute();
+        };
+        const pending = this._lifetimeWriteTail.then(run, run);
+        this._lifetimeWriteTail = pending.then(() => undefined, () => undefined);
+        return pending;
+    }
+
+    async _recordCommitEventsLocked(events = []) {
+        this._lifetimeCounts = null;
+        this._recentCommitIds = null;
+        this._lifetimeCountsLoad = null;
         const counts = await this._loadLifetimeCounts();
-        const previous = counts.get(key) || { commits: 0, lastUpdated: 0 };
-        const next = { commits: previous.commits + 1, lastUpdated: now };
-        counts.set(key, next);
-        await this._persistLifetimeCounts();
-        return next.commits;
+        const recentIds = this._recentCommitIds || new Set();
+        this._recentCommitIds = recentIds;
+        const results = [];
+        let changed = false;
+        const bootstrapProjects = new Set();
+        for (const event of events) {
+            const projectKey = String(event?.projectId || '').trim() || 'unknown';
+            if (counts.get(projectKey)?.identitySeeded === false) bootstrapProjects.add(projectKey);
+        }
+
+        for (const event of events) {
+            const projectKey = String(event?.projectId || '').trim() || 'unknown';
+            const observedAt = Number.isFinite(Number(event?.observedAt)) ? Number(event.observedAt) : nowMs();
+            const commitId = String(event?.commitId || '').trim();
+            const identity = commitId ? `${projectKey}\u0000${commitId}` : '';
+            const previous = counts.get(projectKey) || {
+                commits: 0,
+                lastUpdated: 0,
+                latestCommitAt: 0,
+                latestCommitIds: [],
+                identitySeeded: true,
+            };
+            const latestCommitIds = Array.isArray(previous.latestCommitIds) ? previous.latestCommitIds : [];
+            if (bootstrapProjects.has(projectKey)) {
+                const nextLatestIds = observedAt > (previous.latestCommitAt || 0)
+                    ? (identity ? [identity] : [])
+                    : observedAt === (previous.latestCommitAt || 0)
+                        ? [...latestCommitIds, ...(identity ? [identity] : [])]
+                            .slice(-LATEST_COMMIT_IDS_PER_PROJECT_LIMIT)
+                        : latestCommitIds;
+                counts.set(projectKey, {
+                    ...previous,
+                    latestCommitAt: Math.max(previous.latestCommitAt || 0, observedAt),
+                    latestCommitIds: nextLatestIds,
+                });
+                if (identity) recentIds.add(identity);
+                results.push({ count: previous.commits, recorded: false, seeded: true });
+                changed = true;
+                continue;
+            }
+            if (
+                identity
+                && (
+                    recentIds.has(identity)
+                    || (previous.latestCommitAt > 0 && observedAt < previous.latestCommitAt)
+                    || (observedAt === previous.latestCommitAt && latestCommitIds.includes(identity))
+                )
+            ) {
+                results.push({ count: previous.commits, recorded: false });
+                continue;
+            }
+
+            const nextLatestIds = observedAt > (previous.latestCommitAt || 0)
+                ? (identity ? [identity] : [])
+                : [...latestCommitIds, ...(identity ? [identity] : [])]
+                    .slice(-LATEST_COMMIT_IDS_PER_PROJECT_LIMIT);
+            const next = {
+                commits: previous.commits + 1,
+                lastUpdated: nowMs(),
+                latestCommitAt: Math.max(previous.latestCommitAt || 0, observedAt),
+                latestCommitIds: nextLatestIds,
+                identitySeeded: true,
+            };
+            counts.set(projectKey, next);
+            if (identity) recentIds.add(identity);
+            results.push({ count: next.commits, recorded: true });
+            changed = true;
+        }
+
+        for (const projectKey of bootstrapProjects) {
+            const entry = counts.get(projectKey);
+            if (entry) counts.set(projectKey, { ...entry, identitySeeded: true });
+        }
+
+        if (recentIds.size > LIFETIME_COMMIT_ID_LIMIT) {
+            this._recentCommitIds = new Set([...recentIds].slice(-LIFETIME_COMMIT_ID_LIMIT));
+        }
+        if (changed) await this._persistLifetimeCounts();
+        return results;
     }
 
     async getLifetimeCommitCount(projectId) {
@@ -300,7 +456,13 @@ export class ChronicleStore {
         return this.get('affinities', pairKey);
     }
 
-    async getAllAffinities() {
+    async getAllAffinities({ since = null } = {}) {
+        if (Number.isFinite(since)) {
+            return this.queryRange('affinities', {
+                index: 'lastInteractionAt',
+                lower: since,
+            });
+        }
         await this.open();
         const tx = this.db.transaction('affinities', 'readonly');
         return requestToPromise(tx.objectStore('affinities').getAll());

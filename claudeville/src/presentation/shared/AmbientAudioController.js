@@ -76,6 +76,11 @@ export class AmbientAudioController {
         this.mode = readStoredMode();
         this.userActivated = false;
         this.unlockArmed = false;
+        this._activationGeneration = 0;
+        this._visibilityGeneration = 0;
+        this._suspendTimer = null;
+        this._destroyPromise = null;
+        this._destroyed = false;
 
         this.engine = new AudioEngine();
         this.engine.setVolume(this.volume);
@@ -103,7 +108,8 @@ export class AmbientAudioController {
         if (this.enabled) this._armUnlockListeners();
 
         if (typeof window !== 'undefined') {
-            window.__claudevilleAudio = () => this._debugSnapshot();
+            this._debugHelper = () => this._debugSnapshot();
+            window.__claudevilleAudio = this._debugHelper;
         }
     }
 
@@ -113,7 +119,7 @@ export class AmbientAudioController {
     }
 
     setEnabled(enabled) {
-        if (!this.available) return;
+        if (!this.available || this._destroyed) return;
 
         this.enabled = Boolean(enabled);
         writeStoredPreference(this.enabled);
@@ -137,29 +143,59 @@ export class AmbientAudioController {
 
     // Switch between the reactive ambience and continuous town BGM.
     setMode(mode) {
-        if (!MODES.includes(mode) || mode === this.mode) return;
+        if (this._destroyed || !MODES.includes(mode) || mode === this.mode) return;
         const wasRunning = this.director.running;
         if (wasRunning) this.director.stop();
         this.mode = mode;
         writeStoredMode(mode);
         this._renderControls();
-        if (wasRunning) this.director.start();
+        if (wasRunning && !document.hidden) this.director.start();
     }
 
     async _activate() {
-        if (!this.enabled || !this.available) return;
-        const ready = await this.engine.ensureContext();
-        if (!ready || !this.enabled) return;
+        if (!this.enabled || !this.available || this._destroyed || document.hidden) return;
+        if (this._suspendTimer) {
+            clearTimeout(this._suspendTimer);
+            this._suspendTimer = null;
+        }
+        const activationGeneration = ++this._activationGeneration;
+        const visibilityGeneration = this._visibilityGeneration;
+        let ready = false;
+        try {
+            ready = await this.engine.ensureContext();
+        } catch {
+            return;
+        }
+        if (
+            !ready
+            || !this.enabled
+            || this._destroyed
+            || document.hidden
+            || activationGeneration !== this._activationGeneration
+            || visibilityGeneration !== this._visibilityGeneration
+        ) {
+            if (document.hidden) await this.engine.suspend();
+            return;
+        }
 
         this.engine.start();
         this.director.start();
     }
 
-    _deactivate() {
+    _deactivate({ forceSuspend = false, visibilityGeneration = this._visibilityGeneration } = {}) {
+        this._activationGeneration++;
         for (const director of Object.values(this.directors)) director.stop();
         this.engine.stop();
-        setTimeout(() => {
-            if (!this.enabled) void this.engine.suspend();
+        if (this._suspendTimer) clearTimeout(this._suspendTimer);
+        this._suspendTimer = setTimeout(() => {
+            this._suspendTimer = null;
+            if (this._destroyed) return;
+            const hiddenGenerationMatches = (
+                forceSuspend
+                && document.hidden
+                && visibilityGeneration === this._visibilityGeneration
+            );
+            if (!this.enabled || hiddenGenerationMatches) void this.engine.suspend();
         }, 800);
     }
 
@@ -174,8 +210,9 @@ export class AmbientAudioController {
 
     _handleVisibility() {
         if (typeof document === 'undefined') return;
+        const visibilityGeneration = ++this._visibilityGeneration;
         if (document.hidden) {
-            if (this.enabled) this._deactivate();
+            this._deactivate({ forceSuspend: true, visibilityGeneration });
         } else if (this.enabled && this.userActivated) {
             void this._activate();
         }
@@ -248,8 +285,16 @@ export class AmbientAudioController {
     }
 
     destroy() {
+        if (this._destroyPromise) return this._destroyPromise;
+        this._destroyed = true;
+        this._activationGeneration++;
+        this._visibilityGeneration++;
         this._removeUnlockListeners();
         for (const director of Object.values(this.directors)) director.stop();
+        if (this._suspendTimer) {
+            clearTimeout(this._suspendTimer);
+            this._suspendTimer = null;
+        }
 
         if (this.button) this.button.removeEventListener('click', this._onButtonClick);
         if (this.modeButton) this.modeButton.removeEventListener('click', this._onModeClick);
@@ -258,7 +303,10 @@ export class AmbientAudioController {
             document.removeEventListener('visibilitychange', this._onVisibility);
         }
 
-        void this.engine.dispose();
-        if (typeof window !== 'undefined') delete window.__claudevilleAudio;
+        if (typeof window !== 'undefined' && window.__claudevilleAudio === this._debugHelper) {
+            delete window.__claudevilleAudio;
+        }
+        this._destroyPromise = Promise.resolve(this.engine.dispose());
+        return this._destroyPromise;
     }
 }

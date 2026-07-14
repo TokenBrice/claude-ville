@@ -135,8 +135,12 @@ const TOOL_CONFIDENCE_THRESHOLD = 0.72;
 const TOOL_CLASSIFICATION_CACHE_LIMIT = 160;
 const TOOL_CLASSIFICATION_CACHE = new Map();
 const PROCESSED_SPRITE_CACHE = new Map();
+const PROCESSED_SPRITE_CACHE_ENTRY_LIMIT = 24;
+const PROCESSED_SPRITE_CACHE_PIXEL_LIMIT = 12_500_000;
+let processedSpriteCachePixels = 0;
 // Selection-ring asset recolored per provider accent; keyed by accent color.
 const TINTED_SELECTION_RING_CACHE = new Map();
+const TINTED_SELECTION_RING_CACHE_LIMIT = 24;
 const TOOL_ACTIVITY_LABEL_OVERRIDES = Object.freeze({
     'functions.spawn_agent': 'Spawning',
     'functions.send_input': 'Directing',
@@ -310,6 +314,32 @@ function memoizedToolClassification(tool, input) {
 }
 
 export class AgentSprite {
+    static sharedCacheStats() {
+        let tintedSelectionRingPixels = 0;
+        for (const canvas of TINTED_SELECTION_RING_CACHE.values()) {
+            tintedSelectionRingPixels += (canvas?.width || 0) * (canvas?.height || 0);
+        }
+        return {
+            processedSpriteSheets: PROCESSED_SPRITE_CACHE.size,
+            processedSpritePixels: processedSpriteCachePixels,
+            processedSpriteEntryLimit: PROCESSED_SPRITE_CACHE_ENTRY_LIMIT,
+            processedSpritePixelLimit: PROCESSED_SPRITE_CACHE_PIXEL_LIMIT,
+            tintedSelectionRings: TINTED_SELECTION_RING_CACHE.size,
+            tintedSelectionRingPixels,
+            toolClassifications: TOOL_CLASSIFICATION_CACHE.size,
+        };
+    }
+
+    static releaseSharedCaches() {
+        // Drop cache ownership without mutating backing stores. A renderer
+        // replacement can overlap briefly with the previous renderer, and the
+        // incoming sprites may already reference one of these shared canvases.
+        PROCESSED_SPRITE_CACHE.clear();
+        TINTED_SELECTION_RING_CACHE.clear();
+        TOOL_CLASSIFICATION_CACHE.clear();
+        processedSpriteCachePixels = 0;
+    }
+
     constructor(agent, {
         pathfinder = null,
         bridgeTiles = null,
@@ -2290,7 +2320,12 @@ export class AgentSprite {
 
     _prepareSpriteCanvas(baseCanvas, identity, cacheKey) {
         if (!baseCanvas || !this._shouldScrubBakedCodexWeapon(identity)) return baseCanvas;
-        if (PROCESSED_SPRITE_CACHE.has(cacheKey)) return PROCESSED_SPRITE_CACHE.get(cacheKey);
+        if (PROCESSED_SPRITE_CACHE.has(cacheKey)) {
+            const cached = PROCESSED_SPRITE_CACHE.get(cacheKey);
+            PROCESSED_SPRITE_CACHE.delete(cacheKey);
+            PROCESSED_SPRITE_CACHE.set(cacheKey, cached);
+            return cached;
+        }
 
         const canvas = document.createElement('canvas');
         canvas.width = baseCanvas.width;
@@ -2303,6 +2338,18 @@ export class AgentSprite {
         // canvas so body draw-scale still reads hat-free measurements (D3).
         if (baseCanvas.__cvBaseBounds) canvas.__cvBaseBounds = baseCanvas.__cvBaseBounds;
         PROCESSED_SPRITE_CACHE.set(cacheKey, canvas);
+        processedSpriteCachePixels += canvas.width * canvas.height;
+        while (
+            PROCESSED_SPRITE_CACHE.size > PROCESSED_SPRITE_CACHE_ENTRY_LIMIT
+            || processedSpriteCachePixels > PROCESSED_SPRITE_CACHE_PIXEL_LIMIT
+        ) {
+            const oldestKey = PROCESSED_SPRITE_CACHE.keys().next().value;
+            if (oldestKey == null) break;
+            const oldest = PROCESSED_SPRITE_CACHE.get(oldestKey);
+            PROCESSED_SPRITE_CACHE.delete(oldestKey);
+            processedSpriteCachePixels -= (oldest?.width || 0) * (oldest?.height || 0);
+        }
+        processedSpriteCachePixels = Math.max(0, processedSpriteCachePixels);
         return canvas;
     }
 
@@ -3193,7 +3240,11 @@ export class AgentSprite {
     _getTintedSelectionRing(ring, accent) {
         if (!ring?.width || !ring?.height) return null;
         const cached = TINTED_SELECTION_RING_CACHE.get(accent);
-        if (cached) return cached;
+        if (cached) {
+            TINTED_SELECTION_RING_CACHE.delete(accent);
+            TINTED_SELECTION_RING_CACHE.set(accent, cached);
+            return cached;
+        }
 
         const canvas = document.createElement('canvas');
         canvas.width = ring.width;
@@ -3207,6 +3258,9 @@ export class AgentSprite {
         tintCtx.globalCompositeOperation = 'destination-in';
         tintCtx.drawImage(ring, 0, 0);
         TINTED_SELECTION_RING_CACHE.set(accent, canvas);
+        while (TINTED_SELECTION_RING_CACHE.size > TINTED_SELECTION_RING_CACHE_LIMIT) {
+            TINTED_SELECTION_RING_CACHE.delete(TINTED_SELECTION_RING_CACHE.keys().next().value);
+        }
         return canvas;
     }
 
@@ -3980,7 +4034,7 @@ export class AgentSprite {
 
     // --- Variant and accessory helpers (used by draw to select sprite) ---
 
-    /** Returns a palette variant index (0..3) stable for this agent. */
+    /** Returns the historical 0..3 variant so existing agents keep their colors. */
     _hashVariant() {
         const hash = Math.abs(this._hash(`${this.agent.id}:${this.agent.model || ''}:${this._providerKey()}`));
         return hash % 4;

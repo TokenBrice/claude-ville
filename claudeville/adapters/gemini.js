@@ -31,6 +31,7 @@ const {
 const GEMINI_DIR = path.join(os.homedir(), '.gemini');
 const TMP_DIR = path.join(GEMINI_DIR, 'tmp');
 const SESSION_CACHE_MAX = 256;
+const HASH_TO_PATH_CACHE_MAX = 512;
 const GEMINI_TOOL_INPUT_FIELDS = Object.freeze(['command', 'file_path']);
 
 const _parsedSessionCache = new Map();
@@ -44,6 +45,13 @@ const _sessionFileById = new Map();
  */
 const _hashToPathCache = new Map();
 
+function cacheResolvedProjectPath(projectHash, projectPath) {
+  _hashToPathCache.delete(projectHash);
+  _hashToPathCache.set(projectHash, projectPath);
+  trimCache(_hashToPathCache, HASH_TO_PATH_CACHE_MAX);
+  return projectPath;
+}
+
 function sha256(str) {
   return crypto.createHash('sha256').update(str).digest('hex');
 }
@@ -51,15 +59,17 @@ function sha256(str) {
 function resolveProjectPath(projectHash) {
   // Check cache
   if (_hashToPathCache.has(projectHash)) {
-    return _hashToPathCache.get(projectHash);
+    const cached = _hashToPathCache.get(projectHash);
+    _hashToPathCache.delete(projectHash);
+    _hashToPathCache.set(projectHash, cached);
+    return cached;
   }
 
   const homeDir = os.homedir();
 
   // Candidate 1: home directory itself
   if (sha256(homeDir) === projectHash) {
-    _hashToPathCache.set(projectHash, homeDir);
-    return homeDir;
+    return cacheResolvedProjectPath(projectHash, homeDir);
   }
 
   // Candidate 2: first-level children under the home directory (Desktop, Documents, Projects etc.)
@@ -67,8 +77,7 @@ function resolveProjectPath(projectHash) {
   for (const dir of commonDirs) {
     const fullPath = path.join(homeDir, dir);
     if (sha256(fullPath) === projectHash) {
-      _hashToPathCache.set(projectHash, fullPath);
-      return fullPath;
+      return cacheResolvedProjectPath(projectHash, fullPath);
     }
     // Search up to two levels deep
     try {
@@ -79,8 +88,7 @@ function resolveProjectPath(projectHash) {
         for (const sub of subdirs) {
           const subPath = path.join(fullPath, sub.name);
           if (sha256(subPath) === projectHash) {
-            _hashToPathCache.set(projectHash, subPath);
-            return subPath;
+            return cacheResolvedProjectPath(projectHash, subPath);
           }
         }
       }
@@ -96,16 +104,14 @@ function resolveProjectPath(projectHash) {
         // Claude projects directory name: -Users-name-path format
         const projPath = '/' + dir.replace(/-/g, '/').replace(/^\//, '');
         if (sha256(projPath) === projectHash) {
-          _hashToPathCache.set(projectHash, projPath);
-          return projPath;
+          return cacheResolvedProjectPath(projectHash, projPath);
         }
       }
     }
   } catch { /* ignore */ }
 
   // Mapping failed; return null (do not show the hash directory name)
-  _hashToPathCache.set(projectHash, null);
-  return null;
+  return cacheResolvedProjectPath(projectHash, null);
 }
 
 function getParsedSession(filePath) {
@@ -459,15 +465,18 @@ class GeminiAdapter {
   getActiveSessions(activeThresholdMs) {
     const sessionFiles = scanActiveSessions(activeThresholdMs);
     const sessions = [];
+    const activeSessionIds = new Set();
 
     for (const { filePath, mtime, fileName, projectHash } of sessionFiles) {
       const detail = parseSession(filePath);
       const sessionId = fileName.replace('session-', '').replace('.json', '');
-      _sessionFileById.set(`gemini-${sessionId}`, filePath);
+      const fullSessionId = `gemini-${sessionId}`;
+      activeSessionIds.add(fullSessionId);
+      _sessionFileById.set(fullSessionId, filePath);
       const project = resolveProjectPath(projectHash);
 
       sessions.push({
-        sessionId: `gemini-${sessionId}`,
+        sessionId: fullSessionId,
         provider: 'gemini',
         agentId: null,
         agentType: 'main',
@@ -481,11 +490,14 @@ class GeminiAdapter {
         tokenUsage: getTokenUsage(filePath),
         gitEvents: getGitEvents(filePath, {
           provider: 'gemini',
-          sessionId: `gemini-${sessionId}`,
+          sessionId: fullSessionId,
           project,
         }),
         parentSessionId: null,
       });
+    }
+    for (const sessionId of _sessionFileById.keys()) {
+      if (!activeSessionIds.has(sessionId)) _sessionFileById.delete(sessionId);
     }
 
     return sessions.sort((a, b) => b.lastActivity - a.lastActivity);
@@ -520,19 +532,42 @@ class GeminiAdapter {
     return createDetailResponse({ sessionId });
   }
 
-  getWatchPaths() {
+  getWatchPaths({ sessions = [] } = {}) {
     const paths = [];
+    if (fs.existsSync(GEMINI_DIR)) {
+      paths.push({ type: 'directory', path: GEMINI_DIR, filters: ['tmp'], scope: 'discovery', kind: 'discovery' });
+    }
     if (fs.existsSync(TMP_DIR)) {
-      try {
-        const projDirs = fs.readdirSync(TMP_DIR, { withFileTypes: true })
-          .filter(d => d.isDirectory());
-        for (const dir of projDirs) {
-          const chatsDir = path.join(TMP_DIR, dir.name, 'chats');
-          if (fs.existsSync(chatsDir)) {
-            paths.push({ type: 'directory', path: chatsDir, filter: '.json' });
-          }
-        }
-      } catch { /* ignore */ }
+      paths.push({ type: 'directory', path: TMP_DIR, scope: 'discovery', kind: 'discovery' });
+    }
+    for (const session of sessions) {
+      const filePath = _sessionFileById.get(session.sessionId);
+      if (!filePath || !fs.existsSync(filePath)) continue;
+      const chatsDir = path.dirname(filePath);
+      const dirtyTarget = {
+        sessionId: session.sessionId,
+        project: session.project,
+      };
+      paths.push({ type: 'directory', path: path.dirname(chatsDir), scope: 'recent', kind: 'discovery', activity: session.lastActivity });
+      paths.push({
+        type: 'directory',
+        path: chatsDir,
+        filters: ['.json'],
+        scope: 'active',
+        kind: 'transcript',
+        probe: true,
+        activity: session.lastActivity,
+        ...dirtyTarget,
+      });
+      paths.push({
+        type: 'file',
+        path: filePath,
+        scope: 'active',
+        kind: 'transcript',
+        probe: true,
+        activity: session.lastActivity,
+        ...dirtyTarget,
+      });
     }
     return paths;
   }
@@ -540,6 +575,30 @@ class GeminiAdapter {
   invalidateCaches() {
     _parsedSessionCache.clear();
     _sessionFileById.clear();
+  }
+
+  invalidateCachesForDirty(dirty = {}) {
+    if (dirty.kind === 'transcript' && dirty.path) {
+      _parsedSessionCache.delete(dirty.path);
+      return;
+    }
+    if (dirty.kind === 'discovery' || dirty.kind === 'reconcile') {
+      for (const [projectHash, projectPath] of _hashToPathCache) {
+        if (projectPath && fs.existsSync(projectPath)) continue;
+        _hashToPathCache.delete(projectHash);
+      }
+      for (const [sessionId, filePath] of _sessionFileById) {
+        if (!fs.existsSync(filePath)) _sessionFileById.delete(sessionId);
+      }
+    }
+  }
+
+  getPerfStats() {
+    return {
+      parsedSessionEntries: _parsedSessionCache.size,
+      indexedSessions: _sessionFileById.size,
+      hashToPathEntries: _hashToPathCache.size,
+    };
   }
 }
 

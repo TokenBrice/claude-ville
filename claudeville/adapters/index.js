@@ -50,6 +50,7 @@ const SESSION_DETAIL_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_MAX_CACHE = 256;
 const REPOSITORY_SCAN_CACHE_TTL_MS = 5000;
 const REPOSITORY_SCAN_MAX_PROJECTS = Math.max(1, Number(process.env.CLAUDEVILLE_REPOSITORY_SCAN_MAX || 80) || 80);
+const DIRTY_KINDS = new Set(['transcript', 'discovery', 'metadata', 'teams', 'git', 'reconcile']);
 const REPOSITORY_SCAN_ROOT = process.env.CLAUDEVILLE_REPOSITORY_SCAN_ROOT
   || path.join(os.homedir(), 'Documents', 'git');
 
@@ -294,37 +295,81 @@ function getSessionDetailsBatch(items = [], { force = false } = {}) {
   return results;
 }
 
-function invalidateSessionCaches({ details = true, provider = null } = {}) {
-  const normalizedProvider = provider ? String(provider).toLowerCase() : null;
+function normalizeDirtyDescriptor(dirty, provider = null) {
+  const value = dirty && typeof dirty === 'object' ? dirty : {};
+  const providerValue = value.provider || provider;
+  const normalizedProvider = providerValue
+    ? normalizeProviderId(providerValue, '')
+    : null;
+  return {
+    provider: normalizedProvider || null,
+    path: value.path ? path.resolve(String(value.path)) : null,
+    kind: DIRTY_KINDS.has(value.kind) ? value.kind : 'reconcile',
+    reason: String(value.reason || 'cache-invalidation'),
+    sessionId: value.sessionId ? String(value.sessionId) : null,
+    project: value.project ? path.resolve(String(value.project)) : null,
+  };
+}
+
+function invalidateSessionCaches({ details = true, provider = null, dirty = null } = {}) {
+  const descriptor = normalizeDirtyDescriptor(dirty, provider);
+  const normalizedProvider = descriptor.provider;
   const scopedProvider = normalizedProvider && ADAPTER_BY_PROVIDER[normalizedProvider]
     ? normalizedProvider
     : null;
   _sessionListCache.at = 0;
   _sessionListCache.threshold = null;
   _sessionListCache.sessions = [];
-  invalidateGitStatusCaches();
+
+  if (descriptor.kind === 'git' && (descriptor.project || descriptor.path)) {
+    invalidateGitStatusCaches({ project: descriptor.project || descriptor.path });
+  }
 
   if (details) {
-    if (scopedProvider) {
+    if (descriptor.kind === 'git' && (descriptor.project || descriptor.path)) {
+      const project = descriptor.project || descriptor.path;
+      for (const key of _sessionDetailCache.keys()) {
+        if (key.endsWith(`::${project}`)) _sessionDetailCache.delete(key);
+      }
+    } else if (scopedProvider && descriptor.sessionId) {
+      const prefix = `${scopedProvider}::${descriptor.sessionId}::`;
+      for (const key of _sessionDetailCache.keys()) {
+        if (key.startsWith(prefix)) _sessionDetailCache.delete(key);
+      }
+    } else if (scopedProvider) {
       for (const key of _sessionDetailCache.keys()) {
         if (key.startsWith(`${scopedProvider}::`)) {
           _sessionDetailCache.delete(key);
         }
       }
-    } else {
+    } else if (descriptor.kind !== 'git') {
       _sessionDetailCache.clear();
     }
   }
 
   const adaptersToInvalidate = scopedProvider
     ? [ADAPTER_BY_PROVIDER[scopedProvider]]
-    : adapters;
+    : (['discovery', 'metadata', 'reconcile'].includes(descriptor.kind) ? adapters : []);
 
   for (const adapter of adaptersToInvalidate) {
     try {
-      adapter.invalidateCaches?.();
+      if (typeof adapter.invalidateCachesForDirty === 'function') {
+        adapter.invalidateCachesForDirty(descriptor);
+      } else if (descriptor.kind !== 'transcript' && descriptor.kind !== 'git' && descriptor.kind !== 'teams') {
+        adapter.invalidateCaches?.();
+      }
     } catch {
       // Adapter-local cache invalidation is best effort.
+    }
+  }
+}
+
+function setAdapterDataReadyCallback(callback) {
+  for (const adapter of adapters) {
+    try {
+      adapter.setDataReadyCallback?.(callback);
+    } catch {
+      // Optional adapter completion notifications are best effort.
     }
   }
 }
@@ -336,12 +381,16 @@ function _trimSessionDetailCache() {
 /**
  * Collect watch paths from all active adapters
  */
-function getAllWatchPaths() {
+function getAllWatchPaths({ sessions = [], activeThresholdMs = null } = {}) {
   const paths = [];
   for (const adapter of adapters) {
     if (!adapter.isAvailable()) continue;
     try {
-      paths.push(...adapter.getWatchPaths().map((watchPath) => ({
+      const providerSessions = sessions.filter((session) => session?.provider === adapter.provider);
+      paths.push(...adapter.getWatchPaths({
+        sessions: providerSessions,
+        activeThresholdMs,
+      }).map((watchPath) => ({
         ...watchPath,
         provider: adapter.provider,
       })));
@@ -388,6 +437,8 @@ module.exports = {
   getJsonlDiagnostics,
   isKnownSessionDetailProvider,
   invalidateSessionCaches,
+  normalizeDirtyDescriptor,
   normalizeDetail,
   normalizeSession,
+  setAdapterDataReadyCallback,
 };

@@ -4,11 +4,13 @@ const DEFAULT_HEAD_BYTES = 512 * 1024;
 const DEFAULT_TAIL_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_TAIL_BYTES = 8 * 1024 * 1024;
 const TAIL_STATE_CACHE_MAX = 128;
+const TAIL_STATE_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const TAIL_GUARD_BYTES = 256;
 
-// Tail-offset cache: per (path, count) we remember the byte offset of the last
-// read plus the resulting lines, so steady polling only reads appended bytes.
+// Tail-offset cache: one largest requested window per path. Smaller callers
+// derive their view instead of retaining overlapping copies of the same tail.
 const _tailStateCache = new Map();
+let _tailStateCacheBytes = 0;
 
 const DEFAULT_TOOL_FIELDS = Object.freeze([
   'command',
@@ -84,7 +86,7 @@ function readTailRaw(filePath, count, chunkBytes, maxBytes) {
   const fd = fs.openSync(filePath, 'r');
   try {
     const stat = fs.fstatSync(fd);
-    if (stat.size === 0) return { stat, text: '' };
+    if (stat.size === 0) return { stat, buffer: Buffer.alloc(0), bytesCollected: 0 };
 
     const chunks = [];
     let position = stat.size;
@@ -99,22 +101,51 @@ function readTailRaw(filePath, count, chunkBytes, maxBytes) {
       const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
       if (bytesRead <= 0) break;
 
-      const chunk = buffer.toString('utf-8', 0, bytesRead);
+      const chunk = buffer.subarray(0, bytesRead);
       chunks.unshift(chunk);
       bytesCollected += bytesRead;
 
       for (let i = 0; i < chunk.length; i++) {
-        if (chunk.charCodeAt(i) === 10) newlineCount++;
+        if (chunk[i] === 10) newlineCount++;
       }
     }
 
-    return { stat, text: chunks.join('') };
+    let buffer = Buffer.concat(chunks, bytesCollected);
+    if (position > 0) {
+      const boundary = Buffer.allocUnsafe(1);
+      const boundaryBytes = fs.readSync(fd, boundary, 0, 1, position - 1);
+      const startsOnLineBoundary = boundaryBytes === 1 && boundary[0] === 10;
+      if (!startsOnLineBoundary) {
+        // The bounded window starts in the middle of an older line. Drop that
+        // prefix so callers never mistake an expected tail boundary for corrupt
+        // provider JSONL (and never decode a split UTF-8 prefix).
+        const firstNewline = buffer.indexOf(10);
+        buffer = firstNewline === -1 ? Buffer.alloc(0) : buffer.subarray(firstNewline + 1);
+      }
+    }
+    return { stat, buffer, bytesCollected: buffer.length };
   } finally {
     fs.closeSync(fd);
   }
 }
 
-function finalizeTailLines(lines, pending, count) {
+function splitLineBuffer(buffer) {
+  const lines = [];
+  let start = 0;
+  for (let index = 0; index < buffer.length; index++) {
+    if (buffer[index] !== 10) continue;
+    lines.push(buffer.toString('utf-8', start, index));
+    start = index + 1;
+  }
+  const pendingBuffer = Buffer.from(buffer.subarray(start));
+  return {
+    lines,
+    pendingBuffer,
+  };
+}
+
+function finalizeTailLines(lines, pendingBuffer, count) {
+  const pending = pendingBuffer?.length ? pendingBuffer.toString('utf-8') : '';
   const all = pending ? lines.concat(pending) : lines;
   let start = 0;
   let end = all.length;
@@ -123,39 +154,64 @@ function finalizeTailLines(lines, pending, count) {
   return all.slice(Math.max(start, end - count), end);
 }
 
-function cacheTailState(cacheKey, entry) {
-  _tailStateCache.delete(cacheKey);
-  _tailStateCache.set(cacheKey, entry);
-  trimCache(_tailStateCache, TAIL_STATE_CACHE_MAX);
+function tailStateBytes(entry) {
+  if (!entry) return 0;
+  let bytes = entry.guard?.byteLength || 0;
+  bytes += entry.pendingBuffer?.byteLength || 0;
+  for (const line of entry.lines || []) bytes += Buffer.byteLength(line, 'utf-8');
+  return bytes;
+}
+
+function deleteTailState(filePath) {
+  const previous = _tailStateCache.get(filePath);
+  if (previous) _tailStateCacheBytes -= previous.estimatedBytes || tailStateBytes(previous);
+  _tailStateCache.delete(filePath);
+  _tailStateCacheBytes = Math.max(0, _tailStateCacheBytes);
+}
+
+function cacheTailState(filePath, entry) {
+  deleteTailState(filePath);
+  entry.estimatedBytes = tailStateBytes(entry);
+  _tailStateCache.set(filePath, entry);
+  _tailStateCacheBytes += entry.estimatedBytes;
+  while (_tailStateCache.size > TAIL_STATE_CACHE_MAX || _tailStateCacheBytes > TAIL_STATE_CACHE_MAX_BYTES) {
+    const oldestPath = _tailStateCache.keys().next().value;
+    if (oldestPath == null) break;
+    deleteTailState(oldestPath);
+  }
 }
 
 function readTailLines(filePath, count, {
   chunkBytes = DEFAULT_TAIL_CHUNK_BYTES,
   maxBytes = DEFAULT_TAIL_BYTES,
 } = {}) {
-  const cacheKey = `${filePath}\u0000${count}`;
+  const requestedCount = Math.max(1, Number(count) || 1);
   try {
     let stat;
     try {
       stat = fs.statSync(filePath);
     } catch {
-      _tailStateCache.delete(cacheKey);
+      deleteTailState(filePath);
       return [];
     }
     if (stat.size === 0) {
-      _tailStateCache.delete(cacheKey);
+      deleteTailState(filePath);
       return [];
     }
 
-    const cached = _tailStateCache.get(cacheKey);
-    if (cached && cached.ino === (stat.ino || 0) && stat.size >= cached.size) {
+    const cached = _tailStateCache.get(filePath);
+    const cacheCoversRequest = cached
+      && cached.capacity >= requestedCount
+      && (cached.lines.length >= requestedCount || cached.maxBytes >= maxBytes);
+    if (cacheCoversRequest && cached.ino === (stat.ino || 0) && stat.size >= cached.size) {
       if (stat.size === cached.size && stat.mtimeMs === cached.mtimeMs) {
         // File has not grown: serve the cached tail without touching the file.
-        cacheTailState(cacheKey, cached);
-        return cached.result.slice();
+        cacheTailState(filePath, cached);
+        return finalizeTailLines(cached.lines, cached.pendingBuffer, requestedCount);
       }
       const appendedBytes = stat.size - cached.size;
-      if (appendedBytes > 0 && appendedBytes <= maxBytes && cached.pending.length <= maxBytes) {
+      const pendingBytes = cached.pendingBuffer?.byteLength || 0;
+      if (appendedBytes > 0 && appendedBytes <= maxBytes && pendingBytes <= maxBytes) {
         // Re-read the guard window just before the cached offset; a mismatch
         // means the prefix was rewritten in place, so take the full-read path.
         const guard = Buffer.isBuffer(cached.guard) ? cached.guard : Buffer.alloc(0);
@@ -164,47 +220,59 @@ function readTailLines(filePath, count, {
           && window.buffer.subarray(0, guard.length).equals(guard);
         if (prefixIntact && window.bytesRead > guard.length) {
           const appendedBuffer = window.buffer.subarray(guard.length);
-          const parts = (cached.pending + appendedBuffer.toString('utf-8')).split('\n');
-          const pending = parts.pop();
-          const lines = cached.lines.concat(parts).slice(-count);
+          const carried = cached.pendingBuffer || Buffer.alloc(0);
+          const split = splitLineBuffer(Buffer.concat([carried, appendedBuffer]));
+          const lines = cached.lines.concat(split.lines).slice(-cached.capacity);
           const entry = {
             size: cached.size + appendedBuffer.length,
             mtimeMs: stat.mtimeMs,
             ino: cached.ino,
             guard: tailGuard(Buffer.concat([guard, appendedBuffer])),
             lines,
-            pending,
-            result: finalizeTailLines(lines, pending, count),
+            pendingBuffer: split.pendingBuffer,
+            capacity: cached.capacity,
+            maxBytes: Math.max(cached.maxBytes, maxBytes),
           };
-          cacheTailState(cacheKey, entry);
-          return entry.result.slice();
+          cacheTailState(filePath, entry);
+          return finalizeTailLines(lines, split.pendingBuffer, requestedCount);
         }
       }
     }
 
     // Full tail read: first sight, shrink/rotation, or oversized append.
-    const { stat: readStat, text } = readTailRaw(filePath, count, chunkBytes, maxBytes);
-    if (!text) {
-      _tailStateCache.delete(cacheKey);
+    const capacity = Math.max(requestedCount, cached?.capacity || 0);
+    const readMaxBytes = Math.max(maxBytes, cached?.maxBytes || 0);
+    const { stat: readStat, buffer } = readTailRaw(filePath, capacity, chunkBytes, readMaxBytes);
+    if (!buffer.length) {
+      deleteTailState(filePath);
       return [];
     }
-    const parts = text.split('\n');
-    const pending = parts.pop();
-    const lines = parts.slice(-count);
+    const split = splitLineBuffer(buffer);
+    const lines = split.lines.slice(-capacity);
     const entry = {
       size: readStat.size,
       mtimeMs: readStat.mtimeMs,
       ino: readStat.ino || 0,
-      guard: tailGuard(Buffer.from(text, 'utf-8')),
+      guard: tailGuard(buffer),
       lines,
-      pending,
-      result: finalizeTailLines(lines, pending, count),
+      pendingBuffer: split.pendingBuffer,
+      capacity,
+      maxBytes: readMaxBytes,
     };
-    cacheTailState(cacheKey, entry);
-    return entry.result.slice();
+    cacheTailState(filePath, entry);
+    return finalizeTailLines(lines, split.pendingBuffer, requestedCount);
   } catch {
     return [];
   }
+}
+
+function getTailCacheDiagnostics() {
+  return {
+    entries: _tailStateCache.size,
+    estimatedBytes: _tailStateCacheBytes,
+    entryLimit: TAIL_STATE_CACHE_MAX,
+    byteLimit: TAIL_STATE_CACHE_MAX_BYTES,
+  };
 }
 
 function readLines(filePath, {
@@ -431,6 +499,7 @@ module.exports = {
   createDetailResponse,
   fileSignature,
   getJsonlDiagnostics,
+  getTailCacheDiagnostics,
   parseJsonLines,
   readByteRangeText,
   readHeadLines,

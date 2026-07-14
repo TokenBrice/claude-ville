@@ -24,6 +24,9 @@ const FIREWORKS_RING_DURATION_MS = 5000;
 const FIREWORKS_LIFETIME_MS = 6000;
 const FIREWORKS_MAX_ACTIVE = 8;
 const FIREWORKS_MAX_RADIUS = 110;
+const MAX_PLANTER_SEEN = 4096;
+const MAX_COMMIT_SEEN = 4096;
+const MAX_CHRISTENED_REPOS = 512;
 
 const MILESTONE_DURATIONS_MS = {
     maiden: 6000,
@@ -39,6 +42,23 @@ function toWorld(tileX, tileY) {
 function projectName(project) {
     const parts = String(project || 'unknown').split(/[\\/]/).filter(Boolean);
     return parts.at(-1) || 'unknown';
+}
+
+function commitIdentity(event) {
+    return String(
+        event?.sha
+        || event?.sourceId
+        || event?.commandHash
+        || event?.id
+        || `${event?.project || 'unknown'}:${event?.timestamp || event?.ts || ''}`,
+    );
+}
+
+function commitTimestamp(event, fallback) {
+    const raw = event?.timestamp ?? event?.ts ?? event?.time ?? event?.completedAt;
+    if (Number.isFinite(Number(raw))) return Number(raw);
+    const parsed = Date.parse(raw);
+    return Number.isFinite(parsed) ? parsed : fallback;
 }
 
 function reducedMotionPreferred() {
@@ -95,40 +115,90 @@ export class ChronicleMonuments {
         // over its buoy. Track christened repos so duplicate emits are no-ops.
         this._christenedRepos = new Set();
         this._onRepoChristened = (event) => this._christenRepo(event);
-        this.eventBus?.on?.('harbor:repo-christened', this._onRepoChristened);
+        this._unsubscribeRepoChristened = this.eventBus?.on?.('harbor:repo-christened', this._onRepoChristened) || null;
+        this._disposed = false;
+        this._lifecycleGeneration = 0;
     }
 
     async hydrate(now = Date.now()) {
-        if (!this.store || this._loaded) return;
+        if (this._disposed || !this.store || this._loaded) return;
         if (this._pendingHydrate) return this._pendingHydrate;
+        const generation = this._lifecycleGeneration;
         this._pendingHydrate = this.store.queryRange('monuments', 'plantedAt', now - MONTH_MS, now + MONTH_MS)
             .then((records) => {
+                if (this._disposed || generation !== this._lifecycleGeneration) return;
                 for (const record of records || []) this.records.set(record.id, record);
                 this._loaded = true;
             })
             .catch(() => {
+                if (this._disposed || generation !== this._lifecycleGeneration) return;
                 this._loaded = true;
             });
         return this._pendingHydrate;
     }
 
     async update(agents, context = {}, now = Date.now()) {
+        if (this._disposed) return [];
+        const generation = this._lifecycleGeneration;
         await this.hydrate(now);
+        if (this._disposed || generation !== this._lifecycleGeneration) return [];
         const gitEvents = collectCommitEvents(agents);
         const pushEvents = this._collectPushEvents(agents);
-        const planted = await this.planter.processEvents([...gitEvents, ...pushEvents], {
+        const sourceEvents = [...gitEvents, ...pushEvents].slice(-MAX_PLANTER_SEEN);
+        const planted = await this.planter.processEvents(sourceEvents, {
             ...context,
             now,
             monuments: [...this.records.values()],
+            isActive: () => !this._disposed && generation === this._lifecycleGeneration,
         });
+        if (this._disposed || generation !== this._lifecycleGeneration) return [];
+        if (this.planter?.seen?.size > MAX_PLANTER_SEEN) {
+            this.planter.seen = new Set([...this.planter.seen].slice(-MAX_PLANTER_SEEN));
+        }
         for (const record of planted) this.records.set(record.id, record);
         for (const record of planted) {
             if (record.kind === 'release') this._scheduleReleaseFireworks(record, now);
         }
-        await this._processCommitMilestones(gitEvents, now);
+        await this._processCommitMilestones(gitEvents, now, generation);
+        if (this._disposed || generation !== this._lifecycleGeneration) return [];
         this._dropExpired(now);
         this._dropExpiredOverlays(now);
         return planted;
+    }
+
+    getDiagnostics() {
+        return {
+            records: this.records.size,
+            seenCommitIds: this._seenCommitIds.size,
+            planterSeen: this.planter?.seen?.size || 0,
+            christenedRepos: this._christenedRepos.size,
+            activeFireworks: this._activeFireworks.length,
+            activeBanners: this._activeBanners.length,
+            disposed: this._disposed,
+        };
+    }
+
+    dispose() {
+        if (this._disposed) return;
+        this._disposed = true;
+        this._lifecycleGeneration++;
+        if (typeof this._unsubscribeRepoChristened === 'function') {
+            this._unsubscribeRepoChristened();
+        } else {
+            this.eventBus?.off?.('harbor:repo-christened', this._onRepoChristened);
+        }
+        this._unsubscribeRepoChristened = null;
+        this._onRepoChristened = null;
+        this.records.clear();
+        this._seenCommitIds.clear();
+        this.planter?.seen?.clear?.();
+        this._christenedRepos.clear();
+        this._activeFireworks.length = 0;
+        this._activeBanners.length = 0;
+        this._pendingMilestones.length = 0;
+        this.store = null;
+        this.chronicleStore = null;
+        this.auroraGate = null;
     }
 
     enumerateDrawables(now = Date.now(), camera = null) {
@@ -400,27 +470,57 @@ export class ChronicleMonuments {
         }
     }
 
-    async _processCommitMilestones(gitEvents, now) {
-        if (!this.chronicleStore || typeof this.chronicleStore.recordCommit !== 'function') return;
+    async _processCommitMilestones(gitEvents, now, generation = this._lifecycleGeneration) {
+        if (
+            !this.chronicleStore
+            || (
+                typeof this.chronicleStore.recordCommit !== 'function'
+                && typeof this.chronicleStore.recordCommitEvents !== 'function'
+            )
+        ) return;
         // Group fresh commits by project so a burst of N commits from one repo
         // increments lifetimeCounts N times in order.
         const fresh = [];
-        for (const event of gitEvents || []) {
-            if (!event || event.type !== 'commit') continue;
-            const id = String(event.id || event.sha || `${event.project}:${event.ts || event.timestamp || ''}`);
+        const sourceEvents = (gitEvents || [])
+            .filter(event => event?.type === 'commit');
+        for (const event of sourceEvents) {
+            if (this._disposed || generation !== this._lifecycleGeneration) return;
+            const id = commitIdentity(event);
             if (this._seenCommitIds.has(id)) continue;
             this._seenCommitIds.add(id);
             fresh.push(event);
         }
-        if (this._seenCommitIds.size > 4096) {
-            // Trim seen-set to bound memory; oldest entries are unknown so wipe.
-            this._seenCommitIds = new Set([...this._seenCommitIds].slice(-2048));
+        if (this._seenCommitIds.size > MAX_COMMIT_SEEN) {
+            this._seenCommitIds = new Set([...this._seenCommitIds].slice(-MAX_COMMIT_SEEN));
         }
+        if (typeof this.chronicleStore.recordCommitEvents === 'function' && fresh.length) {
+            const results = await this.chronicleStore.recordCommitEvents(fresh.map(event => ({
+                projectId: event.project,
+                commitId: commitIdentity(event),
+                observedAt: commitTimestamp(event, now),
+            })));
+            if (this._disposed || generation !== this._lifecycleGeneration) return;
+            for (let index = 0; index < fresh.length; index++) {
+                const result = results[index];
+                if (!result?.recorded) continue;
+                const tier = this.rules?.classifyMilestone?.(result.count) ?? null;
+                if (tier) this._spawnMilestone(tier, fresh[index], result.count, now);
+            }
+            return;
+        }
+
         for (const event of fresh) {
+            if (this._disposed || generation !== this._lifecycleGeneration) return;
             try {
-                const count = await this.chronicleStore.recordCommit(event.project, now);
-                const tier = this.rules?.classifyMilestone?.(count) ?? null;
-                if (tier) this._spawnMilestone(tier, event, count, now);
+                const store = this.chronicleStore;
+                if (!store) return;
+                const result = typeof store.recordCommitEvent === 'function'
+                    ? await store.recordCommitEvent(event.project, commitIdentity(event), commitTimestamp(event, now))
+                    : { count: await store.recordCommit(event.project, now), recorded: true };
+                if (this._disposed || generation !== this._lifecycleGeneration) return;
+                if (!result.recorded) continue;
+                const tier = this.rules?.classifyMilestone?.(result.count) ?? null;
+                if (tier) this._spawnMilestone(tier, event, result.count, now);
             } catch { /* lifetime persistence is best-effort */ }
         }
     }
@@ -461,9 +561,13 @@ export class ChronicleMonuments {
     // own buoy (the event carries its anchorage tile), distinct from the
     // commit-count maiden milestone which sits at the inner quay basin.
     _christenRepo(event = {}) {
+        if (this._disposed) return;
         const project = String(event.project || 'unknown');
         if (this._christenedRepos.has(project)) return;
         this._christenedRepos.add(project);
+        if (this._christenedRepos.size > MAX_CHRISTENED_REPOS) {
+            this._christenedRepos.delete(this._christenedRepos.values().next().value);
+        }
         const repo = event.repoName || projectName(project);
         const now = Number(event.ts) || Date.now();
         const duration = MILESTONE_DURATIONS_MS.maiden || 6000;

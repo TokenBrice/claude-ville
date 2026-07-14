@@ -58,10 +58,12 @@ import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
 import VisitTileAllocator from './VisitTileAllocator.js';
 import { getPulsePriority, pulseValue } from './PulsePolicy.js';
-import { MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
+import { getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
 import { lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import {
     applyTeamPlazaPreferences,
+    getCouncilRingDiagnostics,
+    releaseCouncilRingState,
     relationshipLightSources,
 } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
@@ -98,6 +100,16 @@ const SURF_WASH_BANDS = Object.freeze([
     { inset: 9, alpha: 0.11, width: 1.0, phase: 9, seedFloor: 0.22 },
     { inset: 14, alpha: 0.08, width: 1.0, phase: 18, seedFloor: 0.48 },
 ]);
+const CURRENT_WAVE_SCREEN_X = (0.42 - (-0.28)) * TILE_WIDTH / 2;
+const CURRENT_WAVE_SCREEN_Y = (0.42 + (-0.28)) * TILE_HEIGHT / 2;
+const CURRENT_WAVE_SCREEN_LENGTH = Math.hypot(CURRENT_WAVE_SCREEN_X, CURRENT_WAVE_SCREEN_Y) || 1;
+const CURRENT_WAVE_UNIT_X = CURRENT_WAVE_SCREEN_X / CURRENT_WAVE_SCREEN_LENGTH;
+const CURRENT_WAVE_UNIT_Y = CURRENT_WAVE_SCREEN_Y / CURRENT_WAVE_SCREEN_LENGTH;
+const LIGHT_FADE_COLOR_CACHE_LIMIT = 1024;
+const NICKNAME_CACHE_LIMIT = 256;
+const WORLD_FRAME_ERROR_REPORT_INTERVAL_MS = 5000;
+const WORLD_FRAME_MAX_CONSECUTIVE_FAILURES = 3;
+const DEBUG_GLOBAL_OWNERS = new WeakMap();
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
 const MAX_LIGHT_GRADIENT_STAMP_PIXELS = Math.floor(MAX_LIGHT_GRADIENT_CACHE_PIXELS / 5);
 const FAST_ATMOSPHERE_BACKING_PIXELS = 800_000;
@@ -148,6 +160,7 @@ const AGENT_RENDER_MINIMAL_CSS_PIXELS = 1_700_000;
 const AGENT_RENDER_MINIMAL_CANVAS_PIXELS = 1_700_000;
 const CROWD_CLUSTER_TILE_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
+const CROWD_BUMP_COOLDOWN_LIMIT = 512;
 const AGENT_NAME_TAG_MAX_WIDTH = 152;
 const AGENT_NAME_TAG_MIN_WIDTH = 40;
 // Must track the real name-tag pill in AgentSprite._drawNameTag: Departure Mono
@@ -425,6 +438,7 @@ export class IsometricRenderer {
         this.biographyService = options.biographyService || null;
         this.affinityService = options.affinityService || null;
         this._nicknames = new Map(); // identityKey -> earned nickname
+        this._biographyReadGeneration = 0;
         this._affinityProximityAccumulator = 0;
         this._allyTetherPairs = []; // warmest idle ally pairs, drawn as tethers
 
@@ -459,6 +473,7 @@ export class IsometricRenderer {
         this._familiarMoteDrawables = [];
         this._harborPendingSignature = '';
         this._contextLost = false;
+        this._disposed = false;
         this.running = false;
         this.frameId = null;
         this.terrainCache = null;
@@ -493,6 +508,7 @@ export class IsometricRenderer {
         this.atmosphereVignetteCacheKey = '';
         this.lightGradientCache = new Map();
         this.lightFadeColorCache = new Map();
+        this._lightFadeColorCacheEvictions = 0;
         this._frameLightSources = null;
         this.selectedAgent = null;
         this.onAgentSelect = null;
@@ -520,9 +536,21 @@ export class IsometricRenderer {
         this._chroniclerPauseUntil = 0;
         this._chronicleNextUpdateAt = 0;
         this._chronicleUpdating = false;
+        this._chronicleUpdatePromise = null;
         this._worldModeActive = true;
         this._worldSpritesDirty = false;
         this._onModeChanged = null;
+        this._debugGlobals = new Map();
+        this._frameFailureStats = {
+            total: 0,
+            consecutive: 0,
+            lastStage: null,
+            lastMessage: null,
+            lastAt: 0,
+            lastReportedAt: -Infinity,
+            byStage: {},
+            paused: false,
+        };
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
         for (let y = 0; y < MAP_SIZE; y++) {
@@ -796,6 +824,7 @@ export class IsometricRenderer {
     _buildWaterTileDescriptors() {
         const descriptors = [];
         if (!this.waterTiles?.size) return descriptors;
+        const fraction = (value) => value - Math.floor(value);
         for (const key of this.waterTiles) {
             if (this.bridgeTiles?.has(key)) continue;
             const tile = this._parseTileKey(key);
@@ -806,6 +835,32 @@ export class IsometricRenderer {
             const profile = this._waterProfileAt(x, y, key);
             const token = this._waterTokenAt(x, y, key);
             const meta = this._waterMetaAt(x, y, key);
+            const isDeep = this.deepWaterTiles.has(key);
+            const isHarbor = this._isHarborWater(x, y);
+            const isLagoon = this._isLagoonWaterTile(x, y, key);
+            const isOpenSea = this._isOpenSeaTile(x, y, openness);
+            const flowDirX = Number(meta?.flowDirX) || 0;
+            const flowDirY = Number(meta?.flowDirY) || 0;
+            const flowScreenX = (flowDirX - flowDirY) * TILE_WIDTH / 2;
+            const flowScreenY = (flowDirX + flowDirY) * TILE_HEIGHT / 2;
+            const flowScreenLength = Math.hypot(flowScreenX, flowScreenY) || 1;
+            const flowUnitX = flowScreenX / flowScreenLength;
+            const flowUnitY = flowScreenY / flowScreenLength;
+            const glitterCount = 2 + (Math.floor(seed * 97) % 2);
+            const glitterSpecks = [];
+            for (let i = 0; i < glitterCount; i++) {
+                const hx = fraction(Math.sin(seed * 127.1 + i * 311.7) * 43758.5453);
+                const hy = fraction(Math.sin(seed * 269.5 + i * 183.3) * 24634.6345);
+                const hp = fraction(Math.sin(seed * 419.2 + i * 71.9) * 51294.1234);
+                glitterSpecks.push({
+                    offsetX: (hx - 0.5) * TILE_WIDTH * 0.7,
+                    offsetY: (hy - 0.5) * TILE_HEIGHT * 0.7,
+                    phase: hp * 6.28,
+                    rate: 2.2 + hp * 1.6,
+                    alphaScale: 0.14 + hy * 0.16,
+                    size: hp > 0.62 ? 2 : 1,
+                });
+            }
             descriptors.push({
                 x,
                 y,
@@ -817,15 +872,24 @@ export class IsometricRenderer {
                 openness,
                 profile,
                 token,
-                isDeep: this.deepWaterTiles.has(key),
-                isHarbor: this._isHarborWater(x, y),
-                isLagoon: this._isLagoonWaterTile(x, y, key),
-                isOpenSea: this._isOpenSeaTile(x, y, openness),
+                isDeep,
+                isHarbor,
+                isLagoon,
+                isOpenSea,
+                animatedCurrentEligible: openness >= 0.56 || isHarbor || isOpenSea,
+                glitterSpecks,
                 // B1 — flowing river/current tiles carry a downstream unit vector
                 // (tile space) so the flow-streak pass can drift highlights along it.
                 isCurrent: meta?.surface === 'current',
-                flowDirX: Number(meta?.flowDirX) || 0,
-                flowDirY: Number(meta?.flowDirY) || 0,
+                flowDirX,
+                flowDirY,
+                flowUnitX,
+                flowUnitY,
+                flowPerpendicularX: -flowUnitY,
+                flowPerpendicularY: flowUnitX,
+                riverSpan: TILE_WIDTH * 0.42,
+                riverHalfLength: 3.5 + openness * 3,
+                riverLaneSeeds: [seed % 1, (seed + 0.41) % 1],
             });
         }
         return descriptors;
@@ -1224,20 +1288,57 @@ export class IsometricRenderer {
         return n - Math.floor(n);
     }
 
-    show(canvas) {
-        if (!canvas || typeof canvas.getContext !== 'function') {
-            console.warn('[IsometricRenderer] show skipped: invalid canvas element');
+    _installDebugGlobal(name, value) {
+        if (typeof window === 'undefined' || !name) return;
+        if (!this._debugGlobals.has(name)) {
+            this._debugGlobals.set(name, {
+                hadOwn: Object.prototype.hasOwnProperty.call(window, name),
+                previous: window[name],
+                value,
+            });
+        } else {
+            this._debugGlobals.get(name).value = value;
+        }
+        if (value && (typeof value === 'object' || typeof value === 'function')) {
+            DEBUG_GLOBAL_OWNERS.set(value, this);
+        }
+        window[name] = value;
+    }
+
+    _releaseDebugGlobals() {
+        if (typeof window === 'undefined') {
+            this._debugGlobals.clear();
             return;
         }
+        for (const [name, entry] of this._debugGlobals) {
+            if (window[name] !== entry.value) continue;
+            const previousOwner = entry.previous && (typeof entry.previous === 'object' || typeof entry.previous === 'function')
+                ? DEBUG_GLOBAL_OWNERS.get(entry.previous)
+                : null;
+            if (entry.hadOwn && (!previousOwner || previousOwner.running)) window[name] = entry.previous;
+            else delete window[name];
+        }
+        this._debugGlobals.clear();
+    }
+
+    show(canvas) {
+        if (this._disposed) {
+            console.warn('[IsometricRenderer] show skipped: renderer is disposed');
+            return false;
+        }
+        if (!canvas || typeof canvas.getContext !== 'function') {
+            console.warn('[IsometricRenderer] show skipped: invalid canvas element');
+            return false;
+        }
         if (this.running) {
-            this.hide();
+            return true;
         }
 
         this.canvas = canvas;
         this.ctx = canvas.getContext('2d');
         if (!this.ctx) {
             console.warn('[IsometricRenderer] show skipped: failed to get 2d context');
-            return;
+            return false;
         }
         if (!this.villageDirector) {
             this.villageDirector = new VillageDirector(this.world);
@@ -1284,16 +1385,15 @@ export class IsometricRenderer {
         this.relationshipState = new RelationshipState(this.world);
         this._replayActiveToolRituals({ force: true });
         this._updateVisitSystems(Date.now());
-        if (typeof window !== 'undefined') {
-            window.__relationshipState = () => this.relationshipState?.getSnapshot?.();
-            window.__visitIntents = () => this.visitIntentManager?.debugSnapshot?.() || null;
-            window.__visitReservations = () => this.visitTileAllocator?.debug?.() || null;
-            window.__agentBehavior = (agentId) => this.agentSprites.get(agentId)?.getBehaviorDebugSnapshot?.() || null;
-            window.__buildingCrowds = () => this.visitTileAllocator?.snapshot?.()?.buildings || {};
-            window.__agentBehaviorStats = () => this._agentBehaviorStats();
-            window.__agentCrowds = () => this._crowdStats || this._summarizeCrowdClusters();
-            window.__villageDirector = () => this.villageDirector?.getSnapshot?.() || null;
-        }
+        this._installDebugGlobal('__relationshipState', () => this.relationshipState?.getSnapshot?.());
+        this._installDebugGlobal('__visitIntents', () => this.visitIntentManager?.debugSnapshot?.() || null);
+        this._installDebugGlobal('__visitReservations', () => this.visitTileAllocator?.debug?.() || null);
+        this._installDebugGlobal('__agentBehavior', (agentId) => this.agentSprites.get(agentId)?.getBehaviorDebugSnapshot?.() || null);
+        this._installDebugGlobal('__buildingCrowds', () => this.visitTileAllocator?.getBuildingLoads?.() || {});
+        this._installDebugGlobal('__agentBehaviorStats', () => this._agentBehaviorStats());
+        this._installDebugGlobal('__agentCrowds', () => this._crowdStats || this._summarizeCrowdClusters());
+        this._installDebugGlobal('__villageDirector', () => this.villageDirector?.getSnapshot?.() || null);
+        this._installDebugGlobal('__worldPerformance', () => this.getWorldPerformanceDiagnostics());
 
         // Subscribe to domain events
         this._unsubscribers.push(
@@ -1353,8 +1453,7 @@ export class IsometricRenderer {
                 const identityKey = payload?.identityKey;
                 if (!identityKey) return;
                 const nickname = payload?.biography?.nickname || null;
-                if (nickname) this._nicknames.set(identityKey, nickname);
-                else this._nicknames.delete(identityKey);
+                this._cacheNickname(identityKey, nickname);
                 this._applyNicknames();
             }),
         );
@@ -1365,11 +1464,13 @@ export class IsometricRenderer {
         if (this.biographyService && this.chronicleStore?.channel?.addEventListener) {
             this._chronicleChannelListener = (event) => {
                 const identityKey = event?.data?.identityKey;
-                if (event?.data?.type !== 'biography-updated' || !identityKey) return;
-                this.biographyService.getBiography(identityKey).then((biography) => {
+                if (this._disposed || event?.data?.type !== 'biography-updated' || !identityKey) return;
+                const biographyService = this.biographyService;
+                const generation = this._biographyReadGeneration;
+                biographyService.getBiography(identityKey).then((biography) => {
+                    if (this._disposed || generation !== this._biographyReadGeneration) return;
                     const nickname = biography?.nickname || null;
-                    if (nickname) this._nicknames.set(identityKey, nickname);
-                    else this._nicknames.delete(identityKey);
+                    this._cacheNickname(identityKey, nickname);
                     this._applyNicknames();
                 }).catch(() => {});
             };
@@ -1422,14 +1523,18 @@ export class IsometricRenderer {
         };
         window.addEventListener('keydown', this._onKeyDown);
         this._onModeChanged = (mode) => this.setWorldModeActive(mode !== 'dashboard');
-        eventBus.on('mode:changed', this._onModeChanged);
+        this._unsubscribers.push(eventBus.on('mode:changed', this._onModeChanged));
         this._triggerReleaseParadeForVersion();
 
         this.running = true;
         this._startLoop();
+        return true;
     }
 
     hide() {
+        if (this._disposed) return;
+        this._disposed = true;
+        this._biographyReadGeneration++;
         this.running = false;
         this._stopLoop();
         if (this.camera) {
@@ -1454,14 +1559,14 @@ export class IsometricRenderer {
             this.chronicleStore.channel.removeEventListener('message', this._chronicleChannelListener);
         }
         this._chronicleChannelListener = null;
-        if (this._onModeChanged) {
-            eventBus.off('mode:changed', this._onModeChanged);
-            this._onModeChanged = null;
-        }
+        this._onModeChanged = null;
         this.chronicler?.destroy?.();
         this._sortedSprites = [];
         this._spritesNeedSort = true;
         this.agentSprites.clear();
+        this._nicknames.clear();
+        AgentSprite.releaseSharedCaches?.();
+        this.compositor?.dispose?.();
         this.gateTransits.clear();
         this.particleSystem.clear();
         this.buildingRenderer?.dispose?.();
@@ -1469,27 +1574,24 @@ export class IsometricRenderer {
         this.trailRenderer?.dispose?.();
         this.trailRenderer = null;
         this.agentEventStream?.dispose?.();
+        releaseCouncilRingState(this.relationshipState);
         this.relationshipState?.dispose?.();
+        this.harborTraffic?.dispose?.();
+        this.landmarkActivity?.dispose?.();
+        this.chronicleMonuments?.dispose?.();
         this.ritualConductor?.dispose?.();
         this.villageDirector?.dispose?.();
+        if (getActiveMarkGovernor() === this.markGovernor) setActiveMarkGovernor(null);
+        this._releaseDebugGlobals();
         this.agentEventStream = null;
         this.relationshipState = null;
         this.ritualConductor = null;
         this.villageDirector = null;
-        if (typeof window !== 'undefined' && window.__relationshipState) {
-            delete window.__relationshipState;
-        }
-        if (typeof window !== 'undefined') {
-            delete window.__visitIntents;
-            delete window.__visitReservations;
-            delete window.__agentBehavior;
-            delete window.__buildingCrowds;
-            delete window.__agentBehaviorStats;
-            delete window.__agentCrowds;
-            delete window.__villageDirector;
-        }
         this.visitIntentManager?.dispose?.();
-        this.visitTileAllocator?.updateContext?.({ agentSprites: [] });
+        this.visitTileAllocator?.dispose?.();
+        this._crowdBumpCooldowns.clear();
+        this._buildingPresenceMap.clear();
+        this._emitterIntervalLastMs.clear();
         this.fantasyForestTreeCache.clear();
         this.weatherRenderer?.dispose?.();
         this.skyRenderer?.detach?.();
@@ -1501,7 +1603,14 @@ export class IsometricRenderer {
     }
 
     _startLoop() {
-        if (!this.running || this.frameId !== null || !this._worldModeActive || this._contextLost) return;
+        if (
+            !this.running
+            || this._disposed
+            || this.frameId !== null
+            || !this._worldModeActive
+            || this._contextLost
+            || this._frameFailureStats.paused
+        ) return;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
         this.frameId = requestAnimationFrame(() => this._loop());
     }
@@ -1522,6 +1631,7 @@ export class IsometricRenderer {
         this._worldModeActive = nextActive;
         this._lastFrameTime = performance.now();
         if (nextActive) {
+            this._resumeFrameFailures();
             if (this._worldSpritesDirty) this._reconcileSpritesWithWorld();
             this.invalidateViewportCaches();
             this._startLoop();
@@ -1539,7 +1649,10 @@ export class IsometricRenderer {
     resumeFromVisibility({ active = true } = {}) {
         this._worldModeActive = Boolean(active);
         this._lastFrameTime = performance.now();
-        if (this._worldModeActive) this._startLoop();
+        if (this._worldModeActive) {
+            this._resumeFrameFailures();
+            this._startLoop();
+        }
     }
 
     handleContextLost() {
@@ -1551,6 +1664,7 @@ export class IsometricRenderer {
     handleContextRestored() {
         this.ctx = this.canvas?.getContext?.('2d') || null;
         this._contextLost = false;
+        this._resumeFrameFailures();
         this.invalidateViewportCaches();
         this.camera?.onViewportResize?.();
         this._lastFrameTime = performance.now();
@@ -2067,7 +2181,7 @@ export class IsometricRenderer {
 
     _updateVisitSystems(now = Date.now()) {
         const agents = Array.from(this.world?.agents?.values?.() || []);
-        this.visitIntentManager?.update?.(agents, now);
+        this.visitIntentManager?.reconcile?.(agents, now);
         this.visitTileAllocator?.updateContext?.({
             buildings: this.world?.buildings,
             agentSprites: this.agentSprites,
@@ -2076,7 +2190,7 @@ export class IsometricRenderer {
         // 3.13 — feed allocator occupancy into domain congestion state.
         // Building.updateVisitLoad emits 'building:congestion' on level
         // transitions; sprites read building.congestion directly per frame.
-        const buildingLoads = this.visitTileAllocator?.snapshot?.()?.buildings;
+        const buildingLoads = this.visitTileAllocator?.getBuildingLoads?.();
         if (buildingLoads) this.world?.applyVisitLoads?.(buildingLoads, now);
         return agents;
     }
@@ -2379,20 +2493,51 @@ export class IsometricRenderer {
         }
     }
 
+    _cacheNickname(identityKey, nickname) {
+        if (!identityKey) return;
+        this._nicknames.delete(identityKey);
+        if (nickname) this._nicknames.set(identityKey, nickname);
+        this._pruneNicknameCache();
+    }
+
+    _pruneNicknameCache() {
+        if (this._nicknames.size <= NICKNAME_CACHE_LIMIT) return;
+        const liveIdentityKeys = new Set();
+        for (const sprite of this.agentSprites.values()) {
+            const identityKey = AgentBiography.identityKeyFor(sprite.agent);
+            if (identityKey) liveIdentityKeys.add(identityKey);
+        }
+        for (const identityKey of this._nicknames.keys()) {
+            if (this._nicknames.size <= NICKNAME_CACHE_LIMIT) break;
+            if (!liveIdentityKeys.has(identityKey)) this._nicknames.delete(identityKey);
+        }
+    }
+
     /** 4.8 — seed a new sprite's nickname from its persisted biography. */
     _primeNickname(sprite) {
         if (!this.biographyService || !sprite?.agent) return;
         const identityKey = AgentBiography.identityKeyFor(sprite.agent);
         if (!identityKey) return;
         if (this._nicknames.has(identityKey)) {
-            sprite.setNickname?.(this._nicknames.get(identityKey));
+            const nickname = this._nicknames.get(identityKey);
+            this._cacheNickname(identityKey, nickname);
+            sprite.setNickname?.(nickname);
             return;
         }
-        this.biographyService.getBiography(identityKey).then((biography) => {
+        const biographyService = this.biographyService;
+        const generation = this._biographyReadGeneration;
+        const agentId = sprite.agent.id;
+        biographyService.getBiography(identityKey).then((biography) => {
+            if (
+                this._disposed
+                || generation !== this._biographyReadGeneration
+                || this.agentSprites.get(agentId) !== sprite
+                || AgentBiography.identityKeyFor(sprite.agent) !== identityKey
+            ) return;
             const nickname = biography?.nickname || null;
             if (!nickname) return;
-            this._nicknames.set(identityKey, nickname);
-            this.agentSprites.get(sprite.agent?.id)?.setNickname?.(nickname);
+            this._cacheNickname(identityKey, nickname);
+            sprite.setNickname?.(nickname);
         }).catch(() => {});
     }
 
@@ -2735,10 +2880,74 @@ export class IsometricRenderer {
         const now = performance.now();
         const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
         this._lastFrameTime = now;
-        this._update(dt);
-        this._render(dt);
-        this._trackFps(now);
+        let stage = 'update';
+        try {
+            this._update(dt);
+            stage = 'render';
+            this._render(dt);
+            stage = 'telemetry';
+            this._trackFps(now);
+            this._frameFailureStats.consecutive = 0;
+        } catch (error) {
+            this._reportFrameFailure(error, stage, now);
+        } finally {
+            this._startLoop();
+        }
+    }
+
+    _reportFrameFailure(error, stage, now = performance.now()) {
+        const stats = this._frameFailureStats;
+        stats.total++;
+        stats.consecutive++;
+        stats.lastStage = stage;
+        stats.lastMessage = error instanceof Error ? error.message : String(error);
+        stats.lastAt = now;
+        stats.byStage[stage] = (stats.byStage[stage] || 0) + 1;
+        if (stage === 'render') this._resetContextAfterFrameFailure();
+        const tripped = !stats.paused && stats.consecutive >= WORLD_FRAME_MAX_CONSECUTIVE_FAILURES;
+        if (tripped) {
+            stats.paused = true;
+        }
+        if (!tripped && now - stats.lastReportedAt < WORLD_FRAME_ERROR_REPORT_INTERVAL_MS) return;
+        stats.lastReportedAt = now;
+        const detail = {
+            stage,
+            message: stats.lastMessage,
+            total: stats.total,
+            consecutive: stats.consecutive,
+            paused: stats.paused,
+        };
+        try { console.error(`[IsometricRenderer] ${stage} frame failed`, error); } catch (_) { /* no-op */ }
+        try { eventBus.emit('world:frame-error', detail); } catch (_) { /* keep the frame loop alive */ }
+    }
+
+    _resetContextAfterFrameFailure() {
+        const ctx = this.ctx;
+        if (!ctx) return;
+        try {
+            if (typeof ctx.reset === 'function') {
+                ctx.reset();
+                return;
+            }
+            const canvas = this.canvas;
+            if (canvas && canvas.width > 0 && canvas.height > 0) {
+                canvas.width = canvas.width;
+                this.ctx = canvas.getContext('2d');
+            }
+        } catch { /* context recovery is best-effort */ }
+    }
+
+    _resumeFrameFailures() {
+        this._frameFailureStats.paused = false;
+        this._frameFailureStats.consecutive = 0;
+    }
+
+    resumeAfterFrameFailure() {
+        if (this._disposed || !this.running) return false;
+        this._resumeFrameFailures();
+        this._lastFrameTime = performance.now();
         this._startLoop();
+        return true;
     }
 
     // Emit a smoothed FPS reading roughly twice a second; TopBar renders it.
@@ -2857,8 +3066,9 @@ export class IsometricRenderer {
         const now = performance.now();
         const chronicleNow = Date.now();
         const agents = this._updateVisitSystems(chronicleNow);
-        this.relationshipState?.update?.({ agentSprites: this.agentSprites, now });
+        this.relationshipState?.reconcile?.({ agentSprites: this.agentSprites, now });
         applyTeamPlazaPreferences(this.relationshipState, this.agentSprites);
+        this._pruneCrowdBumpCooldowns(now);
         // 2.4 — affinity proximity re-evaluates on a slow cadence; warmth
         // changes are gradual, so per-frame work would be wasted.
         this._affinityProximityAccumulator += dt;
@@ -2924,8 +3134,8 @@ export class IsometricRenderer {
         this.ritualConductor?.update?.(dt);
         this._syncToolRitualPoses();
 
-        this.harborTraffic?.update(agents, dt);
-        this.landmarkActivity?.update(agents, sortedSnapshot, dt);
+        this.harborTraffic?.update?.(agents, dt, chronicleNow);
+        this.landmarkActivity?.update?.(agents, sortedSnapshot, dt, chronicleNow);
         const updateNow = Date.now();
         const failedPushState = this.harborTraffic?.getFailedPushState?.(updateNow) || null;
         const activeWorkingCount = agents.filter(agent => agent?.status === AgentStatus.WORKING).length;
@@ -2958,19 +3168,26 @@ export class IsometricRenderer {
     }
 
     _updateChronicleSystems(now = Date.now()) {
-        if (this._chronicleUpdating) return;
+        if (this._chronicleUpdating || this._disposed) return;
         this._chronicleUpdating = true;
         const agents = Array.from(this.world?.agents?.values?.() || []);
         const context = {
             waterTiles: this.waterTiles,
             blockedTiles: this._monumentBlockedTiles(),
         };
-        Promise.allSettled([
+        const pending = Promise.allSettled([
             this.chronicleMonuments?.update?.(agents, context, now),
             this.trailRenderer?.update?.(agents, now, this._lastAtmosphere),
-        ]).finally(() => {
+        ]);
+        this._chronicleUpdatePromise = pending;
+        pending.finally(() => {
+            if (this._chronicleUpdatePromise === pending) this._chronicleUpdatePromise = null;
             this._chronicleUpdating = false;
         });
+    }
+
+    drainChronicleUpdates() {
+        return this._chronicleUpdatePromise || Promise.resolve([]);
     }
 
     _monumentBlockedTiles() {
@@ -3411,10 +3628,23 @@ export class IsometricRenderer {
         return true;
     }
 
+    _pruneCrowdBumpCooldowns(now = performance.now()) {
+        for (const [key, expiresAt] of this._crowdBumpCooldowns) {
+            if (expiresAt <= now) this._crowdBumpCooldowns.delete(key);
+        }
+        while (this._crowdBumpCooldowns.size > CROWD_BUMP_COOLDOWN_LIMIT) {
+            this._crowdBumpCooldowns.delete(this._crowdBumpCooldowns.keys().next().value);
+        }
+    }
+
     _emitCrowdBumpFeedback(a, b, overlap = 0) {
         const now = performance.now();
         const key = [a.agent?.id || a.x, b.agent?.id || b.x].sort().join('|');
+        this._pruneCrowdBumpCooldowns(now);
         if ((this._crowdBumpCooldowns.get(key) || 0) > now) return;
+        while (this._crowdBumpCooldowns.size >= CROWD_BUMP_COOLDOWN_LIMIT) {
+            this._crowdBumpCooldowns.delete(this._crowdBumpCooldowns.keys().next().value);
+        }
         this._crowdBumpCooldowns.set(key, now + 650);
         a.bumpFlash = Math.max(a.bumpFlash || 0, Math.min(1, 0.4 + overlap));
         b.bumpFlash = Math.max(b.bumpFlash || 0, Math.min(1, 0.4 + overlap));
@@ -6210,21 +6440,14 @@ export class IsometricRenderer {
 
     _drawAnimatedCurrentBands(ctx, waterTiles) {
         if (!waterTiles?.length) return;
-        // B2 — the plane wave travels along tile-space k=(0.42,-0.28); its
-        // unzoomed world-screen direction is fixed, so precompute the unit
-        // vector once and slide each crest's anchor along it.
-        const wsx = (0.42 - (-0.28)) * TILE_WIDTH / 2;
-        const wsy = (0.42 + (-0.28)) * TILE_HEIGHT / 2;
-        const wlen = Math.hypot(wsx, wsy) || 1;
-        const wux = wsx / wlen;
-        const wuy = wsy / wlen;
         const slideRange = 0.35 * TILE_HEIGHT;
+        const roughness = this._waterWeather?.storm || 0;
+        const warm = this._atmosphereReactions?.warmGlint || 0;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         ctx.lineCap = 'round';
         for (const tile of waterTiles) {
-            if (tile.openness < 0.56 && !tile.isHarbor && !tile.isOpenSea) continue;
-            const roughness = this._waterWeather?.storm || 0;
+            if (!tile.animatedCurrentEligible) continue;
             const primary = Math.sin(this.waterFrame * 0.82 + tile.x * 0.42 - tile.y * 0.28 + tile.seed * 2.6);
             const secondary = Math.sin(this.waterFrame * 1.17 - tile.x * 0.24 - tile.y * 0.36 + tile.seed * 5.1);
             const crest = ((primary * 0.72 + secondary * 0.28) + 1) / 2;
@@ -6235,14 +6458,13 @@ export class IsometricRenderer {
             const slide = primary * slideRange;
             const edgeTaper = 1 - Math.abs(primary) * 0.28;
             const crestStrength = (crest - threshold) / Math.max(0.001, 1 - threshold);
-            const anchorX = tile.screenX + wux * slide;
-            const anchorY = tile.screenY + wuy * slide;
+            const anchorX = tile.screenX + CURRENT_WAVE_UNIT_X * slide;
+            const anchorY = tile.screenY + CURRENT_WAVE_UNIT_Y * slide;
             const alpha = Math.min(
                 tile.isOpenSea ? 0.24 + roughness * 0.08 : 0.16 + roughness * 0.04,
                 (crest - threshold) * (tile.isDeep ? (tile.isOpenSea ? 0.62 : 0.48) : 0.32) * (0.62 + tile.openness * 0.5) * (1 + roughness * 0.35) * edgeTaper
             );
             const drift = Math.sin(this.waterFrame * 0.45 + tile.seed * 6.28) * 2;
-            const warm = this._atmosphereReactions?.warmGlint || 0;
             const glintColor = warm > 0.18 ? '255, 210, 136' : tile.token.glint;
             ctx.strokeStyle = `rgba(${glintColor}, ${alpha})`;
             const baseWidth = tile.isOpenSea ? 1.7 + roughness * 0.6 : (tile.isDeep ? 1.4 : 1);
@@ -6276,20 +6498,16 @@ export class IsometricRenderer {
             const fx = tile.flowDirX;
             const fy = tile.flowDirY;
             if (fx === 0 && fy === 0) continue;
-            // Tile-space flow → unzoomed world-screen direction.
-            const sdx = (fx - fy) * TILE_WIDTH / 2;
-            const sdy = (fx + fy) * TILE_HEIGHT / 2;
-            const len = Math.hypot(sdx, sdy) || 1;
-            const ux = sdx / len;
-            const uy = sdy / len;
-            const px = -uy; // screen-space perpendicular for lane separation
-            const py = ux;
-            const span = TILE_WIDTH * 0.42; // travel distance along flow, per tile
-            const half = 3.5 + tile.openness * 3; // streak half-length
+            const ux = tile.flowUnitX;
+            const uy = tile.flowUnitY;
+            const px = tile.flowPerpendicularX;
+            const py = tile.flowPerpendicularY;
+            const span = tile.riverSpan;
+            const half = tile.riverHalfLength;
             const glint = warm > 0.15 ? '255, 214, 150' : tile.token.glint;
             const lanes = reduced ? 1 : 2;
             for (let l = 0; l < lanes; l++) {
-                const laneSeed = (tile.seed + l * 0.41) % 1;
+                const laneSeed = tile.riverLaneSeeds[l];
                 const frac = reduced
                     ? 0.5
                     : ((this.waterFrame * RIVER_FLOW_SPEED + laneSeed) % 1 + 1) % 1;
@@ -6323,26 +6541,26 @@ export class IsometricRenderer {
         const color = isDay ? '255, 246, 214' : '196, 224, 255';
         const scale = isDay ? dayGlitter : nightReflection;
         const reduced = !this.motionScale;
-        const frac = (v) => v - Math.floor(v);
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
         for (const tile of waterTiles) {
             if (tile.openness <= 0.5) continue;
-            const count = reduced ? 1 : 2 + (Math.floor(tile.seed * 97) % 2);
+            const specks = tile.glitterSpecks || [];
+            const count = reduced ? Math.min(1, specks.length) : specks.length;
             for (let i = 0; i < count; i++) {
-                const hx = frac(Math.sin(tile.seed * 127.1 + i * 311.7) * 43758.5453);
-                const hy = frac(Math.sin(tile.seed * 269.5 + i * 183.3) * 24634.6345);
-                const hp = frac(Math.sin(tile.seed * 419.2 + i * 71.9) * 51294.1234);
-                const ox = (hx - 0.5) * TILE_WIDTH * 0.7;
-                const oy = (hy - 0.5) * TILE_HEIGHT * 0.7;
+                const speck = specks[i];
                 const twinkle = reduced
                     ? 0.5
-                    : Math.max(0, Math.sin(this.waterFrame * (2.2 + hp * 1.6) + hp * 6.28)) ** 3;
-                const alpha = Math.min(0.5, scale * (0.14 + hy * 0.16) * twinkle);
+                    : Math.max(0, Math.sin(this.waterFrame * speck.rate + speck.phase)) ** 3;
+                const alpha = Math.min(0.5, scale * speck.alphaScale * twinkle);
                 if (alpha <= 0.02) continue;
-                const s = hp > 0.62 ? 2 : 1;
                 ctx.fillStyle = `rgba(${color}, ${alpha})`;
-                ctx.fillRect(Math.round(tile.screenX + ox), Math.round(tile.screenY + oy), s, s);
+                ctx.fillRect(
+                    Math.round(tile.screenX + speck.offsetX),
+                    Math.round(tile.screenY + speck.offsetY),
+                    speck.size,
+                    speck.size,
+                );
             }
         }
         ctx.restore();
@@ -9543,6 +9761,47 @@ export class IsometricRenderer {
         return overlay;
     }
 
+    getWorldPerformanceDiagnostics() {
+        const liveSpriteCanvases = new Set();
+        for (const sprite of this.agentSprites.values()) {
+            if (sprite?.spriteCanvas) liveSpriteCanvases.add(sprite.spriteCanvas);
+        }
+        let liveSpriteCanvasPixels = 0;
+        for (const canvas of liveSpriteCanvases) liveSpriteCanvasPixels += canvasPixelCount(canvas);
+        return {
+            frameFailures: {
+                ...this._frameFailureStats,
+                byStage: { ...this._frameFailureStats.byStage },
+                reportIntervalMs: WORLD_FRAME_ERROR_REPORT_INTERVAL_MS,
+                maxConsecutive: WORLD_FRAME_MAX_CONSECUTIVE_FAILURES,
+            },
+            boundedState: {
+                lightFadeColors: this.lightFadeColorCache?.size || 0,
+                lightFadeColorLimit: LIGHT_FADE_COLOR_CACHE_LIMIT,
+                lightFadeColorEvictions: this._lightFadeColorCacheEvictions,
+                crowdBumpCooldowns: this._crowdBumpCooldowns.size,
+                crowdBumpCooldownLimit: CROWD_BUMP_COOLDOWN_LIMIT,
+                nicknames: this._nicknames.size,
+                nicknameLimit: NICKNAME_CACHE_LIMIT,
+                liveSpriteCanvases: liveSpriteCanvases.size,
+                liveSpriteCanvasPixels,
+            },
+            waterDescriptors: {
+                total: this._waterTileDescriptors?.length || 0,
+                currentEligible: this._waterTileDescriptors?.filter?.(tile => tile.animatedCurrentEligible).length || 0,
+            },
+            harbor: this.harborTraffic?.getDiagnostics?.() || null,
+            events: this.agentEventStream?.getDiagnostics?.() || null,
+            landmarks: this.landmarkActivity?.getDiagnostics?.() || null,
+            monuments: this.chronicleMonuments?.getDiagnostics?.() || null,
+            visits: this.visitIntentManager?.getDiagnostics?.() || null,
+            allocator: this.visitTileAllocator?.getDiagnostics?.() || null,
+            relationships: this.relationshipState?.getDiagnostics?.() || null,
+            council: getCouncilRingDiagnostics(this.relationshipState),
+            pathfinder: this.pathfinder?.getDiagnostics?.() || null,
+        };
+    }
+
     getCanvasBudget() {
         const sky = this.skyRenderer?.getCanvasBudget?.() || {};
         const trail = this.trailRenderer?.getCanvasBudget?.() || {};
@@ -9567,9 +9826,16 @@ export class IsometricRenderer {
             domCanvasPixels: 0,
             cacheCounts: {
                 lightGradients: this.lightGradientCache?.size || 0,
+                lightFadeColors: this.lightFadeColorCache?.size || 0,
                 fantasyForestTrees: this.fantasyForestTreeCache?.size || 0,
             },
+            cacheStats: {
+                assets: this.assets?.cacheStats?.() || null,
+                compositor: this.compositor?.cacheStats?.() || null,
+                agentSprites: AgentSprite.sharedCacheStats?.() || null,
+            },
             terrainCache: this.getTerrainCacheDiagnostics(),
+            runtime: this.getWorldPerformanceDiagnostics(),
         };
     }
 
@@ -9609,6 +9875,15 @@ export class IsometricRenderer {
         return Math.max(0, Math.min(1, Math.round((Number(value) || 0) * 1000) / 1000));
     }
 
+    _cacheLightFadeColor(key, value) {
+        if (!this.lightFadeColorCache.has(key) && this.lightFadeColorCache.size >= LIGHT_FADE_COLOR_CACHE_LIMIT) {
+            this.lightFadeColorCache.delete(this.lightFadeColorCache.keys().next().value);
+            this._lightFadeColorCacheEvictions++;
+        }
+        this.lightFadeColorCache.set(key, value);
+        return value;
+    }
+
     // Cache `color` → rgba(r,g,b,a) strings keyed by `${color}|${alpha}` so the
     // light pass doesn't re-parse colors per frame.
     _withAlpha(color, alpha) {
@@ -9624,8 +9899,7 @@ export class IsometricRenderer {
             if (m) { r = +m[1]; g = +m[2]; b = +m[3]; }
         }
         const out = `rgba(${r}, ${g}, ${b}, ${alpha})`;
-        this.lightFadeColorCache.set(key, out);
-        return out;
+        return this._cacheLightFadeColor(key, out);
     }
 
     // Mix a colour toward white by `t` (0 = unchanged, 1 = white). Used for the
@@ -9644,8 +9918,7 @@ export class IsometricRenderer {
         }
         const mix = (c) => Math.round(c + (255 - c) * t);
         const out = `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
-        this.lightFadeColorCache.set(key, out);
-        return out;
+        return this._cacheLightFadeColor(key, out);
     }
 
     _drawAncientRuins(ctx) {

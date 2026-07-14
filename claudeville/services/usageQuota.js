@@ -24,7 +24,7 @@ const STATS_TTL = 30_000;         // 30 seconds
 const QUOTA_API_TTL = 5 * 60_000; // 5 minutes
 const QUOTA_MAX_STALE_MS = 30 * 60_000; // stop trusting a frozen snapshot after 30 minutes of failures
 const HISTORY_TAIL_CHUNK_BYTES = 64 * 1024;
-const HISTORY_MAX_TAIL_BYTES = 4 * 1024 * 1024;
+const HISTORY_MAX_LINE_BYTES = 4 * 1024 * 1024;
 
 // Cache store
 const cache = {
@@ -34,68 +34,87 @@ const cache = {
   quota: { data: null, ts: 0, available: false, lastSuccessTs: 0 },
 };
 
-function readTailLines(filePath, maxBytes = HISTORY_MAX_TAIL_BYTES) {
+function aggregateHistoryFile(filePath, todayStart, weekStart) {
   const fd = fs.openSync(filePath, 'r');
   try {
     const stat = fs.fstatSync(fd);
-    if (stat.size === 0) return { lines: [], truncated: false };
-    const chunks = [];
+    let todayMessages = 0;
+    let weekMessages = 0;
+    const todaySessions = new Set();
+    const weekSessions = new Set();
     let position = stat.size;
-    let bytesCollected = 0;
-    while (position > 0 && bytesCollected < maxBytes) {
-      const bytesToRead = Math.min(HISTORY_TAIL_CHUNK_BYTES, position, maxBytes - bytesCollected);
+    let carry = Buffer.alloc(0);
+    let skippingOversizedLine = false;
+    let reachedBoundary = false;
+
+    const consumeLine = (line) => {
+      if (line.length === 0 || line.length > HISTORY_MAX_LINE_BYTES) return true;
+      try {
+        const entry = JSON.parse(line.toString('utf8'));
+        const rawTimestamp = entry.timestamp;
+        const timestamp = Number.isFinite(Number(rawTimestamp))
+          ? Number(rawTimestamp)
+          : Date.parse(rawTimestamp);
+        if (!Number.isFinite(timestamp)) return true;
+        if (timestamp < weekStart) {
+          reachedBoundary = true;
+          return false;
+        }
+        weekMessages++;
+        if (entry.sessionId) weekSessions.add(entry.sessionId);
+        if (timestamp >= todayStart) {
+          todayMessages++;
+          if (entry.sessionId) todaySessions.add(entry.sessionId);
+        }
+      } catch { /* ignore malformed lines */ }
+      return true;
+    };
+
+    while (position > 0 && !reachedBoundary) {
+      const bytesToRead = Math.min(HISTORY_TAIL_CHUNK_BYTES, position);
       position -= bytesToRead;
       const buffer = Buffer.allocUnsafe(bytesToRead);
       const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
       if (bytesRead <= 0) break;
-      chunks.unshift(buffer.toString('utf-8', 0, bytesRead));
-      bytesCollected += bytesRead;
+
+      let combined = buffer.subarray(0, bytesRead);
+      if (skippingOversizedLine) {
+        const boundary = combined.lastIndexOf(0x0a);
+        if (boundary === -1) continue;
+        combined = combined.subarray(0, boundary);
+        skippingOversizedLine = false;
+      } else if (carry.length > 0) {
+        combined = Buffer.concat([combined, carry], combined.length + carry.length);
+      }
+
+      let lineEnd = combined.length;
+      for (let index = combined.length - 1; index >= 0; index--) {
+        if (combined[index] !== 0x0a) continue;
+        if (!consumeLine(combined.subarray(index + 1, lineEnd))) break;
+        lineEnd = index;
+      }
+      if (reachedBoundary) break;
+
+      const fragment = combined.subarray(0, lineEnd);
+      if (fragment.length > HISTORY_MAX_LINE_BYTES) {
+        carry = Buffer.alloc(0);
+        skippingOversizedLine = true;
+      } else {
+        carry = Buffer.from(fragment);
+      }
     }
-    const text = chunks.join('').trim();
+
+    if (!reachedBoundary && position === 0 && !skippingOversizedLine && carry.length > 0) {
+      consumeLine(carry);
+    }
+
     return {
-      lines: text ? text.split('\n') : [],
-      truncated: position > 0,
+      today: { messages: todayMessages, sessions: todaySessions.size },
+      thisWeek: { messages: weekMessages, sessions: weekSessions.size },
     };
   } finally {
     fs.closeSync(fd);
   }
-}
-
-function aggregateHistoryLines(lines, todayStart, weekStart) {
-  let todayMsgs = 0, weekMsgs = 0;
-  let sawBeforeWeek = false;
-  const todaySessions = new Set();
-  const weekSessions = new Set();
-
-  for (let i = lines.length - 1; i >= 0; i--) {
-    try {
-      const entry = JSON.parse(lines[i]);
-      const ts = entry.timestamp;
-      if (!ts) continue;
-
-      // Stop when entries are older than this week.
-      if (ts < weekStart) {
-        sawBeforeWeek = true;
-        break;
-      }
-
-      weekMsgs++;
-      if (entry.sessionId) weekSessions.add(entry.sessionId);
-
-      if (ts >= todayStart) {
-        todayMsgs++;
-        if (entry.sessionId) todaySessions.add(entry.sessionId);
-      }
-    } catch { /* ignore lines that fail to parse */ }
-  }
-
-  return {
-    sawBeforeWeek,
-    result: {
-      today: { messages: todayMsgs, sessions: todaySessions.size },
-      thisWeek: { messages: weekMsgs, sessions: weekSessions.size },
-    },
-  };
 }
 
 // ─── Credentials (extract subscription information only) ────────────────────────────
@@ -211,17 +230,7 @@ function readHistoryLive() {
     monday.setHours(0, 0, 0, 0);
     const weekStart = monday.getTime();
 
-    // Read a bounded tail from the end (newest data is at the end).
-    const tail = readTailLines(HISTORY_PATH);
-    let aggregate = aggregateHistoryLines(tail.lines, todayStart, weekStart);
-
-    if (tail.truncated && !aggregate.sawBeforeWeek) {
-      const raw = fs.readFileSync(HISTORY_PATH, 'utf-8').trim();
-      const fullLines = raw ? raw.split('\n') : [];
-      aggregate = aggregateHistoryLines(fullLines, todayStart, weekStart);
-    }
-
-    return aggregate.result;
+    return aggregateHistoryFile(HISTORY_PATH, todayStart, weekStart);
   } catch {
     return empty;
   }

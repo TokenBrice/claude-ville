@@ -116,6 +116,7 @@ export class LandmarkActivity {
         this._recencyByType = new Map();
         this._countByType = new Map();
         this._lastPresenceEmit = 0;
+        this._disposed = false;
     }
 
     setMotionScale(scale) {
@@ -123,13 +124,26 @@ export class LandmarkActivity {
     }
 
     update(agents, agentSprites = [], dt = 16, now = Date.now()) {
-        this.frame += (dt / 16) * this.motionScale;
-        this.agentSprites = Array.from(agentSprites || []);
-        const agentList = Array.from(agents || []);
+        if (this._disposed) return;
+        this.advance(dt);
+        this.reconcile(agents, agentSprites, now);
+    }
 
+    advance(dt = 16) {
+        if (this._disposed) return;
+        this.frame += (dt / 16) * this.motionScale;
         // Decay the Archive read counter before observing new invocations so
         // this frame's bumps remain at their full weight.
         this._decayArchiveReadCounter(dt);
+    }
+
+    reconcile(agents, agentSprites = [], now = Date.now()) {
+        if (this._disposed) return;
+        this.agentSprites = Array.isArray(agentSprites)
+            ? agentSprites
+            : Array.from(agentSprites || []);
+        const agentList = Array.from(agents || []);
+        this._pruneAgentState(agentList, now);
 
         for (const agent of agentList) {
             this._observeTokens(agent, now);
@@ -143,7 +157,49 @@ export class LandmarkActivity {
         this._maybeEmitPresence(now);
     }
 
+    _pruneAgentState(agents, now) {
+        const liveIds = new Set(agents.map(agent => agent?.id).filter(Boolean));
+        for (const agentId of this.previousTokenTotals.keys()) {
+            if (!liveIds.has(agentId)) this.previousTokenTotals.delete(agentId);
+        }
+        for (const [agentId, forge] of this.lastForgeByAgent) {
+            if (!liveIds.has(agentId) || now - Number(forge?.at || 0) > FORGE_HANDOFF_WINDOW_MS) {
+                this.lastForgeByAgent.delete(agentId);
+            }
+        }
+    }
+
+    getDiagnostics() {
+        return {
+            items: this.items.size,
+            seenSnapshots: this.seenSnapshots.size,
+            previousTokenTotals: this.previousTokenTotals.size,
+            lastForgeAgents: this.lastForgeByAgent.size,
+            archiveReadKeys: this._archiveReadSeen.size,
+            retainedAgentSprites: this.agentSprites.length,
+            disposed: this._disposed,
+        };
+    }
+
+    dispose() {
+        if (this._disposed) return;
+        this._disposed = true;
+        this.items.clear();
+        this.seenSnapshots.clear();
+        this.previousTokenTotals.clear();
+        this.lastForgeByAgent.clear();
+        this._archiveReadSeen.clear();
+        this._kindIds.clear();
+        this._recencyByType.clear();
+        this._countByType.clear();
+        this.agentSprites = [];
+        this.world = null;
+        this.sprites = null;
+        this._archiveReadCounter = { count: 0, lastInvocationTs: 0 };
+    }
+
     enumerateDrawables(now = Date.now()) {
+        if (this._disposed) return [];
         const drawables = [];
         for (const item of this.items.values()) {
             const pos = this._itemPosition(item, now);
