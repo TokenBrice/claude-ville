@@ -2,6 +2,17 @@
 
 ---
 
+## v0.25.1 — *Open Waters* · Jul 14, 2026
+
+Pushed commit ships now complete their voyage cleanly, fading into open water instead of turning back toward the island after reaching the sea.
+
+**Clean departures**
+- **No return leg after open water.** Successful push routes now end at the established sea-lane endpoint, removing the randomized final leg that could point ships back across the island.
+- **Fade on arrival.** Each ship's opacity and mist timing follow its actual departure duration, reaching zero as the ship arrives at open water rather than several seconds afterward.
+- **Regression coverage.** The deterministic Harbor scenario now verifies both the final route endpoint and zero opacity on arrival.
+
+---
+
 ## v0.25.0 — *Steady Hearth* · Jul 14, 2026
 
 ClaudeVille can now stay open through long coding sessions without its history, watchers, canvases, or village state growing without bound. The town keeps its existing look, motion, density, and two-second freshness contract while doing substantially less repeated work.

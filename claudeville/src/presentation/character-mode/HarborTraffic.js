@@ -392,8 +392,6 @@ const HARBOR_ROUTE_GRAPH = Object.freeze({
         },
     }),
 });
-const DEPARTURE_EDGE_LANES = Object.freeze([7.4, 10.2, 13.0, 15.8, 18.6, 21.4, 24.2, 27.0, 29.8, 32.6, 35.4, 38.2]);
-
 const PUSH_STATUS_STYLE = {
     success: {
         label: 'Push landed',
@@ -1667,26 +1665,6 @@ function routeBandsFromData(routeData, ship = null) {
         : LOCAL_WATER_ROUTE_BANDS;
 }
 
-function departureEdgeTile(ship, band) {
-    if (!ship) return { tileX: 19.3, tileY: DEPARTURE_EDGE_Y };
-    const laneCount = DEPARTURE_EDGE_LANES.length;
-    const routeIndex = Number.isFinite(Number(ship?.departRouteIndex))
-        ? Number(ship.departRouteIndex)
-        : (Number(ship?.laneIndex) || 0);
-    const squadIndex = Math.max(0, Math.min(10000, Number(ship?.departSquadIndex || 0)));
-    const squadCount = Math.max(1, Number(ship?.departSquadCount || 1));
-    const zone = ship?.departWaterZone || ship?.waitingZone || 'harbor';
-    const routeSeed = stableHash(`${ship.id || ''}:${ship.departEventId || ''}:${zone}`);
-    const laneOffset = Math.round((squadIndex - (squadCount - 1) / 2) * 0.8);
-    const laneIndex = (((routeSeed % laneCount) + Math.abs(routeIndex) + laneOffset) % laneCount);
-    const lane = DEPARTURE_EDGE_LANES[(laneIndex + laneCount) % laneCount];
-    const bandBias = Number.isFinite(Number(band?.exitLaneIndex))
-        ? Number(band.exitLaneIndex)
-        : 0;
-    const x = clamp(lane + bandBias * 0.28, 4.2, MAP_SIZE - 1.4);
-    return { tileX: x, tileY: DEPARTURE_EDGE_Y };
-}
-
 function pushRoutePoint(route, point) {
     if (!point) return;
     const previous = route[route.length - 1];
@@ -1719,9 +1697,11 @@ function composeWaterRouteTiles(startTile, ship, routeData = null) {
         if (!band.allowSouthbound && Number(point.tileY) > Number(startTile.tileY) + 0.65) continue;
         pushRoutePoint(raw, point);
     }
-    const exitPoint = fallbackLane?.[fallbackLane.length - 1];
-    pushRoutePoint(raw, exitPoint);
-    pushRoutePoint(raw, departureEdgeTile(ship, band));
+    // End at the established sea-lane endpoint. The old randomized edge leg
+    // could send a ship back across the island after it had already reached
+    // open water; the ship now fades during this final approach instead.
+    const seaExitPoint = fallbackLane?.[fallbackLane.length - 1];
+    pushRoutePoint(raw, seaExitPoint);
 
     const lastIndex = raw.length - 1;
     const route = [];
@@ -4679,11 +4659,11 @@ export class HarborTraffic {
             }
         }
 
-        // Mist fade through last 800ms of departure.
+        // Mist fade through the last 800ms of the approach to open water.
         if (this.motionScale > 0 && ship.status === 'departing') {
             const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
             const elapsed = Math.max(0, Number(ship.elapsed) || 0);
-            const mistStart = departMs - MIST_FADE_MS;
+            const mistStart = CAST_OFF_MS + departMs - MIST_FADE_MS;
             if (elapsed >= mistStart) {
                 const t = Math.max(0, Math.min(1, (elapsed - mistStart) / MIST_FADE_MS));
                 this._drawMistFade(ctx, ship.x, ship.y, t);
@@ -5009,10 +4989,15 @@ export class HarborTraffic {
     }
 
     _departureAlpha(ship) {
-        const elapsed = Number.isFinite(ship.elapsed) ? ship.elapsed : ship.progress * DEPARTURE_MS;
-        const fadeStart = DEPARTURE_MS + FADE_DELAY_MS;
+        const departMs = Math.max(1, Number(ship.departMsOverride) || DEPARTURE_MS);
+        const elapsed = Number.isFinite(Number(ship.elapsed))
+            ? Number(ship.elapsed)
+            : CAST_OFF_MS + Math.max(0, Number(ship.progress) || 0) * departMs;
+        const arrivalAt = CAST_OFF_MS + departMs;
+        const fadeStart = Math.max(CAST_OFF_MS, arrivalAt - EXIT_FADE_MS);
         if (elapsed <= fadeStart) return 1;
-        return Math.max(0, Math.min(1, 1 - (elapsed - fadeStart) / EXIT_FADE_MS));
+        const fadeDuration = Math.max(1, arrivalAt - fadeStart);
+        return Math.max(0, Math.min(1, 1 - (elapsed - fadeStart) / fadeDuration));
     }
 
     _drawDockedShipWake(ctx, ship, zoom, profile = trafficProfile(ship.project, ship.branch)) {

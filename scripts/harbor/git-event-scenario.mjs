@@ -32,6 +32,7 @@ function sourceModuleUrl(filePath) {
 }
 
 const {
+    HarborTraffic,
     normalizeGitEvent,
     reduceHarborTrafficState,
     snapshotHarborTrafficState,
@@ -177,6 +178,18 @@ for (const id of ['commit-convoy-a', 'commit-convoy-b', 'commit-convoy-c']) {
     assert.ok(ship?.route?.waypointIds?.includes('sea.exit'), `${id} route should include sea exit`);
 }
 assert.equal(ships.get('commit-convoy-a')?.convoy?.index, 0);
+
+const harbor = new HarborTraffic();
+const successShip = state.ships.get('commit-success');
+const successRoute = harbor._shipRouteTiles(successShip);
+const routeEndpoint = successRoute[successRoute.length - 1];
+assert.ok(routeEndpoint?.tileY > 3.5, 'successful departure should end at the sea lane, before the randomized map edge');
+const endpointDrawable = harbor._shipDrawable(
+    successShip,
+    successShip.departStartedAt + 1500 + successShip.departMsOverride,
+);
+assert.equal(endpointDrawable?.payload?.progress, 1);
+assert.equal(harbor._departureAlpha(endpointDrawable.payload), 0, 'ship should be fully faded when it reaches open water');
 
 const fetchShip = ships.get('inbound:fetch-origin-main');
 assert.equal(fetchShip?.arrivingKind, 'fetch');
