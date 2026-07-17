@@ -1,0 +1,942 @@
+<agent_swarm_result>
+<summary>completed: 12</summary>
+<subagent agent_id="agent-0" item="SKY &amp; ATMOSPHERE. Files: `claudeville/src/presentation/character-mode/SkyRenderer.js`, `AtmosphereState.js`, `WeatherRenderer.js`, `SeasonalAmbience.js`. How the sky gradient, celestial bodies, stars, clouds, rain/storm, aurora/shooting-star rewards, day-night cycle, weather transitions and seasonal ambience look and behave; how atmosphere could carry more session-state meaning (storm = fleet struggling etc.); check the night-*.png screenshots." outcome="completed">I have everything I need. Writing the report.
+
+---
+
+# Sky & Atmosphere — Visual Exploration Report
+
+## 1. Current-state assessment
+
+The sky system is technically mature and perf-disciplined: a phase-blended 4-stop gradient with weather-coupled "bruised storm" palettes (`AtmosphereState.js:475`, #29 shipped), real astronomical moon phases (`AtmosphereState.js:655`), 90 deterministic stars + constellations + 12 live twinkling stars, parallax cloud sprites, god-rays, and a composed sky frame cached at 1–5 Hz (`SkyRenderer.js:172`). Weather is a deterministic daily timeline with 3-layer parallax rain, winter snow swap, fog bands, forked midpoint-displacement lightning with a thunder event, and traveling rain curtains; session health already nudges weather via `MoodService`/`VillageDirector` → `applyWeatherEventInfluence` (`AtmosphereState.js:587`, #8 shipped), and day/night reward pairs (aurora/sky-flare, shooting-star/sun-glint) are wired to push/subagent events (#6 shipped). The honest weaknesses: **(a)** at default camera framing the map covers ~80–90% of the viewport, so the sky is a thin sliver — celestial bodies clamp to just above the map edge (`SkyRenderer.js:644`) and read as ground props (in `performance-world-1600x1000.png` the sun looks like a glowing boulder sitting on the stone wall, rays invisible); **(b)** all hero-moment rewards (aurora, shooting stars, sky-flare) render inside the base sky pass *under the world* (`WorldFrameRenderer.js:71`), so they are geometrically occluded exactly where the village sits; **(c)** the night sky is sparse — 90 fixed 1–2px stars regardless of viewport (the 1440×900 night shot shows ~3 faint dots in the visible sliver); **(d)** `SkyRenderer` duplicates `WeatherRenderer` rain/fog with a per-frame background veil that costs ~1k–2.4k individual `stroke()` calls and can slant *against* the foreground rain.
+
+## 2. Improvement opportunities
+
+### 2.1 Move hero rewards into the canopy pass
+- **What/why:** Aurora (`SkyRenderer.js:918`, yBase 0.23·h), shooting stars (`:966`, up to 0.42·h), and the sky-flare wash (`:1027`) all draw before terrain, so at default framing the village covers them. `drawCanopy` (`:267`) already exists as the sanctioned "sky over terrain, under buildings" overlay — route the three reward layers through it. Optional extension: pulse `grade.worldTint` warm for ~2s on push so the *whole village* flashes gold, not just the sky sliver. This is the single biggest payoff available: the #6 reward system already works, it just isn't visible.
+- **Files:** `SkyRenderer.js:146-167` (draw order), `:267-319` (canopy), `WorldFrameRenderer.js:86`.
+- **Effort:** M · **Risk:** med (changes occlusion semantics; buildings will crop the aurora — acceptable) · **Payoff:** spectacle + clarity.
+- **Perf/RM:** same layers reordered, no new caches; reduced-motion behavior unchanged.
+
+### 2.2 Delete or fold the background rain veil + static fog bands
+- **What/why:** `_drawRainVeil` (`SkyRenderer.js:1160-1178`) draws a full grid of individual strokes every frame — ~1,078 `beginPath/stroke` calls at 1600×1000, ~2,356 at 2560×1440 — for a veil that scrolls 1px per ~21s (`clockDriftPx = dayProgress*4096`, `AtmosphereState.js:956`). Its justification comment ("scrolls too fast for the 5 Hz cache") is stale. Worse, its slope is hardcoded `-10/+24` while foreground rain slants by `windX` (`WeatherRenderer.js:265`) — with reversed wind (18% of knots) the two rains slant opposite directions. `_drawFog` (`:1144`) adds 4 static gradient bands/frame, duplicating `WeatherRenderer._drawFogBands`. Drop the veil, or bake both into the composed frame. Pure win in a performance-release year.
+- **Files:** `SkyRenderer.js:1131-1178`, `:166`.
+- **Effort:** S · **Risk:** low · **Payoff:** coherence + perf.
+- **Perf/RM:** removes ~1–2.4k strokes/frame; no visual loss (foreground systems already carry the meaning).
+
+### 2.3 Viewport-scaled star density
+- **What/why:** `STAR_COUNT = 90` (`SkyRenderer.js:11`) is fixed, so stars per px² drop 4× from 1280×720 to 2560×1440; combined with the thin visible sliver the night sky reads dead (2–3 dots in `night-after-1440-painted.png`). Scale count by canvas area (≈90 per 921k px) and bump the hot-star fraction slightly. Stars live in the 1 Hz cached frame — zero per-frame cost; the live-twinkle PRNG walk (`:884`) already tolerates count changes.
+- **Files:** `SkyRenderer.js:11`, `:454-480`.
+- **Effort:** S · **Risk:** low · **Payoff:** charm.
+- **Perf/RM:** none per-frame; static under reduced motion as today.
+
+### 2.4 Pixel-art sun (asset or stepped disc)
+- **What/why:** The moon has authored pixel assets (`atmosphere.moon.*`) but the sun is a soft radial-gradient orb (`SkyRenderer.js:560-584`) — visibly anti-aliased mush against crisp sprites, violating the plan's own principle #4 ("pixel-art integrity is sacred… sky sprites replicate these settings", `agents/claudeville-visual-upgrade-top-50.md:349`). Add an `atmosphere.sun` manifest asset with warm/cool variants, keep the code sun as fallback; alternatively quantize the disc to pixel steps. Highest when combined with 2.1 (the sun is the most-seen celestial body since it clamps to the map edge).
+- **Files:** `SkyRenderer.js:508-585`, `claudeville/assets/sprites/manifest.yaml:1147-1199` (pattern to follow).
+- **Effort:** M (asset + code) · **Risk:** low · **Payoff:** coherence.
+
+### 2.5 Seasonal day-length modulation
+- **What/why:** `PHASES` are fixed year-round (`AtmosphereState.js:27-32`: dawn 5:30, dusk 17:30–20:00) even though `SeasonalAmbience.js:277` already maps month→season. Shift phase boundaries by month (winter: later dawn, earlier dusk; summer inverse), interpolated smoothly across months. December users currently get a 10.5h day / 9.5h night that feels wrong; this makes the whole lighting year coherent with the seasonal particles and terrain.
+- **Files:** `AtmosphereState.js:27-32`, `:369-379` (`resolvePhase`), `SeasonalAmbience.js:277-284`.
+- **Effort:** S–M · **Risk:** med (changes when night visuals appear; QA scenarios that pin hour overrides are unaffected, but eyeball dawn/dusk) · **Payoff:** coherence + charm.
+- **Perf/RM:** none; pure lookup.
+
+### 2.6 Make session-driven weather *legible as* session-driven
+- **What/why:** "Storm = fleet struggling" is wired (`deriveWeatherInfluence`, `AgentMood.js:137`) but a fleet-error storm is pixel-identical to random timeline rain — the meaning is carried but not readable. Plumb the dominant influence into the snapshot (`weather.cause: 'fleet' | 'timeline'`, folded into `cacheKey`) and, when fleet-storminess dominates, tint the lightning bolt/flash violet (`WeatherRenderer.js:599-652`) and shift the storm canopy from blue-grey toward violet; symmetrically, warming god-rays when clearing dominates. One hue distinction turns the weather into an honest gauge instead of ambient noise.
+- **Files:** `AtmosphereState.js:587-612`, `:963`; `WeatherRenderer.js:556-594`; `WorldFrameRenderer.js:41-50`.
+- **Effort:** M · **Risk:** med (third "storm look" to keep distinct from timeline storm; must stay subtle) · **Payoff:** clarity (the scope's core ask).
+- **Perf/RM:** none new; bolt is event-driven; RM static storm plate picks up the violet cast (color only, compliant).
+
+### 2.7 Ease reduced-motion reward on/off
+- **What/why:** Under `motionScale === 0`, aurora alpha is a hard 1 for 12s then gone (`SkyRenderer.js:958-964`) and sky-flare holds 0.62 then vanishes (`:1034`) — jarring pops. A 3-step wall-clock alpha envelope (e.g. 0 → 0.6 → 0 over 3 wall phases) stays within the motion budget ("fixed alpha" per step, no continuous motion) and reads intentional.
+- **Files:** `SkyRenderer.js:958-964`, `:1027-1058`.
+- **Effort:** S · **Risk:** low · **Payoff:** polish/charm.
+
+### 2.8 Lift canopy clouds so the sky reads over terrain
+- **What/why:** Base cloud bands sit at yFrac 0.16–0.40 (`AtmosphereState.js:166-170`), mostly behind the map; the canopy re-draw is the only cloud presence over the world, but its compounded alpha multipliers (`SkyRenderer.js:300` ×0.34, `:316` ×0.58) make even partly-cloudy skies ~0.10 alpha — invisible. Raise canopy cloud alpha for `partly-cloudy`+ weather so drifting cloud silhouettes read over the upper terrain; pairs with the already-shipped cloud shadows (`WorldFrameRenderer.js:319`).
+- **Files:** `SkyRenderer.js:292-319`.
+- **Effort:** S · **Risk:** low · **Payoff:** charm + coherence.
+- **Perf/RM:** same draw count; canopy already draws every frame.
+
+### 2.9 Rare ambient shooting stars on clear nights
+- **What/why:** Night sky motion is 100% event-driven; a quiet clear night is static except 12 twinkling pixels. Add a low-rate ambient meteor (every ~90–180s, only when `starOcclusion` low, i.e. clear/partly-cloudy night) reusing `triggerShootingStar` (`SkyRenderer.js:221`). Makes night feel alive with zero session input.
+- **Files:** `SkyRenderer.js:221-239`, `:122-136` (attach pattern).
+- **Effort:** S · **Risk:** low · **Payoff:** charm.
+- **Perf/RM:** reuses existing capped pool (max 3); already skipped under reduced motion.
+
+### 2.10 Cross-fade cloud asset sets during weather transitions
+- **What/why:** `resolveWeatherAt` flips `type` at `transitionProgress 0.5` (`AtmosphereState.js:326`) and `buildCloudLayers` is memoized per type (`:953`), so the entire cloud population (e.g. cumulus → storm-shelf) pops at the midpoint of an otherwise smooth 4-hour transition. During the transition window, draw both sets with complementary alpha.
+- **Files:** `AtmosphereState.js:296-357`, `:696-732`; `SkyRenderer.js:846-876`.
+- **Effort:** M · **Risk:** med (cache-key design: two layer sets must both fold into `cloudLayerKey`) · **Payoff:** polish. Lowest priority of the list — the pop is subtle.
+
+## 3. Top 3 quick wins
+
+1. **2.2 — kill/fold the background rain veil.** Pure perf + coherence win, ~1–2.4k strokes/frame removed, deletes a wind-direction bug. S, low risk.
+2. **2.3 — viewport-scaled stars.** 10-line change, night sky stops looking empty on big monitors, zero per-frame cost. S, low risk.
+3. **2.1 — rewards into the canopy.** The only M here, but the highest payoff in the whole scope: the shipped #6 reward moments are currently hidden behind the village. If strictly S-sized, do just the sky-flare layer first.
+
+## 4. Considered and rejected
+
+- **Authored aurora sprite** — already considered and commented out in `manifest.yaml:1230`; procedural bands are palette-adaptive and cheap. An asset would fight the phase/weather palette system.
+- **Milky Way / nebula band in the night gradient** — nearly free to bake, but the visible sky sliver is too thin for it to ever be seen; dead code unless camera framing changes (camera scope, not mine).
+- **Real-geolocation / network weather sync** — violates the documented local-only, zero-network design (`AtmosphereState.js:1-5` header).
+- **Per-frame animated god-rays / rotating sun rays** — god-rays live in the cached sky frame by design (`SkyRenderer.js:35-39`); live rays would break the cache budget that funds everything else.
+- **Extra weather semantics (fog = queue depth, snow = idle fleet, etc.)** — the experience doc explicitly warns against overloading one cue (`docs/visual-experience-crafting.md:91`); storm/clearing already carry fleet health, and 2.6 makes that legible instead of adding a second channel.
+- **Camera auto-reveal of sky during rewards** — belongs to the camera-director scope (#21), high risk of fighting user input; noted as a dependency for the lead, not proposed here.
+- **Storm-flash under reduced motion** — currently (correctly) suppressed entirely (`WeatherRenderer.js:113`); adding even a static flash frame is an accessibility regression, not a win.</subagent>
+<subagent agent_id="agent-1" item="TERRAIN &amp; WATER. Files: `claudeville/src/presentation/character-mode/TerrainTileset.js`, `SceneryEngine.js`, `claudeville/src/config/scenery.js`, plus the water/ground portions of `IsometricRenderer.js` and `claudeville/assets/sprites/terrain/`, `vegetation/`, `bridges/`. Ground tile variety, shoreline/lagoon rendering, waves/ripples/reflections, paths/roads, ground decals, flowers/vegetation density, bridges; look for repetition, banding, flat or noisy areas in the world screenshots." outcome="completed">I have everything I need. Here's my report.
+
+---
+
+# Terrain & Water — Visual Exploration Report
+
+## 1. Current-state assessment
+
+Terrain is a six-sheet Wang 4-bit tileset system (`claudeville/src/presentation/character-mode/TerrainTileset.js:18`) baked once into a single-surface cache with seasonal ground decals, district washes, forest-floor tints, and atmospheric perspective; water is authored as polylines + basins with kind/region/depth metadata (`claudeville/src/config/scenery.js:8-179`) and carries a deep stack of shipped dynamic passes (flow streaks, glitter, surf bands, ripples, night reflections — v0.23–v0.25). The single dominant flaw is the **water checkerboard**: deep/shallow classification is peppered per tile, so every water body reads as alternating light-teal/navy diamonds — I confirmed it by running `SceneryEngine` headlessly and dumping the class map (e.g. the lagoon at map rows 5–9 is `slDllDDDDDllll…` — deep and shallow interleaved, not a coherent deep center). Root causes: overlapping basins/polylines overwrite each other's depth (last write wins, `SceneryEngine.js:279-286`), deep thresholds are per-shape with per-tile white-noise jitter, and `_drawTerrainTone` alternates two very different fills on `seed > 0.5` (`IsometricRenderer.js:7904,7912`). Secondary weaknesses: shallow tiles treat deep neighbors as *land* in the Wang mask (`IsometricRenderer.js:8930`), drawing sandy shore fringes *inside* water bodies; the noise source `_tileNoise` (`IsometricRenderer.js:1286`) is a per-tile white hash, so every "broad variation" feature (region tint, road materials, vegetation, sea bands) scatters as polka dots instead of clumps; and same-mask interiors repeat one identical 32×32 cell across every tile, so big grass/water expanses go flat. Bridges and the baked landmark span are genuinely good; the shore band, roads, and open sea are serviceable but mechanical.
+
+## 2. Improvement opportunities
+
+**A. Kill the water checkerboard (coherent depth map)**
+What: in `SceneryEngine._finalizeWaterMetadata` (`SceneryEngine.js:288`), replace per-shape `deepRatio` stamping with a BFS distance-to-nearest-land over `waterTiles`, then classify `deep = distance ≥ kind threshold` (river ≈0.5 → spine, lagoon ≈1, sea/harbor ≈2). Also flip `_sameTerrainClass` for `terrain.shore-shallow` to count deep tiles as same-class (`IsometricRenderer.js:8930` — drop the `!deep`), so mid-water sand fringes vanish and the `shallow-deep` sheet owns the shallow→deep transition. Depth is visual-only (walkability uses `waterTiles`+bridge flags, `SceneryEngine.js:730-742`), so this is safe. Why: fixes the #1 eyesore visible in every world screenshot; the lagoon, river, and sea finally read as bodies of water with depth structure. Effort **M**, risk **med** (threshold tuning per region; `npm run world:validate-terrain` + visual diff). Payoff: **coherence**. No per-frame cost (init-time BFS over ≤1600 tiles).
+
+**B. Stop alternating fills on white noise**
+What: `_drawTerrainTone` picks `seed > 0.5 ? tokenA : tokenB` at α≈0.5 (`IsometricRenderer.js:7904,7912`); even after fix A, adjacent deep tiles flip between `#074276` and `#03244a`. Lerp the two by seed (or keep one fill and jitter only α ±0.04). Same pattern worth auditing wherever `seed > x` picks colors per tile. Effort **S**, risk **low**. Payoff: **coherence**. Bake-side.
+
+**C. Coherent low-frequency noise field for ground variation**
+What: add one shared smoothed value-noise helper (coarse 4–6-tile lattice, bilinear interp) and route these white-noise call sites through it: `_terrainRegionTint` (`IsometricRenderer.js:8938`), broad grass greens (`IsometricRenderer.js:7934`), road material classification (`IsometricRenderer.js:1091-1096`, which currently peppers cobble into dirt roads), flat-vegetation density (`SceneryEngine.js:617-654`), and open-sea band/whitecap noise (`IsometricRenderer.js:6372,6402`). Why: grass tint, forests, flower drifts, and swell lines come in soft readable masses instead of per-tile confetti — the "authored, not random" look the scenery config already aims for. Effort **M**, risk **low**. Payoff: **coherence + charm**. Init/bake-side only.
+
+**D. Shoreline wet/dry structure + shallow shelf**
+What: shore tiles are a flat 1-tile sand band (`SceneryEngine.js:394-413`, tint at `IsometricRenderer.js:7865-7874`). Bake a darker wet-sand crescent on the water-facing edge, keep dry sand toward grass, and tint adjacent shallow water tiles toward the sand color (sandy-bed gradient) instead of uniform teal — the `shore-shallow` manifest prompt already promises "sandy bed visible". Effort **S**, risk **low**. Payoff: **charm + coherence**. Bake-side; complements the existing wet-shore puddle sheen.
+
+**E. Water-surface banding on big bodies**
+What: the sheets bake horizontal wave lines that stretch 32→64px and read as banding on large water (visible in the lagoon crops). Add a bake-side pass of iso-diagonal wavelet strokes (aligned to the diamond, jittered, α≈0.06) on deep/open interiors to break the horizontal rhythm — or regenerate `terrain.shallow-deep` with iso-aligned wavelets via the existing pixellab pipeline (`manifest.yaml:1111`). Effort **S** (procedural) / **M** (art route), risk **low/med**. Payoff: **coherence**. Bake-side.
+
+**F. Second small crossing using the dead plank-bridge assets**
+What: `bridge.ew.png`/`bridge.ns.png` are in the manifest (`manifest.yaml:1251-1262`) but referenced nowhere — only `bridge.landmark.*` is used (`IsometricRenderer.js:7188`). The 39-tile river has exactly one crossing (`scenery.js:186-196`), cutting the southwest (Portal/Mine) off visually. Add 1–2 `style: 'plank'` hints (e.g. near x≈6,y=25), a small sprite-draw branch beside `_drawGeneratedBridgeSpan`, `widthRadius: 0`. Why: breaks the monotonous moat ribbon, gives the west bank a read. Effort **M**, risk **med** (adds walkable tiles → agent routing changes; needs `node scripts/smoke/adapters.mjs`-style verification and intent-path review). Payoff: **clarity + charm**.
+
+**G. Road verges instead of material pepper**
+What: beyond the classification fix in C, add a baked worn-grass verge along path edges (there's already `_neighborsRoad` wear, `IsometricRenderer.js:6759-6765` — strengthen it into a continuous verge tint) and soften the blocky 2-wide L-bends from `_addTownRoad` (`IsometricRenderer.js:1066-1080`) with corner-wear decals. Effort **S**, risk **low**. Payoff: **coherence + charm**.
+
+**H. Lagoon interior life: clustered lilypads/reeds**
+What: lilypads exist only at two hand-placed spots (`scenery.js:429-432,444-448`); reeds scatter on ~54% of shore tiles individually (`IsometricRenderer.js:1106-1107`). Cluster them (same coherent-noise field as C): lilypad drifts in calm lagoon interiors, reed beds in 2–4-tile clumps at inflows. All `layer: 'cache'` → zero per-frame cost. Effort **S**, risk **low**. Payoff: **charm**.
+
+**I. Seat the landmark bridge into the water**
+What: the bridge span draws its own shadow ribbon (`IsometricRenderer.js:7239-7249`), but there's no foam/wake at the two piers and no darkening of the water under the deck. Bake 2–3 foam dabs at pier bases (reuse the `shoreFoam` sprite path from `_drawShoreCrest`, `IsometricRenderer.js:7842`) plus a soft multiply shadow on the water beneath the arch. Effort **S**, risk **low**. Payoff: **charm**.
+
+**J. One-mass deep-sea gradient**
+What: after fix A, the sea interior still gets per-tile `_drawOpenWaterDepthWash` / `_drawStaticOpenSeaStructure` fills (`IsometricRenderer.js:6299-6415`). Add a single baked radial multiply gradient centered on the sea basin (center darkest, fading to the shelf) so the open sea reads as one deep mass rather than the sum of 200 tinted diamonds. Effort **S**, risk **low**. Payoff: **coherence + spectacle** (cheap depth cue).
+
+## 3. Top 3 quick wins
+
+1. **A+B together** — the checkerboard is the worst thing on screen in every world capture; one init-time BFS plus a few-line fill change, entirely visual-only. Highest payoff-per-effort in this scope.
+2. **C** — one noise helper, five call sites; turns the whole ground plane from confetti into authored masses. Unblocks D/H's clustering for free.
+3. **D** — every shoreline in the game gets a wet tropical read for one bake-pass tint; pairs with the already-shipped foam/surf so the coast finally looks finished.
+
+## 4. Considered and rejected
+
+- **Animated water tile swaps / per-frame caustics** — violates the bake-don't-redraw rule (`agents/claudeville-visual-upgrade-top-50.md:350`) and adds per-frame cost with no budget story; motion is already well-covered by glitter/streaks/surf.
+- **WebGL/shader water** — explicitly forbidden by the pixel-art integrity contract (SpriteRenderer sole blit path, no shaders).
+- **Regenerating all six tileset sheets via pixellab for interior variety** — viable (manifest-driven, `scripts/sprites/generate.md`) but M–L with asset-version bumps and visual-diff burden; the procedural mottling in C/E gets 80% of it for S effort. Kept as a later art pass.
+- **More auto-placed bridges / denser river crossings** — `generateBridges` is deliberately authored-only (`SceneryEngine.js:532-534`); more crossings alter walkability and VillageDirector routing semantics. Limited the proposal to one or two plank crossings (F).
+- **Widening the shore band or reed range** — `SHORELINE_VEGETATION.maxWaterDistance: 1` is a deliberate readability choice (`scenery.js:369-375`); wider sand/reeds reads swampy and crowds building sightlines.
+- **Ground fog over water** — already item #55 in the top-50 deferred backlog; not re-proposed.
+- **Larger map / new water bodies** — terrain cache is a single surface capped by `CANVAS_BUDGET.maxWorldCachePixels` (`world-visual-qa-checklist.md:47-52`); pure cost, no clarity gain.
+
+**Validation hooks for whoever implements:** `npm run world:validate-terrain`, `npm run sprites:visual-diff` for bake changes, and before/after captures at the lagoon (map rows 3–14) and the river (row 25) — that's where the checker is most visible. One caveat I couldn't verify statically: the exact visual weight of each checker contributor (peppered depth vs. `seed>0.5` fills vs. per-tile depth-accent trapezoids at `IsometricRenderer.js:7800-7813`) — A+B should land together and be re-screenshotted before tuning C.</subagent>
+<subagent agent_id="agent-2" item="BUILDINGS, PROPS &amp; LANDMARKS. Files: `claudeville/src/presentation/character-mode/BuildingSprite.js`, `BuildingVisualRegistry.js`, `StaticPropDrawables.js`, `ChronicleMonuments.js`, `LandmarkActivity.js`, `claudeville/src/config/buildings.js`, `claudeville/assets/sprites/buildings/`, `props/`, and `docs/building-style-contract.md`. Building art cohesion (castle, tents, houses, well, taskboard, forge, harbor, portal), window warmth/emitter glow, landmark idle animations, monument storytelling, prop clutter vs empty plots; judge against the style contract." outcome="completed">I have everything needed. Compiling the report.
+
+---
+
+# Explorer Report — Buildings, Props & Landmarks
+
+## 1. Current-state assessment
+
+Buildings are the most visually mature system in the world: all nine are single-image painterly PNGs that pass the style contract (true 2:1 iso, slate-blue roof family, baked ground diamonds — verified against `docs/building-style-contract.md` and the June harmonization plan, status "completed"). A deep functional-overlay layer gives each landmark semantic idle life — forge mouth/anvil/chimney, archive window + doorway spill, mine seam/reserve, portal rings, observatory clock, watchtower fire + rotating distress searchlight, harbor flags/cargo, taskboard ritual papers — all `motionScale`-gated with static reduced-motion fallbacks (`BuildingSprite.js:1511-1628`), plus beacon breathing, window-warmth and roof-glint atmosphere reactions. The honest weaknesses are below the building tier: six high-frequency ground props (well, runestone, oreCart, scrollCrates, harborCrates, noticePillar) were regressed on Apr 26 (commit `e8c0e35`) from ~8.5KB painterly sprites to 250–397-byte blobs that read as smudges next to the painterly set; chronicle monuments are flat vector polygons from a different art family than everything else; a saturated magenta flowerCart body sits off-palette beside the command castle; window warmth is generic radial blobs at emitter anchors rather than actual lit windows; and the command plaza carries 11 near-invisible alpha≈0.2 vector sketch decorations that cost draw calls without paying off.
+
+## 2. Improvement opportunities
+
+### A. Regenerate the six placeholder props (well, runestone, oreCart, scrollCrates, harborCrates, noticePillar)
+**What + why:** These sit at the busiest civic hotspots (well at the plaza `(15.3,20.4)`, noticePillar at taskboard/gate, oreCarts in forge/mine yards, scrollCrates at archive/bridge, runestones scattered) and are visibly the worst pixels on screen — 32×32 monochrome-ish blobs while their own procedural fallbacks (`_drawVillageWell`, `IsometricRenderer.js:10143`) are *more* readable. The pre-regression versions (recoverable via `git show ef7214c:...`) prove 8KB painterly props at this scale work; those read oversized (64px crates ≈ 2 tiles), so regenerate at 48px on the contract ramps rather than restoring verbatim. Also fixes `LandmarkActivity._drawTokenItem` (`LandmarkActivity.js:721`) which blits `prop.oreCart` for every token event.
+**Files:** `claudeville/assets/sprites/props/*.png`, `claudeville/assets/sprites/manifest.yaml:658-700` (size/anchor + `style.assetVersion` bump).
+**Effort:** S–M (6 PixelLab generations + anchor recalibration). **Risk:** low. **Payoff:** coherence + charm. **Perf/RM:** static sprites; most bake into the terrain cache (`layer: 'cache'`) — zero per-frame cost.
+
+### B. ChronicleMonuments sprite set (ship runner-up #60)
+**What + why:** Monuments are the world's long-term memory, yet a v0.25.0 *release* earns a 9px-wide flat-shaded vector obelisk (`ChronicleMonuments.js:380-406`) with a glowing `fillRect` inset (`:348-359`) — no outline, no painterly shading, no pixel snap, off-family next to everything around it. Generate 4 sprites (minor cairn / medium stone / major obelisk / founding layer) on the style contract, keep the `KIND_COLORS` gem as a screen-composite glow overlay (reuses the existing light path), keep vector draws as asset-missing fallback. Tooltips/minimap markers already exist and don't change.
+**Files:** `ChronicleMonuments.js:319-445`, `manifest.yaml`, `AssetManager.js`.
+**Effort:** M. **Risk:** low-med (keep the hit-test box, `ChronicleMonuments.js:270-280`, aligned to new sprite bounds). **Payoff:** coherence + spectacle (storytelling). **Perf/RM:** static sprites + static glow; no new motion; monument count already district-capped.
+
+### C. Per-window warmth calibration
+**What + why:** Window warmth currently paints 1–4 radial gradients at *emitter/lightSource anchors* (`BuildingSprite.js:1370-1420`, points from `_buildingReactionLightPoints:1442-1464`), so occupied buildings glow vaguely in the middle instead of having lit windows. Add optional `windowRects` (sprite-local x/y/rx/ry) per building to `BuildingVisualRegistry.js` or the manifest, calibrated to the baked windows — command (4+), observatory (3 arched), archive (stained-glass + door), harbor shack, watchtower slots (fixes the lighthouse's drab daylight face too). Reuse the existing `warmthAlpha` math and occupancy modulation; draw crisp small rects/ellipses instead of one blob.
+**Files:** `BuildingVisualRegistry.js`, `BuildingSprite.js:_drawAtmosphereBuildingReactions`, optionally `manifest.yaml`.
+**Effort:** M (mostly careful per-building pixel calibration). **Risk:** med — misaligned rects look worse than blobs; verify at zoom 2/3 per building. **Payoff:** charm + clarity ("lights on = someone's home"). **Perf/RM:** ≤4 extra fills/building/frame, alpha-only; pulse already freezes under reduced motion.
+
+### D. Sprite-prop contact shadows
+**What + why:** Buildings get soft directional shadows (`BuildingSprite.js:392-440`); agents get grounding ellipses; sprite props get nothing — the flowerCart/stall sit flat on the cobble (visible next to the castle's big soft shadow at `output/playwright/performance-world-2560x1440.png` ~(1420,380)). Draw a small baked-style ellipse under each `sorted` prop in the drawable pass, and stamp one into the terrain bake for `cache`-layer props.
+**Files:** `IsometricRenderer.js:4384-4394` (sorted prop drawables), prop-bake path near `:9953-9977`.
+**Effort:** S. **Risk:** low. **Payoff:** coherence (nothing floats — the contract's own grounding rule, currently only enforced for buildings). **Perf/RM:** one ellipse per prop; static; trivial.
+
+### E. Delete or sprite-ify the command-plaza vector sketches
+**What + why:** `COMMAND_CENTER_DECORATION` (`buildings.js:70-82`) places 11 banners/runestones/watchfires/guardposts drawn as alpha 0.19–0.31 quadratic curves and 3-rect posts (`IsometricRenderer.js:10007-10075`) — visually near-invisible mush that still costs per-frame path draws around the hero building. The castle sprite already has baked banners/torches plus animated `banner.png`/`watchfire.png` overlay layers. Either delete the vector layer (recommended for banners/guardposts/runes) or replace with real prop sprites.
+**Files:** `claudeville/src/config/buildings.js:70-82`, `IsometricRenderer.js:9977-9980, 10007-10075`.
+**Effort:** S. **Risk:** low (verify no gameplay cue depends on them — they're decorative). **Payoff:** clarity + a small per-frame saving. **Perf/RM:** pure removal.
+
+### F. Re-hue the flowerCart body to the wood/gold ramps
+**What + why:** The cart at `(19.0,18.0)` + plaza-corner `(17.5,22.6)` — the two busiest civic tiles — has a saturated magenta body (sampled `#a61c45` in-scene) that exists in no contract ramp and pulls the eye off the command castle. Keep the flower mound; re-hue the crate to weathered oak + gold trim (contract cobble/wood ramps).
+**Files:** `claudeville/assets/sprites/props/prop.flowerCart.png`, manifest entry (`manifest.yaml:688`).
+**Effort:** S (one regen). **Risk:** low. **Payoff:** coherence.
+
+### G. Lighthouse daylight warmth (cheap variant of a regen)
+**What + why:** The watchtower is the drabbest hero in daylight — uniform cool-grey, all windows dark, no warm accent until the beacon fires (contract allows it as a variant, but the family's "warm window" signature is absent). Cheapest fix: piggyback on item C — add 4–5 tiny warm window rects calibrated to the baked arched windows, gated by `windowWarmth`/beacon intensity. Full sprite regen is *not* recommended: `lanternFire`/`searchlight` pivots (`BuildingVisualRegistry.js:99-112`) and the beacon overlay anchor `[144,68]` are load-bearing and there's no dims assertion for the watchtower (only the observatory has `_assertObservatoryClockDims`).
+**Files:** `BuildingVisualRegistry.js:90-113` (+ item C plumbing).
+**Effort:** S (as part of C). **Risk:** low. **Payoff:** charm. **Perf/RM:** static alpha; reduced-motion safe.
+
+### H. Clean up crude vector strokes on painterly sprites
+**What + why:** A few procedural marks sit visibly *on top of* painterly art at sketch quality: the mine-mouth cart rails are two brown strokes (`BuildingSprite.js:1557-1565`), the harbor signal flags are flat triangles on the painterly mast (`:2011-2023`), and the command hall "windows" are fillRects on the keep (`:3194-3207`). Redraw these few at sprite quality (1px outline, 3-tone shading) or fold them into the base art where static (rails).
+**Files:** `BuildingSprite.js` sections cited.
+**Effort:** S. **Risk:** low. **Payoff:** coherence (minor but constant).
+
+### I. Major-monument persistent presence
+**What + why:** After B lands, give `weight: 'major'` monuments a quiet always-on cue — a slow `beaconMote` drift from the gem (emitter chance ~0.02, reuse `EMITTER_LIGHTS`-style registry) so a release keeps a presence in the world for its 30-day life instead of blending into terrain. Minor/medium stay silent.
+**Files:** `ChronicleMonuments.js` (emitter hook), `BuildingVisualRegistry.js` (light entry).
+**Effort:** S (depends on B). **Risk:** low. **Payoff:** storytelling/charm. **Perf/RM:** one capped emitter per major monument (district cap bounds count); suppressed when `motionScale === 0`, static gem glow remains.
+
+### J. Observatory idle-life bump
+**What + why:** The observatory is the quietest hero: one `sparkle` emitter (`manifest.yaml:531-537`) and a clock. Add a slow telescope glint (one-shot lens flash every ~8–12s, slow band) or a second mote emitter at the dome, so the knowledge district reads alive at idle like the others. Declare the slow band per the motion budget; static fallback = no glint.
+**Files:** `manifest.yaml` observatory emitters, `BuildingVisualRegistry.js` (`BUILDING_EMITTER_FALLBACKS` has no observatory entry — add one).
+**Effort:** S. **Risk:** low. **Payoff:** charm (minor).
+
+## 3. Top 3 quick wins
+
+1. **A — regenerate the six placeholder props.** Biggest visible quality gap in the whole scope; confined to assets + manifest; mostly bake-layer so zero runtime cost.
+2. **E — delete the command-plaza vector sketches.** Pure subtraction: instant declutter of the hero vista plus a small per-frame saving.
+3. **F — flowerCart re-hue.** One sprite swap that removes the single most off-palette object in the most-seen screen region. (D — prop contact shadows — is the runner-up; nearly as cheap, world-wide effect.)
+
+## 4. Considered and rejected
+
+- **Building light reflections on water / forge ground spill / archive door spill / beacon breathing / searchlight / scenic-point props / chimney smoke** — all already shipped from the top-50 (verified: `_drawBuildingLightReflections` `IsometricRenderer.js:6058`, `_forgeSpillLightSources` `BuildingSprite.js:1188`, `_archiveSpillLightSources` `:1149`, `_beaconScaleFor` `:1080`, `_drawWatchtowerSearchlight` `:3311`, `SCENIC_POINT_PROPS` `scenery.js:531-544`, `_smokeEmitterOptions` `:3541`). Do not re-propose.
+- **Restoring the old 8KB prop PNGs from git** — they read oversized at 64px (crates ≈ 2 tiles at zoom 2, likely why they were replaced); regenerate at contract sizes instead.
+- **Idle tents/houses for flavor** — no semantic mapping (nothing they *mean*); world is already dense; this is the "decorative metaphor" pitfall named in `docs/visual-experience-crafting.md` §12.
+- **In-world monument labels** — hover tooltips with lore already exist (`ChronicleMonuments.js:282-293`); floating text would violate the sparse-label grammar.
+- **Full watchtower sprite regen** — rejected on risk: the beacon overlay, searchlight pivot, and emitter anchors are hand-calibrated to `[144,68]` with no drift assertion; the procedural warmth route (G) gets 80% of the payoff.
+- **Animating the taskboard's baked papers / portal vortex further** — already has ritual papers + glow layer + procedural rings; more motion would fight the pulse-band budget.
+- **Terrain checkerboard harshness and the low-sun blob overlapping terrain** — real, but they belong to the terrain/sky scopes, not this one; flagged for the lead to dedupe.
+
+**Ambiguity note for the lead:** the large magenta box beside the command castle in the screenshots is `prop.flowerCart` (verified by palette sampling: magenta body + green flower top at that tile). Its sprite is fine in isolation — the issue is only the off-palette body color, covered by item F.</subagent>
+<subagent agent_id="agent-3" item="CHARACTERS &amp; AGENT AVATARS. Files: `claudeville/src/presentation/character-mode/AgentSprite.js`, `SpriteRenderer.js`, `SpriteSheet.js`, `claudeville/src/presentation/shared/RoleAccessory.js`, `claudeville/src/presentation/character-mode/ToolGlyphBadge.js`, `CrowdClusters.js`, `CrowdClusterOverlay.js`, `claudeville/assets/sprites/characters/`, `equipment/`, `overlays/`, plus the `output/*.png` grok sprite comparison shots. Character art quality per provider (Claude/Codex/Kimi/Grok distinctiveness), walk/idle animations, accessories/hats/roles, status communication on the sprite (working/waiting/error/idle), name labels, selection ring, crowd readability when 20+ agents cluster." outcome="completed">I have a complete picture. Compiling the report.
+
+---
+
+# Characters & Agent Avatars — Visual Exploration Report
+
+## 1. Current-state assessment
+
+ClaudeVille's character layer is one of the most sophisticated parts of the app: 21 PixelLab-generated sheets (8 directions × 10 rows × 92px cells) keyed by model identity (`ModelVisualIdentity.js`), runtime palette-swap + accessory compositing (`Compositor.js`), effort-tier auras/floor-rings/weapons, and an enormous status vocabulary on each sprite — grounding rings, status emotes, tool-glyph badges, speech bubbles with real tool text, name tags, waiting beacons, context-pressure arcs, mood postures, and per-building work gestures. Crowd machinery is equally built out: bubble de-collision, building-fold tallies, cluster standards, label fade, and a mark governor. The honest weaknesses: (a) the per-agent variation system is **silently inert** — I verified by pixel-scanning every sheet that the swap marker colors exist only in `agent.claude.base` (5,908 robe px) while `sonnet` has 5, `codex.base`/`gemini`/`grok`/`deepseek` have **0**, so all same-model agents are pixel-identical twins and team sashes never render (visible in `after-busy-day.png`: two clone armies of purple wizards and teal paladins); (b) every agent animates in **perfect unison** — `statusAnim`/`frame`/`frameTimer` all start at 0 with no id-seeded phase (`AgentSprite.js:366,494-495`), so a crowd breathes and pulses as one; (c) status communication is so layered (up to ~12 concurrent marks on a selected agent) that individual cues like the hairline selection ring and the 2–6px ritual gestures get lost at zoom 1; (d) Dashboard/ActivityPanel avatars bypass the Compositor entirely, drawing the raw south idle frame — no variant, no accessory, no team trim — so avatars are identical chips that don't match the world.
+
+## 2. Improvement opportunities
+
+### 2.1 Make palette variants and team sashes actually work (per-sheet swap sources)
+- **What/why:** `Compositor._applyPaletteSwap` (`Compositor.js:113-153`) hardcodes swap *sources* as `palette.robe[0]/pants[0]/trim[0]` (provider-level), but model-specific sheets were painted with their own outfit colors, so the swap is a no-op on 20 of 21 sheets (verified pixel counts: sonnet robe=5, opus=13, codex.base=0, gemini=0, grok=0, kimi=0; team-sash trim sources: sonnet=0, grok=0, deepseek=0). The docs promise deterministic per-entity variation (`docs/visual-experience-crafting.md` §5) and the changelog shipped "team sash" — neither is visible today. Fix: add an optional per-sheet `paletteSource` (and optionally per-sheet variant ramps) to `manifest.yaml` character entries, sampled from the actual PNGs, and let `_applyPaletteSwap` prefer sheet sources over provider defaults. Zero art regeneration; one manifest + Compositor change. Two same-model agents stop being clones; team identity lands on bodies.
+- **Files:** `claudeville/src/presentation/character-mode/Compositor.js:113-153`, `claudeville/assets/sprites/manifest.yaml` (characters block), `claudeville/src/presentation/character-mode/AgentSprite.js:2121-2145` (already threads `variant`/`teamTrim`).
+- **Effort:** M (sampling 21 sheets + schema + swap change + visual pass) · **Risk:** med (recoloring unintended pixels — mitigate with tight ΔE and per-sheet review via `sprites:visual-diff`) · **Payoff:** clarity + charm · **Perf:** cache-time only, no per-frame cost; no PNG changes so no `assetVersion` bump needed (per `docs/pixellab-reference.md` cache policy). Reduced-motion: n/a (static).
+
+### 2.2 Seed per-agent animation phase from agent id
+- **What/why:** All agents share phase: `this.statusAnim = 0` (`AgentSprite.js:366`), `this.frame = 0; this.frameTimer = 0` (`AgentSprite.js:494-495`), idle ticks on a global 500ms cadence (`AgentSprite.js:1794-1799`), and every sine pulse (grounding `sin(statusAnim*2.2)` at `AgentSprite.js:2846`, selection ring `sin(frame*0.15)` at `AgentSprite.js:3211`, effort rings at `AgentSprite.js:2493`) is synchronized across the crowd. Mote emissions already stagger via `hash(agent.id) % period` (`AgentSprite.js:5206`) — extend the same pattern to `statusAnim`/`frameTimer` init. A crowd of 20 stops breathing/pulsing as a single organism; identical sprites at least desync.
+- **Files:** `AgentSprite.js:366, 494-495` (constructor seeding; `_hash` already exists).
+- **Effort:** S · **Risk:** low · **Payoff:** charm + clarity · **Perf:** zero. Reduced-motion: unaffected (already static under `motionScale 0`).
+
+### 2.3 Match Dashboard/ActivityPanel avatars to world sprites
+- **What/why:** `AvatarCanvas._drawGeneratedSprite` (`dashboard-mode/AvatarCanvas.js:208-265`) draws the raw sheet's south idle frame — no variant swap, no accessory, no team trim, no effort aura. Result: all four Sonnet cards in `performance-dashboard-1600x1000.png` show identical chips, and the avatar disagrees with the world sprite the user just clicked. Have AvatarCanvas request the same composited bitmap as the world (share the `Compositor` cache key: `spriteId|palette|variant|accessory|teamHash`) or at minimum apply variant + effort accessory. World↔Dashboard coherence is a stated project goal (top-50 #1, #31).
+- **Files:** `dashboard-mode/AvatarCanvas.js:208-265`, `character-mode/Compositor.js:34-70`.
+- **Effort:** M · **Risk:** low-med (cache sharing across renderers; the caches are already LRU-bounded at 24 entries/12.5M px) · **Payoff:** coherence + clarity · **Perf:** one-time composite per profile, cached; per-frame unchanged. Reduced-motion: n/a (avatars are static).
+
+### 2.4 Strengthen the selected-agent read in crowds
+- **What/why:** Selection is a hairline 64px gold ellipse (`overlay.status.selected.png`, 739 bytes of thin ring) tinted per provider, plus a 0.18-alpha halo and a screen-blend focus pillar (`AgentSprite.js:2284-2293, 2975-2994, 3208-3235`). In the 1600×1000 crop the selected mage's ring is nearly invisible against bright water; screen-blend gradients wash out on light terrain. Double the ring's stroke weight (or stamp it twice with a 1px offset), put a soft dark backing ellipse under it so it survives bright ground, and consider a `source-over` edge on the pillar. Selection is the app's core interaction; it must read at zoom 1 inside a cluster.
+- **Files:** `AgentSprite.js:2284-2293` (halo), `:3208-3235` (ring), `:2975-2994` (pillar).
+- **Effort:** S · **Risk:** low · **Payoff:** clarity · **Perf:** same draw count. Reduced-motion: ring pulse already freezes via `frame`; no change.
+
+### 2.5 Make ritual work gestures readable at zoom 1
+- **What/why:** The 9 building work gestures (`AgentSprite.js:5413-5522`) are drawn as 2–6px `fillRect`s — a hammer head is 4×3px, a page leaf 1×3px. `_drawToolRitualOverlay` receives `drawScale` but the gesture functions ignore it and use fixed pixel sizes, so at the default zoom the "working" body language is effectively invisible (confirmed in crops: mages at the forge show nothing in hand). Scale gesture geometry by `drawScale` (and optionally ~1.5× base), so the hammer/page/pick reads at zoom 1. The particle downbeat already sells the gesture; the prop itself needs mass.
+- **Files:** `AgentSprite.js:5361-5411` (dispatch), `:5413-5522` (gestures).
+- **Effort:** S · **Risk:** low · **Payoff:** charm + clarity · **Perf:** same op count. Reduced-motion: already renders a static posed frame (`AgentSprite.js:5373-5378`); scaling is motion-neutral.
+
+### 2.6 Name-tag legibility pass
+- **What/why:** Tags sit at feet+38 (`AgentSprite.js:4393`), filled with `repo.panel` and stroked/texted in repo accent (`:4404-4438`). In the crop, "Atlas the Founder" lands on a lantern and the fountain's white pool; green accent text on light stone is low-contrast, and de-collision slots (`_nameTagSlotYOffset`, `:4442-4445`) push tags into awnings. Cheap fixes: force a near-opaque dark panel regardless of repo tint, default text to parchment with the repo accent kept only on the glyph/border, and clamp slot offsets when the tag would overlap a prop footprint (the renderer already knows prop tiles).
+- **Files:** `AgentSprite.js:4372-4445`, slot assignment `IsometricRenderer.js:3937-3946`.
+- **Effort:** S · **Risk:** low · **Payoff:** clarity · **Perf/RM:** static layout, none.
+
+### 2.7 Retire or wire the dead accessory/status-overlay assets
+- **What/why:** Six role-hat overlays (mageHood, scholarCap, oracleVeil, toolBand, goggles, starCrown) and the whole `RoleAccessory.js` matcher are unreachable: every identity spreads `DEFAULT_EFFORT_RENDERING` with `allowRuntimeRoleAccessory: false` (`ModelVisualIdentity.js:75-82`), so `_runtimeHeadAccessory` returns null before role resolution (`AgentSprite.js:3346-3348`). `overlay.status.idle/working/chat.png` are declared in the manifest but never drawn (only `overlay.status.selected` is used — verified by grep). Either delete them (less load weight, honest manifest) or re-enable role hats for providers whose sheets have no baked headgear (grok, deepseek, kimi, codex.base) with a guard for baked-hat sheets (sonnet/opus). Decide once; the hysteresis machinery (`ACCESSORY_HYSTERESIS_MS`) already exists if wiring.
+- **Files:** `ModelVisualIdentity.js:75-82`, `shared/RoleAccessory.js`, `manifest.yaml:330-415`, `AgentSprite.js:3341-3390`.
+- **Effort:** S (remove) / M (wire) · **Risk:** low (remove) / med (wire — hat-on-hat stacking) · **Payoff:** coherence (remove) or charm (wire) · **Perf:** removal *saves* six image loads; wiring costs nothing per-frame (composite-time).
+
+### 2.8 Finish the compact-badge status mark
+- **What/why:** `_drawCompactAgentBadge` (`AgentSprite.js:4447-4473`) renders `visual?.mark || '.'` — but `STATUS_VISUALS` (`theme.js:54-62`) has no `mark` field, so the compact-mode badge always shows a dot. Add a one-char `mark` per status (W, !, ?, ✓, …) so compact render mode carries the status read it was designed for. One-line theme change, half-finished shipped feature.
+- **Files:** `claudeville/src/config/theme.js:54-62`, `AgentSprite.js:4467-4471`.
+- **Effort:** S · **Risk:** low · **Payoff:** clarity · **Perf/RM:** none (static).
+
+### 2.9 Merge identical bubbles in dense clusters
+- **What/why:** The forge crop shows three agents each flying "Editing AgentSprite.js" with two more half-occluded behind them — the slot system (`IsometricRenderer.js:3962-3992`) prevents hard overlap but not semantic duplication, and truncation turns the remainder into "...t iron, true e..?" mush. When N clustered agents' head bubble texts match, collapse to one bubble with a `×N` chip (the cluster standard already does this below zoom 1 for pills; this extends the idea to full-mode bubbles). Fewer, bigger, readable bubbles.
+- **Files:** `IsometricRenderer.js:3956-3992` (`_assignAgentBubbleSlots`), `AgentSprite.js:4076-4098` (`_drawStatus`).
+- **Effort:** M · **Risk:** med (bubble identity is also a per-agent anchor; merged bubble must pick a representative position and not flicker) · **Payoff:** clarity · **Perf/RM:** pure layout, static; slightly fewer draw calls.
+
+### 2.10 Agent hover affordance
+- **What/why:** There is no hover state on agents at all (grep for hover in `IsometricRenderer.js` returns nothing agent-related) — the first feedback you get is after the click. A static thin trim-colored hover ring + the name pill on hover would make the `dense-24-agents` QA scenario ("at least 20 agents remain selectable") much easier and teaches clickability. Buildings already have hover states; agents are the odd surface out.
+- **Files:** `IsometricRenderer.js` (mousemove plumbing), `AgentSprite.js` (a `_drawHoverRing` beside `_drawSelectionRing`, `:3208`).
+- **Effort:** M · **Risk:** low-med (per-mousemove hit tests — reuse the existing click hit-test path, throttle to rAF) · **Payoff:** clarity · **Perf:** bounded hit-test cost on mouse move only, zero when idle; static visual, no pulse claim.
+
+### 2.11 Give zoom-impostors provider identity
+- **What/why:** `_drawLowZoomImpostor`/`_drawBudgetImpostor` (`AgentSprite.js:5529-5582`) draw a dark diamond with a 1px trim stroke + a 4×3px provider rect — at overview zoom the village reads as anonymous dark markers. Fill the diamond body with the provider trim (matching `minimapColor`) and keep the status dot; the overview becomes a provider-colored constellation that agrees with the minimap and the tool-glyph badges.
+- **Files:** `AgentSprite.js:5529-5582`.
+- **Effort:** S · **Risk:** low · **Payoff:** clarity · **Perf:** same or fewer ops (fill vs stroke). RM: static.
+
+### 2.12 Walk-cycle legibility on robed sprites (art)
+- **What/why:** Grok/deepseek/kimi robes reach the feet; the 6-frame walk is a hem shuffle (`output/grok-walk-south-agent.grok.base.png` shows nearly identical frames), so walking reads as gliding — most visible when a robed agent crosses the map. Commission hem-slit/leg-flash frames on the worst sheets. Listed for completeness; see rejected section for why I wouldn't do it soon.
+
+## 3. Top 3 quick wins
+
+1. **Per-agent animation phase seed (2.2)** — a handful of lines in the constructor using the existing `_hash`; instantly dissolves the "one organism" crowd. S / low risk / charm+clarity.
+2. **Per-sheet palette swap sources (2.1)** — the single biggest distinctiveness fix; makes variants and team sashes visible on the sheets people actually see, with zero art regeneration. S–M / med risk / clarity+charm. (Verify with `sprites:visual-diff` per sheet.)
+3. **Selection-ring visibility boost (2.4)** — thicker ring + dark backing; makes the app's primary interaction readable in the exact crowd scenes the QA checklist targets. S / low risk / clarity.
+
+## 4. Considered and rejected
+
+- **Re-enable tool-driven hat flipping for everyone** — the hysteresis machinery exists, but baked-hat sheets (sonnet/opus wizard hats) would stack double hats, effort apex tiers already own the head slot, and hats swapping mid-session was the original "teleporting hats" problem. 2.7's wire-or-delete decision should happen instead; I lean **delete the role overlays, keep effort accessories**.
+- **New animation rows (working/think/sit poses) in the sheets** — 8 directions × new rows × 21 sheets is an XL PixelLab commission with cross-direction consistency risk (the manifest notes pro mode was required to fix per-angle outfit flips); the procedural ritual overlays + posture cues already carry those states within the motion budget. Poor payoff-per-cost.
+- **Moving name tags above the head** — the speech-bubble stack owns that space (status bubble at contentTopY−18, history bubbles above it, emotes/plan/retry glyphs competing for the same slot); feet placement is a deliberate tradeoff. Better to fix panel contrast (2.6) than relocate.
+- **Per-agent colored outline/silhouette for identification** — a black silhouette pass already exists (`_drawSpriteSilhouette`, 0.54 alpha, cached per cell). Tinting it per provider would muddy the pixel edges and duplicate the grounding trim arc's job.
+- **More walk frames / higher frame rate** — against the old-school RPG constraint the docs explicitly endorse, inflates sheet size and cache pixels, and cadence is already governed by stride distance (`WALK_PIXELS_PER_FRAME`). 2.12 covers the only real walk issue, and even that is low priority.
+- **Hover tooltip with session detail** — duplicates the ActivityPanel; 2.10's ring + name preview is the right scope.
+
+**Caveats for the lead:** I did not run the live app — all findings are from code reading plus the repo's screenshots. The "chest badges" on the two mages in `performance-world-1600x1000.png` (check/book emblems at torso height) I could not definitively attribute to one draw path; likely compact-badge slot placement interacting with that zoom level — worth a glance when someone next touches `_agentCompactSlotRect`. Also, the night screenshots (`night-after-1440.png`) are nearly black with agents invisible — outside my scope, but whoever owns atmosphere should know the character layer has no say in it.</subagent>
+<subagent agent_id="agent-4" item="OVERLAYS, EFFECTS &amp; MOTION POLICY. Files: `claudeville/src/presentation/character-mode/VillageDirectorOverlay.js`, `CouncilRing.js`, `HarborTraffic.js`, `TrailRenderer.js`, `ParticleSystem.js`, `LightSourceRegistry.js`, `MarkGovernor.js`, `PulsePolicy.js`, plus `docs/motion-budget.md`. Status rings/halos/tethers, council ring, harbor boats, trails, particles (embers/motes/leaves/insects), light sources at night, the mark governor culling, pulse bands; evaluate whether overlays visually belong to the scene (color grading vs scene lighting) and whether busy scenes stay legible." outcome="completed"># Scope Report: Overlays, Effects & Motion Policy
+
+## 1. Current-state assessment
+
+The overlay layer is mature and well-architected: `VillageDirectorOverlay.js` draws ground marks (replay trails, building signal halos, team auras, incident/recovery/parade beats) plus floating handoff arcs, lifecycle rings, and world pills, all `screen`-composited and color-lerped toward `grade.worldTint`; `CouncilRing.js` adds team polygons, family/ally tethers, talk arcs with a travelling mote, and gossip knots; `HarborTraffic.js` runs the whole ship/buoy theater with class-scaled wakes, bob/roll, and torch flames. The MarkGovernor (`MarkGovernor.js:32-36`) and PulsePolicy (`PulsePolicy.js:2-9`) exist and are genuinely wired in — but only partially: roughly half the decorative marks (incidents, handoffs, lifecycle, parade, crowd auras, replay trails, pills) never consult the governor, and only ~6 call sites use `pulseValue` while my scope files alone carry 11+ local sine cadences. Scene coherence is currently achieved by three overlapping mechanisms (gradeColor lerp, `lightBoost` alpha scaling, and the post-hoc multiply grade) that partially cancel each other, and because `_drawAtmosphere` runs *after* all overlay passes (`WorldFrameRenderer.js:200-209`), every semantic mark — including PRIMARY waiting beacons and incident pills — gets multiplied down ~50% at night (`MULTIPLY_GRADE.night.base = rgb(128,150,196)`) while decorative building labels and lantern glows drawn after the atmosphere pass stay full-bright. Busy-scene legibility is good in the 6-agent screenshots but the governor's within-tier priority is just draw order, so the most semantic SECONDARY marks (talk arcs) are admitted last and culled first.
+
+## 2. Improvement opportunities
+
+### 2.1 Move PRIMARY-tier marks past the atmosphere multiply (or re-stamp them)
+- **What/why:** At night the waiting-on-user beacon, selection ring, and incident pills — the marks the value-hierarchy contract says must *never* be lost — are dimmed ~50% by the vignette multiply, while building plaques and light glows drawn after stay bright. The legibility hierarchy inverts exactly when the scene is darkest. Re-draw PRIMARY pillars/pills in a post-atmosphere pass (the `drawSelectedAgentXray` precedent at `WorldFrameRenderer.js:202` shows the pattern), or hoist `drawVillageDirectorOverlays`' PRIMARY pills below `_drawAtmosphere`.
+- **Refs:** `WorldFrameRenderer.js:195-209`, `AgentSprite.js:3002` (beacon), `VillageDirectorOverlay.js:472-477` (incident pills).
+- **Effort M · Risk med · Payoff: clarity.** Perf: a few extra marks re-stamped, no new passes; RM: no change (static marks re-stamped identically).
+
+### 2.2 Fix the selected-building halo double-draw
+- **What/why:** `drawVillageDirectorGround` draws every `buildingSignals` halo (AMBIENT) and then draws `selectedBuildingSignal` again with boosted heat (PRIMARY via its `selected: true` flag, `VillageDirector.js:958`). The selected building's halo is painted twice through `screen` composite (~2× intended brightness) and double-counts against the region AMBIENT quota. Skip the selected type in the base loop.
+- **Refs:** `VillageDirectorOverlay.js:441-449`, `VillageDirector.js:933-963`.
+- **Effort S · Risk low · Payoff: clarity.** Perf: strictly less work; RM unchanged.
+
+### 2.3 Snap local cadences onto PulsePolicy bands; honor the council ring's `static` band
+- **What/why:** `motion-budget.md:31` lists the council ring under the **static** band, yet `CouncilRing.js:211` shimmers it at ±16% (3.1 s sine). VillageDirectorOverlay pulses run at 420/500/520/620/760 ms (`VillageDirectorOverlay.js:57-60, 135, 241, 262, 353, 402, 419`) — mostly undeclared near-medium cadences that compete with the medium band's canonical working-glow owner (explicitly forbidden for co-located entities). Migrate to `pulseValue('band')` or document exceptions; make the council ring steady (or drop to the `intrinsic` band).
+- **Refs:** `CouncilRing.js:211, 274, 335, 402`, `VillageDirectorOverlay.js:57-60`, `PulsePolicy.js:2-9`, `docs/motion-budget.md:24-31`.
+- **Effort S–M · Risk low · Payoff: coherence.** Perf: identical cost; RM: helpers already return fixed bases.
+
+### 2.4 Tier the un-tiered overlays into the MarkGovernor
+- **What/why:** Incidents (`VillageDirectorOverlay.js:251-270`) are error/rate-limit alerts — semantically PRIMARY — yet draw un-tiered; handoffs, lifecycle rings, recoveries, the release parade, and crowd-cluster auras (`CrowdClusterOverlay.js` has zero governor contact) draw at fixed alpha in every crowd. Wiring them in makes the governor cover the whole mark surface instead of ~half; incidents as PRIMARY also fixes their night-dimming via 2.1.
+- **Refs:** `VillageDirectorOverlay.js:251-270, 320-436`, `CrowdClusterOverlay.js:1-20`, `MarkGovernor.js:78-101`.
+- **Effort S–M · Risk low–med · Payoff: clarity.** Perf: admission is O(1); RM: static caps only, per existing policy.
+
+### 2.5 Priority-ordered admission within tiers
+- **What/why:** The governor admits marks in draw order, so council rings and tethers consume a region's SECONDARY quota (soft 4 / hard 9) before talk arcs — the most information-bearing SECONDARY mark — are even asked (`WorldFrameRenderer.js:100-190`; talk arcs draw last). In a dense crowd the live-conversation arcs cull first, backwards from intent. Add a priority argument to `admit()` (cheap: sort-free two-pass admit, or just reorder calls so talk arcs admit before rings/tethers).
+- **Refs:** `MarkGovernor.js:78-101`, `CouncilRing.js:220, 295, 352, 417, 463`, `WorldFrameRenderer.js:100-125, 182-190`.
+- **Effort M · Risk med · Payoff: clarity.** Perf: same count of admits; RM unchanged (no culling under RM anyway).
+
+### 2.6 Cache the firefly glow stamp
+- **What/why:** `Particle.draw` calls `ctx.createRadialGradient` **per glowing particle per frame** (`ParticleSystem.js:89-105`) — up to 240 gradient allocations/frame when fireflies are active, the exact per-frame cost v0.25 was fought over. Pre-render one 6px stamp per preset color (few) and `drawImage` it, mirroring `_getLanternGlowStamp` (`IsometricRenderer.js:9405-9423`).
+- **Refs:** `ParticleSystem.js:89-105, 205-214`.
+- **Effort S · Risk low · Payoff: clarity (perf enabler).** Perf: removes the particle system's worst per-frame allocation; RM: static halo path reuses the same stamp.
+
+### 2.7 Unify the two trail vocabularies
+- **What/why:** `TrailRenderer` draws hour-long trails in time-of-day phase colors (`TrailRenderer.js:13-18`); `drawReplay` draws a separate 60-second replay in a team-hash palette (`VillageDirectorOverlay.js:75-87, 150-205`) — two different colors for the same agent's path, and the replay path rebuilds a `Map` and spreads `{...point}` per point per frame. Point replay at the TrailRenderer's samples/colors (or vice versa) so "where this agent walked" has one visual language.
+- **Refs:** `TrailRenderer.js:315-336`, `VillageDirectorOverlay.js:150-205`.
+- **Effort M · Risk med · Payoff: coherence.** Perf: kills per-frame replay allocation; RM: replay ticks already static-safe.
+
+### 2.8 Dedupe the triple team mark (aura wash + council ring + orbit light)
+- **What/why:** A 2+-member team currently gets three simultaneous marks: the director's pulsing aura wash (`VillageDirectorOverlay.js:228-249`, AMBIENT), the council ring polygon (`CouncilRing.js:197-257`, SECONDARY), and at night an orbit light source (`CouncilRing.js:497-515`). Same fact, three overlays, two governor tiers. Drop the aura wash when a council ring exists for that team (or demote the wash to ringless ad-hoc clusters).
+- **Refs:** `VillageDirectorOverlay.js:228-249`, `CouncilRing.js:197-257, 491-515`.
+- **Effort S · Risk low–med (needs visual A/B) · Payoff: clarity.** Perf: fewer marks; RM: wash is already static under RM.
+
+### 2.9 Give reduced motion a static buoy-lit cue; swap the torch's `lighter` for `screen`
+- **What/why:** The lively-repo flame is suppressed entirely under reduced motion (`HarborTraffic.js:6026-6028`), leaving only a 0.95-vs-0.70 label-alpha difference to distinguish active repos — the motion-budget says static meaning must survive as fixed pose/alpha. Draw one static flame frame (or a small gilt diamond) when `motionScale === 0 && lively`. Separately, the torch composites with `'lighter'` (`HarborTraffic.js:5923`) while every other glow in the app uses `'screen'` — `lighter` adds raw RGB and can blow out to white over moonlit water glints.
+- **Refs:** `HarborTraffic.js:5916-5936, 6022-6028`.
+- **Effort S · Risk low · Payoff: charm + coherence.** Perf: none; RM: this *is* the RM fix.
+
+### 2.10 Hoist per-frame parsing/allocation out of overlay hot paths
+- **What/why:** `gradeRgb` re-parses `grade.worldTint` with a regex per halo per frame (`VillageDirectorOverlay.js:20-47`, called from ~10 sites), and tethers allocate fresh dash arrays per line per frame (`CouncilRing.js:307-308`). Parse the tint once per frame (memoize on the grade object — it changes ~once/minute) and reuse module-level dash arrays scaled by a zoom key.
+- **Refs:** `VillageDirectorOverlay.js:20-47, 124, 209, 232`, `CouncilRing.js:306-308`.
+- **Effort S · Risk low · Payoff: coherence (perf hygiene).** Perf: removes steady GC churn in busy scenes; RM unchanged.
+
+### 2.11 Reconcile world pills with building plaques (collision + duplication)
+- **What/why:** A selected/hovered building gets both its painted wooden plaque (post-atmosphere, collision-managed via `occupiedBoxes`, `WorldFrameRenderer.js:214-218`) and a director world pill at `center.y-56` (`VillageDirectorOverlay.js:461-470`) — two labels for one building, drawn in different label languages, not aware of each other's rects. Fold the pill's content into the plaque zone (e.g. reuse the #14 tally chip row) or register pills in `occupiedBoxes`. Verify overlap on a live selected building first — no screenshot in the corpus shows that state.
+- **Refs:** `VillageDirectorOverlay.js:89-109, 461-470`, `WorldFrameRenderer.js:213-218`.
+- **Effort M · Risk med · Payoff: coherence.** Perf: none; RM unchanged.
+
+### 2.12 Verify the night first-paint gap
+- **What/why:** `output/playwright/night-after-1440.png` shows a nearly black world (only the vignette blob visible) while `night-after-1440-painted.png` one beat later is a fully lit night scene — suggesting the light-stamp/terrain caches paint a frame late on night transitions, i.e. one unreadable frame exactly when the grade flips. Unverified (may be a capture-timing artifact), but cheap to reproduce with `?hour=22` and a cold cache.
+- **Refs:** `IsometricRenderer.js:9277-9303, 9720-9762`; screenshots `output/playwright/night-after-1440*.png`.
+- **Effort S (investigate) · Risk low · Payoff: clarity.**
+
+## 3. Top 3 quick wins
+
+1. **Selected-halo double-draw fix + incident tiering (2.2 + 2.4)** — one-file change in `VillageDirectorOverlay.js`, removes a real brightness bug and puts alerts in the tier the contract already promises them.
+2. **Firefly glow stamp cache (2.6)** — the single clearest per-frame allocation left in the effects layer; small, safe, on-theme for a performance-release line.
+3. **Reduced-motion buoy flame + `lighter`→`screen` (2.9)** — closes a genuine motion-policy hole (static meaning lost) and a composite inconsistency in ~10 lines.
+
+## 4. Considered and rejected
+
+- **Post-atmosphere move for *all* overlays** — pulling every ring/tether above the multiply grade would make overlays float day-bright over a graded night scene, destroying the coherence #3 shipped; only PRIMARY marks warrant exemption (2.1).
+- **Particle trails along tethers/talk arcs** — violates the motion budget (slow band is single-claimant; talk-arc mote already owns directional flow); more motes would be noise, not information.
+- **`ctx.filter` blur/glow halos** — per-frame cost with no budget story; the cached-stamp approach (`_getLightGlowStamp`) is the right idiom and already exists.
+- **Zoom-compensating the governor's region size** — already done (`IsometricRenderer.js:3755-3757`, `regionSize: 200/zoom`); don't re-propose.
+- **Typed-array color refactor of the `r, g, b` string tables** — churn with no user-visible payoff; palette authority (#1) already shipped via `theme.js` imports (`VillageDirectorOverlay.js:1-8`).
+- **Light source per status ring at night** — would crowd the 12-light fast-path cap (`IsometricRenderer.js:9478`) and compete with building lights; rings should stay marks, not lights.
+- **Re-proposing shipped top-50 items** — verified shipped in code and excluded: mark governor (#2), grade authority (#3), waiting beacon (#4), occupant tally chips (#14), label fade (#16), Pharos searchlight (#17), buoy bob/droop/torch (#18), handoff baton (#28), wake foam (#35), recovery sparks (#40), terrain footfalls (#42).</subagent>
+<subagent agent_id="agent-5" item="CAMERA, COMPOSITION &amp; FRAME. Files: `claudeville/src/presentation/character-mode/CameraDirector.js`, `Camera.js`, `Compositor.js`, `Projection.js`, `WorldFrameRenderer.js`, `CanvasBudget.js`, `DebugOverlay.js`. Cinematic camera moves, framing of the island in the viewport, vignette/letterboxing/frame treatment, zoom behavior, compositing passes (bloom/grade/scanline?), resolution scaling and crispness of pixel art at 1280-2560px; assess how the world is presented as a composed image, not just simulated." outcome="completed">I have everything I need. Here's my report.
+
+---
+
+# Scope Report: Camera, Composition & Frame
+
+## 1. Current-state assessment
+
+The camera stack is genuinely strong: `Camera.js` is a complete cinematic state machine (drag+momentum, cursor-anchored zoom tweens, follow with motion lead-ahead at `Camera.js:795`, director glides with hold phases, establishing shot, idle Lissajous drift), and `CameraDirector.js` is a well-mannered idle attract camera with focus dwell, per-kind cooldowns, frame-comfort deadzones, and instant yield to user input. Frame treatment is deliberately minimal: a cached per-phase multiply grade + radial vignette (`IsometricRenderer.js:9720`), plus a transient vignette/tint grade that bell-curves with director glides (`WorldFrameRenderer.js:265`). There is no post-process compositor — `Compositor.js` despite its name is the *sprite* palette-swap/accessory compositor, not a screen-space pass. The honest weaknesses: (a) at 2560px-wide viewports `effectiveCanvasDpr` drops to ~0.75 (`CanvasBudget.js:9`, 1.5M px main-canvas cap), so the browser upscales the canvas ~1.34× with `image-rendering: pixelated` — a non-integer nearest scale that makes world pixels uneven widths (verified by pixel-run analysis of `performance-world-2560x1440.png`: ragged 1/2/3px runs); (b) zoom steps include fractional 1.5/2.5 (`Camera.js:19`), causing the same non-uniform scaling in the world transform at *every* viewport size, in direct tension with the shipped doctrine "integer zoom {1,2,3}… No fractional zoom" (`agents/claudeville-visual-upgrade-top-50.md:349`); (c) the fast-atmosphere path silently swaps the radial vignette for a vertical fade exactly when zoomed in on large canvases (`IsometricRenderer.js:9425` vs `9745`), changing the frame's character mid-zoom; (d) reduced-motion consistency has a hole — event cues still teleport the camera when `motionScale=0` (`CameraDirector.js:306` never checks it, unlike `update()` at `:272`).
+
+## 2. Improvement opportunities
+
+### A. Snap effective DPR to pixel-uniform ratios at large viewports
+**What/why:** `effectiveCanvasDpr` (`CanvasBudget.js:16`) returns whatever the pixel budget allows (≈0.75 at 2560px). Non-integer canvas→CSS upscale means each world pixel renders as 1 or 2 screen pixels in a visible beat pattern — fat/thin pixels on every diagonal iso line and sprite outline, worst on exactly the large monitors the app targets. Quantize the result so `1/dpr` is integer (dpr ∈ {1, 0.5, 0.25}): at 2560 that yields uniform 2× pixels (chunkier but *even*, like deliberate integer-scaling in pixel-art games); alternatively raise `maxMainCanvasPixels` for large canvases so dpr stays 1 — a perf budget decision that needs measurement since v0.25 was a perf release. Either beats 0.75.
+**Files:** `claudeville/src/presentation/character-mode/CanvasBudget.js:1-31`, callsite `claudeville/src/presentation/App.js:459`.
+**Effort:** S · **Risk:** med (touches the perf budget; needs FPS measurement at 2560) · **Payoff:** clarity.
+**Perf/RM:** The 0.5-snap option *reduces* backing pixels (2.7M→0.67M); the raise-cap option increases fill cost ~80% — must be benchmarked. No motion impact.
+
+### B. Settle wheel/keyboard zoom onto integer steps
+**What/why:** `zoomSteps = [1, 1.5, 2, 2.5, 3]` (`Camera.js:19`) leaves the camera *resting* at 1.5/2.5, where nearest-neighbor sprite blitting produces the same uneven-pixel artifact as (A) at all viewport sizes. Fractional zoom was a deliberate later addition (commit `8e343a3`), so don't silently revert — but the top-50 doctrine says integer zoom is sacred. Middle path: keep the 150ms animated tween (motion masks transient fractional frames) but make the steps it settles on integer, i.e. `[1, 2, 3]`, or add half-steps only if a visual A/B at 1280–2560 shows the wobble is acceptable.
+**Files:** `claudeville/src/presentation/character-mode/Camera.js:19`, keyboard path `IsometricRenderer.js:2395`.
+**Effort:** S (config change + A/B capture) · **Risk:** med (reverses a deliberate UX decision; 1.5 is a genuinely useful framing) · **Payoff:** clarity.
+**Perf/RM:** Neutral; reduced-motion already snaps instantly.
+
+### C. Unify the fast-path vignette with the radial one
+**What/why:** When backing ≥800k px *and* zoom ≥1.5 — i.e. precisely "zoomed into a building on a 1600px+ monitor" — `_drawFastAtmosphereWash` replaces the radial corner vignette with a top-bottom linear fade (`IsometricRenderer.js:9430-9450`). The frame visibly changes compositional character as you zoom in: corners brighten, the top edge darkens. Fix cheaply: pre-render the radial gradient once into a small (e.g. 256px) offscreen and `drawImage` it stretched — radial gradients upscale gracefully, so the fast path keeps its "no full-screen cache" intent while matching `_getAtmosphereVignette` (`IsometricRenderer.js:9745-9756`).
+**Files:** `claudeville/src/presentation/character-mode/IsometricRenderer.js:9425-9459`.
+**Effort:** S · **Risk:** low · **Payoff:** coherence.
+**Perf/RM:** One stretched blit vs. two gradient fills — net-neutral or better. Static under reduced motion already.
+
+### D. Gate event camera cues on `motionScale`
+**What/why:** `CameraDirector.update()` refuses ordinary idle moves when `motionScale<=0` (`CameraDirector.js:272`), but `_handleCue` (`:306`) doesn't check it — so under reduced motion an incident/release cue still calls `glideToWorld`, which hard-cuts the camera (`Camera.js:160-170`). A sudden teleport is arguably *worse* for motion-sensitive users than the glide, and it's inconsistent: the quiet idle camera is suppressed but the jarring one isn't. Add the same `motionScale` guard (cues become no-ops; state is already visible in-world).
+**Files:** `claudeville/src/presentation/character-mode/CameraDirector.js:306-329`.
+**Effort:** S (one guard + smoke pass) · **Risk:** low · **Payoff:** coherence.
+**Perf/RM:** This *is* the reduced-motion fix; verify `storm-night-reduced-motion` scenario per `docs/world-visual-qa-checklist.md:45`.
+
+### E. Offscreen-event edge indicator when the user owns the camera
+**What/why:** When cinema is off or the user recently panned, director cues are silently dropped (`CameraDirector.js:331-356`) — an incident or release parade happens offscreen and the user never knows. Draw a small screen-edge pulse marker (chevron or glow wedge on the canvas edge nearest the cue box, colored by cue kind) that fades over ~8s and glides to the event on click. This delivers most of a minimap's spatial awareness without re-opening the deliberately-removed Minimap (commit `d0b9879`, plan I7). Fits naturally as a screen-space pass beside `drawDirectorGlideGrade` in `WorldFrameRenderer.js:245`.
+**Files:** `WorldFrameRenderer.js` (new pass), `CameraDirector.js` (emit dropped-cue signal), `Camera.js` (glide on click).
+**Effort:** M · **Risk:** med (new HUD element; needs restraint to avoid clutter) · **Payoff:** clarity + charm.
+**Perf/RM:** One small static marker per active cue, no per-frame cost beyond a fade alpha. Reduced motion: static marker, no pulse.
+
+### F. Short glide for F-key / resize re-frames; fix establishing-shot retry
+**What/why:** Every other camera transition in the app glides, but `frameContent()`'s non-first path snaps instantly (`IsometricRenderer.js:2028`) — the F key and panel-open resizes jump cut. Route it through `glideToWorld` with a short ~700ms duration for coherence. Same function: `_didEstablishingShot` is set *before* the attempt (`:2023-2026`), so if the establishing shot fails (zero-size viewport during early layout) the one cinematic first impression is lost forever — set the flag only on success.
+**Files:** `claudeville/src/presentation/character-mode/IsometricRenderer.js:2011-2030`.
+**Effort:** S · **Risk:** low · **Payoff:** charm + coherence.
+**Perf/RM:** Reduced motion keeps the current instant cut via the existing `glideToWorld` branch.
+
+### G. Letterbox bars on the glide grade pass
+**What/why:** The cinematic grade already fades a vignette+tint in/out with director moves (`WorldFrameRenderer.js:265-294`); adding two thin top/bottom bars (2–4% of viewport height, scaled by the same `weight`) during `release` and `incident` cues gives those hero moments an unmistakable "scene" feel for ~4 lines of drawing code. Keep it off for the gentle `arrival` cue and for ordinary idle glides.
+**Files:** `claudeville/src/presentation/character-mode/WorldFrameRenderer.js:265`, grade payload at `VillageDirector.js:312-337`.
+**Effort:** S · **Risk:** low (taste — keep bars subtle) · **Payoff:** spectacle.
+**Perf/RM:** Two fillRects per frame during glides only. Reduced motion: `getDirectorGlideGrade` already returns null (`Camera.js:244`), so bars never appear — correct by construction.
+
+### H. Show camera/DPR state in the debug overlay
+**What/why:** `DebugOverlay.drawScreen` (`DebugOverlay.js:200`) shows frame timings and drawable counts, but not the numbers needed to reason about crispness and budget: current zoom, effective DPR, canvas backing pixels vs. cap, glide owner/state. `getCanvasBudget()` already computes them (`IsometricRenderer.js:9805`) but only via console. One row (`cam: z2.00 dpr0.75 2.0M/1.5Mpx glide:cue:release`) makes items A/B/C verifiable in-browser instead of by measurement scripts.
+**Files:** `claudeville/src/presentation/character-mode/DebugOverlay.js:200-235`, data source `IsometricRenderer.js:9805-9825`.
+**Effort:** S · **Risk:** low · **Payoff:** clarity (developer-facing).
+**Perf/RM:** None (debug-gated).
+
+### I. Cache the glide-grade radial gradient
+**What/why:** `drawDirectorGlideGrade` calls `createRadialGradient` + full-screen fill every frame of every glide (`WorldFrameRenderer.js:285-291`). Tiny, but it's the same cache-everything discipline the rest of the renderer follows (sky/trail/vignette caches). Render the gradient once per viewport size into a small offscreen and alpha-blit it; pairs naturally with item C's stamp approach.
+**Files:** `claudeville/src/presentation/character-mode/WorldFrameRenderer.js:265-294`.
+**Effort:** S · **Risk:** low · **Payoff:** coherence (perf hygiene).
+**Perf/RM:** Removes a per-frame allocation during the app's most visible animation.
+
+### J. Truth-up idle-drift comment and re-check amplitude
+**What/why:** The header comment calls the drift "sub-pixel amplitude" (`Camera.js:5-8`) but `IDLE_DRIFT_AMPLITUDE_PX = 8` world px = 8–24 screen px depending on zoom — a slow but plainly visible pan, not a breath. Either the comment lies or the constant drifted from intent. At zoom 1, 8px over a 38s period is probably fine aesthetically; decide which is wrong and fix one side.
+**Files:** `claudeville/src/presentation/character-mode/Camera.js:4-9, 701-727`.
+**Effort:** S (trivial) · **Risk:** low · **Payoff:** coherence.
+**Perf/RM:** Already skipped under reduced motion.
+
+### K. Single clock for frame time
+**What/why:** `renderWorldFrame` seeds `renderNow = Date.now()` (`WorldFrameRenderer.js:24`) while the update loop and camera use `performance.now()` (`IsometricRenderer.js:3048-3055`). Wall clock can jump (NTP sync), which would hitch any wall-clock-driven trail/atmosphere animation; monotonic clock is also cheaper to read. One-line consistency fix.
+**Files:** `claudeville/src/presentation/character-mode/WorldFrameRenderer.js:24`.
+**Effort:** S (trivial) · **Risk:** low · **Payoff:** coherence.
+
+## 3. Top 3 quick wins
+
+1. **A — DPR quantization** (`CanvasBudget.js`): the single biggest composed-image quality defect, hitting exactly the 2560px "nice monitor" case; a few lines plus a before/after capture. Pair with H so the effect is visible in-browser.
+2. **C — fast-path radial vignette stamp** (`IsometricRenderer.js:9430`): removes a jarring frame-treatment switch that every user sees when zooming in on larger canvases; S effort, zero risk.
+3. **D — motionScale guard on `_handleCue`** (`CameraDirector.js:306`): a real reduced-motion correctness hole with a one-condition fix; include J's comment fix in the same pass.
+
+## 4. Considered and rejected
+
+- **Minimap / overview corner map:** deliberately removed in commit `d0b9879` ("remove minimap, plan I7"). Item E (edge indicator) captures the spatial-awareness value without re-litigating that decision or paying for a second rendered view per frame.
+- **Scanlines / CRT / film grain pass:** fights the pixel-art integrity doctrine, adds a per-frame full-screen cost the v0.25 perf release just fought to remove, and reads as noise over the baked terrain.
+- **Bloom / WebGL post pipeline:** doctrine explicitly forbids WebGL/shaders (`agents/claudeville-visual-upgrade-top-50.md:349`), and canvas-2D "bloom" via shadowBlur is a known fill-rate killer. The existing screen-composite light-stamp path already delivers glow within budget.
+- **Quantizing zoom to integers *during* glides:** motion masks fractional-zoom wobble mid-glide; stepping would make every cinematic visibly jerky. Accept the tradeoff.
+- **Stronger always-on vignette:** already exists in soft form via `MULTIPLY_GRADE` edges (`IsometricRenderer.js:125-130`); deepening it in daylight would crush the harbor edges and screen-space labels that live near the frame border.
+- **Renaming `Compositor.js` → `SpriteCompositor.js`:** the name genuinely misleads (it is not a frame compositor), but a rename is churn outside this scope's minimal-change rule — flagging it here for the lead instead.</subagent>
+<subagent agent_id="agent-6" item="DASHBOARD MODE. Files: `claudeville/src/presentation/dashboard-mode/DashboardRenderer.js`, `AvatarCanvas.js`, `claudeville/css/dashboard.css`, `claudeville/css/layout.css`, `claudeville/src/presentation/dashboard-mode/README.md`. The DOM card grid: card layout, typography, color usage, status communication, tool-history rendering, density vs whitespace, hierarchy, the avatar canvas portraits; compare against world mode's richness — the dashboard screenshots look much flatter/darker; propose how to make the dashboard feel crafted rather than utilitarian." outcome="completed">I have a complete picture now. Compiling the report.
+
+---
+
+# Dashboard Mode — Visual Design Exploration
+
+## 1. Current-state assessment
+
+The dashboard is a competent DOM card grid grouped by project: parchment-dark cards with a 3px status rail, a 44×52 canvas avatar in a "portrait niche", a meta-chip row (provider/model/team/role/age), a current-tool box, an always-present tool-history block, and per-project section headers with a shipped health pulse-bar (`DashboardRenderer.js:268`). The v0.23/v0.24 cohesion work (#20 reskin, #30 district washes, #31 selection echo, #44 health bar, #48 offline shimmer) has all landed — the tokens and gilt framing are real. But next to World mode it still reads flat: everything is the same warm-brown value at the same visual weight, the only saturated accents are green status rails, and the screenfuls at 1280×720 show ~2.2 cards because each card carries a tall, mostly-empty tool-history region. Worst, `completed` is a first-class domain status (`AgentStatus.js:5`) with **no styling at all** — no rail, no dot color, hollow status circle (visible on the Atlas card in every screenshot). The 2560×1440 screenshot shows the grid ending at ~35% viewport height above a dead dark void; the world's day/night atmosphere never reaches this mode at all.
+
+## 2. Improvement opportunities
+
+### A. Give `completed` cards an actual identity
+- **What/why:** `STATUS_VISUALS` (`theme.js:54-62`) has no `completed` entry, `dashboard.css:261-266` has no `.dash-card--completed` rail, and `dashboard.css:566-578` has no `.dash-card__status--completed` dot — so a finished session renders as a broken-looking card (hollow dot, no rail) exactly at the moment of success. Add a token (soft gold, e.g. `--cv-gold-soft` family) + rail + dot; optionally a tiny laurel/✓ overlay on the avatar niche via pure CSS on `.dash-card--completed .dash-card__avatar`. A completed run should read as a small victory, not a styling bug.
+- **Files:** `claudeville/src/config/theme.js:54`, `claudeville/css/dashboard.css:261,556`; status color fallback in `AgentPresentation.js:107`.
+- **Effort S · Risk low · Payoff: coherence + clarity.** No motion, no perf cost.
+
+### B. Collapse empty tool history; stop stretching cards to row height
+- **What/why:** The `.dash-card__tools` block (title + list) renders unconditionally (`DashboardRenderer.js:334-343`); an agent with no history still burns ~60px on "TOOL HISTORY / No tool usage yet", and grid default `align-items: stretch` (`dashboard.css:167-173`) inflates short cards to the tallest sibling — visible as dead space in every screenshot. Hide the section title and show a single muted inline line when empty (or hide entirely and let the usage footer carry the bottom edge), and set `align-items: start`. At 1280×720 this takes you from ~2.2 to ~3.5 visible cards — the single biggest density win.
+- **Files:** `DashboardRenderer.js:334-343,669-705`, `dashboard.css:167-173,655-660`, empty-node render at `AgentPresentation.js:209-217`.
+- **Effort S · Risk low · Payoff: clarity (density).** Pure CSS/DOM, zero per-frame cost.
+
+### C. Status-wash card headers for attention states
+- **What/why:** World mode treats errored/waiting-on-user as PRIMARY-tier marks (amber beacon pillar #4); the dashboard gives them the same 3px rail as everything else — nearly invisible at 2560px where cards are small (see screenshot: all six cards identical weight). Add a static 8–12% status-tinted gradient wash across `.dash-card__header` for `errored` / `waiting_on_user` / `rate_limited`, plus a status-colored underline on the current-tool box. Scanning a wall of 12 cards for "who needs me" becomes instant.
+- **Files:** `dashboard.css:261-266` (extend status modifiers), `dashboard.css:387-395` (header), `dashboard.css:592-608` (current-tool).
+- **Effort S · Risk low · Payoff: clarity.** Static gradients only; reduced-motion unaffected.
+
+### D. FLIP-animate card reorders on status change (runner-up #58, unshipped)
+- **What/why:** `sortAgentsByStatus` (`AgentPresentation.js:66-80`) + `appendChild` moves (`DashboardRenderer.js:136-138`) teleport cards when statuses flip. A cheap FLIP (record rects before `render()`, invert, play a 250ms transform) makes the resort legible — you *watch* the errored card float up instead of losing your place. Verified unshipped (no FLIP refs anywhere).
+- **Files:** `DashboardRenderer.js:105-161` (`render()`).
+- **Effort M · Risk med (transform on many cards; must skip during scroll/detail-poll churn — gate to status-driven moves only) · Payoff: clarity + charm.** Transform-only animation; reduced-motion: skip and jump instantly. Negligible perf: a handful of composited transforms a few times per minute.
+
+### E. Relative timestamps on tool-history rows
+- **What/why:** Rows carry `ts` (used in the render signature, `AgentPresentation.js:190`) but never show it — the "history" has no time axis, so a live card and a frozen one look identical. Add a right-aligned muted `formatRelative(entry.ts)` ("2m") per row and a `title` with the full untruncated detail. Turns the list from a static log into a felt heartbeat.
+- **Files:** `AgentPresentation.js:218-235` (`toolHistoryNodes`), `dashboard.css:686-722`.
+- **Effort S · Risk low · Payoff: clarity + charm.** Text updates ride the existing 3s detail poll; no new timers.
+
+### F. De-pill the meta row
+- **What/why:** The meta row renders up to six near-identical bordered chips (provider, model, team ⚑, parent, age, workflow) — four of them in the same amber family (`dashboard.css:469-527`), so nothing parses as primary. Keep pills only for provider + team (the identity chips); render role and activity-age as plain muted text segments, and let truncation ellipsis (already shipped) handle overflow. Calmer hierarchy, faster name→status scanning.
+- **Files:** `dashboard.css:463-527`, markup at `DashboardRenderer.js:307-315`.
+- **Effort S · Risk low · Payoff: clarity.** Pure CSS.
+
+### G. Sync dashboard ambience to the world clock
+- **What/why:** The world cycles dawn→night but `.content__dashboard` is one fixed warm-dark gradient (`layout.css:56-59`) — the "two windows onto one town" promise (#20) breaks the moment you switch modes at night. Compute phase from local clock (the audio director already does exactly this when the world renderer stops — CHANGELOG v0.25 line 116) and set 2–3 CSS vars (`--cv-ambient-tint`, `--cv-ambient-strength`) on `#dashboardMode`, read by the existing background gradient. Night dashboard gets cooler/dimmer parchment; dawn gets a warm glint. Minute-scale updates, zero animation.
+- **Files:** `layout.css:50-60`; small updater in `DashboardRenderer.js` (or wherever the audio ambience clock lives).
+- **Effort S–M · Risk low · Payoff: coherence + charm.** One style write per minute; static under reduced-motion by definition.
+
+### H. Anchor the empty void below the grid
+- **What/why:** At 2560×1440 the content ends at ~35% height above a featureless void (screenshot confirms). Add a bottom-anchored "hearth glow" — a faint warm radial + 1px gilt horizon rule fixed to the bottom of the scrollport (or shown only when content underfills), so the dashboard feels like a lit room rather than a truncated list. Bonus: same treatment doubles as a richer empty state backdrop behind `dashboard__empty`.
+- **Files:** `layout.css:50-60`, `dashboard.css:176-226`.
+- **Effort S · Risk low · Payoff: charm.** Static CSS, no cost.
+
+### I. Make the district identity visible where it matters
+- **What/why:** #30 shipped but the wash is a 0.16-alpha radial in the top-left corner (`dashboard.css:324-334`) — imperceptible in screenshots — and the avatar's ground ellipse is a fixed cold dab (`AvatarCanvas.js:247`, `rgba(20,12,6,0.34)`). Move the district signal onto the portrait: tint the avatar niche background/ground by `--cv-building-rgb`. The villager then literally stands on their district's ground — the metaphor the emblem only hints at. Keep the corner emblem as-is.
+- **Files:** `dashboard.css:397-408` (niche), `AvatarCanvas.js:244-250`.
+- **Effort S · Risk low · Payoff: charm + coherence.** One extra fill per avatar redraw (already rAF-coalesced, `DashboardRenderer.js:612-623`); no per-frame cost.
+
+### J. House-palette cleanup of dashboard.css
+- **What/why:** Principle #1 ("no file invents its own RGB tables") is violated by ~8 hardcoded hexes: tool name `#f5df8a` (`dashboard.css:626`), tool detail `#8d7659` (`:717`, also below comfortable contrast at 10px), parent chip `#f5b54b` (`:487`), error `#e08f8f` (`:785`), age `#d8b77a` (`:520`). Promote these to `reset.css` tokens (or reuse `--cv-gold-bright`/`--cv-text-muted`) so future palette retunes don't fork.
+- **Files:** `dashboard.css` lines cited, `claudeville/css/reset.css:29-83`.
+- **Effort S · Risk low · Payoff: coherence.** Zero runtime effect.
+
+## 3. Top 3 quick wins
+
+1. **B — collapse empty tool history + `align-items: start`.** Highest payoff-per-line in the scope: fixes the 1280×720 density failure and the dead-space look in one sitting.
+2. **A — style `completed`.** A real correctness hole masquerading as a polish item; ~30 lines across theme + CSS, makes success states read as victories.
+3. **C — attention-state header washes.** The dashboard's one job is triage; today the triage signal is 3px wide. Static, cheap, immediately visible in every screenshot comparison.
+
+(E is a close fourth — pairs naturally with B since both touch `toolHistoryNodes`.)
+
+## 4. Considered and rejected
+
+- **Per-card token/cost sparklines** — the data is snapshot totals only (`DashboardRenderer.js:625-636`); a series would need new collection machinery, and depth belongs to the Activity Panel. Clutter risk on a scanning surface.
+- **Larger card avatars** — the 96px hero portrait already exists in the Activity Panel (#46); bigger card portraits tax density, which is the dashboard's actual problem.
+- **"Needs Attention" cross-project triage section** (second half of #58) — sort already floats attention cards to the top of each section; a duplicated/moved section complicates the section-element model (`_sectionEls`) and selection sync. Revisit only if multi-project users report triage pain. The CSS-level wash (C) gets 80% of the value.
+- **Animated dashboard background (shimmer/parallax/particles)** — v0.25 was a performance release; a DOM animation layer fights the reduced-motion matrix for negligible triage value. The static ambience sync (G) captures the charm honestly.
+- **Masonry / equal-height JS layout** — complexity and layout thrash; the one-line `align-items: start` (B) solves the actual symptom.
+- **Merging the sidebar agent list into the dashboard** — the sidebar is shared chrome and out of this scope; the duplication is intentional (filter/pin affordances).</subagent>
+<subagent agent_id="agent-7" item="SHARED CHROME &amp; CSS. Files: `claudeville/src/presentation/shared/TopBar.js`, `Sidebar.js`, `Modal.js`, `ActivityPanel.js`, `Toast.js`, `claudeville/css/topbar.css`, `sidebar.css`, `modal.css`, `activity-panel.css`, `character.css`, `reset.css`, `claudeville/index.html`. Topbar (stats chips, version chip, mode toggle), agents sidebar (project tree, harbor section), modals, toasts, activity panel, scrollbars, focus/hover states, borders/panel treatments, consistency of the parchment/bronze chrome language, transitions between World and Dashboard modes." outcome="completed"># Shared Chrome & CSS — Visual Design Report
+
+## 1. Current-state assessment
+
+The chrome has already been through one coherent art-direction pass: topbar, sidebar, and activity panel all speak the same warm parchment/bronze language (dark brown gradient panels, `rgba(214,169,81,…)` borders, 2px radii, gold type), and the top-50 plan's chrome items shipped — the living activity rail (topbar.css:30), connection-loss desaturation + reconnect sweep (topbar.css:204, dashboard.css:272), selection echo across sidebar/panel (sidebar.css:152, activity-panel.css:44), repo-tinted sidebar rails (sidebar.css:128), hero portrait (activity-panel.css:75), and director feed. Honest weaknesses: (a) the **modal and toasts never got the memo** — modal.css:12-20 still uses the pre-overhaul cool blue-gray (`rgba(15,15,25)`) with yellow (`#e8d44d`) borders and 6px radius, the only surface in the app off-palette; (b) the **activity-panel header crushes the agent's name** to ~3 characters ("Atl…" in the 1600px screenshot) because the 96px portrait, status chip, Pin, and X all share one flex row; (c) the topbar right cluster has **two competing gold-filled buttons** (CINEMA ON + active mode), diluting the primary nav signal; (d) topbar labels systematically run at 8px Press Start 2P, under the project's own declared 10px floor (reset.css:71); (e) World↔Dashboard switching is an instant `display:none` swap with no transition.
+
+## 2. Improvement opportunities
+
+### A. Reskin modal + toasts to the parchment/bronze language
+**What/why:** The changelog modal is a first-class surface (version chip → changelog is the app's only built-in "about" moment), yet it renders as a blue-gray window with yellow borders floating over a warm bronze app — the single largest remaining coherence wound in chrome. Bring `.modal`, `.modal__header`, `.modal__close`, `.toast` onto `--cv-surface-*` / `--cv-border` / `--cv-gold` / `--cv-text-muted`, 2px radius, and the shared inset-shadow chip treatment already used by `.topbar__ledger` (topbar.css:266-276). The `.cl-*` changelog styles are already warm; they just sit on the wrong ground.
+**Files:** `claudeville/css/modal.css:1-121` (all of it), no JS changes.
+**Effort S · Risk low · Payoff: coherence.** Perf: none. Reduced-motion: n/a.
+
+### B. Fix activity-panel header name truncation
+**What/why:** The selected agent's *name* — the most important string in the panel — ellipsizes to ~3 chars at the panel's fixed 320px (activity-panel.css:123-130; header DOM at index.html:129-135 plus the inserted 96px portrait, Pin, X). Restructure the header middle into a vertical stack (name on its own full-width row, status chip beneath it) and let Pin/X sit compact at the top-right; optionally drop the portrait to 80px. "Atlas" → "Atl…" is a daily-driver legibility bug, not a nit.
+**Files:** `claudeville/css/activity-panel.css:28-180`, `claudeville/index.html:129-135`, possibly `ActivityPanel.js:625-635` (portrait mount point).
+**Effort S · Risk low · Payoff: clarity.** Perf: none.
+
+### C. Restore single-gold-button hierarchy on the topbar right
+**What/why:** `.topbar__cinema-btn--on` (topbar.css:487-491) uses the identical gold fill as `.topbar__mode-btn--active` (topbar.css:511-518), so "CINEMA ON" and the active mode button shout at the same tier in the 1280px and 1600px screenshots. Keep filled gold *exclusive* to the active mode; give cinema/sound "on" states a quieter engaged treatment (bronze border + inner glow + gold text, no fill). The mode toggle is the primary navigation; it should be the only filled element on the bar.
+**Files:** `claudeville/css/topbar.css:410-491`.
+**Effort S · Risk low · Payoff: clarity/coherence.** Perf: none.
+
+### D. Honor the 10px type floor (or amend it) in the topbar
+**What/why:** reset.css:71 declares "labels / eyebrows (floor — nothing smaller)" at 10px, and the top-50 doc restates the 10px legibility floor — yet `.topbar__stat-label`, `.topbar__badge`, `.topbar__seg`, `.topbar__sound-btn`, `.topbar__cinema-btn` all render 8px Press Start 2P (topbar.css:290, 317, 351, 413, 470; mode-btn is 9px at :495). At 8px the chunky pixel font is at the edge of legibility (see the native-res topbar crops). Either bump labels to 9–10px (there's horizontal room — the center absorbs overflow per topbar.css:253-261) or explicitly document the topbar exception in the type contract. Silent violation is the worst option.
+**Files:** `claudeville/css/topbar.css`, `reset.css:65-71` (if amending the contract).
+**Effort S · Risk low · Payoff: clarity.** Perf: none.
+
+### E. Gentle World↔Dashboard mode transition
+**What/why:** ModeManager (`claudeville/src/application/ModeManager.js:26-38`) hard-swaps `display`, so the app's central gesture — switching between the two "windows onto the same town" — is a jarring cut. Feasible cheap version: add a ~180ms fade/translate class to the *incoming* container (like `ap-fade-in` at activity-panel.css:18-24), and optionally delay hiding the outgoing one by one frame so the World's frozen last frame cross-fades. This is perf-safe by design: the world render loop already stops when Dashboard activates (character-mode/README.md:133), so the outgoing canvas is a static bitmap during the fade — zero extra per-frame cost. Reduced-motion: keep the instant cut.
+**Files:** `claudeville/src/application/ModeManager.js`, `claudeville/css/layout.css:29-60`.
+**Effort S–M · Risk low · Payoff: charm/coherence.** Perf: one-shot compositor transition only; reduced-motion fallback = current behavior.
+
+### F. Toast system polish: error variant, panel-aware transition
+**What/why:** Three small gaps: (1) no `toast--error` exists — `NotificationService.js:35` maps server disconnect to `warning` because nothing stronger is available; add a red variant matching the status palette. (2) When the activity panel opens, the toast container jumps from `right:16px` to `right:336px` instantly (modal.css:77-79) — add a one-shot `transition: right .2s` (fixed-position element, negligible layout cost). (3) Toasts share the modal's off-palette `rgba(15,15,25)` ground (modal.css:87) — folded into item A's reskin.
+**Files:** `claudeville/css/modal.css:66-121`, `claudeville/src/application/NotificationService.js:33-37`.
+**Effort S · Risk low · Payoff: coherence/clarity.** Perf: none; reduced-motion: no transition.
+
+### G. Modal entrance + dialog semantics
+**What/why:** The modal pops via `display:none→flex` (Modal.js:22-29) with no entrance and no `role="dialog"`/`aria-modal`; focus isn't moved into the dialog or restored on close. Add a one-shot 160ms opacity/scale-in (snapped to instant under reduced-motion), set the dialog roles in index.html:235, focus the close button on open, and return focus to the invoking element on close. Small charm + real keyboard/a11y payoff for the changelog flow.
+**Files:** `claudeville/css/modal.css:1-21`, `claudeville/src/presentation/shared/Modal.js`, `claudeville/index.html:235-243`.
+**Effort S · Risk low · Payoff: charm + clarity.** Perf: one-shot; reduced-motion: instant swap.
+
+### H. Differentiate section titles from disclosure summaries in the activity panel
+**What/why:** In the panel crop, "SCENE LOG" (section title, activity-panel.css:325-332) and "· VILLAGE CHRONICLE" (disclosure summary, :845-853) are both uppercase Press Start 2P at `--fs-label` in muted tan — collapsible affordances read as more headings, flattening the hierarchy of an already long panel. Render summaries in the body face (Departure Mono) with the existing ▸ caret doing the disclosure signaling, keeping pixel font for true section titles only.
+**Files:** `claudeville/css/activity-panel.css:840-866`.
+**Effort S · Risk low · Payoff: clarity.** Perf: none.
+
+### I. Sidebar collapse transition
+**What/why:** Collapsing the sidebar (`sidebar--collapsed`, sidebar.css:96-118) snaps width 240→48px instantly. A 160–200ms `transition: width` makes it feel crafted. **Perf caveat:** width animation triggers ~12 canvas resizes in World mode (the canvas fills the freed space); the renderer handles resize, so it's a bounded one-shot cost, but if profiling disagrees, the fallback is snapping width while fading only the sidebar's text content. Reduced-motion: snap.
+**Files:** `claudeville/css/sidebar.css:1-17, 96-118`.
+**Effort S · Risk med (canvas resize churn) · Payoff: charm.** Verify on the perf rig before keeping.
+
+### J. Cross-browser scrollbar tokens
+**What/why:** Scrollbars are styled via `::-webkit-scrollbar` only (reset.css:125-140, activity-panel.css:388-395, 443-450); Firefox gets default gray bars inside the warm panels. Two lines (`scrollbar-width: thin; scrollbar-color: rgba(199,157,76,.45) #130d0f;`) on the same selectors close it.
+**Files:** `claudeville/css/reset.css:125-140`, `claudeville/css/activity-panel.css`.
+**Effort S · Risk low · Payoff: coherence.** Perf: none.
+
+### K. Version-chip affordance
+**What/why:** The changelog entry point (index.html:29, styled topbar.css:136-146) is visually identical to the static LIVE/FPS meta text beside it; only a hover underline reveals it's a button. A persistent dotted underline or a tiny leading glyph (e.g. `§` or a scroll glyph) makes the one in-app docs surface discoverable.
+**Files:** `claudeville/css/topbar.css:135-146`.
+**Effort S · Risk low · Payoff: clarity.** Perf: none.
+
+### L. Dedupe the "segmented tag" topbar pattern
+**What/why:** `.topbar__ledger` and `.topbar__status` are byte-identical border/background/shadow blocks (topbar.css:266-276 vs 335-345), as are their segment dividers. Extract one `.topbar__tag` base class so future chrome can't drift — cheap insurance for the consistency this report is about.
+**Files:** `claudeville/css/topbar.css`, `claudeville/index.html:34-66`.
+**Effort S · Risk low · Payoff: coherence.** Perf: none.
+
+## 3. Top 3 quick wins
+
+1. **A — Modal/toast parchment reskin.** Biggest coherence gap in the whole chrome, pure CSS, zero risk, and it completes the story the v0.2x chrome work started.
+2. **B — Panel header name fix.** The most-read string in the most-used panel is truncated to 3 characters; a small flexbox restructure fixes it permanently.
+3. **C — Single-gold-button hierarchy.** Ten lines of CSS to make the primary mode toggle the only filled button on the bar; instantly cleaner topbar read at every width.
+
+## 4. Considered and rejected
+
+- **Muting the repo-tinted project header band** (the strong green `PROJECT` header in the sidebar crop): the tint is hash-derived repo identity (RepoColor.js:45) and is intentional data, not decoration; muting it further would weaken the repo-differentiation read the sidebar relies on. Left alone.
+- **`backdrop-filter` blur on the modal overlay:** per-frame-ish cost on a full-screen layer, and frosted glass fights the pixel/parchment aesthetic; the flat 0.7 dim is correct.
+- **Collapsing CINEMA/SOUND into an overflow menu:** desktop ≥1280px has the room, and hiding shipped, daily-used toggles behind a click is a downgrade; hierarchy fix (C) achieves the same clarity without losing affordance.
+- **Theming chrome with time-of-day atmosphere:** the chrome's job is to be the stable frame while the World grades through dusk/night; coupling them adds state surface for no legibility gain. The activity rail (#49) already carries fleet state into the chrome — that's the right amount.
+- **Outgoing crossfade of the *live* world canvas on mode switch:** would require keeping the render loop alive during the transition; rejected on perf-budget grounds. Item E's frozen-frame/incoming-fade variant gets 90% of the effect at zero per-frame cost.
+- **Widening the activity panel (320→360px) to fix truncation:** eats canvas space at 1280px and treats the symptom; the header restructure (B) is the honest fix.
+
+**Perf/reduced-motion posture of the whole list:** every proposal is either a static restyle or a one-shot ≤200ms DOM transition with a `prefers-reduced-motion` snap-to-final-state fallback; nothing adds per-frame canvas or layout cost. The only item needing perf verification is I (sidebar width transition vs canvas resize).</subagent>
+<subagent agent_id="agent-8" item="THEME TOKENS &amp; VISUAL IDENTITY. Files: `claudeville/src/config/theme.js`, `claudeville/src/presentation/shared/ModelVisualIdentity.js`, `TeamColor.js`, `RepoColor.js`, `GitEventIdentity.js`, `AgentPresentation.js`, `claudeville/src/config/constants.js`. Audit the color system: is there one authoritative palette; do world and dashboard share it; provider hues (Claude/Codex/Kimi/Grok) distinctness and harmony; status color semantics (working/waiting/error/completed) consistency across canvas + DOM; font choices; where hardcoded RGB tables bypass theme.js. This scope is about systemic coherence more than single effects." outcome="completed">Investigation complete. Here's my report.
+
+---
+
+# Scope Report: Theme Tokens & Visual Identity
+
+## 1. Current-state assessment
+
+ClaudeVille has **two parallel "single sources of truth" for color, and they disagree**. `claudeville/src/config/theme.js` (the "House Palette" from top-50 item #1, commit `f4bdc2f`) owns `THEME`, `STATUS_VISUALS`, `PROVIDER_HUES`, `BUILDING_ACCENTS` and feeds the canvas world (`AgentSprite.js:3202`, `BuildingSprite.js:803`) plus `statusPresentation().color`. Separately, `claudeville/css/reset.css:24-86` owns a hand-authored `--cv-*` token ramp (commit `174cc0c`) that feeds every DOM surface — and its status hues are *different values*: working `#79d975` vs `#4ade80`, waiting `#df8c3f` vs `#f97316`, and rate-limited is steel blue `#8fa6bd` in theme.js but **amber `#f59e0b`** in CSS. The two ramps collide head-on inside a single component: `ActivityPanel.js:591` paints the status label with the theme.js color while `activity-panel.css:116-121` rings the hero portrait with the CSS color — two greens (or blue-vs-orange for rate-limited) side by side. Building accents, team colors (`TeamColor.js`), and repo colors (`RepoColor.js`) are genuinely shared cross-mode and work well; provider identity does not — Claude is a purple badge in the dashboard but a gold glyph in the sidebar (`AgentPresentation.js:88` prefers model `minimapColor` over the provider badge hue). `completed` is a first-class `AgentStatus` with **zero** color definition anywhere (no `STATUS_VISUALS` entry, no `--cv-status-completed`, no CSS rule), so it renders blue-fallback in world and gray-default in dashboard. Fonts are in good shape (two local faces, disciplined DOM usage) but canvas text outside `AgentSprite` still uses bare `ui-monospace`.
+
+## 2. Improvement opportunities
+
+### A. Unify the status ramps — one value per status, bridged to CSS
+**What:** Pick one canonical hex per status (the `STATUS_VISUALS` record already exists), and either hand-sync `reset.css:42-48` to it or add a ~15-line boot-time bridge that `setProperty`s `--cv-status-*` from `STATUS_VISUALS` so drift becomes impossible. **Why:** This is the top-50 plan's "#1 spine" still unfinished — the world/dashboard "two products" wound persists specifically in status color, the most-read signal in the app. Also fixes the ActivityPanel label-vs-ring mismatch. **Files:** `claudeville/src/config/theme.js:54-62`, `claudeville/css/reset.css:42-48`, bridge called from `src/presentation/App.js`. **Effort:** S. **Risk:** low (pure value change; visual diff recommended). **Payoff:** coherence. **Perf/RM:** zero per-frame cost, no motion.
+
+### B. Fix the warm attention trio + rate-limited hue
+**What:** In the DOM ramp, waiting `#f97316`, rate-limited `#f59e0b`, and waiting-on-user `#facc15` are three adjacent orange/amber/yellows — the three "needs attention" states are hue-only distinguishable. Move rate-limited to theme.js's steel blue `#8fa6bd` (a throttle state is not an urgency state), and fix `activity-panel.css:118-120` which currently maps both `waiting_on_user` and `rate_limited` to `--cv-status-waiting` (three statuses collapse to one orange in the hero ring). **Why:** the attention gradient (error > input > rate-limit) becomes readable at a glance; matches the already-shipped world glow semantics. **Files:** `claudeville/css/reset.css:46`, `claudeville/css/activity-panel.css:116-121`, `claudeville/css/dashboard.css:569` (amber glow rgba literal). **Effort:** S. **Risk:** low. **Payoff:** clarity. **Perf/RM:** none.
+
+### C. Give `completed` a first-class token everywhere
+**What:** Add `STATUS_VISUALS.completed` (suggest a muted sage/gray-green — "done, dormant"), `--cv-status-completed`, `.dash-card--completed` rail, `.dash-card__status--completed`, `.sidebar__agent-dot--completed`, and an explicit `completed` case in `AgentSprite.js:3205` (currently silently falls back to the idle visual). **Why:** a finished session currently reads as *idle* in world and *unstyled gray* in DOM — two different lies about the same state. **Files:** `theme.js:54`, `reset.css:48`, `dashboard.css:261-266,566-578`, `sidebar.css:193-224`, `AgentSprite.js:3202-3205`, `AgentPresentation.js:96-100`. **Effort:** S. **Risk:** low. **Payoff:** clarity + coherence. **Perf/RM:** none.
+
+### D. De-collide provider hues from status hues
+**What:** `codex.badge #4ade80` is byte-identical to `--cv-status-working`; `gemini.badge #60a5fa` is byte-identical to `--cv-status-idle` — a direct violation of the project's own doctrine (`docs/visual-experience-crafting.md:91`: "If red means error, do not also use red as a provider color"). Shift codex toward its sprite trim teal (`#7be3d7` already in `ModelVisualIdentity.js:11`), gemini toward indigo. Also split `opencode` and `deepseek`, which are byte-identical (`#7cf4c8` in all three slots, `theme.js:107-108`). **Why:** a green Codex chip next to a green WORKING dot teaches users the wrong mapping; teal Codex also aligns badge with sprite identity. **Files:** `claudeville/src/config/theme.js:100-110`. **Effort:** S. **Risk:** low. **Payoff:** clarity. **Perf/RM:** none.
+
+### E. One provider hue across all three provider signals
+**What:** Today provider identity is three unrelated values: world sprite trim (`PROVIDER_HUES.trim`), dashboard badge (`.badge`), and sidebar/minimap glyph (`providerPresentation` prefers `identity.minimapColor`, `AgentPresentation.js:88`) — so Claude = purple badge / lavender trim / gold glyph, and Kimi's own trim `#ff8da8` vs badge `#ff9f7a` are a near-miss pair (`theme.js:106`). Decide a rule — e.g. badge and glyph share the provider hue, `minimapColor` stays model-specific but is only used for the world minimap dot, not the sidebar glyph. **Why:** provider is the family identity layer; it should be the most stable hue in the app. **Files:** `AgentPresentation.js:82-91`, `Sidebar.js:403-406`, `theme.js:100-110`. **Effort:** M (mostly a design decision + small code change). **Risk:** med (touches identity users may have learned). **Payoff:** coherence. **Perf/RM:** none.
+
+### F. Add the missing `long-context` model-tier color
+**What:** DeepSeek V4 Pro gets `modelTier: 'long-context'` (`ModelVisualIdentity.js:420`) but `MODEL_TIER_COLORS` (`theme.js:118-125`) has no such key, so its world crest silently falls back to balanced silver (`AgentSprite.js:4483`). One line adds the tier (or re-map the tier name to an existing one). **Why:** cheap completeness; right now one provider's flagship model is mis-crested. **Effort:** S. **Risk:** low. **Payoff:** coherence. **Perf/RM:** none.
+
+### G. Unify canvas text on `WORLD_BODY_FONT`
+**What:** `AgentSprite.js:102` defines the well-reasoned `WORLD_BODY_FONT` ('Departure Mono' first), but `HarborTraffic.js:4387,4936,4962,5247`, `VillageDirectorOverlay.js:93,488`, and `DebugOverlay.js:102,239` use bare `ui-monospace` stacks — two typefaces in the world canvas. Export the font stack from a shared module (or `theme.js` as a string token) and reuse it. **Why:** harbor ledgers and overlay labels are the most text-heavy canvas surfaces; matching the name-pill face makes world text read as one product, and Departure Mono is already loaded and tuned for tiny sizes. **Effort:** S. **Risk:** low (glyph metrics differ slightly; check label widths). **Payoff:** coherence + charm. **Perf/RM:** none.
+
+### H. Token-conformance smoke script
+**What:** A `scripts/smoke/theme-tokens.mjs` that (1) parses `reset.css` and asserts `--cv-status-*` equals `STATUS_VISUALS` values, and (2) greps `src/` for hex literals outside an allowlist (`theme.js`, `ModelVisualIdentity.js`, sprite/scenery config) and fails on *new* private tables. Wire into `validate:quick`. **Why:** this exact drift has now happened twice (git history: `f4bdc2f` built theme.js palette, `174cc0c` built a second ramp without reconciling). A 100-line script prevents the third re-drift — cheap insurance for the entire coherence axis. **Effort:** S. **Risk:** low (needs allowlist tuning to avoid false positives). **Payoff:** coherence (systemic). **Perf/RM:** build-time only.
+
+### I. Retire the `Appearance.js` fallback palette
+**What:** `Appearance.js:18-24` keeps 23 hardcoded hex (skin/shirt/hair tables) used only by `AvatarCanvas`'s procedural fallback when a sprite PNG is missing — random saturated blues/reds/purples that clash with everything around them. Replace the fallback with a provider-tinted silhouette/neutral robe drawn from `PROVIDER_HUES`. **Why:** the failure path currently produces the most off-palette pixels in the app. **Files:** `claudeville/src/domain/value-objects/Appearance.js`, `claudeville/src/presentation/dashboard-mode/AvatarCanvas.js`. **Effort:** M. **Risk:** low. **Payoff:** coherence. **Perf/RM:** none. (Lower priority — only visible on sprite load failure.)
+
+### J. Fold `TeamColor`'s table into theme.js
+**What:** `TeamColor.js:1-4` is a 10-entry hardcoded Tailwind table; its first entry `#e8d44d` duplicates `--cv-yellow` and its orange/purple entries shadow status hues. The module itself is well-shared (world + dashboard), so this is purely moving the table to `theme.js` as `TEAM_HUES` and curating entries to not collide with status/provider hues. **Why:** every hue table should live in the house palette; team gold currently collides with waiting-on-user yellow and gold text in card headers (visible in the Nova card: team chip, model name, and status all warm-yellow/gold/green noise). **Effort:** S. **Risk:** low. **Payoff:** coherence. **Perf/RM:** none.
+
+## 3. Top 3 quick wins
+
+1. **A+B+C as one sweep** — unify status ramps, fix the warm trio, add `completed`. A few dozen lines across `theme.js`, `reset.css`, `dashboard.css`, `sidebar.css`, `activity-panel.css`; heals the single most visible and most frequently read inconsistency in the app (status color), including the in-panel mismatch at `ActivityPanel.js:591`.
+2. **D — provider hue de-collision.** ~6 changed hex values in `theme.js:100-110`; immediately removes the "green means working *and* Codex" ambiguity and the opencode/deepseek twinning.
+3. **H — token-conformance smoke script.** Half a day, zero runtime surface, and it's the only item that keeps A–G from silently regressing — drift here is historical fact, not hypotension.
+
+## 4. Considered and rejected
+
+- **Procedurally deriving `ModelVisualIdentity` trims from provider hues.** The per-model hand-tuned tables (Sol's gold, Luna's silver-blue, Fable's pink) are deliberate craft and the app's best identity work; a formula would flatten them. Instead just cross-check them for collisions (E).
+- **Merging `TeamColor` and `RepoColor` into one hash-color engine.** Both are internally consistent and shared correctly; the HSL golden-angle engine in `RepoColor.js` is good, but forcing teams through it buys little and churns two working call sites.
+- **Press Start 2P for world canvas labels.** Its ~10px legibility floor and wide glyphs make it wrong for name pills; Departure Mono was already correctly chosen (`AgentSprite.js:98-102`).
+- **A light theme / theme switching.** Out of scope for the brand (night-market parchment is the identity) and would double the token surface before the single dark ramp is even unified.
+- **Syncing `THEME.panel`/`THEME.bg` with `--cv-panel`/`--cv-bg`** (`rgba(29,21,17)` vs `rgba(20,15,18)`): real drift but visually imperceptible; fold into item A's bridge if convenient, don't schedule separately.</subagent>
+<subagent agent_id="agent-9" item="PRIOR-ART AUDIT. Read `agents/claudeville-visual-upgrade-top-50.md` (all 50 items), `agents/plans/v0.23-visual-overhaul.md`, `agents/plans/ui-enhancement-plan.md`, `agents/plans/ui-enhancement-second-pass.md`, and `CHANGELOG.md`. For each prior visual proposal, check the LIVE code it names and classify: shipped / partially shipped / not started / obsolete. Deliver a structured done-vs-remaining table (terse — one line per item or group), highlighting the highest-value items that are still unimplemented and why they were probably deferred. Do not propose new ideas; your job is an accurate map of what already exists so the lead doesn't duplicate." outcome="completed">Audit complete — I verified every prior proposal against live code. Here is the map.
+
+## 1. Current-state assessment
+
+The headline finding: **the top-50 plan is fully shipped, not "partially implemented."** v0.17.0 *Lanternlight* (Jun 20) executed all 50 items via a 23-wave build, and every item — including the ones the changelog never names (#4 beacon pillar, #6 daytime sky rewards, #25 cliff shelf, #26 atmospheric perspective, #27 speech scrolls, #28 handoff baton, #36 context gauge, #42 footfall particles) — has verifiable live code, conveniently tagged with `// #N —` provenance comments. The chrome plan (ui-enhancement-plan) shipped as v0.10.0; the second-pass shipped 5 of 7 tasks; v0.23 shipped 29/30 with documented cuts. **What genuinely remains is: 7 of the 10 runners-up (#51–#60), two second-pass leftovers, two P3 chrome polish items, and v0.23's explicit cuts.** A trap for the next auditor: `agents/README.md:39-45` still lists the top-50 as `ready` and both chrome plans as `active` — all three are executed and should be re-indexed `historical`.
+
+## 2. Done-vs-remaining table
+
+**Top-50 (`agents/claudeville-visual-upgrade-top-50.md`) — all 50 shipped in v0.17.0, verified in code:**
+
+| Items | Status | Evidence |
+|---|---|---|
+| #1 palette, #2 mark governor, #3 grade | shipped | `theme.js` imports in 6+ renderers; governor `IsometricRenderer.js:455,3752`; `gradeColor` `VillageDirectorOverlay.js:33` |
+| #4 waiting beacon, #5 beacons, #6 god-rays/daytime rewards, #7 ground reactions, #8 weather influence | shipped | `AgentSprite.js:2996`; `BuildingSprite.js:1071`; `SkyRenderer.js:46-124`; `IsometricRenderer.js:5760`; `WorldFrameRenderer.js:46` |
+| #9 glyph badges, #10 water reflections, #11 forge spill, #12 archive lamplight, #13 moods, #14 status tally, #15 rituals×9, #16 label fade, #17 searchlight, #18 buoys, #19 heraldic standard, #20 dashboard reskin | shipped | `AgentSprite.js:4525`; `IsometricRenderer.js:6050`; `BuildingSprite.js:2199,2137,3301,749`; `RitualConductor.js:27-37` (9 poses); `IsometricRenderer.js:4025`; `HarborTraffic.js:5971,4150`; `CrowdClusterOverlay.js:141`; `dashboard.css:4-25` |
+| #21 cinematic camera, #22 lightning storm, #23 surf, #24 cloud shadows, #25 void dissolution, #26 aerial perspective, #27 speech scrolls, #28 handoff baton | shipped | `Camera.js:39`; `WeatherRenderer.js:599`; `IsometricRenderer.js:94,7433,7570,4342`; `WorldFrameRenderer.js:310`; `AgentSprite.js:4309`; `VillageDirectorOverlay.js:272-357` |
+| #29 storm sky palette, #30 card building identity, #31 selection echo, #32 arrival ceremonies, #33 smoke, #34 token motes, #35 wake foam, #36 context gauge, #37 directional shadows, #38 gossip, #39 seabirds, #40 distress arc, #41 scenic props, #42 footfall | shipped | `AtmosphereState.js:445`; `DashboardRenderer.js:511`; `--cv-selected-accent` in 3 css files; `AgentSprite.js:29,2736,2856`; `ParticleSystem.js:126-192`; `IsometricRenderer.js:6213,8689`; `VillageDirector.js:444`; `scenery.js:523` |
+| #43 sidebar glow/rail, #44 health bar, #45 establishing shot, #46 hero portrait, #47 scene log, #48 connection chrome, #49 activity rail, #50 Ken-Burns | shipped | `sidebar.css:127-268`; `DashboardRenderer.js:268`; `Camera.js:193`; `ActivityPanel.js:229,629`; `TopBar.js:140-173`; `topbar.css:25-55`; `Camera.js:697` |
+
+One residual inside #1: `ModelVisualIdentity.js:1-12` keeps its own per-model hex palettes (`trim`/`accent`/`minimapColor`) outside `theme.js` — two provider-hue authorities remain.
+
+**Runners-up #51–#60:**
+
+| Item | Status |
+|---|---|
+| #51 familiar motes w/ species/personality | **partial** — orbit motes + night light pools shipped (`AgentSprite.js:5685-5752`), but generic circles via `providerMoteColor`; no owl/ember-sprite shaping |
+| #52 observatory dome aperture | **not started** (dome anchor exists only for rituals, `BuildingSprite.js:2922`) |
+| #53 occupancy pennants | **not started** |
+| #54 empty-village dusk vignette + tour | **not started** (idle-attract camera exists but is agent-focused) |
+| #55 ground fog at dawn/over water | **not started** |
+| #56 river flow direction | **obsolete** — shipped as v0.23 B1 (polyline-derived flow streaks) |
+| #57 glowing dais ring | **not started** — footprint + load pips only (`BuildingSprite.js:3734,3784`) |
+| #58 FLIP reorder + Needs-Attention section | **not started** |
+| #59 arrival camera drop-focus | **obsolete** — subsumed by #21 + v0.18 camera cues |
+| #60 monument sprite set | **not started** — `ChronicleMonuments.js` still primitive polygons, zero `drawImage` |
+
+**v0.23 plan:** 29/30 shipped (its own header + changelog confirm). Remaining = documented cuts: river-mouth confluence plume; C4 canopy/trunk sway split (whole-sprite gust fallback shipped); bunting + shore-reed stretch items.
+
+**ui-enhancement-plan (chrome):** shipped as v0.10.0 (type system, de-chrome, panel rebuild, topbar tiering, sidebar filter+grouping, minimap removal, toasts, focus rings incl. `index.html:29 tabindex`). Leftovers: **I8** shared dash-card/panel sub-components (P3, not done — no shared tool-row exists); **I10** mostly resolved via the "More detail" disclosure, but raw-ish labels `Reservation`/`Breadcrumb` still emit inside it (`ActivityPanel.js:1519-1520`).
+
+**ui-enhancement-second-pass:** 5/7 shipped (sidebar filter, fleet-exception badges `TopBar.js:107-110`, connection chip, status shapes `topbar.css:368-381`, focus rings). **Not shipped:** `perf-health-readout` (no `perf:snapshot` emit anywhere; FPS thresholds still 25/45, no hover readout — `TopBar.js:176-186`); 2 of 3 `sidebar-content-halves` (empty legend shipped `Sidebar.js:349-362`; **idle-age suffix and subagent parent link missing** — `formatRelative` is only used for repo rows, `Sidebar.js:487`).
+
+## 3. Improvement opportunities (all from prior art; nothing new invented)
+
+1. **Perf health readout (finish second-pass)** — color FPS at 48/30 + hover panel (fps/particles/agents/terrain strategy). The only fully-spec'd ready task left; its old cross-plan blocker (WS-E hot-file coordination) is moot post-v0.25. Files: `TopBar.js:176`, `IsometricRenderer._trackFps`, `index.html`. Effort **S**, risk **low**, payoff **clarity**. No motion.
+2. **Sidebar idle-age suffix + subagent parent link (finish content-halves)** — dashboard cards already show both (v0.11.0); sidebar parity gap. `Formatters.formatRelative` already imported. Files: `Sidebar.js:202-300`, `css/sidebar.css`. **S**, low, **clarity**.
+3. **#54 empty-village dusk vignette + slow tour** — first-run/idle impression is currently just an empty map; #50 Ken-Burns + attract-camera plumbing already exist to build on. Files: `Camera.js`, `IsometricRenderer.js`. **M**, low, **charm**. Must yield instantly on first arrival; reduced-motion = static vignette.
+4. **#58 FLIP dashboard reorder + Needs-Attention triage** — errored cards don't surface; #44 health bars + `VillageDirector.js:1039` 'Needs attention' data already exist. Files: `DashboardRenderer.js`, `css/dashboard.css`. **M**, med (DOM reorder + render-signature interplay), **clarity**.
+5. **#55 ground fog at dawn/over water** — the last unbuilt sky-to-ground atmosphere piece; `windX` plumbing shipped. Files: `WorldFrameRenderer.js`, `IsometricRenderer.js`. **M**, med, **charm/spectacle**. Per-frame cost needs a budget story (v0.25 was a perf release); slow band, static fallback.
+6. **#51 species/personality familiar motes** — finish the partial: shaped blits per provider on the existing orbit system. Files: `AgentSprite.js:5685-5760`, `ParticleSystem.js`. **M**, low, **charm**.
+7. **#53 occupancy pennants on hero buildings** — guild-territory read; repo colors + occupant data shipped. Files: `BuildingSprite.js`, `BuildingVisualRegistry.js`. **M**, low, **clarity/charm**.
+8. **#57 footprint → glowing dais ring** — upgrade the existing `_drawBuildingActivityFootprint` pips to an intensity ring. Files: `BuildingSprite.js:3734-3847`. **S**, low, **clarity**. Honor #2 mark governor.
+9. **#52 observatory dome aperture at night** — night-only searching→done payoff; dome anchor already rendered. Files: `BuildingSprite.js:2922-2956`. **S–M**, low, **charm**.
+10. **#60 ChronicleMonuments sprite set** — replace primitive polygons with PixelLab monuments; the only asset-dependent leftover (needs `manifest.yaml` + `assetVersion` bump). Files: `ChronicleMonuments.js`, `manifest.yaml`. **M**, med, **coherence**.
+11. **Provider-hue authority unification (finish #1)** — fold `ModelVisualIdentity` minimap/trim colors toward `theme.js PROVIDER_HUES` or document the split. Files: `ModelVisualIdentity.js`, `theme.js`. **S**, low, **coherence**.
+12. **I8 shared dash-card/panel sub-components** — P3 duplication; low value, include only in a polish sweep. Files: `DashboardRenderer.js`, `ActivityPanel.js`. **S–M**, low, **coherence**.
+
+**Why these were deferred (evidence-based):** runners-up were explicitly ranked below the council's cut line and a 23-wave release had to stop somewhere; `perf-health-readout` died of cross-plan coordination cost (its emit touched the serialized hot file); the two sidebar halves waited on `shared-formatrelative-extract` from the parent tasklist and never followed when it landed; #54/#55 add per-frame cost and v0.25 froze new per-frame spend; #60 needs new assets.
+
+## 4. Top 3 quick wins
+
+1. **Perf health readout** — zero design work, spec written, S effort, ends the only dangling second-pass task.
+2. **Sidebar age suffix + parent link** — S effort, closes a visible dashboard/sidebar parity gap using already-imported helpers.
+3. **#57 dais ring upgrade** — S effort, builds directly on `BuildingSprite.js:3734`, visible from across the map every session (unlike subagent-only #51 motes).
+
+## 5. Considered and rejected
+
+- **Re-proposing any top-50 item** — all 50 verified in code, including every item absent from the v0.17.0 changelog; suggesting "add a waiting beacon / surf / cloud shadows" would be duplication.
+- **#56, #59** — obsolete; shipped under different mechanisms (v0.23 B1, #21+v0.18).
+- **v0.23 cuts (confluence plume, canopy/trunk split, bunting, reed overlay)** — deliberately cut by the executing team for risk/payoff; the plume touches the terrain bake, which is radioactive after the v0.25 perf release.
+- **I10 full jargon relabel** — the plan explicitly accepted "hide behind details" as a resolution; the disclosure shipped. Only cosmetic label renames remain.
+- **Anything with per-frame cost without a budget story (#55 fog especially)** — flagged with a perf caveat rather than rejected, but a lead should require measurement against `CANVAS_BUDGET` before scheduling.
+
+**Housekeeping flag for the lead:** `agents/README.md` index rows 39-41 and 44-45 are stale (`active`/`ready` for executed plans) — re-indexing them `historical` prevents the next audit from re-auditing shipped work.</subagent>
+<subagent agent_id="agent-10" item="SPRITE ASSET INVENTORY &amp; ART PIPELINE. Explore `claudeville/assets/sprites/` (`manifest.yaml`, `palettes.yaml`, and the `characters/`, `buildings/`, `terrain/`, `vegetation/`, `props/`, `overlays/`, `atmosphere/`, `bridges/` subfolders), `scripts/sprites/` (especially `generate.md`), `docs/pixellab-reference.md`. Use ReadMediaFile on a representative sample of actual sprite PNGs. Assess: art consistency across asset families, resolution/scale coherence, palette discipline, which assets look placeholder-ish or weakest, pipeline friction for adding/replacing art, and asset-level upgrades that would most lift the world's look." outcome="completed">I have everything I need. Writing the final report now.
+
+---
+
+# Sprite Asset Inventory & Art Pipeline — Exploration Report
+
+## 1. Current-state assessment
+
+ClaudeVille's sprite inventory is a 165-PNG, manifest-driven PixelLab pipeline (`claudeville/assets/sprites/manifest.yaml`, 1273 lines) with genuinely strong top-of-pyramid assets: 21 pro-mode character sheets (uniform 736×920, 8-dir × 10-frame), 9 painterly buildings that follow the style contract, and a coherent 7-weapon equipment ladder. The pipeline hygiene is real (validator green: 164 expected / 0 missing / 0 orphans-on-disk; documented pitfalls; path contract; assetVersion cache discipline) — but it validates *existence*, not *art correctness*, and several broken generations shipped anyway: `building.command/banner.png` renders live in-world as a **giant floating red cube** beside the keep, and `portalGlow`/`watchfire` building layers are isometric "block" cubes rather than isolated objects (the documented `isometric_tile_shape` pitfall, `docs/pixellab-reference.md:244`). The weakest families are the ones players see most: the 32px head accessories worn constantly via `RoleAccessory.js` (Bash→goggles, Edit→toolBand, Read→scholarCap) include a void-faced hood, an unreadable teal scribble, and goggles baked onto a black head silhouette. Terrain tiles are flat single-hue fills that read as a board game under the painterly buildings, and baked building/tree ground patches visibly seam against the current mustard-olive terrain. Finally, 12 manifest assets (~15% of non-character PNGs) are dead inventory with zero code references, which the validator cannot see.
+
+## 2. Improvement opportunities
+
+### A. Fix the command banner cube + rebake the three other broken building layers
+- **What/why:** `banner.png` (64×64) draws as a huge red block cube floating beside the command keep — verified in `output/playwright/performance-world-1600x1000.png` at region (900,80,420,260). `building.portal/portalGlow.png` is a purple vortex cube; `building.command/watchfire.png` is a stone cube with fire; `building.watchtower/beacon.png` is a flat glowing yellow square. All four fell into the `isometric_tile_shape: block` default. Cheapest correct fix: **delete the `banner` layer** — `base.png` already has red dragon banners baked in, visible in the same crop — and rebake `portalGlow`/`watchfire`/`beacon` as `thin tile` (or `create_map_object`) isolated flames/vortices.
+- **Files:** `claudeville/assets/sprites/manifest.yaml:448-489` (command layers), `:536-542` (portalGlow), `:483-489` (beacon); PNGs under `claudeville/assets/sprites/buildings/*/`.
+- **Effort:** S · **Risk:** low · **Payoff:** coherence (kills the single most visible asset bug in the shipped app)
+- **Perf/motion:** none — static layer swaps; existing `animation: pulse` behavior unchanged.
+
+### B. Rebake the six role head-accessories with a strict "isolated object" recipe
+- **What/why:** These are on agents' heads *constantly* (`claudeville/src/presentation/shared/RoleAccessory.js:5-20`), and they are the weakest art in the game: `toolBand` (the Edit/Write marker — the most common tool) is an illegible teal crayon ring; `goggles` and `scholarCap` baked black head/bust silhouettes despite "no head, no character" prompts, so a dark blob rides on every agent's scalp; `mageHood` has a pure-black void face; `oracleVeil` reads as a purple wig; `starCrown` is a 481-byte smudge. One consistent recipe (`thin tile`, explicit "floating wearable object, no head, no bust, no silhouette") lifts every agent in every frame.
+- **Files:** `claudeville/assets/sprites/manifest.yaml:351-391`; PNGs in `claudeville/assets/sprites/overlays/overlay.accessory.*`; composited by `Compositor.js:155-171`.
+- **Effort:** S (6 assets × 1-2 generations) · **Risk:** low · **Payoff:** clarity + charm
+- **Perf/motion:** none — Compositor caches composites per `(base, palette, accessory)` tuple.
+
+### C. Rebake the effort floor rings so tiers are actually distinguishable
+- **What/why:** `effortLow` (772B) and `effortHigh` (1767B) are near-identical thin gold ellipses; the prompted "single/double/triple-band" language never materialized. These are live semantic markers (`ModelVisualIdentity.js:47-51`) that currently fail at their one job — telling reasoning effort apart at a glance. Rebake with explicit band counts, distinct metals (bronze/silver/gold), and rune ticks on high.
+- **Files:** `manifest.yaml:416-432`; `overlays/overlay.status.effort*.png`.
+- **Effort:** S · **Risk:** low · **Payoff:** clarity
+- **Perf/motion:** none.
+
+### D. Painterly terrain suite rebake (6 tilesets) with texture + softer banding
+- **What/why:** The grass/dirt/water Wang sets are flat fills with sparse speckle (see `terrain/terrain.grass-dirt/sheet.png`), producing the hard two-tone checkerboard visible across every screenshot — flat teal water diamonds, flat mustard grass. This clashes with the "painterly palette" style anchor (`manifest.yaml:3`) and makes the detailed buildings look pasted on. Re-running `create_topdown_tileset` with richer descriptions (baked wavelets/foam on shallow water, moss/wildflower texture on grass, varied stone on cobble) is the single largest "world looks hand-made" lever. Cost ≈100-160 generations — inside the Tier-3 budget (`docs/pixellab-reference.md:14-31`).
+- **Files:** `manifest.yaml:1086-1121`; `terrain/*/sheet.png`; read by `TerrainTileset.js` and baked into the terrain cache.
+- **Effort:** M · **Risk:** med (tile seams need visual-diff review; `npm run sprites:visual-diff` + `world:validate-terrain`) · **Payoff:** coherence + charm
+- **Perf/motion:** zero per-frame cost — terrain is baked once into the single-surface terrain cache; only PNG file size grows slightly.
+
+### E. Heal the building-base / terrain seam
+- **What/why:** Every building bakes a grass-cobble diamond per the style contract (`docs/building-style-contract.md:12`, grass ramp `#355408–#567A16`), but current terrain grass is a different olive-mustard → a visible "patch" outline around every building (verified at the mine, region (180,700) of the 2560px shot, and the command keep). Don't rebake buildings; instead **post-process the nine `base.png` files** (hue/level-shift the baked grass ramp toward the live terrain tone, or align after doing D) with a small pngjs script — one deterministic pass, no regeneration cost. Long-term: record the terrain grass hex in the style contract so future bakes match.
+- **Files:** `claudeville/assets/sprites/buildings/*/base.png`; contract doc above; `scripts/sprites/` for the new script.
+- **Effort:** S-M · **Risk:** med (recolor must dodge cyan ore / violet portal accents — mask by hue range) · **Payoff:** coherence
+- **Perf/motion:** none.
+
+### F. Vegetation hygiene pass: kill baked ground squares + replace pancake/dice assets
+- **What/why:** Large trees (`veg.tree.oak.large`, `veg.tree.willow.large`) and `veg.flowerBed` bake ground squares because their prompts (`manifest.yaml:938-972`, `:1065-1070`) lack the "no ground tile, no square base" negatives that props have — they float alien turf patches on terrain. Meanwhile `tree.pine.large` renders as a brown crate with a hedge top, boulders are perfect dice (block-shape pitfall), `bush.a/b/c` are flat ellipses, and `grassTuft.a/b` (250B each) read as black spikes at 1× (visible in the 1600×1000 shot). Rebake the ~10 offenders as `thin tile` with the prop-style negative suffix.
+- **Files:** `manifest.yaml:924-1082`; `claudeville/assets/sprites/vegetation/`; drawn via `IsometricRenderer.js:664-696`.
+- **Effort:** M · **Risk:** low · **Payoff:** coherence + charm
+- **Perf/motion:** none — static props, existing `_withTreeSway` untouched.
+
+### C2. (clarity) Also fold `prop.noticePillar`, `prop.runestone`, `prop.scrollCrates`, `prop.well`, `prop.harborCrates`, `prop.oreCart` into F — all 250-400B blobs placed in high-traffic civic spots (`scenery.js:455-464`, `:532-543`); one rebake batch at 48px with richer prompts.
+
+### G. Clean up the 12 dead assets + the byte-duplicate gull
+- **What/why:** Zero code references (verified by fixed-string grep across `claudeville/src`): `overlay.status.chat/working/idle` (also broken-as-generated: a brick cube, an iso room interior, another brick cube — nobody noticed *because* they're unused), `prop.harborPier`, `prop.harborCrane`, `prop.lakeShrine`, `bridge.ew/ns`, `dock.ew/ns` (renderer uses only `bridge.landmark.{style}.{orientation}`, `IsometricRenderer.js:7188`), `atmosphere.deep-sea`, `atmosphere.light.lighthouse-beam`. Plus `prop.gullFlight.png` ≡ `prop.gullFlight.level.png` (byte-identical, allowlisted in `manifest-validator.mjs:28-33`). Either wire the good ones in (the crane and pier belong on the harbor quay; `lakeShrine` is charming) or delete/attic them; point gull frames at one id. Then add a validator warning for manifest ids unreferenced in `src/`.
+- **Files:** listed ids in `manifest.yaml:394-414, 700-710, 784-788, 900-904, 1125-1135, 1251-1272`; validator script.
+- **Effort:** S · **Risk:** low (keep allowlist mechanics) · **Payoff:** coherence (pipeline trust) + minor charm if crane/pier get placed
+- **Perf/motion:** none; fewer manifest entries = marginally faster asset load.
+
+### H. Validator upgrade: dimension check + "is it a cube?" alpha heuristic
+- **What/why:** Both documented TODOs (`docs/pixellab-reference.md:328-333`) and the shipped banner cube share one root cause: validation stops at existence. Add (1) PNG-dimension vs manifest `size`/`width/height` check, and (2) for `overlay.*` and building `layers`, a corner-alpha + fill-ratio heuristic (isolated objects have transparent corners and <60% fill; block tiles fill the diamond) — this one check would have caught all four cube defects and the accessories' baked head silhouettes.
+- **Files:** `scripts/sprites/manifest-validator.mjs` (540 lines, already pngjs-based).
+- **Effort:** S · **Risk:** low (start as warnings, tune thresholds, then gate) · **Payoff:** coherence
+- **Perf/motion:** none (dev-time only).
+
+### I. Make the bake pipeline fully manifest-driven + add a contact-sheet evidence step
+- **What/why:** `generate-pixellab-revamp.mjs` is a legacy code-defined bake list that passes the undocumented `'highly detailed'` detail enum and is gated behind "explicit reviewed --ids only" (`generate.md:78`, `pixellab-reference.md:253`) — i.e., there is currently *no supported bulk rebake path*, which is why broken assets linger. Finish the manifest-driven plan (`plan.mjs` already dry-runs), fix the enum, and add one `montage`-based contact-sheet script per family as required bake evidence — the QA checklist already asks for contact sheets (`docs/world-visual-qa-checklist.md:54-58`) but no script produces them.
+- **Files:** `scripts/sprites/generate-pixellab-revamp.mjs`, `plan.mjs`, `generate.md`.
+- **Effort:** M · **Risk:** low · **Payoff:** coherence (unblocks A/B/C/F at batch scale)
+- **Perf/motion:** none (dev-time).
+
+### J. Retire or restyle the generic `prop.harborBoat` fallback
+- **What/why:** The 668B flat sailboat only appears when a ship-class sprite fails to load (`HarborTraffic.js:4756-4760`), but next to the detailed class hulls it's a jarring placeholder whenever it does show. Rebake in the skiff's style, or alias it to `harborShip.skiff`.
+- **Files:** `manifest.yaml:712-716`; `props/prop.harborBoat.png`.
+- **Effort:** S · **Risk:** low · **Payoff:** coherence (minor)
+- **Perf/motion:** none.
+
+## 3. Top 3 quick wins
+
+1. **A — Delete the banner layer / rebake the three cube layers.** The red cube is the most visibly broken thing in the shipped world; the fix is one manifest edit plus ≤3 regenerations. S, zero risk, immediate coherence.
+2. **B — Rebake the six role accessories.** Highest traffic-per-pixel in the inventory (they ride on every agent's head via tool/role mapping), worst current quality, cheapest batch (32px thin-tiles). S.
+3. **C — Rebake the effort floor-ring trio.** Live semantic markers that currently can't be told apart; three 64px thin-tiles restore the low/med/high read. S.
+
+(H is the force-multiplier if a fourth is allowed: it prevents every class of bug above from shipping again.)
+
+## 4. Considered and rejected
+
+- **Full character rebake.** Characters are the strongest family — pro-mode consistency, working palette-swap/variant system, uniform 92px contract. The one nit (a small baked wrench-ish object near `agent.codex.gpt54` despite the "no wrench" prompt) is masked by the runtime-equipment system. Not worth ~200 generations.
+- **Replacing procedural palms/broadleaf trees with sprites (or vice versa).** Two tree systems coexist (`_drawFantasyForestTree` vs `veg.tree.*`, `IsometricRenderer.js:647-679`) but read fine together at distance; unifying is high effort for little gain. The sprite trees' real problem is their baked bases — covered by F.
+- **Removing baked building bases entirely.** Violates the style contract's grounding rule (`building-style-contract.md:12`); the seam is a *color* problem, not a *base* problem — fix via E, not deletion.
+- **Upscaling all 32px props to 64px.** Resolution isn't the issue — `prop.signpost` (32px, 1.8KB) reads great; the blob props suffer from sparse generation, not size. Rebake selectively (C2) instead of a blanket respec.
+- **`create_tiles_pro` hex/octagon terrain or a projection change.** No engine demand; pure churn.
+- **Wiring `overlay.status.chat/working/idle` back into the renderer.** Their concepts (speech halo, work aura, rest aura) overlap shipped procedural effects (chat glyphs, working glows), and the actual PNGs are wrong-subject generations anyway — delete via G rather than revive.
+- **Deep-sea tileset repair.** `atmosphere.deep-sea` has a visible seam artifact, but nothing references it — deep water is procedural today. Delete, don't fix.
+
+**Caveats:** I did not run the dev server; all in-world claims rest on the provided Playwright screenshots (the banner cube, terrain flatness, base seams, grass-tuft readability were each verified at native resolution). The night screenshots (`output/playwright/night-*.png`) are too dark for sprite QA — night-time asset assessment (light-pool overlays) should be re-captured before acting on atmosphere art.</subagent>
+<subagent agent_id="agent-11" item="DESKTOP WIDGETS. Explore `widget/` — `widget/Sources/` (macOS SwiftUI menu-bar app), `widget/Resources/`, `widget/kde/` (Plasma QML), `widget/README.md`, `widget/ClaudeVilleWidget.app/`. Assess the visual quality of both widgets: layout, typography, iconography, how much of the village charm survives in the small form factor, consistency with the browser app's visual language, and concrete widget-feasible visual upgrades (keep in mind macOS build only runs on macOS — assess from code)." outcome="completed"># Desktop Widgets — Visual Assessment Report
+
+Scope covered: `widget/Sources/main.swift` (live macOS popover + menu-bar badge), `widget/Resources/widget.{html,css}` (static WebSocket surface, also served at `/widget.html`), `widget/kde/claudeville/` (Plasma 6 QML widget), `widget/build.sh`, `scripts/widget/check-kde.cjs`. Baseline for coherence: browser app tokens in `claudeville/css/reset.css:25-67` and the current dashboard/world screenshots.
+
+## 1. Current-state assessment
+
+The macOS popover is a 320×420 WKWebView rendering inline-CSS HTML from `buildHTML()` (`widget/Sources/main.swift:294-398`): a cold slate palette (`#0a0a0f`, `#1e293b` borders, purple `#a78bfa` accents), system font everywhere except a 12px Press Start 2P title, text-only agent rows with colored `●` status dots, and quota bars. The KDE widget is theme-native Kirigami with stat pills, quota bars, and — its one big charm win — overlapping pixel-sprite avatars in the panel compact view when agents are working (`main.qml:79-123`). Honest weaknesses: **none of the app's warm medieval identity survives** — the browser app is warm gold/brown (`--cv-gold: #f2d36b`, `--cv-text-muted: #a89476`, `reset.css:29-36`) while both macOS surfaces are generic dark-slate SaaS; agent rows on both full surfaces are text-only even though `spriteId` is already in the API payload (`claudeville/adapters/sessionPresentation.js:272`) and KDE already ships 19 sprite PNGs; the two macOS surfaces have visibly diverged (live popover has a purple flat title, the static surface has a green glowing title, pixel-font meta, and model chips the live one lacks); and the menu-bar badge `● 0` (`main.swift:647,731`) cannot distinguish offline from "0 working".
+
+## 2. Improvement opportunities
+
+**A. Fix the status model in the macOS popover (waiting is silently swallowed)**
+Waiting sessions are counted as idle (`main.swift:137` — `if status == "working" { working += 1 } else { idle += 1 }`) and the header only renders working/idle badges (`main.swift:380-381`), while the browser topbar and KDE both show three counts. Add a waiting badge (amber, hollow/diamond dot per the app's shape-coded convention in `topbar.css:365-385`).
+Files: `widget/Sources/main.swift:124-153, 380-386`. Effort: S. Risk: low (HTML-only; verifiable via the static surface in a browser). Payoff: clarity + coherence.
+
+**B. Unify status colors across all three widget surfaces**
+"Waiting" is `#f59e0b` in the macOS popover (`main.swift:325`), `#facc15` in KDE (`main.qml:221, 357, 443`), and `#f97316` in the app and the static widget (`reset.css:45`, `widget.css:24`). Pick the app's `--cv-status-waiting: #f97316` everywhere; also adopt `--cv-status-rate-limited`/`errored` if those statuses ever reach the API payload. One-line changes in three files.
+Files: `widget/Sources/main.swift:325`, `widget/kde/claudeville/contents/ui/main.qml:441-445`. Effort: S. Risk: low. Payoff: coherence.
+
+**C. Sprite avatars in KDE session rows**
+The row model already carries `spriteSource` and `spriteAccent` (`main.qml:666-677`) and the PNGs are packaged — the list delegate just never uses them (`main.qml:302-347`). Adding a ~28px `Image` (with the existing `smooth: false` pixel rendering and the accent-circle fallback already written for the compact strip at `main.qml:99-107`) turns nameless text rows into villagers. This is the single highest charm-per-line change available in either widget.
+Files: `widget/kde/claudeville/contents/ui/main.qml:302-347`. Effort: S. Risk: low (verifiable only on KDE, but it's a pure delegate addition; `npm run widget:kde:check` covers references). Perf: static images, zero per-frame cost. Payoff: charm.
+
+**D. Menu-bar badge: encode state, not just a count**
+`updateBadge` sets `button.title = "● \(working)"` (`main.swift:731-733`) and offline renders the identical `● 0` (`main.swift:108-113`). Use `attributedTitle` with a colored dot (green when working > 0, blue when only idle, gray/red when offline) — colored attributed titles do render in the macOS menu bar. Optionally append waiting as `●2 ◆1`.
+Files: `widget/Sources/main.swift:644-652, 731-733`. Effort: S. Risk: med — cannot be build-verified on this Linux checkout (`swiftc` is macOS-only); needs an operator run of `npm run widget:check`. Payoff: clarity.
+
+**E. Adopt the app's warm palette + Departure Mono in the macOS popover**
+The popover's slate/purple scheme predates the app's warm overhaul. Swap the inline CSS in `buildHTML()` to the app tokens (bg `#08070b`, gold `#f2d36b` title, tan `#a89476` muted text, hairline `#2a2a3e`-warm borders), and bundle `DepartureMono-Regular.woff2` (already at `claudeville/assets/fonts/`) next to the existing Press Start 2P copy — `build.sh:34` copies `Resources/*` wholesale, so it's a drop-in. Respect the app's own rule: pixel face ≥10px only (`reset.css:66`), Departure Mono for data. The popover stops looking like a different product.
+Files: `widget/Sources/main.swift:339-397`, `widget/Resources/` (font), `widget/Resources/widget.css` for parity. Effort: M. Risk: low-med (visual verification needs a Mac or careful static-surface parity). Payoff: coherence + charm.
+
+**F. Sprite portraits in macOS popover rows**
+`webView.loadHTMLString(shell, baseURL: Bundle.main.resourceURL)` (`main.swift:728`) means any PNG dropped into `widget/Resources/` is URL-loadable, and `/api/sessions` already sends `spriteId`. Reuse the KDE single-frame PNGs (e.g. 24px `<img style="image-rendering:pixelated">` per row), falling back to the status dot when the sprite is missing. Rows are currently the most charmless surface in the whole project (`main.swift:321-336`).
+Files: `widget/Sources/main.swift:320-337`, new PNGs under `widget/Resources/`. Effort: M (sprite-id mapping + fallback + can't visually verify off-Mac). Risk: med. Perf: static images, negligible. Payoff: charm.
+
+**G. Reconcile the two macOS surfaces**
+The live popover and `widget/Resources/widget.html`+`widget.css` are "equivalent" only in structure — the static one has a green glow title, pixel-font token/cost meta, model chips, pulse animations, and hover states the live one lacks (`widget.css:58-65, 114-126, 249-273, 298-308` vs `main.swift:344-374`). Since the static surface is the only one viewable without a Mac (it's the smoke-check surface, `widget/README.md:7-10`), parity matters for maintenance: extract one shared CSS/token block both consume, or at minimum port the divergent visual decisions deliberately. Note the static surface's 7px pixel-font meta violates the app's ≥10px rule — fix during reconciliation.
+Files: `widget/Sources/main.swift:343-374`, `widget/Resources/widget.css`. Effort: M. Risk: low. Payoff: coherence.
+
+**H. KDE compact representation: identity when idle/offline**
+The sprite strip only appears when agents are working; otherwise the panel shows a 4px dot plus the literal word "idle" or "off" (`main.qml:125-146`) — zero village identity at rest, and "off" reads like a broken widget. Always show one small emblem (a static tower/house sprite or the app favicon's gold-roof glyph) with a count badge; keep the red offline dot.
+Files: `widget/kde/claudeville/contents/ui/main.qml:52-146`, plus one new image. Effort: S. Risk: low. Payoff: charm + clarity.
+
+**I. Custom KDE icon instead of `applications-development`**
+`metadata.json:11` uses a stock KDE icon; the Add Widgets list and panel tooltip show it. Ship the pixel-castle mark (the `favicon.svg` gold-roof motif, exported to PNG) as the plugin icon.
+Files: `widget/kde/claudeville/metadata.json`, new icon file, `scripts/widget/check-kde.cjs` (extend required-files list). Effort: S. Risk: low. Payoff: charm + coherence.
+
+**J. Single source for KDE sprite frames**
+The `spriteFrame()` table (`main.qml:469-496`) hardcodes pixel dimensions of 19 committed PNG copies under `contents/images/`, with no generation script — only an existence check (`scripts/widget/check-kde.cjs:60-68`). When sprites regenerate (frequent, per `scripts/sprites/generate.md`), these drift silently. Add a tiny `scripts/sprites/export-widget-frames.mjs` that crops the canonical sheets (`claudeville/assets/sprites/characters/<id>/sheet.png`) into the KDE/Resources PNGs and emits the dimension table as JSON the QML loads via `Qt.resolvedUrl`. 
+Effort: M. Risk: med (QML JSON loading is easy to get subtly wrong; check script must grow a dims assertion). Payoff: coherence (prevents slow visual rot).
+
+**K. Replace the ⚡ emoji offline state with on-brand pixel styling**
+The macOS offline block is a 24px emoji + tiny pixel text (`main.swift:306-313`); emoji clashes with every other surface. A Press Start 2P "SERVER OFFLINE" with a gold/red pixel glyph (or a dimmed sprite) and a pulsing reconnect dot matches the app. Fold into E if that lands.
+Effort: S. Risk: low. Payoff: charm.
+
+**L. KDE quota/pill accents → app warm ramp**
+KDE accents are close but not the app's (`#c4b5fd` tokens, `#fbbf24` cost vs the app's gold ramp `reset.css:29-34`). Align the six hardcoded accents in `main.qml:211-247, 357` to the app tokens. Cheap polish once B is done.
+Effort: S. Risk: low. Payoff: coherence.
+
+## 3. Top 3 quick wins
+
+1. **C — KDE row avatars** (S, charm): model and images already exist; it's a ~15-line delegate change with the fallback pattern already written.
+2. **A+B combined — macOS status truth + canonical colors** (S, clarity/coherence): one Swift edit fixes a real data bug (waiting shown as idle) and the three-way color fork.
+3. **D — state-aware menu-bar badge** (S, clarity): kills the offline/idle ambiguity on the most-seen pixel of the whole widget; needs a Mac to verify, so pair it with the operator's next `npm run widget:check`.
+
+## 4. Considered and rejected
+
+- **Animated sprites in the KDE panel strip** (playing idle loops instead of static frames): poll cadence is 5s and QML animated sprites would need full sheets bundled; per-frame animation in an always-on panel fights the motion-budget/perf-first spirit of v0.25 for near-zero information gain. Static frames are the right call.
+- **Rewriting the macOS popover as native SwiftUI**: the WKWebView HTML surface already supports pixel fonts, sprite images, and DOM-diff updates; a rewrite is XL effort for parity, and the HTML surface doubles as the browser-smoke-checkable artifact.
+- **A live mini-village canvas in the popover**: battery/perf cost with no budget story; the popover's job is glanceable status.
+- **Deleting `widget/Resources/widget.html` as dead code**: it's load-bearing — served at `/widget.html` and used by smoke checks (`widget/README.md:10`). Reconcile (G), don't remove.
+- **Bundling the full sprite manifest into the KDE package**: overkill; J's generated JSON table covers the only data the QML actually needs.
+
+One verification caveat for the lead: anything touching `widget/Sources/main.swift` or the `.app` bundle can only be syntax-smoke-checked indirectly here — this box is Linux, `swiftc` and the popover itself are macOS-only. Sequence native changes to land right before an operator Mac run.</subagent>
+</agent_swarm_result>
