@@ -1,6 +1,7 @@
 import { MAP_SIZE } from '../../config/constants.js';
+import { WORLD_BODY_FONT } from '../../config/theme.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { pulseValue } from './PulsePolicy.js';
+import { pulseValue, pulseAlpha } from './PulsePolicy.js';
 import { BUOY_TORCH_COLORS } from './ParticleSystem.js';
 import { normalizeRepoBranch, repoBranchProfile, repoProfile } from '../shared/RepoColor.js';
 import {
@@ -4384,17 +4385,17 @@ export class HarborTraffic {
         ctx.fillRect(x + 15, y + 6, width - 22, 1);
         ctx.fillRect(x + 15, y + height - 7, width - 22, 1);
 
-        ctx.font = '700 14px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.font = `700 14px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
         ctx.fillStyle = '#fff0b8';
         this._fillReadableText(ctx, shortGitLabel(title, 56, '…'), x + 26, y + 14);
         this._drawRepoLabelIcon(ctx, x + 27, y + 44, 8, profile);
         ctx.fillStyle = profile.labelText || profile.accent;
-        ctx.font = '700 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.font = `700 11px ${WORLD_BODY_FONT}`;
         this._fillReadableText(ctx, shortGitLabel(detail, 60, '…'), x + 38, y + 38);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.62)';
-        ctx.font = '700 9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.font = `700 9px ${WORLD_BODY_FONT}`;
         this._fillReadableText(ctx, (PUSH_STATUS_STYLE[summary.status] || PUSH_STATUS_STYLE.unknown).shortLabel.toUpperCase(), x + 26, y + 62);
         ctx.fillStyle = 'rgba(244, 232, 190, 0.42)';
         ctx.fillRect(x + 94, y + 61, Math.max(34, width - 114), 1);
@@ -4933,7 +4934,7 @@ export class HarborTraffic {
         ctx.strokeStyle = profile.accent;
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(badgeW) - 1, Math.round(badgeH) - 1);
         ctx.fillStyle = '#f4df9f';
-        ctx.font = `${Math.max(8, Math.round(9 * scale))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${Math.max(8, Math.round(9 * scale))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(badge, Math.round(ship.x), Math.round(y + badgeH / 2 + 0.5));
@@ -4959,7 +4960,7 @@ export class HarborTraffic {
         ctx.lineWidth = Math.max(1, Math.round(1.4 * scale));
         ctx.strokeRect(x + 0.5, y + 0.5, Math.round(badgeW) - 1, Math.round(badgeH) - 1);
         ctx.fillStyle = profile.accent;
-        ctx.font = `${Math.max(8, Math.round(9 * scale))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${Math.max(8, Math.round(9 * scale))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._fillReadableText(ctx, badge, Math.round(ship.x), Math.round(y + badgeH / 2 + 0.5), badgeW - 4 * scale);
@@ -5244,7 +5245,7 @@ export class HarborTraffic {
         const y = Math.round(ship.y - (33 + (shipClass.flagOffsetY || 0)) * s);
         ctx.save();
         ctx.fillStyle = '#f6cf60';
-        ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${Math.max(7, Math.round(8 * s))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'top';
         this._fillReadableText(ctx, text, x, y);
@@ -5277,8 +5278,10 @@ export class HarborTraffic {
         const profile = payload.profile;
         const muted = !profile;
         const accent = muted ? '#8c95a0' : profile.accent;
+        // 3.9 — lantern pulse snapped onto the shared 'harbor' band; muted or
+        // reduced-motion buoys hold the legacy static alpha.
         const pulse = (!muted && this.motionScale > 0)
-            ? 0.55 + 0.40 * (0.5 + 0.5 * Math.sin(this.frame * 0.16))
+            ? pulseAlpha('harbor', this.frame, this.motionScale, 0.55, 0.95)
             : 0.65;
         const x = Math.round(payload.x);
         const y = Math.round(payload.y);
@@ -5522,7 +5525,7 @@ export class HarborTraffic {
         const shortName = String(profile.shortName || profile.name || '').slice(0, 3).toUpperCase();
         if (shortName) {
             ctx.fillStyle = profile.labelText || 'rgba(20, 14, 10, 0.94)';
-            ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            ctx.font = `${Math.max(7, Math.round(8 * s))}px ${WORLD_BODY_FONT}`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             this._applyReadableTextShadow(ctx);
@@ -5615,7 +5618,7 @@ export class HarborTraffic {
             ctx.strokeStyle = profile.accent || '#f6d384';
             ctx.strokeRect(labelX + 0.5, labelY + 0.5, Math.round(width) - 1, Math.round(13 * s) - 1);
             ctx.fillStyle = profile.labelText || '#fff0b8';
-            ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            ctx.font = `${Math.max(7, Math.round(8 * s))}px ${WORLD_BODY_FONT}`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             this._fillReadableText(ctx, label, Math.round(ship.x), Math.round(labelY + 7 * s), Math.max(12, width - 4 * s));
@@ -5660,7 +5663,7 @@ export class HarborTraffic {
         ctx.fillRect(x + (profile.isBranchVariant ? Math.max(1, Math.round(2 * s)) : 0), y, Math.max(2, Math.round(4 * s)), Math.round(height));
         this._drawRepoLabelIcon(ctx, x + 8 * s, y + height / 2, 6 * s, profile);
         ctx.fillStyle = ship.pushStatus === 'failed' && statusStyle ? accent : (profile.labelText || accent);
-        ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         this._fillReadableText(ctx, label, Math.round(x + 15 * s), Math.round(y + height / 2 + 0.5), Math.max(12, width - 18 * s));
@@ -5708,7 +5711,7 @@ export class HarborTraffic {
         ctx.strokeRect(x + 0.5, y + 0.5, width - 1, height - 1);
         this._drawRepoLabelIcon(ctx, x + 9 * s, y + height / 2, 6 * s, profile);
         ctx.fillStyle = profile.labelText || profile.accent;
-        ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         this._fillReadableText(ctx, label, Math.round(x + 17 * s), Math.round(y + height / 2 + 0.5), Math.max(12, width - 22 * s));
@@ -5815,7 +5818,7 @@ export class HarborTraffic {
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = Math.max(0.48, alpha);
         ctx.fillStyle = style.accent;
-        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.font = `9px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(style.shortLabel, Math.round(effect.x), Math.round(effect.y - 52));
@@ -5836,7 +5839,7 @@ export class HarborTraffic {
         ctx.strokeStyle = 'rgba(242, 211, 107, 0.82)';
         ctx.strokeRect(Math.round(x) + 0.5, Math.round(y) + 0.5, Math.round(width) - 1, Math.round(height) - 1);
         ctx.fillStyle = '#f2d36b';
-        ctx.font = `${Math.max(8, Math.round(10 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${Math.max(8, Math.round(10 * s))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(label, Math.round(payload.x), Math.round(y + height / 2));
@@ -5864,13 +5867,13 @@ export class HarborTraffic {
         ctx.fillStyle = profile.accent;
         ctx.fillRect(x + Math.round(5 * s), y + Math.round(5 * s), Math.max(2, Math.round(4 * s)), Math.round(height - 10 * s));
         ctx.fillStyle = '#f4df9f';
-        ctx.font = `${Math.max(8, Math.round(10 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${Math.max(8, Math.round(10 * s))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._fillReadableText(ctx, title, Math.round(payload.x + 2 * s), Math.round(y + 11 * s));
         this._drawRepoLabelIcon(ctx, x + 15 * s, y + 25 * s, 7 * s, profile);
         ctx.fillStyle = profile.labelText || profile.accent;
-        ctx.font = `${Math.max(7, Math.round(8 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${Math.max(7, Math.round(8 * s))}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
         this._fillReadableText(ctx, detail, Math.round(x + 23 * s), Math.round(y + 25 * s), Math.max(24, width - 28 * s));
         ctx.restore();
@@ -5906,7 +5909,7 @@ export class HarborTraffic {
         ctx.globalAlpha = 1;
         this._drawRepoLabelIcon(ctx, x + 11 * s, y + height / 2, 7 * s, profile);
         ctx.fillStyle = failed ? PUSH_STATUS_STYLE.failed.accent : (profile.labelText || profile.accent);
-        ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'left';
         ctx.textBaseline = 'middle';
         this._fillReadableText(ctx, label, Math.round(x + 20 * s), Math.round(y + height / 2 + 0.5), Math.max(24, width - 24 * s));
@@ -5915,16 +5918,21 @@ export class HarborTraffic {
 
     // #18 — small flickering flame atop an active repo buoy. A couple of
     // additive ember layers whose height/offset wobble on `this.frame`; colours
-    // come from ParticleSystem's shared `buoyTorch` palette. Callers gate this
-    // on motionScale > 0, so it is never drawn under reduced motion.
+    // come from ParticleSystem's shared `buoyTorch` palette.
+    // 5.8 — composite is 'screen' (the legacy 'lighter' alias is deprecated),
+    // and reduced motion now draws a single static frame (frozen phase, steady
+    // alpha) instead of suppressing the flame entirely. The per-layer detuned
+    // shape wobble stays local pulse math: snapping it to a shared band would
+    // lockstep every flame in the anchorage.
     _drawBuoyTorch(ctx, x, topY, s, slot = 0) {
-        const phase = this.frame * 0.32 + slot * 1.7;
+        const moving = this.motionScale > 0;
+        const phase = (moving ? this.frame * 0.32 : 0) + slot * 1.7;
         ctx.save();
-        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalCompositeOperation = 'screen';
         for (let i = 0; i < 3; i++) {
             const flick = Math.sin(phase + i * 1.9);
             const h = (5 - i * 1.3 + flick * 1.1) * s;
-            const sway = Math.sin(phase * 1.4 + i) * 0.9 * s;
+            const sway = (moving ? Math.sin(phase * 1.4 + i) * 0.9 : 0) * s;
             const w = (3.4 - i * 0.9) * s;
             ctx.globalAlpha = 0.5 - i * 0.12;
             ctx.fillStyle = BUOY_TORCH_COLORS[i] || BUOY_TORCH_COLORS[BUOY_TORCH_COLORS.length - 1];
@@ -5955,7 +5963,7 @@ export class HarborTraffic {
             ctx.strokeRect(Math.round(x - w / 2) + 0.5, Math.round(y - h / 2) + 0.5, Math.round(w) - 1, Math.round(h) - 1);
             ctx.globalAlpha = 1;
             ctx.fillStyle = '#cdd9d6';
-            ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+            ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             this._fillReadableText(ctx, text, Math.round(x), Math.round(y + 0.5), w - 6 * s);
@@ -6022,8 +6030,9 @@ export class HarborTraffic {
         // #18 — active-repo signal flame: a small flickering torch atop the post
         // whenever the repo is lively (live agent or fresh push). Drawn inline
         // (HarborTraffic owns no particle pool) using the shared buoyTorch
-        // palette. Suppressed entirely under reduced motion.
-        if (lively && !failed && moving) {
+        // palette. Reduced motion draws a single static flame frame instead of
+        // suppressing it (5.8).
+        if (lively && !failed) {
             this._drawBuoyTorch(ctx, x, topY, s, slot);
         }
 
@@ -6045,7 +6054,7 @@ export class HarborTraffic {
         ctx.strokeRect(Math.round(x - w / 2) + 0.5, Math.round(labelY) + 0.5, Math.round(w) - 1, Math.round(h) - 1);
         ctx.globalAlpha = 1;
         ctx.fillStyle = lively ? (profile.labelText || profile.accent) : 'rgba(180, 196, 192, 0.78)';
-        ctx.font = `${textSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${textSize}px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         this._fillReadableText(ctx, label, Math.round(x), Math.round(labelY + h / 2 + 0.5), w - 8 * s);

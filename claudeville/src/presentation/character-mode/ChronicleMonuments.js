@@ -12,6 +12,33 @@ const KIND_COLORS = {
     verified: '#f7f0a3',
 };
 
+// 6.1 — sprite ids for the PixelLab monument set. When the asset is missing
+// (not yet generated or failed to load) the vector draws below stay as the
+// fallback. `founding-layer` maps to the founding sprite.
+const MONUMENT_SPRITE_IDS = Object.freeze({
+    minor: 'monument.minor',
+    medium: 'monument.medium',
+    major: 'monument.major',
+    founding: 'monument.founding',
+});
+// Gem-glow anchor on the sprite, as a fraction of its box (from bottom-center).
+const MONUMENT_SPRITE_GEM = Object.freeze({
+    minor: { fx: 0.5, fy: 0.5, r: 6 },
+    medium: { fx: 0.5, fy: 0.45, r: 7 },
+    major: { fx: 0.5, fy: 0.42, r: 8 },
+    founding: { fx: 0.5, fy: 0.5, r: 7 },
+});
+// 6.5 — quiet mote presence over major monuments: one slow trickle shared by
+// all majors (update cadence is ~1s; the modulo staggers them deterministically).
+const MONUMENT_MOTE_INTERVAL_MS = 900;
+
+function hashText(value) {
+    const text = String(value || '');
+    let hash = 0;
+    for (let i = 0; i < text.length; i++) hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+    return Math.abs(hash);
+}
+
 // Mirrored from HarborTraffic.js constants (HARBOR_FINALE_TILE and
 // HARBOR_SQUAD_ANCHORAGES[1] "Inner Quay Basin") — kept here so this module
 // stays self-contained without exporting harbor internals.
@@ -89,6 +116,8 @@ export class ChronicleMonuments {
         eventTarget = eventBus,
         chronicleStore = null,
         auroraGate = null,
+        assets = null,
+        particles = null,
     } = {}) {
         this.store = store;
         this.rules = rules;
@@ -97,6 +126,13 @@ export class ChronicleMonuments {
         this.planter = new MonumentPlanter({ store, rules, eventTarget });
         this._loaded = false;
         this._pendingHydrate = null;
+        // 6.1 — optional AssetManager: when injected and the monument.* sprites
+        // exist, monuments draw from PixelLab art with the vector path as the
+        // asset-missing fallback. 6.5 — optional ParticleSystem for the quiet
+        // major-monument mote trickle. Both are wired by the renderer.
+        this.assets = assets;
+        this.particles = particles;
+        this._lastMonumentMoteAt = 0;
         // ChronicleStore is used for lifetime commit-count milestones. It may
         // be the same instance as `store`, but kept as a separate slot so tests
         // can inject a stub.
@@ -163,7 +199,47 @@ export class ChronicleMonuments {
         if (this._disposed || generation !== this._lifecycleGeneration) return [];
         this._dropExpired(now);
         this._dropExpiredOverlays(now);
+        this._emitMajorMonumentMotes(now);
         return planted;
+    }
+
+    // 6.5 — quiet mote presence over major monuments: a slow single mote per
+    // major, staggered by record hash so several majors never pulse in
+    // lockstep, tinted to the monument kind. Silent when no ParticleSystem is
+    // wired; reduced motion no-ops inside ParticleSystem.spawn itself.
+    _emitMajorMonumentMotes(now) {
+        if (!this.particles) return;
+        if (now - this._lastMonumentMoteAt < MONUMENT_MOTE_INTERVAL_MS) return;
+        this._lastMonumentMoteAt = now;
+        const tick = Math.floor(now / MONUMENT_MOTE_INTERVAL_MS);
+        for (const record of this.records.values()) {
+            if (now - Number(record.plantedAt || record.ts || 0) > MONTH_MS) continue;
+            if ((record.weight || 'medium') !== 'major') continue;
+            const seed = hashText(record.id || record.project || 'monument');
+            if ((tick + seed) % 3 !== 0) continue;
+            const world = toWorld(record.tileX, record.tileY);
+            this.particles.spawn('archiveMote', world.x, world.y - 26, {
+                count: 1,
+                colors: [KIND_COLORS[record.kind] || '#d8b96d'],
+                size: [1, 2],
+                life: [40, 80],
+                speed: [0.06, 0.2],
+                alpha: [0.3, 0.55],
+                spread: [8, 12],
+            });
+        }
+    }
+
+    // 6.1 — sprite id for a monument record, or null when the record should
+    // keep the vector draw (unknown weights fall back to medium).
+    _monumentSpriteId(record) {
+        if (record.kind === 'founding-layer') return MONUMENT_SPRITE_IDS.founding;
+        const weight = record.weight || 'medium';
+        return MONUMENT_SPRITE_IDS[weight] || MONUMENT_SPRITE_IDS.medium;
+    }
+
+    _monumentSpriteAvailable(spriteId) {
+        return Boolean(spriteId && this.assets?.has?.(spriteId) && this.assets.get(spriteId));
     }
 
     getDiagnostics() {
@@ -199,6 +275,8 @@ export class ChronicleMonuments {
         this.store = null;
         this.chronicleStore = null;
         this.auroraGate = null;
+        this.assets = null;
+        this.particles = null;
     }
 
     enumerateDrawables(now = Date.now(), camera = null) {
@@ -271,6 +349,20 @@ export class ChronicleMonuments {
         for (const drawable of this.enumerateDrawables(now)) {
             if (drawable.kind !== 'chronicle-monument') continue;
             const record = drawable.payload;
+            // 6.1 — when the sprite path is live the hit box hugs the sprite
+            // bounds (anchored like the draw) instead of the legacy fixed box.
+            const spriteId = this._monumentSpriteId(record);
+            if (this._monumentSpriteAvailable(spriteId)) {
+                const dims = this.assets.getDims(spriteId);
+                const [ax, ay] = this.assets.anchors?.has?.(spriteId)
+                    ? this.assets.getAnchor(spriteId)
+                    : [dims.w / 2, dims.h];
+                if (worldX >= record.worldX - ax && worldX <= record.worldX + (dims.w - ax) &&
+                    worldY >= record.worldY - ay && worldY <= record.worldY + (dims.h - ay)) {
+                    return record;
+                }
+                continue;
+            }
             if (worldX >= record.worldX - 12 && worldX <= record.worldX + 12 &&
                 worldY >= record.worldY - 28 && worldY <= record.worldY + 12) {
                 return record;
@@ -322,6 +414,10 @@ export class ChronicleMonuments {
         const alpha = Math.max(0.55, 1 - age / MONTH_MS * 0.45);
         const color = KIND_COLORS[record.kind] || '#d8b96d';
 
+        // 6.1 — PixelLab sprite path; the vector draws below remain the
+        // asset-missing fallback.
+        if (this._drawMonumentSprite(ctx, record, world, alpha, color)) return;
+
         ctx.save();
         ctx.translate(Math.round(world.worldX ?? world.x), Math.round(world.worldY ?? world.y));
         ctx.globalAlpha = alpha;
@@ -358,6 +454,50 @@ export class ChronicleMonuments {
             ctx.fillRect(-3, -11, 6, 13);
         }
         ctx.restore();
+    }
+
+    // 6.1 — draw the monument from its PixelLab sprite. Returns false when the
+    // sprite is unavailable so the caller falls back to the vector draws. The
+    // KIND_COLORS gem glow stays a screen-composite overlay on top of the art,
+    // and the contact shadow is shared with the vector path.
+    _drawMonumentSprite(ctx, record, world, alpha, color) {
+        const spriteId = this._monumentSpriteId(record);
+        if (!this._monumentSpriteAvailable(spriteId)) return false;
+        const img = this.assets.get(spriteId);
+        const dims = this.assets.getDims(spriteId);
+        if (!img || !dims) return false;
+        // Honor a registered manifest anchor; default to bottom-center on the
+        // ground point (the engine-wide anchor convention).
+        const [ax, ay] = this.assets.anchors?.has?.(spriteId)
+            ? this.assets.getAnchor(spriteId)
+            : [dims.w / 2, dims.h];
+        const wx = Math.round(world.worldX ?? world.x);
+        const wy = Math.round(world.worldY ?? world.y);
+        const weight = record.kind === 'founding-layer' ? 'founding' : (record.weight || 'medium');
+        const gem = MONUMENT_SPRITE_GEM[weight] || MONUMENT_SPRITE_GEM.medium;
+
+        ctx.save();
+        ctx.translate(wx, wy);
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = 'rgba(26, 22, 18, 0.35)';
+        ctx.beginPath();
+        ctx.ellipse(0, 11, 13, 5, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.drawImage(img, Math.round(-ax), Math.round(-ay));
+        // Gem glow overlay (screen composite) at the calibrated sprite spot.
+        const gx = Math.round(-ax + dims.w * gem.fx);
+        const gy = Math.round(-ay + dims.h * gem.fy);
+        ctx.globalCompositeOperation = 'screen';
+        const gradient = ctx.createRadialGradient(gx, gy, 0, gx, gy, gem.r);
+        gradient.addColorStop(0, color);
+        gradient.addColorStop(1, 'rgba(0, 0, 0, 0)');
+        ctx.globalAlpha = alpha * 0.5;
+        ctx.fillStyle = gradient;
+        ctx.beginPath();
+        ctx.arc(gx, gy, gem.r, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+        return true;
     }
 
     _drawMediumStone(ctx, alpha, zoom) {

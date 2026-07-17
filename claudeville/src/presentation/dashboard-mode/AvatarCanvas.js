@@ -2,7 +2,9 @@
  * Mini character avatar canvas for the dashboard
  * Static recreation of AgentSprite drawing logic
  */
-import { getModelVisualIdentity } from '../shared/ModelVisualIdentity.js';
+import { getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
+import { getTeamColor } from '../shared/TeamColor.js';
+import { Compositor } from '../character-mode/Compositor.js';
 
 let SPRITE_ASSET_VERSION_PROMISE = null;
 let SPRITE_ASSET_VERSION = '2026-04-26-visual-revamp'; // overwritten asynchronously on first load
@@ -29,7 +31,6 @@ getSpriteAssetVersion().then(v => {
 });
 
 const SPRITE_IMAGE_CACHE = new Map();
-const SPRITE_BOUNDS_CACHE = new Map();
 
 function loadSpriteImage(spriteId) {
     const key = `${spriteId}|${SPRITE_ASSET_VERSION}`;
@@ -75,6 +76,12 @@ export class AvatarCanvas {
         this.spriteAssetVersion = null;
         this.spriteFailed = false;
         AVATAR_CANVASES.add(this);
+        // 1.7 — redraw once the world's shared Compositor registers (avatars
+        // can be created before the world renderer boots); the composited
+        // path replaces the raw-sheet fallback on the next draw.
+        Compositor.onSharedAvailable(() => {
+            if (AVATAR_CANVASES.has(this)) this.draw();
+        });
         this.draw();
     }
 
@@ -208,13 +215,14 @@ export class AvatarCanvas {
     _drawGeneratedSprite(ctx, identity, accent) {
         const spriteId = identity.spriteId;
         if (!spriteId || this.spriteFailed) return false;
-        if (!this._ensureSpriteImage(spriteId)) return false;
-        if (!this.spriteImage.complete || !this.spriteImage.naturalWidth) return false;
+        const source = this._avatarSheetSource(identity, spriteId);
+        if (!source) return false;
 
-        const cellSize = Math.floor(this.spriteImage.naturalWidth / 8);
+        const sourceWidth = source.image.naturalWidth || source.image.width;
+        const cellSize = Math.floor(sourceWidth / 8);
         if (!Number.isFinite(cellSize) || cellSize <= 0) return false;
         const sourceRow = 6; // idle, south-facing frame: matches SpriteSheet.js layout.
-        const bounds = this._spriteFrameBounds(cellSize, sourceRow);
+        const bounds = this._spriteFrameBounds(source, cellSize, sourceRow);
         const sourceW = bounds.maxX - bounds.minX + 1;
         const sourceH = bounds.maxY - bounds.minY + 1;
         const hero = this.size === 'hero';
@@ -244,12 +252,21 @@ export class AvatarCanvas {
         const ellipseRx = hero ? 24 : 14;
         const ellipseRy = hero ? 6 : 4;
         const ellipseY = this.canvas.height - (hero ? 7 : 5);
+        // 4.4 — district ground tint: the card stamps --cv-building-rgb (#30),
+        // so the avatar stands on its district's color beneath the warm shadow.
+        const districtRgb = this._districtRgb();
+        if (districtRgb) {
+            ctx.fillStyle = `rgba(${districtRgb}, 0.22)`;
+            ctx.beginPath();
+            ctx.ellipse(this.canvas.width / 2, ellipseY, ellipseRx + 2.5, ellipseRy + 1.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
         ctx.fillStyle = 'rgba(20, 12, 6, 0.34)';
         ctx.beginPath();
         ctx.ellipse(this.canvas.width / 2, ellipseY, ellipseRx, ellipseRy, 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.drawImage(
-            this.spriteImage,
+            source.image,
             bounds.minX,
             sourceRow * cellSize + bounds.minY,
             sourceW,
@@ -262,6 +279,62 @@ export class AvatarCanvas {
         this._drawEffortCrest(ctx, identity, accent);
         ctx.restore();
         return true;
+    }
+
+    // 1.7 — the avatar requests the exact composited bitmap the world draws
+    // (palette variant + effort accessory + team trim) from the shared
+    // Compositor, keyed identically, so World and Dashboard show the same
+    // villager and share one cache. Falls back to the raw sheet image while
+    // the compositor is unavailable (early boot) or missing the asset.
+    _avatarSheetSource(identity, spriteId) {
+        const compositor = Compositor.shared();
+        if (compositor) {
+            const providerKey = providerPaletteKey(this.agent);
+            const paletteKey = identity.paletteKey || providerKey;
+            const accessory = identity.allowRuntimeEffortAccessory !== false
+                ? (identity.effortAccessory || null)
+                : null;
+            const composited = compositor.spriteFor(
+                spriteId,
+                paletteKey,
+                this._paletteVariant(providerKey),
+                accessory,
+                this._teamTrimAccent(),
+            );
+            if (composited) return { image: composited };
+        }
+        if (!this._ensureSpriteImage(spriteId)) return null;
+        if (!this.spriteImage.complete || !this.spriteImage.naturalWidth) return null;
+        return { image: this.spriteImage };
+    }
+
+    // Mirrors AgentSprite._hashVariant so the avatar lands on the same
+    // Compositor cache entry the world uses.
+    _paletteVariant(providerKey) {
+        const text = `${this.agent?.id ?? ''}:${this.agent?.model || ''}:${providerKey}`;
+        let hash = 0;
+        for (let i = 0; i < text.length; i++) {
+            hash = ((hash << 5) - hash) + text.charCodeAt(i);
+            hash |= 0;
+        }
+        return Math.abs(hash) % 4;
+    }
+
+    // Mirrors AgentSprite._teamTrimAccent (team sash override, null solo).
+    _teamTrimAccent() {
+        const name = this.agent?.teamName;
+        if (!name) return null;
+        const accent = getTeamColor(name)?.accent;
+        if (!accent || typeof accent !== 'string') return null;
+        return /^#?[0-9a-fA-F]{6}$/.test(accent.trim()) ? accent.trim() : null;
+    }
+
+    // 4.4 — the dashboard card carries --cv-building-rgb (DashboardRenderer,
+    // #30); read it at draw time so the niche ground wears the district hue.
+    _districtRgb() {
+        if (typeof getComputedStyle !== 'function' || !this.canvas.isConnected) return null;
+        const value = getComputedStyle(this.canvas).getPropertyValue('--cv-building-rgb').trim();
+        return /^\d{1,3},\s*\d{1,3},\s*\d{1,3}$/.test(value) ? value : null;
     }
 
     _ensureSpriteImage(spriteId) {
@@ -287,17 +360,20 @@ export class AvatarCanvas {
         this.draw();
     }
 
-    _spriteFrameBounds(cellSize, sourceRow) {
-        const key = `${this.spriteId}|${SPRITE_ASSET_VERSION}|${cellSize}|${sourceRow}`;
-        const cached = SPRITE_BOUNDS_CACHE.get(key);
-        if (cached) return cached;
+    // Content bounds of one sheet cell, cached on the source itself (the
+    // Compositor's canvases and the raw Images are both long-lived, shared
+    // objects — the Compositor uses the same __cv* stash convention).
+    _spriteFrameBounds(source, cellSize, sourceRow) {
+        const image = source.image;
+        const cacheKey = `${cellSize}|${sourceRow}`;
+        if (image.__cvAvatarBounds?.key === cacheKey) return image.__cvAvatarBounds.bounds;
 
         const scratch = document.createElement('canvas');
         scratch.width = cellSize;
         scratch.height = cellSize;
         const ctx = scratch.getContext('2d');
         ctx.imageSmoothingEnabled = false;
-        ctx.drawImage(this.spriteImage, 0, sourceRow * cellSize, cellSize, cellSize, 0, 0, cellSize, cellSize);
+        ctx.drawImage(image, 0, sourceRow * cellSize, cellSize, cellSize, 0, 0, cellSize, cellSize);
         const data = ctx.getImageData(0, 0, cellSize, cellSize).data;
         let minX = cellSize;
         let minY = cellSize;
@@ -313,17 +389,16 @@ export class AvatarCanvas {
                 maxY = Math.max(maxY, y);
             }
         }
-        if (minX > maxX || minY > maxY) {
-            SPRITE_BOUNDS_CACHE.set(key, { minX: 0, minY: 0, maxX: cellSize - 1, maxY: cellSize - 1 });
-        } else {
-            SPRITE_BOUNDS_CACHE.set(key, {
+        const bounds = (minX > maxX || minY > maxY)
+            ? { minX: 0, minY: 0, maxX: cellSize - 1, maxY: cellSize - 1 }
+            : {
                 minX: Math.max(0, minX - 2),
                 minY: Math.max(0, minY - 2),
                 maxX: Math.min(cellSize - 1, maxX + 2),
                 maxY: Math.min(cellSize - 1, maxY + 1),
-            });
-        }
-        return SPRITE_BOUNDS_CACHE.get(key);
+            };
+        image.__cvAvatarBounds = { key: cacheKey, bounds };
+        return bounds;
     }
 
     _drawEffortCrest(ctx, identity, accent) {

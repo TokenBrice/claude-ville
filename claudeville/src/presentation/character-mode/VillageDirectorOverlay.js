@@ -1,5 +1,8 @@
-import { BUILDING_ACCENTS_RGB, INCIDENT_COLORS_RGB } from '../../config/theme.js';
+import { BUILDING_ACCENTS_RGB, INCIDENT_COLORS_RGB, WORLD_BODY_FONT } from '../../config/theme.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { pulseBand01 } from './PulsePolicy.js';
+import { strokeAgedTrailSegments } from './TrailRenderer.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
 
 const TAU = Math.PI * 2;
 
@@ -33,7 +36,7 @@ function parseTintRgb(grade) {
 // #3 — Grade authority. Lerp an `r, g, b` overlay string toward the active
 // `grade.worldTint` so director halos pick up the time-of-day cast. Pure color
 // transform with no time component — identical under reduced motion.
-function gradeRgb(rgbString, grade) {
+function gradeRgbUncached(rgbString, grade) {
     const tint = parseTintRgb(grade);
     if (!tint) return rgbString;
     const parts = String(rgbString || '').split(',').map(part => Number(part.trim()));
@@ -46,6 +49,24 @@ function gradeRgb(rgbString, grade) {
     return `${r}, ${g}, ${b}`;
 }
 
+// 5.8 — gradeRgb runs for nearly every overlay mark each frame while the tint
+// string barely changes, so memoize on (rgb, worldTint). Bounded: cleared when
+// it outgrows the mark-color × distinct-tint working set.
+const GRADE_RGB_CACHE_LIMIT = 128;
+const _gradeRgbCache = new Map();
+
+function gradeRgb(rgbString, grade) {
+    const tintText = String(grade?.worldTint || '');
+    if (!tintText) return rgbString;
+    const key = `${rgbString}|${tintText}`;
+    const cached = _gradeRgbCache.get(key);
+    if (cached !== undefined) return cached;
+    const resolved = gradeRgbUncached(rgbString, grade);
+    if (_gradeRgbCache.size >= GRADE_RGB_CACHE_LIMIT) _gradeRgbCache.clear();
+    _gradeRgbCache.set(key, resolved);
+    return resolved;
+}
+
 function signalColor(type) {
     return BUILDING_COLORS[type] || '226, 232, 240';
 }
@@ -54,9 +75,11 @@ function incidentColor(kind) {
     return INCIDENT_COLORS[kind] || '250, 204, 21';
 }
 
-function motionPulse(now, scale, phase = 0, speed = 620) {
-    if (!scale) return 0.5;
-    return 0.5 + Math.sin(now / speed + phase) * 0.5;
+// 3.9 — overlay cadences ride the shared PulsePolicy bands instead of private
+// sine speeds (`0.5 + Math.sin(now / speed) * 0.5`). pulseBand01 returns 0.5
+// under reduced motion — the same static mid-value the legacy cadence used.
+function motionPulse(now, scale, phase = 0, band = 'intrinsic') {
+    return pulseBand01(band, now, scale, phase);
 }
 
 function textWidth(ctx, text) {
@@ -90,7 +113,7 @@ function drawWorldPill(ctx, x, y, text, rgb = '226, 232, 240', alpha = 1) {
     const label = String(text || '').trim();
     if (!label) return;
     ctx.save();
-    ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.font = `9px ${WORLD_BODY_FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const width = Math.max(30, textWidth(ctx, label) + 12);
@@ -171,15 +194,16 @@ function drawReplay(ctx, samples, now, selectedAgentId = null) {
         const latest = points.at(-1);
         const rgb = agentTrailColor(latest);
         const selected = latest?.id && latest.id === selectedAgentId;
-        ctx.lineWidth = selected ? 2.6 : 1.25;
-        ctx.strokeStyle = rgba(rgb, selected ? 0.62 : 0.30);
-        ctx.beginPath();
-        for (let i = 0; i < points.length; i++) {
-            const p = points[i];
-            if (i === 0) ctx.moveTo(p.x, p.y);
-            else ctx.lineTo(p.x, p.y);
-        }
-        ctx.stroke();
+        // 3.10 — the replay polyline shares the hour-trail stroke vocabulary
+        // (TrailRenderer.strokeAgedTrailSegments); the tick marks + tail blob
+        // below stay replay-only "live mode" extras.
+        strokeAgedTrailSegments(ctx, points, {
+            now,
+            maxAgeMs: 60_000,
+            baseAlpha: selected ? 0.5 : 0.18,
+            width: selected ? 2 : 1,
+            rgbForPoint: () => rgb,
+        });
 
         const tickEvery = selected ? 2 : 4;
         ctx.fillStyle = rgba(rgb, selected ? 0.52 : 0.24);
@@ -225,7 +249,7 @@ function drawSignalRoutes(ctx, selected, { alphaScale = 1, dash = [6, 7], lineWi
     ctx.restore();
 }
 
-function drawTeams(ctx, teams, now, motionScale, grade = null) {
+function drawTeams(ctx, teams, now, motionScale, grade = null, councilTeamNames = null) {
     if (!teams?.length) return;
     // #2 — team aura washes are AMBIENT: the first marks to dim in a busy region.
     const governor = getActiveMarkGovernor();
@@ -233,11 +257,15 @@ function drawTeams(ctx, teams, now, motionScale, grade = null) {
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const team of teams) {
+        // 3.10 — a team with a live council ring already carries a team mark
+        // (ring + orbit light); drop the aura wash so the triple mark dedupes
+        // to ring + light.
+        if (councilTeamNames?.has?.(team.id)) continue;
         const gate = governor
             ? governor.admit(MarkTier.AMBIENT, team.x, team.y)
             : { draw: true, alpha: 1 };
         if (!gate.draw) continue;
-        const pulse = motionPulse(now, motionScale, team.members?.length || 1, 760);
+        const pulse = motionPulse(now, motionScale, team.members?.length || 1, 'intrinsic');
         const radius = (team.radius || 36) + pulse * 4;
         ctx.fillStyle = rgba(teamRgb, 0.055 * gate.alpha);
         ctx.beginPath();
@@ -250,15 +278,20 @@ function drawTeams(ctx, teams, now, motionScale, grade = null) {
 
 function drawIncidents(ctx, incidents, now, motionScale, grade = null) {
     if (!incidents?.length) return;
+    // 3.9 — incidents are PRIMARY: the action-demanding reads the operator
+    // must never lose. PRIMARY bypasses region culling by contract; the admit
+    // call is kept for symmetry with the other governor clients.
+    const governor = getActiveMarkGovernor();
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const incident of incidents) {
         const center = incident.agent || incident.center;
         if (!center) continue;
+        if (governor && !governor.admit(MarkTier.PRIMARY, center.x, center.y).draw) continue;
         const rgb = gradeRgb(incidentColor(incident.kind), grade);
         const intensity = clamp(incident.intensity ?? 0.7, 0.2, 1);
         const fade = 1 - clamp(incident.progress ?? 0);
-        const pulse = motionPulse(now, motionScale, intensity * 8, 420);
+        const pulse = motionPulse(now, motionScale, intensity * 8, 'alert');
         const radius = 24 + intensity * 32 + pulse * 7;
         ctx.fillStyle = rgba(rgb, (0.08 + intensity * 0.06) * fade);
         ctx.beginPath();
@@ -320,13 +353,20 @@ function drawHandoffSpark(ctx, x, y, rgb, alpha) {
 function drawRecoveries(ctx, recoveries, motionScale, grade = null) {
     if (!recoveries?.length) return;
     const rgb = gradeRgb('134, 239, 172', grade);
+    // 3.9 — recovery beats are SECONDARY: a welcome release of tension, but
+    // never more important than a live incident or selection nearby.
+    const governor = getActiveMarkGovernor();
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const recovery of recoveries) {
         const center = recovery.center;
         if (!center || !Number.isFinite(center.x)) continue;
+        const gate = governor
+            ? governor.admit(MarkTier.SECONDARY, center.x, center.y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
         const progress = clamp(recovery.progress ?? 0);
-        const fade = motionScale ? (1 - progress) : 1;
+        const fade = (motionScale ? (1 - progress) : 1) * gate.alpha;
         if (fade <= 0.02) continue;
         // The relief lifts as it fades, echoing the agent straightening up.
         const lift = motionScale ? progress * 12 : 0;
@@ -340,20 +380,31 @@ function drawRecoveries(ctx, recoveries, motionScale, grade = null) {
     ctx.restore();
 }
 
-function drawHandoffs(ctx, handoffs, now, motionScale, grade = null) {
+function drawHandoffs(ctx, handoffs, now, motionScale, grade = null, wallNow = 0) {
     if (!handoffs?.length) return;
     const handoffRgb = gradeRgb('244, 196, 93', grade);
+    // 3.9 — handoff arcs are SECONDARY (below incidents/selection, above
+    // ambient halos).
+    const governor = getActiveMarkGovernor();
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const handoff of handoffs) {
         const from = handoff.from;
         const to = handoff.to;
         if (!from || !to) continue;
-        const fade = 1 - clamp(handoff.progress ?? 0);
-        const pulse = motionPulse(now, motionScale, handoff.startedAt || 0, 520);
+        const gate = governor
+            ? governor.admit(MarkTier.SECONDARY, from.x, from.y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
+        const fade = (1 - clamp(handoff.progress ?? 0)) * gate.alpha;
+        const pulse = motionPulse(now, motionScale, ((handoff.startedAt || 0) / 1000) % TAU, 'working');
         // Baton travel along the arc: 0 at parent, 1 at child. Reduced motion
         // pins it at the terminus (static arc + landed dot).
-        const t = motionScale ? clamp((now - (handoff.startedAt || now)) / 1100) : 1;
+        // 5.8 — the director stamps `startedAt` on Date.now() while `now` here
+        // is performance.now(); mixing the two pinned the baton at the parent
+        // forever. Wall-clock math uses the snapshot's Date.now-domain clock.
+        const wall = Number.isFinite(wallNow) && wallNow > 0 ? wallNow : now;
+        const t = motionScale ? clamp((wall - (handoff.startedAt || wall)) / 1100) : 1;
         // #28 — transient parent→child lean over arc 0–0.4: the source endpoint
         // nudges toward the child as if the parent steps in to pass the baton,
         // then settles back. Purely a draw-time offset — the sprite x/y the
@@ -392,14 +443,20 @@ function drawHandoffs(ctx, handoffs, now, motionScale, grade = null) {
 
 function drawLifecycle(ctx, lifecycle, now, motionScale, grade = null) {
     if (!lifecycle?.length) return;
+    // 3.9 — arrival/departure rings are SECONDARY.
+    const governor = getActiveMarkGovernor();
     ctx.save();
     ctx.globalCompositeOperation = 'screen';
     for (const scene of lifecycle) {
         const center = scene.center;
         if (!center) continue;
-        const fade = 1 - clamp(scene.progress ?? 0);
+        const gate = governor
+            ? governor.admit(MarkTier.SECONDARY, center.x, center.y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
+        const fade = (1 - clamp(scene.progress ?? 0)) * gate.alpha;
         const rgb = gradeRgb(scene.kind === 'arrival' ? '134, 239, 172' : '216, 180, 254', grade);
-        const pulse = motionPulse(now, motionScale, scene.startedAt || 0, 520);
+        const pulse = motionPulse(now, motionScale, ((scene.startedAt || 0) / 1000) % TAU, 'recent');
         drawIsoRing(ctx, center.x, center.y - 4, 16 + pulse * 9, rgb, 0.25 * fade, 1.4);
         ctx.fillStyle = rgba(rgb, 0.18 * fade);
         ctx.beginPath();
@@ -411,11 +468,17 @@ function drawLifecycle(ctx, lifecycle, now, motionScale, grade = null) {
 
 function drawReleaseParade(ctx, parade, now, motionScale, grade = null) {
     if (!parade?.center) return;
+    // 3.9 — the release parade is SECONDARY (a celebration, not an alert).
+    const governor = getActiveMarkGovernor();
+    const gate = governor
+        ? governor.admit(MarkTier.SECONDARY, parade.center.x, parade.center.y)
+        : { draw: true, alpha: 1 };
+    if (!gate.draw) return;
     const fadeIn = clamp((parade.progress || 0) / 0.18);
     const fadeOut = 1 - clamp(((parade.progress || 0) - 0.78) / 0.22);
-    const alpha = clamp(Math.min(fadeIn, fadeOut));
+    const alpha = clamp(Math.min(fadeIn, fadeOut)) * gate.alpha;
     if (alpha <= 0.02) return;
-    const pulse = motionPulse(now, motionScale, 2.7, 500);
+    const pulse = motionPulse(now, motionScale, 2.7, 'recent');
     const x = parade.center.x;
     const y = parade.center.y - 60;
     ctx.save();
@@ -435,10 +498,27 @@ function drawReleaseParade(ctx, parade, now, motionScale, grade = null) {
     ctx.restore();
 }
 
-export function drawVillageDirectorGround(ctx, snapshot, now = Date.now(), grade = null) {
+// 5.8 — pill/plaque reconcile. The building's own plaque (drawn by
+// BuildingSprite.drawLabels) floats at roughly center.y - dims.h - 24..34.
+// Anchor director pills just above that zone when the asset dims are known so
+// the two labels stack as one cluster instead of floating in two unrelated
+// spots; fall back to the legacy fixed offsets when dims are unavailable.
+function signalPillY(signal, getBuildingDims, fallbackLift) {
+    const dims = getBuildingDims?.(signal?.type);
+    if (dims?.h > 0) return signal.center.y - dims.h - 58;
+    return signal.center.y - fallbackLift;
+}
+
+export function drawVillageDirectorGround(ctx, snapshot, now = Date.now(), grade = null, { councilTeamNames = null } = {}) {
     if (!ctx || !snapshot) return;
     drawReplay(ctx, snapshot.replaySamples, now, snapshot.selectedAgentId);
-    for (const signal of snapshot.buildingSignals || []) drawSignalHalo(ctx, signal, now, snapshot.motionScale, grade);
+    const selectedType = snapshot.selectedBuildingSignal?.type || null;
+    for (const signal of snapshot.buildingSignals || []) {
+        // 0.10 — the selected building's halo is drawn boosted below; skip its
+        // base-loop stamp so the same halo is not drawn twice.
+        if (selectedType && signal?.type === selectedType) continue;
+        drawSignalHalo(ctx, signal, now, snapshot.motionScale, grade);
+    }
     if (snapshot.hoverBuildingSignal) {
         drawSignalHalo(ctx, snapshot.hoverBuildingSignal, now, snapshot.motionScale, grade);
         drawSignalRoutes(ctx, snapshot.hoverBuildingSignal, { alphaScale: 0.52, dash: [3, 9], lineWidth: 1, grade });
@@ -447,31 +527,35 @@ export function drawVillageDirectorGround(ctx, snapshot, now = Date.now(), grade
         drawSignalHalo(ctx, { ...snapshot.selectedBuildingSignal, heat: Math.max(0.52, snapshot.selectedBuildingSignal.heat || 0) }, now, snapshot.motionScale, grade);
         drawSignalRoutes(ctx, snapshot.selectedBuildingSignal, { grade });
     }
-    drawTeams(ctx, snapshot.teams, snapshot.perfNow || now, snapshot.motionScale, grade);
+    drawTeams(ctx, snapshot.teams, snapshot.perfNow || now, snapshot.motionScale, grade, councilTeamNames);
     drawIncidents(ctx, snapshot.incidents, snapshot.perfNow || now, snapshot.motionScale, grade);
     drawRecoveries(ctx, snapshot.recoveries, snapshot.motionScale, grade);
     drawReleaseParade(ctx, snapshot.releaseParade, snapshot.perfNow || now, snapshot.motionScale, grade);
 }
 
-export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now(), grade = null) {
+export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now(), grade = null, { getBuildingDims = null } = {}) {
     if (!ctx || !snapshot) return;
-    drawHandoffs(ctx, snapshot.handoffs, now, snapshot.motionScale, grade);
+    drawHandoffs(ctx, snapshot.handoffs, now, snapshot.motionScale, grade, snapshot.now);
     drawLifecycle(ctx, snapshot.lifecycle, now, snapshot.motionScale, grade);
 
+    const governor = getActiveMarkGovernor();
     const selected = snapshot.selectedBuildingSignal;
     if (selected?.center) {
         const rgb = signalColor(selected.type);
-        drawWorldPill(ctx, selected.center.x, selected.center.y - 56, selected.label || selected.type, rgb, 0.92);
+        drawWorldPill(ctx, selected.center.x, signalPillY(selected, getBuildingDims, 56), selected.label || selected.type, rgb, 0.92);
     }
     const hover = snapshot.hoverBuildingSignal;
     if (hover?.center) {
         const rgb = signalColor(hover.type);
-        drawWorldPill(ctx, hover.center.x, hover.center.y - 48, hover.label || hover.type, rgb, 0.58);
+        drawWorldPill(ctx, hover.center.x, signalPillY(hover, getBuildingDims, 48), hover.label || hover.type, rgb, 0.58);
     }
 
     for (const incident of snapshot.incidents || []) {
         const center = incident.agent || incident.center;
         if (!center || !incident.label) continue;
+        // 3.9 — incident pills are PRIMARY (never culled); admit for contract
+        // symmetry with the beacon's governor call.
+        if (governor && !governor.admit(MarkTier.PRIMARY, center.x, center.y).draw) continue;
         const rgb = incidentColor(incident.kind);
         drawWorldPill(ctx, center.x, center.y - 62, incident.label, rgb, 0.88 * (1 - clamp(incident.progress ?? 0)));
     }
@@ -482,10 +566,31 @@ export function drawVillageDirectorOverlays(ctx, snapshot, now = Date.now(), gra
     }
 }
 
+// 0.7 — PRIMARY marks survive night. Post-atmosphere re-stamp of the PRIMARY
+// pill set (incident labels + the selected-building pill), alpha-scaled by
+// the night factor so the restore stays proportional to how dark the multiply
+// grade actually made the scene. Called from WorldFrameRenderer's
+// drawPrimaryMarksPostAtmosphere; in daylight (factor ~0) it draws nothing.
+// Reduced motion: identical — the re-stamp carries no motion of its own.
+export function drawPrimaryPillRestamp(ctx, snapshot, nightFactor = 0, getBuildingDims = null) {
+    if (!ctx || !snapshot || !(nightFactor > 0.06)) return;
+    for (const incident of snapshot.incidents || []) {
+        const center = incident.agent || incident.center;
+        if (!center || !incident.label) continue;
+        const rgb = incidentColor(incident.kind);
+        drawWorldPill(ctx, center.x, center.y - 62, incident.label, rgb, 0.88 * (1 - clamp(incident.progress ?? 0)) * nightFactor);
+    }
+    const selected = snapshot.selectedBuildingSignal;
+    if (selected?.center) {
+        const rgb = signalColor(selected.type);
+        drawWorldPill(ctx, selected.center.x, signalPillY(selected, getBuildingDims, 56), selected.label || selected.type, rgb, 0.92 * nightFactor);
+    }
+}
+
 export function drawVillageDirectorScreen(ctx, snapshot, viewport) {
     if (!ctx || !snapshot?.replayActive || !viewport) return;
     ctx.save();
-    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.font = `10px ${WORLD_BODY_FONT}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
     const text = `REPLAY 60S · ${snapshot.replayAgentCount || 0} AGENTS`;
@@ -498,5 +603,144 @@ export function drawVillageDirectorScreen(ctx, snapshot, viewport) {
     ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
     ctx.fillStyle = '#dff7ff';
     ctx.fillText(text, x + 9, y);
+    ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// 5.7 — offscreen-event edge indicator. When the village director fires a
+// camera cue (incident / release / arrival) whose moment sits outside the
+// viewport — including cues the CameraDirector dropped (cooldown, user camera
+// ownership, reduced motion) — a small marker docks at the screen edge on the
+// event's side and fades over ~8s. Clicking the marker glides the camera to
+// the cue box. This restores spatial awareness without reviving the removed
+// minimap. Reduced motion: no band pulse (static alpha, age fade only) and
+// the click reframes with a cut (Camera's own RM path), so the indicator is
+// fully static-safe.
+const EDGE_CUE_TTL_MS = 8000;
+const EDGE_CUE_LIMIT = 4;
+const EDGE_MARKER_MARGIN = 26;
+const EDGE_ONSCREEN_INSET = 24;
+const EDGE_HIT_SIZE = 26;
+const EDGE_FALLBACK_TINT = '242, 211, 107';
+const _edgeCues = [];
+const _edgeHitRects = [];
+let _edgeWired = false;
+
+function edgeTintRgb(cue) {
+    const match = String(cue?.tint || '').match(/^#([0-9a-f]{6})$/i);
+    if (!match) return EDGE_FALLBACK_TINT;
+    const n = Number.parseInt(match[1], 16);
+    return `${(n >> 16) & 0xff}, ${(n >> 8) & 0xff}, ${n & 0xff}`;
+}
+
+function wireEdgeCues(renderer) {
+    if (_edgeWired || !renderer?.canvas?.addEventListener) return;
+    _edgeWired = true;
+    eventBus.on('village:camera-cue', (cue) => {
+        if (!cue?.box) return;
+        const existing = _edgeCues.findIndex(entry => entry.kind === (cue.kind || 'default'));
+        if (existing >= 0) _edgeCues.splice(existing, 1);
+        _edgeCues.push({
+            kind: cue.kind || 'default',
+            box: cue.box,
+            tint: cue.grade?.worldTint || null,
+            ts: Date.now(),
+        });
+        while (_edgeCues.length > EDGE_CUE_LIMIT) _edgeCues.shift();
+    });
+    renderer.canvas.addEventListener('click', (event) => {
+        for (let i = _edgeHitRects.length - 1; i >= 0; i--) {
+            const hit = _edgeHitRects[i];
+            if (event.offsetX < hit.left || event.offsetX > hit.right) continue;
+            if (event.offsetY < hit.top || event.offsetY > hit.bottom) continue;
+            const index = _edgeCues.indexOf(hit.cue);
+            if (index >= 0) _edgeCues.splice(index, 1);
+            renderer.camera?.glideToWorld?.(hit.cue.box, {
+                duration: 3200,
+                paddingPx: 220,
+                grade: hit.cue.tint ? { vignette: 0.3, worldTint: hit.cue.tint } : null,
+                owner: `cue:${hit.cue.kind}`,
+                composition: { x: 0.5, y: 0.53 },
+                preferPan: true,
+                allowZoomIn: false,
+            });
+            event.stopImmediatePropagation?.();
+            event.preventDefault?.();
+            return;
+        }
+    }, true);
+}
+
+export function drawOffscreenCueEdges(ctx, renderer, viewport, now = Date.now()) {
+    if (!ctx || !renderer || !viewport) return;
+    wireEdgeCues(renderer);
+    _edgeHitRects.length = 0;
+    if (!_edgeCues.length) return;
+    const camera = renderer.camera;
+    if (typeof camera?.worldToScreen !== 'function') return;
+    const w = Number(viewport.width) || 0;
+    const h = Number(viewport.height) || 0;
+    if (!(w > 0) || !(h > 0)) return;
+    const motionScale = renderer.motionScale ?? 1;
+    // All marker math is canvas-relative: worldToScreen, the click handler's
+    // offsetX/Y, and this dock rect share one coordinate space. The sidebar,
+    // topbar, and activity panel are flex siblings of the canvas, never
+    // overlays, so the canvas rect alone is the visible world area.
+    const visRight = w - EDGE_ONSCREEN_INSET;
+    const visBottom = h - EDGE_ONSCREEN_INSET;
+    const dockRight = w - EDGE_MARKER_MARGIN;
+    const dockBottom = h - EDGE_MARKER_MARGIN;
+
+    ctx.save();
+    for (let i = _edgeCues.length - 1; i >= 0; i--) {
+        const cue = _edgeCues[i];
+        const age = now - cue.ts;
+        if (!Number.isFinite(age) || age >= EDGE_CUE_TTL_MS || age < 0) {
+            _edgeCues.splice(i, 1);
+            continue;
+        }
+        const cx = (cue.box.minX + cue.box.maxX) / 2;
+        const cy = (cue.box.minY + cue.box.maxY) / 2;
+        const p = camera.worldToScreen(cx, cy);
+        // Onscreen moments need no indicator: either the camera glided there
+        // or the event is already in the visible frame.
+        if (p.x >= EDGE_ONSCREEN_INSET && p.x <= visRight
+            && p.y >= EDGE_ONSCREEN_INSET && p.y <= visBottom) continue;
+
+        const ex = Math.max(EDGE_MARKER_MARGIN, Math.min(dockRight, p.x));
+        const ey = Math.max(EDGE_MARKER_MARGIN, Math.min(dockBottom, p.y));
+        const fade = 1 - age / EDGE_CUE_TTL_MS;
+        const pulse = motionScale > 0 ? 0.74 + 0.26 * pulseBand01('alert', now, motionScale, i * 1.3) : 1;
+        const alpha = clamp(fade * pulse);
+        if (alpha <= 0.02) continue;
+        const rgb = edgeTintRgb(cue);
+        const angle = Math.atan2(p.y - ey, p.x - ex);
+
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = 'rgba(21, 18, 15, 0.82)';
+        ctx.beginPath();
+        ctx.arc(ex, ey, 7, 0, TAU);
+        ctx.fill();
+        ctx.strokeStyle = rgba(rgb, 0.9);
+        ctx.lineWidth = 1.2;
+        ctx.stroke();
+        // Outward chevron pointing at the offscreen moment.
+        ctx.fillStyle = rgba(rgb, 0.95);
+        ctx.beginPath();
+        ctx.moveTo(ex + Math.cos(angle) * 9, ey + Math.sin(angle) * 9);
+        ctx.lineTo(ex + Math.cos(angle + 2.5) * 4, ey + Math.sin(angle + 2.5) * 4);
+        ctx.lineTo(ex + Math.cos(angle - 2.5) * 4, ey + Math.sin(angle - 2.5) * 4);
+        ctx.closePath();
+        ctx.fill();
+        ctx.globalAlpha = 1;
+
+        _edgeHitRects.push({
+            cue,
+            left: ex - EDGE_HIT_SIZE / 2,
+            right: ex + EDGE_HIT_SIZE / 2,
+            top: ey - EDGE_HIT_SIZE / 2,
+            bottom: ey + EDGE_HIT_SIZE / 2,
+        });
+    }
     ctx.restore();
 }

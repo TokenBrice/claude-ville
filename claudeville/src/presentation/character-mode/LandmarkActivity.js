@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { WORLD_BODY_FONT } from '../../config/theme.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { compactToolLabel, isCommandToolName, isTaskCommandInput } from '../../domain/services/ToolIdentity.js';
 import { providerColor } from './ArrivalDeparture.js';
@@ -788,7 +789,7 @@ export class LandmarkActivity {
     _drawTinyLabel(ctx, item, x, y, s, color) {
         const label = String(item.label || '').toUpperCase();
         if (!label) return;
-        ctx.font = `${Math.max(5, Math.round(6 * s))}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+        ctx.font = `${Math.max(5, Math.round(6 * s))}px ${WORLD_BODY_FONT}`;
         const width = Math.min(52 * s, Math.max(22 * s, ctx.measureText(label).width + 8 * s));
         ctx.fillStyle = 'rgba(38, 26, 16, 0.86)';
         ctx.fillRect(Math.round(x - width / 2), Math.round(y - 6 * s), Math.round(width), Math.round(11 * s));

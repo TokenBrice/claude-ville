@@ -3,6 +3,7 @@ import {
     WATER_POLYLINES,
     WATER_BASINS,
     BRIDGE_HINTS,
+    PLANK_BRIDGES,
     HARBOR_DOCK_TILES,
     TREE_CLUSTERS,
     BOULDERS,
@@ -17,10 +18,13 @@ import {
 const CARDINAL_DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 export class SceneryEngine {
-    constructor({ world, terrainSeed, tileNoise }) {
+    constructor({ world, terrainSeed, tileNoise, smoothNoise = null }) {
         this.world = world;
         this.terrainSeed = terrainSeed;
         this.tileNoise = tileNoise; // (x, y) -> [0, 1]
+        // Low-frequency value noise (x, y, scale) -> [0, 1] for coherent
+        // masses; falls back to the per-tile hash when not provided.
+        this.smoothNoise = smoothNoise || ((x, y) => this.tileNoise(Math.round(x), Math.round(y)));
 
         this.waterTiles = new Set();
         this.deepWaterTiles = new Set();
@@ -140,7 +144,6 @@ export class SceneryEngine {
 
     _rasterizePolyline({ kind, width, points, region = null, surface = null, weatherProfile = null, flowX = null, flowY = null }) {
         if (!points || points.length < 2) return;
-        const deepRatio = this._deepRatioForKind(kind);
 
         // Bounding box (inclusive), padded by width.
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
@@ -182,10 +185,6 @@ export class SceneryEngine {
                         flowDirY: dir.y,
                     });
                     if (kind === 'lagoon' || region === 'lagoon' || weatherProfile === 'lagoon') this.lagoonWaterTiles.add(key);
-                    if (deepRatio && d <= localWidth * deepRatio) {
-                        this.deepWaterTiles.add(key);
-                        this._markWaterTile(key, { depth: 'deep' });
-                    }
                 }
             }
         }
@@ -232,16 +231,16 @@ export class SceneryEngine {
         return { x: dirX, y: dirY };
     }
 
-    _deepRatioForKind(kind, shape = 'polyline') {
-        if (kind === 'sea') return shape === 'basin' ? 0.70 : 0.58;
-        if (kind === 'harbor') return shape === 'basin' ? 0.56 : 0.44;
-        if (kind === 'moat') return shape === 'basin' ? 0.64 : 0.50;
-        if (kind === 'river' || kind === 'lagoon') return shape === 'basin' ? 0.40 : 0.32;
-        return 0;
+    _deepDistanceForRegion(region) {
+        // BFS shore distance (tiles) at which water reads as deep. Sea/harbor
+        // keep a two-tile shallow shelf; lagoon/river deepen one step in so
+        // their center channel still reads.
+        if (region === 'sea' || region === 'openSea') return 2;
+        if (region === 'harbor') return 2;
+        return 1;
     }
 
     _rasterizeBasin({ kind, centerX, centerY, radiusX, radiusY, edgeNoise = 0.15, region = null, surface = null, weatherProfile = null, flowX = null, flowY = null }) {
-        const deepRatio = this._deepRatioForKind(kind, 'basin');
         const x0 = Math.max(0, Math.floor(centerX - radiusX - 1));
         const x1 = Math.min(MAP_SIZE - 1, Math.ceil(centerX + radiusX + 1));
         const y0 = Math.max(0, Math.floor(centerY - radiusY - 1));
@@ -267,10 +266,6 @@ export class SceneryEngine {
                         flowY,
                     });
                     if (kind === 'lagoon' || region === 'lagoon' || weatherProfile === 'lagoon') this.lagoonWaterTiles.add(key);
-                    if (deepRatio && d <= deepRatio + noise * 0.35) {
-                        this.deepWaterTiles.add(key);
-                        this._markWaterTile(key, { depth: 'deep' });
-                    }
                 }
             }
         }
@@ -286,6 +281,11 @@ export class SceneryEngine {
     }
 
     _finalizeWaterMetadata() {
+        // Depth comes from a BFS distance-to-land field over the finished water
+        // mask, not from per-shape ratios: the distance field is noise-free, so
+        // deep water forms one coherent interior mass with a shallow rim instead
+        // of per-tile deep/shallow peppering (the "checkerboard lagoon").
+        const shoreDistances = this._computeWaterShoreDistances();
         const finalEntries = [];
         for (const key of this.waterTiles) {
             const [x, y] = key.split(',').map(Number);
@@ -313,12 +313,14 @@ export class SceneryEngine {
                 flowDirX = len > 0 ? flowX / len : 0;
                 flowDirY = len > 0 ? flowY / len : 0;
             }
+            const shoreDistance = shoreDistances.get(key) ?? 0;
             const finalMeta = {
                 source: current.source || 'generated',
                 kind: semanticKind,
                 region,
-                depth: current.depth || (this.deepWaterTiles.has(key) ? 'deep' : 'shallow'),
+                depth: shoreDistance >= this._deepDistanceForRegion(region) ? 'deep' : 'shallow',
                 openness,
+                shoreDistance,
                 surface,
                 weatherProfile,
                 flowX,
@@ -338,6 +340,47 @@ export class SceneryEngine {
                 this.lagoonWaterTiles.add(key);
             }
         }
+    }
+
+    // Multi-source BFS over the water mask. Distance 0 = water tile touching
+    // land (or the map edge); each step inward increments. Drives depth
+    // classification and shoreline tints.
+    _computeWaterShoreDistances() {
+        const distances = new Map();
+        const queue = [];
+        for (const key of this.waterTiles) {
+            const comma = key.indexOf(',');
+            const x = Number(key.slice(0, comma));
+            const y = Number(key.slice(comma + 1));
+            let touchesLand = false;
+            for (const [dx, dy] of CARDINAL_DIRS) {
+                const nx = x + dx;
+                const ny = y + dy;
+                if (nx < 0 || nx >= MAP_SIZE || ny < 0 || ny >= MAP_SIZE || !this.waterTiles.has(`${nx},${ny}`)) {
+                    touchesLand = true;
+                    break;
+                }
+            }
+            if (touchesLand) {
+                distances.set(key, 0);
+                queue.push(key);
+            }
+        }
+        let head = 0;
+        while (head < queue.length) {
+            const key = queue[head++];
+            const comma = key.indexOf(',');
+            const x = Number(key.slice(0, comma));
+            const y = Number(key.slice(comma + 1));
+            const distance = distances.get(key);
+            for (const [dx, dy] of CARDINAL_DIRS) {
+                const nextKey = `${x + dx},${y + dy}`;
+                if (!this.waterTiles.has(nextKey) || distances.has(nextKey)) continue;
+                distances.set(nextKey, distance + 1);
+                queue.push(nextKey);
+            }
+        }
+        return distances;
     }
 
     _waterOpenness(tileX, tileY) {
@@ -536,6 +579,18 @@ export class SceneryEngine {
             if (!this.waterTiles.has(key)) continue;
             this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation, hint);
         }
+        // Plank crossings: single-file, walkable, drawn per-tile from the
+        // bridge.ew/ns plank assets rather than as landmark spans.
+        for (const hint of PLANK_BRIDGES) {
+            const key = `${hint.tileX},${hint.tileY}`;
+            if (!this.waterTiles.has(key)) continue;
+            this._addBridgeSpan(hint.tileX, hint.tileY, hint.orientation, {
+                ...hint,
+                kind: 'plank',
+                widthRadius: 0,
+                walkableRadius: 0,
+            });
+        }
         this._addHarborDocks();
     }
 
@@ -585,7 +640,7 @@ export class SceneryEngine {
         const key = `${tileX},${tileY}`;
         this.bridgeTiles.set(key, {
             orientation,
-            kind: 'landmark',
+            kind: meta.kind || 'landmark',
             bridgeId: meta.id || null,
             style: meta.style || 'civic',
             walkable: meta.walkable !== false,
@@ -620,7 +675,9 @@ export class SceneryEngine {
                 const key = `${x},${y}`;
                 if (this._isBlockedForScenery(key, pathTiles, bridgeTiles)) continue;
 
-                const noise = this.tileNoise(x + 109, y + 67);
+                // Low-frequency field for density bands: bushes/tufts/flowers
+                // clump into coherent drifts instead of per-tile confetti.
+                const noise = this.smoothNoise(x + 109, y + 67, 4);
                 const clearing = this._clearingBias(x, y) + this._nearPathNegativeSpace(x, y, pathTiles, bridgeTiles);
                 const bushMax = Math.min(0.42, BUSH_DENSITY.max
                     + this._districtBias(x, y, 'bushBoost')
@@ -640,7 +697,7 @@ export class SceneryEngine {
                 // Flower clumps: independent of bushes/tufts, denser in the
                 // lived-in districts (flowerBoost). Flat, so sightline-safe.
                 if (!this.bushTiles.has(key) && !this.grassTuftTiles.has(key)) {
-                    const fNoise = this.tileNoise(x + 131, y + 89);
+                    const fNoise = this.smoothNoise(x + 131, y + 89, 3.5);
                     const flowerMax = Math.min(0.30, FLOWER_DENSITY.max
                         + this._districtBias(x, y, 'flowerBoost')
                         + this._shorelineBias(x, y, 'flowerBoost')

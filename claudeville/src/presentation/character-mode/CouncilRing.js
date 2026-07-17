@@ -5,6 +5,7 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { pulseBand01 } from './PulsePolicy.js';
 import { gradeColor } from './AtmosphereState.js';
 
 const MAX_TALK_ARCS = 8;
@@ -208,7 +209,10 @@ export function drawCouncilRings(ctx, {
 
     const boost = lightBoost(lighting);
     const plaza = tileToScreen(COMMAND_PLAZA);
-    const shimmer = motionScale === 0 ? 1 : 0.84 + Math.sin(now * 0.002) * 0.16;
+    // 3.9 — council rings are declared STATIC in the motion budget ("no
+    // pulse… council ring"); the ±16% sine shimmer is removed. Alpha is
+    // modulated only by the slow-changing lighting boost, so the reduced-
+    // motion rendering is identical.
     const governor = getActiveMarkGovernor();
 
     for (const [teamName, memberIds] of snapshot.teamToMembers.entries()) {
@@ -221,7 +225,7 @@ export function drawCouncilRings(ctx, {
             : { draw: true, alpha: 1 };
         if (!gate.draw) continue;
         ctx.save();
-        ctx.strokeStyle = rgba(gradeColor(color.accent, grade), Math.min(0.42, 0.26 * boost * shimmer) * gate.alpha);
+        ctx.strokeStyle = rgba(gradeColor(color.accent, grade), Math.min(0.42, 0.26 * boost) * gate.alpha);
         ctx.lineWidth = 1.4 / (zoom || 1);
         ctx.setLineDash([]);
         ctx.beginPath();
@@ -271,7 +275,9 @@ export function drawFamilyTethers(ctx, {
     if (!ctx || !snapshot?.parentToChildren || !agentSprites) return;
 
     const boost = lightBoost(lighting);
-    const flicker = motionScale === 0 ? 1 : 0.85 + 0.15 * Math.sin(now * 0.003);
+    // 3.9 — flicker snapped onto the shared 'intrinsic' pulse band; reduced
+    // motion keeps the legacy static value.
+    const flicker = motionScale === 0 ? 1 : 0.85 + 0.15 * pulseBand01('intrinsic', now, motionScale);
     const alpha = Math.min(0.28, Math.max(0.18, 0.22 * boost * flicker));
     const dashOffset = motionScale === 0 ? 0 : -(Math.floor(now * 0.06) % 9);
     const governor = getActiveMarkGovernor();
@@ -332,7 +338,9 @@ export function drawAllyTethers(ctx, {
     if (!ctx || !Array.isArray(pairs) || !pairs.length) return;
 
     const boost = lightBoost(lighting);
-    const pulse = motionScale === 0 ? 1 : 0.78 + 0.22 * Math.sin(now * 0.0026);
+    // 3.9 — pulse snapped onto the shared 'intrinsic' band (detuned from the
+    // family-tether claim); reduced motion keeps the legacy static value.
+    const pulse = motionScale === 0 ? 1 : 0.78 + 0.22 * pulseBand01('intrinsic', now, motionScale, 1.1);
     const alpha = Math.min(0.26, Math.max(0.16, 0.2 * boost * pulse));
     const governor = getActiveMarkGovernor();
 
@@ -386,6 +394,48 @@ function prioritizedChatPairs(pairs, agentSprites) {
         .slice(0, MAX_TALK_ARCS);
 }
 
+// 3.9 — priority-ordered admission. Talk arcs are the highest-value SECONDARY
+// marks but draw LAST (above sprites), so in draw order they were the first to
+// cull in a busy region. WorldFrameRenderer calls admitTalkArcMarks() before
+// the ring/tether passes; it admits the frame's talk marks up front and caches
+// the gates, which drawTalkArcs() then replays instead of admitting late.
+// Gates are re-admitted every frame (keyed on the governor's frame counter),
+// so this is a pure admission reorder — no persistent budget, and a caller
+// that skips the pre-pass gets the legacy admit-on-draw behavior.
+const _talkArcGates = new Map();
+let _talkArcGateFrame = -1;
+
+export function admitTalkArcMarks({ relationship, agentSprites } = {}) {
+    const governor = getActiveMarkGovernor();
+    if (!governor) return;
+    const snapshot = relationshipSnapshot(relationship);
+    if (!snapshot || !agentSprites) return;
+    if (_talkArcGateFrame === governor._frame) return;
+    _talkArcGates.clear();
+
+    for (const pair of prioritizedChatPairs(snapshot.chatPairs, agentSprites)) {
+        const a = agentSprites.get(pair.aId);
+        const b = agentSprites.get(pair.bId);
+        if (!a || !b || a.isArrivalPending?.() || b.isArrivalPending?.()) continue;
+        _talkArcGates.set(`talk:${pair.aId}:${pair.bId}`, governor.admit(MarkTier.SECONDARY, a.x, a.y - 18));
+    }
+
+    (snapshot.gossipClusters || []).forEach((cluster, index) => {
+        const members = (cluster.memberIds || [])
+            .map(id => agentSprites.get(id))
+            .filter(sprite => sprite && !sprite.isArrivalPending?.());
+        if (members.length < 2) return;
+        _talkArcGates.set(`gossip:${index}`, governor.admit(MarkTier.SECONDARY, members[0].x, members[0].y - 16));
+    });
+
+    _talkArcGateFrame = governor._frame;
+}
+
+function preAdmittedGate(governor, key) {
+    if (!governor || _talkArcGateFrame !== governor._frame) return null;
+    return _talkArcGates.get(key) || null;
+}
+
 export function drawTalkArcs(ctx, {
     relationship,
     agentSprites,
@@ -399,7 +449,9 @@ export function drawTalkArcs(ctx, {
     if (!ctx || !snapshot?.chatPairs || !agentSprites) return;
 
     const boost = lightBoost(lighting);
-    const shimmer = motionScale === 0 ? 1 : 0.55 + 0.2 * Math.sin(now * 0.004);
+    // 3.9 — shimmer snapped onto the shared 'working' band; reduced motion
+    // keeps the legacy static value.
+    const shimmer = motionScale === 0 ? 1 : 0.55 + 0.2 * pulseBand01('working', now, motionScale);
     const alpha = Math.min(0.95, shimmer * boost);
     const governor = getActiveMarkGovernor();
 
@@ -413,9 +465,10 @@ export function drawTalkArcs(ctx, {
         const dx = end.x - start.x;
         const dy = end.y - start.y;
         const dist = Math.hypot(dx, dy);
-        const gate = governor
-            ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
-            : { draw: true, alpha: 1 };
+        const gate = preAdmittedGate(governor, `talk:${pair.aId}:${pair.bId}`)
+            || (governor
+                ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
+                : { draw: true, alpha: 1 });
         if (!gate.draw) continue;
         const control = {
             x: (start.x + end.x) / 2,
@@ -454,14 +507,15 @@ export function drawTalkArcs(ctx, {
     // the loiterers, with the same warm chat hue. Reduced motion drops the
     // shimmer to a steady dashed outline; the standing facing already reads as a
     // conversation, so no travelling mote is drawn here.
-    for (const cluster of snapshot.gossipClusters || []) {
+    for (const [clusterIndex, cluster] of (snapshot.gossipClusters || []).entries()) {
         const members = (cluster.memberIds || [])
             .map(id => agentSprites.get(id))
             .filter(sprite => sprite && !sprite.isArrivalPending?.());
         if (members.length < 2) continue;
-        const gate = governor
-            ? governor.admit(MarkTier.SECONDARY, members[0].x, members[0].y)
-            : { draw: true, alpha: 1 };
+        const gate = preAdmittedGate(governor, `gossip:${clusterIndex}`)
+            || (governor
+                ? governor.admit(MarkTier.SECONDARY, members[0].x, members[0].y)
+                : { draw: true, alpha: 1 });
         if (!gate.draw) continue;
 
         const arcColor = gradeColor(THEME.chatting || '#f2d36b', grade);

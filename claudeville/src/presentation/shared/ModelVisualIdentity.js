@@ -78,7 +78,6 @@ const DEFAULT_EFFORT_RENDERING = Object.freeze({
     allowRuntimeEffortAccessory: true,
     allowRuntimeEffortFloorRing: true,
     allowRuntimeEffortWeapon: true,
-    allowRuntimeRoleAccessory: false,
 });
 
 function codexEquipment(effortTier, modelClass, { suppressBakedWeapon = true } = {}) {
@@ -107,6 +106,22 @@ function normalizeModel(model) {
         .toLowerCase()
         .replace(/[._]/g, '-')
         .replace(/\s+/g, '-');
+}
+
+// Canonical provider key for palette/hue lookups, shared by the world sprite
+// (AgentSprite delegates here) and the dashboard avatar (which keys its
+// shared-Compositor requests with it, plan 1.7).
+export function providerPaletteKey(agent) {
+    const provider = String(agent?.provider || '').toLowerCase();
+    const model = String(agent?.model || '').toLowerCase();
+    if (model.includes('deepseek')) return 'deepseek';
+    if (provider.includes('opencode')) return 'opencode';
+    if (provider.includes('gemini') || model.includes('gemini')) return 'gemini';
+    if (provider.includes('codex') || model.includes('codex') || model.includes('gpt')) return 'codex';
+    if (provider.includes('claude') || model.includes('claude')) return 'claude';
+    if (provider.includes('kimi') || model.includes('kimi')) return 'kimi';
+    if (provider.includes('grok') || model.includes('grok')) return 'grok';
+    return 'default';
 }
 
 export function normalizeReasoningEffort(effort) {

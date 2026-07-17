@@ -17,18 +17,38 @@ const ACCESSORY_TOP_INSET = 1;
 const DEFAULT_BACK_CROP = 0.6;
 // Per-accessory back-facing crop fraction: how much of the overlay's top rows
 // to keep when drawing the back of the head. Face-side detail lives in the
-// lower rows, so crop harder for lenses/veils.
-const ACCESSORY_BACK_CROP = {
-    goggles: 0.5,
-    oracleVeil: 0.55,
-    mageHood: 0.7,
-};
+// lower rows, so crop harder for lenses/veils. Empty today — the runtime set
+// is effort crests only (plan 0.12 deleted the role hats); kept so future
+// accessories can opt into a custom crop.
+const ACCESSORY_BACK_CROP = {};
 
 export class Compositor {
+    // 1.7 — the world's compositor registers itself here so DOM-side consumers
+    // (dashboard AvatarCanvas) can request the exact composited bitmap the
+    // world draws (variant + accessory + team trim) and share its cache,
+    // instead of re-loading raw sheet frames. Last-created wins; dispose()
+    // releases the slot.
+    static shared() {
+        return Compositor._shared || null;
+    }
+
+    // Fires immediately when a shared compositor already exists, otherwise on
+    // registration. Used by avatars created before the world renderer boots.
+    static onSharedAvailable(cb) {
+        if (typeof cb !== 'function') return;
+        if (Compositor._shared) {
+            cb(Compositor._shared);
+            return;
+        }
+        Compositor._sharedListeners.push(cb);
+    }
+
     constructor(assetManager) {
         this.assets = assetManager;
         this.cache = new Map();
         this.cachePixels = 0;
+        Compositor._shared = this;
+        for (const cb of Compositor._sharedListeners.splice(0)) cb(this);
     }
 
     spriteFor(baseSpriteId, paletteKey, paletteVariant, runtimeAccessory, teamTrim = null) {
@@ -51,6 +71,10 @@ export class Compositor {
         const baseImg = this.assets.get(baseId);
         if (!baseImg) return null;
         const dims = this.assets.getDims(baseId);
+        // 0.5 — per-sheet sampled swap sources (manifest `paletteSource`) so
+        // variants and team sashes recolor sheets whose generated garment hues
+        // diverge from the palette family's first ramp color.
+        const sheetSource = this.assets.getEntry?.(baseId)?.paletteSource || null;
         const canvas = document.createElement('canvas');
         canvas.width = dims.w;
         canvas.height = dims.h;
@@ -60,7 +84,7 @@ export class Compositor {
         ctx.imageSmoothingEnabled = false;
 
         ctx.drawImage(baseImg, 0, 0);
-        this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant, teamTrim);
+        this._applyPaletteSwap(ctx, canvas.width, canvas.height, palette, paletteVariant, teamTrim, sheetSource);
         if (runtimeAccessory) this._compositeAccessory(ctx, baseId, runtimeAccessory, palette);
 
         this.cache.set(key, canvas);
@@ -108,9 +132,10 @@ export class Compositor {
         }
         this.cache.clear();
         this.cachePixels = 0;
+        if (Compositor._shared === this) Compositor._shared = null;
     }
 
-    _applyPaletteSwap(ctx, w, h, provider, variant, teamTrim = null) {
+    _applyPaletteSwap(ctx, w, h, provider, variant, teamTrim = null, sheetSource = null) {
         const palette = this.assets.palettes[provider];
         if (!palette) return;
         const targetRobe = palette.robe[variant % palette.robe.length];
@@ -122,16 +147,20 @@ export class Compositor {
         const targetTrim = trimOverride
             ? rgbToHex(trimOverride)
             : palette.trim[variant % palette.trim.length];
-        const sourceRobe = palette.robe[0];
-        const sourcePants = palette.pants[0];
-        const sourceTrim = palette.trim[0];
+        // 0.5: sheet-sampled sources win over the palette family's first ramp
+        // color (which only matches a handful of the generated sheets). Each
+        // role may list up to two sampled garment families — painterly sheets
+        // spread one garment across several hue buckets that ±12 misses.
+        const sourceRobe = sourceList(sheetSource?.robe, palette.robe[0]);
+        const sourcePants = sourceList(sheetSource?.pants, palette.pants[0]);
+        const sourceTrim = sourceList(sheetSource?.trim, palette.trim[0]);
 
         const img = ctx.getImageData(0, 0, w, h);
         const data = img.data;
         const swap = [
-            [hexToRgb(sourceRobe), hexToRgb(targetRobe)],
-            [hexToRgb(sourcePants), hexToRgb(targetPants)],
-            [hexToRgb(sourceTrim), hexToRgb(targetTrim)],
+            ...sourceRobe.map((src) => [hexToRgb(src), hexToRgb(targetRobe)]),
+            ...sourcePants.map((src) => [hexToRgb(src), hexToRgb(targetPants)]),
+            ...sourceTrim.map((src) => [hexToRgb(src), hexToRgb(targetTrim)]),
         ];
         // ΔE bucket: tolerate ±12 per channel so painterly anti-aliased pixels
         // also recolor. Without this tolerance, only fully-saturated marker
@@ -337,6 +366,17 @@ export class Compositor {
         }
         return { front, back, colBottom };
     }
+}
+
+Compositor._shared = null;
+Compositor._sharedListeners = [];
+
+// 0.5 — normalize a manifest paletteSource role (string or short string list)
+// to a source color list, falling back to the palette family's first color.
+function sourceList(value, fallback) {
+    const list = Array.isArray(value) ? value : [value];
+    const valid = list.filter((v) => /^#[0-9a-fA-F]{6}$/.test(String(v || '')));
+    return valid.length ? valid.slice(0, 3) : [fallback];
 }
 
 function hexToRgb(hex) {

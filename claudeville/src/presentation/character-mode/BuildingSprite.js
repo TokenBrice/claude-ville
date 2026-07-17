@@ -8,13 +8,15 @@
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
-import { STATUS_VISUALS } from '../../config/theme.js';
+import { STATUS_VISUALS, WORLD_BODY_FONT } from '../../config/theme.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool } from '../../domain/services/ToolIdentity.js';
+import { repoProfile } from '../shared/RepoColor.js';
 import { normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState, smokeWindDrift } from './AtmosphereState.js';
 import { SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
+import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import {
     BUILDING_EMITTER_FALLBACKS,
@@ -26,7 +28,9 @@ import {
     getBuildingLabelEmblem,
     getBuildingLabelPriority,
     getBuildingOccupancyState,
+    getBuildingPennantAnchor,
     getBuildingVisual,
+    getBuildingWindowRects,
     LIGHT_SOURCE_REGISTRY,
 } from './BuildingVisualRegistry.js';
 
@@ -100,6 +104,21 @@ const PRESENCE_TIER_TABLE = Object.freeze({
 const OBSERVATORY_WEB_RITUAL_TOOLS = new Set(['WebFetch', 'WebSearch', 'web.run']);
 const OBSERVATORY_SPIN_RATE_RAD_PER_S = 0.9;
 const OBSERVATORY_SPIN_EASE_MS = 1500;
+// #52 — dome aperture (registry-anchored): opens with the night beacon, and a
+// brief star burst pays off a completed web ritual. 6.5 — the same dormer
+// carries a slow idle glint sweep when nothing is happening.
+const OBSERVATORY_APERTURE = Object.freeze(getBuildingEffectAnchor('observatory', 'domeAperture', {
+    slit: [140, 56],
+    star: [140, 50],
+    glintArc: { center: [140, 52], radius: 12, from: -2.4, to: -0.7 },
+}));
+const OBSERVATORY_BURST_MS = 1600;
+const OBSERVATORY_GLINT_PERIOD_FRAMES = 540; // ≈9s at 60fps
+// #53 — occupancy pennant cloth metrics (world px at zoom 1).
+const PENNANT_POLE_PX = 18;
+const PENNANT_FLY_PX = 18;
+const PENNANT_DROP_PX = 10;
+const REPO_PROFILE_CACHE_LIMIT = 128;
 const BUILDING_ACTIVITY_STATE_WEIGHT = Object.freeze({
     idle: 0,
     occupied: 0.42,
@@ -235,6 +254,18 @@ export class BuildingSprite {
         eventBus.on('building:read-intensity', this._onReadIntensity);
         // Observatory clock extra rotation while a web ritual is active.
         this._observatoryClockSpin = 0;
+        // #52 — dome aperture result burst: ids of web rituals seen last tick;
+        // a vanished id means the search completed and the dome star fires.
+        this._observatoryWebRitualIds = new Set();
+        this._observatoryBurstAt = -Infinity;
+        // #53 — dominant occupant repo per building type (for pennant tint),
+        // plus a bounded repoProfile cache keyed on the raw project string.
+        this._visitorRepoByType = new Map();
+        this._repoProfileCache = new Map();
+        // #54 — last emitted village population; the empty-village tour in
+        // Camera.js subscribes to the 'village:population' event we emit on
+        // change. -1 forces an initial emit on the first update tick.
+        this._lastAgentCount = -1;
         // #17 — watchtower searchlight sweep angle (rad), advanced in update().
         this._watchtowerSearchlightAngle = -0.34;
         // #40 — transient beam flare (0..1) kicked when an agent newly storms the
@@ -320,11 +351,60 @@ export class BuildingSprite {
     update(dt) {
         this.frame += (dt / 16) * (this.motionScale || 0);
         this._updateVisitorCounts();
+        this._emitVillagePopulation();
+        this._trackObservatoryWebRituals();
         this._syncTaskboardPapers(Date.now());
         this._updateForgeGlow(dt);
         this._updateObservatoryClockSpin(dt);
         this._updateWatchtowerSearchlight(dt);
         for (const b of this.buildings) this._spawnEmittersFor(b, dt);
+    }
+
+    // #54 — publish the live village population whenever it changes so the
+    // Camera's empty-village tour can engage/yield without a renderer reference.
+    // Initial tick always emits (last count starts at -1).
+    _emitVillagePopulation() {
+        const count = this.agentSprites?.length || 0;
+        if (count === this._lastAgentCount) return;
+        this._lastAgentCount = count;
+        eventBus.emit('village:population', { count, empty: count === 0 });
+    }
+
+    // #52 — diff the observatory's web-ritual set tick over tick; a ritual that
+    // vanished since last tick completed, so fire the dome result burst then.
+    _trackObservatoryWebRituals() {
+        const current = new Set();
+        for (const ritual of this._ritualsFor('observatory')) {
+            if (OBSERVATORY_WEB_RITUAL_TOOLS.has(ritual?.tool)) current.add(ritual);
+        }
+        for (const ritual of this._observatoryWebRitualIds) {
+            if (!current.has(ritual)) {
+                this._observatoryBurstAt = Date.now();
+                this._spawnObservatoryBurstParticles();
+                break;
+            }
+        }
+        this._observatoryWebRitualIds = current;
+    }
+
+    _spawnObservatoryBurstParticles() {
+        if (!this.motionScale || !this.particles) return;
+        const observatory = this.buildings.find((b) => b.type === 'observatory');
+        if (!observatory) return;
+        const center = this._buildingScreenCenter(observatory);
+        const anchor = this.assets.getAnchor('building.observatory');
+        const star = OBSERVATORY_APERTURE.star;
+        this.particles.spawn('sparkle',
+            center.x - anchor[0] + star[0],
+            center.y - anchor[1] + star[1],
+            {
+                count: 7,
+                colors: ['#fff1a8', '#d9c7ff', '#ffffff'],
+                size: [1, 2.4],
+                life: [26, 48],
+                speed: [0.25, 0.7],
+                spread: [4, 8],
+            });
     }
 
     // Tick the extra clock spin while a web ritual is active at the
@@ -849,7 +929,7 @@ export class BuildingSprite {
             {
                 text: isHarborLedger ? compactText : baseText,
                 subRows: isHarborLedger ? harborLedgerRows : [],
-                subFont: isHarborLedger ? '11px "Departure Mono", ui-monospace, SFMono-Regular, Menlo, monospace' : '7px "Press Start 2P", monospace',
+                subFont: isHarborLedger ? `11px ${WORLD_BODY_FONT}` : '7px "Press Start 2P", monospace',
                 subMaxTextWidth: Math.round((isHarborLedger ? (isHovered ? 214 : 184) : (isHovered ? 158 : 132)) * widthScale),
                 labelFont,
                 maxTextWidth: Math.round((isHarborLedger ? (isHovered ? 220 : 180) : isHovered ? 190 : isLandmark ? 132 : 96) * widthScale),
@@ -1364,7 +1444,89 @@ export class BuildingSprite {
         if (building) {
             this._drawFunctionalOverlay(ctx, building, entry, wx, wy, splitPass, horizonY);
             this._drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass, horizonY);
+            this._drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass, horizonY);
         }
+    }
+
+    // #53 — occupancy pennant: hero buildings fly a small roofline standard
+    // tinted by the dominant occupant repo (guild-territory read). Idle
+    // buildings fly nothing; busy/full stream a second tail; alert tints the
+    // cloth to the alert red. AMBIENT under the mark governor (banners are the
+    // doc-comment example of that tier). The wave rides the slow band; reduced
+    // motion flies a static pennant.
+    _drawOccupancyPennant(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
+        const pennant = getBuildingPennantAnchor(building.type);
+        if (!pennant) return;
+        const [lx, ly] = pennant.at;
+        if (
+            splitPass !== 'whole'
+            && Number.isFinite(horizonY)
+            && (splitPass === 'back' ? ly >= horizonY : ly < horizonY)
+        ) return;
+        const occupancy = this._buildingOccupancyInfo(building);
+        const dominant = this._visitorRepoByType.get(building.type);
+        // Idle by count AND no semantic occupants routed here: fly nothing.
+        if (occupancy.state === 'idle' && !dominant) return;
+
+        const baseAnchor = this.assets.getAnchor(entry.id);
+        const px = Math.round(wx - baseAnchor[0] + lx);
+        const py = Math.round(wy - baseAnchor[1] + ly);
+        const gate = getActiveMarkGovernor()?.admit(MarkTier.AMBIENT, px, py);
+        if (gate && !gate.draw) return;
+        const gateAlpha = gate?.alpha ?? 1;
+
+        const profile = dominant?.profile || null;
+        const alert = occupancy.state === 'alert';
+        const accent = alert
+            ? '#ff755d'
+            : profile?.accent || getBuildingLabelAccent(building.type, '#d6a951');
+        const shade = alert
+            ? '#a83a2c'
+            : profile
+                ? `hsl(${Math.round(profile.hue)}, ${Math.round(profile.saturation)}%, ${Math.max(22, Math.round(profile.lightness) - 24)}%)`
+                : 'rgba(92, 66, 32, 1)';
+        const busy = occupancy.state === 'busy' || occupancy.state === 'full' || alert;
+        const seed = hashText(`${building.type}|pennant`);
+        const wave = this.motionScale ? Math.sin(this.frame * 0.055 + seed * 0.01) : 0;
+        const lift = this.motionScale ? Math.sin(this.frame * 0.083 + seed * 0.017) * 1.6 : 0;
+
+        const top = py - PENNANT_POLE_PX + 2;
+        const seg1 = Math.round(PENNANT_FLY_PX * 0.55);
+        ctx.save();
+        ctx.globalAlpha = 0.92 * gateAlpha;
+        // Pole + gold finial.
+        ctx.fillStyle = 'rgba(38, 26, 16, 0.9)';
+        ctx.fillRect(px - 1, py - PENNANT_POLE_PX, 2, PENNANT_POLE_PX);
+        ctx.fillStyle = '#e8c876';
+        ctx.fillRect(px - 1, py - PENNANT_POLE_PX - 2, 2, 2);
+        // Cloth: hoist segment + fly segment with a notched, shaded tip.
+        ctx.fillStyle = accent;
+        ctx.beginPath();
+        ctx.moveTo(px + 1, top);
+        ctx.lineTo(px + 1 + seg1, top + 1 + wave * 0.8);
+        ctx.lineTo(px + 1 + seg1, top + PENNANT_DROP_PX - 1 + wave * 0.8);
+        ctx.lineTo(px + 1, top + PENNANT_DROP_PX);
+        ctx.closePath();
+        ctx.fill();
+        ctx.fillStyle = shade;
+        ctx.beginPath();
+        ctx.moveTo(px + 1 + seg1, top + 1 + wave * 0.8);
+        ctx.lineTo(px + 1 + PENNANT_FLY_PX, top + PENNANT_DROP_PX / 2 + lift);
+        ctx.lineTo(px + 1 + seg1, top + PENNANT_DROP_PX - 1 + wave * 0.8);
+        ctx.closePath();
+        ctx.fill();
+        // Busy/full: a second short streamer under the main cloth.
+        if (busy) {
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.moveTo(px + 1, top + PENNANT_DROP_PX + 1);
+            ctx.lineTo(px + 1 + seg1 - 2, top + PENNANT_DROP_PX + 2 + wave * 0.6);
+            ctx.lineTo(px + 1 + seg1 - 2, top + PENNANT_DROP_PX + 5 + wave * 0.6);
+            ctx.lineTo(px + 1, top + PENNANT_DROP_PX + 4);
+            ctx.closePath();
+            ctx.fill();
+        }
+        ctx.restore();
     }
 
     _drawAtmosphereBuildingReactions(ctx, building, entry, wx, wy, splitPass = 'whole', horizonY = null) {
@@ -1397,18 +1559,25 @@ export class BuildingSprite {
             // brighten together as night deepens (static floor under reduced motion).
             const beaconWarm = 0.82 + this._beaconScaleFor(building.type) * 0.4;
             const warmthAlpha = Math.min(0.3, buildingWarmth * (0.12 + pulse * 0.05) * beaconWarm);
-            const lightPoints = this._buildingReactionLightPoints(building, entry, dims);
-            for (const point of lightPoints) {
-                if (!shouldDrawLocalY(point.y)) continue;
-                const p = localPoint(point.x, point.y);
-                const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, point.r || 18);
-                grad.addColorStop(0, `rgba(255, 206, 116, ${warmthAlpha})`);
-                grad.addColorStop(0.58, `rgba(255, 162, 78, ${warmthAlpha * 0.34})`);
-                grad.addColorStop(1, 'rgba(255, 162, 78, 0)');
-                ctx.fillStyle = grad;
-                ctx.beginPath();
-                ctx.ellipse(p.x, p.y, point.r || 18, (point.r || 18) * 0.48, 0, 0, Math.PI * 2);
-                ctx.fill();
+            // 6.2 — buildings with calibrated windowRects get crisp lit windows
+            // instead of the generic mid-wall warmth blobs.
+            const windowRects = getBuildingWindowRects(building.type);
+            if (windowRects) {
+                this._drawWarmthWindows(ctx, windowRects, localPoint, shouldDrawLocalY, warmthAlpha);
+            } else {
+                const lightPoints = this._buildingReactionLightPoints(building, entry, dims);
+                for (const point of lightPoints) {
+                    if (!shouldDrawLocalY(point.y)) continue;
+                    const p = localPoint(point.x, point.y);
+                    const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, point.r || 18);
+                    grad.addColorStop(0, `rgba(255, 206, 116, ${warmthAlpha})`);
+                    grad.addColorStop(0.58, `rgba(255, 162, 78, ${warmthAlpha * 0.34})`);
+                    grad.addColorStop(1, 'rgba(255, 162, 78, 0)');
+                    ctx.fillStyle = grad;
+                    ctx.beginPath();
+                    ctx.ellipse(p.x, p.y, point.r || 18, (point.r || 18) * 0.48, 0, 0, Math.PI * 2);
+                    ctx.fill();
+                }
             }
         }
 
@@ -1464,6 +1633,52 @@ export class BuildingSprite {
         return points.slice(0, 4);
     }
 
+    // 6.2 — crisp lit-window stamps for buildings with calibrated windowRects.
+    // Each window is a tight soft glow + a pixel-snapped warm core (rect or
+    // small ellipse) + a hot center line, so the sprite reads as *lit windows*
+    // at zoom 2/3 rather than a mid-wall blob. Caller already set the 'screen'
+    // composite; alpha derives from the shared warmthAlpha math.
+    _drawWarmthWindows(ctx, rects, localPoint, shouldDrawLocalY, warmthAlpha) {
+        // Crisp cores punch much harder than the legacy blobs: the point is
+        // windows that stay visibly lit through the night atmosphere multiply
+        // (~50% at deep night), so the core carries an explicit night
+        // compensation (the same beacon night factor the PRIMARY re-stamps
+        // scale by). Only fires when windowWarmth is active (dusk/night), so
+        // the strong core never shows in daylight; the occupancy factor in
+        // warmthAlpha still keeps empty buildings dim.
+        const night = clamp01(this.lightingState?.beaconIntensity
+            ?? this.atmosphereState?.lighting?.beaconIntensity ?? 0);
+        const coreAlpha = Math.min(0.85, warmthAlpha * 7 * (1 + night * 1.5));
+        const glowAlpha = warmthAlpha * 1.6 * (1 + night);
+        for (const rect of rects) {
+            const [lx, ly] = rect.at || [];
+            if (!Number.isFinite(lx) || !Number.isFinite(ly) || !shouldDrawLocalY(ly)) continue;
+            const w = Math.max(3, Math.round(rect.w || 6));
+            const h = Math.max(3, Math.round(rect.h || 8));
+            const p = localPoint(lx, ly);
+            const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(w, h) * 1.7);
+            grad.addColorStop(0, `rgba(255, 190, 96, ${glowAlpha})`);
+            grad.addColorStop(1, 'rgba(255, 162, 78, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.ellipse(p.x, p.y, w * 1.7, h * 1.5, 0, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.fillStyle = `rgba(255, 205, 112, ${coreAlpha})`;
+            const left = Math.round(p.x - w / 2);
+            const top = Math.round(p.y - h / 2);
+            if (rect.shape === 'ellipse') {
+                ctx.beginPath();
+                ctx.ellipse(p.x, p.y, w / 2, h / 2, 0, 0, Math.PI * 2);
+                ctx.fill();
+            } else {
+                ctx.fillRect(left, top, w, h);
+            }
+            ctx.fillStyle = `rgba(255, 236, 176, ${Math.min(0.8, coreAlpha * 1.35)})`;
+            ctx.fillRect(Math.round(p.x - 1), Math.round(p.y - h / 2 + 1), 2, Math.max(2, Math.round(h * 0.45)));
+        }
+    }
+
     _clipToSplitPass(ctx, entry, wx, wy, splitPass = 'whole', horizonY = null, dims = null, baseAnchor = null) {
         if (splitPass === 'whole' || !Number.isFinite(horizonY)) return;
         const resolvedDims = dims || this.assets.getDims(entry.id);
@@ -1495,16 +1710,26 @@ export class BuildingSprite {
             const layerId = `${entry.id}.${name}`;
             const layerDims = this.assets.getDims(layerId);
             if (!layerDims) continue;
+            // 0.1 — the manifest layer anchor is the base-sprite-local point the
+            // layer's bottom-center lands on (the engine-wide anchor convention;
+            // the manifest comments document beacon/watchfire/portalGlow anchors
+            // this way). Draw with an explicit bottom-center anchor: the layer's
+            // registered anchor mirrors the manifest value, and letting
+            // drawSprite subtract it would cancel the placement entirely (the
+            // pre-0.1 bug — every layer rendered at a dims-derived corner).
             const [ax, ay] = layer.anchor || [0, 0];
-            const overlayWx = wx - baseAnchor[0] + ax + layerDims.w / 2;
-            const overlayWy = wy - baseAnchor[1] + ay + layerDims.h;
+            const overlayWx = wx - baseAnchor[0] + ax;
+            const overlayWy = wy - baseAnchor[1] + ay;
             // Animated pulse: fade alpha by sine of frame.
             // 0.08 rad/frame ≈ 1.27 Hz at 60fps (slow heartbeat).
             let alpha = 1;
             if (layer.animation === 'pulse') {
                 alpha = 0.6 + 0.4 * Math.sin(this.frame * 0.08);
             }
-            this.sprites.drawSprite(ctx, layerId, overlayWx, overlayWy, { alpha });
+            this.sprites.drawSprite(ctx, layerId, overlayWx, overlayWy, {
+                alpha,
+                anchor: [layerDims.w / 2, layerDims.h],
+            });
         }
     }
 
@@ -1522,6 +1747,11 @@ export class BuildingSprite {
         this._clipToSplitPass(ctx, entry, wx, wy, splitPass, horizonY, null, baseAnchor);
         if (building.type === 'observatory') {
             this._assertObservatoryClockDims(entry);
+            // #52 — the dome dormer aperture sits above the clock on the roof;
+            // drawn whenever its slice of the sprite is in this pass.
+            if (shouldDrawLocalY(OBSERVATORY_APERTURE.slit[1])) {
+                this._drawObservatoryAperture(ctx, localPoint);
+            }
             if (shouldDrawLocalY(OBSERVATORY_CLOCK_FACE.center[1])) {
                 this._drawObservatoryClock(ctx, localPoint);
                 this._drawObservatoryRitual(ctx, localPoint, building);
@@ -1554,15 +1784,45 @@ export class BuildingSprite {
             ctx.ellipse(mouth.x, mouth.y - 1, 28, 13, -0.22, 0, Math.PI * 2);
             ctx.fill();
             ctx.globalCompositeOperation = 'source-over';
-            ctx.globalAlpha = 0.42;
-            ctx.strokeStyle = '#8f6a3d';
-            ctx.lineWidth = 1.4;
-            ctx.beginPath();
-            ctx.moveTo(mouth.x - 26, mouth.y + 23);
-            ctx.lineTo(mouth.x + 23, mouth.y + 8);
-            ctx.moveTo(mouth.x - 18, mouth.y + 29);
-            ctx.lineTo(mouth.x + 30, mouth.y + 14);
-            ctx.stroke();
+            // 6.5 — cart rails redrawn sprite-quality: wooden sleepers under
+            // two steel rails with a pale top edge, following the yard path
+            // away from the cave mouth. Static decoration (no motion claim).
+            ctx.globalAlpha = 0.85;
+            {
+                const railA = { x: mouth.x - 26, y: mouth.y + 23 };
+                const railB = { x: mouth.x + 30, y: mouth.y + 14 };
+                const rdx = railB.x - railA.x;
+                const rdy = railB.y - railA.y;
+                const railLen = Math.hypot(rdx, rdy) || 1;
+                const ux = rdx / railLen;
+                const uy = rdy / railLen;
+                const nx = -uy;
+                const ny = ux;
+                ctx.strokeStyle = '#4a3524';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                for (let d = 2; d < railLen - 2; d += 7) {
+                    const sx = railA.x + ux * d;
+                    const sy = railA.y + uy * d;
+                    ctx.moveTo(sx - nx * 5, sy - ny * 5);
+                    ctx.lineTo(sx + nx * 5, sy + ny * 5);
+                }
+                ctx.stroke();
+                for (const offset of [-2.6, 2.6]) {
+                    ctx.strokeStyle = '#3a3230';
+                    ctx.lineWidth = 1.4;
+                    ctx.beginPath();
+                    ctx.moveTo(railA.x + nx * offset, railA.y + ny * offset);
+                    ctx.lineTo(railB.x + nx * offset, railB.y + ny * offset);
+                    ctx.stroke();
+                    ctx.strokeStyle = '#7a6a55';
+                    ctx.lineWidth = 0.7;
+                    ctx.beginPath();
+                    ctx.moveTo(railA.x + nx * offset, railA.y + ny * offset - 0.7);
+                    ctx.lineTo(railB.x + nx * offset, railB.y + ny * offset - 0.7);
+                    ctx.stroke();
+                }
+            }
             this._drawMineRitual(ctx, mouth, mineRitual);
             this._drawMineReserve(ctx, mouth, building);
             // #33 — reduced-motion fallback: a single static dust wisp at the
@@ -2008,17 +2268,39 @@ export class BuildingSprite {
             ctx.stroke();
         }
 
+        // 6.5 — signal flags redrawn sprite-quality: dark hoist edge, two-tone
+        // cloth with a shaded fly tip, gentle two-segment lift (the old flat
+        // triangles read as paper cutouts over the painterly mast). Wave keeps
+        // the existing slow-band flagLift; reduced motion holds the mid pose.
         ctx.globalAlpha = 0.86;
-        ctx.strokeStyle = '#1f120c';
-        ctx.lineWidth = 1.2;
         for (const [dy, color] of [[-18, '#f2d36b'], [-8, '#5bc0c9'], [2, '#c23f36']]) {
+            const fy = signal.y + dy + flagLift * 0.35;
+            const seg = 11;
+            const tipLift = flagLift * 0.5;
+            // Gold hoist ring where the flag meets the mast line.
+            ctx.fillStyle = '#e8c876';
+            ctx.fillRect(Math.round(signal.x + 3), Math.round(fy + 1), 2, 8);
             ctx.fillStyle = color;
             ctx.beginPath();
-            ctx.moveTo(signal.x + 4, signal.y + dy + flagLift * 0.35);
-            ctx.lineTo(signal.x + 24, signal.y + dy + 4 + flagLift * 0.35);
-            ctx.lineTo(signal.x + 4, signal.y + dy + 10 + flagLift * 0.35);
+            ctx.moveTo(signal.x + 5, fy);
+            ctx.lineTo(signal.x + 5 + seg, fy + 2 + tipLift * 0.4);
+            ctx.lineTo(signal.x + 5 + seg, fy + 8 + tipLift * 0.4);
+            ctx.lineTo(signal.x + 5, fy + 10);
             ctx.closePath();
             ctx.fill();
+            ctx.fillStyle = mixHex(color, '#1f120c', 0.42);
+            ctx.beginPath();
+            ctx.moveTo(signal.x + 5 + seg, fy + 2 + tipLift * 0.4);
+            ctx.lineTo(signal.x + 5 + seg + 9, fy + 5 + tipLift);
+            ctx.lineTo(signal.x + 5 + seg, fy + 8 + tipLift * 0.4);
+            ctx.closePath();
+            ctx.fill();
+            ctx.strokeStyle = 'rgba(31, 18, 12, 0.6)';
+            ctx.lineWidth = 0.8;
+            ctx.beginPath();
+            ctx.moveTo(signal.x + 5, fy);
+            ctx.lineTo(signal.x + 5 + seg, fy + 2 + tipLift * 0.4);
+            ctx.lineTo(signal.x + 5 + seg + 9, fy + 5 + tipLift);
             ctx.stroke();
         }
 
@@ -2916,6 +3198,102 @@ export class BuildingSprite {
         ctx.restore();
     }
 
+    // #52 — dome aperture: the small roof dormer under the telescope opens with
+    // the night beacon (state-driven, so the reduced-motion pose is simply the
+    // same static open amount) revealing a warm slit + star point; a completed
+    // web ritual pays off as a brief star burst. 6.5 — when nothing is going
+    // on, a slow glint (slow band, shared with the observatory sweep — never
+    // concurrent, the glint idles only while no ritual runs) crosses the dormer.
+    _drawObservatoryAperture(ctx, localPoint) {
+        const night = clamp01(this.lightingState?.beaconIntensity
+            ?? this.atmosphereState?.lighting?.beaconIntensity ?? 0);
+        // Closed by day, fully open in deep night.
+        const open = clamp01((night - 0.3) / 0.5);
+        const burstAge = Date.now() - this._observatoryBurstAt;
+        const bursting = burstAge >= 0 && burstAge < OBSERVATORY_BURST_MS;
+        // Motion fades the burst envelope out; reduced motion holds a fixed
+        // alpha for the window instead (static one-shot flash).
+        const burst = bursting
+            ? (this.motionScale ? 1 - burstAge / OBSERVATORY_BURST_MS : 0.85)
+            : 0;
+        const ritualActive = this._observatoryWebRitualIds.size > 0;
+
+        if (open > 0.02 || burst > 0) {
+            const slit = localPoint(...OBSERVATORY_APERTURE.slit);
+            const star = localPoint(...OBSERVATORY_APERTURE.star);
+            const slitH = 1 + Math.round(open * 4);
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            const glowAlpha = Math.min(0.5, 0.10 + open * 0.2 + burst * 0.3);
+            const grad = ctx.createRadialGradient(slit.x, slit.y, 0, slit.x, slit.y, 14 + burst * 10);
+            grad.addColorStop(0, `rgba(255, 214, 138, ${glowAlpha})`);
+            grad.addColorStop(1, 'rgba(255, 162, 78, 0)');
+            ctx.fillStyle = grad;
+            ctx.beginPath();
+            ctx.ellipse(slit.x, slit.y, 15 + burst * 8, 10 + burst * 6, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+
+            ctx.save();
+            // Dark frame + warm core so the slit reads as an opening, not a glow smear.
+            ctx.fillStyle = 'rgba(22, 17, 26, 0.88)';
+            ctx.fillRect(slit.x - 4, slit.y - Math.ceil(slitH / 2) - 1, 9, slitH + 2);
+            ctx.fillStyle = `rgba(255, 216, 142, ${0.32 + open * 0.45})`;
+            ctx.fillRect(slit.x - 3, slit.y - Math.floor(slitH / 2), 7, slitH);
+            // Star point inside the aperture; gentle twinkle on the slow band.
+            const twinkle = this.motionScale ? 0.5 + Math.sin(this.frame * 0.05) * 0.18 : 0.58;
+            ctx.fillStyle = `rgba(255, 244, 196, ${Math.min(1, twinkle + burst * 0.4)})`;
+            ctx.fillRect(star.x - 1, star.y - 1, 2, 2);
+            if (burst > 0) {
+                // 4-point result-burst star over the dormer.
+                ctx.strokeStyle = `rgba(255, 241, 168, ${Math.min(1, 0.45 + burst * 0.55)})`;
+                ctx.lineWidth = 1;
+                const arm = 3 + Math.round(burst * 5);
+                ctx.beginPath();
+                ctx.moveTo(star.x - arm, star.y);
+                ctx.lineTo(star.x + arm, star.y);
+                ctx.moveTo(star.x, star.y - arm);
+                ctx.lineTo(star.x, star.y + arm);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+
+        this._drawObservatoryIdleGlint(ctx, localPoint, ritualActive);
+    }
+
+    // 6.5 — idle glint: a slow bright point sweeping the dormer glass on a ~9s
+    // sawtooth while the observatory has no live web ritual. Reduced motion: a
+    // fixed faint glint at the arc's rest angle (no sweep, no allocations).
+    _drawObservatoryIdleGlint(ctx, localPoint, ritualActive) {
+        if (ritualActive) return;
+        const arc = OBSERVATORY_APERTURE.glintArc || { center: [140, 52], radius: 12, from: -2.4, to: -0.7 };
+        const center = localPoint(...arc.center);
+        let angle;
+        let alpha;
+        if (this.motionScale) {
+            const t = (this.frame % OBSERVATORY_GLINT_PERIOD_FRAMES) / OBSERVATORY_GLINT_PERIOD_FRAMES;
+            // Sweep across the arc for the first 22% of the period, dark the rest.
+            if (t > 0.22) return;
+            const sweep = t / 0.22;
+            angle = arc.from + (arc.to - arc.from) * sweep;
+            alpha = Math.sin(sweep * Math.PI) * 0.55;
+        } else {
+            angle = arc.from + (arc.to - arc.from) * 0.5;
+            alpha = 0.22;
+        }
+        const gx = Math.round(center.x + Math.cos(angle) * arc.radius);
+        const gy = Math.round(center.y + Math.sin(angle) * arc.radius * 0.6);
+        ctx.save();
+        ctx.globalCompositeOperation = 'screen';
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = '#e8f2ff';
+        ctx.fillRect(gx - 1, gy - 1, 2, 2);
+        ctx.globalAlpha = alpha * 0.5;
+        ctx.fillRect(gx - 2, gy, 4, 1);
+        ctx.restore();
+    }
+
     _drawObservatoryRitual(ctx, localPoint, building) {
         const ritual = this._latestRitual('observatory');
         if (!ritual) return;
@@ -3035,7 +3413,7 @@ export class BuildingSprite {
         ctx.fill();
         ctx.stroke();
         ctx.fillStyle = '#d9fbff';
-        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.font = `9px ${WORLD_BODY_FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(this._portalRitualLabel(ritual), gate.x, gate.y - 46);
@@ -3195,15 +3573,29 @@ export class BuildingSprite {
         for (let i = 0; i < count; i++) {
             const x = Math.round(hall.x - 22 + i * 11);
             const y = Math.round(hall.y + 16 + (i % 2) * 2);
-            ctx.globalAlpha = 0.72;
-            ctx.fillStyle = 'rgba(39, 26, 15, 0.86)';
-            ctx.strokeStyle = 'rgba(255, 226, 142, 0.32)';
-            ctx.lineWidth = 1;
-            ctx.fillRect(x - 4, y - 4, 8, 7);
-            ctx.strokeRect(x - 3.5, y - 3.5, 7, 6);
-            ctx.globalAlpha = 0.68 + signal * 0.24;
-            ctx.fillStyle = i < activeWorking ? '#ffe59a' : '#f6c85f';
-            ctx.fillRect(x - 2, y - 6, 4, 2);
+            // 6.5 — hall windows redrawn sprite-quality: arched dark frame,
+            // warm two-tone interior lit by activity, pale sill (replaces the
+            // crude 8x7 fillRect blocks). Count still tracks the activity signal.
+            const lit = i < activeWorking;
+            ctx.globalAlpha = 0.9;
+            // Arched frame: stepped pixel arch over a rect body.
+            ctx.fillStyle = 'rgba(24, 16, 10, 0.92)';
+            ctx.fillRect(x - 4, y - 3, 9, 8);
+            ctx.fillRect(x - 3, y - 5, 7, 2);
+            ctx.fillRect(x - 1, y - 6, 3, 1);
+            // Interior glass: lit windows burn warm, unlit keep a faint ember.
+            ctx.globalAlpha = lit ? 0.72 + signal * 0.22 : 0.5;
+            ctx.fillStyle = lit ? '#ffe59a' : '#8a6438';
+            ctx.fillRect(x - 3, y - 2, 7, 6);
+            ctx.fillRect(x - 2, y - 4, 5, 2);
+            if (lit) {
+                ctx.fillStyle = '#fff6cf';
+                ctx.fillRect(x - 1, y - 3, 2, 5);
+            }
+            // Sill.
+            ctx.globalAlpha = 0.8;
+            ctx.fillStyle = 'rgba(214, 182, 118, 0.55)';
+            ctx.fillRect(x - 4, y + 5, 9, 1);
         }
         ctx.restore();
     }
@@ -3381,7 +3773,7 @@ export class BuildingSprite {
         if (!text) return;
         ctx.save();
         ctx.globalAlpha = alpha;
-        ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+        ctx.font = `9px ${WORLD_BODY_FONT}`;
         const width = Math.max(28, ctx.measureText(text).width + 10);
         ctx.fillStyle = 'rgba(30, 24, 18, 0.82)';
         ctx.strokeStyle = color;
@@ -3577,6 +3969,10 @@ export class BuildingSprite {
         // reads `_foldBuildingType` to suppress folded occupants' name pills.
         for (const sprite of this.agentSprites) sprite._foldBuildingType = null;
         if (!this.buildings.length) return;
+        // #53 — per-building occupant repo tally, refilled in place each tick
+        // and reduced below to the dominant repo per type.
+        const repoTally = this._visitorRepoTally || (this._visitorRepoTally = new Map());
+        for (const tally of repoTally.values()) tally.clear();
 
         for (const sprite of this.agentSprites) {
             const position = this._spriteTilePosition(sprite);
@@ -3597,9 +3993,63 @@ export class BuildingSprite {
                 if (status === AgentStatus.WORKING) tally.working++;
                 else if (status === AgentStatus.WAITING_ON_USER) tally.waiting_on_user++;
                 else if (status === AgentStatus.ERRORED) tally.errored++;
+                const project = this._repoProjectKey(sprite.agent);
+                if (project) {
+                    let repos = repoTally.get(building.type);
+                    if (!repos) {
+                        repos = new Map();
+                        repoTally.set(building.type, repos);
+                    }
+                    repos.set(project, (repos.get(project) || 0) + 1);
+                }
                 sprite._foldBuildingType = building.type;
             }
         }
+
+        // Semantic occupants: agents routed to a building by the visit system
+        // count toward its pennant even while they still walk there — physical
+        // standers alone would leave the standards furled almost always.
+        for (const sprite of this.agentSprites) {
+            const targetType = String(sprite?.agent?.targetBuildingType || '').trim();
+            if (!targetType) continue;
+            const project = this._repoProjectKey(sprite.agent);
+            if (!project) continue;
+            let repos = repoTally.get(targetType);
+            if (!repos) {
+                repos = new Map();
+                repoTally.set(targetType, repos);
+            }
+            repos.set(project, (repos.get(project) || 0) + 1);
+        }
+
+        this._visitorRepoByType.clear();
+        for (const [type, repos] of repoTally) {
+            let dominant = null;
+            for (const [project, count] of repos) {
+                if (!dominant || count > dominant.count) dominant = { project, count };
+            }
+            if (dominant) {
+                this._visitorRepoByType.set(type, {
+                    ...dominant,
+                    profile: this._repoProfileFor(dominant.project),
+                });
+            }
+        }
+    }
+
+    _repoProjectKey(agent) {
+        // Same fallback chain AgentSprite's repo tags use.
+        return String(agent?.projectPath || agent?.project || agent?.teamName || agent?.provider || '').trim();
+    }
+
+    _repoProfileFor(project) {
+        let profile = this._repoProfileCache.get(project);
+        if (!profile) {
+            if (this._repoProfileCache.size >= REPO_PROFILE_CACHE_LIMIT) this._repoProfileCache.clear();
+            profile = repoProfile(project);
+            this._repoProfileCache.set(project, profile);
+        }
+        return profile;
     }
 
     _visitorCountFor(building) {
@@ -3777,45 +4227,77 @@ export class BuildingSprite {
         ctx.lineWidth = info.alert ? 1.8 : 1.15;
         this._traceFootprint(ctx, this._buildingFootprintCorners(building));
         ctx.stroke();
-        this._drawBuildingLoadPips(ctx, building, info, accent);
+        this._drawBuildingDaisRing(ctx, building, info, accent);
         ctx.restore();
     }
 
-    _drawBuildingLoadPips(ctx, building, info, accent) {
+    // #57 — glowing dais ring (replaces the load-pip diamond row): the front
+    // arc of the footprint ellipse is an intensity gauge — a dim track plus a
+    // lit arc whose sweep encodes activity intensity, over a soft ground glow,
+    // so occupancy reads from across the map. Governor-admitted (SECONDARY arc,
+    // AMBIENT glow; banners/halos are that tier's examples). Reduced motion:
+    // static arc and glow, same semantics, no breathing.
+    _drawBuildingDaisRing(ctx, building, info, accent) {
         const occupancy = info.occupancy || {};
-        const capacity = Math.max(0, Number(occupancy.capacity) || 0);
         const signal = Math.max(occupancy.ratio || 0, info.intensity, info.ritualFade || 0);
         if (signal <= 0.16 && !info.alert) return;
 
-        const total = capacity > 0 ? Math.max(1, Math.min(5, capacity)) : 3;
-        const filled = info.alert
-            ? total
-            : Math.max(0, Math.min(total, Math.ceil(signal * total)));
-        if (filled <= 0) return;
-
         const corners = this._buildingFootprintCorners(building);
-        const startT = total === 1 ? 0.5 : 0.28;
-        const endT = total === 1 ? 0.5 : 0.72;
-        const markerSize = info.alert ? 4.2 : 3.6;
+        const cx = Math.round((corners.nw.x + corners.se.x) / 2);
+        const cy = Math.round((corners.nw.y + corners.se.y) / 2 + 4);
+        const rx = Math.max(18, Math.abs(corners.se.x - corners.nw.x) / 2 + 10);
+        const ry = Math.max(10, Math.abs(corners.se.y - corners.nw.y) / 2 + 6);
+        const fill = info.alert ? 1 : clamp01((signal - 0.16) / 0.84);
+        const pulse = this._activityPulseFor(building, getBuildingVisual(building.type));
+        // Canvas ellipse angles: 0 = east, π/2 = south (screen-down). The dais
+        // spans the front (south) face; the lit arc fills east→west through it.
+        const start = Math.PI * 0.08;
+        const end = Math.PI * 0.92;
+        const sweep = start + (end - start) * fill;
+
+        const governor = getActiveMarkGovernor();
+        const glowGate = governor?.admit(MarkTier.AMBIENT, cx, cy) || null;
+        const arcGate = governor?.admit(MarkTier.SECONDARY, cx, cy) || null;
 
         ctx.save();
-        ctx.globalCompositeOperation = 'source-over';
-        ctx.lineWidth = 1;
-        for (let i = 0; i < total; i++) {
-            const t = total === 1 ? 0.5 : lerp(startT, endT, i / (total - 1));
-            const x = Math.round(lerp(corners.sw.x, corners.se.x, t));
-            const y = Math.round(lerp(corners.sw.y, corners.se.y, t) + 6);
-            ctx.globalAlpha = 0.62;
-            this._drawActivityDiamond(ctx, x, y, markerSize, 'rgba(28, 20, 13, 0.72)', 'rgba(245, 217, 146, 0.2)');
-            if (i < filled) {
-                ctx.globalAlpha = 0.82 + Math.min(0.14, info.intensity * 0.14);
-                this._drawActivityDiamond(ctx, x, y, markerSize - 0.6, accent, 'rgba(42, 27, 15, 0.72)');
+        if (!glowGate || glowGate.draw) {
+            ctx.globalCompositeOperation = 'screen';
+            ctx.globalAlpha = (0.10 + fill * 0.13 + (this.motionScale ? pulse * 0.05 : 0.03)) * (glowGate?.alpha ?? 1);
+            ctx.fillStyle = accent;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, rx * 0.94, ry * 0.9, 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        if (!arcGate || arcGate.draw) {
+            const gateAlpha = arcGate?.alpha ?? 1;
+            ctx.globalCompositeOperation = 'source-over';
+            // Dim full-track, then the lit intensity arc with a bright end gem.
+            ctx.globalAlpha = 0.2 * gateAlpha;
+            ctx.strokeStyle = accent;
+            ctx.lineWidth = 2.4;
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, rx, ry, 0, start, end);
+            ctx.stroke();
+            ctx.globalAlpha = Math.min(0.9, 0.4 + fill * 0.38 + (this.motionScale ? pulse * 0.12 : 0.06)) * gateAlpha;
+            ctx.lineWidth = info.alert ? 3 : 2.4;
+            ctx.lineCap = 'round';
+            ctx.beginPath();
+            ctx.ellipse(cx, cy, rx, ry, 0, start, sweep);
+            ctx.stroke();
+            if (fill > 0.05) {
+                const gemX = Math.round(cx + Math.cos(sweep) * rx);
+                const gemY = Math.round(cy + Math.sin(sweep) * ry);
+                ctx.globalAlpha = 0.9 * gateAlpha;
+                ctx.fillStyle = '#fff3cf';
+                ctx.fillRect(gemX - 1, gemY - 1, 2, 2);
             }
         }
 
+        // Overload / full / alert chevrons (kept from the pips row).
         if (info.overload > 0 || info.alert || occupancy.state === 'full') {
             const edgeX = Math.round(lerp(corners.sw.x, corners.se.x, 0.82));
             const edgeY = Math.round(lerp(corners.sw.y, corners.se.y, 0.82) + 7);
+            ctx.globalCompositeOperation = 'source-over';
             ctx.globalAlpha = info.alert ? 0.95 : 0.76;
             ctx.strokeStyle = info.alert ? '#ff755d' : accent;
             ctx.lineWidth = 1.4;

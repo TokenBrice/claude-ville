@@ -67,20 +67,6 @@ export const VISIT_OVERFLOW_TILES = Object.freeze({
     ],
 });
 
-export const COMMAND_CENTER_DECORATION = Object.freeze([
-    { type: 'banner', localX: 1.1, localY: -0.9, facing: 'south', phase: 0 },
-    { type: 'banner', localX: 4.8, localY: 0.8, facing: 'north', phase: 1.7 },
-    { type: 'runestone', localX: -0.6, localY: 1.2, phase: 0.2 },
-    { type: 'runestone', localX: 2.2, localY: 0.0, phase: 2.4 },
-    { type: 'runestone', localX: 4.8, localY: 2.4, phase: 4.1 },
-    { type: 'watchfire', localX: 0.5, localY: 1.0, phase: 0.6 },
-    { type: 'watchfire', localX: 5.0, localY: 0.9, phase: 3.5 },
-    { type: 'guardpost', localX: -2.2, localY: 1.0 },
-    { type: 'guardpost', localX: 4.9, localY: 1.0 },
-    { type: 'guardpost', localX: 2.5, localY: -0.2 },
-    { type: 'guardpost', localX: 2.5, localY: 2.5 },
-]);
-
 export const BUILDING_DEFS = [
     {
         type: 'command',

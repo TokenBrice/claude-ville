@@ -40,6 +40,39 @@ function viewportMetrics(viewport = {}) {
     return { dpr, width, height };
 }
 
+// Shared trail-stroke vocabulary (plan 3.10 — one trail language). Both the
+// persisted hour-trails below and the director's live replay trails in
+// VillageDirectorOverlay stroke through here: round-capped per-segment
+// polylines whose alpha decays with sample age. Color semantics stay with the
+// caller (phase palette vs status/team palette); `points` are screen/world
+// `{ x, y, ts }` in the caller's current transform.
+export function strokeAgedTrailSegments(ctx, points, {
+    now = Date.now(),
+    maxAgeMs = RETAIN_MS,
+    baseAlpha = 0.18,
+    width = 1,
+    rgbForPoint = null,
+} = {}) {
+    if (!ctx || !Array.isArray(points) || points.length < 2) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = width;
+    for (let i = 1; i < points.length; i++) {
+        const previous = points[i - 1];
+        const current = points[i];
+        const age = Math.max(0, now - (Number(current.ts) || now));
+        const alpha = Math.max(0.02, 1 - age / maxAgeMs) * baseAlpha;
+        const color = rgbForPoint ? rgbForPoint(current, i) : '232, 224, 194';
+        ctx.strokeStyle = `rgba(${color}, ${alpha.toFixed(3)})`;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(previous.x), Math.round(previous.y));
+        ctx.lineTo(Math.round(current.x), Math.round(current.y));
+        ctx.stroke();
+    }
+    ctx.restore();
+}
+
 export class TrailRenderer {
     constructor({ store = null, world = null, motionScale = 1 } = {}) {
         this.store = store;
@@ -314,25 +347,18 @@ export class TrailRenderer {
 
     _drawTrail(ctx, samples, camera, now, selected) {
         if (samples.length < 2) return;
-        ctx.save();
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
-        ctx.lineWidth = selected ? 2 : 1;
-        for (let i = 1; i < samples.length; i++) {
-            const previous = samples[i - 1];
-            const current = samples[i];
-            const age = Math.max(0, now - current.ts);
-            const alpha = Math.max(0.02, 1 - age / RETAIN_MS) * (selected ? 0.5 : 0.18);
-            const color = PHASE_COLORS[current.phase] || PHASE_COLORS.afternoon;
-            const from = camera.worldToScreen(...Object.values(toWorld(previous.tileX, previous.tileY)));
-            const to = camera.worldToScreen(...Object.values(toWorld(current.tileX, current.tileY)));
-            ctx.strokeStyle = `rgba(${color}, ${alpha.toFixed(3)})`;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(from.x), Math.round(from.y));
-            ctx.lineTo(Math.round(to.x), Math.round(to.y));
-            ctx.stroke();
+        const points = [];
+        for (const sample of samples) {
+            const p = camera.worldToScreen(...Object.values(toWorld(sample.tileX, sample.tileY)));
+            points.push({ x: p.x, y: p.y, ts: sample.ts, phase: sample.phase });
         }
-        ctx.restore();
+        strokeAgedTrailSegments(ctx, points, {
+            now,
+            maxAgeMs: RETAIN_MS,
+            baseAlpha: selected ? 0.5 : 0.18,
+            width: selected ? 2 : 1,
+            rgbForPoint: (point) => PHASE_COLORS[point.phase] || PHASE_COLORS.afternoon,
+        });
     }
 
     _pruneMemory(now) {

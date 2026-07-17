@@ -14,6 +14,14 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.45, busyMax: 0.8 },
         labelPriority: 'landmark',
         beaconBase: 0.85,
+        // 6.2 — sprite-local lit-window spots (calibrated against base.png).
+        windowRects: [
+            { at: [80, 127], w: 7, h: 10 },
+            { at: [210, 120], w: 7, h: 10 },
+            { at: [150, 90], w: 8, h: 8, shape: 'ellipse' },
+        ],
+        // #53 — sprite-local pole base for the occupancy pennant (right turret).
+        pennant: { at: [240, 56] },
     },
     taskboard: {
         labelAccent: '#8bd7ff',
@@ -24,6 +32,12 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 0.8,
+        // 6.2 — the two eave lanterns, not mid-wall blobs.
+        windowRects: [
+            { at: [48, 62], w: 6, h: 8, shape: 'ellipse' },
+            { at: [182, 62], w: 6, h: 8, shape: 'ellipse' },
+        ],
+        pennant: { at: [128, 34] },
     },
     forge: {
         labelAccent: '#f08a4b',
@@ -34,6 +48,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 1,
+        windowRects: [
+            { at: [157, 143], w: 9, h: 10 },
+            { at: [172, 143], w: 9, h: 10 },
+        ],
     },
     mine: {
         labelAccent: '#ffab47',
@@ -54,6 +72,13 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.82 },
         labelPriority: 'landmark',
         beaconBase: 0.82,
+        // 6.2 — the two niches flanking the door arch; the crest window above
+        // is already baked glowing and needs no warmth stamp.
+        windowRects: [
+            { at: [139, 130], w: 5, h: 9 },
+            { at: [204, 130], w: 5, h: 9 },
+        ],
+        pennant: { at: [48, 30] },
     },
     observatory: {
         labelAccent: '#bda7ff',
@@ -64,6 +89,11 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
         beaconBase: 0.7,
+        windowRects: [
+            { at: [92, 160], w: 9, h: 14 },
+            { at: [127, 166], w: 9, h: 14 },
+        ],
+        pennant: { at: [112, 16] },
         effectAnchors: {
             clockFace: {
                 compositeRef: { w: 256, h: 288 },
@@ -74,6 +104,13 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
                 sourceRadius: 18,
                 hourHandLength: 10,
                 minuteHandLength: 15,
+            },
+            // #52 — dome aperture: the small roof dormer under the telescope,
+            // opens at night; bursts when a web ritual completes.
+            domeAperture: {
+                slit: [140, 56],
+                star: [140, 50],
+                glintArc: { center: [140, 52], radius: 12, from: -2.4, to: -0.7 },
             },
         },
     },
@@ -86,6 +123,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
         beaconBase: 0.92,
+        pennant: { at: [170, 30] },
     },
     watchtower: {
         labelAccent: '#ffe59a',
@@ -96,6 +134,14 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.9 },
         labelPriority: 'landmark',
         beaconBase: 1,
+        // 6.2 — the shaft's three arched windows; lifts the drab daylight
+        // watchtower (its warmth used to pool at the lantern fire alone).
+        windowRects: [
+            { at: [145, 168], w: 9, h: 13 },
+            { at: [153, 219], w: 9, h: 13 },
+            { at: [140, 270], w: 9, h: 13 },
+        ],
+        pennant: { at: [166, 80] },
         effectAnchors: {
             lanternFire: {
                 flame: [144, 68],
@@ -120,6 +166,10 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.84 },
         labelPriority: 'landmark',
         beaconBase: 0.9,
+        windowRects: [
+            { at: [215, 86], w: 8, h: 10 },
+            { at: [233, 86], w: 6, h: 8 },
+        ],
     },
 });
 
@@ -201,6 +251,20 @@ export function getBuildingLabelPriority(type, fallback = 'normal') {
 
 export function getBuildingEffectAnchor(type, key, fallback = null) {
     return getBuildingVisual(type)?.effectAnchors?.[key] || fallback;
+}
+
+// 6.2 — optional per-building lit-window spots (sprite-local px). Buildings
+// without an entry keep the legacy radial warmth blobs.
+export function getBuildingWindowRects(type) {
+    const rects = getBuildingVisual(type)?.windowRects;
+    return Array.isArray(rects) && rects.length ? rects : null;
+}
+
+// #53 — optional occupancy-pennant anchor (sprite-local pole base). Only hero
+// buildings carry one; absent = no pennant.
+export function getBuildingPennantAnchor(type) {
+    const pennant = getBuildingVisual(type)?.pennant;
+    return Array.isArray(pennant?.at) ? pennant : null;
 }
 
 // Per-building responsiveness to the global beacon intensity (0..1). Strong

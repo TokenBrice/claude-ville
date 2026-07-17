@@ -195,6 +195,21 @@ export const BRIDGE_HINTS = [
     },
 ];
 
+// Plank crossings: single-file walkable spans drawn per-tile from the
+// bridge.ew/ns plank assets (kind 'plank' — no landmark span treatment).
+// The west crossing meets the north-bank-promenade's river anchor (7, 23) so
+// the archive/promenade side links to the portal-grove and mine approach
+// without walking to the central landmark bridge. Walkability only ever
+// *adds* connectivity here, so routing risk is limited to new scenery.
+export const PLANK_BRIDGES = [
+    {
+        id: 'west-river-plank',
+        tileX: 7,
+        tileY: 25,
+        orientation: 'NS',
+    },
+];
+
 export const BRIDGE_ACCENT_PROPS = [
     { bridgeId: 'central-river-bridge', id: 'prop.bridgeLanternPost', t: 0.16, side: -1 },
     { bridgeId: 'central-river-bridge', id: 'prop.bridgeLanternPost', t: 0.84, side: 1 },
@@ -419,17 +434,25 @@ export const DISTRICT_PROPS = [
     { tileX: 15.4, tileY: 21.6, id: 'prop.runeFountain', layer: 'cache', district: 'civic' },
     { tileX: 2.2, tileY: 14.4, id: 'veg.root.arch', layer: 'sorted', district: 'elderwood' },
     { tileX: 6.2, tileY: 26.5, id: 'veg.standingStone.mossy', layer: 'cache', district: 'elderwood' },
+    { tileX: 6.9, tileY: 27.3, id: 'prop.lakeShrine', layer: 'cache', district: 'elderwood' },
     { tileX: 32.3, tileY: 19.6, id: 'prop.netRack', layer: 'cache', district: 'harbor' },
+    { tileX: 31.4, tileY: 20.6, id: 'prop.harborCrane', layer: 'cache', district: 'harbor' },
     { tileX: 33.2, tileY: 22.2, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
     { tileX: 37.1, tileY: 22.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'harbor' },
     { tileX: 6.0, tileY: 8.0, id: 'prop.netRack', layer: 'cache', district: 'lagoon' },
     { tileX: 14.0, tileY: 5.5, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'lagoon' },
     { tileX: 20.0, tileY: 11.0, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'lagoon' },
-    // Lagoon lilypads: calm interior water surface, east lagoon basin.
+    // Lagoon lilypad drifts: tight 2-3 pad clusters on calm interior water
+    // instead of isolated singles.
     { tileX: 13.4, tileY: 7.6, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    { tileX: 12.6, tileY: 8.2, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    { tileX: 13.2, tileY: 8.7, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 15.2, tileY: 8.4, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     { tileX: 14.0, tileY: 9.2, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
-    { tileX: 12.6, tileY: 8.2, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    { tileX: 15.6, tileY: 9.3, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    // Waterfall-pool pair on the east lagoon basin.
+    { tileX: 24.2, tileY: 7.4, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
+    { tileX: 25.0, tileY: 7.9, id: 'veg.lilypad', layer: 'cache', district: 'lagoon' },
     // Mangrove roots: west shore shallow water.
     { tileX: 6.6, tileY: 7.8, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'lagoon' },
     { tileX: 7.4, tileY: 9.6, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'lagoon' },
@@ -437,15 +460,17 @@ export const DISTRICT_PROPS = [
     // Driftwood logs: west shore shallows.
     { tileX: 7.2, tileY: 10.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
     { tileX: 8.6, tileY: 9.4, id: 'prop.driftwood.log', layer: 'cache', district: 'lagoon' },
-    // Central island shrine and lily pool composition.
+    // Central island shrine and lily pool composition. Pads sit on the open
+    // water tiles beside the landmark bridge deck (the widened deck covers
+    // the pond's east half, so pads keep clear of it).
     { tileX: 15.0, tileY: 22.4, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
     { tileX: 15.6, tileY: 21.0, id: 'veg.standingStone.mossy', layer: 'sorted', district: 'civic' },
     { tileX: 15.2, tileY: 22.2, id: 'prop.runeBrazier', layer: 'cache', district: 'civic' },
-    { tileX: 17.2, tileY: 21.6, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 16.6, tileY: 22.2, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 17.6, tileY: 22.4, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 17.0, tileY: 21.4, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
-    { tileX: 16.8, tileY: 22.6, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 15.4, tileY: 21.2, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 16.4, tileY: 21.3, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 17.2, tileY: 21.5, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 14.6, tileY: 23.3, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
+    { tileX: 15.4, tileY: 23.7, id: 'veg.lilypad', layer: 'cache', district: 'civic' },
     { tileX: 17.4, tileY: 22.7, id: 'prop.harborBeaconBuoy', layer: 'cache', district: 'civic' },
     { tileX: 16.4, tileY: 21.4, id: 'prop.mangroveRoot.twisted', layer: 'sorted', district: 'civic' },
     { tileX: 16.2, tileY: 22.4, id: 'prop.mangroveRoot.arch', layer: 'sorted', district: 'civic' },

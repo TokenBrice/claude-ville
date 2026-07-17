@@ -25,6 +25,34 @@ function darkenHex(hex) {
     return `rgb(${r},${g},${b})`;
 }
 
+// 5.8 — firefly glow-stamp cache. The glow branch used to allocate a fresh
+// radial gradient per particle per frame (~240 gradient allocs/frame at the
+// particle cap); now one stamp canvas is baked per glow color and blitted.
+// Bounded LRU — glow colors come from the small preset palettes.
+const GLOW_STAMP_SIZE = 24;
+const GLOW_STAMP_CACHE_LIMIT = 32;
+const _glowStampCache = new Map();
+
+function glowStamp(color) {
+    let stamp = _glowStampCache.get(color);
+    if (stamp) return stamp;
+    const canvas = document.createElement('canvas');
+    canvas.width = GLOW_STAMP_SIZE;
+    canvas.height = GLOW_STAMP_SIZE;
+    const stampCtx = canvas.getContext('2d');
+    const half = GLOW_STAMP_SIZE / 2;
+    const gradient = stampCtx.createRadialGradient(half, half, 0, half, half, half);
+    gradient.addColorStop(0, hexToRgba(color, 0.9));
+    gradient.addColorStop(1, hexToRgba(color, 0));
+    stampCtx.fillStyle = gradient;
+    stampCtx.fillRect(0, 0, GLOW_STAMP_SIZE, GLOW_STAMP_SIZE);
+    if (_glowStampCache.size >= GLOW_STAMP_CACHE_LIMIT) {
+        _glowStampCache.delete(_glowStampCache.keys().next().value);
+    }
+    _glowStampCache.set(color, canvas);
+    return canvas;
+}
+
 class Particle {
     constructor(x, y, vx, vy, life, color, size, gravity, alpha = 1, layer = 'effects', opts = {}) {
         this.x = x;
@@ -86,17 +114,15 @@ class Particle {
 
         // C6 — firefly: bright core pixel plus a soft radial halo whose alpha
         // pulses; a constant mid-alpha halo stands in when motion is disabled.
+        // 5.8 — the halo blits a per-color cached stamp (no per-frame gradient
+        // allocations).
         if (this.glow) {
             const pulse = motionEnabled
                 ? 0.3 + 0.4 * Math.sin(age * this.animRate + this.phase)
                 : 0.5;
             const haloR = 3;
-            const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, haloR);
-            grad.addColorStop(0, hexToRgba(this.color, 0.9));
-            grad.addColorStop(1, hexToRgba(this.color, 0));
             ctx.globalAlpha = baseAlpha * Math.max(0, pulse);
-            ctx.fillStyle = grad;
-            ctx.fillRect(this.x - haloR, this.y - haloR, haloR * 2, haloR * 2);
+            ctx.drawImage(glowStamp(this.color), this.x - haloR, this.y - haloR, haloR * 2, haloR * 2);
             ctx.globalAlpha = baseAlpha;
             ctx.fillStyle = this.color;
             ctx.fillRect(this.x - this.size / 2, this.y - this.size / 2, this.size, this.size);

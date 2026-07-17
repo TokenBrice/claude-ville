@@ -1,5 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { drawCouncilRings, drawFamilyTethers, drawAllyTethers, drawTalkArcs } from './CouncilRing.js';
+import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { drawCouncilRings, drawFamilyTethers, drawAllyTethers, drawTalkArcs, admitTalkArcMarks } from './CouncilRing.js';
 import { drawCrowdClusterAuras, drawCrowdClusterBadges } from './CrowdClusterOverlay.js';
 import {
     appendDepthSortedDrawables,
@@ -11,6 +13,8 @@ import {
     drawVillageDirectorGround,
     drawVillageDirectorOverlays,
     drawVillageDirectorScreen,
+    drawPrimaryPillRestamp,
+    drawOffscreenCueEdges,
 } from './VillageDirectorOverlay.js';
 
 // Follow-up after layer extraction: move private renderer calls used here into
@@ -83,7 +87,14 @@ export function renderWorldFrame(renderer, dt = 16) {
     // #24 — cloud-shadow parallax: feathered shadows slide across the baked
     // terrain on the wind, giving the flat iso plane depth under the live sky.
     drawCloudShadows(renderer, ctx, atmosphere, perfNow);
-    renderer._drawSkyCanopy(ctx, atmosphere, dt);
+    // 6.4 — ground fog at dawn / over water, on the ground plane ahead of the
+    // village so agents and buildings stand up out of the mist.
+    drawGroundFog(renderer, ctx, atmosphere, perfNow);
+    // [0.6] Draw-order: the canopy pass now also carries the hero sky rewards
+    // (aurora, shooting stars, sky-flare, sun glints, push grade) so they
+    // composite over terrain instead of behind the village. The rewards live
+    // in SkyRenderer.drawCanopy — this call site is the whole draw-order change.
+    renderer._drawSkyCanopy(ctx, atmosphere, dt, renderer.motionScale);
     renderer.camera.applyTransform(ctx);
     renderer._drawFishSchools(ctx);
     renderer._drawWaterfowl(ctx);
@@ -91,12 +102,22 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._drawOpenSeaGulls(ctx);
     renderer._drawLandBirds(ctx);
     renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
-    drawVillageDirectorGround(ctx, villageSnapshot, renderNow, atmosphere?.grade);
+    // 3.10 — teams with a live council ring skip the director aura wash.
+    drawVillageDirectorGround(ctx, villageSnapshot, renderNow, atmosphere?.grade, {
+        councilTeamNames: collectCouncilTeamNames(renderer, villageSnapshot),
+    });
 
     drawBuildingLightReflections(renderer, ctx, atmosphere);
     markFrameTiming(frameTimer, 'terrain');
 
     renderer.buildingRenderer?.drawShadows(ctx);
+    // 3.9 — priority-ordered admission: talk arcs draw last (above sprites) but
+    // are the highest-value SECONDARY marks, so they are admitted into the mark
+    // governor up front and the ring/tether passes cull ahead of them.
+    admitTalkArcMarks({
+        relationship: renderer.relationshipState,
+        agentSprites: renderer.agentSprites,
+    });
     drawCouncilRings(ctx, {
         relationship: renderer.relationshipState,
         agentSprites: renderer.agentSprites,
@@ -197,7 +218,9 @@ export function renderWorldFrame(renderer, dt = 16) {
         now: perfNow,
         lighting: atmosphere?.lighting,
     });
-    drawVillageDirectorOverlays(ctx, villageSnapshot, perfNow, atmosphere?.grade);
+    drawVillageDirectorOverlays(ctx, villageSnapshot, perfNow, atmosphere?.grade, {
+        getBuildingDims: buildingDimsLookup(renderer),
+    });
 
     drawSelectedAgentXray(renderer, ctx, buildingDrawables);
 
@@ -208,6 +231,10 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._resetScreenTransform(ctx);
     renderer._drawAtmosphere(ctx, atmosphere, dt, renderer._frameLightSources?.ambient || null);
     renderer.camera.applyTransform(ctx);
+    // 0.7 — re-stamp the PRIMARY mark set (waiting beacons, selection rings,
+    // incident pills) AFTER the atmosphere multiply so the action-demanding
+    // reads survive the night grade at the same strength the plaques enjoy.
+    drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphere);
     markFrameTiming(frameTimer, 'effects');
 
     renderer.buildingRenderer?.drawBubbles(ctx, renderer.world);
@@ -239,10 +266,16 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.seasonalAmbience?.drawStatic?.(ctx);
     renderer.harborTraffic?.drawScreenSummary(ctx, viewport, renderer.camera, renderNow);
     drawVillageDirectorScreen(ctx, villageSnapshot, viewport);
+    // 5.7 — offscreen-event edge indicators (incl. cues the CameraDirector
+    // dropped): small screen-edge markers, click to glide there.
+    drawOffscreenCueEdges(ctx, renderer, viewport, renderNow);
     // #21 — director glide grade pass: a momentary vignette + worldTint wash that
     // fades in and out with the cinematic move. Reduced motion yields no grade
     // (the camera cut leaves nothing to fade), so this is a no-op there.
     drawDirectorGlideGrade(ctx, renderer.camera?.getDirectorGlideGrade?.(), viewport);
+    // 5.7 — cinematic letterbox bars while a release/incident cue glide owns
+    // the frame. Never fires under reduced motion (no cue glides happen).
+    drawCueLetterbox(ctx, renderer.camera, viewport);
     drawDebugOverlay(renderer, ctx, atmosphere, viewport);
     renderer._lastRenderStats = {
         ...renderer._lastRenderStats,
@@ -262,6 +295,30 @@ function hexToRgb(hex) {
 // vignette pulls focus to the framed subject and a faint worldTint wash colours
 // the moment (red for incidents, gold for a parade, teal for an arrival). Both
 // scale with the glide's bell-curve weight so they never linger after the move.
+//
+// 5.8 — the vignette gradient is cached per (viewport, quantized-strength)
+// bucket instead of allocated every frame of the glide; strength is quantized
+// to 0.05 steps so the bell-curve ramp reuses a handful of buckets.
+const _glideVignetteCache = new Map();
+const GLIDE_VIGNETTE_CACHE_LIMIT = 24;
+
+function glideVignetteGradient(ctx, w, h, vignette) {
+    const quantized = Math.round(vignette * 20) / 20;
+    const key = `${w}x${h}:${quantized}`;
+    const cached = _glideVignetteCache.get(key);
+    if (cached) return cached;
+    const cx = w / 2;
+    const cy = h / 2;
+    const inner = Math.min(w, h) * 0.32;
+    const outer = Math.hypot(w, h) / 2;
+    const gradient = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
+    gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
+    gradient.addColorStop(1, `rgba(0, 0, 0, ${quantized})`);
+    if (_glideVignetteCache.size >= GLIDE_VIGNETTE_CACHE_LIMIT) _glideVignetteCache.clear();
+    _glideVignetteCache.set(key, gradient);
+    return gradient;
+}
+
 function drawDirectorGlideGrade(ctx, grade, viewport) {
     if (!grade || !(grade.weight > 0.01) || !viewport?.width || !viewport?.height) return;
     const w = viewport.width;
@@ -278,18 +335,37 @@ function drawDirectorGlideGrade(ctx, grade, viewport) {
     }
     const vignette = Math.max(0, Math.min(1, Number(grade.vignette) || 0)) * weight;
     if (vignette > 0.01) {
-        const cx = w / 2;
-        const cy = h / 2;
-        const inner = Math.min(w, h) * 0.32;
-        const outer = Math.hypot(w, h) / 2;
-        const gradient = ctx.createRadialGradient(cx, cy, inner, cx, cy, outer);
-        gradient.addColorStop(0, 'rgba(0, 0, 0, 0)');
-        gradient.addColorStop(1, `rgba(0, 0, 0, ${vignette})`);
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 1;
-        ctx.fillStyle = gradient;
+        ctx.fillStyle = glideVignetteGradient(ctx, w, h, vignette);
         ctx.fillRect(0, 0, w, h);
     }
+    ctx.restore();
+}
+
+// 5.7 — cinematic letterbox bars while a release/incident camera cue glide
+// owns the frame. Bar height rides the glide's bell-curve weight so the bars
+// slide in and out with the move; a 1px ember line on the inner edge (tinted
+// by the cue grade) keeps them reading as cinema chrome, not a render
+// artifact. Reduced motion: cue glides are suppressed and Camera cuts instead,
+// so no bars ever appear.
+function drawCueLetterbox(ctx, camera, viewport) {
+    if (!camera?.isDirectorGliding?.() || !viewport?.width || !viewport?.height) return;
+    const owner = String(camera._cameraOwner || '');
+    if (owner !== 'cue:release' && owner !== 'cue:incident') return;
+    const grade = camera.getDirectorGlideGrade?.();
+    const weight = Math.max(0, Math.min(1, Number(grade?.weight) || 0));
+    if (weight <= 0.02) return;
+    const barH = Math.round(Math.min(72, viewport.height * 0.08) * weight);
+    if (barH < 2) return;
+    ctx.save();
+    ctx.fillStyle = 'rgba(12, 9, 7, 0.94)';
+    ctx.fillRect(0, 0, viewport.width, barH);
+    ctx.fillRect(0, viewport.height - barH, viewport.width, barH);
+    const tint = hexToRgb(grade?.worldTint) || { r: 214, g: 169, b: 81 };
+    ctx.fillStyle = `rgba(${tint.r}, ${tint.g}, ${tint.b}, ${0.5 * weight})`;
+    ctx.fillRect(0, barH, viewport.width, 1);
+    ctx.fillRect(0, viewport.height - barH - 1, viewport.width, 1);
     ctx.restore();
 }
 
@@ -305,6 +381,216 @@ function combineWeatherInfluence(a, b) {
             Number(b?.clearing) || 0,
         ),
     };
+}
+
+// 3.10 — names of teams that currently have a live council ring (2+ gathered,
+// non-arriving members). The director aura wash skips these so the triple team
+// mark (aura + ring + orbit light) dedupes to ring + light. Only computed when
+// the snapshot actually has team clusters to filter.
+function collectCouncilTeamNames(renderer, villageSnapshot) {
+    if (!villageSnapshot?.teams?.length) return null;
+    const relationship = renderer.relationshipState;
+    const snapshot = typeof relationship?.getSnapshot === 'function' ? relationship.getSnapshot() : relationship;
+    const teams = snapshot?.teamToMembers;
+    if (!teams?.entries || !renderer.agentSprites) return null;
+    const names = new Set();
+    for (const [teamName, memberIds] of teams.entries()) {
+        let live = 0;
+        for (const id of memberIds) {
+            const sprite = renderer.agentSprites.get(id);
+            if (sprite && !sprite.isArrivalPending?.()) live++;
+            if (live >= 2) {
+                names.add(teamName);
+                break;
+            }
+        }
+    }
+    return names;
+}
+
+// 5.8 — stable dims accessor handed to the director overlay so pills can stack
+// above the building plaque zone. Cached on the renderer: no per-frame closure.
+function buildingDimsLookup(renderer) {
+    if (!renderer._buildingDimsLookup) {
+        renderer._buildingDimsLookup = (type) => renderer.assets?.getDims?.(`building.${type}`) || null;
+    }
+    return renderer._buildingDimsLookup;
+}
+
+// 0.7 — PRIMARY marks survive night. Everything drawn before _drawAtmosphere
+// is dimmed by the multiply grade (~50% at night) while plaques/glows drawn
+// after stay bright — the legibility hierarchy inverts exactly when the scene
+// is darkest. Re-stamp the PRIMARY set here, post-atmosphere, scaled by the
+// same beacon night factor the lantern glows use (drawSelectedAgentXray is the
+// pass-shape precedent). Daylight (factor ~0) draws nothing, so marks are
+// never double-stamped at full strength. Reduced motion: identical — the
+// re-stamp carries no motion of its own.
+function drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphere) {
+    const nightFactor = primaryRestampNightFactor(renderer, atmosphere);
+    if (nightFactor <= 0.06) return;
+
+    for (const sprite of renderer.agentSprites?.values?.() || []) {
+        if (!sprite) continue;
+        // Waiting-on-user beacon pillar. The outer alpha scales the gradient
+        // body; the method's own save/restore keeps state clean (its tiny `!`
+        // pennant sets its own alpha — acceptable, it is the top-priority read).
+        if (sprite.agent?.status === AgentStatus.WAITING_ON_USER
+            && typeof sprite._drawWaitingOnUserBeacon === 'function') {
+            ctx.save();
+            ctx.globalAlpha = 0.55 * nightFactor;
+            sprite._drawWaitingOnUserBeacon(ctx, null);
+            ctx.restore();
+        }
+        // Selection ring: a soft additive echo of the asset ring at the feet,
+        // in the provider accent so it still reads identity at a glance.
+        if (sprite.selected) {
+            const accent = hexToRgb(sprite._providerAccentColor?.() || '#f2d36b') || { r: 242, g: 211, b: 107 };
+            ctx.save();
+            ctx.globalCompositeOperation = 'screen';
+            ctx.beginPath();
+            ctx.ellipse(sprite.x, sprite.y - 2, 24, 9, 0, 0, Math.PI * 2);
+            ctx.fillStyle = `rgba(${accent.r}, ${accent.g}, ${accent.b}, ${0.10 * nightFactor})`;
+            ctx.fill();
+            ctx.strokeStyle = `rgba(${accent.r}, ${accent.g}, ${accent.b}, ${0.5 * nightFactor})`;
+            ctx.lineWidth = 1.4;
+            ctx.stroke();
+            ctx.restore();
+        }
+    }
+
+    drawPrimaryPillRestamp(ctx, villageSnapshot, nightFactor, buildingDimsLookup(renderer));
+}
+
+function primaryRestampNightFactor(renderer, atmosphere) {
+    const fromRenderer = renderer._lanternNightFactor?.(atmosphere);
+    if (Number.isFinite(fromRenderer)) return fromRenderer;
+    const lighting = atmosphere?.lighting || null;
+    if (!lighting) return 0;
+    const beacon = Number(lighting.beaconIntensity);
+    if (Number.isFinite(beacon)) return Math.max(0, Math.min(1, beacon));
+    const ambient = Number(lighting.ambientLight);
+    return Number.isFinite(ambient) ? Math.max(0, Math.min(1, 1 - ambient)) : 0;
+}
+
+// ---------------------------------------------------------------------------
+// 6.4 — ground fog at dawn / over water. Budget story: placement is computed
+// ONCE (lazily, cached on the renderer) by bucketing the scenery water-tile
+// set into a handful of anchor points plus two lowland spots on the village
+// diamond; the wisp visual is the manifest's baked `atmosphere.fog.wisp.low`
+// sprite with a one-off baked gradient stamp as the no-asset fallback. The
+// per-frame cost is therefore capped at FOG_SPOT_LIMIT drawImage calls, and
+// only while the dawn envelope (or weather fog) is active — zero cost the
+// rest of the day. Drift rides a ~52s slow band; reduced motion freezes the
+// drift and keeps the static wisps (fixed alpha from the dawn envelope).
+const FOG_SPOT_LIMIT = 10;
+const FOG_WATER_ANCHOR_LIMIT = 6;
+const FOG_DRIFT_PERIOD_MS = 52000;
+const FOG_DRIFT_PX = 14;
+const FOG_WISP_SPRITE_ID = 'atmosphere.fog.wisp.low';
+let _fogStamp = null;
+
+function fogStampCanvas() {
+    if (_fogStamp) return _fogStamp;
+    const canvas = document.createElement('canvas');
+    canvas.width = 96;
+    canvas.height = 48;
+    const stampCtx = canvas.getContext('2d');
+    const gradient = stampCtx.createRadialGradient(48, 24, 0, 48, 24, 48);
+    gradient.addColorStop(0, 'rgba(214, 228, 236, 0.55)');
+    gradient.addColorStop(0.6, 'rgba(214, 228, 236, 0.22)');
+    gradient.addColorStop(1, 'rgba(214, 228, 236, 0)');
+    stampCtx.fillStyle = gradient;
+    stampCtx.save();
+    stampCtx.translate(48, 24);
+    stampCtx.scale(1, 0.5);
+    stampCtx.translate(-48, -48);
+    stampCtx.fillRect(0, -24, 96, 96);
+    stampCtx.restore();
+    _fogStamp = canvas;
+    return canvas;
+}
+
+function groundFogSpots(renderer) {
+    if (renderer._groundFogSpots) return renderer._groundFogSpots;
+    const spots = [];
+    // Water anchors: bucket the water-tile set into coarse cells and keep the
+    // largest bodies (lagoon, river, harbor sea lanes).
+    const buckets = new Map();
+    for (const key of renderer.waterTiles || []) {
+        const [tileX, tileY] = String(key).split(',').map(Number);
+        if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) continue;
+        const bucketKey = `${Math.floor(tileX / 9)},${Math.floor(tileY / 9)}`;
+        const bucket = buckets.get(bucketKey) || { n: 0, sx: 0, sy: 0 };
+        bucket.n += 1;
+        bucket.sx += tileX;
+        bucket.sy += tileY;
+        buckets.set(bucketKey, bucket);
+    }
+    const ranked = [...buckets.values()].sort((a, b) => b.n - a.n).slice(0, FOG_WATER_ANCHOR_LIMIT);
+    for (const bucket of ranked) {
+        const tileX = bucket.sx / bucket.n;
+        const tileY = bucket.sy / bucket.n;
+        spots.push({
+            x: (tileX - tileY) * TILE_WIDTH / 2,
+            y: (tileX + tileY) * TILE_HEIGHT / 2,
+            seed: (bucket.n % 7) / 7,
+        });
+    }
+    // Lowland anchors: two spots on the lower flanks of the village diamond.
+    const points = renderer._worldDiamondPoints?.();
+    if (Array.isArray(points) && points.length >= 4) {
+        const bottom = points[2];
+        const left = points[3];
+        const right = points[1];
+        spots.push({ x: (bottom.x + left.x) / 2, y: (bottom.y + left.y) / 2, seed: 0.31 });
+        spots.push({ x: (bottom.x + right.x) / 2, y: (bottom.y + right.y) / 2, seed: 0.67 });
+    }
+    renderer._groundFogSpots = spots.slice(0, FOG_SPOT_LIMIT);
+    return renderer._groundFogSpots;
+}
+
+function groundFogStrength(renderer, atmosphere) {
+    let strength = 0;
+    if (atmosphere?.phase === 'dawn') {
+        const progress = Math.max(0, Math.min(1, Number(atmosphere.phaseProgress) || 0));
+        // Fade in and back out across the dawn phase rather than popping.
+        strength = Math.sin(progress * Math.PI);
+    }
+    const weatherFog = Number(renderer._waterWeather?.fog) || 0;
+    return Math.max(strength, weatherFog * 0.7);
+}
+
+function drawGroundFog(renderer, ctx, atmosphere, perfNow) {
+    const strength = groundFogStrength(renderer, atmosphere);
+    if (strength <= 0.04) return;
+    const spots = groundFogSpots(renderer);
+    if (!spots.length) return;
+    const drifting = (renderer.motionScale ?? 1) > 0;
+    const driftPhase = drifting ? (perfNow / FOG_DRIFT_PERIOD_MS) * Math.PI * 2 : 0;
+
+    ctx.save();
+    ctx.globalCompositeOperation = 'screen';
+    for (let i = 0; i < spots.length; i++) {
+        const spot = spots[i];
+        const dx = Math.sin(driftPhase + spot.seed * Math.PI * 2 + i) * FOG_DRIFT_PX;
+        const alpha = Math.min(0.26, (0.15 + spot.seed * 0.08) * strength);
+        const drew = renderer._drawAtmosphereEffectSprite?.(ctx, FOG_WISP_SPRITE_ID, {
+            x: spot.x + dx,
+            y: spot.y,
+            alpha,
+            scaleX: 1.7 + spot.seed * 0.9,
+            scaleY: 0.55 + spot.seed * 0.25,
+            rotation: -0.1 + spot.seed * 0.2,
+            flipX: spot.seed > 0.5,
+        });
+        if (drew) continue;
+        // No-asset fallback: the baked gradient stamp, same soft-wisp shape.
+        const stamp = fogStampCanvas();
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(stamp, Math.round(spot.x + dx - 80), Math.round(spot.y - 26), 160, 64);
+        ctx.globalAlpha = 1;
+    }
+    ctx.restore();
 }
 
 // #24 — slow band. 2–3 feathered dark ellipses drift across the baked terrain
@@ -462,7 +748,21 @@ function drawDebugOverlay(renderer, ctx, atmosphere, viewport) {
         panelY: 180,
         behaviorStats: renderer._agentBehaviorStats(),
         renderStats: renderer._lastRenderStats,
+        // Integrator follow-up (plan 1.9): light inline camera snapshot — zoom
+        // plus glide owner/state. DPR/backing pixels are derived by the overlay
+        // from the viewport itself; no getCanvasBudget() call per frame.
+        cameraState: cameraDebugState(renderer),
     });
+}
+
+function cameraDebugState(renderer) {
+    const camera = renderer?.camera;
+    if (!camera) return null;
+    return {
+        zoom: camera.zoom,
+        owner: camera._cameraOwner || null,
+        gliding: Boolean(camera.isDirectorGliding?.()),
+    };
 }
 
 function buildRenderStats(renderer, { drawableStats, cullingStats, harborPendingRepos, inputCounts, agentRenderMode = 'full' }) {

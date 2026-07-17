@@ -1,5 +1,6 @@
 import { TILE_HALF_WIDTH, TILE_HALF_HEIGHT } from './Projection.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
 
 // Crowd cluster group visuals: when CrowdClusters reports a dense group
 // (3+ agents in a cell), draw one subtle shared ground aura under the group
@@ -7,7 +8,13 @@ import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 //
 // Pulse band: static (no repeating motion), matching council rings. Alpha is
 // modulated only by the slow-changing lighting boost, so there is no
-// motionScale gate and the reduced-motion rendering is identical.
+// motionScale gate.
+//
+// 3.9 — the ground auras are AMBIENT tier in the mark governor (the first to
+// dim in a busy region); under reduced motion the governor degrades to its
+// static alpha cap with no region culling, per the governor contract. The
+// count badges stay untiered: they are the density summary that must remain
+// precisely when a region overflows.
 //
 // Hot path: called every frame. No per-cluster object/array/gradient
 // allocations; colors are constant strings modulated via ctx.globalAlpha.
@@ -113,6 +120,7 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, zoom = 1, lighting = nu
     if (!ctx || !clusters || clusters.length === 0) return;
 
     const boost = lightBoost(lighting);
+    const governor = getActiveMarkGovernor();
     const fillAlpha = Math.min(0.12, 0.07 * boost);
     const strokeAlpha = Math.min(0.3, 0.18 * boost);
 
@@ -122,16 +130,20 @@ export function drawCrowdClusterAuras(ctx, { crowdStats, zoom = 1, lighting = nu
         const cluster = clusters[i];
         const x = clusterWorldX(cluster);
         const y = clusterWorldY(cluster) + 4;
+        const gate = governor
+            ? governor.admit(MarkTier.AMBIENT, x, y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
         const rx = auraRadiusX(cluster);
         const ry = rx * 0.5;
         const aura = statusAura(cluster.dominantStatus);
 
         ctx.beginPath();
         ctx.ellipse(x, y, rx, ry, 0, 0, Math.PI * 2);
-        ctx.globalAlpha = fillAlpha;
+        ctx.globalAlpha = fillAlpha * gate.alpha;
         ctx.fillStyle = aura.fill;
         ctx.fill();
-        ctx.globalAlpha = strokeAlpha;
+        ctx.globalAlpha = strokeAlpha * gate.alpha;
         ctx.strokeStyle = aura.stroke;
         ctx.stroke();
     }

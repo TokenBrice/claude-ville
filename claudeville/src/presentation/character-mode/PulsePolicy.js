@@ -38,6 +38,29 @@ export function pulseValue(bandName = 'intrinsic', frame = 0, motionScale = 1) {
     return band.base + Math.sin(phase) * band.amplitude;
 }
 
+// Millisecond-domain twin of pulseValue() for overlay modules that track
+// performance.now() instead of a frame counter (plan 3.9 — snapping the local
+// sine cadences onto shared bands). Converts ms to frames so the authored
+// band rates keep their intended cadence; `phase` detunes individual marks
+// sharing one band so neighbours do not pulse in lockstep.
+export function pulseValueMs(bandName = 'intrinsic', nowMs = 0, motionScale = 1, phase = 0) {
+    const band = DEFAULT_PULSE_BANDS[bandName] || DEFAULT_PULSE_BANDS.intrinsic;
+    if (motionScale <= 0) return band.base;
+    const frames = (Number(nowMs) || 0) / (1000 / 60);
+    return band.base + Math.sin(frames * band.rate + band.phase + (Number(phase) || 0)) * band.amplitude;
+}
+
+// Normalized 0..1 read of a band (base±amplitude mapped to 0..1), for callers
+// replacing a legacy `0.5 + Math.sin(now / speed) * 0.5` cadence. Reduced
+// motion returns 0.5 — the same static mid-value those cadences used.
+export function pulseBand01(bandName = 'intrinsic', nowMs = 0, motionScale = 1, phase = 0) {
+    const band = DEFAULT_PULSE_BANDS[bandName] || DEFAULT_PULSE_BANDS.intrinsic;
+    if (motionScale <= 0) return 0.5;
+    const span = Math.max(1e-6, band.amplitude * 2);
+    const value = pulseValueMs(bandName, nowMs, motionScale, phase);
+    return Math.max(0, Math.min(1, (value - (band.base - band.amplitude)) / span));
+}
+
 export function pulseAlpha(bandName = 'intrinsic', frame = 0, motionScale = 1, min = 0, max = 1) {
     const value = Math.max(0, Math.min(1, pulseValue(bandName, frame, motionScale)));
     const lo = Math.max(0, Math.min(1, Number(min) || 0));
