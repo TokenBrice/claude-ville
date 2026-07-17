@@ -2,6 +2,20 @@
 
 ---
 
+## v0.25.2 — *Town Crier* · Jul 17, 2026
+
+Kimi villagers now speak plainly about the tools they wield, and the town's records of where Kimi Code sessions live are hardened against the current session-store layout.
+
+**Clearer Kimi captions**
+- **Questions are heard.** AskUserQuestion turns now surface the actual question in villager captions and the Activity Panel instead of a blank tool input.
+- **More tools named outright.** Task, skill, and cron-style calls now show their identifiers (`task_id`, `skill`, `id`) in captions and tool history rather than falling silent.
+
+**Hardened Kimi Code session mapping**
+- **The right home address.** When the session index lacks an entry, project resolution now prefers `state.json`'s top-level `workDir` over the agent `homedir`, which on current Kimi Code builds points inside the session store rather than at the project.
+- **Fixtures stand watch.** Adapter fixtures now pin the `workDir`-over-`homedir` precedence, question captions, and the new tool-input fields, so future Kimi Code format drift fails loudly instead of emptying the village.
+
+---
+
 ## v0.25.1 — *Open Waters* · Jul 14, 2026
 
 Pushed commit ships now complete their voyage cleanly, fading into open water instead of turning back toward the island after reaching the sea.

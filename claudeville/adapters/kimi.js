@@ -54,6 +54,9 @@ const KIMI_TOOL_INPUT_FIELDS = Object.freeze([
   'prompt',
   'url',
   'content',
+  'task_id',
+  'skill',
+  'id',
 ]);
 
 const _configCache = { at: 0, value: null };
@@ -255,7 +258,7 @@ function getSessionTitle(statePath) {
 }
 
 function summarizeToolInput(argsStr, { maxLength = 60, basenameFile = true } = {}) {
-  return summarizeSharedToolInput(argsStr, {
+  const summary = summarizeSharedToolInput(argsStr, {
     fields: KIMI_TOOL_INPUT_FIELDS,
     basenameFields: basenameFile ? ['file_path'] : [],
     maxLength,
@@ -264,6 +267,21 @@ function summarizeToolInput(argsStr, { maxLength = 60, basenameFile = true } = {
     stringFallback: 'string',
     objectFallback: 'none',
   });
+  if (summary != null) return summary;
+  return summarizeQuestionPrompt(argsStr, maxLength);
+}
+
+// AskUserQuestion keeps its identifying text in questions[].question, which the
+// shallow shared field scan cannot reach; surface it so captions and activity
+// rows are not blank on question turns.
+function summarizeQuestionPrompt(argsStr, maxLength) {
+  let args = argsStr;
+  if (typeof argsStr === 'string') {
+    try { args = JSON.parse(argsStr); } catch { return null; }
+  }
+  if (!args || typeof args !== 'object' || !Array.isArray(args.questions)) return null;
+  const entry = args.questions.find((item) => item && typeof item.question === 'string' && item.question.trim());
+  return entry ? entry.question.trim().substring(0, maxLength) : null;
 }
 
 function parseWireDetail(filePath) {
@@ -498,18 +516,27 @@ function readKimiCodeState(statePath) {
     const agents = state.agents && typeof state.agents === 'object' && !Array.isArray(state.agents)
       ? state.agents
       : {};
+    // Current Kimi Code builds persist the project root as top-level `workDir`.
+    const workDir = typeof state.workDir === 'string' && state.workDir.trim()
+      ? state.workDir.trim()
+      : null;
     // Only surface user-set titles; auto-derived titles (the first prompt) make
     // noisy villager names, so leave them null for procedural naming (matches legacy).
     if (state.isCustomTitle && state.title && typeof state.title === 'string') {
-      return { title: state.title.trim().substring(0, 80) || null, agents };
+      return { title: state.title.trim().substring(0, 80) || null, agents, workDir };
     }
-    return { title: null, agents };
+    return { title: null, agents, workDir };
   } catch {
-    return { title: null, agents: {} };
+    return { title: null, agents: {}, workDir: null };
   }
 }
 
 function kimiCodeProjectFromState(stateMeta) {
+  if (typeof stateMeta?.workDir === 'string' && stateMeta.workDir.trim()) {
+    return stateMeta.workDir.trim();
+  }
+  // Last resort for older layouts. On current builds `agents.<id>.homedir` points
+  // inside the session store (~/.kimi-code/sessions/...), not the project.
   const agents = stateMeta?.agents && typeof stateMeta.agents === 'object' ? stateMeta.agents : {};
   const orderedAgentIds = ['main', ...Object.keys(agents).filter(agentId => agentId !== 'main')];
   for (const agentId of orderedAgentIds) {

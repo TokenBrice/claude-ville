@@ -125,6 +125,8 @@ if (kimiFixture) {
   const stateOnlyMain = sessions.find((session) => session.sessionId === 'kimi-session_state_project');
   const configModelMain = sessions.find((session) => session.sessionId === 'kimi-session_config_model');
   const cwdOnlyMain = sessions.find((session) => session.sessionId === 'kimi-session_cwd_project');
+  const stateWorkdirMain = sessions.find((session) => session.sessionId === 'kimi-session_state_workdir');
+  const questionToolsMain = sessions.find((session) => session.sessionId === 'kimi-session_question_tools');
 
   assert.ok(main);
   assert.equal(main.provider, 'kimi');
@@ -215,6 +217,16 @@ if (kimiFixture) {
   assert.equal(cwdOnlyMain.agentName, 'Cwd Project Kimi');
   assert.equal(cwdOnlyMain.lastTool, 'Read');
 
+  assert.ok(stateWorkdirMain);
+  assert.equal(stateWorkdirMain.project, '/tmp/claude-ville-workdir');
+  assert.equal(stateWorkdirMain.agentName, 'Workdir Kimi');
+  assert.equal(stateWorkdirMain.lastTool, 'Read');
+
+  assert.ok(questionToolsMain);
+  assert.equal(questionToolsMain.project, '/tmp/claude-ville');
+  assert.equal(questionToolsMain.lastTool, 'AskUserQuestion');
+  assert.equal(questionToolsMain.lastToolInput, 'Ship the release?');
+
   const detail = adapter.getSessionDetail('kimi-session_fixture', '/tmp/claude-ville');
   assert.equal(detail.sessionId, 'kimi-session_fixture');
   assert.equal(detail.project, '/tmp/claude-ville');
@@ -254,6 +266,20 @@ if (kimiFixture) {
   assert.equal(cwdOnlyDetail.project, '/tmp/claude-ville-cwd');
   assert.equal(cwdOnlyDetail.toolHistory.length, 1);
   assert.equal(cwdOnlyDetail.toolHistory[0].tool, 'Read');
+
+  const stateWorkdirDetail = adapter.getSessionDetail('kimi-session_state_workdir', '/tmp/claude-ville');
+  assert.equal(stateWorkdirDetail.project, '/tmp/claude-ville-workdir');
+  assert.equal(stateWorkdirDetail.toolHistory.length, 1);
+  assert.equal(stateWorkdirDetail.toolHistory[0].tool, 'Read');
+
+  const questionToolsDetail = adapter.getSessionDetail('kimi-session_question_tools', '/tmp/claude-ville');
+  assert.equal(questionToolsDetail.toolHistory.length, 3);
+  assert.equal(questionToolsDetail.toolHistory[0].tool, 'TaskOutput');
+  assert.equal(questionToolsDetail.toolHistory[0].detail, 'task_42');
+  assert.equal(questionToolsDetail.toolHistory[1].tool, 'Skill');
+  assert.equal(questionToolsDetail.toolHistory[1].detail, 'impeccable');
+  assert.equal(questionToolsDetail.toolHistory[2].tool, 'AskUserQuestion');
+  assert.equal(questionToolsDetail.toolHistory[2].detail, 'Ship the release?');
 
   const registryDetail = getSessionDetailByProvider('kimi', 'kimi-session_fixture', '/tmp/claude-ville', { force: true });
   assert.equal(registryDetail.provider, 'kimi');
@@ -440,6 +466,8 @@ function buildKimiCodeFixture() {
   const stateOnlySessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_state_project');
   const configModelSessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_config_model');
   const cwdOnlySessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_cwd_project');
+  const stateWorkdirSessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_state_workdir');
+  const questionToolsSessionDir = path.join(kimiDir, 'sessions', 'wd_fixture', 'session_question_tools');
   const mainWire = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
   const childWire = path.join(sessionDir, 'agents', 'agent-0', 'wire.jsonl');
   const nestedChildWire = path.join(sessionDir, 'agents', 'agent-1', 'wire.jsonl');
@@ -451,6 +479,8 @@ function buildKimiCodeFixture() {
   const configModelMainWire = path.join(configModelSessionDir, 'agents', 'main', 'wire.jsonl');
   const cwdOnlyMainWire = path.join(cwdOnlySessionDir, 'agents', 'main', 'wire.jsonl');
   const cwdOnlyChildWire = path.join(cwdOnlySessionDir, 'agents', 'agent-0', 'wire.jsonl');
+  const stateWorkdirMainWire = path.join(stateWorkdirSessionDir, 'agents', 'main', 'wire.jsonl');
+  const questionToolsMainWire = path.join(questionToolsSessionDir, 'agents', 'main', 'wire.jsonl');
   const escapedFallbackWire = path.join(kimiDir, 'outside', 'escaped', 'agents', 'main', 'wire.jsonl');
   const escapedFallbackChildWire = path.join(kimiDir, 'outside', 'escaped', 'agents', 'agent-0', 'wire.jsonl');
   const escapedIndexDir = path.join(kimiDir, 'outside-indexed', 'session_escape_index');
@@ -496,6 +526,11 @@ function buildKimiCodeFixture() {
     {
       sessionId: 'session_config_model',
       sessionDir: configModelSessionDir,
+      workDir: '/tmp/claude-ville',
+    },
+    {
+      sessionId: 'session_question_tools',
+      sessionDir: questionToolsSessionDir,
       workDir: '/tmp/claude-ville',
     },
     {
@@ -574,6 +609,27 @@ function buildKimiCodeFixture() {
       main: { type: 'main', parentAgentId: null },
     },
     createdAt: new Date(now - 7000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+  // state.workDir must win over agents.main.homedir: on current Kimi Code builds
+  // homedir points inside the session store, so this fixture pins that precedence.
+  writeTextFile(path.join(stateWorkdirSessionDir, 'state.json'), JSON.stringify({
+    title: 'Workdir Kimi',
+    isCustomTitle: true,
+    agents: {
+      main: { type: 'main', parentAgentId: null, homedir: path.join(stateWorkdirSessionDir, 'agents', 'main') },
+    },
+    workDir: '/tmp/claude-ville-workdir',
+    createdAt: new Date(now - 6000).toISOString(),
+    updatedAt: new Date(now).toISOString(),
+  }));
+  writeTextFile(path.join(questionToolsSessionDir, 'state.json'), JSON.stringify({
+    title: 'Question Tools Kimi',
+    isCustomTitle: false,
+    agents: {
+      main: { type: 'main', parentAgentId: null },
+    },
+    createdAt: new Date(now - 5500).toISOString(),
     updatedAt: new Date(now).toISOString(),
   }));
 
@@ -873,6 +929,74 @@ function buildKimiCodeFixture() {
     },
   ]);
 
+  writeJsonl(stateWorkdirMainWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 1000,
+      event: {
+        type: 'tool.call',
+        name: 'Read',
+        toolCallId: 'call_kimi_state_workdir_fixture',
+        args: { file_path: '/tmp/claude-ville-workdir/README.md' },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 600,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: 4,
+        inputCacheRead: 2,
+        inputCacheCreation: 0,
+        output: 1,
+      },
+    },
+  ]);
+
+  writeJsonl(questionToolsMainWire, [
+    {
+      type: 'context.append_loop_event',
+      time: now - 1400,
+      event: {
+        type: 'tool.call',
+        name: 'TaskOutput',
+        toolCallId: 'call_kimi_task_output_fixture',
+        args: { task_id: 'task_42' },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 1200,
+      event: {
+        type: 'tool.call',
+        name: 'Skill',
+        toolCallId: 'call_kimi_skill_fixture',
+        args: { skill: 'impeccable' },
+      },
+    },
+    {
+      type: 'context.append_loop_event',
+      time: now - 1000,
+      event: {
+        type: 'tool.call',
+        name: 'AskUserQuestion',
+        toolCallId: 'call_kimi_question_fixture',
+        args: { questions: [{ question: 'Ship the release?', header: 'Release', options: [{ label: 'Yes' }, { label: 'No' }] }] },
+      },
+    },
+    {
+      type: 'usage.record',
+      time: now - 600,
+      model: 'kimi-code/kimi-for-coding',
+      usage: {
+        inputOther: 5,
+        inputCacheRead: 3,
+        inputCacheCreation: 0,
+        output: 1,
+      },
+    },
+  ]);
+
   writeJsonl(escapedFallbackWire, [
     {
       type: 'context.append_loop_event',
@@ -885,7 +1009,6 @@ function buildKimiCodeFixture() {
       },
     },
   ]);
-
   writeJsonl(escapedFallbackChildWire, [
     {
       type: 'context.append_loop_event',
@@ -925,6 +1048,8 @@ function buildKimiCodeFixture() {
   fs.utimesSync(configModelMainWire, fileDate, fileDate);
   fs.utimesSync(cwdOnlyMainWire, fileDate, fileDate);
   fs.utimesSync(cwdOnlyChildWire, fileDate, fileDate);
+  fs.utimesSync(stateWorkdirMainWire, fileDate, fileDate);
+  fs.utimesSync(questionToolsMainWire, fileDate, fileDate);
   fs.utimesSync(escapedFallbackWire, fileDate, fileDate);
   fs.utimesSync(escapedFallbackChildWire, fileDate, fileDate);
   fs.utimesSync(escapedIndexWire, fileDate, fileDate);
