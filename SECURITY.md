@@ -6,7 +6,7 @@ Do not open a public issue for vulnerabilities, exposed secrets, local file disc
 
 Use GitHub private vulnerability reporting from this repository's **Security** tab when available. Include:
 
-- affected endpoint, file path, adapter, or widget surface
+- affected endpoint, file path, or adapter
 - impact and prerequisites
 - reproduction steps or proof-of-concept details
 - whether provider logs, local paths, credentials, tokens, or private session content may be exposed
@@ -20,7 +20,6 @@ In scope:
 - `claudeville/server.js` HTTP and WebSocket behavior
 - provider adapter parsing and path handling
 - local file disclosure or traversal risks
-- widget bundle behavior for macOS and KDE
 - repository automation and configuration
 
 Out of scope:

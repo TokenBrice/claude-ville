@@ -34,7 +34,7 @@ The registry also exposes provider metadata (`provider`, display `name`, `suppor
 - `getActiveProviders()` surfaces provider display names and home directories for `/api/providers`.
 - `normalizeSession(session)` and `normalizeDetail(detail, context)` are the final API-shape gate. Adapters should still return the documented shape, but the registry supplies safe defaults for nullable fields before data reaches `server.js`.
 
-The short caches are intentional. The browser, activity panel, dashboard mode, WebSocket loop, and widget all poll near-live state, so the registry absorbs repeated identical reads without making the UI feel stale.
+The short caches are intentional. The browser, activity panel, dashboard mode, and WebSocket loop all poll near-live state, so the registry absorbs repeated identical reads without making the UI feel stale.
 
 ### JSONL parse diagnostics
 

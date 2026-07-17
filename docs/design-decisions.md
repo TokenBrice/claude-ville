@@ -4,11 +4,11 @@ Short decision records for load-bearing constraints in ClaudeVille. Each entry s
 
 ## Port 4000 is hardcoded
 
-`claudeville/server.js` defines `const PORT = 4000;`. The macOS widget, `widget/Resources/widget.html`, and KDE widget defaults hardcode the same port. The README, both `CLAUDE.md` files, and `AGENTS.md` reference it as fixed.
+`claudeville/server.js` defines `const PORT = 4000;`. The README, both `CLAUDE.md` files, and `AGENTS.md` reference it as fixed.
 
-The local-first design assumes one user, one machine, one server. Making the port configurable would force the widget, the embedded `widget.html`, and the docs to learn how to discover it. A constant is simpler and matches user muscle memory.
+The local-first design assumes one user, one machine, one server. Making the port configurable would force the docs and every local workflow to learn how to discover it. A constant is simpler and matches user muscle memory.
 
-If you change this, update: `claudeville/server.js`, `widget/Sources/main.swift`, `widget/Resources/widget.html`, `widget/kde/claudeville/contents/config/main.xml`, `widget/kde/claudeville/contents/ui/main.qml`, README, both `CLAUDE.md` files, `AGENTS.md`, `widget/kde/README.md`, and `docs/troubleshooting.md`.
+If you change this, update: `claudeville/server.js`, README, both `CLAUDE.md` files, `AGENTS.md`, and `docs/troubleshooting.md`.
 
 ## Dependency-free runtime, no build step
 
@@ -18,7 +18,7 @@ This makes the dashboard clone-and-run on any machine with Node 18+. There is no
 
 The repo does have `devDependencies` for sprite validation, screenshot capture, and visual diffs (`js-yaml`, `pngjs`, `pixelmatch`, `playwright`). Those are development tools, not runtime requirements.
 
-If you change this, update: `claudeville/CLAUDE.md` (runtime/development dependency split), `docs/troubleshooting.md` (syntax-check and sprite-tool guidance), and add the relevant install/build steps to README and the widget script.
+If you change this, update: `claudeville/CLAUDE.md` (runtime/development dependency split), `docs/troubleshooting.md` (syntax-check and sprite-tool guidance), and add the relevant install/build steps to README.
 
 ## Vanilla ES modules in the browser
 
@@ -56,11 +56,9 @@ If you change this, update: `docs/troubleshooting.md` (the empty-sessions diagno
 
 The runtime pricing estimate is static. The browser app keeps synchronous pricing helpers in `claudeville/src/domain/value-objects/TokenUsage.js` because `Agent.cost` and Activity Panel rendering are synchronous ES-module code with no build step. Server-side session presentation uses `claudeville/src/config/model-pricing.json` to decorate `/api/sessions` with `estimatedCost`, `displayModel`, `modelColor`, and `spriteId`.
 
-Widgets do not carry their own pricing tables. The native Swift widget, static `widget/Resources/widget.html`, and KDE widget consume the API-provided `estimatedCost` and display identity fields. `scripts/widget/check-pricing.cjs` verifies the browser pricing literals match the JSON source and rejects widget-side pricing tables.
-
 The dashboard does not have a billing API key or an authoritative price feed. Hardcoded estimates are good enough for the "is this run getting expensive?" question this UI answers. Prices change rarely.
 
-If a price changes, update `claudeville/src/config/model-pricing.json` and `TokenUsage.js`; then run `npm run widget:pricing-check`, validate `agent.cost`, Activity Panel rendering, `/api/sessions`, and widget cost rendering.
+If a price changes, update `claudeville/src/config/model-pricing.json` and `TokenUsage.js`; then validate `agent.cost`, Activity Panel rendering, and `/api/sessions`.
 
 ## Cache token normalization
 
@@ -106,22 +104,12 @@ This avoids accidental rollback when one agent integrates work and another is mi
 
 If you change this, update: root `AGENTS.md`/`CLAUDE.md`, `claudeville/CLAUDE.md`, and `docs/README.md`.
 
-## Platform-specific widgets
-
-`widget/Sources/main.swift` builds a Cocoa `NSStatusItem` with a `WKWebView` popover and is compiled by `swiftc`. `widget/build.sh` produces a `.app` bundle. KDE Plasma support lives separately under `widget/kde/claudeville` and is installed through `widget:kde:install`.
-
-The widget policy is platform-specific native surfaces, not one shared desktop shell. A cross-platform widget would mean Electron or Tauri, which would break the no-dependencies rule and add a build pipeline. Linux users without KDE and Windows users open the dashboard at `http://localhost:4000` directly; that path is fully supported.
-
-If you add another platform widget, keep it parallel to the Swift and KDE implementations; do not couple it to either existing widget surface.
-
-## Polling cadence: 2s server scheduler, 2s panel, 5s widget
+## Polling cadence: 2s server scheduler, 2s panel
 
 - Server scheduler: every 2 seconds; actual broadcasts are dirty-driven and no-op when there are no WebSocket clients.
 - Activity panel detail fetch: every 2 seconds for the selected agent (`claudeville/src/presentation/shared/ActivityPanel.js:150`).
-- Native widget HTTP poll: every 5 seconds.
-- Static `widget/Resources/widget.html`: WebSocket client with a 3-second reconnect interval.
 
-Server and panel stay near-live because both serve the active dashboard. The native widget is a glance surface, so it polls less often to save battery and CPU.
+Server and panel stay near-live because both serve the active dashboard.
 
 If you change any of these, also revisit `ACTIVE_THRESHOLD_MS` (the active-session window must stay strictly larger than the slowest poll, or sessions will visibly flicker in and out).
 

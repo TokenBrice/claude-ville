@@ -250,7 +250,7 @@ const SHELL_WRAPPER_PREFIXES = new Set(['bash', 'sh', 'zsh', 'fish', 'exec_comma
 const BOUNDARY_CHARS = ['/', '.', ' ', ':'];
 const SHELL_LIKE_INPUT_PATTERN = /^(?:bash|sh|zsh|fish|exec_command|shell|command_execution|git|gh|wrangler|vercel|npm|node|pnpm|yarn|bun|python|pytest|playwright|curl|wget|rg|grep|find|fd|ls|cat|sed|head|tail|jq|pharos-watch)\b/;
 const DOCUMENTATION_INPUT_PATTERN = /\b(agents|docs|doc|documentation|readme|changelog|handover|plan|spec|adr)\b|(?:^|[\/\s"'=])(?:agents|claude|readme|changelog|contributing|license)(?:\.md)?\b|\.mdx?\b/;
-const CODE_INPUT_PATTERN = /\b(src|server\.js|adapters|services|widget|claudeville\/src|claudeville\/server\.js)\b|\.([cm]?js|ts|tsx|jsx|css|html|json|yaml|yml)\b/;
+const CODE_INPUT_PATTERN = /\b(src|server\.js|adapters|services|claudeville\/src|claudeville\/server\.js)\b|\.([cm]?js|ts|tsx|jsx|css|html|json|yaml|yml)\b/;
 const JSONISH_INPUT_PATTERN = /^[\[{]/;
 const TOOL_REFERENCE_PATTERN = /(?:recipient_name|tool|name)["']?\s*[:=]\s*["']([^"']+)["']/g;
 const URL_PATTERN = /https?:\/\/[^\s"'<>`]+/i;

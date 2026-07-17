@@ -6,7 +6,6 @@ ClaudeVille is a local-first dashboard for watching AI coding CLI sessions. Smal
 
 - Provider adapter fixes with redacted fixtures or clear reproduction notes.
 - Documentation fixes, setup notes, and API examples.
-- macOS or KDE widget fixes.
 - World, Dashboard, and sprite visual fixes with screenshots.
 - Focused UI quality improvements that preserve the current design language.
 - New provider proposals after the data source, privacy boundary, and maintenance cost are clear.
@@ -19,7 +18,7 @@ Feature ideas usually work best in GitHub Discussions before implementation.
 2. Read the nearest area README for the files you plan to touch.
 3. Keep provider session files read-only. ClaudeVille observes local CLI logs; it must not mutate them.
 4. Keep changes narrow. Avoid unrelated refactors, generated churn, and formatting sweeps.
-5. Include screenshots for World, Dashboard, widget, or visual asset changes.
+5. Include screenshots for World, Dashboard, or visual asset changes.
 
 ## Local Setup
 

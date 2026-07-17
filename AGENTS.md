@@ -1,7 +1,7 @@
 ## Scope
 
 - Work from `/home/ahirice/Documents/git/claude-ville`.
-- ClaudeVille is a local, zero-build dashboard for watching AI coding CLI sessions as a browser "village" plus optional macOS and KDE widgets.
+- ClaudeVille is a local, zero-build dashboard for watching AI coding CLI sessions as a browser "village".
 - Desktop-only target: assume browser viewports ≥1280px wide. Do not add `@media` queries, mobile/narrow-viewport testing, or responsive shrinking.
 - Touch only files needed for the task. Shared checkout: start with `git status --short`, preserve unrelated edits, prefer `rg`/`rg --files` for discovery.
 - No install step, bundler, transpiler, lint, formatter, app test runner, or CI.
@@ -11,7 +11,6 @@ Local dev-server (maintained): http://localhost:4000
 ## Commands
 
 - Start: `npm run dev` → `http://localhost:4000`
-- Widget: `npm run widget:build`, then `npm run widget` (macOS only); KDE checks use `npm run widget:kde:check`
 - Run `npm install` only for dev scripts (sprite validation, visual diffs, Playwright capture).
 
 ## Project Map
@@ -28,8 +27,6 @@ Local dev-server (maintained): http://localhost:4000
 | Domain / application / config / infra | `claudeville/src/{domain,application,config,infrastructure}/` | [`claudeville/CLAUDE.md`](claudeville/CLAUDE.md) |
 | Sprite assets | `claudeville/assets/sprites/` | [`scripts/sprites/generate.md`](scripts/sprites/generate.md), [`docs/pixellab-reference.md`](docs/pixellab-reference.md) |
 | Documentation | `docs/` | [`docs/README.md`](docs/README.md) |
-| macOS widget | `widget/` | `README.md` § macOS Menu Bar Widget |
-| KDE Plasma widget | `widget/kde/` | [`widget/kde/README.md`](widget/kde/README.md), `README.md` § KDE Plasma Widget |
 
 ## Agent Artifacts
 
@@ -68,7 +65,6 @@ Match validation to what you changed:
 | Anything under `src/` | Open `http://localhost:4000`, test World + Dashboard, resize, agent select/deselect |
 | Sprite assets or `manifest.yaml` | `npm run sprites:audit-refresh`; for visuals, `sprites:capture-fresh` then `sprites:visual-diff` |
 | World building or terrain config | `npm run world:validate-buildings`; `npm run world:validate-terrain` |
-| `widget/` | macOS: `npm run widget:build`, then `npm run widget:check` or `npm run widget:verify-bundle`, then `npm run widget`; KDE: `npm run widget:kde:check`, then `npm run widget:kde:install` when KDE is available |
 | Root agent docs | parity must hold: `diff <(tail -n +3 CLAUDE.md) <(tail -n +3 AGENTS.md)` empty |
 | Docs-only | diff review + `git status --short` |
 

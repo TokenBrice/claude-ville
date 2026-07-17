@@ -30,8 +30,6 @@ body:
         - Dashboard mode
         - Provider adapter
         - Server or API
-        - macOS widget
-        - KDE widget
         - Documentation
         - Other
   - type: textarea

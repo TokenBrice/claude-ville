@@ -13,15 +13,15 @@ Static HTML/CSS/vanilla ES modules; `server.js` uses only Node built-ins; no bun
 
 ## Server
 
-`server.js`: port hardcoded to `4000`; static files from `claudeville/`; `/widget.html` and `/widget.css` from `widget/Resources/`; watch paths come from active provider adapters; updates debounce on fs events plus a 2 s poll that no-ops with no WS clients.
+`server.js`: port hardcoded to `4000`; static files from `claudeville/`; watch paths come from active provider adapters; updates debounce on fs events plus a 2 s poll that no-ops with no WS clients.
 
 API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf`; `ws://localhost:4000` (init payload, updates, ping/pong).
 
-Do not change port `4000` casually. The README, widget, and local workflows assume it.
+Do not change port `4000` casually. The README and local workflows assume it.
 
-Cadence constants live in `src/config/constants.js`, `server.js`, `adapters/index.js`, `adapters/gitEvents.js`, and `widget/Sources/main.swift`.
+Cadence constants live in `src/config/constants.js`, `server.js`, `adapters/index.js`, and `adapters/gitEvents.js`.
 
-Invariant: client poll fallback runs at 2 s; server cache TTL is 5 s; WS heartbeat is 30 s; widget poll is 5 s — never lower client poll under server cache TTL/2 or the cache becomes useless.
+Invariant: client poll fallback runs at 2 s; server cache TTL is 5 s; WS heartbeat is 30 s — never lower client poll under server cache TTL/2 or the cache becomes useless.
 
 ## Provider Adapters
 
@@ -61,10 +61,6 @@ Via the PixelLab MCP server. `claudeville/assets/sprites/manifest.yaml` is the s
 
 `src/presentation/shared/ActivityPanel.js`: `agent:selected` opens agent mode; `BUILDING_EVENTS.SELECTED` opens building mode and clears agent selection. Polls session detail every 2 s, building occupants every 5 s; renders only when detail signatures change.
 
-## Widget
-
-`widget/Sources/main.swift` polls `/api/sessions` and `/api/usage` every 5 s. The native popover is generated inline in Swift (`buildHTML()`); editing `widget/Resources/widget.html`/`widget.css` does not automatically change it. Widget changes require macOS validation: `npm run widget:build` then `npm run widget`.
-
 ## Validation
 
 In-app (after rendering/layout/event-bus changes): open `http://localhost:4000`; switch World/Dashboard modes; select/deselect an agent — `agent:selected`/`agent:deselected` must open/close the activity panel and toggle camera follow; the world canvas must resize with `.content` (not `position: fixed`).
@@ -77,7 +73,7 @@ Docs (English-only; must return no matches):
 rg -n -P "[\\x{1100}-\\x{11FF}\\x{3130}-\\x{318F}\\x{AC00}-\\x{D7AF}]" $(rg --files -g '*.md' --glob '!node_modules')
 ```
 
-See `AGENTS.md` § Validation Checklist for the canonical syntax/runtime/widget smoke list.
+See `AGENTS.md` § Validation Checklist for the canonical syntax/runtime smoke list.
 
 ## Event Bus
 

@@ -31,10 +31,8 @@ const claudeAdapter = adapters.find(a => a.provider === 'claude');
 const PORT = 4000;
 const STATIC_DIR = __dirname;
 const STATIC_ROOT = path.resolve(STATIC_DIR);
-const WIDGET_STATIC_ROOT = path.resolve(__dirname, '..', 'widget', 'Resources');
 const realpathSync = fs.realpathSync.native || fs.realpathSync;
 const STATIC_REAL_ROOT = realpathSync(STATIC_ROOT);
-const WIDGET_STATIC_REAL_ROOT = realpathIfExists(WIDGET_STATIC_ROOT);
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
@@ -160,14 +158,6 @@ function isContainedPath(root, candidate) {
 
 function realpathExistingPath(filePath) {
   return realpathSync(filePath);
-}
-
-function realpathIfExists(filePath) {
-  try {
-    return realpathSync(filePath);
-  } catch {
-    return filePath;
-  }
 }
 
 function formatAge(ms) {
@@ -547,14 +537,6 @@ function handleStaticFile(req, res, parsedUrl) {
     root: STATIC_ROOT,
     realRoot: STATIC_REAL_ROOT,
     label: 'Static',
-  });
-}
-
-function handleWidgetStaticFile(req, res, parsedUrl) {
-  return serveContainedFile(req, res, parsedUrl, {
-    root: WIDGET_STATIC_ROOT,
-    realRoot: WIDGET_STATIC_REAL_ROOT,
-    label: 'WidgetStatic',
   });
 }
 
@@ -2013,8 +1995,6 @@ const API_ROUTES = {
   ]),
 };
 
-const WIDGET_STATIC_PATHS = new Set(['/widget.html', '/widget.css']);
-
 const server = http.createServer((req, res) => {
   if (req.method === 'OPTIONS') {
     setCorsHeaders(res);
@@ -2034,10 +2014,6 @@ const server = http.createServer((req, res) => {
   const routeHandler = API_ROUTES[req.method]?.get(pathname);
   if (routeHandler) {
     return routeHandler(req, res, parsedUrl);
-  }
-
-  if (WIDGET_STATIC_PATHS.has(pathname)) {
-    return handleWidgetStaticFile(req, res, parsedUrl);
   }
 
   handleStaticFile(req, res, parsedUrl);

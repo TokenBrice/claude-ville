@@ -15,7 +15,7 @@ Read these in order when joining the project:
 
 | Task | Read |
 | --- | --- |
-| Diagnose a first-hour setup, provider, API, widget, or graphics issue | `docs/troubleshooting.md` |
+| Diagnose a first-hour setup, provider, API, or graphics issue | `docs/troubleshooting.md` |
 | Understand load-bearing constraints before changing architecture | `docs/design-decisions.md` |
 | Add or change a provider, model, pricing identity, or agent sprite mapping | `docs/agent-provider-addition.md` |
 | Add World mode animation, pulses, particles, or reduced-motion behavior | `docs/motion-budget.md` |
@@ -40,12 +40,10 @@ Read these in order when joining the project:
 | `CHANGELOG.md` | Named release history shown in-app from the version chip. |
 | `CONTRIBUTING.md` | Public contribution lanes, setup, validation, and pull request expectations. |
 | `SECURITY.md` | Private vulnerability reporting policy and scope. |
-| `SUPPORT.md` | Support routing for setup, provider, widget, and visual issues. |
+| `SUPPORT.md` | Support routing for setup, provider, and visual issues. |
 | `claudeville/adapters/README.md` | Adapter contract and normalized provider data. |
 | `claudeville/src/presentation/character-mode/README.md` | World mode renderer pipeline and canvas contracts. |
 | `claudeville/src/presentation/dashboard-mode/README.md` | Dashboard renderer lifecycle and detail polling. |
 | `claudeville/src/presentation/shared/README.md` | Top bar, sidebar, activity panel, model identity, and shared detail cache. |
-| `widget/kde/README.md` | KDE Plasma widget package and install workflow. |
-| `widget/README.md` | macOS menu bar widget setup and behavior. |
 | `scripts/sprites/generate.md` | Manifest-first sprite generation and validation workflow. |
 | `agents/README.md` | Current agent-artifact policy and retained artifact index. |

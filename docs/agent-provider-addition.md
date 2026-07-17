@@ -10,7 +10,7 @@ Required session-list fields:
 
 | Field | Default when unsupported | Notes |
 | --- | --- | --- |
-| `provider` | required | Stable id consumed by registry, UI, widgets, and visual identity. |
+| `provider` | required | Stable id consumed by registry, UI, and visual identity. |
 | `sessionId` | required | Unique across providers; prefix if provider ids can collide. |
 | `project` | `null` | Absolute path when available. |
 | `model` | `'unknown'` or provider fallback | Free-form provider model string. |
@@ -32,14 +32,13 @@ Detail payloads should return `{ sessionId, toolHistory, messages, tokenUsage }`
 5. Check `AgentManager` handling for provider id, role, project grouping, status fallback, and parent/child relationships.
 6. Add or update `ModelVisualIdentity.js` so labels, colors, sprite ids, palette keys, minimap colors, and effort/accessory rules resolve without provider-specific UI conditionals.
 7. Smoke Dashboard cards, Sidebar rows, Activity Panel detail, World sprites, and minimap.
-8. Check widget impact. `/api/sessions` must provide any new provider/model display fields needed by browser widget resources, Swift `buildHTML()`, and KDE QML.
-9. Update docs: `README.md`, `claudeville/adapters/README.md`, and this runbook when the contract changes.
+8. Update docs: `README.md`, `claudeville/adapters/README.md`, and this runbook when the contract changes.
 
 ## Track B: New Model For Existing Provider
 
 1. Confirm the adapter already passes the model string through unchanged.
 2. Update `ModelVisualIdentity.js` for display label, color, sprite id, palette key, minimap color, and effort/accessory behavior.
-3. If the model changes pricing or status copy, update server session presentation plus browser UI/docs; widgets should consume the API-provided `estimatedCost`, `displayModel`, `modelColor`, and `spriteId` fields.
+3. If the model changes pricing or status copy, update server session presentation plus browser UI/docs.
 4. If the model needs a new sprite, follow Track C.
 5. Smoke Dashboard, Activity Panel, Sidebar, World mode, and minimap with a session using the new model string.
 
@@ -82,11 +81,6 @@ npm run sprites:audit-refresh
 npm run sprites:capture-fresh
 npm run sprites:visual-diff
 ```
-
-Widget changes:
-
-- macOS: `npm run widget:build`, then `npm run widget:check` or `npm run widget:verify-bundle`, then `npm run widget`.
-- KDE: `npm run widget:kde:check`, then `npm run widget:kde:install` when KDE is available.
 
 Docs-only changes:
 

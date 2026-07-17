@@ -18,7 +18,6 @@ body:
         - Terrain or scenery
         - Dashboard cards
         - Sidebar or activity panel
-        - macOS or KDE widget
     validations:
       required: true
   - type: textarea

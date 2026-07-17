@@ -17,7 +17,6 @@ body:
         - Sidebar or activity panel
         - Server or API
         - Provider adapter
-        - Widget
         - Documentation
     validations:
       required: true

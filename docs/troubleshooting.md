@@ -46,7 +46,7 @@ lsof -i :4000
 ss -ltnp | grep 4000
 ```
 
-The widget, README, both `CLAUDE.md` files, and `widget/Resources/widget.html` all assume port 4000. See `docs/design-decisions.md` for why it is hardcoded.
+The README and both `CLAUDE.md` files assume port 4000. See `docs/design-decisions.md` for why it is hardcoded.
 
 If the browser shows a blank page but the port is open, first confirm there is only one listener:
 
@@ -85,28 +85,9 @@ Credential and activity sources are cached briefly, and quota checks are best-ef
 
 ## Cost numbers look wrong
 
-Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. Browser-side estimates use `claudeville/src/domain/value-objects/TokenUsage.js`; server-side `/api/sessions` estimates and widget display fields use `claudeville/src/config/model-pricing.json` through the adapter session-presentation helper. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`, `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `kimi-for-coding`, `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`, `grok-4.5`, `grok-4.3`, `grok-4`, `composer`). DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but match DeepSeek pricing by model string. Grok sessions currently surface a cumulative `contextWindow` occupancy from ACP metadata rather than a full input/output split, so estimated cost often stays near zero until richer usage is written on disk. Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
+Cost is computed locally from token counts in the session files multiplied by static per-million-token rates. Browser-side estimates use `claudeville/src/domain/value-objects/TokenUsage.js`; server-side `/api/sessions` estimates use `claudeville/src/config/model-pricing.json` through the adapter session-presentation helper. The numbers are estimates, not billing truth, and they only cover models whose name contains a known substring (`opus`, `sonnet`, `haiku`, `gpt-5`, `gpt-5.3`, `gpt-5.4`, `gpt-5.5`, `gpt-5.6`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `kimi-for-coding`, `deepseek-v4-pro`, `deepseek-v4-flash`, `deepseek-reasoner`, `grok-4.5`, `grok-4.3`, `grok-4`, `composer`). DeepSeek-backed OpenCode sessions still use `provider: "opencode"` but match DeepSeek pricing by model string. Grok sessions currently surface a cumulative `contextWindow` occupancy from ACP metadata rather than a full input/output split, so estimated cost often stays near zero until richer usage is written on disk. Unknown models fall back to a Sonnet- or `gpt-5`-shaped default.
 
-If a model is missing or its price has changed, update `claudeville/src/config/model-pricing.json` and `TokenUsage.js`; then run `npm run widget:pricing-check` and verify browser, `/api/sessions`, and widget cost displays. Widgets consume the API-provided `estimatedCost`, `displayModel`, `modelColor`, and `spriteId` fields rather than carrying local pricing tables.
-
-## Widget shows "offline"
-
-The Swift widget polls `http://localhost:4000/api/sessions` and `/api/usage` every five seconds. It can also auto-launch the server using two paths recorded in the bundle at build time:
-
-- `ClaudeVilleWidget.app/Contents/Resources/project_path`
-- `ClaudeVilleWidget.app/Contents/Resources/node_path`
-
-Both are written by `widget/build.sh:25-27`. If you moved the repo or upgraded Node after building, those values are stale. Rebuild:
-
-```bash
-npm run widget:build
-```
-
-`widget/build.sh` recreates `widget/ClaudeVilleWidget.app`, so treat widget builds as generated-output changes in the shared checkout. Do not delete or rebuild the app bundle unless widget validation is in scope.
-
-There are two widget HTML surfaces. The native menu-bar popover is generated inline in `widget/Sources/main.swift`; `widget/Resources/widget.html` is a static resource served by the local server and copied into the bundle. Editing `widget.html` alone may not change the native popover. Both widget surfaces now rely on `/api/sessions` for session cost and model display fields.
-
-Before launching Node, the widget checks `http://localhost:4000/api/providers` and verifies the response looks like ClaudeVille. It only terminates a server process that it started itself.
+If a model is missing or its price has changed, update `claudeville/src/config/model-pricing.json` and `TokenUsage.js`, then verify the browser and `/api/sessions` cost displays.
 
 ## Desktop graphics reset or compositor crash while ClaudeVille is open
 
@@ -128,10 +109,6 @@ curl http://localhost:4000/api/perf
 ```
 
 If the journal shows GPU ring timeouts, compositor `GL_CONTEXT_LOST`, or Xwayland/browser core dumps without OOM-killer entries, treat it as a graphics-stack reset. ClaudeVille should reduce load by pausing World mode in Dashboard, releasing renderer-owned canvas caches, and capping canvas backing-store pixels, but driver/compositor resets can still originate below the app.
-
-## macOS widget will not build
-
-The Swift menu-bar widget is macOS only. `widget/build.sh` invokes `swiftc`, which requires the Xcode Command Line Tools. On Linux or Windows the build script will fail at the first compile step. KDE Plasma support is separate under `widget/kde/` and does not use `swiftc`.
 
 ## Browser console errors after editing
 

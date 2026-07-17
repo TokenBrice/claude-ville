@@ -240,8 +240,8 @@ function readHistoryLive() {
 
 /**
  * Convert one quota window from the OAuth usage response into a 0-1 ratio.
- * The API reports `utilization` as a 0-100 percentage; all frontend and
- * widget consumers expect a 0-1 ratio.
+ * The API reports `utilization` as a 0-100 percentage; all frontend
+ * consumers expect a 0-1 ratio.
  */
 function quotaRatio(window) {
   const utilization = Number(window?.utilization);

@@ -66,11 +66,9 @@ curl -s http://localhost:4000/api/providers
 
 ```bash
 curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/
-curl -s -o /dev/null -w "%{http_code}" http://localhost:4000/widget.html
 ```
 
-- **PASS**: index.html returns 200, widget.html returns 200
-- **WARN**: widget.html returns 404 (widget route not added to server)
+- **PASS**: index.html returns 200
 - **FAIL**: index.html returns non-200
 
 ### 7. CORS Headers

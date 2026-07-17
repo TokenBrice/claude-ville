@@ -17,7 +17,6 @@ ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google
 - **Multi-provider:** Claude Code, Codex CLI, Gemini CLI, Grok CLI, Kimi, and OpenCode.
 - **Glanceable:** World mode for second-monitor awareness; Dashboard mode for exact state.
 - **Zero-build runtime:** Node HTTP/WebSocket server plus static browser assets.
-- **Desktop companion:** optional macOS menu bar and KDE Plasma widgets.
 
 Current version: **v0.22.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
 
@@ -27,7 +26,7 @@ Active development lives in this repository. It is currently a public fork of `h
 
 ClaudeVille is a Claude Code dashboard, Codex CLI dashboard, and local AI agent observability tool built for the corner of your eye. It turns invisible local agent activity into a place you can leave open: agents move around the village by what they are doing, while Dashboard mode keeps token usage, cost, tools, status, and session detail available when you need exact state.
 
-The app is intentionally small: a zero-dependency Node.js HTTP/WebSocket server, static browser assets, vanilla ES modules, Canvas 2D rendering, and optional desktop widgets for macOS and KDE Plasma.
+The app is intentionally small: a zero-dependency Node.js HTTP/WebSocket server, static browser assets, vanilla ES modules, and Canvas 2D rendering.
 
 ## Local And Read-Only
 
@@ -71,16 +70,10 @@ Common `package.json` scripts:
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | Start `claudeville/server.js` on port `4000`. |
-| `npm run validate:quick` | Run the no-runtime syntax, adapter-fixture, git-event, sprite-ID, and widget source checks. |
+| `npm run validate:quick` | Run the no-runtime syntax, adapter-fixture, git-event, and sprite-ID checks. |
 | `npm run check:server` / `check:adapters` / `check:services` / `check:frontend-syntax` / `check:scripts` | Targeted JavaScript syntax checks. |
 | `npm run check:git-events` | Validate git-event parsing fixtures. |
 | `npm run check:adapter-fixtures` | Validate adapter fixture behavior. |
-| `npm run widget:build` | Compile the optional macOS widget app. |
-| `npm run widget` | Build, then open `widget/ClaudeVilleWidget.app`. |
-| `npm run widget:check` | Verify macOS widget source checks and copied app-bundle resources. |
-| `npm run widget:kde:check` | Validate the KDE Plasma package without installing it. |
-| `npm run widget:kde:install` | Install or upgrade the KDE Plasma widget. |
-| `npm run widget:kde:uninstall` | Remove the KDE Plasma widget. |
 | `npm run sprites:audit-ids` | Check renderer sprite references against the manifest. |
 | `npm run sprites:audit-refresh` | Run sprite ID audit and full manifest validation together. |
 | `npm run sprites:validate` | Validate `assets/sprites/manifest.yaml` against PNG files and character-sheet shape. Requires dev dependencies. |
@@ -118,8 +111,6 @@ For an unfamiliar agent, read these first:
   - Grok CLI: `~/.grok/` (sessions are read from `~/.grok/sessions/`)
   - Kimi: `~/.kimi/` or `~/.kimi-code/` (legacy sessions are read from `~/.kimi/sessions/`; Kimi Code sessions from `~/.kimi-code/sessions/`)
   - OpenCode: `~/.local/share/opencode/opencode.db` with Node `node:sqlite` support or the `sqlite3` CLI available for read-only access.
-- macOS widget only: macOS with the Xcode Command Line Tools available for `swiftc`.
-- KDE widget only: KDE Plasma 6 with `kpackagetool6`.
 
 Empty provider lists are normal on machines where no supported CLI has local session files yet.
 
@@ -151,17 +142,12 @@ claude-ville/
 |       |-- infrastructure/        # REST data source and WebSocket client
 |       `-- presentation/          # Shared UI plus world and dashboard renderers
 |-- scripts/sprites/               # Manifest validation, sprite generation docs, visual diff helpers
-|-- widget/
-|   |-- Sources/main.swift         # macOS status item app
-|   |-- Resources/                 # Widget HTML and CSS served by the Node server
-|   |-- kde/                       # KDE Plasma panel widget package and install helpers
-|   `-- build.sh                   # Swift build and local path stamping
 `-- package.json
 ```
 
 ## Runtime Architecture
 
-`claudeville/server.js` serves static files from `claudeville/`, serves `/widget.html` and `/widget.css` from `widget/Resources/`, exposes JSON API endpoints, upgrades WebSocket clients at `ws://localhost:4000`, watches provider data paths, and broadcasts updates while clients are connected. Updates are debounced on filesystem events; a 2-second interval also runs unconditionally, with broadcasts becoming no-ops when no WebSocket clients are connected.
+`claudeville/server.js` serves static files from `claudeville/`, exposes JSON API endpoints, upgrades WebSocket clients at `ws://localhost:4000`, watches provider data paths, and broadcasts updates while clients are connected. Updates are debounced on filesystem events; a 2-second interval also runs unconditionally, with broadcasts becoming no-ops when no WebSocket clients are connected.
 
 The frontend boot path is `claudeville/src/presentation/App.js`:
 
@@ -193,8 +179,6 @@ The server is hardcoded to port `4000`.
 | `GET /api/usage` | Usage, subscription, activity, and quota metadata. |
 | `GET /api/perf` | Lightweight runtime counters for manual performance checks. |
 | `GET /api/changelog` | Raw `CHANGELOG.md` text; rendered by the in-app version-chip modal. |
-| `GET /widget.html` | Widget popover HTML from `widget/Resources/`. |
-| `GET /widget.css` | Widget popover CSS from `widget/Resources/`. |
 | `ws://localhost:4000` | Initial session payload, update broadcasts, and ping/pong. |
 
 The server also responds to CORS preflight requests and sends JSON error responses for missing or invalid routes.
@@ -241,43 +225,6 @@ Rendering is sprite-first. `IsometricRenderer.js` orchestrates the draw loop and
 Dashboard mode renders DOM cards grouped by project. Cards show provider badge, model, role, status, current tool, recent message, and fetched tool history. Dashboard mode is designed for scanning active sessions without the RPG world.
 
 `DashboardRenderer.js` fetches session details only while Dashboard mode is active, reuses project sections/cards across updates, and emits the same selection events as the sidebar/canvas. It shares `SessionDetailsService.js` with the activity panel so duplicate detail requests can be coalesced and briefly cached.
-
-## macOS Menu Bar Widget
-
-The optional widget is a small Swift `NSStatusItem` app with a `WKWebView` popover. The native Swift widget polls these endpoints every 5 seconds:
-
-- `http://localhost:4000/api/sessions`
-- `http://localhost:4000/api/usage`
-
-Build and run:
-
-```bash
-npm run widget:build
-npm run widget
-```
-
-`widget/build.sh` compiles `widget/Sources/main.swift`, recreates `widget/ClaudeVilleWidget.app`, copies widget resources, and writes the current project path and Node binary path into the app bundle. The app can start `claudeville/server.js` itself if needed, and its dashboard button opens `http://localhost:4000` in a native window.
-
-There are two widget surfaces:
-
-- The native menu-bar popover is rendered by Swift (`buildHTML()` in `widget/Sources/main.swift`) with `webView.loadHTMLString(...)`.
-- `widget/Resources/widget.html` and `widget.css` are static resources served by `server.js` at `/widget.html` and `/widget.css`, and are also copied into the app bundle. Editing them does not automatically change the native Swift-generated popover.
-
-## KDE Plasma Widget
-
-The KDE Plasma widget lives in `widget/kde/claudeville` as a Plasma 6 applet package. It polls these endpoints every 5 seconds by default:
-
-- `http://localhost:4000/api/sessions`
-- `http://localhost:4000/api/usage`
-
-Install and add it to a Plasma panel:
-
-```bash
-npm run dev
-npm run widget:kde:install
-```
-
-Then open Plasma's **Add Widgets** panel and search for **ClaudeVille**. The widget settings expose the server URL and refresh interval.
 
 ## Validation
 
@@ -326,12 +273,10 @@ npm run sprites:visual-diff
 
 If dependencies are not installed and installing them is out of scope, fall back to manifest/code inspection plus `file claudeville/assets/sprites/**/*.png` checks for touched assets.
 
-For macOS widget changes, run `npm run widget:build`, then `npm run widget:check` or `npm run widget:verify-bundle`, then `npm run widget`, and confirm the app can reach port `4000`. `validate:quick` checks widget pricing and KDE source structure but does not prove the generated `.app` bundle resources are current. For KDE widget changes, run `npm run widget:kde:check`, install with `npm run widget:kde:install` when KDE is available, and confirm the panel widget can reach port `4000`.
-
 ## Development Notes
 
 - Keep provider session files read-only. ClaudeVille observes local CLI logs; it should not mutate them.
-- Keep port `4000` unless all dependent docs, widget code, and local workflows are updated together.
+- Keep port `4000` unless all dependent docs and local workflows are updated together.
 - `DEBUG_STATIC=1` logs static file requests; `DEBUG_WATCH=1` logs watch-path refresh details.
 - Keep small changes within the current vanilla JavaScript and CSS architecture. There is no framework, bundler, transpiler, or app test runner today.
 - Do not edit generated sprite PNGs without also checking `claudeville/assets/sprites/manifest.yaml` and the sprite validation rules.
@@ -340,7 +285,7 @@ For macOS widget changes, run `npm run widget:build`, then `npm run widget:check
 
 ## Contributing And Support
 
-Good public contribution lanes are provider adapter fixes, redacted fixtures, docs fixes, widget fixes, and focused UI or visual quality improvements. Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
+Good public contribution lanes are provider adapter fixes, redacted fixtures, docs fixes, and focused UI or visual quality improvements. Read [CONTRIBUTING.md](./CONTRIBUTING.md) before opening a pull request.
 
 For setup and troubleshooting, start with [SUPPORT.md](./SUPPORT.md) and [docs/troubleshooting.md](./docs/troubleshooting.md). Please do not report vulnerabilities or exposed private data in public issues; use [SECURITY.md](./SECURITY.md).
 
@@ -354,7 +299,7 @@ For setup and troubleshooting, start with [SUPPORT.md](./SUPPORT.md) and [docs/t
 | `CHANGELOG.md` | Everyone | Named release history shown in-app from the version chip. |
 | `CONTRIBUTING.md` | Contributors | Contribution lanes, setup, validation, and pull request expectations. |
 | `SECURITY.md` | Security reporters | Private vulnerability reporting policy and scope. |
-| `SUPPORT.md` | Users and contributors | Where to start for setup, provider, widget, and visual support. |
+| `SUPPORT.md` | Users and contributors | Where to start for setup, provider, and visual support. |
 | `CODE_OF_CONDUCT.md` | Contributors | Collaboration expectations and enforcement scope. |
 | `AGENTS.md` | Codex CLI and any generic agent harness | Canonical agent-context file: harness map, `/agents/` artifact convention, project shape, conventions, validation, git hygiene. |
 | `CLAUDE.md` | Claude Code | Byte-for-byte mirror of `AGENTS.md` (after the heading) so Claude Code's auto-loader sees the same content. `AGENTS.md` is canonical — when changing one, change both and run the parity diff in either file's Validation Checklist. |
@@ -373,8 +318,6 @@ For setup and troubleshooting, start with [SUPPORT.md](./SUPPORT.md) and [docs/t
 | `agents/README.md` | Agents | Current artifact policy and retained artifact index. |
 | `scripts/sprites/generate.md` | Sprite work | Manifest-first PixelLab generation and asset validation runbook. |
 | `docs/pixellab-reference.md` | Sprite work | PixelLab tool catalog, parameter enums, animation templates, async lifecycle, and pitfalls. |
-| `widget/README.md` | macOS widget work | Native menu bar widget setup and behavior. |
-| `widget/kde/README.md` | KDE widget work | Plasma widget install, configuration, and validation. |
 
 ## License
 
