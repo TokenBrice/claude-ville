@@ -117,6 +117,21 @@
     padding: 2px 6px;
 }
 
+/* Collapse transition: the width itself snaps on purpose — animating it would
+   fire the world canvas ResizeObserver every frame (backing-store realloc +
+   camera re-frame). The swap is softened with a short opacity fade on the
+   chrome instead; title/body fade restarts on expand as display flips back. */
+.sidebar__title,
+.sidebar__body,
+.sidebar--collapsed .sidebar__header {
+    animation: sidebar-content-in 0.18s ease;
+}
+
+@keyframes sidebar-content-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
 .sidebar__agent {
     display: flex;
     align-items: center;
@@ -225,6 +240,12 @@
     animation: sidebar-pulse-dot 1.6s ease-in-out infinite;
 }
 
+/* Completed is terminal: static soft-gold dot, claims no pulse band. */
+.sidebar__agent-dot--completed {
+    background: var(--cv-status-completed, #e8c96a);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-completed, #e8c96a) 50%, transparent);
+}
+
 @keyframes sidebar-pulse-dot {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
@@ -278,6 +299,12 @@
         animation: none;
         /* Static partial ring still reads as "in progress". */
         transform: rotate(45deg);
+    }
+    /* Collapse swap is instant: no chrome fade. */
+    .sidebar__title,
+    .sidebar__body,
+    .sidebar--collapsed .sidebar__header {
+        animation: none;
     }
 }
 

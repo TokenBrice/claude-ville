@@ -1,27 +1,43 @@
 .modal-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(9, 6, 5, 0.74);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
+    animation: modal-overlay-in 0.16s ease;
 }
 
+/* Parchment/bronze dialog — same framed-tag treatment as the topbar ledger. */
 .modal {
-    background: rgba(15, 15, 25, 0.98);
-    border: 2px solid rgba(232, 212, 77, 0.3);
+    background: linear-gradient(180deg, rgba(58, 36, 22, 0.99), rgba(15, 10, 10, 0.99));
+    border: 1px solid rgba(236, 187, 89, 0.46);
     border-radius: 6px;
     width: 90%;
     max-width: 500px;
     max-height: 80vh;
     display: flex;
     flex-direction: column;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+    box-shadow:
+        inset 0 1px 0 rgba(255, 231, 150, 0.08),
+        inset 0 -2px 0 rgba(0, 0, 0, 0.26),
+        0 8px 32px rgba(0, 0, 0, 0.55);
+    animation: modal-in 0.16s ease;
 }
 
 .modal--wide {
     max-width: 720px;
+}
+
+@keyframes modal-overlay-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+@keyframes modal-in {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
 }
 
 .modal__header {
@@ -29,21 +45,25 @@
     align-items: center;
     justify-content: space-between;
     padding: 14px 16px;
-    border-bottom: 1px solid rgba(232, 212, 77, 0.15);
+    border-bottom: 1px solid var(--cv-border);
+    background: rgba(20, 13, 11, 0.46);
+    box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.22);
 }
 
 .modal__title {
     font-size: 12px;
-    color: var(--cv-yellow);
+    color: var(--cv-gold-bright);
     letter-spacing: 1px;
     font-family: var(--font-display);
+    text-shadow: 1px 1px 0 #2d1a12;
 }
 
 .modal__close {
     font-size: 11px;
-    color: var(--cv-text-gray);
+    color: var(--cv-tan);
     padding: 4px 8px;
-    border: 1px solid rgba(139, 139, 158, 0.3);
+    background: rgba(25, 17, 15, 0.86);
+    border: 1px solid rgba(199, 157, 76, 0.48);
     border-radius: 3px;
     transition: all 0.15s;
 }
@@ -57,7 +77,7 @@
     padding: 16px;
     overflow-y: auto;
     font-size: 11px;
-    color: var(--cv-text-gray);
+    color: var(--cv-tan);
     line-height: 1.8;
     font-family: var(--font-body);
 }
@@ -72,6 +92,8 @@
     flex-direction: column;
     gap: 8px;
     pointer-events: none;
+    /* Glides aside as the activity panel opens instead of jumping. */
+    transition: right 0.16s ease;
 }
 
 body.cv-panel-open .toast-container {
@@ -83,8 +105,11 @@ body.cv-panel-open .toast-container {
     border-radius: 4px;
     font-size: 10px;
     font-family: var(--font-body);
-    border: 1px solid;
-    background: rgba(15, 15, 25, 0.95);
+    border: 1px solid var(--cv-border);
+    background: linear-gradient(180deg, rgba(66, 43, 25, 0.97), rgba(18, 12, 11, 0.97));
+    box-shadow:
+        inset 0 1px 0 rgba(255, 231, 150, 0.08),
+        0 4px 14px rgba(0, 0, 0, 0.4);
     pointer-events: auto;
     animation: toast-in 0.3s ease;
     max-width: 320px;
@@ -93,17 +118,22 @@ body.cv-panel-open .toast-container {
 
 .toast--info {
     color: var(--cv-status-idle);
-    border-color: rgba(96, 165, 250, 0.4);
+    border-color: color-mix(in srgb, var(--cv-status-idle) 40%, transparent);
 }
 
 .toast--success {
     color: var(--cv-status-working);
-    border-color: rgba(74, 222, 128, 0.4);
+    border-color: color-mix(in srgb, var(--cv-status-working) 40%, transparent);
 }
 
 .toast--warning {
     color: var(--cv-status-waiting);
-    border-color: rgba(249, 115, 22, 0.4);
+    border-color: color-mix(in srgb, var(--cv-status-waiting) 40%, transparent);
+}
+
+.toast--error {
+    color: var(--cv-status-errored);
+    border-color: color-mix(in srgb, var(--cv-status-errored) 45%, transparent);
 }
 
 .toast--fadeout {
@@ -120,6 +150,20 @@ body.cv-panel-open .toast-container {
     to { opacity: 0; transform: translateX(20px); }
 }
 
+/* Reduced motion: dialog/toasts appear and vanish instantly (no travel). */
+@media (prefers-reduced-motion: reduce) {
+    .modal-overlay,
+    .modal,
+    .toast,
+    .toast--fadeout {
+        animation: none;
+    }
+
+    .toast-container {
+        transition: none;
+    }
+}
+
 /* ── Changelog ──────────────────────────────────────────────── */
 
 .cl-release {
@@ -127,7 +171,7 @@ body.cv-panel-open .toast-container {
     align-items: center;
     gap: 10px;
     padding: 14px 0 8px;
-    border-bottom: 1px solid rgba(232, 212, 77, 0.15);
+    border-bottom: 1px solid var(--cv-divider);
     margin-bottom: 10px;
 }
 
@@ -142,8 +186,8 @@ body.cv-panel-open .toast-container {
 
 .cl-ver {
     font-size: 8px;
-    color: var(--cv-yellow);
-    border: 1px solid rgba(232, 212, 77, 0.45);
+    color: var(--cv-gold-bright);
+    border: 1px solid rgba(242, 211, 107, 0.45);
     background: rgba(36, 24, 17, 0.9);
     padding: 2px 6px;
     border-radius: 2px;
@@ -165,7 +209,7 @@ body.cv-panel-open .toast-container {
 
 .cl-date {
     font-size: 10px;
-    color: #5a5a6a;
+    color: #7a6a52;
     margin-left: auto;
     white-space: nowrap;
     font-style: italic;

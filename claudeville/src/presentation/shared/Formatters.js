@@ -40,6 +40,9 @@ export function statusClass(status, fallback = 'idle') {
         AgentStatus.RATE_LIMITED,
         AgentStatus.ERRORED,
         AgentStatus.WAITING_ON_USER,
+        // 0.4 — completed is a first-class status with its own rail/dot/token;
+        // without it a finished agent fell through to the idle class.
+        AgentStatus.COMPLETED,
     ].includes(normalized) ? normalized : fallback;
 }
 

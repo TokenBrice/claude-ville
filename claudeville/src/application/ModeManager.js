@@ -24,16 +24,27 @@ export class ModeManager {
     }
 
     _applyMode(mode) {
+        let shownEl = null;
         if (mode === 'character') {
             if (this.characterEl) this.characterEl.style.display = '';
             if (this.dashboardEl) this.dashboardEl.style.display = 'none';
             this.btnCharacter?.classList.add('topbar__mode-btn--active');
             this.btnDashboard?.classList.remove('topbar__mode-btn--active');
+            shownEl = this.characterEl;
         } else {
             if (this.characterEl) this.characterEl.style.display = 'none';
             if (this.dashboardEl) this.dashboardEl.style.display = '';
             this.btnDashboard?.classList.add('topbar__mode-btn--active');
             this.btnCharacter?.classList.remove('topbar__mode-btn--active');
+            shownEl = this.dashboardEl;
+        }
+        // 4.9 — fade the incoming container (CSS `cv-mode-fade-in`, 180ms).
+        // Reduced motion: the CSS media query disables the animation, so this
+        // stays an instant cut with no extra JS branching.
+        if (shownEl) {
+            shownEl.classList.remove('content__mode--enter');
+            void shownEl.offsetWidth;
+            shownEl.classList.add('content__mode--enter');
         }
     }
 

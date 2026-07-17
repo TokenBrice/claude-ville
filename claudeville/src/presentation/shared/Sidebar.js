@@ -139,6 +139,14 @@ export class Sidebar {
                 this.render();
                 return;
             }
+            // 4.12 — subagent parent link: select the parent instead of
+            // toggling the row's own selection.
+            const parentLink = event.target.closest('.sidebar__agent-parent[data-parent-id]');
+            if (parentLink && this.listEl.contains(parentLink)) {
+                const parent = this.world.agents.get(parentLink.dataset.parentId);
+                if (parent) emitAgentSelected(parent);
+                return;
+            }
             const row = event.target.closest('.sidebar__agent[data-agent-id]');
             if (!row || !this.listEl.contains(row)) return;
             const id = row.dataset.agentId;
@@ -165,6 +173,23 @@ export class Sidebar {
         const agents = Array.from(this.world.agents.values());
         this._reconcileWorkflowState(agents);
         this.countEl.textContent = agents.length;
+        // 4.12 — per-row extras (idle-age suffix, subagent parent link) feed
+        // both the render signature and the row builder; the formatted age
+        // string only changes when the displayed text would, so it stays cheap.
+        const now = Date.now();
+        const rowExtras = new Map();
+        for (const agent of agents) {
+            const status = statusClass(agent.status);
+            let ageText = '';
+            if (status === 'idle' || status === 'completed') {
+                ageText = formatRelative(Number(agent.lastSessionActivity) || 0, now);
+            }
+            let parentLabel = '';
+            if (agent.parentSessionId) {
+                parentLabel = this.world.agents.get(agent.parentSessionId)?.name || 'ended';
+            }
+            rowExtras.set(agent.id, { ageText, parentLabel });
+        }
         const signature = [
             this._filter,
             [...this._collapsedWorkflows].sort().join(','),
@@ -181,6 +206,9 @@ export class Sidebar {
                     agent.workflowName,
                     agent.agentType,
                     agent.workflowId,
+                    agent.parentSessionId,
+                    rowExtras.get(agent.id).ageText,
+                    rowExtras.get(agent.id).parentLabel,
                 ].join('|'))
                 .join('\n'),
         ].join('');
@@ -242,7 +270,7 @@ export class Sidebar {
             ]));
 
             for (const agent of topLevel) {
-                groupEl.append(this._buildAgentRow(agent, profile));
+                groupEl.append(this._buildAgentRow(agent, profile, rowExtras.get(agent.id)));
             }
 
             for (const [workflowId, members] of workflows) {
@@ -264,7 +292,7 @@ export class Sidebar {
                 ]));
                 const membersEl = el('div', { className: 'sidebar__workflow-members' });
                 for (const agent of members) {
-                    membersEl.append(this._buildAgentRow(agent, profile));
+                    membersEl.append(this._buildAgentRow(agent, profile, rowExtras.get(agent.id)));
                 }
                 wfEl.append(membersEl);
                 groupEl.append(wfEl);
@@ -368,7 +396,7 @@ export class Sidebar {
         ];
     }
 
-    _buildAgentRow(agent, profile) {
+    _buildAgentRow(agent, profile, extras = {}) {
         const model = modelPresentation(agent);
         const provider = providerPresentation(agent.provider, model.identity);
         const team = agent.teamName ? getTeamColor(agent.teamName) : null;
@@ -408,6 +436,28 @@ export class Sidebar {
             providerIcon,
             ` ${model.label}`,
         ]);
+        // 4.12 — idle-age suffix (dashboard's "last active" chip parity), shown
+        // only for quiet statuses so working rows stay noise-free.
+        if (extras.ageText) {
+            modelEl.append(el('span', {
+                text: ` · ${extras.ageText}`,
+                title: `Last active ${extras.ageText}`,
+            }));
+        }
+        // 4.12 — subagent parent link (dashboard parent-chip parity): selects
+        // the parent session; muted static text once the parent has ended.
+        if (agent.parentSessionId) {
+            const parent = this.world.agents.get(agent.parentSessionId);
+            modelEl.append(el('span', {
+                className: 'sidebar__agent-parent',
+                text: ` ↩ ${extras.parentLabel}`,
+                title: parent ? `Select parent ${extras.parentLabel}` : 'Parent session ended',
+                style: parent
+                    ? { cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: '2px' }
+                    : { opacity: '0.62' },
+                dataset: parent ? { parentId: agent.parentSessionId } : null,
+            }));
+        }
 
         const dotChildren = [
             el('span', {

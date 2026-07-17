@@ -32,7 +32,7 @@ export class NotificationService {
 
         this._onWsDisconnected = () => {
             if (this.wsEverConnected) {
-                this.toast.show(i18n.t('serverDisconnected'), 'warning');
+                this.toast.show(i18n.t('serverDisconnected'), 'error');
             }
         };
 

@@ -9,10 +9,10 @@
     flex-direction: column;
     gap: 16px;
     /* warm-dark field tokens reused by every parchment surface below */
-    --cv-parchment-glint: rgba(255, 226, 138, 0.13);
+    --cv-parchment-glint: rgba(var(--cv-dash-glint-rgb), 0.13);
     --cv-parchment-warm: rgba(55, 36, 24, 0.95);
     --cv-parchment-deep: rgba(15, 10, 9, 0.96);
-    --cv-parchment-rim: rgba(214, 169, 81, 0.3);
+    --cv-parchment-rim: rgba(var(--cv-dash-rim-rgb), 0.3);
     --cv-parchment-gilt: rgba(236, 201, 123, 0.5);
 }
 
@@ -25,7 +25,7 @@
     border: 1px solid var(--cv-parchment-rim);
     border-radius: 3px;
     box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.09),
+        inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.09),
         inset 0 0 0 1px rgba(0, 0, 0, 0.34),
         var(--cv-elev-2);
     overflow: hidden;
@@ -41,8 +41,8 @@
     padding: 10px 14px;
     background: linear-gradient(180deg, rgba(38, 24, 17, 0.82), rgba(18, 12, 10, 0.68));
     border-left: 3px solid transparent;
-    border-bottom: 1px solid rgba(214, 169, 81, 0.24);
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
+    border-bottom: 1px solid rgba(var(--cv-dash-rim-rgb), 0.24);
+    box-shadow: inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.08);
 }
 
 .dashboard__section-dot {
@@ -62,7 +62,7 @@
     border: 1px solid rgba(236, 201, 123, 0.36);
     border-radius: 2px;
     background: rgba(34, 22, 15, 0.72);
-    color: #f4d983;
+    color: var(--cv-dash-gilt);
     font: 700 10px var(--font-display);
     text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.76);
 }
@@ -72,7 +72,7 @@
     font-weight: bold;
     color: var(--cv-gold-bright);
     font-family: var(--font-display);
-    text-shadow: 1px 1px 0 #2d1a12, 0 0 10px rgba(255, 226, 138, 0.16);
+    text-shadow: 1px 1px 0 var(--cv-dash-ink), 0 0 10px rgba(var(--cv-dash-glint-rgb), 0.16);
 }
 
 .dashboard__section-path {
@@ -89,7 +89,7 @@
     font-size: var(--fs-label);
     color: var(--cv-gold-soft);
     background: rgba(57, 37, 24, 0.78);
-    border: 1px solid rgba(199, 157, 76, 0.22);
+    border: 1px solid rgba(var(--cv-dash-rim-dim-rgb), 0.22);
     padding: 2px 8px;
     border-radius: 2px;
     flex-shrink: 0;
@@ -119,9 +119,9 @@
 }
 
 .dashboard__health-stat--errored { color: var(--cv-status-errored); }
-.dashboard__health-stat--errored::before { box-shadow: 0 0 6px rgba(239, 68, 68, 0.6); }
+.dashboard__health-stat--errored::before { box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-errored) 60%, transparent); }
 .dashboard__health-stat--working { color: var(--cv-status-working); }
-.dashboard__health-stat--working::before { box-shadow: 0 0 6px rgba(74, 222, 128, 0.5); }
+.dashboard__health-stat--working::before { box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-working) 50%, transparent); }
 .dashboard__health-stat--idle    { color: var(--cv-status-idle); }
 
 /* ─ #44 composite health pulse-bar: 2px strip under the header, segments
@@ -145,20 +145,20 @@
 
 .dashboard__healthbar-seg--errored {
     background: var(--cv-status-errored);
-    box-shadow: 0 0 6px rgba(239, 68, 68, 0.6);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-errored) 60%, transparent);
 }
 .dashboard__healthbar-seg--working {
     background: var(--cv-status-working);
-    box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+    box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-working) 50%, transparent);
 }
 .dashboard__healthbar-seg--idle {
     background: var(--cv-status-idle);
 }
 
 @keyframes dashboard-section-errored-flash {
-    0%   { box-shadow: inset 4px 0 0 rgba(239, 68, 68, 0), inset 0 1px 0 rgba(255, 226, 138, 0.08); }
-    35%  { box-shadow: inset 4px 0 0 rgba(239, 68, 68, 0.9), inset 0 1px 0 rgba(255, 226, 138, 0.08); }
-    100% { box-shadow: inset 4px 0 0 rgba(239, 68, 68, 0), inset 0 1px 0 rgba(255, 226, 138, 0.08); }
+    0%   { box-shadow: inset 4px 0 0 transparent, inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.08); }
+    35%  { box-shadow: inset 4px 0 0 color-mix(in srgb, var(--cv-status-errored) 90%, transparent), inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.08); }
+    100% { box-shadow: inset 4px 0 0 transparent, inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.08); }
 }
 .dashboard__section--errored-flash .dashboard__section-header {
     animation: dashboard-section-errored-flash 600ms ease-out;
@@ -170,6 +170,9 @@
     gap: 12px;
     padding: 12px;
     align-content: start;
+    /* 4.1 — cards keep their natural height instead of stretching to the
+       tallest card in the row (pairs with collapsing empty tool history). */
+    align-items: start;
 }
 
 /* Empty state */
@@ -213,7 +216,7 @@
     gap: 8px;
     margin-top: 8px;
     padding: 12px 16px;
-    border: 1px solid rgba(214, 169, 81, 0.24);
+    border: 1px solid rgba(var(--cv-dash-rim-rgb), 0.24);
     border-radius: 3px;
     background: rgba(20, 13, 11, 0.58);
 }
@@ -229,13 +232,13 @@
 .dash-card {
     position: relative;
     background:
-        radial-gradient(circle at 10% 0%, rgba(255, 226, 138, 0.09), transparent 30%),
+        radial-gradient(circle at 10% 0%, rgba(var(--cv-dash-glint-rgb), 0.09), transparent 30%),
         linear-gradient(180deg, rgba(58, 40, 25, 0.99), rgba(19, 13, 11, 0.99)),
         repeating-linear-gradient(0deg, rgba(246, 218, 130, 0.024) 0 1px, transparent 1px 16px);
     border: 1px solid var(--cv-parchment-rim);
     border-radius: 3px;
     box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.08),
+        inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.08),
         inset 0 0 0 1px rgba(0, 0, 0, 0.34),
         var(--cv-elev-1);
     overflow: hidden;
@@ -244,12 +247,12 @@
 }
 
 .dash-card:hover {
-    border-color: rgba(255, 226, 138, 0.58);
+    border-color: rgba(var(--cv-dash-glint-rgb), 0.58);
     box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.12),
-        inset 0 0 0 1px rgba(255, 226, 138, 0.11),
+        inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.12),
+        inset 0 0 0 1px rgba(var(--cv-dash-glint-rgb), 0.11),
         0 9px 20px rgba(0, 0, 0, 0.28),
-        0 0 18px rgba(214, 169, 81, 0.08);
+        0 0 18px rgba(var(--cv-dash-rim-rgb), 0.08);
     transform: translateY(-1px);
 }
 
@@ -264,7 +267,32 @@
 .dash-card--rate_limited     { border-left: 3px solid var(--cv-status-rate-limited); }
 .dash-card--errored          { border-left: 3px solid var(--cv-status-errored); }
 .dash-card--waiting_on_user  { border-left: 3px solid var(--cv-status-waiting-user); }
+/* 0.4 — completed: soft-gold "small victory" rail/dot on the wave-1 token. */
+.dash-card--completed        { border-left: 3px solid var(--cv-status-completed); }
 .dash-card--idle.dash-card--aged { opacity: 0.7; }
+
+/* 4.2 — attention-state header washes: a faint status-tinted gradient over the
+   card header so triage reads from the whole header, not just the 3px rail. */
+.dash-card--errored .dash-card__header {
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--cv-status-errored) 12%, transparent), transparent 85%),
+        linear-gradient(180deg, rgba(38, 25, 17, 0.88), rgba(20, 13, 11, 0.72));
+}
+.dash-card--waiting .dash-card__header {
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--cv-status-waiting) 10%, transparent), transparent 85%),
+        linear-gradient(180deg, rgba(38, 25, 17, 0.88), rgba(20, 13, 11, 0.72));
+}
+.dash-card--waiting_on_user .dash-card__header {
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--cv-status-waiting-user) 10%, transparent), transparent 85%),
+        linear-gradient(180deg, rgba(38, 25, 17, 0.88), rgba(20, 13, 11, 0.72));
+}
+.dash-card--rate_limited .dash-card__header {
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--cv-status-rate-limited) 10%, transparent), transparent 85%),
+        linear-gradient(180deg, rgba(38, 25, 17, 0.88), rgba(20, 13, 11, 0.72));
+}
 
 /* #48 Connection-loss: cards freeze to a muted, desaturated opacity while the
    WebSocket is down, with a slow "reconnecting" shimmer sweeping across them so
@@ -284,7 +312,7 @@
     background: linear-gradient(
         100deg,
         transparent 35%,
-        rgba(255, 226, 138, 0.07) 50%,
+        rgba(var(--cv-dash-glint-rgb), 0.07) 50%,
         transparent 65%);
     background-size: 240% 100%;
     background-repeat: no-repeat;
@@ -360,14 +388,14 @@
 @keyframes dash-card-selected-halo {
     0%, 100% {
         box-shadow:
-            inset 0 1px 0 rgba(255, 226, 138, 0.14),
+            inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.14),
             0 0 0 1px color-mix(in srgb, var(--cv-selected-accent, #ffe58d) 38%, transparent),
             0 0 14px color-mix(in srgb, var(--cv-selected-accent, #ffe58d) 16%, transparent),
             var(--cv-elev-1);
     }
     50% {
         box-shadow:
-            inset 0 1px 0 rgba(255, 226, 138, 0.18),
+            inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.18),
             0 0 0 2px color-mix(in srgb, var(--cv-selected-accent, #ffe58d) 52%, transparent),
             0 0 22px color-mix(in srgb, var(--cv-selected-accent, #ffe58d) 28%, transparent),
             var(--cv-elev-1);
@@ -376,7 +404,7 @@
 .dash-card--parent-flash {
     border-color: rgba(245, 181, 75, 0.78);
     box-shadow:
-        inset 0 1px 0 rgba(255, 226, 138, 0.16),
+        inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.16),
         inset 0 0 0 1px rgba(245, 181, 75, 0.2),
         0 0 0 2px rgba(245, 181, 75, 0.28),
         0 0 18px rgba(245, 181, 75, 0.18),
@@ -390,8 +418,8 @@
     gap: 10px;
     padding: 10px 12px;
     background: linear-gradient(180deg, rgba(38, 25, 17, 0.88), rgba(20, 13, 11, 0.72));
-    border-bottom: 1px solid rgba(214, 169, 81, 0.24);
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
+    border-bottom: 1px solid rgba(var(--cv-dash-rim-rgb), 0.24);
+    box-shadow: inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.08);
 }
 
 .dash-card__avatar {
@@ -402,7 +430,7 @@
        craft, not a floating sprite. */
     border-radius: 3px;
     background:
-        radial-gradient(ellipse at 50% 100%, rgba(255, 226, 138, 0.06), transparent 62%),
+        radial-gradient(ellipse at 50% 100%, rgba(var(--cv-dash-glint-rgb), 0.06), transparent 62%),
         linear-gradient(180deg, rgba(46, 31, 20, 0.42), rgba(16, 11, 9, 0.42));
     box-shadow: inset 0 0 0 1px var(--cv-parchment-rim);
 }
@@ -422,7 +450,7 @@
     font-weight: bold;
     color: var(--cv-gold-bright);
     font-family: var(--font-display);
-    text-shadow: 1px 1px 0 #2d1a12;
+    text-shadow: 1px 1px 0 var(--cv-dash-ink);
 }
 
 .dash-card__meta {
@@ -450,12 +478,9 @@
     box-shadow: inset 0 1px 0 rgba(255, 245, 205, 0.16);
 }
 
+/* 4.4 — de-pilled meta row: only the provider badge and team badge keep the
+   gilt pill frame; model/workflow/parent/activity read as plain meta text. */
 .dash-card__model {
-    background: rgba(126, 183, 214, 0.14);
-    color: var(--cv-blue-soft);
-    border: 1px solid rgba(126, 183, 214, 0.18);
-    padding: 1px 6px;
-    border-radius: 3px;
     font-size: var(--fs-label);
     font-family: var(--font-body);
 }
@@ -467,11 +492,7 @@
 }
 
 .dash-card__workflow-badge {
-    background: rgba(192, 132, 252, 0.16);
     color: var(--cv-purple);
-    border: 1px solid rgba(192, 132, 252, 0.32);
-    padding: 1px 6px;
-    border-radius: 3px;
     font-size: var(--fs-label);
     font-family: var(--font-body);
     font-weight: bold;
@@ -481,11 +502,7 @@
 
 .dash-card__parent-chip,
 .dash-card__activity-age {
-    border: 1px solid rgba(245, 181, 75, 0.3);
-    border-radius: 3px;
-    background: rgba(120, 72, 16, 0.22);
-    color: #f5b54b;
-    padding: 1px 6px;
+    color: var(--cv-dash-amber);
     font-size: var(--fs-label);
     font-family: var(--font-body);
     font-weight: bold;
@@ -505,9 +522,9 @@
 
 .dash-card__parent-chip--clickable:hover,
 .dash-card__parent-chip--clickable:focus-visible {
-    border-color: rgba(245, 181, 75, 0.6);
-    background: rgba(120, 72, 16, 0.36);
     color: var(--cv-gold-bright);
+    text-decoration: underline;
+    text-underline-offset: 2px;
     outline: none;
 }
 
@@ -517,9 +534,7 @@
 }
 
 .dash-card__activity-age {
-    color: #d8b77a;
-    background: rgba(57, 37, 24, 0.62);
-    border-color: rgba(199, 157, 76, 0.22);
+    color: var(--cv-dash-tan-warm);
     font-weight: normal;
     max-width: 150px;
     overflow: hidden;
@@ -543,10 +558,10 @@
     align-items: center;
     gap: 4px;
     padding: 3px 7px;
-    border: 1px solid rgba(214, 169, 81, 0.26);
+    border: 1px solid rgba(var(--cv-dash-rim-rgb), 0.26);
     border-radius: 2px;
     background: linear-gradient(180deg, rgba(57, 37, 24, 0.82), rgba(22, 15, 13, 0.82));
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.08);
+    box-shadow: inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.08);
     font-size: var(--fs-label);
     font-weight: bold;
     text-transform: uppercase;
@@ -566,9 +581,10 @@
 .dash-card__status--working .dash-card__status-dot          { background: var(--cv-status-working); box-shadow: 0 0 6px var(--cv-status-working); }
 .dash-card__status--idle .dash-card__status-dot             { background: var(--cv-status-idle); }
 .dash-card__status--waiting .dash-card__status-dot          { background: var(--cv-status-waiting); animation: dashboard-pulse-dot 1.5s infinite; }
-.dash-card__status--rate_limited .dash-card__status-dot     { background: var(--cv-status-rate-limited); box-shadow: 0 0 6px rgba(245, 158, 11, 0.5); animation: dashboard-pulse-dot 2.4s infinite; }
-.dash-card__status--errored .dash-card__status-dot          { background: var(--cv-status-errored); box-shadow: 0 0 8px rgba(239, 68, 68, 0.6); animation: dashboard-pulse-dot 1.2s infinite; }
-.dash-card__status--waiting_on_user .dash-card__status-dot  { background: var(--cv-status-waiting-user); box-shadow: 0 0 6px rgba(250, 204, 21, 0.55); animation: dashboard-pulse-dot 1.6s infinite; }
+.dash-card__status--rate_limited .dash-card__status-dot     { background: var(--cv-status-rate-limited); box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-rate-limited) 50%, transparent); animation: dashboard-pulse-dot 2.4s infinite; }
+.dash-card__status--errored .dash-card__status-dot          { background: var(--cv-status-errored); box-shadow: 0 0 8px color-mix(in srgb, var(--cv-status-errored) 60%, transparent); animation: dashboard-pulse-dot 1.2s infinite; }
+.dash-card__status--waiting_on_user .dash-card__status-dot  { background: var(--cv-status-waiting-user); box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-waiting-user) 55%, transparent); animation: dashboard-pulse-dot 1.6s infinite; }
+.dash-card__status--completed .dash-card__status-dot        { background: var(--cv-status-completed); box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-completed) 50%, transparent); }
 
 .dash-card__status--working          { color: var(--cv-status-working); }
 .dash-card__status--idle             { color: var(--cv-status-idle); }
@@ -576,6 +592,7 @@
 .dash-card__status--rate_limited     { color: var(--cv-status-rate-limited); }
 .dash-card__status--errored          { color: var(--cv-status-errored); }
 .dash-card__status--waiting_on_user  { color: var(--cv-status-waiting-user); }
+.dash-card__status--completed        { color: var(--cv-status-completed); }
 
 @keyframes dashboard-pulse-dot {
     0%, 100% { opacity: 1; }
@@ -585,8 +602,8 @@
 /* ─ Current activity ─ */
 .dash-card__activity {
     padding: 8px 12px;
-    background: linear-gradient(180deg, rgba(255, 226, 138, 0.02), transparent 42%);
-    border-bottom: 1px solid rgba(199, 157, 76, 0.12);
+    background: linear-gradient(180deg, rgba(var(--cv-dash-glint-rgb), 0.02), transparent 42%);
+    border-bottom: 1px solid rgba(var(--cv-dash-rim-dim-rgb), 0.12);
 }
 
 .dash-card__current-tool {
@@ -597,9 +614,9 @@
     background:
         radial-gradient(circle at 0% 0%, rgba(114, 208, 113, 0.13), transparent 40%),
         linear-gradient(180deg, rgba(63, 44, 27, 0.72), rgba(27, 19, 16, 0.72));
-    border: 1px solid rgba(214, 169, 81, 0.24);
+    border: 1px solid rgba(var(--cv-dash-rim-rgb), 0.24);
     border-radius: 2px;
-    box-shadow: inset 0 1px 0 rgba(255, 226, 138, 0.07);
+    box-shadow: inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.07);
 }
 
 .dash-card__current-tool--idle {
@@ -623,7 +640,7 @@
     font-size: var(--fs-data);
     font-family: var(--font-body);
     font-weight: bold;
-    color: #f5df8a;
+    color: var(--cv-dash-tool-name);
 }
 
 .dash-card__tool-detail {
@@ -643,7 +660,7 @@
     font-family: var(--font-body);
     color: var(--cv-tan);
     background: linear-gradient(180deg, rgba(54, 38, 24, 0.7), rgba(31, 22, 17, 0.64));
-    border: 1px solid rgba(214, 169, 81, 0.16);
+    border: 1px solid rgba(var(--cv-dash-rim-rgb), 0.16);
     border-radius: 2px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -664,7 +681,7 @@
 }
 
 .dash-card__tools::-webkit-scrollbar-thumb {
-    background: rgba(199, 157, 76, 0.32);
+    background: rgba(var(--cv-dash-rim-dim-rgb), 0.32);
     border-radius: 2px;
 }
 
@@ -714,11 +731,20 @@
 .dash-card__tool-item-detail {
     font-size: var(--fs-label);
     font-family: var(--font-body);
-    color: #8d7659;
+    color: var(--cv-dash-detail);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     flex: 1;
+}
+
+/* 4.4 — relative timestamp at the trailing edge of each tool-history row. */
+.dash-card__tool-item-time {
+    flex-shrink: 0;
+    font-size: var(--fs-label);
+    font-family: var(--font-body);
+    color: var(--cv-dash-detail);
+    opacity: 0.85;
 }
 
 .dash-card__tool-item-exit {
@@ -763,7 +789,7 @@
 .dash-card__skeleton-line {
     height: 8px;
     border-radius: 2px;
-    background: linear-gradient(90deg, rgba(214, 169, 81, 0.08) 25%, rgba(214, 169, 81, 0.22) 50%, rgba(214, 169, 81, 0.08) 75%);
+    background: linear-gradient(90deg, rgba(var(--cv-dash-rim-rgb), 0.08) 25%, rgba(var(--cv-dash-rim-rgb), 0.22) 50%, rgba(var(--cv-dash-rim-rgb), 0.08) 75%);
     background-size: 200% 100%;
     animation: dash-skeleton-shimmer 1.4s ease-in-out infinite;
 }
@@ -782,7 +808,7 @@
     text-align: center;
     font-size: var(--fs-label);
     font-family: var(--font-body);
-    color: #e08f8f;
+    color: var(--cv-dash-error-text);
 }
 
 /* ─ Copy session ID button ─ */
@@ -791,7 +817,7 @@
     width: 20px;
     height: 20px;
     padding: 0;
-    border: 1px solid rgba(214, 169, 81, 0.24);
+    border: 1px solid rgba(var(--cv-dash-rim-rgb), 0.24);
     border-radius: 2px;
     background: rgba(34, 22, 15, 0.72);
     color: var(--cv-tan);
@@ -809,7 +835,7 @@
 
 .dash-card__copy-id:hover {
     color: var(--cv-gold-bright);
-    border-color: rgba(255, 226, 138, 0.5);
+    border-color: rgba(var(--cv-dash-glint-rgb), 0.5);
 }
 
 /* ─ Stale data badge ─ */
@@ -819,7 +845,7 @@
     border: 1px solid rgba(245, 158, 11, 0.45);
     border-radius: 2px;
     background: rgba(120, 72, 16, 0.35);
-    color: #f5b54b;
+    color: var(--cv-dash-amber);
     font-size: var(--fs-label);
     font-family: var(--font-body);
     letter-spacing: 1px;
@@ -887,7 +913,7 @@
     .dash-card--selected {
         animation: none;
         box-shadow:
-            inset 0 1px 0 rgba(255, 226, 138, 0.16),
+            inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.16),
             0 0 0 2px color-mix(in srgb, var(--cv-selected-accent, #ffe58d) 52%, transparent),
             0 0 18px color-mix(in srgb, var(--cv-selected-accent, #ffe58d) 22%, transparent),
             var(--cv-elev-1);

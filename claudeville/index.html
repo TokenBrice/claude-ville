@@ -32,7 +32,7 @@
             </div>
         </div>
         <div class="topbar__center">
-            <div class="topbar__ledger">
+            <div class="topbar__ledger topbar__tag">
                 <span class="topbar__seg-stat">
                     <span data-i18n="tokens" class="topbar__stat-label">TOKENS</span>
                     <span id="statTokens" class="topbar__stat-value">0</span>
@@ -47,7 +47,7 @@
                 </span>
             </div>
             <div class="topbar__badges">
-                <div class="topbar__status">
+                <div class="topbar__status topbar__tag">
                     <span class="topbar__seg topbar__seg--working">
                         <span class="topbar__badge-dot"></span>
                         <span id="badgeWorking">0</span> <span data-i18n="working">WORKING</span>
@@ -61,8 +61,8 @@
                         <span id="badgeWaiting">0</span> <span data-i18n="waiting">WAITING</span>
                     </span>
                 </div>
-                <span class="topbar__badge topbar__badge--errored" id="badgeErroredWrap" style="display:none"><span class="topbar__badge-glyph">!</span> <span id="badgeErrored">0</span> ERRORED</span>
-                <span class="topbar__badge topbar__badge--attention" id="badgeAttentionWrap" style="display:none"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> ATTN</span>
+                <span class="topbar__badge topbar__tag topbar__badge--errored" id="badgeErroredWrap" style="display:none"><span class="topbar__badge-glyph">!</span> <span id="badgeErrored">0</span> ERRORED</span>
+                <span class="topbar__badge topbar__tag topbar__badge--attention" id="badgeAttentionWrap" style="display:none"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> ATTN</span>
             </div>
         </div>
         <div class="topbar__right">
@@ -127,11 +127,13 @@
             <!-- right-side live activity panel -->
             <aside id="activityPanel" class="activity-panel" style="display: none;">
                 <div class="activity-panel__header">
-                    <div class="activity-panel__agent-info">
+                    <div class="activity-panel__name-row">
                         <span id="panelAgentName" class="activity-panel__name"></span>
+                        <button id="panelClose" class="activity-panel__close">X</button>
+                    </div>
+                    <div class="activity-panel__agent-info">
                         <span id="panelAgentStatus" class="activity-panel__status"></span>
                     </div>
-                    <button id="panelClose" class="activity-panel__close">X</button>
                 </div>
                 <div class="activity-panel__meta">
                     <div class="activity-panel__meta-row">
@@ -233,7 +235,7 @@
 
     <!-- Modal container -->
     <div id="modalOverlay" class="modal-overlay" style="display: none;">
-        <div class="modal">
+        <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
             <div class="modal__header">
                 <span id="modalTitle" class="modal__title"></span>
                 <button id="modalClose" class="modal__close">X</button>

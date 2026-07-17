@@ -20,7 +20,6 @@ Desktop-only constraint: shared UI only needs to support browser widths of 1280p
 | `GitEventIdentity.js` | Shared git event labeling and identity helpers for harbor/git flows. |
 | `SessionDetailsService.js` | Shared `/api/session-detail` and `/api/session-details` fetch dedupe, cache, stale fallback, and timeout handling. |
 | `ModelVisualIdentity.js` | Provider/model/effort labels, sprite IDs, palette keys, colors, and minimap accents. |
-| `RoleAccessory.js` | Runtime role/accessory selection for sprite composition. |
 | `RepoColor.js` | Deterministic project/repository color assignment. |
 | `TeamColor.js` | Deterministic team color assignment. |
 | `Modal.js` | Shared modal primitive. |

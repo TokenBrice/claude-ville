@@ -1,6 +1,7 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AmbientAudioController } from './AmbientAudioController.js';
 import { formatCost, formatNumber } from './Formatters.js';
+import { el, replaceChildren } from './DomSafe.js';
 
 export class TopBar {
     constructor(world, { modal } = {}) {
@@ -27,6 +28,8 @@ export class TopBar {
             cinemaToggle: document.getElementById('topbarCinemaToggle'),
         };
         this.timeInterval = null;
+        this._fpsSamples = [];
+        this._fpsPanelEl = null;
         this._changelogHtml = null;
         this._changelogController = null;
         this._destroyed = false;
@@ -62,6 +65,15 @@ export class TopBar {
                 }
             };
             this.els.version.addEventListener('keydown', this._onVersionKeydown);
+        }
+
+        // 4.12 — perf-health readout: hover the FPS chip for a rolling summary.
+        if (this.els.fps) {
+            this.els.fps.title = 'Render health — hover for details';
+            this._onFpsEnter = () => this._showFpsPanel();
+            this._onFpsLeave = () => this._hideFpsPanel();
+            this.els.fps.addEventListener('mouseenter', this._onFpsEnter);
+            this.els.fps.addEventListener('mouseleave', this._onFpsLeave);
         }
 
         this._startTimer();
@@ -178,11 +190,92 @@ export class TopBar {
         if (fps == null) {
             this.els.fps.textContent = '-- FPS';
             this.els.fps.classList.remove('topbar__fps--warn', 'topbar__fps--danger');
+            this._fpsSamples.length = 0;
             return;
         }
         this.els.fps.textContent = `${fps} FPS`;
         this.els.fps.classList.toggle('topbar__fps--danger', fps < 25);
         this.els.fps.classList.toggle('topbar__fps--warn', fps >= 25 && fps < 45);
+        // 4.12 — rolling window for the hover readout (~2/s emits → ~2 min cap).
+        this._fpsSamples.push(fps);
+        if (this._fpsSamples.length > 240) this._fpsSamples.shift();
+    }
+
+    // 4.12 — perf-health hover panel: now/avg/min over the rolling sample
+    // window plus the threshold legend behind the warn/danger colors. Built
+    // lazily and updated only on hover; pointer-events: none so it never
+    // steals the mouseleave that dismisses it.
+    _ensureFpsPanel() {
+        if (this._fpsPanelEl || !document.body) return;
+        this._fpsPanelEl = el('div', {
+            className: 'topbar__fps-panel',
+            style: {
+                position: 'fixed',
+                display: 'none',
+                zIndex: '1200',
+                padding: '8px 10px',
+                border: '1px solid var(--cv-border)',
+                borderRadius: '3px',
+                background: 'var(--cv-panel)',
+                boxShadow: 'var(--cv-elev-2)',
+                font: '10px var(--font-body)',
+                color: 'var(--cv-tan)',
+                whiteSpace: 'nowrap',
+                pointerEvents: 'none',
+            },
+        });
+        document.body.appendChild(this._fpsPanelEl);
+    }
+
+    _showFpsPanel() {
+        if (this._destroyed || !this.els.fps) return;
+        this._ensureFpsPanel();
+        const panel = this._fpsPanelEl;
+        if (!panel) return;
+        const samples = this._fpsSamples;
+        if (samples.length === 0) {
+            replaceChildren(panel, [
+                el('div', {
+                    text: 'World render loop idle (dashboard mode)',
+                    style: { color: 'var(--cv-text-muted)' },
+                }),
+            ]);
+        } else {
+            const current = samples[samples.length - 1];
+            let min = Infinity;
+            let sum = 0;
+            for (const sample of samples) {
+                sum += sample;
+                if (sample < min) min = sample;
+            }
+            const avg = Math.round(sum / samples.length);
+            const seconds = Math.max(1, Math.round(samples.length / 2));
+            replaceChildren(panel, [
+                el('div', {
+                    text: `now ${current} · avg ${avg} · min ${min} FPS (~${seconds}s window)`,
+                    style: {
+                        fontWeight: 'bold',
+                        color: current < 25
+                            ? 'var(--cv-status-errored)'
+                            : current < 45
+                                ? 'var(--cv-warn-yellow)'
+                                : 'rgba(150, 195, 130, 0.95)',
+                    },
+                }),
+                el('div', {
+                    text: '≥45 smooth · 25–44 degraded · <25 struggling',
+                    style: { color: 'var(--cv-text-muted)', marginTop: '3px' },
+                }),
+            ]);
+        }
+        const rect = this.els.fps.getBoundingClientRect();
+        panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 240))}px`;
+        panel.style.top = `${rect.bottom + 6}px`;
+        panel.style.display = 'block';
+    }
+
+    _hideFpsPanel() {
+        if (this._fpsPanelEl) this._fpsPanelEl.style.display = 'none';
     }
 
     _startTimer() {
@@ -291,6 +384,13 @@ export class TopBar {
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('fps:updated', this._onFps);
+        if (this._onFpsEnter && this.els.fps) {
+            this.els.fps.removeEventListener('mouseenter', this._onFpsEnter);
+            this.els.fps.removeEventListener('mouseleave', this._onFpsLeave);
+        }
+        this._fpsPanelEl?.remove();
+        this._fpsPanelEl = null;
+        this._fpsSamples = [];
         eventBus.off('ws:connected', this._onWsConnected);
         eventBus.off('ws:disconnected', this._onWsDisconnected);
         if (this._onAutoCamera) eventBus.off('camera:auto-camera', this._onAutoCamera);

@@ -53,9 +53,49 @@ body {
     overflow-y: auto;
     padding: 16px;
     box-sizing: border-box;
+    /* 1.8 — ambient tint/hearth are stamped per local-clock phase from
+       DashboardRenderer (minute-scale, static); fallbacks read as day.
+       4.5 — the hearth layer anchors the grid bottom so tall viewports never
+       end in a void; it also warms the empty state. */
     background:
+        linear-gradient(180deg, var(--cv-ambient-tint, rgba(255, 226, 138, 0.02)), var(--cv-ambient-tint, rgba(255, 226, 138, 0.02))),
+        radial-gradient(ellipse 62% 42% at 50% 100%, var(--cv-ambient-hearth, rgba(245, 171, 75, 0.13)), transparent 70%),
         radial-gradient(circle at 18% 12%, rgba(210, 143, 69, 0.18), transparent 28%),
         radial-gradient(circle at 80% 18%, rgba(62, 94, 61, 0.14), transparent 30%),
         linear-gradient(180deg, rgba(17, 12, 10, 0.96), rgba(8, 7, 7, 1));
+}
+
+/* 4.6 — dashboard house palette. Scoped to the dashboard surface (rather than
+   reset.css) so the shared token file stays untouched; rgb-triplet form keeps
+   each alpha at its call site. */
+#dashboardMode {
+    --cv-dash-glint-rgb: 255, 226, 138;
+    --cv-dash-rim-rgb: 214, 169, 81;
+    --cv-dash-rim-dim-rgb: 199, 157, 76;
+    --cv-dash-amber: #f5b54b;
+    --cv-dash-gilt: #f4d983;
+    --cv-dash-tan-warm: #d8b77a;
+    --cv-dash-tool-name: #f5df8a;
+    --cv-dash-detail: #8d7659;
+    --cv-dash-error-text: #e08f8f;
+    --cv-dash-ink: #2d1a12;
+}
+
+/* 4.9 — mode switch: brief fade on the incoming container. Static cut under
+   reduced motion; the world loop already stops, so this costs one compositor
+   pass, nothing per-frame. */
+@keyframes cv-mode-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.content__mode--enter {
+    animation: cv-mode-fade-in 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .content__mode--enter {
+        animation: none;
+    }
 }
 

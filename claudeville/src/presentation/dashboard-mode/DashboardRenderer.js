@@ -8,6 +8,7 @@ import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { formatCost, formatRelative, formatTokens, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentSelected } from '../shared/AgentSelection.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
+import { phaseNameForDate } from '../character-mode/AtmosphereState.js';
 import {
     buildingClassForAgent,
     buildingPresentation,
@@ -24,6 +25,19 @@ import {
 
 const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const DETAIL_FETCH_LIMIT = 48;
+
+// 1.8 — dashboard ambience follows the same local clock as the World sky.
+// Phase resolution (bounds + seasonal day-length offsets) is shared with the
+// world-side atmosphere stack via phaseNameForDate, so the two clocks cannot
+// drift. Static per phase (no motion), re-stamped at minute scale.
+const AMBIENCE_TINTS = Object.freeze({
+    dawn: { tint: 'rgba(255, 196, 138, 0.05)', hearth: 'rgba(255, 176, 102, 0.15)' },
+    day: { tint: 'rgba(255, 226, 138, 0.02)', hearth: 'rgba(245, 171, 75, 0.13)' },
+    dusk: { tint: 'rgba(214, 120, 64, 0.06)', hearth: 'rgba(240, 140, 60, 0.16)' },
+    // Cooler parchment after dark: steel-blue veil + dimmer, cooler hearth.
+    night: { tint: 'rgba(104, 132, 190, 0.08)', hearth: 'rgba(122, 108, 168, 0.10)' },
+});
+const AMBIENCE_SYNC_INTERVAL = 60_000;
 
 export class DashboardRenderer {
     constructor(world, { toast = null } = {}) {
@@ -47,6 +61,13 @@ export class DashboardRenderer {
         this._sectionEls = new Map(); // projectPath → section element
         this._pendingAvatarDraws = new Set();
         this._avatarDrawFrame = null;
+        this._ambienceEl = document.getElementById('dashboardMode');
+        this._ambiencePhase = '';
+        this._ambienceTimer = null;
+        this._flipTimers = new Set();
+        this._motionQuery = typeof window !== 'undefined'
+            ? window.matchMedia?.('(prefers-reduced-motion: reduce)')
+            : null;
         this._observer = this._createVisibilityObserver();
         this.selection = new AgentSelectionMirror({
             notifyOnRepeat: true,
@@ -71,13 +92,17 @@ export class DashboardRenderer {
                 this._visibilityLayoutDirty = true;
                 this.render();
                 this._startDetailFetching();
+                this._startAmbienceSync();
             } else {
                 this._stopDetailFetching();
+                this._stopAmbienceSync();
             }
         };
         // Pause detail polling while the tab is hidden; refresh once on return.
         this._onVisibilityChange = () => {
-            if (!document.hidden && this.active) this._fetchAllDetails();
+            if (document.hidden || !this.active) return;
+            this._fetchAllDetails();
+            this._syncAmbience();
         };
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:updated', this._onAgentUpdated);
@@ -122,6 +147,7 @@ export class DashboardRenderer {
 
             const gridInner = sectionEl._sectionRefs?.grid || sectionEl.querySelector('.dashboard__section-grid');
 
+            const orderedCards = [];
             for (const agent of groupAgents) {
                 existingIds.add(agent.id);
                 let cardEl = this.cards.get(agent.id);
@@ -136,9 +162,13 @@ export class DashboardRenderer {
                 if (cardEl.parentElement !== gridInner) {
                     gridInner.appendChild(cardEl);
                 }
+                orderedCards.push(cardEl);
 
                 this._updateCard(cardEl, agent);
             }
+
+            // 4.3 — keep DOM order in sync with the status sort, FLIP-animated.
+            this._placeCardsInOrder(gridInner, orderedCards);
         }
 
         // Remove missing agent cards
@@ -182,6 +212,90 @@ export class DashboardRenderer {
             return;
         }
         this._updateCard(cardEl, agent);
+    }
+
+    // 4.3 — FLIP: keep each section's cards in status-sort order. When the
+    // order actually changed (a status transition re-sorted the section),
+    // cards that existed before the move glide to their new slots; newly
+    // created cards have no "first" rect and simply appear. Reduced motion
+    // (or an inactive dashboard) skips the animation — the reorder is an
+    // instant cut. Rects are read only when an order change is detected.
+    _placeCardsInOrder(gridEl, orderedCards) {
+        if (!gridEl || orderedCards.length < 2) return;
+        const cardSet = new Set(orderedCards);
+        let index = 0;
+        let orderChanged = false;
+        for (const child of gridEl.children) {
+            if (!cardSet.has(child)) continue;
+            if (child !== orderedCards[index]) { orderChanged = true; break; }
+            index++;
+        }
+        if (!orderChanged && index === orderedCards.length) return;
+
+        const canAnimate = this.active && !this._destroyed && !(this._motionQuery?.matches);
+        const firstRects = new Map();
+        if (canAnimate) {
+            for (const card of orderedCards) {
+                if (card.parentElement === gridEl) firstRects.set(card, card.getBoundingClientRect());
+            }
+        }
+
+        for (const card of orderedCards) gridEl.appendChild(card);
+        if (!canAnimate || firstRects.size === 0) return;
+
+        const moved = [];
+        for (const [card, first] of firstRects) {
+            const last = card.getBoundingClientRect();
+            const dx = first.left - last.left;
+            const dy = first.top - last.top;
+            if (!dx && !dy) continue;
+            card.style.transition = 'none';
+            card.style.transform = `translate(${dx}px, ${dy}px)`;
+            moved.push(card);
+        }
+        if (moved.length === 0) return;
+
+        void gridEl.offsetWidth; // single reflow so the inverted offsets apply
+        for (const card of moved) {
+            card.style.transition = 'transform 240ms ease';
+            card.style.transform = '';
+            const timer = setTimeout(() => {
+                this._flipTimers.delete(timer);
+                card.style.transition = '';
+            }, 280);
+            this._flipTimers.add(timer);
+        }
+    }
+
+    // 1.8 — ambience sync: stamp --cv-ambient-tint / --cv-ambient-hearth on the
+    // dashboard container from the local-clock phase, re-checked once a minute
+    // while dashboard mode is active. Static tints (no motion), so no
+    // reduced-motion fallback is required.
+    _startAmbienceSync() {
+        this._stopAmbienceSync();
+        this._syncAmbience();
+        this._ambienceTimer = setInterval(() => this._syncAmbience(), AMBIENCE_SYNC_INTERVAL);
+    }
+
+    _stopAmbienceSync() {
+        if (this._ambienceTimer) {
+            clearInterval(this._ambienceTimer);
+            this._ambienceTimer = null;
+        }
+    }
+
+    _syncAmbience(now = new Date()) {
+        if (!this._ambienceEl || this._destroyed) return;
+        const phase = this._ambiencePhaseFor(now);
+        if (phase === this._ambiencePhase) return;
+        this._ambiencePhase = phase;
+        const tints = AMBIENCE_TINTS[phase] || AMBIENCE_TINTS.day;
+        this._ambienceEl.style.setProperty('--cv-ambient-tint', tints.tint);
+        this._ambienceEl.style.setProperty('--cv-ambient-hearth', tints.hearth);
+    }
+
+    _ambiencePhaseFor(date) {
+        return phaseNameForDate(date);
     }
 
     _createSection(projectPath) {
@@ -414,6 +528,7 @@ export class DashboardRenderer {
             toolName: card.querySelector('.dash-card__tool-name'),
             toolDetail: card.querySelector('.dash-card__tool-detail'),
             message: card.querySelector('.dash-card__message'),
+            tools: card.querySelector('.dash-card__tools'),
             toolList: card.querySelector('.dash-card__tool-list'),
             usage: card.querySelector('.dash-card__usage'),
             usageTokens: card.querySelector('.dash-card__usage-tokens'),
@@ -651,6 +766,9 @@ export class DashboardRenderer {
         delete cardEl.dataset.loading;
         if (this.toolHistoryRenderSignatures.get(agentId) === '__error__') return;
         this.toolHistoryRenderSignatures.set(agentId, '__error__');
+        // 4.1 — the error notice needs its container back if an earlier empty
+        // history collapsed it.
+        this._setStyle(cardEl._elements.tools, 'display', '');
         const errorEl = document.createElement('div');
         errorEl.className = 'dash-card__tool-error';
         errorEl.textContent = '⚠ Session details unavailable';
@@ -668,7 +786,8 @@ export class DashboardRenderer {
 
     _renderToolHistory(cardEl, agentId, tools) {
         delete cardEl.dataset.loading;
-        const listEl = cardEl._elements.toolList;
+        const refs = cardEl._elements;
+        const listEl = refs.toolList;
         const limited = (tools || []).slice(-DASHBOARD_TOOL_HISTORY_LIMIT);
 
         const signature = toolHistorySignature(limited, {
@@ -683,6 +802,16 @@ export class DashboardRenderer {
         if (this.toolHistoryRenderSignatures.get(agentId) === historySignature) return;
         this.toolHistoryRenderSignatures.set(agentId, historySignature);
 
+        // 4.1 — no tool history: collapse the whole tools block (skeleton and
+        // "No tool usage" copy included) so cards stay compact. The block
+        // returns as soon as real history or an error notice arrives.
+        if (limited.length === 0) {
+            this._setStyle(refs.tools, 'display', 'none');
+            replaceChildren(listEl, []);
+            return;
+        }
+        this._setStyle(refs.tools, 'display', '');
+
         const nodes = toolHistoryNodes(limited, {
             limit: DASHBOARD_TOOL_HISTORY_LIMIT,
             detailLength: 60,
@@ -692,15 +821,14 @@ export class DashboardRenderer {
             iconClass: 'dash-card__tool-item-icon',
             nameClass: 'dash-card__tool-item-name',
             detailClass: 'dash-card__tool-item-detail',
+            timeClass: 'dash-card__tool-item-time',
             includeCategoryClasses: true,
         });
-        if (limited.length) {
-            const newestFirst = [...limited].reverse();
-            nodes.forEach((node, index) => {
-                const chip = this._toolExitChip(newestFirst[index]);
-                if (chip) node.appendChild(chip);
-            });
-        }
+        const newestFirst = [...limited].reverse();
+        nodes.forEach((node, index) => {
+            const chip = this._toolExitChip(newestFirst[index]);
+            if (chip) node.appendChild(chip);
+        });
         replaceChildren(listEl, nodes);
     }
 
@@ -903,6 +1031,9 @@ export class DashboardRenderer {
         this._destroyed = true;
         this.active = false;
         this._stopDetailFetching();
+        this._stopAmbienceSync();
+        for (const timer of this._flipTimers) clearTimeout(timer);
+        this._flipTimers.clear();
         if (this._avatarDrawFrame !== null) {
             cancelAnimationFrame(this._avatarDrawFrame);
             this._avatarDrawFrame = null;

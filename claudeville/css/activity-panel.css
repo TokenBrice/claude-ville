@@ -27,8 +27,8 @@
 
 .activity-panel__header {
     display: flex;
-    align-items: center;
-    justify-content: space-between;
+    flex-direction: column;
+    gap: 10px;
     padding: 12px 14px;
     border-bottom: 1px solid rgba(199, 157, 76, 0.34);
     background: rgba(20, 13, 11, 0.46);
@@ -112,15 +112,28 @@ body[data-cv-selected] .activity-panel__header::before {
     display: block;
 }
 
-/* Status-tinted ground glow under the avatar's feet. */
+/* Status-tinted ground glow under the avatar's feet. Hues follow the
+   canonical STATUS_VISUALS ramp via the --cv-status-* tokens. */
 .activity-panel__hero-portrait--working { --cv-hero-status: var(--cv-status-working, #72d071); }
-.activity-panel__hero-portrait--waiting,
-.activity-panel__hero-portrait--waiting_on_user { --cv-hero-status: var(--cv-status-waiting, #f97316); }
+.activity-panel__hero-portrait--waiting { --cv-hero-status: var(--cv-status-waiting, #f97316); }
+.activity-panel__hero-portrait--waiting_on_user { --cv-hero-status: var(--cv-status-waiting-user, #facc15); }
 .activity-panel__hero-portrait--errored { --cv-hero-status: var(--cv-status-errored, #e06c5b); }
-.activity-panel__hero-portrait--rate_limited { --cv-hero-status: var(--cv-status-waiting, #f97316); }
+.activity-panel__hero-portrait--rate_limited { --cv-hero-status: var(--cv-status-rate-limited, #8fa6bd); }
+.activity-panel__hero-portrait--completed { --cv-hero-status: var(--cv-status-completed, #e8c96a); }
 .activity-panel__hero-portrait--idle { --cv-hero-status: var(--cv-blue-soft, #7aa6d6); }
 
+/* Name gets the full first header row, with compact Pin/X actions at its
+   right edge, so even long villager names survive without truncating. */
+.activity-panel__name-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
 .activity-panel__name {
+    flex: 1;
+    min-width: 0;
     font-family: var(--font-display);
     font-size: 10px;
     color: var(--cv-gold);
@@ -144,7 +157,7 @@ body[data-cv-selected] .activity-panel__header::before {
     background: rgba(25, 17, 15, 0.86);
     border: 1px solid rgba(199, 157, 76, 0.48);
     border-radius: 2px;
-    padding: 3px 7px;
+    padding: 2px 6px;
     cursor: pointer;
     font-family: inherit;
     flex-shrink: 0;
@@ -161,7 +174,7 @@ body[data-cv-selected] .activity-panel__header::before {
     background: rgba(25, 17, 15, 0.86);
     border: 1px solid rgba(199, 157, 76, 0.38);
     border-radius: 2px;
-    padding: 3px 7px;
+    padding: 2px 6px;
     cursor: pointer;
     font-family: inherit;
     flex-shrink: 0;
@@ -842,9 +855,11 @@ body[data-cv-selected] .activity-panel__header::before {
     min-width: 0;
 }
 
+/* Disclosure summaries sit below section titles in the hierarchy, so they
+   use the quiet body face while titles keep the pixel display face. */
 .activity-panel__journey-summary {
     color: var(--cv-text-muted);
-    font-family: var(--font-display);
+    font-family: var(--font-body);
     font-size: var(--fs-label);
     text-transform: uppercase;
     letter-spacing: 0.5px;
