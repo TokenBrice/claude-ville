@@ -214,8 +214,11 @@ Implemented in full by a 13-agent wave swarm (waves: theme/sky/chrome/camera →
 
 **Deviations:** 4.6 tokens scoped under `#dashboardMode`/`layout.css` instead of reset.css (file-ownership split); team hues kept (documented de-collision constraint rather than re-huing live identities); 3.8 merges restricted to same-slot clusters (flicker guard); 0.12 resolved as delete (plan's recommendation).
 
-**Deferred follow-ups (recorded, not gaps):**
-- 2.5 painterly terrain suite rebake (~100–160 generations) — own art pass; the procedural terrain rework (0.2/2.1–2.4) already removed the worst flatness. `scripts/sprites/bake-manifest.mjs` + `contact-sheet.mjs` are the tooling for it.
-- `veg.tree.pine.small`, `veg.reed.a/b`, `veg.lilypad` still placeholder-ish (~4–5 gens); `bridge.ew` reserved for a future EW crossing.
-- ~~Eyeball pass at 1920×1080~~ — resolved same-day: the floor-only DPR snap made 1080p+ viewports drop to half resolution ("pixelated"); `CanvasBudget.quantizeDpr` now snaps only when the step keeps ≥85% of the capped resolution (1080p → 0.93, 2560 → 0.68, 4K → 0.44; exact snaps kept when nearly free, e.g. 3440 → 0.5). Also sweep of dark-subject bakes against the looser legacy key-out tolerance (tight variant: `scripts/sprites/key-out-dark-bg.mjs`).
-- `BuildingSprite._drawManifestLayers` anchor math noted by the asset agent as surprising-but-preserved; worth a code look if layers ever drift.
+**Deferred follow-ups — resolved 2026-07-17 (second pass):**
+- ~~2.5 painterly terrain suite rebake~~ — done (24 gens via REST `/v2/create-tileset`; `scripts/sprites/bake-terrain.mjs` driver; all six sheets accepted, seamless lagoon gradient).
+- ~~4 vegetation stragglers~~ — done (pine.small/reed.a/reed.b/lilypad, 10 gens; reed.a needed a landscape-free prompt).
+- ~~1080p DPR eyeball~~ — done (tolerance-based snap; see note below).
+- ~~dark-subject key-out sweep~~ — done (2/17 replaced: effortLow, monument.founding; only opaque-border raws were affected).
+- ~~Eyeball pass at 1920×1080~~ — resolved same-day: the floor-only DPR snap made 1080p+ viewports drop to half resolution ("pixelated"); `CanvasBudget.quantizeDpr` now snaps only when the step keeps ≥85% of the capped resolution (1080p → 0.93, 2560 → 0.68, 4K → 0.44; exact snaps kept when nearly free, e.g. 3440 → 0.5).
+
+**Still open (recorded, low priority):** `bridge.ew` reserved for a future EW crossing; `BuildingSprite._drawManifestLayers` anchor math noted as surprising-but-preserved; cobble-square's lower could be aligned to grass-cobble's hue with a reference tile; the legacy key-out threshold is `85²×3` ≈ 147 euclidean (looser than docs assumed — worth a comment fix in `pixellab-rest.mjs:172` when next touched).
