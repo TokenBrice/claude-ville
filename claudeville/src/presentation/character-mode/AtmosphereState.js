@@ -19,7 +19,9 @@
 // The semantic phase fields exist at both the top level (canonical) AND nested
 // under `clock` (alias). Prefer the top-level fields inside this module's
 // renderer consumers; the nested aliases are for downstream tooling (HUDs,
-// widgets, debug overlays) that already destructure `atmosphere.clock`.
+// debug overlays) that already destructure `atmosphere.clock`.
+
+import { seasonTokenForMonth } from './SeasonalAmbience.js';
 
 const DAY_MINUTES = 24 * 60;
 const WEATHER_TIMELINE_KNOTS = 6;
@@ -30,6 +32,39 @@ const PHASES = [
     { name: 'dusk', start: 17 * 60 + 30, end: 20 * 60 },
     { name: 'night', start: 20 * 60, end: 5 * 60 + 30 },
 ];
+
+// 5.4 — seasonal day-length modulation. PHASES is the equinox (spring/autumn)
+// baseline; winter shifts sunrise later and sunset earlier, summer the
+// reverse. The season comes from the shared month→season mapping in
+// SeasonalAmbience so the sky clock stays in lockstep with seasonal terrain
+// and drift particles. Offsets are minutes applied to the phase boundaries.
+const SEASONAL_DAY_LENGTH_OFFSETS = {
+    winter: { sunrise: 40, sunset: -55 },
+    summer: { sunrise: -40, sunset: 55 },
+};
+
+function phasesForSeason(seasonToken) {
+    const offsets = SEASONAL_DAY_LENGTH_OFFSETS[seasonToken];
+    if (!offsets) return PHASES;
+    return PHASES.map((phase) => {
+        let { start, end } = phase;
+        if (phase.name === 'dawn') { start += offsets.sunrise; end += offsets.sunrise; }
+        else if (phase.name === 'day') { start += offsets.sunrise; end += offsets.sunset; }
+        else if (phase.name === 'dusk') { start += offsets.sunset; end += offsets.sunset; }
+        else if (phase.name === 'night') { start += offsets.sunset; end += offsets.sunrise; }
+        return { name: phase.name, start, end };
+    });
+}
+
+// 1.8 — shared phase resolution for non-world surfaces (dashboard ambience
+// sync): one canonical table + seasonal day-length logic, so the dashboard
+// clock can never drift from the world sky. Returns the phase name only;
+// render consumers keep using the full snapshot's phase/phaseProgress.
+export function phaseNameForDate(date) {
+    const minute = minutesSinceMidnight(date);
+    const phases = phasesForSeason(seasonTokenForMonth(date.getMonth()));
+    return resolvePhase(minute, phases).phase;
+}
 
 export const WEATHER_TYPES = ['clear', 'partly-cloudy', 'overcast', 'rain', 'fog', 'storm'];
 const WEATHER_TYPE_SET = new Set(WEATHER_TYPES);
@@ -136,30 +171,39 @@ const PALETTES = {
     },
 };
 
+// 5.3 — `sun` is the manifest hook for a generated pixel-art sun asset. The
+// SkyRenderer gates the lookup on assets.has(), so no manifest entry is
+// required until the asset is actually baked (stepped-disc fallback till then).
 const SKY_ASSETS = {
     clear: {
         clouds: ['atmosphere.cloud.wisp.day'],
         moon: 'atmosphere.moon.crescent.cool',
+        sun: 'atmosphere.sun',
     },
     'partly-cloudy': {
         clouds: ['atmosphere.cloud.cumulus.day', 'atmosphere.cloud.wisp.day'],
         moon: 'atmosphere.moon.crescent.cool',
+        sun: 'atmosphere.sun',
     },
     overcast: {
         clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
         moon: 'atmosphere.moon.crescent.cool',
+        sun: 'atmosphere.sun',
     },
     rain: {
         clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
         moon: 'atmosphere.moon.crescent.cool',
+        sun: 'atmosphere.sun',
     },
     storm: {
         clouds: ['atmosphere.cloud.storm-shelf', 'atmosphere.cloud.overcast-bank', 'atmosphere.cloud.cumulus.day'],
         moon: 'atmosphere.moon.crescent.cool',
+        sun: 'atmosphere.sun',
     },
     fog: {
         clouds: ['atmosphere.cloud.overcast-bank', 'atmosphere.cloud.wisp.day'],
         moon: 'atmosphere.moon.crescent.cool',
+        sun: 'atmosphere.sun',
     },
 };
 
@@ -169,10 +213,22 @@ const CLOUD_LAYER_BANDS = [
     { yFrac: 0.35, parallax: 0.105, driftMul: 1.08, alphaMul: 0.38, scaleBase: 1.22 },
 ];
 
-const _cloudLayerCache = {
-    key: '',
-    layers: null,
-};
+// Bounded descriptor cache. Several keys are live during a weather cross-fade
+// window (incoming set, outgoing set, merged blend), so this is a small Map
+// with oldest-entry eviction instead of a single slot. Keys are deterministic
+// (date | type | cloud bucket [| weight bucket]), so rebuilds are rare and the
+// map cannot grow across sessions.
+const CLOUD_LAYER_CACHE_MAX = 8;
+const _cloudLayerCache = new Map();
+
+function cloudLayerCacheSet(key, layers) {
+    _cloudLayerCache.set(key, layers);
+    if (_cloudLayerCache.size > CLOUD_LAYER_CACHE_MAX) {
+        const oldest = _cloudLayerCache.keys().next().value;
+        _cloudLayerCache.delete(oldest);
+    }
+    return layers;
+}
 
 function clamp(value, min = 0, max = 1) {
     return Math.max(min, Math.min(max, value));
@@ -346,6 +402,7 @@ export function resolveWeatherAt(minute, timeline) {
         fog,
         windX,
         seed: timeline.seed,
+        cause: 'timeline',
         timelineMode: 'auto',
         timeline: knots.map(knot => ({
             minute: knot.minute,
@@ -366,8 +423,8 @@ function deterministicWeather(date, seedOverride = null) {
     return normalizeWeatherOverride(buildWeatherKnot(weatherTypeFromRoll(roll, minute), minute, random, seed), seed);
 }
 
-function resolvePhase(minute) {
-    for (const phase of PHASES) {
+function resolvePhase(minute, phases = PHASES) {
+    for (const phase of phases) {
         if (isWithinInterval(minute, phase.start, phase.end)) {
             return {
                 phase: phase.name,
@@ -566,6 +623,7 @@ function normalizeWeatherOverride(override, fallbackSeed = null) {
             : Number.isFinite(Number(fallbackSeed))
                 ? Number(fallbackSeed) >>> 0
                 : hashString(`weather-override|${type}`),
+        cause: 'timeline',
         timelineMode: 'fixed',
     };
 }
@@ -583,6 +641,12 @@ function resolveWeather(date, override, { seedOverride = null, timelineMode = 'a
  * toward clear skies. The weather type is only escalated when the influence
  * is storm-biased and only de-escalated when clearing-biased, so the
  * timeline's own narrative stays in charge for neutral influences.
+ *
+ * 5.5 — cause legibility: when error-storminess dominates, the weather is
+ * marked `cause: 'fleet'` so renderers can cast the storm subtly violet
+ * (storm canopy + lightning), making "storm = fleet struggling" readable.
+ * Otherwise the timeline owns the weather (`cause: 'timeline'`). The cause is
+ * folded into atmosphere.cacheKey so baked storm plates re-bake on the flip.
  */
 function applyWeatherEventInfluence(weather, influence) {
     if (!weather || !influence) return weather;
@@ -608,7 +672,10 @@ function applyWeatherEventInfluence(weather, influence) {
         if (type === 'partly-cloudy' && cloudCover <= 0.34) type = 'clear';
     }
 
-    return { ...weather, type, intensity, cloudCover, precipitation, fog };
+    const cause = storminess > clearing && storminess > 0.12
+        ? 'fleet'
+        : weather.cause || 'timeline';
+    return { ...weather, type, intensity, cloudCover, precipitation, fog, cause };
 }
 
 function phaseLight(phase, phaseProgress) {
@@ -636,8 +703,8 @@ function celestialHorizonState(yFrac, horizonFrac) {
     };
 }
 
-function buildSun(minute, phase, phaseProgress, weather) {
-    const progress = progressInInterval(minute, PHASES[0].start, PHASES[2].end);
+function buildSun(minute, phase, phaseProgress, weather, phases = PHASES) {
+    const progress = progressInInterval(minute, phases[0].start, phases[2].end);
     const light = phaseLight(phase, phaseProgress);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const alpha = clamp(light * (1 - preset.sunOcclusion * clamp(weather.intensity + 0.16)));
@@ -672,8 +739,8 @@ function moonPhaseForDate(date) {
     };
 }
 
-function buildMoon(minute, phase, phaseProgress, weather, date) {
-    const progress = progressInInterval(minute, PHASES[3].start, PHASES[3].end);
+function buildMoon(minute, phase, phaseProgress, weather, date, phases = PHASES) {
+    const progress = progressInInterval(minute, phases[3].start, phases[3].end);
     let base = phase === 'night' ? 0.92 : 0;
     if (phase === 'dusk') base = 0.34 * smoothstep(phaseProgress);
     if (phase === 'dawn') base = 0.34 * (1 - smoothstep(phaseProgress));
@@ -724,11 +791,53 @@ function buildCloudLayers({ date, weather, assetIds, cloudDensity, cloudAlpha })
 }
 
 function memoizedCloudLayers(key, args) {
-    if (_cloudLayerCache.key === key && _cloudLayerCache.layers) return _cloudLayerCache.layers;
-    const layers = buildCloudLayers(args);
-    _cloudLayerCache.key = key;
-    _cloudLayerCache.layers = layers;
-    return layers;
+    const cached = _cloudLayerCache.get(key);
+    if (cached) return cached;
+    return cloudLayerCacheSet(key, buildCloudLayers(args));
+}
+
+function cloudSetKeyFor(type) {
+    return (SKY_ASSETS[type] || SKY_ASSETS.clear).clouds.join(',');
+}
+
+// 5.6 — cloud-set cross-fade during weather transitions. The timeline flips
+// `weather.type` at the transition midpoint; instead of hard-swapping cloud
+// shapes there, the outgoing set fades out over CLOUD_CROSSFADE_WINDOW of
+// transition progress while the incoming set fades in. Both sets are memoized
+// descriptors; only the merged (alpha-weighted) list is built per weight
+// bucket, so the steady-state path allocates nothing.
+const CLOUD_CROSSFADE_WINDOW = 0.25;
+
+function blendedCloudLayers({ date, weather, cloudDensity, cloudAlpha, cloudBucket }) {
+    const dateKey = localDateKey(date);
+    const currentAssets = SKY_ASSETS[weather.type] || SKY_ASSETS.clear;
+    const currentKey = `${dateKey}|${weather.type}|${cloudBucket}`;
+    const transitionProgress = clamp(Number(weather.transitionProgress) || 0);
+    const previousType = weather.previousType;
+    const blending = previousType
+        && previousType !== weather.type
+        && transitionProgress >= 0.5
+        && cloudSetKeyFor(previousType) !== cloudSetKeyFor(weather.type);
+    if (!blending) {
+        return memoizedCloudLayers(currentKey, { date, weather, assetIds: currentAssets, cloudDensity, cloudAlpha });
+    }
+    const weight = clamp((transitionProgress - 0.5) / CLOUD_CROSSFADE_WINDOW);
+    if (weight >= 1) {
+        return memoizedCloudLayers(currentKey, { date, weather, assetIds: currentAssets, cloudDensity, cloudAlpha });
+    }
+    const weightBucket = Math.round(weight * 10) / 10;
+    const mergedKey = `${dateKey}|xf:${previousType}>${weather.type}|${cloudBucket}|w${weightBucket}`;
+    const cached = _cloudLayerCache.get(mergedKey);
+    if (cached) return cached;
+    const outgoing = memoizedCloudLayers(`${dateKey}|prev:${previousType}|${cloudBucket}`, {
+        date, weather, assetIds: SKY_ASSETS[previousType] || SKY_ASSETS.clear, cloudDensity, cloudAlpha,
+    });
+    const incoming = memoizedCloudLayers(currentKey, { date, weather, assetIds: currentAssets, cloudDensity, cloudAlpha });
+    const merged = [
+        ...outgoing.map(layer => ({ ...layer, alpha: Number((layer.alpha * (1 - weight)).toFixed(3)) })),
+        ...incoming.map(layer => ({ ...layer, alpha: Number((layer.alpha * weight).toFixed(3)) })),
+    ];
+    return cloudLayerCacheSet(mergedKey, merged);
 }
 
 function parseRgbaString(value) {
@@ -930,7 +1039,10 @@ export function createAtmosphereSnapshot({
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
     const minute = minutesSinceMidnight(effectiveDate);
-    const { phase, phaseProgress } = resolvePhase(minute);
+    // 5.4 — season-modulated phase table (day length follows the month→season
+    // mapping; equinox months keep the fixed PHASES baseline).
+    const phases = phasesForSeason(seasonTokenForMonth(effectiveDate.getMonth()));
+    const { phase, phaseProgress } = resolvePhase(minute, phases);
     const dayProgress = minute / DAY_MINUTES;
     let weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode });
     // Explicit overrides (debug helper, scenario metadata) win over the
@@ -950,7 +1062,7 @@ export function createAtmosphereSnapshot({
     const cloudBucket = Math.round((weather.cloudCover || 0) * 10);
     const precipitationBucket = Math.round((weather.precipitation || 0) * 10);
     const fogBucket = Math.round((weather.fog || 0) * 10);
-    const cloudLayerKey = `${localDateKey(effectiveDate)}|${weather.type}|${cloudBucket}`;
+    const cloudLayerBlend = blendedCloudLayers({ date: effectiveDate, weather, cloudDensity, cloudAlpha, cloudBucket });
     const effectiveMotionScale = preferredMotionScale(motionScale);
     const driftEnabled = effectiveMotionScale > 0;
     const clockDriftPx = Math.round(dayProgress * 4096) * weather.windX;
@@ -960,18 +1072,21 @@ export function createAtmosphereSnapshot({
         phaseProgress,
         dayProgress,
         transition,
-        cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}`,
+        // 5.5 — weather.cause ('timeline' | 'fleet') is part of the key so
+        // baked storm plates re-bake when a storm flips between fleet-driven
+        // (violet cast) and timeline-driven.
+        cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|${weather.cause === 'fleet' ? 'fleet' : 'timeline'}`,
         weather,
         sky: {
             palette: blendPalette(phase, phaseProgress, weather),
             assetIds,
-            sun: buildSun(minute, phase, phaseProgress, weather),
-            moon: buildMoon(minute, phase, phaseProgress, weather, effectiveDate),
+            sun: buildSun(minute, phase, phaseProgress, weather, phases),
+            moon: buildMoon(minute, phase, phaseProgress, weather, effectiveDate, phases),
             starsAlpha: starAlpha(phase, phaseProgress, weather),
             cloudAlpha,
             cloudDensity,
             cloudCover,
-            cloudLayers: memoizedCloudLayers(cloudLayerKey, { date: effectiveDate, weather, assetIds, cloudDensity, cloudAlpha }),
+            cloudLayers: cloudLayerBlend,
         },
         grade: buildGrade(phase, phaseProgress, weather),
         lighting,

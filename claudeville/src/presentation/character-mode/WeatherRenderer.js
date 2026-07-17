@@ -111,7 +111,7 @@ export class WeatherRenderer {
                 this._drawRain(ctx, canvas, { ...weather, intensity: rainIntensity }, phaseMs, seed, particleEnabled);
             }
             if (storm && particleEnabled) {
-                this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation) * legibility.flash, seed);
+                this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation) * legibility.flash, seed, weather.cause);
             }
         } else if (weather.type === 'overcast' && fog <= 0.04) {
             this._drawFogBands(ctx, canvas, weather.intensity * 0.34, phaseMs, seed, particleEnabled);
@@ -553,7 +553,7 @@ export class WeatherRenderer {
         ctx.fillRect(Math.round(x), Math.round(y), Math.round(width), Math.round(height));
     }
 
-    _drawStormFlash(ctx, canvas, intensity, seed) {
+    _drawStormFlash(ctx, canvas, intensity, seed, cause = 'timeline') {
         const cycleMs = 7200;
         const cycle = Math.floor(this.elapsedMs / cycleMs);
         const cycleT = this.elapsedMs % cycleMs;
@@ -578,10 +578,13 @@ export class WeatherRenderer {
             eventBus.emit('weather:storm-flash', { intensity: clamp(intensity, 0, 1) });
         }
 
+        // 5.5 — fleet-driven storms (weather.cause === 'fleet') flash a subtle
+        // violet vs the timeline storm's cool white.
+        const fleet = cause === 'fleet';
         const flash = ctx.createLinearGradient(0, 0, canvas.width, canvas.height);
-        flash.addColorStop(0, `rgba(220, 236, 255, ${alpha})`);
-        flash.addColorStop(0.55, `rgba(235, 242, 255, ${alpha * 0.58})`);
-        flash.addColorStop(1, 'rgba(220, 236, 255, 0)');
+        flash.addColorStop(0, fleet ? `rgba(216, 196, 255, ${alpha})` : `rgba(220, 236, 255, ${alpha})`);
+        flash.addColorStop(0.55, fleet ? `rgba(228, 214, 255, ${alpha * 0.58})` : `rgba(235, 242, 255, ${alpha * 0.58})`);
+        flash.addColorStop(1, fleet ? 'rgba(216, 196, 255, 0)' : 'rgba(220, 236, 255, 0)');
         ctx.fillStyle = flash;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
 
@@ -589,14 +592,14 @@ export class WeatherRenderer {
         // dimmer afterglow (secondAge) is sky-glow only. Brighter at the peak
         // of the flash envelope so the bolt reads as the source of the light.
         if (flashAge === age && flashT > 0.32) {
-            this._drawLightningBolt(ctx, canvas, flashT * clamp(intensity, 0, 1), seed, cycle);
+            this._drawLightningBolt(ctx, canvas, flashT * clamp(intensity, 0, 1), seed, cycle, fleet);
         }
     }
 
     // Procedural forked bolt via midpoint displacement. Deterministic per
     // strike (seed + cycle) so it is identical across the brief multi-frame
     // flash window. Drawn screen-composite over the flash wash.
-    _drawLightningBolt(ctx, canvas, strength, seed, cycle) {
+    _drawLightningBolt(ctx, canvas, strength, seed, cycle, fleet = false) {
         const boltSeed = (seed + Math.imul(cycle + 1, 0x27d4eb2f)) >>> 0;
         const startX = Math.round(canvas.width * (0.32 + random01(boltSeed, 11) * 0.36));
         const endX = startX + Math.round((random01(boltSeed, 23) - 0.5) * canvas.width * 0.22);
@@ -622,7 +625,9 @@ export class WeatherRenderer {
             ctx.stroke();
         };
 
-        ctx.strokeStyle = `rgba(176, 206, 255, ${Math.min(0.5, strength * 0.55)})`;
+        ctx.strokeStyle = fleet
+            ? `rgba(198, 168, 255, ${Math.min(0.5, strength * 0.55)})`
+            : `rgba(176, 206, 255, ${Math.min(0.5, strength * 0.55)})`;
         ctx.lineWidth = 5;
         drawPath(points);
 
@@ -640,12 +645,16 @@ export class WeatherRenderer {
                 3,
                 canvas.width * 0.02,
             );
-            ctx.strokeStyle = `rgba(190, 216, 255, ${Math.min(0.34, strength * 0.36)})`;
+            ctx.strokeStyle = fleet
+                ? `rgba(206, 182, 255, ${Math.min(0.34, strength * 0.36)})`
+                : `rgba(190, 216, 255, ${Math.min(0.34, strength * 0.36)})`;
             ctx.lineWidth = 2.5;
             drawPath(branch);
         }
 
-        ctx.strokeStyle = `rgba(244, 250, 255, ${Math.min(0.92, 0.4 + strength * 0.55)})`;
+        ctx.strokeStyle = fleet
+            ? `rgba(246, 240, 255, ${Math.min(0.92, 0.4 + strength * 0.55)})`
+            : `rgba(244, 250, 255, ${Math.min(0.92, 0.4 + strength * 0.55)})`;
         ctx.lineWidth = 1.6;
         drawPath(points);
         ctx.restore();
@@ -705,6 +714,9 @@ function normalizeWeather(atmosphere) {
         ? Number(raw.fog)
         : preset.fog;
     const seed = typeof raw === 'object' && raw ? raw.seed : null;
+    // 5.5 — fleet-driven storms (error-storminess dominating the event
+    // influence) carry a violet cast on flash/lightning vs timeline storms.
+    const cause = typeof raw === 'object' && raw && raw.cause === 'fleet' ? 'fleet' : 'timeline';
 
     return {
         type,
@@ -714,6 +726,7 @@ function normalizeWeather(atmosphere) {
         precipitation: clamp(precipitation, 0, 1),
         fog: clamp(fog, 0, 1),
         seed,
+        cause,
     };
 }
 

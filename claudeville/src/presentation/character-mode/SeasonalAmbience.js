@@ -57,6 +57,13 @@ export function seasonTokenForAtmosphere(atmosphere) {
     return season ? season.token : '';
 }
 
+// 5.4 — month index (0–11) → season token, exported so AtmosphereState can
+// modulate day length off the same month→season mapping (one source of truth
+// for sky clock, seasonal terrain, and drift particles). '' when unknown.
+export function seasonTokenForMonth(monthIndex) {
+    return seasonForMonth(monthIndex)?.token || '';
+}
+
 export class SeasonalAmbience {
     constructor({
         particleSystem = null,

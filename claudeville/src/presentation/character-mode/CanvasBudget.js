@@ -1,5 +1,15 @@
 const MIN_BACKING_DPR = 0.25;
 const MAX_DEVICE_DPR = 1;
+// Plan 1.9 — pixel-uniform scaling, revised: snapping the backing DPR to an
+// integer 1/dpr step only happens when it is nearly free. The original
+// floor-only snap made every viewport above ~1.5M CSS px (1080p and up, the
+// most common desktop resolutions) drop from ~0.93 to 0.5, and the browser
+// then upscaled the canvas 2x with nearest-neighbor — users read that as
+// "pixelated". A mildly non-uniform 1.07x upscale is invisible; a 2x one is
+// not. So: snap only when the step keeps at least KEEP_RATIO of the
+// budget-capped resolution; otherwise keep the fractional capped value.
+const DPR_STEPS = Object.freeze([MAX_DEVICE_DPR, 0.5, MIN_BACKING_DPR]);
+const QUANTIZE_KEEP_RATIO = 0.85;
 const SCREEN_SURFACE_COUNT = 4; // visible canvas, sky cache, trail cache, atmosphere cache
 const WORLD_CACHE_PIXEL_RESERVE = 7_000_000;
 const LIGHT_CACHE_PIXEL_RESERVE = 1_250_000;
@@ -27,7 +37,21 @@ export function effectiveCanvasDpr(cssWidth, cssHeight, requestedDpr = 1) {
             AUX_CACHE_PIXEL_RESERVE,
     );
     const combinedCapDpr = Math.sqrt(screenBudget / (cssPixels * SCREEN_SURFACE_COUNT));
-    return Math.max(MIN_BACKING_DPR, Math.min(requested, mainCapDpr, combinedCapDpr));
+    const capped = Math.max(MIN_BACKING_DPR, Math.min(requested, mainCapDpr, combinedCapDpr));
+    return quantizeDpr(capped);
+}
+
+// Snap to the largest DPR step not above `dpr`, but only when that step keeps
+// at least QUANTIZE_KEEP_RATIO of the capped resolution (a hair of float
+// tolerance for exact-boundary viewports). Otherwise return the capped value
+// unchanged — sharpness beats uniformity once the upscale factor is small.
+function quantizeDpr(dpr) {
+    for (const step of DPR_STEPS) {
+        if (dpr >= step - 1e-6) {
+            return step >= dpr * QUANTIZE_KEEP_RATIO ? step : dpr;
+        }
+    }
+    return MIN_BACKING_DPR;
 }
 
 export function releaseCanvasBackingStore(canvas) {

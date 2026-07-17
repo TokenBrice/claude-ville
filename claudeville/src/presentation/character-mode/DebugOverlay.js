@@ -1,4 +1,6 @@
 import { MAP_SIZE, TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
+import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { CANVAS_BUDGET } from './CanvasBudget.js';
 
 export class DebugOverlay {
     constructor() {
@@ -99,7 +101,7 @@ export class DebugOverlay {
         const reservations = Array.isArray(visitReservations?.reservations) ? visitReservations.reservations : [];
         ctx.save();
         ctx.lineWidth = 1.5;
-        ctx.font = '10px monospace';
+        ctx.font = `10px ${WORLD_BODY_FONT}`;
         ctx.textBaseline = 'bottom';
         for (const reservation of reservations) {
             const point = this._tileToScreen(reservation.tileX, reservation.tileY);
@@ -197,7 +199,7 @@ export class DebugOverlay {
         ctx.fill();
     }
 
-    drawScreen(ctx, { visitIntents, visitReservations, agentSprites, viewport, panelY = 12, behaviorStats = null, renderStats = null } = {}) {
+    drawScreen(ctx, { visitIntents, visitReservations, agentSprites, viewport, panelY = 12, behaviorStats = null, renderStats = null, cameraState = null } = {}) {
         if (!this.enabled) return;
         const intents = Array.isArray(visitIntents?.intents) ? visitIntents.intents : [];
         const reservations = Array.isArray(visitReservations?.reservations) ? visitReservations.reservations : [];
@@ -208,6 +210,7 @@ export class DebugOverlay {
             `agents: ${agentSprites?.size || 0}`,
             `intents: ${intents.length}`,
             `reservations: ${reservations.length}`,
+            this._cameraStateRow(viewport, cameraState),
             renderStats?.drawables ? `drawables: ${renderStats.drawables.total} drawn / ${renderStats.drawables.culling?.culled || 0} culled` : null,
             renderStats?.harbor ? `harbor: pending ${renderStats.harbor.pendingRepos || 0} commits ${renderStats.harbor.pendingCommits || 0}` : null,
             renderStats?.canvas ? `light/cache: ${renderStats.canvas.lightGradients || 0} gradients / particles ${renderStats.canvas.particles || 0}` : null,
@@ -236,7 +239,7 @@ export class DebugOverlay {
         const padding = 8;
         const lineHeight = 14;
         ctx.save();
-        ctx.font = '11px monospace';
+        ctx.font = `11px ${WORLD_BODY_FONT}`;
         const width = Math.min(
             420,
             Math.max(210, ...rows.map((row) => ctx.measureText(row).width + padding * 2)),
@@ -278,6 +281,29 @@ export class DebugOverlay {
         return rows;
     }
 
+    // Plan 1.9 — camera/frame readout. `cameraState` is a light snapshot shaped
+    // from IsometricRenderer.getCanvasBudget() plus the live camera:
+    //   { zoom, dpr, visibleCanvasPixels, maxMainCanvasPixels, owner, gliding }
+    // Without it the row still reports effective DPR and backing px derived
+    // from the viewport's own `_claudeVilleDpr`, so it renders with no caller
+    // wiring; passing `cameraState` adds zoom and glide owner/state.
+    _cameraStateRow(viewport, cameraState) {
+        const dpr = Number(cameraState?.dpr) || Number(viewport?._claudeVilleDpr) || 0;
+        const cssWidth = Number(viewport?.width) || 0;
+        const cssHeight = Number(viewport?.height) || 0;
+        if (!dpr || !cssWidth || !cssHeight) return null;
+        const backing = Number(cameraState?.visibleCanvasPixels)
+            || Math.round(cssWidth * dpr) * Math.round(cssHeight * dpr);
+        const cap = Number(cameraState?.maxMainCanvasPixels) || CANVAS_BUDGET.maxMainCanvasPixels;
+        const parts = [`dpr ${dpr}`, `backing ${formatPixels(backing)}/${formatPixels(cap)} px`];
+        const zoom = Number(cameraState?.zoom);
+        if (Number.isFinite(zoom)) parts.unshift(`zoom ${+zoom.toFixed(2)}`);
+        if (cameraState?.owner) {
+            parts.push(`owner ${cameraState.owner}${cameraState.gliding ? ' (glide)' : ''}`);
+        }
+        return `camera: ${parts.join(' · ')}`;
+    }
+
     _tileToScreen(tileX, tileY) {
         return {
             x: (tileX - tileY) * TILE_WIDTH / 2,
@@ -311,4 +337,12 @@ function formatMs(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return '0.0';
     return number.toFixed(number >= 10 ? 0 : 1);
+}
+
+function formatPixels(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return '0';
+    if (number >= 1_000_000) return `${(number / 1_000_000).toFixed(2)}M`;
+    if (number >= 1_000) return `${Math.round(number / 1_000)}k`;
+    return String(Math.round(number));
 }

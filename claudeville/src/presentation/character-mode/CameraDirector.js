@@ -304,7 +304,11 @@ export class CameraDirector {
     }
 
     _handleCue(cue) {
-        if (!this.autoMode || !this.camera || !cue || !validBox(cue.box)) return;
+        // Honor motionScale like update() does: without this guard event cues
+        // slipped through under reduced motion and hard-cut the camera
+        // (glideToWorld cuts directly when the camera has reduced motion on).
+        // The static fallback for an event reframe is no move at all.
+        if (!this.autoMode || this.motionScale <= 0 || !this.camera || !cue || !validBox(cue.box)) return;
         const now = nowMs();
         const kind = String(cue.kind || 'default');
         if (!this._canCameraMove(now, { snapshot: this._latestSnapshot, event: true })) return;

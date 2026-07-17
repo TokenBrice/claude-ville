@@ -1,4 +1,6 @@
 import { MAP_SIZE } from '../../config/constants.js';
+import { BUILDING_DEFS } from '../../config/buildings.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
 import { mapWorldCorners, tileToWorld, worldToTile } from './Projection.js';
 
 // #50 — idle Ken-Burns drift tuning. Begins after this much input-free time,
@@ -8,6 +10,30 @@ const IDLE_DRIFT_AMPLITUDE_PX = 8;
 const IDLE_DRIFT_PERIOD_X_MS = 38000;
 const IDLE_DRIFT_PERIOD_Y_MS = 47000;
 
+// #54 — empty-village dusk tour. Once the village has been empty for a stretch
+// AND the operator idle, the camera takes a slow Ken-Burns circuit of the
+// landmarks under a dusk vignette. It yields the instant an agent arrives or
+// the operator touches anything. Reduced motion: no circuit — the static dusk
+// vignette still settles over the empty village (the item's RM fallback).
+const TOUR_EMPTY_DELAY_MS = 20000;
+const TOUR_USER_IDLE_MS = 40000;
+const TOUR_GLIDE_MS = 9000;
+const TOUR_DWELL_MS = 7000;
+const TOUR_GRADE_RAMP_MS = 3200;
+const TOUR_VIGNETTE = 0.34;
+const TOUR_WORLD_TINT = '#241d33';
+const TOUR_STOP_ORDER = Object.freeze([
+    'command', 'archive', 'observatory', 'watchtower', 'harbor',
+    'portal', 'mine', 'forge', 'taskboard',
+]);
+
+// Resting steps for wheel/keyboard zoom. The 150ms tween may pass through
+// fractional values mid-gesture, but the camera must SETTLE on integers so the
+// nearest-neighbor canvas upscale stays pixel-uniform (plan 1.9). Fractional
+// half-steps were a deliberate addition (commit 8e343a3) — restore
+// [1, 1.5, 2, 2.5, 3] here if mid-range framing ever needs re-tuning.
+const ZOOM_STEPS = Object.freeze([1, 2, 3]);
+
 export class Camera {
     constructor(canvas) {
         this.canvas = canvas;
@@ -16,7 +42,7 @@ export class Camera {
         this.zoom = 1;
         this.minZoom = 1;
         this.maxZoom = 3;
-        this.zoomSteps = [1, 1.5, 2, 2.5, 3];
+        this.zoomSteps = ZOOM_STEPS;
         this._zoomAnimation = null;
         this._reducedMotion = false;
         try {
@@ -68,6 +94,16 @@ export class Camera {
         this._lastUserInputAt = performance.now();
         this._idleDrift = null;       // { baseX, baseY, phase }
 
+        // #54 — empty-village tour state. `_villageEmpty` is fed by the
+        // 'village:population' event (BuildingSprite emits it on change);
+        // `_villageTour` is non-null while the dusk tour owns the frame.
+        this._villageEmpty = false;
+        this._villageEmptySince = null;
+        this._villageTour = null;   // { index, dwellUntil, gradeWeight }
+        this._tourStopsCache = null;
+        this._onVillagePopulation = (payload) => this._handleVillagePopulation(payload);
+        this._populationUnsub = null;
+
         this._onMouseDown = this._onMouseDown.bind(this);
         this._onMouseMove = this._onMouseMove.bind(this);
         this._onMouseUp = this._onMouseUp.bind(this);
@@ -98,6 +134,7 @@ export class Camera {
     fitToWorldBox(box, { paddingPx = 96, maxZoom = 2, owner = 'system', composition = null } = {}) {
         const pose = this._poseForWorldBox(box, { paddingPx, maxZoom, composition });
         if (!pose) return;
+        this._endVillageTour({ restore: false });
         this._zoomAnimation = null;
         this._snapZoom = null;
         this._momentum = null;
@@ -151,6 +188,8 @@ export class Camera {
             allowZoomIn,
         });
         if (!pose) return false;
+        // Anything but the tour's own stops ends the tour (cues, attract moves).
+        if (owner !== 'village-tour') this._endVillageTour({ restore: false });
 
         this.stopFollow();
         this._momentum = null;
@@ -226,6 +265,8 @@ export class Camera {
         const now = performance.now();
         this._lastInputAt = now;
         this._lastUserInputAt = now;
+        // #54 — operator input yields the dusk tour instantly, right where it stands.
+        this._endVillageTour({ restore: false });
         this._cameraOwner = 'user';
         this._userAdjusted = true;
     }
@@ -238,6 +279,17 @@ export class Camera {
     // WorldFrameRenderer vignette/worldTint pass. Ramps up at the head of the
     // move and eases back out at the tail so it never lingers.
     getDirectorGlideGrade() {
+        // #54 — while the empty-village tour owns the frame its dusk grade is
+        // the active one: persistent (not bell-curved), ramped in over a few
+        // seconds on engage, dropped instantly on yield. Reduced motion holds
+        // the static vignette at full weight.
+        if (this._villageTour) {
+            return {
+                vignette: TOUR_VIGNETTE,
+                worldTint: TOUR_WORLD_TINT,
+                weight: Math.max(0, Math.min(1, this._villageTour.gradeWeight ?? 0)),
+            };
+        }
         const glide = this._directorGlide;
         if (!glide || !glide.grade) return null;
         // Reduced motion cuts directly to the framed view; no lingering overlay.
@@ -252,6 +304,10 @@ export class Camera {
         window.addEventListener('mousemove', this._onMouseMove);
         window.addEventListener('mouseup', this._onMouseUp);
         this.canvas.addEventListener('wheel', this._onWheel, { passive: false });
+        // #54 — village population feed for the empty-village tour.
+        if (!this._populationUnsub) {
+            this._populationUnsub = eventBus.on('village:population', this._onVillagePopulation);
+        }
     }
 
     detach() {
@@ -259,10 +315,16 @@ export class Camera {
         window.removeEventListener('mousemove', this._onMouseMove);
         window.removeEventListener('mouseup', this._onMouseUp);
         this.canvas.removeEventListener('wheel', this._onWheel);
+        if (this._populationUnsub) {
+            this._populationUnsub();
+            this._populationUnsub = null;
+        }
+        this._villageTour = null;
     }
 
     followAgent(sprite) {
         if (this.followTarget === sprite) return;
+        this._endVillageTour({ restore: false });
         this._directorGlide = null;
         this._cameraOwner = 'follow';
         this.followTarget = sprite;
@@ -295,6 +357,9 @@ export class Camera {
             this._followEase = null;
             this._directorGlide = null;
             this._idleDrift = null;
+            // #54 — a live tour keeps only its static dusk vignette under
+            // reduced motion: no circuit, grade snapped to full weight.
+            if (this._villageTour) this._villageTour.gradeWeight = 1;
         }
     }
 
@@ -328,6 +393,7 @@ export class Camera {
     }
 
     update(dt = 16, renderNow = performance.now()) {
+        this._updateVillageTour(dt, renderNow);
         if (this._updateDirectorGlide(dt)) return;
         this._updateMomentum(dt);
         this._updateSnapZoom(dt);
@@ -495,6 +561,7 @@ export class Camera {
     centerOnTile(tileX, tileY) {
         const screen = tileToWorld(tileX, tileY);
         this._idleDrift = null;
+        this._endVillageTour({ restore: false });
         this._cameraOwner = 'system';
         this._userAdjusted = false;
         this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
@@ -534,6 +601,7 @@ export class Camera {
             allowZoomIn,
         });
         if (!pose) return false;
+        this._endVillageTour({ restore: false });
         this.stopFollow();
         this._momentum = null;
         this._zoomAnimation = null;
@@ -701,8 +769,11 @@ export class Camera {
     _updateIdleDrift(dt, renderNow = performance.now()) {
         if (this._reducedMotion) { this._endIdleDrift(); return; }
         // Anything else owning the camera defers the drift and resets the clock.
+        // The #54 dusk tour counts as an owner: it IS the idle motion, and the
+        // drift's base-restore would fight its glide sequencing.
         if (this.dragging || this._momentum || this._directorGlide
-            || this.followTarget || this._zoomAnimation || this._snapZoom) {
+            || this.followTarget || this._zoomAnimation || this._snapZoom
+            || this._villageTour) {
             this._endIdleDrift();
             this._lastInputAt = renderNow;
             return;
@@ -734,6 +805,108 @@ export class Camera {
         this.y = this._idleDrift.baseY;
         this._idleDrift = null;
         this._clampToBounds();
+    }
+
+    // #54 — population feed from BuildingSprite's 'village:population' event.
+    // First arrival ends the tour instantly and hands the frame back to the
+    // auto-camera (owner reset to 'system' so the attract logic may reframe).
+    _handleVillagePopulation(payload = {}) {
+        const empty = payload.empty != null ? Boolean(payload.empty) : Number(payload?.count) === 0;
+        if (empty) {
+            if (!this._villageEmpty) this._villageEmptySince = performance.now();
+            this._villageEmpty = true;
+            return;
+        }
+        this._villageEmpty = false;
+        this._villageEmptySince = null;
+        this._endVillageTour({ restore: true });
+    }
+
+    // #54 — engage/sequence/yield the empty-village dusk tour. Called first in
+    // update(): tour glides are ordinary director glides, so once one starts
+    // `_updateDirectorGlide` owns the move and the rest of update() parks.
+    _updateVillageTour(dt, renderNow = performance.now()) {
+        const tour = this._villageTour;
+        if (!tour) {
+            if (!this._villageEmpty || !this._villageEmptySince) return;
+            if (renderNow - this._villageEmptySince < TOUR_EMPTY_DELAY_MS) return;
+            if (this.getUserIdleMs(renderNow) < TOUR_USER_IDLE_MS) return;
+            if (this.dragging || this.followTarget || this._momentum
+                || this._zoomAnimation || this._snapZoom || this._directorGlide) return;
+            this._villageTour = {
+                index: 0,
+                dwellUntil: 0,
+                // Reduced motion snaps the static vignette on; motion ramps it.
+                gradeWeight: this._reducedMotion ? 1 : 0,
+            };
+            if (!this._reducedMotion) this._startNextTourGlide(renderNow);
+            return;
+        }
+        if (!this._reducedMotion && tour.gradeWeight < 1) {
+            tour.gradeWeight = Math.min(1, tour.gradeWeight + dt / TOUR_GRADE_RAMP_MS);
+        }
+        // Reduced motion: the tour is the static dusk vignette only — no circuit.
+        if (this._reducedMotion) return;
+        if (this._directorGlide) return;
+        if (renderNow < tour.dwellUntil) return;
+        this._startNextTourGlide(renderNow);
+    }
+
+    _startNextTourGlide(renderNow = performance.now()) {
+        const tour = this._villageTour;
+        if (!tour) return;
+        const stops = this._villageTourStops();
+        if (!stops.length) return;
+        const stop = stops[tour.index % stops.length];
+        tour.index += 1;
+        const started = this.glideToWorld(stop.box, {
+            duration: TOUR_GLIDE_MS,
+            maxZoom: stop.maxZoom,
+            paddingPx: 170,
+            owner: 'village-tour',
+            composition: { x: 0.5, y: 0.55 },
+            grade: { vignette: TOUR_VIGNETTE, worldTint: TOUR_WORLD_TINT },
+        });
+        tour.dwellUntil = renderNow + (started ? TOUR_GLIDE_MS + TOUR_DWELL_MS : 1500);
+    }
+
+    // Landmark circuit: one stop per building, ordered as a scenic loop around
+    // the map. Hero tiers hold the wide frame (zoom 1), majors lean in (zoom 2).
+    _villageTourStops() {
+        if (this._tourStopsCache) return this._tourStopsCache;
+        const byType = new Map(BUILDING_DEFS.map((def) => [def.type, def]));
+        const ordered = TOUR_STOP_ORDER.map((type) => byType.get(type)).filter(Boolean);
+        for (const def of BUILDING_DEFS) if (!ordered.includes(def)) ordered.push(def);
+        this._tourStopsCache = ordered.map((def) => {
+            const world = tileToWorld(def.x + def.width / 2, def.y + def.height / 2);
+            const hero = def.visualTier === 'hero';
+            const padX = hero ? 260 : 220;
+            const padY = hero ? 130 : 110;
+            return {
+                box: {
+                    minX: world.x - padX,
+                    minY: world.y - padY,
+                    maxX: world.x + padX,
+                    maxY: world.y + padY,
+                },
+                maxZoom: hero ? 1 : 2,
+            };
+        });
+        return this._tourStopsCache;
+    }
+
+    // Yield the tour: drop any in-flight tour glide so motion stops now (the
+    // yield contract), never mid-move later. `restore` resets the owner to
+    // 'system' so the auto-camera may reframe (agent-arrival path); operator
+    // input passes restore:false and keeps full manual control instead.
+    _endVillageTour({ restore = false } = {}) {
+        if (!this._villageTour) return;
+        this._villageTour = null;
+        if (this._directorGlide?.owner === 'village-tour') this._directorGlide = null;
+        if (restore) {
+            this._cameraOwner = 'system';
+            this._userAdjusted = false;
+        }
     }
 
     // #21 — advance the director glide. Returns true while it owns the camera so
