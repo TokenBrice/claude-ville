@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-07-17-visual-quality-assets-v2"
+  assetVersion: "2026-07-17-visual-quality-assets-v3"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -987,7 +987,7 @@ vegetation:
 
   - id: veg.tree.pine.small
     tool: isometric_tile
-    prompt: "small pine tree, compact cone shape, bright needles, isometric"
+    prompt: "small pine tree, compact cone shape, bright needle clusters with snow-free tips, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 40]
 
@@ -1059,13 +1059,13 @@ vegetation:
 
   - id: veg.reed.a
     tool: isometric_tile
-    prompt: "cluster of tall river reeds, brown seed-heads, near waterline, isometric"
+    prompt: "single small clump of tall reeds, brown seed-heads, slender green blades, plant only, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no water tile, no sky, no sun, no landscape, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 24]
 
   - id: veg.reed.b
     tool: isometric_tile
-    prompt: "sparse reeds, slender green stalks, water reflections, isometric"
+    prompt: "sparse slender green reed stalks with fine leaves, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no water tile, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 24]
 
@@ -1118,38 +1118,38 @@ vegetation:
 terrain:
   - id: terrain.grass-dirt
     tool: tileset
-    lower: "ancient forest grass with wildflowers and moss"
-    upper: "rich loam dirt path"
+    lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
+    upper: "rich loam dirt path, warm packed earth with pebble specks and wheel-worn texture"
     size: 32
 
   - id: terrain.grass-cobble
     tool: tileset
-    lower: "ancient forest grass with wildflowers and moss"
-    upper: "weathered cobblestone road, carved guild marks"
+    lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
+    upper: "weathered cobblestone road, varied grey-blue stones with worn edges, carved guild marks, moss in the cracks"
     size: 32
 
   - id: terrain.grass-shore
     tool: tileset
-    lower: "ancient forest grass with wildflowers and moss"
-    upper: "sandy shore with pebbles and sea foam"
+    lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
+    upper: "warm sandy shore, pebbles and shell flecks, lace of dried sea foam, wet-to-dry gradient"
     size: 32
 
   - id: terrain.shore-shallow
     tool: tileset
-    lower: "pale limestone harbor shore, wet sand, pebbles, broken sea foam"
-    upper: "clear turquoise shallow harbor water, sandy bed visible, small wavelets"
+    lower: "pale limestone harbor shore, glossy wet sand band, pebbles, broken sea foam lace"
+    upper: "clear turquoise shallow harbor water, sunlit sandy bed visible through ripple highlights, small baked wavelets"
     size: 32
 
   - id: terrain.shallow-deep
     tool: tileset
-    lower: "clear turquoise shallow harbor water with foam and sunlit ripples"
-    upper: "deep cobalt open sea water, darker currents, subtle wave crests"
+    lower: "clear turquoise shallow harbor water, foam flecks and sunlit ripple highlights over a sandy bed"
+    upper: "deep cobalt open sea water, darker current streaks, subtle wave-crest glints, painterly depth"
     size: 32
 
   - id: terrain.cobble-square
     tool: tileset
-    lower: "weathered cobblestone road, carved guild marks"
-    upper: "polished town square flagstone, worn smooth"
+    lower: "weathered cobblestone road, varied grey-blue stones with worn edges, carved guild marks, moss in the cracks"
+    upper: "polished town square flagstone, worn smooth with warm sanded joints and subtle chisel marks"
     size: 32
 
 # ─── ATMOSPHERE ──────────────────────────────────────────────────────────────

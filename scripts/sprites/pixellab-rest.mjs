@@ -98,6 +98,117 @@ export async function pixflux(token, {
     throw lastError;
 }
 
+// Async REST create-topdown-tileset call: POST /create-tileset returns 202
+// with { background_job_id, tileset_id }; poll GET /tilesets/{tileset_id}
+// until the job completes (200) — 423/404 while still processing. 422
+// validation errors are thrown immediately (they are free and indicate a
+// caller bug). Returns the decoded tileset payload { tiles, metadata, usage }
+// where each tile carries { name, corners, original_position, image }.
+export async function createTopdownTileset(token, {
+    lowerDescription,
+    upperDescription,
+    transitionDescription = '',
+    tileSize = 32,
+    seed = null,
+    shading = 'detailed shading',
+    outline = 'lineless',
+    detail = 'highly detailed',
+    lowerReferenceImage = null,
+    upperReferenceImage = null,
+    label = 'tileset',
+    pollIntervalMs = 8000,
+    maxWaitMs = 6 * 60 * 1000,
+    retries = 1,
+} = {}) {
+    const body = {
+        lower_description: lowerDescription,
+        upper_description: upperDescription,
+        transition_description: transitionDescription,
+        tile_size: { width: tileSize, height: tileSize },
+        mode: 'standard',
+        transition_size: 0,
+        text_guidance_scale: 8,
+        outline,
+        shading,
+        // Same enum family as pixflux: 'low detail' | 'medium detail' | 'highly detailed'.
+        detail,
+        view: 'high top-down',
+    };
+    if (lowerReferenceImage) body.lower_reference_image = { type: 'base64', base64: lowerReferenceImage, format: 'png' };
+    if (upperReferenceImage) body.upper_reference_image = { type: 'base64', base64: upperReferenceImage, format: 'png' };
+    if (seed != null) body.seed = seed;
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        if (attempt > 0) {
+            console.log(`[pixellab] retry ${attempt}/${retries} for ${label}`);
+            await sleep(5000 * attempt);
+        }
+        let response;
+        try {
+            response = await fetch(`${API_BASE}/create-tileset`, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(body),
+            });
+        } catch (err) {
+            lastError = new Error(`PixelLab transport error for ${label}: ${err.message}`);
+            continue;
+        }
+        const json = await response.json().catch(() => null);
+        if (!response.ok) {
+            lastError = new Error(`PixelLab ${response.status} for ${label}: ${JSON.stringify(json)}`);
+            if (response.status === 429 || response.status >= 500) continue;
+            throw lastError;
+        }
+        const tilesetId = json?.tileset_id;
+        if (!tilesetId) {
+            lastError = new Error(`PixelLab response for ${label} did not include a tileset_id`);
+            continue;
+        }
+        try {
+            return await pollTileset(token, tilesetId, { label, pollIntervalMs, maxWaitMs });
+        } catch (err) {
+            lastError = err;
+        }
+    }
+    throw lastError;
+}
+
+async function pollTileset(token, tilesetId, { label, pollIntervalMs, maxWaitMs }) {
+    const deadline = Date.now() + maxWaitMs;
+    for (;;) {
+        const response = await fetch(`${API_BASE}/tilesets/${tilesetId}`, {
+            headers: { Authorization: `Bearer ${token}` },
+        });
+        if (response.ok) {
+            const json = await response.json();
+            const tiles = json?.tileset?.tiles;
+            if (!Array.isArray(tiles) || tiles.length === 0) {
+                throw new Error(`PixelLab tileset ${tilesetId} for ${label} returned no tiles`);
+            }
+            return {
+                tiles,
+                metadata: json.metadata || null,
+                usage: json.usage || null,
+                tilesetId,
+            };
+        }
+        // 423 Locked / 404 Not Found: still processing. Anything else is fatal.
+        if (response.status !== 423 && response.status !== 404) {
+            const json = await response.json().catch(() => null);
+            throw new Error(`PixelLab poll ${response.status} for ${label}: ${JSON.stringify(json)}`);
+        }
+        if (Date.now() > deadline) {
+            throw new Error(`PixelLab tileset ${tilesetId} for ${label} timed out after ${maxWaitMs}ms`);
+        }
+        await sleep(pollIntervalMs);
+    }
+}
+
 // Flood-fill background key-out seeded from the image border (same algorithm
 // as generate-pixellab-revamp.mjs / key-out-bg.mjs): clears the connected
 // edge background to transparent, then darkens the 1px alpha fringe.

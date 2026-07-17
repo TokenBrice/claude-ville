@@ -108,6 +108,7 @@ Per-tool quick reference. Inputs list the most-used parameters, not every option
 - Inputs: `lower_description`, `upper_description`, `transition_description`, `tile_size` (16 or 32), `transition_size` (0.0 / 0.25 / 0.5 / 0.75 / 1.0), `view` (`low top-down` / `high top-down`), `outline`, `shading`, `detail`, references for `lower`/`upper`/`transition`/`color`.
 - Output: 16 tiles (no transition) or 23 tiles (full transition) as a Wang set. **Async.**
 - Repo usage: terrain tilesets in `claudeville/assets/sprites/terrain/`.
+- **Confirmed REST shape (2026-07-17, `scripts/sprites/pixellab-rest.mjs` `createTopdownTileset()`):** `POST /v2/create-tileset` → 202 `{tileset_id, background_job_id}`; poll `GET /tilesets/{tileset_id}` until 200. Response carries **16 individual 32×32 tiles** (`wang_0..15` with `corners` metadata, bit packing SE=1/SW=2/NE=4/NW=8) — no assembled sheet; stitch client-side (app cells are edge-mask indexed N=1/E=2/S=4/W=8; corner = OR of adjacent edges). `lower_reference_image`/`upper_reference_image` (`{type:'base64',...}`) strongly steers texture+hue and was the winning lever against off-family results (brick/mosaic motifs); water sets want detailed shading + "smooth continuous water surface" language. Driver: `scripts/sprites/bake-terrain.mjs` (cache-aware, `--force/--dry-run/--ids/--seed-offset`).
 
 ### `create_sidescroller_tileset`
 
