@@ -1,7 +1,8 @@
-const TEAM_COLORS = [
-    '#e8d44d', '#4ade80', '#60a5fa', '#f97316', '#a78bfa',
-    '#f472b6', '#34d399', '#fb923c', '#818cf8', '#22d3ee',
-];
+import { TEAM_HUES } from '../../config/theme.js';
+
+// The categorical team ramp lives in the theme.js House Palette as TEAM_HUES
+// (plan 1.11); this module only derives glow/panel tones and the stable hash
+// assignment.
 
 function stableHash(value) {
     const text = String(value || '');
@@ -33,7 +34,7 @@ export function getTeamColor(teamName) {
             panel: 'rgba(34, 34, 46, 0.90)',
         };
     }
-    const accent = TEAM_COLORS[stableHash(key) % TEAM_COLORS.length];
+    const accent = TEAM_HUES[stableHash(key) % TEAM_HUES.length];
     const { r, g, b } = hexToRgb(accent);
     return {
         accent,

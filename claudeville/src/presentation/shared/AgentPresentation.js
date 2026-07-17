@@ -4,7 +4,7 @@ import { buildingForTool, toolCategory, toolIcon, shortToolName } from '../../do
 import { formatModelLabel, getModelVisualIdentity } from './ModelVisualIdentity.js';
 import { repoProfile } from './RepoColor.js';
 import { el } from './DomSafe.js';
-import { hashRows, normalizeStatus, truncateText } from './Formatters.js';
+import { hashRows, formatRelative, normalizeStatus, truncateText } from './Formatters.js';
 
 export const UNKNOWN_PROJECT_KEY = '_unknown';
 
@@ -71,6 +71,7 @@ export function sortAgentsByStatus(agents) {
         waiting: 3,
         rate_limited: 4,
         idle: 5,
+        completed: 6,
     };
     return agents.sort((a, b) => {
         const statusA = normalizeStatus(a.status);
@@ -85,7 +86,10 @@ export function providerPresentation(provider, identity = null) {
     return {
         key,
         icon: PROVIDER_ICONS[key] || '?',
-        color: identity?.minimapColor || PROVIDER_COLORS[key] || '#8b8b9e',
+        // 1.5 — one provider hue across badge / trim / glyph: the shared
+        // `color` (sidebar + dashboard glyph) follows the provider badge hue;
+        // per-model minimap colors only survive for unlisted providers.
+        color: PROVIDER_COLORS[key] || identity?.minimapColor || '#8b8b9e',
         badge,
     };
 }
@@ -97,6 +101,7 @@ export function statusPresentation(status, translator = i18n) {
         rate_limited: 'Rate-limited',
         errored: 'Errored',
         waiting_on_user: 'Waiting for you',
+        completed: 'Completed',
     };
     const fallbackLabel = normalized.charAt(0).toUpperCase() + normalized.slice(1);
     return {
@@ -128,10 +133,14 @@ export function currentToolPresentation(agent, translator = i18n) {
             detail: agent.currentToolInput || '',
         };
     }
+    // Tool-less fallback: terminal statuses read as themselves (idle → "Idle",
+    // completed → "Completed"); only genuinely in-flight tool-less statuses
+    // read as waiting. Fixes completed agents showing "Waiting...".
+    const readsAsSelf = statusInfo.status === 'idle' || statusInfo.status === 'completed';
     return {
         isIdle: true,
-        icon: statusInfo.status === 'idle' ? '\u{1F4A4}' : '\u23F3',
-        name: statusInfo.status === 'idle'
+        icon: statusInfo.status === 'idle' ? '\u{1F4A4}' : (statusInfo.status === 'completed' ? '✓' : '\u23F3'),
+        name: readsAsSelf
             ? statusInfo.label
             : `${translator?.t?.('statusWaiting') || 'Waiting'}...`,
         detail: '',
@@ -203,6 +212,9 @@ export function toolHistoryNodes(tools, options = {}) {
         iconClass,
         nameClass,
         detailClass,
+        // 4.4 — opt-in relative-timestamp span per row (dashboard only);
+        // callers that omit timeClass render exactly as before.
+        timeClass = '',
         includeCategoryClasses = false,
     } = options;
     const limited = (tools || []).slice(-(limit || tools?.length || 0));
@@ -218,7 +230,7 @@ export function toolHistoryNodes(tools, options = {}) {
     return [...limited].reverse().map((entry) => {
         const cat = includeCategoryClasses ? toolCategory(entry.tool) : '';
         const categoryClass = cat ? `tool-cat--${cat}` : '';
-        return el('div', { className: itemClass }, [
+        const children = [
             el('span', {
                 className: [iconClass, categoryClass],
                 text: toolIcon(entry.tool),
@@ -231,6 +243,13 @@ export function toolHistoryNodes(tools, options = {}) {
                 className: detailClass,
                 text: entry.detail ? truncateText(entry.detail, detailLength) : '',
             }),
-        ]);
+        ];
+        if (timeClass) {
+            children.push(el('span', {
+                className: timeClass,
+                text: formatRelative(Number(entry.ts) || 0),
+            }));
+        }
+        return el('div', { className: itemClass }, children);
     });
 }

@@ -39,13 +39,17 @@
     --cv-border-soft: rgba(199, 157, 76, 0.16);
     --cv-shadow: rgba(0, 0, 0, 0.38);
 
-    /* Agent status colors (dots, card borders, badges) */
-    --cv-status-working: #4ade80;
-    --cv-status-idle: #60a5fa;
-    --cv-status-waiting: #f97316;
-    --cv-status-rate-limited: #f59e0b;
+    /* Agent status colors (dots, card borders, badges). Canonical source is
+       STATUS_VISUALS in src/config/theme.js — App.js re-stamps these vars from
+       it at boot (plan 1.1), so edit theme.js, never this block. */
+    --cv-status-working: #79d975;
+    --cv-status-idle: #86bfe0;
+    --cv-status-waiting: #df8c3f;
+    --cv-status-rate-limited: #8fa6bd;
     --cv-status-errored: #ef4444;
     --cv-status-waiting-user: #facc15;
+    --cv-status-chatting: #f2d36b;
+    --cv-status-completed: #ffd873;
 
     /* Tool category colors (tool history items) */
     --cv-tool-read: #60a5fa;
@@ -120,6 +124,14 @@ ul, ol {
 a {
     color: inherit;
     text-decoration: none;
+}
+
+/* 4.11 — cross-browser scrollbar tokens: the standard properties below cover
+   Firefox with the same warm palette as the webkit rules (Chrome keeps using
+   its ::-webkit-scrollbar path when those rules match). */
+* {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(199, 157, 76, 0.45) #130d0f;
 }
 
 ::-webkit-scrollbar {

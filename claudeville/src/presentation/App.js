@@ -3,6 +3,7 @@ import { Building } from '../domain/entities/Building.js';
 import { BUILDING_DEFS } from '../config/buildings.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { i18n } from '../config/i18n.js';
+import { STATUS_VISUALS, STATUS_CSS_VARS } from '../config/theme.js';
 
 import { ClaudeDataSource } from '../infrastructure/ClaudeDataSource.js';
 import { WebSocketClient } from '../infrastructure/WebSocketClient.js';
@@ -96,6 +97,10 @@ export class App {
     async _bootOnce() {
         try {
             console.log('[App] ClaudeVille boot started...');
+
+            // 0. Stamp --cv-status-* from STATUS_VISUALS so CSS and canvas can
+            // never fork (plan 1.1); reset.css holds identical fallbacks.
+            this._stampStatusCssVars();
 
             // 1. Initialize domain
             this.world = new World();
@@ -219,6 +224,15 @@ export class App {
             this._bootState = 'failed';
             this._showBootError(err);
             return null;
+        }
+    }
+
+    _stampStatusCssVars() {
+        const rootStyle = document.documentElement?.style;
+        if (!rootStyle) return;
+        for (const [status, varName] of Object.entries(STATUS_CSS_VARS)) {
+            const color = STATUS_VISUALS[status]?.color;
+            if (color) rootStyle.setProperty(varName, color);
         }
     }
 
