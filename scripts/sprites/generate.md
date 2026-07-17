@@ -77,6 +77,20 @@ Use `npm run sprites:plan -- --ids=<manifest-id>` for a manifest-backed dry run 
 
 `scripts/sprites/generate-pixellab-revamp.mjs` is a legacy REST helper with a static asset inventory. It now fails unless run with an explicit, reviewed `--ids` list.
 
+## Manifest-Driven Bulk Bake + Contact Sheets
+
+`scripts/sprites/bake-manifest.mjs` is the supported bulk-rebake path: it reads prompt, dimensions, and output path straight from `manifest.yaml` (`style.anchor` + entry prompt), calls REST pixflux, keys out the edge background, and writes the manifest-implied PNG. Building overlay layers are addressed as `--ids=building.<id>.<layerName>`. Raw API responses cache under `output/pixellab-cache/bake/`; `--force` ignores the cache, `--dry-run` prints the plan. Characters and terrain tilesets are out of scope (different generation surfaces).
+
+After a batch, produce review evidence without opening individual files:
+
+```bash
+node scripts/sprites/bake-manifest.mjs --ids=prop.well,prop.runestone
+node scripts/sprites/contact-sheet.mjs --groups=props   # or all families
+```
+
+Contact sheets land in `output/sprite-contact-sheets/<family>.png` (pngjs montage, manifest order, dark checkerboard so alpha reads). `scripts/sprites/pixellab-rest.mjs` holds the shared REST/key-out helpers for new bake scripts; `scripts/sprites/rehue-flowercart.mjs` is a single-purpose hue-mask re-hue used for plan 6.5.
+
+
 ## Smoke Before Bulk Work
 
 Before broad regeneration, prove the pipeline with one low-risk asset:
@@ -113,7 +127,7 @@ Run after sprite changes:
 npm run sprites:validate
 ```
 
-The validator checks expected paths, orphan PNGs, duplicate PNGs, palette mirror parity, character-sheet shape/motion, equipment PNG dimensions, and atmosphere PNG dimensions. It does not prove that an asset is artistically correct; inspect important regenerated assets in the browser.
+The validator checks expected paths, orphan PNGs, duplicate PNGs, palette mirror parity, character-sheet shape/motion, equipment PNG dimensions, and atmosphere PNG dimensions. It also prints non-fatal warnings for: PNG dimensions that disagree with the manifest `size`/`width`/`height` declaration, a corner-alpha/fill-ratio "is it a cube?" heuristic on isolated-object sprites (would have caught the four shipped block-cube layers), and manifest ids with no code reference (dead inventory). It does not prove that an asset is artistically correct; inspect important regenerated assets in the browser or via `scripts/sprites/contact-sheet.mjs`.
 
 For visual regression checks:
 

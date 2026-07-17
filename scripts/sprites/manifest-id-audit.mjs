@@ -8,10 +8,10 @@ const scanRoots = [
     'claudeville/src',
     'claudeville/config',
 ].filter((rel) => existsSync(join(repoRoot, rel)));
-const prefixes = '(agent|building|prop|veg|terrain|bridge|dock|equipment|overlay|atmosphere)';
+const prefixes = '(agent|building|prop|veg|terrain|bridge|dock|equipment|overlay|atmosphere|monument)';
 const idBody = '[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*';
 const literalPattern = new RegExp(`(['"])(${prefixes}\\.${idBody})\\1`, 'g');
-const dynamicPattern = new RegExp('`([^`]*(?:agent|building|prop|veg|terrain|bridge|dock|equipment|overlay|atmosphere)\\.[^`]*)`', 'g');
+const dynamicPattern = new RegExp('`([^`]*(?:agent|building|prop|veg|terrain|bridge|dock|equipment|overlay|atmosphere|monument)\\.[^`]*)`', 'g');
 const dynamicIdPattern = new RegExp(`${prefixes}\\.(?:[A-Za-z0-9_-]+|\\$\\{[^}]+\\})(?:\\.(?:[A-Za-z0-9_-]+|\\$\\{[^}]+\\}))*`, 'g');
 const allowedDynamic = [
     /^agent\.\$\{[^}]+\}$/,

@@ -1,0 +1,238 @@
+#!/usr/bin/env node
+// Shared PixelLab REST helpers for sprite bake scripts.
+//
+// Single-sourced here so new bake drivers do not copy/paste the pixflux call,
+// the edge-background key-out, or the .dev.vars token read from
+// generate-pixellab-revamp.mjs (which keeps its own legacy copies).
+//
+// Usage: import { pixflux, keyOutEdgeBackground, ... } from './pixellab-rest.mjs';
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { PNG } from 'pngjs';
+
+export const repoRoot = fileURLToPath(new URL('../..', import.meta.url));
+export const API_BASE = 'https://api.pixellab.ai/v2';
+
+export function readPixellabToken(envPath = join(repoRoot, '.dev.vars')) {
+    if (!existsSync(envPath)) throw new Error('.dev.vars not found');
+    const env = Object.fromEntries(
+        readFileSync(envPath, 'utf8')
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line && !line.startsWith('#') && line.includes('='))
+            .map((line) => {
+                const idx = line.indexOf('=');
+                return [line.slice(0, idx), line.slice(idx + 1).replace(/^["']|["']$/g, '')];
+            })
+    );
+    const token = env.PIXELLAB_API_TOKEN || env.PIXELLAB_AUTHORIZATION?.replace(/^Bearer\s+/i, '');
+    if (!token) throw new Error('PIXELLAB_API_TOKEN or PIXELLAB_AUTHORIZATION missing in .dev.vars');
+    return token;
+}
+
+// Synchronous REST create-image-pixflux call (the endpoint returns the image
+// inline). `size` is { width, height }; both must be <= 400. Retries bounded
+// by `retries` on transport / 5xx / 429 with linear backoff; 4xx parameter
+// errors are not retried. Returns a decoded PNG.
+export async function pixflux(token, {
+    description,
+    width,
+    height,
+    transparent = true,
+    seed = 0,
+    retries = 2,
+    label = 'pixflux',
+} = {}) {
+    const body = {
+        description,
+        image_size: { width, height },
+        text_guidance_scale: 8,
+        outline: 'single color black outline',
+        shading: 'medium shading',
+        // pixflux enum is 'low detail' | 'medium detail' | 'highly detailed'
+        // (422-verified; the generic MCP enum docs list 'high detail' instead).
+        detail: 'highly detailed',
+        view: 'low top-down',
+        isometric: true,
+        no_background: transparent,
+        seed,
+    };
+    let lastError = null;
+    for (let attempt = 0; attempt <= retries; attempt++) {
+        if (attempt > 0) {
+            const waitMs = 4000 * attempt;
+            console.log(`[pixellab] retry ${attempt}/${retries} for ${label} in ${waitMs}ms`);
+            await sleep(waitMs);
+        }
+        let response;
+        try {
+            response = await fetch(`${API_BASE}/create-image-pixflux`, {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${token}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(body),
+            });
+        } catch (err) {
+            lastError = new Error(`PixelLab transport error for ${label}: ${err.message}`);
+            continue;
+        }
+        const json = await response.json().catch(() => null);
+        if (!response.ok) {
+            const status = response.status;
+            lastError = new Error(`PixelLab ${status} for ${label}: ${JSON.stringify(json)}`);
+            // 429/5xx are worth a retry; 4xx parameter problems are not.
+            if (status === 429 || status >= 500) continue;
+            throw lastError;
+        }
+        const image = json?.image || json?.data?.image || json?.images?.[0] || json?.data?.images?.[0];
+        if (!image?.base64) {
+            lastError = new Error(`PixelLab response for ${label} did not include an image`);
+            continue;
+        }
+        return PNG.sync.read(Buffer.from(image.base64, 'base64'));
+    }
+    throw lastError;
+}
+
+// Flood-fill background key-out seeded from the image border (same algorithm
+// as generate-pixellab-revamp.mjs / key-out-bg.mjs): clears the connected
+// edge background to transparent, then darkens the 1px alpha fringe.
+export function keyOutEdgeBackground(src) {
+    const out = clonePng(src);
+    const edgeSeedColors = sampleEdgeBackgroundColors(out);
+    if (edgeSeedColors.length === 0) return out;
+
+    const visited = new Uint8Array(out.width * out.height);
+    const queue = [];
+    const enqueue = (x, y) => {
+        if (x < 0 || y < 0 || x >= out.width || y >= out.height) return;
+        const idx = y * out.width + x;
+        if (visited[idx]) return;
+        visited[idx] = 1;
+        if (!isBackgroundPixel(out, x, y, edgeSeedColors)) return;
+        queue.push([x, y]);
+    };
+
+    for (let x = 0; x < out.width; x++) {
+        enqueue(x, 0);
+        enqueue(x, out.height - 1);
+    }
+    for (let y = 0; y < out.height; y++) {
+        enqueue(0, y);
+        enqueue(out.width - 1, y);
+    }
+
+    while (queue.length) {
+        const [x, y] = queue.pop();
+        const i = (out.width * y + x) << 2;
+        out.data[i + 3] = 0;
+        enqueue(x + 1, y);
+        enqueue(x - 1, y);
+        enqueue(x, y + 1);
+        enqueue(x, y - 1);
+    }
+
+    return trimAlphaFringe(out);
+}
+
+function sampleEdgeBackgroundColors(png) {
+    const samples = [];
+    const points = [
+        [0, 0],
+        [Math.floor(png.width / 2), 0],
+        [png.width - 1, 0],
+        [0, Math.floor(png.height / 2)],
+        [png.width - 1, Math.floor(png.height / 2)],
+        [0, png.height - 1],
+        [Math.floor(png.width / 2), png.height - 1],
+        [png.width - 1, png.height - 1],
+    ];
+    for (const [x, y] of points) {
+        const i = (png.width * y + x) << 2;
+        if (png.data[i + 3] < 220) continue;
+        samples.push([png.data[i], png.data[i + 1], png.data[i + 2]]);
+    }
+    return samples;
+}
+
+function isBackgroundPixel(png, x, y, seedColors) {
+    const i = (png.width * y + x) << 2;
+    if (png.data[i + 3] < 8) return true;
+    let best = Infinity;
+    for (const [r, g, b] of seedColors) {
+        const dr = png.data[i] - r;
+        const dg = png.data[i + 1] - g;
+        const db = png.data[i + 2] - b;
+        best = Math.min(best, dr * dr + dg * dg + db * db);
+    }
+    return best <= 85 * 85 * 3;
+}
+
+export function trimAlphaFringe(png) {
+    const out = clonePng(png);
+    for (let y = 0; y < png.height; y++) {
+        for (let x = 0; x < png.width; x++) {
+            const i = (png.width * y + x) << 2;
+            if (png.data[i + 3] === 0) continue;
+            let transparentNeighbor = false;
+            for (const [nx, ny] of [[x + 1, y], [x - 1, y], [x, y + 1], [x, y - 1]]) {
+                if (nx < 0 || ny < 0 || nx >= png.width || ny >= png.height) continue;
+                const ni = (png.width * ny + nx) << 2;
+                if (png.data[ni + 3] === 0) transparentNeighbor = true;
+            }
+            if (!transparentNeighbor) continue;
+            out.data[i] = Math.max(0, Math.round(out.data[i] * 0.82));
+            out.data[i + 1] = Math.max(0, Math.round(out.data[i + 1] * 0.82));
+            out.data[i + 2] = Math.max(0, Math.round(out.data[i + 2] * 0.82));
+        }
+    }
+    return out;
+}
+
+export function resizeNearest(src, width, height) {
+    if (src.width === width && src.height === height) return src;
+    const out = new PNG({ width, height });
+    for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+            const sx = Math.min(src.width - 1, Math.floor(x * src.width / width));
+            const sy = Math.min(src.height - 1, Math.floor(y * src.height / height));
+            const si = (src.width * sy + sx) << 2;
+            const di = (out.width * y + x) << 2;
+            out.data[di] = src.data[si];
+            out.data[di + 1] = src.data[si + 1];
+            out.data[di + 2] = src.data[si + 2];
+            out.data[di + 3] = src.data[si + 3];
+        }
+    }
+    return out;
+}
+
+export function clonePng(src) {
+    const out = new PNG({ width: src.width, height: src.height });
+    src.data.copy(out.data);
+    return out;
+}
+
+export function writePng(path, png) {
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, PNG.sync.write(png));
+}
+
+// Deterministic per-id seed (same FNV-1a variant as generate-pixellab-revamp.mjs
+// so rebakes of an id stay in the same seed family).
+export function hashSeed(text) {
+    let hash = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+        hash ^= text.charCodeAt(i);
+        hash = Math.imul(hash, 16777619);
+    }
+    return Math.abs(hash % 1000000) + 1000;
+}
+
+export function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+}

@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-07-12-fortified-boundary-v1"
+  assetVersion: "2026-07-17-visual-quality-assets-v2"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -8,6 +8,10 @@ style:
 # Optional `required_equipment` entries are validated in every walk and idle
 # cell for baked-equipment characters. Prefer runtime equipment overlays when
 # pose consistency matters across generated animation frames.
+# Optional `paletteSource` pins the per-sheet robe/pants/trim pixel colors the
+# Compositor's palette swap keys on (sampled from the actual PNG; up to two
+# garment families per role). Entries without it fall back to the palette
+# family's first ramp color.
 characters:
   # NOTE: generated 2026-06-11 with mode=pro, size=76 (canvas 148px, crop to 92px).
   # Pro mode is what fixed cross-direction consistency (standard mode produced
@@ -21,6 +25,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
+    # Sampled from sheet.png (plan 0.5): crimson gown + gold filigree; the
+    # declared claude sources match nothing on this sheet.
+    paletteSource: { robe: ['#8a1d34', '#20143e'], trim: '#dfc18a' }
     anchor: [46, 80]
     mode: pro
 
@@ -34,6 +41,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
+    # Sampled from sheet.png (plan 0.5): midnight-blue robe, ivory hem, dusty
+    # rose trim; the declared claude sources are inert here.
+    paletteSource: { robe: ['#1b1b32', '#2f3251'], pants: '#eee4c1', trim: '#ab8a81' }
     anchor: [46, 80]
     mode: pro
 
@@ -44,6 +54,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
+    # Sampled from sheet.png (plan 0.5): dark violet robe + cobalt cloak; the
+    # declared claude sources are inert here.
+    paletteSource: { robe: ['#34184f', '#522c6b'], pants: '#2a4791' }
     anchor: [46, 80]
     mode: pro
 
@@ -54,6 +67,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: claude
+    # Sampled from sheet.png (plan 0.5): mint scarf (robe role) + bronze clasp;
+    # declared pants source already matches the moss-green lower robe.
+    paletteSource: { robe: ['#c0e9c3', '#78894d'], pants: '#0e8c44', trim: '#a49159' }
     anchor: [46, 80]
     mode: pro
 
@@ -64,6 +80,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): navy armor + steel-blue limbs + teal
+    # core glow; the declared codex sources are inert here.
+    paletteSource: { robe: ['#222945', '#333c5c'], pants: '#404b6d', trim: '#55a6a0' }
     anchor: [46, 80]
     mode: pro
 
@@ -74,6 +93,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): indigo plate + steel-blue pauldrons +
+    # pale teal visor; the declared codex sources are inert here.
+    paletteSource: { robe: ['#1f1d36', '#2d3a54'], pants: '#495c77', trim: '#79aabb' }
     anchor: [46, 80]
     mode: pro
 
@@ -84,6 +106,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): near-black navy plate + violet cape;
+    # the declared trim source already matches the teal reactor glow.
+    paletteSource: { robe: ['#191c2a', '#202a45'], pants: '#4a2868' }
     anchor: [46, 80]
     mode: pro
 
@@ -98,6 +123,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): navy plate only — the signature gold
+    # armor stays untouched so Sol keeps his radiant identity on every variant.
+    paletteSource: { robe: '#2d2f41' }
     anchor: [46, 80]
     mode: pro
 
@@ -108,6 +136,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): navy plate + moss-green sash; the
+    # declared codex sources are inert here.
+    paletteSource: { robe: ['#32384a', '#292f42'], pants: '#697b59' }
     anchor: [46, 80]
     mode: pro
 
@@ -118,6 +149,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): silver-blue light armor + navy
+    # under-suit + steel accent; the declared codex sources are inert here.
+    paletteSource: { robe: ['#bdd2e3', '#a6b8cd'], pants: '#24263e', trim: '#8c9bb5' }
     anchor: [46, 80]
     mode: pro
 
@@ -128,6 +162,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): deep teal half-plate; declared pants
+    # source already matches, and the cyan visor is too small to key trim on.
+    paletteSource: { robe: ['#22575d', '#1e4651'] }
     anchor: [46, 80]
     mode: pro
 
@@ -138,6 +175,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): light teal armor, darker teal limbs,
+    # muted cyan lens; the declared codex sources are inert here.
+    paletteSource: { robe: '#7bb9b0', pants: '#3d676f', trim: '#73ada8' }
     anchor: [46, 80]
     mode: pro
 
@@ -158,6 +198,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: codex
+    # Sampled from sheet.png (plan 0.5): brown leather boots/belt + circuit-teal
+    # glow; the declared robe source already matches the deep teal coat.
+    paletteSource: { pants: '#7f5e4f', trim: '#55c3b6' }
     anchor: [46, 80]
     mode: pro
 
@@ -168,6 +211,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: gemini
+    # Sampled from sheet.png (plan 0.5): violet robe + steel-indigo starlight
+    # trim; the declared pants source already matches the deep indigo folds.
+    paletteSource: { robe: ['#52337d', '#362361'], trim: '#8692c3' }
     anchor: [46, 80]
     mode: pro
 
@@ -178,6 +224,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: kimi
+    # Sampled from sheet.png (plan 0.5): dusty-rose sash/filigree accent; the
+    # declared robe and pants sources already match the ivory robe and wrap.
+    paletteSource: { trim: '#c47774' }
     anchor: [46, 80]
     mode: pro
 
@@ -191,6 +240,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: deepseek
+    # Sampled from sheet.png (plan 0.5): dark forest-green leathers + teal rune
+    # edging; the declared pants source already matches the leggings.
+    paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
     anchor: [46, 80]
     mode: pro
 
@@ -201,6 +253,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: deepseek
+    # Sampled from sheet.png (plan 0.5): near-black hood/wrap + muted teal trim;
+    # the declared pants source already matches the dark leggings.
+    paletteSource: { robe: '#171f1f', trim: '#4d7762' }
     anchor: [46, 80]
     mode: pro
 
@@ -211,6 +266,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: deepseek
+    # Sampled from sheet.png (plan 0.5): dark green vest/leggings; the declared
+    # pants source already matches and no confident trim cluster exists.
+    paletteSource: { robe: '#17251d' }
     anchor: [46, 80]
     mode: pro
 
@@ -229,6 +287,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: grok
+    # Sampled from sheet.png (plan 0.5): electric cyan constellation embroidery;
+    # declared robe/pants sources already match the void-black coat.
+    paletteSource: { trim: '#64a9c8' }
     anchor: [46, 80]
     mode: pro
 
@@ -239,6 +300,9 @@ characters:
     size: 92
     animations: [walk, breathing-idle]
     palette_layer: grok
+    # Sampled from sheet.png (plan 0.5): bright cyan trim/headband glow;
+    # declared robe/pants sources already match the void-charcoal jacket.
+    paletteSource: { trim: '#86bbcb' }
     anchor: [46, 80]
     mode: pro
 
@@ -348,48 +412,6 @@ accessories:
     n_directions: 8
     anchor: [16, 20]
 
-  - id: overlay.accessory.mageHood
-    tool: isometric_tile
-    prompt: "head-worn icon only, deep amber wizard hood with shoulder drape, rune stitching, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
-    size: 32
-    n_directions: 8
-    anchor: [16, 12]
-
-  - id: overlay.accessory.scholarCap
-    tool: isometric_tile
-    prompt: "head-worn icon only, wide-brim scholar cap, weathered leather, small quill tucked in band, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
-    size: 32
-    n_directions: 8
-    anchor: [16, 12]
-
-  - id: overlay.accessory.goggles
-    tool: isometric_tile
-    prompt: "head-worn icon only, brass engineer goggles with cyan lenses and leather strap, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
-    size: 32
-    n_directions: 8
-    anchor: [16, 12]
-
-  - id: overlay.accessory.toolBand
-    tool: isometric_tile
-    prompt: "head-worn icon only, Codex tool-band circlet, dark teal leather band with tiny brass rivets and cyan circuit glow, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
-    size: 32
-    n_directions: 8
-    anchor: [16, 12]
-
-  - id: overlay.accessory.starCrown
-    tool: isometric_tile
-    prompt: "head-worn icon only, small gold star crown, five tiny star points with blue gem center, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
-    size: 32
-    n_directions: 8
-    anchor: [16, 12]
-
-  - id: overlay.accessory.oracleVeil
-    tool: isometric_tile
-    prompt: "head-worn icon only, violet oracle veil circlet, translucent constellation veil draping from silver headband with pale blue star motes, centered wearable silhouette, readable at 32 pixels, transparent background, no base, no floor tile, no plinth, no cube, no box, no head, no character"
-    size: 32
-    n_directions: 8
-    anchor: [16, 12]
-
 # ─── STATUS OVERLAYS ─────────────────────────────────────────────────────────
 statusOverlays:
   - id: overlay.status.selected
@@ -398,36 +420,21 @@ statusOverlays:
     size: 64
     animation: pulse
 
-  - id: overlay.status.chat
-    tool: isometric_tile
-    prompt: "speech bubble halo, soft white glow, small floating runes, transparent background"
-    size: 64
-
-  - id: overlay.status.working
-    tool: isometric_tile
-    prompt: "active work aura, faint amber sparks orbiting at feet, concentrated energy, transparent background"
-    size: 64
-
-  - id: overlay.status.idle
-    tool: isometric_tile
-    prompt: "gentle rest aura, soft grey-blue shimmer at feet, slow calming waves, transparent background"
-    size: 64
-
   - id: overlay.status.effortLow
     tool: isometric_tile
-    prompt: "soft hollow single-band bronze elliptical floor ring at agent feet, transparent center, faint amber pixel glow, low reasoning effort marker, no filled coin, no medallion, no platform, no solid disk"
+    prompt: "flat ground decal viewed from directly above: ONE single thin bronze metal band forming an open elliptical ring, hollow transparent center, faint amber pixel glow along the band, low reasoning effort marker, thin tile, ring only, no objects, no structures, no buildings, no arch, no doorway, no floor tile, no filled disk"
     size: 64
     anchor: [32, 36]
 
   - id: overlay.status.effortMedium
     tool: isometric_tile
-    prompt: "hollow double-band silver elliptical floor ring at agent feet, transparent center, gentle pale blue-white pulse, medium reasoning effort marker, no filled coin, no medallion, no platform, no solid disk"
+    prompt: "flat ground decal viewed from directly above: TWO concentric polished silver-steel metal bands forming open elliptical rings, hollow transparent center, gentle pale blue-white glow, medium reasoning effort marker, thin tile, rings only, no objects, no structures, no buildings, no arch, no doorway, no floor tile, no filled disk"
     size: 64
     anchor: [32, 36]
 
   - id: overlay.status.effortHigh
     tool: isometric_tile
-    prompt: "hollow triple-band gold elliptical floor ring at agent feet, transparent center, tiny rune ticks and amber sparks on the bands, high reasoning effort marker, no filled coin, no medallion, no platform, no solid disk"
+    prompt: "flat ground decal viewed from directly above: THREE concentric ornate gold metal bands forming open elliptical rings with tiny glowing amber rune ticks on the bands, hollow transparent center, high reasoning effort marker, thin tile, rings only, no objects, no structures, no buildings, no medallion, no filled center, no floor tile, no filled disk"
     size: 64
     anchor: [32, 36]
 
@@ -444,18 +451,15 @@ buildings:
     prompt: "epic command center castle keep, grand stone walls with arched gates, dual dragon banners on parapets, golden flame torches, imposing isometric fortress, on a square isometric grass-and-cobblestone base tile"
     splitForOcclusion: true
     horizonY: 130
+    # 0.1 (visual-quality plan): the banner layer was a block-cube mis-generation
+    # (the magenta box beside the keep); base.png already has banners baked in,
+    # so the layer is retired rather than rebaked.
     layers:
       watchfire:
         tool: isometric_tile
-        prompt: "roaring golden watchfire on stone brazier, dancing flame, transparent background, isometric"
+        prompt: "isolated roaring golden watchfire flame in a small stone brazier bowl, dancing amber-orange pixel flames with warm ember sparks, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, empty transparent corners"
         size: 64
         anchor: [40, 52]
-        animation: pulse
-      banner:
-        tool: isometric_tile
-        prompt: "dragon war banner swaying in wind, deep crimson with gold sigil, transparent background, isometric"
-        size: 64
-        anchor: [96, 24]
         animation: pulse
     emitters:
       torch: [64, 28]
@@ -483,7 +487,7 @@ buildings:
     layers:
       beacon:
         tool: map_object
-        prompt: "open brazier fire in the Pharos lantern crown, orange amber flame, warm magical glow, no modern beam, transparent background, isometric"
+        prompt: "isolated warm lantern flame for a lighthouse crown, orange amber pixel fire with a bright golden core and soft warm halo, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, no modern beam, empty transparent corners"
         size: 64
         anchor: [144, 68]
         animation: pulse
@@ -494,7 +498,7 @@ buildings:
     lightSource: [144, 68]
     lightColor: '#ffb347'
     lightRadius: 96
-    lightOverlay: 'atmosphere.light.fire-glow'
+    lightOverlay: 'atmosphere.light.lighthouse-beam'
 
   # ── STANDARD: Harbor Master (commit ships / push departures) ──
   - id: building.harbor
@@ -536,7 +540,7 @@ buildings:
     layers:
       portalGlow:
         tool: isometric_tile
-        prompt: "swirling violet portal vortex energy, arcane rune ring, transparent background, isometric"
+        prompt: "isolated swirling violet portal vortex flame, arcane purple energy spiral with magenta core and faint gold rune sparks, thin tile, transparent background only, no ground tile, no square base, no platform, no cube block, empty transparent corners"
         size: 64
         anchor: [144, 60]
         animation: pulse
@@ -641,13 +645,6 @@ props:
     height: 96
     anchor: [48, 88]
 
-  - id: prop.villageWall
-    tool: map_object
-    prompt: "repeatable high-fantasy isometric village palisade wall segment, heavy dark timber posts, sharpened uneven stakes, stone footing blocks, rope lashings, cross braces, teal slate coping accents, moss and rivets, transparent background, no tower, no gate, no door, no text, no characters"
-    width: 224
-    height: 144
-    anchor: [112, 130]
-
   - id: prop.villageWallSeaTower
     tool: map_object
     prompt: "wooden sea watchtower at the end of a fantasy village wall, square timber tower over rocky shoreline, dark wooden legs and cross braces, covered lookout platform with teal slate roof, palisade wall socket on left side, rope ladder, amber lantern, crimson pennant, mossy stone footings, transparent background, no text, no characters, no water tile, no ground tile"
@@ -663,27 +660,27 @@ props:
 
   - id: prop.runestone
     tool: isometric_tile
-    prompt: "ancient runestone monolith, glowing inscribed runes, mossy base, isometric"
-    size: 32
-    anchor: [16, 28]
+    prompt: "ancient runestone monolith, weathered cool grey stone slab with glowing cyan-blue inscribed runes, mossy foot, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 42]
 
   - id: prop.scrollCrates
     tool: isometric_tile
-    prompt: "stack of wooden crates and scroll-tubes, rope-bound, wax sealed, isometric"
-    size: 32
-    anchor: [16, 24]
+    prompt: "small stack of weathered oak wooden crates with parchment scroll tubes, rope-bound, red wax seals, warm wood and gold trim, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 36]
 
   - id: prop.oreCart
     tool: isometric_tile
-    prompt: "mine ore cart on rails, filled with glowing ore chunks, worn iron wheels, isometric"
-    size: 32
-    anchor: [16, 24]
+    prompt: "small mine ore cart, worn dark iron tub on short rails, filled with glowing cyan crystal ore chunks, rusty iron wheels, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 36]
 
   - id: prop.well
     tool: isometric_tile
-    prompt: "stone village well, wooden bucket on rope, ivy-covered, isometric"
-    size: 32
-    anchor: [16, 24]
+    prompt: "stone village well, cool grey cobble ring wall, small slate-blue pitched roof on wooden posts, wooden bucket on rope, ivy touch, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 36]
 
   - id: prop.marketStall
     tool: isometric_tile
@@ -694,20 +691,15 @@ props:
   - id: prop.flowerCart
     tool: isometric_tile
     prompt: "wooden flower cart with bright blooms, painted wheels, isometric"
-    size: 32
+    size: 64
+    displaySize: 32
     anchor: [16, 24]
 
   - id: prop.noticePillar
     tool: isometric_tile
-    prompt: "carved stone notice pillar, parchment notices pinned all around, topped with iron crown, isometric"
-    size: 32
-    anchor: [16, 30]
-
-  - id: prop.harborPier
-    tool: isometric_tile
-    prompt: "harbor pier section, barnacle-weathered planks, iron mooring rings, rope loops, isometric"
-    size: 64
-    anchor: [32, 32]
+    prompt: "carved cool grey stone notice pillar, parchment quest notices pinned all around, small iron crown top, warm gold trim, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 45]
 
   - id: prop.harborBoat
     tool: isometric_tile
@@ -777,9 +769,9 @@ props:
 
   - id: prop.harborCrates
     tool: isometric_tile
-    prompt: "harbor cargo crates stacked, stencilled guild marks, rope nets, isometric"
-    size: 32
-    anchor: [16, 24]
+    prompt: "harbor cargo crates stacked, weathered oak planks with stencilled dark guild marks, rope nets and iron bands, warm wood tones, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 36]
 
   - id: prop.harborCrane
     tool: isometric_tile
@@ -822,6 +814,11 @@ props:
     prompt: "tiny white seagull in flight, wings level fully spread gliding pose, dark wing tips, tiny amber beak, readable 32 pixel fantasy sprite silhouette, transparent background only, no sky, no water tile, no square base, no platform, empty transparent corners"
     size: 32
     anchor: [16, 18]
+    # Duplicate-frame dedupe (visual-quality plan cross-cutting): the level-glide
+    # frame was byte-identical to prop.gullFlight.png, so it now aliases that
+    # PNG instead of shipping a second file. Code references to this id are
+    # untouched; the alias keeps them loading the same art.
+    assetPath: assets/sprites/props/prop.gullFlight.png
 
   - id: prop.gullFlight.down
     tool: map_object
@@ -921,6 +918,41 @@ props:
     size: 48
     anchor: [24, 30]
 
+  # ── CHRONICLE MONUMENTS (plan 6.1) ─────────────────────────────────────────
+  # Release-history monuments drawn by ChronicleMonuments (vector fallback when
+  # a sprite is missing). Ids intentionally use the `monument.*` namespace; the
+  # generic path mapper has no monument prefix, so each entry pins `assetPath`.
+  # Baked on the building style contract (cool grey stone ramp, gold trim,
+  # painterly 3-4 tone steps, warm key from upper-left). The major obelisk's
+  # gem socket is left dark — the renderer composites the kind-colored glow.
+  - id: monument.minor
+    tool: map_object
+    prompt: "small fantasy cairn of three stacked weathered fieldstones, cool grey stone with warm highlights and a moss touch, tiny gold rune pebble on top, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 42]
+    assetPath: assets/sprites/props/monument.minor.png
+
+  - id: monument.medium
+    tool: map_object
+    prompt: "fantasy standing stone marker, single upright cool grey granite stele with a chiseled gold rune near the top, weathered edges, small moss at the foot, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 48
+    anchor: [24, 44]
+    assetPath: assets/sprites/props/monument.medium.png
+
+  - id: monument.major
+    tool: map_object
+    prompt: "tall fantasy rune obelisk monument, tapered cool grey stone pillar with gold trim bands, one dark unlit gem socket inset near the top, carved base steps, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no glow, no baked shadow, empty transparent corners"
+    size: 64
+    anchor: [32, 58]
+    assetPath: assets/sprites/props/monument.major.png
+
+  - id: monument.founding
+    tool: map_object
+    prompt: "founding monument of three weathered granite standing stones side by side, plain rectangular slabs with rounded tops and staggered heights, the middle one tallest, cool grey stone with faint gold chisel marks, small moss at the feet, thin tile, transparent background only, isolated sprite, no swords, no blades, no crosses, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
+    size: 64
+    anchor: [32, 58]
+    assetPath: assets/sprites/props/monument.founding.png
+
 # ─── VEGETATION ──────────────────────────────────────────────────────────────
 vegetation:
   - id: veg.root.arch
@@ -937,19 +969,19 @@ vegetation:
 
   - id: veg.tree.oak.large
     tool: isometric_tile
-    prompt: "ancient oak tree, dense wide canopy, twisted roots, mossy bark, isometric"
+    prompt: "ancient oak tree, dense wide deep-green canopy, thick twisted trunk with exposed roots gripping bare ground, mossy bark, isolated tree sprite, thin tile, transparent background only, no ground tile, no square base, no grass diamond, no platform, no baked shadow, empty transparent corners"
     size: 64
     anchor: [32, 80]
 
   - id: veg.tree.oak.small
     tool: isometric_tile
-    prompt: "young oak tree, modest canopy, smooth bark, isometric"
+    prompt: "young oak tree, modest deep-green canopy over a slender smooth-bark trunk, natural tree silhouette, isolated tree sprite, thin tile, transparent background only, no ground tile, no square base, no grass diamond, no platform, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 40]
 
   - id: veg.tree.pine.large
     tool: isometric_tile
-    prompt: "tall pine tree, layered conical silhouette, dark green needles, isometric"
+    prompt: "tall pine tree, layered conical dark green needle boughs stepping down a straight brown trunk, roots on bare transparency, natural conifer silhouette, isolated tree sprite, thin tile, transparent background only, no ground tile, no square base, no soil, no dirt patch, no grass fringe, no crate shape, no cube block, no platform, no baked shadow, empty transparent corners"
     size: 64
     anchor: [32, 80]
 
@@ -961,67 +993,67 @@ vegetation:
 
   - id: veg.tree.willow.large
     tool: isometric_tile
-    prompt: "weeping willow tree, long trailing branches to ground, near water, isometric"
+    prompt: "weeping willow tree, long trailing pale-green branches hanging to the ground from a domed canopy, gnarled trunk, isolated tree sprite, thin tile, transparent background only, no ground tile, no square base, no dirt diamond, no water tile, no platform, no baked shadow, empty transparent corners"
     size: 64
     anchor: [32, 80]
 
   - id: veg.tree.willow.small
     tool: isometric_tile
-    prompt: "young weeping willow, slender drooping branches, isometric"
+    prompt: "young weeping willow, dense curtain of slender bright-green trailing branches hanging to the ground from a small domed canopy, slim trunk, isolated tree sprite, thin tile, transparent background only, no ground tile, no square base, no dirt diamond, no wooden plank, no log, no platform, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 40]
 
   - id: veg.boulder.mossy.large
     tool: isometric_tile
-    prompt: "large mossy granite boulder, lichens and ferns at base, isometric"
+    prompt: "large mossy granite boulder, rounded weathered grey stone with moss patches and lichens resting on bare transparency, natural rock silhouette, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no soil, no grass fringe, no ferns at the foot, no platform, no baked shadow, empty transparent corners"
     size: 64
     anchor: [32, 40]
 
   - id: veg.boulder.mossy.small
     tool: isometric_tile
-    prompt: "small mossy stone, patches of lichen, isometric"
+    prompt: "small mossy stone, rounded grey pebble-rock with patches of green lichen, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 20]
 
   - id: veg.boulder.granite.large
     tool: isometric_tile
-    prompt: "large bare granite boulder, angular cracked surface, dramatic, isometric"
+    prompt: "large bare granite boulder, angular cracked grey rock faces with warm highlights, natural asymmetrical boulder silhouette, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no cube block, no dice shape, no platform, no baked shadow, empty transparent corners"
     size: 64
     anchor: [32, 40]
 
   - id: veg.boulder.granite.small
     tool: isometric_tile
-    prompt: "small bare granite rock, angular facets, isometric"
+    prompt: "small bare granite rock, angular grey facets with warm highlight, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no cube block, no platform, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 20]
 
   - id: veg.bush.a
     tool: isometric_tile
-    prompt: "dense round shrub, dark green leaves, few berries, isometric"
+    prompt: "dense round shrub, lush deep-green leaf clusters in one solid bushy mass, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no dirt mound, no soil patch, no grass fringe, no platform, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 20]
 
   - id: veg.bush.b
     tool: isometric_tile
-    prompt: "wild briar bush, thorned branches, small red flowers, isometric"
+    prompt: "wild briar bush, tangled thorned dark branches with small red flowers, loose scraggly silhouette, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no grass fringe, no platform, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 20]
 
   - id: veg.bush.c
     tool: isometric_tile
-    prompt: "flowering hedge bush, white blossoms, trimmed sides, isometric"
+    prompt: "flowering hedge bush, soft rounded green dome covered in tiny white blossoms, leafy shrub growing from bare transparency, thin tile, transparent background only, isolated sprite, no pot, no planter, no urn, no ground tile, no square base, no dirt mound, no grass fringe, no platform, no baked shadow, empty transparent corners"
     size: 32
     anchor: [16, 20]
 
   - id: veg.grassTuft.a
     tool: isometric_tile
-    prompt: "clump of long wild grass, wind-bent tips, bright green, isometric"
+    prompt: "clump of long wild grass, bright green blades with wind-bent pale tips, soft leafy tuft, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no black spikes, no platform, empty transparent corners"
     size: 32
     anchor: [16, 16]
 
   - id: veg.grassTuft.b
     tool: isometric_tile
-    prompt: "sparse dry grass tuft, yellowed at tips, isometric"
+    prompt: "sparse dry grass tuft, yellowed straw blades with green base growing from bare transparency, soft leafy tuft, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no soil, no dirt clod, no grass square, no black spikes, no platform, empty transparent corners"
     size: 32
     anchor: [16, 16]
 
@@ -1064,7 +1096,7 @@ vegetation:
 
   - id: veg.flowerBed
     tool: map_object
-    prompt: "tended garden flower bed, dark soil edged with small stones, rows of bright red yellow and pink blooms, transparent background, no ground tile, no square base, isometric"
+    prompt: "tended garden flower bed, loose dark soil mound edged with a few small stones, rows of bright red yellow and pink blooms with green stems, thin tile, transparent background only, isolated sprite, no ground tile, no square base, no dirt square, no platform, no baked shadow, empty transparent corners"
     width: 48
     height: 40
     anchor: [24, 30]
@@ -1122,13 +1154,9 @@ terrain:
 
 # ─── ATMOSPHERE ──────────────────────────────────────────────────────────────
 atmosphere:
-  - id: atmosphere.deep-sea
-    tool: tileset
-    lower: "abyssal sea, dark currents, painterly"
-    upper: "abyssal sea, dark currents, painterly"
-    # Tile size; generated atmosphere tileset PNG is a 2x2 128px sheet.
-    size: 64
-
+  # atmosphere.deep-sea retired to output/attic (visual-quality plan
+  # dead-inventory sweep): zero code references — the deep-sea reads are painted
+  # procedurally by IsometricRenderer.
   - id: atmosphere.light.lighthouse-beam
     tool: isometric_tile
     prompt: "warm golden light reflection on water, soft shimmering caustics, transparent background"
@@ -1196,6 +1224,15 @@ atmosphere:
     prompt: "cool silver gibbous moon, mostly illuminated disk with dark navy crescent shadow, pale blue rim light, no face, transparent background, pixel art"
     size: 64
 
+  # 5.3 — authored pixel-art sun (plan claudeville-visual-quality-plan), baked
+  # over the wave-1 procedural placeholder. `no rays` — the renderer draws
+  # procedural rays behind the body; SkyRenderer falls back to its stepped-disc
+  # stamp if this PNG ever goes missing.
+  - id: atmosphere.sun
+    tool: map_object
+    prompt: "warm golden pixel art sun disc, flat stepped dithered circle with crisp stair-stepped edge, bright yellow core with warm orange rim band, no face, no rays, no glow halo, no soft gradient, isolated object, transparent background"
+    size: 64
+
   - id: atmosphere.fog.wisp.low
     tool: map_object
     prompt: "low horizontal fantasy pixel art fog wisp, pale blue white translucent mist ribbon, soft broken edges, water surface haze, transparent background"
@@ -1250,6 +1287,10 @@ bridges:
 
   - id: bridge.ew
     tool: isometric_tile
+    # KEPT but currently unreferenced: today's only plank crossing (scenery.js
+    # PLANK_BRIDGES west-river-plank) runs NS. Reserved for a future EW plank
+    # crossing (plan 2.8 follow-up); drawn via the dynamic `bridge.${orientation}`
+    # path in IsometricRenderer when an EW plank hint lands.
     prompt: "weathered wooden bridge, plank deck, rope rails, east-west orientation, isometric"
     size: 64
     anchor: [32, 32]
@@ -1260,14 +1301,6 @@ bridges:
     size: 64
     anchor: [32, 32]
 
-  - id: dock.ew
-    tool: isometric_tile
-    prompt: "harbor dock planks, barnacle-weathered boards, iron mooring cleats, east-west orientation, isometric"
-    size: 64
-    anchor: [32, 32]
-
-  - id: dock.ns
-    tool: isometric_tile
-    prompt: "harbor dock planks, barnacle-weathered boards, iron mooring cleats, north-south orientation, isometric"
-    size: 64
-    anchor: [32, 32]
+  # dock.ew / dock.ns retired to output/attic (visual-quality plan dead-inventory
+  # sweep): HARBOR_DOCK_TILES are all style 'causeway', which draws the procedural
+  # _drawHarborCausewayTile — the per-tile dock sprite path is unreachable today.

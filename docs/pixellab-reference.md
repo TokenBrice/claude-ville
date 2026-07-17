@@ -177,7 +177,7 @@ Exact enums and ranges. Source: `https://api.pixellab.ai/v2/llms.txt` and the `d
 | --- | --- | --- |
 | `outline` | `single color black outline` \| `single color outline` \| `selective outline` \| `lineless` | Strong as param; weak in description. |
 | `shading` | `flat shading` \| `basic shading` \| `medium shading` \| `detailed shading` \| `highly detailed shading` | More shading = more colors used. |
-| `detail` | `low detail` \| `medium detail` \| `high detail` | `'highly detailed'` is **not** a documented enum value. Use `high detail`. |
+| `detail` | `low detail` \| `medium detail` \| `high detail` (MCP tools) / `low detail` \| `medium detail` \| `highly detailed` (REST pixflux) | Enum split 422-verified 2026-07-17: REST `create-image-pixflux` **requires** `'highly detailed'`; the MCP tools take `'high detail'`. |
 | `view` | `side` \| `low top-down` \| `high top-down` | ClaudeVille uses `low top-down`. |
 | `tile_view` (tiles_pro) | `top-down` \| `high top-down` \| `low top-down` \| `side` | `top-down` = no depth, `low top-down` ≈ 30%. |
 | `isometric_tile_shape` | `thin tile` (~15%) \| `thick tile` (~25%) \| `block` (~50%, default) | Floor rings and overlays need `thin tile`. |
@@ -238,7 +238,7 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 1. **Character canvas auto-pads ~40%.** `create_character` with `width: 64` returns a ~90×90 source frame. `scripts/sprites/generate-character-mcp.mjs:108` center-crops back to 92×92. Don't fight this; rely on the crop. Corollary: the manifest `size` field is the engine cell size, not the generation size — tall silhouettes need a smaller generation size (see the `create_character` section and the `# NOTE:` comments in `manifest.yaml`).
 2. **Isometric tiles cap at 64 px.** Above 64 px you must use REST `create-image-pixflux` or MCP `create_map_object` (32–400 px, but not the isometric tile model).
 3. **Tile sizes <24 px give weaker results** even though 16 is allowed. Prefer 32+ for production assets.
-4. **`'highly detailed'` for `detail` is undocumented.** Pass `high detail` (canonical enum). The pixflux endpoint will not error on the wrong value, but the cue is silently weakly applied.
+4. **`'highly detailed'` is mandatory for REST pixflux `detail`.** The pixflux endpoint 422s on `'high detail'` (verified 2026-07-17); the MCP tools use the shorter enum. `scripts/sprites/pixellab-rest.mjs` passes the pixflux-canonical string.
 5. **Background bleed.** REST `create-image-pixflux` with `no_background: true` can return near-transparent gray pixels at edges. `generate-pixellab-revamp.mjs` handles this with `keyOutEdgeBackground` + `trimAlphaFringe`. Re-use that logic when writing new REST callers.
 6. **MCP returns a job; REST `pixflux` returns the image.** Plan async polling for MCP and synchronous handling for REST. Don't mix patterns.
 7. **`isometric_tile_shape` defaults to `block`.** That gives ~50% canvas height of "depth" and clips small icons. For overlays and floor rings, pass `thin tile` explicitly.
@@ -251,8 +251,12 @@ Keep negative descriptions short and concrete: `"no text, no logo, no UI"` works
 | Script | Path used | Authentication | When to invoke |
 | --- | --- | --- | --- |
 | `scripts/sprites/generate-pixellab-revamp.mjs` | REST `/v2/create-image-pixflux` | `.dev.vars` → `PIXELLAB_API_TOKEN` or `PIXELLAB_AUTHORIZATION` | Legacy/code-defined bake helper. It asserts selected IDs exist in `manifest.yaml`, but it does not read per-entry prompts, sizes, anchors, or tool fields. Use only with explicit reviewed `--ids`; do not run broadly until it becomes fully manifest-driven. |
+| `scripts/sprites/bake-manifest.mjs` | REST `/v2/create-image-pixflux` | same | Manifest-driven bulk bake (prompt/dims/path from `manifest.yaml`, building-layer addressing via `building.<id>.<layer>`, raw cache in `output/pixellab-cache/bake/`). The supported rebake path for props/veg/overlays/layers/atmosphere. |
+| `scripts/sprites/pixellab-rest.mjs` | shared module | same | Shared pixflux call + edge-background key-out + token read for bake scripts; do not copy/paste these into new scripts. |
+| `scripts/sprites/contact-sheet.mjs` | None (filesystem) | n/a | One montage PNG per sprite family in `output/sprite-contact-sheets/` for bake-review evidence. |
+| `scripts/sprites/rehue-flowercart.mjs` | None (filesystem) | n/a | Single-purpose hue-mask re-hue (plan 6.5 flowerCart body magenta → weathered oak). |
 | `scripts/sprites/generate-character-mcp.mjs` | MCP ZIP assembly only (you call MCP first) | Inherits from MCP server (token in MCP config) | After `mcp__pixellab__create_character` + `animate_character` complete, to assemble into the 736×920 sheet. |
-| `scripts/sprites/manifest-validator.mjs` | None (filesystem) | n/a | After any sprite change. `npm run sprites:validate`. |
+| `scripts/sprites/manifest-validator.mjs` | None (filesystem) | n/a | After any sprite change. `npm run sprites:validate`. Also warns on dimension drift, block-cube fill heuristics, and unreferenced ids. |
 
 ## Smoke recipes
 
@@ -328,9 +332,9 @@ For the full revamp script that handles edge-color cleanup and grid composition,
 ## Known issues / TODO
 
 - MCP `create_character` + `animate_character` polling is currently manual (call `get_character` every 60s). A small helper that polls and writes the ZIP path on completion would remove a tedious step from every character bake.
-- `generate-pixellab-revamp.mjs` and the MCP character path duplicate the style-anchor logic. If a third path is added, factor the anchor-prepend into a shared utility.
-- The `detail` enum is documented as `low detail` / `medium detail` / `high detail`, but `generate-pixellab-revamp.mjs` passes `'highly detailed'`. Decide whether to (a) update the script to canonical values or (b) verify empirically that the legacy string still produces the desired effect, and document the choice.
-- No automated check that on-disk PNG dimensions match the manifest `size` field. `manifest-validator.mjs` checks existence and the character sheet motion contract, not arbitrary sizes.
+- ~~`generate-pixellab-revamp.mjs` and the MCP character path duplicate the style-anchor logic.~~ New bake scripts import the shared helpers in `scripts/sprites/pixellab-rest.mjs` (pixflux call, key-out, token read, anchor-prepend lives in `bake-manifest.mjs`). The legacy revamp script keeps its own copies intentionally.
+- The `detail` enum for REST pixflux is 422-verified (2026-07-17): `low detail` / `medium detail` / **`highly detailed`** — the generic MCP docs' `high detail` is rejected by `create-image-pixflux`. `scripts/sprites/pixellab-rest.mjs` passes the canonical string.
+- ~~No automated check that on-disk PNG dimensions match the manifest `size` field.~~ `manifest-validator.mjs` now warns on dimension drift, block-cube fill ratios, and unreferenced ids.
 
 ## Glossary
 

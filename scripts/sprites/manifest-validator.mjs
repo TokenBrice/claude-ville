@@ -25,11 +25,26 @@ const orphanAllowlist = new Set([
         .map((rel) => rel.trim())
         .filter(Boolean),
 ]);
-const duplicatePngAllowlist = new Set([
-    duplicateGroupKey([
-        'props/prop.gullFlight.png',
-        'props/prop.gullFlight.level.png',
-    ]),
+const duplicatePngAllowlist = new Set();
+
+// Heuristic thresholds for the "is it a cube?" warnings below. Calibrated
+// 2026-07-17 against the four shipped block-cube defects (banner/watchfire/
+// portalGlow fill ≈ 0.77-0.78) and healthy isolated sprites (≤0.63).
+const CUBE_FILL_RATIO_WARN = 0.72;
+const CUBE_OPAQUE_CORNERS_WARN = 2;
+const CUBE_CHECK_GROUPS = ['props', 'vegetation', 'accessories', 'statusOverlays', 'equipment'];
+const DIMENSION_CHECK_GROUPS = ['props', 'vegetation', 'accessories', 'statusOverlays', 'bridges'];
+const REFERENCE_CHECK_GROUPS = ['props', 'vegetation', 'bridges', 'atmosphere'];
+// Deliberately unreferenced today (documented keeps); everything else in the
+// reference-checked groups should have a live code path. monument.* is wired
+// into ChronicleMonuments (plan 6.1) and intentionally NOT allowlisted.
+const UNREFERENCED_ALLOWLIST = new Set([
+    'bridge.ew', // reserved for a future EW plank crossing (manifest comment)
+]);
+// Visually verified non-cubes that the fill heuristic still flags (bulky by
+// design); keeps the warning channel free of explained noise.
+const CUBE_FILL_ALLOWLIST = new Set([
+    'prop.flowerCart', // 75% fill — the cart crate body is boxy by design; re-hued in 6.5
 ]);
 
 const manifest = loadSpriteManifest();
@@ -129,7 +144,15 @@ for (const entry of manifest.atmosphere || []) {
 
 const invalidPalettes = validatePaletteParity();
 
-console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid equipment PNGs: ${invalidEquipment}  invalid atmosphere PNGs: ${invalidAtmosphere}`);
+// Warnings (non-fatal): dimension drift, block-cube heuristic, dead inventory.
+// These catch the defect classes that shipped silently before (cube layers,
+// 64px PNG under a 32px manifest size, manifest ids nothing references).
+let warnings = 0;
+warnings += warnOnDimensionDrift();
+warnings += warnOnBlockCubes();
+warnings += warnOnUnreferencedIds();
+
+console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid equipment PNGs: ${invalidEquipment}  invalid atmosphere PNGs: ${invalidAtmosphere}  warnings: ${warnings}`);
 process.exit(missing > 0 || orphans > 0 || duplicatePngs > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidEquipment > 0 || invalidAtmosphere > 0 ? 1 : 0);
 
 function duplicateGroupKey(paths) {
@@ -331,6 +354,173 @@ function expectedAtmosphereDimensions(entry) {
         return { width: size * 2, height: size * 2 };
     }
     return { width: size, height: size };
+}
+
+// ─── Warnings (non-fatal) ────────────────────────────────────────────────────
+
+function declaredDimensions(entry) {
+    const width = Number(entry?.width);
+    const height = Number(entry?.height);
+    if (Number.isFinite(width) && Number.isFinite(height)) return { width, height };
+    const size = Number(entry?.size);
+    if (Number.isFinite(size)) return { width: size, height: size };
+    return null;
+}
+
+function readPngQuietly(rel) {
+    const abs = join(spritesRoot, rel);
+    if (!existsSync(abs)) return null;
+    try {
+        return PNG.sync.read(readFileSync(abs));
+    } catch {
+        return null;
+    }
+}
+
+// PNG dimensions vs the manifest `size`/`width`/`height` declaration. Groups
+// with their own hard checks (characters, equipment, atmosphere, terrain) are
+// skipped here; buildings bases carry no declared dims by design.
+function warnOnDimensionDrift() {
+    let warnings = 0;
+    const check = (entry, rel, label) => {
+        const dims = declaredDimensions(entry);
+        if (!dims || !rel) return;
+        const png = readPngQuietly(rel);
+        if (!png) return;
+        if (png.width !== dims.width || png.height !== dims.height) {
+            console.warn(`WARN DIMENSION: ${label} ${rel} is ${png.width}x${png.height}, manifest declares ${dims.width}x${dims.height}`);
+            warnings++;
+        }
+    };
+    for (const group of DIMENSION_CHECK_GROUPS) {
+        for (const entry of manifest[group] || []) {
+            check(entry, pathForEntry(entry), entry.id);
+        }
+    }
+    for (const building of manifest.buildings || []) {
+        for (const [name, layer] of Object.entries(building.layers || {})) {
+            if (name === 'base') continue;
+            check(layer, `buildings/${building.id}/${name}.png`, `${building.id}.${name}`);
+        }
+    }
+    return warnings;
+}
+
+// Corner-alpha + fill-ratio "is it a cube?" heuristic. Isolated-object sprites
+// must have transparent corners and an airy silhouette; a baked block cube
+// packs ~77%+ of the canvas opaque (the four shipped defects measured
+// 0.77-0.78; healthy sprites sit ≤0.63). Bridges are excluded: per-tile plank
+// assets legitimately fill their tile.
+function warnOnBlockCubes() {
+    let warnings = 0;
+    const check = (rel, label) => {
+        if (!rel || CUBE_FILL_ALLOWLIST.has(label)) return;
+        const png = readPngQuietly(rel);
+        if (!png) return;
+        const stats = alphaCoverage(png);
+        if (stats.opaqueCorners >= CUBE_OPAQUE_CORNERS_WARN) {
+            console.warn(`WARN CUBE?: ${label} ${rel} has ${stats.opaqueCorners} opaque corners — baked background?`);
+            warnings++;
+        }
+        if (stats.fillRatio >= CUBE_FILL_RATIO_WARN) {
+            console.warn(`WARN CUBE?: ${label} ${rel} fills ${(stats.fillRatio * 100).toFixed(0)}% of its canvas — reads as a solid block; verify it is not a baked cube`);
+            warnings++;
+        }
+    };
+    for (const group of CUBE_CHECK_GROUPS) {
+        for (const entry of manifest[group] || []) {
+            check(pathForEntry(entry), entry.id);
+        }
+    }
+    for (const building of manifest.buildings || []) {
+        for (const [name, layer] of Object.entries(building.layers || {})) {
+            if (name === 'base') continue;
+            check(`buildings/${building.id}/${name}.png`, `${building.id}.${name}`);
+        }
+    }
+    return warnings;
+}
+
+function alphaCoverage(png) {
+    let opaque = 0;
+    for (let i = 0; i < png.width * png.height; i++) {
+        if (png.data[i * 4 + 3] > ALPHA_THRESHOLD) opaque++;
+    }
+    const corners = [
+        [0, 0],
+        [png.width - 1, 0],
+        [0, png.height - 1],
+        [png.width - 1, png.height - 1],
+    ].filter(([x, y]) => png.data[(png.width * y + x) * 4 + 3] > ALPHA_THRESHOLD).length;
+    return { fillRatio: opaque / (png.width * png.height), opaqueCorners: corners };
+}
+
+// Dead-inventory warning: manifest ids in the prop/veg/bridge/atmosphere
+// families that no code path can draw. Literal fixed-string matches first,
+// then the known runtime id builders (`veg.tree.${species}.${size}`,
+// `bridge.${orientation}`, `dock.${orientation}`, `bridge.landmark.${...}`,
+// `prop.${type}` from scenery config).
+function warnOnUnreferencedIds() {
+    const source = collectSourceText();
+    const internalRefs = manifestInternalReferences();
+    let warnings = 0;
+    for (const group of REFERENCE_CHECK_GROUPS) {
+        for (const entry of manifest[group] || []) {
+            const id = entry?.id;
+            if (!id || UNREFERENCED_ALLOWLIST.has(id)) continue;
+            if (internalRefs.has(id) || isReferenced(id, source)) continue;
+            console.warn(`WARN UNREFERENCED: ${id} has no code reference (dead inventory — wire it or attic it)`);
+            warnings++;
+        }
+    }
+    return warnings;
+}
+
+// Ids another manifest entry points at (e.g. building `lightOverlay` values are
+// consumed generically by BuildingSprite, so they never appear in source).
+function manifestInternalReferences() {
+    const refs = new Set();
+    for (const entry of collectSpriteEntries(manifest)) {
+        if (typeof entry?.lightOverlay === 'string') refs.add(entry.lightOverlay);
+    }
+    return refs;
+}
+
+function isReferenced(id, source) {
+    if (source.includes(`'${id}'`) || source.includes(`"${id}"`) || source.includes(`\`${id}\``)) return true;
+    if (/^veg\.tree\.[^.]+\.[^.]+$/.test(id) && source.includes('veg.tree.${')) return true;
+    if (/^veg\.boulder\.[^.]+\.[^.]+$/.test(id) && source.includes('veg.boulder.${')) return true;
+    if (/^bridge\.(ew|ns)$/.test(id) && source.includes('bridge.${')) return true;
+    if (/^dock\.(ew|ns)$/.test(id) && source.includes('dock.${')) return true;
+    if (/^bridge\.landmark\.[^.]+\.[^.]+$/.test(id) && source.includes('bridge.landmark.${')) return true;
+    if (id.startsWith('prop.') && source.includes('prop.${')) {
+        const suffix = id.slice('prop.'.length);
+        if (!suffix.includes('.') && (source.includes(`'${suffix}'`) || source.includes(`"${suffix}"`))) return true;
+    }
+    return false;
+}
+
+function collectSourceText() {
+    const parts = [];
+    for (const root of ['claudeville/src', 'claudeville/config']) {
+        const abs = join(repoRoot, root);
+        if (!existsSync(abs)) continue;
+        for (const file of walkJs(abs)) {
+            try {
+                parts.push(readFileSync(file, 'utf8'));
+            } catch { /* unreadable files do not produce references */ }
+        }
+    }
+    return parts.join('\n');
+}
+
+function walkJs(dir, files = []) {
+    for (const name of readdirSync(dir)) {
+        const abs = join(dir, name);
+        if (statSync(abs).isDirectory()) walkJs(abs, files);
+        else if (name.endsWith('.js')) files.push(abs);
+    }
+    return files;
 }
 
 function validateRequiredEquipment(entry, png, cell, rel) {
