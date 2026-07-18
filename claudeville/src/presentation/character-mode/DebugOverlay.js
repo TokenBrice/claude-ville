@@ -16,7 +16,7 @@ export class DebugOverlay {
         this.pathDebugEnabled = !this.pathDebugEnabled;
     }
 
-    draw(ctx, { walkabilityGrid, bridgeTiles, agentSprites, buildings, sceneryZones, treeProps, boulderProps, visitIntents, visitReservations }) {
+    draw(ctx, { walkabilityGrid, bridgeTiles, agentSprites, buildings, sceneryZones, treeProps, boulderProps, visitIntents, visitReservations, buildingRenderer }) {
         if (!this.enabled) return;
 
         // Walkability tint: green = walkable, red = blocked, yellow = bridge.
@@ -73,6 +73,8 @@ export class DebugOverlay {
             }
         }
         ctx.restore();
+
+        buildingRenderer?.drawGroundingDebug?.(ctx);
 
         // Tall prop anchors.
         ctx.save();

@@ -37,6 +37,18 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 - Selection ring, label, route/trail, and detail panel state agree after select/deselect.
 - World to Dashboard toggle preserves agent identity and does not leave stale selected-agent visuals.
 
+## Building Ground Integration
+
+- Run `npm run world:validate-buildings` and confirm all nine types have valid grounding profiles.
+- Run `npm run sprites:capture-baseline` and `npm run sprites:capture-fresh`; every named day/night closeup must assert its target near frame center before `npm run sprites:visual-diff`.
+- Press `Shift+D`: cyan is the logical footprint, white is the sprite anchor/world center, magenta is the sprite canvas, yellow is `horizonY`, red is structural contact/shadow extent, and green is the entrance-to-contact line.
+- At zoom 1 and 2, no land building shows a continuous raised lawn/stone perimeter or a renderer pad outside its site.
+- Roads meet the physical threshold, stairs, rails, or posts. Terrain texture remains visible between sparse apron marks and reaches structure footings.
+- Shadows begin under structural mass, not at the footprint edge. Harbor uses piling/water contacts; Lighthouse keeps a supported quay; Portal keeps a stair-connected dais.
+- Hover and active-state marks communicate state without creating a platform at rest. Check idle and `mixed-tools`/active scenarios.
+- Verify a selected agent both behind and in front of each split sprite after any `structureMask`, anchor, or `horizonY` change.
+- Review clear day, fixed night, and reduced motion at integer zoom 1, 2, and 3 on a desktop viewport at least 1280px wide.
+
 ## Atmosphere And Motion
 
 - Clear day: landmarks, terrain, roads, water edges, bridges, and docks have clear contrast.

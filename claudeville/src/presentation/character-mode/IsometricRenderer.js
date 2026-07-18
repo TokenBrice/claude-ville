@@ -4606,6 +4606,7 @@ export class IsometricRenderer {
             this._drawWaterFoamLines(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
             this._drawOpenSeaSurfBreaks(ctx, 0, MAP_SIZE - 1, 0, MAP_SIZE - 1);
             this._drawLandmarkBridgeSpans(ctx);
+            this.buildingRenderer?.drawGroundFoundations?.(ctx);
             this._drawAmbientGroundProps(ctx);
             this._drawWorldEdgeRim(ctx);
             this._bakePerimeterCliffShelf(ctx);

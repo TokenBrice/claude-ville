@@ -735,6 +735,7 @@ function drawDebugOverlay(renderer, ctx, atmosphere, viewport) {
         boulderProps: renderer.boulderPropSprites,
         visitIntents: visitIntentDebug,
         visitReservations: visitReservationDebug,
+        buildingRenderer: renderer.buildingRenderer,
     });
     overlay.drawPathDebug(ctx, { agentSprites: renderer.agentSprites });
     renderer._resetScreenTransform(ctx);

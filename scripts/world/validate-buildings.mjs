@@ -30,6 +30,73 @@ const REQUIRED_FIELDS = [
 ];
 
 const CAPACITY_FIELDS = ['work', 'ambient', 'overflow'];
+const TERRAIN_CONTACT_MIN_RATIO = 0.35;
+const TERRAIN_CONTACT_MAX_RATIO = 1.05;
+
+function validateGroundingProfiles(reporter, buildings, groundingConfig) {
+    const profiles = groundingConfig.BUILDING_GROUNDING_PROFILES || {};
+    const modes = new Set(groundingConfig.BUILDING_GROUNDING_MODES || []);
+    const materials = new Set(groundingConfig.BUILDING_GROUNDING_MATERIALS || []);
+    const edges = new Set(groundingConfig.BUILDING_GROUNDING_EDGE_TREATMENTS || []);
+    const shadows = new Set(groundingConfig.BUILDING_GROUNDING_SHADOWS || []);
+    const buildingTypes = new Set(buildings.map((building) => building.type));
+
+    for (const building of buildings) {
+        const path = pathFor(building, 'grounding');
+        const profile = profiles[building.type];
+        if (!profile || typeof profile !== 'object') {
+            reporter.error(path, 'missing grounding profile');
+            continue;
+        }
+        if (!modes.has(profile.mode)) reporter.error(`${path}.mode`, `unsupported mode "${profile.mode}"`);
+        if (!materials.has(profile.material)) reporter.error(`${path}.material`, `unsupported material "${profile.material}"`);
+        if (!edges.has(profile.edgeTreatment)) reporter.error(`${path}.edgeTreatment`, `unsupported edge treatment "${profile.edgeTreatment}"`);
+        if (!shadows.has(profile.shadow)) reporter.error(`${path}.shadow`, `unsupported shadow "${profile.shadow}"`);
+        if (profile.mode === 'terrain-apron' && profile.edgeTreatment !== 'broken') {
+            reporter.error(path, 'terrain-apron profiles must use broken edges');
+        }
+        const foundation = profile.foundation;
+        if (!foundation || typeof foundation.enabled !== 'boolean') {
+            reporter.error(`${path}.foundation`, 'must declare enabled as a boolean');
+        } else {
+            const validOwners = new Set(['terrain-cache', 'sprite-reference', 'structural-sprite']);
+            if (!validOwners.has(foundation.owner)) {
+                reporter.error(`${path}.foundation.owner`, `unsupported owner "${foundation.owner}"`);
+            }
+            if (foundation.enabled && foundation.owner !== 'terrain-cache') {
+                reporter.error(`${path}.foundation.owner`, 'enabled foundations must be owned by terrain-cache');
+            }
+            if (profile.mode === 'terrain-apron' && !foundation.enabled && foundation.owner !== 'sprite-reference') {
+                reporter.error(`${path}.foundation.owner`, 'disabled terrain aprons must name sprite-reference ownership');
+            }
+        }
+        const contact = profile.contact;
+        if (!contact || typeof contact !== 'object') {
+            reporter.error(`${path}.contact`, 'must be an object');
+        } else {
+            for (const field of ['offsetX', 'offsetY', 'width', 'depth', 'opacity']) {
+                if (!isFiniteNumber(contact[field])) reporter.error(`${path}.contact.${field}`, 'must be finite');
+            }
+            if (Number(contact.width) < 0 || Number(contact.depth) < 0) {
+                reporter.error(`${path}.contact`, 'width and depth must be non-negative');
+            }
+            if (profile.mode === 'terrain-apron') {
+                const projectedSpan = (Number(building.width) + Number(building.height)) * 32;
+                const contactRatio = Number(contact.width) / projectedSpan;
+                if (contactRatio < TERRAIN_CONTACT_MIN_RATIO || contactRatio > TERRAIN_CONTACT_MAX_RATIO) {
+                    reporter.error(
+                        `${path}.contact.width`,
+                        `structure contact spans ${(contactRatio * 100).toFixed(1)}% of the projected footprint; expected ${(TERRAIN_CONTACT_MIN_RATIO * 100).toFixed(0)}-${(TERRAIN_CONTACT_MAX_RATIO * 100).toFixed(0)}%`,
+                    );
+                }
+            }
+        }
+    }
+
+    for (const type of Object.keys(profiles)) {
+        if (!buildingTypes.has(type)) reporter.warn(`grounding.${type}`, 'has no matching BUILDING_DEFS type');
+    }
+}
 
 function pathFor(building, suffix = '') {
     const type = building?.type || '<missing-type>';
@@ -214,6 +281,16 @@ const {
     MAP_SIZE,
 } = await loadConfigExports('claudeville/src/config/constants.js', ['MAP_SIZE']);
 const manifestIds = await loadManifestIds();
+const groundingConfig = await loadConfigExports(
+    'claudeville/src/config/buildingGrounding.js',
+    [
+        'BUILDING_GROUNDING_MODES',
+        'BUILDING_GROUNDING_MATERIALS',
+        'BUILDING_GROUNDING_EDGE_TREATMENTS',
+        'BUILDING_GROUNDING_SHADOWS',
+        'BUILDING_GROUNDING_PROFILES',
+    ],
+);
 
 if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
     reporter.error('BUILDING_DEFS', 'must be a non-empty array');
@@ -233,6 +310,7 @@ if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
         validateWalkExclusions(reporter, building, MAP_SIZE);
     }
     validateSpriteManifest(reporter, BUILDING_DEFS, manifestIds);
+    validateGroundingProfiles(reporter, BUILDING_DEFS, groundingConfig);
 }
 
 reporter.finish(`${BUILDING_DEFS.length} building definition(s) checked against ${manifestIds.size} manifest id(s).`);

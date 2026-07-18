@@ -210,6 +210,102 @@ function validateManifestEntry(entry) {
         errors++;
     }
 
+    if (entry.id.startsWith('building.')) {
+        errors += validateBuildingManifestEntry(entry);
+    }
+
+    return errors;
+}
+
+function validateBuildingManifestEntry(entry) {
+    let errors = 0;
+    const width = Number(entry.width);
+    const height = Number(entry.height);
+    if (!Number.isInteger(width) || width <= 0 || !Number.isInteger(height) || height <= 0) {
+        console.error(`INVALID BUILDING: ${entry.id} must declare positive integer width and height`);
+        return 1;
+    }
+    if (!Array.isArray(entry.anchor) || entry.anchor.length !== 2) {
+        console.error(`INVALID BUILDING: ${entry.id} must declare anchor: [x, y]`);
+        errors++;
+    } else {
+        const [x, y] = entry.anchor.map(Number);
+        if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= width || y >= height) {
+            console.error(`INVALID BUILDING: ${entry.id} anchor [${entry.anchor.join(', ')}] is outside ${width}x${height}`);
+            errors++;
+        }
+    }
+    if (entry.splitForOcclusion) {
+        const horizon = Number(entry.horizonY);
+        if (!Number.isFinite(horizon) || horizon <= 0 || horizon >= height) {
+            console.error(`INVALID BUILDING: ${entry.id} splitForOcclusion requires horizonY inside 1..${height - 1}`);
+            errors++;
+        }
+    }
+
+    const png = readPngQuietly(pathForEntry(entry));
+    if (png && (png.width !== width || png.height !== height)) {
+        console.error(`INVALID BUILDING: ${entry.id} PNG is ${png.width}x${png.height}, manifest declares ${width}x${height}`);
+        errors++;
+    }
+    errors += validateStructureMask(entry, width, height);
+    return errors;
+}
+
+function validateStructureMask(entry, width, height) {
+    const mask = entry.structureMask;
+    if (mask == null) return 0;
+    const shapes = mask.shapes;
+    if (!Array.isArray(shapes) || shapes.length === 0) {
+        console.error(`INVALID BUILDING: ${entry.id} structureMask must declare at least one shape`);
+        return 1;
+    }
+    let errors = 0;
+    const inBounds = (x, y) => Number.isFinite(x) && Number.isFinite(y)
+        && x >= 0 && y >= 0 && x <= width && y <= height;
+    for (const [index, shape] of shapes.entries()) {
+        if (Array.isArray(shape?.rect) && shape.rect.length === 4) {
+            const [x, y, w, h] = shape.rect.map(Number);
+            if (!inBounds(x, y) || !Number.isFinite(w) || !Number.isFinite(h)
+                || w <= 0 || h <= 0 || x + w > width || y + h > height) {
+                console.error(`INVALID BUILDING: ${entry.id} structureMask.shapes[${index}].rect is outside ${width}x${height}`);
+                errors++;
+            }
+            continue;
+        }
+        if (Array.isArray(shape?.polygon) && shape.polygon.length >= 3) {
+            if (shape.polygon.some((point) => !Array.isArray(point) || point.length !== 2
+                || !inBounds(Number(point[0]), Number(point[1])))) {
+                console.error(`INVALID BUILDING: ${entry.id} structureMask.shapes[${index}].polygon is outside ${width}x${height}`);
+                errors++;
+            }
+            continue;
+        }
+        console.error(`INVALID BUILDING: ${entry.id} structureMask.shapes[${index}] must declare rect or polygon geometry`);
+        errors++;
+    }
+    if (mask.siteColorCutout != null) {
+        const family = mask.siteColorCutout.family;
+        const fromY = Number(mask.siteColorCutout.fromY);
+        const validFamily = family === 'grass' || family === 'grass-and-retaining';
+        const lipFromY = Number(mask.siteColorCutout.lipFromY);
+        const invalidLip = family === 'grass-and-retaining'
+            && (!Number.isFinite(lipFromY) || lipFromY < fromY || lipFromY >= height);
+        const eraseFromY = Number(mask.siteColorCutout.eraseOutsideProtectFromY);
+        const hasErase = mask.siteColorCutout.eraseOutsideProtectFromY != null;
+        const protectShapes = mask.siteColorCutout.protectShapes;
+        const invalidProtect = hasErase && (
+            !Number.isFinite(eraseFromY)
+            || eraseFromY < fromY
+            || eraseFromY >= height
+            || !Array.isArray(protectShapes)
+            || protectShapes.length === 0
+        );
+        if (!validFamily || !Number.isFinite(fromY) || fromY < 0 || fromY >= height || invalidLip || invalidProtect) {
+            console.error(`INVALID BUILDING: ${entry.id} has invalid structureMask.siteColorCutout`);
+            errors++;
+        }
+    }
     return errors;
 }
 
@@ -378,8 +474,8 @@ function readPngQuietly(rel) {
 }
 
 // PNG dimensions vs the manifest `size`/`width`/`height` declaration. Groups
-// with their own hard checks (characters, equipment, atmosphere, terrain) are
-// skipped here; buildings bases carry no declared dims by design.
+// with their own hard checks (characters, equipment, atmosphere, terrain,
+// building bases) are skipped here.
 function warnOnDimensionDrift() {
     let warnings = 0;
     const check = (entry, rel, label) => {

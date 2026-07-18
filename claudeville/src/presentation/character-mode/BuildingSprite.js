@@ -126,6 +126,23 @@ const BUILDING_ACTIVITY_STATE_WEIGHT = Object.freeze({
     full: 0.9,
     alert: 1,
 });
+const FOUNDATION_MATERIALS = Object.freeze({
+    'civic-cobble': Object.freeze({
+        base: '#727064', stone: '#aaa58f', dark: '#514f47', wear: '#b8a57d', accent: '#6c7650',
+    }),
+    'knowledge-terrace': Object.freeze({
+        base: '#64656a', stone: '#929397', dark: '#494a51', wear: '#aca17e', accent: '#667154',
+    }),
+    'workshop-yard': Object.freeze({
+        base: '#655b50', stone: '#8c8172', dark: '#413d39', wear: '#8b674a', accent: '#403a36',
+    }),
+    'mine-yard': Object.freeze({
+        base: '#5c554b', stone: '#77756f', dark: '#393c3f', wear: '#7e6a50', accent: '#405c61',
+    }),
+    'arcane-court': Object.freeze({
+        base: '#4d485a', stone: '#757080', dark: '#35313e', wear: '#8b7d72', accent: '#76619a',
+    }),
+});
 
 function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
@@ -466,57 +483,190 @@ export class BuildingSprite {
         }
     }
 
-    // Soft drop shadows under each building footprint. Hero buildings use the
-    // composed sprite width so the shadow tracks the actual visible footprint
-    // rather than the much-smaller tile rect.
+    // Static site materials are baked with terrain. They deliberately retain
+    // the underlying tile texture and never draw a complete perimeter or lip.
+    drawGroundFoundations(ctx) {
+        for (const building of this.buildings) {
+            const grounding = getBuildingVisual(building.type)?.grounding;
+            if (!grounding?.foundation?.enabled) continue;
+            const material = FOUNDATION_MATERIALS[grounding.material];
+            if (!material) continue;
+            this._drawGroundFoundation(ctx, building, grounding, material);
+        }
+    }
+
+    _drawGroundFoundation(ctx, building, grounding, material) {
+        const corners = this._buildingFootprintCorners(building);
+        const foundation = grounding.foundation;
+        const seed = hashText(`foundation:${building.type}:${building.position.tileX}:${building.position.tileY}`);
+        const minX = Math.floor(Math.min(corners.nw.x, corners.ne.x, corners.se.x, corners.sw.x));
+        const maxX = Math.ceil(Math.max(corners.nw.x, corners.ne.x, corners.se.x, corners.sw.x));
+        const minY = Math.floor(Math.min(corners.nw.y, corners.ne.y, corners.se.y, corners.sw.y));
+        const maxY = Math.ceil(Math.max(corners.nw.y, corners.ne.y, corners.se.y, corners.sw.y));
+        const opacity = clamp01(foundation.opacity ?? 0.5);
+        const density = clamp01(foundation.density ?? 0.45);
+
+        ctx.save();
+        this._traceFootprint(ctx, corners);
+        ctx.clip();
+        ctx.globalAlpha = opacity * 0.1;
+        ctx.fillStyle = material.base;
+        ctx.fillRect(minX, minY, maxX - minX, maxY - minY);
+
+        for (let y = minY + 2; y < maxY; y += 5) {
+            for (let x = minX + ((y + seed) % 7); x < maxX; x += 7) {
+                const noise = this._groundingNoise(x, y, seed);
+                if (noise > density) continue;
+                const variant = this._groundingNoise(y, x, seed ^ 0x45d9f3b);
+                ctx.globalAlpha = opacity * (0.3 + variant * 0.42);
+                ctx.fillStyle = variant > 0.76
+                    ? material.accent
+                    : variant > 0.42 ? material.stone : material.dark;
+                const width = variant > 0.7 ? 5 : variant > 0.35 ? 3 : 2;
+                ctx.fillRect(Math.round(x), Math.round(y), width, variant > 0.62 ? 2 : 1);
+            }
+        }
+        this._drawFoundationThreshold(ctx, building, grounding, material, opacity);
+        ctx.restore();
+    }
+
+    _drawFoundationThreshold(ctx, building, grounding, material, opacity) {
+        const entrance = building.entrance;
+        if (!Number.isFinite(entrance?.tileX) || !Number.isFinite(entrance?.tileY)) return;
+        const from = this._tileToScreen(entrance.tileX, entrance.tileY);
+        const center = this._buildingScreenCenter(building);
+        const reach = clamp01(grounding.foundation?.thresholdReach ?? 0.55);
+        const to = {
+            x: from.x + (center.x - from.x) * reach,
+            y: from.y + (center.y - from.y) * reach,
+        };
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const length = Math.max(1, Math.hypot(dx, dy));
+        const steps = Math.max(4, Math.round(length / 9));
+        const ux = dx / length;
+        const uy = dy / length;
+
+        if (grounding.material === 'mine-yard') {
+            const nx = -uy * 5;
+            const ny = ux * 5;
+            ctx.globalAlpha = opacity * 0.88;
+            ctx.strokeStyle = material.dark;
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(from.x + nx, from.y + ny);
+            ctx.lineTo(to.x + nx, to.y + ny);
+            ctx.moveTo(from.x - nx, from.y - ny);
+            ctx.lineTo(to.x - nx, to.y - ny);
+            ctx.stroke();
+            ctx.fillStyle = material.wear;
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                const x = Math.round(from.x + dx * t);
+                const y = Math.round(from.y + dy * t);
+                ctx.fillRect(x - 7, y - 1, 14, 2);
+            }
+            return;
+        }
+
+        for (let i = 0; i <= steps; i++) {
+            const t = i / steps;
+            const x = Math.round(from.x + dx * t);
+            const y = Math.round(from.y + dy * t);
+            ctx.globalAlpha = opacity * (0.48 + (i % 3) * 0.12);
+            ctx.fillStyle = i % 4 === 0 ? material.wear : material.stone;
+            ctx.beginPath();
+            ctx.moveTo(x, y - 3);
+            ctx.lineTo(x + 7, y);
+            ctx.lineTo(x, y + 3);
+            ctx.lineTo(x - 7, y);
+            ctx.closePath();
+            ctx.fill();
+        }
+    }
+
+    _groundingNoise(x, y, seed) {
+        let value = Math.imul((Math.round(x) ^ seed) >>> 0, 0x45d9f3b);
+        value = Math.imul((value ^ (value >>> 16) ^ Math.round(y)) >>> 0, 0x45d9f3b);
+        value ^= value >>> 16;
+        return (value >>> 0) / 4294967295;
+    }
+
+    // Physical shadows follow declared structural contact, never sprite canvas
+    // width or the outer terrain apron.
     drawShadows(ctx) {
         const lighting = this.lightingState || {};
         const shadowLength = lighting.shadowLength ?? 1;
         const shadowAlpha = lighting.shadowAlpha ?? 0.22;
         const shadowAngle = lighting.shadowAngleRad ?? 0.28;
-        const offsetX = Math.cos(shadowAngle) * 12 * shadowLength;
-        const offsetY = Math.sin(shadowAngle) * 7 * shadowLength;
         for (const b of this.buildings) {
+            const grounding = getBuildingVisual(b.type)?.grounding;
+            const contact = grounding?.contact;
             const c = this._buildingScreenCenter(b);
-            const tileHalfW = (b.width + b.height) * TILE_WIDTH / 4;
-            const dims = this.assets.getDims(`building.${b.type}`);
-            const spriteHalfW = dims ? dims.w / 2 : tileHalfW;
-            const halfW = Math.max(tileHalfW, spriteHalfW * 0.7);
             const isLandmark = LANDMARK_LABEL_TYPES.has(b.type);
             const isHovered = this.hovered === b;
             ctx.save();
-            ctx.fillStyle = `rgba(15, 22, 30, ${shadowAlpha})`;
-            ctx.beginPath();
-            ctx.ellipse(
-                Math.round(c.x + offsetX),
-                Math.round(c.y + 4 + offsetY),
-                halfW * (0.92 + shadowLength * 0.16),
-                halfW * (0.27 + shadowLength * 0.08),
-                shadowAngle * 0.22,
-                0,
-                Math.PI * 2
-            );
-            ctx.fill();
-            this._drawFootprintContactPad(ctx, b, { isLandmark, isHovered });
-            this._drawBuildingActivityFootprint(ctx, b, { isLandmark, isHovered });
-            if (isLandmark || isHovered) {
-                ctx.globalAlpha = isHovered ? 0.82 : 0.46;
-                ctx.strokeStyle = isHovered ? 'rgba(255, 232, 166, 0.75)' : 'rgba(213, 169, 88, 0.38)';
-                ctx.lineWidth = isHovered ? 2 : 1;
-                ctx.beginPath();
-                ctx.ellipse(
-                    Math.round(c.x),
-                    Math.round(c.y + 3),
-                    halfW + (isHovered ? 8 : 4),
-                    halfW * 0.34 + (isHovered ? 4 : 2),
-                    0,
-                    0,
-                    Math.PI * 2
-                );
-                ctx.stroke();
+            if (grounding?.shadow !== 'none' && contact?.width > 0 && contact?.depth > 0) {
+                this._drawStructureShadow(ctx, c, grounding, contact, {
+                    shadowLength,
+                    shadowAlpha,
+                    shadowAngle,
+                });
             }
+            this._drawBuildingActivityFootprint(ctx, b, { isLandmark, isHovered });
+            if (isHovered) this._drawBuildingHoverFootprint(ctx, b);
             ctx.restore();
         }
+    }
+
+    _drawStructureShadow(ctx, center, grounding, contact, lighting) {
+        const offsetScale = grounding.shadow === 'tower-cast' ? 0.72 : 0.3;
+        const offsetX = Math.cos(lighting.shadowAngle) * 12 * lighting.shadowLength * offsetScale;
+        const offsetY = Math.sin(lighting.shadowAngle) * 7 * lighting.shadowLength * offsetScale;
+        const cx = center.x + (contact.offsetX || 0) + offsetX;
+        const cy = center.y + (contact.offsetY || 0) + offsetY;
+        const rx = contact.width / 2;
+        const ry = contact.depth / 2;
+        ctx.fillStyle = '#0f161e';
+        ctx.globalAlpha = lighting.shadowAlpha * (contact.opacity ?? 0.75);
+        this._fillSteppedEllipse(ctx, cx, cy, rx, ry);
+
+        if (grounding.shadow !== 'tower-cast' || !contact.castLength) return;
+        const length = contact.castLength * Math.max(0.45, lighting.shadowLength);
+        const steps = Math.max(3, Math.round(length / 9));
+        for (let i = 1; i <= steps; i++) {
+            const t = i / steps;
+            ctx.globalAlpha = lighting.shadowAlpha * (contact.opacity ?? 0.75) * (1 - t) * 0.48;
+            this._fillSteppedEllipse(
+                ctx,
+                cx + Math.cos(lighting.shadowAngle) * length * t,
+                cy + Math.sin(lighting.shadowAngle) * length * 0.55 * t,
+                rx * (1 - t * 0.68),
+                Math.max(2, ry * (1 - t * 0.76)),
+            );
+        }
+    }
+
+    _fillSteppedEllipse(ctx, cx, cy, rx, ry) {
+        const rowHeight = 2;
+        for (let y = -ry; y <= ry; y += rowHeight) {
+            const normalized = y / Math.max(1, ry);
+            const half = rx * Math.sqrt(Math.max(0, 1 - normalized * normalized));
+            ctx.fillRect(
+                Math.round(cx - half),
+                Math.round(cy + y),
+                Math.max(1, Math.round(half * 2)),
+                rowHeight,
+            );
+        }
+    }
+
+    _drawBuildingHoverFootprint(ctx, building) {
+        ctx.globalAlpha = 0.82;
+        ctx.strokeStyle = 'rgba(255, 232, 166, 0.82)';
+        ctx.lineWidth = 2;
+        this._traceFootprint(ctx, this._buildingFootprintCorners(building));
+        ctx.stroke();
     }
 
     // Persistent building labels (parchment tag + identity badge) above each sprite.
@@ -4326,42 +4476,87 @@ export class BuildingSprite {
         if (strokeStyle) ctx.stroke();
     }
 
-    _drawFootprintContactPad(ctx, building, { isLandmark = false, isHovered = false } = {}) {
-        const corners = this._buildingFootprintCorners(building);
-        const districtTint = getBuildingVisual(building.type)?.districtTint;
+    groundingDiagnostics() {
+        return this.buildings.map((building) => {
+            const id = `building.${building.type}`;
+            const entry = this.assets.getEntry(id);
+            const dims = this.assets.getDims(id);
+            const anchor = this.assets.getAnchor(id);
+            const center = this._buildingScreenCenter(building);
+            const grounding = getBuildingVisual(building.type)?.grounding || null;
+            const left = dims ? center.x - anchor[0] : center.x;
+            const top = dims ? center.y - anchor[1] : center.y;
+            return {
+                type: building.type,
+                mode: grounding?.mode || null,
+                center: { ...center },
+                footprint: this._buildingFootprintCorners(building),
+                entrance: building.entrance ? this._tileToScreen(building.entrance.tileX, building.entrance.tileY) : null,
+                sprite: dims ? { left, top, width: dims.w, height: dims.h } : null,
+                anchor: { x: center.x, y: center.y, localX: anchor[0], localY: anchor[1] },
+                horizonY: Number.isFinite(entry?.horizonY) ? top + entry.horizonY : null,
+                contact: grounding?.contact ? {
+                    x: center.x + (grounding.contact.offsetX || 0),
+                    y: center.y + (grounding.contact.offsetY || 0),
+                    width: grounding.contact.width || 0,
+                    depth: grounding.contact.depth || 0,
+                } : null,
+            };
+        });
+    }
+
+    drawGroundingDebug(ctx) {
         ctx.save();
-        ctx.globalAlpha = isHovered ? 0.86 : isLandmark ? 0.66 : 0.54;
-        ctx.fillStyle = isLandmark
-            ? (districtTint || 'rgba(69, 55, 33, 0.34)')
-            : 'rgba(34, 29, 23, 0.30)';
-        this._traceFootprint(ctx, corners);
-        ctx.fill();
+        ctx.font = `10px ${WORLD_BODY_FONT}`;
+        ctx.textBaseline = 'bottom';
+        for (const item of this.groundingDiagnostics()) {
+            const { center, footprint, entrance, sprite, contact } = item;
+            ctx.globalAlpha = 0.94;
+            ctx.strokeStyle = '#00e5ff';
+            ctx.lineWidth = 1.4;
+            this._traceFootprint(ctx, footprint);
+            ctx.stroke();
 
-        ctx.globalAlpha = isHovered ? 0.72 : 0.44;
-        ctx.strokeStyle = isHovered ? 'rgba(255, 230, 156, 0.78)' : 'rgba(25, 18, 13, 0.58)';
-        ctx.lineWidth = isHovered ? 2 : 1.25;
-        this._traceFootprint(ctx, corners);
-        ctx.stroke();
-
-        ctx.globalAlpha = isHovered ? 0.52 : 0.34;
-        ctx.strokeStyle = 'rgba(8, 10, 12, 0.72)';
-        ctx.lineWidth = isHovered ? 5 : 4;
-        ctx.lineJoin = 'round';
-        ctx.beginPath();
-        ctx.moveTo(corners.ne.x, corners.ne.y);
-        ctx.lineTo(corners.se.x, corners.se.y);
-        ctx.lineTo(corners.sw.x, corners.sw.y);
-        ctx.stroke();
-
-        ctx.globalAlpha = isHovered ? 0.42 : 0.24;
-        ctx.strokeStyle = 'rgba(230, 200, 126, 0.48)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(corners.nw.x, corners.nw.y);
-        ctx.lineTo(corners.ne.x, corners.ne.y);
-        ctx.moveTo(corners.nw.x, corners.nw.y);
-        ctx.lineTo(corners.sw.x, corners.sw.y);
-        ctx.stroke();
+            if (sprite) {
+                ctx.globalAlpha = 0.72;
+                ctx.strokeStyle = '#ec6cff';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(sprite.left + 0.5, sprite.top + 0.5, sprite.width - 1, sprite.height - 1);
+            }
+            if (Number.isFinite(item.horizonY) && sprite) {
+                ctx.strokeStyle = '#ffe066';
+                ctx.beginPath();
+                ctx.moveTo(sprite.left, item.horizonY + 0.5);
+                ctx.lineTo(sprite.left + sprite.width, item.horizonY + 0.5);
+                ctx.stroke();
+            }
+            if (contact?.width > 0 && contact?.depth > 0) {
+                ctx.strokeStyle = '#ff6e5f';
+                ctx.beginPath();
+                ctx.ellipse(contact.x, contact.y, contact.width / 2, contact.depth / 2, 0, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            ctx.fillStyle = '#ffffff';
+            ctx.fillRect(Math.round(center.x) - 3, Math.round(center.y), 7, 1);
+            ctx.fillRect(Math.round(center.x), Math.round(center.y) - 3, 1, 7);
+            if (entrance) {
+                ctx.fillStyle = '#7cff6b';
+                ctx.fillRect(Math.round(entrance.x) - 3, Math.round(entrance.y) - 3, 6, 6);
+                ctx.strokeStyle = 'rgba(124, 255, 107, 0.72)';
+                ctx.beginPath();
+                ctx.moveTo(entrance.x, entrance.y);
+                ctx.lineTo(center.x, center.y);
+                ctx.stroke();
+            }
+            const labelX = sprite?.left ?? center.x;
+            const labelY = sprite?.top ?? center.y;
+            const label = `${item.type} · ${item.mode || 'missing'}`;
+            const width = ctx.measureText(label).width + 6;
+            ctx.fillStyle = 'rgba(18, 22, 29, 0.88)';
+            ctx.fillRect(labelX, labelY - 14, width, 13);
+            ctx.fillStyle = '#d8f7ff';
+            ctx.fillText(label, labelX + 3, labelY - 3);
+        }
         ctx.restore();
     }
 

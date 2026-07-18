@@ -90,7 +90,8 @@ export class AssetManager {
             this.missing.add(entry.id);
             this._loadMisses.push({ id: entry.id, path });
         }
-        const img = this._normalizeImageToManifestSize(entry, loadedImg);
+        const normalizedImg = this._normalizeImageToManifestSize(entry, loadedImg);
+        const img = this._applyStructureMask(entry, normalizedImg);
         const anchor = entry.anchor
             ? entry.anchor
             : entry.id.startsWith('building.')
@@ -227,6 +228,100 @@ export class AssetManager {
         ctx.imageSmoothingEnabled = false;
         ctx.drawImage(img, 0, 0, target, target);
         return canvas;
+    }
+
+    // Legacy building sources can retain a baked site slab while the runtime
+    // contract exposes structure-only pixels. The manifest mask is applied once
+    // at load, before hit masks and hover outlines are derived.
+    _applyStructureMask(entry, img) {
+        const shapes = entry?.structureMask?.shapes;
+        if (!entry?.id?.startsWith('building.') || !Array.isArray(shapes) || shapes.length === 0) {
+            return img;
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = img.width;
+        canvas.height = img.height;
+        const ctx = canvas.getContext('2d');
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(img, 0, 0);
+        const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        const data = imageData.data;
+        for (let y = 0; y < canvas.height; y++) {
+            for (let x = 0; x < canvas.width; x++) {
+                const index = (y * canvas.width + x) * 4;
+                if (data[index + 3] === 0) continue;
+                const inside = this._structureMaskContains(shapes, x + 0.5, y + 0.5);
+                const removeSiteColor = inside && this._matchesSiteColorCutout(
+                    entry.structureMask,
+                    x,
+                    y,
+                    data[index],
+                    data[index + 1],
+                    data[index + 2],
+                );
+                if (inside && !removeSiteColor) continue;
+                data[index] = 0;
+                data[index + 1] = 0;
+                data[index + 2] = 0;
+                data[index + 3] = 0;
+            }
+        }
+        ctx.putImageData(imageData, 0, 0);
+        return canvas;
+    }
+
+    _matchesSiteColorCutout(mask, x, y, red, green, blue) {
+        const cutout = mask?.siteColorCutout;
+        if (!cutout || y < Number(cutout.fromY || 0)) return false;
+        if (cutout.family === 'grass' || cutout.family === 'grass-and-retaining') {
+            const isGrass = green >= 34
+                && green > red * 1.16
+                && green > blue * 1.12;
+            if (isGrass) return true;
+        }
+        if (cutout.family === 'grass-and-retaining' && y >= Number(cutout.lipFromY || Infinity)) {
+            const isRetaining = red < 136
+                && green < 82
+                && blue < 108
+                && red > green * 1.22
+                && blue > green * 1.12;
+            if (isRetaining) return true;
+        }
+        if (y >= Number(cutout.eraseOutsideProtectFromY || Infinity)) {
+            const protectedShapes = cutout.protectShapes;
+            return !Array.isArray(protectedShapes)
+                || !this._structureMaskContains(protectedShapes, x + 0.5, y + 0.5);
+        }
+        return false;
+    }
+
+    _structureMaskContains(shapes, x, y) {
+        for (const shape of shapes) {
+            const rect = shape?.rect;
+            if (Array.isArray(rect) && rect.length === 4) {
+                const [rx, ry, rw, rh] = rect.map(Number);
+                if (x >= rx && y >= ry && x < rx + rw && y < ry + rh) return true;
+            }
+            const polygon = shape?.polygon;
+            if (Array.isArray(polygon) && polygon.length >= 3 && this._pointInPolygon(polygon, x, y)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    _pointInPolygon(points, x, y) {
+        let inside = false;
+        for (let i = 0, j = points.length - 1; i < points.length; j = i++) {
+            const xi = Number(points[i]?.[0]);
+            const yi = Number(points[i]?.[1]);
+            const xj = Number(points[j]?.[0]);
+            const yj = Number(points[j]?.[1]);
+            const crosses = ((yi > y) !== (yj > y))
+                && x < ((xj - xi) * (y - yi)) / ((yj - yi) || 1) + xi;
+            if (crosses) inside = !inside;
+        }
+        return inside;
     }
 
     _buildAlphaMask(img) {

@@ -2,6 +2,22 @@
 
 ---
 
+## v0.26.1 — *Firm Foundations* · Jul 18, 2026
+
+ClaudeVille's landmarks now belong to the terrain beneath them. Every World building has an explicit grounding contract, so foundations, thresholds, shadows, and waterfront supports follow the site instead of reading as raised sprite slabs.
+
+**Every building meets the ground**
+- **Nine authored grounding profiles.** The Command Center, Portal, Archive, Task Board, Forge, Mine, Observatory, Watchtower, and Harbor now declare their terrain relationship, contact span, shadow shape, and entrance threshold explicitly.
+- **Foundations belong to the world.** Terrain aprons and threshold paths are baked into the terrain cache, while the Archive's dais, Harbor quay, and Watchtower pilings keep their intentional elevation without making the whole sprite float.
+- **Raised lawns and false platforms removed.** Structure masks and targeted site-color cutouts strip baked-in grass, stone, and dirt slabs from the affected sprites while preserving their pixel architecture.
+
+**Contact that holds up in motion**
+- **Structure-aware shadows.** Deterministic stepped contact shadows follow each building's actual footprint instead of using a generic resting ellipse.
+- **Diagnostics for every landmark.** Shift+D grounding overlays expose profile mode, footprint, contact line, shadow polygon, threshold path, and validation state directly in the World view.
+- **Full visual coverage.** Day and night baselines now center every building type, with manifest and world validators enforcing explicit dimensions, anchors, grounding modes, contact spans, and migration masks.
+
+---
+
 ## v0.26.0 — *Painter's Guild* · Jul 17, 2026
 
 The guild has repainted the whole town. The sea reads as one deep body of water instead of a checkerboard, the ground is hand-textured painterly turf and cobble, sky rewards burst over the village instead of hiding behind it, and every villager, building, card, and panel now speaks one color language. This is the largest visual overhaul since the founding — and it costs the town nothing: the desktop widgets were retired and every effect ships within the v0.25 performance budget.

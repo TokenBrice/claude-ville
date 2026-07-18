@@ -1,3 +1,5 @@
+import { BUILDING_GROUNDING_PROFILES } from '../../config/buildingGrounding.js';
+
 export const DEFAULT_BUILDING_OCCUPANCY_THRESHOLDS = Object.freeze({
     idleMax: 0,
     occupiedMax: 0.49,
@@ -6,6 +8,7 @@ export const DEFAULT_BUILDING_OCCUPANCY_THRESHOLDS = Object.freeze({
 
 export const BUILDING_VISUAL_REGISTRY = Object.freeze({
     command: {
+        grounding: BUILDING_GROUNDING_PROFILES.command,
         labelAccent: '#f6c85f',
         emblem: 'crown',
         districtTint: 'rgba(246, 200, 95, 0.24)',
@@ -24,6 +27,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         pennant: { at: [240, 56] },
     },
     taskboard: {
+        grounding: BUILDING_GROUNDING_PROFILES.taskboard,
         labelAccent: '#8bd7ff',
         emblem: 'scroll',
         districtTint: 'rgba(139, 215, 255, 0.2)',
@@ -40,6 +44,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         pennant: { at: [128, 34] },
     },
     forge: {
+        grounding: BUILDING_GROUNDING_PROFILES.forge,
         labelAccent: '#f08a4b',
         emblem: 'hammer',
         districtTint: 'rgba(240, 138, 75, 0.24)',
@@ -54,6 +59,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         ],
     },
     mine: {
+        grounding: BUILDING_GROUNDING_PROFILES.mine,
         labelAccent: '#ffab47',
         emblem: 'pick',
         districtTint: 'rgba(255, 171, 71, 0.22)',
@@ -64,6 +70,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         beaconBase: 0.78,
     },
     archive: {
+        grounding: BUILDING_GROUNDING_PROFILES.archive,
         labelAccent: '#b3d68c',
         emblem: 'book',
         districtTint: 'rgba(179, 214, 140, 0.22)',
@@ -81,6 +88,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         pennant: { at: [48, 30] },
     },
     observatory: {
+        grounding: BUILDING_GROUNDING_PROFILES.observatory,
         labelAccent: '#bda7ff',
         emblem: 'star',
         districtTint: 'rgba(189, 167, 255, 0.22)',
@@ -115,6 +123,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         },
     },
     portal: {
+        grounding: BUILDING_GROUNDING_PROFILES.portal,
         labelAccent: '#8bd7ff',
         emblem: 'rune',
         districtTint: 'rgba(139, 215, 255, 0.2)',
@@ -126,6 +135,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         pennant: { at: [170, 30] },
     },
     watchtower: {
+        grounding: BUILDING_GROUNDING_PROFILES.watchtower,
         labelAccent: '#ffe59a',
         emblem: 'flame',
         districtTint: 'rgba(255, 229, 154, 0.24)',
@@ -158,6 +168,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         },
     },
     harbor: {
+        grounding: BUILDING_GROUNDING_PROFILES.harbor,
         labelAccent: '#ffd37a',
         emblem: 'anchor',
         districtTint: 'rgba(255, 211, 122, 0.22)',

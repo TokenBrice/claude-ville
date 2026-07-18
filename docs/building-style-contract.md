@@ -1,6 +1,6 @@
 # ClaudeVille Building Style Contract
 
-The single visual standard for every World-mode building sprite. Derived from the gold-standard trio (Command Center, Grand Lore Archive, Observatory) and the manifest `style.anchor`. Use this when writing generation prompts and when judging a regenerated sprite. Companion to the upgrade plan: [`agents/plans/claudeville-building-harmonization-upgrade-plan.md`](../agents/plans/claudeville-building-harmonization-upgrade-plan.md).
+The visual and runtime contract for every World-mode building. Command Center is the land-material reference, Harbor is the water-contact reference, and Portal/Lighthouse are named structural-platform exceptions. Use this when writing generation prompts, defining grounding metadata, and reviewing a regenerated sprite.
 
 ## Craft rules (every building)
 
@@ -9,7 +9,9 @@ The single visual standard for every World-mode building sprite. Derived from th
 - **Shading:** painterly, 3–4 tone steps per material, crisp cel transitions on edges. **Minimum ~35% lightness contrast** dark→light per material (no washed-out pastels).
 - **Lighting:** single warm key from **upper-left**; cool shadow toward lower-right; faint magical rim-glow on landmarks.
 - **Roof signature:** slate-blue tiled roof is the family motif. No terracotta-red, no sky-blue cartoon roofs.
-- **Grounding (required):** every building sits on a baked **2:1 isometric diamond base** — nothing floats. Land → grass + cobble apron; arcane → dark stone floor; harbor → timber deck + water pilings. Diamond width ≈ building width + ~16px margin.
+- **Grounding (required):** land sprites contain structure, attached stairs, and true footings only. The static terrain cache owns grass, dirt, cobble aprons, district wear, and the road-to-threshold transition. A land sprite must not contain a complete ground tile, raised slab, plinth, retaining lip, closed dark perimeter, baked cast shadow, or generic square diamond.
+- **Exceptions:** `intentional-dais`, `quay`, and `water-pilings` may remain structural parts of the sprite. They must have visible support, stairs/thresholds where applicable, and a localized terrain or water contact rather than a second generic platform.
+- **Contact shadow:** structure-aware and tight to walls, posts, rock mass, towers, or pilings. Never size a shadow from the whole sprite canvas or flat apron.
 
 ## Palette ramps (sampled from gold trio + Portal/Mine)
 
@@ -22,10 +24,25 @@ The single visual standard for every World-mode building sprite. Derived from th
 | Warm torch glow | `#D79613` · `#F89206` · `#FDE2AD` | fire / window light |
 | Arcane violet | `#8149B2` · `#B241F0` · `#E39AFC` | Portal / arcane only |
 | Cyan ore glow | `#1E6F86` · `#45DCA8` · `#C8FFF0` | Mine ore only |
-| Grass base | `#355408` · `#456F03` · `#567A16` | land diamond |
-| Cobble base | `#99776A` · `#A1795E` · `#E0A665` | path / apron |
+| Terrain grass | `#355408` · `#456F03` · `#567A16` | terrain-owned edge intrusion |
+| Terrain cobble | `#99776A` · `#A1795E` · `#E0A665` | terrain-owned path / apron |
 
 Thematic palettes (Portal violet, Mine cyan ore, Harbor warm wood) are **allowed deviations** layered on the same craft rules — not separate art styles.
+
+## Grounding profiles
+
+Every type has one profile in `claudeville/src/config/buildingGrounding.js`, linked through `BuildingVisualRegistry`:
+
+```js
+grounding: {
+    mode: 'terrain-apron' | 'intentional-dais' | 'quay' | 'water-pilings',
+    material: 'civic-cobble' | 'knowledge-terrace' | 'workshop-yard' | 'mine-yard' | 'arcane-court',
+    edgeTreatment: 'broken' | 'retained' | 'water-contact',
+    shadow: 'structure-contact' | 'tower-cast' | 'none',
+}
+```
+
+The logical footprint always comes from `BUILDING_DEFS`. Do not duplicate it in the manifest. Every manifest building entry must declare native `width`, `height`, and `anchor`; split sprites also declare `horizonY`. A `structureMask` is a migration tool for preserving legacy upper pixels while removing an old baked site slab at load time. New or regenerated art should not need one.
 
 ## Size tiers (footprint-driven; all ≤400px → single-image generation)
 
@@ -41,9 +58,10 @@ Rule of thumb: **sprite width ≈ 1.2 × iso-diamond width** = `1.2 · (w+h) · 
 
 - Tool: REST `create-image-pixflux` or MCP `create_map_object` (≤400px, transparent BG). Smoke-test the tool per building; prefer whichever yields true iso + painterly (pixflux produced Archive/Harbor).
 - Params (not in the description): `view: low top-down`, `outline: selective outline`, `shading: detailed shading`, `detail: high detail`, transparent background.
-- Description: prepend the manifest `style.anchor`; then subject identity + the palette color cues above + "standing on a square isometric [grass-and-cobblestone | dark stone] base tile" + silhouette intent. Keep negatives short and concrete.
-- After generation: place at `assets/sprites/buildings/<id>/base.png`; recalibrate `horizonY`, emitters, lightSource, and `BuildingVisualRegistry` coords (see plan §6.3); bump `style.assetVersion`.
+- Description for `terrain-apron`: prepend the manifest `style.anchor`; add subject identity, palette cues, silhouette intent, "true wall/post/rock footings and attached steps only", and "transparent ground around the structure". Explicitly forbid ground tile, lawn, slab, plinth, retaining lip, complete perimeter, and baked shadow.
+- Description for a structural exception: name the physical platform (`dais`, `quay`, `deck/pilings`), its support, and its terrain/water transition. Still forbid a larger generic ground tile.
+- After generation: place at `assets/sprites/buildings/<id>/base.png`; declare native dimensions and an explicit anchor; recalibrate `horizonY`, emitters, lights, overlays, windows, pennants, and ritual anchors; bump `style.assetVersion`.
 
-## Reference order (best → worst, regen priority is the reverse)
+## Reference order
 
-Command (canon) · Portal (arcane canon) · Archive · Observatory · Harbor (warm variant) · Mine · Watchtower · Forge · Task Board.
+Harbor (`water-pilings`) · Command (`terrain-apron`) · Portal (`intentional-dais`) · Lighthouse (`quay`). Archive, Task Board, Forge, Mine, and Observatory are legacy masked assets and should be reviewed first when native structure-only replacements are produced.
