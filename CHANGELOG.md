@@ -2,6 +2,37 @@
 
 ---
 
+## v0.26.0 — *Painter's Guild* · Jul 17, 2026
+
+The guild has repainted the whole town. The sea reads as one deep body of water instead of a checkerboard, the ground is hand-textured painterly turf and cobble, sky rewards burst over the village instead of hiding behind it, and every villager, building, card, and panel now speaks one color language. This is the largest visual overhaul since the founding — and it costs the town nothing: the desktop widgets were retired and every effect ships within the v0.25 performance budget.
+
+**Water & ground, remade**
+- **The checkerboard is gone.** Water depth is classified by distance-to-land, so lagoon, river, and sea read as coherent shallow-rim-to-deep-center masses with lerped tones, wet-sand shorelines, a one-mass sea gradient, and baked iso wavelets.
+- **Painterly terrain suite.** All six Wang tilesets were rebaked as textured art: wildflower meadow, earthen paths, grey-blue cobbles, golden shore sand, teal shallows over sandy beds, cobalt deep water, flagstone plaza — generated through a new manifest-driven REST tileset pipeline.
+- **The land coheres.** A low-frequency noise field turns per-tile confetti into authored masses; roads grow worn verges; a plank bridge now crosses the river mid-map; props cast contact shadows; building bases no longer seam against the terrain.
+
+**Sky & light**
+- **Rewards you can actually see.** Aurora, shooting stars, and sky-flares moved to the canopy pass over the village, with a warm whole-village pulse on a successful push; nights gain viewport-scaled stars and ambient meteors; the sun is a crisp stepped pixel disc; day length follows the season; fleet-driven storms take a subtle violet cast so the weather honestly says when the fleet is struggling.
+- **Night keeps its promises.** Waiting beacons, selection rings, and incident pills are re-stamped after the atmosphere multiply, so the marks that must never be lost stay readable in the dark; ground fog drifts over the water at dawn.
+
+**A crowd of individuals**
+- **No more clone armies.** Per-sheet palette sources make per-agent variants and team sashes actually render, and every agent's animation phase is seeded from its id, so a crowd no longer breathes as one organism.
+- **Legible at a glance.** Stronger selection rings, hover rings with name pills, contrast-fixed name tags, identical cluster bubbles that merge into one with a ×N chip, and provider-colored zoom-out impostors.
+
+**One town, two windows**
+- **One status language.** A single canonical status ramp feeds both canvas and DOM through a boot-time token bridge — guarded by a new smoke check so it can never drift again — and `completed` is finally a first-class, softly golden status everywhere. Rate-limited moves to steel blue, and provider hues no longer collide with status hues.
+- **The dashboard earns its keep.** Attention-state header washes, collapsed empty tool history, FLIP-animated reorders, relative timestamps, a calmer chip row, district-tinted portraits, ambience that follows the world clock, and a warm hearth glow under the grid. Modal and toasts join the parchment-and-bronze fold with proper dialog semantics.
+- **Landmarks with presence.** Chronicle monuments are real sprites (cairn, stele, obelisk, founding stones) with a quiet mote over major ones; occupied buildings grow lit windows, occupancy pennants, and a dais ring; the observatory opens its dome aperture at night; an empty village gets a slow dusk tour.
+
+**Craft under the hood**
+- **44+ PixelLab asset bakes.** Broken cube layers rebaked as isolated objects, placeholder props and vegetation replaced, effort rings made distinguishable, and a validator upgrade (dimension + cube-fill heuristics) that would have caught every shipped defect.
+- **Budget respected.** Rain-veil and gradient-allocation hot paths removed; every new motion ships its reduced-motion static fallback; camera event cues honor reduced motion.
+- **Sharp at your size.** Canvas backing snaps to pixel-uniform ratios only when nearly free — 1080p and up keep full sharpness instead of a 2× nearest upscale.
+
+**Farewell, widgets.** The macOS menu-bar app and KDE Plasma widget are retired, along with their build scripts, routes, and checks — one surface, done well.
+
+---
+
 ## v0.25.2 — *Town Crier* · Jul 17, 2026
 
 Kimi villagers now speak plainly about the tools they wield, and the town's records of where Kimi Code sessions live are hardened against the current session-store layout.
