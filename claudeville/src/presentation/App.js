@@ -68,6 +68,9 @@ export class App {
         this._centerCameraHandle = null;
         this._onWindowResize = null;
         this._perfDebugCanvasBudget = null;
+        this._perfDebugStartProfile = null;
+        this._perfDebugStopProfile = null;
+        this._perfDebugFrameProfile = null;
         this._cameraSetHelper = null;
         this._onWorldContextLost = null;
         this._onWorldContextRestored = null;
@@ -550,10 +553,16 @@ export class App {
         if (typeof window === 'undefined') return;
         const existing = window.__claudeVillePerf || {};
         this._perfDebugCanvasBudget = () => this.renderer?.getCanvasBudget?.() || null;
+        this._perfDebugStartProfile = () => this.renderer?.startPerformanceProfile?.() || false;
+        this._perfDebugStopProfile = () => this.renderer?.stopPerformanceProfile?.() || null;
+        this._perfDebugFrameProfile = () => this.renderer?.getPerformanceProfile?.() || null;
         this._cameraSetHelper = (pose = {}) => this.renderer?.setCameraPose?.(pose) || false;
         window.__claudeVillePerf = {
             ...existing,
             canvasBudget: this._perfDebugCanvasBudget,
+            startFrameProfile: this._perfDebugStartProfile,
+            stopFrameProfile: this._perfDebugStopProfile,
+            frameProfile: this._perfDebugFrameProfile,
         };
         window.cameraSet = this._cameraSetHelper;
     }
@@ -728,6 +737,15 @@ export class App {
             if (window.__claudeVillePerf?.canvasBudget === this._perfDebugCanvasBudget) {
                 delete window.__claudeVillePerf.canvasBudget;
             }
+            if (window.__claudeVillePerf?.startFrameProfile === this._perfDebugStartProfile) {
+                delete window.__claudeVillePerf.startFrameProfile;
+            }
+            if (window.__claudeVillePerf?.stopFrameProfile === this._perfDebugStopProfile) {
+                delete window.__claudeVillePerf.stopFrameProfile;
+            }
+            if (window.__claudeVillePerf?.frameProfile === this._perfDebugFrameProfile) {
+                delete window.__claudeVillePerf.frameProfile;
+            }
         }
 
         this.renderer = null;
@@ -755,6 +773,9 @@ export class App {
         this._chroniclePruneState.promise = null;
         this._chronicleTasks.clear();
         this._perfDebugCanvasBudget = null;
+        this._perfDebugStartProfile = null;
+        this._perfDebugStopProfile = null;
+        this._perfDebugFrameProfile = null;
         this._cameraSetHelper = null;
         this._resizeWorldCanvas = null;
         this._bootController = null;

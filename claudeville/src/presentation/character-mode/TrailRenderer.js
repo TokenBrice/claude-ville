@@ -82,6 +82,7 @@ export class TrailRenderer {
         this.pending = [];
         this.cache = null;
         this.cacheKey = '';
+        this.cacheBounds = null;
         this.lastCaptureAt = 0;
         this.lastFlushAt = 0;
         this.lastRepaintAt = 0;
@@ -223,7 +224,8 @@ export class TrailRenderer {
         const { dpr, width, height } = viewportMetrics(viewport);
         ctx.save();
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.drawImage(this.cache, 0, 0, width, height);
+        const bounds = this.cacheBounds || { x: 0, y: 0, width, height };
+        ctx.drawImage(this.cache, bounds.x, bounds.y, bounds.width, bounds.height);
         ctx.restore();
     }
 
@@ -253,6 +255,7 @@ export class TrailRenderer {
         releaseCanvasBackingStore(this.cache);
         this.cache = null;
         this.cacheKey = '';
+        this.cacheBounds = null;
         this._needsRepaint = true;
     }
 
@@ -318,14 +321,13 @@ export class TrailRenderer {
         const width = Math.max(1, Math.round(metrics.width || 1));
         const height = Math.max(1, Math.round(metrics.height || 1));
         const dpr = metrics.dpr;
-        const canvas = this.cache || document.createElement('canvas');
-        canvas.width = Math.round(width * dpr);
-        canvas.height = Math.round(height * dpr);
-        const ctx = canvas.getContext('2d');
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        ctx.clearRect(0, 0, width, height);
         const bounds = camera.getViewportTileBounds?.(3);
         const zoom = camera.zoom || 1;
+        const trails = [];
+        let minX = width;
+        let minY = height;
+        let maxX = 0;
+        let maxY = 0;
 
         for (const [agentId, samples] of this.samplesByAgent) {
             const visible = !bounds || samples.some(sample => (
@@ -337,21 +339,64 @@ export class TrailRenderer {
             const renderSamples = zoom < 1.5 && samples.length > MAX_RENDER_SAMPLES_ZOOMED_OUT
                 ? samples.slice(-MAX_RENDER_SAMPLES_ZOOMED_OUT)
                 : samples;
-            this._drawTrail(ctx, renderSamples, camera, now, selected);
+            const points = this._trailPoints(renderSamples, camera);
+            if (points.length < 2) continue;
+            trails.push({ points, selected });
+            for (const point of points) {
+                minX = Math.min(minX, point.x);
+                minY = Math.min(minY, point.y);
+                maxX = Math.max(maxX, point.x);
+                maxY = Math.max(maxY, point.y);
+            }
+        }
+
+        const pad = 4;
+        const left = Math.max(0, Math.floor(minX - pad));
+        const top = Math.max(0, Math.floor(minY - pad));
+        const right = Math.min(width, Math.ceil(maxX + pad));
+        const bottom = Math.min(height, Math.ceil(maxY + pad));
+        if (!trails.length || right <= left || bottom <= top) {
+            releaseCanvasBackingStore(this.cache);
+            this.cache = null;
+            this.cacheBounds = null;
+            this._needsRepaint = false;
+            this.lastRepaintAt = now;
+            return;
+        }
+
+        const cacheWidth = right - left;
+        const cacheHeight = bottom - top;
+        const canvas = this.cache || document.createElement('canvas');
+        canvas.width = Math.round(cacheWidth * dpr);
+        canvas.height = Math.round(cacheHeight * dpr);
+        const ctx = canvas.getContext('2d');
+        ctx.setTransform(dpr, 0, 0, dpr, -left * dpr, -top * dpr);
+        ctx.clearRect(left, top, cacheWidth, cacheHeight);
+        for (const trail of trails) {
+            this._drawTrailPoints(ctx, trail.points, now, trail.selected);
         }
 
         this.cache = canvas;
+        this.cacheBounds = { x: left, y: top, width: cacheWidth, height: cacheHeight };
         this._needsRepaint = false;
         this.lastRepaintAt = now;
     }
 
     _drawTrail(ctx, samples, camera, now, selected) {
-        if (samples.length < 2) return;
+        this._drawTrailPoints(ctx, this._trailPoints(samples, camera), now, selected);
+    }
+
+    _trailPoints(samples, camera) {
         const points = [];
         for (const sample of samples) {
             const p = camera.worldToScreen(...Object.values(toWorld(sample.tileX, sample.tileY)));
             points.push({ x: p.x, y: p.y, ts: sample.ts, phase: sample.phase });
         }
+        return points;
+    }
+
+    _drawTrailPoints(ctx, points, now, selected) {
+        if (points.length < 2) return;
         strokeAgedTrailSegments(ctx, points, {
             now,
             maxAgeMs: RETAIN_MS,

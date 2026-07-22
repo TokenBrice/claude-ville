@@ -54,6 +54,8 @@ export class WeatherRenderer {
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
         this._rippleStampTimes = new Map();
+        this._washStrip = null;
+        this._washStripKey = '';
     }
 
     setAssets(assets) {
@@ -89,19 +91,23 @@ export class WeatherRenderer {
         ctx.globalCompositeOperation = 'source-over';
         const washBudget = Math.min(1, 0.72 + (1 - fog) * 0.18) * legibility.wash;
 
-        if (weather.type === 'overcast' || cloudCover > 0.72) {
-            this._drawOvercast(ctx, canvas, Math.max(weather.intensity * 0.72, cloudCover * 0.54) * washBudget);
-        }
+        const overcastIntensity = weather.type === 'overcast' || cloudCover > 0.72
+            ? Math.max(weather.intensity * 0.72, cloudCover * 0.54) * washBudget
+            : 0;
+        const fogActive = fog > 0.04 || weather.type === 'fog';
+        const fogIntensity = fogActive
+            ? Math.max(fog, weather.type === 'fog' ? weather.intensity : 0) * legibility.fog
+            : 0;
+        this._drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity * washBudget);
 
-        if (fog > 0.04 || weather.type === 'fog') {
-            const fogIntensity = Math.max(fog, weather.type === 'fog' ? weather.intensity : 0) * legibility.fog;
-            this._drawFogWash(ctx, canvas, fogIntensity * washBudget);
+        if (fogActive) {
             this._drawFogBands(ctx, canvas, fogIntensity, phaseMs, seed, particleEnabled);
         }
 
         if (RAIN_TYPES.has(weather.type) || precipitation > 0.02) {
             const storm = weather.type === 'storm';
             const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * legibility.rain;
+            // This pass stays after the animated fog bands so rain grades them too.
             this._drawOvercast(ctx, canvas, Math.min(1, Math.max(cloudCover, weather.intensity) * (storm ? 0.56 : 0.42)) * washBudget);
             // Winter (Dec–Feb) swaps rain streaks for drifting snow — presentation
             // only; storm flash/lightning below still fires.
@@ -129,6 +135,47 @@ export class WeatherRenderer {
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
         this._rippleStampTimes.clear();
+        if (this._washStrip) {
+            this._washStrip.width = 0;
+            this._washStrip.height = 0;
+        }
+        this._washStrip = null;
+        this._washStripKey = '';
+    }
+
+    _drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity) {
+        const hasOvercast = clamp(overcastIntensity, 0, 1) * 0.14 > 0.005;
+        const hasFog = clamp(fogIntensity, 0, 1) * 0.12 > 0.005;
+        if (!hasOvercast) {
+            if (hasFog) this._drawFogWash(ctx, canvas, fogIntensity);
+            return;
+        }
+        if (!hasFog || typeof document === 'undefined') {
+            this._drawOvercast(ctx, canvas, overcastIntensity);
+            if (hasFog) this._drawFogWash(ctx, canvas, fogIntensity);
+            return;
+        }
+
+        // Both washes vary only vertically, so a 1px-wide strip preserves their
+        // source-over composition while replacing two full-canvas fills with one.
+        const height = Math.max(1, Math.round(canvas.height));
+        const key = `${height}|${overcastIntensity}|${fogIntensity}`;
+        if (!this._washStrip || this._washStrip.height !== height) {
+            this._washStrip = document.createElement('canvas');
+            this._washStrip.width = 1;
+            this._washStrip.height = height;
+            this._washStripKey = '';
+        }
+        if (this._washStripKey !== key) {
+            const stripCtx = this._washStrip.getContext('2d');
+            stripCtx.clearRect(0, 0, 1, height);
+            stripCtx.globalAlpha = 1;
+            stripCtx.globalCompositeOperation = 'source-over';
+            this._drawOvercast(stripCtx, this._washStrip, overcastIntensity);
+            this._drawFogWash(stripCtx, this._washStrip, fogIntensity);
+            this._washStripKey = key;
+        }
+        ctx.drawImage(this._washStrip, 0, 0, 1, height, 0, 0, canvas.width, canvas.height);
     }
 
     _drawOvercast(ctx, canvas, intensity) {

@@ -2,6 +2,27 @@
 
 ---
 
+## v0.27.0 — *Fleetfoot Keep* · Jul 23, 2026
+
+ClaudeVille now stays markedly smoother through crowded workdays and heavy rain without thinning the village, disabling weather, or lowering sprite quality. Repeated canvas work is reused where its pixels are identical, semantic crowd updates move off the per-frame path, and a deterministic benchmark makes World performance reproducible instead of anecdotal.
+
+**Storms spend less paint**
+- **Weather washes are reused.** The vertically varying overcast and fog grades render once into a one-pixel strip and stretch across the viewport, while live rain streaks, splashes, ripples, lightning, and moving fog keep their full animation.
+- **Trails fit their actual footprint.** Persisted paths cache only the cropped area containing visible trail points instead of allocating a full transparent viewport canvas, with pixel-identical output.
+- **Static atmosphere work stays static.** Immutable atmosphere asset descriptors and quieter frame bookkeeping remove repeated allocations without changing draw order or scene composition.
+
+**Crowds share the work**
+- **Equipment is rasterized once.** A bounded, scale-aware cache reuses pixel-identical Codex equipment layers across crowded scenes while arrival, archive, hand, and procedural weapon animation remains live.
+- **One crowd snapshot serves the frame.** Building occupancy, visit allocation, relationship reconciliation, and team plaza preferences reuse shared agent state on their existing semantic cadence instead of rebuilding it for every landmark or frame.
+- **Unchanged rosters stay quiet.** Identical two-second session snapshots refresh in-memory activity age without broadcasting full agent updates; minute-level age changes still reach the Dashboard and sidebar.
+
+**Performance you can reproduce**
+- **Deterministic World scenarios.** New 1, 10, 25, and 50-agent fixtures pin the camera, date, weather, render mode, and device scale for comparable clear and heavy-rain runs.
+- **FPS and frame costs are recorded together.** The benchmark reports app FPS, raw animation-frame percentiles, slow frames, frame failures, host load, and optional update/render segment profiles while counterbalancing run order.
+- **Stable-load release reference.** On the release workstation at 1600×1000 and DPR 1, median clear-weather FPS measured 60, 46, 40, and 33 for 1, 10, 25, and 50 working agents; heavy rain measured 29, 27, 24, and 22, with zero frame failures across all 24 runs.
+
+---
+
 ## v0.26.2 · Jul 22, 2026 — Hotfix
 
 ClaudeVille's pixel art now stays clean at every resting World zoom, including when the browser is displayed below 100%. Common 1080p layouts also render at native canvas resolution instead of passing through avoidable fractional resampling.

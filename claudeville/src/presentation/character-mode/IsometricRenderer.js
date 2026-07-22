@@ -513,11 +513,13 @@ export class IsometricRenderer {
         this._fastVignetteStampKey = '';
         this.lightGradientCache = new Map();
         this.lightFadeColorCache = new Map();
+        this._atmosphereEffectSpriteCache = new Map();
         this._lightFadeColorCacheEvictions = 0;
         this._frameLightSources = null;
         this.selectedAgent = null;
         this.onAgentSelect = null;
         this._chatMatchAccumulator = 250;
+        this._activeAgentsSnapshot = [];
         this._crowdBumpCooldowns = new Map();
         this._stationaryOverlapAccumulator = 0;
         this._rainSplashAccumulator = 0;
@@ -556,6 +558,7 @@ export class IsometricRenderer {
             byStage: {},
             paused: false,
         };
+        this._performanceSamples = null;
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
         for (let y = 0; y < MAP_SIZE; y++) {
@@ -1652,6 +1655,7 @@ export class IsometricRenderer {
         this._buildingPresenceMap.clear();
         this._emitterIntervalLastMs.clear();
         this.fantasyForestTreeCache.clear();
+        this._atmosphereEffectSpriteCache.clear();
         this.weatherRenderer?.dispose?.();
         this.skyRenderer?.detach?.();
         this.skyRenderer?.releaseCache?.();
@@ -2251,6 +2255,7 @@ export class IsometricRenderer {
 
     _updateVisitSystems(now = Date.now()) {
         const agents = Array.from(this.world?.agents?.values?.() || []);
+        this._activeAgentsSnapshot = agents;
         this.visitIntentManager?.reconcile?.(agents, now);
         this.visitTileAllocator?.updateContext?.({
             buildings: this.world?.buildings,
@@ -2998,11 +3003,22 @@ export class IsometricRenderer {
         const now = performance.now();
         const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
         this._lastFrameTime = now;
+        const profileStart = this._performanceSamples ? performance.now() : 0;
+        let renderStart = 0;
         let stage = 'update';
         try {
             this._update(dt);
+            if (this._performanceSamples) renderStart = performance.now();
             stage = 'render';
             this._render(dt);
+            if (this._performanceSamples) {
+                const completedAt = performance.now();
+                this._recordPerformanceSample({
+                    updateMs: renderStart - profileStart,
+                    renderMs: completedAt - renderStart,
+                    totalMs: completedAt - profileStart,
+                });
+            }
             stage = 'telemetry';
             this._trackFps(now);
             this._frameFailureStats.consecutive = 0;
@@ -3082,6 +3098,36 @@ export class IsometricRenderer {
             this._fpsFrames = 0;
             this._fpsWindowStart = now;
         }
+    }
+
+    startPerformanceProfile() {
+        this._performanceSamples = [];
+        this._frameTimingSamples?.clear?.();
+        return true;
+    }
+
+    stopPerformanceProfile() {
+        const profile = this.getPerformanceProfile();
+        this._performanceSamples = null;
+        return profile;
+    }
+
+    getPerformanceProfile() {
+        return {
+            enabled: Array.isArray(this._performanceSamples),
+            samples: this._performanceSamples ? [...this._performanceSamples] : [],
+            renderTimings: this._lastRenderStats?.timings || null,
+        };
+    }
+
+    _recordPerformanceSample(sample) {
+        if (!this._performanceSamples) return;
+        if (this._performanceSamples.length >= 600) this._performanceSamples.shift();
+        this._performanceSamples.push({
+            ...sample,
+            agentCount: this.agentSprites.size,
+            renderMode: this._lastRenderStats?.quality?.agentRenderMode || null,
+        });
     }
 
     _updateChatMatching() {
@@ -3176,16 +3222,23 @@ export class IsometricRenderer {
 
         // Chat matching only depends on session/tool state, not frame-perfect motion.
         this._chatMatchAccumulator += dt;
+        let slowSystemsTick = false;
         if (this._chatMatchAccumulator >= 250) {
             this._chatMatchAccumulator = 0;
+            slowSystemsTick = true;
             this._updateChatMatching();
             this.agentEventStream?.reconcileChatPairs?.(this.agentSprites);
         }
         const now = performance.now();
         const chronicleNow = Date.now();
-        const agents = this._updateVisitSystems(chronicleNow);
-        this.relationshipState?.reconcile?.({ agentSprites: this.agentSprites, now });
-        applyTeamPlazaPreferences(this.relationshipState, this.agentSprites);
+        // Visit allocation and relationship clustering share the same semantic cadence.
+        const agents = slowSystemsTick
+            ? this._updateVisitSystems(chronicleNow)
+            : this._activeAgentsSnapshot;
+        if (slowSystemsTick) {
+            this.relationshipState?.reconcile?.({ agentSprites: this.agentSprites, now });
+            applyTeamPlazaPreferences(this.relationshipState, this.agentSprites);
+        }
         this._pruneCrowdBumpCooldowns(now);
         // 2.4 — affinity proximity re-evaluates on a slow cadence; warmth
         // changes are gradual, so per-frame work would be wasted.
@@ -3758,7 +3811,6 @@ export class IsometricRenderer {
     _emitCrowdBumpFeedback(a, b, overlap = 0) {
         const now = performance.now();
         const key = [a.agent?.id || a.x, b.agent?.id || b.x].sort().join('|');
-        this._pruneCrowdBumpCooldowns(now);
         if ((this._crowdBumpCooldowns.get(key) || 0) > now) return;
         while (this._crowdBumpCooldowns.size >= CROWD_BUMP_COOLDOWN_LIMIT) {
             this._crowdBumpCooldowns.delete(this._crowdBumpCooldowns.keys().next().value);
@@ -6131,10 +6183,14 @@ export class IsometricRenderer {
 
     _getAtmosphereEffectSprite(id) {
         if (!id || !this.assets?.has?.(id)) return null;
+        const cached = this._atmosphereEffectSpriteCache.get(id);
+        if (cached) return cached;
         const img = this.assets.get(id);
         if (!img) return null;
         const dims = this.assets.getDims(id) || { w: img.width, h: img.height };
-        return { img, dims };
+        const sprite = { img, dims };
+        this._atmosphereEffectSpriteCache.set(id, sprite);
+        return sprite;
     }
 
     _drawAtmosphereEffectSprite(ctx, id, {

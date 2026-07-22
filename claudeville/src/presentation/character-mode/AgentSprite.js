@@ -136,6 +136,13 @@ const PROCESSED_SPRITE_CACHE = new Map();
 const PROCESSED_SPRITE_CACHE_ENTRY_LIMIT = 24;
 const PROCESSED_SPRITE_CACHE_PIXEL_LIMIT = 12_500_000;
 let processedSpriteCachePixels = 0;
+const CODEX_EQUIPMENT_CACHE = new Map();
+const CODEX_EQUIPMENT_CACHE_ENTRY_LIMIT = 96;
+const CODEX_EQUIPMENT_CACHE_PIXEL_LIMIT = 2_000_000;
+const CODEX_EQUIPMENT_SCALE_STABLE_MS = 120;
+let codexEquipmentCachePixels = 0;
+let codexEquipmentRasterScale = 0;
+let codexEquipmentRasterScaleSince = 0;
 // Selection-ring asset recolored per provider accent; keyed by accent color.
 const TINTED_SELECTION_RING_CACHE = new Map();
 const TINTED_SELECTION_RING_CACHE_LIMIT = 24;
@@ -322,6 +329,8 @@ export class AgentSprite {
             processedSpritePixels: processedSpriteCachePixels,
             processedSpriteEntryLimit: PROCESSED_SPRITE_CACHE_ENTRY_LIMIT,
             processedSpritePixelLimit: PROCESSED_SPRITE_CACHE_PIXEL_LIMIT,
+            codexEquipmentAssets: CODEX_EQUIPMENT_CACHE.size,
+            codexEquipmentPixels: codexEquipmentCachePixels,
             tintedSelectionRings: TINTED_SELECTION_RING_CACHE.size,
             tintedSelectionRingPixels,
             toolClassifications: TOOL_CLASSIFICATION_CACHE.size,
@@ -333,9 +342,13 @@ export class AgentSprite {
         // replacement can overlap briefly with the previous renderer, and the
         // incoming sprites may already reference one of these shared canvases.
         PROCESSED_SPRITE_CACHE.clear();
+        CODEX_EQUIPMENT_CACHE.clear();
         TINTED_SELECTION_RING_CACHE.clear();
         TOOL_CLASSIFICATION_CACHE.clear();
         processedSpriteCachePixels = 0;
+        codexEquipmentCachePixels = 0;
+        codexEquipmentRasterScale = 0;
+        codexEquipmentRasterScaleSince = 0;
     }
 
     constructor(agent, {
@@ -2275,7 +2288,15 @@ export class AgentSprite {
             ctx.translate(-drawX, -drawY);
             arrivalPushed = true;
         }
-        this._drawCodexEquipment(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'back');
+        const frameGeometry = {
+            dx,
+            dy,
+            bounds,
+            cellSize,
+            drawScale,
+            cacheEquipment: arrivalProgress <= 0 && archiveProgress <= 0,
+        };
+        this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
         this._drawSpriteSilhouette(ctx, cell, dx, dy, drawScale);
         ctx.drawImage(
             this.spriteCanvas,
@@ -2287,7 +2308,7 @@ export class AgentSprite {
         if (this.agent?.status === AgentStatus.RATE_LIMITED) {
             this._drawFrozenTint(ctx, cell, dx, dy, drawScale);
         }
-        this._drawCodexEquipment(ctx, identity, { dx, dy, bounds, cellSize, drawScale }, 'front');
+        this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
         if (arrivalPushed) ctx.restore();
         if (arrivalProgress > 0) this._drawArrivalRuneRing(ctx, arrivalProgress);
         this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
@@ -3331,6 +3352,7 @@ export class AgentSprite {
 
         const directionKey = DIRECTIONS[this.direction] || 's';
         const geometry = this._codexWeaponGeometry(frameGeometry, directionKey);
+        const useCache = frameGeometry.cacheEquipment !== false;
         const heavyGearBaked = identity?.codexHeavyGearBaked && this.assets?.has?.(identity.spriteId);
         const heavyArmor = !heavyGearBaked && (equipment === 'greatsword' || equipment === 'polearm');
         const warlord = equipment === 'polearm';
@@ -3345,7 +3367,7 @@ export class AgentSprite {
             }
 
             if (assetDef && assetDrawsBehindBody) {
-                this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset');
+                this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset', useCache);
             } else if (equipment === 'engineerWrench' && this._weaponBackCarryDirection(directionKey)) {
                 this._drawWeaponAt(ctx, geometry.backCarry, geometry.drawScale, () => this._drawCodexBackWrench(ctx));
             }
@@ -3360,8 +3382,8 @@ export class AgentSprite {
         }
 
         if (assetDef) {
-            if (!assetDrawsBehindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset');
-            this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands');
+            if (!assetDrawsBehindBody) this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'asset', useCache);
+            this._drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, 'hands', useCache);
             return;
         }
 
@@ -3440,12 +3462,31 @@ export class AgentSprite {
         return normalized;
     }
 
-    _drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, part = 'asset') {
+    _drawCodexAssetEquipment(ctx, assetDef, geometry, directionKey, part = 'asset', useCache = true) {
         const poseName = this._weaponPoseName(assetDef, directionKey);
         const pose = geometry[poseName] || geometry.rightHand;
         if (!pose) return;
 
         if (part === 'asset') {
+            const rasterScale = useCache ? this._stableCodexEquipmentRasterScale(ctx) : null;
+            const cached = rasterScale
+                ? this._cachedCodexEquipmentAsset(assetDef, pose, geometry.drawScale, rasterScale)
+                : null;
+            if (cached) {
+                ctx.imageSmoothingEnabled = false;
+                ctx.drawImage(
+                    cached.canvas,
+                    0,
+                    0,
+                    cached.canvas.width,
+                    cached.canvas.height,
+                    Math.round(pose.x) + cached.offsetX / rasterScale,
+                    Math.round(pose.y) + cached.offsetY / rasterScale,
+                    cached.canvas.width / rasterScale,
+                    cached.canvas.height / rasterScale,
+                );
+                return;
+            }
             this._drawWeaponAt(ctx, {
                 ...pose,
                 scale: (pose.scale || 1) * (assetDef.scale || 1),
@@ -3457,6 +3498,90 @@ export class AgentSprite {
             if (assetDef.hands === 'double') this._drawWeaponGripHands(ctx, assetDef.handSpacing || 11, assetDef.handVector);
             else this._drawWeaponGripHand(ctx);
         });
+    }
+
+    _stableCodexEquipmentRasterScale(ctx) {
+        const transform = ctx.getTransform?.();
+        const scale = Math.abs(transform?.a || 0);
+        if (!scale || transform.b !== 0 || transform.c !== 0 || Math.abs(Math.abs(transform.d) - scale) > 1e-9) {
+            return null;
+        }
+        const now = performance.now();
+        if (scale !== codexEquipmentRasterScale) {
+            codexEquipmentRasterScale = scale;
+            codexEquipmentRasterScaleSince = now;
+            return null;
+        }
+        return now - codexEquipmentRasterScaleSince >= CODEX_EQUIPMENT_SCALE_STABLE_MS ? scale : null;
+    }
+
+    _cachedCodexEquipmentAsset(assetDef, pose, drawScale, rasterScale) {
+        const poseScale = pose.scale || 1;
+        const scale = drawScale * poseScale * (assetDef.scale || 1) * rasterScale;
+        const angle = pose.angle || 0;
+        const flipX = Boolean(pose.flipX);
+        const cacheKey = [
+            this.assets?.assetVersion || '_',
+            assetDef.id,
+            this.assets?.has?.(assetDef.id) ? 'asset' : `fallback:${assetDef.fallback || '_'}`,
+            flipX ? 1 : 0,
+            rasterScale,
+            scale,
+            angle,
+        ].join('|');
+        const existing = CODEX_EQUIPMENT_CACHE.get(cacheKey);
+        if (existing) return existing;
+
+        const dims = this.assets?.getDims?.(assetDef.id) || { w: 112, h: 112 };
+        const [anchorX, anchorY] = this._codexWeaponAssetAnchor(assetDef);
+        const sourceBounds = {
+            minX: -anchorX,
+            minY: -anchorY,
+            maxX: dims.w - anchorX,
+            maxY: dims.h - anchorY,
+        };
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const points = [
+            [sourceBounds.minX, sourceBounds.minY],
+            [sourceBounds.maxX, sourceBounds.minY],
+            [sourceBounds.maxX, sourceBounds.maxY],
+            [sourceBounds.minX, sourceBounds.maxY],
+        ].map(([x, y]) => {
+            const rotatedX = (cos * x - sin * y) * scale;
+            return [flipX ? -rotatedX : rotatedX, (sin * x + cos * y) * scale];
+        });
+        const margin = 2;
+        const minX = Math.floor(Math.min(...points.map(point => point[0]))) - margin;
+        const minY = Math.floor(Math.min(...points.map(point => point[1]))) - margin;
+        const maxX = Math.ceil(Math.max(...points.map(point => point[0]))) + margin;
+        const maxY = Math.ceil(Math.max(...points.map(point => point[1]))) + margin;
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, maxX - minX);
+        canvas.height = Math.max(1, maxY - minY);
+        const cacheCtx = canvas.getContext('2d');
+        cacheCtx.imageSmoothingEnabled = false;
+        cacheCtx.translate(-minX, -minY);
+        cacheCtx.scale(flipX ? -1 : 1, 1);
+        cacheCtx.scale(scale, scale);
+        cacheCtx.rotate(angle);
+        this._drawCodexWeaponAssetImage(cacheCtx, assetDef);
+
+        const cached = { canvas, offsetX: minX, offsetY: minY };
+        CODEX_EQUIPMENT_CACHE.set(cacheKey, cached);
+        codexEquipmentCachePixels += canvas.width * canvas.height;
+        while (
+            CODEX_EQUIPMENT_CACHE.size > CODEX_EQUIPMENT_CACHE_ENTRY_LIMIT
+            || codexEquipmentCachePixels > CODEX_EQUIPMENT_CACHE_PIXEL_LIMIT
+        ) {
+            const oldestKey = CODEX_EQUIPMENT_CACHE.keys().next().value;
+            if (oldestKey == null) break;
+            const oldest = CODEX_EQUIPMENT_CACHE.get(oldestKey);
+            CODEX_EQUIPMENT_CACHE.delete(oldestKey);
+            codexEquipmentCachePixels -= (oldest?.canvas?.width || 0) * (oldest?.canvas?.height || 0);
+        }
+        codexEquipmentCachePixels = Math.max(0, codexEquipmentCachePixels);
+        return CODEX_EQUIPMENT_CACHE.get(cacheKey) || null;
     }
 
     _drawCodexWeaponAssetImage(ctx, assetDef) {

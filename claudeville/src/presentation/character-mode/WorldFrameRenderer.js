@@ -792,7 +792,7 @@ function buildRenderStats(renderer, { drawableStats, cullingStats, harborPending
 }
 
 function beginFrameTiming(renderer) {
-    if (!renderer?.debugOverlay?.enabled) return null;
+    if (!renderer?.debugOverlay?.enabled && !renderer?._performanceSamples) return null;
     const now = performance.now();
     return { start: now, last: now, segments: [] };
 }

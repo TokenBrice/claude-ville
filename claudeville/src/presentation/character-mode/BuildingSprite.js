@@ -1232,21 +1232,24 @@ export class BuildingSprite {
     // Ported from BuildingRenderer.drawBubbles (legacy file lines 3215-3256),
     // swapping `style.wallHeight` for sprite `dims.h` to anchor above the sprite top.
     drawBubbles(ctx, world) {
+        const occupants = this.agentSprites?.length
+            ? this.agentSprites.map((sprite) => {
+                const agent = sprite.agent;
+                const position = this._spriteTilePosition(sprite);
+                return { agent, positionedAgent: agent && position ? { ...agent, position } : null };
+            })
+            : Array.from(world.agents.values()).map((agent) => ({
+                agent,
+                positionedAgent: agent.position ? { ...agent, position: agent.position } : null,
+            }));
+
         for (const b of this.buildings) {
             const agentsInBuilding = [];
-            const occupants = this.agentSprites?.length
-                ? this.agentSprites.map((sprite) => ({
-                    agent: sprite.agent,
-                    position: this._spriteTilePosition(sprite),
-                }))
-                : Array.from(world.agents.values()).map((agent) => ({ agent, position: agent.position }));
-
             for (const occupant of occupants) {
-                if (!occupant.agent || !occupant.position) continue;
-                const agentAtPosition = { ...occupant.agent, position: occupant.position };
+                if (!occupant.positionedAgent) continue;
                 const isVisiting = typeof b.isAgentVisiting === 'function'
-                    ? b.isAgentVisiting(agentAtPosition)
-                    : b.containsPoint(occupant.position.tileX, occupant.position.tileY);
+                    ? b.isAgentVisiting(occupant.positionedAgent)
+                    : b.containsPoint(occupant.positionedAgent.position.tileX, occupant.positionedAgent.position.tileY);
                 if (isVisiting) {
                     agentsInBuilding.push(occupant.agent);
                 }

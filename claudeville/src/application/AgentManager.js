@@ -21,6 +21,7 @@ export class AgentManager {
         this.dataSource = dataSource;
         this._teamMembers = new Map();
         this._usageGetter = null;
+        this._agentSignatures = new Map();
     }
 
     setUsageGetter(fn) {
@@ -84,6 +85,7 @@ export class AgentManager {
         const toRemove = [];
         for (const [id, agent] of this.world.agents) {
             if (!currentIds.has(id)) {
+                this._agentSignatures.delete(id);
                 if (agent.status === AgentStatus.IDLE) {
                     // Remove if already IDLE
                     toRemove.push(id);
@@ -101,11 +103,20 @@ export class AgentManager {
     _upsertAgent(session, teamMembers) {
         const payload = this._sessionToAgentPayload(session, teamMembers);
         const { id } = payload;
+        const signature = this._agentSignature(payload);
 
         if (this.world.agents.has(id)) {
+            if (this._agentSignatures.get(id) === signature) {
+                const agent = this.world.agents.get(id);
+                agent.activityAgeMs = payload.activityAgeMs;
+                agent.lastActive = Date.now();
+                return;
+            }
+            this._agentSignatures.set(id, signature);
             const { id: _id, projectPath: _projectPath, provider: _provider, lastMessage: _lastMessage, ...agentData } = payload;
             this.world.updateAgent(id, agentData);
         } else {
+            this._agentSignatures.set(id, signature);
             const agent = new Agent(payload);
             // Fallback (non-provider) names come from a shared pool; probe past
             // names already held by live agents so busy villages stay distinct.
@@ -114,6 +125,14 @@ export class AgentManager {
             }
             this.world.addAgent(agent);
         }
+    }
+
+    _agentSignature(payload) {
+        const { activityAgeMs, ...stablePayload } = payload;
+        const activityAgeMinute = Number.isFinite(activityAgeMs)
+            ? Math.floor(activityAgeMs / 60_000)
+            : null;
+        return JSON.stringify({ ...stablePayload, activityAgeMinute });
     }
 
     _usedAgentNames() {

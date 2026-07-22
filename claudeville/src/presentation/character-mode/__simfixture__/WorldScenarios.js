@@ -413,6 +413,34 @@ export const DENSE_100_AGENTS_SCENARIO = {
     },
 };
 
+function buildPerformanceScenario(count) {
+    const agents = buildDenseAgents(count).map((agent) => ({
+        ...agent,
+        status: AgentStatus.WORKING,
+        currentTool: agent.lastTool,
+        currentToolInput: agent.lastToolInput,
+    }));
+    return {
+        id: `perf-${count}-agents`,
+        label: `Performance ${count} agents`,
+        description: `${count} deterministic active agent${count === 1 ? '' : 's'} with no timeline for steady-state performance measurement.`,
+        timeBase: SCENARIO_TIME_BASE,
+        agents,
+        timeline: [],
+        metadata: {
+            qaTags: ['performance', 'active-agents', `agent-count-${count}`],
+            expectedAgentCount: count,
+            expectedWorkingCount: count,
+            camera: { centerTile: { tileX: 20, tileY: 24 }, zoom: 1.72 },
+        },
+    };
+}
+
+export const PERF_1_AGENTS_SCENARIO = buildPerformanceScenario(1);
+export const PERF_10_AGENTS_SCENARIO = buildPerformanceScenario(10);
+export const PERF_25_AGENTS_SCENARIO = buildPerformanceScenario(25);
+export const PERF_50_AGENTS_SCENARIO = buildPerformanceScenario(50);
+
 export const PARENT_SUBAGENTS_SCENARIO = {
     id: 'parent-subagents',
     label: 'Parent and subagents',
@@ -996,6 +1024,10 @@ export const WORLD_SCENARIOS = [
     ONE_WORKING_AGENT_SCENARIO,
     DENSE_AGENTS_SCENARIO,
     DENSE_100_AGENTS_SCENARIO,
+    PERF_1_AGENTS_SCENARIO,
+    PERF_10_AGENTS_SCENARIO,
+    PERF_25_AGENTS_SCENARIO,
+    PERF_50_AGENTS_SCENARIO,
     PARENT_SUBAGENTS_SCENARIO,
     TEAM_GATHER_SCENARIO,
     MIXED_TOOLS_SCENARIO,
