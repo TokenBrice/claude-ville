@@ -2,12 +2,11 @@ const MIN_BACKING_DPR = 0.25;
 const MAX_DEVICE_DPR = 1;
 // Plan 1.9 — pixel-uniform scaling, revised: snapping the backing DPR to an
 // integer 1/dpr step only happens when it is nearly free. The original
-// floor-only snap made every viewport above ~1.5M CSS px (1080p and up, the
-// most common desktop resolutions) drop from ~0.93 to 0.5, and the browser
-// then upscaled the canvas 2x with nearest-neighbor — users read that as
-// "pixelated". A mildly non-uniform 1.07x upscale is invisible; a 2x one is
-// not. So: snap only when the step keeps at least KEEP_RATIO of the
-// budget-capped resolution; otherwise keep the fractional capped value.
+// floor-only snap made every viewport above the main-canvas budget drop from
+// near-native resolution to 0.5, and the browser then upscaled the canvas 2x
+// with nearest-neighbor. Users read that as "pixelated". So: snap only when
+// the step keeps at least KEEP_RATIO of the budget-capped resolution;
+// otherwise keep the fractional capped value.
 const DPR_STEPS = Object.freeze([MAX_DEVICE_DPR, 0.5, MIN_BACKING_DPR]);
 const QUANTIZE_KEEP_RATIO = 0.85;
 const SCREEN_SURFACE_COUNT = 4; // visible canvas, sky cache, trail cache, atmosphere cache
@@ -17,7 +16,10 @@ const AUX_CACHE_PIXEL_RESERVE = 250_000;
 
 export const CANVAS_BUDGET = Object.freeze({
     maxRendererCanvasPixels: 25_000_000,
-    maxMainCanvasPixels: 1_500_000,
+    // Keep the visible world at native resolution through the common 1080p
+    // desktop range. Above this, the aggregate cache budget still scales the
+    // renderer down progressively instead of risking an abrupt memory spike.
+    maxMainCanvasPixels: 2_000_000,
     maxScreenCachePixels: 8_500_000,
     maxWorldCachePixels: WORLD_CACHE_PIXEL_RESERVE,
     maxLightCachePixels: LIGHT_CACHE_PIXEL_RESERVE,

@@ -2,6 +2,21 @@
 
 ---
 
+## v0.26.2 · Jul 22, 2026 — Hotfix
+
+ClaudeVille's pixel art now stays clean at every resting World zoom, including when the browser is displayed below 100%. Common 1080p layouts also render at native canvas resolution instead of passing through avoidable fractional resampling.
+
+**Crisp at every resting zoom**
+- **Display-pixel-aligned camera tiers.** World zoom levels adapt to sub-100% browser scaling so each authored sprite pixel occupies exactly one, two, or three physical pixels after the camera settles.
+- **Every camera path agrees.** Wheel and keyboard zoom, agent follow, cinematic framing, resize recovery, auto-framing, and scripted capture poses all resolve through the same aligned zoom tiers.
+- **Live browser scaling stays stable.** Changing browser zoom remaps current and in-flight camera poses without losing the chosen tier or leaving the World at a fractional resting scale.
+
+**More native-resolution coverage**
+- **1080p stays native.** The visible-canvas budget rises from 1.5 to 2 million pixels, covering common full-HD World layouts without downsampling.
+- **Large canvases remain guarded.** Higher resolutions still scale progressively within the aggregate renderer budget, preserving the existing memory and frame-rate protections.
+
+---
+
 ## v0.26.1 — *Firm Foundations* · Jul 18, 2026
 
 ClaudeVille's landmarks now belong to the terrain beneath them. Every World building has an explicit grounding contract, so foundations, thresholds, shadows, and waterfront supports follow the site instead of reading as raised sprite slabs.

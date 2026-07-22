@@ -27,22 +27,31 @@ const TOUR_STOP_ORDER = Object.freeze([
     'portal', 'mine', 'forge', 'taskboard',
 ]);
 
-// Resting steps for wheel/keyboard zoom. The 150ms tween may pass through
-// fractional values mid-gesture, but the camera must SETTLE on integers so the
-// nearest-neighbor canvas upscale stays pixel-uniform (plan 1.9). Fractional
-// half-steps were a deliberate addition (commit 8e343a3) — restore
-// [1, 1.5, 2, 2.5, 3] here if mid-range framing ever needs re-tuning.
-const ZOOM_STEPS = Object.freeze([1, 2, 3]);
+// Logical resting tiers for wheel/keyboard zoom. At browser scales below 100%,
+// each tier is divided by the display DPR so one authored world pixel still
+// occupies an integer number of physical pixels. The 150ms tween may pass
+// through fractional values, but every settled pose is display-pixel aligned.
+const NOMINAL_ZOOM_STEPS = Object.freeze([1, 2, 3]);
+
+function displayPixelZoomScale() {
+    const dpr = Math.max(0.25, Number(globalThis.window?.devicePixelRatio) || 1);
+    return dpr < 1 ? 1 / dpr : 1;
+}
+
+function displayPixelZoomSteps(scale) {
+    return Object.freeze(NOMINAL_ZOOM_STEPS.map((step) => step * scale));
+}
 
 export class Camera {
     constructor(canvas) {
         this.canvas = canvas;
         this.x = 0;
         this.y = 0;
-        this.zoom = 1;
-        this.minZoom = 1;
-        this.maxZoom = 3;
-        this.zoomSteps = ZOOM_STEPS;
+        this._displayPixelZoomScale = displayPixelZoomScale();
+        this.zoomSteps = displayPixelZoomSteps(this._displayPixelZoomScale);
+        this.minZoom = this.zoomSteps[0];
+        this.maxZoom = this.zoomSteps[this.zoomSteps.length - 1];
+        this.zoom = this.minZoom;
         this._zoomAnimation = null;
         this._reducedMotion = false;
         try {
@@ -117,7 +126,7 @@ export class Camera {
         const tx = 33, ty = 18;
         const screen = tileToWorld(tx, ty);
         this._idleDrift = null;
-        this.zoom = 1;
+        this.zoom = this.minZoom;
         if (!this.canvas) return;
         this.x = -screen.x + this._viewportWidth() / (2 * this.zoom);
         this.y = -screen.y + this._viewportHeight() / (2 * this.zoom);
@@ -125,12 +134,36 @@ export class Camera {
     }
 
     onViewportResize() {
+        this._syncDisplayPixelZoom();
         this._clampToBounds();
     }
 
+    _syncDisplayPixelZoom() {
+        const nextScale = displayPixelZoomScale();
+        const previousScale = this._displayPixelZoomScale || 1;
+        if (Math.abs(nextScale - previousScale) < 1e-6) return false;
+
+        const ratio = nextScale / previousScale;
+        this._displayPixelZoomScale = nextScale;
+        this.zoomSteps = displayPixelZoomSteps(nextScale);
+        this.minZoom = this.zoomSteps[0];
+        this.maxZoom = this.zoomSteps[this.zoomSteps.length - 1];
+        this.zoom *= ratio;
+
+        // Preserve in-flight camera motion across a live browser-zoom change.
+        // CSS viewport dimensions change by the inverse ratio, so x/y remain
+        // centered while every stored zoom endpoint needs the same remapping.
+        for (const motion of [this._zoomAnimation, this._snapZoom, this._directorGlide]) {
+            if (!motion) continue;
+            if (Number.isFinite(motion.fromZoom)) motion.fromZoom *= ratio;
+            if (Number.isFinite(motion.toZoom)) motion.toZoom *= ratio;
+        }
+        return true;
+    }
+
     // Frame an axis-aligned world box so it fits the viewport, centered on the
-    // box, at the largest *integer* zoom (pixel-perfect) up to `maxZoom`. Used
-    // for the initial "overview of my active agents" framing.
+    // box, at the largest display-pixel-aligned zoom up to `maxZoom`. Used for
+    // the initial "overview of my active agents" framing.
     fitToWorldBox(box, { paddingPx = 96, maxZoom = 2, owner = 'system', composition = null } = {}) {
         const pose = this._poseForWorldBox(box, { paddingPx, maxZoom, composition });
         if (!pose) return;
@@ -147,19 +180,61 @@ export class Camera {
         this._clampToBounds();
     }
 
-    // #21 — solve the largest integer zoom (pixel-perfect) that fits a world box,
-    // shared by fitToWorldBox and the director glide so framing stays consistent.
+    // #21 — solve the largest resting zoom that fits a world box, shared by
+    // fitToWorldBox and the director glide so framing stays consistent.
     _zoomForWorldBox(box, paddingPx = 96, maxZoom = 2) {
         const w = this._viewportWidth();
         const h = this._viewportHeight();
         if (!w || !h || !box) return this.minZoom;
         const boxW = Math.max(1, box.maxX - box.minX);
         const boxH = Math.max(1, box.maxY - box.minY);
-        const hi = Math.min(Math.floor(maxZoom), this.maxZoom);
-        for (let z = hi; z >= this.minZoom; z--) {
+        const hi = this._zoomStepIndexForLimit(maxZoom);
+        for (let index = hi; index >= 0; index--) {
+            const z = this.zoomSteps[index];
             if (boxW * z + paddingPx * 2 <= w && boxH * z + paddingPx * 2 <= h) return z;
         }
         return this.minZoom;
+    }
+
+    _zoomStepIndexForLimit(maxZoom = 2) {
+        const limit = Number(maxZoom);
+        if (!Number.isFinite(limit)) return this.zoomSteps.length - 1;
+
+        // Integer call-site limits are logical tiers. Non-integer limits are
+        // accepted for capture/debug callers that already hold a camera zoom.
+        const nominalIndex = NOMINAL_ZOOM_STEPS.findIndex((step) => Math.abs(step - limit) < 1e-6);
+        if (nominalIndex >= 0) return nominalIndex;
+
+        for (let index = this.zoomSteps.length - 1; index >= 0; index--) {
+            if (this.zoomSteps[index] <= limit + 1e-6) return index;
+        }
+        return 0;
+    }
+
+    _maxZoomForLimit(maxZoom = 2) {
+        return this.zoomSteps[this._zoomStepIndexForLimit(maxZoom)];
+    }
+
+    resolveRestingZoom(zoom) {
+        const requested = Number(zoom);
+        if (!Number.isFinite(requested)) return this.minZoom;
+
+        const aligned = this.zoomSteps.find((step) => Math.abs(step - requested) < 1e-6);
+        if (aligned != null) return aligned;
+        const nominalIndex = NOMINAL_ZOOM_STEPS.findIndex((step) => Math.abs(step - requested) < 1e-6);
+        if (nominalIndex >= 0) return this.zoomSteps[nominalIndex];
+        return this.zoomSteps.reduce((nearest, step) => (
+            Math.abs(step - requested) < Math.abs(nearest - requested) ? step : nearest
+        ), this.minZoom);
+    }
+
+    currentZoomTier() {
+        const currentIndex = this.zoomSteps.reduce((nearestIndex, step, index) => (
+            Math.abs(step - this.zoom) < Math.abs(this.zoomSteps[nearestIndex] - this.zoom)
+                ? index
+                : nearestIndex
+        ), 0);
+        return NOMINAL_ZOOM_STEPS[currentIndex];
     }
 
     // #21 — start a director glide to frame `box`. Reduced motion (or a missing
@@ -329,15 +404,16 @@ export class Camera {
         this._cameraOwner = 'follow';
         this.followTarget = sprite;
         this._momentum = null;
-        const farZoomedOut = this.zoom < 1.5;
+        const detailZoom = this.zoomSteps[1] || this.maxZoom;
+        const farZoomedOut = this.zoom < detailZoom - 1e-6;
         if (this._reducedMotion) {
-            if (farZoomedOut) this._setZoomAboutCenter(2);
+            if (farZoomedOut) this._setZoomAboutCenter(detailZoom);
             return;
         }
         this._followEase = { fromX: this.x, fromY: this.y, elapsed: 0, duration: 650 };
         if (farZoomedOut) {
             this._zoomAnimation = null;
-            this._snapZoom = { fromZoom: this.zoom, toZoom: 2, elapsed: 0, duration: 380 };
+            this._snapZoom = { fromZoom: this.zoom, toZoom: detailZoom, elapsed: 0, duration: 380 };
         }
     }
 
@@ -622,7 +698,10 @@ export class Camera {
         const dx = pose.x - this.x;
         const dy = pose.y - this.y;
         const screenDistance = Math.hypot(dx, dy) * Math.max(0.1, this.zoom || 1);
-        if (screenDistance <= deadzonePx && Math.abs(pose.zoom - this.zoom) < 0.01) return false;
+        if (screenDistance <= deadzonePx && Math.abs(pose.zoom - this.zoom) < 0.01) {
+            if (Math.abs(pose.zoom - this.zoom) > 1e-6) this._setZoomAboutCenter(pose.zoom);
+            return false;
+        }
 
         const eased = 1 - Math.exp(-frameDt / Math.max(1, stiffnessMs));
         const maxWorldStep = Math.max(1, maxSpeedPxPerMs * frameDt / Math.max(0.1, this.zoom || 1));
@@ -714,7 +793,8 @@ export class Camera {
         zoomHysteresis = 0.85,
         allowZoomIn = true,
     } = {}) {
-        const current = Math.max(this.minZoom, Math.min(this.zoom || this.minZoom, Math.min(maxZoom, this.maxZoom)));
+        const maxAllowedZoom = this._maxZoomForLimit(maxZoom);
+        const current = Math.max(this.minZoom, Math.min(this.zoom || this.minZoom, maxAllowedZoom));
         const boxW = Math.max(1, box.maxX - box.minX);
         const boxH = Math.max(1, box.maxY - box.minY);
         const w = this._viewportWidth();

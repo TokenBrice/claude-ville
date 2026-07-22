@@ -1946,7 +1946,8 @@ export class IsometricRenderer {
         if (!this.camera) return false;
         const nextZoom = Number(zoom);
         if (Number.isFinite(nextZoom) && nextZoom > 0) {
-            this.camera.zoom = Math.max(this.camera.minZoom || 1, Math.min(this.camera.maxZoom || 3, nextZoom));
+            this.camera.zoom = this.camera.resolveRestingZoom?.(nextZoom)
+                ?? Math.max(this.camera.minZoom || 1, Math.min(this.camera.maxZoom || 3, nextZoom));
             this.camera._zoomAnimation = null;
         }
 

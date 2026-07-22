@@ -495,12 +495,11 @@ export class App {
             }
             if (this.renderer && this.renderer.camera) {
                 const cam = this.renderer.camera;
+                cam.onViewportResize();
                 // Re-frame to the live village on relayout, unless the user has
                 // taken manual control of the camera or is following an agent.
                 if (!cam._userAdjusted && !cam.followTarget && typeof this.renderer.frameContent === 'function') {
                     this.renderer.frameContent();
-                } else {
-                    cam.onViewportResize();
                 }
             }
         };
