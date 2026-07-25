@@ -4,10 +4,11 @@ import { formatCost, formatNumber } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
 
 export class TopBar {
-    constructor(world, { modal, attention } = {}) {
+    constructor(world, { modal, attention, chronicle } = {}) {
         this.world = world;
         this.modal = modal || null;
         this.attention = attention || null;
+        this.chronicle = chronicle || null;
         this.els = {
             root: document.getElementById('topbar'),
             tokens: document.getElementById('statTokens'),
@@ -28,6 +29,7 @@ export class TopBar {
             soundVolume: document.getElementById('topbarSoundVolume'),
             cinemaToggle: document.getElementById('topbarCinemaToggle'),
             alertsToggle: document.getElementById('topbarAlertsToggle'),
+            chronicleBtn: document.getElementById('topbarChronicle'),
         };
         this.timeInterval = null;
         this._fpsSamples = [];
@@ -43,6 +45,7 @@ export class TopBar {
         });
         this._initCinemaToggle();
         this._initAttentionControls();
+        this._initChronicleButton();
 
         this._onUpdate = () => this.render();
         eventBus.on('agent:added', this._onUpdate);
@@ -153,6 +156,18 @@ export class TopBar {
             if (agent) event.preventDefault();
         };
         document.addEventListener('keydown', this._onAttentionKey);
+    }
+
+    _initChronicleButton() {
+        const btn = this.els.chronicleBtn;
+        if (!btn) return;
+        if (!this.chronicle) { btn.hidden = true; return; }
+        this._onChronicleClick = () => {
+            this.chronicle.open().catch((err) => {
+                console.warn('[TopBar] Chronicle unavailable:', err.message);
+            });
+        };
+        btn.addEventListener('click', this._onChronicleClick);
     }
 
     render() {
@@ -458,6 +473,9 @@ export class TopBar {
             this.els.alertsToggle.removeEventListener('click', this._onAlertsClick);
         }
         if (this._onAttentionKey) document.removeEventListener('keydown', this._onAttentionKey);
+        if (this._onChronicleClick && this.els.chronicleBtn) {
+            this.els.chronicleBtn.removeEventListener('click', this._onChronicleClick);
+        }
         document.body?.classList.remove('cv-offline', 'cv-reconnect-sweep');
         this._destroyPromise = Promise.resolve(this.audio?.destroy?.());
         this.audio = null;

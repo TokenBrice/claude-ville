@@ -271,3 +271,89 @@ body.cv-panel-open .toast-container {
     padding: 0 3px;
     border-radius: 2px;
 }
+
+/* ── Village Chronicle: the day's recap ─────────────────────────────────
+   A ledger of counts over a newest-first timeline. Deliberately quiet — the
+   Chronicle is read on purpose, so it never competes with the live view. */
+
+.chronicle__opening {
+    font-family: var(--font-display);
+    font-size: 10px;
+    line-height: 1.7;
+    color: var(--cv-gold-soft);
+    margin: 0 0 12px;
+}
+
+.chronicle__ledger {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    background: rgba(199, 157, 76, 0.18);
+    border: 1px solid rgba(199, 157, 76, 0.28);
+    border-radius: 3px;
+    margin-bottom: 12px;
+}
+
+.chronicle__stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 8px 10px;
+    background: rgba(25, 17, 15, 0.9);
+}
+
+.chronicle__stat-label {
+    font-family: var(--font-display);
+    font-size: 8px;
+    letter-spacing: 1px;
+    color: rgba(187, 161, 122, 0.7);
+}
+
+.chronicle__stat-value {
+    font-family: var(--font-display);
+    font-size: 13px;
+    color: var(--cv-gold-bright);
+}
+
+.chronicle__note {
+    font-size: 11px;
+    color: rgba(187, 161, 122, 0.82);
+    margin: 0 0 12px;
+}
+
+.chronicle__timeline {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border-top: 1px solid rgba(199, 157, 76, 0.2);
+}
+
+.chronicle__entry {
+    display: grid;
+    grid-template-columns: 42px 16px 1fr;
+    align-items: baseline;
+    gap: 6px;
+    padding: 5px 2px;
+    font-size: 11px;
+    color: var(--cv-tan);
+    border-bottom: 1px solid rgba(199, 157, 76, 0.1);
+}
+
+.chronicle__time {
+    font-family: var(--font-display);
+    font-size: 9px;
+    color: rgba(187, 161, 122, 0.62);
+}
+
+.chronicle__glyph {
+    text-align: center;
+    color: rgba(187, 161, 122, 0.6);
+}
+
+/* One meaning per colour, matching the status ramp used everywhere else. */
+.chronicle__entry--commit .chronicle__glyph,
+.chronicle__entry--push .chronicle__glyph { color: var(--cv-status-working); }
+.chronicle__entry--completed .chronicle__glyph { color: var(--cv-status-completed); }
+.chronicle__entry--waiting .chronicle__glyph { color: var(--cv-status-waiting-user); }
+.chronicle__entry--errored .chronicle__glyph { color: var(--cv-status-errored); }
+.chronicle__entry--rate_limited .chronicle__glyph { color: var(--cv-status-rate-limited); }

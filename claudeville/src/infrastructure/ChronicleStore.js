@@ -1,5 +1,5 @@
 const DB_NAME = 'claudeville-chronicle';
-const DB_VERSION = 4;
+const DB_VERSION = 5;
 const LEASE_KEY = 'claudeville.chronicle.captureLease';
 const DEFAULT_LEASE_TTL_MS = 7000;
 const LIFETIME_COUNTS_META_KEY = 'lifetimeCounts';
@@ -13,6 +13,7 @@ const RETENTION_MS = {
     monuments: 30 * 24 * 60 * 60 * 1000,
     trailSamples: 24 * 60 * 60 * 1000,
     affinities: 30 * 24 * 60 * 60 * 1000,
+    events: 7 * 24 * 60 * 60 * 1000,
 };
 
 function requestToPromise(request) {
@@ -46,6 +47,7 @@ function storeConfig(name) {
         trailSamples: { keyPath: 'id', indexes: ['agentId', 'ts'] },
         auroraLog: { keyPath: 'localDate', indexes: ['ts'] },
         biographies: { keyPath: 'identityKey', indexes: ['firstSeenAt', 'lastSeenAt'] },
+        events: { keyPath: 'id', indexes: ['ts', 'kind', 'localDate'] },
         affinities: { keyPath: 'pairKey', indexes: ['lastInteractionAt'] },
         meta: { keyPath: 'key', indexes: [] },
     }[name];
@@ -90,7 +92,7 @@ export class ChronicleStore {
         request.onupgradeneeded = () => {
             const db = request.result;
             const tx = request.transaction;
-            for (const name of ['manifests', 'monuments', 'trailSamples', 'auroraLog', 'biographies', 'affinities', 'meta']) {
+            for (const name of ['manifests', 'monuments', 'trailSamples', 'auroraLog', 'biographies', 'affinities', 'events', 'meta']) {
                 const config = storeConfig(name);
                 this._ensureStore(db, tx, name, config.keyPath, config.indexes);
             }
@@ -232,6 +234,7 @@ export class ChronicleStore {
                 index: 'lastInteractionAt',
                 upper: now - RETENTION_MS.affinities,
             }),
+            events: await this.deleteRange('events', { upper: now - RETENTION_MS.events }),
         };
         await this.put('meta', { key: 'lastPruneAt', value: now });
         return deleted;

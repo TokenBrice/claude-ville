@@ -14,6 +14,7 @@ import { ModeManager } from '../application/ModeManager.js';
 import { SessionWatcher } from '../application/SessionWatcher.js';
 import { NotificationService } from '../application/NotificationService.js';
 import { AttentionService } from '../application/AttentionService.js';
+import { ChronicleLog } from '../application/ChronicleLog.js';
 import { AuroraGate } from '../application/AuroraGate.js';
 import { AgentBiographyService } from '../application/AgentBiographyService.js';
 import { MoodService } from '../application/MoodService.js';
@@ -23,6 +24,7 @@ import { TopBar } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
 import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
+import { ChroniclePanel } from './shared/ChroniclePanel.js';
 import { ActivityPanel } from './shared/ActivityPanel.js';
 import { el, replaceChildren } from './shared/DomSafe.js';
 import { emitAgentSelected, resetAgentSelection } from './shared/AgentSelection.js';
@@ -43,6 +45,8 @@ export class App {
         this.sessionWatcher = null;
         this.notificationService = null;
         this.attentionService = null;
+        this.chronicleLog = null;
+        this.chroniclePanel = null;
         this.topBar = null;
         this.sidebar = null;
         this.toast = null;
@@ -140,7 +144,15 @@ export class App {
             // Attention marks (title, favicon, cue, jump-to) must exist before
             // the TopBar so the ATTN chip and the `A` hotkey can bind to them.
             this.attentionService = new AttentionService(this.world, { toast: this.toast });
-            this.topBar = new TopBar(this.world, { modal: this.modal, attention: this.attentionService });
+            // The day book: records arrivals, waits, completions and git events
+            // so the Chronicle can answer "what did I miss?".
+            this.chronicleLog = new ChronicleLog({ store: this.chronicleStore }).start();
+            this.chroniclePanel = new ChroniclePanel({ modal: this.modal, chronicleLog: this.chronicleLog });
+            this.topBar = new TopBar(this.world, {
+                modal: this.modal,
+                attention: this.attentionService,
+                chronicle: this.chroniclePanel,
+            });
             this.sidebar = new Sidebar(this.world);
 
             // 4. Initialize application services
@@ -686,6 +698,7 @@ export class App {
         this._callLifecycle('AgentSimulator.stop', () => this.agentSimulator?.stop?.());
         this._callLifecycle('NotificationService.destroy', () => this.notificationService?.destroy?.());
         this._callLifecycle('AttentionService.destroy', () => this.attentionService?.destroy?.());
+        this._callLifecycle('ChronicleLog.stop', () => this.chronicleLog?.stop?.());
         this._callLifecycle('ActivityPanel.destroy', () => this.activityPanel?.destroy?.());
         this._callLifecycle('DashboardRenderer.destroy', () => this.dashboardRenderer?.destroy?.());
         this._callLifecycle('SessionDetailsService.clear', () => sessionDetailsService.clear());
@@ -762,6 +775,8 @@ export class App {
         this.agentSimulator = null;
         this.notificationService = null;
         this.attentionService = null;
+        this.chronicleLog = null;
+        this.chroniclePanel = null;
         this.modeManager = null;
         this.sidebar = null;
         this.topBar = null;
