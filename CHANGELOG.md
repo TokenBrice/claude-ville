@@ -20,7 +20,18 @@ A pass over the places where the pixel village was quietly drawing itself in vec
 - **Torches burn in steps.** Flames were two sharp vector triangles; they now taper in stacked rows around a lit core.
 - **The footing meets the ground.** Where the stone footing tumbles out it drew four flat grey squares outlined on all four sides, with no shading and no contact — UI boxes sitting on the sand. They now carry the same lit-edge and shadow treatment as the course above, with contact shadows and a slight stagger.
 
-All of the added detail bakes once into the existing prop and terrain caches rather than running per frame; monuments got cheaper, not dearer, by moving from vector paths to sprite blits.
+**One hand drawing the whole village**
+- **Shared pixel primitives.** Flames were implemented four separate times — gate brazier, wall torch, command watchfire, watchtower beacon — each as filled triangles or quadratic curves that read as paper cutouts. They now share one stepped-row flame with a lit core, and the beacon brazier is a pixel bowl rather than an outlined vector ellipse.
+- **Water tiles meet exactly.** The depth tint is rasterised with the exactly-tiling isometric scanline decomposition instead of a path fill, so translucent per-tile shading leaves neither a hairline between tiles nor a doubled dark lattice where they overlap.
+
+**Ground that does not repeat**
+- **Interior terrain varies.** The tileset holds one source cell per edge pattern, so every fully-interior tile drew the identical image and a field of dirt or grass read as a stamped repeat at tile frequency. Interior tiles now mirror horizontally on a per-tile hash — free variety, no new art, and the light direction is preserved.
+
+**A coastline with courses**
+- **The island edge is layered.** The sand lip and the cliff face below it were smooth vertical gradients, the one thing a pixel coastline cannot be. Both are now quantised into discrete courses, same silhouette and colours, in the same idiom as the rock above them.
+- **The reef falls away.** Where a basin drops from shallow to deep the base art changes at a tile boundary, so the edge read as a hard staircase however smoothly the depth graded over it. Deep water bordering shallows now carries an inset darker rim, so the step reads as a shelf.
+
+All of the added detail bakes once into the existing prop and terrain caches rather than running per frame; monuments got cheaper, not dearer, by moving from vector paths to sprite blits. Measured on the deterministic world benchmark: 46 FPS median at 10 agents and 39 at 25, matching the v0.27 reference, with zero frame failures.
 
 ---
 
