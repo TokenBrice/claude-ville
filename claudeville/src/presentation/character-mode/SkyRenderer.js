@@ -319,7 +319,7 @@ export class SkyRenderer {
         ctx.clip();
         ctx.globalCompositeOperation = 'screen';
         this._drawStars(ctx, canvas, canopy);
-        this._drawSun(ctx, camera, canvas, canopy, { ensureVisible: true });
+        this._drawSun(ctx, camera, canvas, canopy, { ensureVisible: true, glowOnly: true });
         this._drawMoon(ctx, canvas, canopy);
         this._drawGodrays(ctx, camera, canvas, canopy, { alphaMul: 0.4 });
         ctx.globalCompositeOperation = 'source-over';
@@ -613,6 +613,19 @@ export class SkyRenderer {
                 Math.round(y + Math.sin(angle) * outer),
             );
             ctx.stroke();
+        }
+
+        // The canopy pass composites over the terrain so the hero sky rewards
+        // land on top of the village. The sun's glow and rays belong there —
+        // they are additive light and read as glare. Its body does not: it is
+        // an opaque `source-over` disc, so drawing it in that pass plants a
+        // solid ball on whatever happens to be underneath, which at close zoom
+        // reads as a sticker lying on the ocean. The backdrop pass still draws
+        // the full disc behind the world, so the sun is crisp wherever sky is
+        // actually visible.
+        if (options.glowOnly) {
+            ctx.restore();
+            return;
         }
 
         // 5.3 — pixel-integrity body. Prefer the authored `atmosphere.sun`

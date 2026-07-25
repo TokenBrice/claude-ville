@@ -8289,12 +8289,24 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
+    // Shoreline mask: which edges of this water tile face something that is not
+    // water. Foam belongs on those edges.
+    //
+    // Neighbours outside the map are NOT shore. They used to count as land,
+    // which drew a foam line along the entire map perimeter — a perfectly
+    // straight, tile-aligned pale streak running across open ocean where there
+    // is no coast at all. The map boundary is an artefact of the array bounds,
+    // not a feature of the world.
     _waterEdgeMask(tileX, tileY) {
+        const shore = (x, y) => {
+            if (x < 0 || y < 0 || x >= MAP_SIZE || y >= MAP_SIZE) return false;
+            return !this.waterTiles.has(`${x},${y}`);
+        };
         let mask = 0;
-        if (!this.waterTiles.has(`${tileX},${tileY - 1}`)) mask |= 1;
-        if (!this.waterTiles.has(`${tileX + 1},${tileY}`)) mask |= 2;
-        if (!this.waterTiles.has(`${tileX},${tileY + 1}`)) mask |= 4;
-        if (!this.waterTiles.has(`${tileX - 1},${tileY}`)) mask |= 8;
+        if (shore(tileX, tileY - 1)) mask |= 1;
+        if (shore(tileX + 1, tileY)) mask |= 2;
+        if (shore(tileX, tileY + 1)) mask |= 4;
+        if (shore(tileX - 1, tileY)) mask |= 8;
         return mask;
     }
 
