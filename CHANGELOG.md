@@ -2,6 +2,28 @@
 
 ---
 
+## v0.28.1 — *Chisel & Grain* · Jul 25, 2026
+
+A pass over the places where the pixel village was quietly drawing itself in vectors — smooth curves, resampled lettering, and authored art that never reached the screen.
+
+**The gate says its own name again**
+- **CLAUDEVILLE is legible.** The town's name was baked into the gate sprite at a five-pixel cap height and then sheared onto the isometric axis along with the masonry, which reduced it to "ELAUDEVIL.E". Stone survives being resampled; letterforms do not. The band is now empty in the art and the name is drawn live into it, sheared to sit in the band while every glyph stem stays on a whole pixel column. Sharp at every zoom, day and night.
+
+**Water is one body again**
+- **The checkerboard is actually gone.** Depth shading covered only the lower half of each tile with a hard seam across the middle, which tiles into precisely the light/dark checkerboard the last overhaul removed from the depth *classification*. Shading now covers the whole tile and follows the shore distance already computed for each body of water, so lagoon, river and sea grade from rim to centre as coherent masses.
+
+**Art that was already made now shows up**
+- **Monuments are the sprites they were drawn as.** Every one of the village's monuments was rendering as stacked antialiased ellipses — smooth grey discs in a world of hard pixel steps — because the asset manager was never handed to the monument layer. The four authored cairn, stele, obelisk and founding-stone sprites now draw, and major monuments get their quiet mote trickle.
+
+**The wall stops looking sketched**
+- **Ivy and shrubs are pixels, not strokes.** The trailing ivy was a soft two-pixel polyline and the shrubs were ellipses; both read as marker scribbles against hard-edged planks. They are now stepped forms with a direction of light.
+- **Torches burn in steps.** Flames were two sharp vector triangles; they now taper in stacked rows around a lit core.
+- **The footing meets the ground.** Where the stone footing tumbles out it drew four flat grey squares outlined on all four sides, with no shading and no contact — UI boxes sitting on the sand. They now carry the same lit-edge and shadow treatment as the course above, with contact shadows and a slight stagger.
+
+All of the added detail bakes once into the existing prop and terrain caches rather than running per frame; monuments got cheaper, not dearer, by moving from vector paths to sprite blits.
+
+---
+
 ## v0.28.0 — *Bell & Ledger* · Jul 25, 2026
 
 The village can finally tell the difference between an agent that is thinking, one that is blocked on you, and one that has finished. It stops evicting the agents that need you, rings a bell you can hear from another window, keeps a day book of everything that happened, and tells you the truth about what you are spending.

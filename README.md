@@ -1,6 +1,6 @@
 # ClaudeVille
 
-[![Version](https://img.shields.io/badge/version-v0.28.0-8a6f2a)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.28.1-8a6f2a)](./CHANGELOG.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](./package.json)
 [![Runtime](https://img.shields.io/badge/runtime-zero--build-7c3aed)](#quick-start)
@@ -18,7 +18,7 @@ ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google
 - **Glanceable:** World mode for second-monitor awareness; Dashboard mode for exact state.
 - **Zero-build runtime:** Node HTTP/WebSocket server plus static browser assets.
 
-Current version: **v0.28.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
+Current version: **v0.28.1**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
 
 Active development lives in this repository. It is currently a public fork of `honorstudio/claude-ville`, but `TokenBrice/claude-ville` is the maintained branch for the current multi-provider ClaudeVille work.
 
