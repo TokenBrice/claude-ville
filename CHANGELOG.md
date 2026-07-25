@@ -2,6 +2,40 @@
 
 ---
 
+## v0.28.0 — *Bell & Ledger* · Jul 25, 2026
+
+The village can finally tell the difference between an agent that is thinking, one that is blocked on you, and one that has finished. It stops evicting the agents that need you, rings a bell you can hear from another window, keeps a day book of everything that happened, and tells you the truth about what you are spending.
+
+**The town knows what your agents are actually doing**
+- **Turn state read from the transcript.** Status came from a stopwatch on file modification time plus two hard-coded tool names, so "thinking", "blocked on you", and "finished" all looked the same after thirty seconds of quiet. ClaudeVille now reads the real signal: a closed turn means the next move is yours, and an unanswered tool call means a tool is pending.
+- **Permission prompts are recognised.** A pending tool is judged blocked or merely slow from the session's permission mode, the tool's class, and how long it has been sitting — fifteen seconds for tools that are normally instant, four minutes for Bash and friends, immediately for a direct question. A long build is no longer mistaken for something that needs you.
+- **Completed is a real status.** The soft-gold "completed" state has existed everywhere since v0.26 and nothing had ever produced it. Finished turns now light it up, in the world and on the dashboard.
+- **Blocked agents say what they are blocked on.** "Waiting for approval — Bash" instead of a generic "Waiting for you", in both the dashboard card and the activity panel.
+
+**Nobody vanishes while you are away**
+- **Sessions that stop to ask stay in the village.** A session used to leave two minutes after its file went quiet — which is exactly when it finished a turn or stopped on a permission prompt. Those two states now stay resident for up to 45 minutes, capped, and are re-judged as their wait lengthens. Sessions that vanish mid-work still leave, as before.
+- **Watching costs no more than it did.** Discovery, project tracking, and the file watchers all still run on the original two-minute window; only what reaches the browser holds residents.
+
+**A bell you can hear from another window**
+- **The tab tells you.** A count in the title and a marked favicon, so the village can reach you from a background tab on the other monitor.
+- **A summons cue.** Needing a person finally has its own sound — a rising two-note call, distinct from the storm and distress cues, rate-limited like every other cue.
+- **Alerts that lead somewhere.** The ATTN chip is now a button and `A` cycles waiting agents; both select and follow, so noticing and looking are one step. An optional ALERTS toggle adds desktop notifications, asked for by you and only fired while the tab is hidden.
+
+**The Village Chronicle**
+- **A day book you can read.** Arrivals and departures, waits and how long they lasted, finished turns, errors, rate limits, commits and pushes, all recorded to a readable ledger and timeline. Look away for forty minutes and the town can now tell you what you missed.
+- **Told in the town's voice.** Commit subjects are dug out of the shell text agents actually ran and capped to one readable line; the two records git enrichment produces for a single commit collapse into one; repository watchers no longer "arrive"; and reloading the tab no longer re-announces the whole town. The recap opens from the LOG button in the topbar.
+
+**Numbers that mean something**
+- **Today, not lifetime.** The topbar's biggest number was the summed lifetime cost of whatever sessions were on screen; it lurched whenever one appeared or aged out. It is now the tokens observed today, banked from real growth and persisted across reloads.
+- **Cache reads counted separately.** They are the same prompt re-read every turn and they dominated the total — the first cut of the burn rate read 486M tokens per hour. New tokens carry the headline; cache reads are priced into the day's accounting where they belong.
+- **Quota headroom at a glance.** Two small gauges on the brand line show the 5-hour and 7-day windows and turn red near the ceiling. On a subscription that is the resource that actually runs out, so the dollar figure moved into the Chronicle and is labelled for what it is.
+- **Alerts can no longer be crowded out.** When the topbar runs short of room the spend ledger yields first; the errored and attention badges always survive.
+
+**Under the hood**
+- **A test floor for the signal layer.** 44 `node:test` cases now cover turn-state derivation, pending-tool classification, status priority, residency, the day book, and the spend ledger — no dependency, no build step, wired into `npm run validate:quick`. They caught two real bugs while being written.
+
+---
+
 ## v0.27.0 — *Fleetfoot Keep* · Jul 23, 2026
 
 ClaudeVille now stays markedly smoother through crowded workdays and heavy rain without thinning the village, disabling weather, or lowering sprite quality. Repeated canvas work is reused where its pixels are identical, semantic crowd updates move off the per-frame path, and a deterministic benchmark makes World performance reproducible instead of anecdotal.

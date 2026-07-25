@@ -4,7 +4,7 @@
 - ClaudeVille is a local, zero-build dashboard for watching AI coding CLI sessions as a browser "village".
 - Desktop-only target: assume browser viewports ≥1280px wide. Do not add `@media` queries, mobile/narrow-viewport testing, or responsive shrinking.
 - Touch only files needed for the task. Shared checkout: start with `git status --short`, preserve unrelated edits, prefer `rg`/`rg --files` for discovery.
-- No install step, bundler, transpiler, lint, formatter, app test runner, or CI.
+- No install step, bundler, transpiler, lint, formatter, or CI. Tests are limited to dependency-free `node:test` cases over pure logic (`npm run test:unit`, part of `validate:quick`); there is no browser/component test runner.
 
 Local dev-server (maintained): http://localhost:4000
 
@@ -60,6 +60,7 @@ Match validation to what you changed:
 | --- | --- |
 | `server.js`, `adapters/*.js`, `services/*.js` | `node --check <file>`; multiple: `find claudeville/adapters claudeville/services -name '*.js' -print0 \| xargs -0 -n1 node --check` |
 | Broad non-runtime regression pass | `npm run validate:quick` |
+| Status derivation, session residency, chronicle, spend ledger | `npm run test:unit` (`scripts/tests/`) |
 | Adapter discovery or relationship state | `node scripts/smoke/adapters.mjs`; `NODE_NO_WARNINGS=1 node scripts/smoke/relationship.mjs` |
 | Runtime / API behavior | `npm run dev`; then `curl http://localhost:4000/api/{providers,sessions}` and confirm browser console |
 | Anything under `src/` | Open `http://localhost:4000`, test World + Dashboard, resize, agent select/deselect |

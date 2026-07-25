@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { commitSubject, summarizeDay, ChronicleEventKind } from '../../claudeville/src/application/ChronicleLog.js';
+import { ChronicleLog, commitSubject, summarizeDay, ChronicleEventKind } from '../../claudeville/src/application/ChronicleLog.js';
 
 test('a plain subject line passes through', () => {
     assert.equal(commitSubject({ label: 'feat: harbor lights' }), 'feat: harbor lights');
@@ -56,4 +56,136 @@ test('an empty day rolls up to zeroes, not NaN', () => {
     assert.equal(summary.longestWaitMs, 0);
     assert.equal(summary.firstTs, null);
     assert.deepEqual(summary.agents, []);
+});
+
+// ─── Day-book noise control ──────────────────────────────────────────────
+//
+// The first cut of the Chronicle filled with "arrived" every time the tab was
+// reloaded and logged each commit twice. Both made the recap unreadable, which
+// is the only thing it has to be.
+
+// Minimal stand-in for ChronicleStore's `events` table.
+function fakeStore(seed = []) {
+    const rows = [...seed];
+    return {
+        rows,
+        async put(_store, record) { rows.push(record); return record; },
+        async queryRange() { return [...rows].sort((a, b) => a.ts - b.ts); },
+    };
+}
+
+const agent = (id, extra = {}) => ({
+    id, name: id, provider: 'claude', projectPath: '/home/u/git/demo', gitEvents: [], ...extra,
+});
+
+test('a reload does not re-announce agents already in town', async () => {
+    const store = fakeStore();
+    const first = new ChronicleLog({ store }).start();
+    first._onAdded(agent('a'));
+    await first.flush();
+    first._onAdded(agent('a'));      // same page, duplicate add
+    await first.flush();
+    first.stop();
+
+    // A fresh page over the same store: the agent is still here, not arriving.
+    const second = new ChronicleLog({ store }).start();
+    second._onAdded(agent('a'));
+    await second.flush();
+
+    const arrivals = store.rows.filter((r) => r.kind === 'arrived');
+    assert.equal(arrivals.length, 1);
+});
+
+test('arrivals landing before the replay resolves are still recorded once', async () => {
+    const store = fakeStore();
+    const log = new ChronicleLog({ store }).start();
+    // Fire immediately — the replay read has not resolved yet.
+    log._onAdded(agent('a'));
+    log._onAdded(agent('a'));
+    await log.flush();
+    assert.equal(store.rows.filter((r) => r.kind === 'arrived').length, 1);
+});
+
+test('repository watchers never arrive or depart', async () => {
+    const store = fakeStore();
+    const log = new ChronicleLog({ store }).start();
+    const repo = agent('git-repo-1', { provider: 'git', agentType: 'repository' });
+    log._onAdded(repo);
+    log._onRemoved(repo);
+    await log.flush();
+    assert.deepEqual(store.rows.filter((r) => ['arrived', 'departed'].includes(r.kind)), []);
+});
+
+test('one commit reported in two shapes is logged once', async () => {
+    const store = fakeStore();
+    const log = new ChronicleLog({ store }).start();
+    await log.flush();
+    const ts = Date.now() - 60_000;
+    log._onUpdated(agent('a', {
+        gitEvents: [
+            // Parsed from the repository scan: has a sha and a subject.
+            { id: 'e1', type: 'commit', sha: 'abc123', label: 'feat: harbor lights', ts, observed: true },
+            // Parsed from the tool command: no sha, raw shell text, other hash.
+            { id: 'e2', type: 'commit', commandHash: 'zzz', ts,
+              label: `git commit -m 'feat: harbor lights'` },
+        ],
+    }));
+    await log.flush();
+    assert.equal(store.rows.filter((r) => r.kind === 'commit').length, 1);
+    assert.equal(store.rows.find((r) => r.kind === 'commit').label, 'feat: harbor lights');
+});
+
+test('commits older than the watching window are not backfilled', async () => {
+    const store = fakeStore();
+    const log = new ChronicleLog({ store }).start();
+    await log.flush();
+    log._onUpdated(agent('a', {
+        gitEvents: [{ id: 'old', type: 'commit', sha: 'old1', label: 'chore: last week',
+                      ts: Date.now() - 7 * 24 * 3600_000 }],
+    }));
+    await log.flush();
+    assert.equal(store.rows.filter((r) => r.kind === 'commit').length, 0);
+});
+
+test('commit records whose subjects differ only in trailing text still collapse', async () => {
+    // The real pairing seen in the wild: the scan gives a clean subject, the
+    // tool command gives the same subject with heredoc leftovers glued on.
+    const store = fakeStore();
+    const log = new ChronicleLog({ store }).start();
+    await log.flush();
+    const ts = Date.now() - 60_000;
+    log._onUpdated(agent('a', {
+        gitEvents: [
+            { id: 'e1', type: 'commit', sha: 'aa11', ts,
+              label: 'feat(world): break the onion, and stop the fleet rafting' },
+            { id: 'e2', type: 'commit', commandHash: 'bb22', ts,
+              label: 'feat(world): break the onion, and stop the fleet rafting R6 ' },
+        ],
+    }));
+    await log.flush();
+    assert.equal(store.rows.filter((r) => r.kind === 'commit').length, 1);
+});
+
+test('a commit with neither a name nor a sha is not logged', async () => {
+    const store = fakeStore();
+    const log = new ChronicleLog({ store }).start();
+    await log.flush();
+    log._onUpdated(agent('a', {
+        gitEvents: [{ id: 'e1', type: 'commit', commandHash: 'cc33', ts: Date.now() - 1000,
+                      label: `git commit -q -F - <<'EOF'` }],
+    }));
+    await log.flush();
+    assert.equal(store.rows.filter((r) => r.kind === 'commit').length, 0);
+});
+
+test('a squashed commit body is cut to one readable subject', () => {
+    const body = 'feat(three): make the world breathe — ' + 'and a great deal more prose '.repeat(20);
+    const subject = commitSubject({ label: body });
+    assert.ok(subject.length <= 101, `got ${subject.length}`);
+    assert.ok(subject.startsWith('feat(three): make the world breathe'));
+    assert.ok(subject.endsWith('…'));
+});
+
+test('a short subject is left exactly as written', () => {
+    assert.equal(commitSubject({ label: 'fix: one line' }), 'fix: one line');
 });

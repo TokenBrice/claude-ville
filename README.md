@@ -1,6 +1,6 @@
 # ClaudeVille
 
-[![Version](https://img.shields.io/badge/version-v0.22.0-8a6f2a)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.28.0-8a6f2a)](./CHANGELOG.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](./package.json)
 [![Runtime](https://img.shields.io/badge/runtime-zero--build-7c3aed)](#quick-start)
@@ -18,7 +18,7 @@ ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google
 - **Glanceable:** World mode for second-monitor awareness; Dashboard mode for exact state.
 - **Zero-build runtime:** Node HTTP/WebSocket server plus static browser assets.
 
-Current version: **v0.22.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
+Current version: **v0.28.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
 
 Active development lives in this repository. It is currently a public fork of `honorstudio/claude-ville`, but `TokenBrice/claude-ville` is the maintained branch for the current multi-provider ClaudeVille work.
 
@@ -70,7 +70,8 @@ Common `package.json` scripts:
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | Start `claudeville/server.js` on port `4000`. |
-| `npm run validate:quick` | Run the no-runtime syntax, adapter-fixture, git-event, and sprite-ID checks. |
+| `npm run validate:quick` | Run the no-runtime syntax, adapter-fixture, git-event, unit-test, and sprite-ID checks. |
+| `npm run test:unit` | Run the `node:test` cases in `scripts/tests/` (status derivation, session residency, chronicle, spend ledger). |
 | `npm run check:server` / `check:adapters` / `check:services` / `check:frontend-syntax` / `check:scripts` | Targeted JavaScript syntax checks. |
 | `npm run check:git-events` | Validate git-event parsing fixtures. |
 | `npm run check:adapter-fixtures` | Validate adapter fixture behavior. |
@@ -129,19 +130,22 @@ claude-ville/
 |   |   |-- kimi.js
 |   |   |-- opencode.js
 |   |   |-- gitEvents.js            # Git commit/push extraction from tool commands
+|   |   |-- turnState.js            # Transcript-derived turn state and pending-tool classification
 |   |   `-- index.js               # Adapter registry
 |   |-- assets/sprites/            # Pixel-art manifest and generated PNG assets
 |   |-- services/
-|   |   `-- usageQuota.js          # Usage, quota, and account metadata
+|   |   |-- usageQuota.js          # Usage, quota, and account metadata
+|   |   `-- sessionResidency.js    # Holds finished/blocked sessions past the active window
 |   |-- css/                       # Static CSS loaded directly by index.html
 |   |-- vendor/                    # Browser-vendored helper libraries
 |   `-- src/
 |       |-- config/                # Constants, theme, i18n strings, building definitions
 |       |-- domain/                # World, agents, buildings, tasks, events, value objects
-|       |-- application/           # Agent, mode, session watcher, notification coordination
+|       |-- application/           # Agent, mode, session watcher, attention, chronicle, spend
 |       |-- infrastructure/        # REST data source and WebSocket client
 |       `-- presentation/          # Shared UI plus world and dashboard renderers
 |-- scripts/sprites/               # Manifest validation, sprite generation docs, visual diff helpers
+|-- scripts/tests/                 # node:test cases for the signal layer (npm run test:unit)
 `-- package.json
 ```
 

@@ -9,13 +9,15 @@
 
 ## Project Shape
 
-Static HTML/CSS/vanilla ES modules; `server.js` uses only Node built-ins; no bundler, transpiler, or app test runner. Dev dependencies exist only for sprite validation, Playwright capture, and pixelmatch diffs — run `npm install` only when those scripts are in scope. Dev server: `npm run dev` (node claudeville/server.js).
+Static HTML/CSS/vanilla ES modules; `server.js` uses only Node built-ins; no bundler or transpiler. The only tests are dependency-free `node:test` cases over pure logic in `scripts/tests/` (`npm run test:unit`); there is no browser/component test runner. Dev dependencies exist only for sprite validation, Playwright capture, and pixelmatch diffs — run `npm install` only when those scripts are in scope. Dev server: `npm run dev` (node claudeville/server.js).
 
 ## Server
 
 `server.js`: port hardcoded to `4000`; static files from `claudeville/`; watch paths come from active provider adapters; updates debounce on fs events plus a 2 s poll that no-ops with no WS clients.
 
-API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf`; `ws://localhost:4000` (init payload, updates, ping/pong).
+API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf` (includes `sessionResidency` diagnostics); `ws://localhost:4000` (init payload, updates, ping/pong).
+
+Client-facing session collection goes through `collectSessionsForClients()`, which folds `services/sessionResidency.js` residents into the live list. Discovery, canonical active projects, and watch topology deliberately stay on the raw `ACTIVE_THRESHOLD_MS` window so residency never widens the watcher footprint.
 
 Do not change port `4000` casually. The README and local workflows assume it.
 
@@ -33,6 +35,7 @@ In `adapters/`, registered by `adapters/index.js`.
 - `grok.js`: `~/.grok/sessions/` — `<url-encoded-cwd>/<session-id>/{summary.json,updates.jsonl,chat_history.jsonl}`; optional `~/.grok/active_sessions.json`.
 - `kimi.js`: `~/.kimi/` — session wire/state files and config.
 - `opencode.js`: `~/.local/share/opencode/opencode.db` — SQLite read-only; includes subagent parent links and git events from shell tools.
+- `turnState.js`: pure, provider-agnostic turn state (`working` / `tool_pending` / `awaiting_input` / `unknown`) plus the pending-tool classifier that separates a permission prompt from a slow tool. Adapters extract a small descriptor from their own transcript format and hand it here; `claude.js` pairs `tool_use`/`tool_result` and reads `stop_reason`, `codex.js` uses `task_started`/`task_complete` and `call_id`. Sessions carry `turnState`, `pendingTool`, `pendingSince`, `awaitingSince`, `waitReason`, `resident`.
 - `gitEvents.js`: parses git `commit`/`push` from provider tool logs (dry-runs omitted) into session `gitEvents`; the registry can synthesize repository-only `provider: 'git'` sessions. Scans default to `~/Documents/git`; tune `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`/`CLAUDEVILLE_REPOSITORY_SCAN_MAX`; disable `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`.
 
 Adapter availability is automatic; empty provider output is not necessarily an error. Treat all provider session files as read-only inputs. `adapters/index.js` caches lists and details for 5 s; detail failures return stale cache when present, else `{ toolHistory: [], messages: [] }`.
@@ -67,6 +70,8 @@ In-app (after rendering/layout/event-bus changes): open `http://localhost:4000`;
 
 Assets (`npm install` first if `node_modules/` is missing): `npm run sprites:validate` (manifest ↔ PNG bidirectional check); `npm run sprites:capture-fresh` then `npm run sprites:visual-diff` (pixelmatch baselines).
 
+Signal layer (status derivation, residency, day book, spend): `npm run test:unit` — `node:test` cases under `scripts/tests/`, also part of `validate:quick`. Anything touching `adapters/turnState.js`, `domain/services/StatusResolver.js`, `services/sessionResidency.js`, `application/ChronicleLog.js`, or `application/SpendLedger.js` must keep these green.
+
 Docs (English-only; must return no matches):
 
 ```bash
@@ -77,7 +82,7 @@ See `AGENTS.md` § Validation Checklist for the canonical syntax/runtime smoke l
 
 ## Event Bus
 
-Singleton at `src/domain/events/DomainEvent.js`, exports `eventBus`; no replay or persistence; subscriptions are global. Events: `agent:added`/`agent:updated`/`agent:removed` (`Agent`, from `domain/entities/World.js`); `agent:selected` (`Agent`); `agent:deselected`; `mode:changed` (`'character' | 'dashboard'`, from `application/ModeManager.js`); `usage:updated`; `fps:updated` (number ~2/s from `character-mode/IsometricRenderer.js`, `null` when the World loop stops); `ws:connected`/`ws:disconnected`/`ws:init`/`ws:update`/`ws:message` (from `infrastructure/WebSocketClient.js`). `ws:message` currently has no subscribers.
+Singleton at `src/domain/events/DomainEvent.js`, exports `eventBus`; no replay or persistence; subscriptions are global. Events: `agent:added`/`agent:updated`/`agent:removed` (`Agent`, from `domain/entities/World.js`); `agent:selected` (`Agent`); `agent:deselected`; `attention:raised`/`attention:cleared` (from `application/AttentionService.js`; `raised` carries `{ agentId, status, label }` and drives the `summons` cue); `mode:changed` (`'character' | 'dashboard'`, from `application/ModeManager.js`); `usage:updated`; `fps:updated` (number ~2/s from `character-mode/IsometricRenderer.js`, `null` when the World loop stops); `ws:connected`/`ws:disconnected`/`ws:init`/`ws:update`/`ws:message` (from `infrastructure/WebSocketClient.js`). `ws:message` currently has no subscribers.
 
 ## Development Constraints
 
