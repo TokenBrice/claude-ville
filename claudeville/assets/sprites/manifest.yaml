@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-07-18-building-grounding-v1"
+  assetVersion: "2026-07-25-gate-inscription-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
@@ -702,7 +702,7 @@ props:
 
   - id: prop.villageGateArch
     tool: map_object
-    prompt: "isolated vertical medieval fortified gateway architrave, long raised cool-grey stone connector between two guard towers, broad shallow arch opening, dark timber underside, inset burgundy civic inscription band with exact carved capital letters CLAUDEVILLE, slate-blue coping, transparent background, no doors, no ground, no characters"
+    prompt: "isolated vertical medieval fortified gateway architrave, long raised cool-grey stone connector between two guard towers, broad shallow arch opening, dark timber underside, empty inset burgundy civic inscription band with no lettering, slate-blue coping, transparent background, no doors, no ground, no characters, no text"
     width: 96
     height: 96
     anchor: [48, 88]

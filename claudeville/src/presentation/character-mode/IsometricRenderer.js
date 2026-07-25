@@ -286,6 +286,14 @@ const VILLAGE_GATE_TOWER_HALF_TILES = 1.55;
 const VILLAGE_GATE_TOWER_SPRITE_ID = 'prop.villageGateTower';
 const VILLAGE_GATE_ARCH_SPRITE_ID = 'prop.villageGateArch';
 const VILLAGE_GATE_ARCH_COLUMN_SPAN = 104;
+// Inscription band inside prop.villageGateArch.png, in sprite pixels. The PNG
+// carries the empty burgundy band; the lettering is drawn over it at runtime.
+const VILLAGE_GATE_ARCH_BAND_MID_Y = 27.5;
+const VILLAGE_GATE_ARCH_BAND_WIDTH = 76;
+const VILLAGE_GATE_ARCH_BAND_HEIGHT = 8;
+const VILLAGE_GATE_INSCRIPTION = 'CLAUDEVILLE';
+const VILLAGE_GATE_INSCRIPTION_INK = '#e2bd6b';
+const VILLAGE_GATE_INSCRIPTION_SHADOW = 'rgba(38, 16, 28, 0.85)';
 const VILLAGE_WALL_SEA_TOWER_SPRITE_ID = 'prop.villageWallSeaTower';
 class StaticPropSprite {
     constructor({ tileX, tileY, drawFn, id = null, bounds = null, splitForOcclusion = false, sortY = null }) {
@@ -492,7 +500,17 @@ export class IsometricRenderer {
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
         this.ritualConductor = new RitualConductor({ motionScale: this.motionScale });
         this.arrivalDeparture = new ArrivalDepartureController({ motionScale: this.motionScale });
-        this.chronicleMonuments = new ChronicleMonuments({ store: this.chronicleStore });
+        // ChronicleMonuments takes `assets` and `particles` as optional
+        // injections and silently falls back to a vector path without them.
+        // They were never passed, so every monument in the village drew as
+        // antialiased ellipses while the four authored PixelLab sprites sat
+        // unused — smooth curves in a world that is hard pixel steps everywhere
+        // else. Wire both.
+        this.chronicleMonuments = new ChronicleMonuments({
+            store: this.chronicleStore,
+            assets: this.assets,
+            particles: this.particleSystem,
+        });
         this.trailRenderer = new TrailRenderer({
             store: this.chronicleStore,
             world: this.world,
@@ -5203,6 +5221,37 @@ export class IsometricRenderer {
         ctx.restore();
     }
 
+    // The town's name, carved into the gate band.
+    //
+    // Called inside the same sheared space as the arch masonry, so the baseline
+    // follows the band while every glyph stem stays vertical. That distinction
+    // is the whole fix: the old code used ctx.rotate(), which tips the stems off
+    // the pixel grid and reduces a five-pixel cap height to mush. A shear keeps
+    // verticals on whole columns, and because canvas text is rasterised after
+    // the transform rather than resampled from a bitmap, it stays sharp at
+    // every zoom. Coordinates here are sprite pixels, not screen pixels.
+    _drawGateInscription(ctx, { centerX, centerY, bandWidth, bandHeight }) {
+        if (!(bandWidth > 8) || !(bandHeight > 3)) return;
+
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        // Fit the name to the band: never taller than the band, never wider.
+        let size = Math.max(5, Math.round(bandHeight * 0.9));
+        for (; size > 4; size--) {
+            ctx.font = `700 ${size}px ${WORLD_BODY_FONT}`;
+            if (ctx.measureText(VILLAGE_GATE_INSCRIPTION).width <= bandWidth - 3) break;
+        }
+
+        // A one-pixel dark drop reads as a chiselled edge and keeps the gold
+        // legible against the burgundy at every time of day.
+        ctx.fillStyle = VILLAGE_GATE_INSCRIPTION_SHADOW;
+        ctx.fillText(VILLAGE_GATE_INSCRIPTION, centerX, centerY + 1);
+        ctx.fillStyle = VILLAGE_GATE_INSCRIPTION_INK;
+        ctx.fillText(VILLAGE_GATE_INSCRIPTION, centerX, centerY);
+        ctx.restore();
+    }
+
     _drawVillageGateArch(ctx, leftBase, rightBase) {
         const dx = rightBase.x - leftBase.x;
         const dy = rightBase.y - leftBase.y;
@@ -5224,6 +5273,16 @@ export class IsometricRenderer {
             // onto the same isometric axis as the gate threshold.
             ctx.transform(ux * scale, uy * scale, 0, scale, 0, 0);
             ctx.drawImage(arch, Math.round(-ax), Math.round(-ay));
+            // Painted live inside the same shear, over an inscription band the
+            // PNG now leaves empty. Baking the name into the sprite meant the
+            // town's own name was resampled along with the masonry: stone
+            // survives that, a five-pixel letterform does not.
+            this._drawGateInscription(ctx, {
+                centerX: 0,
+                centerY: VILLAGE_GATE_ARCH_BAND_MID_Y - ay,
+                bandWidth: VILLAGE_GATE_ARCH_BAND_WIDTH,
+                bandHeight: VILLAGE_GATE_ARCH_BAND_HEIGHT,
+            });
             ctx.restore();
             return;
         }
@@ -5342,14 +5401,16 @@ export class IsometricRenderer {
             Math.round(plaqueEnd.y - uy * 3 + plaqueHeight - 2),
         );
         ctx.stroke();
-        ctx.fillStyle = '#d8d2c4';
-        ctx.font = `700 7px ${WORLD_BODY_FONT}`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
+        // Same sheared treatment as the sprite path — see _drawGateInscription.
         ctx.save();
         ctx.translate(Math.round(plaqueMid.x), Math.round(plaqueMid.y + 9));
-        ctx.rotate(Math.atan2(uy, ux));
-        ctx.fillText('CLAUDEVILLE', 0, 0);
+        ctx.transform(ux, uy, 0, 1, 0, 0);
+        this._drawGateInscription(ctx, {
+            centerX: 0,
+            centerY: 0,
+            bandWidth: plaqueSpan,
+            bandHeight: plaqueHeight - 4,
+        });
         ctx.restore();
 
         ctx.restore();
@@ -5752,38 +5813,58 @@ export class IsometricRenderer {
         }
 
         // Trailing ivy down the wall face — breaks up the bare planks.
+        //
+        // Stepped one pixel at a time rather than stroked as a polyline. A 2px
+        // diagonal stroke antialiases into a soft grey-green smear that reads
+        // as a marker scribble next to hard-edged planks; a stepped column of
+        // rects stays on the pixel grid like everything around it.
         for (let d = 58 + offset; d < length - 16; d += 116) {
-            const ix = x1 + ux * d;
-            const iy = y1 + uy * d;
-            ctx.strokeStyle = 'rgba(74, 110, 46, 0.9)';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(Math.round(ix), Math.round(iy - wallHeight + 10));
-            for (let k = 0; k <= 5; k++) {
-                ctx.lineTo(Math.round(ix + Math.sin(k * 1.3 + d) * 4), Math.round(iy - wallHeight + 10 + k * 9));
+            const ix = Math.round(x1 + ux * d);
+            const iy = Math.round(y1 + uy * d);
+            const top = iy - wallHeight + 10;
+            const drop = 46;
+            const phase = d * 0.37;
+            for (let k = 0; k <= drop; k++) {
+                const wander = Math.round(Math.sin(k * 0.16 + phase) * 3);
+                const yy = top + k;
+                // Two tones: a darker core with a lit left edge, so the vine has
+                // a direction of light like the masonry does.
+                ctx.fillStyle = 'rgba(58, 92, 38, 0.92)';
+                ctx.fillRect(ix + wander, yy, 2, 1);
+                if (k % 3 === 0) {
+                    ctx.fillStyle = 'rgba(96, 140, 60, 0.85)';
+                    ctx.fillRect(ix + wander, yy, 1, 1);
+                }
             }
-            ctx.stroke();
-            ctx.fillStyle = 'rgba(96, 140, 60, 0.92)';
+            // Leaves hang off alternating sides of the stem.
             for (let k = 1; k <= 4; k++) {
-                const yy = iy - wallHeight + 12 + k * 11;
-                const xx = ix + Math.sin(k * 1.3 + d) * 4;
-                ctx.fillRect(Math.round(xx - 2), Math.round(yy), 3, 2);
-                ctx.fillRect(Math.round(xx + 1), Math.round(yy + 3), 3, 2);
+                const yy = top + 4 + k * 10;
+                const xx = ix + Math.round(Math.sin((yy - top) * 0.16 + phase) * 3);
+                const side = k % 2 === 0 ? 1 : -1;
+                ctx.fillStyle = 'rgba(96, 140, 60, 0.92)';
+                ctx.fillRect(xx + (side > 0 ? 2 : -3), yy, 3, 2);
+                ctx.fillStyle = 'rgba(126, 170, 78, 0.75)';
+                ctx.fillRect(xx + (side > 0 ? 2 : -3), yy, 1, 1);
             }
         }
 
-        // Low shrubs tucked against the wall footing.
+        // Low shrubs tucked against the wall footing. Stepped mounds rather
+        // than ctx.ellipse, for the same reason as the ivy above.
         for (let d = 30 + offset; d < length - 10; d += 52) {
-            const sx = x1 + ux * d + nx * 4;
-            const sy = y1 + uy * d + ny * 4 + 4;
+            const sx = Math.round(x1 + ux * d + nx * 4);
+            const sy = Math.round(y1 + uy * d + ny * 4 + 4);
+            const rows = [
+                { dy: -3, half: 2 },
+                { dy: -2, half: 4 },
+                { dy: -1, half: 6 },
+                { dy: 0, half: 7 },
+                { dy: 1, half: 5 },
+            ];
             ctx.fillStyle = 'rgba(44, 76, 30, 0.95)';
-            ctx.beginPath();
-            ctx.ellipse(Math.round(sx), Math.round(sy), 7, 4, 0, 0, Math.PI * 2);
-            ctx.fill();
+            for (const row of rows) ctx.fillRect(sx - row.half, sy + row.dy, row.half * 2, 1);
             ctx.fillStyle = 'rgba(74, 116, 50, 0.92)';
-            ctx.beginPath();
-            ctx.ellipse(Math.round(sx - 2), Math.round(sy - 1), 4, 2.5, 0, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.fillRect(sx - 4, sy - 2, 5, 1);
+            ctx.fillRect(sx - 3, sy - 3, 3, 1);
         }
 
         // Mounted torches — warm pools of light along the palisade. Gentle
@@ -5794,21 +5875,28 @@ export class IsometricRenderer {
             ctx.fillStyle = palette.dark;
             ctx.fillRect(Math.round(bx - 2), Math.round(topY), 4, 11);
             const flick = this.motionScale ? (Math.sin(this.waterFrame * 3 + d) * 0.5 + 0.5) : 0.5;
-            const fh = 7 + flick * 3;
-            ctx.fillStyle = 'rgba(255, 150, 40, 0.95)';
-            ctx.beginPath();
-            ctx.moveTo(Math.round(bx - 3), Math.round(topY));
-            ctx.lineTo(Math.round(bx), Math.round(topY - fh));
-            ctx.lineTo(Math.round(bx + 3), Math.round(topY));
-            ctx.closePath();
-            ctx.fill();
-            ctx.fillStyle = 'rgba(255, 226, 130, 0.95)';
-            ctx.beginPath();
-            ctx.moveTo(Math.round(bx - 1.5), Math.round(topY));
-            ctx.lineTo(Math.round(bx), Math.round(topY - fh * 0.6));
-            ctx.lineTo(Math.round(bx + 1.5), Math.round(topY));
-            ctx.closePath();
-            ctx.fill();
+            // Flame built from stacked rows rather than filled triangles: a
+            // sharp-cornered vector triangle reads as a paper cutout, while a
+            // stepped taper with a lit core matches the sprite work around it.
+            const fh = Math.round(7 + flick * 3);
+            const flameX = Math.round(bx);
+            const flameTop = Math.round(topY);
+            for (let k = 0; k < fh; k++) {
+                const t = k / Math.max(1, fh - 1);          // 0 at base, 1 at tip
+                const half = Math.max(0, Math.round(3 * (1 - t * t)));
+                if (half <= 0) continue;
+                ctx.fillStyle = 'rgba(255, 150, 40, 0.95)';
+                ctx.fillRect(flameX - half, flameTop - k, half * 2, 1);
+                if (t < 0.62) {
+                    const coreHalf = Math.max(0, half - 1);
+                    if (coreHalf > 0) {
+                        ctx.fillStyle = 'rgba(255, 226, 130, 0.95)';
+                        ctx.fillRect(flameX - coreHalf, flameTop - k, coreHalf * 2, 1);
+                    }
+                }
+            }
+            ctx.fillStyle = 'rgba(255, 244, 206, 0.9)';
+            ctx.fillRect(flameX, flameTop - fh + 1, 1, 1);
             ctx.save();
             ctx.globalCompositeOperation = 'screen';
             const glow = ctx.createRadialGradient(bx, topY - 2, 1, bx, topY - 2, 22);
@@ -5897,18 +5985,39 @@ export class IsometricRenderer {
             ctx.fillRect(Math.round(p.x - 4), Math.round(p.y - 2), 8, 3);
         }
 
-        // Dither cubes — fade out over half a tile
+        // Dither stones — the footing tumbling out over half a tile.
+        //
+        // These were flat mid-grey squares with a hard outline on all four
+        // sides: no lit edge, no shadow, no contact with the ground, so they
+        // read as UI boxes dropped on the sand rather than masonry petering
+        // out. Same three-tone treatment as the course above, a shadow under
+        // each one, and a small stagger so they tumble instead of descending a
+        // perfect staircase.
         const cubeCount = 4;
         for (let i = 0; i < cubeCount; i++) {
             const t = (i + 1) / (cubeCount + 1);
             const d = fromEnd ? startD - t * ditherDist : endD + t * ditherDist;
-            const size = Math.max(2, Math.round(footingHeight * (1 - t)));
+            const size = Math.max(3, Math.round(footingHeight * (1 - t)));
             const p = stoneY(d);
+            // Deterministic per-stone wobble, so the run never looks stepped.
+            const jitter = ((i * 37) % 5) - 2;
+            const sx = Math.round(p.x - size / 2) + jitter;
+            const sy = Math.round(p.y + footingHeight - size) + ((i * 23) % 3) - 1;
+
+            ctx.fillStyle = 'rgba(24, 18, 14, 0.28)';
+            ctx.fillRect(sx - 1, sy + size, size + 2, 1);
+
             ctx.fillStyle = stone.mid;
-            ctx.fillRect(Math.round(p.x - size / 2), Math.round(p.y + footingHeight - size), size, size);
-            ctx.strokeStyle = stone.outline;
-            ctx.lineWidth = 0.8;
-            ctx.strokeRect(Math.round(p.x - size / 2), Math.round(p.y + footingHeight - size), size, size);
+            ctx.fillRect(sx, sy, size, size);
+            ctx.fillStyle = stone.light;
+            ctx.fillRect(sx, sy, size, 1);
+            if (size > 4) {
+                ctx.fillStyle = stone.shadow;
+                ctx.fillRect(sx, sy + size - 1, size, 1);
+                ctx.fillRect(sx + size - 1, sy + 1, 1, size - 1);
+            }
+            ctx.fillStyle = stone.mortar;
+            ctx.fillRect(sx, sy + size - 1, 1, 1);
         }
 
         ctx.restore();
@@ -8277,18 +8386,40 @@ export class IsometricRenderer {
         ctx.stroke();
     }
 
+    // Depth reads as a continuous ramp from the shore rim to the basin centre.
+    //
+    // This used to shade only the lower half of each tile diamond, with a hard
+    // seam across the middle and a binary deep/shallow alpha. Tiled across a
+    // body of water that is exactly a light/dark checkerboard — the artefact
+    // v0.26 removed from the *classification* was still being drawn back in by
+    // the accent pass. Shading the whole diamond, with alpha following the
+    // already-computed BFS shore distance, gives one coherent mass instead.
     _drawWaterDepthAccent(ctx, screenX, screenY, seed, tileX, tileY) {
-        const isDeep = this.deepWaterTiles.has(`${tileX},${tileY}`);
+        const key = `${tileX},${tileY}`;
         const openSea = this._isOpenSeaTile(tileX, tileY);
-        const token = this._waterTokenAt(tileX, tileY);
-        ctx.fillStyle = isDeep
-            ? `rgba(0, ${openSea ? 8 : 12}, ${openSea ? 42 : 34}, ${openSea ? 0.42 : 0.32})`
-            : 'rgba(5, 34, 61, 0.18)';
+        const token = this._waterTokenAt(tileX, tileY, key);
+        const meta = this._waterMetaAt(tileX, tileY, key);
+        const isDeep = this.deepWaterTiles.has(key);
+
+        const shoreDistance = Number.isFinite(Number(meta?.shoreDistance))
+            ? Number(meta.shoreDistance)
+            : (isDeep ? 3 : 0);
+        const span = openSea ? 6 : 4;
+        const t = Math.max(0, Math.min(1, shoreDistance / span));
+        const eased = t * t * (3 - 2 * t); // smoothstep: gentle rim, settled centre
+        const alpha = (openSea ? 0.10 : 0.08) + eased * (openSea ? 0.34 : 0.25);
+
+        ctx.fillStyle = `rgba(0, ${openSea ? 8 : 12}, ${openSea ? 42 : 34}, ${alpha.toFixed(3)})`;
+        // Exact tile diamond. Do not overscan to hide antialiased edges: these
+        // fills are translucent, so any overlap composites twice and draws a
+        // dark lattice over every body of water — worse than a hairline.
+        const hw = TILE_WIDTH / 2;
+        const hh = TILE_HEIGHT / 2;
         ctx.beginPath();
-        ctx.moveTo(screenX + TILE_WIDTH / 2, screenY);
-        ctx.lineTo(screenX, screenY + TILE_HEIGHT / 2);
-        ctx.lineTo(screenX - TILE_WIDTH / 2, screenY);
-        ctx.lineTo(screenX, screenY + 2);
+        ctx.moveTo(screenX, screenY - hh);
+        ctx.lineTo(screenX + hw, screenY);
+        ctx.lineTo(screenX, screenY + hh);
+        ctx.lineTo(screenX - hw, screenY);
         ctx.closePath();
         ctx.fill();
 
