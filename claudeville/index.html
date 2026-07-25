@@ -62,11 +62,12 @@
                     </span>
                 </div>
                 <span class="topbar__badge topbar__tag topbar__badge--errored" id="badgeErroredWrap" style="display:none"><span class="topbar__badge-glyph">!</span> <span id="badgeErrored">0</span> ERRORED</span>
-                <span class="topbar__badge topbar__tag topbar__badge--attention" id="badgeAttentionWrap" style="display:none"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> ATTN</span>
+                <button class="topbar__badge topbar__tag topbar__badge--attention" id="badgeAttentionWrap" type="button" style="display:none" title="Jump to the longest-waiting agent (A)"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> ATTN</button>
             </div>
         </div>
         <div class="topbar__right">
             <button id="topbarCinemaToggle" class="topbar__cinema-btn" type="button" aria-pressed="true" title="Auto-camera on: frames live action when idle">CINEMA ON</button>
+            <button id="topbarAlertsToggle" class="topbar__sound-btn" type="button" aria-pressed="false" title="Desktop notifications when an agent needs you">ALERTS OFF</button>
             <button id="topbarSoundToggle" class="topbar__sound-btn" type="button" aria-pressed="false" title="Enable sound">SOUND OFF</button>
             <button id="topbarSoundMode" class="topbar__sound-btn" type="button" aria-pressed="false" title="Reactive ambience mode — click for continuous town music" hidden>AMBIENT</button>
             <input id="topbarSoundVolume" class="topbar__sound-vol" type="range" min="0" max="100" value="50" title="Ambience volume" aria-label="Ambience volume" hidden>

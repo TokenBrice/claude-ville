@@ -13,6 +13,7 @@ import { AgentManager } from '../application/AgentManager.js';
 import { ModeManager } from '../application/ModeManager.js';
 import { SessionWatcher } from '../application/SessionWatcher.js';
 import { NotificationService } from '../application/NotificationService.js';
+import { AttentionService } from '../application/AttentionService.js';
 import { AuroraGate } from '../application/AuroraGate.js';
 import { AgentBiographyService } from '../application/AgentBiographyService.js';
 import { MoodService } from '../application/MoodService.js';
@@ -41,6 +42,7 @@ export class App {
         this.modeManager = null;
         this.sessionWatcher = null;
         this.notificationService = null;
+        this.attentionService = null;
         this.topBar = null;
         this.sidebar = null;
         this.toast = null;
@@ -135,7 +137,10 @@ export class App {
             // 3. Initialize UI components
             this.toast = new Toast();
             this.modal = new Modal();
-            this.topBar = new TopBar(this.world, { modal: this.modal });
+            // Attention marks (title, favicon, cue, jump-to) must exist before
+            // the TopBar so the ATTN chip and the `A` hotkey can bind to them.
+            this.attentionService = new AttentionService(this.world, { toast: this.toast });
+            this.topBar = new TopBar(this.world, { modal: this.modal, attention: this.attentionService });
             this.sidebar = new Sidebar(this.world);
 
             // 4. Initialize application services
@@ -680,6 +685,7 @@ export class App {
         this._callLifecycle('SessionWatcher.stop', () => this.sessionWatcher?.stop?.());
         this._callLifecycle('AgentSimulator.stop', () => this.agentSimulator?.stop?.());
         this._callLifecycle('NotificationService.destroy', () => this.notificationService?.destroy?.());
+        this._callLifecycle('AttentionService.destroy', () => this.attentionService?.destroy?.());
         this._callLifecycle('ActivityPanel.destroy', () => this.activityPanel?.destroy?.());
         this._callLifecycle('DashboardRenderer.destroy', () => this.dashboardRenderer?.destroy?.());
         this._callLifecycle('SessionDetailsService.clear', () => sessionDetailsService.clear());
@@ -755,6 +761,7 @@ export class App {
         this.sessionWatcher = null;
         this.agentSimulator = null;
         this.notificationService = null;
+        this.attentionService = null;
         this.modeManager = null;
         this.sidebar = null;
         this.topBar = null;

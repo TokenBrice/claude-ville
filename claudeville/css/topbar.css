@@ -396,6 +396,23 @@
     color: var(--cv-status-rate-limited);
 }
 
+/* The attention badge is the one chip that is also a control: it jumps the
+   camera to the longest-waiting agent, so it has to read as pressable. */
+button.topbar__badge--attention {
+    cursor: pointer;
+    font: inherit;
+    letter-spacing: inherit;
+}
+
+button.topbar__badge--attention:hover {
+    color: var(--cv-gold-bright);
+    border-color: rgba(255, 229, 141, 0.6);
+}
+
+button.topbar__badge--attention:active {
+    transform: translateY(1px);
+}
+
 .topbar__badge-glyph {
     font-weight: bold;
     line-height: 1;

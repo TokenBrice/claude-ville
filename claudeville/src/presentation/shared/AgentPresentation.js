@@ -94,6 +94,22 @@ export function providerPresentation(provider, identity = null) {
     };
 }
 
+// Why an agent is waiting, when the adapter could tell. "Waiting for you" is
+// true but unhelpful; "Waiting for approval — Bash" is what makes a person act.
+const WAIT_REASON_LABELS = {
+    question: 'Asked you a question',
+    approval: 'Waiting for approval',
+    plan_review: 'Plan needs review',
+};
+
+export function waitReasonLabel(agent) {
+    const label = WAIT_REASON_LABELS[agent?.waitReason];
+    if (!label) return null;
+    return agent.pendingTool && agent.waitReason === 'approval'
+        ? `${label} — ${agent.pendingTool}`
+        : label;
+}
+
 export function statusPresentation(status, translator = i18n) {
     const normalized = normalizeStatus(status);
     const statusKey = { working: 'statusWorking', idle: 'statusIdle', waiting: 'statusWaiting' };

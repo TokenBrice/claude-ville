@@ -77,6 +77,8 @@ export class BgmDirector {
         });
         on('team:gather', () => this.cue('council'));
         on('chronicle:aurora', () => this.cue('aurora'));
+        // The one cue that is about the listener rather than the world.
+        on('attention:raised', () => this.cue('summons'));
     }
 
     cue(kind, extra = {}) {

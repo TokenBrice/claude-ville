@@ -4,9 +4,10 @@ import { formatCost, formatNumber } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
 
 export class TopBar {
-    constructor(world, { modal } = {}) {
+    constructor(world, { modal, attention } = {}) {
         this.world = world;
         this.modal = modal || null;
+        this.attention = attention || null;
         this.els = {
             root: document.getElementById('topbar'),
             tokens: document.getElementById('statTokens'),
@@ -26,6 +27,7 @@ export class TopBar {
             soundMode: document.getElementById('topbarSoundMode'),
             soundVolume: document.getElementById('topbarSoundVolume'),
             cinemaToggle: document.getElementById('topbarCinemaToggle'),
+            alertsToggle: document.getElementById('topbarAlertsToggle'),
         };
         this.timeInterval = null;
         this._fpsSamples = [];
@@ -40,6 +42,7 @@ export class TopBar {
             world: this.world,
         });
         this._initCinemaToggle();
+        this._initAttentionControls();
 
         this._onUpdate = () => this.render();
         eventBus.on('agent:added', this._onUpdate);
@@ -105,6 +108,51 @@ export class TopBar {
         btn.addEventListener('click', this._onCinemaClick);
         this._onAutoCamera = (payload) => apply(payload?.enabled !== false);
         eventBus.on('camera:auto-camera', this._onAutoCamera);
+    }
+
+    // Attention plumbing: the ATTN chip and the `A` hotkey both jump to the
+    // longest-waiting agent, and ALERTS opts into desktop notifications from a
+    // real user gesture (browsers reject permission prompts otherwise).
+    _initAttentionControls() {
+        if (!this.attention) return;
+
+        if (this.els.attentionWrap) {
+            this._onAttentionClick = () => this.attention.focusNext();
+            this.els.attentionWrap.addEventListener('click', this._onAttentionClick);
+        }
+
+        const btn = this.els.alertsToggle;
+        if (btn) {
+            if (!this.attention.desktopAlertsAvailable) {
+                btn.hidden = true;
+            } else {
+                const apply = (on) => {
+                    btn.classList.toggle('topbar__sound-btn--on', on);
+                    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+                    btn.textContent = on ? 'ALERTS ON' : 'ALERTS OFF';
+                };
+                apply(this.attention.desktopAlerts);
+                this._onAlertsClick = async () => {
+                    const on = await this.attention.setDesktopAlerts(!this.attention.desktopAlerts);
+                    apply(on);
+                    if (!on && Notification.permission === 'denied') {
+                        btn.title = 'Blocked by the browser — allow notifications for localhost:4000';
+                    }
+                };
+                btn.addEventListener('click', this._onAlertsClick);
+            }
+        }
+
+        this._onAttentionKey = (event) => {
+            if (event.key !== 'a' && event.key !== 'A') return;
+            if (event.metaKey || event.ctrlKey || event.altKey) return;
+            const target = event.target;
+            const tag = target?.tagName;
+            if (tag === 'INPUT' || tag === 'TEXTAREA' || target?.isContentEditable) return;
+            const agent = this.attention.focusNext();
+            if (agent) event.preventDefault();
+        };
+        document.addEventListener('keydown', this._onAttentionKey);
     }
 
     render() {
@@ -403,6 +451,13 @@ export class TopBar {
         if (this._onVersionKeydown && this.els.version) {
             this.els.version.removeEventListener('keydown', this._onVersionKeydown);
         }
+        if (this._onAttentionClick && this.els.attentionWrap) {
+            this.els.attentionWrap.removeEventListener('click', this._onAttentionClick);
+        }
+        if (this._onAlertsClick && this.els.alertsToggle) {
+            this.els.alertsToggle.removeEventListener('click', this._onAlertsClick);
+        }
+        if (this._onAttentionKey) document.removeEventListener('keydown', this._onAttentionKey);
         document.body?.classList.remove('cv-offline', 'cv-reconnect-sweep');
         this._destroyPromise = Promise.resolve(this.audio?.destroy?.());
         this.audio = null;

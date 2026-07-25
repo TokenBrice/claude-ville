@@ -14,6 +14,7 @@ const COOLDOWNS_MS = {
     hourBell: 55 * 60000,
     aurora: 120000,
     thunder: 8000,
+    summons: 45000,
 };
 
 // Weather/clock cues are scenery, exempt from the global chatter budget.
@@ -73,6 +74,14 @@ export class CueKit {
                 });
                 break;
             }
+            // Someone in the village needs a person. A rising two-note call,
+            // brighter than distress and deliberately unlike any scenery cue,
+            // so it reads as "you" rather than "weather".
+            case 'summons':
+                this.engine.duck(0.3, 0.7);
+                this._bell(t, notes.fifth, { gain: 0.038, decay: 1.2, cutoff: 3000 });
+                this._bell(t + 0.18, notes.octave, { gain: 0.042, decay: 2.4, cutoff: 3400 });
+                break;
             case 'thunder':
                 this._thunder(t, intensity);
                 break;

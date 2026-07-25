@@ -19,6 +19,7 @@ import {
     providerPresentation,
     sortAgentsByStatus,
     statusPresentation,
+    waitReasonLabel,
     toolHistoryNodes,
     toolHistorySignature,
 } from '../shared/AgentPresentation.js';
@@ -557,6 +558,8 @@ export class DashboardRenderer {
             agent.parentSessionId || '',
             agent.teamName || '',
             status,
+            agent.waitReason || '',
+            agent.pendingTool || '',
             agent.currentTool || '',
             agent.currentToolInput || '',
             agent.lastMessage || '',
@@ -608,7 +611,11 @@ export class DashboardRenderer {
 
             const nextStatusClass = `dash-card__status dash-card__status--${status}`;
             if (refs.status.className !== nextStatusClass) refs.status.className = nextStatusClass;
-            this._setText(refs.statusLabel, statusInfo.label);
+            // A blocked agent says what it is blocked on; the generic status
+            // label is only useful when there is nothing more specific.
+            const reason = waitReasonLabel(agent);
+            this._setText(refs.statusLabel, reason || statusInfo.label);
+            refs.status.title = reason ? `${statusInfo.label} — ${reason}` : '';
 
             const tool = currentToolPresentation(agent, i18n);
             refs.currentTool.classList.toggle('dash-card__current-tool--idle', tool.isIdle);

@@ -10,6 +10,7 @@ import {
     currentToolPresentation,
     modelPresentation,
     statusPresentation,
+    waitReasonLabel,
     toolHistoryNodes,
     toolHistorySignature,
 } from './AgentPresentation.js';
@@ -587,8 +588,11 @@ export class ActivityPanel {
         this._refreshHeroPortrait(agent, statusInfo);
         this.dom.panelAgentName.textContent = agent.name;
         const statusEl = this.dom.panelAgentStatus;
-        statusEl.textContent = statusInfo.label.toUpperCase();
+        // When the adapter knows why an agent is blocked, that is the headline.
+        const reason = waitReasonLabel(agent);
+        statusEl.textContent = (reason || statusInfo.label).toUpperCase();
         statusEl.style.color = statusInfo.color;
+        statusEl.title = reason ? statusInfo.label : '';
 
         const model = modelPresentation(agent);
         this.dom.panelModel.textContent = model.label;

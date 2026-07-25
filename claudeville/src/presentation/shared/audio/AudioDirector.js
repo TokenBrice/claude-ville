@@ -119,6 +119,8 @@ export class AudioDirector {
 
         on('team:gather', () => this.cue('council'));
         on('chronicle:aurora', () => this.cue('aurora'));
+        // The one cue that is about the listener rather than the world.
+        on('attention:raised', () => this.cue('summons'));
 
         // Thunder trails the visible lightning by a beat, like real distance.
         on('weather:storm-flash', (payload) => {
