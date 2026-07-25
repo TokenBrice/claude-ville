@@ -1,5 +1,6 @@
 import { ChronicleEventKind, summarizeDay } from '../../application/ChronicleLog.js';
 import { el, replaceChildren } from './DomSafe.js';
+import { formatCost, formatNumber } from './Formatters.js';
 
 // The day's recap, told the way the village would tell it. Reads the
 // ChronicleLog day book and renders a short ledger plus a timeline, so looking
@@ -78,9 +79,11 @@ function openingLine(summary) {
 }
 
 export class ChroniclePanel {
-    constructor({ modal, chronicleLog }) {
+    constructor({ modal, chronicleLog, spendLedger = null, usageGetter = null }) {
         this.modal = modal;
         this.log = chronicleLog;
+        this.spendLedger = spendLedger;
+        this.usageGetter = usageGetter;
     }
 
     async open() {
@@ -90,6 +93,27 @@ export class ChroniclePanel {
         this.modal.open('Village Chronicle', '', { wide: true });
         const content = this.modal.contentEl;
         if (content) replaceChildren(content, this._render(events, summary));
+    }
+
+    // The day's accounting lives here rather than in the topbar: a dollar
+    // figure you are not billed for has not earned permanent space in the
+    // corner of someone's eye, but it belongs in the record of the day.
+    _spendNodes() {
+        const today = this.spendLedger?.today;
+        if (!today) return [];
+        const subscription = this.usageGetter?.()?.account?.subscriptionType;
+        const onPlan = typeof subscription === 'string'
+            && ['max', 'pro', 'team', 'enterprise'].includes(subscription.toLowerCase());
+
+        const nodes = [el('div', { className: 'chronicle__ledger' }, [
+            ledgerRow('NEW TOKENS', formatNumber(today.tokens)),
+            ledgerRow('CACHE READS', formatNumber(today.cacheRead)),
+            ledgerRow(onPlan ? 'API EQUIVALENT' : 'EST. COST', formatCost(today.cost)),
+        ])];
+        nodes.push(el('p', { className: 'chronicle__note' }, onPlan
+            ? `Counted while ClaudeVille was open. Your ${subscription} plan bills on quota, not on this figure — it is what today's tokens would have cost at API rates.`
+            : 'Counted while ClaudeVille was open, from the growth in each session\'s token totals.'));
+        return nodes;
     }
 
     _render(events, summary) {
@@ -103,6 +127,8 @@ export class ChroniclePanel {
             ledgerRow('ERRORS', summary.errors),
             ledgerRow('RATE LIMITS', summary.rateLimits),
         ]));
+
+        nodes.push(...this._spendNodes());
 
         if (summary.longestWaitMs > 0) {
             nodes.push(el('p', { className: 'chronicle__note' },

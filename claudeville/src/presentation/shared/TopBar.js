@@ -4,15 +4,15 @@ import { formatCost, formatNumber } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
 
 export class TopBar {
-    constructor(world, { modal, attention, chronicle } = {}) {
+    constructor(world, { modal, attention, chronicle, spendLedger } = {}) {
         this.world = world;
         this.modal = modal || null;
         this.attention = attention || null;
         this.chronicle = chronicle || null;
+        this.spendLedger = spendLedger || null;
         this.els = {
             root: document.getElementById('topbar'),
             tokens: document.getElementById('statTokens'),
-            cost: document.getElementById('statCost'),
             time: document.getElementById('statTime'),
             fps: document.getElementById('statFps'),
             working: document.getElementById('badgeWorking'),
@@ -30,7 +30,14 @@ export class TopBar {
             cinemaToggle: document.getElementById('topbarCinemaToggle'),
             alertsToggle: document.getElementById('topbarAlertsToggle'),
             chronicleBtn: document.getElementById('topbarChronicle'),
+            rate: document.getElementById('statRate'),
+            rateWrap: document.getElementById('statRateWrap'),
+            quotaWrap: document.getElementById('statQuotaWrap'),
+            quota5h: document.getElementById('statQuota5h'),
+            quota7d: document.getElementById('statQuota7d'),
+            quotaText: document.getElementById('statQuotaText'),
         };
+        this._usage = null;
         this.timeInterval = null;
         this._fpsSamples = [];
         this._fpsPanelEl = null;
@@ -54,6 +61,9 @@ export class TopBar {
 
         this._onFps = (fps) => this.renderFps(fps);
         eventBus.on('fps:updated', this._onFps);
+
+        this._onUsage = (usage) => { this._usage = usage; this._renderQuota(); };
+        eventBus.on('usage:updated', this._onUsage);
 
         this._onWsConnected = () => this._setConnection(true);
         this._onWsDisconnected = () => this._setConnection(false);
@@ -173,8 +183,7 @@ export class TopBar {
     render() {
         const stats = this.world.getStats();
 
-        this.els.tokens.textContent = formatNumber(stats.totalTokens);
-        this.els.cost.textContent = formatCost(stats.totalCost);
+        this._renderSpend();
         this.els.working.textContent = stats.working;
         this.els.idle.textContent = stats.idle;
         this.els.waiting.textContent = stats.waiting;
@@ -185,6 +194,53 @@ export class TopBar {
         this.els.attentionWrap.style.display = stats.attention > 0 ? '' : 'none';
 
         this._renderActivityRail(stats);
+    }
+
+    // Today's observed spend, the live burn rate, and quota headroom — the
+    // three numbers that answer "am I burning tokens?". The old readout summed
+    // the lifetime cost of whichever sessions happened to be resident, which
+    // moved for reasons that had nothing to do with spending.
+    _renderSpend() {
+        const today = this.spendLedger?.sample?.() || { tokens: 0, cacheRead: 0, cost: 0 };
+        this.els.tokens.textContent = formatNumber(today.tokens);
+
+
+        // The rate rides alongside today's total in one cell — two numbers
+        // about the same thing, and the topbar has no width to spare.
+        const rate = this.spendLedger?.burnRate?.();
+        this.els.rate.textContent = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
+        if (this.els.rateWrap) {
+            this.els.rateWrap.title = rate
+                ? `Tokens observed today, now running at about ${formatCost(rate.costPerHour)}/hour at API rates`
+                : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity.';
+        }
+    }
+
+    // Quota is the resource that actually runs out on a subscription, so it
+    // gets the bars and the dollar figure is labelled an estimate.
+    _renderQuota() {
+        const quota = this._usage?.quota;
+        const wrap = this.els.quotaWrap;
+        if (!wrap) return;
+        const fiveHour = Number(quota?.fiveHour);
+        const sevenDay = Number(quota?.sevenDay);
+        if (!Number.isFinite(fiveHour) && !Number.isFinite(sevenDay)) {
+            wrap.hidden = true;
+            return;
+        }
+        wrap.hidden = false;
+        const pct = (value) => Math.round(Math.max(0, Math.min(1, value || 0)) * 100);
+        const five = pct(fiveHour);
+        const seven = pct(sevenDay);
+        if (this.els.quota5h) this.els.quota5h.style.width = `${five}%`;
+        if (this.els.quota7d) this.els.quota7d.style.width = `${seven}%`;
+        // Bars carry the glance; the exact numbers live in the tooltip so the
+        // meta line stays narrow enough for the center ledger to breathe.
+        if (this.els.quotaText) this.els.quotaText.textContent = `${Math.max(five, seven)}%`;
+        wrap.title = `Claude usage: ${five}% of the 5-hour window, ${seven}% of the 7-day window`;
+        // Near the ceiling the bars stop being scenery.
+        const hot = Math.max(fiveHour || 0, sevenDay || 0) > 0.85;
+        wrap.classList.toggle('topbar__quota-meta--hot', hot);
     }
 
     // Living activity rail: a 2px strip along the topbar bottom whose hue and
@@ -347,7 +403,7 @@ export class TopBar {
             const h = String(Math.floor(seconds / 3600)).padStart(2, '0');
             const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, '0');
             const s = String(seconds % 60).padStart(2, '0');
-            this.els.time.textContent = `${h}:${m}:${s}`;
+            if (this.els.time) this.els.time.textContent = `${h}:${m}:${s}`;
         }, 1000);
     }
 
@@ -447,6 +503,7 @@ export class TopBar {
         eventBus.off('agent:updated', this._onUpdate);
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('fps:updated', this._onFps);
+        eventBus.off('usage:updated', this._onUsage);
         if (this._onFpsEnter && this.els.fps) {
             this.els.fps.removeEventListener('mouseenter', this._onFpsEnter);
             this.els.fps.removeEventListener('mouseleave', this._onFpsLeave);

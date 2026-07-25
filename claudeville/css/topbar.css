@@ -280,17 +280,23 @@
    One segmented tag with hairline-divided cells, deliberately matching the
    status tag below so the center reads as two members of one family.
    Frame/gradient/shadow come from the shared .topbar__tag base. */
+/* When the center runs out of room the ledger is what gives. Spend figures
+   are nice to have; the exception badges beside them are the alert surface and
+   must never be the thing that gets clipped off the right edge. */
 .topbar__ledger {
     display: flex;
     align-items: stretch;
     overflow: hidden;
+    flex-shrink: 1;
+    min-width: 0;
 }
 
 .topbar__seg-stat {
     display: flex;
     align-items: center;
     gap: 6px;
-    padding: 5px 9px;
+    padding: 5px 8px;
+    white-space: nowrap;
 }
 
 .topbar__seg-stat + .topbar__seg-stat {
@@ -303,6 +309,45 @@
     letter-spacing: 1px;
     opacity: 0.78;
     text-shadow: 0 1px 0 rgba(0, 0, 0, 0.6);
+}
+
+/* Quota headroom: two thin gauges (5-hour, 7-day). It sits on the brand meta
+   line with the other account/connection readouts rather than in the spend
+   ledger — quota is a property of the account, not of today's tokens. */
+.topbar__quota-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.topbar__quota {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.topbar__quota-bar {
+    display: block;
+    width: 26px;
+    height: 3px;
+    background: rgba(0, 0, 0, 0.55);
+    border: 1px solid rgba(199, 157, 76, 0.32);
+}
+
+.topbar__quota-fill {
+    display: block;
+    height: 100%;
+    width: 0;
+    background: var(--cv-gold-soft);
+}
+
+/* Near the ceiling the gauges stop being scenery. */
+.topbar__quota-meta--hot .topbar__quota-fill {
+    background: var(--cv-status-errored);
+}
+
+.topbar__quota-meta--hot {
+    color: var(--cv-status-errored);
 }
 
 /* Values use the legible data face (Departure Mono), sized up from the pixel
@@ -318,6 +363,7 @@
     display: flex;
     align-items: center;
     gap: 7px;
+    flex-shrink: 0;
 }
 
 /* ── Exception badge pills (errored/attention) ── */
@@ -559,4 +605,23 @@ button.topbar__badge--attention:active {
 
 .topbar__mode-btn--active:hover {
     color: #0a0a0f;
+}
+
+/* A number the reader should weigh less: present, legible, not a headline. */
+.topbar__seg-stat--muted .topbar__stat-value {
+    color: rgba(187, 161, 122, 0.72);
+}
+
+.topbar__uptime {
+    color: rgba(187, 161, 122, 0.72);
+}
+
+/* Burn rate rides in the TODAY cell: same subject, secondary weight. */
+.topbar__stat-rate {
+    font-size: 9px;
+    color: rgba(187, 161, 122, 0.7);
+}
+
+.topbar__stat-rate:empty {
+    display: none;
 }

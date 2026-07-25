@@ -58,19 +58,23 @@ class SessionResidency {
       }
     }
 
-    const out = live.slice();
+    // Expire and cap before emitting, so an over-cap resident is never served
+    // one last time on its way out.
     for (const [id, record] of [...this._residents]) {
-      if (liveIds.has(id)) continue; // still live; the resident copy is only a backup
+      if (liveIds.has(id)) continue;
       if (now - record.lastLiveAt > this.ttlMs) {
         this._residents.delete(id);
         this._stats.expired++;
-        continue;
       }
+    }
+    this._enforceCap(liveIds);
+
+    const out = live.slice();
+    for (const [id, record] of this._residents) {
+      if (liveIds.has(id)) continue; // still live; the resident copy is only a backup
       record.absent = true;
       out.push(this._presentResident(record, now));
     }
-
-    this._enforceCap(liveIds, now);
     return out;
   }
 
@@ -79,7 +83,12 @@ class SessionResidency {
   // when the session went quiet is recognised as blocked once it has sat long
   // enough.
   _presentResident(record, now) {
-    const session = { ...record.session, resident: true };
+    const session = {
+      waitReason: null,
+      awaitingSince: null,
+      ...record.session,
+      resident: true,
+    };
     if (session.turnState === 'tool_pending' && !session.waitReason) {
       const { blocked, reason } = classifyPendingTool({
         tool: session.pendingTool,
@@ -94,7 +103,7 @@ class SessionResidency {
     return session;
   }
 
-  _enforceCap(liveIds, now) {
+  _enforceCap(liveIds) {
     const evictable = [...this._residents.entries()].filter(([id]) => !liveIds.has(id));
     let overflow = evictable.length - this.maxResidents;
     if (overflow <= 0) return;
