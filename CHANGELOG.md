@@ -31,7 +31,11 @@ A pass over the places where the pixel village was quietly drawing itself in vec
 - **The island edge is layered.** The sand lip and the cliff face below it were smooth vertical gradients, the one thing a pixel coastline cannot be. Both are now quantised into discrete courses, same silhouette and colours, in the same idiom as the rock above them.
 - **The reef falls away.** Where a basin drops from shallow to deep the base art changes at a tile boundary, so the edge read as a hard staircase however smoothly the depth graded over it. Deep water bordering shallows now carries an inset darker rim, so the step reads as a shelf.
 
-All of the added detail bakes once into the existing prop and terrain caches rather than running per frame; monuments got cheaper, not dearer, by moving from vector paths to sprite blits. Measured on the deterministic world benchmark: 46 FPS median at 10 agents and 39 at 25, matching the v0.27 reference, with zero frame failures.
+**Two artefacts, found by bisecting the render passes**
+- **No more ruled lines across open water.** Long, perfectly straight pale streaks crossed the open sea. The shoreline foam mask counted neighbours *outside* the map as land, so every water tile along the edge of the tile array grew a coastline — foam drawn along a boundary that is an artefact of the array, not a feature of the world. Twenty-nine percent of all foam was spurious; the genuine coastlines keep theirs.
+- **The sun stays in the sky.** The sun is drawn twice: once into the backdrop behind the world, and again in the canopy pass that deliberately composites over the village so aurora and shooting stars are not hidden behind it. That is right for the sun's glow and rays, which are additive and read as glare — and wrong for its body, which is opaque and was being stamped onto whatever lay beneath it, most obviously as a disc sitting on the ocean at close zoom. The canopy now carries only the glare; the backdrop still draws the full stepped disc, so the sun is crisp wherever sky is actually visible.
+
+All of the added detail bakes once into the existing prop and terrain caches rather than running per frame; monuments got cheaper, not dearer, by moving from vector paths to sprite blits. Measured on the deterministic world benchmark: 48 FPS median at 10 agents and 40 at 25, at or above the v0.27 reference of 46 and 40, with zero frame failures.
 
 ---
 
