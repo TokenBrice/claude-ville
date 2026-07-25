@@ -1,0 +1,132 @@
+/**
+ * Session residency.
+ *
+ * Adapters only report sessions touched inside ACTIVE_THRESHOLD_MS, which is
+ * right for discovery and wrong for the village: a session goes quiet exactly
+ * when it finishes a turn or stops on a permission prompt, so the two states
+ * worth looking at were the two that disappeared fastest.
+ *
+ * Residency keeps those — and only those — after they leave the active window.
+ * A session whose last known turn state was `awaiting_input` (done, your move)
+ * or `tool_pending` (a call with no result) stays resident until it resumes,
+ * ages out, or is pushed out by the cap. A session that vanished mid-work, or
+ * one from a provider with no turn state, is dropped as before: silence there
+ * means the process ended, not that something needs a person.
+ */
+
+const { classifyPendingTool } = require('../adapters/turnState');
+
+const DEFAULT_TTL_MS = 45 * 60 * 1000;
+const DEFAULT_MAX_RESIDENTS = 24;
+
+const RETAINED_TURN_STATES = new Set(['awaiting_input', 'tool_pending']);
+
+class SessionResidency {
+  constructor({ ttlMs = DEFAULT_TTL_MS, maxResidents = DEFAULT_MAX_RESIDENTS } = {}) {
+    this.ttlMs = ttlMs;
+    this.maxResidents = maxResidents;
+    this._residents = new Map(); // sessionId → { session, residentSince, lastLiveAt }
+    this._stats = { admitted: 0, resumed: 0, expired: 0, capEvictions: 0 };
+  }
+
+  /**
+   * Merge live adapter output with retained sessions.
+   * @param {Array<object>} liveSessions
+   * @returns {Array<object>} live sessions followed by still-valid residents
+   */
+  merge(liveSessions, now = Date.now()) {
+    const live = Array.isArray(liveSessions) ? liveSessions : [];
+    const liveIds = new Set();
+
+    for (const session of live) {
+      const id = session?.sessionId;
+      if (!id) continue;
+      liveIds.add(id);
+      const previous = this._residents.get(id);
+      // Only a session we were actually serving from residency counts as
+      // resumed; refreshing a still-live retained session is not a resumption.
+      if (previous?.absent) this._stats.resumed++;
+      this._residents.delete(id);
+      if (RETAINED_TURN_STATES.has(session.turnState)) {
+        if (!previous) this._stats.admitted++;
+        this._residents.set(id, {
+          session: { ...session },
+          residentSince: previous?.residentSince ?? now,
+          lastLiveAt: now,
+          absent: false,
+        });
+      }
+    }
+
+    const out = live.slice();
+    for (const [id, record] of [...this._residents]) {
+      if (liveIds.has(id)) continue; // still live; the resident copy is only a backup
+      if (now - record.lastLiveAt > this.ttlMs) {
+        this._residents.delete(id);
+        this._stats.expired++;
+        continue;
+      }
+      record.absent = true;
+      out.push(this._presentResident(record, now));
+    }
+
+    this._enforceCap(liveIds, now);
+    return out;
+  }
+
+  // A resident's transcript is frozen, but how long it has been waiting is not.
+  // Re-run the pending-tool classification so a call that merely looked slow
+  // when the session went quiet is recognised as blocked once it has sat long
+  // enough.
+  _presentResident(record, now) {
+    const session = { ...record.session, resident: true };
+    if (session.turnState === 'tool_pending' && !session.waitReason) {
+      const { blocked, reason } = classifyPendingTool({
+        tool: session.pendingTool,
+        permissionMode: session.permissionMode,
+        pendingForMs: session.pendingSince ? Math.max(0, now - session.pendingSince) : 0,
+      });
+      if (blocked) {
+        session.waitReason = reason;
+        session.awaitingSince = session.pendingSince;
+      }
+    }
+    return session;
+  }
+
+  _enforceCap(liveIds, now) {
+    const evictable = [...this._residents.entries()].filter(([id]) => !liveIds.has(id));
+    let overflow = evictable.length - this.maxResidents;
+    if (overflow <= 0) return;
+    evictable.sort((a, b) => a[1].lastLiveAt - b[1].lastLiveAt);
+    for (const [id] of evictable) {
+      if (overflow-- <= 0) break;
+      this._residents.delete(id);
+      this._stats.capEvictions++;
+    }
+  }
+
+  get size() {
+    return this._residents.size;
+  }
+
+  getDiagnostics() {
+    return {
+      residents: this._residents.size,
+      ttlMs: this.ttlMs,
+      maxResidents: this.maxResidents,
+      ...this._stats,
+    };
+  }
+
+  clear() {
+    this._residents.clear();
+  }
+}
+
+module.exports = {
+  SessionResidency,
+  DEFAULT_TTL_MS,
+  DEFAULT_MAX_RESIDENTS,
+  RETAINED_TURN_STATES,
+};

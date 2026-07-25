@@ -20,6 +20,7 @@ const {
   readLines: readSharedLines,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
+const { deriveTurnState, toEpochMs } = require('./turnState');
 
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
@@ -436,7 +437,59 @@ function parseRollout(filePath) {
     }
   }
 
+  Object.assign(detail, deriveCodexTurnState(entries));
+
   return detail;
+}
+
+// Codex states its turn boundaries outright: `task_started` opens a turn and
+// `task_complete` closes it, while tool calls pair by `call_id`. Derived from
+// the tail window the summary already parsed, so it costs no extra read.
+function deriveCodexTurnState(entries, now = Date.now()) {
+  const resolved = new Set();
+  for (const entry of entries) {
+    const payload = entry?.payload;
+    if (!payload?.call_id) continue;
+    if (payload.type === 'function_call_output' || payload.type === 'custom_tool_call_output') {
+      resolved.add(payload.call_id);
+    }
+  }
+
+  let pendingTool = null;
+  let pendingSince = null;
+  let turnEnded = false;
+  let turnEndedAt = null;
+  let sawTurnBoundary = false;
+
+  for (const entry of entries) {
+    const payload = entry?.payload;
+    if (!payload) continue;
+
+    if (entry.type === 'event_msg' && payload.type === 'task_started') {
+      sawTurnBoundary = true;
+      turnEnded = false;
+      turnEndedAt = null;
+    }
+    if (entry.type === 'event_msg' && (payload.type === 'task_complete' || payload.type === 'turn_complete')) {
+      sawTurnBoundary = true;
+      turnEnded = true;
+      turnEndedAt = toEpochMs(entry.timestamp);
+    }
+
+    if (entry.type !== 'response_item') continue;
+    const isCall = payload.type === 'function_call' || payload.type === 'custom_tool_call';
+    if (isCall && payload.call_id && !resolved.has(payload.call_id) && !pendingTool) {
+      pendingTool = payload.name || payload.type;
+      pendingSince = toEpochMs(entry.timestamp);
+    }
+  }
+
+  if (!sawTurnBoundary && !pendingTool) return deriveTurnState({ known: false }, now);
+
+  // Codex approvals are surfaced by the CLI, not the rollout, so dwell time is
+  // the only signal available; leaving permissionMode null keeps the shared
+  // thresholds in charge.
+  return deriveTurnState({ turnEnded, turnEndedAt, pendingTool, pendingSince }, now);
 }
 
 /**
@@ -1101,6 +1154,11 @@ class CodexAdapter {
         agentType: detail.agentType || 'main',
         model: inferCodexModel(detail) || 'codex',
         reasoningEffort: detail.reasoningEffort,
+        turnState: detail.turnState,
+        pendingTool: detail.pendingTool,
+        pendingSince: detail.pendingSince,
+        awaitingSince: detail.awaitingSince,
+        waitReason: detail.waitReason,
         status: 'active',
         lastActivity: mtime,
         project: detail.project || null,

@@ -23,6 +23,7 @@ const { getTailCacheDiagnostics } = require('./adapters/shared');
 
 // ─── Usage quota service ──────────────────────────────
 const usageQuota = require('./services/usageQuota');
+const { SessionResidency } = require('./services/sessionResidency');
 
 // Claude adapter (teams/tasks are Claude-only)
 const claudeAdapter = adapters.find(a => a.provider === 'claude');
@@ -34,6 +35,9 @@ const STATIC_ROOT = path.resolve(STATIC_DIR);
 const realpathSync = fs.realpathSync.native || fs.realpathSync;
 const STATIC_REAL_ROOT = realpathSync(STATIC_ROOT);
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+// Sessions that stopped on a question, a permission prompt, or a finished turn
+// are held past the active window so the village still shows them.
+const sessionResidency = new SessionResidency();
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
 const JSON_BODY_LIMIT_BYTES = 256 * 1024;
@@ -243,8 +247,7 @@ function printStartupStats(providers) {
 function handleGetSessions(req, res, parsedUrl) {
   sendApiPayload(res, 'Failed to fetch sessions', () => {
     const force = ['1', 'true', 'yes'].includes(String(parsedUrl.searchParams.get('force') || '').toLowerCase());
-    const sessions = getAllSessions(ACTIVE_THRESHOLD_MS, { force });
-    updateCanonicalActiveProjects(sessions);
+    const sessions = collectSessionsForClients({ force });
     return { sessions, count: sessions.length, timestamp: Date.now() };
   }, 'Unable to load session information.');
 }
@@ -354,6 +357,7 @@ function handleGetPerf(req, res) {
   sendApiPayload(res, 'Failed to fetch perf counters', () => ({
     websocketClients: wsClients.size,
     activeWatchPaths: serverPerf.activeWatchPaths,
+    sessionResidency: sessionResidency.getDiagnostics(),
     recursiveWatchFallbacks: serverPerf.recursiveWatchFallbacks,
     recursiveWatchFallbackDetails: Array.from(recursiveWatchFallbacks.values()).map((fallback) => ({
       path: fallback.wp.path,
@@ -845,11 +849,10 @@ function sendInitialData(socket) {
       return;
     }
     const state = {
-      sessions: getAllSessions(ACTIVE_THRESHOLD_MS, { force: true }),
+      sessions: collectSessionsForClients({ force: true }),
       teams: getTeamsCached({ force: true }),
       usage: usageQuota.fetchUsage(),
     };
-    updateCanonicalActiveProjects(state.sessions);
     broadcastSeq++;
     lastBroadcastState = state;
     wsSend(socket, {
@@ -997,6 +1000,16 @@ function updateCanonicalActiveProjects(sessions = []) {
   projects.forEach((project) => lastCanonicalActiveProjects.add(project));
 }
 
+// Client-facing session collection. Discovery, canonical project tracking, and
+// watch topology all stay on the raw active window; only what reaches a browser
+// gets residents folded in, so holding a finished session visible never widens
+// the watcher footprint.
+function collectSessionsForClients({ force = false } = {}) {
+  const live = getAllSessions(ACTIVE_THRESHOLD_MS, { force });
+  updateCanonicalActiveProjects(live);
+  return sessionResidency.merge(live);
+}
+
 function getTeamsCached({ force = false } = {}) {
   if (!claudeAdapter) return [];
   const now = Date.now();
@@ -1072,12 +1085,11 @@ function collectBroadcastPayload({ force = false } = {}) {
   };
   const payload = {
     type: 'update',
-    sessions: stage('sessions', () => getAllSessions(ACTIVE_THRESHOLD_MS, { force })),
+    sessions: stage('sessions', () => collectSessionsForClients({ force })),
     teams: stage('teams', () => getTeamsCached({ force })),
     usage: stage('usage', () => usageQuota.fetchUsage()),
     timestamp: Date.now(),
   };
-  updateCanonicalActiveProjects(payload.sessions);
   return { payload, stages };
 }
 

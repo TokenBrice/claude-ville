@@ -92,6 +92,12 @@ function normalizeSession(session, context = {}) {
     workflowId: session?.workflowId ?? null,
     workflowName: session?.workflowName ?? null,
     permissionMode: session?.permissionMode ?? null,
+    turnState: session?.turnState ?? 'unknown',
+    pendingTool: session?.pendingTool ?? null,
+    pendingSince: Number.isFinite(Number(session?.pendingSince)) ? Number(session.pendingSince) : null,
+    awaitingSince: Number.isFinite(Number(session?.awaitingSince)) ? Number(session.awaitingSince) : null,
+    waitReason: session?.waitReason ?? null,
+    resident: session?.resident === true,
     sendMessages: Array.isArray(session?.sendMessages) ? session.sendMessages : [],
     gitEvents: Array.isArray(session?.gitEvents) ? session.gitEvents : [],
   });

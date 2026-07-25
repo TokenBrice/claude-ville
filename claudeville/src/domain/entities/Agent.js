@@ -47,6 +47,11 @@ export class Agent {
         workflowName,
         lastSessionActivity,
         activityAgeMs,
+        turnState,
+        pendingTool,
+        waitReason,
+        awaitingSince,
+        resident,
     }) {
         this.id = id;
         this._customName = !!name; // Whether the name was assigned by a team
@@ -72,6 +77,14 @@ export class Agent {
         this.lastToolInput = lastToolInput || currentToolInput || null;
         this.gitEvents = Array.isArray(gitEvents) ? gitEvents : [];
         this.permissionMode = permissionMode ?? null;
+        // Transcript-derived turn state (see adapters/turnState.js). `waitReason`
+        // says why a WAITING_ON_USER agent is blocked; `resident` marks a session
+        // the server is holding past its active window.
+        this.turnState = turnState || 'unknown';
+        this.pendingTool = pendingTool || null;
+        this.waitReason = waitReason || null;
+        this.awaitingSince = Number.isFinite(Number(awaitingSince)) ? Number(awaitingSince) : null;
+        this.resident = resident === true;
         this.sendMessages = Array.isArray(sendMessages) ? sendMessages : [];
         this.lastSessionActivity = lastSessionActivity || null;
         this.activityAgeMs = Number.isFinite(Number(activityAgeMs)) ? Number(activityAgeMs) : null;

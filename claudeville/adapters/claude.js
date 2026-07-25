@@ -14,6 +14,7 @@ const {
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
+const { deriveTurnState, toEpochMs } = require('./turnState');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -1033,6 +1034,101 @@ function getTokenUsage(sessionFilePath) {
   return emptyTokenUsage();
 }
 
+// Transcript-derived turn state: is the model working, is a tool call
+// unanswered, or did the turn close and hand control back to the user?
+//
+// Reads the cached tail window, so this costs no extra IO beyond what the
+// session summary already pays. Sidechain lines belong to subagents running
+// inside the parent's transcript; a subagent finishing its turn says nothing
+// about the parent, so they are skipped when judging the main session.
+const TURN_STATE_TAIL_LINES = 60;
+
+function turnStateFromEntries(entries, { permissionMode, skipSidechain, now }) {
+  const skip = (entry) => skipSidechain && entry?.isSidechain === true;
+
+  // Every tool_use id that already has a result, from anywhere in the window.
+  const resolved = new Set();
+  for (const entry of entries) {
+    const content = entry?.message?.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block?.type === 'tool_result' && block.tool_use_id) resolved.add(block.tool_use_id);
+    }
+  }
+
+  let lastAssistantIndex = -1;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (skip(entry)) continue;
+    if (entry?.message?.role === 'assistant') { lastAssistantIndex = i; break; }
+  }
+  if (lastAssistantIndex === -1) return null;
+
+  // A real user message after the last assistant turn means the model owes a
+  // reply — it is thinking, not waiting, whatever the previous turn said.
+  for (let i = lastAssistantIndex + 1; i < entries.length; i++) {
+    const entry = entries[i];
+    if (skip(entry)) continue;
+    if (entry?.message?.role !== 'user') continue;
+    const content = entry.message.content;
+    const isToolResultOnly = Array.isArray(content)
+      && content.length > 0
+      && content.every(block => block?.type === 'tool_result');
+    if (!isToolResultOnly) {
+      return deriveTurnState({ turnEnded: false, permissionMode }, now);
+    }
+  }
+
+  // Earliest unanswered tool call in the trailing assistant turns — the
+  // longest-waiting call is the one that decides how blocked the session is.
+  let pendingTool = null;
+  let pendingSince = null;
+  for (let i = Math.max(0, lastAssistantIndex - 8); i <= lastAssistantIndex && !pendingTool; i++) {
+    const entry = entries[i];
+    if (skip(entry)) continue;
+    if (entry?.message?.role !== 'assistant') continue;
+    const content = entry.message.content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (block?.type !== 'tool_use' || !block.id) continue;
+      if (resolved.has(block.id)) continue;
+      pendingTool = block.name || 'unknown';
+      pendingSince = toEpochMs(entry.timestamp);
+      break;
+    }
+  }
+
+  const lastAssistant = entries[lastAssistantIndex];
+  const stopReason = lastAssistant?.message?.stop_reason || null;
+
+  return deriveTurnState({
+    turnEnded: !pendingTool && stopReason === 'end_turn',
+    turnEndedAt: toEpochMs(lastAssistant?.timestamp),
+    pendingTool,
+    pendingSince,
+    permissionMode,
+  }, now);
+}
+
+function getClaudeTurnState(sessionFilePath, permissionMode = null, now = Date.now()) {
+  const unknown = deriveTurnState({ known: false }, now);
+  if (!sessionFilePath) return unknown;
+
+  try {
+    const entries = tailEntries(sessionFilePath, TURN_STATE_TAIL_LINES);
+    if (!entries.length) return unknown;
+
+    // Prefer the main thread. Subagent transcripts are sidechain end to end,
+    // so when skipping them leaves nothing to read, the whole file is the
+    // sidechain and every line counts.
+    return turnStateFromEntries(entries, { permissionMode, skipSidechain: true, now })
+      || turnStateFromEntries(entries, { permissionMode, skipSidechain: false, now })
+      || unknown;
+  } catch {
+    return unknown;
+  }
+}
+
 // Latest plan/act permission mode for a session. Transcripts carry sparse
 // `permissionMode` markers ('default' | 'plan' | 'acceptEdits' |
 // 'bypassPermissions') on user prompt entries and dedicated
@@ -1281,7 +1377,9 @@ function latestSubAgentActivity(sessionDir) {
 function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, workflowId = null, workflowName = null, lastActivity }) {
   const detail = getSubAgentDetail(filePath);
   const sessionId = `subagent-${agentId}`;
+  const permissionMode = getPermissionMode(filePath);
   return {
+    ...getClaudeTurnState(filePath, permissionMode),
     sessionId,
     provider: 'claude',
     agentId,
@@ -1296,7 +1394,7 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
     lastTool: detail.lastTool,
     lastToolInput: detail.lastToolInput,
     tokenUsage: getTokenUsage(filePath),
-    permissionMode: getPermissionMode(filePath),
+    permissionMode,
     sendMessages: getSendMessageEdges(filePath),
     gitEvents: getGitEvents(filePath, { provider: 'claude', sessionId, project: decodedProject }),
     parentSessionId,
@@ -1376,8 +1474,10 @@ class ClaudeAdapter {
       const sessionFilePath = resolveSessionFilePath(session.sessionId, session.project);
       const sessionName = sessionNames.get(session.sessionId) || null;
       const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
+      const permissionMode = sessionFilePath ? getPermissionMode(sessionFilePath) : null;
       mainSessions.push({
         ...session,
+        ...getClaudeTurnState(sessionFilePath, permissionMode, now),
         name: sessionName,
         agentName: sessionName,
         teamName,
@@ -1386,7 +1486,7 @@ class ClaudeAdapter {
         lastToolInput: detail.lastToolInput,
         lastMessage: detail.lastMessage || session.lastMessage,
         tokenUsage: sessionFilePath ? getTokenUsage(sessionFilePath) : null,
-        permissionMode: sessionFilePath ? getPermissionMode(sessionFilePath) : null,
+        permissionMode,
         sendMessages: sessionFilePath ? getSendMessageEdges(sessionFilePath) : [],
         gitEvents: sessionFilePath ? getGitEvents(sessionFilePath, {
           provider: 'claude',
@@ -1556,8 +1656,10 @@ class ClaudeAdapter {
           const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name);
           const sessionName = sessionNames.get(sessionId) || null;
           const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
+          const permissionMode = getPermissionMode(filePath);
 
           results.push({
+            ...getClaudeTurnState(filePath, permissionMode, now),
             sessionId,
             provider: 'claude',
             agentId: sessionId,
@@ -1573,7 +1675,7 @@ class ClaudeAdapter {
             lastTool: detail.lastTool,
             lastToolInput: detail.lastToolInput,
             tokenUsage: getTokenUsage(filePath),
-            permissionMode: getPermissionMode(filePath),
+            permissionMode,
             sendMessages: getSendMessageEdges(filePath),
             gitEvents: getGitEvents(filePath, {
               provider: 'claude',
