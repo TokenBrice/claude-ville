@@ -9,6 +9,7 @@
 import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { STATUS_VISUALS, WORLD_BODY_FONT } from '../../config/theme.js';
+import { drawPixelFlame, fillPixelEllipse, strokePixelEllipse } from './PixelShapes.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
 import { classifyTool } from '../../domain/services/ToolIdentity.js';
@@ -4014,32 +4015,22 @@ export class BuildingSprite {
 
         ctx.globalCompositeOperation = 'source-over';
         ctx.globalAlpha = 0.92;
-        ctx.fillStyle = '#6b351c';
-        ctx.strokeStyle = '#2f1d12';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.ellipse(beacon.x, beacon.y + 7, 10, 4, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
+        // Brazier bowl: a pixel pool with a rim, not an outlined vector ellipse.
+        fillPixelEllipse(ctx, beacon.x, beacon.y + 7, 10, 4, '#6b351c');
+        strokePixelEllipse(ctx, beacon.x, beacon.y + 7, 10, 4, '#2f1d12');
 
         ctx.globalCompositeOperation = 'screen';
         ctx.globalAlpha = 0.92;
-        ctx.fillStyle = failed ? '#ff5d43' : '#ff7a2f';
-        ctx.beginPath();
-        ctx.moveTo(beacon.x - 6, beacon.y + 5);
-        ctx.quadraticCurveTo(beacon.x - 8 + lean, beacon.y - 3 - flicker, beacon.x - 1 + lean, beacon.y - 15 - flicker);
-        ctx.quadraticCurveTo(beacon.x + 9 + lean, beacon.y - 1, beacon.x + 6, beacon.y + 6);
-        ctx.closePath();
-        ctx.fill();
-
-        ctx.fillStyle = failed ? '#ffd08b' : '#ffe68a';
-        ctx.globalAlpha = 0.95;
-        ctx.beginPath();
-        ctx.moveTo(beacon.x - 2, beacon.y + 4);
-        ctx.quadraticCurveTo(beacon.x - 3 + lean * 0.4, beacon.y - 3 - flicker * 0.5, beacon.x + 2 + lean * 0.3, beacon.y - 10 - flicker * 0.5);
-        ctx.quadraticCurveTo(beacon.x + 5 + lean * 0.2, beacon.y, beacon.x + 3, beacon.y + 5);
-        ctx.closePath();
-        ctx.fill();
+        // The beacon is the tallest, most-looked-at flame in the village; it was
+        // two quadratic curves, which read as a smooth orange leaf.
+        const beaconHeight = 20 + Math.abs(flicker) * 1.6;
+        drawPixelFlame(ctx, beacon.x, beacon.y + 5, beaconHeight, 6, {
+            outer: failed ? '#ff5d43' : '#ff7a2f',
+            inner: failed ? '#ffd08b' : '#ffe68a',
+            tip: failed ? '#ffe9c8' : '#fff3c4',
+            lean,
+            coreRatio: 0.55,
+        });
     }
 
     _spawnEmittersFor(b, dt = 16) {

@@ -1,5 +1,6 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
 import { THEME, WORLD_BODY_FONT } from '../../config/theme.js';
+import { drawPixelFlame, fillPixelEllipse, fillTileDiamond } from './PixelShapes.js';
 import { normalizeBuildingType } from '../../config/buildings.js';
 import { PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
 import {
@@ -285,6 +286,26 @@ const VILLAGE_STONE_PALETTE = Object.freeze({
 const VILLAGE_GATE_TOWER_HALF_TILES = 1.55;
 const VILLAGE_GATE_TOWER_SPRITE_ID = 'prop.villageGateTower';
 const VILLAGE_GATE_ARCH_SPRITE_ID = 'prop.villageGateArch';
+// Sample a colour ramp at t in [0,1], returning an rgba string. Used to
+// quantise what were smooth linear gradients into discrete pixel-art courses.
+function sampleRamp(stops, t) {
+    const clamped = Math.max(0, Math.min(1, t));
+    let lo = stops[0];
+    let hi = stops[stops.length - 1];
+    for (let i = 0; i < stops.length - 1; i++) {
+        if (clamped >= stops[i].t && clamped <= stops[i + 1].t) {
+            lo = stops[i];
+            hi = stops[i + 1];
+            break;
+        }
+    }
+    const span = hi.t - lo.t || 1;
+    const k = (clamped - lo.t) / span;
+    const ch = (i) => Math.round(lo.c[i] + (hi.c[i] - lo.c[i]) * k);
+    const alpha = (lo.c[3] + (hi.c[3] - lo.c[3]) * k).toFixed(3);
+    return `rgba(${ch(0)}, ${ch(1)}, ${ch(2)}, ${alpha})`;
+}
+
 const VILLAGE_GATE_ARCH_COLUMN_SPAN = 104;
 // Inscription band inside prop.villageGateArch.png, in sprite pixels. The PNG
 // carries the empty burgundy band; the lettering is drawn over it at runtime.
@@ -4977,21 +4998,9 @@ export class IsometricRenderer {
         ctx.lineWidth = 1;
         ctx.stroke();
         const flick = this.motionScale ? (Math.sin(this.waterFrame * 3.2 + x) * 0.5 + 0.5) : 0.5;
-        const fh = 10 + flick * 5;
-        ctx.fillStyle = 'rgba(255, 140, 36, 0.96)';
-        ctx.beginPath();
-        ctx.moveTo(Math.round(x - 5), Math.round(y - 24));
-        ctx.lineTo(Math.round(x), Math.round(y - 24 - fh));
-        ctx.lineTo(Math.round(x + 5), Math.round(y - 24));
-        ctx.closePath();
-        ctx.fill();
-        ctx.fillStyle = 'rgba(255, 224, 130, 0.96)';
-        ctx.beginPath();
-        ctx.moveTo(Math.round(x - 2.5), Math.round(y - 24));
-        ctx.lineTo(Math.round(x), Math.round(y - 24 - fh * 0.6));
-        ctx.lineTo(Math.round(x + 2.5), Math.round(y - 24));
-        ctx.closePath();
-        ctx.fill();
+        drawPixelFlame(ctx, x, y - 24, 10 + flick * 5, 5, {
+            lean: this.motionScale ? Math.sin(this.waterFrame * 1.7 + x) * 1.5 : 0,
+        });
         ctx.globalCompositeOperation = 'screen';
         const glow = ctx.createRadialGradient(x, y - 26, 2, x, y - 26, 34);
         glow.addColorStop(0, 'rgba(255, 175, 75, 0.50)');
@@ -5875,28 +5884,9 @@ export class IsometricRenderer {
             ctx.fillStyle = palette.dark;
             ctx.fillRect(Math.round(bx - 2), Math.round(topY), 4, 11);
             const flick = this.motionScale ? (Math.sin(this.waterFrame * 3 + d) * 0.5 + 0.5) : 0.5;
-            // Flame built from stacked rows rather than filled triangles: a
-            // sharp-cornered vector triangle reads as a paper cutout, while a
-            // stepped taper with a lit core matches the sprite work around it.
-            const fh = Math.round(7 + flick * 3);
-            const flameX = Math.round(bx);
-            const flameTop = Math.round(topY);
-            for (let k = 0; k < fh; k++) {
-                const t = k / Math.max(1, fh - 1);          // 0 at base, 1 at tip
-                const half = Math.max(0, Math.round(3 * (1 - t * t)));
-                if (half <= 0) continue;
-                ctx.fillStyle = 'rgba(255, 150, 40, 0.95)';
-                ctx.fillRect(flameX - half, flameTop - k, half * 2, 1);
-                if (t < 0.62) {
-                    const coreHalf = Math.max(0, half - 1);
-                    if (coreHalf > 0) {
-                        ctx.fillStyle = 'rgba(255, 226, 130, 0.95)';
-                        ctx.fillRect(flameX - coreHalf, flameTop - k, coreHalf * 2, 1);
-                    }
-                }
-            }
-            ctx.fillStyle = 'rgba(255, 244, 206, 0.9)';
-            ctx.fillRect(flameX, flameTop - fh + 1, 1, 1);
+            drawPixelFlame(ctx, bx, topY, 7 + flick * 3, 3, {
+                lean: this.motionScale ? Math.sin(this.waterFrame * 1.4 + d) * 1.2 : 0,
+            });
             ctx.save();
             ctx.globalCompositeOperation = 'screen';
             const glow = ctx.createRadialGradient(bx, topY - 2, 1, bx, topY - 2, 22);
@@ -8023,34 +8013,49 @@ export class IsometricRenderer {
         const sandH = 16;   // sunlit beach lip
         const cliffH = 46;   // shaded face dropping to the void
 
+        // Both faces are drawn as stepped bands rather than linear gradients.
+        // A smooth vertical ramp is the one thing a pixel-art coastline cannot
+        // do: it reads as an airbrushed slab against terrain made of discrete
+        // tones. Quantising into courses keeps the same silhouette and colour
+        // ramp while putting the cliff in the same idiom as the rock and
+        // masonry above it. Baked, so the extra fills cost nothing per frame.
+        // `vTop` is the drop from the diamond edge line to the top of this
+        // group of bands; both endpoints of the edge move together.
+        const bandedFace = (side, vTop, height, bandCount, offsetTop, offsetBottom, ramp) => {
+            for (let k = 0; k < bandCount; k++) {
+                const t0 = k / bandCount;
+                const t1 = (k + 1) / bandCount;
+                const dy0 = vTop + height * t0;
+                const dy1 = vTop + height * t1;
+                const o0 = side.dir * (offsetTop + (offsetBottom - offsetTop) * t0);
+                const o1 = side.dir * (offsetTop + (offsetBottom - offsetTop) * t1);
+                ctx.fillStyle = sampleRamp(ramp, (t0 + t1) / 2);
+                ctx.beginPath();
+                ctx.moveTo(side.a.x + o0, Math.round(side.a.y + dy0));
+                ctx.lineTo(side.b.x + o0, Math.round(side.b.y + dy0));
+                ctx.lineTo(side.b.x + o1, Math.round(side.b.y + dy1));
+                ctx.lineTo(side.a.x + o1, Math.round(side.a.y + dy1));
+                ctx.closePath();
+                ctx.fill();
+            }
+        };
+
+        const SAND_RAMP = [
+            { t: 0, c: [226, 196, 142, 0.92] },
+            { t: 1, c: [196, 162, 108, 0.85] },
+        ];
+        const CLIFF_RAMP = [
+            { t: 0, c: [120, 92, 58, 0.82] },
+            { t: 0.6, c: [70, 52, 34, 0.62] },
+            { t: 1, c: [34, 24, 17, 0] },
+        ];
+
         for (const side of [{ a: east, b: south, dir: -1 }, { a: south, b: west, dir: 1 }]) {
             ctx.save();
-            // Sunlit sand lip hugging the diamond edge.
-            const sand = ctx.createLinearGradient(0, side.a.y, 0, side.a.y + sandH);
-            sand.addColorStop(0, 'rgba(226, 196, 142, 0.92)');
-            sand.addColorStop(1, 'rgba(196, 162, 108, 0.85)');
-            ctx.fillStyle = sand;
-            ctx.beginPath();
-            ctx.moveTo(side.a.x, side.a.y);
-            ctx.lineTo(side.b.x, side.b.y);
-            ctx.lineTo(side.b.x + side.dir * 6, side.b.y + sandH);
-            ctx.lineTo(side.a.x + side.dir * 6, side.a.y + sandH);
-            ctx.closePath();
-            ctx.fill();
-
+            // Sunlit sand lip hugging the diamond edge — 4 courses.
+            bandedFace(side, 0, sandH, 4, 0, 6, SAND_RAMP);
             // Shaded cliff face beneath, dissolving into the distant-sea void.
-            const cliff = ctx.createLinearGradient(0, side.a.y + sandH, 0, side.a.y + sandH + cliffH);
-            cliff.addColorStop(0, 'rgba(120, 92, 58, 0.82)');
-            cliff.addColorStop(0.6, 'rgba(70, 52, 34, 0.62)');
-            cliff.addColorStop(1, 'rgba(34, 24, 17, 0)');
-            ctx.fillStyle = cliff;
-            ctx.beginPath();
-            ctx.moveTo(side.a.x + side.dir * 6, side.a.y + sandH);
-            ctx.lineTo(side.b.x + side.dir * 6, side.b.y + sandH);
-            ctx.lineTo(side.b.x + side.dir * 14, side.b.y + sandH + cliffH);
-            ctx.lineTo(side.a.x + side.dir * 14, side.a.y + sandH + cliffH);
-            ctx.closePath();
-            ctx.fill();
+            bandedFace(side, sandH, cliffH, 8, 6, 14, CLIFF_RAMP);
             ctx.restore();
         }
     }
@@ -8409,19 +8414,20 @@ export class IsometricRenderer {
         const eased = t * t * (3 - 2 * t); // smoothstep: gentle rim, settled centre
         const alpha = (openSea ? 0.10 : 0.08) + eased * (openSea ? 0.34 : 0.25);
 
-        ctx.fillStyle = `rgba(0, ${openSea ? 8 : 12}, ${openSea ? 42 : 34}, ${alpha.toFixed(3)})`;
-        // Exact tile diamond. Do not overscan to hide antialiased edges: these
-        // fills are translucent, so any overlap composites twice and draws a
-        // dark lattice over every body of water — worse than a hairline.
-        const hw = TILE_WIDTH / 2;
-        const hh = TILE_HEIGHT / 2;
-        ctx.beginPath();
-        ctx.moveTo(screenX, screenY - hh);
-        ctx.lineTo(screenX + hw, screenY);
-        ctx.lineTo(screenX, screenY + hh);
-        ctx.lineTo(screenX - hw, screenY);
-        ctx.closePath();
-        ctx.fill();
+        // Scanline diamond, not a path fill. A path diamond antialiases along
+        // its diagonals, and with a translucent tint that leaves a hairline
+        // where neighbours meet — overscanning to close it composites twice and
+        // draws a dark lattice instead. The scanline decomposition tiles
+        // exactly, so a body of water comes out as one clean mass.
+        fillTileDiamond(ctx, screenX, screenY, TILE_WIDTH, TILE_HEIGHT,
+            `rgba(0, ${openSea ? 8 : 12}, ${openSea ? 42 : 34}, ${alpha.toFixed(3)})`);
+
+        // Shelf drop-off. The base art switches between the shallow and deep
+        // tilesets at a tile boundary, so the edge of a basin reads as a hard
+        // staircase however smoothly the depth tint ramps over it. A darker rim
+        // on the deep side of that boundary turns the step into a reef edge
+        // falling away, which is what the geometry is actually describing.
+        if (isDeep) this._drawShelfDropoff(ctx, screenX, screenY, tileX, tileY, openSea);
 
         const glint = this.motionScale
             ? 0.04 + Math.max(0, Math.sin(this.waterFrame * 1.6 + tileX * 0.7 - tileY * 0.4 + seed * 5)) * 0.09
@@ -8433,6 +8439,53 @@ export class IsometricRenderer {
         ctx.moveTo(screenX - 18 + seed * 6, screenY - 6);
         ctx.lineTo(screenX + 3 + seed * 10, screenY - 10);
         ctx.stroke();
+    }
+
+    // Darkened rim along the edges of a deep tile that face shallower water,
+    // inset into the tile so it never doubles up with the neighbour's own rim.
+    _drawShelfDropoff(ctx, screenX, screenY, tileX, tileY, openSea) {
+        const shallower = (x, y) => {
+            const k = `${x},${y}`;
+            return this.waterTiles.has(k) && !this.deepWaterTiles.has(k);
+        };
+        let mask = 0;
+        if (shallower(tileX, tileY - 1)) mask |= 1;
+        if (shallower(tileX + 1, tileY)) mask |= 2;
+        if (shallower(tileX, tileY + 1)) mask |= 4;
+        if (shallower(tileX - 1, tileY)) mask |= 8;
+        if (mask === 0) return;
+
+        const hw = TILE_WIDTH / 2;
+        const hh = TILE_HEIGHT / 2;
+        const inset = 0.42;                       // fraction of the half-diagonal
+        const top = { x: screenX, y: screenY - hh };
+        const right = { x: screenX + hw, y: screenY };
+        const bottom = { x: screenX, y: screenY + hh };
+        const left = { x: screenX - hw, y: screenY };
+        const centre = { x: screenX, y: screenY };
+        const toward = (p) => ({
+            x: p.x + (centre.x - p.x) * inset,
+            y: p.y + (centre.y - p.y) * inset,
+        });
+
+        // Bit order matches _waterEdgeMask: N, E, S, W.
+        const edges = [
+            [top, right], [right, bottom], [bottom, left], [left, top],
+        ];
+        ctx.fillStyle = `rgba(0, ${openSea ? 6 : 9}, ${openSea ? 30 : 26}, 0.20)`;
+        for (let bit = 0; bit < 4; bit++) {
+            if (!(mask & (1 << bit))) continue;
+            const [a, b] = edges[bit];
+            const ai = toward(a);
+            const bi = toward(b);
+            ctx.beginPath();
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(b.x, b.y);
+            ctx.lineTo(bi.x, bi.y);
+            ctx.lineTo(ai.x, ai.y);
+            ctx.closePath();
+            ctx.fill();
+        }
     }
 
     _drawShoreCrest(ctx, screenX, screenY, seed, tileX, tileY) {
@@ -10701,20 +10754,15 @@ export class IsometricRenderer {
         ctx.fillStyle = 'rgba(44, 30, 17, 0.6)';
         ctx.fillRect(x - 2, y - 12, 4, 10);
 
-        const radius = 8 + flicker * 2;
-        const outer = `rgba(255, 132, 37, ${0.12 + flicker * 0.08})`;
-        const inner = `rgba(255, 216, 122, ${0.20 + flicker * 0.16})`;
-        ctx.fillStyle = outer;
-        ctx.beginPath();
-        ctx.ellipse(x, y - 12, radius, 5, 0, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = inner;
-        ctx.beginPath();
-        ctx.moveTo(x - 2, y - 17 - flicker * 3);
-        ctx.lineTo(x + 2, y - 17 - flicker * 3);
-        ctx.lineTo(x, y - 4);
-        ctx.closePath();
-        ctx.fill();
+        // Ember bed reads as a pixel pool; the flame uses the shared taper.
+        fillPixelEllipse(ctx, x, y - 12, 8 + flicker * 2, 4,
+            `rgba(255, 132, 37, ${(0.12 + flicker * 0.08).toFixed(3)})`);
+        drawPixelFlame(ctx, x, y - 11, 8 + flicker * 4, 3, {
+            outer: `rgba(255, 132, 37, ${(0.62 + flicker * 0.24).toFixed(3)})`,
+            inner: `rgba(255, 216, 122, ${(0.72 + flicker * 0.20).toFixed(3)})`,
+            tip: `rgba(255, 245, 210, ${(0.60 + flicker * 0.24).toFixed(3)})`,
+            lean: this.motionScale ? Math.sin(this.waterFrame * 2.1 + phase) * 1.2 : 0,
+        });
     }
 
     _drawCommandGuardpost(ctx, x, y) {
