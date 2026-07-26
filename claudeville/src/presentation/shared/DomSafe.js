@@ -37,7 +37,7 @@ export function el(tagName, options = {}, children = []) {
     return node;
 }
 
-export function append(parent, children) {
+function append(parent, children) {
     const list = Array.isArray(children) ? children : [children];
     for (const child of list) {
         if (child === undefined || child === null) continue;

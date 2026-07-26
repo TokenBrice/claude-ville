@@ -147,6 +147,43 @@ test('commits older than the watching window are not backfilled', async () => {
     assert.equal(store.rows.filter((r) => r.kind === 'commit').length, 0);
 });
 
+test('pull and fetch events are never mislabeled as commits', async () => {
+    const store = fakeStore();
+    const log = new ChronicleLog({ store }).start();
+    await log.flush();
+    const ts = Date.now() - 1000;
+    log._onUpdated(agent('a', {
+        gitEvents: [
+            { id: 'pull-1', type: 'pull', sha: 'pullsha', label: 'git pull', ts },
+            { id: 'fetch-1', type: 'fetch', sha: 'fetchsha', label: 'git fetch', ts },
+        ],
+    }));
+    await log.flush();
+    assert.equal(store.rows.filter((row) => row.kind === ChronicleEventKind.COMMIT).length, 0);
+});
+
+test('stop drains delayed day-book writes', async () => {
+    let releaseWrite;
+    const store = fakeStore();
+    store.put = async (_name, record) => {
+        await new Promise(resolve => { releaseWrite = resolve; });
+        store.rows.push(record);
+        return record;
+    };
+    const log = new ChronicleLog({ store }).start();
+    await log.flush();
+    log.record(ChronicleEventKind.COMMIT, agent('a'), { label: 'fix: keep the last line' });
+    const stopped = log.stop();
+    assert.strictEqual(log.stop(), stopped);
+    let drained = false;
+    stopped.then(() => { drained = true; });
+    await Promise.resolve();
+    assert.equal(drained, false);
+    releaseWrite();
+    await stopped;
+    assert.equal(store.rows.some((row) => row.label === 'fix: keep the last line'), true);
+});
+
 test('commit records whose subjects differ only in trailing text still collapse', async () => {
     // The real pairing seen in the wild: the scan gives a clean subject, the
     // tool command gives the same subject with heredoc leftovers glued on.

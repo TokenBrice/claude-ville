@@ -8,6 +8,8 @@ Short decision records for load-bearing constraints in ClaudeVille. Each entry s
 
 The local-first design assumes one user, one machine, one server. Making the port configurable would force the docs and every local workflow to learn how to discover it. A constant is simpler and matches user muscle memory.
 
+The server binds `127.0.0.1` rather than every interface. HTTP requests require a local `Host`; browser origins must match that host, and WebSocket upgrades use the explicit same-origin `/ws` path. ClaudeVille intentionally has no LAN mode, CORS surface, or authentication layer.
+
 If you change this, update: `claudeville/server.js`, README, both `CLAUDE.md` files, `AGENTS.md`, and `docs/troubleshooting.md`.
 
 ## Dependency-free runtime, no build step
@@ -86,7 +88,7 @@ If you change this, update: `claudeville/CLAUDE.md`, root `AGENTS.md`/`CLAUDE.md
 
 ## Hand-written WebSocket framing
 
-`claudeville/server.js` implements RFC 6455 directly: the handshake (`handleWebSocketUpgrade`), frame parser (`handleWebSocketFrame`), and frame builder (`createWebSocketFrame`).
+`claudeville/server.js` implements RFC 6455 directly: the `/ws` handshake (`handleWebSocketUpgrade`), frame parser (`handleWebSocketFrame`), and frame builder (`createWebSocketFrame`). The handshake validates the local Host/Origin, version, and key; client frames must be masked, unfragmented, and free of RSV extensions.
 
 The runtime no-dependencies rule rules out `ws` and similar packages. Browser clients only need text frames, ping/pong, and clean close, so a couple of hundred lines of framing code is cheaper than a runtime dependency.
 

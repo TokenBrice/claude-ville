@@ -79,7 +79,7 @@ export class AvatarCanvas {
         // 1.7 — redraw once the world's shared Compositor registers (avatars
         // can be created before the world renderer boots); the composited
         // path replaces the raw-sheet fallback on the next draw.
-        Compositor.onSharedAvailable(() => {
+        this._unsubscribeSharedCompositor = Compositor.onSharedAvailable(() => {
             if (AVATAR_CANVASES.has(this)) this.draw();
         });
         this.draw();
@@ -694,6 +694,8 @@ export class AvatarCanvas {
     }
 
     destroy() {
+        this._unsubscribeSharedCompositor?.();
+        this._unsubscribeSharedCompositor = null;
         AVATAR_CANVASES.delete(this);
     }
 }

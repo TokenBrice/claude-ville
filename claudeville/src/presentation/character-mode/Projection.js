@@ -36,13 +36,6 @@ export function worldToTile(pointOrX, y) {
     };
 }
 
-export function tileVectorToWorld(deltaX, deltaY) {
-    return {
-        x: (deltaX - deltaY) * TILE_HALF_WIDTH,
-        y: (deltaX + deltaY) * TILE_HALF_HEIGHT,
-    };
-}
-
 export function buildingCenterToWorld(building) {
     const position = building?.position || building || {};
     const width = building?.width ?? 1;

@@ -46,13 +46,10 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
   '--receive-pack',
   '--repo',
 ]);
-// Raised from 5s to 30s: unpushed-commit scans are idempotent and dominate the
-// per-poll cost when many repos are open. Two mechanisms keep commit visibility
-// fast despite the long base TTL: projects with active sessions use the shorter
-// active TTL, and a HEAD/logs-HEAD mtime change busts that project's caches so
-// new commits surface on the next enrichment pass.
+// Unpushed-commit scans are idempotent and dominate the per-poll cost when many
+// repos are open. Git-state probes invalidate a project's cache when its refs
+// change, so active projects do not need a shorter periodic refresh.
 const GIT_STATUS_CACHE_TTL_MS = 30000;
-const GIT_STATUS_ACTIVE_CACHE_TTL_MS = 10000;
 const RECENT_REPOSITORY_PUSH_TTL_MS = 2 * 60 * 1000;
 const REPOSITORY_UNPUSHED_EVENT_TTL_MS = Math.max(
   60 * 60 * 1000,
@@ -144,11 +141,7 @@ function pruneGitTrackingState(activeProjects = [], now = Date.now()) {
   }
 }
 
-function gitStatusCacheTtl(project, now = Date.now()) {
-  const activeAt = _gitStatusActiveProjects.get(project);
-  if (activeAt != null && now - activeAt < GIT_STATUS_CACHE_TTL_MS) {
-    return GIT_STATUS_ACTIVE_CACHE_TTL_MS;
-  }
+function gitStatusCacheTtl() {
   return GIT_STATUS_CACHE_TTL_MS;
 }
 

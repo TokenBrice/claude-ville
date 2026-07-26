@@ -83,32 +83,41 @@ export function renderWorldFrame(renderer, dt = 16) {
 
     renderer.camera.applyTransform(ctx);
     renderer._drawDistantSeaHorizon(ctx, atmosphere);
-    renderer._drawTerrain(ctx);
+    markFrameTiming(frameTimer, 'horizon');
+    renderer._drawTerrain(
+        ctx,
+        frameTimer ? label => markFrameTiming(frameTimer, label) : null,
+    );
     // #24 — cloud-shadow parallax: feathered shadows slide across the baked
     // terrain on the wind, giving the flat iso plane depth under the live sky.
     drawCloudShadows(renderer, ctx, atmosphere, perfNow);
     // 6.4 — ground fog at dawn / over water, on the ground plane ahead of the
     // village so agents and buildings stand up out of the mist.
     drawGroundFog(renderer, ctx, atmosphere, perfNow);
+    markFrameTiming(frameTimer, 'ground-atmosphere');
     // [0.6] Draw-order: the canopy pass now also carries the hero sky rewards
     // (aurora, shooting stars, sky-flare, sun glints, push grade) so they
     // composite over terrain instead of behind the village. The rewards live
     // in SkyRenderer.drawCanopy — this call site is the whole draw-order change.
     renderer._drawSkyCanopy(ctx, atmosphere, dt, renderer.motionScale);
     renderer.camera.applyTransform(ctx);
+    markFrameTiming(frameTimer, 'sky-canopy');
     renderer._drawFishSchools(ctx);
     renderer._drawWaterfowl(ctx);
     renderer._drawTropicalWaterfalls(ctx);
     renderer._drawOpenSeaGulls(ctx);
     renderer._drawLandBirds(ctx);
+    markFrameTiming(frameTimer, 'fauna');
     renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
+    markFrameTiming(frameTimer, 'trails');
     // 3.10 — teams with a live council ring skip the director aura wash.
     drawVillageDirectorGround(ctx, villageSnapshot, renderNow, atmosphere?.grade, {
         councilTeamNames: collectCouncilTeamNames(renderer, villageSnapshot),
     });
+    markFrameTiming(frameTimer, 'director-ground');
 
     drawBuildingLightReflections(renderer, ctx, atmosphere);
-    markFrameTiming(frameTimer, 'terrain');
+    markFrameTiming(frameTimer, 'light-reflections');
 
     renderer.buildingRenderer?.drawShadows(ctx);
     // 3.9 — priority-ordered admission: talk arcs draw last (above sprites) but
@@ -227,15 +236,22 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.particleSystem.draw(ctx, { excludeLayer: 'screen' });
     renderer._drawEmptyStateWorldCue(ctx);
     renderer.harborTraffic?.drawFinaleEffects(ctx, renderNow);
+    markFrameTiming(frameTimer, 'world-effects');
 
     renderer._resetScreenTransform(ctx);
-    renderer._drawAtmosphere(ctx, atmosphere, dt, renderer._frameLightSources?.ambient || null);
+    renderer._drawAtmosphere(
+        ctx,
+        atmosphere,
+        dt,
+        renderer._frameLightSources?.ambient || null,
+        frameTimer ? label => markFrameTiming(frameTimer, label) : null,
+    );
     renderer.camera.applyTransform(ctx);
     // 0.7 — re-stamp the PRIMARY mark set (waiting beacons, selection rings,
     // incident pills) AFTER the atmosphere multiply so the action-demanding
     // reads survive the night grade at the same strength the plaques enjoy.
     drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphere);
-    markFrameTiming(frameTimer, 'effects');
+    markFrameTiming(frameTimer, 'post-atmosphere-effects');
 
     renderer.buildingRenderer?.drawBubbles(ctx, renderer.world);
     renderer.buildingRenderer?.drawLabels(ctx, {

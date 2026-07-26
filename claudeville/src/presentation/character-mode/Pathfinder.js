@@ -207,17 +207,15 @@ export class Pathfinder {
     }
 
     _walkableCandidates(tileX, tileY) {
-        const candidates = [];
         if (this.isWalkable(tileX, tileY)) return [{ tileX, tileY }];
 
-        for (let radius = 1; radius <= 5; radius++) {
-            for (let dy = -radius; dy <= radius; dy++) {
-                for (let dx = -radius; dx <= radius; dx++) {
-                    if (Math.abs(dx) !== radius && Math.abs(dy) !== radius) continue;
-                    const nx = tileX + dx;
-                    const ny = tileY + dy;
-                    if (this.isWalkable(nx, ny)) candidates.push({ tileX: nx, tileY: ny });
-                }
+        const candidates = [];
+        for (let dy = -1; dy <= 1; dy++) {
+            for (let dx = -1; dx <= 1; dx++) {
+                if (dx === 0 && dy === 0) continue;
+                const nx = tileX + dx;
+                const ny = tileY + dy;
+                if (this.isWalkable(nx, ny)) candidates.push({ tileX: nx, tileY: ny });
             }
         }
         return candidates;

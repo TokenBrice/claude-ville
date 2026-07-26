@@ -20,6 +20,24 @@ import {
 // while bounding remembered state to live workflows plus a small recent tail.
 const WORKFLOW_STATE_GRACE_MS = 60 * 1000;
 const WORKFLOW_STATE_GRACE_LIMIT = 32;
+const SIDEBAR_COLLAPSED_STORAGE_KEY = 'claudeville.sidebarCollapsed';
+
+function safeStorageGet(key) {
+    try {
+        return window.localStorage?.getItem(key) ?? null;
+    } catch {
+        return null;
+    }
+}
+
+function safeStorageSet(key, value) {
+    try {
+        window.localStorage?.setItem(key, value);
+    } catch {
+        // Storage can be disabled by browser privacy settings. UI state remains
+        // usable for the current page even when it cannot be persisted.
+    }
+}
 
 export class Sidebar {
     constructor(world) {
@@ -40,7 +58,7 @@ export class Sidebar {
         this._workflowPruneTimer = null;
         this._workflowPruneAt = 0;
         this._destroyed = false;
-        this.isCollapsed = localStorage.getItem('claudeville.sidebarCollapsed') === 'true';
+        this.isCollapsed = safeStorageGet(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
         this.selection = new AgentSelectionMirror({
             onChange: (nextId, previousId) => this._syncSelection(previousId, nextId),
         });
@@ -121,7 +139,7 @@ export class Sidebar {
         if (!this.toggleEl) return;
         this._onToggleClick = () => {
             this.isCollapsed = !this.isCollapsed;
-            localStorage.setItem('claudeville.sidebarCollapsed', String(this.isCollapsed));
+            safeStorageSet(SIDEBAR_COLLAPSED_STORAGE_KEY, String(this.isCollapsed));
             this._applyCollapsedState();
         };
         this.toggleEl.addEventListener('click', this._onToggleClick);
@@ -147,9 +165,9 @@ export class Sidebar {
                 if (parent) emitAgentSelected(parent);
                 return;
             }
-            const row = event.target.closest('.sidebar__agent[data-agent-id]');
-            if (!row || !this.listEl.contains(row)) return;
-            const id = row.dataset.agentId;
+            const select = event.target.closest('.sidebar__agent-select[data-agent-id]');
+            if (!select || !this.listEl.contains(select)) return;
+            const id = select.dataset.agentId;
             toggleAgentSelection(this.world, id, this.selection.selectedId);
         };
         this.listEl.addEventListener('click', this._onListClick);
@@ -446,17 +464,18 @@ export class Sidebar {
         }
         // 4.12 — subagent parent link (dashboard parent-chip parity): selects
         // the parent session; muted static text once the parent has ended.
+        let parentButton = null;
         if (agent.parentSessionId) {
             const parent = this.world.agents.get(agent.parentSessionId);
-            modelEl.append(el('span', {
+            parentButton = el('button', {
                 className: 'sidebar__agent-parent',
-                text: ` ↩ ${extras.parentLabel}`,
+                text: `↩ ${extras.parentLabel}`,
                 title: parent ? `Select parent ${extras.parentLabel}` : 'Parent session ended',
-                style: parent
-                    ? { cursor: 'pointer', textDecoration: 'underline dotted', textUnderlineOffset: '2px' }
-                    : { opacity: '0.62' },
+                ariaLabel: parent ? `Select parent ${extras.parentLabel}` : 'Parent session ended',
                 dataset: parent ? { parentId: agent.parentSessionId } : null,
-            }));
+            });
+            parentButton.type = 'button';
+            parentButton.disabled = !parent;
         }
 
         const dotChildren = [
@@ -470,12 +489,13 @@ export class Sidebar {
             dotChildren.push(caret);
         }
 
-        const row = el('div', {
-            className: agentClasses,
+        const select = el('button', {
+            className: 'sidebar__agent-select',
+            ariaLabel: `Select ${agent.name || agent.id}, ${status.replaceAll('_', ' ')}`,
             dataset: { agentId: agent.id },
         }, [
             el('span', { className: 'sidebar__agent-rail' }, dotChildren),
-            el('div', { className: 'sidebar__agent-info' }, [
+            el('span', { className: 'sidebar__agent-info' }, [
                 el('span', {
                     className: 'sidebar__agent-name',
                     style: { color: profile.accent },
@@ -483,6 +503,13 @@ export class Sidebar {
                 modelEl,
             ]),
         ]);
+        select.type = 'button';
+        select.setAttribute('aria-pressed', String(this.selection.isSelected(agent.id)));
+
+        const row = el('div', {
+            className: agentClasses,
+            dataset: { agentId: agent.id },
+        }, [select, parentButton]);
         // Repo-tinted left rail (color-mix in CSS reads --cv-repo-color).
         if (profile.accent) row.style.setProperty('--cv-repo-color', profile.accent);
         return row;
@@ -507,6 +534,8 @@ export class Sidebar {
             const selector = `.sidebar__agent[data-agent-id="${CSS.escape(id)}"]`;
             const row = this.listEl?.querySelector(selector);
             row?.classList.toggle('sidebar__agent--selected', id === nextId);
+            row?.querySelector('.sidebar__agent-select')
+                ?.setAttribute('aria-pressed', String(id === nextId));
         }
     }
 

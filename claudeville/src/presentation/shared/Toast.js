@@ -19,6 +19,7 @@ export class Toast {
         const el = document.createElement('div');
         el.className = `toast toast--${type}`;
         el.textContent = message;
+        if (type === 'error') el.setAttribute('role', 'alert');
         this.container.appendChild(el);
 
         const entry = { el, dismissTimer: null, removalTimer: null };

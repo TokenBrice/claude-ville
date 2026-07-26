@@ -622,9 +622,19 @@ const EDGE_MARKER_MARGIN = 26;
 const EDGE_ONSCREEN_INSET = 24;
 const EDGE_HIT_SIZE = 26;
 const EDGE_FALLBACK_TINT = '242, 211, 107';
-const _edgeCues = [];
-const _edgeHitRects = [];
-let _edgeWired = false;
+
+function edgeCueState(renderer) {
+    if (!renderer._offscreenCueState) {
+        renderer._offscreenCueState = {
+            cues: [],
+            hitRects: [],
+            unsubscribe: null,
+            clickHandler: null,
+            dispose: null,
+        };
+    }
+    return renderer._offscreenCueState;
+}
 
 function edgeTintRgb(cue) {
     const match = String(cue?.tint || '').match(/^#([0-9a-f]{6})$/i);
@@ -634,27 +644,28 @@ function edgeTintRgb(cue) {
 }
 
 function wireEdgeCues(renderer) {
-    if (_edgeWired || !renderer?.canvas?.addEventListener) return;
-    _edgeWired = true;
-    eventBus.on('village:camera-cue', (cue) => {
+    if (!renderer?.canvas?.addEventListener) return null;
+    const state = edgeCueState(renderer);
+    if (state.unsubscribe) return state;
+    state.unsubscribe = eventBus.on('village:camera-cue', (cue) => {
         if (!cue?.box) return;
-        const existing = _edgeCues.findIndex(entry => entry.kind === (cue.kind || 'default'));
-        if (existing >= 0) _edgeCues.splice(existing, 1);
-        _edgeCues.push({
+        const existing = state.cues.findIndex(entry => entry.kind === (cue.kind || 'default'));
+        if (existing >= 0) state.cues.splice(existing, 1);
+        state.cues.push({
             kind: cue.kind || 'default',
             box: cue.box,
             tint: cue.grade?.worldTint || null,
             ts: Date.now(),
         });
-        while (_edgeCues.length > EDGE_CUE_LIMIT) _edgeCues.shift();
+        while (state.cues.length > EDGE_CUE_LIMIT) state.cues.shift();
     });
-    renderer.canvas.addEventListener('click', (event) => {
-        for (let i = _edgeHitRects.length - 1; i >= 0; i--) {
-            const hit = _edgeHitRects[i];
+    state.clickHandler = (event) => {
+        for (let i = state.hitRects.length - 1; i >= 0; i--) {
+            const hit = state.hitRects[i];
             if (event.offsetX < hit.left || event.offsetX > hit.right) continue;
             if (event.offsetY < hit.top || event.offsetY > hit.bottom) continue;
-            const index = _edgeCues.indexOf(hit.cue);
-            if (index >= 0) _edgeCues.splice(index, 1);
+            const index = state.cues.indexOf(hit.cue);
+            if (index >= 0) state.cues.splice(index, 1);
             renderer.camera?.glideToWorld?.(hit.cue.box, {
                 duration: 3200,
                 paddingPx: 220,
@@ -668,14 +679,28 @@ function wireEdgeCues(renderer) {
             event.preventDefault?.();
             return;
         }
-    }, true);
+    };
+    renderer.canvas.addEventListener('click', state.clickHandler, true);
+    state.dispose = () => {
+        state.unsubscribe?.();
+        state.unsubscribe = null;
+        if (state.clickHandler) {
+            renderer.canvas?.removeEventListener?.('click', state.clickHandler, true);
+            state.clickHandler = null;
+        }
+        state.cues.length = 0;
+        state.hitRects.length = 0;
+        if (renderer._offscreenCueState === state) delete renderer._offscreenCueState;
+    };
+    return state;
 }
 
 export function drawOffscreenCueEdges(ctx, renderer, viewport, now = Date.now()) {
     if (!ctx || !renderer || !viewport) return;
-    wireEdgeCues(renderer);
-    _edgeHitRects.length = 0;
-    if (!_edgeCues.length) return;
+    const state = wireEdgeCues(renderer);
+    if (!state) return;
+    state.hitRects.length = 0;
+    if (!state.cues.length) return;
     const camera = renderer.camera;
     if (typeof camera?.worldToScreen !== 'function') return;
     const w = Number(viewport.width) || 0;
@@ -692,11 +717,11 @@ export function drawOffscreenCueEdges(ctx, renderer, viewport, now = Date.now())
     const dockBottom = h - EDGE_MARKER_MARGIN;
 
     ctx.save();
-    for (let i = _edgeCues.length - 1; i >= 0; i--) {
-        const cue = _edgeCues[i];
+    for (let i = state.cues.length - 1; i >= 0; i--) {
+        const cue = state.cues[i];
         const age = now - cue.ts;
         if (!Number.isFinite(age) || age >= EDGE_CUE_TTL_MS || age < 0) {
-            _edgeCues.splice(i, 1);
+            state.cues.splice(i, 1);
             continue;
         }
         const cx = (cue.box.minX + cue.box.maxX) / 2;
@@ -734,7 +759,7 @@ export function drawOffscreenCueEdges(ctx, renderer, viewport, now = Date.now())
         ctx.fill();
         ctx.globalAlpha = 1;
 
-        _edgeHitRects.push({
+        state.hitRects.push({
             cue,
             left: ex - EDGE_HIT_SIZE / 2,
             right: ex + EDGE_HIT_SIZE / 2,

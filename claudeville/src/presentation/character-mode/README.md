@@ -114,7 +114,6 @@ From `src/config/constants.js`:
 | `TILE_WIDTH` | `64` | iso projection in `Camera.js`, every tile draw. |
 | `TILE_HEIGHT` | `32` | iso projection (half of width — standard 2:1 iso). |
 | `MAP_SIZE` | `40` | square tile grid; terrain seed is `MAP_SIZE * MAP_SIZE`. |
-| `AGENT_SPEED` | `0.06` | sprite tile-per-frame interpolation. |
 
 The grid is `40 × 40` tiles. World-space origin is `(0, 0)` at the top corner of the diamond; tile `(x, y)` projects to screen `((x − y) · 32, (x + y) · 16)` before camera offset and zoom.
 

@@ -168,7 +168,7 @@ function validateEntrance(reporter, building, mapSize) {
     }
     const visitKeys = new Set((building.visitTiles || []).map((tile) => tileKey(tile.tileX, tile.tileY)));
     if (visitKeys.size && !visitKeys.has(tileKey(entrance.tileX, entrance.tileY))) {
-        reporter.warn(pathFor(building, 'entrance'), 'entrance is not present in visitTiles');
+        reporter.error(pathFor(building, 'entrance'), 'entrance is not present in visitTiles');
     }
 }
 
@@ -259,6 +259,67 @@ function validateWalkExclusions(reporter, building, mapSize) {
     });
 }
 
+function tileInsideRect(tile, rect) {
+    return Number(tile.tileX) >= rect.x0
+        && Number(tile.tileX) <= rect.x1
+        && Number(tile.tileY) >= rect.y0
+        && Number(tile.tileY) <= rect.y1;
+}
+
+function validateCombinedVisitTiles(reporter, buildings, overflowTiles, mapSize) {
+    const buildingTypes = new Set(buildings.map((building) => building.type));
+    const claimedTiles = new Map();
+
+    for (const type of Object.keys(overflowTiles || {})) {
+        if (!buildingTypes.has(type)) {
+            reporter.error(`VISIT_OVERFLOW_TILES.${type}`, 'has no matching BUILDING_DEFS type');
+        }
+    }
+
+    for (const building of buildings) {
+        const groups = [
+            ['visitTiles', building.visitTiles || []],
+            ['overflow', overflowTiles?.[building.type] || []],
+        ];
+        for (const [group, tiles] of groups) {
+            if (!Array.isArray(tiles)) {
+                reporter.error(pathFor(building, group), 'must be an array');
+                continue;
+            }
+            tiles.forEach((tile, index) => {
+                const path = group === 'visitTiles'
+                    ? pathFor(building, `visitTiles[${index}]`)
+                    : `VISIT_OVERFLOW_TILES.${building.type}[${index}]`;
+                if (!tile || typeof tile !== 'object') {
+                    reporter.error(path, 'must be an object');
+                    return;
+                }
+                if (!inTileBounds(tile.tileX, tile.tileY, mapSize)) {
+                    reporter.error(path, `tile ${tile.tileX},${tile.tileY} is outside 0..${mapSize - 1}`);
+                    return;
+                }
+                const key = tileKey(tile.tileX, tile.tileY);
+                const previous = claimedTiles.get(key);
+                if (previous) {
+                    reporter.error(path, `duplicates ${previous} at ${key}`);
+                } else {
+                    claimedTiles.set(key, path);
+                }
+                for (const obstacle of buildings) {
+                    if (tileInsideRect(tile, buildingRect(obstacle))) {
+                        reporter.error(path, `sits inside ${obstacle.type} building footprint`);
+                    }
+                    for (const exclusion of obstacle.walkExclusion || []) {
+                        if (tileInsideRect(tile, walkExclusionRect(obstacle, exclusion))) {
+                            reporter.error(path, `sits inside ${obstacle.type} walk exclusion`);
+                        }
+                    }
+                }
+            });
+        }
+    }
+}
+
 function validateSpriteManifest(reporter, buildings, manifestIds) {
     const expectedIds = new Set(buildings.map((building) => `building.${building.type}`));
     for (const id of expectedIds) {
@@ -276,7 +337,11 @@ function validateSpriteManifest(reporter, buildings, manifestIds) {
 const reporter = createReporter('world building validation');
 const {
     BUILDING_DEFS,
-} = await loadConfigExports('claudeville/src/config/buildings.js', ['BUILDING_DEFS']);
+    VISIT_OVERFLOW_TILES,
+} = await loadConfigExports(
+    'claudeville/src/config/buildings.js',
+    ['BUILDING_DEFS', 'VISIT_OVERFLOW_TILES'],
+);
 const {
     MAP_SIZE,
 } = await loadConfigExports('claudeville/src/config/constants.js', ['MAP_SIZE']);
@@ -309,6 +374,7 @@ if (!Array.isArray(BUILDING_DEFS) || BUILDING_DEFS.length === 0) {
         validateVisitTiles(reporter, building, MAP_SIZE, globalVisitTiles);
         validateWalkExclusions(reporter, building, MAP_SIZE);
     }
+    validateCombinedVisitTiles(reporter, BUILDING_DEFS, VISIT_OVERFLOW_TILES, MAP_SIZE);
     validateSpriteManifest(reporter, BUILDING_DEFS, manifestIds);
     validateGroundingProfiles(reporter, BUILDING_DEFS, groundingConfig);
 }

@@ -8,7 +8,9 @@
  * feature (e.g. `extensions.mood`, `extensions.affinity`).
  */
 
-export const BIOGRAPHY_SCHEMA_VERSION = 2;
+export const BIOGRAPHY_SCHEMA_VERSION = 3;
+
+const RECENT_PUSH_KEY_LIMIT = 96;
 
 const FIRST_SEEN_MILESTONE = { id: 'first-seen', label: 'Settled in the village' };
 const FOUNDER_MILESTONE = { id: 'village-founder', label: 'Founded the village', nickname: 'the Founder' };
@@ -64,6 +66,17 @@ function slug(value) {
     return out || 'unknown';
 }
 
+function compactEventKey(value) {
+    const key = String(value || '').trim();
+    if (key.length <= 180) return key;
+    let hash = 2166136261;
+    for (let index = 0; index < key.length; index++) {
+        hash ^= key.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${key.slice(0, 120)}:${(hash >>> 0).toString(36)}`;
+}
+
 function normalizeMilestones(raw) {
     if (!Array.isArray(raw)) return [];
     const out = [];
@@ -80,6 +93,21 @@ function normalizeMilestones(raw) {
         out.push(milestone);
     }
     return out;
+}
+
+function normalizePushMemory(raw) {
+    const recentPushKeys = [];
+    const seen = new Set();
+    for (const value of Array.isArray(raw?.recentPushKeys) ? raw.recentPushKeys : []) {
+        const key = compactEventKey(value);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        recentPushKeys.push(key);
+    }
+    return {
+        pushWatermarkAt: nonNegativeNumber(raw?.pushWatermarkAt),
+        recentPushKeys: recentPushKeys.slice(-RECENT_PUSH_KEY_LIMIT),
+    };
 }
 
 export class AgentBiography {
@@ -104,7 +132,11 @@ export class AgentBiography {
         this.lifetimeTokens = nonNegativeNumber(lifetimeTokens);
         this.errorsRecovered = nonNegativeNumber(errorsRecovered);
         this.milestones = normalizeMilestones(milestones);
-        this.extensions = (extensions && typeof extensions === 'object') ? { ...extensions } : {};
+        const rawExtensions = (extensions && typeof extensions === 'object') ? extensions : {};
+        this.extensions = {
+            ...rawExtensions,
+            biographyEvents: normalizePushMemory(rawExtensions.biographyEvents),
+        };
     }
 
     /**
@@ -136,9 +168,8 @@ export class AgentBiography {
     /** Rehydrate from a persisted record; returns null when unusable. */
     static fromRecord(record) {
         if (!record || typeof record !== 'object' || !record.identityKey) return null;
-        // Schema v2 is current. v1 → v2 added `errorsRecovered` and the
-        // optional milestone `nickname` field; both default safely, so no
-        // explicit migration is needed. Migrate breaking changes here.
+        // v1 → v2 added error/nickname fields; v3 adds bounded event memory
+        // under extensions. All additions default safely for existing records.
         return new AgentBiography(record);
     }
 
@@ -153,8 +184,35 @@ export class AgentBiography {
             lifetimeTokens: this.lifetimeTokens,
             errorsRecovered: this.errorsRecovered,
             milestones: this.milestones.map(m => ({ ...m })),
-            extensions: { ...this.extensions },
+            extensions: {
+                ...this.extensions,
+                biographyEvents: {
+                    ...this.extensions.biographyEvents,
+                    recentPushKeys: [...this.extensions.biographyEvents.recentPushKeys],
+                },
+            },
         };
+    }
+
+    /**
+     * Remember a push identity without retaining the full event history.
+     * Returns true only when the identity was not already present.
+     */
+    rememberPushEvent(key, at = 0) {
+        const normalizedKey = compactEventKey(key);
+        if (!normalizedKey) return false;
+        const memory = this.extensions.biographyEvents;
+        if (memory.recentPushKeys.includes(normalizedKey)) return false;
+        const timestamp = nonNegativeNumber(at);
+        // Once a newer timestamp is persisted, an older identity that fell
+        // out of the bounded key ring is still history, not a new push.
+        if (timestamp && timestamp < memory.pushWatermarkAt) return false;
+        memory.recentPushKeys.push(normalizedKey);
+        if (memory.recentPushKeys.length > RECENT_PUSH_KEY_LIMIT) {
+            memory.recentPushKeys.splice(0, memory.recentPushKeys.length - RECENT_PUSH_KEY_LIMIT);
+        }
+        if (timestamp > memory.pushWatermarkAt) memory.pushWatermarkAt = timestamp;
+        return true;
     }
 
     hasMilestone(id) {

@@ -6,9 +6,11 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const {
+  clearTailCache,
   getJsonlDiagnostics,
   getTailCacheDiagnostics,
   parseJsonLines,
+  readJsonLines,
   readTailLines,
 } = require('../../claudeville/adapters/shared.js');
 
@@ -67,6 +69,54 @@ try {
     ['{"id":1}', '{"id":2}'],
     'a bounded tail must retain the first record when its window starts exactly after a newline',
   );
+
+  const parsedFile = path.join(dir, 'parsed-tail.jsonl');
+  fs.writeFileSync(parsedFile, '{"id":1}\n{"id":2}\n{"id":3}\n');
+  clearTailCache();
+  const parsedBefore = getJsonlDiagnostics()['tail-smoke']?.parsedLines || 0;
+  assert.deepEqual(
+    readJsonLines(parsedFile, { count: 3, source: 'tail-smoke' }),
+    [{ id: 1 }, { id: 2 }, { id: 3 }],
+  );
+  const parsedAfterFirst = getJsonlDiagnostics()['tail-smoke'].parsedLines;
+  assert.equal(parsedAfterFirst - parsedBefore, 3);
+  assert.deepEqual(
+    readJsonLines(parsedFile, { count: 3, source: 'tail-smoke' }),
+    [{ id: 1 }, { id: 2 }, { id: 3 }],
+  );
+  assert.equal(
+    getJsonlDiagnostics()['tail-smoke'].parsedLines,
+    parsedAfterFirst,
+    'an unchanged parsed tail must not call JSON.parse again',
+  );
+
+  fs.appendFileSync(parsedFile, '{"id":4}\n');
+  assert.deepEqual(
+    readJsonLines(parsedFile, { count: 3, source: 'tail-smoke' }),
+    [{ id: 2 }, { id: 3 }, { id: 4 }],
+  );
+  assert.equal(
+    getJsonlDiagnostics()['tail-smoke'].parsedLines,
+    parsedAfterFirst + 1,
+    'a safe append must parse only its new line',
+  );
+  fs.appendFileSync(parsedFile, '{"id":');
+  assert.deepEqual(
+    readJsonLines(parsedFile, { count: 3, source: 'tail-smoke' }),
+    [{ id: 3 }, { id: 4 }],
+  );
+  const partialStats = getJsonlDiagnostics()['tail-smoke'];
+  assert.equal(partialStats.trailingPartials, 1);
+  fs.appendFileSync(parsedFile, '5}\n{malformed}\n{"id":6}\n');
+  assert.deepEqual(
+    readJsonLines(parsedFile, { count: 3, source: 'tail-smoke' }),
+    [{ id: 5 }, { id: 6 }],
+  );
+  const recoveredStats = getJsonlDiagnostics()['tail-smoke'];
+  assert.equal(recoveredStats.parsedLines, parsedAfterFirst + 3);
+  assert.equal(recoveredStats.skippedLines, 1);
+  assert.ok(getTailCacheDiagnostics().parsed.hits >= 1);
+  assert.ok(getTailCacheDiagnostics().estimatedBytes <= getTailCacheDiagnostics().byteLimit);
 
   for (let index = 0; index < 9; index++) {
     const pendingFile = path.join(dir, `large-pending-${index}.jsonl`);

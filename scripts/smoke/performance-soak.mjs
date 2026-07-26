@@ -182,7 +182,7 @@ async function sampleBrowser(page, cdp, elapsedSeconds) {
 
 function openWebSocketProbe(page, url, timeoutMs = 5000) {
   return page.evaluate(({ probeUrl, probeTimeoutMs }) => new Promise((resolve, reject) => {
-    const socket = new WebSocket(probeUrl.replace(/^http/, 'ws'));
+    const socket = new WebSocket(new URL('/ws', probeUrl).toString().replace(/^http/, 'ws'));
     let settled = false;
     const finish = (error, value) => {
       if (settled) return;
@@ -306,6 +306,15 @@ function assertServerPlateau(samples) {
       'tail-cache diagnostics are missing');
     assert.ok(tailCache.estimatedBytes <= tailCache.byteLimit,
       `tail cache used ${tailCache.estimatedBytes} bytes (limit ${tailCache.byteLimit})`);
+    const orphanScan = sample.providers?.claude?.orphanScan;
+    assert.ok(
+      Number.isFinite(orphanScan?.subagentActivityEntries)
+        && Number.isFinite(orphanScan?.subagentActivityLimit),
+      'Claude subagent-activity cache diagnostics are missing',
+    );
+    assert.ok(orphanScan.subagentActivityEntries <= orphanScan.subagentActivityLimit,
+      `Claude subagent-activity cache used ${orphanScan.subagentActivityEntries} entries `
+      + `(limit ${orphanScan.subagentActivityLimit})`);
     assert.ok(Number.isFinite(sample.gitCommandCount), 'Git command diagnostics are missing');
   }
 
@@ -347,6 +356,10 @@ async function main() {
   page.on('pageerror', error => browserErrors.push(error.message));
   await installListenerAudit(page);
   await page.goto(options.url, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await probePage.goto(`${options.url}/api/providers`, {
+    waitUntil: 'domcontentloaded',
+    timeout: 60_000,
+  });
   await page.waitForFunction(() => window.__claudeVilleApp?._bootState === 'ready', null, { timeout: 60_000 });
   await page.waitForFunction(() => typeof window.__claudeVillePerf?.canvasBudget === 'function');
   const cdp = await context.newCDPSession(page);
@@ -355,11 +368,12 @@ async function main() {
   let browserOpen = true;
   let nextCheckpointAt = startedAt;
   try {
-    while (Date.now() <= finishAt) {
+    while (nextCheckpointAt <= finishAt) {
+      const checkpointAt = nextCheckpointAt;
       const now = Date.now();
-      if (now < nextCheckpointAt) await sleep(nextCheckpointAt - now);
+      if (now < checkpointAt) await sleep(checkpointAt - now);
       const elapsedSeconds = Math.round((Date.now() - startedAt) / 100) / 10;
-      if (browserOpen && Date.now() <= browserUntil) {
+      if (browserOpen && checkpointAt <= browserUntil) {
         const sample = await sampleBrowser(page, cdp, elapsedSeconds);
         assertBrowserBounds(sample);
         browserSamples.push(sample);
@@ -368,7 +382,7 @@ async function main() {
         browserOpen = false;
         await page.close();
       }
-      if (Date.now() <= serverUntil) {
+      if (checkpointAt <= serverUntil) {
         const sample = await sampleServer(probePage, options.url, elapsedSeconds);
         const physicalWatchEntries = sample.watchers?.linux?.watchEntries;
         if (Number.isFinite(physicalWatchEntries)) {
@@ -379,7 +393,6 @@ async function main() {
         console.log(JSON.stringify({ type: 'server', ...sample }));
       }
       nextCheckpointAt += intervalMs;
-      if (nextCheckpointAt > finishAt) break;
     }
   } finally {
     await browser.close();

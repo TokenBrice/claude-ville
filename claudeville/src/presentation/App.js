@@ -712,8 +712,14 @@ export class App {
         this._callLifecycle('AgentSimulator.stop', () => this.agentSimulator?.stop?.());
         this._callLifecycle('NotificationService.destroy', () => this.notificationService?.destroy?.());
         this._callLifecycle('AttentionService.destroy', () => this.attentionService?.destroy?.());
-        this._callLifecycle('ChronicleLog.stop', () => this.chronicleLog?.stop?.());
-        this._callLifecycle('SpendLedger.stop', () => this.spendLedger?.stop?.());
+        const chronicleStop = this._callLifecycle(
+            'ChronicleLog.stop',
+            () => this.chronicleLog?.stop?.(),
+        );
+        const spendStop = this._callLifecycle(
+            'SpendLedger.stop',
+            () => this.spendLedger?.stop?.(),
+        );
         this._callLifecycle('ActivityPanel.destroy', () => this.activityPanel?.destroy?.());
         this._callLifecycle('DashboardRenderer.destroy', () => this.dashboardRenderer?.destroy?.());
         this._callLifecycle('SessionDetailsService.clear', () => sessionDetailsService.clear());
@@ -760,6 +766,11 @@ export class App {
             prune,
             ...chronicleTasks,
         ].filter(task => task && typeof task.then === 'function');
+        // These two tails own writes that are not represented in
+        // _chronicleTasks. They must finish before IndexedDB closes.
+        await Promise.allSettled(
+            [chronicleStop, spendStop].filter(task => task && typeof task.then === 'function'),
+        );
         await this._settleLifecycleTasks(storeTasks);
         await this._settleLifecycleTasks([topBarStop, assetsDispose]);
         this._callLifecycle('ChronicleStore.close', () => store?.close?.());

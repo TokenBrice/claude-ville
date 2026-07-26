@@ -55,10 +55,6 @@ export class AssetManager {
         }
     }
 
-    entryFor(id) {
-        return this._entryById.get(id) || null;
-    }
-
     async _fetchText(path, { signal = null } = {}) {
         const r = await fetch(path, { signal });
         if (!r.ok) throw new Error(`[AssetManager] HTTP ${r.status} for ${path}`);

@@ -80,8 +80,9 @@ function connectWebSocket() {
     client.once('error', reject);
     client.on('connect', () => {
       client.write([
-        'GET / HTTP/1.1',
+        'GET /ws HTTP/1.1',
         `Host: localhost:${runtimePort}`,
+        `Origin: http://localhost:${runtimePort}`,
         'Upgrade: websocket',
         'Connection: Upgrade',
         `Sec-WebSocket-Key: ${key}`,

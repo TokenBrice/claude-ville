@@ -145,6 +145,40 @@
     contain: layout style;
 }
 
+.sidebar__agent-select {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+}
+
+.sidebar__agent-parent {
+    flex: 0 1 68px;
+    min-width: 0;
+    padding: 3px 2px;
+    overflow: hidden;
+    color: var(--cv-text-muted);
+    font: 400 var(--fs-label) var(--font-body);
+    text-decoration: underline dotted;
+    text-overflow: ellipsis;
+    text-underline-offset: 2px;
+    white-space: nowrap;
+}
+
+.sidebar__agent-parent:hover,
+.sidebar__agent-parent:focus-visible {
+    color: var(--cv-gold-bright);
+}
+
+.sidebar__agent-parent:disabled {
+    cursor: default;
+    opacity: 0.62;
+    text-decoration: none;
+}
+
 .sidebar__agent:hover {
     background:
         linear-gradient(90deg, rgba(255, 226, 138, 0.12), rgba(92, 57, 27, 0.15));

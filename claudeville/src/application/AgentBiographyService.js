@@ -4,6 +4,7 @@ import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
 const FLUSH_DEBOUNCE_MS = 3000;
 const WRITE_LEASE_KEY = 'claudeville.biography.writeLease';
 const WRITE_LEASE_TTL_MS = 15000;
+const SESSION_PUSH_KEY_LIMIT = 96;
 
 function randomToken() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -25,8 +26,41 @@ function isCountablePush(event) {
     return true;
 }
 
+function compactEventKey(value) {
+    const text = String(value || '');
+    if (text.length <= 180) return text;
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${text.slice(0, 120)}:${(hash >>> 0).toString(36)}`;
+}
+
 function pushEventKey(event) {
-    return String(event.id || `push:${event.ts || event.timestamp || 0}:${event.commandHash || event.command || ''}`);
+    if (event?.id) return compactEventKey(event.id);
+    const source = String(event?.commandHash || event?.command || '');
+    let hash = 2166136261;
+    for (let index = 0; index < source.length; index++) {
+        hash ^= source.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return compactEventKey(`push:${event?.ts || event?.timestamp || 0}:${(hash >>> 0).toString(36)}`);
+}
+
+function eventTimestamp(event) {
+    const raw = event?.completedAt ?? event?.ts ?? event?.timestamp;
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric < 1e12 ? numeric * 1000 : numeric;
+    const parsed = Date.parse(String(raw || ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function rememberBounded(set, key, limit = SESSION_PUSH_KEY_LIMIT) {
+    if (set.has(key)) return false;
+    set.add(key);
+    while (set.size > limit) set.delete(set.values().next().value);
+    return true;
 }
 
 function nameFromIdentityKey(identityKey) {
@@ -156,6 +190,7 @@ export class AgentBiographyService {
         const identityKey = AgentBiography.identityKeyFor(agent);
         if (!identityKey) return;
         let session = this._sessions.get(agent.id);
+        let firstObservation = false;
         if (!session) {
             // Baseline at first sight: sessions report cumulative totals, so
             // counting the initial total would double-count on every page
@@ -168,6 +203,7 @@ export class AgentBiographyService {
                 completed: false,
             };
             this._sessions.set(agent.id, session);
+            firstObservation = true;
         }
         session.identityKey = identityKey;
         this._ensureFounding(identityKey, agent);
@@ -180,21 +216,26 @@ export class AgentBiographyService {
         const tokenDelta = total - session.tokenBaseline;
         session.tokenBaseline = total;
 
-        const newPushes = [];
+        const observedPushes = [];
         for (const event of agent.gitEvents || []) {
             if (!isCountablePush(event)) continue;
             const key = pushEventKey(event);
-            if (session.countedPushKeys.has(key)) continue;
-            session.countedPushKeys.add(key);
-            newPushes.push(event);
+            if (!rememberBounded(session.countedPushKeys, key)) continue;
+            observedPushes.push({ key, at: eventTimestamp(event) });
         }
+        observedPushes.sort((a, b) => a.at - b.at);
 
         const now = Date.now();
         this._mutate(identityKey, (biography) => {
             biography.noteSeen(now);
             const earned = [];
             if (tokenDelta > 0) earned.push(...biography.addLifetimeTokens(tokenDelta, now));
-            for (const _event of newPushes) earned.push(...biography.recordPush(now));
+            for (const push of observedPushes) {
+                if (!biography.rememberPushEvent(push.key, push.at)) continue;
+                // Existing telemetry is the page's baseline. Only pushes that
+                // appear after first observation increase lifetime totals.
+                if (!firstObservation) earned.push(...biography.recordPush(push.at || now));
+            }
             if (recoveredFromError) earned.push(...biography.recordErrorRecovery(now));
             return earned;
         });

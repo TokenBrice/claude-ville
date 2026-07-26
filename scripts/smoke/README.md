@@ -22,15 +22,25 @@ They are **not** a replacement for a test runner.
   non-dirty `update()` calls must reuse the same `teamToMembers` Map and
   inner Array references, while a membership-dirtying event triggers a
   rebuild.
+- `world-visit-paths.mjs` — Opens the maintained local dashboard and verifies
+  every configured base/overflow visit slot against the production Pathfinder
+  grid for uniqueness, walkability, and reachability from the village gate.
+- `server-security.mjs` — Starts an isolated server and verifies loopback-only
+  binding, Host/Origin policy, WebSocket handshakes, and frame validation.
+- `ui-remediation.mjs` — Exercises session-failure recovery, selection races,
+  keyboard controls, modal focus containment, and storage failure fallback.
 
 ## How to run
 
 ```
 node scripts/smoke/adapters.mjs
 node scripts/smoke/relationship.mjs
+node scripts/smoke/world-visit-paths.mjs
+node scripts/smoke/server-security.mjs
+node scripts/smoke/ui-remediation.mjs
 ```
 
-Both scripts exit 0 on success and 1 on any assertion failure, and clean
+These scripts exit 0 on success and 1 on any assertion failure, and clean
 up their temp fixtures in a `finally` block.
 
 `relationship.mjs` may print a one-time `MODULE_TYPELESS_PACKAGE_JSON`

@@ -2,15 +2,6 @@
 // Building positions remain in buildings.js; this file owns the readable
 // settlement shape: district masses and the roads that connect them.
 
-export const TOWN_DISTRICTS = Object.freeze([
-    { id: 'civic', label: 'City Center', center: [16, 22], radius: 6 },
-    { id: 'knowledge', label: 'Scholars Ridge', center: [14, 16], radius: 10 },
-    { id: 'workshop', label: 'Forge Row', center: [26, 28], radius: 5 },
-    { id: 'resource', label: 'Mine Yard', center: [13, 33], radius: 4 },
-    { id: 'arcane', label: 'Portal Periphery', center: [4, 31], radius: 5 },
-    { id: 'harbor', label: 'Harbor Quay', center: [34, 17], radius: 9 },
-]);
-
 export const VILLAGE_GATE = Object.freeze({
     id: 'prop.villageGate',
     tileX: 19.0,

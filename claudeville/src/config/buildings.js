@@ -39,20 +39,20 @@ export const normalizeBuildingType = (type) => {
 
 export const VISIT_OVERFLOW_TILES = Object.freeze({
     archive: [
-        { tileX: 8, tileY: 19, overflow: true, reason: 'archive-walk' },
-        { tileX: 9, tileY: 16, overflow: true, reason: 'reading-alcove' },
+        { tileX: 7, tileY: 19, overflow: true, reason: 'archive-walk' },
+        { tileX: 8, tileY: 20, overflow: true, reason: 'reading-alcove' },
         { tileX: 9, tileY: 19, overflow: true, reason: 'archive-walk' },
-        { tileX: 10, tileY: 17, overflow: true, reason: 'reading-alcove' },
-        { tileX: 10, tileY: 18, overflow: true, reason: 'archive-walk' },
+        { tileX: 9, tileY: 20, overflow: true, reason: 'reading-alcove' },
+        { tileX: 10, tileY: 19, overflow: true, reason: 'archive-walk' },
     ],
     command: [
-        { tileX: 15, tileY: 22, overflow: true, reason: 'plaza' },
-        { tileX: 17, tileY: 22, overflow: true, reason: 'plaza' },
+        { tileX: 14, tileY: 22, overflow: true, reason: 'plaza' },
+        { tileX: 19, tileY: 22, overflow: true, reason: 'plaza' },
         { tileX: 13, tileY: 22, overflow: true, reason: 'plaza' },
     ],
     taskboard: [
-        { tileX: 22, tileY: 34, overflow: true, reason: 'review' },
-        { tileX: 24, tileY: 34, overflow: true, reason: 'review' },
+        { tileX: 20, tileY: 34, overflow: true, reason: 'review' },
+        { tileX: 25, tileY: 34, overflow: true, reason: 'review' },
     ],
     mine: [
         { tileX: 9, tileY: 34, overflow: true, reason: 'mine-yard' },
@@ -62,8 +62,8 @@ export const VISIT_OVERFLOW_TILES = Object.freeze({
         { tileX: 16, tileY: 36, overflow: true, reason: 'ore-sort' },
     ],
     watchtower: [
-        { tileX: 28, tileY: 15, overflow: true, reason: 'lookout' },
-        { tileX: 27, tileY: 15, overflow: true, reason: 'lookout' },
+        { tileX: 27, tileY: 16, overflow: true, reason: 'lookout' },
+        { tileX: 26, tileY: 15, overflow: true, reason: 'lookout' },
     ],
 });
 
@@ -82,13 +82,13 @@ export const BUILDING_DEFS = [
         capacity: { work: 5, ambient: 3, overflow: 3 },
         visualTier: 'hero',
         labelPriority: 'landmark',
-        entrance: { tileX: 16, tileY: 21 },
+        entrance: { tileX: 15, tileY: 21 },
         visitTiles: [
-            workSlot(16, 21, { x: 15.5, y: 18.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
+            workSlot(15, 21, { x: 15.5, y: 18.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
             workSlot(14, 21, { x: 15.5, y: 18.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
             workSlot(18, 21, { x: 15.5, y: 18.0 }, { queueGroup: 'command-briefing', stance: 'briefing' }),
             queueSlot(15, 22, { x: 15.5, y: 18.0 }, { queueGroup: 'command-plaza', reason: 'plaza' }),
-            queueSlot(17, 22, { x: 15.5, y: 18.0 }, { queueGroup: 'command-plaza', reason: 'plaza' }),
+            queueSlot(18, 22, { x: 15.5, y: 18.0 }, { queueGroup: 'command-plaza', reason: 'plaza' }),
             scenicSlot(12, 18, { x: 15.5, y: 18.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
             scenicSlot(12, 19, { x: 15.5, y: 18.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
             scenicSlot(18, 18, { x: 15.5, y: 18.0 }, { queueGroup: 'command-wing', stance: 'watch' }),
@@ -152,11 +152,11 @@ export const BUILDING_DEFS = [
         visitTiles: [
             workSlot(25, 30, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-anvil', stance: 'hammer' }),
             workSlot(28, 30, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-anvil', stance: 'hammer' }),
-            queueSlot(24, 31, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-yard', reason: 'forge-yard' }),
+            queueSlot(25, 31, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-yard', reason: 'forge-yard' }),
             queueSlot(27, 31, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-yard', reason: 'forge-yard' }),
             queueSlot(30, 31, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-yard', reason: 'forge-yard' }),
             scenicSlot(25, 28, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-watch', stance: 'warm-hands' }),
-            scenicSlot(30, 28, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-watch', stance: 'warm-hands' }),
+            scenicSlot(30, 29, { x: 27.5, y: 27.5 }, { queueGroup: 'forge-watch', stance: 'warm-hands' }),
         ],
         walkExclusion: [{ dx: -1, dy: 3, width: 5, height: 1 }],
         scenery: {
@@ -308,9 +308,9 @@ export const BUILDING_DEFS = [
         entrance: { tileX: 28, tileY: 14 },
         visitTiles: [
             workSlot(28, 14, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-beacon', stance: 'signal' }),
-            queueSlot(28, 15, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', reason: 'lookout' }),
+            queueSlot(27, 14, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', reason: 'lookout' }),
             scenicSlot(27, 15, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', stance: 'scan', reason: 'lookout' }),
-            scenicSlot(29, 15, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', stance: 'scan', reason: 'lookout' }),
+            scenicSlot(28, 16, { x: 28.0, y: 10.5 }, { queueGroup: 'watchtower-lookout', stance: 'scan', reason: 'lookout' }),
         ],
         walkExclusion: [{ dx: 0, dy: 5, width: 3, height: 1 }],
         scenery: {
@@ -333,15 +333,15 @@ export const BUILDING_DEFS = [
         capacity: { work: 4, ambient: 3, overflow: 3 },
         visualTier: 'major',
         labelPriority: 'landmark',
-        entrance: { tileX: 29, tileY: 19 },
+        entrance: { tileX: 28, tileY: 19 },
         visitTiles: [
-            workSlot(29, 19, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
+            workSlot(28, 19, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
             workSlot(28, 18, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
             workSlot(28, 20, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-ledger', stance: 'dispatch' }),
             queueSlot(27, 19, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-quay', reason: 'quay' }),
             scenicSlot(27, 17, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-quay', stance: 'watch', reason: 'quay' }),
-            queueSlot(29, 21, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-pier', reason: 'pier' }),
-            scenicSlot(28, 21, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-pier', stance: 'watch', reason: 'pier' }),
+            queueSlot(27, 21, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-pier', reason: 'pier' }),
+            scenicSlot(26, 21, { x: 34.0, y: 19.0 }, { queueGroup: 'harbor-pier', stance: 'watch', reason: 'pier' }),
         ],
         walkExclusion: [{ dx: -1, dy: 0, width: 1, height: 4 }],
         scenery: {

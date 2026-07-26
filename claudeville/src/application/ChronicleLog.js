@@ -95,10 +95,12 @@ export class ChronicleLog {
         this._replayed = false;
         this._replayPromise = null;
         this._pendingArrivals = [];
+        this._stopPromise = null;
     }
 
     start() {
         if (this.running) return this;
+        this._stopPromise = null;
         this.running = true;
         // Reloading the tab is not an arrival. Replay today's book so agents
         // that were already in town stay in town across a refresh.
@@ -130,12 +132,15 @@ export class ChronicleLog {
     }
 
     stop() {
-        if (!this.running) return this;
-        this.running = false;
-        eventBus.off('agent:added', this._onAdded);
-        eventBus.off('agent:updated', this._onUpdated);
-        eventBus.off('agent:removed', this._onRemoved);
-        return this;
+        if (this._stopPromise) return this._stopPromise;
+        if (this.running) {
+            this.running = false;
+            eventBus.off('agent:added', this._onAdded);
+            eventBus.off('agent:updated', this._onUpdated);
+            eventBus.off('agent:removed', this._onRemoved);
+        }
+        this._stopPromise = this.flush();
+        return this._stopPromise;
     }
 
     // Arrivals cannot be judged until the replay says who was already here, and
@@ -224,6 +229,8 @@ export class ChronicleLog {
         const best = new Map();
         for (const event of agent.gitEvents || []) {
             if (!event?.id) continue;
+            const type = String(event.type || '').toLowerCase();
+            if (type !== 'commit' && type !== 'push') continue;
             const key = event.sha || event.commandHash || event.id;
             const existing = best.get(key);
             if (!existing || this._gitEventScore(event) > this._gitEventScore(existing)) {
@@ -232,7 +239,9 @@ export class ChronicleLog {
         }
 
         for (const [key, event] of best) {
-            const kind = event.type === 'push' ? ChronicleEventKind.PUSH : ChronicleEventKind.COMMIT;
+            const kind = String(event.type).toLowerCase() === 'push'
+                ? ChronicleEventKind.PUSH
+                : ChronicleEventKind.COMMIT;
             const subject = commitSubject(event);
             // One commit can still reach us as two records that share neither
             // sha nor commandHash, so identity is "any of these keys seen".

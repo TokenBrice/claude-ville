@@ -80,6 +80,14 @@ const DEFAULT_EFFORT_RENDERING = Object.freeze({
     allowRuntimeEffortWeapon: true,
 });
 
+const PROVIDER_BASE_SPRITES = Object.freeze({
+    claude: 'agent.claude.base',
+    codex: 'agent.codex.base',
+    gemini: 'agent.gemini.base',
+    kimi: 'agent.kimi.base',
+    grok: 'agent.grok.base',
+});
+
 function codexEquipment(effortTier, modelClass, { suppressBakedWeapon = true } = {}) {
     const equipment = modelClass === 'gpt55'
         ? CODEX_GPT55_EQUIPMENT_BY_EFFORT[effortTier || 'none'] || CODEX_EQUIPMENT_BY_CLASS.gpt55
@@ -122,6 +130,11 @@ export function providerPaletteKey(agent) {
     if (provider.includes('kimi') || model.includes('kimi')) return 'kimi';
     if (provider.includes('grok') || model.includes('grok')) return 'grok';
     return 'default';
+}
+
+export function providerBaseSpriteId(model, provider = '') {
+    const paletteKey = providerPaletteKey({ model, provider });
+    return PROVIDER_BASE_SPRITES[paletteKey] || null;
 }
 
 export function normalizeReasoningEffort(effort) {
@@ -454,6 +467,7 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         };
     }
 
+    const paletteKey = providerPaletteKey({ model, provider });
     return {
         family: null,
         modelClass: 'standard',
@@ -464,8 +478,8 @@ export function getModelVisualIdentity(model, effort, provider = '') {
         ...DEFAULT_EFFORT_RENDERING,
         effortAccessory,
         effortFloorRing,
-        spriteId: null,
-        paletteKey: null,
+        spriteId: providerBaseSpriteId(model, provider),
+        paletteKey: paletteKey === 'default' ? null : paletteKey,
         trim: null,
         accent: null,
         minimapColor: null,

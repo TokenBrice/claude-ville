@@ -14,6 +14,8 @@ const INTENSITY_EMIT_STEP = 0.15;
 // Village event arrays are pruned past the widest influence window.
 const VILLAGE_EVENT_RETENTION_MS = 20 * 60_000;
 const STREAK_EVENT_TYPES = new Set(['commit', 'push']);
+const AGENT_STREAK_KEY_LIMIT = 256;
+const VILLAGE_EVENT_LIMIT = 1024;
 
 function tokenTotal(agent) {
     const tokens = agent?.tokens || {};
@@ -31,11 +33,38 @@ function isCountableStreakEvent(event) {
 }
 
 function streakEventKey(event) {
-    return String(event.id || `${event.type}:${event.ts || 0}:${event.commandHash || event.command || ''}`);
+    const value = String(event.id || `${event.type}:${event.ts || 0}:${event.commandHash || event.command || ''}`);
+    if (value.length <= 180) return value;
+    let hash = 2166136261;
+    for (let index = 0; index < value.length; index++) {
+        hash ^= value.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${value.slice(0, 120)}:${(hash >>> 0).toString(36)}`;
+}
+
+function eventTimestamp(event) {
+    const raw = event?.completedAt ?? event?.ts ?? event?.timestamp;
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric < 1e12 ? numeric * 1000 : numeric;
+    const parsed = Date.parse(String(raw || ''));
+    return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function prune(timestamps, cutoff) {
     while (timestamps.length && timestamps[0] < cutoff) timestamps.shift();
+}
+
+function pruneEventKeys(keys, cutoff) {
+    for (const [key, timestamp] of keys) {
+        if (timestamp < cutoff) keys.delete(key);
+    }
+    while (keys.size > AGENT_STREAK_KEY_LIMIT) keys.delete(keys.keys().next().value);
+}
+
+function capTimestamps(timestamps, limit = VILLAGE_EVENT_LIMIT) {
+    timestamps.sort((a, b) => a - b);
+    if (timestamps.length > limit) timestamps.splice(0, timestamps.length - limit);
 }
 
 /**
@@ -101,7 +130,7 @@ export class MoodService {
                 tokenSamples: [{ at: now, total: tokenTotal(agent) }],
                 wasErrored: false,
                 lastErrorAt: 0,
-                countedStreakKeys: new Set(),
+                countedStreakKeys: new Map(),
                 pushTimestamps: [],
                 mood: normalizeMood(null),
             };
@@ -125,19 +154,30 @@ export class MoodService {
         if (isErrored && !record.wasErrored) {
             record.lastErrorAt = now;
             this._villageErrorTimestamps.push(now);
+            capTimestamps(this._villageErrorTimestamps);
         }
         record.wasErrored = isErrored;
 
         // Commit/push streak from git events (deduped by event identity).
+        const streakCutoff = now - MOOD_TUNING.streakWindowMs;
+        pruneEventKeys(record.countedStreakKeys, streakCutoff);
         for (const event of agent.gitEvents || []) {
             if (!isCountableStreakEvent(event)) continue;
+            const at = eventTimestamp(event);
+            // Repository enrichment can surface old history in one batch. It
+            // is useful context, but not a current mood or weather signal.
+            if (!at || at < streakCutoff || at > now) continue;
             const key = streakEventKey(event);
             if (record.countedStreakKeys.has(key)) continue;
-            record.countedStreakKeys.add(key);
-            record.pushTimestamps.push(now);
-            this._villagePushTimestamps.push(now);
+            record.countedStreakKeys.set(key, at);
+            record.pushTimestamps.push(at);
+            this._villagePushTimestamps.push(at);
         }
-        prune(record.pushTimestamps, now - MOOD_TUNING.streakWindowMs);
+        pruneEventKeys(record.countedStreakKeys, streakCutoff);
+        capTimestamps(record.pushTimestamps, AGENT_STREAK_KEY_LIMIT);
+        capTimestamps(this._villagePushTimestamps);
+        prune(record.pushTimestamps, streakCutoff);
+        prune(this._villagePushTimestamps, now - VILLAGE_EVENT_RETENTION_MS);
 
         const mood = deriveAgentMood({
             isErrored,

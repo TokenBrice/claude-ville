@@ -13,9 +13,11 @@ Static HTML/CSS/vanilla ES modules; `server.js` uses only Node built-ins; no bun
 
 ## Server
 
-`server.js`: port hardcoded to `4000`; static files from `claudeville/`; watch paths come from active provider adapters; updates debounce on fs events plus a 2 s poll that no-ops with no WS clients.
+`server.js`: port hardcoded to `4000` and bound to `127.0.0.1`; static files from `claudeville/`; local Host/same-origin checks guard HTTP and WebSocket access; watch paths come from active provider adapters; updates debounce on fs events plus a 2 s poll that no-ops with no WS clients.
 
-API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf` (includes `sessionResidency` diagnostics); `ws://localhost:4000` (init payload, updates, ping/pong).
+API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST `/api/session-details` (body max 256 KiB, up to 100 items read, invalid providers skipped); `/api/teams`; `/api/tasks`; `/api/providers`; `/api/usage` (from `services/usageQuota.js`); `/api/perf` (includes `sessionResidency` diagnostics); `ws://localhost:4000/ws` (same-origin init payload, updates, ping/pong).
+
+`/api/tasks`, `/api/providers`, and `/api/perf` are loopback-only diagnostic/external integration surfaces; the product UI does not consume `/api/tasks`.
 
 Client-facing session collection goes through `collectSessionsForClients()`, which folds `services/sessionResidency.js` residents into the live list. Discovery, canonical active projects, and watch topology deliberately stay on the raw `ACTIVE_THRESHOLD_MS` window so residency never widens the watcher footprint.
 

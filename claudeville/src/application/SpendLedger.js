@@ -53,10 +53,12 @@ export class SpendLedger {
         this._samples = [];           // { ts, tokens, cost } inside the rate window
         this._loaded = false;
         this._writeTail = Promise.resolve();
+        this._stopPromise = null;
     }
 
     async start() {
         if (this.running) return this;
+        this._stopPromise = null;
         this.running = true;
         await this._load();
         this._onChange = () => this.sample();
@@ -70,12 +72,15 @@ export class SpendLedger {
     }
 
     stop() {
-        if (!this.running) return this;
-        this.running = false;
-        eventBus.off('agent:added', this._onChange);
-        eventBus.off('agent:updated', this._onChange);
-        eventBus.off('agent:removed', this._onRemoved);
-        return this;
+        if (this._stopPromise) return this._stopPromise;
+        if (this.running) {
+            this.running = false;
+            eventBus.off('agent:added', this._onChange);
+            eventBus.off('agent:updated', this._onChange);
+            eventBus.off('agent:removed', this._onRemoved);
+        }
+        this._stopPromise = this.flush();
+        return this._stopPromise;
     }
 
     /**

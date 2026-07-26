@@ -25,7 +25,44 @@ function isCountableGitEvent(event) {
 }
 
 function gitEventKey(event) {
-    return String(event.id || `git:${event.ts || event.timestamp || 0}:${event.commandHash || event.command || ''}`);
+    if (event?.id) return compactIdentity(event.id);
+    const source = String(event?.commandHash || event?.command || '');
+    let hash = 2166136261;
+    for (let index = 0; index < source.length; index++) {
+        hash ^= source.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return compactIdentity(`${event?.ts || event?.timestamp || 0}:${(hash >>> 0).toString(36)}`);
+}
+
+function compactIdentity(value) {
+    const text = String(value || '');
+    if (text.length <= 160) return text;
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index++) {
+        hash ^= text.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${text.slice(0, 80)}:${(hash >>> 0).toString(36)}`;
+}
+
+function eventTimestamp(event) {
+    const raw = event?.completedAt ?? event?.ts ?? event?.timestamp;
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric < 1e12 ? numeric * 1000 : numeric;
+    const parsed = Date.parse(String(raw || ''));
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function chatEventKey(agent, message, index) {
+    return compactIdentity([
+        'chat',
+        agent.id,
+        eventTimestamp(message) || `index:${index}`,
+        normalizeAlias(message?.recipient),
+        String(message?.messageType || 'message'),
+        String(message?.summary || ''),
+    ].join(':'));
 }
 
 function sessionPairKey(aId, bId) {
@@ -71,7 +108,7 @@ export class RelationshipAffinityService {
     constructor({ store = null } = {}) {
         this.store = store;
         this._affinities = new Map(); // pairKey -> PairAffinity
-        this._roster = new Map(); // agent.id -> { agent, identityKey, countedGitKeys, lastChatSignature }
+        this._roster = new Map(); // agent.id -> live telemetry + observation baseline
         this._metSessionPairs = new Set();
         this._dirty = new Set();
         this._flushTimer = null;
@@ -180,16 +217,28 @@ export class RelationshipAffinityService {
     _handleAgentSeen(agent) {
         if (!this._accepting || !agent?.id) return;
         let entry = this._roster.get(agent.id);
+        const firstObservation = !entry;
         if (!entry) {
-            entry = { agent, identityKey: null, countedGitKeys: new Set(), lastChatSignature: null };
+            entry = {
+                agent,
+                identityKey: null,
+                observedAt: Date.now(),
+                countedChatKeys: new Set(),
+                lastChatSignature: null,
+            };
             this._roster.set(agent.id, entry);
         }
         entry.agent = agent;
         entry.identityKey = AgentBiography.identityKeyFor(agent);
         if (!entry.identityKey || !this._holdsWriteLease()) return;
         this._recordMeetings(entry);
-        this._recordChat(entry);
-        this._recordSharedCommits(entry);
+        // A recipient or project peer can arrive after the sender. Revisit the
+        // small live roster so already-visible telemetry is baselined once the
+        // pair becomes resolvable.
+        for (const rosterEntry of this._roster.values()) {
+            this._recordChats(rosterEntry, rosterEntry === entry && firstObservation);
+            this._recordSharedCommits(rosterEntry, rosterEntry === entry && firstObservation);
+        }
     }
 
     _handleAgentRemoved(agent) {
@@ -210,48 +259,75 @@ export class RelationshipAffinityService {
             const key = sessionPairKey(entry.agent.id, other.agent.id);
             if (this._metSessionPairs.has(key)) continue;
             this._metSessionPairs.add(key);
-            this._mutatePair(entry, other, 'meeting');
+            this._mutatePair(entry, other, 'meeting', `meeting:${key}`);
         }
     }
 
-    _recordChat(entry) {
+    _recordChats(entry, firstObservation = false) {
         const agent = entry.agent;
+        const messages = Array.isArray(agent.sendMessages) ? agent.sendMessages : [];
+        messages.forEach((message, index) => {
+            const alias = normalizeAlias(message?.recipient);
+            if (!alias) return;
+            const other = this._findRecipient(entry, alias);
+            if (!other) return;
+            const key = chatEventKey(agent, message, index);
+            if (entry.countedChatKeys.has(key)) return;
+            entry.countedChatKeys.add(key);
+            while (entry.countedChatKeys.size > 96) {
+                entry.countedChatKeys.delete(entry.countedChatKeys.values().next().value);
+            }
+            const at = eventTimestamp(message);
+            const baseline = firstObservation || (at > 0 && at <= entry.observedAt);
+            this._mutatePair(entry, other, 'chat', key, { baseline });
+        });
+
+        // Keep the live-tool fallback for providers without sendMessages.
         if (String(agent.currentTool || '') !== 'SendMessage') return;
         const signature = String(agent.currentToolInput || '');
-        if (entry.lastChatSignature === signature) return;
-        entry.lastChatSignature = signature;
+        if (!signature || entry.lastChatSignature === signature) return;
         const alias = normalizeAlias(extractRecipientName(signature));
         if (!alias) return;
+        const other = this._findRecipient(entry, alias);
+        if (!other) return;
+        entry.lastChatSignature = signature;
+        this._mutatePair(
+            entry,
+            other,
+            'chat',
+            compactIdentity(`chat-tool:${agent.id}:${signature}`),
+            { baseline: firstObservation },
+        );
+    }
+
+    _findRecipient(entry, alias) {
         for (const other of this._roster.values()) {
             if (other === entry || !other.identityKey) continue;
             const candidates = [other.agent.name, other.agent.agentName, other.agent.agentId];
             if (candidates.some(value => normalizeAlias(value) === alias)) {
-                this._mutatePair(entry, other, 'chat');
-                return;
+                return other;
+            }
+        }
+        return null;
+    }
+
+    _recordSharedCommits(entry, firstObservation = false) {
+        const project = entry.agent.projectPath;
+        if (!project) return;
+        for (const event of entry.agent.gitEvents || []) {
+            if (!isCountableGitEvent(event)) continue;
+            const key = `git:${gitEventKey(event)}`;
+            const at = eventTimestamp(event);
+            const baseline = firstObservation || (at > 0 && at <= entry.observedAt);
+            for (const other of this._roster.values()) {
+                if (other === entry || !other.identityKey) continue;
+                if (other.agent.projectPath !== project) continue;
+                this._mutatePair(entry, other, 'sharedCommit', key, { baseline });
             }
         }
     }
 
-    _recordSharedCommits(entry) {
-        let fresh = 0;
-        for (const event of entry.agent.gitEvents || []) {
-            if (!isCountableGitEvent(event)) continue;
-            const key = gitEventKey(event);
-            if (entry.countedGitKeys.has(key)) continue;
-            entry.countedGitKeys.add(key);
-            fresh++;
-        }
-        if (!fresh) return;
-        const project = entry.agent.projectPath;
-        if (!project) return;
-        for (const other of this._roster.values()) {
-            if (other === entry || !other.identityKey) continue;
-            if (other.agent.projectPath !== project) continue;
-            for (let i = 0; i < fresh; i++) this._mutatePair(entry, other, 'sharedCommit');
-        }
-    }
-
-    _mutatePair(entryA, entryB, kind) {
+    _mutatePair(entryA, entryB, kind, interactionKey, { baseline = false } = {}) {
         if (!this._accepting) return;
         const pairKey = affinityPairKey(entryA.identityKey, entryB.identityKey);
         if (!pairKey) return;
@@ -262,7 +338,18 @@ export class RelationshipAffinityService {
             if (!affinity) return;
             this._affinities.set(pairKey, affinity);
         }
-        if (!affinity.recordInteraction(kind, now)) return;
+        // Legacy records had counters but no identities. Baseline their first
+        // observed event rather than incrementing once during migration.
+        const legacy = affinity.schemaVersion < 2;
+        if (baseline || legacy) {
+            const remembered = affinity.rememberInteraction(interactionKey);
+            affinity.schemaVersion = 2;
+            if (!remembered && !legacy) return;
+            this._dirty.add(pairKey);
+            this._scheduleFlush();
+            return;
+        }
+        if (!affinity.recordInteraction(kind, now, interactionKey)) return;
         this._dirty.add(pairKey);
         this._scheduleFlush();
         eventBus.emit('affinity:changed', { pairKey, affinity, kind });

@@ -124,3 +124,30 @@ test('a departed agent keeps its banked spend but loses its baseline', () => {
     ledger.sample(T + 2000);
     assert.equal(ledger.today.tokens, 2000, 'spend already observed is not unwound');
 });
+
+test('stop drains delayed ledger writes', async () => {
+    let releaseWrite;
+    const records = [];
+    const store = {
+        async put(_name, record) {
+            await new Promise(resolve => { releaseWrite = resolve; });
+            records.push(record);
+            return record;
+        },
+    };
+    const one = agent('a', { input: 1000 });
+    const ledger = new SpendLedger(worldOf([one]), { store });
+    ledger.sample(T);
+    one.tokens = { input: 2000, output: 0, cacheRead: 0, cacheCreate: 0 };
+    ledger.sample(T + 1000);
+    const stopped = ledger.stop();
+    assert.strictEqual(ledger.stop(), stopped);
+    let drained = false;
+    stopped.then(() => { drained = true; });
+    await Promise.resolve();
+    assert.equal(drained, false);
+    releaseWrite();
+    await stopped;
+    assert.equal(records.length, 1);
+    assert.equal(records[0].value.tokens, 1000);
+});

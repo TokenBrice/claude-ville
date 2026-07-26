@@ -1153,7 +1153,18 @@ export class AgentSprite {
         this._lastPathTileKey = tileKey;
         const finalTarget = { tileX: targetTileX, tileY: targetTileY };
         let tilePath = this._findStitchedPath(fromTile, finalTarget, viaWaypoints);
-        if (tilePath.length === 0) {
+        const finalTile = tilePath[tilePath.length - 1];
+        const targetTile = {
+            tileX: Math.round(targetTileX),
+            tileY: Math.round(targetTileY),
+        };
+        if (
+            !finalTile
+            || Math.max(
+                Math.abs(finalTile.tileX - targetTile.tileX),
+                Math.abs(finalTile.tileY - targetTile.tileY),
+            ) > 1
+        ) {
             this._targetReachable = false;
             this._releaseVisitReservation();
             this.waypoints = [];
@@ -1164,11 +1175,7 @@ export class AgentSprite {
         this.waypoints = tilePath.map((t) => ({
             ...tileToWorld(t),
         }));
-        const finalTile = tilePath[tilePath.length - 1];
         if (
-            finalTile &&
-            Math.abs(finalTile.tileX - Math.round(targetTileX)) <= 1 &&
-            Math.abs(finalTile.tileY - Math.round(targetTileY)) <= 1 &&
             this._isScreenPointWalkable(targetScreenX, targetScreenY)
         ) {
             this.waypoints[this.waypoints.length - 1] = { x: targetScreenX, y: targetScreenY };

@@ -96,5 +96,9 @@ export function shortProjectName(path, unknownLabel = 'Unknown Project') {
 
 export function truncateText(value, max) {
     const text = String(value || '');
-    return text.length > max ? `${text.substring(0, max - 1)}...` : text;
+    const limit = Math.max(0, Math.floor(Number(max) || 0));
+    if (text.length <= limit) return text;
+    if (limit === 0) return '';
+    if (limit === 1) return '…';
+    return `${text.slice(0, limit - 1)}…`;
 }

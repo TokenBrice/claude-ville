@@ -8,12 +8,19 @@ export class Modal {
 
         this._onClose = () => this.close();
         this._onKeydown = (e) => {
-            if (e.key === 'Escape') this.close();
+            if (e.key === 'Escape') {
+                e.preventDefault();
+                this.close();
+            } else if (e.key === 'Tab') {
+                this._trapFocus(e);
+            }
         };
         this._onOverlayClick = (e) => {
             if (e.target === this.overlay) this.close();
         };
         this._destroyed = false;
+        this._isOpen = false;
+        this._inertRecords = [];
         // Element that had focus before the dialog opened; restored on close.
         this._previousFocus = null;
 
@@ -26,7 +33,12 @@ export class Modal {
         this.titleEl.textContent = title;
         this.contentEl.innerHTML = contentHTML;
         this.box.classList.toggle('modal--wide', wide);
-        this._previousFocus = document.activeElement;
+        if (!this._isOpen) {
+            this._previousFocus = document.activeElement;
+            this._setBackgroundInert(true);
+        }
+        this._isOpen = true;
+        this.overlay.setAttribute('aria-hidden', 'false');
         this.overlay.style.display = 'flex';
         document.addEventListener('keydown', this._onKeydown);
         // Move focus inside the dialog (role="dialog" + aria-modal in markup).
@@ -35,16 +47,62 @@ export class Modal {
 
     close() {
         if (!this.overlay) return;
+        const wasOpen = this._isOpen;
+        this._isOpen = false;
         this.overlay.style.display = 'none';
+        this.overlay.setAttribute('aria-hidden', 'true');
         this.titleEl.textContent = '';
         this.contentEl.innerHTML = '';
         this.box.classList.remove('modal--wide');
         document.removeEventListener('keydown', this._onKeydown);
+        this._setBackgroundInert(false);
         const previous = this._previousFocus;
         this._previousFocus = null;
-        if (previous && previous.isConnected && typeof previous.focus === 'function') {
+        if (wasOpen && previous && previous.isConnected && typeof previous.focus === 'function') {
             previous.focus();
         }
+    }
+
+    _trapFocus(event) {
+        if (!this._isOpen || !this.box) return;
+        const focusable = [...this.box.querySelectorAll([
+            'a[href]',
+            'button:not([disabled])',
+            'input:not([disabled])',
+            'select:not([disabled])',
+            'textarea:not([disabled])',
+            '[tabindex]:not([tabindex="-1"])',
+        ].join(','))].filter(node => node.getClientRects().length > 0);
+        if (focusable.length === 0) {
+            event.preventDefault();
+            this.box.tabIndex = -1;
+            this.box.focus();
+            return;
+        }
+        const first = focusable[0];
+        const last = focusable.at(-1);
+        const active = document.activeElement;
+        if (event.shiftKey && (active === first || !this.box.contains(active))) {
+            event.preventDefault();
+            last.focus();
+        } else if (!event.shiftKey && (active === last || !this.box.contains(active))) {
+            event.preventDefault();
+            first.focus();
+        }
+    }
+
+    _setBackgroundInert(inert) {
+        if (inert) {
+            this._inertRecords = [...document.body.children]
+                .filter(node => node !== this.overlay)
+                .map(node => ({ node, wasInert: node.inert }));
+            for (const { node } of this._inertRecords) node.inert = true;
+            return;
+        }
+        for (const { node, wasInert } of this._inertRecords) {
+            if (node.isConnected) node.inert = wasInert;
+        }
+        this._inertRecords = [];
     }
 
     // Public lifecycle hook for callers that mount/unmount shared UI primitives.

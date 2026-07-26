@@ -19,7 +19,7 @@ const {
   setAdapterDataReadyCallback,
   adapters,
 } = require('./adapters');
-const { getTailCacheDiagnostics } = require('./adapters/shared');
+const { clearTailCache, getTailCacheDiagnostics } = require('./adapters/shared');
 
 // ─── Usage quota service ──────────────────────────────
 const usageQuota = require('./services/usageQuota');
@@ -30,6 +30,8 @@ const claudeAdapter = adapters.find(a => a.provider === 'claude');
 
 // ─── Settings ───────────────────────────────────────────────
 const PORT = 4000;
+const LOOPBACK_HOST = '127.0.0.1';
+const WEBSOCKET_PATH = '/ws';
 const STATIC_DIR = __dirname;
 const STATIC_ROOT = path.resolve(STATIC_DIR);
 const realpathSync = fs.realpathSync.native || fs.realpathSync;
@@ -83,14 +85,34 @@ const GIT_STATE_MAX_REF_ENTRIES = 800;
 
 // ─── Utility functions ──────────────────────────────────────
 
-function setCorsHeaders(res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+function localHostValues(req) {
+  const port = Number(req?.socket?.localPort) || PORT;
+  return new Set([`localhost:${port}`, `127.0.0.1:${port}`]);
+}
+
+function normalizedHeader(value) {
+  return typeof value === 'string' ? value.trim().toLowerCase() : '';
+}
+
+function validateLocalRequest(req, { requireOrigin = false } = {}) {
+  const host = normalizedHeader(req?.headers?.host);
+  if (!localHostValues(req).has(host)) {
+    return { ok: false, statusCode: 421, message: 'Misdirected Request' };
+  }
+
+  const origin = normalizedHeader(req?.headers?.origin);
+  if (!origin) {
+    return requireOrigin
+      ? { ok: false, statusCode: 403, message: 'Forbidden' }
+      : { ok: true, host };
+  }
+  if (origin !== `http://${host}`) {
+    return { ok: false, statusCode: 403, message: 'Forbidden' };
+  }
+  return { ok: true, host };
 }
 
 function sendJson(res, statusCode, data) {
-  setCorsHeaders(res);
   res.writeHead(statusCode, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(data));
 }
@@ -445,7 +467,6 @@ function handleGetChangelog(req, res) {
   const changelogPath = path.join(__dirname, '..', 'CHANGELOG.md');
   try {
     const content = fs.readFileSync(changelogPath, 'utf-8');
-    setCorsHeaders(res);
     res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end(content);
   } catch (err) {
@@ -507,7 +528,6 @@ function serveContainedFile(req, res, parsedUrl, { root, realRoot, label = 'Stat
       console.log(`[${label}] resolved`, filePath, 'type', contentType);
     }
 
-    setCorsHeaders(res);
     fs.readFile(filePath, isText ? 'utf-8' : undefined, (err, data) => {
       if (process.env.DEBUG_STATIC) {
         console.log(`[${label}] read callback for`, filePath, 'err?', Boolean(err));
@@ -548,10 +568,52 @@ function handleStaticFile(req, res, parsedUrl) {
 
 const WS_MAGIC_STRING = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 
-function handleWebSocketUpgrade(req, socket, head = Buffer.alloc(0)) {
-  const key = req.headers['sec-websocket-key'];
-  if (!key) {
+function rejectWebSocketUpgrade(socket, statusCode, statusText) {
+  if (!socket || socket.destroyed || !socket.writable) return;
+  try {
+    socket.end(
+      `HTTP/1.1 ${statusCode} ${statusText}\r\n`
+      + 'Connection: close\r\n'
+      + 'Content-Length: 0\r\n'
+      + '\r\n',
+    );
+  } catch {
     socket.destroy();
+  }
+}
+
+function isValidWebSocketKey(key) {
+  if (typeof key !== 'string') return false;
+  try {
+    const decoded = Buffer.from(key, 'base64');
+    return decoded.length === 16 && decoded.toString('base64') === key;
+  } catch {
+    return false;
+  }
+}
+
+function handleWebSocketUpgrade(req, socket, head = Buffer.alloc(0)) {
+  const localRequest = validateLocalRequest(req, { requireOrigin: true });
+  if (!localRequest.ok) {
+    rejectWebSocketUpgrade(socket, localRequest.statusCode, localRequest.message);
+    return;
+  }
+  if (req.method !== 'GET' || req.url !== WEBSOCKET_PATH) {
+    rejectWebSocketUpgrade(socket, 404, 'Not Found');
+    return;
+  }
+  if (
+    normalizedHeader(req.headers.upgrade) !== 'websocket'
+    || !normalizedHeader(req.headers.connection).split(',').map(value => value.trim()).includes('upgrade')
+    || req.headers['sec-websocket-version'] !== '13'
+  ) {
+    rejectWebSocketUpgrade(socket, 400, 'Bad Request');
+    return;
+  }
+
+  const key = req.headers['sec-websocket-key'];
+  if (!isValidWebSocketKey(key)) {
+    rejectWebSocketUpgrade(socket, 400, 'Bad Request');
     return;
   }
 
@@ -618,7 +680,7 @@ function processWebSocketData(socket, buffer) {
     const consumed = handleWebSocketFrame(socket, socket._cvFrameBuffer);
     if (consumed === 0) break;
     if (consumed < 0) {
-      closeWebSocket(socket, 1009);
+      closeWebSocket(socket, Math.abs(consumed));
       return;
     }
     socket._cvFrameBuffer = socket._cvFrameBuffer.slice(consumed);
@@ -627,51 +689,60 @@ function processWebSocketData(socket, buffer) {
 
 function handleWebSocketFrame(socket, buffer) {
   if (buffer.length < 2) return 0;
-  socket._cvLastSeen = Date.now();
 
   const firstByte = buffer[0];
   const secondByte = buffer[1];
 
+  const isFinal = (firstByte & 0x80) !== 0;
+  const reservedBits = firstByte & 0x70;
   const opcode = firstByte & 0x0f;
   const isMasked = (secondByte & 0x80) !== 0;
+  const isControlFrame = opcode >= 0x8;
+  if (reservedBits !== 0 || !isFinal || !isMasked) return -1002;
+  if (![0x1, 0x8, 0x9, 0xa].includes(opcode)) {
+    return opcode === 0x2 ? -1003 : -1002;
+  }
+
   let payloadLength = secondByte & 0x7f;
   let offset = 2;
 
   if (payloadLength === 126) {
+    if (isControlFrame) return -1002;
     if (buffer.length < 4) return 0;
     payloadLength = buffer.readUInt16BE(2);
+    if (payloadLength < 126) return -1002;
     offset = 4;
   } else if (payloadLength === 127) {
+    if (isControlFrame) return -1002;
     if (buffer.length < 10) return 0;
     const extendedLength = buffer.readBigUInt64BE(2);
-    if (extendedLength > BigInt(WS_MAX_PAYLOAD_BYTES)) return -1;
+    if ((extendedLength & (1n << 63n)) !== 0n || extendedLength < 65_536n) return -1002;
+    if (extendedLength > BigInt(WS_MAX_PAYLOAD_BYTES)) return -1009;
     payloadLength = Number(extendedLength);
     offset = 10;
   }
 
-  if (payloadLength > WS_MAX_PAYLOAD_BYTES) return -1;
+  if (isControlFrame && payloadLength > 125) return -1002;
+  if (payloadLength > WS_MAX_PAYLOAD_BYTES) return -1009;
 
-  let maskKey = null;
-  if (isMasked) {
-    if (buffer.length < offset + 4) return 0;
-    maskKey = buffer.slice(offset, offset + 4);
-    offset += 4;
-  }
+  if (buffer.length < offset + 4) return 0;
+  const maskKey = buffer.slice(offset, offset + 4);
+  offset += 4;
 
   if (buffer.length < offset + payloadLength) return 0;
 
   const payload = buffer.slice(offset, offset + payloadLength);
-  if (isMasked && maskKey) {
-    for (let i = 0; i < payload.length; i++) {
-      payload[i] ^= maskKey[i % 4];
-    }
+  for (let i = 0; i < payload.length; i++) {
+    payload[i] ^= maskKey[i % 4];
   }
+  socket._cvLastSeen = Date.now();
 
   switch (opcode) {
     case 0x1:
       handleTextMessage(socket, payload.toString('utf-8'));
       break;
     case 0x8:
+      if (payloadLength === 1) return -1002;
       closeWebSocket(socket, 1000);
       break;
     case 0x9:
@@ -2008,11 +2079,13 @@ const API_ROUTES = {
 };
 
 const server = http.createServer((req, res) => {
+  const localRequest = validateLocalRequest(req);
+  if (!localRequest.ok) {
+    return sendError(res, localRequest.statusCode, localRequest.message);
+  }
+
   if (req.method === 'OPTIONS') {
-    setCorsHeaders(res);
-    res.writeHead(204);
-    res.end();
-    return;
+    return sendError(res, 405, 'Method Not Allowed');
   }
 
   let parsedUrl;
@@ -2064,7 +2137,7 @@ const ASCII_LOGO = `
 
 function startServer() {
   if (server.listening) return server;
-  server.listen(PORT, () => {
+  server.listen(PORT, LOOPBACK_HOST, () => {
     console.log(ASCII_LOGO);
     console.log(`  Server running: http://localhost:${PORT}`);
     console.log('');
@@ -2145,6 +2218,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
       console.warn(`[Shutdown] ${adapter.provider || adapter.name || 'adapter'} cleanup failed:`, err?.message || err);
     }
   }
+  clearTailCache();
   eventLoopDelayMonitor.disable();
 
   for (const socket of Array.from(wsClients)) {

@@ -968,6 +968,78 @@ async function runBoundedCleanupProbe(page) {
   });
 }
 
+async function runAvatarFallbackCleanupProbe(page) {
+  return page.evaluate(async () => {
+    const [{ AvatarCanvas }, { Compositor }, { Agent }] = await Promise.all([
+      import('/src/presentation/dashboard-mode/AvatarCanvas.js'),
+      import('/src/presentation/character-mode/Compositor.js'),
+      import('/src/domain/entities/Agent.js'),
+    ]);
+    const shared = Compositor._shared;
+    const baseline = Compositor._sharedListeners.length;
+    Compositor._shared = null;
+    try {
+      const avatar = new AvatarCanvas(new Agent({
+        id: '__avatar_fallback_cleanup__',
+        name: 'Fallback Avatar',
+        provider: 'claude',
+        model: 'claude',
+        status: 'idle',
+      }));
+      const queued = Compositor._sharedListeners.length - baseline;
+      avatar.destroy();
+      return {
+        queued,
+        retainedAfterDestroy: Compositor._sharedListeners.length - baseline,
+      };
+    } finally {
+      Compositor._shared = shared;
+      Compositor._sharedListeners.splice(baseline);
+    }
+  });
+}
+
+async function runStoreDrainOrderingProbe(page) {
+  return page.evaluate(async () => {
+    const { App } = await import('/src/presentation/App.js');
+    const app = new App();
+    const events = [];
+    let releaseChronicle;
+    let releaseSpend;
+    const chronicleDrain = new Promise(resolve => { releaseChronicle = resolve; });
+    const spendDrain = new Promise(resolve => { releaseSpend = resolve; });
+    app._bootState = 'ready';
+    app.chronicleLog = {
+      stop() {
+        events.push('chronicle:stop');
+        return chronicleDrain.then(() => events.push('chronicle:drained'));
+      },
+    };
+    app.spendLedger = {
+      stop() {
+        events.push('spend:stop');
+        return spendDrain.then(() => events.push('spend:drained'));
+      },
+    };
+    app.chronicleStore = {
+      close() {
+        events.push('store:close');
+      },
+    };
+
+    const destroy = app.destroy();
+    await Promise.resolve();
+    await Promise.resolve();
+    const closedBeforeDrains = events.includes('store:close');
+    releaseChronicle();
+    await Promise.resolve();
+    const closedAfterOneDrain = events.includes('store:close');
+    releaseSpend();
+    await destroy;
+    return { closedBeforeDrains, closedAfterOneDrain, events };
+  });
+}
+
 async function sameDocumentReboot(page) {
   const boot = await page.evaluate(async () => {
     const { App } = await import('/src/presentation/App.js');
@@ -1202,6 +1274,12 @@ async function main() {
     );
     assert.equal(afterSwitches.perf.hasCanvasBudget, true, 'mode switches removed canvas diagnostics');
 
+    const avatarFallbackCleanup = await runAvatarFallbackCleanupProbe(page);
+    assert.deepEqual(avatarFallbackCleanup, {
+      queued: 1,
+      retainedAfterDestroy: 0,
+    }, 'destroyed fallback avatars remained queued for a future compositor');
+
     const destroyProbe = await prepareDestroyProbe(page);
     assert.ok(destroyProbe.cards > 0, 'destroy probe needs at least one dashboard card');
     assert.ok(destroyProbe.avatars > 0, 'destroy probe needs at least one avatar');
@@ -1280,6 +1358,17 @@ async function main() {
     assert.equal(afterDestroy.canvas.height, 0);
     assert.equal(afterDestroy.ui.selectionEcho, false);
     assert.equal(browserErrors.length, 0, browserErrors.join('\n'));
+
+    const storeDrainOrdering = await runStoreDrainOrderingProbe(page);
+    assert.equal(storeDrainOrdering.closedBeforeDrains, false);
+    assert.equal(storeDrainOrdering.closedAfterOneDrain, false);
+    assert.deepEqual(storeDrainOrdering.events, [
+      'chronicle:stop',
+      'spend:stop',
+      'chronicle:drained',
+      'spend:drained',
+      'store:close',
+    ]);
 
     const boundedCleanup = await runBoundedCleanupProbe(page);
     assert.equal(boundedCleanup.resolved, true, 'never-settling cleanup blocked destroy()');
@@ -1369,6 +1458,8 @@ async function main() {
       audioProbe,
       frameProbe,
       contextProbe,
+      avatarFallbackCleanup,
+      storeDrainOrdering,
       boundedCleanup,
       reboot: { boot: reboot.boot, destroy: reboot.destroy },
       destroyDuringBoot: { state: destroyDuringBoot.state, ownersCleared: destroyDuringBoot.ownersCleared },

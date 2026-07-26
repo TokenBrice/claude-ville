@@ -9,7 +9,9 @@
  * they stop working together.
  */
 
-export const AFFINITY_SCHEMA_VERSION = 1;
+export const AFFINITY_SCHEMA_VERSION = 2;
+const RECENT_INTERACTION_KEY_LIMIT = 192;
+const RECENT_INTERACTION_KEYS_PER_CATEGORY = 64;
 
 /** Warmth halves every 48 hours without interaction. */
 export const AFFINITY_HALF_LIFE_MS = 48 * 60 * 60 * 1000;
@@ -26,6 +28,56 @@ const ACQUAINTANCE_SCORE = 1.5;
 function nonNegativeNumber(value) {
     const n = Number(value);
     return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+function compactInteractionKey(value) {
+    const key = String(value || '').trim();
+    if (key.length <= 180) return key;
+    let hash = 2166136261;
+    for (let index = 0; index < key.length; index++) {
+        hash ^= key.charCodeAt(index);
+        hash = Math.imul(hash, 16777619);
+    }
+    return `${key.slice(0, 120)}:${(hash >>> 0).toString(36)}`;
+}
+
+function interactionCategory(key) {
+    const prefix = String(key || '').split(':', 1)[0];
+    if (prefix.startsWith('chat')) return 'chat';
+    if (prefix === 'meeting' || prefix === 'git') return prefix;
+    return 'other';
+}
+
+function trimInteractionKeys(keys, newestCategory) {
+    while (
+        keys.filter(key => interactionCategory(key) === newestCategory).length
+        > RECENT_INTERACTION_KEYS_PER_CATEGORY
+    ) {
+        keys.splice(keys.findIndex(key => interactionCategory(key) === newestCategory), 1);
+    }
+    while (keys.length > RECENT_INTERACTION_KEY_LIMIT) {
+        const counts = new Map();
+        for (const key of keys) {
+            const category = interactionCategory(key);
+            counts.set(category, (counts.get(category) || 0) + 1);
+        }
+        const largestCategory = [...counts].sort((a, b) => b[1] - a[1])[0]?.[0];
+        const index = keys.findIndex(key => interactionCategory(key) === largestCategory);
+        keys.splice(index >= 0 ? index : 0, 1);
+    }
+}
+
+function normalizeInteractionKeys(raw) {
+    const keys = [];
+    const seen = new Set();
+    for (const value of Array.isArray(raw) ? raw : []) {
+        const key = compactInteractionKey(value);
+        if (!key || seen.has(key)) continue;
+        seen.add(key);
+        keys.push(key);
+        trimInteractionKeys(keys, interactionCategory(key));
+    }
+    return keys;
 }
 
 /** Order-insensitive key for a pair of identity keys; null when degenerate. */
@@ -49,6 +101,7 @@ export class PairAffinity {
         lastInteractionAt,
         score,
         scoreUpdatedAt,
+        recentInteractionKeys,
     } = {}) {
         this.pairKey = String(pairKey || '');
         this.schemaVersion = Number(schemaVersion) || AFFINITY_SCHEMA_VERSION;
@@ -62,6 +115,7 @@ export class PairAffinity {
         this.lastInteractionAt = nonNegativeNumber(lastInteractionAt) || this.firstMetAt;
         this.score = nonNegativeNumber(score);
         this.scoreUpdatedAt = nonNegativeNumber(scoreUpdatedAt) || this.lastInteractionAt;
+        this.recentInteractionKeys = normalizeInteractionKeys(recentInteractionKeys);
     }
 
     static create(identityA, identityB, now = Date.now()) {
@@ -81,8 +135,8 @@ export class PairAffinity {
     /** Rehydrate from a persisted record; returns null when unusable. */
     static fromRecord(record) {
         if (!record || typeof record !== 'object' || !record.pairKey) return null;
-        // Schema v1 is current. When AFFINITY_SCHEMA_VERSION grows, migrate
-        // older records here before constructing.
+        // v2 adds bounded interaction identities. Existing v1 records load
+        // with an empty identity list and are migrated on their next write.
         return new PairAffinity(record);
     }
 
@@ -99,6 +153,7 @@ export class PairAffinity {
             lastInteractionAt: this.lastInteractionAt,
             score: this.score,
             scoreUpdatedAt: this.scoreUpdatedAt,
+            recentInteractionKeys: [...this.recentInteractionKeys],
         };
     }
 
@@ -117,9 +172,10 @@ export class PairAffinity {
      * bumps the matching counter, settles decay up to `now`, and adds the
      * interaction weight to the warmth score.
      */
-    recordInteraction(kind, now = Date.now()) {
+    recordInteraction(kind, now = Date.now(), interactionKey = null) {
         const weight = INTERACTION_WEIGHTS[kind];
         if (!weight) return false;
+        if (interactionKey && !this.rememberInteraction(interactionKey)) return false;
         if (kind === 'meeting') this.meetings += 1;
         else if (kind === 'chat') this.chats += 1;
         else this.sharedCommits += 1;
@@ -127,6 +183,18 @@ export class PairAffinity {
         this.score = this.decayedScore(now) + weight;
         this.scoreUpdatedAt = now;
         if (now > this.lastInteractionAt) this.lastInteractionAt = now;
+        return true;
+    }
+
+    /**
+     * Persist a compact interaction identity without changing lifetime totals.
+     * Used to baseline telemetry that was already visible when a page loaded.
+     */
+    rememberInteraction(key) {
+        const normalized = compactInteractionKey(key);
+        if (!normalized || this.recentInteractionKeys.includes(normalized)) return false;
+        this.recentInteractionKeys.push(normalized);
+        trimInteractionKeys(this.recentInteractionKeys, interactionCategory(normalized));
         return true;
     }
 

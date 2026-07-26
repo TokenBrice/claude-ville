@@ -35,12 +35,16 @@ export class Compositor {
     // Fires immediately when a shared compositor already exists, otherwise on
     // registration. Used by avatars created before the world renderer boots.
     static onSharedAvailable(cb) {
-        if (typeof cb !== 'function') return;
+        if (typeof cb !== 'function') return () => {};
         if (Compositor._shared) {
             cb(Compositor._shared);
-            return;
+            return () => {};
         }
         Compositor._sharedListeners.push(cb);
+        return () => {
+            const index = Compositor._sharedListeners.indexOf(cb);
+            if (index >= 0) Compositor._sharedListeners.splice(index, 1);
+        };
     }
 
     constructor(assetManager) {

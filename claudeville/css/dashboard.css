@@ -256,7 +256,7 @@
     transform: translateY(-1px);
 }
 
-.dash-card:focus-visible {
+.dash-card__select:focus-visible {
     outline: 2px solid rgba(242, 211, 107, 0.85);
     outline-offset: 2px;
 }
@@ -422,6 +422,16 @@
     box-shadow: inset 0 1px 0 rgba(var(--cv-dash-glint-rgb), 0.08);
 }
 
+.dash-card__select {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1;
+    min-width: 0;
+    padding: 0;
+    text-align: left;
+}
+
 .dash-card__avatar {
     width: 44px;
     height: 52px;
@@ -512,7 +522,10 @@
 
 .dash-card__parent-chip {
     max-width: 140px;
+    min-width: 0;
+    padding: 3px 2px;
     overflow: hidden;
+    text-align: left;
     text-overflow: ellipsis;
 }
 
@@ -531,6 +544,7 @@
 .dash-card__parent-chip--muted {
     cursor: default;
     opacity: 0.62;
+    text-decoration: none;
 }
 
 .dash-card__activity-age {

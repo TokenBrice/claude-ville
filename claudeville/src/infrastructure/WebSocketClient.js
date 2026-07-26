@@ -72,7 +72,8 @@ export class WebSocketClient {
         this.connected = false;
         this.reconnectTimer = null;
         this.reconnectAttempts = 0;
-        this.url = `ws://${window.location.host}`;
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        this.url = `${protocol}//${window.location.host}/ws`;
         // Delta protocol state: last full {sessions, teams, usage} snapshot
         // and its server sequence number. Old servers never send deltas, so
         // these simply stay unused against a full-payload-only server.

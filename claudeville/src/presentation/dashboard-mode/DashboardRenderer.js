@@ -72,8 +72,9 @@ export class DashboardRenderer {
         this._observer = this._createVisibilityObserver();
         this.selection = new AgentSelectionMirror({
             notifyOnRepeat: true,
-            onChange: (nextId) => {
+            onChange: (nextId, previousId) => {
                 this._selectedAgentId = nextId;
+                this._syncSelectionControls(nextId, previousId);
                 if (this.active) void this._fetchAllDetails();
             },
         });
@@ -409,26 +410,25 @@ export class DashboardRenderer {
         const card = document.createElement('div');
         card.className = `dash-card dash-card--${agent.status}`;
         card.dataset.agentId = agent.id;
-        card.setAttribute('role', 'button');
-        card.setAttribute('tabindex', '0');
-        card.setAttribute('aria-label', `Select agent ${agent.name || agent.id}`);
 
         card.innerHTML = `
             <div class="dash-card__header">
                 <span class="dash-card__building-emblem" aria-hidden="true" style="display: none"></span>
-                <div class="dash-card__avatar"></div>
-                <div class="dash-card__info">
-                    <div class="dash-card__name"></div>
-                    <div class="dash-card__meta">
-                        <span class="dash-card__provider-badge"></span>
-                        <span class="dash-card__model"></span>
-                        <span class="dash-card__workflow-badge"></span>
-                        <span class="dash-card__parent-chip" style="display: none"></span>
-                        <span class="dash-card__team-badge" style="display: none"></span>
-                        <span class="dash-card__role"></span>
-                        <span class="dash-card__activity-age" style="display: none"></span>
-                    </div>
-                </div>
+                <button type="button" class="dash-card__select">
+                    <span class="dash-card__avatar"></span>
+                    <span class="dash-card__info">
+                        <span class="dash-card__name"></span>
+                        <span class="dash-card__meta">
+                            <span class="dash-card__provider-badge"></span>
+                            <span class="dash-card__model"></span>
+                            <span class="dash-card__workflow-badge"></span>
+                            <span class="dash-card__team-badge" style="display: none"></span>
+                            <span class="dash-card__role"></span>
+                            <span class="dash-card__activity-age" style="display: none"></span>
+                        </span>
+                    </span>
+                </button>
+                <button type="button" class="dash-card__parent-chip" style="display: none"></button>
                 <button type="button" class="dash-card__copy-id" title="Copy session ID" aria-label="Copy session ID">⧉</button>
                 <span class="dash-card__stale-badge" style="display: none" title="Showing cached data; latest refresh did not complete">STALE</span>
                 <div class="dash-card__status">
@@ -493,26 +493,15 @@ export class DashboardRenderer {
             }
         };
         parentChip.addEventListener('click', selectParent);
-        parentChip.addEventListener('keydown', (event) => {
-            event.stopPropagation();
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            selectParent(event);
-        });
-
-        // Click or Enter/Space to select agent
-        card.addEventListener('click', () => {
+        const selectBtn = card.querySelector('.dash-card__select');
+        selectBtn.addEventListener('click', () => {
             const current = this.world.agents.get(card.dataset.agentId);
             emitAgentSelected(current);
         });
-        card.addEventListener('keydown', (event) => {
-            if (event.key !== 'Enter' && event.key !== ' ') return;
-            event.preventDefault();
-            const current = this.world.agents.get(card.dataset.agentId);
-            emitAgentSelected(current);
-        });
+        selectBtn.setAttribute('aria-pressed', String(this.selection.isSelected(agent.id)));
 
         card._elements = {
+            select: selectBtn,
             name: card.querySelector('.dash-card__name'),
             model: card.querySelector('.dash-card__model'),
             workflowBadge: card.querySelector('.dash-card__workflow-badge'),
@@ -571,9 +560,11 @@ export class DashboardRenderer {
         if (this._cardRenderSignatures.get(agent.id) !== signature) {
             this._cardRenderSignatures.set(agent.id, signature);
 
-            const nextClass = `dash-card dash-card--${status}`;
+            const selectedClass = this.selection.isSelected(agent.id) ? ' dash-card--selected' : '';
+            const nextClass = `dash-card dash-card--${status}${selectedClass}`;
             if (cardEl.className !== nextClass) cardEl.className = nextClass;
-            cardEl.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}`);
+            refs.select.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}`);
+            refs.select.setAttribute('aria-pressed', String(this.selection.isSelected(agent.id)));
 
             this._setText(refs.name, agent.name);
             this._setText(refs.model, model.label);
@@ -653,7 +644,20 @@ export class DashboardRenderer {
         this._updateParentChip(cardEl, agent);
         this._updateActivityAge(cardEl, agent);
 
-        const avatarSignature = `${agent.model || ''}|${agent.effort || ''}|${agent.provider || ''}`;
+        const appearance = agent.appearance || {};
+        const avatarSignature = [
+            agent.model || '',
+            agent.effort || '',
+            agent.provider || '',
+            agent.teamName || '',
+            appearance.skin || '',
+            appearance.shirt || '',
+            appearance.hair || '',
+            appearance.hairStyle || '',
+            appearance.pants || '',
+            appearance.accessory || '',
+            appearance.eyeStyle || '',
+        ].join('|');
         if (cardEl._avatarCanvas && cardEl._avatarSignature !== avatarSignature) {
             cardEl._avatarSignature = avatarSignature;
             cardEl._avatarCanvas.agent = agent;
@@ -679,8 +683,7 @@ export class DashboardRenderer {
         if (!parentId) {
             this._setStyle(chip, 'display', 'none');
             delete chip.dataset.parentId;
-            chip.removeAttribute('role');
-            chip.removeAttribute('tabindex');
+            chip.disabled = true;
             chip.classList.remove('dash-card__parent-chip--clickable', 'dash-card__parent-chip--muted');
             return;
         }
@@ -692,14 +695,16 @@ export class DashboardRenderer {
         chip.title = parent ? `Select parent ${parent.name || parent.id}` : 'Parent session ended';
         chip.classList.toggle('dash-card__parent-chip--clickable', !!parent);
         chip.classList.toggle('dash-card__parent-chip--muted', !parent);
-        if (parent) {
-            chip.setAttribute('role', 'button');
-            chip.setAttribute('tabindex', '0');
-        } else {
-            chip.removeAttribute('role');
-            chip.removeAttribute('tabindex');
-        }
+        chip.disabled = !parent;
         this._setStyle(chip, 'display', '');
+    }
+
+    _syncSelectionControls(nextId, previousId) {
+        for (const id of new Set([nextId, previousId].filter(Boolean))) {
+            const selected = id === nextId;
+            this.cards.get(id)?._elements?.select
+                ?.setAttribute('aria-pressed', String(selected));
+        }
     }
 
     _updateActivityAge(cardEl, agent) {
@@ -889,7 +894,8 @@ export class DashboardRenderer {
                 }
                 const footer = this._usageFooterFor(agent, data);
                 if (footer) this.usageFooters.set(agent.id, footer);
-                if (cardEl && footer) this._renderUsageFooter(cardEl, footer);
+                else this.usageFooters.delete(agent.id);
+                if (cardEl) this._renderUsageFooter(cardEl, footer);
                 const toolHistory = data.toolHistory || [];
                 this.toolHistories.set(agent.id, toolHistory.slice(-DASHBOARD_TOOL_HISTORY_LIMIT));
                 if (cardEl) {

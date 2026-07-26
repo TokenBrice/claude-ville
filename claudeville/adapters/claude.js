@@ -7,10 +7,9 @@ const path = require('path');
 const os = require('os');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
+  clearTailCache,
   createDetailResponse,
-  parseJsonLines,
   readJsonLines: readSharedJsonLines,
-  readTailLines,
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
@@ -55,6 +54,8 @@ const TRANSCRIPT_ASYNC_THRESHOLD_BYTES = Math.max(
 const TRANSCRIPT_SCAN_CONCURRENCY = 1;
 const TRANSCRIPT_SCAN_QUEUE_MAX = 128;
 const ORPHAN_SCAN_CACHE_MAX = 512;
+const SUBAGENT_ACTIVITY_CACHE_MAX = 8192;
+const SUBAGENT_ACTIVITY_REFRESH_MS = 30 * 1000;
 const TEAM_MEMBERSHIP_WARNED_MAX = 256;
 const ORPHAN_DIR_MTIME_EPSILON_MS = 1;
 const CLAUDE_TOOL_INPUT_FIELDS = Object.freeze([
@@ -132,6 +133,7 @@ const _teamsCache = { signature: '', value: [] };
 const _orphanScanCache = {
   filesByProjectDir: new Map(),
   projectDirMtimes: new Map(),
+  subagentActivityBySessionDir: new Map(),
 };
 
 // ─── Utilities ─────────────────────────────────────────────
@@ -153,13 +155,6 @@ function safeExistingFile(candidatePath, rootPath) {
   } catch {
     return null;
   }
-}
-
-function readLastLines(filePath, lineCount) {
-  return readTailLines(filePath, lineCount, {
-    chunkBytes: TAIL_CHUNK_BYTES,
-    maxBytes: MAX_TAIL_BYTES,
-  });
 }
 
 function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } = {}) {
@@ -889,8 +884,10 @@ function shutdownClaudeAdapter() {
   _activeTranscriptScans = 0;
   clearTranscriptAggregateCache();
   clearSessionEntryCache();
+  clearTailCache('claude');
   _orphanScanCache.filesByProjectDir.clear();
   _orphanScanCache.projectDirMtimes.clear();
+  _orphanScanCache.subagentActivityBySessionDir.clear();
   _teamMembershipWarned.clear();
   _sessionNamesCache.signature = '';
   _sessionNamesCache.value = new Map();
@@ -1349,18 +1346,58 @@ function readWorkflowName(sessionDir, wfRunId) {
 // transcripts. A long-running orchestrator can leave its own .jsonl untouched
 // for minutes while its (possibly nested workflow) children write constantly,
 // so the parent's liveness must follow its children.
-function latestSubAgentActivity(sessionDir) {
+function cacheSubAgentActivity(sessionDir, entry) {
+  _orphanScanCache.subagentActivityBySessionDir.delete(sessionDir);
+  _orphanScanCache.subagentActivityBySessionDir.set(sessionDir, entry);
+  while (_orphanScanCache.subagentActivityBySessionDir.size > SUBAGENT_ACTIVITY_CACHE_MAX) {
+    const oldest = _orphanScanCache.subagentActivityBySessionDir.keys().next().value;
+    _orphanScanCache.subagentActivityBySessionDir.delete(oldest);
+  }
+}
+
+function pruneSubAgentActivityCache() {
+  for (const sessionDir of _orphanScanCache.subagentActivityBySessionDir.keys()) {
+    if (fs.existsSync(sessionDir)) continue;
+    _orphanScanCache.subagentActivityBySessionDir.delete(sessionDir);
+  }
+}
+
+function latestSubAgentActivity(sessionDir, activeThresholdMs, now = Date.now()) {
+  const cached = _orphanScanCache.subagentActivityBySessionDir.get(sessionDir);
+  if (cached) {
+    cacheSubAgentActivity(sessionDir, cached);
+    if (cached.activePaths.length) {
+      let latest = 0;
+      const activePaths = [];
+      for (const filePath of cached.activePaths) {
+        try {
+          const mtimeMs = fs.statSync(filePath).mtimeMs;
+          if (now - mtimeMs > activeThresholdMs) continue;
+          activePaths.push(filePath);
+          if (mtimeMs > latest) latest = mtimeMs;
+        } catch { /* removed children force a rescan below */ }
+      }
+      cached.activePaths = activePaths;
+      if (activePaths.length) return latest;
+    } else if (now - cached.scannedAt < SUBAGENT_ACTIVITY_REFRESH_MS) {
+      return 0;
+    }
+  }
+
   let latest = 0;
+  const activePaths = [];
   const subagentsDir = path.join(sessionDir, 'subagents');
-  if (!fs.existsSync(subagentsDir)) return latest;
   const scan = (dir) => {
     let names;
     try { names = fs.readdirSync(dir); } catch { return; }
     for (const name of names) {
       if (!name.startsWith('agent-') || !name.endsWith('.jsonl')) continue;
       try {
-        const m = fs.statSync(path.join(dir, name)).mtimeMs;
-        if (m > latest) latest = m;
+        const filePath = path.join(dir, name);
+        const mtimeMs = fs.statSync(filePath).mtimeMs;
+        if (now - mtimeMs > activeThresholdMs) continue;
+        activePaths.push(filePath);
+        if (mtimeMs > latest) latest = mtimeMs;
       } catch { /* ignore */ }
     }
   };
@@ -1371,6 +1408,7 @@ function latestSubAgentActivity(sessionDir) {
   for (const dir of runDirs) {
     if (dir.isDirectory()) scan(path.join(workflowsDir, dir.name));
   }
+  cacheSubAgentActivity(sessionDir, { activePaths, scannedAt: now });
   return latest;
 }
 
@@ -1416,8 +1454,7 @@ class ClaudeAdapter {
 
   getActiveSessions(activeThresholdMs) {
     if (_adapterShutdown) return [];
-    const lines = readLastLines(HISTORY_FILE, 1000);
-    const entries = parseJsonLines(lines, { source: 'claude', file: HISTORY_FILE });
+    const entries = readJsonLines(HISTORY_FILE, { from: 'end', count: 1000 });
     const now = Date.now();
     const sessionsMap = new Map();
     const projectPathMap = new Map(); // Encoded directory name to real path
@@ -1464,7 +1501,11 @@ class ClaudeAdapter {
     for (const session of sessionsMap.values()) {
       const fileMtime = getSessionFileActivity(session.sessionId, session.project);
       const childMtime = session.project
-        ? latestSubAgentActivity(path.join(CLAUDE_DIR, 'projects', session.project.replace(/\//g, '-'), session.sessionId))
+        ? latestSubAgentActivity(
+          path.join(CLAUDE_DIR, 'projects', session.project.replace(/\//g, '-'), session.sessionId),
+          activeThresholdMs,
+          now,
+        )
         : 0;
       const lastActive = Math.max(session.lastActivity, fileMtime, childMtime);
       if (now - lastActive > activeThresholdMs) continue;
@@ -1648,7 +1689,10 @@ class ClaudeAdapter {
           // swarm) can leave their own .jsonl untouched for minutes while children
           // write constantly. Treat the session as active if either the parent file
           // or any (possibly nested workflow) subagent file is fresh.
-          const lastActivity = Math.max(stat.mtimeMs, latestSubAgentActivity(path.join(projPath, sessionId)));
+          const lastActivity = Math.max(
+            stat.mtimeMs,
+            latestSubAgentActivity(path.join(projPath, sessionId), activeThresholdMs, now),
+          );
 
           if (now - lastActivity > activeThresholdMs) continue;
 
@@ -1895,13 +1939,16 @@ class ClaudeAdapter {
         _orphanScanCache.filesByProjectDir.delete(projectDir);
         _orphanScanCache.projectDirMtimes.delete(projectDir);
       }
+      pruneSubAgentActivityCache();
     }
   }
 
   invalidateCaches() {
     if (_adapterShutdown) return;
+    clearTailCache('claude');
     clearSessionEntryCache();
     clearTranscriptAggregateCache();
+    _orphanScanCache.subagentActivityBySessionDir.clear();
     _sessionNamesCache.signature = '';
     _sessionNamesCache.value = new Map();
     _teamMembershipCache.signature = '';
@@ -1954,6 +2001,9 @@ class ClaudeAdapter {
       },
       orphanScan: {
         projectDirectories: _orphanScanCache.filesByProjectDir.size,
+        subagentActivityEntries: _orphanScanCache.subagentActivityBySessionDir.size,
+        subagentActivityLimit: SUBAGENT_ACTIVITY_CACHE_MAX,
+        subagentActivityRefreshMs: SUBAGENT_ACTIVITY_REFRESH_MS,
       },
       teamMembershipWarnings: _teamMembershipWarned.size,
     };

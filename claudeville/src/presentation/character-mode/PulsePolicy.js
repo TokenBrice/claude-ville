@@ -27,10 +27,6 @@ export function getPulsePriority() {
     }
 }
 
-export function getPulseBands() {
-    return DEFAULT_PULSE_BANDS;
-}
-
 export function pulseValue(bandName = 'intrinsic', frame = 0, motionScale = 1) {
     const band = DEFAULT_PULSE_BANDS[bandName] || DEFAULT_PULSE_BANDS.intrinsic;
     if (motionScale <= 0) return band.base;

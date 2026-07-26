@@ -11,6 +11,13 @@ const TAIL_GUARD_BYTES = 256;
 // derive their view instead of retaining overlapping copies of the same tail.
 const _tailStateCache = new Map();
 let _tailStateCacheBytes = 0;
+const _parsedTailStats = {
+  hits: 0,
+  misses: 0,
+  parsedLines: 0,
+  reusedLines: 0,
+  rejectedEntries: 0,
+};
 
 const DEFAULT_TOOL_FIELDS = Object.freeze([
   'command',
@@ -159,6 +166,7 @@ function tailStateBytes(entry) {
   let bytes = entry.guard?.byteLength || 0;
   bytes += entry.pendingBuffer?.byteLength || 0;
   for (const line of entry.lines || []) bytes += Buffer.byteLength(line, 'utf-8');
+  bytes += entry.jsonView?.estimatedBytes || 0;
   return bytes;
 }
 
@@ -167,6 +175,17 @@ function deleteTailState(filePath) {
   if (previous) _tailStateCacheBytes -= previous.estimatedBytes || tailStateBytes(previous);
   _tailStateCache.delete(filePath);
   _tailStateCacheBytes = Math.max(0, _tailStateCacheBytes);
+}
+
+function clearTailCache(source = null) {
+  if (!source) {
+    _tailStateCache.clear();
+    _tailStateCacheBytes = 0;
+    return;
+  }
+  for (const [filePath, entry] of _tailStateCache) {
+    if (entry.jsonView?.source === source) deleteTailState(filePath);
+  }
 }
 
 function cacheTailState(filePath, entry) {
@@ -204,7 +223,11 @@ function readTailLines(filePath, count, {
       && cached.capacity >= requestedCount
       && (cached.lines.length >= requestedCount || cached.maxBytes >= maxBytes);
     if (cacheCoversRequest && cached.ino === (stat.ino || 0) && stat.size >= cached.size) {
-      if (stat.size === cached.size && stat.mtimeMs === cached.mtimeMs) {
+      if (
+        stat.size === cached.size
+        && stat.mtimeMs === cached.mtimeMs
+        && stat.ctimeMs === cached.ctimeMs
+      ) {
         // File has not grown: serve the cached tail without touching the file.
         cacheTailState(filePath, cached);
         return finalizeTailLines(cached.lines, cached.pendingBuffer, requestedCount);
@@ -226,12 +249,14 @@ function readTailLines(filePath, count, {
           const entry = {
             size: cached.size + appendedBuffer.length,
             mtimeMs: stat.mtimeMs,
+            ctimeMs: stat.ctimeMs,
             ino: cached.ino,
             guard: tailGuard(Buffer.concat([guard, appendedBuffer])),
             lines,
             pendingBuffer: split.pendingBuffer,
             capacity: cached.capacity,
             maxBytes: Math.max(cached.maxBytes, maxBytes),
+            jsonView: cached.jsonView || null,
           };
           cacheTailState(filePath, entry);
           return finalizeTailLines(lines, split.pendingBuffer, requestedCount);
@@ -252,12 +277,14 @@ function readTailLines(filePath, count, {
     const entry = {
       size: readStat.size,
       mtimeMs: readStat.mtimeMs,
+      ctimeMs: readStat.ctimeMs,
       ino: readStat.ino || 0,
       guard: tailGuard(buffer),
       lines,
       pendingBuffer: split.pendingBuffer,
       capacity,
       maxBytes: readMaxBytes,
+      jsonView: cached?.jsonView || null,
     };
     cacheTailState(filePath, entry);
     return finalizeTailLines(lines, split.pendingBuffer, requestedCount);
@@ -272,6 +299,7 @@ function getTailCacheDiagnostics() {
     estimatedBytes: _tailStateCacheBytes,
     entryLimit: TAIL_STATE_CACHE_MAX,
     byteLimit: TAIL_STATE_CACHE_MAX_BYTES,
+    parsed: { ..._parsedTailStats },
   };
 }
 
@@ -367,11 +395,196 @@ function parseJsonLines(lines, { source, file } = {}) {
   return results;
 }
 
+function commonSuffixLength(left, right) {
+  let count = 0;
+  while (
+    count < left.length
+    && count < right.length
+    && left[left.length - count - 1] === right[right.length - count - 1]
+  ) {
+    count += 1;
+  }
+  return count;
+}
+
+// Longest suffix of `left` that is also a prefix of `right`, using the KMP
+// prefix table so repeated identical JSONL lines remain linear-time.
+function suffixPrefixLength(left, right) {
+  if (!left.length || !right.length) return 0;
+  const separator = Symbol('jsonl-view-separator');
+  const sequence = right.concat(separator, left);
+  const prefix = new Uint32Array(sequence.length);
+  for (let index = 1; index < sequence.length; index++) {
+    let candidate = prefix[index - 1];
+    while (candidate > 0 && sequence[index] !== sequence[candidate]) {
+      candidate = prefix[candidate - 1];
+    }
+    if (sequence[index] === sequence[candidate]) candidate += 1;
+    prefix[index] = Math.min(candidate, right.length);
+  }
+  return Math.min(prefix[prefix.length - 1], left.length, right.length);
+}
+
+function alignJsonView(previous, lines, source) {
+  const records = new Array(lines.length).fill(null);
+  if (!previous || previous.source !== source) {
+    return { source, lines, records, estimatedBytes: 0 };
+  }
+
+  const suffixLength = commonSuffixLength(previous.lines, lines);
+  const appendOverlap = suffixPrefixLength(previous.lines, lines);
+  if (suffixLength >= appendOverlap) {
+    for (let index = 0; index < suffixLength; index++) {
+      records[lines.length - suffixLength + index] =
+        previous.records[previous.records.length - suffixLength + index];
+    }
+  } else {
+    for (let index = 0; index < appendOverlap; index++) {
+      records[index] = previous.records[previous.records.length - appendOverlap + index];
+    }
+  }
+  return { source, lines, records, estimatedBytes: 0 };
+}
+
+function estimateParsedValueBytes(value) {
+  const seen = new Set();
+  const stack = [value];
+  let bytes = 0;
+  while (stack.length > 0) {
+    const current = stack.pop();
+    if (current == null) {
+      bytes += 8;
+    } else if (typeof current === 'string') {
+      bytes += 16 + (current.length * 2);
+    } else if (typeof current === 'number' || typeof current === 'boolean') {
+      bytes += 8;
+    } else if (typeof current === 'object' && !seen.has(current)) {
+      seen.add(current);
+      if (Array.isArray(current)) {
+        bytes += 32 + (current.length * 8);
+        for (const item of current) stack.push(item);
+      } else {
+        const entries = Object.entries(current);
+        bytes += 48 + (entries.length * 16);
+        for (const [key, item] of entries) {
+          bytes += 16 + (key.length * 2);
+          stack.push(item);
+        }
+      }
+    }
+  }
+  return bytes;
+}
+
+function estimateJsonViewBytes(view) {
+  let bytes = 64 + (view.records.length * 8);
+  for (const record of view.records) {
+    if (!record) continue;
+    bytes += 24;
+    if (record.valid) bytes += estimateParsedValueBytes(record.value);
+  }
+  return bytes;
+}
+
+function tailJsonSignature(state) {
+  return [
+    state.ino,
+    state.size,
+    state.mtimeMs,
+    state.ctimeMs,
+    state.capacity,
+    state.maxBytes,
+  ].join(':');
+}
+
+function parseJsonRecord(line, { source, file, lines, index, lastContentIndex }) {
+  const stats = _jsonlStatsFor(source);
+  try {
+    const value = JSON.parse(line);
+    stats.parsedLines += 1;
+    _parsedTailStats.parsedLines += 1;
+    return { valid: true, value, classification: 'parsed' };
+  } catch {
+    if (index === lastContentIndex) {
+      stats.trailingPartials += 1;
+      return { valid: false, value: null, classification: 'trailing' };
+    }
+    _recordSkippedLine(stats, source, file, lines, index);
+    return { valid: false, value: null, classification: 'skipped' };
+  }
+}
+
 function readJsonLines(filePath, options = {}) {
-  return parseJsonLines(readLines(filePath, options), {
-    source: options.source,
-    file: filePath,
-  });
+  if (options.from === 'start') {
+    return parseJsonLines(readLines(filePath, options), {
+      source: options.source,
+      file: filePath,
+    });
+  }
+
+  const requestedLines = readLines(filePath, options);
+  if (!requestedLines.length) return [];
+  const state = _tailStateCache.get(filePath);
+  if (!state) {
+    _parsedTailStats.misses += 1;
+    return parseJsonLines(requestedLines, {
+      source: options.source,
+      file: filePath,
+    });
+  }
+
+  const lines = finalizeTailLines(state.lines, state.pendingBuffer, state.capacity);
+  const source = options.source || 'unknown';
+  const previousView = state.jsonView;
+  const signature = tailJsonSignature(state);
+  const unchangedView = previousView
+    && previousView.source === source
+    && previousView.signature === signature;
+  const view = unchangedView ? previousView : alignJsonView(previousView, lines, source);
+  let lastContentIndex = lines.length - 1;
+  while (lastContentIndex >= 0 && !lines[lastContentIndex].trim()) lastContentIndex -= 1;
+
+  let parsedThisRead = 0;
+  let reusedThisRead = 0;
+  for (let index = 0; index < lines.length; index++) {
+    let record = view.records[index];
+    if (!lines[index].trim()) {
+      if (!record) view.records[index] = { valid: false, value: null, classification: 'blank' };
+      continue;
+    }
+    if (record?.classification === 'trailing' && index !== lastContentIndex) {
+      record = null;
+    }
+    if (!record) {
+      view.records[index] = parseJsonRecord(lines[index], {
+        source,
+        file: filePath,
+        lines,
+        index,
+        lastContentIndex,
+      });
+      parsedThisRead += 1;
+    } else {
+      reusedThisRead += 1;
+    }
+  }
+
+  view.estimatedBytes = estimateJsonViewBytes(view);
+  view.signature = signature;
+  state.jsonView = view;
+  cacheTailState(filePath, state);
+  if (_tailStateCache.get(filePath) !== state) _parsedTailStats.rejectedEntries += 1;
+  if (parsedThisRead === 0) _parsedTailStats.hits += 1;
+  else _parsedTailStats.misses += 1;
+  _parsedTailStats.reusedLines += reusedThisRead;
+
+  const start = Math.max(0, lines.length - requestedLines.length);
+  const results = [];
+  for (let index = start; index < view.records.length; index++) {
+    const record = view.records[index];
+    if (record?.valid) results.push(record.value);
+  }
+  return results;
 }
 
 function statCacheKey(filePath, stat) {
@@ -496,6 +709,7 @@ function createDetailResponse({
 }
 
 module.exports = {
+  clearTailCache,
   createDetailResponse,
   fileSignature,
   getJsonlDiagnostics,

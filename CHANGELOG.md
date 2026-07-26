@@ -2,6 +2,31 @@
 
 ---
 
+## v0.29.0 — *The Wardens* · Jul 26, 2026
+
+ClaudeVille now guards its private local data, keeps session history truthful across failures and reloads, and stays bounded through long-running work and heavy weather.
+
+**The gate is local again**
+- **Private data stays on the machine.** The server now binds explicitly to IPv4 loopback, rejects non-local hosts and cross-origin browser requests, and exposes WebSockets only on the validated same-origin `/ws` path. Malformed, unmasked, fragmented, or oversized frames are closed cleanly instead of being accepted by the hand-written protocol layer.
+
+**The village does not rewrite its own history**
+- **Transient failures no longer empty the town.** A failed provider poll is distinct from a successful empty result, so brief read or network failures preserve the current village. Agent details, usage panels, and Dashboard footers clear at identity boundaries instead of showing another agent's stale data.
+- **Reloads are idempotent.** Biography pushes, meetings, messages, shared Git events, moods, Chronicle entries, and spend totals now retain compact bounded identities or watermarks. Reloading the same evidence cannot inflate milestones, relationships, streaks, or the day book, and shutdown waits for pending Chronicle and spend writes before closing storage.
+
+**Every authored route leads somewhere**
+- **World visits use real capacity.** All 83 base and overflow visit slots are unique, walkable, and reachable from the gate. Blocked targets can fall back only to an adjacent tile, so agents no longer report success while stopping several tiles away.
+
+**Less repeated work**
+- **Live transcripts stay warm.** Claude and Codex reuse parsed JSONL tails and parse safe appends incrementally. Claude's historical subagent scan now rechecks active children without restatting thousands of cold transcripts every broadcast, cutting measured warm collection from roughly 95–154 ms to 25–38 ms on the release workstation.
+- **Rain keeps its character without taking the frame.** Rain, water, fog, puddle, and reflection work is bounded and profiled only when requested. Paired release runs kept heavy rain within 28.6% of clear weather at 25 agents and 21.4% at 50, with zero frame failures.
+
+**Controls that work the way they look**
+- **Keyboard and screen-reader paths are complete.** Sidebar agents, parent links, Dashboard selection, modal focus, and toast announcements now use native non-nested controls and explicit state. Gemini and appearance/team changes also resolve to the same avatar identity in World and Dashboard.
+
+The release gate passed 73 dependency-free unit tests, a 250-switch browser lifecycle run, security and API probes, all sprite and World validators, a zero-vulnerability dependency audit, and a 60-second live soak with stable listener, watcher, canvas, cache, heap, and RSS bounds.
+
+---
+
 ## v0.28.1 — *Chisel & Grain* · Jul 25, 2026
 
 A pass over the places where the pixel village was quietly drawing itself in vectors — smooth curves, resampled lettering, and authored art that never reached the screen.

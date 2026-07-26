@@ -136,6 +136,7 @@ export class ActivityPanel {
         this._chronicleSectionEl = null;
         this._chronicleBodyEl = null;
         this._chronicleFetchSeq = 0;
+        this._currentBiographyIdentityKey = null;
         this._detailFetchSeq = 0;
         this._directorFeedSectionEl = null;
         this._directorFeedBodyEl = null;
@@ -187,13 +188,19 @@ export class ActivityPanel {
                 this._fetchPinnedDetails();
             }
             if (this._mode === 'agent' && this.currentAgent && agent.id === this.currentAgent.id) {
+                const nextBiographyIdentityKey = this._biographyIdentityKey(agent);
+                const biographyIdentityChanged = nextBiographyIdentityKey !== this._currentBiographyIdentityKey;
                 this.currentAgent = agent;
                 this._updateInfo(agent);
                 this._updateCurrentTool(agent);
                 this._updateJourney(agent);
                 this._updateHarborLog(agent);
                 this._updateMessageEdges(agent);
-                this._fetchAndRenderChronicle(agent);
+                if (biographyIdentityChanged) {
+                    this._currentBiographyIdentityKey = nextBiographyIdentityKey;
+                    this._setChronicleState('Loading biography…');
+                    this._fetchAndRenderChronicle(agent);
+                }
                 this._renderRelationships(agent);
                 this._updatePinToggle(agent);
             }
@@ -517,7 +524,10 @@ export class ActivityPanel {
         }
         this._mode = 'agent';
         this.currentAgent = agent;
+        this._currentBiographyIdentityKey = this._biographyIdentityKey(agent);
         this._renderSignatures = this._emptyRenderSignatures();
+        this._setDetailState('Loading activity…', 'Loading usage…');
+        this._setChronicleState('Loading biography…');
         this._showAgentSections();
         this.panelEl.style.display = '';
         document.body.classList.add('cv-panel-open');
@@ -544,6 +554,7 @@ export class ActivityPanel {
         if (this._mode === 'agent') {
             this._stopPolling();
             this.currentAgent = null;
+            this._currentBiographyIdentityKey = null;
             // Notify renderer/sidebar/dashboard so highlight clears.
             emitAgentDeselected();
         }
@@ -574,6 +585,7 @@ export class ActivityPanel {
         document.body.classList.remove('cv-panel-open');
         this._teardownHeroPortrait();
         this.currentAgent = null;
+        this._currentBiographyIdentityKey = null;
         this._renderSignatures = this._emptyRenderSignatures();
         this._updatePinToggle(null);
         this._stopPolling();
@@ -757,10 +769,13 @@ export class ActivityPanel {
         if (
             this._destroyed
             || seq !== this._detailFetchSeq
-            || !data
             || !this.currentAgent
             || this.currentAgent.id !== agent.id
         ) return;
+        if (!data) {
+            this._setDetailState('Activity unavailable', 'Usage unavailable');
+            return;
+        }
         this._renderToolHistory(data.toolHistory || []);
         this._renderMessages(data.messages || []);
         this._renderTokenUsage(data.tokenUsage || data.tokens || data.usage);
@@ -854,7 +869,10 @@ export class ActivityPanel {
     }
 
     _renderTokenUsage(usage) {
-        if (!usage) return;
+        if (!usage) {
+            this._clearTokenUsage('No usage data');
+            return;
+        }
 
         const normalizedUsage = TokenUsage.normalize(usage);
         const usageSignature = `${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}`;
@@ -900,6 +918,28 @@ export class ActivityPanel {
             this.currentAgent?.provider,
         );
         this.dom.panelEstCost.textContent = formatCost(cost);
+    }
+
+    _setDetailState(activityText, usageText) {
+        this._renderSignatures.toolHistory = `state:${activityText}`;
+        this._renderSignatures.messages = `state:${activityText}`;
+        replaceChildren(this.dom.panelToolHistory, [this._emptyState(activityText)]);
+        replaceChildren(this.dom.panelMessages, [this._emptyState(activityText)]);
+        this._clearTokenUsage(usageText);
+    }
+
+    _clearTokenUsage(label = 'No usage data') {
+        this._renderSignatures.tokenUsage = `state:${label}`;
+        this.dom.panelContextSize.textContent = label;
+        this.dom.panelContextBar.style.width = '0%';
+        this.dom.panelContextBar.className = 'activity-panel__context-bar';
+        this.dom.panelInputTokens.textContent = '-';
+        this.dom.panelOutputTokens.textContent = '-';
+        this.dom.panelCacheRead.textContent = '-';
+        this.dom.panelCacheCreate.textContent = '-';
+        this.dom.panelCacheHit.textContent = '-';
+        this.dom.panelTurnCount.textContent = '-';
+        this.dom.panelEstCost.textContent = '-';
     }
 
     _emptyState(text) {
@@ -1039,13 +1079,25 @@ export class ActivityPanel {
                 || this._mode !== 'agent'
                 || !this.currentAgent
                 || this.currentAgent.id !== agent.id
+                || identityKey !== this._currentBiographyIdentityKey
             ) return;
             this._renderChronicleBody(biography);
         } catch {
-            if (!this._destroyed && seq === this._chronicleFetchSeq) {
-                this._chronicleSectionEl.style.display = 'none';
+            if (
+                !this._destroyed
+                && seq === this._chronicleFetchSeq
+                && identityKey === this._currentBiographyIdentityKey
+            ) {
+                this._setChronicleState('Biography unavailable');
             }
         }
+    }
+
+    _setChronicleState(text) {
+        if (!this._chronicleSectionEl || !this._chronicleBodyEl) return;
+        this._renderSignatures.chronicle = `state:${text}`;
+        this._chronicleSectionEl.style.display = '';
+        replaceChildren(this._chronicleBodyEl, [this._emptyState(text)]);
     }
 
     _renderChronicleBody(biography) {
@@ -2698,6 +2750,7 @@ export class ActivityPanel {
         if (this.panelEl) this.panelEl.style.display = 'none';
         document.body.classList.remove('cv-panel-open');
         this.currentAgent = null;
+        this._currentBiographyIdentityKey = null;
         this._selectedBuilding = null;
         this._mode = null;
         this.closeBtn?.removeEventListener('click', this._onCloseClick);

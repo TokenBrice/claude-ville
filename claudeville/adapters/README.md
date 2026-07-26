@@ -38,7 +38,7 @@ The short caches are intentional. The browser, activity panel, dashboard mode, a
 
 ### JSONL parse diagnostics
 
-The shared JSONL parser (`shared.js` `parseJsonLines` / `readJsonLines`) counts lines per adapter source: `parsedLines`, `skippedLines` (malformed lines mid-window — potential silent data loss), and `trailingPartials` (the benign partial final line of an actively-written file). Counts plus the most recent skip (file, byte offset relative to the read window, line size) are exposed via `/api/perf` as `jsonlDiagnostics`. Set `CLAUDEVILLE_DEBUG_JSONL=1` before starting the server to additionally log every skipped line with its offset and a snippet.
+The shared JSONL parser (`shared.js` `parseJsonLines` / `readJsonLines`) counts lines per adapter source: `parsedLines`, `skippedLines` (malformed lines mid-window — potential silent data loss), and `trailingPartials` (the benign partial final line of an actively-written file). Parsed tail records share the existing byte-bounded tail state, so unchanged polls reuse objects and safe appends parse only new lines. Counts plus the most recent skip (file, byte offset relative to the read window, line size) are exposed via `/api/perf` as `jsonlDiagnostics`; parsed-tail hit/reuse counters are under `tailCache.parsed`. Set `CLAUDEVILLE_DEBUG_JSONL=1` before starting the server to additionally log every skipped line with its offset and a snippet.
 
 ## Contract
 

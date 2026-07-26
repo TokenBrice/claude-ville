@@ -12,9 +12,12 @@ const WEATHER_TYPE_SET = new Set(WEATHER_TYPES);
 
 const LOOP_MS = 60000;
 const MAX_FRAME_DT = 80;
-const RAIN_AREA_DENSITY = 3200;
-const RAIN_MAX_STREAKS = 420;
+const RAIN_AREA_DENSITY = 5200;
+const RAIN_MAX_STREAKS = 180;
 const RAIN_MIN_STREAKS = 24;
+const SNOW_AREA_DENSITY = 3200;
+const SNOW_MAX_FLAKES = 420;
+const SNOW_MIN_FLAKES = 24;
 const FOG_MAX_BANDS = 9;
 const FOG_MIN_BANDS = 3;
 
@@ -62,7 +65,12 @@ export class WeatherRenderer {
         this.assets = assets || null;
     }
 
-    drawForeground(ctx, { canvas = ctx?.canvas, atmosphere = null, dt = 16 } = {}) {
+    drawForeground(ctx, {
+        canvas = ctx?.canvas,
+        atmosphere = null,
+        dt = 16,
+        profileMark = null,
+    } = {}) {
         if (!ctx || !canvas || !canvas.width || !canvas.height) return;
 
         const weather = normalizeWeather(atmosphere);
@@ -98,17 +106,31 @@ export class WeatherRenderer {
         const fogIntensity = fogActive
             ? Math.max(fog, weather.type === 'fog' ? weather.intensity : 0) * legibility.fog
             : 0;
-        this._drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity * washBudget);
+        const rainActive = RAIN_TYPES.has(weather.type) || precipitation > 0.02;
+        const rainOvercastIntensity = rainActive
+            ? Math.min(
+                1,
+                Math.max(cloudCover, weather.intensity)
+                    * (weather.type === 'storm' ? 0.56 : 0.42),
+            ) * washBudget
+            : 0;
+        this._drawWeatherWash(
+            ctx,
+            canvas,
+            overcastIntensity,
+            fogIntensity * washBudget,
+            rainOvercastIntensity,
+        );
+        profileMark?.('weather-wash');
 
         if (fogActive) {
             this._drawFogBands(ctx, canvas, fogIntensity, phaseMs, seed, particleEnabled);
         }
+        profileMark?.('weather-fog-bands');
 
-        if (RAIN_TYPES.has(weather.type) || precipitation > 0.02) {
+        if (rainActive) {
             const storm = weather.type === 'storm';
             const rainIntensity = Math.max(precipitation, weather.intensity * (storm ? 0.86 : 0.72)) * legibility.rain;
-            // This pass stays after the animated fog bands so rain grades them too.
-            this._drawOvercast(ctx, canvas, Math.min(1, Math.max(cloudCover, weather.intensity) * (storm ? 0.56 : 0.42)) * washBudget);
             // Winter (Dec–Feb) swaps rain streaks for drifting snow — presentation
             // only; storm flash/lightning below still fires.
             if (isWinterMonth(atmosphere)) {
@@ -122,6 +144,7 @@ export class WeatherRenderer {
         } else if (weather.type === 'overcast' && fog <= 0.04) {
             this._drawFogBands(ctx, canvas, weather.intensity * 0.34, phaseMs, seed, particleEnabled);
         }
+        profileMark?.('weather-precipitation');
 
         ctx.restore();
     }
@@ -143,23 +166,25 @@ export class WeatherRenderer {
         this._washStripKey = '';
     }
 
-    _drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity) {
+    _drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity, rainOvercastIntensity = 0) {
         const hasOvercast = clamp(overcastIntensity, 0, 1) * 0.14 > 0.005;
         const hasFog = clamp(fogIntensity, 0, 1) * 0.12 > 0.005;
-        if (!hasOvercast) {
+        const hasRainOvercast = clamp(rainOvercastIntensity, 0, 1) * 0.14 > 0.005;
+        if (!hasOvercast && !hasRainOvercast) {
             if (hasFog) this._drawFogWash(ctx, canvas, fogIntensity);
             return;
         }
-        if (!hasFog || typeof document === 'undefined') {
-            this._drawOvercast(ctx, canvas, overcastIntensity);
+        if ((!hasFog && !hasRainOvercast) || typeof document === 'undefined') {
+            if (hasOvercast) this._drawOvercast(ctx, canvas, overcastIntensity);
             if (hasFog) this._drawFogWash(ctx, canvas, fogIntensity);
+            if (hasRainOvercast) this._drawOvercast(ctx, canvas, rainOvercastIntensity);
             return;
         }
 
         // Both washes vary only vertically, so a 1px-wide strip preserves their
         // source-over composition while replacing two full-canvas fills with one.
         const height = Math.max(1, Math.round(canvas.height));
-        const key = `${height}|${overcastIntensity}|${fogIntensity}`;
+        const key = `${height}|${overcastIntensity}|${fogIntensity}|${rainOvercastIntensity}`;
         if (!this._washStrip || this._washStrip.height !== height) {
             this._washStrip = document.createElement('canvas');
             this._washStrip.width = 1;
@@ -171,8 +196,9 @@ export class WeatherRenderer {
             stripCtx.clearRect(0, 0, 1, height);
             stripCtx.globalAlpha = 1;
             stripCtx.globalCompositeOperation = 'source-over';
-            this._drawOvercast(stripCtx, this._washStrip, overcastIntensity);
-            this._drawFogWash(stripCtx, this._washStrip, fogIntensity);
+            if (hasOvercast) this._drawOvercast(stripCtx, this._washStrip, overcastIntensity);
+            if (hasFog) this._drawFogWash(stripCtx, this._washStrip, fogIntensity);
+            if (hasRainOvercast) this._drawOvercast(stripCtx, this._washStrip, rainOvercastIntensity);
             this._washStripKey = key;
         }
         ctx.drawImage(this._washStrip, 0, 0, 1, height, 0, 0, canvas.width, canvas.height);
@@ -327,10 +353,10 @@ export class WeatherRenderer {
         const density = weather.type === 'storm' ? 1.18 : 1;
         const animatedScale = particleEnabled ? 1 : 0.5;
         const count = Math.min(
-            RAIN_MAX_STREAKS,
+            SNOW_MAX_FLAKES,
             Math.max(
-                RAIN_MIN_STREAKS,
-                Math.floor((area / (RAIN_AREA_DENSITY * 1.4)) * (0.35 + intensity * 0.85) * density * animatedScale),
+                SNOW_MIN_FLAKES,
+                Math.floor((area / (SNOW_AREA_DENSITY * 1.4)) * (0.35 + intensity * 0.85) * density * animatedScale),
             ),
         );
 

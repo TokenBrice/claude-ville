@@ -257,6 +257,7 @@ export const BRIDGE_STYLE_PALETTES = {
 // the two landmark river bridges so agents can reach the harbor without
 // creating extra town-wide crossings.
 export const HARBOR_DOCK_TILES = [
+    { tileX: 28, tileY: 19, orientation: 'EW', style: 'causeway' },
     { tileX: 29, tileY: 19, orientation: 'EW', style: 'causeway' },
     { tileX: 30, tileY: 19, orientation: 'EW', style: 'causeway' },
     { tileX: 31, tileY: 19, orientation: 'EW', style: 'causeway' },

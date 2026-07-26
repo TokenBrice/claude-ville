@@ -1,6 +1,6 @@
 # ClaudeVille
 
-[![Version](https://img.shields.io/badge/version-v0.28.1-8a6f2a)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-v0.29.0-8a6f2a)](./CHANGELOG.md)
 [![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
 [![Node](https://img.shields.io/badge/node-%3E%3D18-3c873a)](./package.json)
 [![Runtime](https://img.shields.io/badge/runtime-zero--build-7c3aed)](#quick-start)
@@ -18,7 +18,7 @@ ClaudeVille is a local-first dashboard for Claude Code, OpenAI Codex CLI, Google
 - **Glanceable:** World mode for second-monitor awareness; Dashboard mode for exact state.
 - **Zero-build runtime:** Node HTTP/WebSocket server plus static browser assets.
 
-Current version: **v0.28.1**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
+Current version: **v0.29.0**. See [CHANGELOG.md](./CHANGELOG.md) for named releases and user-facing changes.
 
 Active development lives in this repository. It is currently a public fork of `honorstudio/claude-ville`, but `TokenBrice/claude-ville` is the maintained branch for the current multi-provider ClaudeVille work.
 
@@ -30,7 +30,7 @@ The app is intentionally small: a zero-dependency Node.js HTTP/WebSocket server,
 
 ## Local And Read-Only
 
-ClaudeVille runs on `localhost:4000` and reads supported CLI session stores from your machine. It does not write provider session files, does not proxy requests to a hosted service, and does not need a build step to run.
+ClaudeVille binds only to the IPv4 loopback interface at `localhost:4000` and reads supported CLI session stores from your machine. It does not write provider session files, does not proxy requests to a hosted service, and does not need a build step to run.
 
 Desktop browser viewports 1280px wide and larger are the supported target. Empty provider lists are normal on machines where no supported CLI has local session files yet.
 
@@ -151,7 +151,7 @@ claude-ville/
 
 ## Runtime Architecture
 
-`claudeville/server.js` serves static files from `claudeville/`, exposes JSON API endpoints, upgrades WebSocket clients at `ws://localhost:4000`, watches provider data paths, and broadcasts updates while clients are connected. Updates are debounced on filesystem events; a 2-second interval also runs unconditionally, with broadcasts becoming no-ops when no WebSocket clients are connected.
+`claudeville/server.js` binds to `127.0.0.1`, serves static files from `claudeville/`, exposes same-origin JSON API endpoints, upgrades WebSocket clients at `ws://localhost:4000/ws`, watches provider data paths, and broadcasts updates while clients are connected. Updates are debounced on filesystem events; a 2-second interval also runs unconditionally, with broadcasts becoming no-ops when no WebSocket clients are connected.
 
 The frontend boot path is `claudeville/src/presentation/App.js`:
 
@@ -170,7 +170,7 @@ The layout is a full-height flex shell: fixed-height top bar, left sidebar, cent
 
 ## Local Server API
 
-The server is hardcoded to port `4000`.
+The server is hardcoded to port `4000` and the IPv4 loopback interface. Requests with a non-local `Host` or a cross-origin browser `Origin` are rejected; origin-less local CLI requests remain supported.
 
 | Endpoint | Description |
 | --- | --- |
@@ -183,9 +183,9 @@ The server is hardcoded to port `4000`.
 | `GET /api/usage` | Usage, subscription, activity, and quota metadata. |
 | `GET /api/perf` | Lightweight runtime counters for manual performance checks. |
 | `GET /api/changelog` | Raw `CHANGELOG.md` text; rendered by the in-app version-chip modal. |
-| `ws://localhost:4000` | Initial session payload, update broadcasts, and ping/pong. |
+| `ws://localhost:4000/ws` | Same-origin initial session payload, update broadcasts, and ping/pong. |
 
-The server also responds to CORS preflight requests and sends JSON error responses for missing or invalid routes.
+The server does not enable CORS or accept preflight requests. Missing or invalid routes receive JSON error responses.
 
 ## Provider Adapters
 

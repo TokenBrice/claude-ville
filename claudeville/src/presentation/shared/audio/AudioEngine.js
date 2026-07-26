@@ -25,10 +25,6 @@ export function pick(list) {
     return list[Math.floor(Math.random() * list.length)];
 }
 
-export function safeDisconnect(node) {
-    try { node?.disconnect?.(); } catch { /* node may already be disconnected */ }
-}
-
 function buildNoiseBuffer(ctx, type, seconds = 4) {
     const length = Math.max(1, Math.floor(ctx.sampleRate * seconds));
     const buffer = ctx.createBuffer(1, length, ctx.sampleRate);

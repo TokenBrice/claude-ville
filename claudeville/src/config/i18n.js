@@ -18,7 +18,7 @@ const STRINGS = {
     unknownProject: 'Unknown Project',
 
     noActiveAgents: 'NO ACTIVE AGENTS',
-    noActiveAgentsSub: 'Start a Claude Code session to see agents here',
+    noActiveAgentsSub: 'Start a coding CLI session to see agents here',
     toolHistory: 'TOOL HISTORY',
     noToolUsage: 'No tool usage yet',
     nAgents: (n) => `${n} agents`,

@@ -13,11 +13,12 @@ const path = require('path');
 const os = require('os');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
+  clearTailCache,
   createDetailResponse,
   fileSignature,
   parseJsonLines,
   readHeadText: readSharedHeadText,
-  readLines: readSharedLines,
+  readJsonLines: readSharedJsonLines,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
@@ -74,13 +75,14 @@ function readHeadText(filePath, maxBytes = MAX_METADATA_BYTES) {
   return readSharedHeadText(filePath, maxBytes);
 }
 
-function readLines(filePath, { from = 'end', count = 50 } = {}) {
-  return readSharedLines(filePath, {
+function readJsonLines(filePath, { from = 'end', count = 50 } = {}) {
+  return readSharedJsonLines(filePath, {
     from,
     count,
     headMaxBytes: MAX_HEAD_BYTES,
     tailChunkBytes: TAIL_CHUNK_BYTES,
     tailMaxBytes: MAX_TAIL_BYTES,
+    source: 'codex',
   });
 }
 
@@ -391,8 +393,7 @@ function parseRollout(filePath) {
   }
 
   // Read recent tools/messages from the end of the file
-  const lastLines = readLines(filePath, { from: 'end', count: 50 });
-  const entries = parseJsonLines(lastLines, { source: 'codex', file: filePath });
+  const entries = readJsonLines(filePath, { from: 'end', count: 50 });
 
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -498,8 +499,7 @@ function deriveCodexTurnState(entries, now = Date.now()) {
 function getToolHistory(filePath, maxItems = 15) {
   const tools = [];
   try {
-    const lines = readLines(filePath, { from: 'end', count: 100 });
-    const entries = parseJsonLines(lines, { source: 'codex', file: filePath });
+    const entries = readJsonLines(filePath, { from: 'end', count: 100 });
     const itemsByCallId = new Map();
 
     for (const entry of entries) {
@@ -540,8 +540,7 @@ function getToolHistory(filePath, maxItems = 15) {
 function getRecentMessages(filePath, maxItems = 5) {
   const messages = [];
   try {
-    const lines = readLines(filePath, { from: 'end', count: 60 });
-    const entries = parseJsonLines(lines, { source: 'codex', file: filePath });
+    const entries = readJsonLines(filePath, { from: 'end', count: 60 });
 
     for (const entry of entries) {
       if (entry.type !== 'response_item' || !entry.payload) continue;
@@ -605,8 +604,7 @@ function getTokenUsage(filePath) {
   };
 
   try {
-    const lines = readLines(filePath, { from: 'end', count: 500 });
-    const entries = parseJsonLines(lines, { source: 'codex', file: filePath });
+    const entries = readJsonLines(filePath, { from: 'end', count: 500 });
     let lastInput = 0;
     let latestTokenCount = null;
 
@@ -777,8 +775,7 @@ function applyCompletionMetadata(eventsById, completion) {
 function getGitEvents(filePath, context) {
   const events = [];
   try {
-    const lines = readLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
-    const entries = parseJsonLines(lines, { source: 'codex', file: filePath });
+    const entries = readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
     const eventsBySourceId = new Map();
     const eventsByCommandHash = new Map();
 
@@ -1258,6 +1255,7 @@ class CodexAdapter {
   }
 
   invalidateCaches() {
+    clearTailCache('codex');
     _rolloutFileBySessionId.clear();
     _sessionNamesCache.signature = '';
     _sessionNamesCache.value = new Map();

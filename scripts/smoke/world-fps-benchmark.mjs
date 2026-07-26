@@ -39,6 +39,8 @@ Options:
   --repetitions=<n>           Fresh browser contexts per case (default: 3)
   --counts=<list>             Comma-separated subset of 1,10,25,50
   --weather=<list>            Comma-separated subset of clear,rain
+  --max-rain-regression-pct=<n>
+                              Fail if paired rain median FPS is more than n% below clear
   --profile                   Include opt-in update/render timings
   --headed                    Show the Chromium window
   --help                      Print this help
@@ -62,6 +64,7 @@ function parseArgs(argv) {
     weather: Object.keys(WEATHER_PROFILES),
     profile: false,
     headed: false,
+    maxRainRegressionPct: null,
   };
 
   for (let index = 0; index < argv.length; index++) {
@@ -86,6 +89,7 @@ function parseArgs(argv) {
       '--repetitions',
       '--counts',
       '--weather',
+      '--max-rain-regression-pct',
     ].includes(flag)) {
       throw new Error(`Unknown argument: ${arg}`);
     }
@@ -97,6 +101,7 @@ function parseArgs(argv) {
     if (flag === '--repetitions') options.repetitions = Number(value);
     if (flag === '--counts') options.counts = parseList(value).map(Number);
     if (flag === '--weather') options.weather = parseList(value);
+    if (flag === '--max-rain-regression-pct') options.maxRainRegressionPct = Number(value);
   }
 
   if (!Number.isFinite(options.durationSeconds) || options.durationSeconds < 1) {
@@ -113,6 +118,18 @@ function parseArgs(argv) {
   }
   if (!options.weather.length || options.weather.some(name => !WEATHER_PROFILES[name])) {
     throw new Error(`weather must be a non-empty subset of ${Object.keys(WEATHER_PROFILES).join(',')}`);
+  }
+  if (
+    options.maxRainRegressionPct != null
+    && (!Number.isFinite(options.maxRainRegressionPct) || options.maxRainRegressionPct < 0)
+  ) {
+    throw new Error('max rain regression percent must be zero or positive');
+  }
+  if (
+    options.maxRainRegressionPct != null
+    && (!options.weather.includes('clear') || !options.weather.includes('rain'))
+  ) {
+    throw new Error('rain regression checks require both clear and rain weather cases');
   }
   return options;
 }
@@ -362,9 +379,23 @@ async function main() {
       }
     }
     const cpu = os.cpus()[0];
-    console.log(JSON.stringify({
+    const cases = summarizeRuns(runs);
+    const rainRegressionViolations = options.maxRainRegressionPct == null
+      ? []
+      : cases
+        .filter(item => item.weather === 'rain')
+        .filter(item => (
+          !Number.isFinite(item.fpsChangeVsClearPct)
+          || item.fpsChangeVsClearPct < -options.maxRainRegressionPct
+        ))
+        .map(item => ({
+          count: item.count,
+          fpsChangeVsClearPct: item.fpsChangeVsClearPct,
+          maxRainRegressionPct: options.maxRainRegressionPct,
+        }));
+    const summary = {
       type: 'summary',
-      ok: true,
+      ok: rainRegressionViolations.length === 0,
       url: options.url,
       browserVersion: browser.version(),
       environment: {
@@ -387,9 +418,13 @@ async function main() {
         repetitions: options.repetitions,
         profile: options.profile,
         headed: options.headed,
+        maxRainRegressionPct: options.maxRainRegressionPct,
       },
-      cases: summarizeRuns(runs),
-    }, null, 2));
+      cases,
+      rainRegressionViolations,
+    };
+    console.log(JSON.stringify(summary, null, 2));
+    if (!summary.ok) process.exitCode = 1;
   } finally {
     await browser.close();
   }
