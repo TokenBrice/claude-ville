@@ -1,6 +1,17 @@
 const DISTANCE_EPSILON = 1e-6;
 
 /**
+ * Bridge tiles already carry an authored grid orientation. Prefer it over
+ * neighbor inference, which is ambiguous on widened road/bridge masks.
+ */
+export function laneAxisForBridgeOrientation(orientation) {
+    const normalized = String(orientation || '').toUpperCase();
+    if (normalized === 'NS') return { dx: 0, dy: 1 };
+    if (normalized === 'EW') return { dx: 1, dy: 0 };
+    return null;
+}
+
+/**
  * Keep a renderer-level steering correction from undoing path progress.
  *
  * AgentSprite advances toward its current waypoint before the renderer applies

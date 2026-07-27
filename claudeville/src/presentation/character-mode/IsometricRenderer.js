@@ -43,7 +43,7 @@ import { BuildingSprite } from './BuildingSprite.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
-import { constrainSteeringToTarget } from './MovementSteering.js';
+import { constrainSteeringToTarget, laneAxisForBridgeOrientation } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState } from './AtmosphereState.js';
@@ -3434,7 +3434,9 @@ export class IsometricRenderer {
             if (!this._isRoadLikeTileKey(key)) continue;
             const tile = this._parseTileKey(key);
             if (!tile) continue;
-            const axis = this._bestRoadAxis(tile.tileX, tile.tileY);
+            if (this.pathfinder && !this.pathfinder.isWalkable(tile.tileX, tile.tileY)) continue;
+            const bridgeAxis = laneAxisForBridgeOrientation(this.bridgeTiles?.get?.(key)?.orientation);
+            const axis = bridgeAxis || this._bestRoadAxis(tile.tileX, tile.tileY);
             if (!axis) continue;
             const center = tileToWorld(tile.tileX, tile.tileY);
             const next = tileToWorld(tile.tileX + axis.dx, tile.tileY + axis.dy);

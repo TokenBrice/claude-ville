@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     constrainSteeringToTarget,
+    laneAxisForBridgeOrientation,
 } from '../../claudeville/src/presentation/character-mode/MovementSteering.js';
 
 function distanceToTarget(position, target = { x: 10, y: 0 }) {
@@ -68,4 +69,10 @@ test('a slow walker still reaches its waypoint against stronger reverse steering
         target,
         'post-movement steering must not cancel every forward step',
     );
+});
+
+test('bridge lane axes follow their authored grid orientation', () => {
+    assert.deepEqual(laneAxisForBridgeOrientation('NS'), { dx: 0, dy: 1 });
+    assert.deepEqual(laneAxisForBridgeOrientation('EW'), { dx: 1, dy: 0 });
+    assert.equal(laneAxisForBridgeOrientation('diagonal'), null);
 });

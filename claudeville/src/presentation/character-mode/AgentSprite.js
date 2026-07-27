@@ -14,6 +14,7 @@ import { AgentBehaviorState } from './AgentBehaviorState.js';
 import { compactToolInput, toolActionLabel, toolCategory, classifyTool } from '../../domain/services/ToolIdentity.js';
 import { pickLoreLine } from '../../config/loreDialogue.js';
 import { tileToWorld, worldToTile } from './Projection.js';
+import { resolveUpdateRouteBuilding } from './MovementRouting.js';
 
 // Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
@@ -1679,9 +1680,13 @@ export class AgentSprite {
         // Reroute immediately when status or fresh tool changes the intended building.
         if (!this.chatPartner) {
             const activeIntent = this._activeVisitIntent();
-            let curBuilding = activeIntent?.building || (this.agent.status === AgentStatus.IDLE
-                ? this._lastBuildingType
-                : this._targetBuildingTypeForState());
+            let curBuilding = resolveUpdateRouteBuilding({
+                activeIntentBuilding: activeIntent?.building,
+                status: this.agent.status,
+                currentBuilding: this._lastBuildingType,
+                targetBuilding: this.agent.targetBuildingType,
+                lastKnownBuilding: this.agent.lastKnownBuildingType,
+            });
             if (!activeIntent && this._blockedIntentId && Date.now() < this._blockedIntentRetryAfter) {
                 curBuilding = this._lastBuildingType;
             }

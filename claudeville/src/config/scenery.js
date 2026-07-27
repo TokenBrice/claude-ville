@@ -191,6 +191,8 @@ export const BRIDGE_HINTS = [
         orientation: 'NS',
         style: 'elderwood',
         widthRadius: 2,
+        // Side spans carry the landmark art, rails, and accents over water;
+        // traversal stays on the authored center deck.
         walkableRadius: 0,
     },
 ];

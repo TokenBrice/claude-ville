@@ -2,6 +2,16 @@
 
 ---
 
+## v0.29.0.2 · Jul 27, 2026 — Hotfix
+
+Agents now stay on the landmark bridge's center deck and complete crowded crossings without being redirected or pushed backward.
+
+- **The crossing matches the art.** Only the authored center deck is walkable; decorative side spans, rails, lanterns, and water remain outside the traversal grid.
+- **Completed agents keep their destination.** Ambient routes are no longer discarded and rebuilt every frame when a completed or idle status has no new destination.
+- **Opposing traffic keeps moving.** Bridge lanes follow the crossing's authored direction, ignore non-walkable spans, and preserve forward progress while agents separate.
+
+---
+
 ## v0.29.0.1 · Jul 27, 2026 — Hotfix
 
 Agents now keep making forward progress through crowded roads and building approaches instead of turning back and forth around the same few pixels.
