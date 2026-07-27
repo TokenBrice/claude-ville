@@ -2,6 +2,15 @@
 
 ---
 
+## v0.29.0.1 · Jul 27, 2026 — Hotfix
+
+Agents now keep making forward progress through crowded roads and building approaches instead of turning back and forth around the same few pixels.
+
+- **Crowd steering cannot undo a step.** Lane discipline and collision separation retain their useful sideways motion, but corrections that would push an agent farther from its current waypoint are constrained so slowed or congested villagers cannot be held in place indefinitely.
+- **The failure stays fixed.** Focused regression coverage reproduces a slow walker facing a stronger reverse correction and proves it still reaches the waypoint.
+
+---
+
 ## v0.29.0 — *The Wardens* · Jul 26, 2026
 
 ClaudeVille now guards its private local data, keeps session history truthful across failures and reloads, and stays bounded through long-running work and heavy weather.

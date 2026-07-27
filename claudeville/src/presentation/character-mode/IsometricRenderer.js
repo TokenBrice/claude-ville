@@ -43,6 +43,7 @@ import { BuildingSprite } from './BuildingSprite.js';
 
 import { SceneryEngine } from './SceneryEngine.js';
 import { Pathfinder } from './Pathfinder.js';
+import { constrainSteeringToTarget } from './MovementSteering.js';
 import { SpriteRenderer } from './SpriteRenderer.js';
 import { SkyRenderer } from './SkyRenderer.js';
 import { AtmosphereState } from './AtmosphereState.js';
@@ -566,6 +567,7 @@ export class IsometricRenderer {
             laneCorrections: 0,
             separationPushes: 0,
             zeroDistancePairs: 0,
+            progressClamps: 0,
         };
         this._crowdStats = this._emptyCrowdStats();
         this._crowdStatsAccumulator = 0;
@@ -3605,12 +3607,20 @@ export class IsometricRenderer {
                 continue;
             }
             const step = Math.max(-maxCorrection, Math.min(maxCorrection, correction));
-            const nextX = sprite.x + lane.perpX * step;
-            const nextY = sprite.y + lane.perpY * step;
-            if (!this._isSpritePositionWalkable(sprite, nextX, nextY)) continue;
-            sprite.x = nextX;
-            sprite.y = nextY;
+            const steered = constrainSteeringToTarget({
+                x: sprite.x,
+                y: sprite.y,
+                nextX: sprite.x + lane.perpX * step,
+                nextY: sprite.y + lane.perpY * step,
+                targetX: sprite.targetX,
+                targetY: sprite.targetY,
+            });
+            if (!this._isSpritePositionWalkable(sprite, steered.x, steered.y)) continue;
+            if (Math.hypot(steered.x - sprite.x, steered.y - sprite.y) <= 0.001) continue;
+            sprite.x = steered.x;
+            sprite.y = steered.y;
             sprite._laneDiscipline = { tileKey: lane.tileKey, side, offsetPx: desiredOffset };
+            if (steered.constrained) this._localAvoidanceMetrics.progressClamps++;
             corrections++;
         }
         if (corrections > 0) {
@@ -3650,20 +3660,40 @@ export class IsometricRenderer {
             const sameLane = a._laneDiscipline?.tileKey && a._laneDiscipline.tileKey === b._laneDiscipline?.tileKey;
             const opposingLanes = sameLane && a._laneDiscipline.side !== b._laneDiscipline.side;
             const strength = baseStrength * (opposingLanes ? 0.55 : 1);
-            const nextAx = a.x + nx * overlap * strength;
-            const nextAy = a.y + ny * overlap * strength;
-            const nextBx = b.x - nx * overlap * strength;
-            const nextBy = b.y - ny * overlap * strength;
+            const nextA = constrainSteeringToTarget({
+                x: a.x,
+                y: a.y,
+                nextX: a.x + nx * overlap * strength,
+                nextY: a.y + ny * overlap * strength,
+                targetX: a.targetX,
+                targetY: a.targetY,
+            });
+            const nextB = constrainSteeringToTarget({
+                x: b.x,
+                y: b.y,
+                nextX: b.x - nx * overlap * strength,
+                nextY: b.y - ny * overlap * strength,
+                targetX: b.targetX,
+                targetY: b.targetY,
+            });
 
             let moved = false;
-            if (this._isSpritePositionWalkable(a, nextAx, nextAy)) {
-                a.x = nextAx;
-                a.y = nextAy;
+            if (
+                Math.hypot(nextA.x - a.x, nextA.y - a.y) > 0.001
+                && this._isSpritePositionWalkable(a, nextA.x, nextA.y)
+            ) {
+                a.x = nextA.x;
+                a.y = nextA.y;
+                if (nextA.constrained) this._localAvoidanceMetrics.progressClamps++;
                 moved = true;
             }
-            if (this._isSpritePositionWalkable(b, nextBx, nextBy)) {
-                b.x = nextBx;
-                b.y = nextBy;
+            if (
+                Math.hypot(nextB.x - b.x, nextB.y - b.y) > 0.001
+                && this._isSpritePositionWalkable(b, nextB.x, nextB.y)
+            ) {
+                b.x = nextB.x;
+                b.y = nextB.y;
+                if (nextB.constrained) this._localAvoidanceMetrics.progressClamps++;
                 moved = true;
             }
             if (moved) {
