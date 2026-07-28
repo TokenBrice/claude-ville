@@ -27,15 +27,24 @@ function attentionLabel(agent) {
 }
 
 export class AttentionService {
-    constructor(world, { toast = null, document: doc = null } = {}) {
+    constructor(world, {
+        toast = null,
+        document: doc = null,
+        NotificationClass = null,
+    } = {}) {
         this.world = world;
         this.toast = toast;
         this.doc = doc || (typeof document !== 'undefined' ? document : null);
+        this.NotificationClass = NotificationClass
+            || (typeof Notification !== 'undefined' ? Notification : null);
         this.desktopAlerts = this._readDesktopAlertsPref();
 
         this._known = new Set();       // agent ids currently needing a person
+        this._notifications = new Map(); // agent id -> owned desktop notification
         this._cursor = 0;              // rotation position for focusNext()
         this._faviconEl = null;
+        this._destroyed = false;
+        this._desktopAlertRequest = 0;
 
         this._onWorldChanged = () => this.refresh();
         eventBus.on('agent:added', this._onWorldChanged);
@@ -44,9 +53,14 @@ export class AttentionService {
     }
 
     destroy() {
+        if (this._destroyed) return;
+        this._destroyed = true;
+        this._desktopAlertRequest++;
         eventBus.off('agent:added', this._onWorldChanged);
         eventBus.off('agent:updated', this._onWorldChanged);
         eventBus.off('agent:removed', this._onWorldChanged);
+        this._closeAllNotifications();
+        this._known.clear();
         this._setTitle(0);
         this._setFavicon(false);
     }
@@ -64,6 +78,7 @@ export class AttentionService {
     }
 
     refresh() {
+        if (this._destroyed) return;
         const agents = this.list();
         const ids = new Set(agents.map(agent => agent.id));
 
@@ -72,7 +87,10 @@ export class AttentionService {
             this._raise(agent);
         }
         for (const id of this._known) {
-            if (!ids.has(id)) eventBus.emit('attention:cleared', { agentId: id });
+            if (!ids.has(id)) {
+                this._closeNotification(id);
+                eventBus.emit('attention:cleared', { agentId: id });
+            }
         }
         this._known = ids;
 
@@ -103,7 +121,7 @@ export class AttentionService {
     // ─── Desktop notifications (opt-in, user gesture only) ───────────────
 
     get desktopAlertsAvailable() {
-        return typeof Notification !== 'undefined';
+        return !!this.NotificationClass;
     }
 
     /**
@@ -112,38 +130,75 @@ export class AttentionService {
      * exactly the kind of nagging this app is supposed to avoid.
      */
     async setDesktopAlerts(enabled) {
+        const request = ++this._desktopAlertRequest;
         if (!enabled) {
             this.desktopAlerts = false;
             this._writeDesktopAlertsPref(false);
+            this._closeAllNotifications();
             return false;
         }
-        if (!this.desktopAlertsAvailable) return false;
-        let permission = Notification.permission;
-        if (permission === 'default') {
-            try { permission = await Notification.requestPermission(); } catch { permission = 'denied'; }
+        if (!this.desktopAlertsAvailable) {
+            this.desktopAlerts = false;
+            this._writeDesktopAlertsPref(false);
+            this._closeAllNotifications();
+            return false;
         }
+        let permission = this.NotificationClass.permission;
+        if (permission === 'default') {
+            try {
+                permission = await this.NotificationClass.requestPermission();
+            } catch {
+                permission = 'denied';
+            }
+        }
+        if (this._destroyed || request !== this._desktopAlertRequest) return false;
         this.desktopAlerts = permission === 'granted';
         this._writeDesktopAlertsPref(this.desktopAlerts);
+        if (!this.desktopAlerts) this._closeAllNotifications();
         return this.desktopAlerts;
     }
 
     _notify(agent, label) {
-        if (!this.desktopAlerts || !this.desktopAlertsAvailable) return;
-        if (Notification.permission !== 'granted') return;
+        if (this._destroyed || !this.desktopAlerts || !this.desktopAlertsAvailable) return;
+        if (this.NotificationClass.permission !== 'granted') return;
         // Only speak up when nobody is looking at the village.
         if (this.doc && this.doc.visibilityState === 'visible') return;
+        const agentId = agent.id;
+        this._closeNotification(agentId);
         try {
-            const note = new Notification(`${agent.name} ${label}`, {
+            const note = new this.NotificationClass(`${agent.name} ${label}`, {
                 body: agent.projectPath || 'ClaudeVille',
-                tag: `claudeville-${agent.id}`,
+                tag: `claudeville-${agentId}`,
                 icon: FAVICON_ALERT,
             });
+            this._notifications.set(agentId, note);
+            note.onclose = () => {
+                if (this._notifications.get(agentId) === note) {
+                    this._notifications.delete(agentId);
+                }
+            };
             note.onclick = () => {
                 try { window.focus(); } catch { /* no-op */ }
-                eventBus.emit('agent:selected', agent);
-                note.close();
+                const current = this.world?.agents?.get?.(agentId);
+                if (current) eventBus.emit('agent:selected', current);
+                this._closeNotification(agentId);
             };
         } catch { /* notifications are best effort */ }
+    }
+
+    _closeNotification(agentId) {
+        const note = this._notifications.get(agentId);
+        if (!note) return;
+        this._notifications.delete(agentId);
+        note.onclick = null;
+        note.onclose = null;
+        try { note.close(); } catch { /* notifications are best effort */ }
+    }
+
+    _closeAllNotifications() {
+        for (const agentId of [...this._notifications.keys()]) {
+            this._closeNotification(agentId);
+        }
     }
 
     _readDesktopAlertsPref() {

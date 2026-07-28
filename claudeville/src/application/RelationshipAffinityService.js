@@ -7,6 +7,8 @@ const FLUSH_DEBOUNCE_MS = 3000;
 const WRITE_LEASE_KEY = 'claudeville.affinity.writeLease';
 const WRITE_LEASE_TTL_MS = 15000;
 const AFFINITY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+export const AFFINITY_CACHE_LIMIT = 1024;
+const MET_SESSION_PAIR_LIMIT = AFFINITY_CACHE_LIMIT;
 
 function randomToken() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -69,6 +71,15 @@ function sessionPairKey(aId, bId) {
     return [aId, bId].sort().join('|');
 }
 
+function meetingContextSignature(entry) {
+    return compactIdentity([
+        entry?.identityKey,
+        entry?.agent?.parentSessionId,
+        entry?.agent?.teamName,
+        entry?.agent?.projectPath,
+    ].join('|'));
+}
+
 function normalizeAlias(value) {
     return String(value || '').trim().toLowerCase();
 }
@@ -111,6 +122,7 @@ export class RelationshipAffinityService {
         this._roster = new Map(); // agent.id -> live telemetry + observation baseline
         this._metSessionPairs = new Set();
         this._dirty = new Set();
+        this._flushing = new Set();
         this._flushTimer = null;
         this._flushTail = Promise.resolve();
         this._stopPromise = null;
@@ -119,6 +131,7 @@ export class RelationshipAffinityService {
         this._leaseToken = randomToken();
         this._unsubscribers = [];
         this._channelListener = null;
+        this._capacityDrops = 0;
     }
 
     start() {
@@ -165,6 +178,11 @@ export class RelationshipAffinityService {
                 await this._flushTail;
             } finally {
                 this._releaseWriteLease();
+                this._affinities.clear();
+                this._roster.clear();
+                this._metSessionPairs.clear();
+                this._dirty.clear();
+                this._flushing.clear();
             }
         })();
         return this._stopPromise;
@@ -180,7 +198,9 @@ export class RelationshipAffinityService {
 
     getAffinity(identityKeyA, identityKeyB) {
         const pairKey = affinityPairKey(identityKeyA, identityKeyB);
-        return pairKey ? this._affinities.get(pairKey) || null : null;
+        const affinity = pairKey ? this._affinities.get(pairKey) || null : null;
+        if (affinity) this._touchAffinity(pairKey);
+        return affinity;
     }
 
     /** Decayed warmth between two live agents; 0 for strangers/unknown. */
@@ -202,16 +222,23 @@ export class RelationshipAffinityService {
         if (!this.store || !this._dirty.size) return;
         const keys = [...this._dirty];
         this._dirty.clear();
+        for (const pairKey of keys) this._flushing.add(pairKey);
         for (const pairKey of keys) {
             const affinity = this._affinities.get(pairKey);
-            if (!affinity) continue;
+            if (!affinity) {
+                this._flushing.delete(pairKey);
+                continue;
+            }
             try {
                 await this.store.putAffinity(affinity.toRecord());
             } catch (err) {
                 this._dirty.add(pairKey);
                 console.warn('[RelationshipAffinityService] flush failed:', err?.message || err);
+            } finally {
+                this._flushing.delete(pairKey);
             }
         }
+        this._pruneAffinityCache();
     }
 
     _handleAgentSeen(agent) {
@@ -222,6 +249,7 @@ export class RelationshipAffinityService {
             entry = {
                 agent,
                 identityKey: null,
+                meetingContextSignature: null,
                 observedAt: Date.now(),
                 countedChatKeys: new Set(),
                 lastChatSignature: null,
@@ -231,7 +259,11 @@ export class RelationshipAffinityService {
         entry.agent = agent;
         entry.identityKey = AgentBiography.identityKeyFor(agent);
         if (!entry.identityKey || !this._holdsWriteLease()) return;
-        this._recordMeetings(entry);
+        const nextMeetingContext = meetingContextSignature(entry);
+        if (firstObservation || entry.meetingContextSignature !== nextMeetingContext) {
+            entry.meetingContextSignature = nextMeetingContext;
+            this._recordMeetings(entry);
+        }
         // A recipient or project peer can arrive after the sender. Revisit the
         // small live roster so already-visible telemetry is baselined once the
         // pair becomes resolvable.
@@ -250,6 +282,7 @@ export class RelationshipAffinityService {
             const [a, b] = key.split('|');
             if (a === agent.id || b === agent.id) this._metSessionPairs.delete(key);
         }
+        this._pruneAffinityCache();
     }
 
     _recordMeetings(entry) {
@@ -258,8 +291,8 @@ export class RelationshipAffinityService {
             if (!sharesContext(entry.agent, other.agent)) continue;
             const key = sessionPairKey(entry.agent.id, other.agent.id);
             if (this._metSessionPairs.has(key)) continue;
-            this._metSessionPairs.add(key);
-            this._mutatePair(entry, other, 'meeting', `meeting:${key}`);
+            const admitted = this._mutatePair(entry, other, 'meeting', `meeting:${key}`);
+            if (admitted !== null) this._rememberMetSessionPair(key);
         }
     }
 
@@ -328,15 +361,18 @@ export class RelationshipAffinityService {
     }
 
     _mutatePair(entryA, entryB, kind, interactionKey, { baseline = false } = {}) {
-        if (!this._accepting) return;
+        if (!this._accepting) return null;
         const pairKey = affinityPairKey(entryA.identityKey, entryB.identityKey);
-        if (!pairKey) return;
+        if (!pairKey) return null;
         const now = Date.now();
         let affinity = this._affinities.get(pairKey);
         if (!affinity) {
+            if (!this._reserveAffinitySlot()) return null;
             affinity = PairAffinity.create(entryA.identityKey, entryB.identityKey, now);
-            if (!affinity) return;
+            if (!affinity) return null;
             this._affinities.set(pairKey, affinity);
+        } else {
+            this._touchAffinity(pairKey);
         }
         // Legacy records had counters but no identities. Baseline their first
         // observed event rather than incrementing once during migration.
@@ -344,15 +380,16 @@ export class RelationshipAffinityService {
         if (baseline || legacy) {
             const remembered = affinity.rememberInteraction(interactionKey);
             affinity.schemaVersion = 2;
-            if (!remembered && !legacy) return;
+            if (!remembered && !legacy) return false;
             this._dirty.add(pairKey);
             this._scheduleFlush();
-            return;
+            return true;
         }
-        if (!affinity.recordInteraction(kind, now, interactionKey)) return;
+        if (!affinity.recordInteraction(kind, now, interactionKey)) return false;
         this._dirty.add(pairKey);
         this._scheduleFlush();
         eventBus.emit('affinity:changed', { pairKey, affinity, kind });
+        return true;
     }
 
     async _preload() {
@@ -360,11 +397,15 @@ export class RelationshipAffinityService {
         try {
             const records = await this.store.getAllAffinities({
                 since: Date.now() - AFFINITY_RETENTION_MS,
+                limit: AFFINITY_CACHE_LIMIT,
             });
-            for (const record of records || []) {
+            // Store queries newest-first; insert oldest-first so Map order is
+            // a useful LRU baseline.
+            for (const record of [...(records || [])].reverse()) {
                 const affinity = PairAffinity.fromRecord(record);
                 if (affinity) this._affinities.set(affinity.pairKey, affinity);
             }
+            this._pruneAffinityCache();
         } catch (err) {
             console.warn('[RelationshipAffinityService] preload failed:', err?.message || err);
         }
@@ -378,6 +419,8 @@ export class RelationshipAffinityService {
                 const affinity = PairAffinity.fromRecord(record);
                 if (!affinity) return;
                 this._affinities.set(pairKey, affinity);
+                this._touchAffinity(pairKey);
+                this._pruneAffinityCache();
                 eventBus.emit('affinity:changed', { pairKey, affinity, kind: 'sync' });
             })
             .catch(() => {});
@@ -389,6 +432,49 @@ export class RelationshipAffinityService {
             this._flushTimer = null;
             this.flush().catch(() => {});
         }, FLUSH_DEBOUNCE_MS);
+    }
+
+    _touchAffinity(pairKey) {
+        const affinity = this._affinities.get(pairKey);
+        if (!affinity) return;
+        this._affinities.delete(pairKey);
+        this._affinities.set(pairKey, affinity);
+    }
+
+    _reserveAffinitySlot() {
+        if (this._affinities.size < AFFINITY_CACHE_LIMIT) return true;
+        for (const pairKey of this._affinities.keys()) {
+            if (this._dirty.has(pairKey) || this._flushing.has(pairKey)) continue;
+            this._affinities.delete(pairKey);
+            return true;
+        }
+        // Affinity is ambient telemetry. When every retained pair is awaiting
+        // persistence, prefer a hard memory bound over an unbounded dirty burst.
+        this._capacityDrops++;
+        return false;
+    }
+
+    _rememberMetSessionPair(pairKey) {
+        this._metSessionPairs.delete(pairKey);
+        this._metSessionPairs.add(pairKey);
+        while (this._metSessionPairs.size > MET_SESSION_PAIR_LIMIT) {
+            this._metSessionPairs.delete(this._metSessionPairs.values().next().value);
+        }
+    }
+
+    _pruneAffinityCache(now = Date.now()) {
+        const cutoff = now - AFFINITY_RETENTION_MS;
+        for (const [pairKey, affinity] of this._affinities) {
+            if (this._dirty.has(pairKey) || this._flushing.has(pairKey)) continue;
+            if (Number(affinity.lastInteractionAt || 0) < cutoff) {
+                this._affinities.delete(pairKey);
+            }
+        }
+        for (const pairKey of this._affinities.keys()) {
+            if (this._affinities.size <= AFFINITY_CACHE_LIMIT) break;
+            if (this._dirty.has(pairKey) || this._flushing.has(pairKey)) continue;
+            this._affinities.delete(pairKey);
+        }
     }
 
     _holdsWriteLease() {

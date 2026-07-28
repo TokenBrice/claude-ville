@@ -186,6 +186,41 @@ export class ChronicleStore {
         return out;
     }
 
+    async reduceRange(storeName, options, reducer, initialValue) {
+        if (typeof reducer !== 'function') throw new TypeError('reduceRange requires a reducer');
+        const {
+            index = 'ts',
+            lower = null,
+            upper = null,
+            direction = 'next',
+        } = options || {};
+        await this.open();
+        const tx = this.db.transaction(storeName, 'readonly');
+        const store = tx.objectStore(storeName);
+        const source = index && store.indexNames.contains(index) ? store.index(index) : store;
+        const range = this._range(lower, upper);
+        let accumulator = initialValue;
+        await new Promise((resolve, reject) => {
+            const request = source.openCursor(range, direction);
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor) {
+                    resolve();
+                    return;
+                }
+                try {
+                    accumulator = reducer(accumulator, cursor.value);
+                } catch (error) {
+                    reject(error);
+                    return;
+                }
+                cursor.continue();
+            };
+        });
+        return accumulator;
+    }
+
     async deleteRange(storeName, { index = 'ts', lower = null, upper = null } = {}) {
         await this.open();
         const tx = this.db.transaction(storeName, 'readwrite');
@@ -459,11 +494,20 @@ export class ChronicleStore {
         return this.get('affinities', pairKey);
     }
 
-    async getAllAffinities({ since = null } = {}) {
+    async getAllAffinities({ since = null, limit = Infinity } = {}) {
         if (Number.isFinite(since)) {
             return this.queryRange('affinities', {
                 index: 'lastInteractionAt',
                 lower: since,
+                direction: 'prev',
+                limit,
+            });
+        }
+        if (Number.isFinite(limit)) {
+            return this.queryRange('affinities', {
+                index: 'lastInteractionAt',
+                direction: 'prev',
+                limit,
             });
         }
         await this.open();

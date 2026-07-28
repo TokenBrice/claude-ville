@@ -121,6 +121,7 @@ export class WebSocketClient {
                 if (this.ws !== socket) return;
                 this.ws = null;
                 this.connected = false;
+                this._clearProtocolState();
                 console.log('[WS] Disconnected');
                 eventBus.emit('ws:disconnected');
                 this._scheduleReconnect();
@@ -154,6 +155,7 @@ export class WebSocketClient {
             }
         }
         this.connected = false;
+        this._clearProtocolState();
     }
 
     send(data) {
@@ -195,6 +197,28 @@ export class WebSocketClient {
         };
         this._seq = Number.isFinite(data.seq) ? data.seq : null;
         this._resyncRequested = false;
+    }
+
+    _clearProtocolState() {
+        this._state = null;
+        this._seq = null;
+        this._resyncRequested = false;
+    }
+
+    getDebugSnapshot() {
+        const sessions = this._state?.sessions || [];
+        const teams = this._state?.teams || [];
+        let retainedBytes = 0;
+        if (this._state) {
+            try { retainedBytes = JSON.stringify(this._state).length * 2; } catch { /* diagnostic only */ }
+        }
+        return {
+            connected: this.connected,
+            retainedSessions: sessions.length,
+            retainedTeams: teams.length,
+            retainedBytes,
+            sequence: this._seq,
+        };
     }
 
     _handleDelta(data) {

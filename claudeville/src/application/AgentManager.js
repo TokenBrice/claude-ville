@@ -3,6 +3,179 @@ import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
 import { resolveAgentStatus } from '../domain/services/StatusResolver.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 
+const AGENT_SIGNATURE_FIELDS = Object.freeze([
+    'id',
+    'agentId',
+    'agentName',
+    'agentType',
+    'parentSessionId',
+    'workflowId',
+    'workflowName',
+    'model',
+    'effort',
+    'status',
+    'role',
+    'teamName',
+    'tokens',
+    'currentTool',
+    'currentToolInput',
+    'lastTool',
+    'lastToolInput',
+    'gitEvents',
+    'permissionMode',
+    'turnState',
+    'pendingTool',
+    'waitReason',
+    'awaitingSince',
+    'resident',
+    'sendMessages',
+    'lastSessionActivity',
+    '_lastMessage',
+    'name',
+    '_customName',
+    'projectPath',
+    'provider',
+]);
+const SIGNATURE_STRING_SAMPLE = 512;
+const SIGNATURE_ARRAY_ITEMS = 64;
+const SIGNATURE_OBJECT_FIELDS = 32;
+const SIGNATURE_FIELD_VALUE_BUDGET = 128;
+const SIGNATURE_COLLECTION_VALUE_BUDGET = 1024;
+const SIGNATURE_FIELD_CHARACTER_BUDGET = 1024;
+const SIGNATURE_COLLECTION_CHARACTER_BUDGET = 15 * 1024;
+const SIGNATURE_CHARACTER_BUDGET = 64 * 1024;
+const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages']);
+
+function mixDigestCode(state, code) {
+    state.a = Math.imul(state.a ^ code, 16777619);
+    state.b = Math.imul(state.b ^ code, 2246822519);
+}
+
+function mixDigestString(state, value, budget = null) {
+    const text = String(value);
+    mixDigestCode(state, text.length & 0xffff);
+    mixDigestCode(state, text.length >>> 16);
+    const globalRemaining = Math.max(0, SIGNATURE_CHARACTER_BUDGET - state.characters);
+    const fieldRemaining = budget
+        ? Math.max(0, budget.characterLimit - budget.characters)
+        : globalRemaining;
+    const remaining = Math.min(globalRemaining, fieldRemaining);
+    const sampleSize = Math.min(SIGNATURE_STRING_SAMPLE, remaining);
+    if (sampleSize <= 0) return;
+    if (text.length <= sampleSize) {
+        for (let index = 0; index < text.length; index++) mixDigestCode(state, text.charCodeAt(index));
+        state.characters += text.length;
+        if (budget) budget.characters += text.length;
+        return;
+    }
+
+    const head = Math.floor(sampleSize * 0.4);
+    const tail = Math.floor(sampleSize * 0.4);
+    const middle = sampleSize - head - tail;
+    for (let index = 0; index < head; index++) mixDigestCode(state, text.charCodeAt(index));
+    for (let index = 1; index <= middle; index++) {
+        const sourceIndex = Math.floor(index * (text.length - 1) / (middle + 1));
+        mixDigestCode(state, text.charCodeAt(sourceIndex));
+    }
+    for (let index = text.length - tail; index < text.length; index++) {
+        mixDigestCode(state, text.charCodeAt(index));
+    }
+    state.characters += sampleSize;
+    if (budget) budget.characters += sampleSize;
+}
+
+function mixDigestValue(state, value, depth = 0, budget = null) {
+    if (!budget || budget.values >= budget.valueLimit || depth > 4) return;
+    budget.values++;
+    state.values++;
+    if (value === null || value === undefined) {
+        mixDigestString(state, value === null ? 'null' : 'undefined', budget);
+        return;
+    }
+    const type = typeof value;
+    mixDigestString(state, type, budget);
+    if (type === 'string') {
+        mixDigestString(state, value, budget);
+        return;
+    }
+    if (type === 'number' || type === 'boolean' || type === 'bigint') {
+        mixDigestString(state, value, budget);
+        return;
+    }
+    if (Array.isArray(value)) {
+        mixDigestString(state, value.length, budget);
+        const headCount = value.length > SIGNATURE_ARRAY_ITEMS ? 8 : value.length;
+        const tailStart = value.length > SIGNATURE_ARRAY_ITEMS
+            ? Math.max(headCount, value.length - (SIGNATURE_ARRAY_ITEMS - headCount))
+            : value.length;
+        for (let index = 0; index < headCount; index++) {
+            mixDigestValue(state, value[index], depth + 1, budget);
+        }
+        for (let index = tailStart; index < value.length; index++) {
+            mixDigestValue(state, value[index], depth + 1, budget);
+        }
+        return;
+    }
+    if (type !== 'object') return;
+
+    let fieldCount = 0;
+    for (const key in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+        if (fieldCount >= SIGNATURE_OBJECT_FIELDS || budget.values >= budget.valueLimit) {
+            mixDigestString(state, '[more-fields]', budget);
+            break;
+        }
+        fieldCount++;
+        mixDigestString(state, key, budget);
+        mixDigestValue(state, value[key], depth + 1, budget);
+    }
+}
+
+/**
+ * Fixed-size signature for the fields retained by an Agent. Work is bounded by
+ * sampled strings, recent array rows, recursion depth, and per-field work
+ * budgets, so one large collection cannot starve later fields or force a
+ * second full-payload serialization.
+ */
+export function digestAgentPayload(payload, diagnostics = null) {
+    const state = {
+        a: 2166136261,
+        b: 2654435761,
+        characters: 0,
+        values: 0,
+    };
+    for (const field of AGENT_SIGNATURE_FIELDS) {
+        mixDigestString(state, field);
+        const collection = SIGNATURE_COLLECTION_FIELDS.has(field);
+        const budget = {
+            values: 0,
+            valueLimit: collection
+                ? SIGNATURE_COLLECTION_VALUE_BUDGET
+                : SIGNATURE_FIELD_VALUE_BUDGET,
+            characters: 0,
+            characterLimit: collection
+                ? SIGNATURE_COLLECTION_CHARACTER_BUDGET
+                : SIGNATURE_FIELD_CHARACTER_BUDGET,
+        };
+        mixDigestValue(state, payload?.[field], 0, budget);
+    }
+    const activityAgeMinute = Number.isFinite(payload?.activityAgeMs)
+        ? Math.floor(payload.activityAgeMs / 60_000)
+        : null;
+    mixDigestString(state, 'activityAgeMinute');
+    mixDigestValue(state, activityAgeMinute, 0, {
+        values: 0,
+        valueLimit: SIGNATURE_FIELD_VALUE_BUDGET,
+        characters: 0,
+        characterLimit: SIGNATURE_FIELD_CHARACTER_BUDGET,
+    });
+    if (diagnostics && typeof diagnostics === 'object') {
+        diagnostics.characters = state.characters;
+        diagnostics.values = state.values;
+    }
+    return `${(state.a >>> 0).toString(16).padStart(8, '0')}${(state.b >>> 0).toString(16).padStart(8, '0')}`;
+}
+
 export class AgentManager {
     constructor(world, dataSource) {
         this.world = world;
@@ -116,11 +289,7 @@ export class AgentManager {
     }
 
     _agentSignature(payload) {
-        const { activityAgeMs, ...stablePayload } = payload;
-        const activityAgeMinute = Number.isFinite(activityAgeMs)
-            ? Math.floor(activityAgeMs / 60_000)
-            : null;
-        return JSON.stringify({ ...stablePayload, activityAgeMinute });
+        return digestAgentPayload(payload);
     }
 
     _usedAgentNames() {

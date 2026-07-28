@@ -3,6 +3,7 @@ import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
+import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { formatCost, formatRelative, formatTokens, hashRows, truncateText } from './Formatters.js';
 import { emitAgentDeselected, emitAgentSelected } from './AgentSelection.js';
@@ -33,6 +34,69 @@ const PIN_COMPARE_LIMIT = 2;
 const PINNED_AGENTS_STORAGE_KEY = 'claudeville.pinnedAgents';
 const VILLAGE_DIRECTOR_EVENT = 'village:director';
 const VILLAGE_BUILDING_SIGNAL_EVENT = 'village:building-signal';
+const CONFIGURED_BUILDING_TYPES = new Set(BUILDING_DEFS.map(def => normalizeBuildingType(def.type)));
+const BUILDING_PAYLOAD_STRING_LIMIT = 512;
+const BUILDING_PAYLOAD_ARRAY_LIMIT = 3;
+const BUILDING_PAYLOAD_DEPTH_LIMIT = 3;
+const BUILDING_PAYLOAD_NODE_LIMIT = 64;
+const BUILDING_PAYLOAD_FIELD_LIMIT = 128;
+const BUILDING_PAYLOAD_CHARACTER_LIMIT = 8192;
+const BUILDING_PAYLOAD_SCAN_LIMIT = 512;
+const BUILDING_PAYLOAD_ENTRY_LIMIT = 64;
+const BUILDING_PAYLOAD_FIELDS = new Set([
+    'active',
+    'activeAgents',
+    'activity',
+    'alert',
+    'alerts',
+    'count',
+    'counts',
+    'data',
+    'detail',
+    'error',
+    'errorCount',
+    'errored',
+    'errors',
+    'headline',
+    'inbound',
+    'incident',
+    'incidents',
+    'issue',
+    'issues',
+    'label',
+    'lastWork',
+    'line',
+    'message',
+    'name',
+    'occupied',
+    'path',
+    'payload',
+    'phase',
+    'problem',
+    'problems',
+    'queue',
+    'queueDepth',
+    'queued',
+    'queues',
+    'recent',
+    'recentWork',
+    'recency',
+    'recencyScore',
+    'route',
+    'routes',
+    'score',
+    'signal',
+    'state',
+    'status',
+    'summary',
+    'text',
+    'tier',
+    'title',
+    'waiting',
+    'warning',
+    'warnings',
+    'work',
+]);
 
 const BEHAVIOR_STATE_LABELS = Object.freeze({
     blocked: 'Blocked',
@@ -267,18 +331,7 @@ export class ActivityPanel {
             this._renderChronicleBody(biography);
         };
         // Pause polling while the tab is hidden; refresh once on return.
-        this._onVisibilityChange = () => {
-            if (document.hidden) return;
-            if (this._mode === 'agent') {
-                this._fetchDetail();
-                this._fetchPinnedDetails();
-            } else if (this._mode === 'building') {
-                this._renderBuildingSignal();
-                this._renderBuildingOccupants();
-                this._renderBuildingState();
-                this._fetchPinnedDetails();
-            }
-        };
+        this._onVisibilityChange = () => this._syncPollingForVisibility();
 
         this.closeBtn.addEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.addEventListener('click', this._onPinToggleClick);
@@ -520,6 +573,7 @@ export class ActivityPanel {
         this._chronicleFetchSeq++;
         // Agent selection takes over the panel: tear down any building view first.
         if (this._mode === 'building') {
+            this._stopBuildingPolling();
             this._teardownBuildingView();
         }
         this._mode = 'agent';
@@ -723,10 +777,10 @@ export class ActivityPanel {
 
     _startPolling() {
         this._stopPolling();
+        if (document.hidden || this._mode !== 'agent') return;
         this._fetchDetail();
         this._fetchPinnedDetails();
         this._pollTimer = setInterval(() => {
-            if (document.hidden) return;
             this._fetchDetail();
             this._fetchPinnedDetails();
         }, SESSION_DETAIL_PANEL_REFRESH_INTERVAL);
@@ -741,8 +795,8 @@ export class ActivityPanel {
 
     _startBuildingPolling() {
         this._stopBuildingPolling();
+        if (document.hidden || this._mode !== 'building') return;
         this._buildingPollTimer = setInterval(() => {
-            if (document.hidden) return;
             if (this._mode !== 'building') return;
             this._renderBuildingSignal();
             this._renderBuildingOccupants();
@@ -755,6 +809,23 @@ export class ActivityPanel {
         if (this._buildingPollTimer) {
             clearInterval(this._buildingPollTimer);
             this._buildingPollTimer = null;
+        }
+    }
+
+    _syncPollingForVisibility() {
+        if (document.hidden) {
+            this._stopPolling();
+            this._stopBuildingPolling();
+            return;
+        }
+        if (this._mode === 'agent') {
+            this._startPolling();
+        } else if (this._mode === 'building') {
+            this._renderBuildingSignal();
+            this._renderBuildingOccupants();
+            this._renderBuildingState();
+            this._fetchPinnedDetails();
+            this._startBuildingPolling();
         }
     }
 
@@ -2443,7 +2514,12 @@ export class ActivityPanel {
         const raw = value && typeof value === 'object'
             ? (value.type || value.buildingType || value.building || value.id || value.key)
             : value;
-        return String(raw || '').trim().toLowerCase();
+        return normalizeBuildingType(String(raw || '').trim().toLowerCase()) || '';
+    }
+
+    _isConfiguredBuildingKey(value) {
+        const key = this._buildingKey(value);
+        return !!key && (CONFIGURED_BUILDING_TYPES.has(key) || !!this._getBuildingByType(key));
     }
 
     _buildingDisplayName(building) {
@@ -2455,7 +2531,7 @@ export class ActivityPanel {
         this._buildingPresenceByType.clear();
         for (const [type, value] of this._buildingPayloadEntries(payload)) {
             const key = this._buildingKey(type);
-            if (!key) continue;
+            if (!this._isConfiguredBuildingKey(key)) continue;
             this._buildingPresenceByType.set(key, this._normalizeBuildingPresence(value));
         }
     }
@@ -2464,9 +2540,10 @@ export class ActivityPanel {
         if (!targetMap) return;
         for (const [type, value] of this._buildingPayloadEntries(payload)) {
             const key = this._buildingKey(type);
-            if (!key || !value || typeof value !== 'object') continue;
-            const previous = targetMap.get(key) || {};
-            targetMap.set(key, this._mergeBuildingPayload(previous, value));
+            if (!this._isConfiguredBuildingKey(key) || !value || typeof value !== 'object') continue;
+            const projected = this._projectBuildingPayload(value);
+            if (Object.keys(projected).length) targetMap.set(key, projected);
+            else targetMap.delete(key);
         }
     }
 
@@ -2474,15 +2551,33 @@ export class ActivityPanel {
         this._cacheBuildingPayload(payload, this._villageDirectorByType);
     }
 
-    _buildingPayloadEntries(payload, depth = 0) {
-        if (!payload || depth > 3) return [];
+    _buildingPayloadEntries(payload, depth = 0, budget = null) {
+        const remaining = budget || { scanned: 0, entries: 0 };
+        if (
+            !payload
+            || depth > 3
+            || remaining.scanned >= BUILDING_PAYLOAD_SCAN_LIMIT
+            || remaining.entries >= BUILDING_PAYLOAD_ENTRY_LIMIT
+        ) return [];
         if (Array.isArray(payload)) {
-            return payload.flatMap(item => this._buildingPayloadEntries(item, depth + 1));
+            const entries = [];
+            for (const item of payload) {
+                if (
+                    remaining.scanned >= BUILDING_PAYLOAD_SCAN_LIMIT
+                    || remaining.entries >= BUILDING_PAYLOAD_ENTRY_LIMIT
+                ) break;
+                remaining.scanned++;
+                entries.push(...this._buildingPayloadEntries(item, depth + 1, remaining));
+            }
+            return entries;
         }
         if (typeof payload !== 'object') return [];
 
         const directKey = this._payloadBuildingKey(payload);
-        if (directKey) return [[directKey, payload]];
+        if (directKey) {
+            remaining.entries++;
+            return [[directKey, payload]];
+        }
 
         const entries = [];
         const containerKeys = [
@@ -2502,25 +2597,65 @@ export class ActivityPanel {
             const directContainerKey = this._payloadBuildingKey(container);
             if (directContainerKey) {
                 entries.push([directContainerKey, container]);
+                remaining.entries++;
                 continue;
             }
             if (Array.isArray(container)) {
-                entries.push(...container.flatMap(item => this._buildingPayloadEntries(item, depth + 1)));
+                for (const item of container) {
+                    if (
+                        remaining.scanned >= BUILDING_PAYLOAD_SCAN_LIMIT
+                        || remaining.entries >= BUILDING_PAYLOAD_ENTRY_LIMIT
+                    ) break;
+                    remaining.scanned++;
+                    entries.push(...this._buildingPayloadEntries(item, depth + 1, remaining));
+                }
                 continue;
             }
-            for (const [key, value] of Object.entries(container)) {
+            const directConfiguredKeys = new Set();
+            for (const configuredType of CONFIGURED_BUILDING_TYPES) {
+                if (
+                    remaining.entries >= BUILDING_PAYLOAD_ENTRY_LIMIT
+                    || !Object.prototype.hasOwnProperty.call(container, configuredType)
+                ) continue;
+                const configuredValue = container[configuredType];
+                if (!configuredValue || typeof configuredValue !== 'object') continue;
+                entries.push([configuredType, configuredValue]);
+                directConfiguredKeys.add(configuredType);
+                remaining.entries++;
+            }
+            for (const key in container) {
+                if (!Object.prototype.hasOwnProperty.call(container, key)) continue;
+                if (directConfiguredKeys.has(key)) continue;
+                if (
+                    remaining.scanned >= BUILDING_PAYLOAD_SCAN_LIMIT
+                    || remaining.entries >= BUILDING_PAYLOAD_ENTRY_LIMIT
+                ) break;
+                remaining.scanned++;
+                const value = container[key];
                 if (value && typeof value === 'object') {
                     const mapKey = this._buildingKey(key);
-                    if (mapKey) entries.push([mapKey, value]);
-                    else entries.push(...this._buildingPayloadEntries(value, depth + 1));
+                    if (this._isConfiguredBuildingKey(mapKey)) {
+                        entries.push([mapKey, value]);
+                        remaining.entries++;
+                    } else {
+                        entries.push(...this._buildingPayloadEntries(value, depth + 1, remaining));
+                    }
                 }
             }
         }
         if (entries.length) return entries;
 
-        for (const [key, value] of Object.entries(payload)) {
+        for (const key in payload) {
+            if (!Object.prototype.hasOwnProperty.call(payload, key)) continue;
+            if (
+                remaining.scanned >= BUILDING_PAYLOAD_SCAN_LIMIT
+                || remaining.entries >= BUILDING_PAYLOAD_ENTRY_LIMIT
+            ) break;
+            remaining.scanned++;
+            const value = payload[key];
             if (this._looksLikeBuildingPayloadMapEntry(key, value)) {
                 entries.push([this._buildingKey(key), value]);
+                remaining.entries++;
             }
         }
         return entries;
@@ -2544,6 +2679,7 @@ export class ActivityPanel {
     _looksLikeBuildingPayloadMapEntry(key, value) {
         const buildingKey = this._buildingKey(key);
         if (!buildingKey || !value || typeof value !== 'object' || Array.isArray(value)) return false;
+        if (!this._isConfiguredBuildingKey(buildingKey)) return false;
         if (this._getBuildingByType(buildingKey) || this._buildingKey(this._selectedBuilding) === buildingKey) return true;
         return this._hasAnyKey(value, [
             'count',
@@ -2575,11 +2711,72 @@ export class ActivityPanel {
         const recencyScore = this._firstFiniteNumber([source.recencyScore, source.recency, source.score]);
         const tier = String(source.tier || source.state || source.status || '').trim().toLowerCase();
         return {
-            ...source,
             ...(Number.isFinite(count) ? { count } : {}),
             ...(Number.isFinite(recencyScore) ? { recencyScore } : {}),
-            tier: tier || (Number.isFinite(count) && count > 0 ? 'occupied' : 'dormant'),
+            tier: truncateText(
+                tier || (Number.isFinite(count) && count > 0 ? 'occupied' : 'dormant'),
+                32,
+            ),
         };
+    }
+
+    _projectBuildingPayload(value, depth = 0, budget = null) {
+        const remaining = budget || { nodes: 0, fields: 0, characters: 0 };
+        if (
+            depth > BUILDING_PAYLOAD_DEPTH_LIMIT
+            || value === null
+            || value === undefined
+            || remaining.nodes >= BUILDING_PAYLOAD_NODE_LIMIT
+        ) return {};
+        if (typeof value !== 'object' || Array.isArray(value)) return {};
+        remaining.nodes++;
+        const projected = {};
+        for (const [key, fieldValue] of Object.entries(value)) {
+            if (!BUILDING_PAYLOAD_FIELDS.has(key)) continue;
+            if (remaining.fields >= BUILDING_PAYLOAD_FIELD_LIMIT) break;
+            remaining.fields++;
+            if (typeof fieldValue === 'string') {
+                const available = BUILDING_PAYLOAD_CHARACTER_LIMIT - remaining.characters;
+                if (available <= 0) continue;
+                projected[key] = truncateText(
+                    fieldValue.trim(),
+                    Math.min(BUILDING_PAYLOAD_STRING_LIMIT, available),
+                );
+                remaining.characters += projected[key].length;
+            } else if (typeof fieldValue === 'number') {
+                if (Number.isFinite(fieldValue)) projected[key] = fieldValue;
+            } else if (typeof fieldValue === 'boolean') {
+                projected[key] = fieldValue;
+            } else if (Array.isArray(fieldValue)) {
+                const items = fieldValue
+                    .slice(0, BUILDING_PAYLOAD_ARRAY_LIMIT)
+                    .map(item => {
+                        if (typeof item === 'string') {
+                            const available = BUILDING_PAYLOAD_CHARACTER_LIMIT - remaining.characters;
+                            if (available <= 0) return null;
+                            const projectedItem = truncateText(
+                                item.trim(),
+                                Math.min(BUILDING_PAYLOAD_STRING_LIMIT, available),
+                            );
+                            remaining.characters += projectedItem.length;
+                            return projectedItem;
+                        }
+                        if (typeof item === 'number') return Number.isFinite(item) ? item : null;
+                        if (typeof item === 'boolean') return item;
+                        if (item && typeof item === 'object') {
+                            const nested = this._projectBuildingPayload(item, depth + 1, remaining);
+                            return Object.keys(nested).length ? nested : null;
+                        }
+                        return null;
+                    })
+                    .filter(item => item !== null);
+                if (items.length) projected[key] = items;
+            } else if (fieldValue && typeof fieldValue === 'object') {
+                const nested = this._projectBuildingPayload(fieldValue, depth + 1, remaining);
+                if (Object.keys(nested).length) projected[key] = nested;
+            }
+        }
+        return projected;
     }
 
     _mergeBuildingPayload(base, overlay) {

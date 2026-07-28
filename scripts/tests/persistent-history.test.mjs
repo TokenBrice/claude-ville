@@ -2,8 +2,14 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { AgentBiography } from '../../claudeville/src/domain/value-objects/AgentBiography.js';
-import { AgentBiographyService } from '../../claudeville/src/application/AgentBiographyService.js';
-import { RelationshipAffinityService } from '../../claudeville/src/application/RelationshipAffinityService.js';
+import {
+    AgentBiographyService,
+    BIOGRAPHY_CACHE_LIMIT,
+} from '../../claudeville/src/application/AgentBiographyService.js';
+import {
+    RelationshipAffinityService,
+    AFFINITY_CACHE_LIMIT,
+} from '../../claudeville/src/application/RelationshipAffinityService.js';
 import { affinityPairKey, PairAffinity } from '../../claudeville/src/domain/value-objects/PairAffinity.js';
 import { MoodService } from '../../claudeville/src/application/MoodService.js';
 import { Mood } from '../../claudeville/src/domain/value-objects/AgentMood.js';
@@ -34,8 +40,11 @@ function affinityStore() {
     return {
         affinities,
         channel: null,
-        async getAllAffinities() {
-            return [...affinities.values()].map(record => structuredClone(record));
+        async getAllAffinities({ limit = Infinity } = {}) {
+            return [...affinities.values()]
+                .sort((a, b) => b.lastInteractionAt - a.lastInteractionAt)
+                .slice(0, limit)
+                .map(record => structuredClone(record));
         },
         async getAffinity(key) { return affinities.get(key) || null; },
         async putAffinity(record) {
@@ -147,6 +156,81 @@ test('affinity interactions remain idempotent across reload and shared telemetry
     assert.equal(afterReload.chats, 2);
     assert.equal(afterReload.sharedCommits, 1);
     assert.ok(afterReload.recentInteractionKeys.length <= 192);
+});
+
+test('settled biography reads use a bounded cache and clear on stop', async () => {
+    const store = biographyStore();
+    const service = new AgentBiographyService({ store });
+    for (let index = 0; index < BIOGRAPHY_CACHE_LIMIT + 80; index++) {
+        await service.getBiography(`villager:claude:cache-${index}`);
+    }
+    assert.ok(service._biographies.size <= BIOGRAPHY_CACHE_LIMIT);
+    await service.stop();
+    assert.equal(service._biographies.size, 0);
+});
+
+test('affinity preload is bounded to the newest retained pairs and clears on stop', async () => {
+    const store = affinityStore();
+    const now = Date.now();
+    for (let index = 0; index < AFFINITY_CACHE_LIMIT + 200; index++) {
+        const affinity = PairAffinity.create(
+            `villager:claude:a-${index}`,
+            `villager:claude:b-${index}`,
+            now - index,
+        );
+        store.affinities.set(affinity.pairKey, affinity.toRecord());
+    }
+    const service = new RelationshipAffinityService({ store }).start();
+    await service._ready;
+    assert.equal(service._affinities.size, AFFINITY_CACHE_LIMIT);
+    await service.stop();
+    assert.equal(service._affinities.size, 0);
+});
+
+test('live affinity bursts respect the hard cache bound', () => {
+    const service = new RelationshipAffinityService();
+    service._accepting = true;
+    service._scheduleFlush = () => {};
+    const source = { identityKey: 'villager:claude:source' };
+    for (let index = 0; index < AFFINITY_CACHE_LIMIT + 200; index++) {
+        service._mutatePair(
+            source,
+            { identityKey: `villager:claude:peer-${index}` },
+            'meeting',
+            `meeting:source:peer-${index}`,
+        );
+    }
+    assert.equal(service._affinities.size, AFFINITY_CACHE_LIMIT);
+    assert.equal(service._dirty.size, AFFINITY_CACHE_LIMIT);
+    assert.equal(service._capacityDrops, 200);
+});
+
+test('same-project meeting bursts bound both affinity and session-pair state', () => {
+    const service = new RelationshipAffinityService();
+    service._accepting = true;
+    service._scheduleFlush = () => {};
+    for (let index = 0; index < 100; index++) {
+        service._handleAgentSeen({
+            id: `session-${index}`,
+            provider: 'claude',
+            agentId: `agent-${index}`,
+            projectPath: '/tmp/shared-project',
+            gitEvents: [],
+            sendMessages: [],
+        });
+    }
+    assert.equal(service._affinities.size, AFFINITY_CACHE_LIMIT);
+    assert.equal(service._metSessionPairs.size, AFFINITY_CACHE_LIMIT);
+    assert.ok(service._capacityDrops > 0);
+    const capacityDrops = service._capacityDrops;
+    for (const entry of service._roster.values()) {
+        service._handleAgentSeen(entry.agent);
+    }
+    assert.equal(
+        service._capacityDrops,
+        capacityDrops,
+        'unchanged agent updates must not retry the saturated meeting working set',
+    );
 });
 
 test('chat churn cannot evict meeting or git dedupe identities', () => {

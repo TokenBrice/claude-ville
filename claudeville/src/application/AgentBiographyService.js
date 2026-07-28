@@ -5,6 +5,7 @@ const FLUSH_DEBOUNCE_MS = 3000;
 const WRITE_LEASE_KEY = 'claudeville.biography.writeLease';
 const WRITE_LEASE_TTL_MS = 15000;
 const SESSION_PUSH_KEY_LIMIT = 96;
+export const BIOGRAPHY_CACHE_LIMIT = 256;
 
 function randomToken() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -85,6 +86,8 @@ export class AgentBiographyService {
     constructor({ store = null } = {}) {
         this.store = store;
         this._biographies = new Map(); // identityKey -> Promise<AgentBiography|null>
+        this._loadingKeys = new Set();
+        this._flushingKeys = new Set();
         this._mutationTails = new Map(); // identityKey -> Promise (serializes mutations)
         this._sessions = new Map(); // agent.id -> { identityKey, tokenBaseline, countedPushKeys, completed }
         this._dirty = new Set();
@@ -140,6 +143,12 @@ export class AgentBiographyService {
                 await this._flushTail;
             } finally {
                 this._releaseWriteLease();
+                this._biographies.clear();
+                this._loadingKeys.clear();
+                this._flushingKeys.clear();
+                this._mutationTails.clear();
+                this._sessions.clear();
+                this._dirty.clear();
             }
         })();
         return this._stopPromise;
@@ -153,8 +162,16 @@ export class AgentBiographyService {
     async getBiography(identityKey) {
         if (!identityKey || !this.store) return null;
         if (!this._biographies.has(identityKey)) {
-            this._biographies.set(identityKey, this._load(identityKey));
+            this._loadingKeys.add(identityKey);
+            const pending = this._load(identityKey).finally(() => {
+                this._loadingKeys.delete(identityKey);
+                this._pruneBiographyCache();
+            });
+            this._biographies.set(identityKey, pending);
+        } else {
+            this._touchBiography(identityKey);
         }
+        this._pruneBiographyCache();
         return this._biographies.get(identityKey);
     }
 
@@ -174,6 +191,7 @@ export class AgentBiographyService {
         if (!this.store || !this._dirty.size) return;
         const keys = [...this._dirty];
         this._dirty.clear();
+        for (const identityKey of keys) this._flushingKeys.add(identityKey);
         for (const identityKey of keys) {
             try {
                 const biography = await this._biographies.get(identityKey);
@@ -181,8 +199,11 @@ export class AgentBiographyService {
             } catch (err) {
                 this._dirty.add(identityKey);
                 console.warn('[AgentBiographyService] flush failed:', err?.message || err);
+            } finally {
+                this._flushingKeys.delete(identityKey);
             }
         }
+        this._pruneBiographyCache();
     }
 
     _handleAgentSeen(agent) {
@@ -279,6 +300,7 @@ export class AgentBiographyService {
         if (!this._accepting || !agent?.id) return;
         const session = this._sessions.get(agent.id);
         this._sessions.delete(agent.id);
+        this._pruneBiographyCache();
         if (!session || session.completed || !this._holdsWriteLease()) return;
         session.completed = true;
         const now = Date.now();
@@ -300,6 +322,7 @@ export class AgentBiographyService {
                     biography = AgentBiography.create(identityKey);
                     this._biographies.set(identityKey, Promise.resolve(biography));
                 }
+                this._touchBiography(identityKey);
                 const earned = mutator(biography) || [];
                 this._dirty.add(identityKey);
                 if (earned.length) {
@@ -316,6 +339,7 @@ export class AgentBiographyService {
         next.then(() => {
             if (this._mutationTails.get(identityKey) === next) {
                 this._mutationTails.delete(identityKey);
+                this._pruneBiographyCache();
             }
         });
     }
@@ -333,6 +357,30 @@ export class AgentBiographyService {
         } catch (err) {
             console.warn('[AgentBiographyService] load failed:', err?.message || err);
             return null;
+        }
+    }
+
+    _touchBiography(identityKey) {
+        const pending = this._biographies.get(identityKey);
+        if (!pending) return;
+        this._biographies.delete(identityKey);
+        this._biographies.set(identityKey, pending);
+    }
+
+    _pruneBiographyCache() {
+        if (this._biographies.size <= BIOGRAPHY_CACHE_LIMIT) return;
+        const pinned = new Set([
+            ...this._dirty,
+            ...this._loadingKeys,
+            ...this._flushingKeys,
+            ...this._mutationTails.keys(),
+        ]);
+        for (const session of this._sessions.values()) {
+            if (session.identityKey) pinned.add(session.identityKey);
+        }
+        for (const identityKey of this._biographies.keys()) {
+            if (this._biographies.size <= BIOGRAPHY_CACHE_LIMIT) break;
+            if (!pinned.has(identityKey)) this._biographies.delete(identityKey);
         }
     }
 

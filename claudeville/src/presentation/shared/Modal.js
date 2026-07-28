@@ -20,6 +20,7 @@ export class Modal {
         };
         this._destroyed = false;
         this._isOpen = false;
+        this._requestVersion = 0;
         this._inertRecords = [];
         // Element that had focus before the dialog opened; restored on close.
         this._previousFocus = null;
@@ -28,8 +29,25 @@ export class Modal {
         this.overlay.addEventListener('click', this._onOverlayClick);
     }
 
-    open(title, contentHTML, { wide = false } = {}) {
-        if (this._destroyed) return;
+    beginRequest() {
+        if (this._destroyed) return null;
+        return ++this._requestVersion;
+    }
+
+    isRequestCurrent(request) {
+        return !this._destroyed && request !== null && request === this._requestVersion;
+    }
+
+    invalidateRequest(request = null) {
+        if (request === null || request === this._requestVersion) {
+            this._requestVersion++;
+        }
+    }
+
+    open(title, contentHTML, { wide = false, request = null } = {}) {
+        if (this._destroyed) return false;
+        const owner = request ?? this.beginRequest();
+        if (!this.isRequestCurrent(owner)) return false;
         this.titleEl.textContent = title;
         this.contentEl.innerHTML = contentHTML;
         this.box.classList.toggle('modal--wide', wide);
@@ -43,10 +61,12 @@ export class Modal {
         document.addEventListener('keydown', this._onKeydown);
         // Move focus inside the dialog (role="dialog" + aria-modal in markup).
         this.closeBtn.focus();
+        return true;
     }
 
     close() {
         if (!this.overlay) return;
+        this.invalidateRequest();
         const wasOpen = this._isOpen;
         this._isOpen = false;
         this.overlay.style.display = 'none';

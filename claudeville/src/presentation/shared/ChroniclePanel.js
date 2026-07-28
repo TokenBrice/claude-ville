@@ -24,6 +24,8 @@ const REASON_TEXT = {
     plan_review: 'awaited plan review',
 };
 
+export const CHRONICLE_TIMELINE_PAGE_SIZE = 100;
+
 function clockTime(ts) {
     const date = new Date(ts);
     return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
@@ -84,15 +86,51 @@ export class ChroniclePanel {
         this.log = chronicleLog;
         this.spendLedger = spendLedger;
         this.usageGetter = usageGetter;
+        this._request = null;
+        this._destroyed = false;
     }
 
     async open() {
-        if (!this.modal) return;
-        const events = await this.log.readDay();
-        const summary = summarizeDay(events);
-        this.modal.open('Village Chronicle', '', { wide: true });
+        if (!this.modal || this._destroyed) return;
+        const request = this.modal.beginRequest();
+        if (request === null) return;
+        this._request = request;
+        let page;
+        if (typeof this.log.readDayPage === 'function') {
+            page = await this.log.readDayPage(new Date(), { limit: CHRONICLE_TIMELINE_PAGE_SIZE });
+        } else {
+            const all = await this.log.readDay();
+            page = {
+                events: all.slice(-CHRONICLE_TIMELINE_PAGE_SIZE).reverse(),
+                summary: summarizeDay(all),
+                totalCount: all.length,
+            };
+        }
+        const { events, summary, totalCount } = page;
+        if (
+            this._destroyed
+            || this._request !== request
+            || !this.modal.isRequestCurrent(request)
+        ) return;
+        if (!this.modal.open('Village Chronicle', '', { wide: true, request })) return;
         const content = this.modal.contentEl;
-        if (content) replaceChildren(content, this._render(events, summary));
+        if (content) {
+            replaceChildren(content, this._render(events, summary, {
+                newestFirst: true,
+                totalCount,
+            }));
+        }
+    }
+
+    destroy() {
+        if (this._destroyed) return;
+        this._destroyed = true;
+        this.modal?.invalidateRequest?.(this._request);
+        this._request = null;
+        this.modal = null;
+        this.log = null;
+        this.spendLedger = null;
+        this.usageGetter = null;
     }
 
     // The day's accounting lives here rather than in the topbar: a dollar
@@ -116,7 +154,7 @@ export class ChroniclePanel {
         return nodes;
     }
 
-    _render(events, summary) {
+    _render(events, summary, { newestFirst = false, totalCount = events.length } = {}) {
         const nodes = [el('p', { className: 'chronicle__opening' }, openingLine(summary))];
 
         nodes.push(el('div', { className: 'chronicle__ledger' }, [
@@ -143,7 +181,7 @@ export class ChroniclePanel {
 
         // Newest first: the recap answers "what did I miss" before "how did the
         // day start".
-        const ordered = [...events].reverse();
+        const ordered = newestFirst ? events : [...events].reverse();
         nodes.push(el('ul', { className: 'chronicle__timeline' }, ordered.map(event => (
             el('li', { className: `chronicle__entry chronicle__entry--${event.kind}` }, [
                 el('span', { className: 'chronicle__time' }, clockTime(event.ts)),
@@ -151,6 +189,11 @@ export class ChroniclePanel {
                 el('span', { className: 'chronicle__text' }, eventText(event)),
             ])
         ))));
+        const omitted = Math.max(0, totalCount - ordered.length);
+        if (omitted > 0) {
+            nodes.push(el('p', { className: 'chronicle__note' },
+                `Showing the newest ${ordered.length} of ${totalCount} events.`));
+        }
 
         return nodes;
     }

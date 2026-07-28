@@ -409,6 +409,8 @@ export class TopBar {
 
     async _openChangelog() {
         if (!this.modal || this._destroyed) return;
+        const request = this.modal.beginRequest();
+        if (request === null) return;
         if (!this._changelogHtml) {
             this._changelogController?.abort?.();
             const controller = new AbortController();
@@ -424,8 +426,8 @@ export class TopBar {
                 if (this._changelogController === controller) this._changelogController = null;
             }
         }
-        if (this._destroyed) return;
-        this.modal.open('Changelog', this._changelogHtml, { wide: true });
+        if (this._destroyed || !this.modal.isRequestCurrent(request)) return;
+        this.modal.open('Changelog', this._changelogHtml, { wide: true, request });
     }
 
     _changelogToHtml(md) {
@@ -533,6 +535,8 @@ export class TopBar {
         if (this._onChronicleClick && this.els.chronicleBtn) {
             this.els.chronicleBtn.removeEventListener('click', this._onChronicleClick);
         }
+        this.chronicle?.destroy?.();
+        this.chronicle = null;
         document.body?.classList.remove('cv-offline', 'cv-reconnect-sweep');
         this._destroyPromise = Promise.resolve(this.audio?.destroy?.());
         this.audio = null;

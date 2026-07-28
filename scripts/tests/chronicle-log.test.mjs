@@ -58,6 +58,30 @@ test('an empty day rolls up to zeroes, not NaN', () => {
     assert.deepEqual(summary.agents, []);
 });
 
+test('a large day is folded exactly while the newest timeline stays bounded', async () => {
+    const rows = Array.from({ length: 10_000 }, (_, index) => ({
+        id: `event-${index}`,
+        ts: index + 1,
+        kind: ChronicleEventKind.COMPLETED,
+        agentName: `agent-${index % 25}`,
+    }));
+    const store = {
+        async reduceRange(_name, options, reducer, initialValue) {
+            let result = initialValue;
+            const ordered = options.direction === 'prev' ? [...rows].reverse() : rows;
+            for (const row of ordered) result = reducer(result, row);
+            return result;
+        },
+    };
+    const page = await new ChronicleLog({ store }).readDayPage(new Date(), { limit: 100 });
+    assert.equal(page.summary.completed, 10_000);
+    assert.equal(page.summary.totalEvents, 10_000);
+    assert.equal(page.totalCount, 10_000);
+    assert.equal(page.events.length, 100);
+    assert.equal(page.events[0].id, 'event-9999');
+    assert.equal(page.events.at(-1).id, 'event-9900');
+});
+
 // ─── Day-book noise control ──────────────────────────────────────────────
 //
 // The first cut of the Chronicle filled with "arrived" every time the tab was

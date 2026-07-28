@@ -181,7 +181,7 @@ export class ChronicleLog {
     async _runReplay() {
         if (!this.store) return;
         try {
-            for (const event of await this.readDay()) {
+            await this._foldDay(null, (_unused, event) => {
                 if (event.kind === ChronicleEventKind.ARRIVED && event.agentId) {
                     this._presentIds.add(event.agentId);
                 } else if (event.kind === ChronicleEventKind.DEPARTED && event.agentId) {
@@ -191,7 +191,8 @@ export class ChronicleLog {
                     const replayKey = subjectKey(event.label);
                     if (replayKey) this._seenGitEvents.add(`${event.kind}:${replayKey}`);
                 }
-            }
+                return null;
+            });
         } catch { /* an unreadable book just starts empty */ }
     }
 
@@ -300,19 +301,73 @@ export class ChronicleLog {
     /** Events for a local day, oldest first. */
     async readDay(date = new Date()) {
         if (!this.store) return [];
-        const start = new Date(date);
-        start.setHours(0, 0, 0, 0);
-        const end = new Date(start);
-        end.setDate(end.getDate() + 1);
+        const { lower, upper } = dayBounds(date);
         try {
             return await this.store.queryRange('events', {
                 index: 'ts',
-                lower: start.getTime(),
-                upper: end.getTime(),
+                lower,
+                upper,
             });
         } catch {
             return [];
         }
+    }
+
+    /**
+     * Exact summary plus a bounded newest-first timeline. IndexedDB records are
+     * folded directly so opening the modal never retains a second full-day
+     * array.
+     */
+    async readDayPage(date = new Date(), { limit = 100 } = {}) {
+        if (!this.store) {
+            return { events: [], summary: summarizeDay([]), totalCount: 0 };
+        }
+        const pageLimit = Math.max(1, Math.min(500, Math.floor(Number(limit) || 100)));
+        const state = {
+            summary: createDaySummary(),
+            events: [],
+        };
+        try {
+            if (typeof this.store.reduceRange === 'function') {
+                const folded = await this._foldDay(state, (result, event) => {
+                    accumulateDaySummary(result.summary, event);
+                    if (result.events.length < pageLimit) result.events.push(event);
+                    return result;
+                }, date, 'prev');
+                const summary = finalizeDaySummary(folded.summary);
+                return {
+                    events: folded.events,
+                    summary,
+                    totalCount: summary.totalEvents,
+                };
+            }
+            const all = await this.readDay(date);
+            return {
+                events: all.slice(-pageLimit).reverse(),
+                summary: summarizeDay(all),
+                totalCount: all.length,
+            };
+        } catch {
+            return { events: [], summary: summarizeDay([]), totalCount: 0 };
+        }
+    }
+
+    async _foldDay(initialValue, reducer, date = new Date(), direction = 'next') {
+        if (!this.store) return initialValue;
+        if (typeof this.store.reduceRange !== 'function') {
+            let result = initialValue;
+            const events = await this.readDay(date);
+            const ordered = direction === 'prev' ? events.reverse() : events;
+            for (const event of ordered) result = reducer(result, event);
+            return result;
+        }
+        const { lower, upper } = dayBounds(date);
+        return this.store.reduceRange('events', {
+            index: 'ts',
+            lower,
+            upper,
+            direction,
+        }, reducer, initialValue);
     }
 
     /** Wait for the replay and any queued writes. */
@@ -326,10 +381,19 @@ export class ChronicleLog {
  * Roll a day's events into the numbers a recap needs. Pure, so it can be
  * tested without IndexedDB.
  */
-export function summarizeDay(events = []) {
-    const summary = {
+function dayBounds(date) {
+    const start = new Date(date);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 1);
+    return { lower: start.getTime(), upper: end.getTime() - 1 };
+}
+
+function createDaySummary() {
+    return {
         agents: new Set(),
         projects: new Set(),
+        totalEvents: 0,
         commits: 0,
         pushes: 0,
         completed: 0,
@@ -341,28 +405,40 @@ export function summarizeDay(events = []) {
         firstTs: null,
         lastTs: null,
     };
-    for (const event of events) {
-        if (event.agentName) summary.agents.add(event.agentName);
-        if (event.project) summary.projects.add(event.project);
-        if (summary.firstTs === null || event.ts < summary.firstTs) summary.firstTs = event.ts;
-        if (summary.lastTs === null || event.ts > summary.lastTs) summary.lastTs = event.ts;
-        switch (event.kind) {
-            case ChronicleEventKind.COMMIT: summary.commits++; break;
-            case ChronicleEventKind.PUSH: summary.pushes++; break;
-            case ChronicleEventKind.COMPLETED: summary.completed++; break;
-            case ChronicleEventKind.ERRORED: summary.errors++; break;
-            case ChronicleEventKind.RATE_LIMITED: summary.rateLimits++; break;
-            case ChronicleEventKind.WAITING: summary.waits++; break;
-            case ChronicleEventKind.RESOLVED:
-                summary.totalWaitMs += event.waitedMs || 0;
-                summary.longestWaitMs = Math.max(summary.longestWaitMs, event.waitedMs || 0);
-                break;
-            default: break;
-        }
+}
+
+function accumulateDaySummary(summary, event) {
+    summary.totalEvents++;
+    if (event.agentName) summary.agents.add(event.agentName);
+    if (event.project) summary.projects.add(event.project);
+    if (summary.firstTs === null || event.ts < summary.firstTs) summary.firstTs = event.ts;
+    if (summary.lastTs === null || event.ts > summary.lastTs) summary.lastTs = event.ts;
+    switch (event.kind) {
+        case ChronicleEventKind.COMMIT: summary.commits++; break;
+        case ChronicleEventKind.PUSH: summary.pushes++; break;
+        case ChronicleEventKind.COMPLETED: summary.completed++; break;
+        case ChronicleEventKind.ERRORED: summary.errors++; break;
+        case ChronicleEventKind.RATE_LIMITED: summary.rateLimits++; break;
+        case ChronicleEventKind.WAITING: summary.waits++; break;
+        case ChronicleEventKind.RESOLVED:
+            summary.totalWaitMs += event.waitedMs || 0;
+            summary.longestWaitMs = Math.max(summary.longestWaitMs, event.waitedMs || 0);
+            break;
+        default: break;
     }
+    return summary;
+}
+
+function finalizeDaySummary(summary) {
     return {
         ...summary,
         agents: [...summary.agents],
         projects: [...summary.projects],
     };
+}
+
+export function summarizeDay(events = []) {
+    const summary = createDaySummary();
+    for (const event of events) accumulateDaySummary(summary, event);
+    return finalizeDaySummary(summary);
 }
