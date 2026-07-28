@@ -9,7 +9,7 @@ const browser = await chromium.launch();
 const page = await (await browser.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 })).newPage();
 await page.goto('http://localhost:4000/?sim=1&scenario=dense-24-agents', { waitUntil: 'networkidle' });
 await page.waitForTimeout(1200);
-await page.click('text=CINEMA ON').catch(() => {});
+await page.click('#topbarCinemaToggle').catch(() => {});
 await page.waitForTimeout(9000);
 async function sky(hour) {
   await page.evaluate((h) => {

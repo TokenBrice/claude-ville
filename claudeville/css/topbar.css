@@ -576,6 +576,43 @@ button.topbar__badge--attention:active {
     border-color: rgba(255, 229, 141, 0.75);
 }
 
+/* Compact utility row: inactive toggles recede to a warm gray; engaged
+   controls pick up the same quiet torchlight as the existing text toggles. */
+.topbar__icon-btn {
+    display: inline-grid;
+    place-items: center;
+    width: 28px;
+    height: 28px;
+    padding: 0;
+    color: rgba(145, 137, 125, 0.62);
+    line-height: 1;
+}
+
+.topbar__icon-btn svg {
+    display: block;
+    width: 16px;
+    height: 16px;
+    shape-rendering: crispEdges;
+}
+
+.topbar__icon-btn--action {
+    color: rgba(215, 185, 121, 0.84);
+}
+
+.topbar__icon-btn:hover:not(:disabled) {
+    color: var(--cv-gold-soft);
+}
+
+.topbar__icon-btn.topbar__sound-btn--on,
+.topbar__icon-btn.topbar__cinema-btn--on {
+    color: var(--cv-gold-bright);
+}
+
+.topbar__icon-btn.topbar__sound-btn--on svg,
+.topbar__icon-btn.topbar__cinema-btn--on svg {
+    filter: drop-shadow(0 0 2px rgba(255, 229, 141, 0.62));
+}
+
 /* ── Mode buttons (primary) ── */
 .topbar__mode-btn {
     font-family: var(--font-display);

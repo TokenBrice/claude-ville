@@ -21,7 +21,7 @@ page.on('pageerror', (e) => errors.push(e.message));
 await page.goto('http://localhost:4000/?sim=1&scenario=dense-24-agents', { waitUntil: 'networkidle' });
 // Kill the auto-camera so framing sticks.
 await page.waitForTimeout(1200);
-await page.click('text=CINEMA ON').catch(() => {});
+await page.click('#topbarCinemaToggle').catch(() => {});
 await page.waitForTimeout(3500);
 
 async function sky(hour) {

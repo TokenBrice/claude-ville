@@ -67,10 +67,27 @@
             </div>
         </div>
         <div class="topbar__right">
-            <button id="topbarCinemaToggle" class="topbar__cinema-btn" type="button" aria-pressed="true" title="Auto-camera on: frames live action when idle">CINEMA ON</button>
-            <button id="topbarChronicle" class="topbar__sound-btn" type="button" title="Village Chronicle — what happened today">LOG</button>
-            <button id="topbarAlertsToggle" class="topbar__sound-btn" type="button" aria-pressed="false" title="Desktop notifications when an agent needs you">ALERTS</button>
-            <button id="topbarSoundToggle" class="topbar__sound-btn" type="button" aria-pressed="false" title="Enable sound">SOUND OFF</button>
+            <button id="topbarChronicle" class="topbar__sound-btn topbar__icon-btn topbar__icon-btn--action" type="button" aria-label="Open Village Chronicle" aria-haspopup="dialog" title="Village Chronicle — what happened today">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" fill-rule="evenodd" d="M3 1h10v1h1v4h-3V4H5v8h6v-1h3v3h-1v1H3v-1H2v-4h2V6H2V2h1V1Zm2 5h5v1H5V6Zm0 3h4v1H5V9Z"/>
+                </svg>
+            </button>
+            <button id="topbarAlertsToggle" class="topbar__sound-btn topbar__icon-btn" type="button" aria-label="Desktop alerts" aria-pressed="false" title="Enable desktop notifications">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M3 1h10v2h-2v1h1v1h1v5h2v2H1v-2h2V5h1V4h1V3H3V1Zm3 12h4v2H6v-2Z"/>
+                </svg>
+            </button>
+            <button id="topbarSoundToggle" class="topbar__sound-btn topbar__icon-btn" type="button" aria-label="Sound" aria-pressed="false" title="Enable sound">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M5 2h9v9h-1v2h-2v1H9v-1H8v-2h1v-1h3V5H7v7H6v2H4v1H2v-1H1v-2h1v-1h3V2Zm2 1v1h5V3H7Z"/>
+                </svg>
+            </button>
+            <button id="topbarCinemaToggle" class="topbar__cinema-btn topbar__icon-btn" type="button" aria-label="Automatic camera" aria-pressed="true" title="Auto-camera on: frames live action when idle">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" fill-rule="evenodd" d="M6 2h4v1h2v1h1v1h2v2h1v2h-1v2h-2v1h-1v1h-2v1H6v-1H4v-1H3v-1H1V9H0V7h1V6h2V5h1V4h2V2Zm0 4v6h4V6H6Z"/>
+                    <path fill="currentColor" d="M7 7h2v4H7V7Z"/>
+                </svg>
+            </button>
             <button id="topbarSoundMode" class="topbar__sound-btn" type="button" aria-pressed="false" title="Reactive ambience mode — click for continuous town music" hidden>AMBIENT</button>
             <input id="topbarSoundVolume" class="topbar__sound-vol" type="range" min="0" max="100" value="50" title="Ambience volume" aria-label="Ambience volume" hidden>
             <button id="btnModeCharacter" data-i18n="world" class="topbar__mode-btn topbar__mode-btn--active">WORLD</button>

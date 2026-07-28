@@ -235,9 +235,6 @@ export class AmbientAudioController {
     _renderControls() {
         if (this.button) {
             this.button.disabled = !this.available;
-            this.button.textContent = this.available
-                ? (this.enabled ? 'SOUND ON' : 'SOUND OFF')
-                : 'SOUND N/A';
             this.button.title = this.available
                 ? (this.enabled ? 'Disable sound' : 'Enable sound')
                 : 'Sound unavailable';

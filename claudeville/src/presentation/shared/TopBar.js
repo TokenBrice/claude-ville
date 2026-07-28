@@ -108,7 +108,6 @@ export class TopBar {
         const apply = (on) => {
             btn.classList.toggle('topbar__cinema-btn--on', on);
             btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-            btn.textContent = on ? 'CINEMA ON' : 'CINEMA OFF';
             btn.title = on ? 'Auto-camera on: frames live action when idle' : 'Auto-camera off';
         };
         apply(read());
@@ -142,7 +141,9 @@ export class TopBar {
                 const apply = (on) => {
                     btn.classList.toggle('topbar__sound-btn--on', on);
                     btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-                    btn.textContent = on ? 'ALERTS ON' : 'ALERTS OFF';
+                    btn.title = on
+                        ? 'Disable desktop notifications'
+                        : 'Enable desktop notifications';
                 };
                 apply(this.attention.desktopAlerts);
                 this._onAlertsClick = async () => {
