@@ -2,6 +2,33 @@
 
 ---
 
+## v0.30.0 — *The Quartermaster* · Jul 28, 2026
+
+ClaudeVille now keeps substantially more headroom during long watches. Session readers reuse bounded work, World releases its heavyweight resources while Dashboard is active, and the keep's controls communicate their state in one compact glance.
+
+**The village carries less**
+- **Dashboard truly puts World to sleep.** Switching modes releases the World canvas, decoded sprites, hit masks, outlines, composited agent sheets, and volatile caches, then restores them before animation resumes.
+- **Trails remember the journey, not every footfall.** Paths now follow visible sprite movement, suppress stationary duplicates, compact older samples, and enforce bounded hydration and rendering.
+
+**Session watching stays warm**
+- **Provider readers reuse bounded work.** Claude transcript tails are projected once, while Gemini, Grok, Kimi, and OpenCode use capped caches and active-first or resumable discovery paths instead of repeatedly sweeping full histories.
+- **Git stays quiet until something changes.** Ref-aware signatures, longer-lived caches, scoped invalidation, and coalesced watcher events make unchanged warm refreshes zero-command while retaining nested-ref detection.
+
+**Long-running state has firm edges**
+- **History cannot grow without limit.** Chronicle reads are paginated, agent signatures stay compact, biography and affinity memories are capped, and superseded WebSocket snapshots are released promptly.
+- **Background work respects ownership.** Desktop notifications close cleanly, delayed modal reads cannot replace newer content, and hidden activity panels stop unnecessary timer work.
+
+**Four controls, one glance**
+- **Log → Alerts → Sound → Cinema.** The topbar's text controls are now a scroll, town bell, minstrel notes, and scrying eye. Inactive toggles recede into warm gray; active controls catch the keep's torchlight.
+
+**Pressure you can verify**
+- **Runtime health is measurable.** Diagnostics now report watcher, parsing, Git, trail, canvas, and asset pressure, backed by stricter watcher checks and warm-up-aware soak gates.
+- **The regression floor is broader.** Oversized transcripts, deep provider indexes, nested Git refs, bounded trails, mode suspension, lifecycle ownership, and quota body limits all have focused coverage.
+
+The release gate covers 100 dependency-free unit tests, 250 World–Dashboard transitions, bounded oversized-transcript and trail fixtures, zero-command unchanged Git refreshes, and a fresh-code 10-minute browser/30-minute server soak with no frame failures, no retained Dashboard World surfaces, browser heap inside its growth gate, and negative server-RSS slopes.
+
+---
+
 ## v0.29.0.2 · Jul 27, 2026 — Hotfix
 
 Agents now stay on the landmark bridge's center deck and complete crowded crossings without being redirected or pushed backward.
