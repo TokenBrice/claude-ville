@@ -14,6 +14,7 @@ const { execFileSync } = require('child_process');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   createDetailResponse,
+  fileSignature,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 
@@ -43,9 +44,38 @@ const OPENCODE_TOOL_INPUT_FIELDS = Object.freeze([
   'prompt',
   'url',
 ]);
+const ACTIVE_SESSION_CANDIDATE_SQL = `
+  SELECT s.id, s.parent_id, s.directory, s.title, s.version, s.agent, s.model, s.cost,
+         s.tokens_input, s.tokens_output, s.tokens_reasoning, s.tokens_cache_read,
+         s.tokens_cache_write, s.time_created, s.time_updated, p.worktree,
+         MAX(s.time_updated, COALESCE((
+           SELECT MAX(recent_part.time_updated)
+           FROM part recent_part
+           WHERE recent_part.session_id = s.id
+             AND recent_part.time_updated >= :cutoff
+         ), 0)) AS latestActivity
+  FROM session s
+  LEFT JOIN project p ON p.id = s.project_id
+  WHERE s.time_archived IS NULL
+    AND s.time_updated >= :cutoff
+  ORDER BY latestActivity DESC
+  LIMIT :limit
+`;
 
 let _sqliteModule = undefined;
 let _sqliteCliAvailable = undefined;
+const _activeSessionsCache = {
+  signature: null,
+  threshold: null,
+  sessions: [],
+  expiresAt: 0,
+  hits: 0,
+  misses: 0,
+};
+
+function databaseSignature() {
+  return `${fileSignature(OPENCODE_DB)}|${fileSignature(`${OPENCODE_DB}-wal`)}`;
+}
 
 function loadNodeSqlite() {
   if (process.env.CLAUDEVILLE_OPENCODE_SQLITE_STRATEGY === 'cli') return null;
@@ -483,24 +513,24 @@ class OpenCodeAdapter {
   getActiveSessions(activeThresholdMs) {
     if (!this.isAvailable()) return [];
 
+    const signature = databaseSignature();
+    if (
+      _activeSessionsCache.signature === signature
+      && _activeSessionsCache.threshold === activeThresholdMs
+      && Date.now() < _activeSessionsCache.expiresAt
+    ) {
+      _activeSessionsCache.hits++;
+      return _activeSessionsCache.sessions;
+    }
+    _activeSessionsCache.misses++;
+
     const cutoff = Date.now() - activeThresholdMs;
-    const candidateRows = queryRows(`
-      SELECT s.id, s.parent_id, s.directory, s.title, s.version, s.agent, s.model, s.cost,
-             s.tokens_input, s.tokens_output, s.tokens_reasoning, s.tokens_cache_read,
-             s.tokens_cache_write, s.time_created, s.time_updated, p.worktree,
-             MAX(s.time_updated, COALESCE(latest_parts.latest_part_time, 0)) AS latestActivity
-      FROM session s
-      LEFT JOIN project p ON p.id = s.project_id
-      LEFT JOIN (
-        SELECT session_id, MAX(time_updated) AS latest_part_time
-        FROM part
-        GROUP BY session_id
-      ) latest_parts ON latest_parts.session_id = s.id
-      WHERE s.time_archived IS NULL
-        AND MAX(s.time_updated, COALESCE(latest_parts.latest_part_time, 0)) >= :cutoff
-      ORDER BY latestActivity DESC
-      LIMIT :limit
-    `, { cutoff, limit: ACTIVE_SESSION_LIMIT });
+    // OpenCode updates session.time_updated with session activity. Use it to
+    // bound candidates before probing each candidate's indexed part rows.
+    const candidateRows = queryRows(ACTIVE_SESSION_CANDIDATE_SQL, {
+      cutoff,
+      limit: ACTIVE_SESSION_LIMIT,
+    });
 
     const rows = candidateRows
       .map(row => ({
@@ -510,7 +540,7 @@ class OpenCodeAdapter {
       .sort((a, b) => b.latestActivity - a.latestActivity);
     const partsBySession = getRecentPartsForSessions(rows.map(row => row.id));
 
-    return rows.map((row) => {
+    const sessions = rows.map((row) => {
       const parts = partsBySession.get(row.id) || [];
       const model = parseModel(row.model);
       const sessionId = `opencode-${row.id}`;
@@ -537,6 +567,13 @@ class OpenCodeAdapter {
         gitEvents: getGitEvents(parts, { provider: 'opencode', sessionId, project }),
       };
     });
+    _activeSessionsCache.signature = signature;
+    _activeSessionsCache.threshold = activeThresholdMs;
+    _activeSessionsCache.sessions = sessions;
+    _activeSessionsCache.expiresAt = sessions.length
+      ? Math.min(...sessions.map(session => session.lastActivity + activeThresholdMs))
+      : Infinity;
+    return sessions;
   }
 
   getSessionDetail(sessionId, project) {
@@ -596,8 +633,24 @@ class OpenCodeAdapter {
   }
 
   invalidateCaches() {
-    // No long-lived adapter-local data caches.
+    _activeSessionsCache.signature = null;
+    _activeSessionsCache.threshold = null;
+    _activeSessionsCache.sessions = [];
+    _activeSessionsCache.expiresAt = 0;
+  }
+
+  getPerfStats() {
+    return {
+      activeSessionCacheHits: _activeSessionsCache.hits,
+      activeSessionCacheMisses: _activeSessionsCache.misses,
+      activeSessionCacheEntries: _activeSessionsCache.sessions.length,
+    };
   }
 }
 
-module.exports = { OpenCodeAdapter };
+module.exports = {
+  OpenCodeAdapter,
+  _test: {
+    ACTIVE_SESSION_CANDIDATE_SQL,
+  },
+};

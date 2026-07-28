@@ -68,6 +68,12 @@ const require = createRequire(import.meta.url);
 const { adapters, getAllWatchPaths } = require('../../claudeville/adapters');
 const { shutdownRuntime, _watcherTest } = require('../../claudeville/server');
 
+function hasWatchResourceExhaustion(snapshot) {
+  return (snapshot?.recentFailures || []).some((failure) => (
+    /\b(?:EMFILE|ENFILE|ENOSPC)\b/.test(String(failure?.message || ''))
+  ));
+}
+
 try {
   const sessions = [];
   for (const adapter of adapters) {
@@ -148,17 +154,38 @@ try {
   assert.match(_watcherTest.cacheControlFor(new URL('http://localhost/a?v=1'), fontPath), /immutable/);
 
   _watcherTest.refreshWatchPaths(descriptors);
-  assert.equal(_watcherTest.watcherTopologySnapshot().dynamicInstalled, 0);
+  const beforeFirstClient = _watcherTest.watcherTopologySnapshot();
+  const degradedWatchers = beforeFirstClient.stableInstalled === 0;
+  assert.equal(beforeFirstClient.dynamicInstalled, 0);
+  if (degradedWatchers) {
+    assert.ok(hasWatchResourceExhaustion(beforeFirstClient));
+    assert.ok(beforeFirstClient.fallbacks > 0);
+  }
   _watcherTest.onFirstWebSocketClient();
-  assert.ok(_watcherTest.watcherTopologySnapshot().dynamicInstalled > 0);
+  const afterFirstClient = _watcherTest.watcherTopologySnapshot();
+  assert.equal(afterFirstClient.dynamicEnabled, true);
+  if (degradedWatchers) {
+    assert.ok(hasWatchResourceExhaustion(afterFirstClient));
+    assert.ok(afterFirstClient.probes > 0);
+  } else {
+    assert.ok(afterFirstClient.dynamicInstalled > 0);
+  }
   _watcherTest.onLastWebSocketClient();
   await new Promise((resolve) => setTimeout(resolve, 100));
   const retired = _watcherTest.watcherTopologySnapshot();
   assert.equal(retired.dynamicEnabled, false);
   assert.equal(retired.dynamicInstalled, 0);
-  assert.ok(retired.stableInstalled > 0);
+  if (degradedWatchers) {
+    assert.ok(hasWatchResourceExhaustion(retired));
+    assert.ok(retired.fallbacks > 0);
+  } else {
+    assert.ok(retired.stableInstalled > 0);
+  }
 
-  console.log(`watcher topology smoke passed (${descriptors.length} raw descriptors, ${sessions.length} fixture sessions)`);
+  console.log(
+    `watcher topology smoke passed${degradedWatchers ? ' (degraded: inotify resources exhausted)' : ''} `
+    + `(${descriptors.length} raw descriptors, ${sessions.length} fixture sessions)`,
+  );
 } finally {
   shutdownRuntime({ reason: 'watcher topology smoke', exitProcess: false });
   process.env.HOME = previousHome;

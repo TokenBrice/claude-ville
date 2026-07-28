@@ -62,6 +62,18 @@ try {
     afterFirstUnpushed.gitCommandCount,
     'unchanged unpushed enrichment should reuse its project cache',
   );
+  const realDateNow = Date.now;
+  Date.now = () => realDateNow() + 60_000;
+  try {
+    gitEvents.inferUnpushedGitEventsForSessions([session]);
+  } finally {
+    Date.now = realDateNow;
+  }
+  assert.equal(
+    gitEvents.getGitEnrichmentPerfStats().gitCommandCount,
+    afterFirstUnpushed.gitCommandCount,
+    'an unchanged 60-second window must not launch a periodic Git subprocess burst',
+  );
   assert.equal(afterSecondUnpushed.statusCacheSize, 2, 'unpushed events need a distinct cache key space');
   assert.equal(afterSecondUnpushed.unpushedEventCacheSize, 1, 'fixture should retain one bounded unpushed entry');
 
@@ -207,6 +219,66 @@ try {
     grok.invalidateCaches = originalGrokFull;
   }
 
+  const remoteProject = makeRepository('nested-remote-ref');
+  execFileSync('git', ['config', 'user.email', 'fixture@claudeville.local'], { cwd: remoteProject });
+  execFileSync('git', ['config', 'user.name', 'ClaudeVille Fixture'], { cwd: remoteProject });
+  fs.writeFileSync(path.join(remoteProject, 'remote.txt'), 'base\n');
+  execFileSync('git', ['add', 'remote.txt'], { cwd: remoteProject });
+  execFileSync('git', ['commit', '-q', '-m', 'remote base'], { cwd: remoteProject });
+  const remoteBase = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remoteProject, encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(remoteProject, 'remote.txt'), 'second\n');
+  execFileSync('git', ['add', 'remote.txt'], { cwd: remoteProject });
+  execFileSync('git', ['commit', '-q', '-m', 'remote second'], { cwd: remoteProject });
+  const remoteHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: remoteProject, encoding: 'utf8' }).trim();
+  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', remoteBase], { cwd: remoteProject });
+  const remoteSession = {
+    sessionId: 'nested-remote-ref-session',
+    provider: 'fixture',
+    project: remoteProject,
+    gitEvents: [],
+  };
+  const beforeRemoteAdvance = gitEvents.inferUnpushedGitEventsForSessions([remoteSession]);
+  assert.ok(
+    beforeRemoteAdvance[0].gitEvents.some(event => event.label === 'remote second'),
+    'fixture must begin with one commit ahead of the nested remote ref',
+  );
+  const beforeRemoteStats = gitEvents.getGitEnrichmentPerfStats();
+  execFileSync('git', ['update-ref', 'refs/remotes/origin/main', remoteHead], { cwd: remoteProject });
+  const afterRemoteAdvance = gitEvents.inferUnpushedGitEventsForSessions([remoteSession]);
+  const afterRemoteStats = gitEvents.getGitEnrichmentPerfStats();
+  assert.equal(
+    afterRemoteStats.headInvalidations,
+    beforeRemoteStats.headInvalidations + 1,
+    'a nested loose remote-ref update must invalidate Git enrichment without watcher help',
+  );
+  assert.ok(afterRemoteStats.gitCommandCount > beforeRemoteStats.gitCommandCount);
+  assert.equal(
+    afterRemoteAdvance[0].gitEvents.some(event => event.type === 'commit' && event.label === 'remote second'),
+    false,
+    'the refreshed enrichment must not retain a commit now contained by the remote ref',
+  );
+  const bulkRemoteDir = path.join(remoteProject, '.git', 'refs', 'remotes', 'bulk');
+  fs.mkdirSync(bulkRemoteDir, { recursive: true });
+  for (let index = 0; index < 900; index++) {
+    fs.writeFileSync(
+      path.join(bulkRemoteDir, `ref-${String(index).padStart(4, '0')}`),
+      `${remoteHead}\n`,
+    );
+  }
+  const beforeBoundedRemoteStats = gitEvents.getGitEnrichmentPerfStats();
+  gitEvents.inferUnpushedGitEventsForSessions([remoteSession]);
+  const afterBoundedRemoteStats = gitEvents.getGitEnrichmentPerfStats();
+  assert.ok(
+    afterBoundedRemoteStats.remoteRefScanTruncations
+      > beforeBoundedRemoteStats.remoteRefScanTruncations,
+    'large loose remote-ref trees must stop at the traversal budget',
+  );
+  assert.ok(
+    afterBoundedRemoteStats.remoteRefScanHighWater
+      <= afterBoundedRemoteStats.remoteRefScanEntryLimit,
+    'loose remote-ref traversal exceeded its entry budget',
+  );
+
   const { shutdownRuntime, _watcherTest } = require('../../claudeville/server.js');
   const watchRoot = path.join(tmpHome, 'watch-root');
   fs.mkdirSync(watchRoot);
@@ -237,7 +309,7 @@ try {
   });
   shutdownRuntime({ reason: 'scoped invalidation smoke', exitProcess: false });
 
-  console.log('scoped invalidation smoke passed (provider append, project Git scope, watcher metadata)');
+  console.log('scoped invalidation smoke passed (provider append, project Git scope, nested remote refs, watcher metadata)');
 } finally {
   process.env.HOME = previousHome;
   if (previousDisableGit === undefined) delete process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT;

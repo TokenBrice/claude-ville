@@ -23,6 +23,7 @@ const CREDENTIALS_TTL = 30_000;   // 30 seconds
 const STATS_TTL = 30_000;         // 30 seconds
 const QUOTA_API_TTL = 5 * 60_000; // 5 minutes
 const QUOTA_MAX_STALE_MS = 30 * 60_000; // stop trusting a frozen snapshot after 30 minutes of failures
+const QUOTA_RESPONSE_MAX_BYTES = 256 * 1024;
 const HISTORY_TAIL_CHUNK_BYTES = 64 * 1024;
 const HISTORY_MAX_LINE_BYTES = 4 * 1024 * 1024;
 
@@ -249,6 +250,35 @@ function quotaRatio(window) {
   return Math.min(1, Math.max(0, utilization / 100));
 }
 
+function consumeQuotaResponse(res, onJson, { maxBytes = QUOTA_RESPONSE_MAX_BYTES } = {}) {
+  if (res.statusCode !== 200) {
+    // Error pages are not useful quota data; drain without retaining them.
+    res.resume();
+    return;
+  }
+
+  let body = '';
+  let bodyBytes = 0;
+  let overflowed = false;
+  res.on('data', chunk => {
+    if (overflowed) return;
+    bodyBytes += Buffer.byteLength(chunk);
+    if (bodyBytes > maxBytes) {
+      overflowed = true;
+      body = '';
+      res.destroy();
+      return;
+    }
+    body += chunk;
+  });
+  res.on('end', () => {
+    if (overflowed) return;
+    try {
+      onJson(JSON.parse(body));
+    } catch { /* parse failed; retry on the next cycle */ }
+  });
+}
+
 function tryFetchQuota() {
   const now = Date.now();
   if (now - cache.quota.ts < QUOTA_API_TTL) return;
@@ -272,25 +302,16 @@ function tryFetchQuota() {
   };
 
   const req = https.request(options, (res) => {
-    let body = '';
-    res.on('data', chunk => { body += chunk; });
-    res.on('end', () => {
-      if (res.statusCode === 200) {
-        try {
-          // Response shape: { five_hour: { utilization, resets_at },
-          //                   seven_day: { utilization, resets_at }, ... }
-          const data = JSON.parse(body);
-          const fiveHour = quotaRatio(data.five_hour);
-          const sevenDay = quotaRatio(data.seven_day);
-          if (fiveHour === null && sevenDay === null) return;
-          cache.quota.data = { fiveHour, sevenDay };
-          cache.quota.lastSuccessTs = Date.now();
-          if (!cache.quota.available) console.log('[Usage] Quota API available');
-          cache.quota.available = true;
-        } catch { /* parse failed; retry on the next cycle */ }
-      }
-      // On non-200 (expired token, upstream outage) keep the last good
-      // snapshot, if any, and retry after QUOTA_API_TTL.
+    consumeQuotaResponse(res, data => {
+      // Response shape: { five_hour: { utilization, resets_at },
+      //                   seven_day: { utilization, resets_at }, ... }
+      const fiveHour = quotaRatio(data.five_hour);
+      const sevenDay = quotaRatio(data.seven_day);
+      if (fiveHour === null && sevenDay === null) return;
+      cache.quota.data = { fiveHour, sevenDay };
+      cache.quota.lastSuccessTs = Date.now();
+      if (!cache.quota.available) console.log('[Usage] Quota API available');
+      cache.quota.available = true;
     });
   });
 
@@ -346,4 +367,11 @@ function init() {
   tryFetchQuota();
 }
 
-module.exports = { fetchUsage, init };
+module.exports = {
+  fetchUsage,
+  init,
+  _test: {
+    consumeQuotaResponse,
+    QUOTA_RESPONSE_MAX_BYTES,
+  },
+};

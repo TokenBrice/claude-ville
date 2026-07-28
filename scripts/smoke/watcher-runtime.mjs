@@ -60,6 +60,12 @@ async function poll(check, { timeoutMs = 10_000, intervalMs = 100 } = {}) {
   throw lastError || new Error(`condition not met within ${timeoutMs}ms`);
 }
 
+function hasWatchResourceExhaustion(perf) {
+  return (perf?.recentWatchFailures || []).some((failure) => (
+    /\b(?:EMFILE|ENFILE|ENOSPC)\b/.test(String(failure?.message || ''))
+  ));
+}
+
 function connectWebSocket() {
   return new Promise((resolve, reject) => {
     const client = net.createConnection({ host: '127.0.0.1', port: runtimePort });
@@ -184,18 +190,50 @@ try {
 
   const initial = await poll(async () => {
     const perf = await requestJson('/api/perf');
-    return perf.watchers?.stableInstalled > 0 ? perf : null;
+    const ready = perf.watchers?.configured > 0
+      && (perf.watchers.stableInstalled > 0 || hasWatchResourceExhaustion(perf));
+    return ready ? perf : null;
   });
+  const degradedWatchers = initial.watchers.stableInstalled === 0;
+  if (degradedWatchers) {
+    assert.ok(hasWatchResourceExhaustion(initial), 'watcher installation failed without a resource-exhaustion diagnostic');
+    assert.ok(initial.recursiveWatchFallbacks > 0, 'watcher resource exhaustion did not install stat fallbacks');
+    assert.ok(initial.watchers.probePaths > 0, 'watcher resource exhaustion did not retain active probes');
+  }
   assert.equal(initial.watchers.dynamicEnabled, false);
   assert.equal(initial.watchers.dynamicInstalled, 0);
+  const footprintScript = path.join(repoRoot, 'scripts', 'smoke', 'watcher-footprint.mjs');
+  const footprintUrl = `http://127.0.0.1:${runtimePort}/api/perf`;
+  execFileSync(process.execPath, [footprintScript, '--url', footprintUrl, '--max', '1000'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (initial.watchers.linux?.watchEntries > 0) {
+    assert.throws(
+      () => execFileSync(process.execPath, [footprintScript, '--url', footprintUrl, '--max', '0'], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+      }),
+      'a deliberately low watcher bound must fail against the fresh server process',
+    );
+  }
 
   socket = await connectWebSocket();
   const connected = await poll(async () => {
     const perf = await requestJson('/api/perf');
-    return perf.watchers?.dynamicInstalled > 0 ? perf : null;
+    return perf.watchers?.dynamicEnabled && perf.watchers.dynamicRequested > 0 ? perf : null;
   });
   assert.equal(connected.watchers.dynamicEnabled, true);
   assert.ok(connected.watchers.canonical <= connected.watchers.configured);
+  if (degradedWatchers) {
+    assert.ok(
+      connected.watchers.dynamicInstalled > 0 || hasWatchResourceExhaustion(connected),
+      'dynamic watchers were unavailable without a resource-exhaustion diagnostic',
+    );
+    assert.ok(connected.watchers.probePaths > 0, 'degraded dynamic watchers did not retain probes');
+  } else {
+    assert.ok(connected.watchers.dynamicInstalled > 0);
+  }
 
   writeJsonLine(largeTranscript, {
     message: { role: 'assistant', usage: { input_tokens: 13, output_tokens: 17 }, content: [] },
@@ -284,7 +322,12 @@ try {
     return perf.watchers.dynamicEnabled === false ? perf : null;
   }, { timeoutMs: 5000, intervalMs: 100 });
   assert.equal(retired.watchers.dynamicInstalled, 0);
-  assert.ok(retired.watchers.stableInstalled > 0);
+  if (degradedWatchers) {
+    assert.ok(hasWatchResourceExhaustion(retired));
+    assert.ok(retired.recursiveWatchFallbacks > 0);
+  } else {
+    assert.ok(retired.watchers.stableInstalled > 0);
+  }
   if (retired.watchers.linux?.watchEntries != null) {
     assert.ok(retired.watchers.linux.watchEntries < 1000);
   }
@@ -294,7 +337,9 @@ try {
   assert.equal(exitCode, 0, `server exited with ${exitCode}\n${childOutput}`);
   child = null;
   console.log(
-    `watcher runtime smoke passed (detail ${detailDurationMs.toFixed(1)}ms, health ${healthDurationMs.toFixed(1)}ms, append git commands ${appendGitCommands}, session-stage max ${sessionStageMaxMs}ms)`,
+    `watcher runtime smoke passed${degradedWatchers ? ' (degraded: inotify resources exhausted)' : ''} `
+    + `(detail ${detailDurationMs.toFixed(1)}ms, health ${healthDurationMs.toFixed(1)}ms, `
+    + `append git commands ${appendGitCommands}, session-stage max ${sessionStageMaxMs}ms)`,
   );
 } catch (err) {
   if (childOutput) process.stderr.write(childOutput);

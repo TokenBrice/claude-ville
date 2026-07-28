@@ -31,11 +31,32 @@ const {
 const GEMINI_DIR = path.join(os.homedir(), '.gemini');
 const TMP_DIR = path.join(GEMINI_DIR, 'tmp');
 const SESSION_CACHE_MAX = 256;
+const SESSION_CACHE_MAX_BYTES = 32 * 1024 * 1024;
 const HASH_TO_PATH_CACHE_MAX = 512;
 const GEMINI_TOOL_INPUT_FIELDS = Object.freeze(['command', 'file_path']);
 
 const _parsedSessionCache = new Map();
 const _sessionFileById = new Map();
+let _parsedSessionCacheBytes = 0;
+let _parsedSessionCacheRejected = 0;
+
+function deleteParsedSessionCache(filePath) {
+  const cached = _parsedSessionCache.get(filePath);
+  if (!cached) return;
+  _parsedSessionCache.delete(filePath);
+  _parsedSessionCacheBytes = Math.max(0, _parsedSessionCacheBytes - cached.estimatedBytes);
+}
+
+function trimParsedSessionCache() {
+  while (
+    _parsedSessionCache.size > SESSION_CACHE_MAX
+    || _parsedSessionCacheBytes > SESSION_CACHE_MAX_BYTES
+  ) {
+    const oldest = _parsedSessionCache.keys().next().value;
+    if (oldest === undefined) break;
+    deleteParsedSessionCache(oldest);
+  }
+}
 
 // ─── Restore project paths ──────────────────────────────
 
@@ -127,12 +148,23 @@ function getParsedSession(filePath) {
 
     const content = fs.readFileSync(filePath, 'utf-8');
     const session = JSON.parse(content);
-    _parsedSessionCache.set(filePath, { key, session });
-    trimCache(_parsedSessionCache, SESSION_CACHE_MAX);
+    deleteParsedSessionCache(filePath);
+    const estimatedBytes = Math.max(stat.size * 2, content.length * 2);
+    if (estimatedBytes <= SESSION_CACHE_MAX_BYTES) {
+      _parsedSessionCache.set(filePath, { key, session, estimatedBytes });
+      _parsedSessionCacheBytes += estimatedBytes;
+      trimParsedSessionCache();
+    } else {
+      _parsedSessionCacheRejected++;
+    }
     return session;
   } catch {
     return null;
   }
+}
+
+function resolveParsedSession(filePath, parsedSession) {
+  return parsedSession === undefined ? getParsedSession(filePath) : parsedSession;
 }
 
 function summarizeGeminiToolArgs(args, { maxLength = 60, basenameFile = true, missingValue = null } = {}) {
@@ -187,7 +219,7 @@ function geminiContextWindowMax(model) {
  * showed $0.00 for every Gemini session. Values are treated as per-turn deltas;
  * the largest turn total drives context-window occupancy.
  */
-function getTokenUsage(filePath) {
+function getTokenUsage(filePath, parsedSession) {
   const tokenUsage = {
     totalInput: 0,
     totalOutput: 0,
@@ -203,7 +235,7 @@ function getTokenUsage(filePath) {
   };
 
   try {
-    const session = getParsedSession(filePath);
+    const session = resolveParsedSession(filePath, parsedSession);
     const messages = session?.messages;
     if (!Array.isArray(messages)) return tokenUsage;
 
@@ -242,7 +274,7 @@ function getTokenUsage(filePath) {
  * Extract model/tools/messages from Gemini session JSON
  * Actual format: {sessionId, projectHash, messages: [{type, content, model, ...}]}
  */
-function parseSession(filePath) {
+function parseSession(filePath, parsedSession) {
   const detail = {
     model: null,
     lastTool: null,
@@ -251,7 +283,7 @@ function parseSession(filePath) {
   };
 
   try {
-    const session = getParsedSession(filePath);
+    const session = resolveParsedSession(filePath, parsedSession);
     if (!session) return detail;
 
     const messages = session.messages;
@@ -306,10 +338,10 @@ function parseSession(filePath) {
 /**
  * Extract tool history from Gemini sessions
  */
-function getToolHistory(filePath, maxItems = 15) {
+function getToolHistory(filePath, maxItems = 15, parsedSession) {
   const tools = [];
   try {
-    const session = getParsedSession(filePath);
+    const session = resolveParsedSession(filePath, parsedSession);
     if (!session) return tools;
     const messages = session.messages;
     if (!Array.isArray(messages)) return tools;
@@ -348,10 +380,10 @@ function getToolHistory(filePath, maxItems = 15) {
 /**
  * Extract recent messages from Gemini sessions
  */
-function getRecentMessages(filePath, maxItems = 5) {
+function getRecentMessages(filePath, maxItems = 5, parsedSession) {
   const msgList = [];
   try {
-    const session = getParsedSession(filePath);
+    const session = resolveParsedSession(filePath, parsedSession);
     if (!session) return msgList;
     const messages = session.messages;
     if (!Array.isArray(messages)) return msgList;
@@ -372,10 +404,10 @@ function getRecentMessages(filePath, maxItems = 5) {
   return msgList.slice(-maxItems);
 }
 
-function getGitEvents(filePath, context) {
+function getGitEvents(filePath, context, parsedSession) {
   const events = [];
   try {
-    const session = getParsedSession(filePath);
+    const session = resolveParsedSession(filePath, parsedSession);
     if (!session) return events;
     const messages = session.messages;
     if (!Array.isArray(messages)) return events;
@@ -468,7 +500,8 @@ class GeminiAdapter {
     const activeSessionIds = new Set();
 
     for (const { filePath, mtime, fileName, projectHash } of sessionFiles) {
-      const detail = parseSession(filePath);
+      const parsedSession = getParsedSession(filePath);
+      const detail = parseSession(filePath, parsedSession);
       const sessionId = fileName.replace('session-', '').replace('.json', '');
       const fullSessionId = `gemini-${sessionId}`;
       activeSessionIds.add(fullSessionId);
@@ -487,12 +520,12 @@ class GeminiAdapter {
         lastMessage: detail.lastMessage,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
-        tokenUsage: getTokenUsage(filePath),
+        tokenUsage: getTokenUsage(filePath, parsedSession),
         gitEvents: getGitEvents(filePath, {
           provider: 'gemini',
           sessionId: fullSessionId,
           project,
-        }),
+        }, parsedSession),
         parentSessionId: null,
       });
     }
@@ -507,10 +540,11 @@ class GeminiAdapter {
     const cleanId = sessionId.replace('gemini-', '');
     const indexedPath = _sessionFileById.get(sessionId);
     if (indexedPath && fs.existsSync(indexedPath)) {
+      const parsedSession = getParsedSession(indexedPath);
       return createDetailResponse({
-        toolHistory: getToolHistory(indexedPath),
-        messages: getRecentMessages(indexedPath),
-        tokenUsage: getTokenUsage(indexedPath),
+        toolHistory: getToolHistory(indexedPath, 15, parsedSession),
+        messages: getRecentMessages(indexedPath, 5, parsedSession),
+        tokenUsage: getTokenUsage(indexedPath, parsedSession),
         sessionId,
       });
     }
@@ -520,10 +554,11 @@ class GeminiAdapter {
       const fileId = fileName.replace('session-', '').replace('.json', '');
       if (fileId === cleanId) {
         _sessionFileById.set(sessionId, filePath);
+        const parsedSession = getParsedSession(filePath);
         return createDetailResponse({
-          toolHistory: getToolHistory(filePath),
-          messages: getRecentMessages(filePath),
-          tokenUsage: getTokenUsage(filePath),
+          toolHistory: getToolHistory(filePath, 15, parsedSession),
+          messages: getRecentMessages(filePath, 5, parsedSession),
+          tokenUsage: getTokenUsage(filePath, parsedSession),
           sessionId,
         });
       }
@@ -574,12 +609,13 @@ class GeminiAdapter {
 
   invalidateCaches() {
     _parsedSessionCache.clear();
+    _parsedSessionCacheBytes = 0;
     _sessionFileById.clear();
   }
 
   invalidateCachesForDirty(dirty = {}) {
     if (dirty.kind === 'transcript' && dirty.path) {
-      _parsedSessionCache.delete(dirty.path);
+      deleteParsedSessionCache(dirty.path);
       return;
     }
     if (dirty.kind === 'discovery' || dirty.kind === 'reconcile') {
@@ -596,6 +632,9 @@ class GeminiAdapter {
   getPerfStats() {
     return {
       parsedSessionEntries: _parsedSessionCache.size,
+      parsedSessionBytes: _parsedSessionCacheBytes,
+      parsedSessionByteLimit: SESSION_CACHE_MAX_BYTES,
+      parsedSessionRejected: _parsedSessionCacheRejected,
       indexedSessions: _sessionFileById.size,
       hashToPathEntries: _hashToPathCache.size,
     };

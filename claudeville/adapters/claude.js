@@ -60,6 +60,7 @@ const TEAM_MEMBERSHIP_WARNED_MAX = 256;
 const ORPHAN_DIR_MTIME_EPSILON_MS = 1;
 const CLAUDE_TOOL_INPUT_FIELDS = Object.freeze([
   'command',
+  'cmd',
   'file_path',
   'pattern',
   'query',
@@ -75,10 +76,19 @@ const CLAUDE_TOOL_INPUT_FIELDS = Object.freeze([
   'id',
   'targets',
   'recipient',
+  'to',
+  'recipient_name',
+  'recipientName',
+  'summary',
+  'type',
   'description',
   'prompt',
   'url',
 ]);
+const TRANSCRIPT_PROJECTION_TEXT_BYTES = 200;
+const TRANSCRIPT_PROJECTION_RESULT_BYTES = 32 * 1024;
+const TRANSCRIPT_PROJECTION_COMMAND_BYTES = 64 * 1024;
+const TRANSCRIPT_PROJECTION_FIELD_BYTES = 512;
 
 const _sessionEntryCache = new Map();
 let _sessionEntryCacheBytes = 0;
@@ -89,6 +99,11 @@ const _sessionEntryCacheStats = {
   byteEvictions: 0,
   entryEvictions: 0,
   rejectedEntries: 0,
+};
+const _sessionProjectionStats = {
+  records: 0,
+  stringsTruncated: 0,
+  bytesDropped: 0,
 };
 const _transcriptAggregateCache = new Map();
 let _transcriptAggregateCacheBytes = 0;
@@ -157,6 +172,191 @@ function safeExistingFile(candidatePath, rootPath) {
   }
 }
 
+function boundedProjectionString(value, maxLength, { keepTail = false } = {}) {
+  if (typeof value !== 'string' || value.length <= maxLength) return value;
+  _sessionProjectionStats.stringsTruncated++;
+  _sessionProjectionStats.bytesDropped += Math.max(0, (value.length - maxLength) * 2);
+  if (!keepTail || maxLength < 8) return value.slice(0, maxLength);
+  const headLength = Math.ceil(maxLength / 2);
+  return `${value.slice(0, headLength)}\n…\n${value.slice(-(maxLength - headLength - 3))}`;
+}
+
+function projectToolInput(input) {
+  if (typeof input === 'string') {
+    return boundedProjectionString(input, TRANSCRIPT_PROJECTION_COMMAND_BYTES, { keepTail: true });
+  }
+  if (Array.isArray(input)) {
+    return input.slice(0, 16)
+      .map((item) => {
+        if (typeof item === 'string') {
+          return boundedProjectionString(item, TRANSCRIPT_PROJECTION_FIELD_BYTES);
+        }
+        if (item == null || ['number', 'boolean'].includes(typeof item)) return item;
+        return null;
+      })
+      .filter((item) => item !== null);
+  }
+  if (!input || typeof input !== 'object') {
+    return input == null || ['number', 'boolean'].includes(typeof input) ? input : '';
+  }
+
+  const projected = {};
+  for (const field of CLAUDE_TOOL_INPUT_FIELDS) {
+    const value = input[field];
+    if (value === undefined) continue;
+    if (typeof value === 'string') {
+      const commandLike = field === 'command' || field === 'cmd';
+      projected[field] = boundedProjectionString(
+        value,
+        commandLike ? TRANSCRIPT_PROJECTION_COMMAND_BYTES : TRANSCRIPT_PROJECTION_FIELD_BYTES,
+        { keepTail: commandLike },
+      );
+    } else if (Array.isArray(value)) {
+      projected[field] = value.slice(0, 16)
+        .map((item) => {
+          if (typeof item === 'string') {
+            return boundedProjectionString(item, TRANSCRIPT_PROJECTION_FIELD_BYTES);
+          }
+          if (item == null || ['number', 'boolean'].includes(typeof item)) return item;
+          return null;
+        })
+        .filter((item) => item !== null);
+    } else if (value == null || ['number', 'boolean'].includes(typeof value)) {
+      projected[field] = value;
+    }
+  }
+  return projected;
+}
+
+function projectToolResultContent(content) {
+  if (typeof content === 'string') {
+    return boundedProjectionString(content, TRANSCRIPT_PROJECTION_RESULT_BYTES, { keepTail: true });
+  }
+  if (!Array.isArray(content)) return '';
+  return content.slice(0, 16).map((item) => {
+    if (typeof item === 'string') {
+      return boundedProjectionString(item, TRANSCRIPT_PROJECTION_RESULT_BYTES, { keepTail: true });
+    }
+    if (!item || typeof item !== 'object') return item;
+    if (item.type !== 'text') return { type: item.type };
+    return {
+      type: 'text',
+      text: boundedProjectionString(
+        typeof item.text === 'string' ? item.text : '',
+        TRANSCRIPT_PROJECTION_RESULT_BYTES,
+        { keepTail: true },
+      ),
+    };
+  });
+}
+
+function projectTranscriptContentBlock(block) {
+  if (!block || typeof block !== 'object') return null;
+  if (block.type === 'text') {
+    const text = typeof block.text === 'string' ? block.text.trim() : '';
+    return {
+      type: 'text',
+      text: boundedProjectionString(text, TRANSCRIPT_PROJECTION_TEXT_BYTES),
+    };
+  }
+  if (block.type === 'tool_use') {
+    return {
+      type: 'tool_use',
+      id: boundedProjectionString(block.id, TRANSCRIPT_PROJECTION_FIELD_BYTES),
+      name: boundedProjectionString(block.name, TRANSCRIPT_PROJECTION_FIELD_BYTES),
+      input: projectToolInput(block.input),
+    };
+  }
+  if (block.type === 'tool_result') {
+    return {
+      type: 'tool_result',
+      tool_use_id: boundedProjectionString(block.tool_use_id, TRANSCRIPT_PROJECTION_FIELD_BYTES),
+      is_error: typeof block.is_error === 'boolean' ? block.is_error : undefined,
+      content: projectToolResultContent(block.content),
+    };
+  }
+  return null;
+}
+
+function projectClaudeTailEntry(entry) {
+  _sessionProjectionStats.records++;
+  if (!entry || typeof entry !== 'object') {
+    return typeof entry === 'string'
+      ? boundedProjectionString(entry, TRANSCRIPT_PROJECTION_TEXT_BYTES, { keepTail: true })
+      : entry;
+  }
+  const projected = {};
+  for (const field of [
+    'type',
+    'timestamp',
+    'created_at',
+    'uuid',
+    'id',
+    'isSidechain',
+    'permissionMode',
+    'sessionId',
+    'project',
+    'agentId',
+    'agentType',
+    'model',
+  ]) {
+    if (entry[field] !== undefined) {
+      const value = entry[field];
+      if (typeof value === 'string') {
+        projected[field] = boundedProjectionString(value, TRANSCRIPT_PROJECTION_FIELD_BYTES);
+      } else if (value == null || ['number', 'boolean'].includes(typeof value)) {
+        projected[field] = value;
+      }
+    }
+  }
+  if (typeof entry.display === 'string') {
+    projected.display = boundedProjectionString(entry.display, TRANSCRIPT_PROJECTION_FIELD_BYTES);
+  }
+  if (entry.toolUseResult && typeof entry.toolUseResult === 'object') {
+    projected.toolUseResult = {
+      stderr: boundedProjectionString(
+        typeof entry.toolUseResult.stderr === 'string' ? entry.toolUseResult.stderr : '',
+        TRANSCRIPT_PROJECTION_RESULT_BYTES,
+        { keepTail: true },
+      ),
+      stdout: boundedProjectionString(
+        typeof entry.toolUseResult.stdout === 'string' ? entry.toolUseResult.stdout : '',
+        TRANSCRIPT_PROJECTION_RESULT_BYTES,
+        { keepTail: true },
+      ),
+    };
+  }
+  if (entry.message && typeof entry.message === 'object') {
+    const needsSourceHash = !entry.uuid
+      && !entry.id
+      && Array.isArray(entry.message.content)
+      && entry.message.content.some((block) => block?.type === 'tool_use' && !block.id);
+    const content = Array.isArray(entry.message.content)
+      ? entry.message.content.map(projectTranscriptContentBlock).filter(Boolean)
+      : boundedProjectionString(
+        typeof entry.message.content === 'string' ? entry.message.content : '',
+        TRANSCRIPT_PROJECTION_TEXT_BYTES,
+      );
+    projected.message = {
+      role: boundedProjectionString(
+        typeof entry.message.role === 'string' ? entry.message.role : '',
+        TRANSCRIPT_PROJECTION_FIELD_BYTES,
+      ),
+      model: boundedProjectionString(
+        typeof entry.message.model === 'string' ? entry.message.model : '',
+        TRANSCRIPT_PROJECTION_FIELD_BYTES,
+      ),
+      stop_reason: boundedProjectionString(
+        typeof entry.message.stop_reason === 'string' ? entry.message.stop_reason : '',
+        TRANSCRIPT_PROJECTION_FIELD_BYTES,
+      ),
+      content,
+    };
+    if (needsSourceHash) projected._sourceHash = stableHash(JSON.stringify(entry));
+  }
+  return projected;
+}
+
 function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } = {}) {
   return readSharedJsonLines(filePath, {
     from,
@@ -165,6 +365,8 @@ function readJsonLines(filePath, { from = 'end', count = GIT_EVENT_SCAN_LINES } 
     tailChunkBytes: TAIL_CHUNK_BYTES,
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'claude',
+    project: from === 'end' ? projectClaudeTailEntry : undefined,
+    projectionKey: from === 'end' ? 'claude-tail-v1' : undefined,
   });
 }
 
@@ -1225,7 +1427,7 @@ function getGitEvents(sessionFilePath, context) {
         events.push(...extractGitEventsFromCommandSource(block.input, {
           ...context,
           ts: entry.timestamp || entry.created_at || 0,
-          sourceId: block.id || entry.uuid || entry.id || `${stableHash(JSON.stringify(entry))}:${blockIndex}`,
+          sourceId: block.id || entry.uuid || entry.id || `${entry._sourceHash || stableHash(JSON.stringify(entry))}:${blockIndex}`,
           stderr: result?.stderr || '',
         }));
       });
@@ -1981,6 +2183,7 @@ class ClaudeAdapter {
         estimatedBytes: _sessionEntryCacheBytes,
         entryLimit: SESSION_ENTRY_CACHE_MAX,
         byteLimit: SESSION_ENTRY_CACHE_MAX_BYTES,
+        projection: { ..._sessionProjectionStats },
       },
       transcriptAggregate: {
         ..._transcriptAggregateStats,

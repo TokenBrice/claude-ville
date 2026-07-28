@@ -21,6 +21,7 @@ const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   createDetailResponse,
+  fileSignature,
   readJsonLines: readSharedJsonLines,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
@@ -43,6 +44,22 @@ const GIT_EVENT_SCAN_LINES = 5000;
 const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const MAX_HEAD_BYTES = 512 * 1024;
+const KIMI_CODE_INDEX_MAX_LINES = 4096;
+const KIMI_CODE_INDEX_SCAN_CHUNK_BYTES = 64 * 1024;
+const KIMI_CODE_INDEX_MAX_LINE_BYTES = KIMI_CODE_INDEX_SCAN_CHUNK_BYTES - 1;
+const KIMI_CODE_INDEX_FALLBACK_MAX_BYTES = Math.max(
+  KIMI_CODE_INDEX_SCAN_CHUNK_BYTES,
+  Number(process.env.CLAUDEVILLE_KIMI_INDEX_FALLBACK_MAX_BYTES || 2 * 1024 * 1024)
+    || 2 * 1024 * 1024,
+);
+const KIMI_CODE_INDEX_FALLBACK_MAX_LINES = Math.max(
+  1,
+  Number(process.env.CLAUDEVILLE_KIMI_INDEX_FALLBACK_MAX_LINES || 8192) || 8192,
+);
+const KIMI_CODE_INDEX_FALLBACK_MAX_MS = Math.max(
+  1,
+  Number(process.env.CLAUDEVILLE_KIMI_INDEX_FALLBACK_MAX_MS || 20) || 20,
+);
 const KIMI_TOOL_INPUT_FIELDS = Object.freeze([
   'command',
   'file_path',
@@ -62,7 +79,27 @@ const KIMI_TOOL_INPUT_FIELDS = Object.freeze([
 const _configCache = { at: 0, value: null };
 const _kimiJsonCache = { at: 0, value: null };
 const _codeConfigCache = { at: 0, value: null };
-const _codeIndexCache = { at: 0, value: null };
+const _codeIndexCache = {
+  signature: null,
+  value: null,
+  fallbackMisses: new Set(),
+  fallbackOffset: 0,
+  fallbackDiscarding: false,
+  fallbackTargetSignature: '',
+};
+const _perf = {
+  codeIndexHits: 0,
+  codeIndexMisses: 0,
+  codeIndexFallbackScans: 0,
+  codeIndexFallbackBytes: 0,
+  codeIndexFallbackMaxScanBytes: 0,
+  codeIndexFallbackLines: 0,
+  codeIndexFallbackMatches: 0,
+  codeIndexFallbackBudgetStops: 0,
+  codeIndexOversizedLines: 0,
+  parsedActiveAgentWires: 0,
+  skippedInactiveAgentWires: 0,
+};
 
 // ─── Utilities ─────────────────────────────────────────────
 
@@ -180,32 +217,275 @@ function addKimiCodeIndexEntry(map, key, entry) {
 
 // Kimi Code session index: sessionId, sessionDir, and basename(sessionDir) → { sessionDir, workDir }
 function readKimiCodeIndex() {
-  const now = Date.now();
-  if (_codeIndexCache.value && (now - _codeIndexCache.at) < 5000) return _codeIndexCache.value;
+  const signature = fileSignature(KIMI_CODE_INDEX);
+  if (_codeIndexCache.value && _codeIndexCache.signature === signature) {
+    _perf.codeIndexHits++;
+    return _codeIndexCache.value;
+  }
+  _perf.codeIndexMisses++;
   const map = new Map();
   try {
-    const content = fs.readFileSync(KIMI_CODE_INDEX, 'utf-8');
-    for (const line of content.split('\n')) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        const entry = JSON.parse(trimmed);
-        if (entry && entry.sessionId) {
-          const sessionDir = typeof entry.sessionDir === 'string'
-            ? safeExistingDirectory(entry.sessionDir, KIMI_CODE_SESSIONS_DIR)
-            : null;
-          if (!sessionDir) continue;
-          const indexed = { sessionDir, workDir: entry.workDir || null };
-          addKimiCodeIndexEntry(map, entry.sessionId, indexed);
-          addKimiCodeIndexEntry(map, sessionDir, indexed);
-          addKimiCodeIndexEntry(map, path.basename(sessionDir), indexed);
-        }
-      } catch { /* skip malformed line */ }
+    const entries = readJsonLines(KIMI_CODE_INDEX, {
+      from: 'end',
+      count: KIMI_CODE_INDEX_MAX_LINES,
+    });
+    for (const entry of entries) {
+      if (!entry?.sessionId) continue;
+      const sessionDir = typeof entry.sessionDir === 'string'
+        ? safeExistingDirectory(entry.sessionDir, KIMI_CODE_SESSIONS_DIR)
+        : null;
+      if (!sessionDir) continue;
+      const indexed = { sessionDir, workDir: entry.workDir || null };
+      addKimiCodeIndexEntry(map, entry.sessionId, indexed);
+      addKimiCodeIndexEntry(map, sessionDir, indexed);
+      addKimiCodeIndexEntry(map, path.basename(sessionDir), indexed);
     }
   } catch { /* ignore */ }
   _codeIndexCache.value = map;
-  _codeIndexCache.at = now;
+  _codeIndexCache.signature = signature;
+  _codeIndexCache.fallbackMisses.clear();
+  _codeIndexCache.fallbackOffset = 0;
+  _codeIndexCache.fallbackDiscarding = false;
+  _codeIndexCache.fallbackTargetSignature = '';
   return map;
+}
+
+function kimiCodeIndexTargetKeys(record) {
+  return [...new Set([
+    record.sessionRealPath,
+    record.sessionPath,
+    record.sessionDirName,
+  ].filter(Boolean))];
+}
+
+function hydrateKimiCodeIndexForSessions(index, sessionRecords) {
+  if (!sessionRecords.length || !fs.existsSync(KIMI_CODE_INDEX)) return;
+
+  const targetsByKey = new Map();
+  const unresolved = new Set();
+  for (const record of sessionRecords) {
+    const keys = kimiCodeIndexTargetKeys(record);
+    if (keys.some(key => index.has(key))) continue;
+    const missKey = record.sessionRealPath || record.sessionPath;
+    if (_codeIndexCache.fallbackMisses.has(missKey)) continue;
+
+    const target = {
+      keys,
+      missKey,
+      sessionRealPath: record.sessionRealPath,
+      sessionPath: record.sessionPath,
+      sessionDirName: record.sessionDirName,
+    };
+    unresolved.add(target);
+    for (const key of keys) {
+      const targets = targetsByKey.get(key) || new Set();
+      targets.add(target);
+      targetsByKey.set(key, targets);
+    }
+  }
+  if (!unresolved.size) return;
+  const targetSignature = [...unresolved]
+    .map(target => target.missKey)
+    .sort()
+    .join('\0');
+  if (_codeIndexCache.fallbackTargetSignature !== targetSignature) {
+    _codeIndexCache.fallbackTargetSignature = targetSignature;
+    _codeIndexCache.fallbackOffset = 0;
+    _codeIndexCache.fallbackDiscarding = false;
+  }
+
+  const removeTarget = (target) => {
+    unresolved.delete(target);
+    for (const key of target.keys) {
+      const targets = targetsByKey.get(key);
+      if (!targets) continue;
+      targets.delete(target);
+      if (!targets.size) targetsByKey.delete(key);
+    }
+  };
+
+  const processLine = (lineBuffer) => {
+    _perf.codeIndexFallbackLines++;
+    if (!lineBuffer.length || lineBuffer.length > KIMI_CODE_INDEX_MAX_LINE_BYTES) {
+      if (lineBuffer.length > KIMI_CODE_INDEX_MAX_LINE_BYTES) _perf.codeIndexOversizedLines++;
+      return;
+    }
+
+    let entry;
+    try {
+      entry = JSON.parse(lineBuffer.toString('utf8'));
+    } catch {
+      return;
+    }
+    if (!entry?.sessionId || typeof entry.sessionDir !== 'string') return;
+
+    const rawSessionDir = entry.sessionDir;
+    const rawBasename = path.basename(rawSessionDir);
+    const possibleTargets = targetsByKey.get(rawSessionDir)
+      || targetsByKey.get(entry.sessionId)
+      || targetsByKey.get(rawBasename);
+    if (!possibleTargets?.size) return;
+
+    const sessionDir = safeExistingDirectory(rawSessionDir, KIMI_CODE_SESSIONS_DIR);
+    if (!sessionDir) return;
+    const exactTargets = targetsByKey.get(sessionDir) || targetsByKey.get(rawSessionDir);
+    const matchedTargets = exactTargets
+      || (possibleTargets.size === 1 ? possibleTargets : null);
+    if (!matchedTargets?.size) return;
+
+    const indexed = { sessionDir, workDir: entry.workDir || null };
+    addKimiCodeIndexEntry(index, entry.sessionId, indexed);
+    addKimiCodeIndexEntry(index, sessionDir, indexed);
+    addKimiCodeIndexEntry(index, path.basename(sessionDir), indexed);
+    for (const target of [...matchedTargets]) {
+      if (
+        target.sessionRealPath !== sessionDir
+        && target.sessionPath !== rawSessionDir
+        && target.sessionDirName !== entry.sessionId
+        && target.sessionDirName !== rawBasename
+      ) {
+        continue;
+      }
+      for (const key of target.keys) addKimiCodeIndexEntry(index, key, indexed);
+      _perf.codeIndexFallbackMatches++;
+      removeTarget(target);
+    }
+  };
+
+  _perf.codeIndexFallbackScans++;
+  let fd;
+  try {
+    fd = fs.openSync(KIMI_CODE_INDEX, 'r');
+    const fileSize = fs.fstatSync(fd).size;
+    if (_codeIndexCache.fallbackOffset >= fileSize) {
+      _codeIndexCache.fallbackOffset = 0;
+      _codeIndexCache.fallbackDiscarding = false;
+    }
+    const chunk = Buffer.allocUnsafe(KIMI_CODE_INDEX_SCAN_CHUNK_BYTES);
+    let pending = Buffer.alloc(0);
+    let discardingOversizedLine = _codeIndexCache.fallbackDiscarding;
+    let position = _codeIndexCache.fallbackOffset;
+    let nextOffset = position;
+    let bytesScanned = 0;
+    let linesScanned = 0;
+    let reachedEof = false;
+    let budgetStopped = false;
+    let stopScan = false;
+    const startedAt = Date.now();
+
+    while (!stopScan && unresolved.size) {
+      if (
+        bytesScanned >= KIMI_CODE_INDEX_FALLBACK_MAX_BYTES
+        || linesScanned >= KIMI_CODE_INDEX_FALLBACK_MAX_LINES
+        || Date.now() - startedAt >= KIMI_CODE_INDEX_FALLBACK_MAX_MS
+      ) {
+        budgetStopped = true;
+        break;
+      }
+      const readLength = Math.min(
+        chunk.length,
+        KIMI_CODE_INDEX_FALLBACK_MAX_BYTES - bytesScanned,
+      );
+      const readStart = position;
+      const bytesRead = fs.readSync(fd, chunk, 0, readLength, position);
+      if (!bytesRead) {
+        reachedEof = true;
+        break;
+      }
+      position += bytesRead;
+      bytesScanned += bytesRead;
+      const incoming = chunk.subarray(0, bytesRead);
+      const buffer = pending.length ? Buffer.concat([pending, incoming]) : incoming;
+      const bufferStart = readStart - pending.length;
+      let lineStart = 0;
+      for (let index = 0; index < buffer.length; index++) {
+        if (buffer[index] !== 0x0a) continue;
+        const lineEndOffset = bufferStart + index + 1;
+        if (discardingOversizedLine) {
+          discardingOversizedLine = false;
+        } else {
+          if (
+            linesScanned >= KIMI_CODE_INDEX_FALLBACK_MAX_LINES
+            || Date.now() - startedAt >= KIMI_CODE_INDEX_FALLBACK_MAX_MS
+          ) {
+            budgetStopped = true;
+            stopScan = true;
+            break;
+          }
+          processLine(buffer.subarray(lineStart, index));
+          linesScanned++;
+        }
+        nextOffset = lineEndOffset;
+        lineStart = index + 1;
+        if (!unresolved.size) {
+          stopScan = true;
+          break;
+        }
+      }
+      if (stopScan) break;
+
+      const remainder = buffer.subarray(lineStart);
+      if (discardingOversizedLine) {
+        pending = Buffer.alloc(0);
+        nextOffset = position;
+      } else if (remainder.length > KIMI_CODE_INDEX_MAX_LINE_BYTES) {
+        _perf.codeIndexOversizedLines++;
+        pending = Buffer.alloc(0);
+        discardingOversizedLine = true;
+        nextOffset = position;
+      } else {
+        pending = Buffer.from(remainder);
+      }
+
+      if (position >= fileSize) {
+        reachedEof = true;
+        break;
+      }
+    }
+    if (reachedEof && unresolved.size && !discardingOversizedLine && pending.length) {
+      if (
+        linesScanned < KIMI_CODE_INDEX_FALLBACK_MAX_LINES
+        && Date.now() - startedAt < KIMI_CODE_INDEX_FALLBACK_MAX_MS
+      ) {
+        processLine(pending);
+        linesScanned++;
+        nextOffset = position;
+      } else {
+        // Retry the unterminated final record from the last complete line on
+        // the next bounded pass instead of memoizing an authoritative miss.
+        reachedEof = false;
+        budgetStopped = true;
+      }
+    }
+
+    _perf.codeIndexFallbackBytes += bytesScanned;
+    _perf.codeIndexFallbackMaxScanBytes = Math.max(
+      _perf.codeIndexFallbackMaxScanBytes,
+      bytesScanned,
+    );
+    if (reachedEof) {
+      _codeIndexCache.fallbackOffset = 0;
+      _codeIndexCache.fallbackDiscarding = false;
+    } else {
+      _codeIndexCache.fallbackOffset = nextOffset;
+      _codeIndexCache.fallbackDiscarding = discardingOversizedLine;
+      if (unresolved.size && budgetStopped) _perf.codeIndexFallbackBudgetStops++;
+    }
+
+    if (reachedEof) {
+      for (const target of unresolved) {
+        _codeIndexCache.fallbackMisses.add(target.missKey);
+      }
+    }
+    _codeIndexCache.fallbackTargetSignature = [...unresolved]
+      .map(target => target.missKey)
+      .sort()
+      .join('\0');
+  } catch {
+    // Ignore an index that disappears or changes while being scanned.
+  } finally {
+    try { if (fd !== undefined) fs.closeSync(fd); } catch { /* ignore */ }
+  }
 }
 
 function buildProjectPathMap() {
@@ -814,6 +1094,7 @@ function getActiveSessionsV2(activeThresholdMs, now) {
   const config = readConfigToml(KIMI_CODE_CONFIG_TOML, _codeConfigCache);
   const modelInfo = resolveModelInfo(config);
   const sessions = [];
+  const sessionRecords = [];
 
   let workspaceDirs;
   try {
@@ -840,16 +1121,6 @@ function getActiveSessionsV2(activeThresholdMs, now) {
         agentDirs = fs.readdirSync(agentsDir, { withFileTypes: true }).filter(d => d.isDirectory());
       } catch { continue; }
 
-      const sessionRealPath = safeExistingDirectory(sessionPath, KIMI_CODE_SESSIONS_DIR);
-      const indexEntry = (sessionRealPath ? index.get(sessionRealPath) : null)
-        || index.get(sessionPath)
-        || index.get(sessionDirName);
-      const statePath = path.join(sessionPath, 'state.json');
-      const stateMeta = fs.existsSync(statePath)
-        ? readKimiCodeState(statePath)
-        : { title: null, agents: {} };
-      const title = stateMeta.title;
-
       const agentRecords = [];
       let latestAgentActivity = 0;
       for (const aDir of agentDirs) {
@@ -864,85 +1135,117 @@ function getActiveSessionsV2(activeThresholdMs, now) {
       }
       if (!agentRecords.length || now - latestAgentActivity > activeThresholdMs) continue;
 
-      const activeAgentNames = new Set(agentRecords
-        .filter(record => record.agentName === 'main' || now - record.stat.mtimeMs <= activeThresholdMs)
-        .map(record => record.agentName));
-      const hasMainRecord = agentRecords.some(record => record.agentName === 'main');
-      const detailsByAgentName = new Map();
-      let wireProject = null;
-      for (const record of agentRecords) {
-        const detail = parseWireDetailV2(record.wirePath);
-        detailsByAgentName.set(record.agentName, detail);
-        if (!wireProject && detail.project) wireProject = detail.project;
-      }
-      const project = indexEntry?.workDir || kimiCodeProjectFromState(stateMeta) || wireProject;
+      sessionRecords.push({
+        sessionDirName,
+        sessionPath,
+        sessionRealPath: safeExistingDirectory(sessionPath, KIMI_CODE_SESSIONS_DIR),
+        agentRecords,
+        latestAgentActivity,
+      });
+    }
+  }
 
-      if (!hasMainRecord) {
-        const modelKey = kimiCodeSessionModelKey(detailsByAgentName, agentRecords, now, activeThresholdMs)
-          || config.defaultModel;
-        const modelEntry = modelKey ? config.models[modelKey] : null;
-        const model = (modelEntry && modelEntry.displayName) || modelInfo.displayName || modelInfo.model || 'kimi';
-        const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || 0;
-        const sessionId = `kimi-${sessionDirName}`;
-        sessions.push({
-          sessionId,
+  hydrateKimiCodeIndexForSessions(index, sessionRecords);
+
+  for (const record of sessionRecords) {
+    const {
+      sessionDirName,
+      sessionPath,
+      sessionRealPath,
+      agentRecords,
+      latestAgentActivity,
+    } = record;
+    const indexEntry = (sessionRealPath ? index.get(sessionRealPath) : null)
+      || index.get(sessionPath)
+      || index.get(sessionDirName);
+    const statePath = path.join(sessionPath, 'state.json');
+    const stateMeta = fs.existsSync(statePath)
+      ? readKimiCodeState(statePath)
+      : { title: null, agents: {} };
+    const title = stateMeta.title;
+    const activeAgentNames = new Set(agentRecords
+      .filter(record => record.agentName === 'main' || now - record.stat.mtimeMs <= activeThresholdMs)
+      .map(record => record.agentName));
+    const hasMainRecord = agentRecords.some(record => record.agentName === 'main');
+    const detailsByAgentName = new Map();
+    let wireProject = null;
+    for (const record of agentRecords) {
+      if (!activeAgentNames.has(record.agentName)) {
+        _perf.skippedInactiveAgentWires++;
+        continue;
+      }
+      _perf.parsedActiveAgentWires++;
+      const detail = parseWireDetailV2(record.wirePath);
+      detailsByAgentName.set(record.agentName, detail);
+      if (!wireProject && detail.project) wireProject = detail.project;
+    }
+    const project = indexEntry?.workDir || kimiCodeProjectFromState(stateMeta) || wireProject;
+
+    if (!hasMainRecord) {
+      const modelKey = kimiCodeSessionModelKey(detailsByAgentName, agentRecords, now, activeThresholdMs)
+        || config.defaultModel;
+      const modelEntry = modelKey ? config.models[modelKey] : null;
+      const model = (modelEntry && modelEntry.displayName) || modelInfo.displayName || modelInfo.model || 'kimi';
+      const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || 0;
+      const sessionId = `kimi-${sessionDirName}`;
+      sessions.push({
+        sessionId,
+        provider: 'kimi',
+        agentId: 'main',
+        name: title,
+        agentName: title,
+        agentType: 'main',
+        model,
+        status: 'active',
+        lastActivity: latestAgentActivity,
+        project,
+        lastMessage: null,
+        lastTool: null,
+        lastToolInput: null,
+        tokenUsage: emptyKimiCodeUsage(ctxMax),
+        gitEvents: [],
+        parentSessionId: null,
+      });
+    }
+
+    for (const { agentName, wirePath, stat } of agentRecords) {
+      const isMain = agentName === 'main';
+      // Child agents can keep writing after the main wire goes quiet; keep the
+      // main session visible so parent/child lineage remains intact in the UI.
+      const lastActivity = isMain ? Math.max(stat.mtimeMs, latestAgentActivity) : stat.mtimeMs;
+      if (now - lastActivity > activeThresholdMs) continue;
+
+      const detail = detailsByAgentName.get(agentName) || parseWireDetailV2(wirePath);
+      const sessionId = isMain ? `kimi-${sessionDirName}` : `kimi-${sessionDirName}::${agentName}`;
+
+      const modelKey = detail.model || config.defaultModel;
+      const modelEntry = modelKey ? config.models[modelKey] : null;
+      const model = (modelEntry && modelEntry.displayName) || modelInfo.displayName || modelInfo.model || 'kimi';
+      const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || 0;
+      const agentLabel = isMain ? title : agentName;
+
+      sessions.push({
+        sessionId,
+        provider: 'kimi',
+        agentId: agentName,
+        name: agentLabel,
+        agentName: agentLabel,
+        agentType: isMain ? 'main' : 'sub-agent',
+        model,
+        status: 'active',
+        lastActivity,
+        project,
+        lastMessage: detail.lastMessage,
+        lastTool: detail.lastTool,
+        lastToolInput: detail.lastToolInput,
+        tokenUsage: getTokenUsageV2(wirePath, ctxMax),
+        gitEvents: getGitEventsV2(wirePath, {
           provider: 'kimi',
-          agentId: 'main',
-          name: title,
-          agentName: title,
-          agentType: 'main',
-          model,
-          status: 'active',
-          lastActivity: latestAgentActivity,
-          project,
-          lastMessage: null,
-          lastTool: null,
-          lastToolInput: null,
-          tokenUsage: emptyKimiCodeUsage(ctxMax),
-          gitEvents: [],
-          parentSessionId: null,
-        });
-      }
-
-      for (const { agentName, wirePath, stat } of agentRecords) {
-        const isMain = agentName === 'main';
-        // Child agents can keep writing after the main wire goes quiet; keep the
-        // main session visible so parent/child lineage remains intact in the UI.
-        const lastActivity = isMain ? Math.max(stat.mtimeMs, latestAgentActivity) : stat.mtimeMs;
-        if (now - lastActivity > activeThresholdMs) continue;
-
-        const detail = detailsByAgentName.get(agentName) || parseWireDetailV2(wirePath);
-        const sessionId = isMain ? `kimi-${sessionDirName}` : `kimi-${sessionDirName}::${agentName}`;
-
-        const modelKey = detail.model || config.defaultModel;
-        const modelEntry = modelKey ? config.models[modelKey] : null;
-        const model = (modelEntry && modelEntry.displayName) || modelInfo.displayName || modelInfo.model || 'kimi';
-        const ctxMax = (modelEntry && modelEntry.maxContext) || modelInfo.maxContext || 0;
-        const agentLabel = isMain ? title : agentName;
-
-        sessions.push({
           sessionId,
-          provider: 'kimi',
-          agentId: agentName,
-          name: agentLabel,
-          agentName: agentLabel,
-          agentType: isMain ? 'main' : 'sub-agent',
-          model,
-          status: 'active',
-          lastActivity,
           project,
-          lastMessage: detail.lastMessage,
-          lastTool: detail.lastTool,
-          lastToolInput: detail.lastToolInput,
-          tokenUsage: getTokenUsageV2(wirePath, ctxMax),
-          gitEvents: getGitEventsV2(wirePath, {
-            provider: 'kimi',
-            sessionId,
-            project,
-          }),
-          parentSessionId: kimiCodeParentSessionId(sessionDirName, agentName, stateMeta.agents, activeAgentNames),
-        });
-      }
+        }),
+        parentSessionId: kimiCodeParentSessionId(sessionDirName, agentName, stateMeta.agents, activeAgentNames),
+      });
     }
   }
 
@@ -1222,8 +1525,24 @@ class KimiAdapter {
     _kimiJsonCache.value = null;
     _codeConfigCache.at = 0;
     _codeConfigCache.value = null;
-    _codeIndexCache.at = 0;
+    _codeIndexCache.signature = null;
     _codeIndexCache.value = null;
+    _codeIndexCache.fallbackMisses.clear();
+    _codeIndexCache.fallbackOffset = 0;
+    _codeIndexCache.fallbackDiscarding = false;
+    _codeIndexCache.fallbackTargetSignature = '';
+  }
+
+  getPerfStats() {
+    return {
+      ..._perf,
+      codeIndexEntries: _codeIndexCache.value?.size || 0,
+      codeIndexMaxLines: KIMI_CODE_INDEX_MAX_LINES,
+      codeIndexFallbackOffset: _codeIndexCache.fallbackOffset,
+      codeIndexFallbackMaxBytes: KIMI_CODE_INDEX_FALLBACK_MAX_BYTES,
+      codeIndexFallbackMaxLines: KIMI_CODE_INDEX_FALLBACK_MAX_LINES,
+      codeIndexFallbackMaxMs: KIMI_CODE_INDEX_FALLBACK_MAX_MS,
+    };
   }
 }
 

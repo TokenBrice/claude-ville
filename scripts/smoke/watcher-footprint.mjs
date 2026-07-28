@@ -2,19 +2,61 @@ import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
 
+const args = process.argv.slice(2);
+const usage = `Usage: node scripts/smoke/watcher-footprint.mjs [options]
+
+Options:
+  --url <url>         Perf endpoint (default: http://localhost:4000/api/perf)
+  --pid <pid>         Explicit server PID; must match /api/perf.runtime.pid
+  --max <count>       Maximum physical inotify watch entries (default: 1000)
+  --tolerance <count> Allowed direct/API sampling difference (default: 4)
+  --help              Show this help`;
+
+function readValue(flag, index) {
+  const value = args[index + 1];
+  if (!value || value.startsWith('--')) throw new Error(`${flag} requires a value\n\n${usage}`);
+  return value;
+}
+
+function positiveInteger(flag, value, { allowZero = false } = {}) {
+  const number = Number(value);
+  if (!Number.isInteger(number) || number < (allowZero ? 0 : 1)) {
+    throw new Error(`${flag} must be ${allowZero ? 'a non-negative' : 'a positive'} integer`);
+  }
+  return number;
+}
+
+let explicitPid = null;
+let max = 1000;
+let tolerance = 4;
+let url = 'http://localhost:4000/api/perf';
+for (let index = 0; index < args.length; index++) {
+  const flag = args[index];
+  if (flag === '--help') {
+    console.log(usage);
+    process.exit(0);
+  }
+  if (flag === '--pid') {
+    explicitPid = positiveInteger(flag, readValue(flag, index));
+    index++;
+  } else if (flag === '--max') {
+    max = positiveInteger(flag, readValue(flag, index), { allowZero: true });
+    index++;
+  } else if (flag === '--tolerance') {
+    tolerance = positiveInteger(flag, readValue(flag, index), { allowZero: true });
+    index++;
+  } else if (flag === '--url') {
+    url = readValue(flag, index);
+    index++;
+  } else {
+    throw new Error(`Unknown argument: ${flag}\n\n${usage}`);
+  }
+}
+
 if (process.platform !== 'linux') {
   console.log(`watcher footprint skipped: ${process.platform} does not expose Linux fdinfo`);
   process.exit(0);
 }
-
-const args = process.argv.slice(2);
-const valueAfter = (flag, fallback = null) => {
-  const index = args.indexOf(flag);
-  return index === -1 ? fallback : args[index + 1];
-};
-const pid = Number(valueAfter('--pid', process.pid));
-const max = Number(valueAfter('--max', 1000));
-const url = valueAfter('--url', 'http://localhost:4000/api/perf');
 
 function readProcWatchers(targetPid) {
   const fdInfoDir = `/proc/${targetPid}/fdinfo`;
@@ -52,19 +94,47 @@ function getJson(targetUrl) {
   });
 }
 
-const direct = readProcWatchers(pid);
-let api = null;
+let perf;
 try {
-  const perf = await getJson(url);
-  api = {
-    websocketClients: perf.websocketClients,
-    topology: perf.watchers,
-  };
+  perf = await getJson(url);
 } catch (err) {
-  api = { unavailable: err.message };
+  throw new Error(`Unable to read ${url}: ${err.message}`);
 }
 
+const apiPid = Number(perf?.runtime?.pid);
+if (!Number.isInteger(apiPid) || apiPid <= 0) {
+  throw new Error(`${url} did not report a valid runtime.pid`);
+}
+if (explicitPid !== null && explicitPid !== apiPid) {
+  throw new Error(`--pid ${explicitPid} does not match ${url} runtime.pid ${apiPid}`);
+}
+
+const pid = explicitPid ?? apiPid;
+const apiLinux = perf?.watchers?.linux;
+if (apiLinux?.supported !== true || !Number.isInteger(apiLinux.watchEntries) || apiLinux.watchEntries < 0) {
+  throw new Error(`${url} did not report a valid watchers.linux.watchEntries count`);
+}
+if (apiLinux.error) throw new Error(`${url} watcher sample failed: ${apiLinux.error}`);
+
+const direct = readProcWatchers(pid);
+const difference = Math.abs(direct.watchEntries - apiLinux.watchEntries);
+const api = {
+  pid: apiPid,
+  websocketClients: perf.websocketClients,
+  topology: perf.watchers,
+  difference,
+  tolerance,
+};
+
 console.log(JSON.stringify({ direct, api }, null, 2));
-if (Number.isFinite(max) && direct.watchEntries > max) {
-  throw new Error(`watch entry count ${direct.watchEntries} exceeds limit ${max}`);
+if (difference > tolerance) {
+  throw new Error(
+    `direct watcher count ${direct.watchEntries} differs from API count ${apiLinux.watchEntries} `
+    + `by ${difference} (tolerance ${tolerance})`,
+  );
+}
+if (direct.watchEntries > max || apiLinux.watchEntries > max) {
+  throw new Error(
+    `watch entry count exceeds limit ${max} (direct=${direct.watchEntries}, api=${apiLinux.watchEntries})`,
+  );
 }

@@ -54,6 +54,13 @@ const _sessionIndex = new Map(); // sessionId (with prefix) -> { dir, summaryPat
 const _summaryCache = new Map(); // summaryPath -> { key, summary }
 const _tailParseCache = new Map(); // filePath -> { key, detail }
 const _subagentMetaCache = new Map(); // meta.json path -> { key, childId, parentId }
+const _projectSessionsCache = new Map(); // projectPath -> { mtimeMs, entries }
+const _discoveryPerf = {
+  projectCacheHits: 0,
+  projectCacheMisses: 0,
+  lastDiscoveredSessions: 0,
+  lastActiveSessions: 0,
+};
 
 const MAX_SUBAGENT_META_READS = 2000;
 
@@ -191,6 +198,20 @@ function listSessionDirs() {
   for (const projectDir of projectDirs) {
     const projectPath = path.join(SESSIONS_DIR, projectDir.name);
     const projectFromName = decodeProjectDirName(projectDir.name);
+    let projectMtimeMs = 0;
+    try {
+      projectMtimeMs = fs.statSync(projectPath).mtimeMs;
+    } catch {
+      continue;
+    }
+    const cached = _projectSessionsCache.get(projectPath);
+    if (cached?.mtimeMs === projectMtimeMs) {
+      _discoveryPerf.projectCacheHits++;
+      results.push(...cached.entries);
+      continue;
+    }
+    _discoveryPerf.projectCacheMisses++;
+
     let sessionDirs = [];
     try {
       sessionDirs = fs.readdirSync(projectPath, { withFileTypes: true })
@@ -199,11 +220,11 @@ function listSessionDirs() {
       continue;
     }
 
+    const projectEntries = [];
     for (const sessionDir of sessionDirs) {
       const dir = path.join(projectPath, sessionDir.name);
       const summaryPath = path.join(dir, 'summary.json');
-      if (!fs.existsSync(summaryPath)) continue;
-      results.push({
+      projectEntries.push({
         dir,
         sessionUuid: sessionDir.name,
         projectFromName,
@@ -213,7 +234,14 @@ function listSessionDirs() {
         eventsPath: path.join(dir, 'events.jsonl'),
       });
     }
+    _projectSessionsCache.set(projectPath, { mtimeMs: projectMtimeMs, entries: projectEntries });
+    results.push(...projectEntries);
   }
+  const activeProjects = new Set(projectDirs.map(projectDir => path.join(SESSIONS_DIR, projectDir.name)));
+  for (const projectPath of _projectSessionsCache.keys()) {
+    if (!activeProjects.has(projectPath)) _projectSessionsCache.delete(projectPath);
+  }
+  _discoveryPerf.lastDiscoveredSessions = results.length;
   return results;
 }
 
@@ -245,10 +273,12 @@ function readSubagentMeta(metaPath) {
 // Grok records the parent link under <parentDir>/subagents/<childId>/meta.json,
 // not on the child's own summary. Build a child→parent map once per scan so
 // subagent sessions can resolve their owner without rescanning per session.
-function buildSubagentParentIndex(entries) {
+function buildSubagentParentIndex(entries, wantedChildIds = null) {
   const childToParent = new Map();
+  const wanted = wantedChildIds ? new Set(wantedChildIds) : null;
   let reads = 0;
   for (const entry of entries) {
+    if (wanted && childToParent.size >= wanted.size) break;
     if (reads >= MAX_SUBAGENT_META_READS) break;
     const subagentsDir = path.join(entry.dir, 'subagents');
     let childDirs;
@@ -258,12 +288,15 @@ function buildSubagentParentIndex(entries) {
       continue;
     }
     for (const child of childDirs) {
+      if (wanted && !wanted.has(child.name)) continue;
       if (reads >= MAX_SUBAGENT_META_READS) break;
       reads++;
       const meta = readSubagentMeta(path.join(subagentsDir, child.name, 'meta.json'));
       const childId = meta?.childId || child.name;
       const parentId = meta?.parentId || entry.sessionUuid;
-      if (childId && parentId) childToParent.set(childId, parentId);
+      if (childId && parentId && (!wanted || wanted.has(childId))) {
+        childToParent.set(childId, parentId);
+      }
     }
   }
   return childToParent;
@@ -594,7 +627,7 @@ class GrokAdapter {
     const sessions = [];
 
     const entries = listSessionDirs();
-    const subagentParents = buildSubagentParentIndex(entries);
+    const activeEntries = [];
 
     for (const entry of entries) {
       const summary = getSummary(entry.summaryPath);
@@ -602,7 +635,19 @@ class GrokAdapter {
 
       const lastActivity = sessionActivityMs(entry, summary);
       if (!lastActivity || now - lastActivity > activeThresholdMs) continue;
+      activeEntries.push({ entry, summary, lastActivity });
+    }
+    const unresolvedChildIds = activeEntries
+      .filter(({ summary }) => (
+        summary.session_kind === 'subagent'
+        && !summary.parent_session_id
+        && !summary.parentSessionId
+      ))
+      .map(({ entry, summary }) => summary?.info?.id || entry.sessionUuid);
+    const subagentParents = buildSubagentParentIndex(entries, unresolvedChildIds);
+    _discoveryPerf.lastActiveSessions = activeEntries.length;
 
+    for (const { entry, summary, lastActivity } of activeEntries) {
       const info = summary.info || {};
       const sessionUuid = info.id || entry.sessionUuid;
       const prefixedId = `grok-${sessionUuid}`;
@@ -698,6 +743,14 @@ class GrokAdapter {
     _summaryCache.clear();
     _tailParseCache.clear();
     _subagentMetaCache.clear();
+    _projectSessionsCache.clear();
+  }
+
+  getPerfStats() {
+    return {
+      ..._discoveryPerf,
+      projectCacheEntries: _projectSessionsCache.size,
+    };
   }
 }
 

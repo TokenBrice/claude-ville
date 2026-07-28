@@ -9,6 +9,7 @@ const path = require('node:path');
 const kimiFixture = buildKimiCodeFixture();
 if (kimiFixture) {
   process.env.HOME = kimiFixture.root;
+  process.env.CLAUDEVILLE_KIMI_INDEX_FALLBACK_MAX_BYTES = String(64 * 1024);
   delete process.env.USERPROFILE;
 }
 const codexFixture = kimiFixture ? buildCodexFixture(kimiFixture.root) : null;
@@ -28,7 +29,10 @@ const {
 } = require('../../claudeville/adapters');
 const { KimiAdapter } = require('../../claudeville/adapters/kimi');
 const { CodexAdapter } = require('../../claudeville/adapters/codex');
-const { OpenCodeAdapter } = require('../../claudeville/adapters/opencode');
+const {
+  OpenCodeAdapter,
+  _test: openCodeTest,
+} = require('../../claudeville/adapters/opencode');
 
 const now = Date.now();
 
@@ -113,7 +117,17 @@ if (kimiFixture) {
   assert.equal(adapter.isAvailable(), true);
   assert.equal(adapter.homeDir, kimiFixture.kimiDir);
 
-  const sessions = adapter.getActiveSessions(10 * 60 * 1000);
+  let sessions = adapter.getActiveSessions(10 * 60 * 1000);
+  const firstPerf = adapter.getPerfStats();
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const alias = sessions.find((session) => session.sessionId === 'kimi-session_alias_dir');
+    const perf = adapter.getPerfStats();
+    if (alias?.project === '/tmp/claude-ville-alias' && perf.codeIndexFallbackOffset === 0) break;
+    sessions = adapter.getActiveSessions(10 * 60 * 1000);
+  }
+  const settledPerf = adapter.getPerfStats();
+  const cachedSessions = adapter.getActiveSessions(10 * 60 * 1000);
+  const warmPerf = adapter.getPerfStats();
   const main = sessions.find((session) => session.sessionId === 'kimi-session_fixture');
   const child = sessions.find((session) => session.sessionId === 'kimi-session_fixture::agent-0');
   const nestedChild = sessions.find((session) => session.sessionId === 'kimi-session_fixture::agent-1');
@@ -127,6 +141,22 @@ if (kimiFixture) {
   const cwdOnlyMain = sessions.find((session) => session.sessionId === 'kimi-session_cwd_project');
   const stateWorkdirMain = sessions.find((session) => session.sessionId === 'kimi-session_state_workdir');
   const questionToolsMain = sessions.find((session) => session.sessionId === 'kimi-session_question_tools');
+  assert.deepEqual(cachedSessions, sessions);
+  assert.ok(firstPerf.skippedInactiveAgentWires >= 1);
+  assert.ok(warmPerf.codeIndexHits > firstPerf.codeIndexHits);
+  assert.ok(firstPerf.codeIndexFallbackScans >= 1);
+  assert.ok(firstPerf.codeIndexFallbackMatches >= 1);
+  assert.ok(firstPerf.codeIndexFallbackBudgetStops >= 1);
+  assert.ok(warmPerf.codeIndexOversizedLines >= 1);
+  assert.ok(
+    firstPerf.codeIndexFallbackMaxScanBytes <= firstPerf.codeIndexFallbackMaxBytes,
+    'each Kimi fallback pass must respect its byte budget',
+  );
+  assert.equal(
+    warmPerf.codeIndexFallbackScans,
+    settledPerf.codeIndexFallbackScans,
+    'an unchanged Kimi index must not restart a completed fallback scan',
+  );
 
   assert.ok(main);
   assert.equal(main.provider, 'kimi');
@@ -197,7 +227,11 @@ if (kimiFixture) {
   assert.ok(childOnlyParent.lastActivity >= childOnlyChild.lastActivity);
 
   assert.ok(aliasMain);
-  assert.equal(aliasMain.project, '/tmp/claude-ville-alias');
+  assert.equal(
+    aliasMain.project,
+    '/tmp/claude-ville-alias',
+    'an active Kimi session older than the 4,096-line index tail must retain its indexed project',
+  );
   assert.equal(aliasMain.agentName, 'Aliased Kimi');
   assert.equal(aliasMain.lastTool, 'Bash');
 
@@ -313,9 +347,31 @@ if (fixture) {
   const adapter = new OpenCodeAdapter();
   assert.equal(adapter.isAvailable(), true);
 
+  const { DatabaseSync } = require('node:sqlite');
+  const planDb = new DatabaseSync(fixture.dbPath, { readOnly: true });
+  try {
+    const plan = planDb.prepare(`EXPLAIN QUERY PLAN ${openCodeTest.ACTIVE_SESSION_CANDIDATE_SQL}`)
+      .all({ cutoff: Date.now() - (10 * 60 * 1000), limit: 256 })
+      .map(row => String(row.detail || ''))
+      .join('\n');
+    assert.match(plan, /SEARCH (?:recent_part|candidate_part) USING INDEX part_session_idx/);
+    assert.doesNotMatch(
+      plan,
+      /SCAN (?:recent_part|candidate_part)/,
+      'active-session discovery must not scan all OpenCode parts',
+    );
+  } finally {
+    planDb.close();
+  }
+
   const sessions = adapter.getActiveSessions(10 * 60 * 1000);
   const parent = sessions.find((session) => session.sessionId === 'opencode-ses_parent');
   const child = sessions.find((session) => session.sessionId === 'opencode-ses_child');
+  const firstPerf = adapter.getPerfStats();
+  const cachedSessions = adapter.getActiveSessions(10 * 60 * 1000);
+  const warmPerf = adapter.getPerfStats();
+  assert.deepEqual(cachedSessions, sessions);
+  assert.ok(warmPerf.activeSessionCacheHits > firstPerf.activeSessionCacheHits);
 
   assert.ok(parent);
   assert.equal(parent.provider, 'opencode');
@@ -471,6 +527,7 @@ function buildKimiCodeFixture() {
   const mainWire = path.join(sessionDir, 'agents', 'main', 'wire.jsonl');
   const childWire = path.join(sessionDir, 'agents', 'agent-0', 'wire.jsonl');
   const nestedChildWire = path.join(sessionDir, 'agents', 'agent-1', 'wire.jsonl');
+  const staleChildWire = path.join(sessionDir, 'agents', 'agent-stale', 'wire.jsonl');
   const childFreshMainWire = path.join(childFreshSessionDir, 'agents', 'main', 'wire.jsonl');
   const childFreshChildWire = path.join(childFreshSessionDir, 'agents', 'agent-0', 'wire.jsonl');
   const childOnlyChildWire = path.join(childOnlySessionDir, 'agents', 'agent-0', 'wire.jsonl');
@@ -507,7 +564,7 @@ function buildKimiCodeFixture() {
     ].join('\n'),
   );
 
-  writeJsonl(path.join(kimiDir, 'session_index.jsonl'), [
+  const indexEntries = [
     {
       sessionId: 'session_fixture',
       sessionDir,
@@ -543,7 +600,26 @@ function buildKimiCodeFixture() {
       sessionDir: escapedIndexDir,
       workDir: '/tmp/claude-ville',
     },
-  ]);
+  ];
+  const aliasIndexEntry = indexEntries.splice(5, 1)[0];
+  for (let index = 0; index < 400; index++) {
+    indexEntries.push({
+      sessionId: `pre-alias-padding-${index}`,
+      padding: 'x'.repeat(256),
+    });
+  }
+  indexEntries.push({
+    sessionId: 'oversized-index-padding',
+    padding: 'x'.repeat(70 * 1024),
+  });
+  indexEntries.push(aliasIndexEntry);
+  for (let index = 0; index < 4096; index++) {
+    indexEntries.push({ sessionId: `index-padding-${index}` });
+  }
+  writeTextFile(
+    path.join(kimiDir, 'session_index.jsonl'),
+    indexEntries.map((entry) => JSON.stringify(entry)).join('\n'),
+  );
 
   writeTextFile(path.join(sessionDir, 'state.json'), JSON.stringify({
     title: 'Fixture Kimi',
@@ -552,6 +628,7 @@ function buildKimiCodeFixture() {
       main: { type: 'main', parentAgentId: null },
       'agent-0': { type: 'sub', parentAgentId: 'main' },
       'agent-1': { type: 'sub', parentAgentId: 'agent-0' },
+      'agent-stale': { type: 'sub', parentAgentId: 'main' },
     },
     createdAt: new Date(now - 5000).toISOString(),
     updatedAt: new Date(now).toISOString(),
@@ -734,6 +811,17 @@ function buildKimiCodeFixture() {
       },
     },
   ]);
+
+  writeJsonl(staleChildWire, [{
+    type: 'context.append_loop_event',
+    time: now - 30 * 60_000,
+    event: {
+      type: 'tool.call',
+      name: 'Read',
+      toolCallId: 'call_kimi_inactive_child_fixture',
+      args: { file_path: '/tmp/claude-ville/old.js' },
+    },
+  }]);
 
   writeJsonl(childFreshMainWire, [
     {
@@ -1040,6 +1128,7 @@ function buildKimiCodeFixture() {
   fs.utimesSync(mainWire, fileDate, fileDate);
   fs.utimesSync(childWire, fileDate, fileDate);
   fs.utimesSync(nestedChildWire, fileDate, fileDate);
+  fs.utimesSync(staleChildWire, staleDate, staleDate);
   fs.utimesSync(childFreshMainWire, staleDate, staleDate);
   fs.utimesSync(childFreshChildWire, fileDate, fileDate);
   fs.utimesSync(childOnlyChildWire, fileDate, fileDate);
@@ -1118,6 +1207,7 @@ function buildOpenCodeFixture() {
         time_updated integer NOT NULL,
         data text NOT NULL
       );
+      CREATE INDEX part_session_idx ON part(session_id);
     `);
 
     const now = Date.now();

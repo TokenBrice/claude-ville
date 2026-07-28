@@ -80,6 +80,7 @@ const WATCH_ZERO_CLIENT_GRACE_MS = Math.max(50, Number(process.env.CLAUDEVILLE_W
 const WATCH_RECONCILIATION_INTERVAL_MS = 30_000;
 const PERF_SAMPLE_INTERVAL_MS = 5000;
 const LINUX_WATCH_SAMPLE_INTERVAL_MS = 15_000;
+const GIT_STATE_SCAN_INTERVAL_MS = 5000;
 const GIT_STATE_MAX_PROJECTS = 40;
 const GIT_STATE_MAX_REF_ENTRIES = 800;
 
@@ -395,6 +396,7 @@ function handleGetPerf(req, res) {
     providers: getAdapterPerfStats(),
     gitEnrichment,
     gitRate: perfDiagnostics.gitRate,
+    tailRate: perfDiagnostics.tailRate,
     jsonlDiagnostics: getJsonlDiagnostics(),
     tailCache: getTailCacheDiagnostics(),
     watchFailures: serverPerf.watchFailures,
@@ -428,6 +430,9 @@ function handleGetPerf(req, res) {
       probeScans: serverPerf.probeScans,
       probeChanges: serverPerf.probeChanges,
       reconciliations: serverPerf.reconciliations,
+      gitStateScans: serverPerf.gitStateScans,
+      gitStateChanges: serverPerf.gitStateChanges,
+      gitStateProjects: serverPerf.gitStateProjects,
       lastReconciliationAt,
       linux: perfDiagnostics.linuxWatchers,
     },
@@ -453,6 +458,7 @@ function handleGetPerf(req, res) {
       providerDataDirty,
       teamsDirty,
       marks: serverPerf.dirtyMarks,
+      coalesced: serverPerf.dirtyMarksCoalesced,
       last: serverPerf.lastDirty,
     },
     timestamp: Date.now(),
@@ -965,6 +971,7 @@ let lastBroadcastState = null;
 let lastDeltaSnapshotAt = 0;
 const activeProjectGitState = new Map();
 const lastCanonicalActiveProjects = new Set();
+const recentDirtyMarks = new Map();
 const activeWatchers = new Map();
 const recursiveWatchFallbacks = new Map();
 const watchProbeSignatures = new Map();
@@ -975,11 +982,14 @@ let dynamicWatchersEnabled = false;
 const eventLoopDelayMonitor = monitorEventLoopDelay({ resolution: 20 });
 let lastEventLoopUtilization = performance.eventLoopUtilization();
 let lastGitPerfSample = null;
+let lastTailPerfSample = null;
 let lastLinuxWatchSampleAt = 0;
+let lastGitStateScanAt = 0;
 const perfDiagnostics = {
   memory: null,
   eventLoop: null,
   gitRate: null,
+  tailRate: null,
   linuxWatchers: {
     supported: process.platform === 'linux',
     sampledAt: null,
@@ -1010,6 +1020,10 @@ const serverPerf = {
   probeChanges: 0,
   reconciliations: 0,
   dirtyMarks: 0,
+  dirtyMarksCoalesced: 0,
+  gitStateScans: 0,
+  gitStateChanges: 0,
+  gitStateProjects: 0,
   lastDirty: null,
   lastBroadcastStateBytes: 0,
 };
@@ -1039,8 +1053,30 @@ function normalizeServerDirtyDescriptor(value = 'watch', provider = null) {
   };
 }
 
+function dirtyDescriptorKey(dirty) {
+  return [
+    dirty.provider || '',
+    dirty.kind || '',
+    dirty.path || '',
+    dirty.sessionId || '',
+    dirty.project || '',
+  ].join('|');
+}
+
 function markProviderDataDirty(value = 'watch', provider = null) {
   const dirty = normalizeServerDirtyDescriptor(value, provider);
+  const now = Date.now();
+  const dirtyKey = dirtyDescriptorKey(dirty);
+  const previousMark = recentDirtyMarks.get(dirtyKey);
+  if (
+    previousMark
+    && now - previousMark.at < BROADCAST_DEBOUNCE_MS
+    && lastBroadcastStamp < previousMark.stamp
+  ) {
+    serverPerf.dirtyMarksCoalesced++;
+    return false;
+  }
+
   providerDataDirty = true;
   if (dirty.kind === 'teams'
     || (dirty.provider === 'claude' && ['discovery', 'metadata', 'reconcile'].includes(dirty.kind))
@@ -1048,13 +1084,21 @@ function markProviderDataDirty(value = 'watch', provider = null) {
     teamsDirty = true;
   }
   cacheStampCounter++;
+  recentDirtyMarks.delete(dirtyKey);
+  recentDirtyMarks.set(dirtyKey, { at: now, stamp: cacheStampCounter });
+  while (recentDirtyMarks.size > 512) {
+    const oldest = recentDirtyMarks.keys().next().value;
+    if (oldest === undefined) break;
+    recentDirtyMarks.delete(oldest);
+  }
   serverPerf.dirtyMarks++;
-  serverPerf.lastDirty = { ...dirty, at: Date.now() };
+  serverPerf.lastDirty = { ...dirty, at: now };
   invalidateSessionCaches({ provider: dirty.provider, dirty });
   if (process.env.DEBUG_WATCH) {
     const scope = dirty.provider ? ` provider=${dirty.provider}` : ' provider=all';
     console.log(`[Watch] dirty: ${dirty.reason} kind=${dirty.kind}${scope}`);
   }
+  return true;
 }
 
 function updateCanonicalActiveProjects(sessions = []) {
@@ -1767,6 +1811,7 @@ function refreshWatchPaths(initialWatchPaths = null, { sessions = null } = {}) {
   serverPerf.probeWatchPaths = probes.length;
   serverPerf.recursiveWatchFallbacks = recursiveWatchFallbacks.size;
   lastFullDiscoveryAt = Date.now();
+  sampleLinuxWatcherCount(Date.now(), { force: true });
 }
 
 function watchProbeSignature(wp) {
@@ -1827,6 +1872,8 @@ function watcherTopologySnapshot() {
     dynamicInstalled: serverPerf.dynamicWatchPaths,
     dynamicEnabled: dynamicWatchersEnabled,
     probes: activeProbeDescriptors.size,
+    fallbacks: recursiveWatchFallbacks.size,
+    recentFailures: serverPerf.watchFailureDetails.slice(),
   };
 }
 
@@ -1834,9 +1881,9 @@ function millisecondsFromNanoseconds(value) {
   return Number.isFinite(value) ? Math.round((value / 1e6) * 1000) / 1000 : null;
 }
 
-function sampleLinuxWatcherCount(now = Date.now()) {
+function sampleLinuxWatcherCount(now = Date.now(), { force = false } = {}) {
   if (process.platform !== 'linux') return;
-  if (now - lastLinuxWatchSampleAt < LINUX_WATCH_SAMPLE_INTERVAL_MS) return;
+  if (!force && now - lastLinuxWatchSampleAt < LINUX_WATCH_SAMPLE_INTERVAL_MS) return;
   lastLinuxWatchSampleAt = now;
 
   let inotifyFds = 0;
@@ -1913,6 +1960,33 @@ function sampleRuntimePerf() {
     gitCommandCount: Number(git.gitCommandCount) || 0,
     gitCommandTimeMs: Number(git.gitCommandTimeMs) || 0,
     cacheHits: Number(git.cacheHits) || 0,
+  };
+
+  const tail = getTailCacheDiagnostics().parsed || {};
+  if (lastTailPerfSample) {
+    const elapsedSeconds = Math.max(0.001, (now - lastTailPerfSample.at) / 1000);
+    const rate = (field) => Math.round(
+      (((Number(tail[field]) || 0) - (Number(lastTailPerfSample[field]) || 0)) / elapsedSeconds) * 1000,
+    ) / 1000;
+    perfDiagnostics.tailRate = {
+      sampledAt: now,
+      windowMs: now - lastTailPerfSample.at,
+      parsePassesPerSecond: rate('parsePasses'),
+      parsedLinesPerSecond: rate('parsedLines'),
+      projectedLinesPerSecond: rate('projectedLines'),
+      reusedLinesPerSecond: rate('reusedLines'),
+      rejectedEntriesPerSecond: rate('rejectedEntries'),
+      bytesReadPerSecond: rate('bytesRead'),
+    };
+  }
+  lastTailPerfSample = {
+    at: now,
+    parsePasses: Number(tail.parsePasses) || 0,
+    parsedLines: Number(tail.parsedLines) || 0,
+    projectedLines: Number(tail.projectedLines) || 0,
+    reusedLines: Number(tail.reusedLines) || 0,
+    rejectedEntries: Number(tail.rejectedEntries) || 0,
+    bytesRead: Number(tail.bytesRead) || 0,
   };
   sampleLinuxWatcherCount(now);
 }
@@ -2003,8 +2077,13 @@ function activeGitProjects() {
 
 function scanActiveProjectGitState() {
   if (wsClients.size === 0) return;
+  const now = Date.now();
+  if (now - lastGitStateScanAt < GIT_STATE_SCAN_INTERVAL_MS) return;
+  lastGitStateScanAt = now;
 
   const projects = activeGitProjects();
+  serverPerf.gitStateScans++;
+  serverPerf.gitStateProjects += projects.length;
   const activeProjects = new Set(projects);
   for (const project of activeProjectGitState.keys()) {
     if (!activeProjects.has(project)) activeProjectGitState.delete(project);
@@ -2028,6 +2107,7 @@ function scanActiveProjectGitState() {
       project,
     });
   }
+  serverPerf.gitStateChanges += changedProjects.length;
 }
 
 function reconcileWatchTopology() {
@@ -2207,6 +2287,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   for (const key of Array.from(activeWatchers.keys())) closeWatcherEntry(key);
   recursiveWatchFallbacks.clear();
   watchProbeSignatures.clear();
+  recentDirtyMarks.clear();
   selectedWatchDescriptors.clear();
   activeProbeDescriptors.clear();
   setAdapterDataReadyCallback(null);

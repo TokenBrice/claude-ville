@@ -46,10 +46,10 @@ const GIT_PUSH_FLAGS_WITH_VALUE = new Set([
   '--receive-pack',
   '--repo',
 ]);
-// Unpushed-commit scans are idempotent and dominate the per-poll cost when many
-// repos are open. Git-state probes invalidate a project's cache when its refs
-// change, so active projects do not need a shorter periodic refresh.
-const GIT_STATUS_CACHE_TTL_MS = 30000;
+// Git-state probes invalidate a project's cache when refs change. Keep a slow
+// fallback for missed/provider-external changes without launching a subprocess
+// burst at every 30-second watcher reconciliation.
+const GIT_STATUS_CACHE_TTL_MS = 5 * 60 * 1000;
 const RECENT_REPOSITORY_PUSH_TTL_MS = 2 * 60 * 1000;
 const REPOSITORY_UNPUSHED_EVENT_TTL_MS = Math.max(
   60 * 60 * 1000,
@@ -58,6 +58,8 @@ const REPOSITORY_UNPUSHED_EVENT_TTL_MS = Math.max(
 const MAX_UNPUSHED_COMMITS_PER_BRANCH = 120;
 const GIT_TRACKING_TTL_MS = 6 * 60 * 60 * 1000;
 const GIT_TRACKING_MAX_PROJECTS = 512;
+const GIT_REMOTE_REF_SCAN_MAX_ENTRIES = 800;
+const GIT_REMOTE_REF_SCAN_MAX_DEPTH = 8;
 const _gitStatusCache = new Map();
 const _unpushedEventsCache = new Map();
 const _currentBranchCache = new Map();
@@ -77,6 +79,10 @@ const _perf = {
   gitCommandTimeouts: 0,
   cacheHits: 0,
   headInvalidations: 0,
+  remoteRefScans: 0,
+  remoteRefEntries: 0,
+  remoteRefScanHighWater: 0,
+  remoteRefScanTruncations: 0,
   lastRun: null,
   recentRuns: [],
 };
@@ -145,34 +151,129 @@ function gitStatusCacheTtl() {
   return GIT_STATUS_CACHE_TTL_MS;
 }
 
-function gitHeadFiles(project) {
+function resolveGitDir(project) {
   let gitDir = path.join(project, '.git');
   try {
     if (fs.statSync(gitDir).isFile()) {
       // Worktree/submodule checkout: .git is a pointer file to the real git dir.
       const pointer = fs.readFileSync(gitDir, 'utf8').match(/^gitdir:\s*(.+?)\s*$/m);
-      if (!pointer) return [];
+      if (!pointer) return null;
       gitDir = path.resolve(project, pointer[1]);
     }
   } catch {
-    return [];
+    return null;
   }
-  // logs/HEAD mtime changes on every commit; HEAD mtime changes on checkout.
-  return [path.join(gitDir, 'logs', 'HEAD'), path.join(gitDir, 'HEAD')];
+  return gitDir;
+}
+
+function resolveGitCommonDir(gitDir) {
+  try {
+    const commonDir = fs.readFileSync(path.join(gitDir, 'commondir'), 'utf8').trim();
+    return commonDir ? path.resolve(gitDir, commonDir) : gitDir;
+  } catch {
+    return gitDir;
+  }
+}
+
+function gitHeadFiles(gitDir) {
+  // logs/HEAD changes on local commits, HEAD on checkout, and remote/packed-ref
+  // metadata on fetch/push.
+  return [
+    path.join(gitDir, 'logs', 'HEAD'),
+    path.join(gitDir, 'HEAD'),
+    path.join(gitDir, 'FETCH_HEAD'),
+    path.join(gitDir, 'packed-refs'),
+    path.join(gitDir, 'refs', 'heads'),
+    path.join(gitDir, 'refs', 'remotes'),
+  ];
+}
+
+function looseRemoteRefsSignature(gitDir) {
+  const root = path.join(gitDir, 'refs', 'remotes');
+  const hash = crypto.createHash('sha256');
+  const pending = [{ directory: root, relative: '', depth: 0 }];
+  let observed = false;
+  let scannedEntries = 0;
+  let truncated = false;
+  _perf.remoteRefScans++;
+  while (pending.length && scannedEntries < GIT_REMOTE_REF_SCAN_MAX_ENTRIES) {
+    const { directory, relative, depth } = pending.pop();
+    let dir;
+    const entries = [];
+    try {
+      const stat = fs.statSync(directory);
+      hash.update(`dir:${relative}\0${stat.mtimeMs}:${stat.ctimeMs}:${stat.ino || 0}\0`);
+      observed = true;
+      dir = fs.opendirSync(directory);
+      while (entries.length < GIT_REMOTE_REF_SCAN_MAX_ENTRIES - scannedEntries) {
+        const entry = dir.readSync();
+        if (!entry) break;
+        entries.push(entry);
+      }
+      if (
+        entries.length >= GIT_REMOTE_REF_SCAN_MAX_ENTRIES - scannedEntries
+        && dir.readSync()
+      ) {
+        truncated = true;
+      }
+    } catch {
+      continue;
+    } finally {
+      try { dir?.closeSync(); } catch { /* ignore */ }
+    }
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    scannedEntries += entries.length;
+    for (let index = entries.length - 1; index >= 0; index--) {
+      const entry = entries[index];
+      const entryPath = path.join(directory, entry.name);
+      const entryRelative = relative ? `${relative}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        if (depth < GIT_REMOTE_REF_SCAN_MAX_DEPTH) {
+          pending.push({ directory: entryPath, relative: entryRelative, depth: depth + 1 });
+        } else {
+          truncated = true;
+        }
+        continue;
+      }
+      let stat;
+      try {
+        stat = fs.lstatSync(entryPath);
+      } catch {
+        continue;
+      }
+      observed = true;
+      hash.update(entryRelative);
+      hash.update('\0');
+      hash.update(`${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino || 0}`);
+      hash.update('\0');
+    }
+  }
+  if (pending.length) truncated = true;
+  hash.update(`scan:${scannedEntries}:${truncated ? 'truncated' : 'complete'}`);
+  _perf.remoteRefEntries += scannedEntries;
+  _perf.remoteRefScanHighWater = Math.max(_perf.remoteRefScanHighWater, scannedEntries);
+  if (truncated) _perf.remoteRefScanTruncations++;
+  return observed ? hash.digest('hex').slice(0, 16) : '-';
 }
 
 function gitHeadSignature(project) {
-  const files = gitHeadFiles(project);
-  if (!files.length) return null;
-  return files
+  const gitDir = resolveGitDir(project);
+  if (!gitDir) return null;
+  const gitDirs = [...new Set([gitDir, resolveGitCommonDir(gitDir)])];
+  const fileSignature = [...new Set(gitDirs.flatMap(gitHeadFiles))]
     .map((file) => {
       try {
-        return String(fs.statSync(file).mtimeMs);
+        const stat = fs.statSync(file);
+        return `${stat.mtimeMs}:${stat.ctimeMs}:${stat.size}:${stat.ino || 0}`;
       } catch {
         return '-';
       }
     })
     .join('|');
+  const remoteRefSignature = gitDirs
+    .map(looseRemoteRefsSignature)
+    .join('|');
+  return `${fileSignature}|${remoteRefSignature}`;
 }
 
 function invalidateOnGitHeadChange(project) {
@@ -246,6 +347,8 @@ function getGitEnrichmentPerfStats() {
     unpushedTransitionCacheSize: _lastUnpushedByProjectBranch.size,
     trackingProjectCount: _gitTrackingLastSeen.size,
     trackingProjectLimit: GIT_TRACKING_MAX_PROJECTS,
+    remoteRefScanEntryLimit: GIT_REMOTE_REF_SCAN_MAX_ENTRIES,
+    remoteRefScanDepthLimit: GIT_REMOTE_REF_SCAN_MAX_DEPTH,
   };
 }
 

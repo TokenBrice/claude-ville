@@ -90,6 +90,7 @@ try {
 
   const require = createRequire(import.meta.url);
   const { ClaudeAdapter } = require('../../claudeville/adapters/claude.js');
+  const { getTailCacheDiagnostics } = require('../../claudeville/adapters/shared.js');
   const adapter = new ClaudeAdapter();
   let completionNotifications = 0;
   adapter.setDataReadyCallback(() => { completionNotifications++; });
@@ -242,11 +243,63 @@ try {
     'a 129-session active working set must remain warm on the next pass'
   );
 
+  const projectedTailId = 'projected-oversized-tail';
+  const projectedTailPath = path.join(projectDir, `${projectedTailId}.jsonl`);
+  const largeText = 'projection-fixture-'.repeat(9_000);
+  const oversizedScalar = 'scalar-projection-fixture-'.repeat(12_000);
+  const oversizedNonArrayContent = {
+    output: 'non-array-projection-fixture-'.repeat(12_000),
+  };
+  const projectedTailLines = Array.from(
+    { length: 218 },
+    (_, index) => jsonLine(usageEntry(index + 1, 1, {
+      content: [{ type: 'text', text: `${index}:${largeText}` }],
+    })),
+  );
+  projectedTailLines.push(
+    jsonLine(oversizedScalar),
+    jsonLine(usageEntry(219, 1, {
+      content: [{
+        type: 'tool_result',
+        tool_use_id: 'oversized-non-array-result',
+        content: oversizedNonArrayContent,
+      }],
+    })),
+  );
+  writeFile(
+    projectedTailPath,
+    projectedTailLines.join(''),
+  );
+  assert.ok(fs.statSync(projectedTailPath).size > 32 * 1024 * 1024);
+  const projectionRejectsBefore = adapter.getPerfStats().parsedTailCache.rejectedEntries;
+  adapter.getSessionDetail(projectedTailId, project);
+  const projectedAfterFirst = getTailCacheDiagnostics().parsed.parsedLines;
+  adapter.getSessionDetail(projectedTailId, project);
+  const projectedAfterSecond = getTailCacheDiagnostics().parsed.parsedLines;
+  assert.equal(
+    projectedAfterSecond,
+    projectedAfterFirst,
+    'an unchanged oversized raw tail must reuse Claude\'s compact projection',
+  );
+  const projectionDiagnostics = adapter.getPerfStats().parsedTailCache;
+  assert.equal(
+    projectionDiagnostics.rejectedEntries,
+    projectionRejectsBefore,
+    'oversized scalar and non-array content must project within Claude\'s parsed-tail byte budget',
+  );
+  assert.ok(projectionDiagnostics.projection.bytesDropped > 0);
+  await waitFor(() => adapter.getPerfStats().transcriptAggregate.pending === 0);
+
   const parsedEvictionsBefore = adapter.getPerfStats().parsedTailCache.evictions;
   for (let index = 0; index < 6; index++) {
     const id = `parsed-tail-pressure-${index}`;
     writeFile(path.join(projectDir, `${id}.jsonl`), jsonLine(usageEntry(1, 1, {
-      content: [{ type: 'text', text: 'p'.repeat(48 * 1024) }],
+      content: [{
+        type: 'tool_use',
+        id: `tool-${index}`,
+        name: 'Bash',
+        input: { command: `printf %s ${'p'.repeat(48 * 1024)}` },
+      }],
     })));
     usageFor(adapter, id);
   }

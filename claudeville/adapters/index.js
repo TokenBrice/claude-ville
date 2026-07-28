@@ -48,7 +48,10 @@ const SYNTHETIC_PROVIDERS = Object.freeze([
 const SESSION_LIST_CACHE_TTL_MS = 2000;
 const SESSION_DETAIL_CACHE_TTL_MS = 5000;
 const SESSION_DETAIL_MAX_CACHE = 256;
-const REPOSITORY_SCAN_CACHE_TTL_MS = 5000;
+// Repository discovery is a cold fallback, not active-session state. Watcher
+// descriptors and per-project Git signatures handle live changes, so avoid
+// rescanning the checkout root (and spawning rev-parse) every five seconds.
+const REPOSITORY_SCAN_CACHE_TTL_MS = 5 * 60 * 1000;
 const REPOSITORY_SCAN_MAX_PROJECTS = Math.max(1, Number(process.env.CLAUDEVILLE_REPOSITORY_SCAN_MAX || 80) || 80);
 const DIRTY_KINDS = new Set(['transcript', 'discovery', 'metadata', 'teams', 'git', 'reconcile']);
 const REPOSITORY_SCAN_ROOT = process.env.CLAUDEVILLE_REPOSITORY_SCAN_ROOT

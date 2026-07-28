@@ -110,6 +110,20 @@ curl http://localhost:4000/api/perf
 
 If the journal shows GPU ring timeouts, compositor `GL_CONTEXT_LOST`, or Xwayland/browser core dumps without OOM-killer entries, treat it as a graphics-stack reset. ClaudeVille should reduce load by pausing World mode in Dashboard, releasing renderer-owned canvas caches, and capping canvas backing-store pixels, but driver/compositor resets can still originate below the app.
 
+## Linux reports an out-of-memory kill
+
+Do not infer the victim from the notification text or virtual-memory size. Match ClaudeVille's current PID to the kernel OOM table and compare resident/anonymous memory:
+
+```bash
+curl -fsS http://localhost:4000/api/perf
+journalctl -k -b --no-pager | rg -i 'out of memory|oom-kill|killed process'
+RUNTIME_PID=12345 # replace with runtime.pid from /api/perf
+ps -o pid,ppid,comm,rss,vsz,etime -p "$RUNTIME_PID"
+rg '^(Rss|Pss|Pss_Anon|Private_Dirty|Swap):' "/proc/$RUNTIME_PID/smaps_rollup"
+```
+
+`/api/perf.runtime.memory.rss` covers the Node server. Browser canvas, decoded-image, compositor, and GPU allocations belong to the browser process and must be recorded separately with `window.__claudeVillePerf.canvasBudget()` and the browser task manager. A kernel table showing another process with materially larger anonymous RSS is evidence against attributing the system OOM to ClaudeVille.
+
 ## Browser console errors after editing
 
 There is no transpiler, bundler, or app test runner. A typo in any module aborts page startup with a console error pointing at the failing module. Run a server-side syntax check first:
