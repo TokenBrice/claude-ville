@@ -129,13 +129,17 @@ export class Compositor {
         };
     }
 
-    dispose() {
+    releaseCache() {
         for (const canvas of this.cache.values()) {
             canvas.width = 0;
             canvas.height = 0;
         }
         this.cache.clear();
         this.cachePixels = 0;
+    }
+
+    dispose() {
+        this.releaseCache();
         if (Compositor._shared === this) Compositor._shared = null;
     }
 

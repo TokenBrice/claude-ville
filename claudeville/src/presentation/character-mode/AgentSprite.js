@@ -15,6 +15,7 @@ import { compactToolInput, toolActionLabel, toolCategory, classifyTool } from '.
 import { pickLoreLine } from '../../config/loreDialogue.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { resolveUpdateRouteBuilding } from './MovementRouting.js';
+import { releaseCanvasMap } from './CanvasBudget.js';
 
 // Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
@@ -548,6 +549,24 @@ export class AgentSprite {
         this._auraMotes = null;
 
         this._pickTarget();
+    }
+
+    releaseRenderResources() {
+        // Sprite sheets are shared with the compositor and Dashboard avatars, so
+        // drop our references without zeroing their backing stores. Cell effects
+        // are private to this AgentSprite and can be released immediately.
+        releaseCanvasMap(this._silhouetteCellCache);
+        releaseCanvasMap(this._frozenTintCellCache);
+        this._cellBoundsCache.clear();
+        this.spriteCanvas = null;
+        this.spriteSheet = null;
+        this._spriteProfileKey = '';
+        this._nameTagLayoutCacheKey = '';
+        this._nameTagLayoutCache = null;
+        this._bubbleLayoutCacheKey = '';
+        this._bubbleLayoutCache = null;
+        this._compactNameStatusCacheKey = '';
+        this._compactNameStatusCache = null;
     }
 
     _pickTarget() {

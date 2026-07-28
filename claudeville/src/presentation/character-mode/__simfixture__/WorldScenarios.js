@@ -1044,6 +1044,13 @@ export const WORLD_SCENARIOS = [
 const WORLD_SCENARIO_BY_ID = new Map(WORLD_SCENARIOS.map((scenario) => [scenario.id, scenario]));
 
 export function getWorldScenario(id = DEFAULT_WORLD_SCENARIO_ID) {
+    const performanceMatch = /^perf-(\d+)-agents$/.exec(String(id));
+    if (performanceMatch) {
+        const count = Number(performanceMatch[1]);
+        if (Number.isInteger(count) && count >= 1 && count <= 200) {
+            return buildPerformanceScenario(count);
+        }
+    }
     return WORLD_SCENARIO_BY_ID.get(id) || WORLD_SCENARIO_BY_ID.get(DEFAULT_WORLD_SCENARIO_ID);
 }
 

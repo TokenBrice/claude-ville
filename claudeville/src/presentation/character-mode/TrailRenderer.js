@@ -1,28 +1,27 @@
-import { TILE_WIDTH, TILE_HEIGHT } from '../../config/constants.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
+import { tileToWorld, worldToTile } from './Projection.js';
 
 const CAPTURE_INTERVAL_MS = 1000;
 const FLUSH_INTERVAL_MS = 30000;
 const REPAINT_INTERVAL_MS = 2000;
+const PRUNE_INTERVAL_MS = 60000;
 const RETAIN_MS = 60 * 60 * 1000;
-const MAX_RENDER_SAMPLES_ZOOMED_OUT = 600;
-const DIRECT_SELECTED_TRAIL_BACKING_PIXELS = 1_200_000;
-const DIRECT_SELECTED_TRAIL_MIN_ZOOM = 1.5;
-const MAX_DIRECT_SELECTED_SAMPLES = 900;
+const MIN_SAMPLE_DISTANCE_TILES = 0.2;
+const MAX_SAMPLES_PER_AGENT = 720;
+const MAX_TOTAL_SAMPLES = 12000;
+const MAX_PENDING_SAMPLES = 4000;
+const COMPACT_TO_RATIO = 0.8;
+const MAX_RENDER_SAMPLES_PER_AGENT = 240;
+const MAX_RENDER_SAMPLES_TOTAL = 4000;
+const MAX_SELECTED_RENDER_SAMPLES = 600;
+const DIRECT_RENDER_SAMPLE_LIMIT = 512;
 const PHASE_COLORS = {
     morning: '255, 218, 128',
     afternoon: '232, 224, 194',
     dusk: '255, 164, 96',
     night: '112, 174, 255',
 };
-
-function toWorld(tileX, tileY) {
-    return {
-        x: (tileX - tileY) * TILE_WIDTH / 2,
-        y: (tileX + tileY) * TILE_HEIGHT / 2,
-    };
-}
 
 function sampleId(agentId, ts) {
     return `${agentId}:${Math.floor(ts / 1000)}`;
@@ -38,6 +37,34 @@ function viewportMetrics(viewport = {}) {
     const width = viewport._claudeVilleCssWidth || viewport.clientWidth || (taggedCssViewport ? viewport.width : Math.round((viewport.width || 0) / dpr)) || viewport.width || 0;
     const height = viewport._claudeVilleCssHeight || viewport.clientHeight || (taggedCssViewport ? viewport.height : Math.round((viewport.height || 0) / dpr)) || viewport.height || 0;
     return { dpr, width, height };
+}
+
+function sampleListToLimit(samples, limit) {
+    const target = Math.max(1, Math.floor(limit));
+    if (!Array.isArray(samples) || samples.length <= target) return samples;
+    if (target === 1) return [samples.at(-1)];
+    if (target === 2) return [samples[0], samples.at(-1)];
+
+    // Keep a denser recent tail while preserving evenly spaced history so the
+    // one-hour route remains recognizable after compaction.
+    const recentCount = Math.min(Math.floor(target / 4), 120);
+    const historyCount = target - recentCount;
+    const historyEnd = samples.length - recentCount;
+    const compacted = [];
+    for (let index = 0; index < historyCount; index++) {
+        const sourceIndex = historyCount === 1
+            ? 0
+            : Math.round(index * Math.max(0, historyEnd - 1) / (historyCount - 1));
+        compacted.push(samples[sourceIndex]);
+    }
+    compacted.push(...samples.slice(-recentCount));
+    return compacted;
+}
+
+function timerNow() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
 }
 
 // Shared trail-stroke vocabulary (plan 3.10 — one trail language). Both the
@@ -74,9 +101,10 @@ export function strokeAgedTrailSegments(ctx, points, {
 }
 
 export class TrailRenderer {
-    constructor({ store = null, world = null, motionScale = 1 } = {}) {
+    constructor({ store = null, world = null, sprites = null, motionScale = 1 } = {}) {
         this.store = store;
         this.world = world;
+        this.sprites = sprites;
         this.motionScale = motionScale;
         this.samplesByAgent = new Map();
         this.pending = [];
@@ -86,15 +114,34 @@ export class TrailRenderer {
         this.lastCaptureAt = 0;
         this.lastFlushAt = 0;
         this.lastRepaintAt = 0;
+        this.lastPruneAt = 0;
         this.selectedAgentId = null;
         this.lease = null;
         this._loaded = false;
+        this._paused = false;
         this._needsRepaint = true;
+        this._totalSamples = 0;
         this._flushPromise = null;
         this._drainPromise = null;
         this._disposePromise = null;
         this._disposed = false;
         this._lifecycleGeneration = 0;
+        this._stats = {
+            capturedSamples: 0,
+            hydratedSamples: 0,
+            duplicateDrops: 0,
+            malformedDrops: 0,
+            pendingDrops: 0,
+            compactedSamples: 0,
+            prunedSamples: 0,
+            pruneRuns: 0,
+            repaintCount: 0,
+            repaintTimeMs: 0,
+            directDrawCount: 0,
+            directDrawTimeMs: 0,
+            highWaterSamples: 0,
+            highWaterCachePixels: 0,
+        };
         this._unsubscribers = [
             eventBus.on('agent:selected', (agent) => this.setSelectedAgent(agent?.id || null)),
             eventBus.on('agent:deselected', () => this.setSelectedAgent(null)),
@@ -113,22 +160,34 @@ export class TrailRenderer {
     }
 
     async hydrate(now = Date.now()) {
-        if (this._disposed || !this.store || this._loaded) return;
+        if (this._disposed || this._paused || !this.store || this._loaded) return;
         const generation = this._lifecycleGeneration;
         try {
-            const records = await this.store.queryRange('trailSamples', 'ts', now - RETAIN_MS, now);
-            if (this._disposed || generation !== this._lifecycleGeneration) return;
-            for (const record of records || []) this._addSample(record, false);
+            const records = await this.store.queryRange('trailSamples', {
+                index: 'ts',
+                lower: now - RETAIN_MS,
+                upper: now,
+                limit: MAX_TOTAL_SAMPLES,
+                direction: 'prev',
+            });
+            if (this._disposed || this._paused || generation !== this._lifecycleGeneration) return;
+            let hydrated = 0;
+            for (const record of Array.isArray(records) ? records.slice().reverse() : []) {
+                if (this._addSample(record, false)) hydrated++;
+            }
+            this._stats.hydratedSamples += hydrated;
+            this._enforceGlobalCap();
         } catch { /* empty trail on storage failures */ }
-        if (this._disposed || generation !== this._lifecycleGeneration) return;
+        if (this._disposed || this._paused || generation !== this._lifecycleGeneration) return;
         this._loaded = true;
         this._needsRepaint = true;
     }
 
     async update(agents, now = Date.now(), atmosphere = null) {
-        if (this._disposed) return;
+        if (this._disposed || this._paused) return;
+        const generation = this._lifecycleGeneration;
         await this.hydrate(now);
-        if (this._disposed) return;
+        if (this._disposed || this._paused || generation !== this._lifecycleGeneration) return;
         const visible = pageIsVisible();
         if (!visible && this.lease) {
             this.releaseLease();
@@ -146,16 +205,17 @@ export class TrailRenderer {
         }
         if (visible && this.lease && now - this.lastFlushAt >= FLUSH_INTERVAL_MS) {
             await this.flush(now);
+            if (this._disposed || this._paused || generation !== this._lifecycleGeneration) return;
         }
         this._pruneMemory(now);
     }
 
     capture(agents, now = Date.now(), atmosphere = null) {
-        if (this._disposed) return;
+        if (this._disposed || this._paused) return;
         this.lastCaptureAt = now;
         const list = agents?.values ? agents.values() : (agents || []);
         for (const agent of list) {
-            const position = agent?.position;
+            const position = this._capturePosition(agent);
             if (!agent?.id || !position) continue;
             const tileX = Number(position.tileX);
             const tileY = Number(position.tileY);
@@ -171,8 +231,9 @@ export class TrailRenderer {
                 dayProgress: Number(atmosphere?.dayProgress ?? 0),
                 phase: atmosphere?.phase || this._phaseFromDate(now),
             };
-            this._addSample(sample, true);
+            if (this._addSample(sample, true)) this._stats.capturedSamples++;
         }
+        this._enforceGlobalCap();
     }
 
     async flush(now = Date.now()) {
@@ -212,9 +273,10 @@ export class TrailRenderer {
     }
 
     draw(ctx, camera, viewport, now = Date.now()) {
-        if (!ctx || !camera || !viewport) return;
-        if (this._shouldDrawSelectedTrailDirect(camera, viewport)) {
-            this._drawSelectedTrailDirect(ctx, camera, viewport, now);
+        if (this._disposed || this._paused || !ctx || !camera || !viewport) return;
+        if (this._totalSamples <= DIRECT_RENDER_SAMPLE_LIMIT) {
+            if (this.cache) this.releaseCache();
+            this._drawDirect(ctx, camera, viewport, now);
             return;
         }
         if (this._shouldRepaint(camera, viewport, now)) {
@@ -232,6 +294,7 @@ export class TrailRenderer {
     dispose() {
         if (this._disposePromise) return this._disposePromise;
         this._disposed = true;
+        this._paused = true;
         this._lifecycleGeneration++;
         this._disposePromise = this.drain();
         this.releaseLease();
@@ -242,8 +305,20 @@ export class TrailRenderer {
     }
 
     pause() {
+        if (this._disposed) return;
+        if (!this._paused) {
+            this._paused = true;
+            this._lifecycleGeneration++;
+        }
         this.releaseLease();
         this.releaseCache();
+    }
+
+    resume() {
+        if (this._disposed || !this._paused) return;
+        this._paused = false;
+        this._lifecycleGeneration++;
+        this._needsRepaint = true;
     }
 
     releaseLease() {
@@ -265,38 +340,77 @@ export class TrailRenderer {
             cacheKey: this.cacheKey,
             pendingSamples: this.pending.length,
             flushInFlight: this._flushPromise !== null,
+            ...this.getDiagnostics(),
         };
     }
 
-    _shouldDrawSelectedTrailDirect(camera, viewport) {
-        if (!this.selectedAgentId) return false;
-        if ((camera?.zoom || 1) < DIRECT_SELECTED_TRAIL_MIN_ZOOM) return false;
-        const { dpr, width, height } = viewportMetrics(viewport);
-        return width * height * dpr * dpr >= DIRECT_SELECTED_TRAIL_BACKING_PIXELS;
-    }
-
-    _drawSelectedTrailDirect(ctx, camera, viewport, now) {
-        const samples = this.samplesByAgent.get(this.selectedAgentId);
-        if (!samples?.length) return;
-        const { dpr } = viewportMetrics(viewport);
-        const renderSamples = samples.length > MAX_DIRECT_SELECTED_SAMPLES
-            ? samples.slice(-MAX_DIRECT_SELECTED_SAMPLES)
-            : samples;
-        ctx.save();
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        this._drawTrail(ctx, renderSamples, camera, now, true);
-        ctx.restore();
+    getDiagnostics() {
+        return {
+            ...this._stats,
+            totalSamples: this._totalSamples,
+            agentsWithSamples: this.samplesByAgent.size,
+            pendingSamples: this.pending.length,
+            paused: this._paused,
+            loaded: this._loaded,
+            perAgentLimit: MAX_SAMPLES_PER_AGENT,
+            globalLimit: MAX_TOTAL_SAMPLES,
+            pendingLimit: MAX_PENDING_SAMPLES,
+            renderPerAgentLimit: MAX_RENDER_SAMPLES_PER_AGENT,
+            renderGlobalLimit: MAX_RENDER_SAMPLES_TOTAL,
+            directRenderLimit: DIRECT_RENDER_SAMPLE_LIMIT,
+            minimumDistanceTiles: MIN_SAMPLE_DISTANCE_TILES,
+        };
     }
 
     _addSample(sample, pending) {
-        const list = this.samplesByAgent.get(sample.agentId) || [];
+        const agentId = String(sample?.agentId || '');
+        const ts = Number(sample?.ts);
+        const tileX = Number(sample?.tileX);
+        const tileY = Number(sample?.tileY);
+        if (!agentId || !Number.isFinite(ts) || !Number.isFinite(tileX) || !Number.isFinite(tileY)) {
+            this._stats.malformedDrops++;
+            return false;
+        }
+        const normalized = sample.agentId === agentId
+            && sample.ts === ts
+            && sample.tileX === tileX
+            && sample.tileY === tileY
+            ? sample
+            : { ...sample, agentId, ts, tileX, tileY };
+        let list = this.samplesByAgent.get(agentId) || [];
         const last = list.at(-1);
-        if (last && Math.floor(last.ts / 1000) === Math.floor(sample.ts / 1000)) return;
-        list.push(sample);
-        while (list.length > 3600) list.shift();
-        this.samplesByAgent.set(sample.agentId, list);
-        if (pending) this.pending.push(sample);
+        if (last) {
+            const dx = tileX - last.tileX;
+            const dy = tileY - last.tileY;
+            if (
+                Math.floor(last.ts / 1000) === Math.floor(ts / 1000)
+                || dx * dx + dy * dy < MIN_SAMPLE_DISTANCE_TILES * MIN_SAMPLE_DISTANCE_TILES
+            ) {
+                this._stats.duplicateDrops++;
+                return false;
+            }
+        }
+        list.push(normalized);
+        this._totalSamples++;
+        if (list.length > MAX_SAMPLES_PER_AGENT) {
+            const target = Math.max(2, Math.floor(MAX_SAMPLES_PER_AGENT * COMPACT_TO_RATIO));
+            const compacted = sampleListToLimit(list, target);
+            this._recordCompaction(list.length - compacted.length);
+            this._totalSamples -= list.length - compacted.length;
+            list = compacted;
+        }
+        this.samplesByAgent.set(agentId, list);
+        if (pending && this.store) {
+            this.pending.push(normalized);
+            if (this.pending.length > MAX_PENDING_SAMPLES) {
+                const excess = this.pending.length - MAX_PENDING_SAMPLES;
+                this.pending.splice(0, excess);
+                this._stats.pendingDrops += excess;
+            }
+        }
+        this._stats.highWaterSamples = Math.max(this._stats.highWaterSamples, this._totalSamples);
         this._needsRepaint = true;
+        return true;
     }
 
     _shouldRepaint(camera, viewport, now) {
@@ -316,28 +430,76 @@ export class TrailRenderer {
         return this._needsRepaint && now - this.lastRepaintAt >= REPAINT_INTERVAL_MS;
     }
 
+    _drawDirect(ctx, camera, viewport, now) {
+        const startedAt = timerNow();
+        const { dpr } = viewportMetrics(viewport);
+        const bounds = camera.getViewportTileBounds?.(3);
+        ctx.save();
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        for (const [agentId, samples] of this.samplesByAgent) {
+            if (samples.length < 2) continue;
+            const visible = !bounds || samples.some(sample => (
+                sample.tileX >= bounds.startX && sample.tileX <= bounds.endX
+                && sample.tileY >= bounds.startY && sample.tileY <= bounds.endY
+            ));
+            if (!visible) continue;
+            const limit = agentId === this.selectedAgentId
+                ? MAX_SELECTED_RENDER_SAMPLES
+                : MAX_RENDER_SAMPLES_PER_AGENT;
+            const renderSamples = samples.length > limit
+                ? sampleListToLimit(samples, limit)
+                : samples;
+            this._drawTrailPoints(
+                ctx,
+                this._trailPoints(renderSamples, camera),
+                now,
+                agentId === this.selectedAgentId,
+            );
+        }
+        ctx.restore();
+        this._stats.directDrawCount++;
+        this._stats.directDrawTimeMs += Math.max(0, timerNow() - startedAt);
+    }
+
     _repaint(camera, viewport, now) {
+        const repaintStartedAt = timerNow();
         const metrics = viewportMetrics(viewport);
         const width = Math.max(1, Math.round(metrics.width || 1));
         const height = Math.max(1, Math.round(metrics.height || 1));
         const dpr = metrics.dpr;
         const bounds = camera.getViewportTileBounds?.(3);
-        const zoom = camera.zoom || 1;
         const trails = [];
         let minX = width;
         let minY = height;
         let maxX = 0;
         let maxY = 0;
 
+        const visibleTrails = [];
         for (const [agentId, samples] of this.samplesByAgent) {
+            if (samples.length < 2) continue;
             const visible = !bounds || samples.some(sample => (
                 sample.tileX >= bounds.startX && sample.tileX <= bounds.endX &&
                 sample.tileY >= bounds.startY && sample.tileY <= bounds.endY
             ));
             if (!visible) continue;
+            visibleTrails.push({ agentId, samples });
+        }
+
+        const selectedVisible = visibleTrails.some(trail => trail.agentId === this.selectedAgentId);
+        const selectedBudget = selectedVisible ? MAX_SELECTED_RENDER_SAMPLES : 0;
+        const ordinaryCount = Math.max(1, visibleTrails.length - (selectedVisible ? 1 : 0));
+        const ordinaryLimit = Math.max(
+            2,
+            Math.min(
+                MAX_RENDER_SAMPLES_PER_AGENT,
+                Math.floor((MAX_RENDER_SAMPLES_TOTAL - selectedBudget) / ordinaryCount),
+            ),
+        );
+        for (const { agentId, samples } of visibleTrails) {
             const selected = agentId === this.selectedAgentId;
-            const renderSamples = zoom < 1.5 && samples.length > MAX_RENDER_SAMPLES_ZOOMED_OUT
-                ? samples.slice(-MAX_RENDER_SAMPLES_ZOOMED_OUT)
+            const limit = selected ? MAX_SELECTED_RENDER_SAMPLES : ordinaryLimit;
+            const renderSamples = samples.length > limit
+                ? sampleListToLimit(samples, limit)
                 : samples;
             const points = this._trailPoints(renderSamples, camera);
             if (points.length < 2) continue;
@@ -361,14 +523,17 @@ export class TrailRenderer {
             this.cacheBounds = null;
             this._needsRepaint = false;
             this.lastRepaintAt = now;
+            this._recordRepaint(repaintStartedAt);
             return;
         }
 
         const cacheWidth = right - left;
         const cacheHeight = bottom - top;
         const canvas = this.cache || document.createElement('canvas');
-        canvas.width = Math.round(cacheWidth * dpr);
-        canvas.height = Math.round(cacheHeight * dpr);
+        const backingWidth = Math.round(cacheWidth * dpr);
+        const backingHeight = Math.round(cacheHeight * dpr);
+        if (canvas.width !== backingWidth) canvas.width = backingWidth;
+        if (canvas.height !== backingHeight) canvas.height = backingHeight;
         const ctx = canvas.getContext('2d');
         ctx.setTransform(dpr, 0, 0, dpr, -left * dpr, -top * dpr);
         ctx.clearRect(left, top, cacheWidth, cacheHeight);
@@ -378,18 +543,20 @@ export class TrailRenderer {
 
         this.cache = canvas;
         this.cacheBounds = { x: left, y: top, width: cacheWidth, height: cacheHeight };
+        this._stats.highWaterCachePixels = Math.max(
+            this._stats.highWaterCachePixels,
+            canvasPixelCount(canvas),
+        );
         this._needsRepaint = false;
         this.lastRepaintAt = now;
-    }
-
-    _drawTrail(ctx, samples, camera, now, selected) {
-        this._drawTrailPoints(ctx, this._trailPoints(samples, camera), now, selected);
+        this._recordRepaint(repaintStartedAt);
     }
 
     _trailPoints(samples, camera) {
         const points = [];
         for (const sample of samples) {
-            const p = camera.worldToScreen(...Object.values(toWorld(sample.tileX, sample.tileY)));
+            const world = tileToWorld(sample.tileX, sample.tileY);
+            const p = camera.worldToScreen(world.x, world.y);
             points.push({ x: p.x, y: p.y, ts: sample.ts, phase: sample.phase });
         }
         return points;
@@ -406,13 +573,70 @@ export class TrailRenderer {
         });
     }
 
-    _pruneMemory(now) {
+    _pruneMemory(now, { force = false } = {}) {
+        if (!force && now - this.lastPruneAt < PRUNE_INTERVAL_MS) return;
+        this.lastPruneAt = now;
+        this._stats.pruneRuns++;
         const cutoff = now - RETAIN_MS;
         for (const [agentId, samples] of this.samplesByAgent) {
-            const kept = samples.filter(sample => sample.ts >= cutoff);
-            if (kept.length) this.samplesByAgent.set(agentId, kept);
-            else this.samplesByAgent.delete(agentId);
+            let firstKept = 0;
+            while (firstKept < samples.length && samples[firstKept].ts < cutoff) firstKept++;
+            if (firstKept === 0) continue;
+            samples.splice(0, firstKept);
+            this._totalSamples -= firstKept;
+            this._stats.prunedSamples += firstKept;
+            if (!samples.length) this.samplesByAgent.delete(agentId);
+            this._needsRepaint = true;
         }
+    }
+
+    _capturePosition(agent) {
+        if (!agent?.id) return null;
+        const sprite = this.sprites?.get?.(agent.id);
+        if (sprite) {
+            const x = Number(sprite.x);
+            const y = Number(sprite.y);
+            if (Number.isFinite(x) && Number.isFinite(y)) return worldToTile(x, y);
+            return null;
+        }
+        return agent.position || null;
+    }
+
+    _enforceGlobalCap() {
+        if (this._totalSamples <= MAX_TOTAL_SAMPLES) return;
+        const targetPerAgent = Math.max(
+            2,
+            Math.floor(MAX_TOTAL_SAMPLES * COMPACT_TO_RATIO / Math.max(1, this.samplesByAgent.size)),
+        );
+        for (const [agentId, samples] of this.samplesByAgent) {
+            if (samples.length <= targetPerAgent) continue;
+            const compacted = sampleListToLimit(samples, targetPerAgent);
+            const removed = samples.length - compacted.length;
+            this.samplesByAgent.set(agentId, compacted);
+            this._totalSamples -= removed;
+            this._recordCompaction(removed);
+        }
+        if (this._totalSamples > MAX_TOTAL_SAMPLES) {
+            for (const [agentId, samples] of this.samplesByAgent) {
+                if (this._totalSamples <= MAX_TOTAL_SAMPLES) break;
+                const remove = Math.min(samples.length - 1, this._totalSamples - MAX_TOTAL_SAMPLES);
+                if (remove <= 0) continue;
+                samples.splice(0, remove);
+                this._totalSamples -= remove;
+                this._recordCompaction(remove);
+                if (!samples.length) this.samplesByAgent.delete(agentId);
+            }
+        }
+        this._needsRepaint = true;
+    }
+
+    _recordCompaction(removed) {
+        if (removed > 0) this._stats.compactedSamples += removed;
+    }
+
+    _recordRepaint(startedAt) {
+        this._stats.repaintCount++;
+        this._stats.repaintTimeMs += Math.max(0, timerNow() - startedAt);
     }
 
     _phaseFromDate(now) {

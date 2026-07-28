@@ -8,6 +8,7 @@ import { ChronicleMonuments } from '../../claudeville/src/presentation/character
 import { LandmarkActivity } from '../../claudeville/src/presentation/character-mode/LandmarkActivity.js';
 import { RelationshipState } from '../../claudeville/src/presentation/character-mode/RelationshipState.js';
 import { TrailRenderer } from '../../claudeville/src/presentation/character-mode/TrailRenderer.js';
+import { worldToTile } from '../../claudeville/src/presentation/character-mode/Projection.js';
 import { VisitIntentManager } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
 import { VisitTileAllocator } from '../../claudeville/src/presentation/character-mode/VisitTileAllocator.js';
 
@@ -276,6 +277,127 @@ async function checkTrailHydrateDisposeBoundary() {
   assert.equal(trail._loaded, false);
 }
 
+function checkTrailSamplingBounds() {
+  const stationaryAgent = {
+    id: 'stationary',
+    provider: 'claude',
+    position: { tileX: 99, tileY: 99 },
+  };
+  const stationarySprite = { x: 160, y: 80 };
+  const stationaryTrail = new TrailRenderer({
+    sprites: new Map([[stationaryAgent.id, stationarySprite]]),
+  });
+  const startedAt = 1_000_000;
+  for (let second = 0; second < 600; second++) {
+    stationaryTrail.capture([stationaryAgent], startedAt + second * 1000);
+  }
+  const stationaryDiagnostics = stationaryTrail.getDiagnostics();
+  const [stationarySample] = stationaryTrail.samplesByAgent.get(stationaryAgent.id);
+  const expectedTile = worldToTile(stationarySprite.x, stationarySprite.y);
+  assert.equal(stationaryDiagnostics.totalSamples, 1);
+  assert.equal(stationaryDiagnostics.duplicateDrops, 599);
+  assert.equal(stationarySample.tileX, expectedTile.tileX);
+  assert.equal(stationarySample.tileY, expectedTile.tileY);
+  assert.notEqual(stationarySample.tileX, stationaryAgent.position.tileX);
+
+  const agents = Array.from({ length: 100 }, (_, index) => ({
+    id: `moving-${index}`,
+    position: { tileX: 0, tileY: 0 },
+  }));
+  const sprites = new Map(agents.map((agent, index) => [
+    agent.id,
+    { x: index * 3, y: index * 2 },
+  ]));
+  const boundedTrail = new TrailRenderer({ sprites });
+  for (let second = 0; second < 800; second++) {
+    for (const sprite of sprites.values()) sprite.x += 64;
+    boundedTrail.capture(agents, startedAt + second * 1000);
+  }
+  const boundedDiagnostics = boundedTrail.getDiagnostics();
+  assert.ok(boundedDiagnostics.totalSamples <= boundedDiagnostics.globalLimit);
+  assert.ok(
+    boundedDiagnostics.totalSamples >= Math.floor(boundedDiagnostics.globalLimit * 0.5),
+    'moving trail fixture did not retain enough samples to exercise the global bound',
+  );
+  assert.ok(boundedDiagnostics.compactedSamples > 0, 'moving trail fixture did not exercise compaction');
+  assert.equal(boundedTrail.samplesByAgent.size, agents.length);
+  assert.ok(
+    [...boundedTrail.samplesByAgent.values()]
+      .every(samples => samples.length >= 2 && samples.length <= boundedDiagnostics.perAgentLimit),
+  );
+  assert.equal(boundedTrail.pending.length, 0);
+
+  const directTrail = new TrailRenderer();
+  const directSamples = Array.from({ length: 500 }, (_, index) => ({
+    agentId: 'direct',
+    ts: startedAt + index * 1000,
+    tileX: index,
+    tileY: index,
+  }));
+  directTrail.samplesByAgent.set('direct', directSamples);
+  directTrail._totalSamples = directSamples.length;
+  let directRenderSamples = 0;
+  directTrail._trailPoints = samples => {
+    directRenderSamples = samples.length;
+    return samples.map(sample => ({ x: sample.tileX, y: sample.tileY, ts: sample.ts }));
+  };
+  directTrail._drawTrailPoints = () => {};
+  directTrail.draw(
+    { save() {}, setTransform() {}, restore() {} },
+    { getViewportTileBounds: () => null },
+    { width: 1280, height: 720, dpr: 1 },
+    startedAt + 500_000,
+  );
+  assert.equal(
+    directRenderSamples,
+    directTrail.getDiagnostics().renderPerAgentLimit,
+    'direct trail rendering must use the same per-agent cap as cached rendering',
+  );
+  stationaryTrail.dispose();
+  boundedTrail.dispose();
+  directTrail.dispose();
+
+  return {
+    stationarySamples: stationaryDiagnostics.totalSamples,
+    stationaryDuplicateDrops: stationaryDiagnostics.duplicateDrops,
+    boundedSamples: boundedDiagnostics.totalSamples,
+    compactedSamples: boundedDiagnostics.compactedSamples,
+    directRenderSamples,
+  };
+}
+
+async function checkTrailPauseHydrationBoundary() {
+  let resolveQuery;
+  let leaseAcquisitions = 0;
+  const lease = {
+    acquired: true,
+    renew: () => true,
+    release: () => {},
+  };
+  const store = {
+    queryRange: () => new Promise(resolve => { resolveQuery = resolve; }),
+    acquireCaptureLease: () => {
+      leaseAcquisitions++;
+      return lease;
+    },
+  };
+  const trail = new TrailRenderer({ store });
+  const update = trail.update([], 10_000);
+  await Promise.resolve();
+  trail.pause();
+  resolveQuery([{ id: 'late', agentId: 'late', ts: 10_000, tileX: 1, tileY: 1 }]);
+  await update;
+  assert.equal(trail.getDiagnostics().paused, true);
+  assert.equal(trail.samplesByAgent.size, 0);
+  assert.equal(leaseAcquisitions, 0);
+
+  store.queryRange = async () => [];
+  trail.resume();
+  await trail.update([], 11_000);
+  assert.equal(leaseAcquisitions, 1);
+  await trail.dispose();
+}
+
 await checkPersistedCommitIdempotency();
 await checkConcurrentLifetimeWriters();
 await checkChronicleReplayAndDispose();
@@ -284,9 +406,12 @@ checkVisitReplayWindow();
 const sharedRepositoryVisitMs = checkSharedRepositoryVisitCost();
 checkPostDisposeNoMutation();
 await checkTrailHydrateDisposeBoundary();
+const trailBounds = checkTrailSamplingBounds();
+await checkTrailPauseHydrationBoundary();
 
 console.log(JSON.stringify({
   ok: true,
   smoke: 'world-state-bounds',
   sharedRepositoryVisit20ReconcilesMs: Number(sharedRepositoryVisitMs.toFixed(2)),
+  trailBounds,
 }));

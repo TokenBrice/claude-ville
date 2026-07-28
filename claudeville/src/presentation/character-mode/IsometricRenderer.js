@@ -108,6 +108,9 @@ const CURRENT_WAVE_SCREEN_LENGTH = Math.hypot(CURRENT_WAVE_SCREEN_X, CURRENT_WAV
 const CURRENT_WAVE_UNIT_X = CURRENT_WAVE_SCREEN_X / CURRENT_WAVE_SCREEN_LENGTH;
 const CURRENT_WAVE_UNIT_Y = CURRENT_WAVE_SCREEN_Y / CURRENT_WAVE_SCREEN_LENGTH;
 const LIGHT_FADE_COLOR_CACHE_LIMIT = 1024;
+const LIGHT_COLOR_RGB_CACHE_LIMIT = 256;
+const LIGHT_COLOR_QUANTIZATION_STEPS = 32;
+const LIGHT_COLOR_MIX_STEPS = 16;
 const NICKNAME_CACHE_LIMIT = 256;
 const WORLD_FRAME_ERROR_REPORT_INTERVAL_MS = 5000;
 const WORLD_FRAME_MAX_CONSECUTIVE_FAILURES = 3;
@@ -406,6 +409,10 @@ class StaticPropSprite {
         };
         return this._cacheCanvas;
     }
+    releaseCache() {
+        releaseCanvasBackingStore(this._cacheCanvas?.canvas);
+        this._cacheCanvas = null;
+    }
     propBackSortY() {
         return this.sortY + Math.min(-8, this.bounds.splitY);
     }
@@ -536,6 +543,7 @@ export class IsometricRenderer {
         this.trailRenderer = new TrailRenderer({
             store: this.chronicleStore,
             world: this.world,
+            sprites: this.agentSprites,
             motionScale: this.motionScale,
         });
         this.chronicler = new Chronicler({
@@ -553,8 +561,10 @@ export class IsometricRenderer {
         this._fastVignetteStampKey = '';
         this.lightGradientCache = new Map();
         this.lightFadeColorCache = new Map();
+        this.lightColorRgbCache = new Map();
         this._atmosphereEffectSpriteCache = new Map();
         this._lightFadeColorCacheEvictions = 0;
+        this._lightColorRgbCacheEvictions = 0;
         this._frameLightSources = null;
         this.selectedAgent = null;
         this.onAgentSelect = null;
@@ -586,7 +596,13 @@ export class IsometricRenderer {
         this._chronicleUpdating = false;
         this._chronicleUpdatePromise = null;
         this._worldModeActive = true;
+        this._worldResourcesSuspended = false;
+        this._worldResourceGeneration = 0;
+        this._worldResumePromise = null;
+        this._worldResumeFailures = 0;
         this._worldSpritesDirty = false;
+        this._harborFailedPushState = null;
+        this._activeWorkingCount = 0;
         this._onModeChanged = null;
         this._debugGlobals = new Map();
         this._frameFailureStats = {
@@ -1359,18 +1375,12 @@ export class IsometricRenderer {
     // Lerp two '#rrggbb'/'rgb(r,g,b)' colours by t, memoized in the shared
     // colour cache (same style as _withAlpha / _mixToWhite).
     _lerpColor(a, b, t) {
-        const key = `lc|${a}|${b}|${t}`;
+        const mixAmount = this._quantizedColorMix(t);
+        const key = `lc|${a}|${b}|${mixAmount}`;
         if (this.lightFadeColorCache.has(key)) return this.lightFadeColorCache.get(key);
-        const parse = (color) => {
-            if (color.startsWith('#') && color.length === 7) {
-                return [parseInt(color.slice(1, 3), 16), parseInt(color.slice(3, 5), 16), parseInt(color.slice(5, 7), 16)];
-            }
-            const m = color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-            return m ? [+m[1], +m[2], +m[3]] : [255, 255, 255];
-        };
-        const [ar, ag, ab] = parse(a);
-        const [br, bg, bb] = parse(b);
-        const mix = (u, v) => Math.round(u + (v - u) * t);
+        const [ar, ag, ab] = this._parseLightColor(a);
+        const [br, bg, bb] = this._parseLightColor(b);
+        const mix = (u, v) => Math.round(u + (v - u) * mixAmount);
         const out = `rgb(${mix(ar, br)}, ${mix(ag, bg)}, ${mix(ab, bb)})`;
         return this._cacheLightFadeColor(key, out);
     }
@@ -1634,6 +1644,7 @@ export class IsometricRenderer {
         if (this._disposed) return;
         this._disposed = true;
         this._biographyReadGeneration++;
+        this._worldResourceGeneration++;
         this.running = false;
         this._stopLoop();
         if (this.camera) {
@@ -1668,6 +1679,7 @@ export class IsometricRenderer {
         this.chronicler?.destroy?.();
         this._sortedSprites = [];
         this._spritesNeedSort = true;
+        this._suspendWorldModeResources();
         this.agentSprites.clear();
         this._nicknames.clear();
         AgentSprite.releaseSharedCaches?.();
@@ -1714,6 +1726,7 @@ export class IsometricRenderer {
             || this._disposed
             || this.frameId !== null
             || !this._worldModeActive
+            || this._worldResourcesSuspended
             || this._contextLost
             || this._frameFailureStats.paused
         ) return;
@@ -1733,22 +1746,25 @@ export class IsometricRenderer {
 
     setWorldModeActive(active) {
         const nextActive = Boolean(active);
-        if (this._worldModeActive === nextActive) return;
+        if (this._worldModeActive === nextActive) {
+            if (!nextActive) this._suspendWorldModeResources();
+            return;
+        }
         this._worldModeActive = nextActive;
         this._lastFrameTime = performance.now();
         if (nextActive) {
-            this._resumeFrameFailures();
-            if (this._worldSpritesDirty) this._reconcileSpritesWithWorld();
-            this.invalidateViewportCaches();
-            this._startLoop();
+            void this._beginWorldModeResume();
         } else {
+            this._worldResourceGeneration++;
             this._stopLoop();
-            this.releaseVolatileCaches();
+            this._suspendWorldModeResources();
         }
     }
 
     pauseForVisibility() {
+        this._worldResourceGeneration++;
         this._stopLoop();
+        if (this._worldResourcesSuspended) this.assets?.suspend?.();
         this.releaseVolatileCaches();
     }
 
@@ -1756,8 +1772,11 @@ export class IsometricRenderer {
         this._worldModeActive = Boolean(active);
         this._lastFrameTime = performance.now();
         if (this._worldModeActive) {
-            this._resumeFrameFailures();
-            this._startLoop();
+            void this._beginWorldModeResume();
+        } else {
+            this._worldResourceGeneration++;
+            this._stopLoop();
+            this._suspendWorldModeResources();
         }
     }
 
@@ -1770,6 +1789,7 @@ export class IsometricRenderer {
     handleContextRestored() {
         this.ctx = this.canvas?.getContext?.('2d') || null;
         this._contextLost = false;
+        if (this._worldModeActive) this.trailRenderer?.resume?.();
         this._resumeFrameFailures();
         this.invalidateViewportCaches();
         this.camera?.onViewportResize?.();
@@ -1791,6 +1811,7 @@ export class IsometricRenderer {
         this._fastVignetteStampKey = '';
         releaseCanvasMap(this.lightGradientCache);
         this.lightFadeColorCache?.clear?.();
+        this.lightColorRgbCache?.clear?.();
         this.skyRenderer?.releaseCache?.();
         this.trailRenderer?.pause?.();
         this.weatherRenderer?.dispose?.();
@@ -1801,8 +1822,102 @@ export class IsometricRenderer {
         this.trailRenderer = new TrailRenderer({
             store: this.chronicleStore,
             world: this.world,
+            sprites: this.agentSprites,
             motionScale: this.motionScale,
         });
+    }
+
+    _suspendWorldModeResources() {
+        // Always forward suspension so an in-flight decoded-asset reload is
+        // aborted even when the renderer already released its own surfaces.
+        this.assets?.suspend?.();
+        if (this._worldResourcesSuspended) return;
+        this.releaseVolatileCaches();
+        for (const sprite of this.agentSprites.values()) sprite?.releaseRenderResources?.();
+        AgentSprite.releaseSharedCaches?.();
+        this.compositor?.releaseCache?.();
+        releaseCanvasMap(this.fantasyForestTreeCache);
+        this._atmosphereEffectSpriteCache.clear();
+        const staticSprites = new Set(
+            this._staticPropDrawables.map(drawable => drawable?.payload?.sprite).filter(Boolean),
+        );
+        for (const sprite of staticSprites) sprite.releaseCache?.();
+        releaseCanvasBackingStore(this.canvas);
+        this._worldResourcesSuspended = true;
+    }
+
+    _beginWorldModeResume() {
+        if (
+            this._disposed
+            || !this.running
+            || !this._worldModeActive
+            || (typeof document !== 'undefined' && document.visibilityState === 'hidden')
+        ) return Promise.resolve(false);
+
+        const generation = ++this._worldResourceGeneration;
+        this._stopLoop();
+        const operation = Promise.resolve()
+            .then(() => this._resumeWorldModeResources())
+            .then((ready) => {
+                if (
+                    !ready
+                    || this._disposed
+                    || !this.running
+                    || !this._worldModeActive
+                    || generation !== this._worldResourceGeneration
+                ) return false;
+                this._resumeFrameFailures();
+                if (this._worldSpritesDirty) this._reconcileSpritesWithWorld();
+                this.invalidateViewportCaches();
+                this._startLoop();
+                return this.frameId !== null;
+            })
+            .catch((err) => {
+                if (
+                    !this._disposed
+                    && this._worldModeActive
+                    && generation === this._worldResourceGeneration
+                ) {
+                    this._worldResumeFailures++;
+                    console.error('[IsometricRenderer] World asset resume failed:', err);
+                }
+                return false;
+            });
+        const wrapped = operation.finally(() => {
+            if (this._worldResumePromise === wrapped) this._worldResumePromise = null;
+        });
+        this._worldResumePromise = wrapped;
+        return wrapped;
+    }
+
+    async _resumeWorldModeResources() {
+        if (!this._worldResourcesSuspended) {
+            this.trailRenderer?.resume?.();
+            return true;
+        }
+        if (this.assets?.resume) {
+            const assetsReady = await this.assets.resume();
+            if (!assetsReady) return false;
+        }
+        if (this._disposed || !this._worldModeActive || !this._worldResourcesSuspended) return false;
+        const width = Math.round(
+            (this.canvas?._claudeVilleCssWidth || this.canvas?.clientWidth || 0)
+            * (this.canvas?._claudeVilleDpr || 1),
+        );
+        const height = Math.round(
+            (this.canvas?._claudeVilleCssHeight || this.canvas?.clientHeight || 0)
+            * (this.canvas?._claudeVilleDpr || 1),
+        );
+        if (this.canvas && width > 0 && height > 0) {
+            this.canvas.width = width;
+            this.canvas.height = height;
+            this.ctx = this.canvas.getContext('2d');
+            if (this.ctx) SpriteRenderer.disableSmoothing(this.ctx);
+        }
+        this.trailRenderer?.resume?.();
+        this._worldResourcesSuspended = false;
+        this.camera?.onViewportResize?.();
+        return true;
     }
 
     _reconcileSpritesWithWorld() {
@@ -2879,6 +2994,7 @@ export class IsometricRenderer {
             this._markSpritesDirty();
             return;
         }
+        sprite.releaseRenderResources?.();
         this.agentSprites.delete(agentId);
         this._markSpritesDirty();
     }
@@ -2891,6 +3007,7 @@ export class IsometricRenderer {
             const anim = sprite._archiveAnim;
             if (!anim) continue;
             if (nowMs - anim.startedAt >= anim.total) {
+                sprite.releaseRenderResources?.();
                 this.agentSprites.delete(agentId);
                 removed = true;
             }
@@ -3348,20 +3465,29 @@ export class IsometricRenderer {
         this.ritualConductor?.update?.(dt);
         this._syncToolRitualPoses();
 
-        this.harborTraffic?.update?.(agents, dt, chronicleNow);
+        // Ship motion is visual and stays frame-smooth. Git/source semantics
+        // only need the existing 250ms application cadence.
+        this.harborTraffic?.advance?.(dt);
+        if (slowSystemsTick) {
+            this.harborTraffic?.reconcile?.(agents, chronicleNow);
+            this._harborFailedPushState = this.harborTraffic?.getFailedPushState?.(chronicleNow) || null;
+            let activeWorkingCount = 0;
+            for (const agent of agents) {
+                if (agent?.status === AgentStatus.WORKING) activeWorkingCount++;
+            }
+            this._activeWorkingCount = activeWorkingCount;
+            this.villageDirector?.setHarborState?.(this._harborFailedPushState);
+            this.buildingRenderer?.setHarborStatus?.({
+                failedPushActive: Boolean(this._harborFailedPushState?.hasFailedPush),
+                activeWorkingCount,
+            });
+        }
         this.landmarkActivity?.update?.(agents, sortedSnapshot, dt, chronicleNow);
         const updateNow = Date.now();
-        const failedPushState = this.harborTraffic?.getFailedPushState?.(updateNow) || null;
-        const activeWorkingCount = agents.filter(agent => agent?.status === AgentStatus.WORKING).length;
-        this.villageDirector?.setHarborState?.(failedPushState);
         this.villageDirector?.update?.(this, dt, updateNow);
 
         // Update building renderer (pass agent sprite positions)
         this.buildingRenderer?.setAgentSprites(sortedSnapshot);
-        this.buildingRenderer?.setHarborStatus?.({
-            failedPushActive: Boolean(failedPushState?.hasFailedPush),
-            activeWorkingCount,
-        });
         this.buildingRenderer?.update(dt);
         this._updateAmbientEffects(dt);
 
@@ -10596,6 +10722,9 @@ export class IsometricRenderer {
                 lightFadeColors: this.lightFadeColorCache?.size || 0,
                 lightFadeColorLimit: LIGHT_FADE_COLOR_CACHE_LIMIT,
                 lightFadeColorEvictions: this._lightFadeColorCacheEvictions,
+                lightColorRgbEntries: this.lightColorRgbCache?.size || 0,
+                lightColorRgbLimit: LIGHT_COLOR_RGB_CACHE_LIMIT,
+                lightColorRgbEvictions: this._lightColorRgbCacheEvictions,
                 crowdBumpCooldowns: this._crowdBumpCooldowns.size,
                 crowdBumpCooldownLimit: CROWD_BUMP_COOLDOWN_LIMIT,
                 nicknames: this._nicknames.size,
@@ -10608,6 +10737,7 @@ export class IsometricRenderer {
                 currentEligible: this._waterTileDescriptors?.filter?.(tile => tile.animatedCurrentEligible).length || 0,
             },
             harbor: this.harborTraffic?.getDiagnostics?.() || null,
+            trails: this.trailRenderer?.getDiagnostics?.() || null,
             events: this.agentEventStream?.getDiagnostics?.() || null,
             landmarks: this.landmarkActivity?.getDiagnostics?.() || null,
             monuments: this.chronicleMonuments?.getDiagnostics?.() || null,
@@ -10635,6 +10765,9 @@ export class IsometricRenderer {
             dpr: this._screenDpr(),
             running: this.running,
             worldModeActive: this._worldModeActive,
+            worldResourcesSuspended: this._worldResourcesSuspended,
+            worldResumeInFlight: this._worldResumePromise !== null,
+            worldResumeFailures: this._worldResumeFailures,
             rafPending: this.frameId !== null,
             visibleCanvasPixels: canvasPixelCount(this.canvas),
             volatile,
@@ -10644,6 +10777,7 @@ export class IsometricRenderer {
             cacheCounts: {
                 lightGradients: this.lightGradientCache?.size || 0,
                 lightFadeColors: this.lightFadeColorCache?.size || 0,
+                lightColorRgb: this.lightColorRgbCache?.size || 0,
                 fantasyForestTrees: this.fantasyForestTreeCache?.size || 0,
             },
             cacheStats: {
@@ -10689,7 +10823,17 @@ export class IsometricRenderer {
     }
 
     _quantizedAlpha(value) {
-        return Math.max(0, Math.min(1, Math.round((Number(value) || 0) * 1000) / 1000));
+        return Math.max(
+            0,
+            Math.min(1, Math.round((Number(value) || 0) * LIGHT_COLOR_QUANTIZATION_STEPS) / LIGHT_COLOR_QUANTIZATION_STEPS),
+        );
+    }
+
+    _quantizedColorMix(value) {
+        return Math.max(
+            0,
+            Math.min(1, Math.round((Number(value) || 0) * LIGHT_COLOR_MIX_STEPS) / LIGHT_COLOR_MIX_STEPS),
+        );
     }
 
     _cacheLightFadeColor(key, value) {
@@ -10704,38 +10848,49 @@ export class IsometricRenderer {
     // Cache `color` → rgba(r,g,b,a) strings keyed by `${color}|${alpha}` so the
     // light pass doesn't re-parse colors per frame.
     _withAlpha(color, alpha) {
-        const key = `${color}|${alpha}`;
+        const normalizedColor = String(color || '#ffffff');
+        const normalizedAlpha = this._quantizedAlpha(alpha);
+        const key = `${normalizedColor}|${normalizedAlpha}`;
         if (this.lightFadeColorCache.has(key)) return this.lightFadeColorCache.get(key);
-        let r = 255, g = 255, b = 255;
-        if (color.startsWith('#') && color.length === 7) {
-            r = parseInt(color.slice(1, 3), 16);
-            g = parseInt(color.slice(3, 5), 16);
-            b = parseInt(color.slice(5, 7), 16);
-        } else {
-            const m = color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-            if (m) { r = +m[1]; g = +m[2]; b = +m[3]; }
-        }
-        const out = `rgba(${r}, ${g}, ${b}, ${alpha})`;
+        const [r, g, b] = this._parseLightColor(normalizedColor);
+        const out = `rgba(${r}, ${g}, ${b}, ${normalizedAlpha})`;
         return this._cacheLightFadeColor(key, out);
     }
 
     // Mix a colour toward white by `t` (0 = unchanged, 1 = white). Used for the
     // hot light-glow cores; memoized in the shared colour cache.
     _mixToWhite(color, t) {
-        const key = `mw|${color}|${t}`;
+        const normalizedColor = String(color || '#ffffff');
+        const mixAmount = this._quantizedColorMix(t);
+        const key = `mw|${normalizedColor}|${mixAmount}`;
         if (this.lightFadeColorCache.has(key)) return this.lightFadeColorCache.get(key);
-        let r = 255, g = 255, b = 255;
-        if (color.startsWith('#') && color.length === 7) {
-            r = parseInt(color.slice(1, 3), 16);
-            g = parseInt(color.slice(3, 5), 16);
-            b = parseInt(color.slice(5, 7), 16);
-        } else {
-            const m = color.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
-            if (m) { r = +m[1]; g = +m[2]; b = +m[3]; }
-        }
-        const mix = (c) => Math.round(c + (255 - c) * t);
+        const [r, g, b] = this._parseLightColor(normalizedColor);
+        const mix = (c) => Math.round(c + (255 - c) * mixAmount);
         const out = `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
         return this._cacheLightFadeColor(key, out);
+    }
+
+    _parseLightColor(color) {
+        const key = String(color || '#ffffff');
+        const cached = this.lightColorRgbCache.get(key);
+        if (cached) return cached;
+        let rgb = [255, 255, 255];
+        if (key.startsWith('#') && key.length === 7) {
+            rgb = [
+                parseInt(key.slice(1, 3), 16),
+                parseInt(key.slice(3, 5), 16),
+                parseInt(key.slice(5, 7), 16),
+            ];
+        } else {
+            const match = key.match(/(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/);
+            if (match) rgb = [+match[1], +match[2], +match[3]];
+        }
+        if (this.lightColorRgbCache.size >= LIGHT_COLOR_RGB_CACHE_LIMIT) {
+            this.lightColorRgbCache.delete(this.lightColorRgbCache.keys().next().value);
+            this._lightColorRgbCacheEvictions++;
+        }
+        this.lightColorRgbCache.set(key, rgb);
+        return rgb;
     }
 
     _drawAncientRuins(ctx) {

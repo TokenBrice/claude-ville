@@ -334,6 +334,19 @@ assert.equal(JSON.stringify({
   nextSequence: harbor.state.nextSequence,
 }), disposedSnapshot);
 
+// Animation remains frame-driven while semantic/source work follows the
+// renderer's existing 250ms cadence.
+const cadenceHarbor = new HarborTraffic();
+cadenceHarbor.reconcile([agent], BASE_TIME + 250_000);
+for (let frame = 1; frame <= 60; frame++) {
+  cadenceHarbor.advance(1000 / 60);
+  if (frame % 15 === 0) cadenceHarbor.reconcile([agent], BASE_TIME + 250_000 + frame * (1000 / 60));
+}
+const cadenceDiagnostics = cadenceHarbor.getDiagnostics();
+assert.equal(cadenceDiagnostics.animationAdvances, 60);
+assert.equal(cadenceDiagnostics.semanticReconciliations, 5);
+cadenceHarbor.dispose();
+
 console.log('harbor traffic bounds smoke passed');
 console.log(`4,800-event reducer ingest: ${ingestElapsedMs.toFixed(1)}ms`);
 console.log(`100 cached 4,800-event reconciles: ${steadyElapsedMs.toFixed(1)}ms`);

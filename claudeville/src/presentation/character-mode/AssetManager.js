@@ -24,35 +24,130 @@ export class AssetManager {
         // Per-asset miss records ({id, path}) collected across this load() pass;
         // flushed as one summary warn when load() resolves.
         this._loadMisses = [];
+        this._decodedLoaded = false;
+        this._suspended = false;
+        this._loadPromise = null;
+        this._loadController = null;
+        this._loadGeneration = 0;
+        this._decodePasses = 0;
         this._disposed = false;
     }
 
-    async load({ signal = null } = {}) {
-        const [manifestText, palettesText] = await Promise.all([
-            this._fetchText(this.manifestPath, { signal }),
-            this._fetchText('assets/sprites/palettes.yaml', { signal }),
-        ]);
-        if (signal?.aborted || this._disposed) return;
-        try {
-            this.manifest = jsyaml.load(manifestText);
-            this.palettes = jsyaml.load(palettesText);
-        } catch (err) {
-            throw new Error(`[AssetManager] failed to parse YAML: ${err.message}`);
+    load({ signal = null } = {}) {
+        return this._ensureDecoded({ signal, loadManifest: !this.manifest });
+    }
+
+    /**
+     * Reload decoded World assets after Dashboard mode released them. The
+     * parsed manifest/palettes stay resident, so a resume only fetches images.
+     */
+    resume({ signal = null } = {}) {
+        if (this._disposed) return Promise.resolve(false);
+        this._suspended = false;
+        return this._ensureDecoded({ signal, loadManifest: !this.manifest });
+    }
+
+    /**
+     * Dashboard does not consume this manager. Abort any partial reload and
+     * drop all decoded image/canvas, mask, and outline ownership immediately.
+     */
+    suspend() {
+        if (this._disposed) return;
+        this._suspended = true;
+        this._decodedLoaded = false;
+        this._loadGeneration++;
+        this._loadController?.abort?.();
+        this._releaseDecodedEntries();
+    }
+
+    _ensureDecoded({ signal = null, loadManifest = false } = {}) {
+        if (this._disposed || this._suspended) return Promise.resolve(false);
+        if (this._decodedLoaded) return Promise.resolve(true);
+        if (this._loadPromise) {
+            if (!this._loadController?.signal?.aborted) return this._loadPromise;
+            const previous = this._loadPromise;
+            return previous.catch(() => false).then(() => {
+                if (this._disposed || this._suspended) return false;
+                return this._ensureDecoded({ signal, loadManifest: loadManifest || !this.manifest });
+            });
         }
 
-        this.assetVersion = this.manifest?.style?.assetVersion || null;
-        const entries = this._flattenManifest(this.manifest);
-        this._entriesCache = entries;
-        this._entryById = new Map(entries.map((entry) => [entry.id, entry]));
-        await Promise.all(entries.map(e => this._loadEntry(e, { signal })));
-        if (signal?.aborted || this._disposed) return;
+        const controller = new AbortController();
+        const generation = ++this._loadGeneration;
+        const forwardAbort = () => controller.abort(signal?.reason);
+        if (signal?.aborted) forwardAbort();
+        else signal?.addEventListener?.('abort', forwardAbort, { once: true });
+        this._loadController = controller;
 
+        const operation = this._decodeAssets({
+            signal: controller.signal,
+            generation,
+            loadManifest: loadManifest || !this.manifest,
+        }).catch((err) => {
+            if (generation === this._loadGeneration) {
+                this._decodedLoaded = false;
+                this._releaseDecodedEntries();
+            }
+            if (
+                controller.signal.aborted
+                || this._disposed
+                || this._suspended
+                || err?.name === 'AbortError'
+            ) return false;
+            throw err;
+        });
+        const wrapped = operation.finally(() => {
+            signal?.removeEventListener?.('abort', forwardAbort);
+            if (this._loadPromise === wrapped) {
+                this._loadPromise = null;
+                this._loadController = null;
+            }
+        });
+        this._loadPromise = wrapped;
+        return wrapped;
+    }
+
+    async _decodeAssets({ signal, generation, loadManifest }) {
+        if (loadManifest) {
+            const [manifestText, palettesText] = await Promise.all([
+                this._fetchText(this.manifestPath, { signal }),
+                this._fetchText('assets/sprites/palettes.yaml', { signal }),
+            ]);
+            if (!this._canCommitLoad(signal, generation)) return false;
+            try {
+                this.manifest = jsyaml.load(manifestText);
+                this.palettes = jsyaml.load(palettesText);
+            } catch (err) {
+                throw new Error(`[AssetManager] failed to parse YAML: ${err.message}`);
+            }
+            this.assetVersion = this.manifest?.style?.assetVersion || null;
+            const entries = this._flattenManifest(this.manifest);
+            this._entriesCache = entries;
+            this._entryById = new Map(entries.map((entry) => [entry.id, entry]));
+        }
+
+        const entries = this._entriesCache || [];
+        this._releaseDecodedEntries();
+        this._loadMisses = [];
+        await Promise.all(entries.map(entry => this._loadEntry(entry, { signal, generation })));
+        if (!this._canCommitLoad(signal, generation)) return false;
+
+        this._decodedLoaded = true;
+        this._decodePasses++;
         if (this._loadMisses.length > 0) {
             console.warn(
                 `[AssetManager] missing ${this._loadMisses.length} assets:`,
                 this._loadMisses.map(m => m.id)
             );
         }
+        return true;
+    }
+
+    _canCommitLoad(signal, generation) {
+        return !signal?.aborted
+            && !this._disposed
+            && !this._suspended
+            && generation === this._loadGeneration;
     }
 
     async _fetchText(path, { signal = null } = {}) {
@@ -77,11 +172,11 @@ export class AssetManager {
         return out;
     }
 
-    async _loadEntry(entry, { signal = null } = {}) {
+    async _loadEntry(entry, { signal = null, generation = this._loadGeneration } = {}) {
         // Single-PNG entry (buildings are all single-image; composeGrid retired).
         const path = this._pathFor(entry);
         const { img: loadedImg, ok } = await this._loadImage(path, { signal });
-        if (signal?.aborted || this._disposed) return;
+        if (!this._canCommitLoad(signal, generation)) return;
         if (!ok) {
             this.missing.add(entry.id);
             this._loadMisses.push({ id: entry.id, path });
@@ -95,6 +190,7 @@ export class AssetManager {
                 : null;
         this._storeBitmap(entry.id, img, {
             anchor,
+            generation,
             // Only building bases participate in per-pixel hit testing and
             // hover outlines. Avoid deriving full-sheet buffers for every
             // character, terrain, prop, and atmosphere asset.
@@ -112,13 +208,18 @@ export class AssetManager {
                 const layerPath = entry.id.startsWith('building.')
                     ? `assets/sprites/buildings/${entry.id}/${name}.png`
                     : this._pathFor({ id: layerId, ...layer });
-                await this._loadLayer(layerId, layer, layerPath, { signal });
+                await this._loadLayer(layerId, layer, layerPath, { signal, generation });
             }
         }
     }
 
-    _storeBitmap(id, img, { anchor = null, mask = null, buildMask = false } = {}) {
-        if (this._disposed) return;
+    _storeBitmap(id, img, {
+        anchor = null,
+        mask = null,
+        buildMask = false,
+        generation = this._loadGeneration,
+    } = {}) {
+        if (this._disposed || this._suspended || generation !== this._loadGeneration) return;
         this.bitmaps.set(id, img);
         this.dimensions.set(id, { w: img.width, h: img.height });
         if (anchor) this.anchors.set(id, anchor);
@@ -128,9 +229,14 @@ export class AssetManager {
         this.outlines.set(id, this._bakeOutline(img.width, img.height, alphaMask));
     }
 
-    async _loadLayer(layerId, layer, layerPath, { signal = null } = {}) {
+    async _loadLayer(
+        layerId,
+        layer,
+        layerPath,
+        { signal = null, generation = this._loadGeneration } = {},
+    ) {
         const { img: loadedImg, ok } = await this._loadImage(layerPath, { signal });
-        if (signal?.aborted || this._disposed) return;
+        if (!this._canCommitLoad(signal, generation)) return;
         if (!ok) {
             this.missing.add(layerId);
             this._loadMisses.push({ id: layerId, path: layerPath });
@@ -139,6 +245,7 @@ export class AssetManager {
         this._storeBitmap(layerId, img, {
             anchor: layer.anchor || null,
             buildMask: false,
+            generation,
         });
     }
 
@@ -392,11 +499,14 @@ export class AssetManager {
             outlines: this.outlines.size,
             outlinePixels,
             missing: this.missing.size,
+            decodedLoaded: this._decodedLoaded,
+            suspended: this._suspended,
+            loadInFlight: this._loadPromise !== null,
+            decodePasses: this._decodePasses,
         };
     }
 
-    dispose() {
-        this._disposed = true;
+    _releaseDecodedEntries() {
         for (const outline of this.outlines.values()) {
             if (outline && typeof outline === 'object' && 'width' in outline && 'height' in outline) {
                 outline.width = 0;
@@ -404,7 +514,12 @@ export class AssetManager {
             }
         }
         for (const bitmap of this.bitmaps.values()) {
-            if (typeof HTMLCanvasElement !== 'undefined' && bitmap instanceof HTMLCanvasElement) {
+            if (typeof bitmap?.close === 'function') {
+                try { bitmap.close(); } catch { /* best-effort ImageBitmap release */ }
+            } else if (
+                typeof HTMLCanvasElement !== 'undefined'
+                && bitmap instanceof HTMLCanvasElement
+            ) {
                 bitmap.width = 0;
                 bitmap.height = 0;
             }
@@ -414,9 +529,19 @@ export class AssetManager {
         this.dimensions.clear();
         this.anchors.clear();
         this.outlines.clear();
-        this._entryById.clear();
         this.missing.clear();
         this._loadMisses.length = 0;
+    }
+
+    dispose() {
+        if (this._disposed) return;
+        this._disposed = true;
+        this._suspended = true;
+        this._decodedLoaded = false;
+        this._loadGeneration++;
+        this._loadController?.abort?.();
+        this._releaseDecodedEntries();
+        this._entryById.clear();
         this._entriesCache = null;
         this.manifest = null;
         this.palettes = null;

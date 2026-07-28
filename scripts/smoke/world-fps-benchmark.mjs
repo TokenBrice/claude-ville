@@ -37,7 +37,7 @@ Options:
   --duration-seconds=<n>      Measurement duration per run (default: 30)
   --warmup-seconds=<n>        Warmup duration per run (default: 10)
   --repetitions=<n>           Fresh browser contexts per case (default: 3)
-  --counts=<list>             Comma-separated subset of 1,10,25,50
+  --counts=<list>             Comma-separated agent counts from 1 to 200
   --weather=<list>            Comma-separated subset of clear,rain
   --max-rain-regression-pct=<n>
                               Fail if paired rain median FPS is more than n% below clear
@@ -113,8 +113,8 @@ function parseArgs(argv) {
   if (!Number.isInteger(options.repetitions) || options.repetitions <= 0) {
     throw new Error('repetitions must be a positive integer');
   }
-  if (!options.counts.length || options.counts.some(count => !DEFAULT_COUNTS.includes(count))) {
-    throw new Error(`counts must be a non-empty subset of ${DEFAULT_COUNTS.join(',')}`);
+  if (!options.counts.length || options.counts.some(count => !Number.isInteger(count) || count < 1 || count > 200)) {
+    throw new Error('counts must be a non-empty list of integers from 1 to 200');
   }
   if (!options.weather.length || options.weather.some(name => !WEATHER_PROFILES[name])) {
     throw new Error(`weather must be a non-empty subset of ${Object.keys(WEATHER_PROFILES).join(',')}`);

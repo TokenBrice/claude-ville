@@ -3009,6 +3009,8 @@ export class HarborTraffic {
         this._eventSourceSnapshot = null;
         this._sourceNormalizations = 0;
         this._sourceCacheHits = 0;
+        this._advanceCalls = 0;
+        this._reconcileCalls = 0;
         this._lastRawEventCount = 0;
         this._lastNormalizedEventCount = 0;
         this._hasTimedLifecycle = false;
@@ -3084,11 +3086,13 @@ export class HarborTraffic {
 
     advance(dt = 16) {
         if (this._disposed) return;
+        this._advanceCalls++;
         this.frame += (dt / 16) * this.motionScale;
     }
 
     reconcile(agents, now = Date.now(), { force = false } = {}) {
         if (this._disposed) return this;
+        this._reconcileCalls++;
         const sourceSnapshot = harborEventSourceSnapshot(agents);
         const sourceChanged = !harborEventSourcesEqual(this._eventSourceSnapshot, sourceSnapshot);
         let events = [];
@@ -3142,6 +3146,8 @@ export class HarborTraffic {
             unchangedReconciliations: this._unchangedReconciliations,
             sourceNormalizations: this._sourceNormalizations,
             sourceCacheHits: this._sourceCacheHits,
+            animationAdvances: this._advanceCalls,
+            semanticReconciliations: this._reconcileCalls,
             rawEventCount: this._lastRawEventCount,
             normalizedEventCount: this._lastNormalizedEventCount,
             seenEventIds: this.state.seenEventIds.size,

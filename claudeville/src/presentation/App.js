@@ -329,6 +329,9 @@ export class App {
             if (candidate.show(canvas) === false) {
                 throw new Error('IsometricRenderer failed to mount');
             }
+            candidate.setWorldModeActive?.(
+                this.modeManager?.getCurrentMode?.() !== 'dashboard',
+            );
             if (this.latestUsage) candidate.setQuotaState?.(this.latestUsage);
 
             candidate.onAgentSelect = (agent) => {
