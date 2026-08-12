@@ -135,6 +135,7 @@ export const PROVIDER_HUES = Object.freeze({
     git: { trim: '#f6cf60', badge: '#f6cf60', badgeBg: 'rgba(246,207,96,0.15)' },
     grok: { trim: '#7df9ff', badge: '#7df9ff', badgeBg: 'rgba(125,249,255,0.15)' },
     kimi: { trim: '#ff8da8', badge: '#ff8da8', badgeBg: 'rgba(255,141,168,0.15)' },
+    omp: { trim: '#f2d36b', badge: '#f2d36b', badgeBg: 'rgba(242,211,107,0.15)' },
     opencode: { trim: '#7cf4c8', badge: '#7cf4c8', badgeBg: 'rgba(124,244,200,0.15)' },
     deepseek: { trim: '#9ec1ff', badge: '#5b8def', badgeBg: 'rgba(91,141,239,0.15)' },
     default: { trim: '#f2d36b', badge: '#8b8b9e', badgeBg: 'rgba(139,139,158,0.15)' },

@@ -85,6 +85,7 @@ const PROVIDER_HOME_BUILDINGS = {
     codex: 'forge',
     gemini: 'observatory',
     kimi: 'portal',
+    omp: 'taskboard',
     opencode: 'portal',
     deepseek: 'observatory',
 };

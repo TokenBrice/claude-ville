@@ -37,6 +37,7 @@ In `adapters/`, registered by `adapters/index.js`.
 - `grok.js`: `~/.grok/sessions/` — `<url-encoded-cwd>/<session-id>/{summary.json,updates.jsonl,chat_history.jsonl}`; optional `~/.grok/active_sessions.json`.
 - `kimi.js`: `~/.kimi/` — session wire/state files and config.
 - `opencode.js`: `~/.local/share/opencode/opencode.db` — SQLite read-only; includes subagent parent links and git events from shell tools.
+- `omp.js`: `~/.omp/agent/sessions/` — OMP parent and nested agent JSONL transcripts; maps OMP model/provider, nested parent links, tool history, messages, and aggregated response usage.
 - `turnState.js`: pure, provider-agnostic turn state (`working` / `tool_pending` / `awaiting_input` / `unknown`) plus the pending-tool classifier that separates a permission prompt from a slow tool. Adapters extract a small descriptor from their own transcript format and hand it here; `claude.js` pairs `tool_use`/`tool_result` and reads `stop_reason`, `codex.js` uses `task_started`/`task_complete` and `call_id`. Sessions carry `turnState`, `pendingTool`, `pendingSince`, `awaitingSince`, `waitReason`, `resident`.
 - `gitEvents.js`: parses git `commit`/`push` from provider tool logs (dry-runs omitted) into session `gitEvents`; the registry can synthesize repository-only `provider: 'git'` sessions. Scans default to `~/Documents/git`; tune `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`/`CLAUDEVILLE_REPOSITORY_SCAN_MAX`; disable `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`.
 

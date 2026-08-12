@@ -2,6 +2,24 @@
 
 ---
 
+## v0.31.0 — *The Taskboard* · Aug 12, 2026
+
+ClaudeVille now follows Oh My Pi orchestration as a first-class provider, keeping the parent session, nested agents, lineage, conversation, tool activity, and usage visible in the same village watch.
+
+**The whole party stays in view**
+- **OMP has a proper adapter.** ClaudeVille reads OMP's local session transcripts without modifying them and discovers both orchestration parents and nested agent runs.
+- **Lineage survives the handoff.** Parent-child links, agent names, model identities, and underlying providers remain attached as nested work moves through the village.
+- **Details carry the work.** Session detail views now include OMP messages, tool history, response usage, and token totals instead of reducing an orchestrated run to a single process row.
+
+**A new house on the map**
+- **The taskboard welcomes OMP.** Provider labels, badges, hues, arrival cues, agent prefixes, and home-building placement all recognize OMP sessions consistently.
+- **The watch stays local and read-only.** OMP data comes from `~/.omp/agent/sessions/`; the server watches transcript changes and never writes to provider state.
+
+**Pressure you can verify**
+- **The release gate is green.** Dedicated OMP adapter coverage passes alongside the full 101-test dependency-free unit suite, syntax checks, live API detail checks, and a browser dashboard smoke test.
+
+---
+
 ## v0.30.0 — *The Quartermaster* · Jul 28, 2026
 
 ClaudeVille now keeps substantially more headroom during long watches. Session readers reuse bounded work, World releases its heavyweight resources while Dashboard is active, and the keep's controls communicate their state in one compact glance.

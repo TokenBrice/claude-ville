@@ -18,6 +18,7 @@ const PROVIDER_COLORS = {
     gemini: '#60a5fa',
     git: '#f6cf60',
     kimi: '#ff9f7a',
+    omp: '#f2d36b',
     opencode: '#7cf4c8',
     default: '#f2d36b',
 };
@@ -28,6 +29,7 @@ const PROVIDER_INITIALS = {
     gemini: 'G',
     git: '#',
     kimi: 'K',
+    omp: 'M',
     opencode: 'O',
     default: '?',
 };

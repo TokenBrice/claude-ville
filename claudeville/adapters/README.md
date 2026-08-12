@@ -1,6 +1,6 @@
 # Provider Adapters
 
-Read-only readers that pull active session data from local CLI provider stores (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi/`, and `~/.local/share/opencode/`) and normalize it into a single shape the rest of ClaudeVille consumes.
+Read-only readers that pull active session data from local CLI provider stores (`~/.claude/`, `~/.codex/`, `~/.gemini/`, `~/.grok/`, `~/.kimi-code/`, `~/.local/share/opencode/`, and `~/.omp/`) and normalize it into a single shape the rest of ClaudeVille consumes.
 
 ## Purpose
 
@@ -18,6 +18,7 @@ const adapters = [
   new GrokAdapter(),
   new KimiAdapter(),
   new OpenCodeAdapter(),
+  new OmpAdapter(),
 ];
 ```
 
@@ -47,7 +48,7 @@ Each adapter class must expose the following getters and methods. Getters are JS
 | Member | Kind | Returns | Consumer |
 | --- | --- | --- | --- |
 | `name` | getter | display string (e.g. `'Claude Code'`) | `getActiveProviders()`, surfaced via `/api/providers` |
-| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'` / `'grok'` / `'kimi'` / `'opencode'`) | Adapter dispatch and adapter-backed session objects |
+| `provider` | getter | stable id (`'claude'` / `'codex'` / `'gemini'` / `'grok'` / `'kimi'` / `'opencode'` / `'omp'`) | Adapter dispatch and adapter-backed session objects |
 | `homeDir` | getter | absolute path to the provider's source dir | `getActiveProviders()` |
 | `isAvailable()` | method | `boolean` | Gates every registry iteration |
 | `getActiveSessions(activeThresholdMs)` | method | `Session[]` (see below) | Called from `server.js` per request and per polling tick |
@@ -75,8 +76,8 @@ Registry metadata treats adapter-backed providers as detail-capable when `getSes
 
 | Field | Type | Notes |
 | --- | --- | --- |
-| `sessionId` | string | Unique across providers. Codex, Gemini, Grok, Kimi, and OpenCode prefix with `codex-` / `gemini-` / `grok-` / `kimi-` / `opencode-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
-| `provider` | `'claude' \| 'codex' \| 'gemini' \| 'grok' \| 'kimi' \| 'opencode' \| 'git'` | Adapter-backed sessions use the CLI/source provider id. DeepSeek-backed OpenCode sessions still use `provider: 'opencode'` and expose DeepSeek through `model`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
+| `sessionId` | string | Unique across providers. Codex, Gemini, Grok, Kimi, OpenCode, and OMP prefix with `codex-` / `gemini-` / `grok-` / `kimi-` / `opencode-` / `omp-`; Claude uses the raw uuid; subagents use `subagent-<agentId>`. Repository-only git sessions use `git-repo-<hash>`. |
+| `provider` | `'claude' \| 'codex' \| 'gemini' \| 'grok' \| 'kimi' \| 'opencode' \| 'omp' \| 'git'` | Adapter-backed sessions use the CLI/source provider id. DeepSeek-backed OpenCode sessions still use `provider: 'opencode'` and expose DeepSeek through `model`. OMP sessions use `provider: 'omp'` and expose their underlying provider through `underlyingProvider`. The registry can synthesize repository sessions with `provider: 'git'` for unpushed commit visibility. |
 | `agentId` | string \| null | Provider-specific agent thread id; nullable for Gemini. |
 | `agentType` | `'main' \| 'sub-agent' \| 'team-member' \| 'workflow-subagent' \| 'repository'` | Drives sprite/card grouping. Default `'main'`. Synthetic git sessions use `'repository'`. Workflow tool sub-agents use `'workflow-subagent'`. |
 | `agentName` | string \| null | Human label when the provider exposes one (Codex `session_index.jsonl` `thread_name` with `agent_nickname` fallback, Claude team launch name). |
