@@ -2,6 +2,14 @@
 
 ---
 
+## v0.31.0.1 · Aug 20, 2026 — Hotfix
+
+World mode now renders through an opaque canvas, sparing the desktop compositor per-frame alpha blending of the whole village layer.
+
+- **The canvas declares itself opaque.** The sky pass already repaints the full viewport every frame, so the World canvas backing store is created with `alpha: false`; the browser compositor can skip blending the layer against the page. Measured on a busy 240 Hz desktop, worst-case frame pacing tightened from 21 ms to 16.8 ms with no visual change.
+
+---
+
 ## v0.31.0 — *The Taskboard* · Aug 12, 2026
 
 ClaudeVille now follows Oh My Pi orchestration as a first-class provider, keeping the parent session, nested agents, lineage, conversation, tool activity, and usage visible in the same village watch.

@@ -1432,7 +1432,10 @@ export class IsometricRenderer {
         }
 
         this.canvas = canvas;
-        this.ctx = canvas.getContext('2d');
+        // alpha:false matches App.js resize; the sky pass repaints the full
+        // viewport opaquely every frame (context attributes are fixed by the
+        // first getContext call, so every main-canvas site must agree).
+        this.ctx = canvas.getContext('2d', { alpha: false });
         if (!this.ctx) {
             console.warn('[IsometricRenderer] show skipped: failed to get 2d context');
             return false;
@@ -1911,7 +1914,7 @@ export class IsometricRenderer {
         if (this.canvas && width > 0 && height > 0) {
             this.canvas.width = width;
             this.canvas.height = height;
-            this.ctx = this.canvas.getContext('2d');
+            this.ctx = this.canvas.getContext('2d', { alpha: false });
             if (this.ctx) SpriteRenderer.disableSmoothing(this.ctx);
         }
         this.trailRenderer?.resume?.();
@@ -3226,7 +3229,7 @@ export class IsometricRenderer {
             const canvas = this.canvas;
             if (canvas && canvas.width > 0 && canvas.height > 0) {
                 canvas.width = canvas.width;
-                this.ctx = canvas.getContext('2d');
+                this.ctx = canvas.getContext('2d', { alpha: false });
             }
         } catch { /* context recovery is best-effort */ }
     }

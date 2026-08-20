@@ -523,7 +523,10 @@ export class App {
             canvas._claudeVilleCssHeight = cssHeight;
             canvas.style.width = `${cssWidth}px`;
             canvas.style.height = `${cssHeight}px`;
-            const ctx = canvas.getContext('2d');
+            // alpha:false — the sky pass paints the full viewport opaquely
+            // every frame, so an opaque backing store lets the compositor
+            // skip per-frame alpha blending of the whole canvas layer.
+            const ctx = canvas.getContext('2d', { alpha: false });
             ctx.imageSmoothingEnabled = false;
             ctx.mozImageSmoothingEnabled = false;
             ctx.webkitImageSmoothingEnabled = false;
