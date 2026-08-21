@@ -2,6 +2,26 @@
 
 ---
 
+## v0.32.0 — *Lanternfire* · Aug 21, 2026
+
+World mode gains a hybrid GPU pipeline: the Canvas-2D village stays the source of truth while a new WebGL2 post-processing stage grades, glows, and blooms the finished frame — and steps aside automatically the moment it cannot earn its keep.
+
+**The village learns to glow**
+- **Night belongs to the lanterns.** Building windows, watchfires, braziers, the forge, and the lighthouse beacon now bloom into nearby roads and harbor water through a GPU bright-pass and Kawase blur, driven by the same light registry the 2D renderer already keeps.
+- **The atmosphere grade moved to the GPU.** When the post stage is active it owns the day/night grade and edge vignette from the same atmosphere inputs; the classic 2D multiply grade remains byte-for-byte intact as the fallback path.
+- **Water bends the light.** Harbor and shoreline tiles get flow-aware displacement and a faint reflection hint, masked by a quarter-resolution water mask that rebuilds only when the camera moves.
+- **Weather, rays, and pulses.** Dawn/dusk god rays, forge heat haze, incident chromatic pulses, and a low-amplitude film grain round out the pass — every animated term honors the motion budget and freezes under reduced motion.
+
+**Text never gets graded**
+- **A third canvas carries the UI.** Labels, bubbles, primary marks, weather foreground, screen particles, cinematic letterbox, and the debug overlay now draw on a dedicated overlay canvas above the GL output, so post-processing can never distort a letter.
+
+**It degrades before it drops frames**
+- **A hysteretic effects ladder.** Sustained over-budget frames shed god rays and reflections first, then collapse to grade-plus-glows, then hand the whole frame back to Canvas-2D — the scene itself is never half-rated or half-resolved. Healthy frames probe back up slowly.
+- **Stalls cannot hide.** The ladder watches instrumented upload/CPU/GPU timings *and* the raw gap between frames, so driver-side stalls that dodge the timers still trigger fallback.
+- **Escape hatches.** `?postfx=0` skips the GPU path (and its allocations) entirely; Shift-D shows live post-FX level, timings, and texture bytes; WebGL2 absence or context loss falls back instantly with no visual regression from v0.31.
+
+---
+
 ## v0.31.0.1 · Aug 20, 2026 — Hotfix
 
 World mode now renders through an opaque canvas, sparing the desktop compositor per-frame alpha blending of the whole village layer.

@@ -480,8 +480,11 @@ export class App {
 
     _bindResize() {
         const canvas = document.getElementById('worldCanvas');
+        const fxCanvas = document.getElementById('worldFxCanvas');
+        const overlayCanvas = document.getElementById('worldOverlayCanvas');
         const container = canvas?.parentElement;
         if (!canvas || !container) return;
+        const canvasSurfaces = [canvas, fxCanvas, overlayCanvas].filter(Boolean);
         this._worldCanvas = canvas;
         if (this._resizeHandle) {
             cancelAnimationFrame(this._resizeHandle);
@@ -512,17 +515,21 @@ export class App {
             const newH = Math.round(cssHeight * dpr);
             if (
                 !force &&
-                canvas.width === newW &&
-                canvas.height === newH &&
-                canvas._claudeVilleDpr === dpr
+                canvasSurfaces.every(surface => (
+                    surface.width === newW &&
+                    surface.height === newH &&
+                    surface._claudeVilleDpr === dpr
+                ))
             ) return;
-            canvas.width = newW;
-            canvas.height = newH;
-            canvas._claudeVilleDpr = dpr;
-            canvas._claudeVilleCssWidth = cssWidth;
-            canvas._claudeVilleCssHeight = cssHeight;
-            canvas.style.width = `${cssWidth}px`;
-            canvas.style.height = `${cssHeight}px`;
+            for (const surface of canvasSurfaces) {
+                surface.width = newW;
+                surface.height = newH;
+                surface._claudeVilleDpr = dpr;
+                surface._claudeVilleCssWidth = cssWidth;
+                surface._claudeVilleCssHeight = cssHeight;
+                surface.style.width = `${cssWidth}px`;
+                surface.style.height = `${cssHeight}px`;
+            }
             // alpha:false — the sky pass paints the full viewport opaquely
             // every frame, so an opaque backing store lets the compositor
             // skip per-frame alpha blending of the whole canvas layer.
@@ -530,6 +537,13 @@ export class App {
             ctx.imageSmoothingEnabled = false;
             ctx.mozImageSmoothingEnabled = false;
             ctx.webkitImageSmoothingEnabled = false;
+            const overlayCtx = overlayCanvas?.getContext?.('2d', { alpha: true });
+            if (overlayCtx) {
+                overlayCtx.imageSmoothingEnabled = false;
+                overlayCtx.mozImageSmoothingEnabled = false;
+                overlayCtx.webkitImageSmoothingEnabled = false;
+            }
+            this.renderer?.postFx?.resize?.(newW, newH);
             if (this.renderer?.invalidateViewportCaches) {
                 this.renderer.invalidateViewportCaches();
             }
@@ -663,6 +677,8 @@ export class App {
         const renderer = this.renderer;
         const store = this.chronicleStore;
         const worldCanvas = this._worldCanvas || document.getElementById('worldCanvas');
+        const worldFxCanvas = document.getElementById('worldFxCanvas');
+        const worldOverlayCanvas = document.getElementById('worldOverlayCanvas');
 
         this._bootController?.abort?.();
 
@@ -760,9 +776,10 @@ export class App {
         });
         await this._settleLifecycleTasks([chronicleDrain, trailDrain]);
         this._callLifecycle('IsometricRenderer.hide', () => renderer?.hide?.());
-        if (worldCanvas) {
-            worldCanvas.width = 0;
-            worldCanvas.height = 0;
+        for (const canvas of [worldCanvas, worldFxCanvas, worldOverlayCanvas]) {
+            if (!canvas) continue;
+            canvas.width = 0;
+            canvas.height = 0;
         }
         const assetsDispose = this._callLifecycle('AssetManager.dispose', () => this.assets?.dispose?.());
 

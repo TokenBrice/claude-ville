@@ -9,7 +9,8 @@ const MAX_DEVICE_DPR = 1;
 // otherwise keep the fractional capped value.
 const DPR_STEPS = Object.freeze([MAX_DEVICE_DPR, 0.5, MIN_BACKING_DPR]);
 const QUANTIZE_KEEP_RATIO = 0.85;
-const SCREEN_SURFACE_COUNT = 4; // visible canvas, sky cache, trail cache, atmosphere cache
+// Visible scene, PostFX, UI overlay, sky cache, trail cache, atmosphere cache.
+const SCREEN_SURFACE_COUNT = 6;
 const WORLD_CACHE_PIXEL_RESERVE = 7_000_000;
 const LIGHT_CACHE_PIXEL_RESERVE = 1_250_000;
 const AUX_CACHE_PIXEL_RESERVE = 250_000;

@@ -201,7 +201,7 @@ export class DebugOverlay {
         ctx.fill();
     }
 
-    drawScreen(ctx, { visitIntents, visitReservations, agentSprites, viewport, panelY = 12, behaviorStats = null, renderStats = null, cameraState = null } = {}) {
+    drawScreen(ctx, { renderer = null, visitIntents, visitReservations, agentSprites, viewport, panelY = 12, behaviorStats = null, renderStats = null, cameraState = null } = {}) {
         if (!this.enabled) return;
         const intents = Array.isArray(visitIntents?.intents) ? visitIntents.intents : [];
         const reservations = Array.isArray(visitReservations?.reservations) ? visitReservations.reservations : [];
@@ -213,6 +213,7 @@ export class DebugOverlay {
             `intents: ${intents.length}`,
             `reservations: ${reservations.length}`,
             this._cameraStateRow(viewport, cameraState),
+            ...this._postFxRows(renderer),
             renderStats?.drawables ? `drawables: ${renderStats.drawables.total} drawn / ${renderStats.drawables.culling?.culled || 0} culled` : null,
             renderStats?.harbor ? `harbor: pending ${renderStats.harbor.pendingRepos || 0} commits ${renderStats.harbor.pendingCommits || 0}` : null,
             renderStats?.canvas ? `light/cache: ${renderStats.canvas.lightGradients || 0} gradients / particles ${renderStats.canvas.particles || 0}` : null,
@@ -306,6 +307,19 @@ export class DebugOverlay {
         return `camera: ${parts.join(' · ')}`;
     }
 
+    _postFxRows(renderer) {
+        const diagnostics = renderer?.postFx?.getDiagnostics?.() || null;
+        const levelValue = diagnostics?.level;
+        const level = levelValue !== null && levelValue !== undefined && Number.isFinite(Number(levelValue))
+            ? Number(levelValue)
+            : 'n/a';
+        return [
+            `postfx: active ${diagnostics?.active ? 'yes' : 'no'} · supported ${diagnostics?.supported ? 'yes' : 'no'} · level ${level}`,
+            `postfx ms: upload ${formatOptionalMs(diagnostics?.uploadMs)} · gpu ${formatOptionalMs(diagnostics?.gpuMs)} · cpu ${formatOptionalMs(diagnostics?.cpuMs)}`,
+            `postfx texture: ${formatBytes(diagnostics?.textureBytes)}`,
+        ];
+    }
+
     _tileToScreen(tileX, tileY) {
         return {
             x: (tileX - tileY) * TILE_WIDTH / 2,
@@ -339,6 +353,20 @@ function formatMs(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return '0.0';
     return number.toFixed(number >= 10 ? 0 : 1);
+}
+
+function formatOptionalMs(value) {
+    if (value === null || value === undefined) return 'n/a';
+    const number = Number(value);
+    return Number.isFinite(number) ? `${formatMs(number)}ms` : 'n/a';
+}
+
+function formatBytes(value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number <= 0) return '0 B';
+    if (number >= 1_048_576) return `${(number / 1_048_576).toFixed(1)} MiB`;
+    if (number >= 1_024) return `${Math.round(number / 1_024)} KiB`;
+    return `${Math.round(number)} B`;
 }
 
 function formatPixels(value) {

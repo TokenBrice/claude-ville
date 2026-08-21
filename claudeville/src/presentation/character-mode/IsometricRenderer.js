@@ -80,6 +80,8 @@ import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { buildStaticPropDrawables } from './StaticPropDrawables.js';
 import { createDepthDrawable, propDepthDrawable } from './DrawablePass.js';
 import { renderWorldFrame } from './WorldFrameRenderer.js';
+import { createPostFx } from './postfx/PostFx.js';
+import { createPostFxFeed } from './postfx/PostFxFeed.js';
 import {
     CANVAS_BUDGET,
     canvasMapPixelCount,
@@ -430,6 +432,12 @@ export class IsometricRenderer {
         this.compositor = this.assets ? new Compositor(this.assets) : null;
         this.canvas = null;
         this.ctx = null;
+        this.fxCanvas = null;
+        this.overlayCanvas = null;
+        this.overlayCtx = null;
+        this.postFx = null;
+        this.postFxFeed = null;
+        this._postFxCanvasVisible = null;
         this.camera = null;
         this.cameraDirector = null;
         this.particleSystem = new ParticleSystem();
@@ -1432,6 +1440,8 @@ export class IsometricRenderer {
         }
 
         this.canvas = canvas;
+        this.fxCanvas = canvas.parentElement?.querySelector?.('#worldFxCanvas') || null;
+        this.overlayCanvas = canvas.parentElement?.querySelector?.('#worldOverlayCanvas') || null;
         // alpha:false matches App.js resize; the sky pass repaints the full
         // viewport opaquely every frame (context attributes are fixed by the
         // first getContext call, so every main-canvas site must agree).
@@ -1440,6 +1450,21 @@ export class IsometricRenderer {
             console.warn('[IsometricRenderer] show skipped: failed to get 2d context');
             return false;
         }
+        this._resizeAuxiliaryBackingStores(canvas.width, canvas.height);
+        if (!this.overlayCtx) {
+            console.warn('[IsometricRenderer] show skipped: failed to get overlay 2d context');
+            return false;
+        }
+        // ?postfx=0 skips creation entirely — a disabled instance would still
+        // allocate a WebGL2 context and ~13MB of GPU textures for nothing.
+        const postFxEnabled = new URLSearchParams(window.location.search).get('postfx') !== '0';
+        this.postFx = (postFxEnabled && this.fxCanvas)
+            ? createPostFx({ canvas: this.fxCanvas, enabled: true })
+            : null;
+        this.postFxFeed = createPostFxFeed();
+        this.postFx?.resize?.(canvas.width, canvas.height);
+        this._postFxCanvasVisible = null;
+        this._setPostFxCanvasVisible(this.postFx?.isActive?.() === true);
         if (!this.villageDirector) {
             this.villageDirector = new VillageDirector(this.world);
             this.villageDirector.setMotionScale?.(this.motionScale);
@@ -1650,6 +1675,10 @@ export class IsometricRenderer {
         this._worldResourceGeneration++;
         this.running = false;
         this._stopLoop();
+        this.postFx?.dispose?.();
+        this.postFx = null;
+        this.postFxFeed = null;
+        this._setPostFxCanvasVisible(false);
         if (this.camera) {
             this.camera.detach();
         }
@@ -1721,6 +1750,9 @@ export class IsometricRenderer {
         // SeasonalAmbience holds no resources today; the optional chain keeps
         // the lifecycle hook in place if a dispose method lands.
         this.seasonalAmbience?.dispose?.();
+        this.overlayCtx = null;
+        this.overlayCanvas = null;
+        this.fxCanvas = null;
     }
 
     _startLoop() {
@@ -1846,6 +1878,9 @@ export class IsometricRenderer {
         );
         for (const sprite of staticSprites) sprite.releaseCache?.();
         releaseCanvasBackingStore(this.canvas);
+        // The UI surface is as volatile as the world backing store; keeping it
+        // alive in Dashboard mode would retain a full-screen alpha canvas.
+        releaseCanvasBackingStore(this.overlayCanvas);
         this._worldResourcesSuspended = true;
     }
 
@@ -1916,6 +1951,7 @@ export class IsometricRenderer {
             this.canvas.height = height;
             this.ctx = this.canvas.getContext('2d', { alpha: false });
             if (this.ctx) SpriteRenderer.disableSmoothing(this.ctx);
+            this._resizeAuxiliaryBackingStores(width, height);
         }
         this.trailRenderer?.resume?.();
         this._worldResourcesSuspended = false;
@@ -2685,6 +2721,31 @@ export class IsometricRenderer {
         const dpr = this._screenDpr();
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         SpriteRenderer.disableSmoothing(ctx);
+    }
+
+    _resizeAuxiliaryBackingStores(width, height) {
+        const backingWidth = Math.max(0, Math.round(Number(width) || 0));
+        const backingHeight = Math.max(0, Math.round(Number(height) || 0));
+        for (const surface of [this.fxCanvas, this.overlayCanvas]) {
+            if (!surface) continue;
+            if (surface.width !== backingWidth) surface.width = backingWidth;
+            if (surface.height !== backingHeight) surface.height = backingHeight;
+            surface._claudeVilleDpr = this.canvas?._claudeVilleDpr || 1;
+            surface._claudeVilleCssWidth = this.canvas?._claudeVilleCssWidth || this.canvas?.clientWidth || 0;
+            surface._claudeVilleCssHeight = this.canvas?._claudeVilleCssHeight || this.canvas?.clientHeight || 0;
+        }
+        this.overlayCtx = this.overlayCanvas?.getContext?.('2d', { alpha: true }) || null;
+        if (this.overlayCtx) SpriteRenderer.disableSmoothing(this.overlayCtx);
+        if (backingWidth > 0 && backingHeight > 0) {
+            this.postFx?.resize?.(backingWidth, backingHeight);
+        }
+    }
+
+    _setPostFxCanvasVisible(active) {
+        const visible = Boolean(active);
+        if (this._postFxCanvasVisible === visible) return;
+        this._postFxCanvasVisible = visible;
+        if (this.fxCanvas) this.fxCanvas.style.display = visible ? 'block' : 'none';
     }
 
     _addAgentSprite(agent) {
@@ -10184,13 +10245,6 @@ export class IsometricRenderer {
         ctx.restore();
         profileMark?.('atmosphere-grade');
 
-        this.weatherRenderer?.drawForeground(ctx, {
-            canvas,
-            atmosphere,
-            dt,
-            profileMark,
-        });
-
         // E2/E3 — additive building light glows, shared with the fast path so
         // both draw lanterns identically.
         this._drawLightGlowStamps(ctx, canvas, atmosphere, ambientLightSources);
@@ -10348,13 +10402,6 @@ export class IsometricRenderer {
         ctx.drawImage(this._getFastVignetteStamp(canvas, atmosphere), 0, 0, canvas.width, canvas.height);
         ctx.restore();
         profileMark?.('atmosphere-grade');
-
-        this.weatherRenderer?.drawForeground(ctx, {
-            canvas,
-            atmosphere,
-            dt,
-            profileMark,
-        });
 
         // E3 — restore light glows on the fast path (previously dropped exactly
         // when zoomed into a building at night), capped at the ~12 nearest.

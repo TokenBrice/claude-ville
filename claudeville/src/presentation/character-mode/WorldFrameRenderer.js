@@ -22,11 +22,17 @@ import {
 export function renderWorldFrame(renderer, dt = 16) {
     const ctx = renderer.ctx;
     const canvas = renderer.canvas;
-    if (!ctx || !canvas) return;
+    const overlayCtx = renderer.overlayCtx;
+    if (!ctx || !canvas || !overlayCtx) return;
     if (!canvas.width || !canvas.height) return;
     const frameTimer = beginFrameTiming(renderer);
     const renderNow = Date.now();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
+    const viewport = renderer._screenViewport();
+    const postFxActive = renderer.postFx?.isActive?.() === true;
+    renderer._setPostFxCanvasVisible?.(postFxActive);
+    renderer._resetScreenTransform(overlayCtx);
+    overlayCtx.clearRect(0, 0, viewport.width, viewport.height);
     // #28 integration — fire the child sprite's one-shot handoff ack-bob once the
     // director's baton reaches it (progress near terminus), deduped per scene id.
     if (villageSnapshot?.handoffs?.length) {
@@ -67,7 +73,6 @@ export function renderWorldFrame(renderer, dt = 16) {
     const perfNow = performance.now();
     renderer._frameLightSources = renderer._computeFrameLightSources(atmosphere, perfNow);
     renderer._updateGateDoorState?.(perfNow);
-    const viewport = renderer._screenViewport();
     markFrameTiming(frameTimer, 'setup');
 
     renderer._resetScreenTransform(ctx);
@@ -239,22 +244,44 @@ export function renderWorldFrame(renderer, dt = 16) {
     markFrameTiming(frameTimer, 'world-effects');
 
     renderer._resetScreenTransform(ctx);
-    renderer._drawAtmosphere(
-        ctx,
+    let postFxRendered = false;
+    if (postFxActive) {
+        const feed = renderer.postFxFeed?.build?.({
+            renderer,
+            atmosphere,
+            villageSnapshot,
+            nowMs: renderNow,
+        }) || null;
+        postFxRendered = renderer.postFx?.render?.(canvas, feed) === true;
+        markFrameTiming(frameTimer, 'postfx');
+    }
+    if (!postFxActive || !postFxRendered) {
+        renderer._drawAtmosphere(
+            ctx,
+            atmosphere,
+            dt,
+            renderer._frameLightSources?.ambient || null,
+            frameTimer ? label => markFrameTiming(frameTimer, label) : null,
+        );
+    }
+    if (postFxActive && !postFxRendered) renderer._setPostFxCanvasVisible?.(false);
+
+    renderer._resetScreenTransform(overlayCtx);
+    renderer.weatherRenderer?.drawForeground(overlayCtx, {
+        canvas: viewport,
         atmosphere,
         dt,
-        renderer._frameLightSources?.ambient || null,
-        frameTimer ? label => markFrameTiming(frameTimer, label) : null,
-    );
-    renderer.camera.applyTransform(ctx);
+        profileMark: frameTimer ? label => markFrameTiming(frameTimer, label) : null,
+    });
+    renderer.camera.applyTransform(overlayCtx);
     // 0.7 — re-stamp the PRIMARY mark set (waiting beacons, selection rings,
     // incident pills) AFTER the atmosphere multiply so the action-demanding
     // reads survive the night grade at the same strength the plaques enjoy.
-    drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphere);
+    drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, villageSnapshot, atmosphere);
     markFrameTiming(frameTimer, 'post-atmosphere-effects');
 
-    renderer.buildingRenderer?.drawBubbles(ctx, renderer.world);
-    renderer.buildingRenderer?.drawLabels(ctx, {
+    renderer.buildingRenderer?.drawBubbles(overlayCtx, renderer.world);
+    renderer.buildingRenderer?.drawLabels(overlayCtx, {
         zoom,
         occupiedBoxes: renderer._collectAgentLabelHitRects(sortedSprites),
         harborPendingRepos,
@@ -277,22 +304,22 @@ export function renderWorldFrame(renderer, dt = 16) {
     });
     markFrameTiming(frameTimer, 'labels');
 
-    renderer._resetScreenTransform(ctx);
-    renderer.particleSystem.draw(ctx, { layer: 'screen' });
-    renderer.seasonalAmbience?.drawStatic?.(ctx);
-    renderer.harborTraffic?.drawScreenSummary(ctx, viewport, renderer.camera, renderNow);
-    drawVillageDirectorScreen(ctx, villageSnapshot, viewport);
+    renderer._resetScreenTransform(overlayCtx);
+    renderer.particleSystem.draw(overlayCtx, { layer: 'screen' });
+    renderer.seasonalAmbience?.drawStatic?.(overlayCtx);
+    renderer.harborTraffic?.drawScreenSummary(overlayCtx, viewport, renderer.camera, renderNow);
+    drawVillageDirectorScreen(overlayCtx, villageSnapshot, viewport);
     // 5.7 — offscreen-event edge indicators (incl. cues the CameraDirector
     // dropped): small screen-edge markers, click to glide there.
-    drawOffscreenCueEdges(ctx, renderer, viewport, renderNow);
+    drawOffscreenCueEdges(overlayCtx, renderer, viewport, renderNow);
     // #21 — director glide grade pass: a momentary vignette + worldTint wash that
     // fades in and out with the cinematic move. Reduced motion yields no grade
     // (the camera cut leaves nothing to fade), so this is a no-op there.
-    drawDirectorGlideGrade(ctx, renderer.camera?.getDirectorGlideGrade?.(), viewport);
+    drawDirectorGlideGrade(overlayCtx, renderer.camera?.getDirectorGlideGrade?.(), viewport);
     // 5.7 — cinematic letterbox bars while a release/incident cue glide owns
     // the frame. Never fires under reduced motion (no cue glides happen).
-    drawCueLetterbox(ctx, renderer.camera, viewport);
-    drawDebugOverlay(renderer, ctx, atmosphere, viewport);
+    drawCueLetterbox(overlayCtx, renderer.camera, viewport);
+    drawDebugOverlay(renderer, overlayCtx, atmosphere, viewport);
     renderer._lastRenderStats = {
         ...renderer._lastRenderStats,
         timings: finishFrameTiming(renderer, frameTimer),
@@ -758,6 +785,7 @@ function drawDebugOverlay(renderer, ctx, atmosphere, viewport) {
     if (!overlay.enabled) return;
     renderer._drawAtmosphereDebug(ctx, atmosphere);
     renderer.debugOverlay.drawScreen(ctx, {
+        renderer,
         visitIntents: visitIntentDebug,
         visitReservations: visitReservationDebug,
         agentSprites: renderer.agentSprites,

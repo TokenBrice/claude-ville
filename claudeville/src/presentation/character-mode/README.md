@@ -37,6 +37,9 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `RitualConductor.js` | Capped, reduced-motion-aware scheduler for tool ritual visuals: building rituals plus per-agent reading/typing/thinking pose records consumed by `AgentSprite`. |
 | `ParticleSystem.js` | Particle emitters and ambient effects. Honors `prefers-reduced-motion`. |
 | `Minimap.js` | Minimap rendering and click-to-pan; mounted into the canvas's parent node. |
+| `postfx/PostFx.js` | WebGL2 post-processing stage: samples the finished 2D scene as a texture and applies the atmosphere grade, light glows, bloom, water displacement, god rays, heat haze, incident pulses, and grain. Owns context loss, timings, and diagnostics. |
+| `postfx/PostFxLadder.js` | Pure hysteretic degradation ladder (FULL → REDUCED → MINIMAL → DISABLED). Sheds effect cost only — the scene is always uploaded and presented at full resolution every frame. Unit-tested in `scripts/tests/postfx-ladder.test.mjs`. |
+| `postfx/PostFxFeed.js` | Allocation-light per-frame uniform feed: screen-space light list, quarter-res water mask (camera-pose cached, revision-counted), sun anchor, haze anchors, incident pulse envelope, motion state. |
 
 ## Data sources and draw order
 
@@ -54,6 +57,8 @@ The render loop keeps the scene readable by drawing in broad layers:
 3. Building bases and occlusion-aware hero building pieces.
 4. Agents, selection/status overlays, chat motion, and current-tool effects.
 5. Building labels/bubbles, particles, atmospheric overlays, and the minimap.
+
+World mode renders through a three-canvas stack inside `#characterMode`: `#worldCanvas` (the 2D scene, source of truth and mouse target), `#worldFxCanvas` (WebGL2 post-process output, hidden whenever inactive), and `#worldOverlayCanvas` (2D UI: weather foreground, primary marks, labels, bubbles, screen particles, letterbox, debug — never graded or distorted). Grading ownership is exclusive: when the post stage is active the 2D multiply grade and glow/lantern stamps are skipped and the GPU reproduces them from the same `atmosphere.grade` inputs; when inactive (`?postfx=0`, no WebGL2, context loss, or ladder level 3) the 2D path draws exactly as before. Shift-D shows post-FX level and timings.
 
 When adding a visual feature, place it in the lowest layer that still communicates the state. Avoid adding per-frame work when it can be cached into terrain or static scenery.
 
