@@ -7,6 +7,7 @@ import {
   clampGpuLights,
   emissivePhaseForAmbientLight,
   estimateGpuWorldTextureBytes,
+  localLightPhaseForLighting,
   materialClassId,
   resolveGpuWorldRendererMode,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldPolicy.js';
@@ -52,6 +53,13 @@ test('authored emitters stay restrained by day and recover toward night', () => 
   assert.equal(emissivePhaseForAmbientLight(1), 0.12);
   assert.equal(emissivePhaseForAmbientLight(0), 1);
   assert.ok(emissivePhaseForAmbientLight(0.4) > emissivePhaseForAmbientLight(0.8));
+});
+
+test('local point lights disappear at noon and rise with darkness or weather beacons', () => {
+  assert.equal(localLightPhaseForLighting({ ambientLight: 1, beaconIntensity: 0 }), 0);
+  assert.equal(localLightPhaseForLighting({ ambientLight: 0.65, beaconIntensity: 0.2 }), 0.35);
+  assert.equal(localLightPhaseForLighting({ ambientLight: 0.9, beaconIntensity: 0.42 }), 0.42);
+  assert.equal(localLightPhaseForLighting({ ambientLight: 0, beaconIntensity: 1 }), 1);
 });
 
 test('texture byte estimates include render targets and cached sources', () => {

@@ -3,6 +3,7 @@ import {
     clampGpuLights,
     emissivePhaseForAmbientLight,
     estimateGpuWorldTextureBytes,
+    localLightPhaseForLighting,
 } from './GpuWorldPolicy.js';
 import {
     createPostFxLadder,
@@ -17,6 +18,7 @@ const OCCLUSION_SCALE = 0.375;
 const EMA_ALPHA = 0.1;
 const MAX_CACHED_TEXTURE_BYTES = 48 * 1024 * 1024;
 const MAX_CACHED_TEXTURES = 512;
+const LOCAL_LIGHT_VISIBILITY_FLOOR = 0.04;
 
 const PHASE_GRADES = Object.freeze({
     day: { base: [1, 0.996, 0.98], edge: [0.84, 0.88, 0.91], edgeAlpha: 0.28, fog: [0.55, 0.68, 0.74] },
@@ -86,8 +88,10 @@ float occlusionBetween(vec2 fromPx, vec2 toPx, float elevation) {
     vec2 fromUv = fromPx / max(vec2(1.0), u_resolution);
     vec2 toUv = toPx / max(vec2(1.0), u_resolution);
     float blocked = 0.0;
-    for (int stepIndex = 1; stepIndex <= 5; stepIndex++) {
-        float t = float(stepIndex) / 6.0;
+    // Three samples keep the stepped pixel-art shadow read while avoiding the
+    // previous five texture fetches for every admitted light and scene pixel.
+    for (int stepIndex = 1; stepIndex <= 3; stepIndex++) {
+        float t = float(stepIndex) / 4.0;
         vec2 uv = mix(fromUv, toUv, t);
         float h = texture(u_occlusion, clamp(uv, vec2(0.0), vec2(1.0))).r;
         blocked = max(blocked, smoothstep(elevation + 0.03, elevation + 0.18, h));
@@ -161,7 +165,11 @@ void main() {
     float elevation = max(v_elevation, sidecar.b);
     vec2 px = vec2(gl_FragCoord.x, u_resolution.y - gl_FragCoord.y);
     vec2 glPx = gl_FragCoord.xy;
-    vec3 color = applyMaterialWeather(albedo.rgb, material, px);
+    vec3 color = albedo.rgb;
+    // Clear weather is the overwhelmingly common case. Avoid the ordered
+    // glint/material classification work when every weather contribution is
+    // mathematically zero; rainy output remains byte-for-byte equivalent.
+    if (u_weather.x > 0.001) color = applyMaterialWeather(color, material, px);
     color = applyAuthoredSunBand(color, material);
     color = applyGrade(color, px);
 
@@ -359,6 +367,7 @@ export class GpuWorldRenderer {
         this.batches = 0;
         this.lightCount = 0;
         this.emissivePhase = 0.12;
+        this.localLightPhase = 0;
         this.uploadMs = null;
         this.cpuMs = null;
         this.shaderCpuMs = null;
@@ -370,9 +379,13 @@ export class GpuWorldRenderer {
         this.qualityLadder = createPostFxLadder({
             budgetMs: 4,
             healthyMs: 2,
-            overBudgetFrames: 60,
-            probeMs: 5000,
+            overBudgetFrames: 12,
+            probeMs: 1500,
         });
+        // Shader compilation and first-use texture uploads happen together on
+        // a fresh context. Begin with optional occlusion/bloom shed, then let
+        // the normal healthy probes restore REDUCED and FULL within ~3 seconds.
+        this.qualityLadder.reset(POST_FX_LEVELS.MINIMAL);
         this._frameUploadMs = 0;
         this._lastRenderAtMs = null;
         this._textureEntries = new Map();
@@ -635,6 +648,7 @@ export class GpuWorldRenderer {
             this.suspended = false;
             this._initResources();
             this.resize(this.width, this.height);
+            this.qualityLadder.reset(POST_FX_LEVELS.MINIMAL);
             this.contextHealthy = true;
             return true;
         } catch (error) {
@@ -826,7 +840,11 @@ export class GpuWorldRenderer {
         gl.bindTexture(gl.TEXTURE_2D, this.occlusionTarget.textures[0]);
         gl.uniform1i(uniforms.u_occlusion, 2);
 
-        const lightLimit = qualityLevel >= POST_FX_LEVELS.MINIMAL
+        this.localLightPhase = localLightPhaseForLighting(feed.lighting);
+        const daylightSuppressesLights = this.localLightPhase <= LOCAL_LIGHT_VISIBILITY_FLOOR;
+        const lightLimit = daylightSuppressesLights
+            ? 0
+            : qualityLevel >= POST_FX_LEVELS.MINIMAL
             ? 4
             : qualityLevel >= POST_FX_LEVELS.REDUCED
                 ? 10
@@ -841,12 +859,13 @@ export class GpuWorldRenderer {
             lightValues[offset] = finite(light.x);
             lightValues[offset + 1] = this.height - finite(light.y);
             lightValues[offset + 2] = Math.max(1, finite(light.radius, 64));
-            lightValues[offset + 3] = clamp(finite(light.intensity, 1), 0, 3);
+            lightValues[offset + 3] = clamp(finite(light.intensity, 1), 0, 3)
+                * this.localLightPhase;
             lightColors[offset] = color[0];
             lightColors[offset + 1] = color[1];
             lightColors[offset + 2] = color[2];
             lightColors[offset + 3] = light.night
-                ? clamp(finite(feed.lighting?.beaconIntensity, 0), 0, 1.2)
+                ? clamp(finite(feed.lighting?.beaconIntensity, 0), 0, 1)
                 : 1;
         }
         this.lightCount = lights.length;
@@ -858,7 +877,11 @@ export class GpuWorldRenderer {
     _renderScene(batches, camera, feed, qualityLevel = POST_FX_LEVELS.FULL) {
         const gl = this.gl;
         gl.bindFramebuffer(gl.FRAMEBUFFER, this.sceneTarget.framebuffer);
-        gl.drawBuffers([gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]);
+        const bloomEnabled = qualityLevel < POST_FX_LEVELS.MINIMAL
+            && localLightPhaseForLighting(feed.lighting) > LOCAL_LIGHT_VISIBILITY_FLOOR;
+        gl.drawBuffers(bloomEnabled
+            ? [gl.COLOR_ATTACHMENT0, gl.COLOR_ATTACHMENT1]
+            : [gl.COLOR_ATTACHMENT0]);
         gl.viewport(0, 0, this.width, this.height);
         gl.clearColor(0, 0, 0, 0);
         gl.clear(gl.COLOR_BUFFER_BIT);
@@ -869,6 +892,7 @@ export class GpuWorldRenderer {
             else gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
             this._bindBatch(this.sceneProgram, this.sceneUniforms, batch);
         }
+        return bloomEnabled;
     }
 
     _renderBloom() {
@@ -927,16 +951,13 @@ export class GpuWorldRenderer {
         this._lastRenderAtMs = started;
         this._frameUploadMs = 0;
         let qualityLevel = this.qualityLadder.getLevel();
-        // A disabled GPU level remains a recoverable Canvas fallback. Render
-        // calls continue to provide a healthy probe so the ladder can restore
-        // the parity path after its five-second cooldown.
+        // DISABLED means optional GPU effects are exhausted, not that the
+        // renderer may swap composition paths mid-scene. Canvas-only fauna and
+        // water details sit beneath this surface; toggling to Canvas and back
+        // makes boats/waterfalls blink. Keep the minimal resident scene while
+        // cheap probes allow recovery after warm-up.
         if (qualityLevel >= POST_FX_LEVELS.DISABLED) {
             const recovery = this.qualityLadder.update({ totalMs: 0 }, started);
-            // The direct renderer cannot hand back a scene whose Canvas-owned
-            // terrain/buildings were intentionally skipped earlier this frame.
-            // Hold the cheapest resident grade while probing recovery; actual
-            // context loss still makes isActive() false before frame assembly,
-            // so the complete Canvas path is selected safely.
             qualityLevel = Math.min(recovery.effectiveLevel, POST_FX_LEVELS.MINIMAL);
         }
         try {
@@ -947,7 +968,9 @@ export class GpuWorldRenderer {
             gl.enable(gl.BLEND);
             gl.disable(gl.DEPTH_TEST);
             gl.disable(gl.CULL_FACE);
-            if (qualityLevel < POST_FX_LEVELS.MINIMAL) {
+            const localLightsVisible = localLightPhaseForLighting(feed.lighting)
+                > LOCAL_LIGHT_VISIBILITY_FLOOR;
+            if (qualityLevel < POST_FX_LEVELS.MINIMAL && localLightsVisible) {
                 this._renderOcclusion(batches, camera);
             } else {
                 gl.bindFramebuffer(gl.FRAMEBUFFER, this.occlusionTarget.framebuffer);
@@ -956,9 +979,9 @@ export class GpuWorldRenderer {
                 gl.clearColor(0, 0, 0, 0);
                 gl.clear(gl.COLOR_BUFFER_BIT);
             }
-            this._renderScene(batches, camera, feed, qualityLevel);
+            const bloomEnabled = this._renderScene(batches, camera, feed, qualityLevel);
             gl.disable(gl.BLEND);
-            if (qualityLevel < POST_FX_LEVELS.MINIMAL) this._renderBloom();
+            if (bloomEnabled && this.lightCount > 0) this._renderBloom();
             gl.enable(gl.BLEND);
             this._present(qualityLevel);
             this._trimTextureCache();
@@ -1003,6 +1026,7 @@ export class GpuWorldRenderer {
             records: this.records,
             batches: this.batches,
             lights: this.lightCount,
+            localLightPhase: this.localLightPhase,
             uploads: this.uploads,
             uploadBytes: this.uploadBytes,
             uploadMs: this.uploadMs ?? 0,

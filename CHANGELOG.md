@@ -2,6 +2,23 @@
 
 ---
 
+## v0.33.1 — *Quickened Glass* · Aug 21, 2026
+
+World mode now reaches its fast steady state without trading away the Glasswrights renderer, while daylight lighting and animated water remain visually stable throughout GPU warm-up.
+
+**A faster first watch**
+- **GPU warm-up starts lean and restores the full scene quickly.** New contexts begin on the minimal effects rung, skip clear-weather work that cannot affect the frame, avoid unused daylight emission/bloom targets, and recover through the quality ladder once shader and texture uploads settle.
+- **Local-light shading costs less after dusk.** The occlusion trace keeps its stepped pixel-shadow character with three samples instead of five, reducing the most expensive repeated texture work without flattening night lighting.
+
+**Sunlight behaves like sunlight**
+- **Point-light halos now answer to ambient darkness.** Broad daylight suppresses lighthouse, harbor, building, and lantern floodlight halos across direct GPU, flattened PostFX, and Canvas paths while authored glowing windows, runes, and fire pixels remain identifiable.
+
+**One village, one composition path**
+- **Adaptive recovery no longer flickers boats or water features.** Even at the lowest quality rung, the direct GPU scene remains resident while optional effects recover in place, so Canvas-only fauna and water layers cannot blink through between frames.
+- **Release checks cover the regression.** Day/night browser captures, forced quality recovery, World/Dashboard switching, agent selection, 142 unit tests, sprite audits, and building/terrain validators all pass without console or frame errors.
+
+---
+
 ## v0.33.0 — *The Glasswrights* · Aug 21, 2026
 
 World mode becomes a semantic, GPU-resident pixel diorama: the village now knows which agents matter, which surfaces receive weather and light, and when visual detail should yield to operator clarity.

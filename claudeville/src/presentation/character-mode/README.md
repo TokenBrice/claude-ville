@@ -39,7 +39,7 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `ParticleSystem.js` | Particle emitters and ambient effects. Honors `prefers-reduced-motion`. |
 | `Minimap.js` | Minimap rendering and click-to-pan; mounted into the canvas's parent node. |
 | `postfx/PostFx.js` | WebGL2 post-processing stage: samples the finished 2D scene as a texture and applies the atmosphere grade, light glows, bloom, water displacement, god rays, heat haze, incident pulses, and grain. Owns context loss, timings, and diagnostics. |
-| `postfx/PostFxLadder.js` | Pure hysteretic degradation ladder (FULL → REDUCED → MINIMAL → DISABLED). Sheds effect cost only — the scene is always uploaded and presented at full resolution every frame. Unit-tested in `scripts/tests/postfx-ladder.test.mjs`. |
+| `postfx/PostFxLadder.js` | Pure hysteretic degradation ladder (FULL → REDUCED → MINIMAL → DISABLED). It sheds optional effects only; the direct GPU world holds a minimal resident scene at DISABLED so Canvas-only water/fauna layers cannot flicker through during recovery. Unit-tested in `scripts/tests/postfx-ladder.test.mjs`. |
 | `postfx/PostFxFeed.js` | Allocation-light per-frame uniform feed: screen-space light list, quarter-res water mask (camera-pose cached, revision-counted), sun anchor, haze anchors, incident pulse envelope, motion state. |
 
 ## Data sources and draw order

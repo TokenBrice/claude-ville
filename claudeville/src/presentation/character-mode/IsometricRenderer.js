@@ -83,7 +83,7 @@ import { renderWorldFrame } from './WorldFrameRenderer.js';
 import { createPostFx } from './postfx/PostFx.js';
 import { createPostFxFeed } from './postfx/PostFxFeed.js';
 import { createGpuWorldRenderer } from './gpu/GpuWorldRenderer.js';
-import { resolveGpuWorldRendererMode } from './gpu/GpuWorldPolicy.js';
+import { localLightPhaseForLighting, resolveGpuWorldRendererMode } from './gpu/GpuWorldPolicy.js';
 import {
     CANVAS_BUDGET,
     canvasMapPixelCount,
@@ -10360,11 +10360,15 @@ export class IsometricRenderer {
     // lights and passes them in, the full path passes them all.
     _drawLightGlowStamps(ctx, canvas, atmosphere = null, ambientLightSources = null, maxCount = Infinity) {
         if (!this.buildingRenderer) return;
+        const localLightPhase = localLightPhaseForLighting(atmosphere?.lighting);
+        if (localLightPhase <= 0.04) return;
         const zoom = this.camera?.zoom || 1;
         const glowScale = atmosphere?.lighting?.lightBoost ?? atmosphere?.grade?.buildingGlowScale ?? 1;
         ctx.save();
         ctx.globalCompositeOperation = 'screen';
-        ctx.globalAlpha = this._quantizedAlpha((zoom < 1 ? 0.10 : 0.14) * glowScale);
+        ctx.globalAlpha = this._quantizedAlpha(
+            (zoom < 1 ? 0.10 : 0.14) * glowScale * localLightPhase,
+        );
         let drawn = 0;
         for (const light of ambientLightSources || this._ambientLightSources(atmosphere)) {
             if (drawn >= maxCount) break;

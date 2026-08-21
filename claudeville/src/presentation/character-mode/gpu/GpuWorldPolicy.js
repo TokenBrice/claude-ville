@@ -169,3 +169,14 @@ export function emissivePhaseForAmbientLight(ambientLight = 1) {
     const ambient = Math.max(0, Math.min(1, finite(ambientLight, 1)));
     return 0.12 + 0.88 * (1 - ambient);
 }
+
+/**
+ * Local point lights are a darkness response, not a second daytime sun.
+ * Beacon intensity already folds in dusk warmth and weather dimming, while
+ * inverse ambient light is the stable fallback for older atmosphere feeds.
+ */
+export function localLightPhaseForLighting(lighting = {}) {
+    const ambient = Math.max(0, Math.min(1, finite(lighting?.ambientLight, 1)));
+    const beacon = Math.max(0, Math.min(1, finite(lighting?.beaconIntensity, 0)));
+    return Math.max(1 - ambient, beacon);
+}

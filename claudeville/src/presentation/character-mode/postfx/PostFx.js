@@ -4,6 +4,7 @@ import {
     gpuResourceAccounting,
     unifiedRendererResourceAccounting,
 } from '../CanvasBudget.js';
+import { localLightPhaseForLighting } from '../gpu/GpuWorldPolicy.js';
 
 const MAX_LIGHTS = 48;
 const MAX_HAZE_ANCHORS = 8;
@@ -831,14 +832,15 @@ class PostFxInstance {
         gl.uniform3f(uniforms.u_tint, worldTint[0], worldTint[1], worldTint[2]);
         gl.uniform1f(uniforms.u_tintAlpha, parseColorAlpha(grade.worldTint));
         const lightBoost = clamp(finite(lighting.lightBoost, finite(grade.buildingGlowScale, 1)), 0.3, 2);
-        // IsometricRenderer._lanternNightFactor equivalent — used ONLY for the
-        // flagged lantern-prop halos (the 2D _drawLanternGlows gate). Ambient
-        // source glows are NOT night-gated in 2D and stay day-visible.
+        // Local lights follow the same darkness response in every renderer.
+        // Authored emissive pixels stay identifiable by day, but point-light
+        // halos do not compete with the sun.
         const beacon = Number(lighting.beaconIntensity);
         const ambient = Number(lighting.ambientLight);
         const nightFactor = clamp(Number.isFinite(beacon) ? beacon
             : (Number.isFinite(ambient) ? 1 - ambient : 0), 0, 1);
         this._glowNightFactor = nightFactor;
+        this._localLightPhase = localLightPhaseForLighting(lighting);
         // 2D parity: _drawLightGlowStamps composites at globalAlpha
         // 0.14 * lightBoost over a stamp whose stop alphas already carry
         // another lightBoost factor (glowScale) — hence boost squared.
@@ -882,6 +884,7 @@ class PostFxInstance {
             const light = lights[i] || {};
             if (light.kind === 'beam') continue; // beam wedges are not radial stamps in the 2D path
             if (light.night && !lanternsVisible) continue; // 2D gate: prop halos only after dusk
+            if (!light.night && this._localLightPhase <= 0.04) continue;
             if (!Number.isFinite(Number(light.x)) || !Number.isFinite(Number(light.y))) continue;
             const offset = lightCount * 4;
             this.lightValues[offset] = finite(light.x);
@@ -891,7 +894,7 @@ class PostFxInstance {
             this.lightColors[offset] = clamp(finite(light.r, 255) / 255, 0, 1);
             this.lightColors[offset + 1] = clamp(finite(light.g, 255) / 255, 0, 1);
             this.lightColors[offset + 2] = clamp(finite(light.b, 255) / 255, 0, 1);
-            this.lightColors[offset + 3] = light.night ? lanternScale : 1;
+            this.lightColors[offset + 3] = light.night ? lanternScale : this._localLightPhase;
             lightCount++;
         }
         this.lightCount = lightCount;
