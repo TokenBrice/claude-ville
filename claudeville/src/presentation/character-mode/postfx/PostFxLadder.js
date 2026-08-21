@@ -11,6 +11,14 @@ export const POST_FX_LEVELS = Object.freeze({
     DISABLED: 3,
 });
 
+export const POST_FX_LADDER_REASONS = Object.freeze({
+    INITIAL: 'initial',
+    WITHIN_BUDGET: 'within-budget',
+    HEALTHY_PROBE: 'healthy-probe',
+    HEALTHY_RECOVERY: 'healthy-recovery',
+    OVERRIDE: 'override',
+});
+
 const DEFAULT_OPTIONS = Object.freeze({
     budgetMs: 4,
     healthyMs: 2,
@@ -29,24 +37,50 @@ function finite(value, fallback = 0) {
     return Number.isFinite(Number(value)) ? Number(value) : fallback;
 }
 
-function timingScore(metrics = {}) {
+export function assessPostFxTimings(metrics = {}) {
     if (Number.isFinite(Number(metrics.totalMs))
         && !Number.isFinite(Number(metrics.uploadMs))
-        && !Number.isFinite(Number(metrics.cpuMs))) {
-        return Math.max(0, Number(metrics.totalMs));
+        && !Number.isFinite(Number(metrics.cpuMs))
+        && !Number.isFinite(Number(metrics.shaderCpuMs))) {
+        return {
+            score: Math.max(0, Number(metrics.totalMs)),
+            driver: 'total',
+            components: { totalMs: Math.max(0, Number(metrics.totalMs)) },
+        };
     }
     const upload = finite(metrics.uploadMs);
-    const cpu = finite(metrics.cpuMs);
+    const auxiliaryUpload = finite(metrics.auxUploadMs);
+    const setupCpu = finite(metrics.setupCpuMs);
+    const cpu = Number.isFinite(Number(metrics.shaderCpuMs))
+        ? Number(metrics.shaderCpuMs)
+        : finite(metrics.cpuMs);
     const gpu = Number.isFinite(Number(metrics.gpuMs)) ? Number(metrics.gpuMs) : 0;
-    let score = Math.max(0, upload + cpu + gpu);
+    const components = {
+        uploadMs: Math.max(0, upload),
+        auxUploadMs: Math.max(0, auxiliaryUpload),
+        setupCpuMs: Math.max(0, setupCpu),
+        shaderCpuMs: Math.max(0, cpu),
+        gpuMs: Math.max(0, gpu),
+        frameGapPenaltyMs: 0,
+    };
+    let score = components.uploadMs
+        + components.auxUploadMs
+        + components.setupCpuMs
+        + components.shaderCpuMs
+        + components.gpuMs;
+    let driver = Object.entries(components)
+        .filter(([name]) => name !== 'frameGapPenaltyMs')
+        .sort((a, b) => b[1] - a[1])[0]?.[0] || 'combined';
     // Driver stalls (e.g. canvas-producer readbacks) can land outside the
     // instrumented windows: an oversized gap between consecutive renders is
     // the only visible symptom, so fold the excess above ~30 FPS pacing in.
     const frameGap = finite(metrics.frameGapMs);
     if (frameGap > 35) {
-        score = Math.max(score, frameGap - 33);
+        components.frameGapPenaltyMs = frameGap - 33;
+        if (components.frameGapPenaltyMs > score) driver = 'frameGapMs';
+        score = Math.max(score, components.frameGapPenaltyMs);
     }
-    return score;
+    return { score: Math.max(0, score), driver, components };
 }
 
 function normalizeState(state = {}, options = {}) {
@@ -55,8 +89,27 @@ function normalizeState(state = {}, options = {}) {
         level: clampLevel(state.level) ?? 0,
         override: clampLevel(state.override),
         overBudgetFrames: Math.max(0, Math.floor(finite(state.overBudgetFrames))),
-        healthySinceMs: Number.isFinite(Number(state.healthySinceMs)) ? Number(state.healthySinceMs) : null,
+        healthySinceMs: state.healthySinceMs !== null
+            && state.healthySinceMs !== undefined
+            && Number.isFinite(Number(state.healthySinceMs))
+            ? Number(state.healthySinceMs)
+            : null,
         lastScore: Math.max(0, finite(state.lastScore)),
+        lastDriver: typeof state.lastDriver === 'string' ? state.lastDriver : 'none',
+        lastDecisionReason: typeof state.lastDecisionReason === 'string'
+            ? state.lastDecisionReason
+            : POST_FX_LADDER_REASONS.INITIAL,
+        lastDegradationReason: typeof state.lastDegradationReason === 'string'
+            ? state.lastDegradationReason
+            : null,
+        lastTransitionAtMs: state.lastTransitionAtMs !== null
+            && state.lastTransitionAtMs !== undefined
+            && Number.isFinite(Number(state.lastTransitionAtMs))
+            ? Number(state.lastTransitionAtMs)
+            : null,
+        lastTransitionMetrics: state.lastTransitionMetrics && typeof state.lastTransitionMetrics === 'object'
+            ? { ...state.lastTransitionMetrics }
+            : null,
         options: config,
     };
 }
@@ -69,35 +122,66 @@ export function advancePostFxLadder(state = {}, metrics = {}, nowMs = Date.now()
     const current = normalizeState(state, options);
     const config = current.options;
     const now = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
-    const score = timingScore(metrics);
+    const assessment = assessPostFxTimings(metrics);
+    const score = assessment.score;
+    const driver = assessment.driver;
 
     // A QA override is deliberately sticky and does not poison the underlying
     // level's healthy/budget counters.
     if (current.override !== null) {
-        return { ...current, lastScore: score };
+        return {
+            ...current,
+            lastScore: score,
+            lastDriver: driver,
+            lastDecisionReason: POST_FX_LADDER_REASONS.OVERRIDE,
+        };
     }
 
     let level = current.level;
     let overBudgetFrames = current.overBudgetFrames;
     let healthySinceMs = current.healthySinceMs;
+    let lastDecisionReason = current.lastDecisionReason;
+    let lastDegradationReason = current.lastDegradationReason;
+    let lastTransitionAtMs = current.lastTransitionAtMs;
+    let lastTransitionMetrics = current.lastTransitionMetrics;
 
     if (score > config.budgetMs) {
         overBudgetFrames += 1;
         healthySinceMs = null;
+        lastDecisionReason = `over-budget:${driver}`;
         if (overBudgetFrames >= config.overBudgetFrames && level < POST_FX_LEVELS.DISABLED) {
             level += 1;
             overBudgetFrames = 0;
+            lastDegradationReason = `sustained-${driver}`;
+            lastDecisionReason = `degrade:${lastDegradationReason}`;
+            lastTransitionAtMs = now;
+            lastTransitionMetrics = {
+                score,
+                driver,
+                ...assessment.components,
+            };
+        } else if (level >= POST_FX_LEVELS.DISABLED) {
+            lastDecisionReason = `disabled:${driver}`;
         }
     } else {
         overBudgetFrames = 0;
         if (score < config.healthyMs && level > POST_FX_LEVELS.FULL) {
             if (healthySinceMs === null) healthySinceMs = now;
+            lastDecisionReason = POST_FX_LADDER_REASONS.HEALTHY_PROBE;
             if (now - healthySinceMs >= config.probeMs) {
                 level -= 1;
                 healthySinceMs = now;
+                lastDecisionReason = POST_FX_LADDER_REASONS.HEALTHY_RECOVERY;
+                lastTransitionAtMs = now;
+                lastTransitionMetrics = {
+                    score,
+                    driver,
+                    ...assessment.components,
+                };
             }
         } else {
             healthySinceMs = null;
+            lastDecisionReason = POST_FX_LADDER_REASONS.WITHIN_BUDGET;
         }
     }
 
@@ -107,6 +191,11 @@ export function advancePostFxLadder(state = {}, metrics = {}, nowMs = Date.now()
         overBudgetFrames,
         healthySinceMs,
         lastScore: score,
+        lastDriver: driver,
+        lastDecisionReason,
+        lastDegradationReason,
+        lastTransitionAtMs,
+        lastTransitionMetrics,
     };
 }
 

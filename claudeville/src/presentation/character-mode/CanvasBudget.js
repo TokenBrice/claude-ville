@@ -14,6 +14,8 @@ const SCREEN_SURFACE_COUNT = 6;
 const WORLD_CACHE_PIXEL_RESERVE = 7_000_000;
 const LIGHT_CACHE_PIXEL_RESERVE = 1_250_000;
 const AUX_CACHE_PIXEL_RESERVE = 250_000;
+const BYTES_PER_RGBA_PIXEL = 4;
+const MAX_GPU_RESOURCE_BYTES = 64 * 1024 * 1024;
 
 export const CANVAS_BUDGET = Object.freeze({
     maxRendererCanvasPixels: 25_000_000,
@@ -24,7 +26,17 @@ export const CANVAS_BUDGET = Object.freeze({
     maxScreenCachePixels: 8_500_000,
     maxWorldCachePixels: WORLD_CACHE_PIXEL_RESERVE,
     maxLightCachePixels: LIGHT_CACHE_PIXEL_RESERVE,
+    // Persisted trails are cached once in world space. The current 40x40 map
+    // projects to roughly 3.3M pixels, leaving margin without allowing a future
+    // map expansion to create an unbounded backing store.
+    maxTrailCachePixels: 4_000_000,
+    maxGpuResourceBytes: MAX_GPU_RESOURCE_BYTES,
+    // One accounting ceiling for Canvas backing stores plus GPU-owned textures,
+    // attachments, and buffers. This is diagnostic policy, not an allocator.
+    maxUnifiedRendererBytes: 25_000_000 * BYTES_PER_RGBA_PIXEL + MAX_GPU_RESOURCE_BYTES,
 });
+
+export const RENDERER_RESOURCE_BYTES_PER_PIXEL = BYTES_PER_RGBA_PIXEL;
 
 export function effectiveCanvasDpr(cssWidth, cssHeight, requestedDpr = 1) {
     const width = Math.max(1, Number(cssWidth) || 1);
@@ -74,6 +86,69 @@ export function canvasPixelCount(canvas) {
     const width = Number(backingCanvas.width) || 0;
     const height = Number(backingCanvas.height) || 0;
     return Math.max(0, width * height);
+}
+
+export function canvasByteCount(canvas, bytesPerPixel = BYTES_PER_RGBA_PIXEL) {
+    return canvasPixelCount(canvas) * Math.max(0, Number(bytesPerPixel) || 0);
+}
+
+function normalizedResourceGroup(group = {}) {
+    const out = {};
+    if (!group || typeof group !== 'object') return out;
+    for (const [name, value] of Object.entries(group)) {
+        const bytes = Number(value);
+        out[name] = Number.isFinite(bytes) && bytes > 0 ? Math.round(bytes) : 0;
+    }
+    return out;
+}
+
+/**
+ * Build one byte ledger for renderer-owned GPU resources. Callers keep named
+ * leaves (rather than an opaque total) so future attachments cannot silently
+ * escape diagnostics or be double-counted.
+ */
+export function gpuResourceAccounting({ textures = {}, attachments = {}, buffers = {} } = {}) {
+    const groups = {
+        textures: normalizedResourceGroup(textures),
+        attachments: normalizedResourceGroup(attachments),
+        buffers: normalizedResourceGroup(buffers),
+    };
+    const groupTotals = Object.fromEntries(Object.entries(groups).map(([name, values]) => [
+        name,
+        Object.values(values).reduce((sum, bytes) => sum + bytes, 0),
+    ]));
+    return {
+        ...groups,
+        groupTotals,
+        totalBytes: Object.values(groupTotals).reduce((sum, bytes) => sum + bytes, 0),
+    };
+}
+
+/**
+ * Combine Canvas pixels and the GPU byte ledger without assuming every future
+ * resource is RGBA8. The returned breakdown is suitable for perf captures.
+ */
+export function unifiedRendererResourceAccounting({
+    visibleCanvasPixels = 0,
+    volatileCanvasPixels = 0,
+    retainedCanvasPixels = 0,
+    gpu = null,
+} = {}) {
+    const canvas = {
+        visible: Math.max(0, Math.round(Number(visibleCanvasPixels) || 0)) * BYTES_PER_RGBA_PIXEL,
+        volatile: Math.max(0, Math.round(Number(volatileCanvasPixels) || 0)) * BYTES_PER_RGBA_PIXEL,
+        retained: Math.max(0, Math.round(Number(retainedCanvasPixels) || 0)) * BYTES_PER_RGBA_PIXEL,
+    };
+    const canvasBytes = Object.values(canvas).reduce((sum, bytes) => sum + bytes, 0);
+    const gpuBytes = Math.max(0, Number(gpu?.totalBytes) || 0);
+    return {
+        canvas,
+        canvasBytes,
+        gpu: gpu || gpuResourceAccounting(),
+        gpuBytes,
+        totalBytes: canvasBytes + gpuBytes,
+        budgetBytes: CANVAS_BUDGET.maxUnifiedRendererBytes,
+    };
 }
 
 export function canvasMapPixelCount(map) {

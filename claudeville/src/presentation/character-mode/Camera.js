@@ -424,6 +424,24 @@ export class Camera {
         this._momentum = null;
     }
 
+    capturePose() {
+        return { x: this.x, y: this.y, zoom: this.zoom, owner: this._cameraOwner, inputAt: this._lastUserInputAt };
+    }
+
+    restorePose(pose) {
+        if (!pose || ![pose.x, pose.y, pose.zoom].every(Number.isFinite)) return false;
+        this.stopFollow();
+        this._zoomAnimation = null;
+        this._directorGlide = null;
+        this.x = pose.x;
+        this.y = pose.y;
+        this.zoom = this.resolveRestingZoom(pose.zoom);
+        this._cameraOwner = pose.owner || 'system';
+        this._userAdjusted = false;
+        this._clampToBounds();
+        return true;
+    }
+
     setReducedMotion(enabled) {
         this._reducedMotion = Boolean(enabled);
         if (this._reducedMotion) {

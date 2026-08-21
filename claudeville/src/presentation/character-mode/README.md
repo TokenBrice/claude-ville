@@ -16,8 +16,9 @@ The directory is named `character-mode/` for historical reasons. In prose, the u
 | `VisitIntentManager.js`, `VisitTileAllocator.js` | Building capacity, visit reservations, and destination assignment. |
 | `BuildingSprite.js` | Current building visuals, sprite blits, hover state, building-specific decoration/effects, occlusion split for hero buildings, and `hitTest` in world coordinates. |
 | `BuildingVisualRegistry.js` | Data-driven building visual profiles for labels, sprites, lights, emitter anchors, overlays, and split-pass rules. |
-| `AssetManager.js` | Loads `manifest.yaml` and `palettes.yaml`, maps manifest IDs to PNG paths, cache-busts with `style.assetVersion`, and supplies placeholder/checker fallbacks. |
-| `SpriteRenderer.js` | Single entry point for PNG sprite blits; keeps pixel-art draws snapped and smoothing disabled. |
+| `AssetManager.js` | Loads `manifest.yaml` and `palettes.yaml`, maps manifest IDs to PNG paths, cache-busts with `style.assetVersion`, and supplies placeholder/checker fallbacks. Material companions and deterministic atlases are opt-in and never use the checker fallback. |
+| `MaterialRegistry.js` | Stable material classes, authored upper-left key-light convention, safe channel defaults, companion-path rules, and semantic material normalization. |
+| `SpriteRenderer.js` | Single entry point for PNG sprite blits; keeps pixel-art draws snapped and smoothing disabled. Also builds additive sprite-quad records and can draw optional companion channels for debugging. |
 | `SpriteSheet.js` | Character sheet frame lookup and 8-direction velocity mapping. Character sheets are 8 columns × 10 rows of 92px cells. |
 | `Compositor.js` | Palette-swap and accessory overlay composition. |
 | `TerrainTileset.js` | Wang-tile neighbor masks and isometric tile transforms. |
@@ -72,13 +73,23 @@ World mode overlap rendering goes through `DrawablePass.js`. New overlap-aware v
   sortY: <finite-world-y>,
   sortBand: <optional-order-band>,
   stableKey: '<optional-deterministic-key>',
-  draw(ctx, zoom, context) {},
+  salience: 'primary' | 'recent' | 'working' | 'ambient',
+  materialId: '<stable-material-source>',
+  materialClass: '<known-class>',
+  elevation: { base: 0, top: 0, unit: 'sprite-px' },
+  emissive: { strength: 0, sources: [] },
+  occluder: { mode: 'alpha-silhouette', strength: 1 },
+  atlasFrame: null,
+  drawFallback(ctx, zoom, context) {},
+  buildGpuRecord(context) {},
   hitArea: null, // optional future hit-test metadata
   payload: <source-object>
 }
 ```
 
-`kind` should be stable enough for diagnostics and narrow special cases such as the selected-agent x-ray pass. Ordering is `sortY`, then `sortBand`, then `kind`, then `stableKey`, then insertion sequence. `createDepthDrawable()` assigns default bands for building backs, props, harbor traffic, agents, landmark activity, chronicle visuals, familiar motes, and building fronts; set `sortBand` only when a new category needs deterministic interleaving. Normalize missing or non-finite `sortY` before sorting. `draw()` should own the dispatch for that item; avoid adding new manual draw switches in `WorldFrameRenderer.js` when an adapter in `DrawablePass.js` can preserve the existing behavior. Use `cullDepthSortedDrawables()` for large drawable sets that can be skipped outside the camera viewport.
+`kind` should be stable enough for diagnostics and narrow special cases such as the selected-agent x-ray pass. Ordering is `sortY`, then `sortBand`, then `kind`, then `stableKey`, then insertion sequence. `createDepthDrawable()` assigns default bands for building backs, props, harbor traffic, agents, landmark activity, chronicle visuals, familiar motes, and building fronts; set `sortBand` only when a new category needs deterministic interleaving. Normalize missing or non-finite `sortY` before sorting. The legacy `draw()` property remains an alias of `drawFallback()`, so Canvas output is unchanged. `buildGpuRecordsFromDrawables()` converts the already-sorted stream and adds `drawOrder`; consumers may batch only consecutive compatible records. Avoid adding new manual draw switches in `WorldFrameRenderer.js` when an adapter in `DrawablePass.js` can preserve the existing behavior. Use `cullDepthSortedDrawables()` for large drawable sets that can be skipped outside the camera viewport.
+
+Material metadata is optional. Missing values normalize to unlit albedo, zero emissive contribution, a flat alpha-silhouette occluder, and no atlas frame. See [`../../../../docs/material-channel-contract.md`](../../../../docs/material-channel-contract.md) for manifest fields, stable material indices, atlas frame tags, channel encoding, and tooling.
 
 `WorldFrameRenderer.js` still reaches into renderer private helpers for terrain, atmosphere, debug, labels, and post-processing. Treat that as a follow-up for layer extraction, not a reason to broaden a drawable-only change.
 
@@ -174,6 +185,14 @@ Deterministic QA scenarios for these states are available at `?sim=1&scenario=<i
 4. Run `npm run world:validate-buildings` and `npm run world:validate-terrain`, then reload the page. There is no build step; `App.js` adds buildings from `BUILDING_DEFS` on every boot.
 
 Future building visual cleanup should expand the existing `BuildingVisualRegistry.js` coverage before adding custom procedural drawing. Good candidates are label accents/emblems, light sources, emitter specs, overlay anchors, and split-pass rules. Keep custom renderers behind named functions so adding a building usually changes config data rather than several distant `type` branches.
+
+## Performance baselines and trail policy
+
+Renderer comparisons use the manifest and runbook in [`../../../../docs/rendering-baselines.md`](../../../../docs/rendering-baselines.md). The matrix records WebGL, flattened PostFX, and allocation-free Canvas outputs from the same deterministic scene declaration, along with hardware, frame, upload/shader, resource-byte, and overlay-census evidence.
+
+Persisted movement history is retained for diagnostics and replay but routine historical trails are not painted over the village. The selected agent and action-needed agents may draw only a short, bounded recent route. `TrailRenderer.getDiagnostics()` reports the active policy, confirms zero ambient cache ownership, and retains stationary/manual-pan/follow/director-glide timing buckets. Run `npm run world:benchmark-trails` after changing trails or camera invalidation.
+
+Shift-D reports PostFX source upload, mask upload, setup CPU, shader CPU/GPU, ladder decision/degradation reason, named GPU resource bytes, mask rebuild causes, and trail camera-mode timing.
 
 ## Frame and update notes
 

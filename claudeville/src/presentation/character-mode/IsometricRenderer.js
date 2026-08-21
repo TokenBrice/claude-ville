@@ -60,7 +60,7 @@ import { RitualConductor } from './RitualConductor.js';
 import { VisitIntentManager } from './VisitIntentManager.js';
 import VisitTileAllocator from './VisitTileAllocator.js';
 import { getPulsePriority, pulseValue } from './PulsePolicy.js';
-import { getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
+import { annotationModeForPressure, calculateScenePressure, getActiveMarkGovernor, MarkGovernor, setActiveMarkGovernor } from './MarkGovernor.js';
 import { lightSourceCacheKey, normalizeLightSource } from './LightSourceRegistry.js';
 import {
     applyTeamPlazaPreferences,
@@ -82,12 +82,16 @@ import { createDepthDrawable, propDepthDrawable } from './DrawablePass.js';
 import { renderWorldFrame } from './WorldFrameRenderer.js';
 import { createPostFx } from './postfx/PostFx.js';
 import { createPostFxFeed } from './postfx/PostFxFeed.js';
+import { createGpuWorldRenderer } from './gpu/GpuWorldRenderer.js';
+import { resolveGpuWorldRendererMode } from './gpu/GpuWorldPolicy.js';
 import {
     CANVAS_BUDGET,
     canvasMapPixelCount,
     canvasPixelCount,
+    gpuResourceAccounting,
     releaseCanvasBackingStore,
     releaseCanvasMap,
+    unifiedRendererResourceAccounting,
 } from './CanvasBudget.js';
 
 const WATER_FRAME_STEP = 0.03;
@@ -437,6 +441,8 @@ export class IsometricRenderer {
         this.overlayCtx = null;
         this.postFx = null;
         this.postFxFeed = null;
+        this.gpuWorld = null;
+        this.worldRendererMode = 'canvas';
         this._postFxCanvasVisible = null;
         this.camera = null;
         this.cameraDirector = null;
@@ -1455,16 +1461,29 @@ export class IsometricRenderer {
             console.warn('[IsometricRenderer] show skipped: failed to get overlay 2d context');
             return false;
         }
-        // ?postfx=0 skips creation entirely — a disabled instance would still
-        // allocate a WebGL2 context and ~13MB of GPU textures for nothing.
-        const postFxEnabled = new URLSearchParams(window.location.search).get('postfx') !== '0';
-        this.postFx = (postFxEnabled && this.fxCanvas)
+        // The parity, lifecycle, memory, and reference-hardware gates promote
+        // the GPU-resident diorama to the default. `?renderer=canvas` keeps the
+        // production fallback and `?postfx=0` is the allocation-free escape.
+        const params = new URLSearchParams(window.location.search);
+        const postFxEnabled = params.get('postfx') !== '0';
+        const requestedMode = resolveGpuWorldRendererMode(params, { webgl2: true });
+        this.gpuWorld = (postFxEnabled && requestedMode === 'webgl' && this.fxCanvas)
+            ? createGpuWorldRenderer({ canvas: this.fxCanvas, enabled: true })
+            : null;
+        this.worldRendererMode = this.gpuWorld?.isActive?.() ? 'webgl' : 'canvas';
+        this.postFx = (!this.gpuWorld && postFxEnabled && this.fxCanvas)
             ? createPostFx({ canvas: this.fxCanvas, enabled: true })
             : null;
         this.postFxFeed = createPostFxFeed();
         this.postFx?.resize?.(canvas.width, canvas.height);
+        this.gpuWorld?.resize?.(canvas.width, canvas.height);
+        for (const sprite of this.agentSprites.values()) {
+            sprite.setGpuWorldEnabled?.(this.gpuWorld?.isActive?.() === true);
+        }
         this._postFxCanvasVisible = null;
-        this._setPostFxCanvasVisible(this.postFx?.isActive?.() === true);
+        this._setPostFxCanvasVisible(
+            this.gpuWorld?.isActive?.() === true || this.postFx?.isActive?.() === true,
+        );
         if (!this.villageDirector) {
             this.villageDirector = new VillageDirector(this.world);
             this.villageDirector.setMotionScale?.(this.motionScale);
@@ -1677,6 +1696,10 @@ export class IsometricRenderer {
         this._stopLoop();
         this.postFx?.dispose?.();
         this.postFx = null;
+        this.gpuWorld?.dispose?.();
+        this.gpuWorld = null;
+        this.worldRendererMode = 'canvas';
+        this.postFxFeed?.dispose?.();
         this.postFxFeed = null;
         this._setPostFxCanvasVisible(false);
         if (this.camera) {
@@ -1850,6 +1873,21 @@ export class IsometricRenderer {
         this.skyRenderer?.releaseCache?.();
         this.trailRenderer?.pause?.();
         this.weatherRenderer?.dispose?.();
+        releaseCanvasBackingStore(this._gpuAgentFrameAtlas);
+        this._gpuAgentFrameAtlas = null;
+        this._gpuAgentFrameAtlasSignature = '';
+        this._gpuAgentFrameAtlasRevision = 0;
+        this._gpuAgentAtlasSlots?.clear?.();
+        this._gpuAgentAtlasFrameKeys?.clear?.();
+        this._gpuAgentAtlasNextSlot = 0;
+        this._gpuAgentAtlasRosterSignature = '';
+        this._gpuAgentAtlasUpdatedAt = 0;
+        for (const entry of this._gpuPackedMaterialSidecars?.values?.() || []) {
+            releaseCanvasBackingStore(entry?.canvas);
+        }
+        this._gpuPackedMaterialSidecars?.clear?.();
+        releaseCanvasBackingStore(this._gpuTerrainMaterialSidecar?.canvas);
+        this._gpuTerrainMaterialSidecar = null;
     }
 
     _ensureTrailRenderer() {
@@ -1877,6 +1915,10 @@ export class IsometricRenderer {
             this._staticPropDrawables.map(drawable => drawable?.payload?.sprite).filter(Boolean),
         );
         for (const sprite of staticSprites) sprite.releaseCache?.();
+        this.postFxFeed?.dispose?.();
+        this.postFx?.suspend?.();
+        this.gpuWorld?.suspend?.();
+        releaseCanvasBackingStore(this.fxCanvas);
         releaseCanvasBackingStore(this.canvas);
         // The UI surface is as volatile as the world backing store; keeping it
         // alive in Dashboard mode would retain a full-screen alpha canvas.
@@ -1952,6 +1994,11 @@ export class IsometricRenderer {
             this.ctx = this.canvas.getContext('2d', { alpha: false });
             if (this.ctx) SpriteRenderer.disableSmoothing(this.ctx);
             this._resizeAuxiliaryBackingStores(width, height);
+        }
+        this.postFx?.resume?.();
+        this.gpuWorld?.resume?.();
+        for (const sprite of this.agentSprites.values()) {
+            sprite.setGpuWorldEnabled?.(this.gpuWorld?.isActive?.() === true);
         }
         this.trailRenderer?.resume?.();
         this._worldResourcesSuspended = false;
@@ -2738,6 +2785,7 @@ export class IsometricRenderer {
         if (this.overlayCtx) SpriteRenderer.disableSmoothing(this.overlayCtx);
         if (backingWidth > 0 && backingHeight > 0) {
             this.postFx?.resize?.(backingWidth, backingHeight);
+            this.gpuWorld?.resize?.(backingWidth, backingHeight);
         }
     }
 
@@ -2776,6 +2824,7 @@ export class IsometricRenderer {
                 getTileType: (tileX, tileY) => this._surfaceMaterialAt(tileX, tileY),
             });
             sprite.setMotionScale(this.motionScale);
+            sprite.setGpuWorldEnabled?.(this.gpuWorld?.isActive?.() === true);
             sprite.addedAt = performance.now();
             this._beginAgentGateArrival(agent, sprite);
             this.agentSprites.set(agent.id, sprite);
@@ -3408,6 +3457,7 @@ export class IsometricRenderer {
     }
 
     selectAgentById(agentId) {
+        if (agentId && !this.selectedAgent) this._inspectionPose = this.camera.capturePose();
         for (const sprite of this.agentSprites.values()) {
             sprite.selected = false;
         }
@@ -3422,6 +3472,8 @@ export class IsometricRenderer {
         }
         this.selectedAgent = null;
         this.camera.stopFollow();
+        if (this._inspectionPose && this.camera._lastUserInputAt === this._inspectionPose.inputAt) this.camera.restorePose(this._inspectionPose);
+        this._inspectionPose = null;
     }
 
     _update(dt = 16) {
@@ -4189,7 +4241,20 @@ export class IsometricRenderer {
             regionSize: 200 / (this.camera?.zoom || 1),
             motionScale: this.motionScale,
         });
+        this._syncSemanticSummary();
         renderWorldFrame(this, dt);
+    }
+
+    _syncSemanticSummary() {
+        const el = document.getElementById('worldSemanticSummary');
+        if (!el) return;
+        const agents = Array.from(this.agentSprites.values()).map(sprite => sprite.agent).filter(Boolean);
+        const needs = agents.filter(agent => agent.status === AgentStatus.WAITING_ON_USER).length;
+        const errors = agents.filter(agent => agent.status === AgentStatus.ERRORED || agent.status === AgentStatus.RATE_LIMITED).length;
+        const working = agents.filter(agent => agent.status === AgentStatus.WORKING).length;
+        const selected = this.selectedAgent?.name ? ` Selected ${this.selectedAgent.name}.` : '';
+        const text = `Village: ${agents.length} agents. ${needs} need you, ${errors} errored or quota-limited, ${working} working.${selected}`;
+        if (text !== this._semanticSummaryText) { this._semanticSummaryText = text; el.textContent = text; }
     }
 
     _harborPendingReposSignature(repos = []) {
@@ -4275,8 +4340,13 @@ export class IsometricRenderer {
 
     _agentRenderMode(viewport = this._screenViewport(), sprites = this._snapshotSortedSprites()) {
         const count = sprites?.length || 0;
-        if (count < 50) return 'full';
         const zoom = this.camera?.zoom || 1;
+        const overlayArea = count * (zoom >= 3 ? 3900 : 2100);
+        const collisions = Number(this._crowdStats?.congestedAgents) || 0;
+        const pressure = calculateScenePressure({ sprites, viewport, zoom, overlayArea, collisions });
+        const pressureMode = annotationModeForPressure(pressure, this._annotationMode || 'full');
+        this._annotationMode = pressureMode;
+        if (count < 50) return pressureMode;
         const cssPixels = Math.max(0, (viewport?.width || 0) * (viewport?.height || 0));
         const backingPixels = canvasPixelCount(this.canvas);
         if (
@@ -4313,29 +4383,41 @@ export class IsometricRenderer {
     }
 
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1, { agentRenderMode = 'full' } = {}) {
-        if (agentRenderMode === 'minimal') {
-            for (const sprite of sprites) {
-                if (this._foldOccupantIntoBuilding(sprite, zoom)) continue;
-                sprite.overlaySlot = null;
-                sprite.nameTagSlot = sprite.selected ? 0 : null;
-                sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
-            }
-            return;
-        }
-
         const compactOccupied = [];
         const nameOccupied = [];
-        const compactLabelCap = agentRenderMode === 'compact' ? 36 : Infinity;
+        // Minimal is an annotation vocabulary, not anonymity. Keep a small,
+        // collision-aware sample of compact names/actions so a dense village
+        // remains learnable instead of becoming a faceless mob.
+        const compactLabelCap = agentRenderMode === 'minimal'
+            ? 10
+            : agentRenderMode === 'compact'
+                ? 16
+                : Infinity;
+        const actionLabelCap = agentRenderMode === 'minimal'
+            ? 3
+            : agentRenderMode === 'compact'
+                ? 4
+                : Infinity;
         let compactLabels = 0;
+        let actionLabels = 0;
         const prioritized = sprites
             .filter((sprite) => sprite.agent)
             .sort((a, b) => this._agentLabelPriority(b) - this._agentLabelPriority(a));
+
+        // Primary agents reserve their label envelope before buildings and
+        // routine agents request overlay space later in the frame.
+        for (const sprite of prioritized) {
+            const status = sprite.agent?.status;
+            if (!sprite.selected && ![AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status)) continue;
+            this.markGovernor.reserve(this._agentCompactSlotRect(sprite, 0), 'primary', `agent:${sprite.agent.id}`);
+        }
 
         for (const sprite of prioritized) {
             if (!sprite.agent) continue;
 
             sprite.overlaySlot = null;
             sprite.nameTagSlot = null;
+            sprite.gpuActionOverlay = false;
             sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
 
             if (this._foldOccupantIntoBuilding(sprite, zoom)) continue;
@@ -4345,6 +4427,7 @@ export class IsometricRenderer {
                 nameOccupied.push(this._agentNameSlotRect(sprite, 0));
                 sprite.overlaySlot = 0;
                 sprite.nameTagSlot = 0;
+                sprite.gpuActionOverlay = true;
                 compactLabels++;
                 continue;
             }
@@ -4359,6 +4442,10 @@ export class IsometricRenderer {
                 sprite.overlaySlot = compactSlot;
                 compactOccupied.push(this._agentCompactSlotRect(sprite, compactSlot));
                 compactLabels++;
+                if (sprite.agent?.currentTool && actionLabels < actionLabelCap) {
+                    sprite.gpuActionOverlay = true;
+                    actionLabels++;
+                }
             }
 
             if (agentRenderMode !== 'full' || zoom < 3) {
@@ -4386,11 +4473,20 @@ export class IsometricRenderer {
             }
         }
 
-        // Only full mode draws a bubble per agent; compact/minimal keep at most
-        // the selected agent's bubble (defaults on the sprite already suffice).
-        if (agentRenderMode === 'full') {
-            this._assignAgentBubbleSlots(prioritized, zoom);
-        }
+        const bubbleSprites = agentRenderMode === 'full'
+            ? prioritized
+            : prioritized.filter((sprite) => {
+                const status = sprite.agent?.status;
+                return sprite.gpuActionOverlay || sprite.selected
+                    || status === AgentStatus.WAITING_ON_USER
+                    || status === AgentStatus.ERRORED
+                    || status === AgentStatus.RATE_LIMITED;
+            });
+        this._assignAgentBubbleSlots(
+            bubbleSprites,
+            zoom,
+            [...compactOccupied, ...nameOccupied],
+        );
     }
 
     // Crowd bubble de-collision. Reuses the overlay-slot rect-overlap technique:
@@ -4399,8 +4495,11 @@ export class IsometricRenderer {
     // an ellipsis dot so at most AGENT_BUBBLE_SLOT_CAP full bubbles render per
     // cluster. Deterministic priority (selected, then label priority, then stable
     // id) keeps slots from flickering frame to frame. Pure layout, no motion.
-    _assignAgentBubbleSlots(sprites, zoom = this.camera?.zoom || 1) {
-        const occupied = [];
+    _assignAgentBubbleSlots(sprites, zoom = this.camera?.zoom || 1, reservedLabels = []) {
+        // Names and thoughts share one reservation plane even though their
+        // anchors are deliberately below and above the character respectively.
+        // This prevents one villager's thought from covering another's name.
+        const occupied = [...reservedLabels];
         const order = sprites
             .filter((sprite) => sprite.agent && this._spriteWantsBubble(sprite))
             .sort((a, b) => {
@@ -4419,20 +4518,17 @@ export class IsometricRenderer {
             sprite.bubbleMergedInto = null;
             const baseRect = this._agentBubbleSlotRect(sprite, 0);
             baseRects.push(baseRect);
-            if (sprite.selected) {
-                occupied.push(baseRect);
-                continue;
-            }
             let slot = 0;
             let rect = baseRect;
+            const slotCap = sprite.selected ? 8 : AGENT_BUBBLE_SLOT_CAP;
             while (
-                slot < AGENT_BUBBLE_SLOT_CAP &&
+                slot < slotCap &&
                 occupied.some((item) => this._rectsOverlap(rect, item))
             ) {
                 slot++;
                 rect = this._agentBubbleSlotRect(sprite, slot);
             }
-            if (slot >= AGENT_BUBBLE_SLOT_CAP) {
+            if (slot >= slotCap && !sprite.selected) {
                 sprite.bubbleSuppressed = true;
             } else {
                 sprite.bubbleSlot = slot;
@@ -4619,7 +4715,8 @@ export class IsometricRenderer {
     _agentCompactSlotRect(sprite, slot) {
         const s = 1 / ((this.camera?.zoom) || 1);
         const offsetX = sprite.x;
-        const offsetY = sprite.y + (AGENT_COMPACT_NAME_SLOT_BASE_Y + slot * AGENT_COMPACT_NAME_SLOT_STEP_Y) * s;
+        const offsetY = sprite.y
+            + (AGENT_COMPACT_NAME_SLOT_BASE_Y + slot * AGENT_COMPACT_NAME_SLOT_STEP_Y) * s;
         const pad = 2 * s;
         const halfW = (this._estimateCompactNameTagWidth(sprite) / 2) * s;
         const halfH = (AGENT_COMPACT_NAME_HEIGHT / 2) * s;
@@ -10796,20 +10893,54 @@ export class IsometricRenderer {
             relationships: this.relationshipState?.getDiagnostics?.() || null,
             council: getCouncilRingDiagnostics(this.relationshipState),
             pathfinder: this.pathfinder?.getDiagnostics?.() || null,
+            gpuWorld: this.gpuWorld?.getDiagnostics?.() || null,
+            worldRendererMode: this.worldRendererMode,
         };
     }
 
     getCanvasBudget() {
         const sky = this.skyRenderer?.getCanvasBudget?.() || {};
         const trail = this.trailRenderer?.getCanvasBudget?.() || {};
+        const postFxFeed = this.postFxFeed?.getCanvasBudget?.() || {};
+        const postFxResources = this.postFx?.getResourceAccounting?.() || gpuResourceAccounting();
+        const gpuWorldResources = this.gpuWorld?.getResourceAccounting?.() || {
+            textures: {},
+            attachments: {},
+            buffers: {},
+        };
+        const gpuResources = gpuResourceAccounting({
+            textures: {
+                ...Object.fromEntries(Object.entries(postFxResources.textures || {}).map(([name, bytes]) => [`postfx.${name}`, bytes])),
+                ...Object.fromEntries(Object.entries(gpuWorldResources.textures || {}).map(([name, bytes]) => [`gpuWorld.${name}`, bytes])),
+            },
+            attachments: {
+                ...Object.fromEntries(Object.entries(postFxResources.attachments || {}).map(([name, bytes]) => [`postfx.${name}`, bytes])),
+                ...Object.fromEntries(Object.entries(gpuWorldResources.attachments || {}).map(([name, bytes]) => [`gpuWorld.${name}`, bytes])),
+            },
+            buffers: {
+                ...Object.fromEntries(Object.entries(postFxResources.buffers || {}).map(([name, bytes]) => [`postfx.${name}`, bytes])),
+                ...Object.fromEntries(Object.entries(gpuWorldResources.buffers || {}).map(([name, bytes]) => [`gpuWorld.${name}`, bytes])),
+            },
+        });
         const volatile = {
             terrain: canvasPixelCount(this.terrainCache),
             sky: sky.volatilePixels || 0,
             trail: trail.volatilePixels || 0,
+            postFxMask: postFxFeed.volatilePixels || 0,
             atmosphere: canvasPixelCount(this.atmosphereVignetteCache),
             lightGradients: canvasMapPixelCount(this.lightGradientCache),
+            gpuAgentAtlas: canvasPixelCount(this._gpuAgentFrameAtlas),
         };
         const volatilePixels = Object.values(volatile).reduce((sum, value) => sum + value, 0);
+        const visibleCanvasPixels = canvasPixelCount(this.canvas);
+        const overlayCanvasPixels = canvasPixelCount(this.overlayCanvas);
+        const retainedAssetPixels = canvasMapPixelCount(this.fantasyForestTreeCache);
+        const resources = unifiedRendererResourceAccounting({
+            visibleCanvasPixels: visibleCanvasPixels + overlayCanvasPixels,
+            volatileCanvasPixels: volatilePixels,
+            retainedCanvasPixels: retainedAssetPixels,
+            gpu: gpuResources,
+        });
         return {
             budgets: CANVAS_BUDGET,
             dpr: this._screenDpr(),
@@ -10819,11 +10950,12 @@ export class IsometricRenderer {
             worldResumeInFlight: this._worldResumePromise !== null,
             worldResumeFailures: this._worldResumeFailures,
             rafPending: this.frameId !== null,
-            visibleCanvasPixels: canvasPixelCount(this.canvas),
+            visibleCanvasPixels,
             volatile,
             volatilePixels,
-            retainedAssetPixels: canvasMapPixelCount(this.fantasyForestTreeCache),
-            domCanvasPixels: 0,
+            retainedAssetPixels,
+            domCanvasPixels: canvasPixelCount(this.fxCanvas) + overlayCanvasPixels,
+            resources,
             cacheCounts: {
                 lightGradients: this.lightGradientCache?.size || 0,
                 lightFadeColors: this.lightFadeColorCache?.size || 0,
@@ -10835,6 +10967,7 @@ export class IsometricRenderer {
                 compositor: this.compositor?.cacheStats?.() || null,
                 agentSprites: AgentSprite.sharedCacheStats?.() || null,
             },
+            gpu: this.gpuWorld?.getDiagnostics?.() || null,
             terrainCache: this.getTerrainCacheDiagnostics(),
             runtime: this.getWorldPerformanceDiagnostics(),
         };

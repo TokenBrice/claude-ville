@@ -16,6 +16,21 @@
     --cv-parchment-gilt: rgba(236, 201, 123, 0.5);
 }
 
+.dashboard-attention {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    border: 1px solid rgba(242, 211, 107, .42);
+    border-left: 3px solid var(--cv-status-waiting-user);
+    background: linear-gradient(180deg, rgba(55, 36, 24, .96), rgba(15, 10, 9, .96));
+    box-shadow: inset 0 1px 0 rgba(255, 226, 138, .1), var(--cv-elev-1);
+}
+.dashboard-attention__heading { margin-bottom: 8px; color: var(--cv-gold-bright); font: 700 var(--fs-label) var(--font-display); letter-spacing: 1px; }
+.dashboard-attention__list { display: flex; flex-wrap: wrap; gap: 6px; }
+.dashboard-attention__item { padding: 5px 8px; border: 1px solid rgba(199, 157, 76, .35); border-radius: 2px; background: #1d1410; color: var(--cv-tan); font: var(--fs-label) var(--font-display); cursor: pointer; }
+.dashboard-attention__item:hover, .dashboard-attention__item:focus-visible { color: var(--cv-gold-bright); border-color: var(--cv-gold-bright); outline: none; }
+.dashboard-attention__item--waiting_on_user { color: var(--cv-status-waiting-user); }
+.dashboard-attention__item--errored { color: var(--cv-status-errored); }
+
 /* ═══ Project section ═══ */
 .dashboard__section {
     background:
@@ -689,6 +704,11 @@
     overflow-y: auto;
     background: linear-gradient(180deg, rgba(20, 13, 11, 0.08), rgba(0, 0, 0, 0.08));
 }
+
+/* Compact dossier by default; selection is the explicit diagnostic expansion. */
+.dash-card:not(.dash-card--selected) .dash-card__tools,
+.dash-card:not(.dash-card--selected) .dash-card__message { display: none !important; }
+.dash-card--selected .dash-card__tools { max-height: none; overflow: visible; }
 
 .dash-card__tools::-webkit-scrollbar {
     width: 4px;

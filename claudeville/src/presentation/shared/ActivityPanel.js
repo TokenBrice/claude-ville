@@ -177,6 +177,9 @@ export class ActivityPanel {
             panelMessages: document.getElementById('panelMessages'),
             panelContextSize: document.getElementById('panelContextSize'),
             panelContextBar: document.getElementById('panelContextBar'),
+            panelTokenGrid: document.getElementById('panelTokenGrid'),
+            panelNoUsage: document.getElementById('panelNoUsage'),
+            panelCostRow: document.getElementById('panelCostRow'),
             panelInputTokens: document.getElementById('panelInputTokens'),
             panelOutputTokens: document.getElementById('panelOutputTokens'),
             panelCacheRead: document.getElementById('panelCacheRead'),
@@ -962,10 +965,13 @@ export class ActivityPanel {
 
         // Context bar
         const bar = this.dom.panelContextBar;
-        bar.style.width = contextPct + '%';
+        bar.style.transform = `scaleX(${contextPct / 100})`;
         bar.className = 'activity-panel__context-bar';
         if (contextPct > 80) bar.classList.add('activity-panel__context-bar--danger');
         else if (contextPct > 50) bar.classList.add('activity-panel__context-bar--warning');
+        this.dom.panelTokenGrid.hidden = false;
+        this.dom.panelCostRow.hidden = false;
+        this.dom.panelNoUsage.hidden = true;
 
         // Token cells
         this.dom.panelInputTokens.textContent =
@@ -1002,8 +1008,12 @@ export class ActivityPanel {
     _clearTokenUsage(label = 'No usage data') {
         this._renderSignatures.tokenUsage = `state:${label}`;
         this.dom.panelContextSize.textContent = label;
-        this.dom.panelContextBar.style.width = '0%';
+        this.dom.panelContextBar.style.transform = 'scaleX(0)';
         this.dom.panelContextBar.className = 'activity-panel__context-bar';
+        this.dom.panelTokenGrid.hidden = true;
+        this.dom.panelCostRow.hidden = true;
+        this.dom.panelNoUsage.hidden = true;
+        this.dom.panelNoUsage.textContent = label;
         this.dom.panelInputTokens.textContent = '-';
         this.dom.panelOutputTokens.textContent = '-';
         this.dom.panelCacheRead.textContent = '-';
@@ -1662,7 +1672,7 @@ export class ActivityPanel {
     _formatBehaviorAction(state, moving) {
         const normalized = String(state || '').toLowerCase();
         if (moving || normalized === 'traveling') return 'Moving to';
-        if (normalized === 'performing') return 'Working at';
+        if (normalized === 'performing') return 'Visiting';
         if (normalized === 'blocked') return 'Blocked near';
         if (normalized === 'cooldown') return 'Leaving';
         if (normalized === 'wandering' || normalized === 'roaming') return 'Roaming near';

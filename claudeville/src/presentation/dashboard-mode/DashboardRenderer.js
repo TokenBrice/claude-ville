@@ -7,6 +7,7 @@ import { replaceChildren } from '../shared/DomSafe.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { formatCost, formatRelative, formatTokens, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentSelected } from '../shared/AgentSelection.js';
+import { operatorStatusLabel, sortAttentionAgents } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import { phaseNameForDate } from '../character-mode/AtmosphereState.js';
 import {
@@ -45,6 +46,7 @@ export class DashboardRenderer {
         this.world = world;
         this.toast = toast;
         this.gridEl = document.getElementById('dashboardGrid');
+        this.attentionEl = document.getElementById('dashboardAttentionQueue');
         this.emptyEl = document.getElementById('dashboardEmpty');
         this._appendEmptyHints();
         this.cards = new Map();
@@ -116,6 +118,7 @@ export class DashboardRenderer {
     render() {
         this._visibilityLayoutDirty = true;
         const agents = Array.from(this.world.agents.values());
+        this._renderAttentionQueue(agents);
 
         if (agents.length === 0) {
             this._detailFetchGeneration++;
@@ -529,6 +532,27 @@ export class DashboardRenderer {
         return card;
     }
 
+    _renderAttentionQueue(agents) {
+        if (!this.attentionEl) return;
+        const actionable = sortAttentionAgents(agents).filter(agent => ['waiting_on_user', 'errored', 'rate_limited', 'waiting'].includes(normalizeStatus(agent.status)));
+        this.attentionEl.hidden = actionable.length === 0;
+        if (!actionable.length) { replaceChildren(this.attentionEl, []); return; }
+        const heading = document.createElement('div');
+        heading.className = 'dashboard-attention__heading';
+        heading.textContent = `NEEDS YOU & WATCHLIST · ${actionable.length}`;
+        const list = document.createElement('div');
+        list.className = 'dashboard-attention__list';
+        for (const agent of actionable) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `dashboard-attention__item dashboard-attention__item--${normalizeStatus(agent.status)}`;
+            button.textContent = `${operatorStatusLabel(agent.status)} · ${agent.name || agent.id} · ${shortProjectName(agent.projectPath || '')}`;
+            button.addEventListener('click', () => emitAgentSelected(this.world.agents.get(agent.id)));
+            list.appendChild(button);
+        }
+        replaceChildren(this.attentionEl, [heading, list]);
+    }
+
     _updateCard(cardEl, agent) {
         const refs = cardEl._elements;
         const status = normalizeStatus(agent.status);
@@ -605,7 +629,7 @@ export class DashboardRenderer {
             // A blocked agent says what it is blocked on; the generic status
             // label is only useful when there is nothing more specific.
             const reason = waitReasonLabel(agent);
-            this._setText(refs.statusLabel, reason || statusInfo.label);
+            this._setText(refs.statusLabel, reason || operatorStatusLabel(status));
             refs.status.title = reason ? `${statusInfo.label} — ${reason}` : '';
 
             const tool = currentToolPresentation(agent, i18n);
@@ -704,6 +728,7 @@ export class DashboardRenderer {
             const selected = id === nextId;
             this.cards.get(id)?._elements?.select
                 ?.setAttribute('aria-pressed', String(selected));
+            this.cards.get(id)?.classList.toggle('dash-card--selected', selected);
         }
     }
 

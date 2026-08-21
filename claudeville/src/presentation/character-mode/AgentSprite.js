@@ -16,6 +16,7 @@ import { pickLoreLine } from '../../config/loreDialogue.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { resolveUpdateRouteBuilding } from './MovementRouting.js';
 import { releaseCanvasMap } from './CanvasBudget.js';
+import { AgentAction, resolveAgentAction } from './ActionVocabulary.js';
 
 // Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
@@ -389,6 +390,11 @@ export class AgentSprite {
         this.statusAnim = ((animSeed >>> 3) % 628) / 100;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
         this.lightingState = null;
+        // The GPU-resident World path consumes a stable base-sprite record
+        // after the Canvas draw has resolved identity, frame, bounds and pixel
+        // snapping. Canvas remains authoritative for hit testing and fallback.
+        this.gpuWorldEnabled = false;
+        this._gpuFrameRecord = null;
         this._lastBuildingType = null;
         this._lastIntentId = null;
         this._lastTargetTile = null;
@@ -424,6 +430,7 @@ export class AgentSprite {
         // renderer from AgentBiographyService; rendered as a name-tag suffix.
         this.nickname = null;
         this.labelAlpha = 1;
+        this.gpuActionOverlay = false;
         this.bumpFlash = 0;
         // #28 — handoff acknowledgement bob. A child agent gives a short upward
         // dip when a parent's handoff baton lands on it. Timestamp of the most
@@ -562,6 +569,7 @@ export class AgentSprite {
         this.spriteCanvas = null;
         this.spriteSheet = null;
         this._spriteProfileKey = '';
+        this._gpuFrameRecord = null;
         this._nameTagLayoutCacheKey = '';
         this._nameTagLayoutCache = null;
         this._bubbleLayoutCacheKey = '';
@@ -2169,7 +2177,7 @@ export class AgentSprite {
         }
 
         const budgetMode = renderMode !== 'full' && !this.selected;
-        if (budgetMode) {
+        if (budgetMode && !this.gpuWorldEnabled) {
             this._drawBudgetImpostor(ctx);
             if (renderMode === 'compact' && this.overlaySlot != null) {
                 this._drawCompactAgentBadge(ctx);
@@ -2202,6 +2210,11 @@ export class AgentSprite {
 
         if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
             const baseCanvas = this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim);
+            // GPU animation uses the untouched generated sheet. Canvas may
+            // scrub a baked sidearm and reconstruct equipment in front/back
+            // layers, but packing that scrubbed sheet alone creates apparent
+            // missing limbs during movement.
+            this._gpuBaseSpriteCanvas = baseCanvas;
             this.spriteCanvas = this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
             if (this.spriteCanvas) {
                 this.spriteSheet = new SpriteSheet(this.spriteCanvas);
@@ -2219,6 +2232,45 @@ export class AgentSprite {
 
         // Ensure animState reflects current movement (idle when not moving).
         this.animState = this.moving && this.motionScale > 0 ? 'walk' : 'idle';
+
+        // GPU mode still resolves the real sprite while Canvas annotation LOD
+        // is compact/minimal. This avoids turning dense GPU scenes into blank
+        // crowds while keeping the quiet Canvas impostor vocabulary intact.
+        if (budgetMode) {
+            const cell = this.spriteSheet.cell(this.animState, this.direction, this.frame);
+            const bounds = this._getCellContentBounds(cell);
+            const drawScale = this._spriteDrawScale(this._scaleBounds(cell, bounds));
+            const drawX = this._snapWorldToScreenPixel(this.x);
+            const drawY = this._snapWorldToScreenPixel(this.y);
+            const contentCenterX = (bounds.minX + bounds.maxX) / 2;
+            const dx = drawX - contentCenterX * drawScale;
+            const dy = drawY - bounds.maxY * drawScale + 2;
+            const frameGeometry = {
+                dx,
+                dy,
+                bounds,
+                drawScale,
+                cacheEquipment: true,
+            };
+            this._setGpuFrameRecord({
+                cell,
+                dx,
+                dy,
+                drawScale,
+                profileKey,
+                spriteId,
+                alpha: 1,
+                contentTopY: dy + bounds.minY * drawScale,
+                identity,
+                frameGeometry,
+            });
+            this._drawBudgetImpostor(ctx);
+            if (renderMode === 'compact' && this.overlaySlot != null) {
+                this._drawCompactAgentBadge(ctx);
+            }
+            if (archivePushed) ctx.restore();
+            return;
+        }
 
         // Strong ground language keeps agents readable against dense pixel-art terrain.
         // 4.6 — effort aura first so it stays behind the sprite and rings.
@@ -2328,6 +2380,19 @@ export class AgentSprite {
             drawScale,
             cacheEquipment: arrivalProgress <= 0 && archiveProgress <= 0,
         };
+        const popScale = arrivalProgress > 0 ? 0.6 + 0.4 * easeOutCubic(arrivalProgress) : 1;
+        this._setGpuFrameRecord({
+            cell,
+            dx: drawX + (dx - drawX) * popScale,
+            dy: drawY + (dy - drawY) * popScale,
+            drawScale: drawScale * popScale,
+            profileKey,
+            spriteId,
+            alpha: archiveProgress > 0 ? Math.max(0, 1 - archiveProgress) : 1,
+            contentTopY,
+            identity,
+            frameGeometry,
+        });
         this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
         this._drawSpriteSilhouette(ctx, cell, dx, dy, drawScale);
         ctx.drawImage(
@@ -2344,6 +2409,7 @@ export class AgentSprite {
         if (arrivalPushed) ctx.restore();
         if (arrivalProgress > 0) this._drawArrivalRuneRing(ctx, arrivalProgress);
         this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
+        this._drawActionPoseOverlay(ctx, { dx, dy, bounds, drawScale });
         this._drawToolRitualOverlay(ctx, { dx, dy, bounds, drawScale });
 
         // #4 — waiting-on-user amber beacon pillar. PRIMARY tier (never culled):
@@ -3151,6 +3217,113 @@ export class AgentSprite {
             dx, dy, cell.sw * drawScale, cell.sh * drawScale
         );
         ctx.restore();
+    }
+
+    setGpuWorldEnabled(enabled) {
+        const next = Boolean(enabled);
+        this.gpuWorldEnabled = next;
+        if (!this.gpuWorldEnabled) this._gpuFrameRecord = null;
+    }
+
+    getGpuWorldRecords() {
+        return this._gpuFrameRecord ? [this._gpuFrameRecord] : [];
+    }
+
+    drawGpuWorldOverlay(ctx, zoom = 1, annotationMode = 'full') {
+        if (!this.gpuWorldEnabled || !this._gpuFrameRecord || !ctx) return;
+        this._zoom = zoom;
+        const contentTopY = Number.isFinite(this._gpuFrameRecord.contentTopY)
+            ? this._gpuFrameRecord.contentTopY
+            : this.y - 48;
+        const status = this.agent?.status;
+        const primary = this.selected || status === AgentStatus.WAITING_ON_USER
+            || status === AgentStatus.ERRORED || status === AgentStatus.RATE_LIMITED;
+
+        if (this.selected) {
+            this._drawFocusPillar(ctx, contentTopY);
+        } else if (this.hovered) {
+            this._drawHoverRing(ctx);
+        }
+
+        // Modular action props stay in the ungraded overlay. They add to the
+        // complete GPU body frame and can never punch holes in its alpha.
+        if (this._gpuFrameRecord.frameGeometry) {
+            this._drawActionPoseOverlay(ctx, this._gpuFrameRecord.frameGeometry);
+        }
+
+        const admitted = this.overlaySlot != null || this.nameTagSlot != null || primary;
+        if (primary || this.selected || annotationMode === 'full' || this.gpuActionOverlay) {
+            if (this.chatting) this._drawChatEffect(ctx);
+            else this._drawStatus(ctx, contentTopY);
+            this._drawStatusEmote(ctx, contentTopY);
+            this._drawPlanModeGlyph(ctx, contentTopY);
+            this._drawRetryGlyph(ctx, contentTopY);
+        }
+
+        if (this.selected || (annotationMode === 'full' && this.nameTagSlot != null)) {
+            this._drawNameTag(ctx);
+        } else if (admitted) {
+            this._drawCompactNameStatus(ctx);
+        }
+    }
+
+    _setGpuFrameRecord({
+        cell,
+        dx,
+        dy,
+        drawScale,
+        profileKey,
+        spriteId,
+        alpha = 1,
+        contentTopY = null,
+        frameGeometry = null,
+    }) {
+        if (!this.gpuWorldEnabled || !this.spriteCanvas || !cell) {
+            this._gpuFrameRecord = null;
+            return;
+        }
+        const source = this._gpuBaseSpriteCanvas || this.spriteCanvas;
+        const sourceSx = cell.sx;
+        const sourceSy = cell.sy;
+        const sourceSw = cell.sw;
+        const sourceSh = cell.sh;
+        const status = this.agent?.status;
+        const materialSource = this.assets?.getSidecar?.(spriteId, 'material')
+            || this.assets?.getMaterialSidecar?.(spriteId, 'material')
+            || null;
+        this._gpuFrameRecord = {
+            id: `agent:${this.agent?.id || profileKey}`,
+            stableKey: this.agent?.id || profileKey,
+            textureKey: `agent-sheet:${profileKey}`,
+            sidecarKey: materialSource ? `${spriteId}:material` : '',
+            source,
+            materialSource,
+            sourceWidth: source.width,
+            sourceHeight: source.height,
+            sx: sourceSx,
+            sy: sourceSy,
+            sw: sourceSw,
+            sh: sourceSh,
+            x: dx,
+            y: dy,
+            width: sourceSw * drawScale,
+            height: sourceSh * drawScale,
+            alpha,
+            material: this.agent?.provider === 'codex' ? 'metal' : 'fabric',
+            elevation: 0.52,
+            occluder: 0.58,
+            emissive: status === AgentStatus.WAITING_ON_USER
+                ? 0.42
+                : status === AgentStatus.COMPLETED
+                    ? 0.20
+                    : status === AgentStatus.WORKING
+                        ? 0.08
+                        : 0,
+            textureRevision: profileKey,
+            sidecarRevision: this.assets?.assetVersion || null,
+            contentTopY,
+            frameGeometry,
+        };
     }
 
     _drawSpriteSilhouette(ctx, cell, dx, dy, drawScale = 1) {
@@ -4697,6 +4870,9 @@ export class AgentSprite {
 
         ctx.save();
         ctx.globalAlpha *= this.selected ? 1 : (this.labelAlpha ?? 1);
+        // Identity stays below the feet; thoughts and current actions use the
+        // separate head-space bubble zone. This stable grammar makes a dense
+        // crowd scannable without confusing a name for spoken/tool content.
         ctx.translate(this.x, this.y);
         ctx.scale(s, s);
         ctx.translate(0, COMPACT_NAME_SLOT_BASE_Y + slot * COMPACT_NAME_SLOT_STEP_Y);
@@ -5626,6 +5802,46 @@ export class AgentSprite {
             case 'scan':
                 this._drawGestureScaled(ctx, centerX, headY, gestureScale, () => this._drawScanGesture(ctx, 0, 0, sideSign, swing));
                 break;
+        }
+        ctx.restore();
+    }
+
+    // Shared medium-distance action vocabulary for the Claude and Codex hero
+    // families. Static geometry carries the meaning; the optional two-frame
+    // lift uses the medium pulse band and freezes under reduced motion.
+    _drawActionPoseOverlay(ctx, frameGeometry) {
+        const provider = this._providerKey();
+        if (!['claude', 'codex'].includes(provider) || this.moving) return;
+        const action = resolveAgentAction(this.agent, { chatting: this.chatting });
+        if (!action) return;
+        const { dx, dy, bounds, drawScale } = frameGeometry || {};
+        if (!bounds || !Number.isFinite(dx) || !Number.isFinite(dy)) return;
+        const width = Math.max(1, bounds.maxX - bounds.minX);
+        const height = Math.max(1, bounds.maxY - bounds.minY);
+        const x = dx + (bounds.minX + width * .72) * drawScale;
+        const y = dy + (bounds.minY + height * .42) * drawScale;
+        const scale = Math.max(1, Number(drawScale) || 1);
+        const animated = this.motionScale > 0;
+        const beat = animated ? Math.floor(Date.now() / 320) % 2 : 0;
+        const trim = this._providerTrimColor();
+        ctx.save();
+        ctx.translate(Math.round(x), Math.round(y - beat));
+        ctx.scale(scale, scale);
+        ctx.fillStyle = trim;
+        ctx.strokeStyle = trim;
+        ctx.lineWidth = 1;
+        if (action === AgentAction.READ) {
+            ctx.fillStyle = '#f0e6c8'; ctx.fillRect(-5, -2, 4, 5); ctx.fillRect(1, -2, 4, 5);
+            ctx.fillStyle = trim; ctx.fillRect(0, -2, 1, 5); ctx.fillRect(-4, -1, 2, 1); ctx.fillRect(2, -1, 2, 1);
+        } else if (action === AgentAction.WORK) {
+            ctx.fillRect(-4, -1, 8, 2); ctx.fillRect(2, -4, 2, 8); ctx.fillStyle = THEME.text; ctx.fillRect(-5, -3, 2, 2);
+        } else if (action === AgentAction.THINK) {
+            ctx.fillRect(-3, 2, 2, 2); ctx.fillRect(0, -1, 3, 3); ctx.fillRect(3, -5, 4, 4);
+        } else if (action === AgentAction.TALK) {
+            ctx.fillRect(-5, -4, 10, 6); ctx.clearRect(-3, -2, 1, 1); ctx.clearRect(0, -2, 1, 1); ctx.clearRect(3, -2, 1, 1); ctx.fillRect(-3, 2, 2, 2);
+        } else if (action === AgentAction.CELEBRATE) {
+            ctx.fillRect(-6, -5, 2, 6); ctx.fillRect(4, -5, 2, 6);
+            ctx.fillStyle = THEME.text; ctx.fillRect(-7, -7, 2, 2); ctx.fillRect(6, -6, 2, 2); ctx.fillRect(0, -8, 2, 2);
         }
         ctx.restore();
     }

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
     POST_FX_LEVELS,
+    assessPostFxTimings,
     createPostFxLadder,
 } from '../../claudeville/src/presentation/character-mode/postfx/PostFxLadder.js';
 
@@ -49,6 +50,7 @@ test('frame-gap stalls degrade even when instrumented timings look healthy', () 
     // gap collapses to ~7 FPS. The gap excess must count against the budget.
     run(ladder, { uploadMs: 0.5, cpuMs: 0.2, frameGapMs: 140 }, 60, 0, 140);
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.REDUCED);
+    assert.equal(ladder.getState().lastDegradationReason, 'sustained-frameGapMs');
 });
 
 test('healthy frames probe one level up only after the probe window', () => {
@@ -69,4 +71,30 @@ test('override pins the effective level and survives metric churn', () => {
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.MINIMAL);
     ladder.setOverride(null);
     assert.equal(ladder.getLevel(), POST_FX_LEVELS.FULL);
+});
+
+test('timing assessment attributes upload, auxiliary upload, shader, GPU, and frame-gap cost', () => {
+    const upload = assessPostFxTimings({ uploadMs: 6, auxUploadMs: 1, setupCpuMs: 0.5, shaderCpuMs: 1, gpuMs: 2 });
+    assert.equal(upload.driver, 'uploadMs');
+    assert.equal(upload.score, 10.5);
+
+    const stall = assessPostFxTimings({ uploadMs: 0.2, shaderCpuMs: 0.2, frameGapMs: 140 });
+    assert.equal(stall.driver, 'frameGapMs');
+    assert.equal(stall.score, 107);
+});
+
+test('degradation diagnostics retain the concrete bottleneck reason', () => {
+    const ladder = createPostFxLadder({ probeMs: 32 });
+    run(ladder, { uploadMs: 6, shaderCpuMs: 0.5 }, 60);
+    const degraded = ladder.getState();
+    assert.equal(degraded.level, POST_FX_LEVELS.REDUCED);
+    assert.equal(degraded.lastDecisionReason, 'degrade:sustained-uploadMs');
+    assert.equal(degraded.lastDegradationReason, 'sustained-uploadMs');
+    assert.equal(degraded.lastTransitionMetrics.driver, 'uploadMs');
+
+    run(ladder, { uploadMs: 0.2, shaderCpuMs: 0.2 }, 3, 60 * 16);
+    const recovered = ladder.getState();
+    assert.equal(recovered.level, POST_FX_LEVELS.FULL);
+    assert.equal(recovered.lastDecisionReason, 'healthy-recovery');
+    assert.equal(recovered.lastDegradationReason, 'sustained-uploadMs', 'recovery must not erase the last degradation cause');
 });

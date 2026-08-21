@@ -4,6 +4,7 @@
 // frame orchestrator so both slices share one allocation-light contract.
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../../config/constants.js';
+import { RENDERER_RESOURCE_BYTES_PER_PIXEL, canvasPixelCount, releaseCanvasBackingStore } from '../CanvasBudget.js';
 
 const MAX_LIGHTS = 48;
 const MAX_HAZE = 8;
@@ -33,6 +34,12 @@ function clamp01(value) {
 function finite(value, fallback = 0) {
     const n = Number(value);
     return Number.isFinite(n) ? n : fallback;
+}
+
+function timingNow() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
 }
 
 // Registry colors arrive as #rrggbb (or loose "r, g, b"); glow stamps consume 0-255 channels.
@@ -119,6 +126,24 @@ export function createPostFxFeed() {
     // WHY: the mask canvas is reused across rebuilds, so identity alone cannot
     // tell the GPU consumer when pixels changed — the revision counter does.
     let maskRevision = 0;
+    const diagnostics = {
+        builds: 0,
+        buildFailures: 0,
+        maskRebuilds: 0,
+        maskReuses: 0,
+        maskSkips: 0,
+        maskRepaintTimeMs: 0,
+        maskLastRepaintMs: 0,
+        maskLastReason: 'uninitialized',
+        maskReasonCounts: {
+            initial: 0,
+            'camera-pose': 0,
+            viewport: 0,
+            'water-set': 0,
+        },
+        visibleLights: 0,
+        visibleHaze: 0,
+    };
 
     function lightSlot(index) {
         let slot = lightSlotPool[index];
@@ -352,8 +377,16 @@ export function createPostFxFeed() {
         const waterTiles = renderer?.waterTiles
             || renderer?.scenery?.getWaterTiles?.()
             || null;
-        if (!waterTiles || waterTiles.size === 0) return waterObj;
-        if (viewport.width <= 0 || viewport.height <= 0) return waterObj;
+        if (!waterTiles || waterTiles.size === 0) {
+            diagnostics.maskSkips++;
+            diagnostics.maskLastReason = 'no-water';
+            return waterObj;
+        }
+        if (viewport.width <= 0 || viewport.height <= 0) {
+            diagnostics.maskSkips++;
+            diagnostics.maskLastReason = 'empty-viewport';
+            return waterObj;
+        }
 
         const zoom = Math.max(1e-6, finite(camera?.zoom, 1));
         const camX = finite(camera?.x, 0);
@@ -378,12 +411,32 @@ export function createPostFxFeed() {
             && maskCanvas.width === Math.max(1, Math.round(viewport.width * WATER_MASK_SCALE))
             && maskCanvas.height === Math.max(1, Math.round(viewport.height * WATER_MASK_SCALE))
         ) {
+            diagnostics.maskReuses++;
+            diagnostics.maskLastReason = 'cache-hit';
             waterObj.mask = maskHadVisible ? maskCanvas : null;
             waterObj.flowX = maskFlowX;
             waterObj.flowY = maskFlowY;
             waterObj.maskRevision = maskRevision;
             return waterObj;
         }
+
+        const previousParts = maskCacheKey ? maskCacheKey.split('|') : [];
+        const viewportChanged = !maskCanvas
+            || maskCanvas.width !== maskW
+            || maskCanvas.height !== maskH
+            || previousParts[3] !== String(viewport.width | 0)
+            || previousParts[4] !== String(viewport.height | 0)
+            || previousParts[5] !== dpr.toFixed(3);
+        const waterSetChanged = previousParts.length > 0
+            && previousParts[6] !== String(waterTiles.size | 0);
+        const rebuildReason = !maskCacheKey
+            ? 'initial'
+            : viewportChanged
+                ? 'viewport'
+                : waterSetChanged
+                    ? 'water-set'
+                    : 'camera-pose';
+        const rebuildStartedAt = timingNow();
 
         const bridgeTiles = renderer?.bridgeTiles;
         const waterMeta = renderer?.waterMeta || renderer?.scenery?.getWaterMeta?.();
@@ -498,6 +551,12 @@ export function createPostFxFeed() {
         maskHadVisible = visibleN > 0;
         maskRevision += 1;
         waterObj.maskRevision = maskRevision;
+        const repaintMs = Math.max(0, timingNow() - rebuildStartedAt);
+        diagnostics.maskRebuilds++;
+        diagnostics.maskRepaintTimeMs += repaintMs;
+        diagnostics.maskLastRepaintMs = repaintMs;
+        diagnostics.maskLastReason = rebuildReason;
+        diagnostics.maskReasonCounts[rebuildReason] = (diagnostics.maskReasonCounts[rebuildReason] || 0) + 1;
 
         if (!maskHadVisible) {
             // Nothing on screen — drop the mask so the water pass can no-op.
@@ -588,6 +647,7 @@ export function createPostFxFeed() {
 
     function build(args = {}) {
         try {
+            diagnostics.builds++;
             const renderer = args?.renderer ?? null;
             const atmosphere = args?.atmosphere ?? renderer?._lastAtmosphere ?? null;
             const villageSnapshot = args?.villageSnapshot ?? null;
@@ -627,6 +687,8 @@ export function createPostFxFeed() {
 
             fillLights(renderer, viewport, dpr);
             fillWater(renderer, camera, viewport, dpr);
+            diagnostics.visibleLights = lightsOut.length;
+            diagnostics.visibleHaze = hazeOut.length;
 
             feed.timeMs = finite(nowMs, 0);
             feed.motionScale = motionScale;
@@ -644,6 +706,7 @@ export function createPostFxFeed() {
             feed.pulse = fillPulse(villageSnapshot, nowMs);
             return feed;
         } catch {
+            diagnostics.buildFailures++;
             // Contract: never throw. Hand back the last stable feed skeleton.
             feed.timeMs = finite(args?.nowMs, feed.timeMs);
             feed.lights = lightsOut;
@@ -654,5 +717,36 @@ export function createPostFxFeed() {
         }
     }
 
-    return { build };
+    function getDiagnostics() {
+        const maskPixels = canvasPixelCount(maskCanvas);
+        return {
+            ...diagnostics,
+            maskReasonCounts: { ...diagnostics.maskReasonCounts },
+            maskRevision,
+            maskPixels,
+            maskBytes: maskPixels * RENDERER_RESOURCE_BYTES_PER_PIXEL,
+            maskWidth: Number(maskCanvas?.width) || 0,
+            maskHeight: Number(maskCanvas?.height) || 0,
+        };
+    }
+
+    function getCanvasBudget() {
+        const maskPixels = canvasPixelCount(maskCanvas);
+        return {
+            volatilePixels: maskPixels,
+            volatileBytes: maskPixels * RENDERER_RESOURCE_BYTES_PER_PIXEL,
+            cacheKey: maskCacheKey,
+            revision: maskRevision,
+        };
+    }
+
+    function dispose() {
+        releaseCanvasBackingStore(maskCanvas);
+        maskCanvas = null;
+        maskCtx = null;
+        maskCacheKey = '';
+        maskHadVisible = false;
+    }
+
+    return { build, getDiagnostics, getCanvasBudget, dispose };
 }

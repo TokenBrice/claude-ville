@@ -1,5 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
+import { CANVAS_BUDGET, canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 
 const CAPTURE_INTERVAL_MS = 1000;
@@ -14,8 +14,20 @@ const MAX_PENDING_SAMPLES = 4000;
 const COMPACT_TO_RATIO = 0.8;
 const MAX_RENDER_SAMPLES_PER_AGENT = 240;
 const MAX_RENDER_SAMPLES_TOTAL = 4000;
-const MAX_SELECTED_RENDER_SAMPLES = 600;
+const MAX_SELECTED_RENDER_SAMPLES = 24;
+const MAX_ACTION_RENDER_SAMPLES = 12;
 const DIRECT_RENDER_SAMPLE_LIMIT = 512;
+// Historical trails are intentionally half-resolution. They are faint ground
+// context, while selected/action-needed recent paths render directly at full
+// resolution. This keeps the camera-stable cache cheap to composite.
+const WORLD_CACHE_SCALE = 0.5;
+const ACTION_NEEDED_STATUSES = new Set(['waiting_on_user', 'errored', 'rate_limited']);
+const CAMERA_MOTION_MODES = Object.freeze([
+    'stationary',
+    'manual-pan',
+    'follow',
+    'director-glide',
+]);
 const PHASE_COLORS = {
     morning: '255, 218, 128',
     afternoon: '232, 224, 194',
@@ -67,6 +79,53 @@ function timerNow() {
         : Date.now();
 }
 
+function cameraPose(camera) {
+    return {
+        x: Number(camera?.x) || 0,
+        y: Number(camera?.y) || 0,
+        zoom: Number(camera?.zoom) || 1,
+    };
+}
+
+export function classifyTrailCameraMotion(camera, previousPose = null) {
+    if (camera?.isDirectorGliding?.() || camera?._directorGlide) return 'director-glide';
+    if (camera?.followTarget) return 'follow';
+    const pose = cameraPose(camera);
+    const moved = previousPose && (
+        Math.abs(pose.x - previousPose.x) > 0.01
+        || Math.abs(pose.y - previousPose.y) > 0.01
+        || Math.abs(pose.zoom - previousPose.zoom) > 0.0001
+    );
+    if (camera?.dragging || camera?._momentum || moved) return 'manual-pan';
+    return 'stationary';
+}
+
+export function resolveTrailRenderPolicy({
+    totalSamples = 0,
+    selectedAgentId = null,
+    cameraMotion = 'stationary',
+} = {}) {
+    void totalSamples;
+    void cameraMotion;
+    return Object.freeze({
+        historicalMode: 'none',
+        cacheSpace: 'none',
+        repaintOnCameraMotion: false,
+        historicalVisibility: 'hidden',
+        selectedMode: selectedAgentId ? 'recent-direct-overlay' : 'none',
+        actionNeededMode: 'recent-direct-overlay',
+    });
+}
+
+function createCameraMotionStats() {
+    return Object.fromEntries(CAMERA_MOTION_MODES.map(mode => [mode, {
+        frames: 0,
+        drawTimeMs: 0,
+        repaintCount: 0,
+        repaintTimeMs: 0,
+    }]));
+}
+
 // Shared trail-stroke vocabulary (plan 3.10 — one trail language). Both the
 // persisted hour-trails below and the director's live replay trails in
 // VillageDirectorOverlay stroke through here: round-capped per-segment
@@ -111,6 +170,8 @@ export class TrailRenderer {
         this.cache = null;
         this.cacheKey = '';
         this.cacheBounds = null;
+        this._lastCameraPose = null;
+        this._lastCameraMotion = 'stationary';
         this.lastCaptureAt = 0;
         this.lastFlushAt = 0;
         this.lastRepaintAt = 0;
@@ -139,8 +200,14 @@ export class TrailRenderer {
             repaintTimeMs: 0,
             directDrawCount: 0,
             directDrawTimeMs: 0,
+            cacheDrawCount: 0,
+            cacheDrawTimeMs: 0,
+            selectedOverlayDraws: 0,
+            actionOverlayDraws: 0,
             highWaterSamples: 0,
             highWaterCachePixels: 0,
+            oversizedCacheFallbacks: 0,
+            cameraMotion: createCameraMotionStats(),
         };
         this._unsubscribers = [
             eventBus.on('agent:selected', (agent) => this.setSelectedAgent(agent?.id || null)),
@@ -156,7 +223,6 @@ export class TrailRenderer {
     setSelectedAgent(agentId) {
         if (this.selectedAgentId === agentId) return;
         this.selectedAgentId = agentId;
-        this._needsRepaint = true;
     }
 
     async hydrate(now = Date.now()) {
@@ -274,21 +340,24 @@ export class TrailRenderer {
 
     draw(ctx, camera, viewport, now = Date.now()) {
         if (this._disposed || this._paused || !ctx || !camera || !viewport) return;
-        if (this._totalSamples <= DIRECT_RENDER_SAMPLE_LIMIT) {
+        const drawStartedAt = timerNow();
+        const motionMode = classifyTrailCameraMotion(camera, this._lastCameraPose);
+        const policy = resolveTrailRenderPolicy({
+            totalSamples: this._totalSamples,
+            selectedAgentId: this.selectedAgentId,
+            cameraMotion: motionMode,
+        });
+        this._lastCameraMotion = motionMode;
+        try {
             if (this.cache) this.releaseCache();
-            this._drawDirect(ctx, camera, viewport, now);
-            return;
+            // Ambient history is deliberately invisible. Only a short recent
+            // route for selection or action-needed state survives, preventing
+            // long-lived paths from webbing over the authored village.
+            this._drawSemanticTrailOverlays(ctx, camera, now);
+        } finally {
+            this._recordCameraMotionDraw(motionMode, drawStartedAt);
+            this._lastCameraPose = cameraPose(camera);
         }
-        if (this._shouldRepaint(camera, viewport, now)) {
-            this._repaint(camera, viewport, now);
-        }
-        if (!this.cache) return;
-        const { dpr, width, height } = viewportMetrics(viewport);
-        ctx.save();
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        const bounds = this.cacheBounds || { x: 0, y: 0, width, height };
-        ctx.drawImage(this.cache, bounds.x, bounds.y, bounds.width, bounds.height);
-        ctx.restore();
     }
 
     dispose() {
@@ -345,8 +414,13 @@ export class TrailRenderer {
     }
 
     getDiagnostics() {
+        const cameraMotion = Object.fromEntries(Object.entries(this._stats.cameraMotion).map(([mode, stats]) => [
+            mode,
+            { ...stats },
+        ]));
         return {
             ...this._stats,
+            cameraMotion,
             totalSamples: this._totalSamples,
             agentsWithSamples: this.samplesByAgent.size,
             pendingSamples: this.pending.length,
@@ -358,7 +432,16 @@ export class TrailRenderer {
             renderPerAgentLimit: MAX_RENDER_SAMPLES_PER_AGENT,
             renderGlobalLimit: MAX_RENDER_SAMPLES_TOTAL,
             directRenderLimit: DIRECT_RENDER_SAMPLE_LIMIT,
+            actionRenderLimit: MAX_ACTION_RENDER_SAMPLES,
             minimumDistanceTiles: MIN_SAMPLE_DISTANCE_TILES,
+            cacheSpace: this.cache ? 'world' : 'none',
+            cacheBounds: this.cacheBounds ? { ...this.cacheBounds } : null,
+            cameraMotionMode: this._lastCameraMotion,
+            renderPolicy: resolveTrailRenderPolicy({
+                totalSamples: this._totalSamples,
+                selectedAgentId: this.selectedAgentId,
+                cameraMotion: this._lastCameraMotion,
+            }),
         };
     }
 
@@ -413,19 +496,8 @@ export class TrailRenderer {
         return true;
     }
 
-    _shouldRepaint(camera, viewport, now) {
-        const { dpr, width, height } = viewportMetrics(viewport);
-        const key = [
-            width, height, dpr,
-            Math.round((camera.x || 0) / 4),
-            Math.round((camera.y || 0) / 4),
-            Math.round((camera.zoom || 1) * 20),
-            this.selectedAgentId || '',
-        ].join('|');
-        if (this.cacheKey !== key) {
-            this.cacheKey = key;
-            return true;
-        }
+    _shouldRepaint(now) {
+        if (!this.cache) return true;
         if (this.motionScale === 0) return this._needsRepaint;
         return this._needsRepaint && now - this.lastRepaintAt >= REPAINT_INTERVAL_MS;
     }
@@ -453,7 +525,7 @@ export class TrailRenderer {
                 ctx,
                 this._trailPoints(renderSamples, camera),
                 now,
-                agentId === this.selectedAgentId,
+                this._trailImportance(agentId),
             );
         }
         ctx.restore();
@@ -461,49 +533,35 @@ export class TrailRenderer {
         this._stats.directDrawTimeMs += Math.max(0, timerNow() - startedAt);
     }
 
-    _repaint(camera, viewport, now) {
+    _repaintWorldCache(now, motionMode = this._lastCameraMotion) {
         const repaintStartedAt = timerNow();
-        const metrics = viewportMetrics(viewport);
-        const width = Math.max(1, Math.round(metrics.width || 1));
-        const height = Math.max(1, Math.round(metrics.height || 1));
-        const dpr = metrics.dpr;
-        const bounds = camera.getViewportTileBounds?.(3);
         const trails = [];
-        let minX = width;
-        let minY = height;
-        let maxX = 0;
-        let maxY = 0;
+        let minX = Infinity;
+        let minY = Infinity;
+        let maxX = -Infinity;
+        let maxY = -Infinity;
 
-        const visibleTrails = [];
+        const cacheTrails = [];
         for (const [agentId, samples] of this.samplesByAgent) {
             if (samples.length < 2) continue;
-            const visible = !bounds || samples.some(sample => (
-                sample.tileX >= bounds.startX && sample.tileX <= bounds.endX &&
-                sample.tileY >= bounds.startY && sample.tileY <= bounds.endY
-            ));
-            if (!visible) continue;
-            visibleTrails.push({ agentId, samples });
+            cacheTrails.push({ agentId, samples });
         }
 
-        const selectedVisible = visibleTrails.some(trail => trail.agentId === this.selectedAgentId);
-        const selectedBudget = selectedVisible ? MAX_SELECTED_RENDER_SAMPLES : 0;
-        const ordinaryCount = Math.max(1, visibleTrails.length - (selectedVisible ? 1 : 0));
+        const ordinaryCount = Math.max(1, cacheTrails.length);
         const ordinaryLimit = Math.max(
             2,
             Math.min(
                 MAX_RENDER_SAMPLES_PER_AGENT,
-                Math.floor((MAX_RENDER_SAMPLES_TOTAL - selectedBudget) / ordinaryCount),
+                Math.floor(MAX_RENDER_SAMPLES_TOTAL / ordinaryCount),
             ),
         );
-        for (const { agentId, samples } of visibleTrails) {
-            const selected = agentId === this.selectedAgentId;
-            const limit = selected ? MAX_SELECTED_RENDER_SAMPLES : ordinaryLimit;
-            const renderSamples = samples.length > limit
-                ? sampleListToLimit(samples, limit)
+        for (const { samples } of cacheTrails) {
+            const renderSamples = samples.length > ordinaryLimit
+                ? sampleListToLimit(samples, ordinaryLimit)
                 : samples;
-            const points = this._trailPoints(renderSamples, camera);
+            const points = this._worldTrailPoints(renderSamples);
             if (points.length < 2) continue;
-            trails.push({ points, selected });
+            trails.push(points);
             for (const point of points) {
                 minX = Math.min(minX, point.x);
                 minY = Math.min(minY, point.y);
@@ -512,44 +570,87 @@ export class TrailRenderer {
             }
         }
 
-        const pad = 4;
-        const left = Math.max(0, Math.floor(minX - pad));
-        const top = Math.max(0, Math.floor(minY - pad));
-        const right = Math.min(width, Math.ceil(maxX + pad));
-        const bottom = Math.min(height, Math.ceil(maxY + pad));
+        const pad = 6;
+        const left = Math.floor(minX - pad);
+        const top = Math.floor(minY - pad);
+        const right = Math.ceil(maxX + pad);
+        const bottom = Math.ceil(maxY + pad);
         if (!trails.length || right <= left || bottom <= top) {
             releaseCanvasBackingStore(this.cache);
             this.cache = null;
             this.cacheBounds = null;
+            this.cacheKey = '';
             this._needsRepaint = false;
             this.lastRepaintAt = now;
-            this._recordRepaint(repaintStartedAt);
+            this._recordRepaint(repaintStartedAt, motionMode);
             return;
         }
 
         const cacheWidth = right - left;
         const cacheHeight = bottom - top;
+        const uncappedPixels = cacheWidth * cacheHeight * WORLD_CACHE_SCALE * WORLD_CACHE_SCALE;
+        const scale = Math.max(
+            0.25,
+            Math.min(WORLD_CACHE_SCALE, Math.sqrt(CANVAS_BUDGET.maxTrailCachePixels / Math.max(1, uncappedPixels))),
+        );
+        if (scale < WORLD_CACHE_SCALE) this._stats.oversizedCacheFallbacks++;
         const canvas = this.cache || document.createElement('canvas');
-        const backingWidth = Math.round(cacheWidth * dpr);
-        const backingHeight = Math.round(cacheHeight * dpr);
+        const backingWidth = Math.max(1, Math.ceil(cacheWidth * scale));
+        const backingHeight = Math.max(1, Math.ceil(cacheHeight * scale));
         if (canvas.width !== backingWidth) canvas.width = backingWidth;
         if (canvas.height !== backingHeight) canvas.height = backingHeight;
         const ctx = canvas.getContext('2d');
-        ctx.setTransform(dpr, 0, 0, dpr, -left * dpr, -top * dpr);
+        ctx.imageSmoothingEnabled = false;
+        ctx.setTransform(scale, 0, 0, scale, -left * scale, -top * scale);
         ctx.clearRect(left, top, cacheWidth, cacheHeight);
-        for (const trail of trails) {
-            this._drawTrailPoints(ctx, trail.points, now, trail.selected);
+        for (const points of trails) {
+            this._drawTrailPoints(ctx, points, now, 'ambient', {
+                coordinateSpace: 'world-cache',
+                cacheScale: scale,
+            });
         }
 
         this.cache = canvas;
-        this.cacheBounds = { x: left, y: top, width: cacheWidth, height: cacheHeight };
+        this.cacheBounds = { x: left, y: top, width: cacheWidth, height: cacheHeight, scale };
+        this.cacheKey = `world|${this._totalSamples}|${left},${top},${cacheWidth},${cacheHeight}|${scale.toFixed(3)}`;
         this._stats.highWaterCachePixels = Math.max(
             this._stats.highWaterCachePixels,
             canvasPixelCount(canvas),
         );
         this._needsRepaint = false;
         this.lastRepaintAt = now;
-        this._recordRepaint(repaintStartedAt);
+        this._recordRepaint(repaintStartedAt, motionMode);
+    }
+
+    _drawSemanticTrailOverlays(ctx, camera, now) {
+        const zoom = Math.max(0.25, Number(camera?.zoom) || 1);
+        let drewAny = false;
+        ctx.save();
+        camera.applyTransform?.(ctx);
+        for (const [agentId, samples] of this.samplesByAgent) {
+            if (samples.length < 2) continue;
+            const importance = this._trailImportance(agentId);
+            if (importance === 'ambient') continue;
+            const limit = importance === 'selected'
+                ? MAX_SELECTED_RENDER_SAMPLES
+                : MAX_ACTION_RENDER_SAMPLES;
+            const renderSamples = samples.slice(-limit);
+            this._drawTrailPoints(ctx, this._worldTrailPoints(renderSamples), now, importance, {
+                coordinateSpace: 'world',
+                zoom,
+            });
+            if (importance === 'selected') this._stats.selectedOverlayDraws++;
+            else this._stats.actionOverlayDraws++;
+            drewAny = true;
+        }
+        ctx.restore();
+        return drewAny;
+    }
+
+    _trailImportance(agentId) {
+        if (agentId === this.selectedAgentId) return 'selected';
+        const status = String(this.world?.agents?.get?.(agentId)?.status || '').toLowerCase();
+        return ACTION_NEEDED_STATUSES.has(status) ? 'action-needed' : 'ambient';
     }
 
     _trailPoints(samples, camera) {
@@ -562,13 +663,31 @@ export class TrailRenderer {
         return points;
     }
 
-    _drawTrailPoints(ctx, points, now, selected) {
+    _worldTrailPoints(samples) {
+        const points = [];
+        for (const sample of samples) {
+            const world = tileToWorld(sample.tileX, sample.tileY);
+            points.push({ x: world.x, y: world.y, ts: sample.ts, phase: sample.phase });
+        }
+        return points;
+    }
+
+    _drawTrailPoints(ctx, points, now, importance = 'ambient', {
+        coordinateSpace = 'screen',
+        zoom = 1,
+        cacheScale = 1,
+    } = {}) {
         if (points.length < 2) return;
+        const selected = importance === 'selected';
+        const actionNeeded = importance === 'action-needed';
+        let width = selected ? 2 : actionNeeded ? 1.5 : 1;
+        if (coordinateSpace === 'world') width /= Math.max(0.25, zoom);
+        if (coordinateSpace === 'world-cache') width /= Math.max(0.25, cacheScale);
         strokeAgedTrailSegments(ctx, points, {
             now,
             maxAgeMs: RETAIN_MS,
-            baseAlpha: selected ? 0.5 : 0.18,
-            width: selected ? 2 : 1,
+            baseAlpha: selected ? 0.30 : actionNeeded ? 0.28 : 0,
+            width,
             rgbForPoint: (point) => PHASE_COLORS[point.phase] || PHASE_COLORS.afternoon,
         });
     }
@@ -634,9 +753,20 @@ export class TrailRenderer {
         if (removed > 0) this._stats.compactedSamples += removed;
     }
 
-    _recordRepaint(startedAt) {
+    _recordRepaint(startedAt, motionMode = this._lastCameraMotion) {
+        const elapsed = Math.max(0, timerNow() - startedAt);
         this._stats.repaintCount++;
-        this._stats.repaintTimeMs += Math.max(0, timerNow() - startedAt);
+        this._stats.repaintTimeMs += elapsed;
+        const bucket = this._stats.cameraMotion[motionMode] || this._stats.cameraMotion.stationary;
+        bucket.repaintCount++;
+        bucket.repaintTimeMs += elapsed;
+    }
+
+    _recordCameraMotionDraw(motionMode, startedAt) {
+        const elapsed = Math.max(0, timerNow() - startedAt);
+        const bucket = this._stats.cameraMotion[motionMode] || this._stats.cameraMotion.stationary;
+        bucket.frames++;
+        bucket.drawTimeMs += elapsed;
     }
 
     _phaseFromDate(now) {

@@ -19,8 +19,10 @@ Read these in order when joining the project:
 | Understand load-bearing constraints before changing architecture | `docs/design-decisions.md` |
 | Add or change a provider, model, pricing identity, or agent sprite mapping | `docs/agent-provider-addition.md` |
 | Add World mode animation, pulses, particles, or reduced-motion behavior | `docs/motion-budget.md` |
+| Capture deterministic renderer stills or profile PostFX/trail performance | `docs/rendering-baselines.md` |
 | QA World mode visuals, deterministic scenarios, terrain cache, or sprite refreshes | `docs/world-visual-qa-checklist.md` |
 | Generate or edit PixelLab sprite assets | `scripts/sprites/generate.md`, then `docs/pixellab-reference.md` only for tool/API specifics |
+| Add semantic drawable metadata, material channels, sidecars, or deterministic atlases | `docs/material-channel-contract.md`, then `scripts/sprites/generate.md` |
 | Adapt the ClaudeVille world-metaphor approach to another domain | `docs/visual-experience-crafting.md` |
 
 ## Documentation Rules

@@ -2,6 +2,31 @@
 
 ---
 
+## v0.33.0 — *The Glasswrights* · Aug 21, 2026
+
+World mode becomes a semantic, GPU-resident pixel diorama: the village now knows which agents matter, which surfaces receive weather and light, and when visual detail should yield to operator clarity.
+
+**A world with material memory**
+- **WebGL2 now renders the village directly.** Terrain, landmarks, props, and animated agent frames stay in GPU-managed textures instead of uploading one flattened Canvas frame every render. The complete Canvas path remains available with `?renderer=canvas`, and `?postfx=0` still provides the allocation-free escape hatch.
+- **Nine landmarks gained authored material contracts.** Stone, timber, metal, water, foliage, fabric, cobble, glass/runes, and fire respond differently to phase light, rain, fog, reflections, local occlusion, and quantized sun bands. Emissive windows, runes, forge fire, lanterns, and the lighthouse now bloom from named masks—and stay restrained in broad daylight.
+- **Deterministic atlas tooling ships with the renderer.** A reviewed 18-asset, 209-frame pilot includes byte-stable albedo/material/emissive/occluder atlases, manifest validation, channel contact sheets, mask-fix tooling, and safe defaults for assets without companions.
+
+**The crowd speaks more clearly**
+- **One salience governor now owns the scene.** Needs-you, error, selection, recent events, working detail, and ambience share collision and occupancy budgets. Primary cues never disappear; routine particles, plaques, labels, and tool text quiet down before the village art does.
+- **Names and thoughts have a stable grammar.** Agent identity stays below the feet, thoughts and current actions stay above the head, and both participate in one collision plane. GPU animation uses complete source silhouettes so movement no longer drops body or equipment pixels.
+- **Claude and Codex share five readable action poses.** Read, work, think, talk, and celebrate add small modular pixel gestures without changing simulation cadence, and reduced motion keeps a complete static version of every cue.
+
+**Triage before transcript**
+- **Dashboard cards default to compact dossiers.** A cross-project queue orders Needs You, errors/rate limits, high burn, working sessions, and quiet agents; full tool/message history expands only for the selected card.
+- **Inspection preserves orientation.** World selection saves the overview pose, composes against the detail panel, and restores the camera unless the operator moved it manually. A compact controls popover documents navigation and replay commands.
+
+**Built to degrade cleanly**
+- **Historical routes no longer web over the village.** Hour-long movement history stays recorded for diagnostics but is not painted across the overview; only a short, restrained recent route survives for the selected or action-needed agent.
+- **Renderer budgets now name every owner.** Upload, shader, frame-gap, texture, attachment, buffer, Canvas, atlas, and trail diagnostics feed a hysteretic quality ladder. Context loss, Dashboard suspension, visibility changes, and resume release and rebuild resources without stale-context warnings.
+- **Release evidence is reproducible.** Deterministic World scenarios, hardware metadata, overlay censuses, performance scripts, and 20 approved day/night visual baselines cover the new pipeline. The final suite passes 141 unit tests plus building, terrain, sprite, material-channel, and visual-diff gates.
+
+---
+
 ## v0.32.0.1 · Aug 21, 2026 — Hotfix
 
 GPU light glows no longer render as bright daylight discs (seen over the market stall and torches around Command), and the baked lantern posts got their night halos back.

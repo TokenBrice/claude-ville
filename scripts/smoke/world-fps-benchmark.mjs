@@ -4,7 +4,7 @@ import os from 'node:os';
 import { chromium } from 'playwright';
 
 const DEFAULT_URL = process.env.CLAUDEVILLE_URL || 'http://localhost:4000';
-const DEFAULT_COUNTS = [1, 10, 25, 50];
+const DEFAULT_COUNTS = [1, 10, 24, 50, 100];
 const WEATHER_PROFILES = Object.freeze({
   clear: Object.freeze({
     type: 'clear',
@@ -45,7 +45,7 @@ Options:
   --headed                    Show the Chromium window
   --help                      Print this help
 
-The default matrix measures clear and heavy rain for 1, 10, 25, and 50
+The default matrix measures clear and heavy rain for 1, 10, 24, 50, and 100
 deterministic active agents. Output is newline-delimited JSON followed by a
 summary object.`);
 }
@@ -294,6 +294,8 @@ async function runCase(browser, options, count, weatherName, repetition) {
       const app = window.__claudeVilleApp;
       const renderer = app?.renderer;
       const canvasBudget = window.__claudeVillePerf?.canvasBudget?.() || null;
+      const postFx = renderer?.postFx?.getDiagnostics?.() || null;
+      const postFxFeed = renderer?.postFxFeed?.getDiagnostics?.() || null;
       return {
         agents: app?.world?.agents?.size ?? null,
         working: app?.world?.getStats?.().working ?? null,
@@ -305,6 +307,11 @@ async function runCase(browser, options, count, weatherName, repetition) {
         visibleCanvasPixels: canvasBudget?.visibleCanvasPixels ?? null,
         particles: renderer?._lastRenderStats?.canvas?.particles ?? null,
         frameFailures: canvasBudget?.runtime?.frameFailures || null,
+        postFx,
+        postFxFeed,
+        gpuWorld: renderer?.gpuWorld?.getDiagnostics?.() || null,
+        resources: canvasBudget?.resources || null,
+        trails: renderer?.trailRenderer?.getDiagnostics?.() || null,
       };
     });
 

@@ -3,6 +3,15 @@
 Use the maintained local server at `http://localhost:4000`.
 World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 
+## Frozen Renderer Baselines
+
+- Read [`rendering-baselines.md`](rendering-baselines.md) before renderer, trail, PostFX, atmosphere, or material changes.
+- Run `npm run world:capture-render-baselines -- --dry-run` after changing the capture matrix.
+- Capture the affected manifest IDs in `webgl`, `postfx`, and `canvas` modes. Do not compare a forced-FULL PostFX source frame with an adaptive performance level without reporting both values.
+- Every performance claim must include Chromium build, GPU/driver, OS, machine label, viewport, DPR, browser zoom, and power state from the capture metadata.
+- Review and approve the clear-day, torchlit-night, and action-needed storm north-star frames before broad material or asset production.
+- Use `npm run world:benchmark-trails` after trail, camera, or cache changes; manual pan, follow, and director glide must produce zero historical trail-cache repaints.
+
 ## Baseline
 
 - `no-agents`: map loads with stable building labels, idle harbor, no empty-state errors, and no console errors.
@@ -62,6 +71,7 @@ World scenarios are deterministic fixtures for `?sim=1&scenario=<id>`.
 - Run `npm run world:validate-buildings` after building layout or visit-tile changes.
 - In the debug overlay or console diagnostics, confirm terrain cache strategy is `single-surface` for the current 40x40 map. Console diagnostics are exposed at `window.__claudeVillePerf.canvasBudget().terrainCache`.
 - Before increasing `MAP_SIZE`, confirm the single-surface estimate remains under the world cache budget or implement chunked terrain caches first.
+- `MAP_SIZE` remains fixed at 40 for the semantic-diorama program. Package 0 measures a 6,560,000-pixel single-surface estimate against the 7,000,000-pixel reserve (440,000 pixels / about 6.3% remaining) with a 3x3 chunk plan; re-record the validator output when this changes.
 
 ## Sprite Refresh Audit
 

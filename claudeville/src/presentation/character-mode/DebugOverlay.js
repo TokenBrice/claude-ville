@@ -214,6 +214,7 @@ export class DebugOverlay {
             `reservations: ${reservations.length}`,
             this._cameraStateRow(viewport, cameraState),
             ...this._postFxRows(renderer),
+            ...this._trailRows(renderer),
             renderStats?.drawables ? `drawables: ${renderStats.drawables.total} drawn / ${renderStats.drawables.culling?.culled || 0} culled` : null,
             renderStats?.harbor ? `harbor: pending ${renderStats.harbor.pendingRepos || 0} commits ${renderStats.harbor.pendingCommits || 0}` : null,
             renderStats?.canvas ? `light/cache: ${renderStats.canvas.lightGradients || 0} gradients / particles ${renderStats.canvas.particles || 0}` : null,
@@ -309,14 +310,32 @@ export class DebugOverlay {
 
     _postFxRows(renderer) {
         const diagnostics = renderer?.postFx?.getDiagnostics?.() || null;
+        const feed = renderer?.postFxFeed?.getDiagnostics?.() || null;
         const levelValue = diagnostics?.level;
         const level = levelValue !== null && levelValue !== undefined && Number.isFinite(Number(levelValue))
             ? Number(levelValue)
             : 'n/a';
         return [
             `postfx: active ${diagnostics?.active ? 'yes' : 'no'} · supported ${diagnostics?.supported ? 'yes' : 'no'} · level ${level}`,
-            `postfx ms: upload ${formatOptionalMs(diagnostics?.uploadMs)} · gpu ${formatOptionalMs(diagnostics?.gpuMs)} · cpu ${formatOptionalMs(diagnostics?.cpuMs)}`,
-            `postfx texture: ${formatBytes(diagnostics?.textureBytes)}`,
+            `postfx ladder: ${diagnostics?.ladder?.lastDecisionReason || 'n/a'} · last degrade ${diagnostics?.ladder?.lastDegradationReason || 'none'} · score ${formatMs(diagnostics?.ladder?.lastScore)}/${formatMs(diagnostics?.ladder?.budgetMs)}ms`,
+            `postfx upload: source ${formatOptionalMs(diagnostics?.uploadMs)} · mask ${formatOptionalMs(diagnostics?.maskUploadMs)} · setup ${formatOptionalMs(diagnostics?.setupCpuMs)}`,
+            `postfx shader: cpu ${formatOptionalMs(diagnostics?.shaderCpuMs)} · gpu ${formatOptionalMs(diagnostics?.gpuMs)} · total cpu ${formatOptionalMs(diagnostics?.renderTotalCpuMs)} · gap ${formatOptionalMs(diagnostics?.frameGapMs)}`,
+            `postfx resources: textures ${formatBytes(diagnostics?.resources?.groupTotals?.textures)} · attachments ${formatBytes(diagnostics?.resources?.groupTotals?.attachments)} · total ${formatBytes(diagnostics?.resources?.totalBytes ?? diagnostics?.textureBytes)}`,
+            `renderer bytes: canvas ${formatBytes(diagnostics?.unifiedResources?.canvasBytes)} + gpu ${formatBytes(diagnostics?.unifiedResources?.gpuBytes)} = ${formatBytes(diagnostics?.unifiedResources?.totalBytes)}/${formatBytes(diagnostics?.unifiedResources?.budgetBytes)}`,
+            feed ? `postfx feed: mask ${formatPixels(feed.maskPixels)} px · rebuild ${feed.maskRebuilds} reuse ${feed.maskReuses} · ${feed.maskLastReason} ${formatOptionalMs(feed.maskLastRepaintMs)}` : null,
+        ];
+    }
+
+    _trailRows(renderer) {
+        const trails = renderer?.trailRenderer?.getDiagnostics?.() || null;
+        if (!trails) return [];
+        const motion = trails.cameraMotion?.[trails.cameraMotionMode] || null;
+        const averageDraw = motion?.frames > 0 ? motion.drawTimeMs / motion.frames : null;
+        const averageRepaint = motion?.repaintCount > 0 ? motion.repaintTimeMs / motion.repaintCount : null;
+        return [
+            `trails: ${trails.renderPolicy?.historicalMode || 'n/a'} · cache ${trails.cacheSpace || 'none'} ${formatPixels(trails.highWaterCachePixels)} px · samples ${trails.totalSamples}/${trails.globalLimit}`,
+            `trails camera: ${trails.cameraMotionMode || 'n/a'} · draw avg ${formatOptionalMs(averageDraw)} · repaint ${motion?.repaintCount || 0} avg ${formatOptionalMs(averageRepaint)}`,
+            `trails semantic: selected ${trails.selectedOverlayDraws || 0} · action ${trails.actionOverlayDraws || 0} · oversized ${trails.oversizedCacheFallbacks || 0}`,
         ];
     }
 

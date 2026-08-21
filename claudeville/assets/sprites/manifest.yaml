@@ -2,6 +2,47 @@ style:
   assetVersion: "2026-07-25-gate-inscription-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
+# Optional semantic channels. Canvas mode keeps loading the original albedo
+# paths; GPU consumers opt into this contract and use deterministic defaults
+# whenever an individual sidecar is absent.
+materialContract:
+  version: 1
+  sampling: nearest
+  keyLight: warm-upper-left
+  responseBands: [0.72, 0.86, 1.0, 1.12]
+  channels: [albedo, material, emissive, occluder]
+
+atlases:
+  - id: world-pilot
+    maxWidth: 2048
+    padding: 2
+    powerOfTwo: true
+    metadata: assets/sprites/atlases/world-pilot.json
+    channels:
+      albedo: assets/sprites/atlases/world-pilot.albedo.png
+      material: assets/sprites/atlases/world-pilot.material.png
+      emissive: assets/sprites/atlases/world-pilot.emissive.png
+      occluder: assets/sprites/atlases/world-pilot.occluder.png
+    ids:
+      - agent.claude.opus
+      - agent.codex.gpt56sol
+      - building.command
+      - building.watchtower
+      - building.harbor
+      - building.observatory
+      - building.portal
+      - building.forge
+      - building.mine
+      - building.taskboard
+      - building.archive
+      - prop.lantern
+      - prop.runeBrazier
+      - terrain.shore-shallow
+      - terrain.shallow-deep
+      - atmosphere.light.lighthouse-beam
+      - atmosphere.light.fire-glow
+      - atmosphere.light.lantern-glow
+
 # ─── CHARACTERS ──────────────────────────────────────────────────────────────
 # Character sheets are 8 direction columns by 10 animation rows:
 # 6 walk rows followed by 4 breathing-idle rows, with 92px square cells.
@@ -46,6 +87,14 @@ characters:
     paletteSource: { robe: ['#1b1b32', '#2f3251'], pants: '#eee4c1', trim: '#ab8a81' }
     anchor: [46, 80]
     mode: pro
+    materialClass: fabric
+    atlasFrame: { atlas: world-pilot, keyPrefix: agent.claude.opus }
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0.45
+      sources:
+        - { id: emissive.agent.claude.opus.crystal, kind: rune, geometry: sidecar-required, strength: 0.45 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.claude.sonnet
     tool: create_character
@@ -128,6 +177,14 @@ characters:
     paletteSource: { robe: '#2d2f41' }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    atlasFrame: { atlas: world-pilot, keyPrefix: agent.codex.gpt56sol }
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0.7
+      sources:
+        - { id: emissive.agent.codex.gpt56sol.reactor, kind: rune, geometry: sidecar-required, strength: 0.7 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt56terra
     tool: create_character
@@ -453,6 +510,15 @@ buildings:
     width: 312
     height: 208
     anchor: [156, 182]
+    materialClass: stone
+    atlasFrame: { atlas: world-pilot, key: building.command }
+    elevation: { base: 0, top: 208, unit: sprite-px }
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.command.windows, kind: windows, geometry: registry.windowRects, strength: 0.72 }
+        - { id: emissive.command.watchfire, kind: fire, geometry: layer.watchfire, strength: 1 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 130 }
     splitForOcclusion: true
     horizonY: 130
     # 0.1 (visual-quality plan): the banner layer was a block-cube mis-generation
@@ -465,6 +531,12 @@ buildings:
         size: 64
         anchor: [40, 52]
         animation: pulse
+        materialClass: fire
+        emissive:
+          strength: 1
+          sources:
+            - { id: emissive.command.watchfire, kind: fire, geometry: authored-albedo, strength: 1 }
+        occluder: { mode: alpha-silhouette, strength: 0.65 }
     emitters:
       torch: [64, 28]
       torch2: [176, 28]
@@ -488,6 +560,15 @@ buildings:
     width: 288
     height: 384
     anchor: [144, 320]
+    materialClass: stone
+    atlasFrame: { atlas: world-pilot, key: building.watchtower }
+    elevation: { base: 0, top: 384, unit: sprite-px }
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.watchtower.windows, kind: windows, geometry: registry.windowRects, strength: 0.68 }
+        - { id: emissive.watchtower.beacon, kind: fire, geometry: layer.beacon, strength: 1 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 300 }
     splitForOcclusion: true
     horizonY: 300
     layers:
@@ -497,6 +578,12 @@ buildings:
         size: 64
         anchor: [144, 68]
         animation: pulse
+        materialClass: fire
+        emissive:
+          strength: 1
+          sources:
+            - { id: emissive.watchtower.beacon, kind: fire, geometry: authored-albedo, strength: 1 }
+        occluder: { mode: alpha-silhouette, strength: 0.35 }
     emitters:
       torch: [144, 68]
     # Phase 2.5.5: light-reflection compositing reads these to additively
@@ -513,6 +600,15 @@ buildings:
     width: 352
     height: 224
     anchor: [176, 196]
+    materialClass: timber
+    atlasFrame: { atlas: world-pilot, key: building.harbor }
+    elevation: { base: 0, top: 224, unit: sprite-px }
+    emissive:
+      strength: 0.82
+      sources:
+        - { id: emissive.harbor.windows, kind: windows, geometry: registry.windowRects, strength: 0.66 }
+        - { id: emissive.harbor.lantern, kind: lantern, geometry: lightSource, strength: 0.82 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 142 }
     splitForOcclusion: true
     horizonY: 142
     emitters:
@@ -532,6 +628,15 @@ buildings:
     width: 256
     height: 288
     anchor: [128, 252]
+    materialClass: stone
+    atlasFrame: { atlas: world-pilot, key: building.observatory }
+    elevation: { base: 0, top: 288, unit: sprite-px }
+    emissive:
+      strength: 0.78
+      sources:
+        - { id: emissive.observatory.windows, kind: windows, geometry: registry.windowRects, strength: 0.62 }
+        - { id: emissive.observatory.dome, kind: rune, geometry: registry.effectAnchors.domeAperture, strength: 0.78 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 235 }
     structureMask:
       siteColorCutout: { family: grass, fromY: 205 }
       shapes:
@@ -554,6 +659,14 @@ buildings:
     width: 312
     height: 208
     anchor: [156, 182]
+    materialClass: glass-rune
+    atlasFrame: { atlas: world-pilot, key: building.portal }
+    elevation: { base: 0, top: 208, unit: sprite-px }
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.portal.vortex, kind: rune, geometry: layer.portalGlow, strength: 1 }
+    occluder: { mode: alpha-silhouette, strength: 0.92, horizonY: 130 }
     splitForOcclusion: true
     horizonY: 130
     layers:
@@ -563,6 +676,12 @@ buildings:
         size: 64
         anchor: [144, 60]
         animation: pulse
+        materialClass: glass-rune
+        emissive:
+          strength: 1
+          sources:
+            - { id: emissive.portal.vortex, kind: rune, geometry: authored-albedo, strength: 1 }
+        occluder: { mode: none, strength: 0 }
     emitters:
       sparkle: [144, 60]
       sparkle2: [120, 80]
@@ -579,6 +698,14 @@ buildings:
     width: 256
     height: 232
     anchor: [128, 203]
+    materialClass: stone
+    atlasFrame: { atlas: world-pilot, key: building.forge }
+    elevation: { base: 0, top: 232, unit: sprite-px }
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.forge.furnace, kind: fire, geometry: registry.windowRects, strength: 1 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
     structureMask:
       siteColorCutout:
         family: grass-and-retaining
@@ -610,6 +737,15 @@ buildings:
     width: 256
     height: 232
     anchor: [128, 203]
+    materialClass: stone
+    atlasFrame: { atlas: world-pilot, key: building.mine }
+    elevation: { base: 0, top: 232, unit: sprite-px }
+    emissive:
+      strength: 0.82
+      sources:
+        - { id: emissive.mine.cave, kind: lantern, geometry: lightSource, strength: 0.82 }
+        - { id: emissive.mine.crystals, kind: rune, geometry: emitters.sparkle, strength: 0.62 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
     structureMask:
       siteColorCutout: { family: grass-and-retaining, fromY: 135, lipFromY: 175 }
       shapes:
@@ -632,6 +768,14 @@ buildings:
     width: 256
     height: 232
     anchor: [128, 203]
+    materialClass: timber
+    atlasFrame: { atlas: world-pilot, key: building.taskboard }
+    elevation: { base: 0, top: 232, unit: sprite-px }
+    emissive:
+      strength: 0.76
+      sources:
+        - { id: emissive.taskboard.lanterns, kind: lantern, geometry: registry.windowRects, strength: 0.76 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 150 }
     structureMask:
       siteColorCutout: { family: grass, fromY: 132 }
       shapes:
@@ -659,6 +803,15 @@ buildings:
     width: 336
     height: 224
     anchor: [168, 196]
+    materialClass: stone
+    atlasFrame: { atlas: world-pilot, key: building.archive }
+    elevation: { base: 0, top: 224, unit: sprite-px }
+    emissive:
+      strength: 0.74
+      sources:
+        - { id: emissive.archive.windows, kind: windows, geometry: registry.windowRects, strength: 0.68 }
+        - { id: emissive.archive.door-spill, kind: lantern, geometry: lightSource, strength: 0.74 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 145 }
     splitForOcclusion: true
     horizonY: 145
     structureMask:
@@ -685,6 +838,14 @@ props:
     prompt: "iron street lantern on post, warm amber candlelight glow, isometric"
     size: 32
     anchor: [16, 28]
+    materialClass: metal
+    atlasFrame: { atlas: world-pilot, key: prop.lantern }
+    elevation: { base: 0, top: 28, unit: sprite-px }
+    emissive:
+      strength: 0.9
+      sources:
+        - { id: emissive.prop.lantern.flame, kind: lantern, geometry: authored-albedo, strength: 0.9 }
+    occluder: { mode: alpha-silhouette, strength: 0.85 }
 
   - id: prop.villageGate
     tool: map_object
@@ -846,6 +1007,14 @@ props:
     prompt: "ancient stone rune brazier, blue-gold magical flame, carved dragon feet, heroic fantasy RPG prop, transparent background only, isolated sprite, no ground tile, no square base, no platform, no baked shadow, empty transparent corners"
     size: 48
     anchor: [24, 38]
+    materialClass: fire
+    atlasFrame: { atlas: world-pilot, key: prop.runeBrazier }
+    elevation: { base: 0, top: 38, unit: sprite-px }
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.prop.runeBrazier.flame, kind: fire, geometry: authored-albedo, strength: 1 }
+    occluder: { mode: alpha-silhouette, strength: 0.72 }
 
   - id: prop.fishSchoolTeal
     tool: isometric_tile
@@ -1201,12 +1370,22 @@ terrain:
     lower: "pale limestone harbor shore, glossy wet sand band, pebbles, broken sea foam lace"
     upper: "clear turquoise shallow harbor water, sunlit sandy bed visible through ripple highlights, small baked wavelets"
     size: 32
+    materialClass: water
+    atlasFrame: { atlas: world-pilot, keyPrefix: terrain.shore-shallow }
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
 
   - id: terrain.shallow-deep
     tool: tileset
     lower: "clear turquoise shallow harbor water, foam flecks and sunlit ripple highlights over a sandy bed"
     upper: "deep cobalt open sea water, darker current streaks, subtle wave-crest glints, painterly depth"
     size: 32
+    materialClass: water
+    atlasFrame: { atlas: world-pilot, keyPrefix: terrain.shallow-deep }
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
 
   - id: terrain.cobble-square
     tool: tileset
@@ -1223,16 +1402,37 @@ atmosphere:
     tool: isometric_tile
     prompt: "warm golden light reflection on water, soft shimmering caustics, transparent background"
     size: 64
+    materialClass: fire
+    atlasFrame: { atlas: world-pilot, key: atmosphere.light.lighthouse-beam }
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.atmosphere.lighthouse-beam, kind: beacon, geometry: authored-albedo, strength: 1 }
+    occluder: { mode: none, strength: 0 }
 
   - id: atmosphere.light.fire-glow
     tool: isometric_tile
     prompt: "orange-amber fire glow on ground, flickering radiant light pool, transparent background"
     size: 64
+    materialClass: fire
+    atlasFrame: { atlas: world-pilot, key: atmosphere.light.fire-glow }
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.atmosphere.fire-glow, kind: fire, geometry: authored-albedo, strength: 1 }
+    occluder: { mode: none, strength: 0 }
 
   - id: atmosphere.light.lantern-glow
     tool: isometric_tile
     prompt: "soft warm lantern light pool on stone, gentle amber halo, transparent background"
     size: 64
+    materialClass: fire
+    atlasFrame: { atlas: world-pilot, key: atmosphere.light.lantern-glow }
+    emissive:
+      strength: 1
+      sources:
+        - { id: emissive.atmosphere.lantern-glow, kind: lantern, geometry: authored-albedo, strength: 1 }
+    occluder: { mode: none, strength: 0 }
 
   - id: atmosphere.cloud.cumulus
     tool: map_object

@@ -26,7 +26,7 @@
                 <span class="topbar__logo">ClaudeVille</span>
                 <div class="topbar__meta">
                     <span id="topbarConnection" class="topbar__conn topbar__conn--connected">LIVE</span>
-                    <span class="topbar__version" tabindex="0" role="button">v0.32</span>
+                    <span class="topbar__version" tabindex="0" role="button">v0.33</span>
                     <span id="statFps" class="topbar__fps">-- FPS</span>
                     <span id="statQuotaWrap" class="topbar__quota-meta" hidden>
                         <span class="topbar__quota">
@@ -63,7 +63,7 @@
                     </span>
                 </div>
                 <span class="topbar__badge topbar__tag topbar__badge--errored" id="badgeErroredWrap" style="display:none"><span class="topbar__badge-glyph">!</span> <span id="badgeErrored">0</span> ERRORED</span>
-                <button class="topbar__badge topbar__tag topbar__badge--attention" id="badgeAttentionWrap" type="button" style="display:none" title="Jump to the longest-waiting agent (A)"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> ATTN</button>
+                <button class="topbar__badge topbar__tag topbar__badge--attention" id="badgeAttentionWrap" type="button" style="display:none" title="Jump to the longest-waiting agent (A)"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> NEEDS YOU</button>
             </div>
         </div>
         <div class="topbar__right">
@@ -86,6 +86,11 @@
                 <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                     <path fill="currentColor" fill-rule="evenodd" d="M6 2h4v1h2v1h1v1h2v2h1v2h-1v2h-2v1h-1v1h-2v1H6v-1H4v-1H3v-1H1V9H0V7h1V6h2V5h1V4h2V2Zm0 4v6h4V6H6Z"/>
                     <path fill="currentColor" d="M7 7h2v4H7V7Z"/>
+                </svg>
+            </button>
+            <button id="topbarWorldControls" class="topbar__sound-btn topbar__icon-btn topbar__icon-btn--action" type="button" popovertarget="worldGrammar" aria-label="Open World controls" title="World controls and keyboard shortcuts">
+                <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                    <path fill="currentColor" d="M6 1h4v3h3v2h2v4h-2v2h-3v3H6v-3H3v-2H1V6h2V4h3V1Zm1 2v3H4v4h3v3h2v-3h3V6H9V3H7Zm0 4h2v2H7V7Z"/>
                 </svg>
             </button>
             <button id="topbarSoundMode" class="topbar__sound-btn" type="button" aria-pressed="false" title="Reactive ambience mode — click for continuous town music" hidden>AMBIENT</button>
@@ -131,10 +136,19 @@
                     <canvas id="worldCanvas" class="content__canvas"></canvas>
                     <canvas id="worldFxCanvas" class="content__canvas" aria-hidden="true"></canvas>
                     <canvas id="worldOverlayCanvas" class="content__canvas" aria-hidden="true"></canvas>
+                    <div id="worldGrammar" class="world-grammar" popover>
+                        <div class="world-grammar__header">
+                            <span>WORLD CONTROLS</span>
+                            <button class="world-grammar__close" type="button" popovertarget="worldGrammar" popovertargetaction="hide" aria-label="Close World controls">×</button>
+                        </div>
+                        <div class="world-grammar__body"><b>A</b> attention cycle · <b>F</b> frame village · <b>drag / arrows</b> pan · <b>wheel / +/-</b> zoom · <b>R</b> replay · <b>click agent</b> follow · <b>Esc</b> clear</div>
+                    </div>
+                    <div id="worldSemanticSummary" class="world-semantic-summary" role="status" aria-live="polite"></div>
                 </div>
 
                 <!-- Dashboard mode -->
                 <div id="dashboardMode" class="content__dashboard" style="display: none;">
+                    <section id="dashboardAttentionQueue" class="dashboard-attention" aria-label="Cross-project attention queue" hidden></section>
                     <div id="dashboardGrid" class="dashboard__grid">
                         <!-- Agent cards are added dynamically -->
                     </div>
@@ -199,9 +213,9 @@
                             <span id="panelContextSize" class="activity-panel__token-value">-</span>
                         </div>
                         <div class="activity-panel__context-bar-wrap">
-                            <div id="panelContextBar" class="activity-panel__context-bar" style="width: 0%"></div>
+                            <div id="panelContextBar" class="activity-panel__context-bar"></div>
                         </div>
-                        <div class="activity-panel__token-grid">
+                        <div id="panelTokenGrid" class="activity-panel__token-grid">
                             <div class="activity-panel__token-cell">
                                 <span class="activity-panel__token-cell-label">Input</span>
                                 <span id="panelInputTokens" class="activity-panel__token-cell-value">0</span>
@@ -227,7 +241,8 @@
                                 <span id="panelTurnCount" class="activity-panel__token-cell-value">0</span>
                             </div>
                         </div>
-                        <div class="activity-panel__token-row">
+                        <div id="panelNoUsage" class="activity-panel__no-usage" hidden>No usage data</div>
+                        <div id="panelCostRow" class="activity-panel__token-row">
                             <span class="activity-panel__token-label">Est. Cost</span>
                             <span id="panelEstCost" class="activity-panel__token-value activity-panel__token-value--cost">$0.00</span>
                         </div>

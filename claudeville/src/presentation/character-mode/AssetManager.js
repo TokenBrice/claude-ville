@@ -1,12 +1,24 @@
 // AssetManager loads sprites declared in manifest.yaml, decodes them into
 // HTMLImageElements plus interaction-only alpha masks/outlines, and exposes lookup by id.
 
+import {
+    MATERIAL_CHANNELS,
+    companionPathFor,
+    materialDebugDescriptor,
+    normalizeAtlasFrame,
+    normalizeMaterialMetadata,
+} from './MaterialRegistry.js';
+
 const PLACEHOLDER_PATH = 'assets/sprites/_placeholder/checker-64.png';
 const OUTLINE_COLOR = '#f2d36b';
 const ALPHA_THRESHOLD = 16;
 
 export class AssetManager {
-    constructor(manifestPath = 'assets/sprites/manifest.yaml') {
+    constructor(manifestPath = 'assets/sprites/manifest.yaml', options = {}) {
+        if (manifestPath && typeof manifestPath === 'object') {
+            options = manifestPath;
+            manifestPath = options.manifestPath || 'assets/sprites/manifest.yaml';
+        }
         this.manifestPath = manifestPath;
         this.manifest = null;          // parsed YAML root
         this.palettes = null;
@@ -15,6 +27,11 @@ export class AssetManager {
         this.dimensions = new Map();   // id → { w, h }
         this.anchors = new Map();      // id → [cx, cy] in sprite-local px
         this.outlines = new Map();     // interactive id → HTMLCanvasElement (1-px gold edge)
+        this.companions = new Map(MATERIAL_CHANNELS
+            .filter((channel) => channel !== 'albedo')
+            .map((channel) => [channel, new Map()]));
+        this.atlasImages = new Map();  // `${atlasId}:${channel}` → HTMLImageElement
+        this.atlasMetadata = new Map();// atlas id → deterministic metadata JSON
         this._entriesCache = null;
         this._entryById = new Map();
         this.assetVersion = null;
@@ -25,12 +42,17 @@ export class AssetManager {
         // flushed as one summary warn when load() resolves.
         this._loadMisses = [];
         this._decodedLoaded = false;
+        this._materialAssetsEnabled = options.materialAssets === true;
+        this._materialDecodedLoaded = false;
         this._suspended = false;
         this._loadPromise = null;
         this._loadController = null;
+        this._materialLoadPromise = null;
+        this._materialLoadController = null;
         this._loadGeneration = 0;
         this._decodePasses = 0;
         this._disposed = false;
+        this._optionalLoadMisses = [];
     }
 
     load({ signal = null } = {}) {
@@ -55,14 +77,21 @@ export class AssetManager {
         if (this._disposed) return;
         this._suspended = true;
         this._decodedLoaded = false;
+        this._materialDecodedLoaded = false;
         this._loadGeneration++;
         this._loadController?.abort?.();
+        this._materialLoadController?.abort?.();
         this._releaseDecodedEntries();
     }
 
     _ensureDecoded({ signal = null, loadManifest = false } = {}) {
         if (this._disposed || this._suspended) return Promise.resolve(false);
-        if (this._decodedLoaded) return Promise.resolve(true);
+        if (this._decodedLoaded) {
+            if (this._materialAssetsEnabled && !this._materialDecodedLoaded) {
+                return this._ensureMaterialDecoded({ signal });
+            }
+            return Promise.resolve(true);
+        }
         if (this._loadPromise) {
             if (!this._loadController?.signal?.aborted) return this._loadPromise;
             const previous = this._loadPromise;
@@ -123,7 +152,7 @@ export class AssetManager {
             this.assetVersion = this.manifest?.style?.assetVersion || null;
             const entries = this._flattenManifest(this.manifest);
             this._entriesCache = entries;
-            this._entryById = new Map(entries.map((entry) => [entry.id, entry]));
+            this._entryById = this._indexManifestEntries(entries);
         }
 
         const entries = this._entriesCache || [];
@@ -131,6 +160,11 @@ export class AssetManager {
         this._loadMisses = [];
         await Promise.all(entries.map(entry => this._loadEntry(entry, { signal, generation })));
         if (!this._canCommitLoad(signal, generation)) return false;
+
+        if (this._materialAssetsEnabled) {
+            await this._decodeMaterialAssets({ signal, generation });
+            if (!this._canCommitLoad(signal, generation)) return false;
+        }
 
         this._decodedLoaded = true;
         this._decodePasses++;
@@ -141,6 +175,41 @@ export class AssetManager {
             );
         }
         return true;
+    }
+
+    async loadMaterialAssets({ signal = null } = {}) {
+        if (this._disposed || this._suspended) return false;
+        this._materialAssetsEnabled = true;
+        const decoded = await this._ensureDecoded({ signal, loadManifest: !this.manifest });
+        if (!decoded) return false;
+        if (this._materialDecodedLoaded) return true;
+        return this._ensureMaterialDecoded({ signal });
+    }
+
+    _ensureMaterialDecoded({ signal = null } = {}) {
+        if (this._disposed || this._suspended || !this._materialAssetsEnabled) return Promise.resolve(false);
+        if (this._materialDecodedLoaded) return Promise.resolve(true);
+        if (this._materialLoadPromise) return this._materialLoadPromise;
+
+        const controller = new AbortController();
+        const generation = this._loadGeneration;
+        const forwardAbort = () => controller.abort(signal?.reason);
+        if (signal?.aborted) forwardAbort();
+        else signal?.addEventListener?.('abort', forwardAbort, { once: true });
+        this._materialLoadController = controller;
+        const operation = this._decodeMaterialAssets({
+            signal: controller.signal,
+            generation,
+        }).then(() => this._canCommitLoad(controller.signal, generation));
+        const wrapped = operation.finally(() => {
+            signal?.removeEventListener?.('abort', forwardAbort);
+            if (this._materialLoadPromise === wrapped) {
+                this._materialLoadPromise = null;
+                this._materialLoadController = null;
+            }
+        });
+        this._materialLoadPromise = wrapped;
+        return wrapped;
     }
 
     _canCommitLoad(signal, generation) {
@@ -170,6 +239,31 @@ export class AssetManager {
         collect(root.bridges);
         collect(root.atmosphere);
         return out;
+    }
+
+    _indexManifestEntries(entries) {
+        const indexed = new Map(entries.map((entry) => [entry.id, entry]));
+        for (const entry of entries) {
+            if (!entry.id?.startsWith('building.') || !entry.layers) continue;
+            const parentAtlas = normalizeAtlasFrame(entry.atlasFrame);
+            for (const [name, layer] of Object.entries(entry.layers)) {
+                if (name === 'base') continue;
+                const id = `${entry.id}.${name}`;
+                indexed.set(id, {
+                    ...layer,
+                    id,
+                    assetPath: `assets/sprites/buildings/${entry.id}/${name}.png`,
+                    materialClass: layer.materialClass || entry.materialClass,
+                    elevation: layer.elevation || entry.elevation,
+                    occluder: layer.occluder || entry.occluder,
+                    atlasFrame: parentAtlas?.atlas
+                        ? { atlas: parentAtlas.atlas, key: id }
+                        : null,
+                    parentId: entry.id,
+                });
+            }
+        }
+        return indexed;
     }
 
     async _loadEntry(entry, { signal = null, generation = this._loadGeneration } = {}) {
@@ -249,6 +343,96 @@ export class AssetManager {
         });
     }
 
+    async _decodeMaterialAssets({ signal, generation }) {
+        this._releaseMaterialEntries();
+        this._optionalLoadMisses = [];
+        const entries = [...this._entryById.values()];
+        const sidecarLoads = [];
+        for (const entry of entries) {
+            for (const channel of MATERIAL_CHANNELS) {
+                if (channel === 'albedo') continue;
+                const path = companionPathFor(entry, channel, this._pathFor(entry));
+                if (!path) continue;
+                sidecarLoads.push(this._loadCompanion(entry, channel, path, { signal, generation }));
+            }
+        }
+        const atlasLoads = (this.manifest?.atlases || []).map((atlas) => (
+            this._loadAtlas(atlas, { signal, generation })
+        ));
+        await Promise.all([...sidecarLoads, ...atlasLoads]);
+        if (!this._canCommitLoad(signal, generation)) return false;
+        this._materialDecodedLoaded = true;
+        if (this._optionalLoadMisses.length > 0) {
+            console.warn(
+                `[AssetManager] skipped ${this._optionalLoadMisses.length} optional material assets:`,
+                this._optionalLoadMisses.map((miss) => `${miss.id}:${miss.channel}`),
+            );
+        }
+        return true;
+    }
+
+    async _loadCompanion(entry, channel, path, { signal, generation }) {
+        const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
+        if (!this._canCommitLoad(signal, generation)) return;
+        if (!ok || !img) {
+            this._optionalLoadMisses.push({ id: entry.id, channel, path, reason });
+            return;
+        }
+        const albedoDims = this.dimensions.get(entry.id);
+        if (albedoDims && (img.width !== albedoDims.w || img.height !== albedoDims.h)) {
+            this._optionalLoadMisses.push({
+                id: entry.id,
+                channel,
+                path,
+                reason: `dimension ${img.width}x${img.height} != ${albedoDims.w}x${albedoDims.h}`,
+            });
+            return;
+        }
+        this.companions.get(channel)?.set(entry.id, img);
+    }
+
+    async _loadAtlas(atlas, { signal, generation }) {
+        if (!atlas?.id || !atlas?.metadata || !atlas?.channels) return;
+        let metadata = null;
+        try {
+            const text = await this._fetchText(this._versionedPath(atlas.metadata), { signal });
+            metadata = JSON.parse(text);
+        } catch (err) {
+            if (signal?.aborted) return;
+            this._optionalLoadMisses.push({
+                id: atlas.id,
+                channel: 'metadata',
+                path: atlas.metadata,
+                reason: err.message,
+            });
+            return;
+        }
+        if (!this._canCommitLoad(signal, generation)) return;
+        this.atlasMetadata.set(atlas.id, metadata);
+        await Promise.all(Object.entries(atlas.channels).map(async ([channel, path]) => {
+            if (!MATERIAL_CHANNELS.includes(channel) || !path) return;
+            const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
+            if (!this._canCommitLoad(signal, generation)) return;
+            if (!ok || !img) {
+                this._optionalLoadMisses.push({ id: atlas.id, channel, path, reason });
+                return;
+            }
+            if (
+                Number(metadata.width) !== img.width
+                || Number(metadata.height) !== img.height
+            ) {
+                this._optionalLoadMisses.push({
+                    id: atlas.id,
+                    channel,
+                    path,
+                    reason: `dimension ${img.width}x${img.height} != metadata ${metadata.width}x${metadata.height}`,
+                });
+                return;
+            }
+            this.atlasImages.set(`${atlas.id}:${channel}`, img);
+        }));
+    }
+
     _pathFor(entry) {
         if (entry.assetPath) return entry.assetPath;
         // Deterministic path mapping by id prefix.
@@ -263,6 +447,34 @@ export class AssetManager {
         if (entry.id.startsWith('bridge.') || entry.id.startsWith('dock.')) return `assets/sprites/bridges/${entry.id}.png`;
         if (entry.id.startsWith('atmosphere.')) return `assets/sprites/atmosphere/${entry.id}.png`;
         return PLACEHOLDER_PATH;
+    }
+
+    _loadOptionalImage(path, { signal = null } = {}) {
+        return new Promise((resolve) => {
+            const img = new Image();
+            let settled = false;
+            const cleanup = () => signal?.removeEventListener?.('abort', abort);
+            const finish = (value) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                resolve(value);
+            };
+            const abort = () => {
+                img.onload = null;
+                img.onerror = null;
+                img.src = '';
+                finish({ img: null, ok: false, reason: 'aborted' });
+            };
+            if (signal?.aborted) {
+                abort();
+                return;
+            }
+            signal?.addEventListener?.('abort', abort, { once: true });
+            img.onload = () => finish({ img, ok: true, reason: null });
+            img.onerror = () => finish({ img: null, ok: false, reason: 'load failed' });
+            img.src = this._versionedPath(path);
+        });
     }
 
     // Resolves with { img, ok } where ok=false means the real PNG failed and
@@ -479,17 +691,102 @@ export class AssetManager {
     getEntry(id) {
         return this._entryById.get(id);
     }
+    getCompanion(id, channel) {
+        return this.companions.get(channel)?.get(id) || null;
+    }
+    // Compatibility name used by GPU scene builders; companion channels are
+    // the same optional sidecar images and still never use checker fallback.
+    getSidecar(id, channel) {
+        return this.getCompanion(id, channel);
+    }
+    getMaterialSidecar(id, channel = 'material') {
+        return this.getCompanion(id, channel);
+    }
+    getMaterialChannels(id) {
+        const atlasFrame = normalizeAtlasFrame(this.getEntry(id)?.atlasFrame);
+        return Object.fromEntries(MATERIAL_CHANNELS.map((channel) => [
+            channel,
+            channel === 'albedo'
+                ? this.get(id) || null
+                : this.getCompanion(id, channel)
+                    || (atlasFrame?.atlas ? this.getAtlas(atlasFrame.atlas, channel) : null),
+        ]));
+    }
+    getMaterialMetadata(id) {
+        const entry = this.getEntry(id) || { id };
+        return normalizeMaterialMetadata(entry);
+    }
+    getAtlas(atlasId, channel = 'albedo') {
+        return this.atlasImages.get(`${atlasId}:${channel}`) || null;
+    }
+    getAtlasChannels(atlasId) {
+        return Object.fromEntries(MATERIAL_CHANNELS.map((channel) => [
+            channel,
+            this.getAtlas(atlasId, channel),
+        ]));
+    }
+    getAtlasMetadata(atlasId) {
+        return this.atlasMetadata.get(atlasId) || null;
+    }
+    getAtlasFrame(id, frameKey = null) {
+        const entry = this.getEntry(id);
+        const declaration = normalizeAtlasFrame(entry?.atlasFrame);
+        if (!declaration?.atlas) return null;
+        const metadata = this.getAtlasMetadata(declaration.atlas);
+        if (!metadata?.frames) return null;
+        const key = frameKey
+            ? `${declaration.keyPrefix || declaration.key || id}/${frameKey}`
+            : declaration.key || id;
+        const frame = metadata.frames[key];
+        if (!frame) return null;
+        return {
+            atlas: declaration.atlas,
+            key,
+            ...frame,
+        };
+    }
+    materialDebugSnapshot() {
+        const assets = [];
+        for (const entry of this._entryById.values()) {
+            if (!entry?.materialClass && !entry?.atlasFrame) continue;
+            const atlasFrame = normalizeAtlasFrame(entry.atlasFrame);
+            const available = Object.fromEntries(MATERIAL_CHANNELS
+                .filter((channel) => channel !== 'albedo')
+                .map((channel) => [channel, Boolean(
+                    this.getCompanion(entry.id, channel)
+                    || (atlasFrame?.atlas && this.getAtlas(atlasFrame.atlas, channel)),
+                )]));
+            assets.push(materialDebugDescriptor(entry, available));
+        }
+        return {
+            enabled: this._materialAssetsEnabled,
+            decodedLoaded: this._materialDecodedLoaded,
+            atlases: [...this.atlasMetadata.keys()].sort(),
+            optionalMisses: [...this._optionalLoadMisses],
+            assets,
+        };
+    }
 
     cacheStats() {
         let bitmapPixels = 0;
         let maskBytes = 0;
         let outlinePixels = 0;
+        let companionPixels = 0;
+        let atlasPixels = 0;
         for (const bitmap of this.bitmaps.values()) {
             bitmapPixels += Math.max(0, Number(bitmap?.width) || 0) * Math.max(0, Number(bitmap?.height) || 0);
         }
         for (const mask of this.alphaMasks.values()) maskBytes += mask?.byteLength || 0;
         for (const outline of this.outlines.values()) {
             outlinePixels += Math.max(0, Number(outline?.width) || 0) * Math.max(0, Number(outline?.height) || 0);
+        }
+        for (const channel of this.companions.values()) {
+            for (const image of channel.values()) {
+                companionPixels += Math.max(0, Number(image?.width) || 0) * Math.max(0, Number(image?.height) || 0);
+            }
+        }
+        for (const image of this.atlasImages.values()) {
+            atlasPixels += Math.max(0, Number(image?.width) || 0) * Math.max(0, Number(image?.height) || 0);
         }
         return {
             bitmaps: this.bitmaps.size,
@@ -498,8 +795,17 @@ export class AssetManager {
             maskBytes,
             outlines: this.outlines.size,
             outlinePixels,
+            companions: [...this.companions.values()].reduce((sum, channel) => sum + channel.size, 0),
+            companionPixels,
+            atlasImages: this.atlasImages.size,
+            atlasPixels,
+            atlasMetadata: this.atlasMetadata.size,
+            materialTextureBytes: (companionPixels + atlasPixels) * 4,
             missing: this.missing.size,
+            optionalMissing: this._optionalLoadMisses.length,
             decodedLoaded: this._decodedLoaded,
+            materialAssetsEnabled: this._materialAssetsEnabled,
+            materialDecodedLoaded: this._materialDecodedLoaded,
             suspended: this._suspended,
             loadInFlight: this._loadPromise !== null,
             decodePasses: this._decodePasses,
@@ -531,6 +837,31 @@ export class AssetManager {
         this.outlines.clear();
         this.missing.clear();
         this._loadMisses.length = 0;
+        this._releaseMaterialEntries();
+    }
+
+    _releaseMaterialEntries() {
+        for (const channel of this.companions.values()) {
+            for (const image of channel.values()) this._releaseImage(image);
+            channel.clear();
+        }
+        for (const image of this.atlasImages.values()) this._releaseImage(image);
+        this.atlasImages.clear();
+        this.atlasMetadata.clear();
+        this._optionalLoadMisses.length = 0;
+        this._materialDecodedLoaded = false;
+    }
+
+    _releaseImage(image) {
+        if (typeof image?.close === 'function') {
+            try { image.close(); } catch { /* best-effort ImageBitmap release */ }
+        } else if (
+            typeof HTMLCanvasElement !== 'undefined'
+            && image instanceof HTMLCanvasElement
+        ) {
+            image.width = 0;
+            image.height = 0;
+        }
     }
 
     dispose() {
@@ -540,11 +871,13 @@ export class AssetManager {
         this._decodedLoaded = false;
         this._loadGeneration++;
         this._loadController?.abort?.();
+        this._materialLoadController?.abort?.();
         this._releaseDecodedEntries();
         this._entryById.clear();
         this._entriesCache = null;
         this.manifest = null;
         this.palettes = null;
         this.assetVersion = null;
+        this._materialAssetsEnabled = false;
     }
 }

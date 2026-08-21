@@ -1,4 +1,9 @@
 import { createPostFxLadder, POST_FX_LEVELS } from './PostFxLadder.js';
+import {
+    canvasPixelCount,
+    gpuResourceAccounting,
+    unifiedRendererResourceAccounting,
+} from '../CanvasBudget.js';
 
 const MAX_LIGHTS = 48;
 const MAX_HAZE_ANCHORS = 8;
@@ -352,6 +357,12 @@ function setEma(previous, sample) {
     return previous === null ? value : previous + (value - previous) * EMA_ALPHA;
 }
 
+function timingNow() {
+    return typeof performance !== 'undefined' && typeof performance.now === 'function'
+        ? performance.now()
+        : Date.now();
+}
+
 class PostFxInstance {
     constructor(canvas, enabled) {
         this.canvas = canvas;
@@ -359,14 +370,26 @@ class PostFxInstance {
         this.supported = false;
         this.contextHealthy = false;
         this.disposed = false;
+        this.suspended = false;
         this.width = Math.max(1, Math.floor(canvas?.width || 1));
         this.height = Math.max(1, Math.floor(canvas?.height || 1));
         this.frames = 0;
         this.lightCount = 0;
         this.uploadMs = null;
+        this.maskUploadMs = null;
+        this.setupCpuMs = null;
+        this.shaderCpuMs = null;
+        // Backward-compatible alias for diagnostics consumers. It now means
+        // shader-command CPU only; setup and full-frame upload stay separate.
         this.cpuMs = null;
         this.gpuMs = null;
+        this.frameGapMs = 0;
+        this.renderTotalCpuMs = null;
         this.textureBytes = 0;
+        this.resourceBytes = gpuResourceAccounting();
+        this.sourceCanvasPixels = 0;
+        this.unifiedResources = unifiedRendererResourceAccounting();
+        this._frameMaskUploadMs = 0;
         this.pendingGpuQueries = [];
         this.timerExtension = null;
         this.ladder = createPostFxLadder();
@@ -386,13 +409,18 @@ class PostFxInstance {
         this._onContextLost = event => {
             event.preventDefault();
             this.contextHealthy = false;
+            this._abandonGpuResources();
         };
         this._onContextRestored = () => {
             if (this.disposed) return;
+            if (this.suspended) {
+                this.contextHealthy = true;
+                return;
+            }
             try {
                 this._initResources();
-                this.resize(this.width, this.height);
                 this.contextHealthy = true;
+                this.resize(this.width, this.height);
             } catch {
                 this.contextHealthy = false;
             }
@@ -406,6 +434,8 @@ class PostFxInstance {
                 alpha: true,
                 premultipliedAlpha: true,
                 antialias: false,
+                depth: false,
+                stencil: false,
                 preserveDrawingBuffer: false,
             });
             if (!this.gl) {
@@ -508,6 +538,10 @@ class PostFxInstance {
     _releaseGpuResources() {
         const gl = this.gl;
         if (!gl) return;
+        if (gl.isContextLost?.()) {
+            this._abandonGpuResources();
+            return;
+        }
         this._releaseTarget(this.sceneTarget);
         this._releaseTarget(this.bloomA);
         this._releaseTarget(this.bloomB);
@@ -528,13 +562,45 @@ class PostFxInstance {
         this.vao = null;
     }
 
+    _abandonGpuResources() {
+        this.sceneTarget = null;
+        this.bloomA = null;
+        this.bloomB = null;
+        this.sourceTexture = null;
+        this.waterMaskTexture = null;
+        this.mainProgram = null;
+        this.bloomProgram = null;
+        this.compositeProgram = null;
+        this.vao = null;
+        this.pendingGpuQueries.length = 0;
+        this.timerExtension = null;
+        this.textureBytes = 0;
+        this.resourceBytes = gpuResourceAccounting();
+        this.unifiedResources = unifiedRendererResourceAccounting({
+            visibleCanvasPixels: this.sourceCanvasPixels,
+            gpu: this.resourceBytes,
+        });
+    }
+
     _updateTextureBytes() {
         const targetBytes = target => target ? target.width * target.height * 4 : 0;
-        this.textureBytes = this.width * this.height * 4
-            + targetBytes(this.sceneTarget)
-            + targetBytes(this.bloomA)
-            + targetBytes(this.bloomB)
-            + this.maskWidth * this.maskHeight * 4;
+        this.resourceBytes = gpuResourceAccounting({
+            textures: {
+                source: this.sourceTexture ? this.width * this.height * 4 : 0,
+                waterMask: this.waterMaskTexture ? this.maskWidth * this.maskHeight * 4 : 0,
+            },
+            attachments: {
+                presentation: this.gl ? this.width * this.height * 4 : 0,
+                sceneColor: targetBytes(this.sceneTarget),
+                bloomA: targetBytes(this.bloomA),
+                bloomB: targetBytes(this.bloomB),
+            },
+        });
+        this.textureBytes = this.resourceBytes.totalBytes;
+        this.unifiedResources = unifiedRendererResourceAccounting({
+            visibleCanvasPixels: this.sourceCanvasPixels,
+            gpu: this.resourceBytes,
+        });
     }
 
     _ensureTargets(level) {
@@ -584,7 +650,7 @@ class PostFxInstance {
                 this.canvas.style.imageRendering = 'pixelated';
             }
         }
-        if (!this.gl || !this.contextHealthy) return;
+        if (!this.gl || !this.contextHealthy || this.suspended) return;
         const gl = this.gl;
         gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
         gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
@@ -594,7 +660,41 @@ class PostFxInstance {
 
     isActive() {
         return Boolean(this.enabled && this.supported && this.contextHealthy && !this.disposed
+            && !this.suspended
             && this.ladder.getLevel() < 3);
+    }
+
+    suspend() {
+        if (this.disposed || this.suspended) return;
+        this.suspended = true;
+        if (this.gl && !this.gl.isContextLost?.()) {
+            for (const query of this.pendingGpuQueries) this.gl.deleteQuery(query);
+        }
+        this.pendingGpuQueries.length = 0;
+        this._releaseGpuResources();
+        this.textureBytes = 0;
+        this.sourceCanvasPixels = 0;
+        this.resourceBytes = gpuResourceAccounting();
+        this.unifiedResources = unifiedRendererResourceAccounting({
+            visibleCanvasPixels: this.sourceCanvasPixels,
+            gpu: this.resourceBytes,
+        });
+    }
+
+    resume() {
+        if (this.disposed || !this.suspended || !this.gl) return this.isActive();
+        try {
+            this.suspended = false;
+            this._initResources();
+            this.contextHealthy = true;
+            this.resize(this.width, this.height);
+            return true;
+        } catch (error) {
+            this.suspended = true;
+            this.contextHealthy = false;
+            console.warn('[PostFx] resume failed; Canvas grade remains active:', error);
+            return false;
+        }
     }
 
     setEnabled(enabled) {
@@ -610,13 +710,13 @@ class PostFxInstance {
     _uploadSource(sourceCanvas) {
         const gl = this.gl;
         if (!sourceCanvas || !this.sourceTexture) return false;
-        const started = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+        const started = timingNow();
         gl.activeTexture(gl.TEXTURE0);
         gl.bindTexture(gl.TEXTURE_2D, this.sourceTexture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, sourceCanvas);
         gl.bindTexture(gl.TEXTURE_2D, null);
-        const ended = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+        const ended = timingNow();
         this.uploadMs = setEma(this.uploadMs, ended - started);
         return true;
     }
@@ -634,21 +734,22 @@ class PostFxInstance {
         // pose; the revision counter marks in-place repaints.
         const contentChanged = revision !== null && revision !== this.maskRevision;
         if (!storageChanged && !contentChanged) return true;
+        const started = timingNow();
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, this.waterMaskTexture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
         if (storageChanged) {
-            const previousMaskBytes = this.maskWidth * this.maskHeight * 4;
             gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
             this.maskCanvas = maskCanvas;
             this.maskWidth = width;
             this.maskHeight = height;
-            this.textureBytes += width * height * 4 - previousMaskBytes;
+            this._updateTextureBytes();
         } else {
             gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, maskCanvas);
         }
         this.maskRevision = revision;
         gl.bindTexture(gl.TEXTURE_2D, null);
+        this._frameMaskUploadMs += Math.max(0, timingNow() - started);
         return true;
     }
 
@@ -803,15 +904,26 @@ class PostFxInstance {
         if (!this.isActive() || !this.gl || !sourceCanvas) return false;
         const gl = this.gl;
         try {
+            const frameStart = timingNow();
+            const sourcePixels = canvasPixelCount(sourceCanvas);
+            if (sourcePixels !== this.sourceCanvasPixels) {
+                this.sourceCanvasPixels = sourcePixels;
+                this._updateTextureBytes();
+            }
+            this._frameMaskUploadMs = 0;
             this._pollGpuQueries();
             const level = this.ladder.getLevel();
             if (!this._uploadSource(sourceCanvas)) return false;
-            const cpuStart = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
+            const setupStart = timingNow();
             this._ensureTargets(level);
             if (level <= POST_FX_LEVELS.REDUCED && feed?.water?.mask) {
                 this._uploadMask(feed.water.mask, feed.water.maskRevision ?? null);
             }
+            const setupSample = Math.max(0, timingNow() - setupStart - this._frameMaskUploadMs);
+            this.setupCpuMs = setEma(this.setupCpuMs, setupSample);
+            this.maskUploadMs = setEma(this.maskUploadMs, this._frameMaskUploadMs);
 
+            const shaderStart = timingNow();
             gl.bindVertexArray(this.vao);
             const timer = this._beginTimer();
             const minimal = level === POST_FX_LEVELS.MINIMAL;
@@ -870,15 +982,20 @@ class PostFxInstance {
 
             gl.bindTexture(gl.TEXTURE_2D, null);
             gl.bindVertexArray(null);
-            const frameEnd = typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now();
-            this.cpuMs = setEma(this.cpuMs, frameEnd - cpuStart);
+            const frameEnd = timingNow();
+            this.shaderCpuMs = setEma(this.shaderCpuMs, frameEnd - shaderStart);
+            this.cpuMs = this.shaderCpuMs;
+            this.renderTotalCpuMs = setEma(this.renderTotalCpuMs, frameEnd - frameStart);
             // Gap between consecutive renders catches driver stalls that the
             // instrumented upload/cpu/gpu windows cannot see.
             const frameGapMs = this._lastRenderEndMs != null ? frameEnd - this._lastRenderEndMs : 0;
+            this.frameGapMs = frameGapMs;
             this._lastRenderEndMs = frameEnd;
             this.ladder.update({
                 uploadMs: this.uploadMs || 0,
-                cpuMs: this.cpuMs || 0,
+                auxUploadMs: this.maskUploadMs || 0,
+                setupCpuMs: this.setupCpuMs || 0,
+                shaderCpuMs: this.shaderCpuMs || 0,
                 gpuMs: this.gpuMs,
                 frameGapMs,
             }, frameEnd);
@@ -901,24 +1018,69 @@ class PostFxInstance {
         this.disposed = true;
         this.canvas?.removeEventListener?.('webglcontextlost', this._onContextLost, false);
         this.canvas?.removeEventListener?.('webglcontextrestored', this._onContextRestored, false);
-        if (this.gl) {
+        if (this.gl && !this.gl.isContextLost?.()) {
             for (const query of this.pendingGpuQueries) this.gl.deleteQuery(query);
         }
         this._releaseGpuResources();
         this.pendingGpuQueries.length = 0;
         this.textureBytes = 0;
+        this.resourceBytes = gpuResourceAccounting();
+        this.sourceCanvasPixels = 0;
+        this.unifiedResources = unifiedRendererResourceAccounting();
         this.contextHealthy = false;
     }
 
+    getResourceAccounting() {
+        return {
+            textures: { ...(this.resourceBytes?.textures || {}) },
+            attachments: { ...(this.resourceBytes?.attachments || {}) },
+            buffers: { ...(this.resourceBytes?.buffers || {}) },
+            groupTotals: { ...(this.resourceBytes?.groupTotals || {}) },
+            totalBytes: Number(this.resourceBytes?.totalBytes) || 0,
+        };
+    }
+
     getDiagnostics() {
+        const ladder = this.ladder.getState();
         return {
             supported: this.supported,
             active: this.isActive(),
+            suspended: this.suspended,
             level: this.ladder.getLevel(),
             uploadMs: this.uploadMs ?? 0,
+            maskUploadMs: this.maskUploadMs ?? 0,
+            setupCpuMs: this.setupCpuMs ?? 0,
+            shaderCpuMs: this.shaderCpuMs ?? 0,
             gpuMs: this.timerExtension ? (this.gpuMs ?? 0) : null,
+            // Compatibility for existing diagnostics readers.
             cpuMs: this.cpuMs ?? 0,
+            renderTotalCpuMs: this.renderTotalCpuMs ?? 0,
+            frameGapMs: this.frameGapMs,
             textureBytes: this.textureBytes,
+            resources: this.getResourceAccounting(),
+            unifiedResources: {
+                canvas: { ...(this.unifiedResources?.canvas || {}) },
+                canvasBytes: this.unifiedResources?.canvasBytes || 0,
+                gpuBytes: this.unifiedResources?.gpuBytes || 0,
+                totalBytes: this.unifiedResources?.totalBytes || 0,
+                budgetBytes: this.unifiedResources?.budgetBytes || 0,
+            },
+            ladder: {
+                effectiveLevel: ladder.effectiveLevel,
+                lastScore: ladder.lastScore,
+                lastDriver: ladder.lastDriver,
+                lastDecisionReason: ladder.lastDecisionReason,
+                lastDegradationReason: ladder.lastDegradationReason,
+                lastTransitionAtMs: ladder.lastTransitionAtMs,
+                lastTransitionMetrics: ladder.lastTransitionMetrics
+                    ? { ...ladder.lastTransitionMetrics }
+                    : null,
+                overBudgetFrames: ladder.overBudgetFrames,
+                healthySinceMs: ladder.healthySinceMs,
+                override: ladder.override,
+                budgetMs: ladder.options?.budgetMs ?? null,
+                healthyMs: ladder.options?.healthyMs ?? null,
+            },
             frames: this.frames,
         };
     }

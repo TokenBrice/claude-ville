@@ -941,10 +941,20 @@ body[data-cv-selected] .activity-panel__header::before {
 }
 
 .activity-panel__context-bar {
+    width: 100%;
     height: 100%;
+    transform: scaleX(0);
+    transform-origin: left center;
     border-radius: 0;
     background: linear-gradient(90deg, var(--cv-green-soft), var(--cv-gold));
-    transition: width 0.5s ease;
+    transition: transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.activity-panel__no-usage {
+    padding: 8px 6px;
+    color: var(--cv-text-muted);
+    font-size: var(--fs-label);
+    text-align: center;
 }
 
 .activity-panel__context-bar--warning {
@@ -959,6 +969,12 @@ body[data-cv-selected] .activity-panel__header::before {
     display: grid;
     grid-template-columns: 1fr 1fr;
     gap: 4px;
+}
+
+.activity-panel__token-grid[hidden],
+.activity-panel__token-row[hidden],
+.activity-panel__no-usage[hidden] {
+    display: none;
 }
 
 .activity-panel__token-cell {

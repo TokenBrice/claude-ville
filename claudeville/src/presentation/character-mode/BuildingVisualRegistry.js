@@ -1,4 +1,5 @@
 import { BUILDING_GROUNDING_PROFILES } from '../../config/buildingGrounding.js';
+import { normalizeMaterialMetadata } from './MaterialRegistry.js';
 
 export const DEFAULT_BUILDING_OCCUPANCY_THRESHOLDS = Object.freeze({
     idleMax: 0,
@@ -6,8 +7,48 @@ export const DEFAULT_BUILDING_OCCUPANCY_THRESHOLDS = Object.freeze({
     busyMax: 0.84,
 });
 
+// Pilot material profiles seed the authored semantic contract from existing
+// window/light/effect anchors. Geometry stays in this registry; light records
+// stay authoritative in LightSourceRegistry/BuildingSprite.
+export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
+    command: landmarkMaterial('command', 'stone', 208, 130, [
+        emissiveSource('emissive.command.windows', 'windows', 'windowRects', 0.72),
+        emissiveSource('emissive.command.watchfire', 'fire', 'layers.watchfire', 1),
+    ]),
+    taskboard: landmarkMaterial('taskboard', 'timber', 232, 150, [
+        emissiveSource('emissive.taskboard.lanterns', 'lantern', 'windowRects', 0.76),
+    ]),
+    forge: landmarkMaterial('forge', 'stone', 232, null, [
+        emissiveSource('emissive.forge.furnace', 'fire', 'windowRects', 1),
+    ]),
+    mine: landmarkMaterial('mine', 'stone', 232, null, [
+        emissiveSource('emissive.mine.cave', 'lantern', 'lightSource', 0.82),
+        emissiveSource('emissive.mine.crystals', 'rune', 'emitters.sparkle', 0.62),
+    ]),
+    archive: landmarkMaterial('archive', 'stone', 224, 145, [
+        emissiveSource('emissive.archive.windows', 'windows', 'windowRects', 0.68),
+        emissiveSource('emissive.archive.door-spill', 'lantern', 'lightSource', 0.74),
+    ]),
+    observatory: landmarkMaterial('observatory', 'stone', 288, 235, [
+        emissiveSource('emissive.observatory.windows', 'windows', 'windowRects', 0.62),
+        emissiveSource('emissive.observatory.dome', 'rune', 'effectAnchors.domeAperture', 0.78),
+    ]),
+    portal: landmarkMaterial('portal', 'glass-rune', 208, 130, [
+        emissiveSource('emissive.portal.vortex', 'rune', 'layers.portalGlow', 1),
+    ]),
+    watchtower: landmarkMaterial('watchtower', 'stone', 384, 300, [
+        emissiveSource('emissive.watchtower.windows', 'windows', 'windowRects', 0.68),
+        emissiveSource('emissive.watchtower.beacon', 'fire', 'effectAnchors.lanternFire', 1),
+    ]),
+    harbor: landmarkMaterial('harbor', 'timber', 224, 142, [
+        emissiveSource('emissive.harbor.windows', 'windows', 'windowRects', 0.66),
+        emissiveSource('emissive.harbor.lantern', 'lantern', 'lightSource', 0.82),
+    ]),
+});
+
 export const BUILDING_VISUAL_REGISTRY = Object.freeze({
     command: {
+        material: BUILDING_MATERIAL_REGISTRY.command,
         grounding: BUILDING_GROUNDING_PROFILES.command,
         labelAccent: '#f6c85f',
         emblem: 'crown',
@@ -27,6 +68,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         pennant: { at: [240, 56] },
     },
     taskboard: {
+        material: BUILDING_MATERIAL_REGISTRY.taskboard,
         grounding: BUILDING_GROUNDING_PROFILES.taskboard,
         labelAccent: '#8bd7ff',
         emblem: 'scroll',
@@ -44,6 +86,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         pennant: { at: [128, 34] },
     },
     forge: {
+        material: BUILDING_MATERIAL_REGISTRY.forge,
         grounding: BUILDING_GROUNDING_PROFILES.forge,
         labelAccent: '#f08a4b',
         emblem: 'hammer',
@@ -59,6 +102,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         ],
     },
     mine: {
+        material: BUILDING_MATERIAL_REGISTRY.mine,
         grounding: BUILDING_GROUNDING_PROFILES.mine,
         labelAccent: '#ffab47',
         emblem: 'pick',
@@ -70,6 +114,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         beaconBase: 0.78,
     },
     archive: {
+        material: BUILDING_MATERIAL_REGISTRY.archive,
         grounding: BUILDING_GROUNDING_PROFILES.archive,
         labelAccent: '#b3d68c',
         emblem: 'book',
@@ -88,6 +133,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         pennant: { at: [48, 30] },
     },
     observatory: {
+        material: BUILDING_MATERIAL_REGISTRY.observatory,
         grounding: BUILDING_GROUNDING_PROFILES.observatory,
         labelAccent: '#bda7ff',
         emblem: 'star',
@@ -123,6 +169,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         },
     },
     portal: {
+        material: BUILDING_MATERIAL_REGISTRY.portal,
         grounding: BUILDING_GROUNDING_PROFILES.portal,
         labelAccent: '#8bd7ff',
         emblem: 'rune',
@@ -135,6 +182,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         pennant: { at: [170, 30] },
     },
     watchtower: {
+        material: BUILDING_MATERIAL_REGISTRY.watchtower,
         grounding: BUILDING_GROUNDING_PROFILES.watchtower,
         labelAccent: '#ffe59a',
         emblem: 'flame',
@@ -168,6 +216,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         },
     },
     harbor: {
+        material: BUILDING_MATERIAL_REGISTRY.harbor,
         grounding: BUILDING_GROUNDING_PROFILES.harbor,
         labelAccent: '#ffd37a',
         emblem: 'anchor',
@@ -248,6 +297,10 @@ export function getBuildingVisual(type) {
     return BUILDING_VISUAL_REGISTRY[type] || null;
 }
 
+export function getBuildingMaterial(type) {
+    return getBuildingVisual(type)?.material || null;
+}
+
 export function getBuildingLabelAccent(type, fallback = '#d6a951') {
     return getBuildingVisual(type)?.labelAccent || fallback;
 }
@@ -300,4 +353,22 @@ export function getBuildingOccupancyState(type, { count = 0, capacity = 0, alert
     if (ratio <= thresholds.occupiedMax) return 'occupied';
     if (ratio <= thresholds.busyMax) return 'busy';
     return 'full';
+}
+
+function landmarkMaterial(type, materialClass, top, horizonY, sources) {
+    return Object.freeze(normalizeMaterialMetadata({
+        materialId: `building.${type}`,
+        materialClass,
+        elevation: { base: 0, top, unit: 'sprite-px' },
+        emissive: { strength: sources.length ? 1 : 0, sources },
+        occluder: {
+            mode: 'alpha-silhouette',
+            strength: 1,
+            ...(Number.isFinite(horizonY) ? { horizonY } : {}),
+        },
+    }));
+}
+
+function emissiveSource(id, kind, geometry, strength) {
+    return Object.freeze({ id, kind, geometry, strength });
 }

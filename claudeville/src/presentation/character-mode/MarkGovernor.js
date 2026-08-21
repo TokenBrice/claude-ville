@@ -1,124 +1,66 @@
-// Mark governor (visual-upgrade item #2) — the value-hierarchy contract's
-// per-frame enforcement arm, the twin of the motion budget.
-//
-// Every decorative overlay mark (a ring, a tether, a halo, an aura, a banner)
-// declares a TIER when it asks to draw:
-//
-//   PRIMARY   — errored / waiting-on-user / selected. The reads the operator
-//               MUST never lose in a crowd. Always full alpha, never culled.
-//   SECONDARY — working glow, relationship tethers, council rings, talk arcs.
-//               Capped in count and alpha per screen region so a clustered
-//               crowd does not stack into a wash; the overflow is culled.
-//   AMBIENT   — drifting motes, ground tints, building halos, banners. The
-//               first marks to dim and the first to cull when a region is busy.
-//
-// The governor buckets the screen into coarse regions and counts admitted
-// SECONDARY/AMBIENT marks per region per frame; as a region fills, later marks
-// of those tiers fade and then drop entirely. PRIMARY marks bypass all of it.
-//
-// Reduced motion (motionScale === 0): static caps only — alpha is clamped to
-// each tier's cap but NO region culling happens, so the still scene keeps every
-// mark it would otherwise show, just at the calmer ceiling alpha. This is the
-// item's reduced-motion fallback: the governor degrades to a pure alpha clamp.
-
-export const MarkTier = Object.freeze({
-    PRIMARY: 'primary',
-    SECONDARY: 'secondary',
-    AMBIENT: 'ambient',
-});
-
-// Per-tier alpha ceilings (multipliers applied to the caller's own alpha) and
-// per-region soft/hard limits. PRIMARY is uncapped and uncounted.
-const TIER_POLICY = Object.freeze({
-    [MarkTier.PRIMARY]: { alphaCap: 1, soft: Infinity, hard: Infinity },
-    [MarkTier.SECONDARY]: { alphaCap: 0.85, soft: 4, hard: 9 },
-    [MarkTier.AMBIENT]: { alphaCap: 0.6, soft: 3, hard: 6 },
-});
-
+export const MarkTier = Object.freeze({ PRIMARY: 'primary', RECENT: 'recent', WORKING: 'working', SECONDARY: 'working', AMBIENT: 'ambient' });
+export const SALIENCE_ORDER = Object.freeze([MarkTier.PRIMARY, MarkTier.RECENT, MarkTier.WORKING, MarkTier.AMBIENT]);
+const POLICY = Object.freeze({ primary: { alphaCap: 1, soft: Infinity, hard: Infinity }, recent: { alphaCap: .92, soft: 4, hard: 8 }, working: { alphaCap: .78, soft: 3, hard: 7 }, ambient: { alphaCap: .5, soft: 2, hard: 5 } });
 const DEFAULT_REGION_SIZE = 200;
 
+export function salienceTierFor({ selected = false, status = '', recent = false, working = false } = {}) {
+    if (selected || ['waiting_on_user', 'errored', 'rate_limited'].includes(status)) return MarkTier.PRIMARY;
+    if (recent) return MarkTier.RECENT;
+    if (working || status === 'working' || status === 'waiting') return MarkTier.WORKING;
+    return MarkTier.AMBIENT;
+}
+
+export function calculateScenePressure({ sprites = [], viewport = {}, zoom = 1, overlayArea = 0, collisions = 0 } = {}) {
+    const area = Math.max(1, Number(viewport.width) * Number(viewport.height) || 1);
+    const z = Math.max(1, Number(zoom) || 1);
+    let spriteArea = 0;
+    for (const sprite of sprites || []) {
+        if (!sprite || sprite.isArrivalPending?.()) continue;
+        spriteArea += (Number(sprite.projectedWidth) || 34 * z) * (Number(sprite.projectedHeight) || 54 * z);
+    }
+    const occupancy = Math.min(1.5, spriteArea / area);
+    const overlays = Math.min(1.5, Math.max(0, Number(overlayArea) || 0) / area);
+    const collisionLoad = Math.min(1, Math.max(0, Number(collisions) || 0) / Math.max(1, sprites.length));
+    const populationLoad = Math.min(1, sprites.length / Math.max(12, area / 42000));
+    return Math.max(0, Math.min(1, occupancy * .34 + overlays * .2 + collisionLoad * .16 + populationLoad * .3));
+}
+
+export function annotationModeForPressure(pressure, previous = 'full') {
+    const p = Math.max(0, Math.min(1, Number(pressure) || 0));
+    if (previous === 'minimal' && p >= .66) return 'minimal';
+    if (previous === 'compact' && p >= .37 && p < .78) return 'compact';
+    return p >= .72 ? 'minimal' : p >= .42 ? 'compact' : 'full';
+}
+
 export class MarkGovernor {
-    constructor() {
-        this.regionSize = DEFAULT_REGION_SIZE;
-        this.motionScale = 1;
-        // Map<regionKey, { secondary: n, ambient: n }>
-        this._regions = new Map();
-        this._frame = 0;
+    constructor() { this.regionSize = DEFAULT_REGION_SIZE; this.motionScale = 1; this._regions = new Map(); this._occupied = []; this._primaryRegions = new Set(); this._frame = 0; }
+    beginFrame({ regionSize = DEFAULT_REGION_SIZE, motionScale = 1 } = {}) { this.regionSize = regionSize > 0 ? regionSize : DEFAULT_REGION_SIZE; this.motionScale = motionScale; this._regions.clear(); this._occupied.length = 0; this._primaryRegions.clear(); this._frame++; }
+    _key(x, y) { return `${Math.floor((Number(x) || 0) / this.regionSize)},${Math.floor((Number(y) || 0) / this.regionSize)}`; }
+    _region(x, y) { const key = this._key(x, y); let region = this._regions.get(key); if (!region) this._regions.set(key, region = { recent: 0, working: 0, ambient: 0 }); return { key, region }; }
+    reserve(rect, tier = MarkTier.AMBIENT, stableKey = '') {
+        if (!rect || !Number.isFinite(rect.x) || !Number.isFinite(rect.y)) return false;
+        const candidate = { ...rect, tier, stableKey: String(stableKey) };
+        if (tier !== MarkTier.PRIMARY && this._occupied.some(item => item.tier === MarkTier.PRIMARY && overlaps(candidate, item))) return false;
+        this._occupied.push(candidate);
+        if (tier === MarkTier.PRIMARY) this._primaryRegions.add(this._key(rect.x + rect.w / 2, rect.y + rect.h / 2));
+        return true;
     }
-
-    // Reset per-frame state. Called once per frame by the renderer before the
-    // draw passes run.
-    beginFrame({ regionSize = DEFAULT_REGION_SIZE, motionScale = 1 } = {}) {
-        this.regionSize = regionSize > 0 ? regionSize : DEFAULT_REGION_SIZE;
-        this.motionScale = motionScale;
-        this._regions.clear();
-        this._frame++;
-    }
-
-    _bucket(x, y) {
-        const size = this.regionSize;
-        const rx = Number.isFinite(x) ? Math.floor(x / size) : 0;
-        const ry = Number.isFinite(y) ? Math.floor(y / size) : 0;
-        const key = `${rx},${ry}`;
-        let region = this._regions.get(key);
-        if (!region) {
-            region = { secondary: 0, ambient: 0 };
-            this._regions.set(key, region);
-        }
-        return region;
-    }
-
-    // Ask the governor whether a mark of `tier` at screen-space (x, y) may draw.
-    // Returns { draw, alpha } where `alpha` is a 0..1 multiplier to apply on top
-    // of the caller's own alpha. PRIMARY always returns { draw: true, alpha: 1 }.
-    //
-    // For SECONDARY/AMBIENT: alpha rides the tier cap until the region's soft
-    // limit, then ramps down to 0 between soft and hard, then culls (draw:false)
-    // past hard. Under reduced motion the region count is ignored (static caps).
-    admit(tier, x = 0, y = 0) {
-        const policy = TIER_POLICY[tier] || TIER_POLICY[MarkTier.AMBIENT];
+    admit(tier, x = 0, y = 0, { rect = null, stableKey = '' } = {}) {
+        tier = POLICY[tier] ? tier : MarkTier.AMBIENT;
+        if (rect && !this.reserve(rect, tier, stableKey)) return { draw: false, alpha: 0 };
         if (tier === MarkTier.PRIMARY) return { draw: true, alpha: 1 };
-
-        // Reduced motion: no region culling, just the static ceiling.
-        if (this.motionScale <= 0) {
-            return { draw: true, alpha: policy.alphaCap };
-        }
-
-        const region = this._bucket(x, y);
-        const field = tier === MarkTier.SECONDARY ? 'secondary' : 'ambient';
-        const index = region[field];
-        region[field] = index + 1;
-
+        const policy = POLICY[tier];
+        if (this.motionScale <= 0) return { draw: true, alpha: policy.alphaCap };
+        const { key, region } = this._region(x, y); const index = region[tier]++;
         if (index >= policy.hard) return { draw: false, alpha: 0 };
-
         let alpha = policy.alphaCap;
-        if (index >= policy.soft) {
-            const span = Math.max(1, policy.hard - policy.soft);
-            const decay = 1 - (index - policy.soft) / span;
-            alpha = policy.alphaCap * Math.max(0, decay);
-        }
-        return { draw: alpha > 0.01, alpha };
+        if (index >= policy.soft) alpha *= Math.max(0, 1 - (index - policy.soft) / Math.max(1, policy.hard - policy.soft));
+        if (this._primaryRegions.has(key)) alpha *= tier === MarkTier.AMBIENT ? .28 : .72;
+        return { draw: alpha > .01, alpha };
     }
-
-    // Convenience: just the alpha multiplier (0 when culled).
-    alphaFor(tier, x = 0, y = 0) {
-        const result = this.admit(tier, x, y);
-        return result.draw ? result.alpha : 0;
-    }
+    alphaFor(tier, x = 0, y = 0) { const result = this.admit(tier, x, y); return result.draw ? result.alpha : 0; }
 }
-
-// Module-singleton. The frame orchestrator (WorldFrameRenderer / DrawablePass)
-// calls the draw functions with renderer-derived option bags that do not carry
-// the governor, and AgentSprite.draw() receives no governor argument — so the
-// renderer publishes the active governor here and the decorative draw paths
-// read it back. The renderer owns the lifecycle: it constructs the governor and
-// calls beginFrame() each frame before drawing.
+function overlaps(a, b) { return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
 let activeGovernor = null;
-
-export function setActiveMarkGovernor(governor) {
-    activeGovernor = governor || null;
-}
-
-export function getActiveMarkGovernor() {
-    return activeGovernor;
-}
+export function setActiveMarkGovernor(governor) { activeGovernor = governor || null; }
+export function getActiveMarkGovernor() { return activeGovernor; }

@@ -470,6 +470,11 @@ export class ParticleSystem {
         const preset = PARTICLE_PRESETS[type];
         if (!preset || !this.motionEnabled) return;
 
+        const semanticTier = options.semanticTier || MarkTier.AMBIENT;
+        const gate = getActiveMarkGovernor()?.admit(semanticTier, x, y);
+        if (gate && !gate.draw) return;
+        if (gate && semanticTier === MarkTier.AMBIENT) count = Math.ceil(count * gate.alpha);
+
         const spawnCount = Math.min(Math.max(0, Math.floor(count)), this.maxParticles);
         if (spawnCount === 0) return;
 
@@ -590,3 +595,4 @@ export class ParticleSystem {
         this.particles = [];
     }
 }
+import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';

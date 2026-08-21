@@ -16,6 +16,10 @@ import {
     repoRoot,
     spritesRoot,
 } from './manifest-utils.mjs';
+import {
+    materialExpectedPngPaths,
+    validateMaterialContract,
+} from './channel-validation.mjs';
 
 const args = process.argv.slice(2);
 const orphanAllowlist = new Set([
@@ -85,6 +89,7 @@ for (const e of collectSpriteEntries(manifest)) {
     if (e.id?.startsWith('equipment.')) equipmentEntries.push(e);
     for (const p of expectedPathsForEntry(e)) expected.add(p);
 }
+for (const path of materialExpectedPngPaths(manifest)) expected.add(path);
 
 let invalidManifest = 0;
 for (const entry of manifestEntries) {
@@ -143,6 +148,8 @@ for (const entry of manifest.atmosphere || []) {
 }
 
 const invalidPalettes = validatePaletteParity();
+const materialValidation = validateMaterialContract(manifest);
+const invalidMaterialAssets = materialValidation.errors;
 
 // Warnings (non-fatal): dimension drift, block-cube heuristic, dead inventory.
 // These catch the defect classes that shipped silently before (cube layers,
@@ -152,8 +159,8 @@ warnings += warnOnDimensionDrift();
 warnings += warnOnBlockCubes();
 warnings += warnOnUnreferencedIds();
 
-console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid equipment PNGs: ${invalidEquipment}  invalid atmosphere PNGs: ${invalidAtmosphere}  warnings: ${warnings}`);
-process.exit(missing > 0 || orphans > 0 || duplicatePngs > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidEquipment > 0 || invalidAtmosphere > 0 ? 1 : 0);
+console.log(`expected: ${expected.size}  missing: ${missing}  orphan PNGs: ${orphans}  allowlisted orphan PNGs: ${allowlistedOrphans}  duplicate PNG groups: ${duplicatePngs}  allowlisted duplicate PNG groups: ${allowlistedDuplicatePngGroups}  invalid manifest entries: ${invalidManifest}  invalid palette mirrors: ${invalidPalettes}  invalid character sheets: ${invalidCharacters}  invalid equipment PNGs: ${invalidEquipment}  invalid atmosphere PNGs: ${invalidAtmosphere}  invalid material/atlas assets: ${invalidMaterialAssets}  warnings: ${warnings + materialValidation.warnings}`);
+process.exit(missing > 0 || orphans > 0 || duplicatePngs > 0 || invalidManifest > 0 || invalidPalettes > 0 || invalidCharacters > 0 || invalidEquipment > 0 || invalidAtmosphere > 0 || invalidMaterialAssets > 0 ? 1 : 0);
 
 function duplicateGroupKey(paths) {
     return [...paths].sort().join('|');

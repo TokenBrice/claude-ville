@@ -217,6 +217,13 @@ export class App {
             this.assets = new AssetManager();
             await this.assets.load({ signal: this._bootController?.signal });
             if (this._destroyed) return null;
+            const renderParams = new URLSearchParams(location.search);
+            const materialWorldRequested = renderParams.get('renderer') !== 'canvas'
+                && renderParams.get('postfx') !== '0';
+            if (materialWorldRequested) {
+                await this.assets.loadMaterialAssets({ signal: this._bootController?.signal });
+                if (this._destroyed) return null;
+            }
             console.log('[App] sprite assets loaded');
             await this._loadRenderer();
             if (this._destroyed) return null;
@@ -544,6 +551,7 @@ export class App {
                 overlayCtx.webkitImageSmoothingEnabled = false;
             }
             this.renderer?.postFx?.resize?.(newW, newH);
+            this.renderer?.gpuWorld?.resize?.(newW, newH);
             if (this.renderer?.invalidateViewportCaches) {
                 this.renderer.invalidateViewportCaches();
             }

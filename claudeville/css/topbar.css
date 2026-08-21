@@ -608,6 +608,11 @@ button.topbar__badge--attention:active {
     color: var(--cv-gold-bright);
 }
 
+body:has(#worldGrammar:popover-open) #topbarWorldControls {
+    color: var(--cv-gold-bright);
+    border-color: rgba(242, 211, 107, 0.72);
+}
+
 .topbar__icon-btn.topbar__sound-btn--on svg,
 .topbar__icon-btn.topbar__cinema-btn--on svg {
     filter: drop-shadow(0 0 2px rgba(255, 229, 141, 0.62));
@@ -632,8 +637,8 @@ button.topbar__badge--attention:active {
 }
 
 .topbar__mode-btn--active {
-    color: #241812;
-    background: linear-gradient(180deg, #fff0b0, #d6a951 62%, #9c6732);
+    color: var(--cv-active-ink);
+    background: linear-gradient(180deg, var(--cv-active-top), var(--cv-active-mid) 62%, var(--cv-active-bottom));
     border-color: var(--cv-gold-warm);
     box-shadow:
         inset 0 1px 0 rgba(255, 255, 255, 0.28),
@@ -641,7 +646,9 @@ button.topbar__badge--attention:active {
 }
 
 .topbar__mode-btn--active:hover {
-    color: #0a0a0f;
+    color: var(--cv-active-ink);
+    background: linear-gradient(180deg, color-mix(in srgb, var(--cv-active-top) 86%, white), color-mix(in srgb, var(--cv-active-mid) 88%, white) 62%, color-mix(in srgb, var(--cv-active-bottom) 88%, white));
+    border-color: var(--cv-gold-bright);
 }
 
 /* A number the reader should weigh less: present, legible, not a headline. */

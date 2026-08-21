@@ -13,6 +13,9 @@ For tool selection, parameter enums, animation templates, async lifecycle, and p
 | `claudeville/src/presentation/character-mode/AssetManager.js` | Runtime path mapping, manifest flattening, composed building loading, cache busting, and placeholder fallback. |
 | `claudeville/src/presentation/character-mode/SpriteSheet.js` | Character sheet layout contract. Current sheets are 8 columns by 10 rows of 92px cells. |
 | `scripts/sprites/manifest-validator.mjs` | Manifest-to-PNG validation and character-sheet motion checks. |
+| `docs/material-channel-contract.md` | Semantic drawable fields, material classes, sidecar paths, atlas metadata, and channel encodings. |
+| `scripts/sprites/atlas-{plan,bake}.mjs` | Deterministic reviewed-ID atlas planning and committed channel bake. |
+| `scripts/sprites/channel-{validate,contact-sheet}.mjs` | Sidecar/atlas validation and output-only channel review sheets. |
 
 ## Setup
 
@@ -89,6 +92,53 @@ node scripts/sprites/contact-sheet.mjs --groups=props   # or all families
 ```
 
 Contact sheets land in `output/sprite-contact-sheets/<family>.png` (pngjs montage, manifest order, dark checkerboard so alpha reads). `scripts/sprites/pixellab-rest.mjs` holds the shared REST/key-out helpers for new bake scripts; `scripts/sprites/rehue-flowercart.mjs` is a single-purpose hue-mask re-hue used for plan 6.5.
+
+## Material Sidecars And Deterministic Atlases
+
+Material metadata is optional and must not change Canvas rendering. Read
+[`docs/material-channel-contract.md`](../../docs/material-channel-contract.md)
+before authoring a companion channel.
+
+The committed `world-pilot` atlas uses a reviewed manifest ID list. It includes
+all nine landmarks, representative light/water assets, and one Claude/Codex
+class. Character sheets retain their 8-direction × 10-row frame tags; terrain
+retains all 16 Wang masks. Building overlay layers follow their parent.
+
+```bash
+# Deterministic dry-run; no files written.
+npm run sprites:atlas-plan -- --atlas=world-pilot
+
+# Bake albedo + default/authored material, emissive, and occluder channels.
+npm run sprites:atlas-bake -- --atlas=world-pilot
+
+# Schema, source hash, dimensions, alpha bounds, matching rectangles, frame
+# tags, nearest sampling, padding extrusion, and orphan checks.
+npm run sprites:channels-validate
+npm run sprites:validate
+
+# Output-only visual evidence, one montage per channel.
+npm run sprites:channels-contact-sheet -- --atlas=world-pilot
+```
+
+`atlas-bake` rejects an ad-hoc `--ids` override. Change `atlases[].ids` in the
+manifest so broad membership is explicit and reviewable. Unchanged source PNGs
+produce byte-stable channel PNGs and metadata; metadata contains no timestamp.
+
+Absent individual sidecars use generated safe defaults and do not load a
+checkerboard. To create a reviewed correction, paint exact rectangles/points:
+
+```bash
+npm run sprites:sidecar-mask-fix -- \
+  --id=building.command \
+  --channel=emissive \
+  --paint=rect:80:127:7:10:#ffd98aff \
+  --dry-run
+```
+
+Remove `--dry-run` only after checking the coordinates, add the matching
+`materialSidecar`, `emissiveSidecar`, or `occluderSidecar` manifest opt-in, then
+rebake and review the channel contact sheet. Do not use automatic luminance
+thresholding as a substitute for authored emission.
 
 
 ## Smoke Before Bulk Work

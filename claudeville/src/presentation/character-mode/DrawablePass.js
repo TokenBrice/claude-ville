@@ -1,3 +1,5 @@
+import { normalizeMaterialMetadata } from './MaterialRegistry.js';
+
 function finiteSortY(value) {
     return Number.isFinite(value) ? value : 0;
 }
@@ -22,20 +24,40 @@ const KIND_ORDER = Object.freeze({
  * Shape:
  * - kind: stable category for diagnostics and special-case consumers.
  * - sortY: finite world-space Y used for painter ordering.
- * - draw(ctx, zoom, context): draws itself without call-site dispatch.
+ * - drawFallback(ctx, zoom, context): current Canvas-2D implementation.
+ * - buildGpuRecord(context): optional additive GPU-record seam.
  * - hitArea: optional future hit-test metadata.
  * - payload: original source object for legacy consumers.
  */
-export function createDepthDrawable(kind, sortY, payload, draw) {
+export function createDepthDrawable(kind, sortY, payload, drawFallback, semantics = {}) {
+    const material = drawableMaterialMetadata(payload, semantics);
+    const gpuBuilder = semantics?.buildGpuRecord || payload?.buildGpuRecord || null;
+    const fallback = (ctx, zoom, context) => {
+        drawFallback?.(ctx, zoom, context, payload);
+    };
     return {
         kind,
         sortY: finiteSortY(sortY),
         sortBand: KIND_ORDER[kind] ?? 50,
         stableKey: payloadStableKey(payload),
+        salience: normalizeSalience(semantics?.salience ?? payload?.salience),
+        materialId: material.materialId,
+        materialClass: material.materialClass,
+        elevation: material.elevation,
+        emissive: material.emissive,
+        occluder: material.occluder,
+        atlasFrame: material.atlasFrame,
         hitArea: payload?.hitArea || null,
         payload,
-        draw(ctx, zoom, context) {
-            draw?.(ctx, zoom, context, payload);
+        drawFallback: fallback,
+        // Legacy alias: Canvas callers keep the exact same call path.
+        draw: fallback,
+        gpuReady: typeof gpuBuilder === 'function',
+        buildGpuRecord(context = {}) {
+            if (typeof gpuBuilder === 'function') {
+                return gpuBuilder(context, payload, this);
+            }
+            return context.spriteRenderer?.buildGpuRecordForDrawable?.(this, context) ?? null;
         },
     };
 }
@@ -122,8 +144,45 @@ export function appendDepthSortedDrawables(target, {
 export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
     const zoom = context.zoom || 1;
     for (const drawable of drawables) {
+        if (
+            context.gpuWorldActive
+            && (drawable.kind?.startsWith?.('building') || drawable.kind?.startsWith?.('prop'))
+        ) {
+            continue;
+        }
         drawable.draw?.(ctx, zoom, context);
     }
+}
+
+// Converts the already-sorted stream without reordering painter semantics.
+// Package 6 can batch only consecutive compatible records after this seam.
+export function buildGpuRecordsFromDrawables(drawables, context = {}) {
+    const records = [];
+    for (let drawOrder = 0; drawOrder < (drawables || []).length; drawOrder++) {
+        const drawable = drawables[drawOrder];
+        const built = drawable?.buildGpuRecord?.(context);
+        if (!built) continue;
+        const candidates = Array.isArray(built) ? built : [built];
+        for (const record of candidates) {
+            if (!record) continue;
+            records.push({
+                kind: drawable.kind,
+                sortY: drawable.sortY,
+                sortBand: drawable.sortBand,
+                stableKey: drawable.stableKey,
+                salience: drawable.salience,
+                materialId: drawable.materialId,
+                materialClass: drawable.materialClass,
+                elevation: drawable.elevation,
+                emissive: drawable.emissive,
+                occluder: drawable.occluder,
+                atlasFrame: drawable.atlasFrame,
+                ...record,
+                drawOrder,
+            });
+        }
+    }
+    return records;
 }
 
 export function cullDepthSortedDrawables(drawables, camera, viewport, margin = 180) {
@@ -156,13 +215,26 @@ export function cullDepthSortedDrawables(drawables, camera, viewport, margin = 1
 
 export function summarizeDrawableLayers(drawables, culling = null) {
     const byKind = {};
+    const byMaterial = {};
+    let gpuReady = 0;
+    let emissive = 0;
+    let occluders = 0;
     for (const drawable of drawables || []) {
         const kind = drawable?.kind || 'unknown';
         byKind[kind] = (byKind[kind] || 0) + 1;
+        const materialClass = drawable?.materialClass || 'unlit';
+        byMaterial[materialClass] = (byMaterial[materialClass] || 0) + 1;
+        if (drawable?.gpuReady) gpuReady++;
+        if ((drawable?.emissive?.strength || 0) > 0) emissive++;
+        if (drawable?.occluder?.mode && drawable.occluder.mode !== 'none') occluders++;
     }
     return {
         total: drawables?.length || 0,
         byKind,
+        byMaterial,
+        gpuReady,
+        emissive,
+        occluders,
         culling,
     };
 }
@@ -241,4 +313,29 @@ function payloadStableKey(payload) {
         || payload?.payload?.squadKey
         || payload?.payload?.project
         || '';
+}
+
+function normalizeSalience(value) {
+    return value === 'primary' || value === 'recent' || value === 'working'
+        ? value
+        : 'ambient';
+}
+
+function drawableMaterialMetadata(payload, semantics) {
+    const entry = payload?.entry || payload?.sprite?.entry || null;
+    const source = semantics?.material || payload?.material || entry || {};
+    const materialId = semantics?.materialId
+        || source.materialId
+        || entry?.id
+        || payload?.sprite?.id
+        || payload?.id
+        || 'material.default';
+    return normalizeMaterialMetadata(source, {
+        materialId,
+        materialClass: semantics?.materialClass ?? source.materialClass,
+        elevation: semantics?.elevation ?? source.elevation,
+        emissive: semantics?.emissive ?? source.emissive,
+        occluder: semantics?.occluder ?? source.occluder,
+        atlasFrame: semantics?.atlasFrame ?? source.atlasFrame,
+    });
 }

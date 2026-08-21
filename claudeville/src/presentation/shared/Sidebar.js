@@ -393,19 +393,9 @@ export class Sidebar {
 
     // Empty-world onboarding: name the village and teach the building metaphor.
     _emptyLegendNodes() {
-        const legend = [
-            ['Forge', 'Code work'],
-            ['Archive', 'Reading & search'],
-            ['Harbor', 'Commit ships'],
-            ['Mine', 'Token usage'],
-        ].map(([name, desc]) => el('div', { className: 'sidebar__empty-legend-row' }, [
-            el('span', { className: 'sidebar__empty-legend-name', text: name }),
-            el('span', { className: 'sidebar__empty-legend-desc', text: desc }),
-        ]));
         return [
             el('div', { className: 'sidebar__empty' }, [
                 el('div', { className: 'sidebar__empty-title', text: 'THE VILLAGE AWAITS' }),
-                el('div', { className: 'sidebar__empty-legend' }, legend),
                 el('div', {
                     className: 'sidebar__empty-cta',
                     text: 'Start a coding session to populate the village.',

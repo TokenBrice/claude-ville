@@ -1,0 +1,180 @@
+# Semantic Drawable, Material, and Atlas Contract
+
+This contract prepares World mode for a GPU-resident renderer without changing
+the current Canvas-2D result. Albedo PNGs remain authoritative. Material data,
+sidecars, atlases, and GPU records are optional and use deterministic defaults.
+
+## Runtime Invariants
+
+- Canvas mode loads and draws the original albedo paths exactly as before.
+- `AssetManager` only loads atlases and companion channels after an explicit
+  `loadMaterialAssets()` call or `new AssetManager(path, { materialAssets: true })`.
+- A missing optional sidecar or atlas never loads the checker placeholder.
+- Albedo and every channel use nearest sampling. One authored albedo pixel stays
+  one sampled renderer pixel at integer zoom tiers.
+- Labels, bubbles, primary marks, and debug UI remain outside material grading.
+- Material response is palette-stepped, not smooth PBR shading.
+
+## Semantic Drawable Record
+
+`DrawablePass.createDepthDrawable()` preserves the legacy `draw()` method and
+adds the following fields:
+
+```js
+{
+  kind,
+  sortY,
+  sortBand,
+  stableKey,
+  salience,       // primary | recent | working | ambient
+  materialId,
+  materialClass,
+  elevation,
+  emissive,
+  occluder,
+  atlasFrame,
+  drawFallback(ctx, zoom, context),
+  buildGpuRecord(context),
+}
+```
+
+`draw` remains an alias of `drawFallback`; existing Canvas call sites do not
+change. `buildGpuRecordsFromDrawables()` walks the already-sorted stream and
+adds `drawOrder` without reordering painter semantics. Future batching may only
+combine consecutive compatible records.
+
+`summarizeDrawableLayers()` exposes counts by material plus GPU-ready,
+emissive, and occluder counts for Shift-D integration. `AssetManager` exposes a
+more detailed `materialDebugSnapshot()`; neither seam draws UI by itself.
+
+## Material Vocabulary
+
+Stable material classes, in numeric encoding order, are:
+
+| Index | Class | Intended response |
+| ---: | --- | --- |
+| 0 | `unlit` | Safe default; albedo only |
+| 1 | `stone` | Restrained key light, modest wetness |
+| 2 | `timber` | Warm, low reflection |
+| 3 | `metal` | Strong stepped key response |
+| 4 | `foliage` | Wet receiving surface, low reflection |
+| 5 | `fabric` | Soft response |
+| 6 | `earth` | Matte, darkens when wet |
+| 7 | `cobble` | Wet receiving surface |
+| 8 | `water` | Reflection-eligible, non-occluding |
+| 9 | `glass-rune` | Reflective and optionally emissive |
+| 10 | `fire` | Semantic emission, no key-light response |
+
+Append new classes; never reorder these indices. The authored key convention is
+warm light from screen upper-left with quantized response bands
+`0.72 / 0.86 / 1.00 / 1.12`.
+
+## Manifest Fields
+
+All fields are optional for ordinary assets:
+
+```yaml
+materialClass: stone
+atlasFrame: { atlas: world-pilot, key: building.command }
+elevation: { base: 0, top: 208, unit: sprite-px }
+emissive:
+  strength: 1
+  sources:
+    - { id: emissive.command.windows, kind: windows, geometry: registry.windowRects, strength: 0.72 }
+occluder: { mode: alpha-silhouette, strength: 1, horizonY: 130 }
+
+# Only add these after the companion PNG exists and was reviewed:
+materialSidecar: true
+emissiveSidecar: true
+occluderSidecar: true
+```
+
+Every emissive source needs a stable semantic `id`. `BuildingVisualRegistry`
+owns landmark geometry such as windows and effect anchors; light placement
+remains under `LightSourceRegistry`/building light records.
+
+### Companion Paths
+
+`true` derives a companion path beside albedo:
+
+| Albedo | Channel | Derived path |
+| --- | --- | --- |
+| `buildings/building.command/base.png` | emissive | `base.emissive.png` |
+| `characters/agent.claude.opus/sheet.png` | material | `sheet.material.png` |
+| `terrain/terrain.shore-shallow/sheet.png` | occluder | `sheet.occluder.png` |
+
+A string value is an explicit path. Absent/false means “use generated defaults,”
+not “load a missing file.” Sidecars must exactly match albedo dimensions and may
+not extend alpha beyond albedo.
+
+## Channel Encoding
+
+The committed pilot atlas has identical rectangles and padding in every channel:
+
+- `albedo`: original RGBA pixels.
+- `material`: R = stable material-class index; G/B reserved; A = albedo alpha.
+- `emissive`: authored RGB with A as contribution; transparent black by default.
+- `occluder`: R = authored height (zero in the flat default), G = occlusion
+  strength, B reserved, A = albedo alpha. `mode: none` is transparent.
+
+Generated emissive defaults come only from named semantic sources and existing
+window/light anchors. The tooling does not infer emission from luminance.
+
+Each frame has a two-pixel extruded gutter to prevent atlas bleeding. Runtime
+sampling is still nearest; gutters protect edge texels when future passes sample
+near frame boundaries.
+
+## Frame Contracts
+
+- Characters retain 8 directions (`s,se,e,ne,n,nw,w,sw`) and 10 rows: six
+  `walk` frames followed by four `idle` frames. Atlas keys are
+  `<id>/<animation>/<direction>/<frame>`.
+- Terrain retains the 4x4 Wang layout. Keys are `<id>/wang/<mask>`.
+- Building overlay layers use `<building-id>.<layer-name>`.
+- Single sprites keep their stable manifest ID as the frame key.
+- Metadata preserves source path/dimensions/hash, anchor, structure mask,
+  material class, semantic tags, and deterministic pack order. It contains no
+  timestamp, so unchanged inputs produce byte-stable JSON and PNGs.
+
+## Pilot
+
+`world-pilot` covers 18 reviewed IDs: all nine landmarks; lantern, rune brazier,
+and three light overlays; shallow/deep water transitions; one Claude class; and
+one Codex class. Building overlay layers are included with their parent. No
+individual sidecar PNG is required for the pilot.
+
+## Tooling
+
+```bash
+# Review deterministic layout; writes nothing.
+npm run sprites:atlas-plan -- --atlas=world-pilot
+
+# Rebuild committed atlas channels and metadata from existing source PNGs.
+npm run sprites:atlas-bake -- --atlas=world-pilot
+
+# Validate schema, dimensions, anchors, hashes, alpha bounds, frame tags,
+# matching rectangles, nearest gutters, and orphan/missing channels.
+npm run sprites:channels-validate
+npm run sprites:validate
+
+# Produce output-only channel review sheets.
+npm run sprites:channels-contact-sheet -- --atlas=world-pilot
+```
+
+Broad atlas membership is opt-in through the reviewed `atlases[].ids` list in
+`manifest.yaml`. `atlas-bake` deliberately rejects an ad-hoc `--ids` override.
+
+For a precise manual correction, paint explicit pixels or rectangles rather
+than auto-thresholding luminance:
+
+```bash
+npm run sprites:sidecar-mask-fix -- \
+  --id=building.command \
+  --channel=emissive \
+  --paint=rect:80:127:7:10:#ffd98aff \
+  --dry-run
+```
+
+Remove `--dry-run` only after reviewing the target and then add the matching
+`<channel>Sidecar: true` manifest opt-in. Re-bake, validate, and inspect the
+channel contact sheet before committing a sidecar.

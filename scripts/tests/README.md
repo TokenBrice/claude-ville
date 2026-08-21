@@ -1,15 +1,14 @@
 # scripts/tests/
 
-Unit tests for the signal layer, run by `npm run test:unit` (part of
+Unit tests for signal and pure renderer-policy logic, run by `npm run test:unit` (part of
 `npm run validate:quick`). They use Node's built-in `node:test` runner — no
 dependency, no build step, consistent with the rest of the project.
 
-These cover the pure logic that decides **what the village believes about an
-agent**. Everything the user sees — the bell, the beacon, the ATTN badge, the
-attention cue, the dashboard header, the Chronicle — is downstream of these
-functions, so a silent regression here misinforms every surface at once. They
-are deliberately not renderer tests; canvas output stays covered by the sprite
-visual diffs and the world validators.
+The signal tests decide **what the village believes about an agent**. The
+renderer-policy tests cover deterministic admission, resource accounting,
+material records, atlas layout, and degradation without requiring Canvas or a
+browser. Actual pixels stay covered by sprite/channel validation, visual diffs,
+and World validators.
 
 | File | Covers |
 | --- | --- |
@@ -18,6 +17,12 @@ visual diffs and the world validators.
 | `session-residency.test.mjs` | `services/sessionResidency.js` — which sessions survive the active window, TTL expiry, re-classification as a wait lengthens, and the resident cap. |
 | `chronicle-log.test.mjs` | `src/application/ChronicleLog.js` — commit-subject extraction and the day rollup. |
 | `spend-ledger.test.mjs` | `src/application/SpendLedger.js` — delta banking, cache-read separation, backwards counters, rate windowing, and midnight rollover. |
+| `material-contract.test.mjs` | Semantic material defaults, nine-landmark metadata, Canvas-compatible drawable/GPU seams, SpriteRenderer placement parity, and deterministic atlas packing. |
+| `postfx-ladder.test.mjs` | PostFX degradation/recovery hysteresis, timing-driver attribution, and sticky degradation reasons. |
+| `postfx-feed.test.mjs` | Water-mask cache reuse, camera-pose rebuild diagnostics, and mask resource ownership. |
+| `trail-render-policy.test.mjs` | Camera-motion classification, world-cache admission, and no-repaint pose transforms. |
+| `canvas-budget.test.mjs` | Named GPU texture/attachment/buffer accounting and the unified Canvas/GPU byte ledger. |
+| `render-baseline-manifest.test.mjs` | Required deterministic scenes, atmospheres, desktop sizes, renderer modes, camera declarations, and north-star coverage. |
 
 ## Conventions
 

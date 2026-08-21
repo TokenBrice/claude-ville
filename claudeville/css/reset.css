@@ -38,6 +38,10 @@
     --cv-border: rgba(199, 157, 76, 0.42);
     --cv-border-soft: rgba(199, 157, 76, 0.16);
     --cv-shadow: rgba(0, 0, 0, 0.38);
+    --cv-active-ink: #241812;
+    --cv-active-top: #fff0b0;
+    --cv-active-mid: #d6a951;
+    --cv-active-bottom: #9c6732;
 
     /* Agent status colors (dots, card borders, badges). Canonical source is
        STATUS_VISUALS in src/config/theme.js — App.js re-stamps these vars from

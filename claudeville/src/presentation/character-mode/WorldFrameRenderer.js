@@ -16,6 +16,7 @@ import {
     drawPrimaryPillRestamp,
     drawOffscreenCueEdges,
 } from './VillageDirectorOverlay.js';
+import { buildGpuWorldRecords } from './gpu/GpuSceneBuilder.js';
 
 // Follow-up after layer extraction: move private renderer calls used here into
 // explicit layer/context methods so this module stays a frame orchestrator.
@@ -29,8 +30,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     const renderNow = Date.now();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const viewport = renderer._screenViewport();
-    const postFxActive = renderer.postFx?.isActive?.() === true;
-    renderer._setPostFxCanvasVisible?.(postFxActive);
+    const gpuWorldActive = renderer.gpuWorld?.isActive?.() === true;
+    const postFxActive = !gpuWorldActive && renderer.postFx?.isActive?.() === true;
+    renderer._setPostFxCanvasVisible?.(gpuWorldActive || postFxActive);
     renderer._resetScreenTransform(overlayCtx);
     overlayCtx.clearRect(0, 0, viewport.width, viewport.height);
     // #28 integration — fire the child sprite's one-shot handoff ack-bob once the
@@ -89,16 +91,18 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.camera.applyTransform(ctx);
     renderer._drawDistantSeaHorizon(ctx, atmosphere);
     markFrameTiming(frameTimer, 'horizon');
-    renderer._drawTerrain(
-        ctx,
-        frameTimer ? label => markFrameTiming(frameTimer, label) : null,
-    );
-    // #24 — cloud-shadow parallax: feathered shadows slide across the baked
-    // terrain on the wind, giving the flat iso plane depth under the live sky.
-    drawCloudShadows(renderer, ctx, atmosphere, perfNow);
-    // 6.4 — ground fog at dawn / over water, on the ground plane ahead of the
-    // village so agents and buildings stand up out of the mist.
-    drawGroundFog(renderer, ctx, atmosphere, perfNow);
+    if (!gpuWorldActive) {
+        renderer._drawTerrain(
+            ctx,
+            frameTimer ? label => markFrameTiming(frameTimer, label) : null,
+        );
+        // #24 — cloud-shadow parallax: feathered shadows slide across the baked
+        // terrain on the wind, giving the flat iso plane depth under the live sky.
+        drawCloudShadows(renderer, ctx, atmosphere, perfNow);
+        // 6.4 — ground fog at dawn / over water, on the ground plane ahead of the
+        // village so agents and buildings stand up out of the mist.
+        drawGroundFog(renderer, ctx, atmosphere, perfNow);
+    }
     markFrameTiming(frameTimer, 'ground-atmosphere');
     // [0.6] Draw-order: the canopy pass now also carries the hero sky rewards
     // (aurora, shooting stars, sky-flare, sun glints, push grade) so they
@@ -113,7 +117,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._drawOpenSeaGulls(ctx);
     renderer._drawLandBirds(ctx);
     markFrameTiming(frameTimer, 'fauna');
-    renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
+    if (!gpuWorldActive) renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
     markFrameTiming(frameTimer, 'trails');
     // 3.10 — teams with a live council ring skip the director aura wash.
     drawVillageDirectorGround(ctx, villageSnapshot, renderNow, atmosphere?.grade, {
@@ -121,10 +125,10 @@ export function renderWorldFrame(renderer, dt = 16) {
     });
     markFrameTiming(frameTimer, 'director-ground');
 
-    drawBuildingLightReflections(renderer, ctx, atmosphere);
+    if (!gpuWorldActive) drawBuildingLightReflections(renderer, ctx, atmosphere);
     markFrameTiming(frameTimer, 'light-reflections');
 
-    renderer.buildingRenderer?.drawShadows(ctx);
+    if (!gpuWorldActive) renderer.buildingRenderer?.drawShadows(ctx);
     // 3.9 — priority-ordered admission: talk arcs draw last (above sprites) but
     // are the highest-value SECONDARY marks, so they are admitted into the mark
     // governor up front and the ring/tether passes cull ahead of them.
@@ -170,6 +174,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     const agentLighting = atmosphere?.lighting || null;
     for (const sprite of sortedSprites) {
         sprite.setLightingState?.(agentLighting);
+        sprite.setGpuWorldEnabled?.(gpuWorldActive);
     }
     const propDrawables = renderer._enumeratePropDrawables();
     const harborDrawables = renderer.harborTraffic?.enumerateDrawables() ?? [];
@@ -212,6 +217,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         chronicleMonuments: renderer.chronicleMonuments,
         chronicler: renderer.chronicler,
         agentRenderMode,
+        gpuWorldActive,
     });
     markFrameTiming(frameTimer, 'drawables');
     drawTalkArcs(ctx, {
@@ -244,18 +250,35 @@ export function renderWorldFrame(renderer, dt = 16) {
     markFrameTiming(frameTimer, 'world-effects');
 
     renderer._resetScreenTransform(ctx);
+    let gpuWorldRendered = false;
     let postFxRendered = false;
-    if (postFxActive) {
-        const feed = renderer.postFxFeed?.build?.({
+    const needsGpuFeed = gpuWorldActive || postFxActive;
+    const feed = needsGpuFeed
+        ? renderer.postFxFeed?.build?.({
             renderer,
             atmosphere,
             villageSnapshot,
             nowMs: renderNow,
-        }) || null;
+        }) || null
+        : null;
+    if (gpuWorldActive) {
+        const records = buildGpuWorldRecords(renderer, { drawables });
+        const gpuFeed = Object.assign(renderer._gpuFeedEnvelope ||= {}, feed || {}, {
+            atmosphere,
+            weather: atmosphere?.weather || null,
+            lighting: atmosphere?.lighting || null,
+        });
+        gpuWorldRendered = renderer.gpuWorld?.render?.({
+            records,
+            camera: renderer.camera,
+            feed: gpuFeed,
+        }) === true;
+        markFrameTiming(frameTimer, 'gpu-world');
+    } else if (postFxActive) {
         postFxRendered = renderer.postFx?.render?.(canvas, feed) === true;
         markFrameTiming(frameTimer, 'postfx');
     }
-    if (!postFxActive || !postFxRendered) {
+    if ((!gpuWorldActive || !gpuWorldRendered) && (!postFxActive || !postFxRendered)) {
         renderer._drawAtmosphere(
             ctx,
             atmosphere,
@@ -264,7 +287,9 @@ export function renderWorldFrame(renderer, dt = 16) {
             frameTimer ? label => markFrameTiming(frameTimer, label) : null,
         );
     }
-    if (postFxActive && !postFxRendered) renderer._setPostFxCanvasVisible?.(false);
+    if ((gpuWorldActive && !gpuWorldRendered) || (postFxActive && !postFxRendered)) {
+        renderer._setPostFxCanvasVisible?.(false);
+    }
 
     renderer._resetScreenTransform(overlayCtx);
     renderer.weatherRenderer?.drawForeground(overlayCtx, {
@@ -274,10 +299,21 @@ export function renderWorldFrame(renderer, dt = 16) {
         profileMark: frameTimer ? label => markFrameTiming(frameTimer, label) : null,
     });
     renderer.camera.applyTransform(overlayCtx);
+    if (gpuWorldRendered) {
+        renderer.trailRenderer?.draw?.(overlayCtx, renderer.camera, viewport, renderNow);
+    }
     // 0.7 — re-stamp the PRIMARY mark set (waiting beacons, selection rings,
     // incident pills) AFTER the atmosphere multiply so the action-demanding
     // reads survive the night grade at the same strength the plaques enjoy.
-    drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, villageSnapshot, atmosphere);
+    drawPrimaryMarksPostAtmosphere(renderer, overlayCtx, villageSnapshot, atmosphere, {
+        force: gpuWorldRendered,
+    });
+    if (gpuWorldRendered) renderer._drawEmptyStateWorldCue(overlayCtx);
+    if (gpuWorldRendered) {
+        for (const sprite of sortedSprites) {
+            sprite.drawGpuWorldOverlay?.(overlayCtx, zoom, agentRenderMode);
+        }
+    }
     markFrameTiming(frameTimer, 'post-atmosphere-effects');
 
     renderer.buildingRenderer?.drawBubbles(overlayCtx, renderer.world);
@@ -301,6 +337,7 @@ export function renderWorldFrame(renderer, dt = 16) {
             familiars: familiarDrawables.length,
         },
         agentRenderMode,
+        gpuWorld: renderer.gpuWorld?.getDiagnostics?.() || null,
     });
     markFrameTiming(frameTimer, 'labels');
 
@@ -468,8 +505,8 @@ function buildingDimsLookup(renderer) {
 // pass-shape precedent). Daylight (factor ~0) draws nothing, so marks are
 // never double-stamped at full strength. Reduced motion: identical — the
 // re-stamp carries no motion of its own.
-function drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphere) {
-    const nightFactor = primaryRestampNightFactor(renderer, atmosphere);
+function drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphere, { force = false } = {}) {
+    const nightFactor = force ? 1 : primaryRestampNightFactor(renderer, atmosphere);
     if (nightFactor <= 0.06) return;
 
     for (const sprite of renderer.agentSprites?.values?.() || []) {
@@ -480,7 +517,7 @@ function drawPrimaryMarksPostAtmosphere(renderer, ctx, villageSnapshot, atmosphe
         if (sprite.agent?.status === AgentStatus.WAITING_ON_USER
             && typeof sprite._drawWaitingOnUserBeacon === 'function') {
             ctx.save();
-            ctx.globalAlpha = 0.55 * nightFactor;
+            ctx.globalAlpha = (force ? 1 : 0.55) * nightFactor;
             sprite._drawWaitingOnUserBeacon(ctx, null);
             ctx.restore();
         }
@@ -829,6 +866,8 @@ function buildRenderStats(renderer, { drawableStats, cullingStats, harborPending
         director: renderer.villageDirector?.getStats?.() || null,
         quality: {
             agentRenderMode,
+            worldRendererMode: renderer.worldRendererMode || 'canvas',
+            gpuWorld: renderer.gpuWorld?.getDiagnostics?.() || null,
         },
         terrainCache: renderer.getTerrainCacheDiagnostics?.() || null,
         timings: renderer._lastRenderStats?.timings || null,
