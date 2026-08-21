@@ -2,6 +2,16 @@
 
 ---
 
+## v0.32.0.1 · Aug 21, 2026 — Hotfix
+
+GPU light glows no longer render as bright daylight discs (seen over the market stall and torches around Command), and the baked lantern posts got their night halos back.
+
+- **The disc was a falloff bug, not a gating one.** The glow shader's hard 0.35-radius core drew a solid ball where the Canvas-2D pass draws a cached radial gradient (0.5 alpha core mixed toward white, 0.25 at a third of the radius, fading to the rim). The shader now reproduces that exact gradient, at the 2D pass's `0.14 × lightBoost²` strength envelope.
+- **Day visibility preserved where the 2D path has it.** The ambient stamp pass is *not* night-gated in 2D — transient semantic lights (arrivals, rituals, relationship cues) and faint building glows keep their daylight presence instead of being suppressed wholesale.
+- **Lantern posts glow at night again.** The baked lantern/brazier prop halos come from a separate, night-gated 2D pass (`_drawLanternGlows`) whose sources were never in the light feed — the GPU path had dropped them. They are now fed as flagged lights carrying the lantern night factor (`0.42 × nightFactor`, dusk-onward only).
+
+---
+
 ## v0.32.0 — *Lanternfire* · Aug 21, 2026
 
 World mode gains a hybrid GPU pipeline: the Canvas-2D village stays the source of truth while a new WebGL2 post-processing stage grades, glows, and blooms the finished frame — and steps aside automatically the moment it cannot earn its keep.

@@ -123,7 +123,7 @@ export function createPostFxFeed() {
     function lightSlot(index) {
         let slot = lightSlotPool[index];
         if (!slot) {
-            slot = { x: 0, y: 0, radius: 0, r: 255, g: 255, b: 255, intensity: 1, kind: 'point' };
+            slot = { x: 0, y: 0, radius: 0, r: 255, g: 255, b: 255, intensity: 1, kind: 'point', night: false };
             lightSlotPool[index] = slot;
         }
         return slot;
@@ -245,7 +245,10 @@ export function createPostFxFeed() {
             const kind = src.kind || 'point';
             const radiusWorld = Math.max(0, finite(src.radius, 64));
             const radiusBacking = radiusWorld * zoom * dpr;
-            const intensity = Math.max(0, finite(src.intensity ?? src.alpha, 1));
+            // 2D parity: _drawLightGlowStamps scales its gradient stamp by
+            // `light.intensity || 1` (the record's `alpha` is unused there)
+            // and draws day and night alike.
+            const intensity = Math.max(0, finite(src.intensity, 1));
             const [r, g, b] = parseLightColor(src.color, colorCache);
             const bx = sx * dpr;
             const by = sy * dpr;
@@ -259,6 +262,7 @@ export function createPostFxFeed() {
                 slot.g = g;
                 slot.b = b;
                 slot.intensity = intensity;
+                slot.night = false;
                 slot.kind = kind;
                 lightsOut.push(slot);
                 lightCount++;
@@ -276,6 +280,37 @@ export function createPostFxFeed() {
             }
 
             if (lightCount >= MAX_LIGHTS && hazeCount >= MAX_HAZE) break;
+        }
+
+        // Baked lantern/brazier prop halos: the 2D path draws these in a
+        // separate, night-gated pass (_drawLanternGlows) from sources that are
+        // NOT in the ambient list. Feed them as flagged lights so the GL pass
+        // can apply the same lantern night factor per light.
+        const lanternSources = renderer?._lanternGlowSources?.() || null;
+        if (lanternSources && camera && typeof camera.worldToScreen === 'function') {
+            const lanternRadius = Math.max(9, Math.round(14 * zoom)) * dpr;
+            for (let i = 0; i < lanternSources.length && lightCount < MAX_LIGHTS; i++) {
+                const src = lanternSources[i];
+                if (!src) continue;
+                const p = camera.worldToScreen(finite(src.x, NaN), finite(src.y, NaN));
+                const sx = finite(p?.x, NaN);
+                const sy = finite(p?.y, NaN);
+                if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
+                if (sx < -margin || sy < -margin || sx > cssW + margin || sy > cssH + margin) continue;
+                const slot = lightSlot(lightCount);
+                slot.x = sx * dpr;
+                slot.y = sy * dpr;
+                slot.radius = lanternRadius;
+                // Lantern token #ffd56a — matches _getLanternGlowStamp's core.
+                slot.r = 255;
+                slot.g = 213;
+                slot.b = 106;
+                slot.intensity = 1;
+                slot.night = true;
+                slot.kind = 'point';
+                lightsOut.push(slot);
+                lightCount++;
+            }
         }
     }
 

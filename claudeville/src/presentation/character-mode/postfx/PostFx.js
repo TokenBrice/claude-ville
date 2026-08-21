@@ -155,12 +155,19 @@ vec3 applyGlows(vec3 color) {
     for (int i = 0; i < 48; i++) {
         if (i >= u_lightCount) break;
         vec4 light = u_lights[i];
-        float distancePx = distance(p, light.xy);
         float radius = max(1.0, light.z);
-        float falloff = 1.0 - smoothstep(0.0, radius, distancePx);
-        float core = 1.0 - smoothstep(0.0, radius * 0.35, distancePx);
-        float stamp = (falloff * 0.25 + core * 0.50) * light.w * u_lightGlowScale;
-        color += u_lightColors[i].rgb * stamp;
+        float t = distance(p, light.xy) / radius;
+        if (t >= 1.0) continue;
+        // 2D parity: _getLightGlowStamp's radial gradient — alpha 0.5 at the
+        // core, 0.25 at t=0.35, fading to 0 at the rim, with the core hue
+        // mixed 60% toward white so lanterns read incandescent.
+        float a = mix(mix(0.5, 0.25, t / 0.35), mix(0.25, 0.0, (t - 0.35) / 0.65), step(0.35, t));
+        vec3 base = u_lightColors[i].rgb;
+        vec3 hue = mix(mix(base, vec3(1.0), 0.6), base, smoothstep(0.0, 0.35, t));
+        // u_lightColors[i].a carries the per-light scale: 1 for ambient
+        // sources (day-visible, 2D parity), lantern night factor for baked
+        // prop halos.
+        color += hue * a * light.w * u_lightGlowScale * u_lightColors[i].a;
     }
     return color;
 }
@@ -723,9 +730,20 @@ class PostFxInstance {
         gl.uniform3f(uniforms.u_tint, worldTint[0], worldTint[1], worldTint[2]);
         gl.uniform1f(uniforms.u_tintAlpha, parseColorAlpha(grade.worldTint));
         const lightBoost = clamp(finite(lighting.lightBoost, finite(grade.buildingGlowScale, 1)), 0.3, 2);
-        // _drawLightGlowStamps caps the screen-composite alpha at 0.14 before
-        // each cached radial stamp; retain that authored brightness envelope.
-        gl.uniform1f(uniforms.u_lightGlowScale, 0.14 * lightBoost);
+        // IsometricRenderer._lanternNightFactor equivalent — used ONLY for the
+        // flagged lantern-prop halos (the 2D _drawLanternGlows gate). Ambient
+        // source glows are NOT night-gated in 2D and stay day-visible.
+        const beacon = Number(lighting.beaconIntensity);
+        const ambient = Number(lighting.ambientLight);
+        const nightFactor = clamp(Number.isFinite(beacon) ? beacon
+            : (Number.isFinite(ambient) ? 1 - ambient : 0), 0, 1);
+        this._glowNightFactor = nightFactor;
+        // 2D parity: _drawLightGlowStamps composites at globalAlpha
+        // 0.14 * lightBoost over a stamp whose stop alphas already carry
+        // another lightBoost factor (glowScale) — hence boost squared.
+        const glowScale = 0.14 * lightBoost * lightBoost;
+        this._glowScale = glowScale;
+        gl.uniform1f(uniforms.u_lightGlowScale, glowScale);
         gl.uniform1f(uniforms.u_time, finite(feed?.timeMs));
         gl.uniform1f(uniforms.u_motionScale, motionScale);
         gl.uniform1i(uniforms.u_reducedMotion, reducedMotion ? 1 : 0);
@@ -754,9 +772,15 @@ class PostFxInstance {
         this.lightColors.fill(0);
         const lights = Array.isArray(feed?.lights) ? feed.lights : [];
         let lightCount = 0;
+        // Lantern-prop halos replicate _drawLanternGlows: globalAlpha
+        // 0.42 * nightFactor over a near-unity stamp. Cancel the ambient
+        // glow scale and substitute the lantern envelope in the alpha slot.
+        const lanternScale = (0.42 * (this._glowNightFactor ?? 0)) / Math.max(0.02, this._glowScale ?? 0.14);
+        const lanternsVisible = (this._glowNightFactor ?? 0) > 0.05;
         for (let i = 0; i < lights.length && lightCount < MAX_LIGHTS; i++) {
             const light = lights[i] || {};
             if (light.kind === 'beam') continue; // beam wedges are not radial stamps in the 2D path
+            if (light.night && !lanternsVisible) continue; // 2D gate: prop halos only after dusk
             if (!Number.isFinite(Number(light.x)) || !Number.isFinite(Number(light.y))) continue;
             const offset = lightCount * 4;
             this.lightValues[offset] = finite(light.x);
@@ -766,7 +790,7 @@ class PostFxInstance {
             this.lightColors[offset] = clamp(finite(light.r, 255) / 255, 0, 1);
             this.lightColors[offset + 1] = clamp(finite(light.g, 255) / 255, 0, 1);
             this.lightColors[offset + 2] = clamp(finite(light.b, 255) / 255, 0, 1);
-            this.lightColors[offset + 3] = 1;
+            this.lightColors[offset + 3] = light.night ? lanternScale : 1;
             lightCount++;
         }
         this.lightCount = lightCount;
