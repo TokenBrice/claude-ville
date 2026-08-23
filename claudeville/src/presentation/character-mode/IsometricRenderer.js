@@ -123,8 +123,10 @@ const WORLD_FRAME_MAX_CONSECUTIVE_FAILURES = 3;
 const DEBUG_GLOBAL_OWNERS = new WeakMap();
 const MAX_LIGHT_GRADIENT_CACHE_PIXELS = CANVAS_BUDGET.maxLightCachePixels;
 const MAX_LIGHT_GRADIENT_STAMP_PIXELS = Math.floor(MAX_LIGHT_GRADIENT_CACHE_PIXELS / 5);
-const FAST_ATMOSPHERE_BACKING_PIXELS = 800_000;
-const FAST_PROP_BACKING_PIXELS = 800_000;
+// Viewport-size gates for the cheap sky/atmosphere/prop paths. CSS pixels, not
+// backing pixels: a sharper display is not a bigger scene.
+const FAST_ATMOSPHERE_CSS_PIXELS = 800_000;
+const FAST_PROP_CSS_PIXELS = 800_000;
 const FAST_PROP_MIN_ZOOM = 1.5;
 const FAST_PROP_AGENT_MARGIN = 36;
 const FAST_PROP_SCREEN_MARGIN = 96;
@@ -162,13 +164,15 @@ const LOCAL_AVOIDANCE = Object.freeze({
     denseStrengthPx: 0.62,
     bucketPx: 40,
 });
+// Scene-complexity gates: how many sprites and labels compete for screen area
+// is a CSS-space property. They must never read backing pixels — a Retina
+// canvas has 4x as many for the same scene, which would strip annotations off
+// the world purely because the display is sharp.
 const AGENT_RENDER_COMPACT_COUNT = 80;
 const AGENT_RENDER_COMPACT_ZOOM = 2.2;
 const AGENT_RENDER_COMPACT_CSS_PIXELS = 1_450_000;
-const AGENT_RENDER_COMPACT_CANVAS_PIXELS = 1_900_000;
 const AGENT_RENDER_MINIMAL_COUNT = 96;
 const AGENT_RENDER_MINIMAL_CSS_PIXELS = 1_700_000;
-const AGENT_RENDER_MINIMAL_CANVAS_PIXELS = 1_700_000;
 const CROWD_CLUSTER_TILE_SIZE = 4;
 const CROWD_CLUSTER_TOP_LIMIT = 12;
 const CROWD_BUMP_COOLDOWN_LIMIT = 512;
@@ -1873,6 +1877,11 @@ export class IsometricRenderer {
         this.skyRenderer?.releaseCache?.();
         this.trailRenderer?.pause?.();
         this.weatherRenderer?.dispose?.();
+        // The water mask is a viewport-sized volatile surface like the rest of
+        // this list; `fillWater` rebuilds it on the next frame. Without this it
+        // survived context loss, which the lifecycle smoke reports as leaked
+        // volatile pixels.
+        this.postFxFeed?.dispose?.();
         releaseCanvasBackingStore(this._gpuAgentFrameAtlas);
         this._gpuAgentFrameAtlas = null;
         this._gpuAgentFrameAtlasSignature = '';
@@ -2080,7 +2089,7 @@ export class IsometricRenderer {
 
     _shouldUseFastStaticProps() {
         if ((this.camera?.zoom || 1) < FAST_PROP_MIN_ZOOM) return false;
-        return canvasPixelCount(this.canvas) >= FAST_PROP_BACKING_PIXELS;
+        return this._screenWidth() * this._screenHeight() >= FAST_PROP_CSS_PIXELS;
     }
 
     _enumerateFastPropDrawables() {
@@ -4348,18 +4357,12 @@ export class IsometricRenderer {
         this._annotationMode = pressureMode;
         if (count < 50) return pressureMode;
         const cssPixels = Math.max(0, (viewport?.width || 0) * (viewport?.height || 0));
-        const backingPixels = canvasPixelCount(this.canvas);
-        if (
-            count >= AGENT_RENDER_MINIMAL_COUNT &&
-            (cssPixels >= AGENT_RENDER_MINIMAL_CSS_PIXELS || backingPixels >= AGENT_RENDER_MINIMAL_CANVAS_PIXELS)
-        ) {
+        if (count >= AGENT_RENDER_MINIMAL_COUNT && cssPixels >= AGENT_RENDER_MINIMAL_CSS_PIXELS) {
             return 'minimal';
         }
         if (
             count >= AGENT_RENDER_COMPACT_COUNT &&
-            (zoom <= AGENT_RENDER_COMPACT_ZOOM ||
-                cssPixels >= AGENT_RENDER_COMPACT_CSS_PIXELS ||
-                backingPixels >= AGENT_RENDER_COMPACT_CANVAS_PIXELS)
+            (zoom <= AGENT_RENDER_COMPACT_ZOOM || cssPixels >= AGENT_RENDER_COMPACT_CSS_PIXELS)
         ) {
             return 'compact';
         }
@@ -10477,8 +10480,8 @@ export class IsometricRenderer {
     }
 
     _shouldUseFastAtmosphere() {
-        const backingPixels = canvasPixelCount(this.canvas);
-        return backingPixels >= FAST_ATMOSPHERE_BACKING_PIXELS && (this.camera?.zoom || 1) >= 1.5;
+        const cssPixels = this._screenWidth() * this._screenHeight();
+        return cssPixels >= FAST_ATMOSPHERE_CSS_PIXELS && (this.camera?.zoom || 1) >= 1.5;
     }
 
     _drawFastAtmosphereWash(

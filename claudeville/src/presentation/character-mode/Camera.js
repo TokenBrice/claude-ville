@@ -27,18 +27,38 @@ const TOUR_STOP_ORDER = Object.freeze([
     'portal', 'mine', 'forge', 'taskboard',
 ]);
 
-// Logical resting tiers for wheel/keyboard zoom. At browser scales below 100%,
-// each tier is divided by the display DPR so one authored world pixel still
-// occupies an integer number of physical pixels. The 150ms tween may pass
-// through fractional values, but every settled pose is display-pixel aligned.
+// Logical resting tiers for wheel/keyboard zoom. Every settled pose must place
+// one authored world pixel on a whole number of BACKING pixels, otherwise
+// sprite art and canvas text are resampled instead of scaled. A backing pixel
+// is itself an exact integer block of device pixels (see CanvasBudget's
+// divisor ladder), so an integer backing scale is an integer device scale —
+// the two together are what keep pixel text readable at any display scale.
+// The 150ms tween may pass through fractional values; every settled pose is
+// display-pixel aligned.
 const NOMINAL_ZOOM_STEPS = Object.freeze([1, 2, 3]);
 
-function displayPixelZoomScale() {
-    const dpr = Math.max(0.25, Number(globalThis.window?.devicePixelRatio) || 1);
-    return dpr < 1 ? 1 / dpr : 1;
+// The surface's own ratio, never re-clamped: CanvasBudget already picked a rung
+// on the device grid, and a second, different floor here would align the zoom
+// tiers to a DPR the canvas is not actually using.
+function backingDpr(canvas) {
+    const surfaceDpr = Number(canvas?._claudeVilleDpr);
+    if (Number.isFinite(surfaceDpr) && surfaceDpr > 0) return surfaceDpr;
+    const deviceDpr = Number(globalThis.window?.devicePixelRatio);
+    return Number.isFinite(deviceDpr) && deviceDpr > 0 ? deviceDpr : 1;
 }
 
-function displayPixelZoomSteps(scale) {
+// Tier 1 puts one authored world pixel on the nearest whole number of backing
+// pixels; tiers 2 and 3 are the same [1, 2, 3] ratios on top of it, so tier
+// semantics elsewhere in the renderer are unchanged. At backing DPR 1 and 2
+// the tiers are exactly [1, 2, 3]; below 1 this reduces to the historical
+// 1/dpr scaling; fractional ratios above 1 (125% browser zoom, 150% displays)
+// shift by the rounding needed to stay on the grid.
+function displayPixelZoomScale(dpr) {
+    return Math.max(1, Math.round(dpr)) / dpr;
+}
+
+export function displayPixelZoomSteps(dpr) {
+    const scale = displayPixelZoomScale(dpr);
     return Object.freeze(NOMINAL_ZOOM_STEPS.map((step) => step * scale));
 }
 
@@ -47,8 +67,8 @@ export class Camera {
         this.canvas = canvas;
         this.x = 0;
         this.y = 0;
-        this._displayPixelZoomScale = displayPixelZoomScale();
-        this.zoomSteps = displayPixelZoomSteps(this._displayPixelZoomScale);
+        this.zoomSteps = displayPixelZoomSteps(backingDpr(canvas));
+        this._displayPixelZoomScale = this.zoomSteps[0];
         this.minZoom = this.zoomSteps[0];
         this.maxZoom = this.zoomSteps[this.zoomSteps.length - 1];
         this.zoom = this.minZoom;
@@ -139,24 +159,32 @@ export class Camera {
     }
 
     _syncDisplayPixelZoom() {
-        const nextScale = displayPixelZoomScale();
-        const previousScale = this._displayPixelZoomScale || 1;
-        if (Math.abs(nextScale - previousScale) < 1e-6) return false;
+        const nextSteps = displayPixelZoomSteps(backingDpr(this.canvas));
+        const currentSteps = this.zoomSteps;
+        if (nextSteps.every((step, index) => Math.abs(step - currentSteps[index]) < 1e-6)) return false;
 
-        const ratio = nextScale / previousScale;
-        this._displayPixelZoomScale = nextScale;
-        this.zoomSteps = displayPixelZoomSteps(nextScale);
+        // A pose already resting on a tier moves to the SAME tier on the new
+        // grid; only mid-tween values are scaled. Scaling a resting pose by the
+        // tier-1 ratio would land it between the new tiers, off the pixel grid.
+        const ratio = nextSteps[0] / (this._displayPixelZoomScale || currentSteps[0] || 1);
+        const remap = (value) => {
+            if (!Number.isFinite(value)) return value;
+            const tier = currentSteps.findIndex((step) => Math.abs(step - value) < 1e-6);
+            return tier >= 0 ? nextSteps[tier] : value * ratio;
+        };
+        this._displayPixelZoomScale = nextSteps[0];
+        this.zoomSteps = nextSteps;
         this.minZoom = this.zoomSteps[0];
         this.maxZoom = this.zoomSteps[this.zoomSteps.length - 1];
-        this.zoom *= ratio;
+        this.zoom = remap(this.zoom);
 
         // Preserve in-flight camera motion across a live browser-zoom change.
         // CSS viewport dimensions change by the inverse ratio, so x/y remain
         // centered while every stored zoom endpoint needs the same remapping.
         for (const motion of [this._zoomAnimation, this._snapZoom, this._directorGlide]) {
             if (!motion) continue;
-            if (Number.isFinite(motion.fromZoom)) motion.fromZoom *= ratio;
-            if (Number.isFinite(motion.toZoom)) motion.toZoom *= ratio;
+            motion.fromZoom = remap(motion.fromZoom);
+            motion.toZoom = remap(motion.toZoom);
         }
         return true;
     }

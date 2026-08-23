@@ -1,29 +1,40 @@
+// Pixel-art invariant: the browser may only ever scale a canvas backing store
+// to the display by an exact integer factor. `image-rendering: pixelated`
+// then replicates pixels instead of resampling them, so authored art and
+// canvas text keep hard edges. Any fractional factor shreds the 1px strokes
+// of a pixel font — that was the "blurry/unreadable on a big screen" report.
+//
+// So the backing DPR is always `deviceDpr / n` for an integer n: one backing
+// pixel covers exactly n x n device pixels, whatever the device ratio is
+// (2 on Retina, 2.5 at 125% browser zoom, 1 elsewhere). n only grows when the
+// viewport would otherwise blow the per-surface pixel budget, and a coarser
+// rung stays pixel-exact — it never resamples, it just gets chunkier.
 const MIN_BACKING_DPR = 0.25;
-const MAX_DEVICE_DPR = 1;
-// Plan 1.9 — pixel-uniform scaling, revised: snapping the backing DPR to an
-// integer 1/dpr step only happens when it is nearly free. The original
-// floor-only snap made every viewport above the main-canvas budget drop from
-// near-native resolution to 0.5, and the browser then upscaled the canvas 2x
-// with nearest-neighbor. Users read that as "pixelated". So: snap only when
-// the step keeps at least KEEP_RATIO of the budget-capped resolution;
-// otherwise keep the fractional capped value.
-const DPR_STEPS = Object.freeze([MAX_DEVICE_DPR, 0.5, MIN_BACKING_DPR]);
-const QUANTIZE_KEEP_RATIO = 0.85;
-// Visible scene, PostFX, UI overlay, sky cache, trail cache, atmosphere cache.
-const SCREEN_SURFACE_COUNT = 6;
+// Screen-surface equivalents that scale with the backing DPR: the visible 2D
+// canvas, the UI overlay, the WebGL drawing buffer, the two full-resolution
+// GPU scene attachments, and headroom for the PostFX/atmosphere surfaces. The
+// sky and trail caches are deliberately excluded — the sky cache is pinned at
+// CSS resolution (SkyRenderer._skyCacheDpr) and the trail cache is world-space.
+const SCREEN_SURFACE_COUNT = 7;
+// Per screen-surface backing ceiling, the one knob that decides the rung.
+// 7.5M backing px keeps native device resolution through ~1.87M CSS px, which
+// covers every built-in MacBook display and the 1440p range; 5K/6K viewports
+// drop to the next integer rung instead of quadrupling into ~350MB.
+const MAX_MAIN_CANVAS_PIXELS = 7_500_000;
 const WORLD_CACHE_PIXEL_RESERVE = 7_000_000;
 const LIGHT_CACHE_PIXEL_RESERVE = 1_250_000;
 const AUX_CACHE_PIXEL_RESERVE = 250_000;
 const BYTES_PER_RGBA_PIXEL = 4;
-const MAX_GPU_RESOURCE_BYTES = 64 * 1024 * 1024;
+const MAX_RENDERER_CANVAS_PIXELS = MAX_MAIN_CANVAS_PIXELS * SCREEN_SURFACE_COUNT
+    + WORLD_CACHE_PIXEL_RESERVE + LIGHT_CACHE_PIXEL_RESERVE + AUX_CACHE_PIXEL_RESERVE;
+// Native-Retina GPU cost measured at 1488x946 CSS: ~42.5MB of cached source
+// textures plus ~54.5MB of full-resolution scene attachments.
+const MAX_GPU_RESOURCE_BYTES = 128 * 1024 * 1024;
 
 export const CANVAS_BUDGET = Object.freeze({
-    maxRendererCanvasPixels: 25_000_000,
-    // Keep the visible world at native resolution through the common 1080p
-    // desktop range. Above this, the aggregate cache budget still scales the
-    // renderer down progressively instead of risking an abrupt memory spike.
-    maxMainCanvasPixels: 2_000_000,
-    maxScreenCachePixels: 8_500_000,
+    maxRendererCanvasPixels: MAX_RENDERER_CANVAS_PIXELS,
+    maxMainCanvasPixels: MAX_MAIN_CANVAS_PIXELS,
+    maxScreenCachePixels: MAX_MAIN_CANVAS_PIXELS,
     maxWorldCachePixels: WORLD_CACHE_PIXEL_RESERVE,
     maxLightCachePixels: LIGHT_CACHE_PIXEL_RESERVE,
     // Persisted trails are cached once in world space. The current 40x40 map
@@ -33,17 +44,28 @@ export const CANVAS_BUDGET = Object.freeze({
     maxGpuResourceBytes: MAX_GPU_RESOURCE_BYTES,
     // One accounting ceiling for Canvas backing stores plus GPU-owned textures,
     // attachments, and buffers. This is diagnostic policy, not an allocator.
-    maxUnifiedRendererBytes: 25_000_000 * BYTES_PER_RGBA_PIXEL + MAX_GPU_RESOURCE_BYTES,
+    maxUnifiedRendererBytes: MAX_RENDERER_CANVAS_PIXELS * BYTES_PER_RGBA_PIXEL + MAX_GPU_RESOURCE_BYTES,
 });
 
 export const RENDERER_RESOURCE_BYTES_PER_PIXEL = BYTES_PER_RGBA_PIXEL;
 
+// Largest `deviceDpr / n` rung whose backing store fits the per-surface budget.
+// `requestedDpr` is never clamped from above: capping it would make the
+// backing-to-display ratio fractional again on a hypothetical >4x display,
+// which is exactly the artefact this ladder exists to prevent. Oversized
+// viewports are handled by growing `n`, not by capping the device ratio.
+//
+// `MIN_BACKING_DPR` is a hard floor, not a budget rung: a viewport would need
+// ~120M CSS pixels to reach it, and rendering the village below quarter
+// resolution is worse than exceeding a diagnostic ceiling.
 export function effectiveCanvasDpr(cssWidth, cssHeight, requestedDpr = 1) {
     const width = Math.max(1, Number(cssWidth) || 1);
     const height = Math.max(1, Number(cssHeight) || 1);
     const cssPixels = width * height;
-    const requested = Math.max(MIN_BACKING_DPR, Math.min(Number(requestedDpr) || 1, MAX_DEVICE_DPR));
-    const mainCapDpr = Math.sqrt(CANVAS_BUDGET.maxMainCanvasPixels / cssPixels);
+    const reported = Number(requestedDpr);
+    const device = Number.isFinite(reported) && reported > 0
+        ? Math.max(MIN_BACKING_DPR, reported)
+        : 1;
     const screenBudget = Math.max(
         1,
         CANVAS_BUDGET.maxRendererCanvasPixels -
@@ -51,22 +73,18 @@ export function effectiveCanvasDpr(cssWidth, cssHeight, requestedDpr = 1) {
             CANVAS_BUDGET.maxLightCachePixels -
             AUX_CACHE_PIXEL_RESERVE,
     );
-    const combinedCapDpr = Math.sqrt(screenBudget / (cssPixels * SCREEN_SURFACE_COUNT));
-    const capped = Math.max(MIN_BACKING_DPR, Math.min(requested, mainCapDpr, combinedCapDpr));
-    return quantizeDpr(capped);
-}
-
-// Snap to the largest DPR step not above `dpr`, but only when that step keeps
-// at least QUANTIZE_KEEP_RATIO of the capped resolution (a hair of float
-// tolerance for exact-boundary viewports). Otherwise return the capped value
-// unchanged — sharpness beats uniformity once the upscale factor is small.
-function quantizeDpr(dpr) {
-    for (const step of DPR_STEPS) {
-        if (dpr >= step - 1e-6) {
-            return step >= dpr * QUANTIZE_KEEP_RATIO ? step : dpr;
-        }
+    const perSurfacePixels = Math.min(
+        CANVAS_BUDGET.maxMainCanvasPixels,
+        screenBudget / SCREEN_SURFACE_COUNT,
+    );
+    let dpr = device;
+    for (let divisor = 1; ; divisor++) {
+        const candidate = device / divisor;
+        if (candidate < MIN_BACKING_DPR) break;
+        dpr = candidate;
+        if (cssPixels * candidate * candidate <= perSurfacePixels) break;
     }
-    return MIN_BACKING_DPR;
+    return dpr;
 }
 
 export function releaseCanvasBackingStore(canvas) {

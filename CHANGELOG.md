@@ -2,6 +2,22 @@
 
 ---
 
+## v0.33.2 — *The Lettercarvers* · Aug 23, 2026
+
+In-world text stays sharp on every display. The world canvas now picks its resolution from the physical pixel grid instead of a flat cap, so the browser can only ever scale the village by a whole number.
+
+**Readable at any display scale**
+- **The world renders at native device resolution.** The backing store was previously capped at CSS resolution, so on a Retina display every name plate, building plaque, and speech bubble was drawn at half resolution and stretched back up. Retina desktops now draw the village at full device resolution.
+- **The canvas never lands between pixels again.** Large viewports used to fall to a fractional resolution and were then rescaled by a non-integer factor with nearest-neighbour filtering, which shredded the 1px strokes of the pixel fonts. Resolution is now always the device ratio divided by a whole number, so one canvas pixel covers an exact block of screen pixels; oversized viewports get chunkier, never smeared.
+- **Browser zoom and mixed-DPI displays are handled.** Zoom tiers snap to whole backing pixels at fractional device ratios, and moving the window between a laptop panel and an external monitor now rebinds the canvas instead of leaving it scaled by the old ratio.
+
+**Sharpness where it counts**
+- **Annotations no longer thin out just because the display is sharp.** Agent render tiers and the fast sky, atmosphere, and prop paths measure the scene in layout pixels; a Retina canvas is no longer mistaken for a four-times-busier village.
+- **Pixel budgets are spent deliberately.** One per-surface ceiling drives the whole ladder: laptop and 1440p-class viewports run native, 5K/6K viewports step down one whole rung, and the smooth sky caches stay at layout resolution because gradients gain nothing from four times the pixels.
+- **Context loss no longer strands the water mask.** The PostFX mask is released with the other volatile surfaces and rebuilt on the next frame.
+
+---
+
 ## v0.33.1 — *Quickened Glass* · Aug 21, 2026
 
 World mode now reaches its fast steady state without trading away the Glasswrights renderer, while daylight lighting and animated water remain visually stable throughout GPU warm-up.

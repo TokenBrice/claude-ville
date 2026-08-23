@@ -1,6 +1,6 @@
 {
   "name": "claude-ville",
-  "version": "0.33.1",
+  "version": "0.33.2",
   "description": "Local-first dashboard for watching Claude Code, Codex CLI, Gemini, Grok, Kimi, and OpenCode sessions as an isometric pixel village and monitoring dashboard.",
   "private": true,
   "license": "MIT",
@@ -57,6 +57,7 @@
     "world:validate-buildings": "node scripts/world/validate-buildings.mjs",
     "world:validate-terrain": "node scripts/world/validate-terrain.mjs",
     "world:capture-render-baselines": "node scripts/world/capture-render-baselines.mjs",
+    "world:verify-dpr": "NODE_NO_WARNINGS=1 node scripts/world/verify-dpr-fix.mjs",
     "world:benchmark-trails": "node scripts/smoke/trail-camera-benchmark.mjs",
     "world:benchmark-fps": "node scripts/smoke/world-fps-benchmark.mjs --profile",
     "vendor:refresh-js-yaml": "node scripts/vendor/refresh-js-yaml.mjs"

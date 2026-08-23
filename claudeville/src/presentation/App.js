@@ -75,6 +75,9 @@ export class App {
         this._loadRendererRetryScheduled = false;
         this._centerCameraHandle = null;
         this._onWindowResize = null;
+        this._watchDevicePixelRatio = null;
+        this._onDevicePixelRatioChange = null;
+        this._dprQuery = null;
         this._perfDebugCanvasBudget = null;
         this._perfDebugStartProfile = null;
         this._perfDebugStopProfile = null;
@@ -572,6 +575,21 @@ export class App {
 
         this._onWindowResize = () => resize();
         window.addEventListener('resize', this._onWindowResize);
+
+        // A DPR change without a layout change never fires `resize` — dragging
+        // the window from a Retina laptop panel to a 1x external display is the
+        // common case. Without this the backing store keeps the old ratio and
+        // the browser rescales it by a fraction, which shreds pixel text.
+        this._watchDevicePixelRatio = () => {
+            this._dprQuery?.removeEventListener?.('change', this._onDevicePixelRatioChange);
+            this._dprQuery = window.matchMedia?.(`(resolution: ${window.devicePixelRatio || 1}dppx)`) || null;
+            this._dprQuery?.addEventListener?.('change', this._onDevicePixelRatioChange);
+        };
+        this._onDevicePixelRatioChange = () => {
+            this._watchDevicePixelRatio();
+            resize();
+        };
+        this._watchDevicePixelRatio();
         this._resizeWorldCanvas = resize;
         this._bindGraphicsRecovery(canvas, resize);
         resize();
@@ -717,6 +735,12 @@ export class App {
             window.removeEventListener('resize', this._onWindowResize);
             this._onWindowResize = null;
         }
+        if (this._dprQuery && this._onDevicePixelRatioChange) {
+            this._dprQuery.removeEventListener?.('change', this._onDevicePixelRatioChange);
+        }
+        this._dprQuery = null;
+        this._onDevicePixelRatioChange = null;
+        this._watchDevicePixelRatio = null;
         this._resizeObserver?.disconnect?.();
         this._resizeObserver = null;
 

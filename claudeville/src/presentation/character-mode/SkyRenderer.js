@@ -61,7 +61,7 @@ const SHOOTING_STAR_DURATION_MS = 1200;
 // full-screen gradients every animation frame. Cloud drift is ~0.0012 px/ms,
 // so a refresh moves clouds well under a pixel — invisible at 5 Hz.
 const SKY_FRAME_REFRESH_MS = 200;
-const FAST_SKY_BACKING_PIXELS = 800_000;
+const FAST_SKY_CSS_PIXELS = 800_000;
 const FAST_SKY_FRAME_REFRESH_MS = 1000;
 const FAST_SKY_CAMERA_QUANT_PX = 64;
 const SHOOTING_STAR_MAX = 3;
@@ -415,11 +415,15 @@ export class SkyRenderer {
     }
 
     _useFastSkyCache(canvas) {
-        const dpr = canvas?._claudeVilleDpr || 1;
-        const backingPixels = Math.max(1, Number(canvas?.width) || 1) * Math.max(1, Number(canvas?.height) || 1) * dpr * dpr;
-        return backingPixels >= FAST_SKY_BACKING_PIXELS;
+        const cssPixels = Math.max(1, Number(canvas?.width) || 1) * Math.max(1, Number(canvas?.height) || 1);
+        return cssPixels >= FAST_SKY_CSS_PIXELS;
     }
 
+    // Sky is gradients, stars, and a sun/moon disc: nothing here has 1px pixel
+    // detail worth a 4x backing store. Past FAST_SKY_CSS_PIXELS the two sky
+    // caches therefore stay at CSS resolution and the screen blit stretches
+    // them; below it they follow the backing DPR like everything else. This is
+    // where the DPR budget is deliberately not spent.
     _skyCacheDpr(canvas) {
         const dpr = canvas?._claudeVilleDpr || 1;
         return this._useFastSkyCache(canvas) ? Math.min(dpr, 1) : dpr;
@@ -1389,7 +1393,7 @@ export class SkyRenderer {
 
     getCanvasBudget() {
         return {
-            volatilePixels: canvasPixelCount(this.cache),
+            volatilePixels: canvasPixelCount(this.cache) + canvasPixelCount(this._frameCache),
             cacheKey: this.cacheKey,
         };
     }
