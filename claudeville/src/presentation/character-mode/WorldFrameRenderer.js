@@ -6,6 +6,7 @@ import { drawCrowdClusterAuras, drawCrowdClusterBadges } from './CrowdClusterOve
 import {
     appendDepthSortedDrawables,
     cullDepthSortedDrawables,
+    drawDepthSortedDrawableKinds,
     drawDepthSortedDrawables,
     summarizeDrawableLayers,
 } from './DrawablePass.js';
@@ -301,6 +302,12 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {
         renderer.trailRenderer?.draw?.(overlayCtx, renderer.camera, viewport, renderNow);
+        drawDepthSortedDrawableKinds(overlayCtx, drawables, ['harbor-traffic'], {
+            zoom,
+            renderNow,
+            harborTraffic: renderer.harborTraffic,
+        });
+        renderer.harborTraffic?.drawFinaleEffects?.(overlayCtx, renderNow);
     }
     // 0.7 — re-stamp the PRIMARY mark set (waiting beacons, selection rings,
     // incident pills) AFTER the atmosphere multiply so the action-demanding

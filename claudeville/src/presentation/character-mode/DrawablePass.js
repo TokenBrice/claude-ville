@@ -154,6 +154,21 @@ export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
     }
 }
 
+// The GPU world canvas is opaque and sits above the Canvas-2D world canvas.
+// Canvas-only categories therefore need a narrow replay on the transparent
+// overlay after a successful GPU frame. Keep the caller in charge of which
+// categories are safe to replay above the GPU scene; harbor traffic stays on
+// water routes and does not need building/agent depth interleaving.
+export function drawDepthSortedDrawableKinds(ctx, drawables, kinds, context = {}) {
+    const accepted = kinds instanceof Set ? kinds : new Set(kinds || []);
+    if (!accepted.size) return;
+    const zoom = context.zoom || 1;
+    for (const drawable of drawables || []) {
+        if (!accepted.has(drawable?.kind)) continue;
+        drawable.draw?.(ctx, zoom, context);
+    }
+}
+
 // Converts the already-sorted stream without reordering painter semantics.
 // Package 6 can batch only consecutive compatible records after this seam.
 export function buildGpuRecordsFromDrawables(drawables, context = {}) {

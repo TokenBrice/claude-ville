@@ -2,6 +2,20 @@
 
 ---
 
+## v0.33.3 — *The Returning Tide* · Aug 23, 2026
+
+Commit fleets are visible in World mode again. The default WebGL renderer now carries Canvas-only harbor traffic onto the transparent world overlay instead of covering it with the opaque GPU scene.
+
+**The fleet returns**
+- **Unpushed commits are ships again.** Commit boats, packed fleets, repository flags, mooring marks, and harbor cargo labels render above the GPU-resident village while keeping their existing world positions and motion.
+- **Push celebrations survive the compositor.** Harbor finale effects now use the same visible overlay whenever a GPU frame succeeds, so the journey from waiting commits to a shipped convoy remains complete.
+
+**The renderer keeps its fast path**
+- **Only the missing Canvas category is replayed.** Buildings, props, and agents stay on the GPU path; the overlay selectively draws harbor traffic without duplicating the rest of the village.
+- **The fallback remains unchanged.** Canvas mode still uses its original depth-sorted pass, while focused tests cover selective GPU-overlay replay and the full 151-test quick validation remains green.
+
+---
+
 ## v0.33.2 — *The Lettercarvers* · Aug 23, 2026
 
 In-world text stays sharp on every display. The world canvas now picks its resolution from the physical pixel grid instead of a flat cap, so the browser can only ever scale the village by a whole number.
