@@ -38,29 +38,59 @@ export function gpuLightColorForShader(light = {}, fallback = [1, 0.78, 0.42]) {
     return channels.map(channel => Math.max(0, Math.min(1, channel / 255)));
 }
 
+export function createGpuTimingMetricsScratch() {
+    return {
+        cpu: {
+            source: 'cpu-fallback',
+            metrics: { uploadMs: 0, frameGapMs: 0, shaderCpuMs: 0 },
+        },
+        gpu: {
+            source: 'gpu-timer',
+            metrics: { uploadMs: 0, frameGapMs: 0, gpuMs: 0 },
+        },
+    };
+}
+
 export function selectGpuTimingMetrics({
     uploadMs = 0,
     shaderCpuMs = 0,
     gpuMs = null,
     gpuTimerSupported = false,
     frameGapMs = 0,
-} = {}) {
+} = {}, scratch = null) {
     const useGpu = Boolean(
         gpuTimerSupported
         && gpuMs !== null
         && gpuMs !== undefined
         && Number.isFinite(Number(gpuMs)),
     );
-    return {
-        source: useGpu ? 'gpu-timer' : 'cpu-fallback',
-        metrics: {
-            uploadMs: Math.max(0, finite(uploadMs)),
-            frameGapMs: Math.max(0, finite(frameGapMs)),
-            ...(useGpu
-                ? { gpuMs: Math.max(0, finite(gpuMs)) }
-                : { shaderCpuMs: Math.max(0, finite(shaderCpuMs)) }),
-        },
-    };
+    const result = scratch?.cpu && scratch?.gpu
+        ? (useGpu ? scratch.gpu : scratch.cpu)
+        : scratch || null;
+    if (!result) {
+        return {
+            source: useGpu ? 'gpu-timer' : 'cpu-fallback',
+            metrics: {
+                uploadMs: Math.max(0, finite(uploadMs)),
+                frameGapMs: Math.max(0, finite(frameGapMs)),
+                ...(useGpu
+                    ? { gpuMs: Math.max(0, finite(gpuMs)) }
+                    : { shaderCpuMs: Math.max(0, finite(shaderCpuMs)) }),
+            },
+        };
+    }
+    const metrics = result.metrics ||= {};
+    metrics.uploadMs = Math.max(0, finite(uploadMs));
+    metrics.frameGapMs = Math.max(0, finite(frameGapMs));
+    if (useGpu) {
+        metrics.gpuMs = Math.max(0, finite(gpuMs));
+        delete metrics.shaderCpuMs;
+    } else {
+        metrics.shaderCpuMs = Math.max(0, finite(shaderCpuMs));
+        delete metrics.gpuMs;
+    }
+    result.source = useGpu ? 'gpu-timer' : 'cpu-fallback';
+    return result;
 }
 
 function finite(value, fallback = 0) {

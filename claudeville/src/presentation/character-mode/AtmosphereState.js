@@ -22,6 +22,7 @@
 // debug overlays) that already destructure `atmosphere.clock`.
 
 import { seasonTokenForMonth } from './SeasonalAmbience.js';
+import { AUTHORED_KEY_LIGHT } from './MaterialRegistry.js';
 
 const DAY_MINUTES = 24 * 60;
 const WEATHER_TIMELINE_KNOTS = 6;
@@ -29,6 +30,12 @@ const WEATHER_TIMELINE_KNOTS = 6;
 // represent isolated agents (for example one troubled agent among five), not a
 // village-wide condition, and must not tint the shared dome.
 const SHARED_SKY_INFLUENCE_FLOOR = 0.2;
+export const DISTRICT_LIGHTING_BANDS = AUTHORED_KEY_LIGHT.responseBands;
+
+const DEFAULT_DISTRICT_ATMOSPHERE_BUFFER = {
+    entries: [],
+    pool: [],
+};
 
 const PHASES = [
     { name: 'dawn', start: 5 * 60 + 30, end: 7 * 60 },
@@ -684,42 +691,81 @@ function applyWeatherEventInfluence(weather, influence) {
     return { ...weather, type, intensity, cloudCover, precipitation, fog, cause };
 }
 
+export function createDistrictAtmosphereBuffer() {
+    return { entries: [], pool: [] };
+}
+
+function roundDistrictValue(value) {
+    return Math.round(value * 1000) / 1000;
+}
+
+// A district's lighting response selects an authored palette band. It is not
+// a continuous multiplier: zero means no local lighting response, while the
+// non-zero values are the material contract's four response bands.
+export function quantizeDistrictLightingBand(value, direction = 'dim') {
+    const strength = clamp(Number(value) || 0);
+    if (strength < 0.02) return 0;
+    if (direction === 'warm') return DISTRICT_LIGHTING_BANDS[3];
+    return strength >= 0.66
+        ? DISTRICT_LIGHTING_BANDS[0]
+        : DISTRICT_LIGHTING_BANDS[1];
+}
+
+function districtDescriptor(pool, index) {
+    return pool[index] ||= {
+        project: 'unknown',
+        agentIds: [],
+        storminess: 0,
+        clearing: 0,
+        groundHaze: { alpha: 0, tint: '' },
+        lightingBias: { cool: 0, warm: 0, dim: 0 },
+        falloff: { shape: 'smoothstep', innerRadiusTiles: 2.5, outerRadiusTiles: 7 },
+    };
+}
+
 /**
  * Convert project-scoped mood influence into renderer-neutral ground effects.
- * Consumers resolve `agentIds` to a project footprint, then feather the effect
- * between inner/outer radii with smoothstep. Keeping precipitation and the sky
- * out of this descriptor avoids implausible rain walls and hard district seams.
+ * Haze keeps a smooth feather between the inner and outer radii. Lighting is
+ * a discrete response-band selection so it cannot become a soft PBR factor on
+ * top of the finished world pixels.
  */
-export function buildDistrictAtmosphere(influences = []) {
-    if (!Array.isArray(influences)) return [];
-    return influences
-        .map((influence) => {
-            const storminess = clamp(Number(influence?.storminess) || 0);
-            const clearing = clamp(Number(influence?.clearing) || 0);
-            const strength = Math.max(storminess, clearing);
-            if (strength < 0.02) return null;
-            return {
-                project: String(influence?.project || 'unknown'),
-                agentIds: Array.isArray(influence?.agentIds) ? [...influence.agentIds] : [],
-                storminess,
-                clearing,
-                groundHaze: {
-                    alpha: Number((storminess * 0.24).toFixed(3)),
-                    tint: storminess > clearing ? '76, 68, 94' : '210, 226, 205',
-                },
-                lightingBias: {
-                    cool: Number((storminess * 0.18).toFixed(3)),
-                    warm: Number((clearing * 0.14).toFixed(3)),
-                    dim: Number((storminess * 0.12).toFixed(3)),
-                },
-                falloff: {
-                    shape: 'smoothstep',
-                    innerRadiusTiles: 2.5,
-                    outerRadiusTiles: 7,
-                },
-            };
-        })
-        .filter(Boolean);
+export function buildDistrictAtmosphere(influences = [], buffer = null) {
+    const target = buffer?.entries && buffer?.pool
+        ? buffer
+        : DEFAULT_DISTRICT_ATMOSPHERE_BUFFER;
+    const entries = target.entries;
+    const pool = target.pool;
+    entries.length = 0;
+    if (!Array.isArray(influences)) return entries;
+
+    let count = 0;
+    for (const influence of influences) {
+        const storminess = clamp(Number(influence?.storminess) || 0);
+        const clearing = clamp(Number(influence?.clearing) || 0);
+        const strength = Math.max(storminess, clearing);
+        if (strength < 0.02) continue;
+
+        const descriptor = districtDescriptor(pool, count);
+        descriptor.project = String(influence?.project || 'unknown');
+        const agentIds = descriptor.agentIds;
+        agentIds.length = 0;
+        if (Array.isArray(influence?.agentIds)) {
+            for (const agentId of influence.agentIds) agentIds.push(agentId);
+        }
+        descriptor.storminess = storminess;
+        descriptor.clearing = clearing;
+        descriptor.groundHaze.alpha = roundDistrictValue(storminess * 0.24);
+        descriptor.groundHaze.tint = storminess > clearing ? '76, 68, 94' : '210, 226, 205';
+        descriptor.lightingBias.cool = quantizeDistrictLightingBand(storminess, 'cool');
+        descriptor.lightingBias.warm = quantizeDistrictLightingBand(clearing, 'warm');
+        descriptor.lightingBias.dim = quantizeDistrictLightingBand(storminess, 'dim');
+        descriptor.falloff.shape = 'smoothstep';
+        descriptor.falloff.innerRadiusTiles = 2.5;
+        descriptor.falloff.outerRadiusTiles = 7;
+        entries[count++] = descriptor;
+    }
+    entries.length = count;
+    return entries;
 }
 
 function phaseLight(phase, phaseProgress) {
@@ -1080,6 +1126,7 @@ export function createAtmosphereSnapshot({
     seedOverride = null,
     timelineMode = 'auto',
     eventInfluence = null,
+    districtBuffer = null,
 } = {}) {
     const effectiveDate = applyHourOverride(normalizeDate(now), hourOverride);
     const minute = minutesSinceMidnight(effectiveDate);
@@ -1092,7 +1139,7 @@ export function createAtmosphereSnapshot({
     // Explicit overrides (debug helper, scenario metadata) win over the
     // village event influence.
     if (!weatherOverride) weather = applyWeatherEventInfluence(weather, eventInfluence);
-    const districtAtmosphere = buildDistrictAtmosphere(eventInfluence?.districts);
+    const districtAtmosphere = buildDistrictAtmosphere(eventInfluence?.districts, districtBuffer);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
@@ -1159,6 +1206,7 @@ export class AtmosphereState {
         this._seedOverride = null;
         this._timelineMode = 'auto';
         this._frozenDate = null;
+        this._districtAtmosphereBuffer = createDistrictAtmosphereBuffer();
         this._lastSnapshot = null;
         this._previousHelper = null;
         this._debugHelperInstalled = false;
@@ -1179,6 +1227,7 @@ export class AtmosphereState {
             seedOverride: this._seedOverride,
             timelineMode: this._timelineMode,
             eventInfluence,
+            districtBuffer: this._districtAtmosphereBuffer,
         });
         return this._lastSnapshot;
     }

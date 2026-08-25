@@ -1,6 +1,7 @@
 import {
     buildStableGpuBatches,
     clampGpuLights,
+    createGpuTimingMetricsScratch,
     emissivePhaseForAmbientLight,
     estimateGpuWorldTextureBytes,
     gpuLightColorForShader,
@@ -384,6 +385,14 @@ export class GpuWorldRenderer {
         this.timerExtension = null;
         this.pendingGpuQueries = [];
         this.qualityTimingSource = 'cpu-fallback';
+        this._qualityTimingScratch = createGpuTimingMetricsScratch();
+        this._qualityTimingInput = {
+            uploadMs: 0,
+            shaderCpuMs: 0,
+            gpuMs: null,
+            gpuTimerSupported: false,
+            frameGapMs: 0,
+        };
         this.gpuTimerErrors = 0;
         this.frameGapMs = null;
         this.uploads = 0;
@@ -1116,13 +1125,13 @@ export class GpuWorldRenderer {
             this.shaderCpuMs = ema(this.shaderCpuMs, shaderCpuMs);
             this.cpuMs = ema(this.cpuMs, totalMs);
             this.frameGapMs = ema(this.frameGapMs, frameGapMs);
-            const timing = selectGpuTimingMetrics({
-                uploadMs: this._frameUploadMs,
-                shaderCpuMs,
-                gpuMs: this.gpuMs,
-                gpuTimerSupported: Boolean(this.timerExtension),
-                frameGapMs,
-            });
+            const timingInput = this._qualityTimingInput;
+            timingInput.uploadMs = this._frameUploadMs;
+            timingInput.shaderCpuMs = shaderCpuMs;
+            timingInput.gpuMs = this.gpuMs;
+            timingInput.gpuTimerSupported = Boolean(this.timerExtension);
+            timingInput.frameGapMs = frameGapMs;
+            const timing = selectGpuTimingMetrics(timingInput, this._qualityTimingScratch);
             this.qualityTimingSource = timing.source;
             this.qualityLadder.update(timing.metrics, started);
             return true;

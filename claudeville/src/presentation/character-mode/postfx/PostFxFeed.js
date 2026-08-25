@@ -117,6 +117,8 @@ export function createPostFxFeed() {
     const waterObj = { mask: null, flowX: 0, flowY: 0, maskRevision: 0 };
     const lightSlotPool = [];
     const hazeSlotPool = [];
+    const lightColorScratch = [0, 0, 0];
+    const lanternColor = [255, 213, 106];
 
     let maskCanvas = null;
     let maskCtx = null;
@@ -287,7 +289,10 @@ export function createPostFxFeed() {
             // `light.intensity || 1` (the record's `alpha` is unused there)
             // and draws day and night alike.
             const intensity = Math.max(0, finite(src.intensity, 1));
-            const [r, g, b] = parseLightColor(src.color, colorCache);
+            const rgb = parseLightColor(src.color, colorCache);
+            lightColorScratch[0] = rgb[0];
+            lightColorScratch[1] = rgb[1];
+            lightColorScratch[2] = rgb[2];
             const bx = sx * dpr;
             const by = sy * dpr;
 
@@ -298,7 +303,7 @@ export function createPostFxFeed() {
                 slot.x = bx;
                 slot.y = by;
                 slot.radius = radiusBacking;
-                setGpuLightColor(slot, [r, g, b]);
+                setGpuLightColor(slot, lightColorScratch);
                 slot.intensity = intensity;
                 slot.night = false;
                 slot.kind = kind;
@@ -342,7 +347,7 @@ export function createPostFxFeed() {
                 slot.y = sy * dpr;
                 slot.radius = lanternRadius;
                 // Lantern token #ffd56a — matches _getLanternGlowStamp's core.
-                setGpuLightColor(slot, [255, 213, 106]);
+                setGpuLightColor(slot, lanternColor);
                 slot.intensity = 1;
                 slot.night = true;
                 slot.kind = 'point';

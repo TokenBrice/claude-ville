@@ -3,7 +3,12 @@
 // Screen-space foreground weather. Intended to run after world sprites and
 // particles, before labels and status badges, with the canvas transform reset.
 
-import { WEATHER_PRESETS, WEATHER_TYPES } from './AtmosphereState.js';
+import {
+    DISTRICT_LIGHTING_BANDS,
+    WEATHER_PRESETS,
+    WEATHER_TYPES,
+    quantizeDistrictLightingBand,
+} from './AtmosphereState.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 
@@ -45,6 +50,20 @@ const DEFAULT_INTENSITY = {
     fog: 0.58,
     storm: 0.82,
 };
+
+function normalizedDistrictLightingBand(value, direction) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+    for (const band of DISTRICT_LIGHTING_BANDS) {
+        if (numeric === band) return band;
+    }
+    return quantizeDistrictLightingBand(numeric, direction);
+}
+
+function districtLightingStrength(band) {
+    if (!band || band === DISTRICT_LIGHTING_BANDS[2]) return 0;
+    return Math.abs(1 - band);
+}
 
 // Parallax rain: the streak budget is split across three depth layers so rain
 // stops reading as one rigid sheet. Fractions sum to 1 so total segment count
@@ -248,9 +267,9 @@ export class WeatherRenderer {
             const screenX = (centerX + cameraX) * zoom;
             const screenY = (centerY + cameraY + 5) * zoom;
             const hazeAlpha = clamp(Number(district?.groundHaze?.alpha) || 0, 0, 1);
-            const cool = clamp(Number(district?.lightingBias?.cool) || 0, 0, 1);
-            const warm = clamp(Number(district?.lightingBias?.warm) || 0, 0, 1);
-            const dim = clamp(Number(district?.lightingBias?.dim) || 0, 0, 1);
+            const cool = normalizedDistrictLightingBand(district?.lightingBias?.cool, 'cool');
+            const warm = normalizedDistrictLightingBand(district?.lightingBias?.warm, 'warm');
+            const dim = normalizedDistrictLightingBand(district?.lightingBias?.dim, 'dim');
 
             ctx.save();
             ctx.globalCompositeOperation = 'source-over';
@@ -266,14 +285,41 @@ export class WeatherRenderer {
                     radiusY,
                 );
             }
-            if (cool > 0.002) {
-                this._drawDistrictWash(ctx, DISTRICT_COOL_TINT, innerRatio, cool, screenX, screenY, radiusX, radiusY);
+            if (cool && cool !== DISTRICT_LIGHTING_BANDS[2]) {
+                this._drawDistrictLighting(
+                    ctx,
+                    DISTRICT_COOL_TINT,
+                    innerRatio,
+                    cool,
+                    screenX,
+                    screenY,
+                    radiusX,
+                    radiusY,
+                );
             }
-            if (warm > 0.002) {
-                this._drawDistrictWash(ctx, DISTRICT_WARM_TINT, innerRatio, warm, screenX, screenY, radiusX, radiusY);
+            if (warm && warm !== DISTRICT_LIGHTING_BANDS[2]) {
+                this._drawDistrictLighting(
+                    ctx,
+                    DISTRICT_WARM_TINT,
+                    innerRatio,
+                    warm,
+                    screenX,
+                    screenY,
+                    radiusX,
+                    radiusY,
+                );
             }
-            if (dim > 0.002) {
-                this._drawDistrictWash(ctx, DISTRICT_DIM_TINT, innerRatio, dim, screenX, screenY, radiusX, radiusY);
+            if (dim && dim !== DISTRICT_LIGHTING_BANDS[2]) {
+                this._drawDistrictLighting(
+                    ctx,
+                    DISTRICT_DIM_TINT,
+                    innerRatio,
+                    dim,
+                    screenX,
+                    screenY,
+                    radiusX,
+                    radiusY,
+                );
             }
             ctx.restore();
             this._lastDistrictDrawCount++;
@@ -286,6 +332,18 @@ export class WeatherRenderer {
         ctx.globalAlpha = alpha;
         ctx.drawImage(texture, x - radiusX, y - radiusY, radiusX * 2, radiusY * 2);
         ctx.globalAlpha = 1;
+    }
+
+    _drawDistrictLighting(ctx, tint, innerRatio, band, x, y, radiusX, radiusY) {
+        const strength = districtLightingStrength(band);
+        if (!strength || radiusX <= 0 || radiusY <= 0) return;
+        const texture = this._districtLightingTexture(tint, innerRatio, band);
+        if (!texture) return;
+        ctx.globalCompositeOperation = band < DISTRICT_LIGHTING_BANDS[2] ? 'multiply' : 'screen';
+        ctx.globalAlpha = strength;
+        ctx.drawImage(texture, x - radiusX, y - radiusY, radiusX * 2, radiusY * 2);
+        ctx.globalAlpha = 1;
+        ctx.globalCompositeOperation = 'source-over';
     }
 
     _districtWashTexture(tint, innerRatio) {
@@ -317,6 +375,49 @@ export class WeatherRenderer {
         textureCtx.fillStyle = gradient;
         textureCtx.fillRect(0, 0, DISTRICT_TEXTURE_SIZE, DISTRICT_TEXTURE_SIZE);
         ratios.set(ratioBucket, canvas);
+        this._trimDistrictTextureCache();
+        return canvas;
+    }
+
+    _districtLightingTexture(tint, innerRatio, band) {
+        const ratioBucket = Math.round(clamp(innerRatio, 0, 0.95) * 20) / 20;
+        const tintKey = `lighting:${tint}`;
+        let ratios = this._districtWashTextures.get(tintKey);
+        if (!ratios) {
+            ratios = new Map();
+            this._districtWashTextures.set(tintKey, ratios);
+        }
+        const key = `${ratioBucket}|${band}`;
+        const cached = ratios.get(key);
+        if (cached) return cached;
+        const canvas = this._canvasFactory();
+        if (!canvas) return null;
+        canvas.width = DISTRICT_TEXTURE_SIZE;
+        canvas.height = DISTRICT_TEXTURE_SIZE;
+        const textureCtx = canvas.getContext?.('2d');
+        if (!textureCtx?.createRadialGradient) return null;
+        const radius = DISTRICT_TEXTURE_SIZE / 2;
+        const gradient = textureCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);
+        const span = 1 - ratioBucket;
+        const course = band < DISTRICT_LIGHTING_BANDS[2] ? band : 1;
+        const color = alpha => `rgba(${tint}, ${alpha})`;
+        gradient.addColorStop(0, color(1));
+        gradient.addColorStop(ratioBucket, color(1));
+        // Duplicate the stops over a tiny pixel-sized interval. The district
+        // lighting response changes course in discrete rings; only haze keeps
+        // the smooth five-stop falloff above.
+        const addStep = (offset, from, to) => {
+            const safe = clamp(offset, 0, 0.999);
+            gradient.addColorStop(safe, color(from));
+            gradient.addColorStop(Math.min(1, safe + 0.001), color(to));
+        };
+        addStep(ratioBucket + span * 0.25, 1, course);
+        addStep(ratioBucket + span * 0.50, course, course);
+        addStep(ratioBucket + span * 0.75, course, course);
+        gradient.addColorStop(1, color(0));
+        textureCtx.fillStyle = gradient;
+        textureCtx.fillRect(0, 0, DISTRICT_TEXTURE_SIZE, DISTRICT_TEXTURE_SIZE);
+        ratios.set(key, canvas);
         this._trimDistrictTextureCache();
         return canvas;
     }

@@ -1,5 +1,6 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { gpuMaterialNameForProvider } from './gpu/GpuSceneBuilder.js';
 
 // Owns the GPU-world base-sprite record and the ungraded Canvas annotation
 // pass. The host remains authoritative for animation, identity, and all shared
@@ -115,13 +116,18 @@ export class AgentGpuOverlayRenderer {
         const materialSource = host.assets?.getSidecar?.(spriteId, 'material')
             || host.assets?.getMaterialSidecar?.(spriteId, 'material')
             || null;
+        const emissiveSource = host.assets?.getSidecar?.(spriteId, 'emissive')
+            || host.assets?.getMaterialSidecar?.(spriteId, 'emissive')
+            || null;
         host._gpuFrameRecord = {
             id: `agent:${host.agent?.id || profileKey}`,
             stableKey: host.agent?.id || profileKey,
             textureKey: `agent-sheet:${profileKey}`,
-            sidecarKey: materialSource ? `${spriteId}:material` : '',
+            sidecarKey: materialSource || emissiveSource ? `${spriteId}:channels` : '',
             source,
             materialSource,
+            emissiveSource,
+            channelRevision: host.assets?.assetVersion || null,
             sourceWidth: source.width,
             sourceHeight: source.height,
             sx: cell.sx,
@@ -133,7 +139,7 @@ export class AgentGpuOverlayRenderer {
             width: cell.sw * drawScale,
             height: cell.sh * drawScale,
             alpha: host.agent?.isDeparted ? alpha * 0.58 : alpha,
-            material: host.agent?.provider === 'codex' ? 'metal' : 'fabric',
+            material: gpuMaterialNameForProvider(host.agent?.provider),
             elevation: 0.52,
             occluder: 0.58,
             emissive: host.agent?.isDeparted
