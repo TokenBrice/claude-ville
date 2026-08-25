@@ -3,6 +3,7 @@ import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
 import { resolveAgentStatus } from '../domain/services/StatusResolver.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
+import { dialogueIsHeldable } from '../config/dialogue.js';
 
 const GENERATED_NAMES_STORAGE_KEY = 'claudeville.generatedAgentNames.v1';
 
@@ -425,13 +426,35 @@ export class AgentManager {
             activityAgeMs,
             _lastMessage: session.lastMessage || null,
             lastMessage: session.lastMessage,
-            dialogue: session.dialogue ?? null,
+            dialogue: this._retainedDialogue(session, status, id),
             observedSources: session.observedSources ?? null,
             name: agentName || null,
             _customName: !!agentName,
             projectPath: session.project || null,
             provider: session.provider || 'claude',
         };
+    }
+
+    /**
+     * Dialogue for this poll, holding a blocked agent's question in place.
+     *
+     * The server drops every line older than its own max age, which is right
+     * for narration: a working agent's stale line describes work it has already
+     * moved on from. A question is different. It stays true until it is
+     * answered, and an agent blocked on the operator emits no newer text by
+     * definition, so the wire simply goes quiet with the question still
+     * outstanding. Keep the assistant prose it was last seen asking; every
+     * other kind, and every other status, still falls silent on schedule.
+     *
+     * `Agent.speech()` marks the retained line as held so the tooltip discloses
+     * it instead of passing an old question off as something just said.
+     */
+    _retainedDialogue(session, status, id) {
+        const incoming = session.dialogue ?? null;
+        if (incoming) return incoming;
+        const previous = this.world?.agents?.get(id)?.dialogue ?? null;
+        if (!previous) return null;
+        return dialogueIsHeldable(status, previous.kind) ? previous : null;
     }
 
     _resolveStatus(session) {

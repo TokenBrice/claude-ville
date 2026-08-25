@@ -5,7 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
+import { AgentSprite, CODEX_WEAPON_ASSETS } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
 import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 
 // Monospace stand-in: every glyph is 6px wide, so expected widths are exact and
@@ -169,4 +169,34 @@ test('only villagers with something to show reserve a slot', () => {
     assert.equal(wants({ _activitySnapshot: null, _shouldUseLongWaitClock: () => true }), true);
     assert.equal(wants({ chatting: true, _activitySnapshot: { text: 'x' } }), false);
     assert.equal(wants(null), false);
+});
+
+// A Sol villager rendered its dawnblade behind its own body in every direction,
+// which hid roughly two thirds of the blade and left the authored empty hands
+// gripping air. Measured on a frozen pose: 16,026 visible weapon pixels forced
+// behind the body versus 29,570 with the default rule.
+test('an empty-handed sprite carries its weapon in front, and tucks it away only when facing away', () => {
+    const backLayer = (def, dir) => AgentSprite.prototype._assetWeaponBackLayer.call({}, def, dir);
+    const dawnblade = CODEX_WEAPON_ASSETS.dawnblade;
+
+    // The bug: `backLayer: 'always'` on a hand-held weapon.
+    assert.equal(dawnblade.backLayer, undefined);
+    for (const dir of ['s', 'se', 'e', 'sw', 'w']) {
+        assert.equal(backLayer(dawnblade, dir), false, `dawnblade should be held in view facing ${dir}`);
+    }
+    // Facing away, the blade belongs behind the body.
+    for (const dir of ['n', 'ne', 'nw']) {
+        assert.equal(backLayer(dawnblade, dir), true, `dawnblade should sit behind the body facing ${dir}`);
+    }
+
+    // Sol/Luna/Terra sprites are all authored empty-handed, so none of them may
+    // force its signature weapon behind the body.
+    for (const key of ['dawnblade', 'crescentSaber', 'earthbreaker']) {
+        assert.notEqual(CODEX_WEAPON_ASSETS[key].backLayer, 'always', `${key} must stay visible from the front`);
+    }
+
+    // `greatsword` is the deliberate exception: it pairs with procedural heavy
+    // armour drawn on the front layer, so its blade has to stay behind.
+    assert.equal(CODEX_WEAPON_ASSETS.greatsword.backLayer, 'always');
+    assert.equal(backLayer(CODEX_WEAPON_ASSETS.greatsword, 's'), true);
 });

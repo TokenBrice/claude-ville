@@ -6,7 +6,7 @@ import { i18n } from '../../config/i18n.js';
 import { TokenUsage } from '../value-objects/TokenUsage.js';
 import { normalizeMood } from '../value-objects/AgentMood.js';
 import { buildingForTool } from '../services/ToolIdentity.js';
-import { DIALOGUE_STALE_MS, dialogueShape } from '../../config/dialogue.js';
+import { DIALOGUE_STALE_MS, dialogueShape, dialogueWindowMs } from '../../config/dialogue.js';
 
 const AGENT_NAMES_EN = [
     'Ada', 'Alden', 'Ansel', 'Bess', 'Bram', 'Cedric', 'Cora', 'Cyril',
@@ -206,8 +206,14 @@ export class Agent {
      * Every field comes from the adapter-side dialogue contract: the model's
      * own words, tagged with origin and whether they were trimmed or redacted.
      * There is deliberately no fallback — no preset pool, no tool label dressed
-     * as speech, no stale line held over. When there is nothing attributable to
-     * say, the villager says nothing and the renderer shows status glyphs only.
+     * as speech, no invented filler. When there is nothing attributable to say,
+     * the villager says nothing and the renderer shows status glyphs only.
+     *
+     * How long a line survives depends on what the agent is doing, because
+     * "still current" means different things per status. A working agent's line
+     * decays on the normal window; a finished agent's parting summary fades
+     * faster; an agent blocked on the operator holds its question until the
+     * wait ends, and that held line is flagged so the tooltip can say so.
      *
      * Text is NOT truncated here. The renderer fits it by measured pixel width,
      * so truncation happens once, where the font and bubble width are known.
@@ -218,8 +224,9 @@ export class Agent {
         if (!dialogue?.text) return null;
         const observedAt = Number(dialogue.observedAt);
         if (!Number.isFinite(observedAt)) return null;
+        const age = now - observedAt;
         // Stale dialogue describes work the agent has already moved on from.
-        if (now - observedAt > DIALOGUE_STALE_MS) return null;
+        if (age > dialogueWindowMs(this.status, dialogue.kind)) return null;
         return {
             text: dialogue.text,
             full: dialogue.full || null,
@@ -227,6 +234,10 @@ export class Agent {
             source: dialogue.source,
             fidelity: dialogue.fidelity,
             redacted: dialogue.redacted === true,
+            // Retained past the point a working agent would have fallen silent,
+            // so the operator is told the line is a standing question rather
+            // than something just said.
+            held: age > DIALOGUE_STALE_MS,
             observedAt,
             actionId: dialogue.actionId || null,
             shape: dialogueShape(dialogue.kind),

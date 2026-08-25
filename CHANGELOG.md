@@ -2,6 +2,50 @@
 
 ---
 
+## v0.34.0 — *True Voices* · Aug 25, 2026
+
+Villagers stop reciting written-for-them lines and start saying what the models actually wrote. Around that, the world gains authored lighting that survives the GPU path, native art for every landmark, villagers who keep their faces between restarts, and a backend that stays bounded under load.
+
+**Villagers speak for themselves**
+- **Every bubble is the model's own text.** Speech is extracted from Claude, Codex, OMP, Grok, OpenCode, Gemini, and Kimi sessions and carries its origin, authorship, and fidelity. The handwritten intent and lore phrase pools are gone, along with the 24-character cap that reduced real sentences to fragments.
+- **Nothing is invented to fill a silence.** With no attributable line, the villager says nothing and status stays legible through glyphs, rings, and the long-wait clock. Reasoning renders as a tailless chip rather than a quote, because an excerpt of a long thought is not something the model said.
+- **Speech expires the way the work does.** A working villager's line fades on the normal window, a finished agent's parting summary fades sooner, and an agent blocked on you keeps its question until you answer it — flagged as awaiting a reply so an old question is never passed off as something just said.
+- **Extraction is sanitized and gateable.** Secrets, keys, emails, and bidi controls are stripped and home paths rewritten before text ever reaches the browser. `CLAUDEVILLE_DIALOGUE_SOURCES` limits which kinds are read at all, and withheld sources are never serialized.
+- **The selected villager keeps a narration log.** Twenty entries over five minutes, each with its untrimmed text and exact source, so a bubble that scrolled past is still readable.
+
+**Light behaves the way it was authored**
+- **Authored light colour survives the GPU path.** Forge, lighthouse, portal-rune, and lantern lights keep their RGB instead of collapsing to one warm default, and light identity and priority are retained for culling.
+- **Emissive and occluder channels are no longer guessed.** Authored emissive RGBA reaches the GPU texture directly rather than being reconstructed from albedo, and occluder height and strength stay distinct through the shadow trace.
+- **Every provider gets its real material.** GPU agent overlays read the shared provider material table and packed companion channels, so Gemini, DeepSeek, and unknown providers no longer inherit a metal-or-fabric guess. District light steps through defined bands instead of sliding.
+- **Local weather stays local.** District trouble below a fifth of the scale no longer fogs the whole village; ground haze and lighting bias composite per district over either renderer.
+
+**A village built from native art**
+- **All nine landmarks are native sprites.** Archive, Task Board, Forge, Mine, and Observatory are regenerated as structure-only art, retiring the last five hand-drawn mask cutouts. The Observatory becomes grey stone under a blue-slate dome with a brass telescope; the Harbor becomes a steampunk Harbor Masters Guild of stacked timber and stone, copper machinery, catwalks, and a clockwork loading crane.
+- **Material coverage reaches the whole roster.** Companion material, emissive, and occluder channels cover the remaining provider and terrain identities, and landmark glow stays restrained enough that daylight never turns a window into a disc.
+- **Atlas baking fails before the runtime can.** An oversized page is rejected up front with its required size, limit, overage, and offending frame, and channel tooling reads one registry so adding a channel is a contract edit.
+
+**Villagers you recognise**
+- **Faces and names persist.** Appearance and generated names derive from a stable biography identity rather than a session id, so a returning villager looks like itself.
+- **Departures linger honestly.** A vanished session stays ten minutes as an explicitly departed villager — static, dimmed, non-emissive, with a `DEPARTED` plaque — then evicts oldest-first, reclaiming its identity if it comes back.
+- **Sol paladins carry their blades again.** The Codex dawnblade was drawn behind its own body in every direction, hiding roughly two thirds of the weapon and leaving authored empty hands gripping air. It is now held in view, and tucks behind the body only when the villager faces away.
+- **Mood reflects pressure.** Context pressure and long waits feed anxiety, and model-tier pacing varies only slightly so urgency stays the louder signal.
+
+**An operator surface that answers**
+- **Sound locates itself.** Cues pan to the agent's real screen position, eight providers get distinct voicings, council bells scale with team size, and captions carry cue identity even with audio off. A hidden-tab summons briefly resumes the audio context and re-suspends.
+- **Search, spend, and export do their jobs.** Search indexes tool names, touched paths, and commit messages without detail-fetch storms; the Spend Map rolls costs up by project and provider; Chronicle exports injection-safe Markdown and CSV.
+- **Keyboard parity across both modes.** Dashboard gains roving card traversal, Enter/Space activation, Escape deselection, and a jump to the longest-waiting agent, with focus preserved through live reordering.
+- **One place for settings.** A SET chip centralizes sound, volume, audio mode, the five-channel mix, auto-camera, desktop alerts, and sidebar state, with reset to defaults and no change to stored formats.
+- **Fixes to shipped behaviour.** CSV neutralization catches dangerous prefixes after whitespace and quotes tabs; Markdown export neutralizes links, images, and raw HTML; BGM mode forwards its full payload again; attention and caption announcements collapse into one; date selection commits only after a successful read; popovers scope focus and Escape correctly.
+
+**Bounded backend, continuous checks**
+- **Git enrichment can no longer stall a poll.** Enrichment runs as a stale-while-revalidate worker with two concurrent jobs, a shedding queue, request coalescing, a command timeout, an output cap, and retry backoff. Cached state serves immediately and failures keep last-good data.
+- **Cache-token accounting is shared.** One normalization path covers all seven providers while preserving each one's quirks, and `/api/perf` now reports process errors and Git-worker telemetry.
+- **The pipeline is exercised, not assumed.** CI runs `validate:quick` on push and pull request, and an end-to-end replay drives real adapters through a real server and a raw WebSocket client, reconstructing JSON-Patch deltas and checking the full-snapshot floor.
+- **Lifecycle records stop inventing history.** The Chronicle upgrade handles blocked connections with a visible degraded state, departures log as departures instead of false completions, departed agents stop accruing affinity, and the unattended digest reports only still-unresolved state.
+- **A crash that only a browser could catch.** A missing bubble-height constant made the world renderer throw every frame and pause itself to a black canvas; the constant is restored and geometry tests now execute the draw path. The release closes with 345 passing checks, 0 frame failures, and 120 fps in both World and Dashboard.
+
+---
+
 ## v0.33.3 — *The Returning Tide* · Aug 23, 2026
 
 Commit fleets are visible in World mode again. The default WebGL renderer now carries Canvas-only harbor traffic onto the transparent world overlay instead of covering it with the opaque GPU scene.

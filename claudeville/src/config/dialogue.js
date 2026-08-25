@@ -16,6 +16,48 @@
 // the villager falls silent rather than presenting stale work as current.
 export const DIALOGUE_STALE_MS = 90_000;
 
+// A completed agent has stopped producing text. Its last line is a parting
+// summary rather than current narration, so it fades faster than a working
+// villager's line instead of lingering for the full window.
+export const DIALOGUE_COMPLETED_STALE_MS = 30_000;
+
+// Statuses that mean "stopped, waiting on the operator". Matched against the
+// wire strings the server sends (see domain/value-objects/AgentStatus.js);
+// config deliberately does not import the domain enum, since every other
+// dependency runs domain -> config.
+const BLOCKED_STATUSES = new Set(['waiting', 'waiting_on_user']);
+
+// An agent blocked on the operator is usually blocked *by its own question*,
+// and that question stays true for as long as the wait lasts. Only assistant
+// prose is held: interrupted reasoning and in-progress plan steps describe work
+// that already stopped, so they still decay on the normal window.
+const HELD_KINDS = new Set(['assistant']);
+
+/**
+ * How long a line of this kind may still be shown for an agent in this status.
+ * `Infinity` means the line is held until the status or the dialogue changes —
+ * only ever for a question the operator has not answered yet.
+ */
+export function dialogueWindowMs(status, kind) {
+    const normalizedStatus = String(status || '');
+    if (BLOCKED_STATUSES.has(normalizedStatus) && HELD_KINDS.has(String(kind))) {
+        return Infinity;
+    }
+    if (normalizedStatus === 'completed') return DIALOGUE_COMPLETED_STALE_MS;
+    return DIALOGUE_STALE_MS;
+}
+
+/**
+ * Whether a line of this kind may be held in place for an agent in this status.
+ *
+ * The server drops every candidate older than its own max age, so retention has
+ * to happen client-side (see `AgentManager._retainedDialogue`). Without it the
+ * `Infinity` window above could never fire.
+ */
+export function dialogueIsHeldable(status, kind) {
+    return BLOCKED_STATUSES.has(String(status || '')) && HELD_KINDS.has(String(kind));
+}
+
 // Long-form reasoning renders as a tailless chip, never as a speech bubble: an
 // excerpt of a 200-character thought is not a quote, and quote styling would
 // claim more fidelity than the text has.
@@ -37,14 +79,16 @@ const KIND_LABELS = Object.freeze({
 /**
  * Human-readable origin for the bubble tooltip, derived from the dotted
  * `source` id the adapter emitted, so it can never claim a source that was not
- * actually read. Trimming and redaction are always disclosed.
+ * actually read. Trimming, redaction, and a line held past its normal window
+ * are always disclosed.
  */
-export function dialogueSourceLabel({ kind, source, fidelity, redacted } = {}) {
+export function dialogueSourceLabel({ kind, source, fidelity, redacted, held } = {}) {
     const base = KIND_LABELS[String(kind)] || 'Session text';
     const origin = String(source || '').trim();
     const notes = [];
     if (fidelity === 'excerpt') notes.push('excerpt');
     if (redacted) notes.push('redacted');
+    if (held) notes.push('awaiting reply');
     const suffix = notes.length ? ` (${notes.join(', ')})` : '';
     return origin ? `${base} — ${origin}${suffix}` : `${base}${suffix}`;
 }

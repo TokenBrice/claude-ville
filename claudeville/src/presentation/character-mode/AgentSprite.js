@@ -178,7 +178,10 @@ const CODEX_EQUIPMENT_BY_CLASS = Object.freeze({
     gpt56terra: 'earthbreaker',
     gpt56luna: 'crescentSaber',
 });
-const CODEX_WEAPON_ASSETS = Object.freeze({
+// Exported so the layering invariant is testable: a weapon whose sprite is
+// authored empty-handed must not be forced behind the body, or the villager
+// grips air while the blade hides in its own silhouette.
+export const CODEX_WEAPON_ASSETS = Object.freeze({
     runeblade: {
         id: 'equipment.codex.runeblade',
         fallback: 'runeblade',
@@ -219,7 +222,13 @@ const CODEX_WEAPON_ASSETS = Object.freeze({
         id: 'equipment.codex.dawnblade',
         fallback: 'greatsword',
         pose: 'greatswordShoulder',
-        backLayer: 'always',
+        // No `backLayer: 'always'` here, unlike `greatsword`. That entry pairs
+        // with procedural heavy armour drawn on the front layer, so its blade
+        // has to sit behind the body. Sol's armour is baked into the sprite and
+        // its hands are authored empty to grip a runtime greatblade, so forcing
+        // the blade behind the body hid ~62% of it and left the grip holding
+        // air. Falling through to the default rule keeps the blade in hand and
+        // moves it behind the body only when the villager faces away.
         anchor: [36, 82],
         scale: 0.56,
         hands: 'single',
@@ -5166,8 +5175,9 @@ export class AgentSprite {
     _activityEntryForAgent(agent = this.agent, timestamp = Date.now()) {
         if (!agent) return null;
         // Agent.speech() is the only source of villager words. It returns the
-        // model's own text with provenance, or null — there is no preset pool,
-        // no tool label dressed as speech, and no stale line held over.
+        // model's own text with provenance, or null — there is no preset pool
+        // and no tool label dressed as speech. A line only outlives its normal
+        // window when the agent is blocked on the operator, and it says so.
         const speech = typeof agent.speech === 'function' ? agent.speech(timestamp) : null;
         if (speech?.text) {
             const currentTool = String(agent.currentTool || '').trim();
@@ -5183,6 +5193,7 @@ export class AgentSprite {
                 source: speech.source,
                 fidelity: speech.fidelity,
                 redacted: speech.redacted,
+                held: speech.held === true,
                 badge: DIALOGUE_BADGE_COLORS[speech.kind] || null,
                 accent: this._providerTrimColor(agent),
                 tool: currentTool || null,
@@ -5219,6 +5230,7 @@ export class AgentSprite {
             source: entry.source || null,
             fidelity: entry.fidelity || null,
             redacted: entry.redacted === true,
+            held: entry.held === true,
             full: entry.full || null,
             key: entry.key,
             text: entry.text,

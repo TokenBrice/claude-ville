@@ -8,7 +8,8 @@ import assert from 'node:assert/strict';
 import { Agent } from '../../claudeville/src/domain/entities/Agent.js';
 import { AgentBiography } from '../../claudeville/src/domain/value-objects/AgentBiography.js';
 import { VisitIntentManager } from '../../claudeville/src/presentation/character-mode/VisitIntentManager.js';
-import { DIALOGUE_STALE_MS } from '../../claudeville/src/config/dialogue.js';
+import { DIALOGUE_COMPLETED_STALE_MS, DIALOGUE_STALE_MS } from '../../claudeville/src/config/dialogue.js';
+import { AgentManager } from '../../claudeville/src/application/AgentManager.js';
 
 function dialogue(overrides = {}) {
     return {
@@ -118,6 +119,82 @@ test('stale dialogue falls silent instead of asserting finished work', () => {
     // One millisecond inside the window still speaks.
     agent.dialogue = dialogue({ observedAt: now - DIALOGUE_STALE_MS + 1 });
     assert.equal(agent.speech(now).text, 'Checking git state and largest files');
+});
+
+test('a completed villager stops narrating sooner than a working one', () => {
+    const now = 1_800_000_000_000;
+    const observedAt = now - DIALOGUE_COMPLETED_STALE_MS - 1;
+    // Same line, same age: still current for a working agent, already a parting
+    // summary for one that has finished.
+    const working = new Agent({ id: 'working-agent', status: 'working', dialogue: dialogue({ observedAt }) });
+    const completed = new Agent({ id: 'completed-agent', status: 'completed', dialogue: dialogue({ observedAt }) });
+
+    assert.equal(working.speech(now).text, 'Checking git state and largest files');
+    assert.equal(completed.speech(now), null);
+});
+
+test('a question outlives the window only while the operator has not answered', () => {
+    const now = 1_800_000_000_000;
+    const asked = dialogue({ kind: 'assistant', source: 'omp.message', observedAt: now - DIALOGUE_STALE_MS * 4 });
+
+    // Blocked on the operator: the question is still the truth of the session.
+    const waiting = new Agent({ id: 'waiting-agent', status: 'waiting_on_user', dialogue: asked });
+    const held = waiting.speech(now);
+    assert.equal(held.text, asked.text);
+    // Held lines disclose themselves rather than posing as something just said.
+    assert.equal(held.held, true);
+    assert.equal(held.observedAt, asked.observedAt);
+
+    // Same age, same text, but nothing is blocked: silence.
+    const working = new Agent({ id: 'working-too', status: 'working', dialogue: asked });
+    assert.equal(working.speech(now), null);
+
+    // Reasoning is not a standing question, so it decays even while blocked.
+    const thinking = new Agent({
+        id: 'waiting-thinker',
+        status: 'waiting_on_user',
+        dialogue: dialogue({ kind: 'thinking', observedAt: now - DIALOGUE_STALE_MS * 4 }),
+    });
+    assert.equal(thinking.speech(now), null);
+
+    // A fresh line is never marked held.
+    const fresh = new Agent({
+        id: 'waiting-fresh',
+        status: 'waiting_on_user',
+        dialogue: dialogue({ kind: 'assistant', observedAt: now - 1_000 }),
+    });
+    assert.equal(fresh.speech(now).held, false);
+});
+
+test('the client holds a blocked question the server has already dropped', () => {
+    // The server only publishes lines inside its own max age, so retention has
+    // to survive the poll where `dialogue` arrives null.
+    const asked = dialogue({ kind: 'assistant', source: 'omp.message', observedAt: Date.now() - DIALOGUE_STALE_MS * 3 });
+    const world = { agents: new Map([['s1', new Agent({ id: 's1', status: 'waiting_on_user', dialogue: asked })]]) };
+    const manager = new AgentManager(world, { getSessions: async () => [] });
+
+    // `tool_pending` + a wait reason is what the adapters emit for a session
+    // blocked on the operator (see StatusResolver).
+    const blocked = { sessionId: 's1', dialogue: null, turnState: 'tool_pending', waitReason: 'question', lastActivity: Date.now() };
+    const heldPayload = manager._sessionToAgentPayload(blocked, null);
+    assert.equal(heldPayload.status, 'waiting_on_user');
+    assert.equal(heldPayload.dialogue, asked);
+
+    // Once the agent is working again the retained question is dropped.
+    const movedOn = manager._sessionToAgentPayload(
+        { sessionId: 's1', dialogue: null, turnState: 'working', lastTool: 'Edit', lastActivity: Date.now() },
+        null,
+    );
+    assert.equal(movedOn.status, 'working');
+    assert.equal(movedOn.dialogue, null);
+
+    // Reasoning is never retained, even while blocked.
+    world.agents.set('s2', new Agent({ id: 's2', status: 'waiting_on_user', dialogue: dialogue({ kind: 'thinking' }) }));
+    const notHeld = manager._sessionToAgentPayload(
+        { sessionId: 's2', dialogue: null, turnState: 'tool_pending', waitReason: 'question', lastActivity: Date.now() },
+        null,
+    );
+    assert.equal(notHeld.dialogue, null);
 });
 
 test('departed villagers stay silent', () => {
