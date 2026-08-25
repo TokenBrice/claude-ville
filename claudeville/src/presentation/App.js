@@ -35,6 +35,7 @@ import { AssetManager } from './character-mode/AssetManager.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 
 const LIFECYCLE_DRAIN_TIMEOUT_MS = 2000;
+const FIRST_RUN_HINT_STORAGE_KEY = 'claudeville.firstRunHint.worldControls.v1';
 
 export class App {
     constructor() {
@@ -89,6 +90,7 @@ export class App {
         this._worldCanvas = null;
         this._eventUnsubscribers = [];
         this._onPageHide = null;
+        this._onFirstRunHintDismiss = null;
         this._bootPromise = null;
         this._bootController = null;
         this._destroyPromise = null;
@@ -171,6 +173,8 @@ export class App {
                 spendLedger: this.spendLedger,
             });
             this.sidebar = new Sidebar(this.world);
+            this._bindWorldEmptyState();
+            this._initFirstRunHint();
 
             // 4. Initialize application services
             this.agentManager = new AgentManager(this.world, this.dataSource);
@@ -242,6 +246,7 @@ export class App {
                 harborTraffic: () => this.renderer?.harborTraffic || null,
                 biographyService: () => this.biographyService,
                 affinityService: () => this.affinityService,
+                toast: this.toast,
             });
             this._bindAgentFollow();
             this._bindDeepLink();
@@ -278,6 +283,40 @@ export class App {
             const color = STATUS_VISUALS[status]?.color;
             if (color) rootStyle.setProperty(varName, color);
         }
+    }
+
+    _bindWorldEmptyState() {
+        const emptyEl = document.getElementById('worldEmpty');
+        if (!emptyEl) return;
+        const sync = () => {
+            emptyEl.hidden = (this.world?.agents?.size || 0) > 0;
+        };
+        this._eventUnsubscribers.push(eventBus.on('agent:added', sync));
+        this._eventUnsubscribers.push(eventBus.on('agent:removed', sync));
+        sync();
+    }
+
+    _initFirstRunHint() {
+        const hint = document.getElementById('firstRunHint');
+        const dismiss = document.getElementById('firstRunHintDismiss');
+        if (!hint || !dismiss) return;
+
+        let seen = false;
+        try {
+            seen = window.localStorage?.getItem(FIRST_RUN_HINT_STORAGE_KEY) === '1';
+            if (!seen) window.localStorage?.setItem(FIRST_RUN_HINT_STORAGE_KEY, '1');
+        } catch {
+            // Storage may be disabled; the hint remains dismissible for this page.
+        }
+        if (seen) return;
+
+        hint.hidden = false;
+        this._onFirstRunHintDismiss = () => {
+            hint.hidden = true;
+            dismiss.removeEventListener('click', this._onFirstRunHintDismiss);
+            this._onFirstRunHintDismiss = null;
+        };
+        dismiss.addEventListener('click', this._onFirstRunHintDismiss);
     }
 
     _bindPageExit() {
@@ -728,6 +767,13 @@ export class App {
 
         for (const unsubscribe of this._eventUnsubscribers.splice(0)) {
             unsubscribe?.();
+        }
+        if (this._onFirstRunHintDismiss) {
+            document.getElementById('firstRunHintDismiss')?.removeEventListener(
+                'click',
+                this._onFirstRunHintDismiss,
+            );
+            this._onFirstRunHintDismiss = null;
         }
         resetAgentSelection();
 

@@ -669,3 +669,112 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
 .topbar__stat-rate:empty {
     display: none;
 }
+
+.topbar__spend-panel {
+    position: fixed;
+    z-index: 1200;
+    width: 500px;
+    padding: 11px;
+    color: var(--cv-tan, #d6c09c);
+    background: linear-gradient(180deg, var(--cv-panel, #211811), #17100c);
+    border: 1px solid var(--cv-gold-warm, #c79d4c);
+    border-radius: 2px;
+    box-shadow: 0 0 0 2px rgba(28, 17, 11, 0.96), var(--cv-elev-2);
+    font: 10px var(--font-body);
+}
+
+.topbar__spend-heading {
+    margin-bottom: 3px;
+    color: var(--cv-gold-bright, #f2d36b);
+    font-family: var(--font-pixel);
+    font-size: 10px;
+    letter-spacing: 1px;
+}
+
+.topbar__spend-note {
+    margin-bottom: 9px;
+    color: var(--cv-text-muted);
+    font-size: 9px;
+}
+
+.topbar__spend-columns {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+}
+
+.topbar__spend-section {
+    min-width: 0;
+}
+
+.topbar__spend-section-heading {
+    padding-bottom: 4px;
+    color: var(--cv-text-muted);
+    border-bottom: 1px solid rgba(199, 157, 76, 0.3);
+    font-family: var(--font-pixel);
+    font-size: 8px;
+    letter-spacing: 1px;
+}
+
+.topbar__spend-empty {
+    padding: 9px 2px;
+    color: var(--cv-text-muted);
+}
+
+.topbar__spend-row {
+    display: grid;
+    grid-template-columns: minmax(0, 82px) 1fr;
+    gap: 7px;
+    align-items: center;
+    min-height: 31px;
+    border-bottom: 1px solid rgba(199, 157, 76, 0.12);
+}
+
+.topbar__spend-name {
+    overflow: hidden;
+    color: var(--cv-text-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.topbar__spend-name--active {
+    color: var(--cv-gold-soft);
+}
+
+.topbar__spend-primary {
+    color: var(--cv-text-muted);
+    font-weight: normal;
+    white-space: nowrap;
+}
+
+.topbar__spend-primary--burning {
+    color: rgba(244, 214, 120, 0.96);
+    font-weight: bold;
+}
+
+.topbar__spend-detail {
+    margin-top: 2px;
+    color: var(--cv-text-muted);
+    font-size: 9px;
+}
+
+.topbar__spend-more {
+    padding-top: 5px;
+    color: var(--cv-text-muted);
+    font-size: 9px;
+    text-align: right;
+}
+
+/* The TODAY cell opens the Spend Map popover, so it must read as actionable. */
+#statRateWrap[role="button"] {
+    cursor: pointer;
+}
+
+#statRateWrap[role="button"]:hover {
+    color: var(--cv-gold-bright);
+}
+
+#statRateWrap[role="button"]:focus-visible {
+    outline: 1px solid var(--cv-gold-soft);
+    outline-offset: 2px;
+}

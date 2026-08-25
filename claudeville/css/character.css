@@ -29,6 +29,130 @@
 #worldOverlayCanvas {
     z-index: 2;
 }
+
+.world-empty {
+    position: absolute;
+    z-index: 3;
+    left: 50%;
+    top: 52%;
+    display: flex;
+    width: 420px;
+    box-sizing: border-box;
+    transform: translate(-50%, -50%);
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding: 18px 22px 20px;
+    pointer-events: none;
+    color: var(--cv-text-muted);
+    background:
+        linear-gradient(180deg, rgba(55, 37, 24, 0.9), rgba(20, 14, 12, 0.92)),
+        repeating-linear-gradient(90deg, rgba(255, 226, 138, 0.035) 0 1px, transparent 1px 14px);
+    border: 1px solid rgba(214, 169, 81, 0.58);
+    box-shadow:
+        0 0 0 2px rgba(20, 13, 10, 0.76),
+        inset 0 1px 0 rgba(255, 231, 150, 0.12),
+        0 12px 30px rgba(0, 0, 0, 0.38);
+    text-align: center;
+}
+
+.world-empty[hidden],
+.first-run-hint[hidden] {
+    display: none;
+}
+
+.world-empty__crest {
+    display: grid;
+    place-items: center;
+    width: 30px;
+    height: 30px;
+    color: var(--cv-gold-bright);
+    background: rgba(19, 12, 10, 0.74);
+    border: 1px solid rgba(242, 211, 107, 0.46);
+    font: 17px/1 var(--font-display);
+    text-shadow: 1px 1px 0 #2d1a12;
+}
+
+.world-empty__title {
+    color: var(--cv-gold-bright);
+    font: 12px/1.5 var(--font-display);
+    letter-spacing: 2px;
+    text-shadow: 1px 1px 0 #2d1a12;
+}
+
+.world-empty__copy {
+    max-width: 340px;
+    font: 9px/1.7 var(--font-display);
+    letter-spacing: 0.5px;
+}
+
+.first-run-hint {
+    position: fixed;
+    z-index: 1100;
+    top: 63px;
+    right: 167px;
+    display: flex;
+    width: 300px;
+    box-sizing: border-box;
+    flex-direction: column;
+    gap: 7px;
+    padding: 11px 32px 12px 12px;
+    color: var(--cv-text-muted);
+    background: linear-gradient(180deg, rgba(45, 30, 20, 0.98), rgba(18, 12, 11, 0.98));
+    border: 1px solid rgba(214, 169, 81, 0.58);
+    box-shadow: 0 8px 22px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 231, 150, 0.1);
+}
+
+.first-run-hint::before {
+    content: "";
+    position: absolute;
+    top: -7px;
+    right: 14px;
+    width: 12px;
+    height: 12px;
+    transform: rotate(45deg);
+    background: rgba(45, 30, 20, 0.98);
+    border-top: 1px solid rgba(214, 169, 81, 0.58);
+    border-left: 1px solid rgba(214, 169, 81, 0.58);
+}
+
+.first-run-hint__title {
+    color: var(--cv-gold-bright);
+    font: 9px/1.4 var(--font-display);
+    letter-spacing: 1px;
+}
+
+.first-run-hint__copy {
+    font: 9px/1.65 var(--font-body);
+}
+
+.first-run-hint__copy kbd {
+    padding: 1px 4px;
+    color: var(--cv-gold-bright);
+    background: rgba(8, 6, 5, 0.72);
+    border: 1px solid rgba(214, 169, 81, 0.42);
+    font: 8px/1 var(--font-display);
+}
+
+.first-run-hint__dismiss {
+    position: absolute;
+    top: 7px;
+    right: 7px;
+    width: 19px;
+    height: 19px;
+    padding: 0;
+    color: var(--cv-text-muted);
+    background: rgba(20, 13, 11, 0.74);
+    border: 1px solid rgba(214, 169, 81, 0.34);
+    font: 12px/1 var(--font-display);
+}
+
+.first-run-hint__dismiss:hover,
+.first-run-hint__dismiss:focus-visible {
+    color: var(--cv-gold-bright);
+    border-color: rgba(242, 211, 107, 0.72);
+}
+
 /* Ungraded, discoverable grammar opened from the matching topbar icon. */
 .world-grammar { position: fixed; inset: 58px 174px auto auto; margin: 0; width: 310px; padding: 0; color: #d7b979; background: rgba(20, 15, 18, .98); border: 1px solid rgba(199, 157, 76, .52); border-radius: 2px; font: 7px/1.6 'Press Start 2P', monospace; box-shadow: inset 0 1px 0 rgba(255,226,138,.1), 0 10px 24px rgba(0,0,0,.42); }
 .world-grammar::backdrop { background: transparent; }

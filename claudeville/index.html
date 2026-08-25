@@ -100,6 +100,12 @@
         </div>
     </header>
 
+    <aside id="firstRunHint" class="first-run-hint" aria-label="World controls hint" hidden>
+        <button id="firstRunHintDismiss" class="first-run-hint__dismiss" type="button" aria-label="Dismiss hint">×</button>
+        <span class="first-run-hint__title">WORLD CONTROLS</span>
+        <span class="first-run-hint__copy">Open the compass for camera keys. Press <kbd>A</kbd> anytime to jump to the longest-waiting agent.</span>
+    </aside>
+
     <!-- Main area -->
     <div class="main">
         <!-- Top: sidebar + content -->
@@ -136,6 +142,11 @@
                     <canvas id="worldCanvas" class="content__canvas"></canvas>
                     <canvas id="worldFxCanvas" class="content__canvas" aria-hidden="true"></canvas>
                     <canvas id="worldOverlayCanvas" class="content__canvas" aria-hidden="true"></canvas>
+                    <div id="worldEmpty" class="world-empty" role="status">
+                        <span class="world-empty__crest" aria-hidden="true">⌂</span>
+                        <span class="world-empty__title">NO ACTIVE AGENTS</span>
+                        <span class="world-empty__copy">Start a coding CLI session to see agents here</span>
+                    </div>
                     <div id="worldGrammar" class="world-grammar" popover>
                         <div class="world-grammar__header">
                             <span>WORLD CONTROLS</span>
