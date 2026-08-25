@@ -2,6 +2,9 @@
 
 **Status:** `implemented and verified`
 
+**Open follow-ups:** See the [live open-followups checklist](open-followups.md)
+for the deferred items and their measurement triggers.
+
 **Source:** `agents/research/claudeville-comprehensive-verification/audit.md`
 
 **Baseline:** `main` at `2d648cb` (`v0.28.1`)

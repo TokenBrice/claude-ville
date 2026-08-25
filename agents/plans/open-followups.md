@@ -1,0 +1,91 @@
+# Open follow-ups
+
+**Status:** live checklist
+
+**As of:** 2026-08-25, current checkout at `5f6ba42` (`v0.33.3`)
+
+This is the active ledger for deferred work extracted from completed plans. A
+source plan can remain `implemented` or `release-verified`; an item belongs
+here only when that plan explicitly retained it or gave it a conditional
+revisit trigger. The original audit checklists are evidence/specification, not
+an additional source of open work.
+
+`[ ]` means open/deferred until its trigger is observed. `[x]` means the
+relevant work is already implemented and must not be carried forward as open.
+
+## Artifact-policy note
+
+The repository instructions reference `agents/README.md`, but that file is not
+present in this checkout (and the post-OOM plan records the same baseline
+condition). This file follows the existing retained-artifact convention of
+`agents/plans/<slug>.md` and is linked from each source plan below.
+
+## Open / deferred
+
+- [ ] **Async stale-while-revalidate Git worker / bounded async Git refresh**
+
+  - **Source:** [comprehensive remediation plan — CV-PERF-003](claudeville-comprehensive-remediation-plan.md#package-9--small-cleanup-and-explicit-deferrals) and [post-OOM plan — retained follow-ups](claudeville-post-oom-reliability-performance-plan.md#retained-follow-ups).
+  - **Reopen when, from the comprehensive plan:** post-Package-8 runtime measurements show Git timeouts or sustained user-visible event-loop/broadcast stalls. The execution record restates this as isolated timeouts or user-visible stalls reproducing.
+  - **Reopen when, from the post-OOM plan:** cold/change Git enrichment exceeds **50 ms p95**, Git appears in broadcast p95, or an unchanged warm run launches any Git command.
+  - **Current status:** Open — deferred architecture. The change-driven, scoped, cached path is implemented, but current source still calls synchronous `execFileSync` in `claudeville/adapters/index.js` and `claudeville/adapters/gitEvents.js`; the async worker/queue is not implemented.
+  - **Current measurement:** recorded cold enrichment was **17.02 ms / 4 commands** and unchanged warm enrichment **0.34 ms / 0 commands**; the comprehensive release gate recorded steady Git activity at **2.50 commands/second** and event-loop p95 at **22.9 ms or below**. No listed trigger is currently evidenced.
+
+- [ ] **Provider/model lazy asset loading**
+
+  - **Source:** [comprehensive remediation plan — CV-PERF-004](claudeville-comprehensive-remediation-plan.md#package-9--small-cleanup-and-explicit-deferrals).
+  - **Reopen when:** cold readiness exceeds **2 seconds** or memory pressure is reproduced. The retained baseline was cold readiness near **1.23 seconds** with bounded caches.
+  - **Current status:** Open — deferred. World resource suspension/reload is implemented, but broader provider/model lazy-loading infrastructure was not added. Current boot still awaits `AssetManager.load()` and, for the material renderer, `loadMaterialAssets()` before loading the renderer (`claudeville/src/presentation/App.js`).
+
+- [ ] **Identity-aware native-surface registry and staged asset groups**
+
+  - **Source:** [post-OOM plan — retained follow-ups](claudeville-post-oom-reliability-performance-plan.md#retained-follow-ups).
+  - **Reopen when:** a new surface owner shares World assets with Dashboard, diagnostics cannot attribute overlap, or Dashboard becomes a direct boot mode.
+  - **Current status:** Open — deferred architecture. The simpler explicit owner lifecycle is implemented and reaches zero World canvas/decoded-resource checkpoints, but current `CanvasBudget` is aggregate accounting and `AssetManager` has no identity-aware owner registry or staged `ensure()` groups.
+  - **Current measurement:** the recorded World → Dashboard → World checkpoint was **1,286,560 → 0 → 1,286,560** main-canvas pixels, **15,717,856 → 0 → 15,717,856** decoded World asset pixels, and **3,385,600 → 0 → 3,385,600** composited agent-sheet pixels. No listed trigger is currently evidenced.
+
+- [ ] **Durable Claude aggregate checkpoints and a global provider cold-work scheduler**
+
+  - **Source:** [post-OOM plan — retained follow-ups](claudeville-post-oom-reliability-performance-plan.md#retained-follow-ups), corresponding to Package 7 Phase B.
+  - **Reopen when:** a cold restart scans more than **64 MiB synchronously**, takes more than **2 seconds**, or provider diagnostics show a growing deferred-age backlog.
+  - **Current status:** Open — deferred. Current Claude code has bounded signature/aggregate caches, guard/append aggregation, and a concurrency-one async scan queue, but no durable ClaudeVille-owned checkpoint or global provider cold-work scheduler. The large-fixture evidence was about **52.5 MiB** and an unchanged second detail read added zero parsed lines, so the trigger was not met.
+
+- [ ] **Conditional P3 provider whole-file caches and incremental indexes**
+
+  - **Source:** [post-OOM plan — Package 7, Phase C](claudeville-post-oom-reliability-performance-plan.md#phase-c-conditional-p3-whole-file-caches).
+  - **Scope:** byte-bound Gemini’s whole-history cache and derive all consumers from one compact pass; incrementally parse growing Codex/Kimi session indexes with last-write-wins semantics instead of full read/split/parse on each signature change.
+  - **Reopen when:** oversized fixtures demonstrate **material savings**; the plan records that current local index files were small and no Gemini corpus was present.
+  - **Current status:** Open — conditional P3. The measured provider discovery/cache bounds are implemented, but current source still full-reads/splits the Codex index on a signature miss, parses Gemini session JSON as a whole, and rereads the bounded Kimi index tail on a signature miss. No oversized-fixture trigger is recorded.
+
+- [ ] **Long pressure soak before a release push**
+
+  - **Source:** [post-OOM plan — Definition of done](claudeville-post-oom-reliability-performance-plan.md#definition-of-done) and [release verification gate](claudeville-post-oom-reliability-performance-plan.md#package-9--release-verification-gate).
+  - **Reopen when:** before a release push, run the long pressure soak against the correct server process and pass both the JavaScript heap/RSS gates and deduplicated native-resource gates.
+  - **Current status:** Open release gate, not a missing implementation. The default soak infrastructure and the recorded **10-minute browser / 30-minute server** run are present and passed, but the source plan explicitly leaves this release-duration gate open because no release push was requested.
+  - **Current gate values:** **8 MiB** browser-heap projected-growth limit, **64 MiB** server-RSS plateau limit, **250 ms** event-loop p95 limit, plus native canvas/asset drift checks in `scripts/smoke/performance-soak.mjs`.
+
+### Additional conditional follow-ups from the semantic rendering plan
+
+The semantic rendering plan also contains two explicit conditional
+architecture follow-ups. They are included here because the task brief asked
+for them if that completed plan contained open follow-ups; its stale unchecked
+implementation checklist is not otherwise treated as open work.
+
+- [ ] **Evaluate OffscreenCanvas for remaining main-thread contention**
+
+  - **Source:** [semantic diorama rendering plan — Package 9](claudeville-semantic-diorama-rendering-plan.md#package-9--conditional-modernization-and-polish).
+  - **Reopen when:** profiling after the GPU-resident path is complete shows main-thread contention remains material.
+  - **Current status:** Open — conditional and not implemented. Current source has no `OffscreenCanvas` path; the plan’s recorded post-GPU verification was **12.6 ms rAF p95** at **100% FULL** quality, so no trigger is recorded.
+
+- [ ] **Prototype WebGPU behind the existing fallback**
+
+  - **Source:** [semantic diorama rendering plan — Package 9](claudeville-semantic-diorama-rendering-plan.md#package-9--conditional-modernization-and-polish).
+  - **Reopen when:** WebGL2 batching, attachment limits, or material passes remain a measured blocker.
+  - **Current status:** Open — conditional and not implemented. Current source contains the WebGL2 GPU path but no `navigator.gpu`/`GPUDevice` implementation, and no measured WebGL2 blocker is recorded.
+
+## Already landed; do not carry forward as open
+
+- [x] **Change-driven Git enrichment:** scoped signatures, cache reuse, nested-remote handling, ref invalidation, and zero-command unchanged warm refresh are implemented. This does not close the async-worker item above.
+- [x] **World resource suspension:** Dashboard releases the World canvas, decoded World assets, masks/outlines, and composited agent sheets; World reloads them on a generation-current resume.
+- [x] **Bounded Claude parsing:** compact signature-keyed tail/aggregate projections, byte caps, append/guard handling, and concurrency-one async large-file scans are implemented. This does not close the durable-checkpoint/scheduler item above.
+- [x] **Measured provider discovery hot paths:** bounded caches, active-first lookups, Kimi’s bounded old-index fallback, and OpenCode’s avoidance of the all-history active-part scan are implemented. This does not close the conditional Phase C cache/index work above.
+- [x] **Pressure measurement infrastructure:** process identity, warm-up, rolling slopes, native-resource checkpoints, and the default 10/30-minute soak are implemented and release-verified; only the explicitly pending pre-push gate remains above.

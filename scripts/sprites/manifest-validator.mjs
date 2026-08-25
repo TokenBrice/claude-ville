@@ -89,7 +89,8 @@ for (const e of collectSpriteEntries(manifest)) {
     if (e.id?.startsWith('equipment.')) equipmentEntries.push(e);
     for (const p of expectedPathsForEntry(e)) expected.add(p);
 }
-for (const path of materialExpectedPngPaths(manifest)) expected.add(path);
+const expectedMaterialPngPaths = materialExpectedPngPaths(manifest);
+for (const path of expectedMaterialPngPaths) expected.add(path);
 
 let invalidManifest = 0;
 for (const entry of manifestEntries) {
@@ -171,6 +172,11 @@ function validateDuplicatePngs(files) {
     let errors = 0;
     for (const rel of files) {
         if (!expected.has(rel)) continue;
+        // Companion channels are semantic data, not albedo art. Empty
+        // emissive masks and flat occluders are intentionally byte-identical;
+        // validate them through the material contract instead of the art-copy
+        // detector below.
+        if (expectedMaterialPngPaths.has(rel)) continue;
         const abs = join(spritesRoot, rel);
         try {
             const hash = createHash('sha256').update(readFileSync(abs)).digest('hex');

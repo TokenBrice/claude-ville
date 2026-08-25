@@ -38,6 +38,16 @@ The CLIs append to these files concurrently and may change their format in any r
 
 If you change this, update: every adapter under `claudeville/adapters/`, `claudeville/CLAUDE.md`, and add a clear ownership story in README.
 
+## The quota API is the only outbound network exception
+
+`claudeville/services/usageQuota.js` makes one deliberate outbound request: Node's `https.request` sends an authenticated `GET` to `api.anthropic.com/api/oauth/usage` when Claude OAuth credentials include both a subscription type and access token (`claudeville/services/usageQuota.js:282-304`). This is an exception to ClaudeVille's otherwise loopback-only serving and local-data model; it is not a hosted proxy or a general network surface.
+
+The request is attempted at most once per `QUOTA_API_TTL` interval, which is `5 * 60_000` (5 minutes). Only an HTTP 200 response is parsed, and the production response accumulator destroys a body once it exceeds `QUOTA_RESPONSE_MAX_BYTES` (`256 * 1024`, or 256 KiB). The request timeout is 5 seconds (`claudeville/services/usageQuota.js:24-26`, `253-279`, `282-302`). A valid response with at least one usable quota window updates the snapshot; malformed, non-200, oversized, and network-failed requests do not. Network errors are intentionally ignored: a failed attempt does not clear an older successful snapshot, and the timestamp gate delays another attempt until the next 5-minute interval. An existing successful snapshot remains available while `Date.now() - lastSuccessTs <= QUOTA_MAX_STALE_MS`, which is `30 * 60_000` (30 minutes); after that, `fetchUsage()` reports `quotaAvailable: false` and null `fiveHour`/`sevenDay` values. Offline operation with no successful snapshot reports those quota values as unavailable immediately (`claudeville/services/usageQuota.js:304-320`, `332-356`).
+
+This keeps quota telemetry useful without making the local dashboard depend on the remote service for its core operation. The retry interval limits background traffic, the response cap bounds remote input, and the stale cutoff prevents a frozen quota snapshot from looking current when the machine has been offline or the service is failing.
+
+If you change this, update: `claudeville/services/usageQuota.js`, the local-only/proxy descriptions in `README.md` and `claudeville/CLAUDE.md`, the quota troubleshooting note in `docs/troubleshooting.md`, and this entry plus the loopback claim in the `Port 4000 is hardcoded` entry.
+
 ## 2-second polling on top of `fs.watch`
 
 `claudeville/server.js` runs a dirty-driven 2-second scheduler. The scheduler attempts a broadcast when WebSocket clients are connected, but `broadcastUpdate` can no-op when no provider data is dirty and no heartbeat is due.
@@ -114,6 +124,14 @@ If you change this, update: root `AGENTS.md`/`CLAUDE.md`, `claudeville/CLAUDE.md
 Server and panel stay near-live because both serve the active dashboard.
 
 If you change any of these, also revisit `ACTIVE_THRESHOLD_MS` (the active-session window must stay strictly larger than the slowest poll, or sessions will visibly flicker in and out).
+
+## BGM mode keeps event cues but drops reactive ambience
+
+`BgmDirector` intentionally starts a `BgmPlayer` and `CueKit` instead of the `AudioDirector` layer set (`claudeville/src/presentation/shared/audio/BgmDirector.js:33-44`; `claudeville/src/presentation/shared/audio/AudioDirector.js:62-76`). BGM has no wind, rain, birds, crickets, village-hum, tonal-bed, or reactive music layers, and it does not subscribe to storm-flash thunder (`BgmDirector.js:1-6`; `AudioDirector.js:125-133`, `157-218`). It does retain event cues, including arrival, departure, distress, recovery, council, aurora, and the listener-focused summons (`BgmDirector.js:69-81`), along with the waking-hours hour bell (`BgmDirector.js:97-107`).
+
+This is a deliberate mode distinction: continuous town music is the background in BGM mode, while discrete village and attention signals still need to ring over it. Weather and wildlife are reactive ambience layers, so restoring them in BGM mode would change the intended music-first soundscape rather than fix a missing event subscription.
+
+If you change this, update: `claudeville/src/presentation/shared/audio/BgmDirector.js`, `claudeville/src/presentation/shared/audio/AudioDirector.js`, the mode description in `claudeville/src/presentation/shared/README.md`, and this entry.
 
 ## Domain layer must not import from presentation
 

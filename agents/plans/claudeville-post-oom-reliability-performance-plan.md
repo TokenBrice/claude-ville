@@ -2,6 +2,9 @@
 
 **Status:** `implemented and release-verified`
 
+**Open follow-ups:** See the [live open-followups checklist](open-followups.md)
+for the retained items and their measurement triggers.
+
 **Audit date:** July 28, 2026
 
 **Implementation date:** July 28, 2026

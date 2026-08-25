@@ -42,7 +42,7 @@ grounding: {
 }
 ```
 
-The logical footprint always comes from `BUILDING_DEFS`. Do not duplicate it in the manifest. Every manifest building entry must declare native `width`, `height`, and `anchor`; split sprites also declare `horizonY`. A `structureMask` is a migration tool for preserving legacy upper pixels while removing an old baked site slab at load time. New or regenerated art should not need one.
+The logical footprint always comes from `BUILDING_DEFS`. Do not duplicate it in the manifest. Every manifest building entry must declare native `width`, `height`, and `anchor`; split sprites also declare `horizonY`. A `structureMask` is reserved as a migration tool for preserving legacy upper pixels while removing an old baked site slab at load time. The nine current landmark sprites are native structure-only art and do not use one.
 
 ## Size tiers (footprint-driven; all ≤400px → single-image generation)
 
@@ -64,4 +64,4 @@ Rule of thumb: **sprite width ≈ 1.2 × iso-diamond width** = `1.2 · (w+h) · 
 
 ## Reference order
 
-Harbor (`water-pilings`) · Command (`terrain-apron`) · Portal (`intentional-dais`) · Lighthouse (`quay`). Archive, Task Board, Forge, Mine, and Observatory are legacy masked assets and should be reviewed first when native structure-only replacements are produced.
+Harbor (`water-pilings`) · Command (`terrain-apron`) · Portal (`intentional-dais`) · Lighthouse (`quay`). Archive, Task Board, Forge, Mine, and Observatory were regenerated as native structure-only sprites in the 2026-08-25 landmark pass; preserve their recognizable silhouettes and authored material channels in future revisions.

@@ -2,6 +2,9 @@
 
 **Status:** implemented and release-verified for v0.33.0
 
+**Open follow-ups:** See the [live open-followups checklist](open-followups.md)
+for the conditional modernization items and their measurement triggers.
+
 **Date:** Aug 21, 2026
 
 **Source critique:** consolidated multi-agent visual, UX, rendering, performance, and tooling review

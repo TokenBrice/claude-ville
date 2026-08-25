@@ -8,8 +8,17 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PNG } from 'pngjs';
-import { MATERIAL_CHANNELS } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
-import { loadSpriteManifest, repoRoot, spritesRoot } from './manifest-utils.mjs';
+import {
+    MATERIAL_CHANNELS,
+    companionPathFor,
+} from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
+import {
+    collectSpriteEntries,
+    loadSpriteManifest,
+    pathForEntry,
+    repoRoot,
+    spritesRoot,
+} from './manifest-utils.mjs';
 import { resolveAtlasDefinition } from './atlas-layout.mjs';
 
 const CELL_CAP = 96;
@@ -22,6 +31,11 @@ const MATERIAL_PREVIEW = [
 ];
 const args = process.argv.slice(2);
 const atlasId = args.find((arg) => arg.startsWith('--atlas='))?.slice('--atlas='.length) || 'world-pilot';
+const sidecars = args.includes('--sidecars');
+const idsArg = args.find((arg) => arg.startsWith('--ids='));
+const reviewedIds = idsArg
+    ? new Set(idsArg.slice('--ids='.length).split(',').map((value) => value.trim()).filter(Boolean))
+    : null;
 const channelArg = args.find((arg) => arg.startsWith('--channels='));
 const channels = channelArg
     ? channelArg.slice('--channels='.length).split(',').map((value) => value.trim()).filter(Boolean)
@@ -33,33 +47,65 @@ if (invalid.length) {
 }
 
 const manifest = loadSpriteManifest();
-const atlas = resolveAtlasDefinition(manifest, atlasId);
-const metadataPath = absoluteSpritePath(atlas.metadata);
-if (!existsSync(metadataPath)) {
-    console.error(`[channel-contact-sheet] missing metadata ${metadataPath}; run atlas-bake first`);
-    process.exit(1);
-}
-const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
 const outRoot = args.find((arg) => arg.startsWith('--out='))?.slice('--out='.length)
     || join(repoRoot, 'output', 'sprite-channel-sheets');
 mkdirSync(outRoot, { recursive: true });
 
-for (const channel of channels) {
-    const sourcePath = absoluteSpritePath(atlas.channels[channel]);
-    const source = PNG.sync.read(readFileSync(sourcePath));
-    const tiles = metadata.packOrder.map((key) => ({ key, rect: metadata.frames[key].rect }));
-    const sheet = montage(source, tiles, channel);
-    const outputPath = join(outRoot, `${atlas.id}.${channel}.png`);
+if (sidecars) renderSidecarSheets();
+else renderAtlasSheets();
+
+function renderAtlasSheets() {
+    const atlas = resolveAtlasDefinition(manifest, atlasId);
+    const metadataPath = absoluteSpritePath(atlas.metadata);
+    if (!existsSync(metadataPath)) {
+        console.error(`[channel-contact-sheet] missing metadata ${metadataPath}; run atlas-bake first`);
+        process.exit(1);
+    }
+    const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));
+    for (const channel of channels) {
+        const sourcePath = absoluteSpritePath(atlas.channels[channel]);
+        const source = PNG.sync.read(readFileSync(sourcePath));
+        const tiles = metadata.packOrder.map((key) => ({ key, source, rect: metadata.frames[key].rect }));
+        writeSheet(`${atlas.id}.${channel}.png`, tiles, channel);
+    }
+}
+
+function renderSidecarSheets() {
+    const entries = collectSpriteEntries(manifest)
+        .filter((entry) => !reviewedIds || reviewedIds.has(entry.id));
+    for (const channel of channels.filter((candidate) => candidate !== 'albedo')) {
+        const tiles = [];
+        for (const entry of entries) {
+            const albedoPath = pathForEntry(entry);
+            const sidecarPath = companionPathFor(entry, channel, albedoPath);
+            if (!sidecarPath) continue;
+            const absolute = absoluteSpritePath(sidecarPath);
+            if (!existsSync(absolute)) continue;
+            const source = PNG.sync.read(readFileSync(absolute));
+            tiles.push({ key: entry.id, source, rect: { x: 0, y: 0, w: source.width, h: source.height } });
+        }
+        if (!tiles.length) {
+            console.log(`[channel-contact-sheet] sidecars:${channel}: no declared companions, skipped`);
+            continue;
+        }
+        writeSheet(`sidecars.${channel}.png`, tiles, channel);
+    }
+}
+
+function writeSheet(filename, tiles, channel) {
+    const sheet = montage(tiles, channel);
+    const outputPath = join(outRoot, filename);
     mkdirSync(dirname(outputPath), { recursive: true });
     writeFileSync(outputPath, PNG.sync.write(sheet));
     console.log(`[channel-contact-sheet] ${channel}: ${tiles.length} frames -> ${outputPath}`);
 }
 
-function montage(source, tiles, channelName) {
-    const cells = tiles.map(({ key, rect }) => {
+function montage(tiles, channelName) {
+    const cells = tiles.map(({ key, source, rect }) => {
         const scale = Math.max(1, Math.ceil(Math.max(rect.w, rect.h) / CELL_CAP));
         return {
             key,
+            source,
             rect,
             scale,
             w: Math.ceil(rect.w / scale),
@@ -79,7 +125,7 @@ function montage(source, tiles, channelName) {
         const row = Math.floor(index / cols);
         const x = MARGIN + col * (cellW + GAP) + Math.floor((cellW - cell.w) / 2);
         const y = MARGIN + row * (cellH + GAP) + Math.floor((cellH - cell.h) / 2);
-        blitNearest(output, source, cell.rect, x, y, cell.scale, channelName);
+        blitNearest(output, cell.source, cell.rect, x, y, cell.scale, channelName);
     });
     return output;
 }
@@ -104,7 +150,13 @@ function blitNearest(destination, source, rect, ox, oy, scale, channelName) {
             const sx = rect.x + Math.min(rect.w - 1, x * scale);
             const sy = rect.y + Math.min(rect.h - 1, y * scale);
             const sourceIndex = (source.width * sy + sx) * 4;
-            const alpha = source.data[sourceIndex + 3];
+            const encodedAlpha = source.data[sourceIndex + 3];
+            // Emissive alpha is intentionally restrained in authored assets;
+            // amplify only the review preview so sparse semantic pixels remain
+            // inspectable on the checkerboard.
+            const alpha = channelName === 'emissive'
+                ? Math.min(255, encodedAlpha * 4)
+                : encodedAlpha;
             if (alpha === 0) continue;
             const destinationIndex = (destination.width * (oy + y) + ox + x) * 4;
             const t = alpha / 255;
