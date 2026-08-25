@@ -1,6 +1,7 @@
 import { AgentStatus, normalizeAgentStatus } from '../value-objects/AgentStatus.js';
 import { Position } from '../value-objects/Position.js';
 import { Appearance } from '../value-objects/Appearance.js';
+import { AgentBiography } from '../value-objects/AgentBiography.js';
 import { i18n } from '../../config/i18n.js';
 import { TokenUsage } from '../value-objects/TokenUsage.js';
 import { normalizeMood } from '../value-objects/AgentMood.js';
@@ -52,6 +53,7 @@ export class Agent {
         waitReason,
         awaitingSince,
         resident,
+        departedAt,
     }) {
         this.id = id;
         this._customName = !!name; // Whether the name was assigned by a team
@@ -85,13 +87,25 @@ export class Agent {
         this.waitReason = waitReason || null;
         this.awaitingSince = Number.isFinite(Number(awaitingSince)) ? Number(awaitingSince) : null;
         this.resident = resident === true;
+        // A departed agent is no longer present in the live server roster, but
+        // remains in the world briefly so burst workloads stay perceptible.
+        // This marker is intentionally separate from AgentStatus: departure is
+        // presence lifecycle, not another execution state.
+        this.departedAt = departedAt !== null
+            && departedAt !== undefined
+            && Number.isFinite(Number(departedAt))
+            ? Number(departedAt)
+            : null;
         this.sendMessages = Array.isArray(sendMessages) ? sendMessages : [];
         this.lastSessionActivity = lastSessionActivity || null;
         this.activityAgeMs = Number.isFinite(Number(activityAgeMs)) ? Number(activityAgeMs) : null;
         this._lastMessage = lastMessage || null;
         // Telemetry-derived emotion; kept current by application/MoodService.js.
         this.mood = normalizeMood(null);
-        this.appearance = Appearance.fromHash(id);
+        // Transient presentation hint populated by VisitIntentManager. Keeping
+        // the derived copy here avoids replacing or disguising raw tool data.
+        this.visitIntentBubble = null;
+        this.refreshIdentityAppearance();
         this.position = new Position(20 + Math.random() * 10, 20 + Math.random() * 10);
         this.targetPosition = null;
         this.walkFrame = 0;
@@ -99,15 +113,19 @@ export class Agent {
     }
 
     get isWorking() {
-        return this.status === AgentStatus.WORKING;
+        return !this.isDeparted && this.status === AgentStatus.WORKING;
     }
 
     get isIdle() {
-        return this.status === AgentStatus.IDLE;
+        return !this.isDeparted && this.status === AgentStatus.IDLE;
     }
 
     get isWaiting() {
-        return this.status === AgentStatus.WAITING;
+        return !this.isDeparted && this.status === AgentStatus.WAITING;
+    }
+
+    get isDeparted() {
+        return Number.isFinite(this.departedAt);
     }
 
     get isSubagent() {
@@ -115,7 +133,7 @@ export class Agent {
     }
 
     get isToolFresh() {
-        return this.status === AgentStatus.WORKING && !!this.currentTool;
+        return !this.isDeparted && this.status === AgentStatus.WORKING && !!this.currentTool;
     }
 
     get cost() {
@@ -158,6 +176,7 @@ export class Agent {
             updates.name = this.name || this.generateName();
         }
         Object.assign(this, updates);
+        this.refreshIdentityAppearance();
         this.lastActive = Date.now();
     }
 
@@ -180,7 +199,15 @@ export class Agent {
      * Text to display in the speech bubble (capped at ~24 chars).
      */
     get bubbleText() {
+        if (this.isDeparted) return null;
         const CAP = 24;
+        const intentBubble = this.visitIntentBubble;
+        if (
+            intentBubble?.text
+            && (!Number.isFinite(Number(intentBubble.expiresAt)) || Number(intentBubble.expiresAt) > Date.now())
+        ) {
+            return Agent._truncate(intentBubble.text, CAP);
+        }
         // Occasionally speak village lore instead of the tool label; the
         // pick is seeded per agent + time bucket, so it stays stable
         // across frames and returns null outside lore buckets.
@@ -200,6 +227,11 @@ export class Agent {
         return null;
     }
 
+    setVisitIntentBubble(bubble) {
+        this.visitIntentBubble = bubble?.text ? { ...bubble } : null;
+        return this.visitIntentBubble;
+    }
+
     static _truncate(s, cap) {
         const str = String(s);
         if (str.length <= cap) return str;
@@ -209,6 +241,12 @@ export class Agent {
     generateName(usedNames = null) {
         const hash = Appearance.hashCode(this.id);
         return Agent.generateNameForLang(hash, i18n.lang, usedNames);
+    }
+
+    refreshIdentityAppearance() {
+        const identityKey = AgentBiography.identityKeyFor(this);
+        this.appearance = Appearance.fromIdentityKey(identityKey || this.id);
+        return this.appearance;
     }
 
     // Deterministic: the hash picks a starting index; when `usedNames` already

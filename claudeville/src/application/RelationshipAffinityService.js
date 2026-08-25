@@ -1,6 +1,10 @@
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
-import { PairAffinity, affinityPairKey } from '../domain/value-objects/PairAffinity.js';
+import {
+    AFFINITY_HALF_LIFE_MS,
+    PairAffinity,
+    affinityPairKey,
+} from '../domain/value-objects/PairAffinity.js';
 import { extractRecipientName } from '../domain/services/RecipientResolver.js';
 
 const FLUSH_DEBOUNCE_MS = 3000;
@@ -9,6 +13,30 @@ const WRITE_LEASE_TTL_MS = 15000;
 const AFFINITY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const AFFINITY_CACHE_LIMIT = 1024;
 const MET_SESSION_PAIR_LIMIT = AFFINITY_CACHE_LIMIT;
+const WARMTH_KINDLED_MS = AFFINITY_HALF_LIFE_MS / 4;
+
+/**
+ * A lore-facing decay phase. These labels describe time since the warmth
+ * score was last settled, not the score itself: after one 48-hour half-life
+ * a bond is cooling, and after two it is a faint trail.
+ */
+export function affinityWarmthPhase(affinity, now = Date.now()) {
+    const updatedAt = Number(affinity?.scoreUpdatedAt || affinity?.lastInteractionAt || 0);
+    if (!updatedAt) return 'faint';
+    const elapsed = Math.max(0, Number(now) - updatedAt);
+    if (elapsed < WARMTH_KINDLED_MS) return 'hearth-warm';
+    if (elapsed < AFFINITY_HALF_LIFE_MS) return 'warm';
+    if (elapsed < AFFINITY_HALF_LIFE_MS * 2) return 'cooling';
+    return 'faint';
+}
+
+function interactionTotal(affinity) {
+    return (
+        Number(affinity?.meetings || 0)
+        + Number(affinity?.chats || 0)
+        + Number(affinity?.sharedCommits || 0)
+    );
+}
 
 function randomToken() {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
@@ -137,7 +165,9 @@ export class RelationshipAffinityService {
     start() {
         if (!this.store || this._accepting || this._stopPromise) return this;
         this._accepting = true;
-        this._ready = this._preload();
+        this._ready = this._preload().then(() => {
+            if (this._accepting) eventBus.emit('affinity:ready', { service: this });
+        });
         const seen = (agent) => {
             this._ready.then(() => {
                 if (this._accepting) this._handleAgentSeen(agent);
@@ -201,6 +231,41 @@ export class RelationshipAffinityService {
         const affinity = pairKey ? this._affinities.get(pairKey) || null : null;
         if (affinity) this._touchAffinity(pairKey);
         return affinity;
+    }
+
+    /**
+     * Ranked relationship summaries for one persistent biography identity.
+     * Lifetime counters remain exact while tier and warmth are evaluated at
+     * read time, so UI consumers never need to understand the decay formula.
+     */
+    collaboratorsFor(identityKey, now = Date.now()) {
+        const key = String(identityKey || '').trim();
+        if (!key) return [];
+        const tierRank = { allies: 0, acquaintances: 1, strangers: 2 };
+        const collaborators = [];
+        for (const affinity of this._affinities.values()) {
+            if (!affinity?.involves?.(key) || interactionTotal(affinity) <= 0) continue;
+            const otherIdentity = affinity.otherIdentity(key);
+            if (!otherIdentity) continue;
+            collaborators.push({
+                identityKey: otherIdentity,
+                tier: affinity.tier(now),
+                warmth: affinityWarmthPhase(affinity, now),
+                score: affinity.decayedScore(now),
+                meetings: Number(affinity.meetings) || 0,
+                chats: Number(affinity.chats) || 0,
+                sharedCommits: Number(affinity.sharedCommits) || 0,
+                firstMetAt: Number(affinity.firstMetAt) || 0,
+                lastInteractionAt: Number(affinity.lastInteractionAt) || 0,
+            });
+        }
+        return collaborators.sort((a, b) => (
+            (tierRank[a.tier] - tierRank[b.tier])
+            || (b.score - a.score)
+            || (b.sharedCommits - a.sharedCommits)
+            || (b.lastInteractionAt - a.lastInteractionAt)
+            || a.identityKey.localeCompare(b.identityKey)
+        ));
     }
 
     /** Decayed warmth between two live agents; 0 for strangers/unknown. */

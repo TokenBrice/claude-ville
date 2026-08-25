@@ -50,6 +50,10 @@ export class Appearance {
         });
     }
 
+    static fromIdentityKey(identityKey) {
+        return Appearance.fromHash(String(identityKey || ''));
+    }
+
     static hashCode(str) {
         let hash = 0;
         for (let i = 0; i < str.length; i++) {

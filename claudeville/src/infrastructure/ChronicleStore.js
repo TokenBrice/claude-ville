@@ -1,11 +1,13 @@
 const DB_NAME = 'claudeville-chronicle';
-const DB_VERSION = 5;
+const DB_VERSION = 6;
 const LEASE_KEY = 'claudeville.chronicle.captureLease';
 const DEFAULT_LEASE_TTL_MS = 7000;
 const LIFETIME_COUNTS_META_KEY = 'lifetimeCounts';
 const LIFETIME_COMMIT_ID_LIMIT = 4096;
 const LATEST_COMMIT_IDS_PER_PROJECT_LIMIT = 64;
 const FOUNDING_META_KEY = 'founding';
+const EVENT_RETENTION_DAYS = 14;
+const EVENT_RETENTION_MAX_ROWS = 20_000;
 
 const RETENTION_MS = {
     manifests: 24 * 60 * 60 * 1000,
@@ -13,8 +15,14 @@ const RETENTION_MS = {
     monuments: 30 * 24 * 60 * 60 * 1000,
     trailSamples: 24 * 60 * 60 * 1000,
     affinities: 30 * 24 * 60 * 60 * 1000,
-    events: 7 * 24 * 60 * 60 * 1000,
 };
+
+export function eventRetentionCutoff(now = nowMs(), retentionDays = EVENT_RETENTION_DAYS) {
+    const cutoff = new Date(now);
+    cutoff.setHours(0, 0, 0, 0);
+    cutoff.setDate(cutoff.getDate() - Math.max(0, retentionDays - 1));
+    return cutoff.getTime();
+}
 
 function requestToPromise(request) {
     return new Promise((resolve, reject) => {
@@ -56,6 +64,7 @@ function storeConfig(name) {
 export class ChronicleStore {
     constructor({ dbName = DB_NAME } = {}) {
         this.dbName = dbName;
+        this.eventRetentionDays = EVENT_RETENTION_DAYS;
         this.db = null;
         this.channel = typeof BroadcastChannel !== 'undefined'
             ? new BroadcastChannel('claudeville-chronicle')
@@ -269,8 +278,14 @@ export class ChronicleStore {
                 index: 'lastInteractionAt',
                 upper: now - RETENTION_MS.affinities,
             }),
-            events: await this.deleteRange('events', { upper: now - RETENTION_MS.events }),
+            // Keep complete local calendar days rather than a rolling duration:
+            // yesterday should not disappear part-way through the afternoon.
+            events: await this.deleteRange('events', {
+                upper: eventRetentionCutoff(now, this.eventRetentionDays) - 1,
+            }),
         };
+        const overflowEvents = await this._trimOldest('events', EVENT_RETENTION_MAX_ROWS, 'ts');
+        deleted.events += overflowEvents;
         await this.put('meta', { key: 'lastPruneAt', value: now });
         return deleted;
     }
@@ -604,6 +619,34 @@ export class ChronicleStore {
         return deleted;
     }
 
+    async _trimOldest(storeName, maxRows, index = 'ts') {
+        const total = await this.count(storeName);
+        let remaining = Math.max(0, total - maxRows);
+        if (!remaining) return 0;
+        await this.open();
+        const tx = this.db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        const source = index && store.indexNames.contains(index) ? store.index(index) : store;
+        let deleted = 0;
+        await new Promise((resolve, reject) => {
+            const request = source.openCursor();
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+                const cursor = request.result;
+                if (!cursor || remaining <= 0) {
+                    resolve();
+                    return;
+                }
+                cursor.delete();
+                deleted++;
+                remaining--;
+                cursor.continue();
+            };
+        });
+        await txDone(tx);
+        return deleted;
+    }
+
     _readLease() {
         if (typeof localStorage === 'undefined') return null;
         try {
@@ -642,4 +685,10 @@ export class ChronicleStore {
     }
 }
 
-export { DB_NAME, DB_VERSION, RETENTION_MS };
+export {
+    DB_NAME,
+    DB_VERSION,
+    EVENT_RETENTION_DAYS,
+    EVENT_RETENTION_MAX_ROWS,
+    RETENTION_MS,
+};

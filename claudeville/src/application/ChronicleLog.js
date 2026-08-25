@@ -30,11 +30,41 @@ const STATUS_EVENTS = {
     [AgentStatus.COMPLETED]: ChronicleEventKind.COMPLETED,
 };
 
-function localDateKey(ts) {
+const DIGEST_DETAIL_LIMIT = 8;
+let activeChronicleLog = null;
+
+/** The running day book, used by services that are constructed before it. */
+export function getActiveChronicleLog() {
+    return activeChronicleLog;
+}
+
+export function chronicleDateKey(ts = Date.now()) {
     const date = new Date(ts);
     const month = String(date.getMonth() + 1).padStart(2, '0');
     const day = String(date.getDate()).padStart(2, '0');
     return `${date.getFullYear()}-${month}-${day}`;
+}
+
+export function chronicleDateFromKey(value) {
+    const match = String(value || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!match) return new Date(value);
+    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]));
+}
+
+export function chronicleDateWindow(now = Date.now(), retentionDays = 14) {
+    const maxDate = new Date(now);
+    maxDate.setHours(0, 0, 0, 0);
+    const minDate = new Date(maxDate);
+    minDate.setDate(minDate.getDate() - Math.max(0, retentionDays - 1));
+    return {
+        min: chronicleDateKey(minDate),
+        max: chronicleDateKey(maxDate),
+    };
+}
+
+function boundedText(value, maxLength = 200) {
+    if (value == null) return null;
+    return String(value).slice(0, maxLength);
 }
 
 function projectName(path) {
@@ -85,6 +115,7 @@ export function commitSubject(event) {
 export class ChronicleLog {
     constructor({ store = null } = {}) {
         this.store = store;
+        this.retentionDays = Number(store?.eventRetentionDays) || 14;
         this.running = false;
         this._statusById = new Map();
         this._waitingSince = new Map();
@@ -102,14 +133,23 @@ export class ChronicleLog {
         if (this.running) return this;
         this._stopPromise = null;
         this.running = true;
+        activeChronicleLog = this;
+        eventBus.emit('chronicle:log-ready', this);
         // Reloading the tab is not an arrival. Replay today's book so agents
         // that were already in town stay in town across a refresh.
         this._replayToday();
 
         this._onAdded = (agent) => {
             this._statusById.set(agent.id, agent.status);
-            this._noteArrival(agent);
-            this._noteStatus(agent);
+            const arrived = this._noteArrival(agent);
+            // A genuinely new resident may already be waiting, errored,
+            // rate-limited, or complete when it enters the town. Preserve that
+            // observed transition for the day book, while replayed residents
+            // keep the reload de-duplication behavior above.
+            if (arrived && STATUS_EVENTS[agent.status]) {
+                this._statusById.delete(agent.id);
+                this._noteStatus(agent);
+            }
             this._noteGitEvents(agent);
         };
         this._onUpdated = (agent) => {
@@ -138,6 +178,10 @@ export class ChronicleLog {
             eventBus.off('agent:added', this._onAdded);
             eventBus.off('agent:updated', this._onUpdated);
             eventBus.off('agent:removed', this._onRemoved);
+            if (activeChronicleLog === this) {
+                activeChronicleLog = null;
+                eventBus.emit('chronicle:log-stopped', this);
+            }
         }
         this._stopPromise = this.flush();
         return this._stopPromise;
@@ -146,19 +190,26 @@ export class ChronicleLog {
     // Arrivals cannot be judged until the replay says who was already here, and
     // the first sessions can land before that read returns — so they queue.
     _noteArrival(agent) {
-        if (!this._isTownsfolk(agent)) return;
+        if (!this._isTownsfolk(agent)) return false;
         if (!this._replayed) {
             this._pendingArrivals.push(agent);
-            return;
+            return null;
         }
-        if (this._presentIds.has(agent.id)) return;
+        if (this._presentIds.has(agent.id)) return false;
         this._presentIds.add(agent.id);
         this.record(ChronicleEventKind.ARRIVED, agent);
+        return true;
     }
 
     _flushPendingArrivals() {
         const queued = this._pendingArrivals.splice(0);
-        for (const agent of queued) this._noteArrival(agent);
+        for (const agent of queued) {
+            const arrived = this._noteArrival(agent);
+            if (arrived && STATUS_EVENTS[agent.status]) {
+                this._statusById.delete(agent.id);
+                this._noteStatus(agent);
+            }
+        }
     }
 
     // Repository watchers are a scan artifact, not somebody visiting the town.
@@ -284,7 +335,7 @@ export class ChronicleLog {
         const record = {
             id: `${ts}-${this._seq++}-${kind}`,
             ts,
-            localDate: localDateKey(ts),
+            localDate: chronicleDateKey(ts),
             kind,
             agentId: agent?.id || null,
             agentName: agent?.name || null,
@@ -293,6 +344,11 @@ export class ChronicleLog {
             ...extra,
         };
         delete record.ts_;
+        // A row ceiling bounds count; bounding free-form fields also bounds
+        // each row so an unusual provider payload cannot defeat that ceiling.
+        for (const key of ['agentId', 'agentName', 'provider', 'project', 'reason', 'tool', 'label', 'sha']) {
+            record[key] = boundedText(record[key]);
+        }
         this._writeTail = this._writeTail
             .then(() => this.store.put('events', record))
             .catch(() => { /* the day book is best effort; never break the app */ });
@@ -352,6 +408,53 @@ export class ChronicleLog {
         }
     }
 
+    /**
+     * Fold Chronicle records observed in an arbitrary timestamp interval into
+     * a compact unattended-work summary. This deliberately uses the events
+     * index rather than keeping a second in-memory history for the digest.
+     */
+    async readDigest(since, until = Date.now()) {
+        const lower = Number(since);
+        const upper = Number(until);
+        if (!Number.isFinite(lower) || !Number.isFinite(upper) || upper < lower) {
+            return summarizeDigest([], { since: lower, until: upper });
+        }
+        if (!this.store) return summarizeDigest([], { since: lower, until: upper });
+
+        try {
+            await this.flush();
+            const initial = createDigestSummary();
+            let folded = initial;
+            const collect = (result, event) => {
+                const ts = Number(event?.ts);
+                // Real ChronicleStore cursors respect the range. The explicit
+                // check also keeps simple test stores and future adapters safe.
+                if (!Number.isFinite(ts) || ts < lower || ts > upper) return result;
+                return accumulateDigestSummary(result, event);
+            };
+
+            if (typeof this.store.reduceRange === 'function') {
+                folded = await this.store.reduceRange('events', {
+                    index: 'ts',
+                    lower,
+                    upper,
+                    direction: 'next',
+                }, collect, initial);
+            } else if (typeof this.store.queryRange === 'function') {
+                const events = await this.store.queryRange('events', {
+                    index: 'ts',
+                    lower,
+                    upper,
+                    direction: 'next',
+                });
+                for (const event of events || []) folded = collect(folded, event);
+            }
+            return finalizeDigestSummary(folded, { since: lower, until: upper });
+        } catch {
+            return summarizeDigest([], { since: lower, until: upper });
+        }
+    }
+
     async _foldDay(initialValue, reducer, date = new Date(), direction = 'next') {
         if (!this.store) return initialValue;
         if (typeof this.store.reduceRange !== 'function') {
@@ -382,7 +485,7 @@ export class ChronicleLog {
  * tested without IndexedDB.
  */
 function dayBounds(date) {
-    const start = new Date(date);
+    const start = typeof date === 'string' ? chronicleDateFromKey(date) : new Date(date);
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
@@ -405,6 +508,164 @@ function createDaySummary() {
         firstTs: null,
         lastTs: null,
     };
+}
+
+function createDigestSummary() {
+    return {
+        ...createDaySummary(),
+        arrivals: 0,
+        departures: 0,
+        resolved: 0,
+        waiting: [],
+        errorAgents: [],
+        rateLimitAgents: [],
+        commitDetails: [],
+        _detailMaps: {
+            waiting: new Map(),
+            errorAgents: new Map(),
+            rateLimitAgents: new Map(),
+            commitDetails: new Map(),
+        },
+    };
+}
+
+function digestAgentKey(event) {
+    return String(event?.agentId || '').trim()
+        || `${String(event?.agentName || '').trim()}\u0000${String(event?.project || '').trim()}`
+        || 'unknown';
+}
+
+function addDigestAgentDetail(summary, field, event, kind) {
+    const key = digestAgentKey(event);
+    const map = summary._detailMaps[field];
+    const existing = map.get(key);
+    if (existing) {
+        existing.count++;
+        existing.lastTs = Number(event?.ts) || existing.lastTs;
+        return;
+    }
+
+    const detail = {
+        kind,
+        agentId: boundedText(event?.agentId),
+        agentName: boundedText(event?.agentName),
+        project: boundedText(event?.project),
+        reason: boundedText(event?.reason),
+        count: 1,
+        firstTs: Number(event?.ts) || null,
+        lastTs: Number(event?.ts) || null,
+    };
+    map.set(key, detail);
+    if (summary[field].length < DIGEST_DETAIL_LIMIT) summary[field].push(detail);
+}
+
+function addDigestCommitDetail(summary, event) {
+    const label = boundedText(event?.label);
+    if (!label) return;
+    const key = `${label}\u0000${String(event?.agentId || '').trim()}`;
+    const existing = summary._detailMaps.commitDetails.get(key);
+    if (existing) {
+        existing.count++;
+        existing.lastTs = Number(event?.ts) || existing.lastTs;
+        return;
+    }
+    const detail = {
+        label,
+        agentId: boundedText(event?.agentId),
+        agentName: boundedText(event?.agentName),
+        project: boundedText(event?.project),
+        count: 1,
+        firstTs: Number(event?.ts) || null,
+        lastTs: Number(event?.ts) || null,
+    };
+    summary._detailMaps.commitDetails.set(key, detail);
+    if (summary.commitDetails.length < DIGEST_DETAIL_LIMIT) summary.commitDetails.push(detail);
+}
+
+function accumulateDigestSummary(summary, event) {
+    accumulateDaySummary(summary, event);
+    switch (event?.kind) {
+        case ChronicleEventKind.ARRIVED:
+            summary.arrivals++;
+            break;
+        case ChronicleEventKind.DEPARTED:
+            summary.departures++;
+            break;
+        case ChronicleEventKind.WAITING:
+            addDigestAgentDetail(summary, 'waiting', event, ChronicleEventKind.WAITING);
+            break;
+        case ChronicleEventKind.ERRORED:
+            addDigestAgentDetail(summary, 'errorAgents', event, ChronicleEventKind.ERRORED);
+            break;
+        case ChronicleEventKind.RATE_LIMITED:
+            addDigestAgentDetail(summary, 'rateLimitAgents', event, ChronicleEventKind.RATE_LIMITED);
+            break;
+        case ChronicleEventKind.COMMIT:
+            addDigestCommitDetail(summary, event);
+            break;
+        case ChronicleEventKind.RESOLVED:
+            summary.resolved++;
+            break;
+        default:
+            break;
+    }
+    return summary;
+}
+
+function finalizeDigestSummary(summary, { since = null, until = null } = {}) {
+    const { _detailMaps: detailMaps, ...plain } = summary;
+    const waitingAgentCount = detailMaps.waiting.size;
+    const errorAgentCount = detailMaps.errorAgents.size;
+    const rateLimitAgentCount = detailMaps.rateLimitAgents.size;
+    const daySummary = finalizeDaySummary(plain);
+    return {
+        ...daySummary,
+        // The digest is a toast payload, not a second Chronicle page. Keep
+        // names bounded even when a busy interval contains many agents.
+        agents: daySummary.agents.slice(0, DIGEST_DETAIL_LIMIT),
+        projects: daySummary.projects.slice(0, DIGEST_DETAIL_LIMIT),
+        agentCount: daySummary.agents.length,
+        projectCount: daySummary.projects.length,
+        since,
+        until,
+        hasActivity: daySummary.totalEvents > 0,
+        waiting: daySummary.waiting,
+        errorAgents: daySummary.errorAgents,
+        rateLimitAgents: daySummary.rateLimitAgents,
+        commitDetails: daySummary.commitDetails,
+        waitingAgents: waitingAgentCount,
+        errorAgentCount,
+        rateLimitAgentCount,
+        urgent: {
+            waiting: daySummary.waiting,
+            errors: daySummary.errorAgents,
+            rateLimits: daySummary.rateLimitAgents,
+        },
+        routine: {
+            completed: daySummary.completed,
+            commits: daySummary.commits,
+            pushes: daySummary.pushes,
+            arrivals: countKind(daySummary, ChronicleEventKind.ARRIVED),
+            departures: countKind(daySummary, ChronicleEventKind.DEPARTED),
+            resolved: countKind(daySummary, ChronicleEventKind.RESOLVED),
+        },
+    };
+}
+
+function countKind(summary, kind) {
+    // The day summary has dedicated counters only for the event kinds used by
+    // its recap. Digest callers need the three quieter lifecycle counts too.
+    if (kind === ChronicleEventKind.ARRIVED) return summary.arrivals || 0;
+    if (kind === ChronicleEventKind.DEPARTED) return summary.departures || 0;
+    if (kind === ChronicleEventKind.RESOLVED) return summary.resolved || 0;
+    return 0;
+}
+
+/** Pure interval rollup used by the store-backed digest and unit tests. */
+export function summarizeDigest(events = [], { since = null, until = null } = {}) {
+    const summary = createDigestSummary();
+    for (const event of events || []) accumulateDigestSummary(summary, event);
+    return finalizeDigestSummary(summary, { since, until });
 }
 
 function accumulateDaySummary(summary, event) {

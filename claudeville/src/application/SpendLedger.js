@@ -42,6 +42,43 @@ function localDateKey(ts = Date.now()) {
     return `${date.getFullYear()}-${month}-${day}`;
 }
 
+function projectKey(agent) {
+    const path = String(agent?.projectPath || '').trim();
+    return path || 'unattributed';
+}
+
+function providerKey(agent) {
+    const provider = String(agent?.provider || '').trim().toLowerCase();
+    return provider || 'unknown';
+}
+
+function emptyTotal() {
+    return { tokens: 0, cacheRead: 0, cost: 0 };
+}
+
+function addTo(map, key, { tokens = 0, cacheRead = 0, cost = 0 }) {
+    const total = map.get(key) || emptyTotal();
+    total.tokens += tokens;
+    total.cacheRead += cacheRead;
+    total.cost += cost;
+    map.set(key, total);
+}
+
+function restoreTotals(value) {
+    const totals = new Map();
+    if (!Array.isArray(value)) return totals;
+    for (const row of value) {
+        const key = String(row?.key || '').trim();
+        if (!key) continue;
+        totals.set(key, {
+            tokens: Number(row.tokens) || 0,
+            cacheRead: Number(row.cacheRead) || 0,
+            cost: Number(row.cost) || 0,
+        });
+    }
+    return totals;
+}
+
 export class SpendLedger {
     constructor(world, { store = null } = {}) {
         this.world = world;
@@ -49,8 +86,10 @@ export class SpendLedger {
         this.running = false;
         this.date = localDateKey();
         this.today = { tokens: 0, cacheRead: 0, cost: 0 };
-        this._lastSeen = new Map();   // agentId → { tokens, cost }
-        this._samples = [];           // { ts, tokens, cost } inside the rate window
+        this._todayByProject = new Map();
+        this._todayByProvider = new Map();
+        this._lastSeen = new Map();   // agentId → counters + attribution keys
+        this._samples = [];           // attributed deltas inside the rate window
         this._loaded = false;
         this._writeTail = Promise.resolve();
         this._stopPromise = null;
@@ -95,29 +134,50 @@ export class SpendLedger {
         const date = localDateKey(now);
         if (date !== this.date) this._rollOver(date);
 
-        let tokenDelta = 0;
-        let cacheDelta = 0;
-        let costDelta = 0;
+        const delta = emptyTotal();
+        const projectDeltas = new Map();
+        const providerDeltas = new Map();
 
         for (const agent of this.world?.agents?.values?.() || []) {
             const tokens = newTokens(agent.tokens);
             const cacheRead = cacheReadTokens(agent.tokens);
             const cost = Number(agent.cost) || 0;
+            const project = projectKey(agent);
+            const provider = providerKey(agent);
             const previous = this._lastSeen.get(agent.id);
-            this._lastSeen.set(agent.id, { tokens, cacheRead, cost });
+            this._lastSeen.set(agent.id, { tokens, cacheRead, cost, project, provider });
             if (!previous) continue;
+            // Project and provider are session identity. If either changes under
+            // a reused id, the interval cannot be attributed honestly.
+            if (previous.project !== project || previous.provider !== provider) continue;
             // Counters only grow; a decrease means the session was replaced or
             // recounted, so re-baseline instead of banking a negative.
-            if (tokens > previous.tokens) tokenDelta += tokens - previous.tokens;
-            if (cacheRead > previous.cacheRead) cacheDelta += cacheRead - previous.cacheRead;
-            if (cost > previous.cost) costDelta += cost - previous.cost;
+            const observed = {
+                tokens: tokens > previous.tokens ? tokens - previous.tokens : 0,
+                cacheRead: cacheRead > previous.cacheRead ? cacheRead - previous.cacheRead : 0,
+                cost: cost > previous.cost ? cost - previous.cost : 0,
+            };
+            if (observed.tokens <= 0 && observed.cacheRead <= 0 && observed.cost <= 0) continue;
+            addTo(projectDeltas, project, observed);
+            addTo(providerDeltas, provider, observed);
+            delta.tokens += observed.tokens;
+            delta.cacheRead += observed.cacheRead;
+            delta.cost += observed.cost;
         }
 
-        if (tokenDelta > 0 || cacheDelta > 0 || costDelta > 0) {
-            this.today.tokens += tokenDelta;
-            this.today.cacheRead += cacheDelta;
-            this.today.cost += costDelta;
-            this._samples.push({ ts: now, tokens: tokenDelta, cost: costDelta });
+        if (delta.tokens > 0 || delta.cacheRead > 0 || delta.cost > 0) {
+            this.today.tokens += delta.tokens;
+            this.today.cacheRead += delta.cacheRead;
+            this.today.cost += delta.cost;
+            for (const [key, observed] of projectDeltas) {
+                addTo(this._todayByProject, key, observed);
+                this._samples.push({ ts: now, dimension: 'project', key, ...observed });
+            }
+            for (const [key, observed] of providerDeltas) {
+                addTo(this._todayByProvider, key, observed);
+                this._samples.push({ ts: now, dimension: 'provider', key, ...observed });
+            }
+            this._samples.push({ ts: now, dimension: 'total', key: 'total', ...delta });
             this._persist();
         }
 
@@ -131,18 +191,66 @@ export class SpendLedger {
      * there is enough of a window to say anything honest.
      */
     burnRate(now = Date.now()) {
-        if (this._samples.length < 2) return null;
-        const span = now - this._samples[0].ts;
+        return this._rateFor('total', 'total', now);
+    }
+
+    /**
+     * Today's observed spend grouped by the domain's existing projectPath and
+     * provider identities. Rows include active zero-spend groups so a newly
+     * discovered project reads as "watching", not as missing telemetry.
+     */
+    rollups(now = Date.now()) {
+        const activeProjects = new Map();
+        const activeProviders = new Map();
+        for (const agent of this.world?.agents?.values?.() || []) {
+            const project = projectKey(agent);
+            const provider = providerKey(agent);
+            activeProjects.set(project, (activeProjects.get(project) || 0) + 1);
+            activeProviders.set(provider, (activeProviders.get(provider) || 0) + 1);
+        }
+        return {
+            projects: this._rollupRows('project', this._todayByProject, activeProjects, now),
+            providers: this._rollupRows('provider', this._todayByProvider, activeProviders, now),
+        };
+    }
+
+    _rateFor(dimension, key, now) {
+        const samples = this._samples.filter(sample => sample.dimension === dimension && sample.key === key);
+        if (samples.length < 2) return null;
+        const span = now - samples[0].ts;
         if (span < RATE_MIN_WINDOW_MS) return null;
         const hours = span / 3_600_000;
-        const tokens = this._samples.reduce((sum, s) => sum + s.tokens, 0);
-        const cost = this._samples.reduce((sum, s) => sum + s.cost, 0);
+        const tokens = samples.reduce((sum, sample) => sum + sample.tokens, 0);
+        const cost = samples.reduce((sum, sample) => sum + sample.cost, 0);
         return { tokensPerHour: tokens / hours, costPerHour: cost / hours };
+    }
+
+    _rollupRows(dimension, totals, active, now) {
+        const keys = new Set([...totals.keys(), ...active.keys()]);
+        return [...keys].map((key) => {
+            const total = totals.get(key) || emptyTotal();
+            return {
+                key,
+                ...total,
+                activeSessions: active.get(key) || 0,
+                burnRate: this._rateFor(dimension, key, now),
+            };
+        }).sort((a, b) => {
+            const aRate = a.burnRate?.costPerHour || 0;
+            const bRate = b.burnRate?.costPerHour || 0;
+            return bRate - aRate
+                || (b.burnRate?.tokensPerHour || 0) - (a.burnRate?.tokensPerHour || 0)
+                || b.cost - a.cost
+                || b.tokens - a.tokens
+                || a.key.localeCompare(b.key);
+        });
     }
 
     _rollOver(date) {
         this.date = date;
         this.today = { tokens: 0, cacheRead: 0, cost: 0 };
+        this._todayByProject.clear();
+        this._todayByProvider.clear();
         this._samples = [];
         // Baselines survive the rollover: a session running across midnight
         // should contribute its post-midnight growth to the new day, not all of
@@ -160,6 +268,8 @@ export class SpendLedger {
                     cacheRead: Number(record.value.cacheRead) || 0,
                     cost: Number(record.value.cost) || 0,
                 };
+                this._todayByProject = restoreTotals(record.value.projects);
+                this._todayByProvider = restoreTotals(record.value.providers);
             }
         } catch { /* a missing ledger just starts the day at zero */ }
     }
@@ -167,7 +277,12 @@ export class SpendLedger {
     _persist() {
         if (!this.store) return;
         const key = `${LEDGER_KEY_PREFIX}${this.date}`;
-        const value = { ...this.today };
+        const serialize = (totals) => [...totals].map(([key, value]) => ({ key, ...value }));
+        const value = {
+            ...this.today,
+            projects: serialize(this._todayByProject),
+            providers: serialize(this._todayByProvider),
+        };
         this._writeTail = this._writeTail
             .then(() => this.store.put('meta', { key, value }))
             .catch(() => { /* the ledger is best effort */ });

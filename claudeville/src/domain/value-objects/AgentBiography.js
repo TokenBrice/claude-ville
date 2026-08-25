@@ -12,8 +12,13 @@ export const BIOGRAPHY_SCHEMA_VERSION = 3;
 
 const RECENT_PUSH_KEY_LIMIT = 96;
 
-const FIRST_SEEN_MILESTONE = { id: 'first-seen', label: 'Settled in the village' };
-const FOUNDER_MILESTONE = { id: 'village-founder', label: 'Founded the village', nickname: 'the Founder' };
+const FIRST_SEEN_MILESTONE = { id: 'first-seen', kind: 'milestone', label: 'Settled in the village' };
+const FOUNDER_MILESTONE = {
+    id: 'village-founder',
+    kind: 'nickname',
+    label: 'Founded the village',
+    nickname: 'the Founder',
+};
 
 const MILESTONE_TRACKS = [
     {
@@ -85,6 +90,7 @@ function normalizeMilestones(raw) {
         if (!id) continue;
         const milestone = {
             id,
+            kind: entry?.kind === 'nickname' || entry?.nickname ? 'nickname' : 'milestone',
             at: nonNegativeNumber(entry?.at),
             label: String(entry?.label || id),
         };
@@ -169,7 +175,8 @@ export class AgentBiography {
     static fromRecord(record) {
         if (!record || typeof record !== 'object' || !record.identityKey) return null;
         // v1 → v2 added error/nickname fields; v3 adds bounded event memory
-        // under extensions. All additions default safely for existing records.
+        // under extensions. Reward kind is inferred for older records, so the
+        // addition remains schema-compatible. All fields default safely.
         return new AgentBiography(record);
     }
 
@@ -279,7 +286,7 @@ export class AgentBiography {
                 if (value < threshold) break;
                 const id = `${track.stat}-${threshold}`;
                 if (this.hasMilestone(id)) continue;
-                const milestone = { id, at: now, label: track.label(threshold) };
+                const milestone = { id, kind: 'milestone', at: now, label: track.label(threshold) };
                 this.milestones.push(milestone);
                 earned.push(milestone);
             }
@@ -290,6 +297,7 @@ export class AgentBiography {
             if (this.hasMilestone(id)) continue;
             const milestone = {
                 id,
+                kind: 'nickname',
                 at: now,
                 label: `Earned the nickname "${track.nickname}"`,
                 nickname: track.nickname,

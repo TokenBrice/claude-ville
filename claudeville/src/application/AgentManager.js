@@ -2,6 +2,16 @@ import { Agent } from '../domain/entities/Agent.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
 import { resolveAgentStatus } from '../domain/services/StatusResolver.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
+import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
+
+const GENERATED_NAMES_STORAGE_KEY = 'claudeville.generatedAgentNames.v1';
+
+// Sessions leave the server's live roster after two quiet minutes. Keep their
+// villagers present long enough for short parallel fan-outs to remain visible.
+export const DEPARTED_AGENT_GRACE_MS = 10 * 60 * 1000;
+// Bound world presence independently of Chronicle history. A 20-agent fan-out
+// fits comfortably while pathological churn evicts the oldest departures.
+export const MAX_DEPARTED_AGENTS = 100;
 
 const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'id',
@@ -177,12 +187,14 @@ export function digestAgentPayload(payload, diagnostics = null) {
 }
 
 export class AgentManager {
-    constructor(world, dataSource) {
+    constructor(world, dataSource, { clock = Date.now } = {}) {
         this.world = world;
         this.dataSource = dataSource;
+        this._clock = typeof clock === 'function' ? clock : Date.now;
         this._teamMembers = new Map();
         this._usageGetter = null;
         this._agentSignatures = new Map();
+        this._generatedNames = this._loadGeneratedNames();
     }
 
     setUsageGetter(fn) {
@@ -242,23 +254,54 @@ export class AgentManager {
             this._upsertAgent(session, this._teamMembers);
         }
 
-        // Handle agents missing from the server list
+        // Missing sessions linger as departed villagers. COMPLETED is an
+        // existing compatibility projection for presentation/counters; the
+        // departedAt marker, not status, owns this presence lifecycle.
+        const now = this._now();
         const toRemove = [];
         for (const [id, agent] of this.world.agents) {
             if (!currentIds.has(id)) {
                 this._agentSignatures.delete(id);
-                if (agent.status === AgentStatus.IDLE) {
-                    // Remove if already IDLE
-                    toRemove.push(id);
+                if (agent.isDeparted) {
+                    if (now - agent.departedAt >= DEPARTED_AGENT_GRACE_MS) {
+                        toRemove.push(id);
+                    }
                 } else {
-                    // Set to IDLE first if still active
-                    this.world.updateAgent(id, { status: AgentStatus.IDLE, currentTool: null, currentToolInput: null });
+                    this.world.updateAgent(id, {
+                        status: AgentStatus.COMPLETED,
+                        departedAt: now,
+                        currentTool: null,
+                        currentToolInput: null,
+                        pendingTool: null,
+                        waitReason: null,
+                        awaitingSince: null,
+                        resident: false,
+                        visitIntentBubble: null,
+                    });
                 }
             }
         }
         for (const id of toRemove) {
             this.world.removeAgent(id);
         }
+        this._evictDepartedOverflow();
+    }
+
+    _evictDepartedOverflow() {
+        const departed = [...this.world.agents.values()]
+            .filter(agent => agent.isDeparted)
+            .sort((a, b) => a.departedAt - b.departedAt || String(a.id).localeCompare(String(b.id)));
+        const overflow = departed.length - MAX_DEPARTED_AGENTS;
+        for (let index = 0; index < overflow; index++) {
+            const id = departed[index].id;
+            this._agentSignatures.delete(id);
+            this.world.removeAgent(id);
+        }
+    }
+
+    _now() {
+        const now = Number(this._clock());
+        return Number.isFinite(now) ? now : Date.now();
     }
 
     _upsertAgent(session, teamMembers) {
@@ -267,23 +310,32 @@ export class AgentManager {
         const signature = this._agentSignature(payload);
 
         if (this.world.agents.has(id)) {
-            if (this._agentSignatures.get(id) === signature) {
-                const agent = this.world.agents.get(id);
+            const agent = this.world.agents.get(id);
+            if (!agent.isDeparted && this._agentSignatures.get(id) === signature) {
                 agent.activityAgeMs = payload.activityAgeMs;
                 agent.lastActive = Date.now();
                 return;
             }
             this._agentSignatures.set(id, signature);
             const { id: _id, projectPath: _projectPath, provider: _provider, lastMessage: _lastMessage, ...agentData } = payload;
-            this.world.updateAgent(id, agentData);
+            this.world.updateAgent(id, { ...agentData, departedAt: null });
         } else {
             this._agentSignatures.set(id, signature);
             const agent = new Agent(payload);
             // Fallback (non-provider) names come from a shared pool; probe past
             // names already held by live agents so busy villages stay distinct.
+            // Persist the result under the pre-probe identity as well as the
+            // resulting identity, so roster order cannot rename the villager
+            // after a restart.
             if (!agent._customName) {
-                agent.name = agent.generateName(this._usedAgentNames());
+                const initialIdentityKey = AgentBiography.identityKeyFor(agent);
+                agent.name = this._generatedNames.get(initialIdentityKey)
+                    || agent.generateName(this._usedAgentNames());
+                const identityKey = AgentBiography.identityKeyFor(agent);
+                this._rememberGeneratedName(initialIdentityKey, agent.name);
+                this._rememberGeneratedName(identityKey, agent.name);
             }
+            agent.refreshIdentityAppearance();
             this.world.addAgent(agent);
         }
     }
@@ -299,6 +351,32 @@ export class AgentManager {
             if (name) used.add(name);
         }
         return used;
+    }
+
+    _loadGeneratedNames() {
+        if (typeof localStorage === 'undefined') return new Map();
+        try {
+            const entries = JSON.parse(localStorage.getItem(GENERATED_NAMES_STORAGE_KEY) || '[]');
+            if (!Array.isArray(entries)) return new Map();
+            return new Map(entries.filter(entry => (
+                Array.isArray(entry)
+                && typeof entry[0] === 'string'
+                && typeof entry[1] === 'string'
+            )));
+        } catch {
+            return new Map();
+        }
+    }
+
+    _rememberGeneratedName(identityKey, name) {
+        if (!identityKey || !name || this._generatedNames.get(identityKey) === name) return;
+        this._generatedNames.set(identityKey, name);
+        if (typeof localStorage === 'undefined') return;
+        try {
+            localStorage.setItem(GENERATED_NAMES_STORAGE_KEY, JSON.stringify([...this._generatedNames]));
+        } catch {
+            // Storage can be unavailable in private or restricted contexts.
+        }
     }
 
     _sessionToAgentPayload(session, teamMembers) {
