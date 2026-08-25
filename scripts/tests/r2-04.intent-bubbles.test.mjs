@@ -149,6 +149,17 @@ test('a question outlives the window only while the operator has not answered', 
     const working = new Agent({ id: 'working-too', status: 'working', dialogue: asked });
     assert.equal(working.speech(now), null);
 
+    // `waiting` is not an outstanding prompt. statusFromSessionActivity assigns
+    // it to any session merely quiet for 30s-2min, so holding for it would let
+    // an old ordinary line reappear whenever an agent paused.
+    const quiet = new Agent({ id: 'quiet-agent', status: 'waiting', dialogue: asked });
+    assert.equal(quiet.speech(now), null);
+    // Every non-actionable state keeps the normal ceiling.
+    for (const status of ['waiting', 'idle', 'errored', 'rate_limited', 'completed']) {
+        const agent = new Agent({ id: `ceiling-${status}`, status, dialogue: asked });
+        assert.equal(agent.speech(now), null, `${status} must not hold a stale line`);
+    }
+
     // Reasoning is not a standing question, so it decays even while blocked.
     const thinking = new Agent({
         id: 'waiting-thinker',
@@ -195,6 +206,15 @@ test('the client holds a blocked question the server has already dropped', () =>
         null,
     );
     assert.equal(notHeld.dialogue, null);
+
+    // Ordinary inactivity retains nothing, even for assistant prose.
+    world.agents.set('s3', new Agent({ id: 's3', status: 'waiting', dialogue: asked }));
+    const quietPayload = manager._sessionToAgentPayload(
+        { sessionId: 's3', dialogue: null, status: 'active', lastActivity: Date.now() - 45_000 },
+        null,
+    );
+    assert.equal(quietPayload.status, 'waiting');
+    assert.equal(quietPayload.dialogue, null);
 });
 
 test('departed villagers stay silent', () => {

@@ -2,6 +2,12 @@
 
 ---
 
+## v0.34.0.1 · Aug 25, 2026 — Hotfix
+
+- **Only a real question is held open.** The speech hold introduced in v0.34.0 also matched the plain `waiting` status, which is assigned to any session whose file has merely been quiet for 30 seconds to two minutes. An agent that simply paused could therefore re-surface arbitrarily old prose. The hold is now limited to `waiting_on_user`, the status reserved for an actual question or blocked input; every other state keeps the normal 90-second ceiling.
+
+---
+
 ## v0.34.0 — *True Voices* · Aug 25, 2026
 
 Villagers stop reciting written-for-them lines and start saying what the models actually wrote. Around that, the world gains authored lighting that survives the GPU path, native art for every landmark, villagers who keep their faces between restarts, and a backend that stays bounded under load.

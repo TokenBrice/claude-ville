@@ -21,11 +21,18 @@ export const DIALOGUE_STALE_MS = 90_000;
 // villager's line instead of lingering for the full window.
 export const DIALOGUE_COMPLETED_STALE_MS = 30_000;
 
-// Statuses that mean "stopped, waiting on the operator". Matched against the
-// wire strings the server sends (see domain/value-objects/AgentStatus.js);
-// config deliberately does not import the domain enum, since every other
-// dependency runs domain -> config.
-const BLOCKED_STATUSES = new Set(['waiting', 'waiting_on_user']);
+// The one status that means "stopped, and the next move is yours". Matched
+// against the wire strings the server sends (see
+// domain/value-objects/AgentStatus.js); config deliberately does not import the
+// domain enum, since every other dependency runs domain -> config.
+//
+// Plain `waiting` is deliberately excluded. `statusFromSessionActivity` assigns
+// it to any session whose file has merely been quiet for 30s to 2min, so it
+// describes ordinary inactivity, not an outstanding prompt. Holding a line for
+// it would let arbitrarily old prose reappear whenever an agent paused, which
+// is the exact staleness this module exists to prevent. `StatusResolver`
+// reserves `waiting_on_user` for a real question or blocked input.
+const BLOCKED_STATUSES = new Set(['waiting_on_user']);
 
 // An agent blocked on the operator is usually blocked *by its own question*,
 // and that question stays true for as long as the wait lasts. Only assistant
