@@ -11,7 +11,6 @@ import { dirname, join } from 'node:path';
 import { PNG } from 'pngjs';
 import { getBuildingVisual } from '../../claudeville/src/presentation/character-mode/BuildingVisualRegistry.js';
 import {
-    MATERIAL_CHANNELS,
     defaultChannelPixel,
 } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
 import {
@@ -37,6 +36,10 @@ if (args.some((arg) => arg.startsWith('--ids='))) {
 const manifest = loadSpriteManifest();
 const atlas = resolveAtlasDefinition(manifest, atlasId);
 const plan = createAtlasPlan(manifest, atlas);
+const channels = Object.keys(plan.channels);
+const primaryChannel = channels[0];
+const emissiveChannel = channels[2];
+const occluderChannel = channels[3];
 if (dryRun) {
     console.log(`[atlas-bake] dry run ${plan.id}: ${plan.ids.length} ids, ${Object.keys(plan.frames).length} frames, ${plan.width}x${plan.height}`);
     for (const [channel, path] of Object.entries(plan.channels)) {
@@ -48,7 +51,7 @@ if (dryRun) {
 const entriesById = new Map(collectSpriteEntries(manifest).map((entry) => [entry.id, entry]));
 const sourceCache = new Map();
 const sourceHashes = new Map();
-const outputs = Object.fromEntries(MATERIAL_CHANNELS.map((channel) => [
+const outputs = Object.fromEntries(channels.map((channel) => [
     channel,
     new PNG({ width: plan.width, height: plan.height, colorType: 6 }),
 ]));
@@ -58,8 +61,8 @@ for (const key of plan.packOrder) {
     const albedo = readSource(frame.sourcePath);
     assertSourceDimensions(key, albedo, frame.sourceSize);
     const companions = {};
-    for (const channel of MATERIAL_CHANNELS) {
-        if (channel === 'albedo') continue;
+    for (const channel of channels) {
+        if (channel === primaryChannel) continue;
         const path = frame.sidecars?.[channel];
         if (!path) continue;
         if (!existsSync(join(spritesRoot, path))) {
@@ -68,13 +71,16 @@ for (const key of plan.packOrder) {
         companions[channel] = readSource(path);
         assertSourceDimensions(`${key}:${channel}`, companions[channel], frame.sourceSize);
     }
-    for (const channel of MATERIAL_CHANNELS) {
+    for (const channel of channels) {
         blitFrame({
             destination: outputs[channel],
-            source: channel === 'albedo' ? albedo : companions[channel] || null,
+            source: channel === primaryChannel ? albedo : companions[channel] || null,
             albedo,
             frame,
             channel,
+            primaryChannel,
+            emissiveChannel,
+            occluderChannel,
             entry: entriesById.get(frameAssetId(key, frame, plan)),
             padding: plan.padding,
         });
@@ -83,7 +89,7 @@ for (const key of plan.packOrder) {
 }
 
 const channelHashes = {};
-for (const channel of MATERIAL_CHANNELS) {
+for (const channel of channels) {
     const declaredPath = plan.channels[channel];
     if (!declaredPath) throw new Error(`atlas ${plan.id} does not declare ${channel} output`);
     const bytes = PNG.sync.write(outputs[channel], { colorType: 6 });
@@ -106,7 +112,7 @@ writeFileSync(metadataPath, stableJson(plan));
 console.log(`[atlas-bake] metadata: ${relativeSpritePath(atlas.metadata)}`);
 console.log(`[atlas-bake] done: ${plan.ids.length} ids, ${Object.keys(plan.frames).length} frames, ${plan.width}x${plan.height}`);
 
-function blitFrame({ destination, source, albedo, frame, channel, entry, padding }) {
+function blitFrame({ destination, source, albedo, frame, channel, primaryChannel, emissiveChannel, occluderChannel, entry, padding }) {
     const { rect } = frame;
     for (let y = -padding; y < rect.h + padding; y++) {
         for (let x = -padding; x < rect.w + padding; x++) {
@@ -117,15 +123,23 @@ function blitFrame({ destination, source, albedo, frame, channel, entry, padding
             const albedoPixel = pixelAt(albedo, sourceX, sourceY);
             const rgba = source
                 ? pixelAt(source, sourceX, sourceY)
-                : generatedChannelPixel(channel, frame, entry, sourceX, sourceY, albedoPixel);
+                : generatedChannelPixel(channel, frame, entry, sourceX, sourceY, albedoPixel, {
+                    primaryChannel,
+                    emissiveChannel,
+                    occluderChannel,
+                });
             setPixel(destination, rect.x + x, rect.y + y, rgba);
         }
     }
 }
 
-function generatedChannelPixel(channel, frame, entry, sourceX, sourceY, albedoPixel) {
+function generatedChannelPixel(channel, frame, entry, sourceX, sourceY, albedoPixel, {
+    primaryChannel,
+    emissiveChannel,
+    occluderChannel,
+}) {
     const alpha = albedoPixel[3];
-    if (channel === 'emissive') {
+    if (channel === emissiveChannel) {
         const strength = semanticEmissiveStrength(frame, entry, sourceX, sourceY);
         if (strength <= 0 || alpha === 0) return [0, 0, 0, 0];
         return [
@@ -135,7 +149,8 @@ function generatedChannelPixel(channel, frame, entry, sourceX, sourceY, albedoPi
             Math.round(alpha * strength),
         ];
     }
-    if (channel === 'occluder' && frame.occluder?.mode === 'none') return [0, 0, 0, 0];
+    if (channel === occluderChannel && frame.occluder?.mode === 'none') return [0, 0, 0, 0];
+    if (channel === primaryChannel) return albedoPixel;
     return defaultChannelPixel(channel, frame.materialClass, alpha);
 }
 

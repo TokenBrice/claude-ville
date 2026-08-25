@@ -23,18 +23,26 @@ import {
     pathForEntry,
     spritesRoot,
 } from './manifest-utils.mjs';
+import {
+    MATERIAL_CONTRACT_VERSION,
+    channelContractMatchesRegistry,
+    channelsForManifest,
+    companionChannels,
+    sidecarFieldFor,
+} from './channel-registry.mjs';
 
 const ALPHA_THRESHOLD = 0;
 
 export function materialExpectedPngPaths(manifest) {
     const expected = new Set();
+    const channels = channelsForManifest(manifest);
     for (const atlas of manifest?.atlases || []) {
         for (const path of Object.values(atlas?.channels || {})) {
             if (path) expected.add(relativeSpritePath(path));
         }
     }
     for (const entry of collectSpriteEntries(manifest)) {
-        for (const frame of frameSpecsForEntry(entry)) {
+        for (const frame of frameSpecsForEntry(entry, channels)) {
             for (const path of Object.values(frame.sidecars || {})) {
                 if (path) expected.add(relativeSpritePath(path));
             }
@@ -53,25 +61,29 @@ export function validateMaterialContract(manifest, {
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
     const atlases = Array.isArray(manifest?.atlases) ? manifest.atlases : [];
     const atlasIds = new Set(atlases.map((atlas) => atlas?.id).filter(Boolean));
+    const channels = channelsForManifest(manifest);
+    const sidecarFields = companionChannels(channels).map(sidecarFieldFor);
 
     if (manifest?.materialContract) {
         const contract = manifest.materialContract;
-        if (Number(contract.version) !== 1) errors += fail(logger, 'INVALID MATERIAL CONTRACT: version must be 1');
+        if (Number(contract.version) !== MATERIAL_CONTRACT_VERSION) {
+            errors += fail(logger, `INVALID MATERIAL CONTRACT: version must be ${MATERIAL_CONTRACT_VERSION}`);
+        }
         if (contract.sampling !== 'nearest') errors += fail(logger, 'INVALID MATERIAL CONTRACT: sampling must be nearest');
         if (contract.keyLight !== 'warm-upper-left') errors += fail(logger, 'INVALID MATERIAL CONTRACT: keyLight must be warm-upper-left');
         if (!deepEqual(contract.responseBands, AUTHORED_KEY_LIGHT.responseBands)) {
             errors += fail(logger, `INVALID MATERIAL CONTRACT: responseBands must be ${AUTHORED_KEY_LIGHT.responseBands.join(', ')}`);
         }
-        if (JSON.stringify(contract.channels) !== JSON.stringify(MATERIAL_CHANNELS)) {
+        if (!channelContractMatchesRegistry(contract.channels)) {
             errors += fail(logger, `INVALID MATERIAL CONTRACT: channels must be ${MATERIAL_CHANNELS.join(', ')}`);
         }
     }
 
     for (const entry of entries) {
         const hasEntryMaterial = entry.materialClass || entry.atlasFrame
-            || entry.materialSidecar || entry.emissiveSidecar || entry.occluderSidecar;
+            || sidecarFields.some((field) => entry[field]);
         const hasLayerMaterial = Object.values(entry.layers || {}).some((layer) => (
-            layer?.materialClass || layer?.materialSidecar || layer?.emissiveSidecar || layer?.occluderSidecar
+            layer?.materialClass || sidecarFields.some((field) => layer?.[field])
         ));
         if (!hasEntryMaterial && !hasLayerMaterial) continue;
         if (hasEntryMaterial) {
@@ -88,7 +100,7 @@ export function validateMaterialContract(manifest, {
             errors += validateEmissive(entry, logger);
             errors += validateOccluder(entry, logger);
         }
-        errors += validateDeclaredSidecars(entry, root, logger);
+        errors += validateDeclaredSidecars(entry, root, logger, channels);
         for (const [name, layer] of Object.entries(entry.layers || {})) {
             const layerEntry = { ...layer, id: `${entry.id}.${name}` };
             if (layer.materialClass && !isKnownMaterialClass(layer.materialClass)) {
@@ -112,7 +124,7 @@ export function validateMaterialContract(manifest, {
         if (!Number.isInteger(Number(atlas.padding)) || Number(atlas.padding) < 1) {
             errors += fail(logger, `INVALID ATLAS: ${atlas.id} padding must be at least 1px to prevent bleeding`);
         }
-        for (const channel of MATERIAL_CHANNELS) {
+        for (const channel of channels) {
             if (!atlas.channels?.[channel]) errors += fail(logger, `INVALID ATLAS: ${atlas.id} missing ${channel} channel path`);
         }
         const result = validateAtlasOutputs(manifest, atlas, { root, logger });
@@ -130,6 +142,7 @@ export function validateMaterialContract(manifest, {
 export function validateAtlasOutputs(manifest, atlas, { root = spritesRoot, logger = console } = {}) {
     let errors = 0;
     let warnings = 0;
+    const channels = channelsForManifest(manifest);
     const metadataPath = absoluteSpritePath(root, atlas.metadata);
     if (!existsSync(metadataPath)) {
         return { errors: fail(logger, `MISSING ATLAS METADATA: ${relativeSpritePath(atlas.metadata)}`), warnings };
@@ -192,7 +205,7 @@ export function validateAtlasOutputs(manifest, atlas, { root = spritesRoot, logg
     }
 
     const channelPngs = {};
-    for (const channel of MATERIAL_CHANNELS) {
+    for (const channel of channels) {
         const path = atlas.channels?.[channel];
         const absolute = absoluteSpritePath(root, path);
         if (!path || !existsSync(absolute)) {
@@ -214,15 +227,18 @@ export function validateAtlasOutputs(manifest, atlas, { root = spritesRoot, logg
         }
     }
 
-    if (Object.keys(channelPngs).length === MATERIAL_CHANNELS.length) {
-        errors += validateFramePixels(metadata, channelPngs, logger);
+    if (Object.keys(channelPngs).length === channels.length) {
+        errors += validateFramePixels(metadata, channelPngs, logger, channels);
     }
     return { errors, warnings };
 }
 
-function validateFramePixels(metadata, channels, logger) {
+function validateFramePixels(metadata, channels, logger, channelNames) {
     let errors = 0;
     const materialClassMax = MATERIAL_CLASS_NAMES.length - 1;
+    const primaryChannel = channelNames[0];
+    const materialChannel = MATERIAL_CHANNELS[1];
+    const companionChannelNames = companionChannels(channelNames);
     for (const [key, frame] of Object.entries(metadata.frames || {})) {
         const rect = frame.rect;
         const padded = frame.paddedRect;
@@ -240,15 +256,15 @@ function validateFramePixels(metadata, channels, logger) {
             for (let x = 0; x < rect.w; x++) {
                 const ax = rect.x + x;
                 const ay = rect.y + y;
-                const albedoAlpha = alphaAt(channels.albedo, ax, ay);
-                for (const channel of ['material', 'emissive', 'occluder']) {
-                    if (alphaAt(channels[channel], ax, ay) > albedoAlpha) {
-                        errors += fail(logger, `CHANNEL ALPHA: ${key}:${channel} extends outside albedo at ${x},${y}`);
+                const primaryAlpha = alphaAt(channels[primaryChannel], ax, ay);
+                for (const channel of companionChannelNames) {
+                    if (alphaAt(channels[channel], ax, ay) > primaryAlpha) {
+                        errors += fail(logger, `CHANNEL ALPHA: ${key}:${channel} extends outside ${primaryChannel} at ${x},${y}`);
                         return errors;
                     }
                 }
-                const materialIndex = channelAt(channels.material, ax, ay, 0);
-                if (albedoAlpha > ALPHA_THRESHOLD && materialIndex > materialClassMax) {
+                const materialIndex = channelAt(channels[materialChannel], ax, ay, 0);
+                if (primaryAlpha > ALPHA_THRESHOLD && materialIndex > materialClassMax) {
                     errors += fail(logger, `CHANNEL MATERIAL: ${key} uses unknown class index ${materialIndex} at ${x},${y}`);
                     return errors;
                 }
@@ -258,9 +274,9 @@ function validateFramePixels(metadata, channels, logger) {
     return errors;
 }
 
-function validateDeclaredSidecars(entry, root, logger) {
+function validateDeclaredSidecars(entry, root, logger, channels = MATERIAL_CHANNELS) {
     let errors = 0;
-    const frames = frameSpecsForEntry(entry);
+    const frames = frameSpecsForEntry(entry, channels);
     const checked = new Set();
     for (const frame of frames) {
         for (const [channel, path] of Object.entries(frame.sidecars || {})) {

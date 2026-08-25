@@ -10,7 +10,6 @@ import { dirname, join } from 'node:path';
 import { PNG } from 'pngjs';
 import {
     MATERIAL_CHANNELS,
-    companionPathFor,
 } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
 import {
     collectSpriteEntries,
@@ -20,6 +19,11 @@ import {
     spritesRoot,
 } from './manifest-utils.mjs';
 import { resolveAtlasDefinition } from './atlas-layout.mjs';
+import {
+    channelsForManifest,
+    companionPathForChannel,
+    companionChannels,
+} from './channel-registry.mjs';
 
 const CELL_CAP = 96;
 const GAP = 6;
@@ -29,6 +33,13 @@ const MATERIAL_PREVIEW = [
     [82, 146, 78], [144, 90, 155], [111, 80, 52], [123, 126, 134],
     [58, 152, 196], [170, 106, 230], [242, 132, 48],
 ];
+const CHANNEL_PREVIEWERS = new Map([
+    [MATERIAL_CHANNELS[1], previewMaterial],
+    [MATERIAL_CHANNELS[3], previewOccluder],
+]);
+const CHANNEL_ALPHA_SCALES = new Map([
+    [MATERIAL_CHANNELS[2], 4],
+]);
 const args = process.argv.slice(2);
 const atlasId = args.find((arg) => arg.startsWith('--atlas='))?.slice('--atlas='.length) || 'world-pilot';
 const sidecars = args.includes('--sidecars');
@@ -36,17 +47,18 @@ const idsArg = args.find((arg) => arg.startsWith('--ids='));
 const reviewedIds = idsArg
     ? new Set(idsArg.slice('--ids='.length).split(',').map((value) => value.trim()).filter(Boolean))
     : null;
+const manifest = loadSpriteManifest();
+const registeredChannels = channelsForManifest(manifest);
 const channelArg = args.find((arg) => arg.startsWith('--channels='));
 const channels = channelArg
     ? channelArg.slice('--channels='.length).split(',').map((value) => value.trim()).filter(Boolean)
-    : [...MATERIAL_CHANNELS];
-const invalid = channels.filter((channel) => !MATERIAL_CHANNELS.includes(channel));
+    : registeredChannels;
+const invalid = channels.filter((channel) => !registeredChannels.includes(channel));
 if (invalid.length) {
     console.error(`[channel-contact-sheet] unknown channels: ${invalid.join(', ')}`);
     process.exit(1);
 }
 
-const manifest = loadSpriteManifest();
 const outRoot = args.find((arg) => arg.startsWith('--out='))?.slice('--out='.length)
     || join(repoRoot, 'output', 'sprite-channel-sheets');
 mkdirSync(outRoot, { recursive: true });
@@ -73,11 +85,11 @@ function renderAtlasSheets() {
 function renderSidecarSheets() {
     const entries = collectSpriteEntries(manifest)
         .filter((entry) => !reviewedIds || reviewedIds.has(entry.id));
-    for (const channel of channels.filter((candidate) => candidate !== 'albedo')) {
+    for (const channel of companionChannels(registeredChannels).filter((candidate) => channels.includes(candidate))) {
         const tiles = [];
         for (const entry of entries) {
             const albedoPath = pathForEntry(entry);
-            const sidecarPath = companionPathFor(entry, channel, albedoPath);
+            const sidecarPath = companionPathForChannel(entry, channel, albedoPath);
             if (!sidecarPath) continue;
             const absolute = absoluteSpritePath(sidecarPath);
             if (!existsSync(absolute)) continue;
@@ -151,12 +163,10 @@ function blitNearest(destination, source, rect, ox, oy, scale, channelName) {
             const sy = rect.y + Math.min(rect.h - 1, y * scale);
             const sourceIndex = (source.width * sy + sx) * 4;
             const encodedAlpha = source.data[sourceIndex + 3];
-            // Emissive alpha is intentionally restrained in authored assets;
-            // amplify only the review preview so sparse semantic pixels remain
-            // inspectable on the checkerboard.
-            const alpha = channelName === 'emissive'
-                ? Math.min(255, encodedAlpha * 4)
-                : encodedAlpha;
+            // Sparse authored channels can be difficult to inspect on a
+            // checkerboard, so their registry preview may amplify alpha.
+            const alphaScale = CHANNEL_ALPHA_SCALES.get(channelName) || 1;
+            const alpha = Math.min(255, encodedAlpha * alphaScale);
             if (alpha === 0) continue;
             const destinationIndex = (destination.width * (oy + y) + ox + x) * 4;
             const t = alpha / 255;
@@ -173,15 +183,21 @@ function blitNearest(destination, source, rect, ox, oy, scale, channelName) {
 }
 
 function previewRgb(source, index, channelName) {
-    if (channelName === 'material') {
-        return MATERIAL_PREVIEW[source.data[index]] || [255, 0, 255];
-    }
-    if (channelName === 'occluder') {
-        const strength = source.data[index + 1];
-        const height = source.data[index];
-        return [Math.max(strength, height), strength, strength];
-    }
+    return (CHANNEL_PREVIEWERS.get(channelName) || previewRaw)(source, index);
+}
+
+function previewRaw(source, index) {
     return [source.data[index], source.data[index + 1], source.data[index + 2]];
+}
+
+function previewMaterial(source, index) {
+    return MATERIAL_PREVIEW[source.data[index]] || [255, 0, 255];
+}
+
+function previewOccluder(source, index) {
+    const strength = source.data[index + 1];
+    const height = source.data[index];
+    return [Math.max(strength, height), strength, strength];
 }
 
 function absoluteSpritePath(path) {

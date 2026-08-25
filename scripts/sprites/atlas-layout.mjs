@@ -1,6 +1,5 @@
 import {
     MATERIAL_CHANNELS,
-    companionPathFor,
     normalizeAtlasFrame,
     normalizeMaterialClass,
 } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
@@ -10,9 +9,14 @@ import {
 } from './manifest-utils.mjs';
 import {
     canonicalize,
+    DEFAULT_ATLAS_PAGE_SIZE,
     packFrames,
     stableJson,
 } from './atlas-packing.mjs';
+import {
+    channelsForManifest,
+    companionPathForChannel,
+} from './channel-registry.mjs';
 
 export { canonicalize, packFrames, stableJson } from './atlas-packing.mjs';
 
@@ -30,6 +34,7 @@ export function resolveAtlasDefinition(manifest, atlasId) {
 
 export function createAtlasPlan(manifest, atlasDefinition) {
     const entries = collectSpriteEntries(manifest);
+    const channels = channelsForManifest(manifest);
     const byId = new Map(entries.map((entry) => [entry.id, entry]));
     const ids = [...new Set(atlasDefinition?.ids || [])];
     const unknown = ids.filter((id) => !byId.has(id));
@@ -39,13 +44,14 @@ export function createAtlasPlan(manifest, atlasDefinition) {
     const assets = {};
     for (const id of ids) {
         const entry = byId.get(id);
-        const specs = frameSpecsForEntry(entry);
+        const specs = frameSpecsForEntry(entry, channels);
         frames.push(...specs);
         assets[id] = assetMetadata(entry, specs);
     }
 
     const layout = packFrames(frames, {
-        maxWidth: positiveInteger(atlasDefinition.maxWidth, 2048),
+        maxWidth: positiveInteger(atlasDefinition.maxWidth, DEFAULT_ATLAS_PAGE_SIZE),
+        maxHeight: positiveInteger(atlasDefinition.maxHeight, DEFAULT_ATLAS_PAGE_SIZE),
         padding: nonNegativeInteger(atlasDefinition.padding, 2),
         powerOfTwo: atlasDefinition.powerOfTwo !== false,
     });
@@ -74,7 +80,7 @@ export function createAtlasPlan(manifest, atlasDefinition) {
         contentHeight: layout.contentHeight,
         padding: layout.padding,
         sampling: 'nearest',
-        channels: Object.fromEntries(MATERIAL_CHANNELS.map((channel) => [
+        channels: Object.fromEntries(channels.map((channel) => [
             channel,
             atlasDefinition.channels?.[channel] || null,
         ])),
@@ -85,7 +91,7 @@ export function createAtlasPlan(manifest, atlasDefinition) {
     };
 }
 
-export function frameSpecsForEntry(entry) {
+export function frameSpecsForEntry(entry, channels = MATERIAL_CHANNELS) {
     const sourcePath = pathForEntry(entry);
     if (!sourcePath) throw new Error(`${entry?.id || '(unknown)'} has no albedo path`);
     const atlasFrame = normalizeAtlasFrame(entry.atlasFrame);
@@ -98,7 +104,7 @@ export function frameSpecsForEntry(entry) {
         anchor,
         emissive: entry.emissive || null,
         occluder: entry.occluder || null,
-        sidecars: sidecarPaths(entry, sourcePath),
+        sidecars: sidecarPaths(entry, sourcePath, channels),
     };
 
     if (entry.id.startsWith('agent.')) {
@@ -178,7 +184,7 @@ export function frameSpecsForEntry(entry) {
                 materialClass: normalizeMaterialClass(layer.materialClass || entry.materialClass),
                 emissive: layer.emissive || null,
                 occluder: layer.occluder || entry.occluder || null,
-                sidecars: sidecarPaths(layer, layerPath),
+                sidecars: sidecarPaths(layer, layerPath, channels),
                 tags: { layer: name },
             });
         }
@@ -206,10 +212,10 @@ function assetMetadata(entry, specs) {
     };
 }
 
-function sidecarPaths(entry, albedoPath) {
-    return Object.fromEntries(MATERIAL_CHANNELS
-        .filter((channel) => channel !== 'albedo')
-        .map((channel) => [channel, normalizeSpritePath(companionPathFor(entry, channel, albedoPath))]));
+function sidecarPaths(entry, albedoPath, channels = MATERIAL_CHANNELS) {
+    return Object.fromEntries(channels
+        .slice(1)
+        .map((channel) => [channel, normalizeSpritePath(companionPathForChannel(entry, channel, albedoPath))]));
 }
 
 function normalizeSpritePath(path) {

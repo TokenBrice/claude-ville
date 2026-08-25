@@ -1,5 +1,13 @@
-export function packFrames(frames, { maxWidth = 2048, padding = 2, powerOfTwo = true } = {}) {
-    const width = positiveInteger(maxWidth, 2048);
+export const DEFAULT_ATLAS_PAGE_SIZE = 2048;
+
+export function packFrames(frames, {
+    maxWidth = DEFAULT_ATLAS_PAGE_SIZE,
+    maxHeight = DEFAULT_ATLAS_PAGE_SIZE,
+    padding = 2,
+    powerOfTwo = true,
+} = {}) {
+    const width = positiveInteger(maxWidth, DEFAULT_ATLAS_PAGE_SIZE);
+    const height = positiveInteger(maxHeight, DEFAULT_ATLAS_PAGE_SIZE);
     const pad = nonNegativeInteger(padding, 2);
     const ordered = [...frames].sort((a, b) => (
         (b.h - a.h)
@@ -26,9 +34,20 @@ export function packFrames(frames, { maxWidth = 2048, padding = 2, powerOfTwo = 
         contentWidth = Math.max(contentWidth, x);
     }
     const contentHeight = y + rowHeight;
+    const pageWidth = powerOfTwo ? nextPowerOfTwo(Math.max(contentWidth, 1)) : Math.max(contentWidth, 1);
+    const pageHeight = powerOfTwo ? nextPowerOfTwo(Math.max(contentHeight, 1)) : Math.max(contentHeight, 1);
+    assertPageBudget({
+        pageWidth,
+        pageHeight,
+        maxWidth: width,
+        maxHeight: height,
+        contentWidth,
+        contentHeight,
+        lastFrame: ordered.at(-1),
+    });
     return {
-        width: powerOfTwo ? nextPowerOfTwo(Math.max(contentWidth, 1)) : Math.max(contentWidth, 1),
-        height: powerOfTwo ? nextPowerOfTwo(Math.max(contentHeight, 1)) : Math.max(contentHeight, 1),
+        width: pageWidth,
+        height: pageHeight,
         contentHeight,
         padding: pad,
         frames: ordered,
@@ -53,6 +72,24 @@ function positiveInteger(value, fallback) {
 function nonNegativeInteger(value, fallback) {
     const number = Number(value);
     return Number.isInteger(number) && number >= 0 ? number : fallback;
+}
+
+function assertPageBudget({ pageWidth, pageHeight, maxWidth, maxHeight, contentWidth, contentHeight, lastFrame }) {
+    if (pageWidth > maxWidth) {
+        throw new Error(
+            `atlas page width budget exceeded: ${pageWidth}px required `
+            + `(packed content ${contentWidth}px), maximum is ${maxWidth}px `
+            + `(${pageWidth - maxWidth}px over); reduce the atlas contents or raise maxWidth after reviewing texture memory`,
+        );
+    }
+    if (pageHeight > maxHeight) {
+        const frame = lastFrame?.key ? `; last packed frame: ${lastFrame.key}` : '';
+        throw new Error(
+            `atlas page height budget exceeded: ${pageHeight}px required `
+            + `(packed content ${contentHeight}px), maximum is ${maxHeight}px `
+            + `(${pageHeight - maxHeight}px over)${frame}; reduce atlas ids/frames or raise maxHeight after reviewing texture memory`,
+        );
+    }
 }
 
 function nextPowerOfTwo(value) {

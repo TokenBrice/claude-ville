@@ -15,30 +15,36 @@ import {
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { PNG } from 'pngjs';
-import { companionPathFor } from '../../claudeville/src/presentation/character-mode/MaterialRegistry.js';
 import {
     collectSpriteEntries,
     loadSpriteManifest,
     pathForEntry,
     spritesRoot,
 } from './manifest-utils.mjs';
+import {
+    channelsForManifest,
+    companionPathForChannel,
+    companionChannels,
+} from './channel-registry.mjs';
 
 const args = process.argv.slice(2);
 const id = option('id');
 const channel = option('channel');
 const dryRun = args.includes('--dry-run');
 const paints = args.filter((arg) => arg.startsWith('--paint=')).map((arg) => parsePaint(arg.slice('--paint='.length)));
-if (!id || !['material', 'emissive', 'occluder'].includes(channel) || !paints.length) {
-    console.error('usage: node scripts/sprites/sidecar-mask-fix.mjs --id=<manifest-id> --channel=<material|emissive|occluder> --paint=rect:x:y:w:h:#rrggbbaa [--paint=point:x:y:#rrggbbaa] [--dry-run]');
+const manifest = loadSpriteManifest();
+const registeredChannels = channelsForManifest(manifest);
+const sidecarChannels = companionChannels(registeredChannels);
+if (!id || !sidecarChannels.includes(channel) || !paints.length) {
+    console.error(`usage: node scripts/sprites/sidecar-mask-fix.mjs --id=<manifest-id> --channel=<${sidecarChannels.join('|')}> --paint=rect:x:y:w:h:#rrggbbaa [--paint=point:x:y:#rrggbbaa] [--dry-run]`);
     process.exit(1);
 }
 
-const manifest = loadSpriteManifest();
 const entry = collectSpriteEntries(manifest).find((candidate) => candidate.id === id);
 if (!entry) throw new Error(`unknown manifest id ${id}`);
 const albedoRel = pathForEntry(entry);
 const albedo = PNG.sync.read(readFileSync(join(spritesRoot, albedoRel)));
-const declared = companionPathFor(entry, channel, albedoRel);
+const declared = companionPathForChannel(entry, channel, albedoRel);
 const sidecarRel = normalizePath(declared || derivePath(albedoRel, channel));
 const sidecarPath = join(spritesRoot, sidecarRel);
 const sidecar = existsSync(sidecarPath)
