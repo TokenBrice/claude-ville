@@ -38,7 +38,9 @@ export function createDepthDrawable(kind, sortY, payload, drawFallback, semantic
     return {
         kind,
         sortY: finiteSortY(sortY),
-        sortBand: KIND_ORDER[kind] ?? 50,
+        sortBand: Number.isFinite(Number(semantics?.sortBand))
+            ? Number(semantics.sortBand)
+            : KIND_ORDER[kind] ?? 50,
         stableKey: payloadStableKey(payload),
         salience: normalizeSalience(semantics?.salience ?? payload?.salience),
         materialId: material.materialId,
@@ -74,10 +76,6 @@ function drawProp(ctx, zoom, context, payload) {
     payload?.sprite?.drawPart?.(ctx, payload.part || 'whole', zoom);
 }
 
-function drawHarborTraffic(ctx, zoom, context, drawable) {
-    context.harborTraffic?.draw?.(ctx, drawable, zoom);
-}
-
 function drawLandmarkActivity(ctx, zoom, context, drawable) {
     context.landmarkActivity?.draw?.(ctx, drawable, zoom);
 }
@@ -108,7 +106,7 @@ export function appendDepthSortedDrawables(target, {
     buildingDrawables = [],
     propDrawables = [],
     agentSprites = [],
-    harborDrawables = [],
+    sceneCategoryFrame = null,
     landmarkDrawables = [],
     chronicleMonumentDrawables = [],
     chroniclerDrawables = [],
@@ -123,8 +121,20 @@ export function appendDepthSortedDrawables(target, {
     for (const sprite of agentSprites) {
         pushDepthDrawable(target, createDepthDrawable('agent', sprite.y, sprite, drawAgent));
     }
-    for (const drawable of harborDrawables) {
-        pushDepthDrawable(target, createDepthDrawable('harbor-traffic', drawable.sortY, drawable, drawHarborTraffic));
+    for (const entry of sceneCategoryFrame?.entries || []) {
+        const category = entry.category;
+        for (const item of entry.items) {
+            const drawable = createDepthDrawable(
+                category.id,
+                item?.sortY,
+                item,
+                (ctx, zoom, context, payload) => category.canvasFallback(ctx, payload, zoom, context),
+                { sortBand: category.sortBand },
+            );
+            drawable.sceneCategory = category;
+            drawable.overlayBand = category.overlayBand;
+            pushDepthDrawable(target, drawable);
+        }
     }
     for (const drawable of landmarkDrawables) {
         pushDepthDrawable(target, createDepthDrawable('landmark-activity', drawable.sortY, drawable, drawLandmarkActivity));
@@ -154,11 +164,8 @@ export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
     }
 }
 
-// The GPU world canvas is opaque and sits above the Canvas-2D world canvas.
-// Canvas-only categories therefore need a narrow replay on the transparent
-// overlay after a successful GPU frame. Keep the caller in charge of which
-// categories are safe to replay above the GPU scene; harbor traffic stays on
-// water routes and does not need building/agent depth interleaving.
+// Legacy selective-draw helper retained for non-category callers. Scene backend
+// fallback must use drawSceneCategoryOverlays() so policy stays in the registry.
 export function drawDepthSortedDrawableKinds(ctx, drawables, kinds, context = {}) {
     const accepted = kinds instanceof Set ? kinds : new Set(kinds || []);
     if (!accepted.size) return;
@@ -167,6 +174,23 @@ export function drawDepthSortedDrawableKinds(ctx, drawables, kinds, context = {}
         if (!accepted.has(drawable?.kind)) continue;
         drawable.draw?.(ctx, zoom, context);
     }
+}
+
+// Replays only categories selected by the registry's backend-policy resolution.
+// overlayBand orders whole categories on the ungraded transparent canvas; the
+// canonical depth-pass order is retained within the same band.
+export function drawSceneCategoryOverlays(ctx, drawables, resolution, context = {}) {
+    const accepted = resolution?.overlayCategoryIds;
+    if (!(accepted instanceof Set) || !accepted.size) return;
+    const selected = [];
+    for (let index = 0; index < (drawables || []).length; index++) {
+        const drawable = drawables[index];
+        if (!drawable?.sceneCategory || !accepted.has(drawable.sceneCategory.id)) continue;
+        selected.push({ drawable, index });
+    }
+    selected.sort((a, b) => (a.drawable.overlayBand - b.drawable.overlayBand) || (a.index - b.index));
+    const zoom = context.zoom || 1;
+    for (const { drawable } of selected) drawable.draw?.(ctx, zoom, context);
 }
 
 // Converts the already-sorted stream without reordering painter semantics.

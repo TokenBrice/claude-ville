@@ -6,8 +6,8 @@ import { drawCrowdClusterAuras, drawCrowdClusterBadges } from './CrowdClusterOve
 import {
     appendDepthSortedDrawables,
     cullDepthSortedDrawables,
-    drawDepthSortedDrawableKinds,
     drawDepthSortedDrawables,
+    drawSceneCategoryOverlays,
     summarizeDrawableLayers,
 } from './DrawablePass.js';
 import {
@@ -17,6 +17,7 @@ import {
     drawPrimaryPillRestamp,
     drawOffscreenCueEdges,
 } from './VillageDirectorOverlay.js';
+import { worldSceneCategoryRegistry } from './SceneCategoryRegistry.js';
 import { buildGpuWorldRecords } from './gpu/GpuSceneBuilder.js';
 
 // Follow-up after layer extraction: move private renderer calls used here into
@@ -31,7 +32,16 @@ export function renderWorldFrame(renderer, dt = 16) {
     const renderNow = Date.now();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const viewport = renderer._screenViewport();
-    const gpuWorldActive = renderer.gpuWorld?.isActive?.() === true;
+    const gpuWorldRequested = renderer.gpuWorld?.isActive?.() === true;
+    const sceneCategoryFrame = worldSceneCategoryRegistry.enumerate({ renderer, renderNow });
+    const sceneCategoryResolution = worldSceneCategoryRegistry.resolve(
+        sceneCategoryFrame,
+        gpuWorldRequested
+            ? sceneCommandBackend(renderer.gpuWorld)
+            : { id: 'canvas-2d', canvasFallback: true },
+    );
+    emitSceneCategoryDiagnostics(renderer, sceneCategoryResolution.diagnostics);
+    const gpuWorldActive = gpuWorldRequested && !sceneCategoryResolution.requireCanvasFrame;
     const postFxActive = !gpuWorldActive && renderer.postFx?.isActive?.() === true;
     renderer._setPostFxCanvasVisible?.(gpuWorldActive || postFxActive);
     renderer._resetScreenTransform(overlayCtx);
@@ -178,7 +188,6 @@ export function renderWorldFrame(renderer, dt = 16) {
         sprite.setGpuWorldEnabled?.(gpuWorldActive);
     }
     const propDrawables = renderer._enumeratePropDrawables();
-    const harborDrawables = renderer.harborTraffic?.enumerateDrawables() ?? [];
     const harborPendingRepos = renderer.harborTraffic?.getPendingRepoSummaries?.() ?? [];
     const harborSignature = renderer._harborPendingReposSignature(harborPendingRepos);
     if (harborSignature !== renderer._harborPendingSignature) {
@@ -200,7 +209,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         buildingDrawables,
         propDrawables,
         agentSprites: sortedSprites,
-        harborDrawables,
+        sceneCategoryFrame,
         landmarkDrawables,
         chronicleMonumentDrawables,
         chroniclerDrawables,
@@ -212,6 +221,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawDepthSortedDrawables(ctx, drawables, {
         zoom,
         renderNow,
+        renderer,
         buildingRenderer: renderer.buildingRenderer,
         harborTraffic: renderer.harborTraffic,
         landmarkActivity: renderer.landmarkActivity,
@@ -273,6 +283,7 @@ export function renderWorldFrame(renderer, dt = 16) {
             records,
             camera: renderer.camera,
             feed: gpuFeed,
+            sceneCommands: sceneCategoryResolution.nativeCommandBatches,
         }) === true;
         markFrameTiming(frameTimer, 'gpu-world');
     } else if (postFxActive) {
@@ -302,10 +313,10 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {
         renderer.trailRenderer?.draw?.(overlayCtx, renderer.camera, viewport, renderNow);
-        drawDepthSortedDrawableKinds(overlayCtx, drawables, ['harbor-traffic'], {
+        drawSceneCategoryOverlays(overlayCtx, drawables, sceneCategoryResolution, {
             zoom,
             renderNow,
-            harborTraffic: renderer.harborTraffic,
+            renderer,
         });
         renderer.harborTraffic?.drawFinaleEffects?.(overlayCtx, renderNow);
     }
@@ -333,11 +344,15 @@ export function renderWorldFrame(renderer, dt = 16) {
         drawableStats,
         cullingStats,
         harborPendingRepos,
+        sceneCategoryResolution,
         inputCounts: {
             buildings: buildingDrawables.length,
             props: propDrawables.length,
             agents: sortedSprites.length,
-            harbor: harborDrawables.length,
+            sceneCategories: Object.fromEntries(sceneCategoryFrame.entries.map(entry => [
+                entry.category.id,
+                entry.items.length,
+            ])),
             landmarks: landmarkDrawables.length,
             monuments: chronicleMonumentDrawables.length,
             chronicler: chroniclerDrawables.length,
@@ -854,7 +869,14 @@ function cameraDebugState(renderer) {
     };
 }
 
-function buildRenderStats(renderer, { drawableStats, cullingStats, harborPendingRepos, inputCounts, agentRenderMode = 'full' }) {
+function buildRenderStats(renderer, {
+    drawableStats,
+    cullingStats,
+    harborPendingRepos,
+    inputCounts,
+    sceneCategoryResolution,
+    agentRenderMode = 'full',
+}) {
     const pendingRepos = Array.isArray(harborPendingRepos) ? harborPendingRepos : [];
     return {
         drawables: drawableStats,
@@ -875,10 +897,31 @@ function buildRenderStats(renderer, { drawableStats, cullingStats, harborPending
             agentRenderMode,
             worldRendererMode: renderer.worldRendererMode || 'canvas',
             gpuWorld: renderer.gpuWorld?.getDiagnostics?.() || null,
+            sceneCategories: sceneCategoryResolution?.categories || [],
         },
         terrainCache: renderer.getTerrainCacheDiagnostics?.() || null,
         timings: renderer._lastRenderStats?.timings || null,
     };
+}
+
+function sceneCommandBackend(backend) {
+    return {
+        id: backend?.backendId || backend?.constructor?.name || 'gpu-world',
+        supportsSceneCommands(request) {
+            return backend?.supportsSceneCommands?.(request) === true;
+        },
+    };
+}
+
+function emitSceneCategoryDiagnostics(renderer, diagnostics = []) {
+    if (!diagnostics.length) return;
+    const emitted = (renderer._sceneCategoryDiagnostics ||= new Set());
+    for (const diagnostic of diagnostics) {
+        const key = `${diagnostic.code}:${diagnostic.backendId}:${diagnostic.categoryId}`;
+        if (emitted.has(key)) continue;
+        emitted.add(key);
+        console.warn(diagnostic.message);
+    }
 }
 
 function beginFrameTiming(renderer) {

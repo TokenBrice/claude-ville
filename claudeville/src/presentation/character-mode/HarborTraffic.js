@@ -174,6 +174,26 @@ const MAX_REPO_ANCHORAGES = REPO_ANCHORAGE_SLOTS.length;
 // An agent's repo stays "home" (a lit anchorage) this long after its last update.
 const REPO_ANCHORAGE_ACTIVE_MS = 5 * 60 * 1000;
 
+// Harbor traffic is intentionally overlay-safe: its routes stay in open water
+// and never require agent/building depth interleaving. It emits no neutral scene
+// commands yet, so command-driven backends must apply that explicit policy.
+export const HARBOR_TRAFFIC_SCENE_CATEGORY = Object.freeze({
+    id: 'harbor-traffic',
+    sortBand: 40,
+    enumerate({ renderer } = {}) {
+        return renderer?.harborTraffic?.enumerateDrawables?.() ?? [];
+    },
+    emitSceneCommands() {
+        return null;
+    },
+    canvasFallback(ctx, drawable, zoom, context = {}) {
+        const harborTraffic = context.renderer?.harborTraffic || context.harborTraffic;
+        harborTraffic?.draw?.(ctx, drawable, zoom);
+    },
+    unsupported: 'overlay-safe',
+    overlayBand: 40,
+});
+
 const SEA_LANES = [
     [
         { tileX: 36.2, tileY: 21.1 },
