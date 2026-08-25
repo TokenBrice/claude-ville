@@ -85,8 +85,8 @@ const OBSERVATORY_CLOCK_FACE = Object.freeze(getBuildingEffectAnchor('observator
     // with different dimensions logs a visible warning instead of silently
     // misplacing the clock hands.
     compositeRef: Object.freeze({ w: 256, h: 288 }),
-    center: [96, 108],
-    radius: 18,
+    center: [80, 155],
+    radius: 13,
     sourceSize: 40,
     sourceCenter: 20,
     sourceRadius: 18,
@@ -107,12 +107,12 @@ const OBSERVATORY_WEB_RITUAL_TOOLS = new Set(['WebFetch', 'WebSearch', 'web.run'
 const OBSERVATORY_SPIN_RATE_RAD_PER_S = 0.9;
 const OBSERVATORY_SPIN_EASE_MS = 1500;
 // #52 — dome aperture (registry-anchored): opens with the night beacon, and a
-// brief star burst pays off a completed web ritual. 6.5 — the same dormer
+// brief star burst pays off a completed web ritual. 6.5 — the same aperture
 // carries a slow idle glint sweep when nothing is happening.
 const OBSERVATORY_APERTURE = Object.freeze(getBuildingEffectAnchor('observatory', 'domeAperture', {
-    slit: [140, 56],
-    star: [140, 50],
-    glintArc: { center: [140, 52], radius: 12, from: -2.4, to: -0.7 },
+    slit: [149, 107],
+    star: [149, 101],
+    glintArc: { center: [149, 104], radius: 12, from: -2.4, to: -0.7 },
 }));
 const OBSERVATORY_BURST_MS = 1600;
 const OBSERVATORY_GLINT_PERIOD_FRAMES = 540; // ≈9s at 60fps
@@ -2895,7 +2895,7 @@ export class BuildingSprite {
         ctx.restore();
     }
 
-    // #52 — dome aperture: the small roof dormer under the telescope opens with
+    // #52 — dome aperture: the round opening nearest the telescope opens with
     // the night beacon (state-driven, so the reduced-motion pose is simply the
     // same static open amount) revealing a warm slit + star point; a completed
     // web ritual pays off as a brief star burst. 6.5 — when nothing is going
@@ -2964,7 +2964,7 @@ export class BuildingSprite {
     // fixed faint glint at the arc's rest angle (no sweep, no allocations).
     _drawObservatoryIdleGlint(ctx, localPoint, ritualActive) {
         if (ritualActive) return;
-        const arc = OBSERVATORY_APERTURE.glintArc || { center: [140, 52], radius: 12, from: -2.4, to: -0.7 };
+        const arc = OBSERVATORY_APERTURE.glintArc || { center: [149, 104], radius: 12, from: -2.4, to: -0.7 };
         const center = localPoint(...arc.center);
         let angle;
         let alpha;
@@ -2994,7 +2994,7 @@ export class BuildingSprite {
     _drawObservatoryRitual(ctx, localPoint, building) {
         const ritual = this._latestRitual('observatory');
         if (!ritual) return;
-        const dome = localPoint(133, 54);
+        const dome = localPoint(157, 86);
         const progress = this._ritualProgress(ritual);
         const fade = this._ritualFade(ritual);
         const target = ritual.angle || -0.7;

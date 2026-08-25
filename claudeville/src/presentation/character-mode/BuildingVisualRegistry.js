@@ -144,27 +144,28 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         labelPriority: 'landmark',
         beaconBase: 0.7,
         windowRects: [
-            { at: [92, 160], w: 9, h: 14 },
-            { at: [127, 166], w: 9, h: 14 },
+            { at: [74, 182], w: 13, h: 27 },
+            { at: [169, 149], w: 20, h: 29 },
+            { at: [137, 203], w: 13, h: 20 },
         ],
-        pennant: { at: [112, 16] },
+        pennant: { at: [108, 20] },
         effectAnchors: {
             clockFace: {
                 compositeRef: { w: 256, h: 288 },
-                center: [96, 108],
-                radius: 18,
+                center: [80, 155],
+                radius: 13,
                 sourceSize: 40,
                 sourceCenter: 20,
                 sourceRadius: 18,
                 hourHandLength: 10,
                 minuteHandLength: 15,
             },
-            // #52 — dome aperture: the small roof dormer under the telescope,
-            // opens at night; bursts when a web ritual completes.
+            // #52 — the round dome aperture nearest the telescope opens at
+            // night and bursts when a web ritual completes.
             domeAperture: {
-                slit: [140, 56],
-                star: [140, 50],
-                glintArc: { center: [140, 52], radius: 12, from: -2.4, to: -0.7 },
+                slit: [149, 107],
+                star: [149, 101],
+                glintArc: { center: [149, 104], radius: 12, from: -2.4, to: -0.7 },
             },
         },
     },

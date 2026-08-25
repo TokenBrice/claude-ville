@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-08-25-native-landmarks-v1"
+  assetVersion: "2026-08-25-native-landmarks-v2"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -796,14 +796,11 @@ buildings:
   # by _drawObservatoryClock at BUILDING_VISUAL_REGISTRY.observatory clockFace.
   - id: building.observatory
     tool: map_object
-    prompt: "Scholarly grey stone clock tower observatory, blue slate tiled roof, a large blank circular clock dial on the front face with no clock hands, copper-blue scholarly accents, tall arched windows glowing soft gold, arched wooden door, stone buttresses, a small brass telescope angled from the rooftop, true masonry wall footings and attached front steps only. Bold readable landmark, taller than wide. Transparent ground around the structure; no lawn tile, raised slab, brick curb, retaining lip, complete base outline, or baked cast shadow. No clock hands, no text, no numbers, no logo."
+    prompt: "Broad stocky grey-stone astronomical observatory whose masonry walls end directly at their footings, a large blue-slate dome with an open viewing aperture, and one enormous ornate brass telescope projecting far upward-right. One blank circular astrolabe dial centered above the arched front door, warm gold windows, copper trim, heavy buttresses, attached stone doorstep and stairs, compact proportions, and a strong asymmetric telescope silhouette. Structure only with empty transparent space around every footing; no lawn, grass, terrain, base platform, cast shadow, text, numbers, logo, or clock hands."
     width: 256
     height: 288
     anchor: [128, 252]
     materialClass: stone
-    materialSidecar: true
-    emissiveSidecar: true
-    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.observatory }
     elevation: { base: 0, top: 288, unit: sprite-px }
     emissive:
@@ -815,10 +812,10 @@ buildings:
     splitForOcclusion: true
     horizonY: 235
     emitters:
-      sparkle: [150, 60]
+      sparkle: [211, 57]
     # Phase 2.5.5: light-reflection compositing reads these to additively
     # tint nearby water tiles. Anchor is sprite-local pixels.
-    lightSource: [120, 150]
+    lightSource: [149, 107]
     lightColor: '#9fd1ff'
     lightRadius: 58
 

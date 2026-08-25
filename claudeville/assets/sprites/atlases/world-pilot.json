@@ -465,7 +465,7 @@
       "id": "building.observatory",
       "materialClass": "stone",
       "sourcePath": "buildings/building.observatory/base.png",
-      "sourceSha256": "93944aa033048f209f58216914a6b717e56568f8f5fff1c4f09ad55bc0e0ba7e",
+      "sourceSha256": "438416ce561a8949892ba9e499987741b9bc6deeedde4673dcf88faf22bb6bdc",
       "sourceSize": {
         "h": 288,
         "w": 256
@@ -699,10 +699,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "7ec05ee18054458e93af2c6541c94c7164a73bb2471b5f5b934e580df3b456c8",
-    "emissive": "97b8780be4a8251fba6b12e1163ad03e8791b8db29043d7081e995461af0bbd9",
-    "material": "9cfc1c99bf7c71e01f7e7426e82e1adb16bd86d50a051623a99cb56a99f9a6a4",
-    "occluder": "54862c479d40099e1b97cb1437429ee6d72765a3a80c5b244d1183aa2885694d"
+    "albedo": "d94f88423cfdbd99ac24e26d7a3c5cb56686523dc94b4030edd7f2b1a9721e82",
+    "emissive": "5e77ae036e71fb0a315c53aabecbfe25538467ca2fbfd6d8e46c9e67ee70dfae",
+    "material": "10a148398fc73b040e58ddacf82a325b06a25ffeeffbaad6ca7898e357a1c9d7",
+    "occluder": "fd266cf65d8734e837073c33de2796d42a77131ac7d69a8a7d12d049010dff84"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -10226,9 +10226,9 @@
         "y": 2
       },
       "sidecars": {
-        "emissive": "buildings/building.observatory/base.emissive.png",
-        "material": "buildings/building.observatory/base.material.png",
-        "occluder": "buildings/building.observatory/base.occluder.png"
+        "emissive": null,
+        "material": null,
+        "occluder": null
       },
       "sourcePath": "buildings/building.observatory/base.png",
       "sourceRect": {
@@ -10237,7 +10237,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "93944aa033048f209f58216914a6b717e56568f8f5fff1c4f09ad55bc0e0ba7e",
+      "sourceSha256": "438416ce561a8949892ba9e499987741b9bc6deeedde4673dcf88faf22bb6bdc",
       "sourceSize": {
         "h": 288,
         "w": 256
