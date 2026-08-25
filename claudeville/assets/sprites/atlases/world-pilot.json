@@ -320,95 +320,12 @@
       "id": "building.archive",
       "materialClass": "stone",
       "sourcePath": "buildings/building.archive/base.png",
-      "sourceSha256": "0b81ce7ce6f3423a82fbba466b7501021f56b28d8a5f4a4c0581b493c994dfdf",
+      "sourceSha256": "6ee004e90a7c3e7d88a900e17182c9367625986be9d458110f8981a75dda5d1e",
       "sourceSize": {
         "h": 224,
         "w": 336
       },
-      "structureMask": {
-        "shapes": [
-          {
-            "rect": [
-              45,
-              12,
-              59,
-              166
-            ]
-          },
-          {
-            "rect": [
-              232,
-              12,
-              59,
-              166
-            ]
-          },
-          {
-            "polygon": [
-              [
-                88,
-                50
-              ],
-              [
-                168,
-                41
-              ],
-              [
-                248,
-                50
-              ],
-              [
-                248,
-                169
-              ],
-              [
-                218,
-                177
-              ],
-              [
-                207,
-                166
-              ],
-              [
-                129,
-                166
-              ],
-              [
-                117,
-                177
-              ],
-              [
-                88,
-                169
-              ]
-            ]
-          },
-          {
-            "polygon": [
-              [
-                120,
-                143
-              ],
-              [
-                216,
-                143
-              ],
-              [
-                216,
-                194
-              ],
-              [
-                168,
-                220
-              ],
-              [
-                108,
-                198
-              ]
-            ]
-          }
-        ]
-      }
+      "structureMask": null
     },
     "building.command": {
       "anchor": [
@@ -461,187 +378,12 @@
       "id": "building.forge",
       "materialClass": "stone",
       "sourcePath": "buildings/building.forge/base.png",
-      "sourceSha256": "8ce8e6ca381acd6bf38844bd983735e5337fe9bf17269bf6d4f65857498e9674",
+      "sourceSha256": "7ae12e449cdee9e397927e0e8e101e21ee47b7a7ca7acae525b2ed620691f4c7",
       "sourceSize": {
         "h": 232,
         "w": 256
       },
-      "structureMask": {
-        "shapes": [
-          {
-            "polygon": [
-              [
-                48,
-                39
-              ],
-              [
-                96,
-                25
-              ],
-              [
-                150,
-                42
-              ],
-              [
-                158,
-                7
-              ],
-              [
-                196,
-                22
-              ],
-              [
-                203,
-                91
-              ],
-              [
-                187,
-                130
-              ],
-              [
-                67,
-                130
-              ],
-              [
-                39,
-                99
-              ]
-            ]
-          },
-          {
-            "polygon": [
-              [
-                42,
-                82
-              ],
-              [
-                185,
-                76
-              ],
-              [
-                205,
-                151
-              ],
-              [
-                176,
-                202
-              ],
-              [
-                78,
-                202
-              ],
-              [
-                37,
-                178
-              ]
-            ]
-          },
-          {
-            "polygon": [
-              [
-                175,
-                116
-              ],
-              [
-                231,
-                139
-              ],
-              [
-                231,
-                187
-              ],
-              [
-                193,
-                198
-              ],
-              [
-                174,
-                179
-              ]
-            ]
-          }
-        ],
-        "siteColorCutout": {
-          "eraseOutsideProtectFromY": 145,
-          "family": "grass-and-retaining",
-          "fromY": 132,
-          "lipFromY": 170,
-          "protectShapes": [
-            {
-              "polygon": [
-                [
-                  43,
-                  82
-                ],
-                [
-                  112,
-                  79
-                ],
-                [
-                  121,
-                  181
-                ],
-                [
-                  82,
-                  199
-                ],
-                [
-                  39,
-                  176
-                ]
-              ]
-            },
-            {
-              "polygon": [
-                [
-                  96,
-                  82
-                ],
-                [
-                  187,
-                  75
-                ],
-                [
-                  202,
-                  150
-                ],
-                [
-                  176,
-                  196
-                ],
-                [
-                  98,
-                  181
-                ]
-              ]
-            },
-            {
-              "polygon": [
-                [
-                  174,
-                  115
-                ],
-                [
-                  231,
-                  138
-                ],
-                [
-                  231,
-                  187
-                ],
-                [
-                  193,
-                  198
-                ],
-                [
-                  173,
-                  179
-                ]
-              ]
-            }
-          ]
-        }
-      }
+      "structureMask": null
     },
     "building.harbor": {
       "anchor": [
@@ -694,124 +436,12 @@
       "id": "building.mine",
       "materialClass": "stone",
       "sourcePath": "buildings/building.mine/base.png",
-      "sourceSha256": "6b52c0ca5c217bfee515ba7cdc2fba7485eb161ef070129ed8624091c8ed344f",
+      "sourceSha256": "26457e5b616ab4c3b1f9e24e9a229c59b614d6115affe9ca74778eadc07b6a24",
       "sourceSize": {
         "h": 232,
         "w": 256
       },
-      "structureMask": {
-        "shapes": [
-          {
-            "polygon": [
-              [
-                96,
-                4
-              ],
-              [
-                154,
-                13
-              ],
-              [
-                192,
-                55
-              ],
-              [
-                222,
-                116
-              ],
-              [
-                218,
-                165
-              ],
-              [
-                197,
-                193
-              ],
-              [
-                151,
-                205
-              ],
-              [
-                82,
-                202
-              ],
-              [
-                28,
-                178
-              ],
-              [
-                35,
-                108
-              ],
-              [
-                62,
-                56
-              ]
-            ]
-          },
-          {
-            "polygon": [
-              [
-                113,
-                91
-              ],
-              [
-                196,
-                89
-              ],
-              [
-                231,
-                147
-              ],
-              [
-                229,
-                191
-              ],
-              [
-                178,
-                204
-              ],
-              [
-                116,
-                181
-              ]
-            ]
-          },
-          {
-            "polygon": [
-              [
-                121,
-                151
-              ],
-              [
-                175,
-                147
-              ],
-              [
-                229,
-                181
-              ],
-              [
-                209,
-                204
-              ],
-              [
-                169,
-                212
-              ],
-              [
-                105,
-                200
-              ]
-            ]
-          }
-        ],
-        "siteColorCutout": {
-          "family": "grass-and-retaining",
-          "fromY": 135,
-          "lipFromY": 175
-        }
-      }
+      "structureMask": null
     },
     "building.observatory": {
       "anchor": [
@@ -835,83 +465,12 @@
       "id": "building.observatory",
       "materialClass": "stone",
       "sourcePath": "buildings/building.observatory/base.png",
-      "sourceSha256": "c358d9ef185e69d1cd1af95d203134b0ced3019d8da22c2658c9eed734cb5d27",
+      "sourceSha256": "93944aa033048f209f58216914a6b717e56568f8f5fff1c4f09ad55bc0e0ba7e",
       "sourceSize": {
         "h": 288,
         "w": 256
       },
-      "structureMask": {
-        "shapes": [
-          {
-            "polygon": [
-              [
-                84,
-                4
-              ],
-              [
-                169,
-                4
-              ],
-              [
-                199,
-                69
-              ],
-              [
-                196,
-                246
-              ],
-              [
-                178,
-                269
-              ],
-              [
-                82,
-                269
-              ],
-              [
-                57,
-                247
-              ],
-              [
-                57,
-                91
-              ]
-            ]
-          },
-          {
-            "polygon": [
-              [
-                137,
-                222
-              ],
-              [
-                211,
-                252
-              ],
-              [
-                211,
-                269
-              ],
-              [
-                169,
-                276
-              ],
-              [
-                123,
-                266
-              ],
-              [
-                123,
-                249
-              ]
-            ]
-          }
-        ],
-        "siteColorCutout": {
-          "family": "grass",
-          "fromY": 205
-        }
-      }
+      "structureMask": null
     },
     "building.portal": {
       "anchor": [
@@ -963,43 +522,12 @@
       "id": "building.taskboard",
       "materialClass": "timber",
       "sourcePath": "buildings/building.taskboard/base.png",
-      "sourceSha256": "ad2bada58e71380fa06eaf32647b5a1f8991c728afbf6051a155caeee4a51a6e",
+      "sourceSha256": "11724bc082e246915e0062f56f9d0e3643e347794139a5e71304b50916624501",
       "sourceSize": {
         "h": 232,
         "w": 256
       },
-      "structureMask": {
-        "shapes": [
-          {
-            "rect": [
-              22,
-              0,
-              212,
-              153
-            ]
-          },
-          {
-            "rect": [
-              34,
-              139,
-              34,
-              76
-            ]
-          },
-          {
-            "rect": [
-              188,
-              139,
-              35,
-              76
-            ]
-          }
-        ],
-        "siteColorCutout": {
-          "family": "grass",
-          "fromY": 132
-        }
-      }
+      "structureMask": null
     },
     "building.watchtower": {
       "anchor": [
@@ -1171,10 +699,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "2fd1f85b9bbb1b5c689822d66cf1ca5a159e42b2e5cbf6267ed4c7ae43412b79",
-    "emissive": "0b0bb13c462cc5213f92dd2114301d360b0ff8fad03fcd97fb21f8d849f33ec5",
-    "material": "44fce67248c9fadb75642b9498a8bbe05338cc0feeb654cd06218cb36ee7129f",
-    "occluder": "e963ddb0caa1eedd011c31ce4b4cf80c80a3f54efc30333f8ee0edc9c08012d3"
+    "albedo": "7ec05ee18054458e93af2c6541c94c7164a73bb2471b5f5b934e580df3b456c8",
+    "emissive": "97b8780be4a8251fba6b12e1163ad03e8791b8db29043d7081e995461af0bbd9",
+    "material": "9cfc1c99bf7c71e01f7e7426e82e1adb16bd86d50a051623a99cb56a99f9a6a4",
+    "occluder": "54862c479d40099e1b97cb1437429ee6d72765a3a80c5b244d1183aa2885694d"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -10347,9 +9875,9 @@
         "y": 2
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "buildings/building.archive/base.emissive.png",
+        "material": "buildings/building.archive/base.material.png",
+        "occluder": "buildings/building.archive/base.occluder.png"
       },
       "sourcePath": "buildings/building.archive/base.png",
       "sourceRect": {
@@ -10358,7 +9886,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "0b81ce7ce6f3423a82fbba466b7501021f56b28d8a5f4a4c0581b493c994dfdf",
+      "sourceSha256": "6ee004e90a7c3e7d88a900e17182c9367625986be9d458110f8981a75dda5d1e",
       "sourceSize": {
         "h": 224,
         "w": 336
@@ -10516,9 +10044,9 @@
         "y": 2
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "buildings/building.forge/base.emissive.png",
+        "material": "buildings/building.forge/base.material.png",
+        "occluder": "buildings/building.forge/base.occluder.png"
       },
       "sourcePath": "buildings/building.forge/base.png",
       "sourceRect": {
@@ -10527,7 +10055,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "8ce8e6ca381acd6bf38844bd983735e5337fe9bf17269bf6d4f65857498e9674",
+      "sourceSha256": "7ae12e449cdee9e397927e0e8e101e21ee47b7a7ca7acae525b2ed620691f4c7",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10637,9 +10165,9 @@
         "y": 2
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "buildings/building.mine/base.emissive.png",
+        "material": "buildings/building.mine/base.material.png",
+        "occluder": "buildings/building.mine/base.occluder.png"
       },
       "sourcePath": "buildings/building.mine/base.png",
       "sourceRect": {
@@ -10648,7 +10176,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "6b52c0ca5c217bfee515ba7cdc2fba7485eb161ef070129ed8624091c8ed344f",
+      "sourceSha256": "26457e5b616ab4c3b1f9e24e9a229c59b614d6115affe9ca74778eadc07b6a24",
       "sourceSize": {
         "h": 232,
         "w": 256
@@ -10698,9 +10226,9 @@
         "y": 2
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "buildings/building.observatory/base.emissive.png",
+        "material": "buildings/building.observatory/base.material.png",
+        "occluder": "buildings/building.observatory/base.occluder.png"
       },
       "sourcePath": "buildings/building.observatory/base.png",
       "sourceRect": {
@@ -10709,7 +10237,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "c358d9ef185e69d1cd1af95d203134b0ced3019d8da22c2658c9eed734cb5d27",
+      "sourceSha256": "93944aa033048f209f58216914a6b717e56568f8f5fff1c4f09ad55bc0e0ba7e",
       "sourceSize": {
         "h": 288,
         "w": 256
@@ -10862,9 +10390,9 @@
         "y": 2
       },
       "sidecars": {
-        "emissive": null,
-        "material": null,
-        "occluder": null
+        "emissive": "buildings/building.taskboard/base.emissive.png",
+        "material": "buildings/building.taskboard/base.material.png",
+        "occluder": "buildings/building.taskboard/base.occluder.png"
       },
       "sourcePath": "buildings/building.taskboard/base.png",
       "sourceRect": {
@@ -10873,7 +10401,7 @@
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "ad2bada58e71380fa06eaf32647b5a1f8991c728afbf6051a155caeee4a51a6e",
+      "sourceSha256": "11724bc082e246915e0062f56f9d0e3643e347794139a5e71304b50916624501",
       "sourceSize": {
         "h": 232,
         "w": 256

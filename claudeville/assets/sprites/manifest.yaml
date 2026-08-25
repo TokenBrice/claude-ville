@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-07-25-gate-inscription-v1"
+  assetVersion: "2026-08-25-native-landmarks-v1"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -71,6 +71,16 @@ characters:
     paletteSource: { robe: ['#8a1d34', '#20143e'], trim: '#dfc18a' }
     anchor: [46, 80]
     mode: pro
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.claude.fable.constellations, kind: rune, geometry: sidecar, strength: 0.1 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   # NOTE: regenerate via pixellab create_character with size=76 (canvas ~108) to
   # keep the tall hood silhouette inside the 92-px engine cell. The manifest `size: 92`
@@ -108,6 +118,16 @@ characters:
     paletteSource: { robe: ['#34184f', '#522c6b'], pants: '#2a4791' }
     anchor: [46, 80]
     mode: pro
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.claude.sonnet.runes, kind: rune, geometry: sidecar, strength: 0.12 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.claude.haiku
     tool: create_character
@@ -121,6 +141,13 @@ characters:
     paletteSource: { robe: ['#c0e9c3', '#78894d'], pants: '#0e8c44', trim: '#a49159' }
     anchor: [46, 80]
     mode: pro
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt55
     tool: create_character
@@ -134,6 +161,16 @@ characters:
     paletteSource: { robe: ['#222945', '#333c5c'], pants: '#404b6d', trim: '#55a6a0' }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.codex.gpt55.reactor, kind: rune, geometry: sidecar, strength: 0.16 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt55.high
     tool: create_character
@@ -147,6 +184,16 @@ characters:
     paletteSource: { robe: ['#1f1d36', '#2d3a54'], pants: '#495c77', trim: '#79aabb' }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.codex.gpt55.high.visor, kind: rune, geometry: sidecar, strength: 0.14 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt55.xhigh
     tool: create_character
@@ -160,6 +207,16 @@ characters:
     paletteSource: { robe: ['#191c2a', '#202a45'], pants: '#4a2868' }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.codex.gpt55.xhigh.reactor, kind: rune, geometry: sidecar, strength: 0.18 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   # GPT-5.6 celestial warrior triad (Sol/Terra/Luna). Generated with mode=pro,
   # size=76 (canvas ~108, center-crop to 92) so Sol's crest crown stays inside
@@ -198,6 +255,16 @@ characters:
     paletteSource: { robe: ['#32384a', '#292f42'], pants: '#697b59' }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.codex.gpt56terra.earth-core, kind: rune, geometry: sidecar, strength: 0.14 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt56luna
     tool: create_character
@@ -211,6 +278,13 @@ characters:
     paletteSource: { robe: ['#bdd2e3', '#a6b8cd'], pants: '#24263e', trim: '#8c9bb5' }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt54
     tool: create_character
@@ -224,6 +298,13 @@ characters:
     paletteSource: { robe: ['#22575d', '#1e4651'] }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.gpt53spark
     tool: create_character
@@ -237,6 +318,13 @@ characters:
     paletteSource: { robe: '#7bb9b0', pants: '#3d676f', trim: '#73ada8' }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.claude.base
     tool: create_character
@@ -247,6 +335,13 @@ characters:
     palette_layer: claude
     anchor: [46, 80]
     mode: pro
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.codex.base
     tool: create_character
@@ -260,6 +355,16 @@ characters:
     paletteSource: { pants: '#7f5e4f', trim: '#55c3b6' }
     anchor: [46, 80]
     mode: pro
+    materialClass: metal
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.codex.base.circuit-trim, kind: rune, geometry: sidecar, strength: 0.14 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.gemini.base
     tool: create_character
@@ -273,6 +378,16 @@ characters:
     paletteSource: { robe: ['#52337d', '#362361'], trim: '#8692c3' }
     anchor: [46, 80]
     mode: pro
+    materialClass: glass-rune
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.gemini.base.starlight, kind: rune, geometry: sidecar, strength: 0.1 }
+    occluder: { mode: alpha-silhouette, strength: 0.92 }
 
   - id: agent.kimi.base
     tool: create_character
@@ -286,6 +401,13 @@ characters:
     paletteSource: { trim: '#c47774' }
     anchor: [46, 80]
     mode: pro
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   # DeepSeek rogue/archer class: ranged-heavy -> melee-light ladder, distinct
   # from Codex warriors and Claude mages. Generated at size 76 (canvas ~106) so
@@ -302,6 +424,16 @@ characters:
     paletteSource: { robe: ['#162620', '#2e4735'], trim: '#459883' }
     anchor: [46, 80]
     mode: pro
+    materialClass: earth
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.deepseek.reasoner.rune-edging, kind: rune, geometry: sidecar, strength: 0.12 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.deepseek.pro
     tool: create_character
@@ -315,6 +447,16 @@ characters:
     paletteSource: { robe: '#171f1f', trim: '#4d7762' }
     anchor: [46, 80]
     mode: pro
+    materialClass: earth
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.deepseek.pro.rune-trim, kind: rune, geometry: sidecar, strength: 0.1 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.deepseek.flash
     tool: create_character
@@ -328,6 +470,16 @@ characters:
     paletteSource: { robe: '#17251d' }
     anchor: [46, 80]
     mode: pro
+    materialClass: earth
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.deepseek.flash.accent-trim, kind: rune, geometry: sidecar, strength: 0.08 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   # Grok cosmic truthseeker class: void-black + electric cyan, distinct from
   # Codex warriors, Claude mages, and DeepSeek rogues.
@@ -349,6 +501,16 @@ characters:
     paletteSource: { trim: '#64a9c8' }
     anchor: [46, 80]
     mode: pro
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.grok.base.constellation-embroidery, kind: rune, geometry: sidecar, strength: 0.14 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
   - id: agent.grok.composer
     tool: create_character
@@ -362,6 +524,16 @@ characters:
     paletteSource: { trim: '#86bbcb' }
     anchor: [46, 80]
     mode: pro
+    materialClass: fabric
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 80, unit: sprite-px }
+    emissive:
+      strength: 0
+      sources:
+        - { id: emissive.agent.grok.composer.star-clasps, kind: rune, geometry: sidecar, strength: 0.12 }
+    occluder: { mode: alpha-silhouette, strength: 1 }
 
 # ─── PALETTES ────────────────────────────────────────────────────────────────
 # Canonical palette definitions. claudeville/assets/sprites/palettes.yaml mirrors
@@ -629,6 +801,9 @@ buildings:
     height: 288
     anchor: [128, 252]
     materialClass: stone
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.observatory }
     elevation: { base: 0, top: 288, unit: sprite-px }
     emissive:
@@ -637,11 +812,6 @@ buildings:
         - { id: emissive.observatory.windows, kind: windows, geometry: registry.windowRects, strength: 0.62 }
         - { id: emissive.observatory.dome, kind: rune, geometry: registry.effectAnchors.domeAperture, strength: 0.78 }
     occluder: { mode: alpha-silhouette, strength: 1, horizonY: 235 }
-    structureMask:
-      siteColorCutout: { family: grass, fromY: 205 }
-      shapes:
-        - polygon: [[84, 4], [169, 4], [199, 69], [196, 246], [178, 269], [82, 269], [57, 247], [57, 91]]
-        - polygon: [[137, 222], [211, 252], [211, 269], [169, 276], [123, 266], [123, 249]]
     splitForOcclusion: true
     horizonY: 235
     emitters:
@@ -699,6 +869,9 @@ buildings:
     height: 232
     anchor: [128, 203]
     materialClass: stone
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.forge }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -706,26 +879,12 @@ buildings:
       sources:
         - { id: emissive.forge.furnace, kind: fire, geometry: registry.windowRects, strength: 1 }
     occluder: { mode: alpha-silhouette, strength: 1 }
-    structureMask:
-      siteColorCutout:
-        family: grass-and-retaining
-        fromY: 132
-        lipFromY: 170
-        eraseOutsideProtectFromY: 145
-        protectShapes:
-          - polygon: [[43, 82], [112, 79], [121, 181], [82, 199], [39, 176]]
-          - polygon: [[96, 82], [187, 75], [202, 150], [176, 196], [98, 181]]
-          - polygon: [[174, 115], [231, 138], [231, 187], [193, 198], [173, 179]]
-      shapes:
-        - polygon: [[48, 39], [96, 25], [150, 42], [158, 7], [196, 22], [203, 91], [187, 130], [67, 130], [39, 99]]
-        - polygon: [[42, 82], [185, 76], [205, 151], [176, 202], [78, 202], [37, 178]]
-        - polygon: [[175, 116], [231, 139], [231, 187], [193, 198], [174, 179]]
     emitters:
-      smoke: [175, 28]
-      forgeEmber: [75, 118]
-      forgeSpark: [76, 112]
-      sparkle: [195, 150]
-    lightSource: [75, 118]
+      smoke: [185, 35]
+      forgeEmber: [72, 150]
+      forgeSpark: [78, 132]
+      sparkle: [210, 160]
+    lightSource: [72, 150]
     lightColor: '#ff8a33'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.fire-glow'
@@ -738,6 +897,9 @@ buildings:
     height: 232
     anchor: [128, 203]
     materialClass: stone
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.mine }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -746,17 +908,11 @@ buildings:
         - { id: emissive.mine.cave, kind: lantern, geometry: lightSource, strength: 0.82 }
         - { id: emissive.mine.crystals, kind: rune, geometry: emitters.sparkle, strength: 0.62 }
     occluder: { mode: alpha-silhouette, strength: 1 }
-    structureMask:
-      siteColorCutout: { family: grass-and-retaining, fromY: 135, lipFromY: 175 }
-      shapes:
-        - polygon: [[96, 4], [154, 13], [192, 55], [222, 116], [218, 165], [197, 193], [151, 205], [82, 202], [28, 178], [35, 108], [62, 56]]
-        - polygon: [[113, 91], [196, 89], [231, 147], [229, 191], [178, 204], [116, 181]]
-        - polygon: [[121, 151], [175, 147], [229, 181], [209, 204], [169, 212], [105, 200]]
     emitters:
       sparkle: [90, 95]
       sparkle2: [60, 120]
       mining: [138, 165]
-    lightSource: [128, 158]
+    lightSource: [188, 115]
     lightColor: '#ffb84d'
     lightRadius: 80
     lightOverlay: 'atmosphere.light.lantern-glow'
@@ -769,6 +925,9 @@ buildings:
     height: 232
     anchor: [128, 203]
     materialClass: timber
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.taskboard }
     elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
@@ -776,12 +935,6 @@ buildings:
       sources:
         - { id: emissive.taskboard.lanterns, kind: lantern, geometry: registry.windowRects, strength: 0.76 }
     occluder: { mode: alpha-silhouette, strength: 1, horizonY: 150 }
-    structureMask:
-      siteColorCutout: { family: grass, fromY: 132 }
-      shapes:
-        - rect: [22, 0, 212, 153]
-        - rect: [34, 139, 34, 76]
-        - rect: [188, 139, 35, 76]
     splitForOcclusion: true
     horizonY: 150
     emitters:
@@ -804,6 +957,9 @@ buildings:
     height: 224
     anchor: [168, 196]
     materialClass: stone
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
     atlasFrame: { atlas: world-pilot, key: building.archive }
     elevation: { base: 0, top: 224, unit: sprite-px }
     emissive:
@@ -814,12 +970,6 @@ buildings:
     occluder: { mode: alpha-silhouette, strength: 1, horizonY: 145 }
     splitForOcclusion: true
     horizonY: 145
-    structureMask:
-      shapes:
-        - rect: [45, 12, 59, 166]
-        - rect: [232, 12, 59, 166]
-        - polygon: [[88, 50], [168, 41], [248, 50], [248, 169], [218, 177], [207, 166], [129, 166], [117, 177], [88, 169]]
-        - polygon: [[120, 143], [216, 143], [216, 194], [168, 220], [108, 198]]
     emitters:
       sparkle: [168, 82]
       sparkle2: [142, 128]
@@ -1352,18 +1502,39 @@ terrain:
     lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
     upper: "rich loam dirt path, warm packed earth with pebble specks and wheel-worn texture"
     size: 32
+    materialClass: earth
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
 
   - id: terrain.grass-cobble
     tool: tileset
     lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
     upper: "weathered cobblestone road, varied grey-blue stones with worn edges, carved guild marks, moss in the cracks"
     size: 32
+    materialClass: cobble
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
 
   - id: terrain.grass-shore
     tool: tileset
     lower: "ancient forest grass, painterly hand-textured blades, scattered wildflowers and moss clumps, soft dappled color variation, rich olive-green ground"
     upper: "warm sandy shore, pebbles and shell flecks, lace of dried sea foam, wet-to-dry gradient"
     size: 32
+    materialClass: foliage
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
 
   - id: terrain.shore-shallow
     tool: tileset
@@ -1392,6 +1563,13 @@ terrain:
     lower: "weathered cobblestone road, varied grey-blue stones with worn edges, carved guild marks, moss in the cracks"
     upper: "polished town square flagstone, worn smooth with warm sanded joints and subtle chisel marks"
     size: 32
+    materialClass: cobble
+    materialSidecar: true
+    emissiveSidecar: true
+    occluderSidecar: true
+    elevation: { base: 0, top: 0, unit: sprite-px }
+    emissive: { strength: 0, sources: [] }
+    occluder: { mode: none, strength: 0 }
 
 # ─── ATMOSPHERE ──────────────────────────────────────────────────────────────
 atmosphere:
