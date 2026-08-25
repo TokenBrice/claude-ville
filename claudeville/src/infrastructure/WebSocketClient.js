@@ -67,11 +67,13 @@ function applyJsonPatch(state, patch) {
 }
 
 export class WebSocketClient {
-    constructor() {
+    constructor(options = {}) {
+        const { performanceMetrics = null } = options || {};
         this.ws = null;
         this.connected = false;
         this.reconnectTimer = null;
         this.reconnectAttempts = 0;
+        this.performanceMetrics = performanceMetrics;
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.url = `${protocol}//${window.location.host}/ws`;
         // Delta protocol state: last full {sessions, teams, usage} snapshot
@@ -109,10 +111,15 @@ export class WebSocketClient {
 
             socket.onmessage = (event) => {
                 if (this.ws !== socket) return;
+                const metrics = this.performanceMetrics;
+                const messagePerf = metrics && metrics.enabled !== false
+                    ? metrics.beginMessage?.() || null
+                    : null;
                 try {
                     const data = JSON.parse(event.data);
-                    this._handleMessage(data);
+                    this._handleMessage(data, messagePerf);
                 } catch (err) {
+                    if (messagePerf) metrics.cancelMessage?.(messagePerf);
                     console.error('[WS] Failed to parse message:', err.message);
                 }
             };
@@ -164,9 +171,10 @@ export class WebSocketClient {
         }
     }
 
-    _handleMessage(data) {
+    _handleMessage(data, messagePerf = null) {
         switch (data.type) {
             case 'init':
+                if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
                 // Reset reconnect attempts only after server confirms a healthy session,
                 // so half-open TCPs that never deliver init keep backing off.
                 this.reconnectAttempts = 0;
@@ -175,16 +183,19 @@ export class WebSocketClient {
                 if (data.usage) eventBus.emit('usage:updated', data.usage);
                 break;
             case 'update':
+                if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
                 this._rememberSnapshot(data);
                 eventBus.emit('ws:update', data);
                 if (data.usage) eventBus.emit('usage:updated', data.usage);
                 break;
             case 'update-delta':
-                this._handleDelta(data);
+                this._handleDelta(data, messagePerf);
                 break;
             case 'pong':
+                if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
                 break;
             default:
+                if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
                 eventBus.emit('ws:message', data);
         }
     }
@@ -221,19 +232,27 @@ export class WebSocketClient {
         };
     }
 
-    _handleDelta(data) {
+    _handleDelta(data, messagePerf = null) {
+        const metrics = this.performanceMetrics;
+        const deltaPerf = metrics && metrics.enabled !== false
+            ? metrics.beginDelta?.(messagePerf) || null
+            : null;
         if (!this._state || this._seq === null || data.baseSeq !== this._seq) {
+            if (deltaPerf) metrics.discardDelta?.(deltaPerf, 'resync');
             this._requestResync();
             return;
         }
         let next;
+        if (deltaPerf) metrics.markPatchStart?.(deltaPerf);
         try {
             next = applyJsonPatch(this._state, data.patch);
         } catch (err) {
+            if (deltaPerf) metrics.discardDelta?.(deltaPerf, 'resync');
             console.warn('[WS] Failed to apply delta, requesting resync:', err.message);
             this._requestResync();
             return;
         }
+        if (deltaPerf) metrics.markPatchApplied?.(deltaPerf, data.patch.length);
         this._state = next;
         this._seq = data.seq;
         const payload = {
@@ -243,8 +262,13 @@ export class WebSocketClient {
             usage: next.usage,
             timestamp: data.timestamp,
         };
+        if (deltaPerf) metrics.markFanoutStart?.(deltaPerf);
         eventBus.emit('ws:update', payload);
         if (payload.usage) eventBus.emit('usage:updated', payload.usage);
+        if (deltaPerf) {
+            metrics.markFanoutEnd?.(deltaPerf);
+            metrics.finishDelta?.(deltaPerf);
+        }
     }
 
     _requestResync() {

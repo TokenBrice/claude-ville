@@ -30,6 +30,7 @@ import { ActivityPanel } from './shared/ActivityPanel.js';
 import { el, replaceChildren } from './shared/DomSafe.js';
 import { emitAgentSelected, resetAgentSelection } from './shared/AgentSelection.js';
 import { sessionDetailsService } from './shared/SessionDetailsService.js';
+import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
@@ -126,7 +127,12 @@ export class App {
 
             // 2. Initialize infrastructure
             this.dataSource = new ClaudeDataSource();
-            this.wsClient = new WebSocketClient();
+            // Opt-in client-side timing: delta-to-paint latency and delta-correlated
+            // frame gaps. Disabled by default; costs one state check per message.
+            this.clientPerfMetrics = new ClientPerfMetrics();
+            this.wsClient = new WebSocketClient({
+                performanceMetrics: this.clientPerfMetrics,
+            });
             this.chronicleStore = new ChronicleStore();
             const initialStore = this.chronicleStore;
             this._trackChronicleTask(this._runChroniclePrune().then(() => {
@@ -673,8 +679,10 @@ export class App {
         this._perfDebugStopProfile = () => this.renderer?.stopPerformanceProfile?.() || null;
         this._perfDebugFrameProfile = () => this.renderer?.getPerformanceProfile?.() || null;
         this._cameraSetHelper = (pose = {}) => this.renderer?.setCameraPose?.(pose) || false;
+        this._clientPerfHelpers = this.clientPerfMetrics?.getDebugHelpers?.() || {};
         window.__claudeVillePerf = {
             ...existing,
+            ...this._clientPerfHelpers,
             canvasBudget: this._perfDebugCanvasBudget,
             startFrameProfile: this._perfDebugStartProfile,
             stopFrameProfile: this._perfDebugStopProfile,
@@ -880,6 +888,12 @@ export class App {
             if (window.__chronicle === store) delete window.__chronicle;
             if (window.__claudeVilleApp === this) delete window.__claudeVilleApp;
             if (window.cameraSet === this._cameraSetHelper) delete window.cameraSet;
+            // Stop before unpublishing: the collector owns a PerformanceObserver and
+            // a pending-delta ring that must not outlive the app instance.
+            this.clientPerfMetrics?.stop?.();
+            for (const [name, fn] of Object.entries(this._clientPerfHelpers || {})) {
+                if (window.__claudeVillePerf?.[name] === fn) delete window.__claudeVillePerf[name];
+            }
             if (window.__claudeVillePerf?.canvasBudget === this._perfDebugCanvasBudget) {
                 delete window.__claudeVillePerf.canvasBudget;
             }
