@@ -2,6 +2,8 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { i18n } from '../../config/i18n.js';
 import { getTeamColor, shortTeamName } from './TeamColor.js';
 import { repoBranchProfile } from './RepoColor.js';
+import { AgentSearchIndex } from './SearchIndex.js';
+import { sessionDetailsService } from './SessionDetailsService.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { formatRelative, hashRows, shortProjectName, statusClass } from './Formatters.js';
 import {
@@ -52,19 +54,31 @@ export class Sidebar {
         this._harborSignature = '';
         this._renderSignature = '';
         this._filter = '';
+        this.searchIndex = new AgentSearchIndex();
         this._collapsedWorkflows = new Set();
         this._seenWorkflows = new Set();
         this._workflowLastSeenAt = new Map();
         this._workflowPruneTimer = null;
         this._workflowPruneAt = 0;
+        this._detailIndexTimer = null;
         this._destroyed = false;
         this.isCollapsed = safeStorageGet(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
         this.selection = new AgentSelectionMirror({
-            onChange: (nextId, previousId) => this._syncSelection(previousId, nextId),
+            onChange: (nextId, previousId) => {
+                this._syncSelection(previousId, nextId);
+                this._scheduleSelectedDetailIndex(nextId);
+            },
         });
 
-        this._onUpdate = () => {
-            if (!this._destroyed) this.render();
+        this._onAgentUpdate = (agent) => {
+            if (this._destroyed) return;
+            this._indexAgent(agent);
+            this.render();
+        };
+        this._onAgentRemoved = (agent) => {
+            if (this._destroyed) return;
+            this.searchIndex.remove(agent?.id);
+            this.render();
         };
         this._onHarborUpdate = (repos = []) => {
             if (this._destroyed) return;
@@ -82,9 +96,9 @@ export class Sidebar {
             this.harborRepos = nextRepos;
             this.renderHarbor();
         };
-        eventBus.on('agent:added', this._onUpdate);
-        eventBus.on('agent:updated', this._onUpdate);
-        eventBus.on('agent:removed', this._onUpdate);
+        eventBus.on('agent:added', this._onAgentUpdate);
+        eventBus.on('agent:updated', this._onAgentUpdate);
+        eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on('harbor:updated', this._onHarborUpdate);
 
         this._bindToggle();
@@ -100,13 +114,13 @@ export class Sidebar {
         const wrap = el('div', { className: 'sidebar__filter' }, [
             el('input', {
                 className: 'sidebar__filter-input',
-                ariaLabel: 'Filter agents',
+                ariaLabel: 'Search agents',
             }),
         ]);
         this._filterWrapEl = wrap;
         this.filterEl = wrap.firstChild;
         this.filterEl.type = 'text';
-        this.filterEl.placeholder = 'Filter agents…';
+        this.filterEl.placeholder = 'Search agents, tools, files…';
         this.listEl.parentNode?.insertBefore(wrap, this.listEl);
         this._onFilterInput = (event) => {
             this._filter = String(event.target.value || '').trim().toLowerCase();
@@ -117,22 +131,58 @@ export class Sidebar {
         // Enter routes to the single matching agent (select + camera focus).
         this._onFilterKeydown = (event) => {
             if (event.key !== 'Enter') return;
-            const matches = Array.from(this.world.agents.values())
-                .filter(agent => this._matchesFilter(agent, modelPresentation(agent)));
+            const agents = Array.from(this.world.agents.values());
+            const matches = this.searchIndex.search(this._filter, agents.map(agent => agent.id))
+                .map(match => this.world.agents.get(match.agentId))
+                .filter(Boolean);
             if (matches.length === 1) emitAgentSelected(matches[0]);
         };
         this.filterEl.addEventListener('keydown', this._onFilterKeydown);
     }
 
-    _matchesFilter(agent, model) {
+    _matchesFilter(agent) {
         if (!this._filter) return true;
-        const haystack = [
-            agent.name || '',
-            model?.label || '',
-            agent.model || '',
-            agent.status || '',
-        ].join(' ').toLowerCase();
-        return haystack.includes(this._filter);
+        return Boolean(this.searchIndex.match(agent.id, this._filter));
+    }
+
+    _indexAgent(agent) {
+        if (!agent?.id) return;
+        const cachedDetail = sessionDetailsService.detailCacheState(agent)?.value || null;
+        this.searchIndex.upsert(agent, {
+            modelLabel: modelPresentation(agent)?.label || '',
+            detail: cachedDetail,
+        });
+    }
+
+    _scheduleSelectedDetailIndex(agentId, attempt = 0) {
+        if (this._detailIndexTimer) clearTimeout(this._detailIndexTimer);
+        this._detailIndexTimer = null;
+        if (!agentId || this._destroyed) return;
+
+        const agent = this.world.agents.get(agentId);
+        const cachedDetail = agent && sessionDetailsService.detailCacheState(agent)?.value;
+        if (cachedDetail) {
+            const changed = this.searchIndex.upsert(agent, {
+                modelLabel: modelPresentation(agent)?.label || '',
+                detail: cachedDetail,
+            });
+            if (changed) {
+                this._renderSignature = '';
+                this.render();
+            }
+            return;
+        }
+
+        // The selected-agent panel may currently be filling the shared cache.
+        // Probe only that one cache key; these checks never initiate a fetch.
+        const delays = [500, 1000, 3000];
+        if (attempt >= delays.length) return;
+        this._detailIndexTimer = setTimeout(() => {
+            this._detailIndexTimer = null;
+            if (this.selection.selectedId === agentId) {
+                this._scheduleSelectedDetailIndex(agentId, attempt + 1);
+            }
+        }, delays[attempt]);
     }
 
     _bindToggle() {
@@ -189,6 +239,11 @@ export class Sidebar {
     render() {
         if (this._destroyed) return;
         const agents = Array.from(this.world.agents.values());
+        for (const agent of agents) {
+            if (!this.searchIndex.has(agent.id)) this._indexAgent(agent);
+        }
+        const searchResults = this.searchIndex.search(this._filter, agents.map(agent => agent.id));
+        const matchesById = new Map(searchResults.map(match => [match.agentId, match]));
         this._reconcileWorkflowState(agents);
         this.countEl.textContent = agents.length;
         // 4.12 — per-row extras (idle-age suffix, subagent parent link) feed
@@ -206,10 +261,15 @@ export class Sidebar {
             if (agent.parentSessionId) {
                 parentLabel = this.world.agents.get(agent.parentSessionId)?.name || 'ended';
             }
-            rowExtras.set(agent.id, { ageText, parentLabel });
+            rowExtras.set(agent.id, {
+                ageText,
+                parentLabel,
+                searchContext: this._filter ? matchesById.get(agent.id)?.context || null : null,
+            });
         }
         const signature = [
             this._filter,
+            this.searchIndex.revision,
             [...this._collapsedWorkflows].sort().join(','),
             agents
                 .map(agent => [
@@ -237,12 +297,21 @@ export class Sidebar {
         this._renderSignature = signature;
 
         // Group by project
-        const groups = groupAgentsByProject(agents);
+        const groups = [...groupAgentsByProject(agents)];
+        if (this._filter) {
+            groups.sort((a, b) => {
+                const bestScore = group => Math.max(
+                    ...group[1].map(agent => matchesById.get(agent.id)?.score ?? -1),
+                );
+                return bestScore(b) - bestScore(a);
+            });
+        }
 
         const nodes = [];
         for (const [projectPath, groupAgents] of groups) {
-            // Filter rows by name + model + status (case-insensitive substring).
-            const visible = groupAgents.filter(agent => this._matchesFilter(agent, modelPresentation(agent)));
+            const visible = groupAgents
+                .filter(agent => this._matchesFilter(agent))
+                .sort((a, b) => (matchesById.get(b.id)?.score || 0) - (matchesById.get(a.id)?.score || 0));
             if (visible.length === 0) continue;
 
             // Split workflow subagents (collapsible per workflow) from top-level rows.
@@ -293,7 +362,9 @@ export class Sidebar {
 
             for (const [workflowId, members] of workflows) {
                 const workflowName = members[0]?.workflowName || workflowId;
-                const collapsed = this._collapsedWorkflows.has(workflowId);
+                // A search reveals matching workflow members without mutating
+                // the operator's persisted collapsed/expanded preference.
+                const collapsed = !this._filter && this._collapsedWorkflows.has(workflowId);
                 const wfEl = el('div', {
                     className: collapsed
                         ? ['sidebar__workflow-group', 'sidebar__workflow-group--collapsed']
@@ -452,6 +523,20 @@ export class Sidebar {
                 title: `Last active ${extras.ageText}`,
             }));
         }
+        const infoChildren = [
+            el('span', {
+                className: 'sidebar__agent-name',
+                style: { color: profile.accent },
+            }, nameChildren),
+            modelEl,
+        ];
+        if (extras.searchContext) {
+            infoChildren.push(el('span', {
+                className: ['sidebar__agent-model', 'sidebar__agent-match'],
+                text: extras.searchContext,
+                title: extras.searchContext,
+            }));
+        }
         // 4.12 — subagent parent link (dashboard parent-chip parity): selects
         // the parent session; muted static text once the parent has ended.
         let parentButton = null;
@@ -485,13 +570,7 @@ export class Sidebar {
             dataset: { agentId: agent.id },
         }, [
             el('span', { className: 'sidebar__agent-rail' }, dotChildren),
-            el('span', { className: 'sidebar__agent-info' }, [
-                el('span', {
-                    className: 'sidebar__agent-name',
-                    style: { color: profile.accent },
-                }, nameChildren),
-                modelEl,
-            ]),
+            el('span', { className: 'sidebar__agent-info' }, infoChildren),
         ]);
         select.type = 'button';
         select.setAttribute('aria-pressed', String(this.selection.isSelected(agent.id)));
@@ -508,7 +587,7 @@ export class Sidebar {
     _applyWorkflowToggleState() {
         this.listEl?.querySelectorAll('.sidebar__workflow-toggle[data-workflow-id]')
             .forEach(toggle => {
-                const collapsed = this._collapsedWorkflows.has(toggle.dataset.workflowId);
+                const collapsed = !this._filter && this._collapsedWorkflows.has(toggle.dataset.workflowId);
                 toggle.setAttribute('aria-expanded', String(!collapsed));
             });
     }
@@ -594,9 +673,9 @@ export class Sidebar {
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
-        eventBus.off('agent:added', this._onUpdate);
-        eventBus.off('agent:updated', this._onUpdate);
-        eventBus.off('agent:removed', this._onUpdate);
+        eventBus.off('agent:added', this._onAgentUpdate);
+        eventBus.off('agent:updated', this._onAgentUpdate);
+        eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off('harbor:updated', this._onHarborUpdate);
         this.selection?.destroy?.();
         if (this._onToggleClick) this.toggleEl?.removeEventListener('click', this._onToggleClick);
@@ -604,8 +683,10 @@ export class Sidebar {
         if (this._onFilterInput) this.filterEl?.removeEventListener('input', this._onFilterInput);
         if (this._onFilterKeydown) this.filterEl?.removeEventListener('keydown', this._onFilterKeydown);
         if (this._workflowPruneTimer) clearTimeout(this._workflowPruneTimer);
+        if (this._detailIndexTimer) clearTimeout(this._detailIndexTimer);
         this._workflowPruneTimer = null;
         this._workflowPruneAt = 0;
+        this._detailIndexTimer = null;
         this._filterWrapEl?.remove?.();
         this._filterWrapEl = null;
         this.filterEl = null;
@@ -617,6 +698,7 @@ export class Sidebar {
         this._harborSignature = '';
         this._renderSignature = '';
         this._filter = '';
+        this.searchIndex.clear();
         this._seenWorkflows.clear();
         this._collapsedWorkflows.clear();
         this._workflowLastSeenAt.clear();

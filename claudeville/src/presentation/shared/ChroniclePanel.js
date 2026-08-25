@@ -1,4 +1,10 @@
-import { ChronicleEventKind, summarizeDay } from '../../application/ChronicleLog.js';
+import {
+    ChronicleEventKind,
+    chronicleDateFromKey,
+    chronicleDateKey,
+    chronicleDateWindow,
+    summarizeDay,
+} from '../../application/ChronicleLog.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { formatCost, formatNumber } from './Formatters.js';
 
@@ -25,6 +31,11 @@ const REASON_TEXT = {
 };
 
 export const CHRONICLE_TIMELINE_PAGE_SIZE = 100;
+
+const CHRONICLE_EXPORT_MIME = {
+    markdown: 'text/markdown;charset=utf-8',
+    csv: 'text/csv;charset=utf-8',
+};
 
 function clockTime(ts) {
     const date = new Date(ts);
@@ -68,16 +79,178 @@ function ledgerRow(label, value) {
     ]);
 }
 
-function openingLine(summary) {
+function openingLine(summary, isToday = true) {
     if (!summary.agents.length) {
-        return 'A quiet day. Nothing has passed through the village yet.';
+        return isToday
+            ? 'A quiet day. Nothing has passed through the village yet.'
+            : 'No Chronicle entries were recorded on this day.';
     }
-    const since = summary.firstTs ? `Since ${clockTime(summary.firstTs)}` : 'Today';
+    const since = summary.firstTs ? `From ${clockTime(summary.firstTs)}` : (isToday ? 'Today' : 'That day');
     const agents = `${summary.agents.length} ${summary.agents.length === 1 ? 'agent' : 'agents'}`;
     const projects = summary.projects.length
         ? ` across ${summary.projects.length} ${summary.projects.length === 1 ? 'project' : 'projects'}`
         : '';
     return `${since}: ${agents}${projects}.`;
+}
+
+function orderedEvents(events) {
+    return (Array.isArray(events) ? events : [])
+        .map((event, index) => ({ event, index }))
+        .sort((a, b) => (Number(a.event?.ts) || 0) - (Number(b.event?.ts) || 0) || a.index - b.index)
+        .map(({ event }) => event);
+}
+
+function markdownCell(value) {
+    return String(value ?? '')
+        .replace(/\\/g, '\\\\')
+        .replace(/\r?\n/g, '<br>')
+        .replace(/\|/g, '\\|');
+}
+
+function durationOrZero(ms) {
+    return Number(ms) > 0 ? duration(ms) : '0m';
+}
+
+function summaryRows(summary) {
+    return [
+        ['Events', summary.totalEvents],
+        ['Agents', summary.agents.length],
+        ['Projects', summary.projects.length],
+        ['Commits', summary.commits],
+        ['Pushes', summary.pushes],
+        ['Turns done', summary.completed],
+        ['Waited on you', summary.waits],
+        ['Errors', summary.errors],
+        ['Rate limits', summary.rateLimits],
+        ['Total wait', durationOrZero(summary.totalWaitMs)],
+        ['Longest wait', durationOrZero(summary.longestWaitMs)],
+    ];
+}
+
+function spendRows(spend) {
+    if (!spend) return [];
+    return [
+        ['New tokens', spend.tokens],
+        ['Cache reads', spend.cacheRead],
+        [spend.costLabel || 'Est. cost', spend.cost],
+    ];
+}
+
+/** Build paste-ready prose and tables for one retained Chronicle day. */
+export function buildChronicleMarkdown({
+    dateKey = chronicleDateKey(),
+    events = [],
+    summary = summarizeDay(events),
+    spend = null,
+} = {}) {
+    const daySummary = summary || summarizeDay(events);
+    const dayEvents = orderedEvents(events);
+    const isToday = dateKey === chronicleDateKey();
+    const lines = [
+        `# Chronicle — ${markdownCell(dateKey)}`,
+        '',
+        markdownCell(openingLine(daySummary, isToday)),
+        '',
+        '## Summary',
+        '',
+        '| Metric | Value |',
+        '| --- | ---: |',
+        ...summaryRows(daySummary).map(([label, value]) => `| ${markdownCell(label)} | ${markdownCell(value)} |`),
+    ];
+
+    const spending = dateKey === chronicleDateKey() ? spendRows(spend) : [];
+    if (spending.length) {
+        lines.push(
+            '',
+            '## Spend summary',
+            '',
+            '| Metric | Value |',
+            '| --- | ---: |',
+            ...spending.map(([label, value]) => `| ${markdownCell(label)} | ${markdownCell(
+                label === 'New tokens' || label === 'Cache reads' ? formatNumber(value) : formatCost(value),
+            )} |`),
+        );
+    }
+
+    lines.push('', '## Timeline', '', '| Time | Glyph | Event |', '| --- | :---: | --- |');
+    if (dayEvents.length) {
+        lines.push(...dayEvents.map(event => (
+            `| ${markdownCell(clockTime(event.ts))} | ${markdownCell(KIND_GLYPH[event.kind] || '·')} | ${markdownCell(eventText(event))} |`
+        )));
+    } else {
+        lines.push('| — | — | No Chronicle entries were recorded on this day. |');
+    }
+
+    return `${lines.join('\n')}\n`;
+}
+
+/** Escape one CSV cell, including Excel formula-injection protection. */
+export function csvEscapeCell(value) {
+    const text = value == null ? '' : String(value);
+    // A leading apostrophe makes Excel treat formula-like text as a literal.
+    const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
+    return /[",\r\n]/.test(safe)
+        ? `"${safe.replace(/"/g, '""')}"`
+        : safe;
+}
+
+/** Build a spreadsheet-friendly CSV with summary and event rows. */
+export function buildChronicleCsv({
+    dateKey = chronicleDateKey(),
+    events = [],
+    summary = summarizeDay(events),
+    spend = null,
+} = {}) {
+    const daySummary = summary || summarizeDay(events);
+    const dayEvents = orderedEvents(events);
+    const rows = [[
+        'row_type', 'date', 'time', 'glyph', 'event', 'kind', 'agent', 'provider',
+        'project', 'reason', 'tool', 'waited_ms', 'metric', 'value',
+    ]];
+
+    for (const [metric, value] of summaryRows(daySummary)) {
+        rows.push(['summary', dateKey, '', '', '', '', '', '', '', '', '', '', metric, value]);
+    }
+    for (const [metric, value] of (dateKey === chronicleDateKey() ? spendRows(spend) : [])) {
+        rows.push(['spend', dateKey, '', '', '', '', '', '', '', '', '', '', metric, value]);
+    }
+    for (const event of dayEvents) {
+        rows.push([
+            'event',
+            dateKey,
+            clockTime(event.ts),
+            KIND_GLYPH[event.kind] || '·',
+            eventText(event),
+            event.kind,
+            event.agentName,
+            event.provider,
+            event.project,
+            event.reason,
+            event.tool,
+            event.waitedMs,
+            '',
+            '',
+        ]);
+    }
+
+    return `${rows.map(row => row.map(csvEscapeCell).join(',')).join('\r\n')}\r\n`;
+}
+
+function downloadText(text, filename, mimeType) {
+    const blob = new Blob([text], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    let link = null;
+    try {
+        link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.style.display = 'none';
+        document.body.append(link);
+        link.click();
+    } finally {
+        link?.remove();
+        URL.revokeObjectURL(url);
+    }
 }
 
 export class ChroniclePanel {
@@ -87,6 +260,8 @@ export class ChroniclePanel {
         this.spendLedger = spendLedger;
         this.usageGetter = usageGetter;
         this._request = null;
+        this._dateReadSeq = 0;
+        this._selectedDateKey = null;
         this._destroyed = false;
     }
 
@@ -95,29 +270,101 @@ export class ChroniclePanel {
         const request = this.modal.beginRequest();
         if (request === null) return;
         this._request = request;
-        let page;
-        if (typeof this.log.readDayPage === 'function') {
-            page = await this.log.readDayPage(new Date(), { limit: CHRONICLE_TIMELINE_PAGE_SIZE });
-        } else {
-            const all = await this.log.readDay();
-            page = {
-                events: all.slice(-CHRONICLE_TIMELINE_PAGE_SIZE).reverse(),
-                summary: summarizeDay(all),
-                totalCount: all.length,
-            };
-        }
-        const { events, summary, totalCount } = page;
+        const dateKey = chronicleDateKey();
+        this._selectedDateKey = dateKey;
+        const page = await this._readPage(dateKey);
         if (
             this._destroyed
             || this._request !== request
             || !this.modal.isRequestCurrent(request)
         ) return;
         if (!this.modal.open('Village Chronicle', '', { wide: true, request })) return;
+        this._renderPage(page, dateKey, request);
+    }
+
+    async _readPage(dateKey) {
+        if (typeof this.log.readDayPage === 'function') {
+            return this.log.readDayPage(dateKey, { limit: CHRONICLE_TIMELINE_PAGE_SIZE });
+        }
+        const all = await this.log.readDay(dateKey);
+        return {
+            events: all.slice(-CHRONICLE_TIMELINE_PAGE_SIZE).reverse(),
+            summary: summarizeDay(all),
+            totalCount: all.length,
+        };
+    }
+
+    async _showDate(dateKey, request) {
+        if (!dateKey || dateKey === this._selectedDateKey) return;
+        this._selectedDateKey = dateKey;
+        const readSeq = ++this._dateReadSeq;
+        const page = await this._readPage(dateKey);
+        if (
+            this._destroyed
+            || this._request !== request
+            || readSeq !== this._dateReadSeq
+            || !this.modal.isRequestCurrent(request)
+        ) return;
+        this._renderPage(page, dateKey, request);
+    }
+
+    _spendForExport(dateKey) {
+        if (dateKey !== chronicleDateKey()) return null;
+        const today = this.spendLedger?.today;
+        if (!today || typeof today !== 'object') return null;
+        if (this.spendLedger.date && this.spendLedger.date !== dateKey) return null;
+        const subscription = this.usageGetter?.()?.account?.subscriptionType;
+        const onPlan = typeof subscription === 'string'
+            && ['max', 'pro', 'team', 'enterprise'].includes(subscription.toLowerCase());
+        return {
+            tokens: Number(today.tokens) || 0,
+            cacheRead: Number(today.cacheRead) || 0,
+            cost: Number(today.cost) || 0,
+            costLabel: onPlan ? 'API equivalent' : 'Est. cost',
+        };
+    }
+
+    async _readExportData(dateKey) {
+        const selectedDateKey = dateKey || chronicleDateKey();
+        let events;
+        if (typeof this.log?.readDay === 'function') {
+            events = await this.log.readDay(selectedDateKey);
+        } else {
+            events = (await this._readPage(selectedDateKey)).events;
+        }
+        const dayEvents = Array.isArray(events) ? events : [];
+        return {
+            dateKey: selectedDateKey,
+            events: dayEvents,
+            summary: summarizeDay(dayEvents),
+            spend: this._spendForExport(selectedDateKey),
+        };
+    }
+
+    async _export(format) {
+        if (this._destroyed) return;
+        const dateKey = this._selectedDateKey || chronicleDateKey();
+        try {
+            const data = await this._readExportData(dateKey);
+            // A date change during the read must never download the wrong day.
+            if (this._destroyed || dateKey !== this._selectedDateKey) return;
+            const isCsv = format === 'csv';
+            const text = isCsv ? buildChronicleCsv(data) : buildChronicleMarkdown(data);
+            const extension = isCsv ? 'csv' : 'md';
+            downloadText(text, `chronicle-${dateKey}.${extension}`, CHRONICLE_EXPORT_MIME[isCsv ? 'csv' : 'markdown']);
+        } catch {
+            // Export is best effort; a failed local read must not disrupt the modal.
+        }
+    }
+
+    _renderPage({ events, summary, totalCount }, dateKey, request) {
         const content = this.modal.contentEl;
         if (content) {
             replaceChildren(content, this._render(events, summary, {
                 newestFirst: true,
                 totalCount,
+                dateKey,
+                onDateChange: nextDate => this._showDate(nextDate, request),
             }));
         }
     }
@@ -125,6 +372,7 @@ export class ChroniclePanel {
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
+        this._dateReadSeq++;
         this.modal?.invalidateRequest?.(this._request);
         this._request = null;
         this.modal = null;
@@ -136,7 +384,8 @@ export class ChroniclePanel {
     // The day's accounting lives here rather than in the topbar: a dollar
     // figure you are not billed for has not earned permanent space in the
     // corner of someone's eye, but it belongs in the record of the day.
-    _spendNodes() {
+    _spendNodes(isToday = true) {
+        if (!isToday) return [];
         const today = this.spendLedger?.today;
         if (!today) return [];
         const subscription = this.usageGetter?.()?.account?.subscriptionType;
@@ -154,8 +403,62 @@ export class ChroniclePanel {
         return nodes;
     }
 
-    _render(events, summary, { newestFirst = false, totalCount = events.length } = {}) {
-        const nodes = [el('p', { className: 'chronicle__opening' }, openingLine(summary))];
+    _datePicker(dateKey, onDateChange) {
+        const retentionDays = Number(this.log?.retentionDays) || 14;
+        const window = chronicleDateWindow(Date.now(), retentionDays);
+        const input = el('input', {
+            className: 'chronicle__date-input',
+            ariaLabel: 'Chronicle date',
+        });
+        input.type = 'date';
+        input.value = dateKey;
+        input.min = window.min;
+        input.max = window.max;
+        input.addEventListener('change', () => onDateChange?.(input.value));
+        const markdownButton = el('button', {
+            className: 'chronicle__export-button',
+            text: 'Markdown',
+            title: 'Download the selected day as Markdown',
+            ariaLabel: 'Download selected Chronicle day as Markdown',
+        });
+        markdownButton.type = 'button';
+        markdownButton.addEventListener('click', () => this._export('markdown'));
+        const csvButton = el('button', {
+            className: 'chronicle__export-button',
+            text: 'CSV',
+            title: 'Download the selected day as CSV',
+            ariaLabel: 'Download selected Chronicle day as CSV',
+        });
+        csvButton.type = 'button';
+        csvButton.addEventListener('click', () => this._export('csv'));
+        const selected = chronicleDateFromKey(dateKey);
+        const heading = selected.toLocaleDateString(undefined, {
+            weekday: 'long',
+            month: 'long',
+            day: 'numeric',
+            year: 'numeric',
+        });
+        return el('div', { className: 'chronicle__date-controls' }, [
+            el('label', { className: 'chronicle__date-label' }, [
+                el('span', { className: 'chronicle__date-label-text' }, 'Day'),
+                input,
+            ]),
+            el('span', { className: 'chronicle__date-heading' }, heading),
+            el('span', { className: 'chronicle__export-actions' }, [markdownButton, csvButton]),
+        ]);
+    }
+
+    _render(events, summary, {
+        newestFirst = false,
+        totalCount = events.length,
+        dateKey = chronicleDateKey(),
+        onDateChange = null,
+    } = {}) {
+        const isToday = dateKey === chronicleDateKey();
+        const nodes = [
+            this._datePicker(dateKey, onDateChange),
+            el('p', { className: 'chronicle__opening' }, openingLine(summary, isToday)),
+        ];
 
         nodes.push(el('div', { className: 'chronicle__ledger' }, [
             ledgerRow('COMMITS', summary.commits),
@@ -166,7 +469,7 @@ export class ChroniclePanel {
             ledgerRow('RATE LIMITS', summary.rateLimits),
         ]));
 
-        nodes.push(...this._spendNodes());
+        nodes.push(...this._spendNodes(isToday));
 
         if (summary.longestWaitMs > 0) {
             nodes.push(el('p', { className: 'chronicle__note' },
@@ -175,7 +478,9 @@ export class ChroniclePanel {
 
         if (!events.length) {
             nodes.push(el('p', { className: 'chronicle__note' },
-                'The day book fills as agents work — it records only what happens while ClaudeVille is open.'));
+                isToday
+                    ? 'The day book fills as agents work — it records only what happens while ClaudeVille is open.'
+                    : 'Choose another date to continue browsing the retained Chronicle.'));
             return nodes;
         }
 

@@ -1,6 +1,6 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AmbientAudioController } from './AmbientAudioController.js';
-import { formatCost, formatNumber } from './Formatters.js';
+import { formatCost, formatNumber, shortProjectName } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
 
 export class TopBar {
@@ -44,15 +44,20 @@ export class TopBar {
         this._changelogHtml = null;
         this._changelogController = null;
         this._destroyed = false;
+        const audioMixer = this._buildAudioMixer();
         this.audio = new AmbientAudioController({
             button: this.els.soundToggle,
             modeButton: this.els.soundMode,
             volumeSlider: this.els.soundVolume,
+            mixerButton: audioMixer.button,
+            mixerPanel: audioMixer.panel,
+            layerControls: audioMixer.controls,
             world: this.world,
         });
         this._initCinemaToggle();
         this._initAttentionControls();
         this._initChronicleButton();
+        this._initSpendBreakdown();
 
         this._onUpdate = () => this.render();
         eventBus.on('agent:added', this._onUpdate);
@@ -181,6 +186,197 @@ export class TopBar {
         btn.addEventListener('click', this._onChronicleClick);
     }
 
+    // The topbar remains a glance surface: one compact chip opens the deeper
+    // mix below it. The fixed panel is right-anchored, escapes the topbar's
+    // overflow clipping, and never shares the screen with the Spend Map.
+    _buildAudioMixer() {
+        const anchor = this.els.soundVolume;
+        if (!anchor || !document.body) return { button: null, panel: null, controls: {} };
+
+        const button = el('button', {
+            className: 'topbar__sound-btn',
+            text: 'MIX',
+            title: 'Open soundscape mixer',
+            ariaLabel: 'Open soundscape mixer',
+            style: { fontSize: '9px', padding: '6px 7px', letterSpacing: '0.5px' },
+        });
+        button.type = 'button';
+        button.hidden = true;
+        button.setAttribute('aria-haspopup', 'dialog');
+        button.setAttribute('aria-controls', 'audioMixerPanel');
+        button.setAttribute('aria-expanded', 'false');
+        anchor.insertAdjacentElement('afterend', button);
+
+        const panel = el('div', {
+            className: 'topbar__mixer-panel',
+            ariaLabel: 'Soundscape mixer',
+            style: {
+                position: 'fixed',
+                display: 'none',
+                zIndex: '1200',
+                boxSizing: 'border-box',
+                width: '308px',
+                padding: '11px',
+                border: '1px solid var(--cv-gold-warm, #c79d4c)',
+                borderRadius: '2px',
+                background: 'linear-gradient(180deg, var(--cv-panel, #211811), #17100c)',
+                boxShadow: '0 0 0 2px rgba(28, 17, 11, 0.96), var(--cv-elev-2)',
+                color: 'var(--cv-tan, #d6c09c)',
+                font: '10px var(--font-body)',
+            },
+        });
+        panel.id = 'audioMixerPanel';
+        panel.setAttribute('role', 'dialog');
+
+        const heading = el('div', {
+            text: 'SOUNDSCAPE MIXER',
+            style: {
+                color: 'var(--cv-gold-bright, #f2d36b)',
+                fontFamily: 'var(--font-pixel)',
+                fontSize: '10px',
+                letterSpacing: '1px',
+                marginBottom: '3px',
+            },
+        });
+        const note = el('div', {
+            text: 'Layer trims · master volume still applies',
+            style: { color: 'var(--cv-text-muted)', fontSize: '9px', marginBottom: '8px' },
+        });
+        const rows = el('div', {
+            style: {
+                borderTop: '1px solid rgba(199, 157, 76, 0.22)',
+            },
+        });
+        const controls = {};
+        const layers = [
+            ['wind', 'WIND'],
+            ['rain', 'RAIN'],
+            ['wildlife', 'WILDLIFE'],
+            ['hum', 'VILLAGE HUM'],
+            ['music', 'MUSIC'],
+        ];
+        for (const [name, label] of layers) {
+            const slider = el('input', {
+                className: 'topbar__sound-vol',
+                ariaLabel: `${label.toLowerCase()} level`,
+                style: { width: '142px' },
+            });
+            slider.type = 'range';
+            slider.min = '0';
+            slider.max = '100';
+            slider.step = '1';
+            slider.value = '100';
+            const value = el('span', {
+                text: '100%',
+                style: { color: 'var(--cv-text-muted)', textAlign: 'right', fontVariantNumeric: 'tabular-nums' },
+            });
+            rows.appendChild(el('label', {
+                style: {
+                    display: 'grid',
+                    gridTemplateColumns: '78px 1fr 34px',
+                    gap: '7px',
+                    alignItems: 'center',
+                    minHeight: '32px',
+                    borderBottom: '1px solid rgba(199, 157, 76, 0.12)',
+                    color: 'var(--cv-gold-soft, #d7b96f)',
+                    fontFamily: 'var(--font-pixel)',
+                    fontSize: '8px',
+                },
+            }, [label, slider, value]));
+            controls[name] = { slider, value };
+        }
+        panel.append(heading, note, rows);
+        document.body.appendChild(panel);
+
+        this._mixerButtonEl = button;
+        this._mixerPanelEl = panel;
+        this._onMixerClick = (event) => {
+            event.stopPropagation();
+            this._toggleMixerPanel();
+        };
+        this._onMixerKeydown = (event) => {
+            if (event.key === 'Escape') this._hideMixerPanel();
+        };
+        this._onMixerPanelKeydown = (event) => {
+            if (event.key !== 'Escape') return;
+            this._hideMixerPanel();
+            button.focus();
+        };
+        this._onMixerOutside = (event) => {
+            if (panel.style.display === 'none') return;
+            if (!panel.contains(event.target) && !button.contains(event.target)) this._hideMixerPanel();
+        };
+        this._onMixerResize = () => this._hideMixerPanel();
+        button.addEventListener('click', this._onMixerClick);
+        button.addEventListener('keydown', this._onMixerKeydown);
+        panel.addEventListener('keydown', this._onMixerPanelKeydown);
+        document.addEventListener('pointerdown', this._onMixerOutside);
+        window.addEventListener('resize', this._onMixerResize);
+        return { button, panel, controls };
+    }
+
+    _toggleMixerPanel() {
+        if (!this._mixerPanelEl) return;
+        if (this._mixerPanelEl.style.display === 'none') this._showMixerPanel();
+        else this._hideMixerPanel();
+    }
+
+    _showMixerPanel() {
+        if (this._destroyed || !this._mixerButtonEl || !this._mixerPanelEl) return;
+        this._hideSpendPanel();
+        const rect = this._mixerButtonEl.getBoundingClientRect();
+        const panelWidth = 308;
+        this._mixerPanelEl.style.left = `${Math.max(8, Math.min(rect.right - panelWidth, window.innerWidth - panelWidth - 8))}px`;
+        this._mixerPanelEl.style.top = `${rect.bottom + 7}px`;
+        this._mixerPanelEl.style.display = 'block';
+        this._mixerButtonEl.setAttribute('aria-expanded', 'true');
+        this._mixerButtonEl.classList.add('topbar__sound-btn--on');
+    }
+
+    _hideMixerPanel() {
+        if (this._mixerPanelEl) this._mixerPanelEl.style.display = 'none';
+        this._mixerButtonEl?.setAttribute('aria-expanded', 'false');
+        this._mixerButtonEl?.classList.remove('topbar__sound-btn--on');
+    }
+
+    // Keep the thin topbar as the glance surface; its TODAY cell opens a
+    // stable, inspectable spend map rather than trying to squeeze project names
+    // between status badges. Click (rather than hover) also gives keyboard
+    // users and operators chasing a spike time to read the rows.
+    _initSpendBreakdown() {
+        const trigger = this.els.rateWrap;
+        if (!trigger || !this.spendLedger) return;
+        trigger.tabIndex = 0;
+        trigger.setAttribute('role', 'button');
+        trigger.setAttribute('aria-haspopup', 'dialog');
+        trigger.setAttribute('aria-controls', 'spendBreakdownPanel');
+        trigger.setAttribute('aria-expanded', 'false');
+        trigger.title = 'Open project and provider spend map';
+        this._onSpendClick = (event) => {
+            event.stopPropagation();
+            this._toggleSpendPanel();
+        };
+        this._onSpendKeydown = (event) => {
+            if (event.key === 'Escape') {
+                this._hideSpendPanel();
+            } else if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                this._toggleSpendPanel();
+            }
+        };
+        this._onSpendOutside = (event) => {
+            if (!this._spendPanelEl || this._spendPanelEl.style.display === 'none') return;
+            if (!this._spendPanelEl.contains(event.target) && !trigger.contains(event.target)) {
+                this._hideSpendPanel();
+            }
+        };
+        this._onSpendResize = () => this._hideSpendPanel();
+        trigger.addEventListener('click', this._onSpendClick);
+        trigger.addEventListener('keydown', this._onSpendKeydown);
+        document.addEventListener('pointerdown', this._onSpendOutside);
+        window.addEventListener('resize', this._onSpendResize);
+    }
+
     render() {
         const stats = this.world.getStats();
 
@@ -202,19 +398,163 @@ export class TopBar {
     // the lifetime cost of whichever sessions happened to be resident, which
     // moved for reasons that had nothing to do with spending.
     _renderSpend() {
-        const today = this.spendLedger?.sample?.() || { tokens: 0, cacheRead: 0, cost: 0 };
+        const now = Date.now();
+        const today = this.spendLedger?.sample?.(now) || { tokens: 0, cacheRead: 0, cost: 0 };
         this.els.tokens.textContent = formatNumber(today.tokens);
 
 
         // The rate rides alongside today's total in one cell — two numbers
         // about the same thing, and the topbar has no width to spare.
-        const rate = this.spendLedger?.burnRate?.();
+        const rate = this.spendLedger?.burnRate?.(now);
+        this._spendRollups = this.spendLedger?.rollups?.(now) || { projects: [], providers: [] };
         this.els.rate.textContent = rate ? `${formatNumber(Math.round(rate.tokensPerHour))}/h` : '';
         if (this.els.rateWrap) {
             this.els.rateWrap.title = rate
-                ? `Tokens observed today, now running at about ${formatCost(rate.costPerHour)}/hour at API rates`
-                : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity.';
+                ? `Tokens observed today, now running at about ${formatCost(rate.costPerHour)}/hour at API rates. Click for project and provider detail.`
+                : 'Tokens observed today by this page. A burn rate appears after a couple of minutes of activity. Click for project and provider detail.';
         }
+        if (this._spendPanelEl?.style.display !== 'none') this._renderSpendPanel();
+    }
+
+    _ensureSpendPanel() {
+        if (this._spendPanelEl || !document.body) return;
+        this._spendPanelEl = el('div', {
+            className: 'topbar__spend-panel',
+            ariaLabel: 'Spend by project and provider',
+            style: { display: 'none' },
+        });
+        this._spendPanelEl.id = 'spendBreakdownPanel';
+        this._spendPanelEl.setAttribute('role', 'dialog');
+        document.body.appendChild(this._spendPanelEl);
+    }
+
+    _toggleSpendPanel() {
+        this._ensureSpendPanel();
+        if (!this._spendPanelEl) return;
+        if (this._spendPanelEl.style.display === 'none') this._showSpendPanel();
+        else this._hideSpendPanel();
+    }
+
+    _showSpendPanel() {
+        if (this._destroyed || !this.els.rateWrap) return;
+        this._hideMixerPanel();
+        this._ensureSpendPanel();
+        this._renderSpendPanel();
+        const panel = this._spendPanelEl;
+        const rect = this.els.rateWrap.getBoundingClientRect();
+        panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 516))}px`;
+        panel.style.top = `${rect.bottom + 7}px`;
+        panel.style.display = 'block';
+        this.els.rateWrap.setAttribute('aria-expanded', 'true');
+    }
+
+    _hideSpendPanel() {
+        if (this._spendPanelEl) this._spendPanelEl.style.display = 'none';
+        this.els.rateWrap?.setAttribute('aria-expanded', 'false');
+    }
+
+    _renderSpendPanel() {
+        const panel = this._spendPanelEl;
+        if (!panel) return;
+        const rollups = this._spendRollups || { projects: [], providers: [] };
+        const heading = el('div', {
+            text: 'SPEND MAP',
+            className: 'topbar__spend-heading',
+        });
+        const note = el('div', {
+            text: '5-minute burn rate first · today observed totals · estimated API pricing',
+            className: 'topbar__spend-note',
+        });
+        const columns = el('div', {
+            className: 'topbar__spend-columns',
+        }, [
+            this._spendSection('PROJECTS', rollups.projects, true),
+            this._spendSection('PROVIDERS', rollups.providers, false),
+        ]);
+        replaceChildren(panel, [heading, note, columns]);
+    }
+
+    _spendSection(title, rows, projects) {
+        const section = el('section', {
+            className: `topbar__spend-section topbar__spend-section--${projects ? 'projects' : 'providers'}`,
+        });
+        section.appendChild(el('div', {
+            text: title,
+            className: 'topbar__spend-section-heading',
+        }));
+
+        const visible = (rows || []).slice(0, 5);
+        const projectLabels = projects ? this._projectLabels(rows) : null;
+        if (visible.length === 0) {
+            section.appendChild(el('div', {
+                text: 'No sessions observed',
+                className: 'topbar__spend-empty',
+            }));
+            return section;
+        }
+
+        for (const row of visible) {
+            const name = projects
+                ? projectLabels.get(row.key)
+                : this._providerLabel(row.key);
+            const burning = row.burnRate && row.burnRate.tokensPerHour > 0;
+            const activeNoSpend = row.activeSessions > 0 && row.tokens === 0 && row.cost === 0;
+            const primary = burning
+                ? `${formatNumber(Math.round(row.burnRate.tokensPerHour))}/h · ${formatCost(row.burnRate.costPerHour)}/h`
+                : activeNoSpend ? 'WATCHING · no spend observed' : 'QUIET';
+            const detail = `${formatNumber(row.tokens)} tokens · ${formatCost(row.cost)} est.`;
+            section.appendChild(el('div', {
+                title: projects ? row.key : `${name} provider`,
+                className: 'topbar__spend-row',
+            }, [
+                el('div', {
+                    text: `${row.activeSessions > 0 ? '◆' : '·'} ${name}`,
+                    className: `topbar__spend-name${row.activeSessions > 0 ? ' topbar__spend-name--active' : ''}`,
+                }),
+                el('div', {}, [
+                    el('div', {
+                        text: primary,
+                        className: `topbar__spend-primary${burning ? ' topbar__spend-primary--burning' : ''}`,
+                    }),
+                    el('div', {
+                        text: detail,
+                        className: 'topbar__spend-detail',
+                    }),
+                ]),
+            ]));
+        }
+        if (rows.length > visible.length) {
+            section.appendChild(el('div', {
+                text: `+${rows.length - visible.length} quieter ${projects ? 'projects' : 'providers'}`,
+                className: 'topbar__spend-more',
+            }));
+        }
+        return section;
+    }
+
+    _projectLabels(rows) {
+        const names = new Map();
+        const counts = new Map();
+        for (const row of rows || []) {
+            const name = row.key === 'unattributed' ? 'Unattributed' : shortProjectName(row.key, 'Unattributed');
+            names.set(row.key, name);
+            counts.set(name, (counts.get(name) || 0) + 1);
+        }
+        for (const row of rows || []) {
+            const name = names.get(row.key);
+            if ((counts.get(name) || 0) < 2 || row.key === 'unattributed') continue;
+            const parts = String(row.key).replace(/[\\/]+$/, '').split(/[\\/]/).filter(Boolean);
+            names.set(row.key, parts.slice(-2).join('/'));
+        }
+        return names;
+    }
+
+    _providerLabel(provider) {
+        const labels = {
+            claude: 'Claude', codex: 'Codex', gemini: 'Gemini', grok: 'Grok',
+            kimi: 'Kimi', opencode: 'OpenCode', omp: 'OMP', unknown: 'Unknown',
+        };
+        return labels[provider] || String(provider || 'Unknown');
     }
 
     // Quota is the resource that actually runs out on a subscription, so it
@@ -536,6 +876,27 @@ export class TopBar {
         if (this._onChronicleClick && this.els.chronicleBtn) {
             this.els.chronicleBtn.removeEventListener('click', this._onChronicleClick);
         }
+        if (this._onSpendClick && this.els.rateWrap) {
+            this.els.rateWrap.removeEventListener('click', this._onSpendClick);
+            this.els.rateWrap.removeEventListener('keydown', this._onSpendKeydown);
+        }
+        if (this._onSpendOutside) document.removeEventListener('pointerdown', this._onSpendOutside);
+        if (this._onSpendResize) window.removeEventListener('resize', this._onSpendResize);
+        this._spendPanelEl?.remove();
+        this._spendPanelEl = null;
+        if (this._onMixerClick && this._mixerButtonEl) {
+            this._mixerButtonEl.removeEventListener('click', this._onMixerClick);
+            this._mixerButtonEl.removeEventListener('keydown', this._onMixerKeydown);
+        }
+        if (this._onMixerPanelKeydown && this._mixerPanelEl) {
+            this._mixerPanelEl.removeEventListener('keydown', this._onMixerPanelKeydown);
+        }
+        if (this._onMixerOutside) document.removeEventListener('pointerdown', this._onMixerOutside);
+        if (this._onMixerResize) window.removeEventListener('resize', this._onMixerResize);
+        this._mixerButtonEl?.remove();
+        this._mixerPanelEl?.remove();
+        this._mixerButtonEl = null;
+        this._mixerPanelEl = null;
         this.chronicle?.destroy?.();
         this.chronicle = null;
         document.body?.classList.remove('cv-offline', 'cv-reconnect-sweep');

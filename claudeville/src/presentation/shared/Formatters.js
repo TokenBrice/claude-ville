@@ -94,6 +94,12 @@ export function shortProjectName(path, unknownLabel = 'Unknown Project') {
     return parts.at(-1) || String(path);
 }
 
+export function formatCdCommand(path) {
+    const text = String(path || '').trim();
+    if (!text || text === '_unknown') return '';
+    return `cd '${text.replace(/'/g, `'"'"'`)}'`;
+}
+
 export function truncateText(value, max) {
     const text = String(value || '');
     const limit = Math.max(0, Math.floor(Number(max) || 0));

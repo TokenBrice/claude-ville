@@ -5,8 +5,9 @@ import { sessionDetailsService } from './SessionDetailsService.js';
 import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { el, replaceChildren } from './DomSafe.js';
-import { formatCost, formatRelative, formatTokens, hashRows, truncateText } from './Formatters.js';
+import { formatCdCommand, formatCost, formatRelative, formatTokens, hashRows, shortenHomePath, truncateText } from './Formatters.js';
 import { emitAgentDeselected, emitAgentSelected } from './AgentSelection.js';
+import { Toast } from './Toast.js';
 import {
     currentToolPresentation,
     modelPresentation,
@@ -24,7 +25,7 @@ const PANEL_TOOL_LIMIT = 30;
 const PANEL_MESSAGE_LIMIT = 12;
 const PANEL_INTER_AGENT_MESSAGE_LIMIT = 5;
 const PANEL_GIT_EVENT_LIMIT = 6;
-const PANEL_RELATIONSHIP_LIMIT = 6;
+const PANEL_RELATIONSHIP_LIMIT = 4;
 const DIRECTOR_FEED_LIMIT = 12;
 const BUILDING_OCCUPANT_REFRESH_INTERVAL = 5000;
 const JOURNEY_BREADCRUMB_LIMIT = 5;
@@ -137,8 +138,23 @@ const REASON_LABELS = Object.freeze({
     'quota-resource': 'Quota check',
 });
 
+const RELATIONSHIP_WARMTH_LABELS = Object.freeze({
+    'hearth-warm': 'Hearth-warm',
+    warm: 'Warm trail',
+    cooling: 'Cooling trail',
+    faint: 'Faint trail',
+});
+
+export function relationshipLoreLine(bond, now = Date.now()) {
+    const commits = Number(bond?.sharedCommits) || 0;
+    const commitLore = commits === 1 ? '1 shared commit' : `${commits} shared commits`;
+    const warmthLore = RELATIONSHIP_WARMTH_LABELS[bond?.warmth] || 'Faint trail';
+    const ago = formatRelative(Number(bond?.lastInteractionAt), now);
+    return [warmthLore, commitLore, ago ? `crossed paths ${ago}` : 'no meeting recorded'].join(' · ');
+}
+
 export class ActivityPanel {
-    constructor({ world = null, renderer = null, harborTraffic = null, biographyService = null, affinityService = null } = {}) {
+    constructor({ world = null, renderer = null, harborTraffic = null, biographyService = null, affinityService = null, toast = null } = {}) {
         const getterFor = (value) => (typeof value === 'function' ? value : () => value);
         this.panelEl = document.getElementById('activityPanel');
         this.closeBtn = document.getElementById('panelClose');
@@ -155,6 +171,8 @@ export class ActivityPanel {
         this._heroPortraitEl = null;
         this._selectedBuilding = null;
         this._latestUsage = null;
+        this.toast = toast || new Toast();
+        this._ownsToast = !toast;
         this._buildingPresenceByType = new Map();
         this._buildingSignalByType = new Map();
         this._villageDirectorByType = new Map();
@@ -219,7 +237,11 @@ export class ActivityPanel {
         this._pinned = new Set(this._loadPinnedAgentIds());
         this._pinnedDetails = new Map();
         this._agentSections = [];
+        this._workingDirectoryRowEl = null;
+        this._workingDirectoryValueEl = null;
+        this._workingDirectoryCopyBtn = null;
         this._ensurePinCompare();
+        this._ensureWorkingDirectoryAction();
         this._ensureJourneySection();
         this._ensureHarborLogSection();
         this._ensureChronicleSection();
@@ -246,6 +268,7 @@ export class ActivityPanel {
                 this._togglePinnedAgent(this.currentAgent);
             }
         };
+        this._onWorkingDirectoryCopyClick = () => this._copyWorkingDirectory();
         this._onAgentSelected = (agent) => {
             if (agent) this.show(agent);
         };
@@ -333,11 +356,22 @@ export class ActivityPanel {
             if (identityKey !== this._biographyIdentityKey(this.currentAgent)) return;
             this._renderChronicleBody(biography);
         };
+        this._onAffinityChanged = ({ affinity } = {}) => {
+            if (this._mode !== 'agent' || !this.currentAgent) return;
+            const identityKey = this._biographyIdentityKey(this.currentAgent);
+            if (!affinity || affinity.involves?.(identityKey)) this._renderRelationships(this.currentAgent);
+        };
+        this._onAffinityReady = ({ service } = {}) => {
+            if (this._mode !== 'agent' || !this.currentAgent) return;
+            if (service && service !== this._getAffinityService()) return;
+            this._renderRelationships(this.currentAgent);
+        };
         // Pause polling while the tab is hidden; refresh once on return.
         this._onVisibilityChange = () => this._syncPollingForVisibility();
 
         this.closeBtn.addEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.addEventListener('click', this._onPinToggleClick);
+        this._workingDirectoryCopyBtn?.addEventListener('click', this._onWorkingDirectoryCopyClick);
         eventBus.on('agent:selected', this._onAgentSelected);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
@@ -349,6 +383,8 @@ export class ActivityPanel {
         eventBus.on('usage:updated', this._onUsageUpdated);
         eventBus.on('mood:changed', this._onMoodChanged);
         eventBus.on('biography:updated', this._onBiographyUpdated);
+        eventBus.on('affinity:changed', this._onAffinityChanged);
+        eventBus.on('affinity:ready', this._onAffinityReady);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
 
@@ -419,6 +455,76 @@ export class ActivityPanel {
             button.setAttribute('aria-pressed', 'false');
             this.closeBtn.parentNode.insertBefore(button, this.closeBtn);
             this._pinToggleBtn = button;
+        }
+    }
+
+    _ensureWorkingDirectoryAction() {
+        if (this._workingDirectoryRowEl) return;
+        const meta = this.panelEl?.querySelector('.activity-panel__meta');
+        if (!meta) return;
+
+        const value = el('span', { className: 'activity-panel__value' });
+        const copyButton = el('button', {
+            className: 'activity-panel__pin-toggle',
+            text: '⧉',
+            title: 'Copy cd command',
+            style: {
+                opacity: '0',
+                transition: 'opacity 0.15s, color 0.15s, border-color 0.15s',
+            },
+        });
+        copyButton.type = 'button';
+        copyButton.setAttribute('aria-label', 'Copy working directory cd command');
+
+        const row = el('div', {
+            className: 'activity-panel__meta-row',
+            style: { display: 'none', gridColumn: '1 / -1' },
+        }, [
+            el('span', { className: 'activity-panel__label', text: 'Workdir' }),
+            value,
+            copyButton,
+        ]);
+        const reveal = () => { copyButton.style.opacity = '1'; };
+        const conceal = () => {
+            if (document.activeElement !== copyButton) copyButton.style.opacity = '0';
+        };
+        row.addEventListener('mouseenter', reveal);
+        row.addEventListener('mouseleave', conceal);
+        copyButton.addEventListener('focus', reveal);
+        copyButton.addEventListener('blur', conceal);
+
+        meta.appendChild(row);
+        this._workingDirectoryRowEl = row;
+        this._workingDirectoryValueEl = value;
+        this._workingDirectoryCopyBtn = copyButton;
+    }
+
+    _updateWorkingDirectory(agent) {
+        if (!this._workingDirectoryRowEl || !this._workingDirectoryValueEl) return;
+        const path = String(agent?.projectPath || '').trim();
+        const command = formatCdCommand(path);
+        if (!command) {
+            this._workingDirectoryRowEl.style.display = 'none';
+            this._workingDirectoryValueEl.textContent = '';
+            this._workingDirectoryValueEl.removeAttribute('title');
+            return;
+        }
+        this._workingDirectoryRowEl.style.display = '';
+        this._workingDirectoryValueEl.textContent = shortenHomePath(path);
+        this._workingDirectoryValueEl.title = path;
+    }
+
+    async _copyWorkingDirectory() {
+        if (this._destroyed) return;
+        const command = formatCdCommand(this.currentAgent?.projectPath);
+        if (!command) return;
+        try {
+            await navigator.clipboard.writeText(command);
+            if (this._destroyed) return;
+            this.toast?.show('cd command copied to clipboard', 'success');
+        } catch {
+            if (this._destroyed) return;
+            this.toast?.show('Could not copy cd command', 'warning');
         }
     }
 
@@ -623,6 +729,7 @@ export class ActivityPanel {
         this._renderSignatures.buildingState = '';
         this._hideAgentSections();
         this._updatePinToggle(null);
+        this._updateWorkingDirectory(null);
         this._renderPinCompare();
         this._ensureBuildingContentEl();
         this.panelEl.style.display = '';
@@ -645,6 +752,7 @@ export class ActivityPanel {
         this._currentBiographyIdentityKey = null;
         this._renderSignatures = this._emptyRenderSignatures();
         this._updatePinToggle(null);
+        this._updateWorkingDirectory(null);
         this._stopPolling();
         this._stopBuildingPolling();
         if (wasBuilding) this._teardownBuildingView();
@@ -674,6 +782,7 @@ export class ActivityPanel {
         this.dom.panelTeam.textContent = agent.teamName || '-';
         this.dom.panelMood.textContent = this._formatMood(agent.mood);
         this.dom.panelLastActive.textContent = this._formatLastActive(agent);
+        this._updateWorkingDirectory(agent);
         const modeLabel = this._formatPermissionMode(agent.permissionMode);
         if (modeLabel) {
             this.dom.panelModeRow.style.display = '';
@@ -786,6 +895,7 @@ export class ActivityPanel {
         this._pollTimer = setInterval(() => {
             this._fetchDetail();
             this._fetchPinnedDetails();
+            if (this.currentAgent) this._renderRelationships(this.currentAgent);
         }, SESSION_DETAIL_PANEL_REFRESH_INTERVAL);
     }
 
@@ -1315,89 +1425,85 @@ export class ActivityPanel {
             className: 'activity-panel__section',
             style: { display: 'none' },
         }, [
-            el('div', { className: 'activity-panel__section-title', text: 'Kinship' }),
+            el('div', {
+                className: 'activity-panel__section-title',
+                text: 'Village Bonds',
+                title: 'Bond warmth halves every 48 hours without a new meeting, message, or shared commit.',
+            }),
             body,
         ]);
-        this._insertAgentSectionAfterMeta(section);
+        const currentToolSection = this.dom.panelCurrentTool?.closest?.('.activity-panel__section');
+        if (currentToolSection?.nextSibling) {
+            this.panelEl.insertBefore(section, currentToolSection.nextSibling);
+        } else if (currentToolSection) {
+            this.panelEl.appendChild(section);
+        } else {
+            this._insertAgentSectionAfterMeta(section);
+        }
         this._relationshipsSectionEl = section;
         this._relationshipsBodyEl = body;
         this._registerAgentSection(section);
     }
 
     /**
-     * Surface the affinity the village already tracks: the selected agent's
-     * allies and acquaintances (strangers omitted), warmest first. Reads the
-     * in-memory affinity snapshot synchronously — no fetch needed.
+     * Surface the affinity the village already tracks. The service owns tier,
+     * decay, and ranking semantics; this layer adds names and village voice.
      */
     _renderRelationships(agent) {
         if (!this._relationshipsSectionEl || !this._relationshipsBodyEl || !agent) return;
         const service = this._getAffinityService();
         const identityKey = this._biographyIdentityKey(agent);
-        const snapshot = service?.getSnapshot?.();
-        if (!service || !identityKey || !snapshot?.size) {
+        if (!identityKey) {
             this._relationshipsSectionEl.style.display = 'none';
             this._renderSignatures.relationships = '';
             return;
         }
         const now = Date.now();
-        const bonds = [];
-        for (const affinity of snapshot.values()) {
-            if (!affinity?.involves?.(identityKey)) continue;
-            const tier = affinity.tier?.(now);
-            if (tier !== 'allies' && tier !== 'acquaintances') continue;
-            const otherKey = affinity.otherIdentity?.(identityKey);
-            if (!otherKey) continue;
-            bonds.push({
-                otherKey,
-                tier,
-                score: affinity.decayedScore?.(now) || 0,
-                meetings: affinity.meetings || 0,
-                chats: affinity.chats || 0,
-                sharedCommits: affinity.sharedCommits || 0,
-                lastInteractionAt: affinity.lastInteractionAt || 0,
-            });
-        }
+        const bonds = service?.collaboratorsFor?.(identityKey, now) || [];
+        this._relationshipsSectionEl.style.display = '';
         if (!bonds.length) {
-            this._relationshipsSectionEl.style.display = 'none';
-            this._renderSignatures.relationships = '';
+            const signature = 'empty';
+            if (signature === this._renderSignatures.relationships) return;
+            this._renderSignatures.relationships = signature;
+            replaceChildren(this._relationshipsBodyEl, [this._emptyState(
+                'No bonds recorded yet. Shared work, messages, and meetings will write the first entry.',
+            )]);
             return;
         }
-        const tierRank = { allies: 0, acquaintances: 1 };
-        bonds.sort((a, b) => (tierRank[a.tier] - tierRank[b.tier]) || (b.score - a.score));
         const shown = bonds.slice(0, PANEL_RELATIONSHIP_LIMIT);
         const nameByKey = this._identityDisplayNameMap();
         for (const bond of shown) {
-            bond.name = nameByKey.get(bond.otherKey) || this._identityKeyDisplayName(bond.otherKey);
+            bond.name = nameByKey.get(bond.identityKey) || this._identityKeyDisplayName(bond.identityKey);
         }
         const overflow = bonds.length - shown.length;
         const signature = shown
-            .map(b => `${b.otherKey}:${b.tier}:${b.meetings}:${b.chats}:${b.sharedCommits}:${b.lastInteractionAt}`)
+            .map(b => `${b.identityKey}:${b.tier}:${b.warmth}:${b.sharedCommits}:${formatRelative(b.lastInteractionAt, now)}`)
             .join('|') + `+${overflow}`;
-        this._relationshipsSectionEl.style.display = '';
         if (signature === this._renderSignatures.relationships) return;
         this._renderSignatures.relationships = signature;
         const rows = shown.map(bond => this._relationshipRow(bond, now));
         if (overflow > 0) {
-            rows.push(el('div', { className: 'activity-panel__rel-more', text: `+${overflow} more` }));
+            rows.push(el('div', {
+                className: 'activity-panel__rel-more',
+                text: `+${overflow} more ${overflow === 1 ? 'name' : 'names'} in the village annals`,
+            }));
         }
         replaceChildren(this._relationshipsBodyEl, rows);
     }
 
     _relationshipRow(bond, now = Date.now()) {
-        const bits = [];
-        if (bond.meetings) bits.push(`${bond.meetings} met`);
-        if (bond.chats) bits.push(`${bond.chats} chats`);
-        if (bond.sharedCommits) bits.push(`${bond.sharedCommits} commits`);
-        const ago = formatRelative(bond.lastInteractionAt, now);
-        if (ago) bits.push(ago);
-        const tierLabel = bond.tier === 'allies' ? 'ally' : 'acquaintance';
+        const tierLabel = {
+            allies: 'ally',
+            acquaintances: 'acquaintance',
+            strangers: 'stranger',
+        }[bond.tier] || 'stranger';
         return el('div', { className: ['activity-panel__rel-row', `activity-panel__rel-row--${bond.tier}`] }, [
             el('div', { className: 'activity-panel__rel-head' }, [
                 el('span', { className: `activity-panel__rel-dot activity-panel__rel-dot--${bond.tier}` }),
                 el('span', { className: 'activity-panel__rel-name', text: bond.name }),
                 el('span', { className: `activity-panel__rel-tier activity-panel__rel-tier--${bond.tier}`, text: tierLabel }),
             ]),
-            el('div', { className: 'activity-panel__rel-meta', text: bits.join(' · ') }),
+            el('div', { className: 'activity-panel__rel-meta', text: relationshipLoreLine(bond, now) }),
         ]);
     }
 
@@ -2962,6 +3068,7 @@ export class ActivityPanel {
         this._mode = null;
         this.closeBtn?.removeEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.removeEventListener('click', this._onPinToggleClick);
+        this._workingDirectoryCopyBtn?.removeEventListener('click', this._onWorkingDirectoryCopyClick);
         eventBus.off('agent:selected', this._onAgentSelected);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);
@@ -2973,11 +3080,14 @@ export class ActivityPanel {
         eventBus.off('usage:updated', this._onUsageUpdated);
         eventBus.off('mood:changed', this._onMoodChanged);
         eventBus.off('biography:updated', this._onBiographyUpdated);
+        eventBus.off('affinity:changed', this._onAffinityChanged);
+        eventBus.off('affinity:ready', this._onAffinityReady);
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
 
         const ownedNodes = [
             this._pinStripEl,
             this._pinToggleBtn,
+            this._workingDirectoryRowEl,
             this._journeySectionEl,
             this._harborLogSectionEl,
             this._chronicleSectionEl,
@@ -2995,12 +3105,17 @@ export class ActivityPanel {
         this._directorFeed = [];
         this._directorFeedIds.clear();
         this._dependencies = null;
+        if (this._ownsToast) this.toast?.destroy?.();
+        this.toast = null;
         this.dom = null;
         this._toolEls = null;
         this.panelEl = null;
         this.closeBtn = null;
         this._pinStripEl = null;
         this._pinToggleBtn = null;
+        this._workingDirectoryRowEl = null;
+        this._workingDirectoryValueEl = null;
+        this._workingDirectoryCopyBtn = null;
         this._journeySectionEl = null;
         this._journeyBodyEl = null;
         this._journeyWhyEl = null;
