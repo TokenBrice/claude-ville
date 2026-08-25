@@ -198,6 +198,7 @@ const AGENT_BUBBLE_PADDING = 18;
 // Mirrors STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored in AgentSprite.js, which is
 // where the text is actually truncated to fit.
 const AGENT_BUBBLE_MAX_WIDTH = 232;
+const AGENT_BUBBLE_HEIGHT = 22;
 const AGENT_BUBBLE_ANCHOR_Y = 58;
 // Vertical step per stacked slot, in screen pixels; must match AgentSprite
 // STATUS_BUBBLE_STACK_STEP so assigned slots line up with the drawn offset.

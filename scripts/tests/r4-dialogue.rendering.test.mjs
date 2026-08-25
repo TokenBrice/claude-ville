@@ -6,6 +6,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { AgentSprite } from '../../claudeville/src/presentation/character-mode/AgentSprite.js';
+import { IsometricRenderer } from '../../claudeville/src/presentation/character-mode/IsometricRenderer.js';
 
 // Monospace stand-in: every glyph is 6px wide, so expected widths are exact and
 // the assertions do not depend on a real font being present.
@@ -108,4 +109,64 @@ test('a silent villager has no tooltip', () => {
         AgentSprite.prototype.dialogueTooltip.call({ _activitySnapshot: { text: 'WORKING', source: null } }),
         '',
     );
+});
+
+// Bubble slot geometry. These call the real methods so every module-level
+// constant they touch is actually evaluated. A missing declaration is a runtime
+// ReferenceError that `node --check` cannot see and that pauses the whole world
+// renderer after three consecutive frame failures — which is exactly how it
+// escaped review once already.
+function slotHost() {
+    return {
+        camera: { zoom: 1 },
+        // Real method, so the constants it reads are genuinely evaluated.
+        _agentBubbleWidth: IsometricRenderer.prototype._agentBubbleWidth,
+    };
+}
+
+test('slot reservation widens with the real line length and stays bounded', () => {
+    const host = slotHost();
+    const width = (text) => IsometricRenderer.prototype._agentBubbleWidth.call(host, {
+        _activitySnapshot: text === null ? null : { text },
+    });
+
+    // Silent villager: falls back to the short-label floor.
+    const floor = width(null);
+    assert.equal(floor > 0, true);
+    // A short status label does not exceed the floor.
+    assert.equal(width('IDLE'), floor);
+    // A real intent phrase reserves more room than the old fixed estimate.
+    assert.equal(width('Checking git state and largest files') > floor, true);
+    // A long reasoning excerpt is capped at the width the sprite truncates to.
+    assert.equal(width('x'.repeat(400)), 232);
+});
+
+test('stacked slots step upward without overlapping', () => {
+    const host = slotHost();
+    const sprite = { x: 100, y: 200, _activitySnapshot: { text: 'Running the checks' } };
+    const slot0 = IsometricRenderer.prototype._agentBubbleSlotRect.call(host, sprite, 0);
+    const slot1 = IsometricRenderer.prototype._agentBubbleSlotRect.call(host, sprite, 1);
+
+    for (const rect of [slot0, slot1]) {
+        for (const key of ['x', 'y', 'w', 'h']) {
+            assert.equal(Number.isFinite(rect[key]), true, `${key} must be finite, got ${rect[key]}`);
+        }
+    }
+    assert.equal(slot0.h > 0, true);
+    assert.equal(slot0.w > 0, true);
+    // Higher slots sit above lower ones and do not share vertical space.
+    assert.equal(slot1.y < slot0.y, true);
+    assert.equal(slot1.y + slot1.h <= slot0.y + 1, true);
+});
+
+test('only villagers with something to show reserve a slot', () => {
+    const wants = (sprite) => IsometricRenderer.prototype._spriteWantsBubble.call(slotHost(), sprite);
+
+    assert.equal(wants({ _activitySnapshot: { text: 'Running the checks' } }), true);
+    // Silent and not waiting: reserves nothing, so a speaking neighbour keeps slot 0.
+    assert.equal(wants({ _activitySnapshot: null }), false);
+    // Silent but blocked long enough for the wait clock: still needs its slot.
+    assert.equal(wants({ _activitySnapshot: null, _shouldUseLongWaitClock: () => true }), true);
+    assert.equal(wants({ chatting: true, _activitySnapshot: { text: 'x' } }), false);
+    assert.equal(wants(null), false);
 });
