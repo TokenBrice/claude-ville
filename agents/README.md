@@ -1,0 +1,31 @@
+# Retained agent artifacts
+
+Committed agent outputs belong under `/agents/` only when they remain useful after the task that produced them. Use the path that matches the artifact:
+
+- `agents/plans/<slug>.md` — implementation plans and their execution records.
+- `agents/research/<slug>/` — research notes, audits, proofs, and supporting evidence.
+- `agents/handover/<slug>.md` — handover memos for work that another agent must continue.
+
+Before using or adding a retained artifact, check this index and the artifact's own status. Deleted historical artifacts are not implementation guidance. `agents/plans/open-followups.md` is the live checklist of still-open or deferred work; a plan may be implemented while items from it remain on that checklist.
+
+## Current inventory
+
+Statuses below are the statuses recorded in the artifacts themselves.
+
+### Plans
+
+| Artifact | Status | Purpose |
+| --- | --- | --- |
+| [`plans/claudeville-comprehensive-remediation-plan.md`](plans/claudeville-comprehensive-remediation-plan.md) | `implemented and verified` | Comprehensive remediation plan and verification record. |
+| [`plans/claudeville-opus5-improvement-plan.md`](plans/claudeville-opus5-improvement-plan.md) | `proposed — not started` | Opus 5 improvement plan and round assignments. |
+| [`plans/claudeville-post-oom-reliability-performance-plan.md`](plans/claudeville-post-oom-reliability-performance-plan.md) | `implemented and release-verified` | Post-OOM reliability and performance plan. |
+| [`plans/claudeville-semantic-diorama-rendering-plan.md`](plans/claudeville-semantic-diorama-rendering-plan.md) | `implemented and release-verified for v0.33.0` | Semantic diorama rendering plan and release record. |
+| [`plans/open-followups.md`](plans/open-followups.md) | `live checklist` | Active ledger of open, deferred, conditional, and already-landed follow-ups. |
+
+### Research
+
+| Artifact | Status | Purpose |
+| --- | --- | --- |
+| [`research/claudeville-comprehensive-verification/audit.md`](research/claudeville-comprehensive-verification/audit.md) | `ready` | Comprehensive verification audit and evidence index. |
+
+There are currently no handover memos under `agents/handover/`. The checkout also contains `agents/.DS_Store`, which is macOS directory metadata, not a retained agent artifact and has no project status.
