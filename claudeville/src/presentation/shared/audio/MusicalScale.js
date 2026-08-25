@@ -21,8 +21,107 @@ const SCALES = {
     night: { tones: [-12, -9, -7, -5, -2, 0], bass: -36, brightness: 0.4 },
 };
 
+function bellPartial(ratio, gain, decay) {
+    return Object.freeze({ ratio, gain, decay });
+}
+
+// Provider voices keep the fundamental on the shared cue scale, then use
+// integer harmonic partials for colour. Integer partials keep simultaneous
+// providers consonant while the register and harmonic recipe make each house
+// recognizable without needing samples.
+const BELL_VOICINGS = Object.freeze({
+    default: Object.freeze({
+        register: 1,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(2.756, 0.3, 0.5),
+        ]),
+    }),
+    claude: Object.freeze({
+        register: 1,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(2, 0.3, 0.5),
+            bellPartial(4, 0.14, 0.34),
+        ]),
+    }),
+    codex: Object.freeze({
+        register: 2,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(3, 0.22, 0.42),
+            bellPartial(5, 0.1, 0.27),
+        ]),
+    }),
+    gemini: Object.freeze({
+        register: 1,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(2, 0.24, 0.5),
+            bellPartial(5, 0.1, 0.28),
+        ]),
+    }),
+    grok: Object.freeze({
+        register: 0.5,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(3, 0.24, 0.44),
+            bellPartial(4, 0.12, 0.32),
+        ]),
+    }),
+    kimi: Object.freeze({
+        register: 1,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(4, 0.2, 0.38),
+            bellPartial(6, 0.08, 0.24),
+        ]),
+    }),
+    omp: Object.freeze({
+        register: 0.5,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(2, 0.28, 0.5),
+            bellPartial(3, 0.16, 0.4),
+        ]),
+    }),
+    opencode: Object.freeze({
+        register: 2,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(4, 0.18, 0.36),
+            bellPartial(5, 0.1, 0.27),
+        ]),
+    }),
+    deepseek: Object.freeze({
+        register: 1,
+        partials: Object.freeze([
+            bellPartial(1, 1, 1),
+            bellPartial(3, 0.2, 0.43),
+            bellPartial(6, 0.08, 0.24),
+        ]),
+    }),
+});
+
+function providerFamily(provider) {
+    const key = String(provider || '').toLowerCase();
+    if (key.includes('deepseek')) return 'deepseek';
+    if (key.includes('opencode')) return 'opencode';
+    if (key === 'omp' || key.includes('open-model')) return 'omp';
+    if (key.includes('codex') || key.includes('openai') || key.includes('gpt')) return 'codex';
+    if (key.includes('gemini')) return 'gemini';
+    if (key.includes('grok')) return 'grok';
+    if (key.includes('kimi')) return 'kimi';
+    if (key.includes('claude') || key.includes('anthropic')) return 'claude';
+    return 'default';
+}
+
 export function scaleForPhase(phase) {
     return SCALES[phase] || SCALES.day;
+}
+
+export function bellVoicingForProvider(provider) {
+    return BELL_VOICINGS[providerFamily(provider)] || BELL_VOICINGS.default;
 }
 
 // Fixed interval set for one-shot cues, voiced from the same tonal center.

@@ -10,6 +10,7 @@
 // is pure local-clock, so ambience keeps tracking time and weather anywhere.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
+import { MAP_SIZE, TILE_WIDTH } from '../../../config/constants.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { clamp01, rand } from './AudioEngine.js';
@@ -26,6 +27,10 @@ import { MusicLayer } from './layers/MusicLayer.js';
 
 const TICK_MS = 1000;
 const ATMO_FRESH_MS = 3000;
+const AGENT_CUE_DEDUPE_MS = 2500;
+const SPATIAL_CUES = new Set(['arrival', 'departure', 'distress', 'recovery', 'summons']);
+const WORLD_TILE_SPAN = Math.max(1, MAP_SIZE - 1);
+const WORLD_SCREEN_X_HALF_SPAN = WORLD_TILE_SPAN * (TILE_WIDTH / 2);
 
 const BED_LEVEL_BY_PHASE = { dawn: 0.55, day: 0.15, dusk: 0.6, night: 0.32 };
 const BIRD_SEASON = { winter: 0.25, spring: 1, summer: 1, autumn: 0.7 };
@@ -39,16 +44,84 @@ function daylight(phase, phaseProgress) {
     return 0;
 }
 
+function copyPosition(position) {
+    if (!position || typeof position !== 'object') return null;
+    return {
+        ...(Number.isFinite(Number(position.tileX)) ? { tileX: Number(position.tileX) } : {}),
+        ...(Number.isFinite(Number(position.tileY)) ? { tileY: Number(position.tileY) } : {}),
+        ...(Number.isFinite(Number(position.x)) ? { x: Number(position.x) } : {}),
+        ...(Number.isFinite(Number(position.y)) ? { y: Number(position.y) } : {}),
+        ...(Number.isFinite(Number(position.screenX)) ? { screenX: Number(position.screenX) } : {}),
+    };
+}
+
+function normalizedScreenValue(value, width = 0) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return null;
+    if (n >= 0 && n <= 1) return clamp01(n);
+    const viewport = Number(width);
+    if (Number.isFinite(viewport) && viewport > 1) return clamp01(n / viewport);
+    return null;
+}
+
+function normalizedWorldX(worldX) {
+    const x = Number(worldX);
+    if (!Number.isFinite(x) || WORLD_SCREEN_X_HALF_SPAN <= 0) return null;
+    return clamp01((x + WORLD_SCREEN_X_HALF_SPAN) / (WORLD_SCREEN_X_HALF_SPAN * 2));
+}
+
+function normalizedTilePosition(position) {
+    if (!position || typeof position !== 'object') return null;
+    const tileX = Number(position.tileX ?? position.x);
+    const tileY = Number(position.tileY ?? position.y);
+    if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+    return clamp01((tileX - tileY + WORLD_TILE_SPAN) / (WORLD_TILE_SPAN * 2));
+}
+
+function explicitScreenX(payload) {
+    const candidates = [
+        [payload?.screenX, payload?.viewportWidth || payload?.screenWidth],
+        [payload?.normalizedScreenX, 0],
+        [payload?.screenPosition?.x, payload?.screenPosition?.width || payload?.viewportWidth],
+        [payload?.agent?.screenX, payload?.agent?.viewportWidth || payload?.viewportWidth],
+        [payload?.agent?.normalizedScreenX, 0],
+        [payload?.agent?.position?.screenX, payload?.agent?.position?.viewportWidth || payload?.viewportWidth],
+        [payload?.position?.screenX, payload?.position?.viewportWidth || payload?.viewportWidth],
+    ];
+    for (const [value, width] of candidates) {
+        const normalized = normalizedScreenValue(value, width);
+        if (normalized != null) return normalized;
+    }
+    return null;
+}
+
+function spatialFields(payload) {
+    return {
+        agent: payload?.agent,
+        screenX: payload?.screenX,
+        normalizedScreenX: payload?.normalizedScreenX,
+        screenPosition: payload?.screenPosition,
+        position: payload?.position,
+        lastTile: payload?.lastTile,
+        worldX: payload?.worldX,
+        center: payload?.center,
+    };
+}
+
 export class AudioDirector {
     constructor({ engine, world = null } = {}) {
         this.engine = engine;
         this.world = world;
         this.layers = {};
-        this.cueKit = null;
         this.governor = new CueGovernor();
+        this.cueKit = new CueKit(this.engine, this.governor);
         this.running = false;
         this._interval = null;
         this._unsubscribes = [];
+        this._signalUnsubscribes = [];
+        this._signalRouting = true;
+        this.hidden = false;
+        this._hiddenSummonsHandler = null;
         this._atmosphere = null;
         this._atmosphereAt = 0;
         this._atmosphereSource = 'none';
@@ -57,6 +130,13 @@ export class AudioDirector {
         this._overrides = new Map();
         this._lastBellHour = null;
         this._thunderTimers = new Set();
+        this._recentAgentCues = new Map();
+        this._agentAudioContext = new Map();
+        this._mode = 'character';
+
+        // Cue signals stay subscribed while audio is disabled so the
+        // accessibility event stream remains useful without an AudioContext.
+        this._subscribeSignals();
     }
 
     start() {
@@ -73,15 +153,13 @@ export class AudioDirector {
             music: new MusicLayer(this.engine),
         };
         for (const layer of Object.values(this.layers)) layer.start();
-        this.cueKit = new CueKit(this.engine, this.governor);
 
-        this._subscribe();
+        this._subscribeRuntime();
         this._interval = setInterval(() => this._tick(), TICK_MS);
         this._tick();
     }
 
     stop() {
-        if (!this.running) return;
         this.running = false;
         if (this._interval) clearInterval(this._interval);
         this._interval = null;
@@ -91,10 +169,100 @@ export class AudioDirector {
         this._unsubscribes = [];
         for (const layer of Object.values(this.layers)) layer.stop();
         this.layers = {};
-        this.cueKit = null;
     }
 
-    _subscribe() {
+    destroy() {
+        this.stop();
+        for (const unsubscribe of this._signalUnsubscribes) unsubscribe();
+        this._signalUnsubscribes = [];
+        this.cueKit = null;
+        this._recentAgentCues.clear();
+        this._agentAudioContext.clear();
+    }
+
+    setSignalRouting(enabled) {
+        this._signalRouting = Boolean(enabled);
+    }
+
+    setHidden(hidden) {
+        this.hidden = Boolean(hidden);
+    }
+
+    setHiddenSummonsHandler(handler) {
+        this._hiddenSummonsHandler = typeof handler === 'function' ? handler : null;
+    }
+
+    _subscribeSignals() {
+        const on = (event, handler) => {
+            this._signalUnsubscribes.push(eventBus.on(event, handler));
+        };
+
+        on('mode:changed', (mode) => {
+            this._mode = mode === 'dashboard' ? 'dashboard' : 'character';
+        });
+        on('agent:added', (agent) => this._rememberAgentAudioContext(agent));
+        on('agent:updated', (agent) => this._rememberAgentAudioContext(agent));
+        // Keep the last position/provider through the synchronous removal →
+        // village:scene sequence so departures can retain their identity.
+        on('agent:removed', (agent) => this._rememberAgentAudioContext(agent));
+
+        on('village:scene', (scene) => {
+            if (!this._signalRouting) return;
+            const agentId = scene?.agentId ?? scene?.agent?.id ?? null;
+            const label = scene?.agent?.name || scene?.agent?.agentName || scene?.label;
+            const provider = this._agentProvider(scene, agentId);
+            if (scene?.kind === 'arrival') {
+                this.cue('arrival', { agentId, label, provider, ...spatialFields(scene) });
+            }
+            else if (scene?.kind === 'departure') {
+                this.cue('departure', { agentId, label, provider, ...spatialFields(scene) });
+                if (agentId != null) this._agentAudioContext.delete(agentId);
+            }
+        });
+
+        on('distress:watchtower', (payload) => {
+            if (!this._signalRouting) return;
+            const kind = payload?.kind;
+            const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
+            if (kind === 'errored' || kind === 'rate_limited') {
+                this._playDistress(payload, agentId);
+            } else if (kind === 'recovered') {
+                this._recentAgentCues.delete(agentId);
+                this.cue('recovery', {
+                    agentId,
+                    label: this._agentLabel(payload, agentId),
+                    provider: this._agentProvider(payload, agentId),
+                    ...spatialFields(payload),
+                });
+            }
+        });
+
+        on('team:gather', (payload) => {
+            if (!this._signalRouting) return;
+            const teamSize = Array.isArray(payload?.members)
+                ? payload.members.length
+                : payload?.teamSize ?? payload?.size;
+            this.cue('council', { agentId: payload?.agentId ?? null, teamSize });
+        });
+        on('chronicle:aurora', (payload) => {
+            if (this._signalRouting) this.cue('aurora', { agentId: payload?.agentId ?? null });
+        });
+        // The one cue that is about the listener rather than the world.
+        on('attention:raised', (payload) => this._handleAttention(payload));
+
+        // Thunder trails the visible lightning by a beat, like real distance.
+        on('weather:storm-flash', (payload) => {
+            if (!this._signalRouting) return;
+            const intensity = clamp01(payload?.intensity, 0.6);
+            const id = setTimeout(() => {
+                this._thunderTimers.delete(id);
+                if (this._signalRouting) this.cue('thunder', { intensity });
+            }, rand(300, 1200));
+            this._thunderTimers.add(id);
+        });
+    }
+
+    _subscribeRuntime() {
         const on = (event, handler) => {
             this._unsubscribes.push(eventBus.on(event, handler));
         };
@@ -105,37 +273,160 @@ export class AudioDirector {
             this._atmosphereAt = Date.now();
             this._atmosphereSource = 'world';
         });
+    }
 
-        on('village:scene', (scene) => {
-            if (scene?.kind === 'arrival') this.cue('arrival');
-            else if (scene?.kind === 'departure') this.cue('departure');
+    _agentCueIsRecent(agentId) {
+        if (agentId == null) return false;
+        const recent = this._recentAgentCues.get(agentId);
+        if (!recent) return false;
+        if (Date.now() - recent.at >= AGENT_CUE_DEDUPE_MS) {
+            this._recentAgentCues.delete(agentId);
+            return false;
+        }
+        return true;
+    }
+
+    _rememberAgentCue(agentId, kind) {
+        if (agentId != null) this._recentAgentCues.set(agentId, { kind, at: Date.now() });
+    }
+
+    _rememberAgentAudioContext(agent) {
+        const agentId = agent?.id;
+        if (agentId == null) return;
+        const previous = this._agentAudioContext.get(agentId) || {};
+        this._agentAudioContext.set(agentId, {
+            provider: agent?.provider || previous.provider || null,
+            position: copyPosition(agent?.position) || previous.position || null,
+            screenX: explicitScreenX(agent) ?? previous.screenX ?? null,
+            at: Date.now(),
         });
+        // A removed agent can wait briefly for its departure scene. Keep this
+        // cache bounded when a long-running village cycles many sessions.
+        while (this._agentAudioContext.size > 128) {
+            const oldest = this._agentAudioContext.keys().next().value;
+            if (oldest == null) break;
+            this._agentAudioContext.delete(oldest);
+        }
+    }
 
-        on('distress:watchtower', (payload) => {
-            const kind = payload?.kind;
-            if (kind === 'errored' || kind === 'rate_limited') this.cue('distress');
-            else if (kind === 'recovered') this.cue('recovery');
+    _agentProvider(payload, agentId) {
+        return payload?.provider
+            || payload?.agent?.provider
+            || this._agentAudioContext.get(agentId)?.provider
+            || this.world?.agents?.get?.(agentId)?.provider
+            || null;
+    }
+
+    _rendererScreenX(agentId) {
+        if (agentId == null) return null;
+        const renderer = globalThis.window?.__claudeVilleApp?.renderer;
+        const sprite = renderer?.agentSprites?.get?.(agentId);
+        const camera = renderer?.camera;
+        if (!sprite || !camera?.worldToScreen) return null;
+        const x = Number(sprite.x);
+        const y = Number(sprite.y);
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+        const screen = camera.worldToScreen(x, y);
+        const width = camera._viewportWidth?.()
+            || renderer?.canvas?._claudeVilleCssWidth
+            || renderer?.canvas?.clientWidth
+            || renderer?.canvas?.width;
+        return normalizedScreenValue(screen?.x, width);
+    }
+
+    _resolveScreenX(payload, agentId) {
+        if (this._mode === 'dashboard') return 0.5;
+
+        const direct = explicitScreenX(payload);
+        if (direct != null) return direct;
+
+        const rendered = this._rendererScreenX(agentId);
+        if (rendered != null) return rendered;
+
+        const worldScreen = normalizedWorldX(
+            payload?.worldX
+            ?? payload?.agent?.worldX
+            ?? payload?.center?.x,
+        );
+        if (worldScreen != null) return worldScreen;
+
+        const payloadPosition = payload?.agent?.position || payload?.position || payload?.lastTile;
+        const payloadTile = normalizedTilePosition(payloadPosition);
+        if (payloadTile != null) return payloadTile;
+
+        const cached = this._agentAudioContext.get(agentId);
+        const cachedScreen = normalizedScreenValue(cached?.screenX);
+        if (cachedScreen != null) return cachedScreen;
+        const cachedTile = normalizedTilePosition(cached?.position);
+        if (cachedTile != null) return cachedTile;
+
+        const agent = this.world?.agents?.get?.(agentId);
+        const agentScreen = explicitScreenX(agent);
+        if (agentScreen != null) return agentScreen;
+        const agentTile = normalizedTilePosition(agent?.position);
+        if (agentTile != null) return agentTile;
+
+        return 0.5;
+    }
+
+    _playDistress(payload, agentId) {
+        if (this._agentCueIsRecent(agentId)) return false;
+        const played = this.cue('distress', {
+            agentId,
+            label: this._agentLabel(payload, agentId),
+            provider: this._agentProvider(payload, agentId),
+            ...spatialFields(payload),
         });
+        if (played) this._rememberAgentCue(agentId, 'distress');
+        return played;
+    }
 
-        on('team:gather', () => this.cue('council'));
-        on('chronicle:aurora', () => this.cue('aurora'));
-        // The one cue that is about the listener rather than the world.
-        on('attention:raised', () => this.cue('summons'));
+    _handleAttention(payload) {
+        if (!this._signalRouting) return false;
+        const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
+        if (this._agentCueIsRecent(agentId)) return false;
+        if (this.hidden && this._hiddenSummonsHandler) {
+            this._hiddenSummonsHandler(payload);
+            return true;
+        }
+        return this.playSummons(payload);
+    }
 
-        // Thunder trails the visible lightning by a beat, like real distance.
-        on('weather:storm-flash', (payload) => {
-            const intensity = clamp01(payload?.intensity, 0.6);
-            const id = setTimeout(() => {
-                this._thunderTimers.delete(id);
-                if (this.running) this.cue('thunder', { intensity });
-            }, rand(300, 1200));
-            this._thunderTimers.add(id);
+    playSummons(payload = {}) {
+        const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
+        if (this._agentCueIsRecent(agentId)) return false;
+        const played = this.cue('summons', {
+            agentId,
+            label: this._agentLabel(payload, agentId),
+            provider: this._agentProvider(payload, agentId),
+            waitingCount: payload?.waitingCount,
+            oldestWaitMs: payload?.oldestWaitMs,
+            ...spatialFields(payload),
         });
+        if (played) this._rememberAgentCue(agentId, 'summons');
+        return played;
+    }
+
+    _agentLabel(payload, agentId) {
+        return payload?.agent?.name
+            || payload?.agent?.agentName
+            || this.world?.agents?.get?.(agentId)?.name
+            || payload?.label
+            || payload?.reason
+            || null;
     }
 
     cue(kind, extra = {}) {
         if (!this.cueKit) return false;
-        return this.cueKit.play(kind, { phase: this._phase, ...extra });
+        const payload = { phase: this._phase, ...extra };
+        const agentId = payload.agentId ?? payload.agent?.id ?? null;
+        if (agentId != null && payload.provider == null) {
+            payload.provider = this._agentProvider(payload, agentId);
+        }
+        if (SPATIAL_CUES.has(kind)) {
+            payload.screenX = this._resolveScreenX(payload, agentId);
+        }
+        return this.cueKit.play(kind, payload);
     }
 
     // QA hook: pin a layer's level for `holdMs`, overriding the tick mapping.
