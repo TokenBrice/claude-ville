@@ -6,10 +6,11 @@ import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { replaceChildren } from '../shared/DomSafe.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { formatCost, formatRelative, formatTokens, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
-import { AgentSelectionMirror, emitAgentSelected } from '../shared/AgentSelection.js';
+import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
 import { operatorStatusLabel, sortAttentionAgents } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import { phaseNameForDate } from '../character-mode/AtmosphereState.js';
+import { attentionAgentIds, isKeyboardEditTarget, nextCardId, recoveryCardId } from './DashboardKeyboardNavigation.js';
 import {
     buildingClassForAgent,
     buildingPresentation,
@@ -57,6 +58,8 @@ export class DashboardRenderer {
         this._visibleAgentIds = new Set();
         this._visibilityLayoutDirty = true;
         this._selectedAgentId = null;
+        this._focusedAgentId = null;
+        this._attentionCursor = 0;
         this.active = false;
         this._destroyed = false;
         this._isFetchingDetails = false;
@@ -108,11 +111,21 @@ export class DashboardRenderer {
             this._fetchAllDetails();
             this._syncAmbience();
         };
+        this._onDashboardKeyDown = (event) => this._handleDashboardKeyboardCommand(event);
+        this._onDashboardFocusIn = (event) => {
+            const select = event.target?.closest?.('.dash-card__select');
+            const card = select?.closest?.('.dash-card');
+            if (!card?.dataset?.agentId) return;
+            this._focusedAgentId = card.dataset.agentId;
+            this._syncCardTabStops();
+        };
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on('mode:changed', this._onModeChanged);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
+        window.addEventListener('keydown', this._onDashboardKeyDown);
+        this.gridEl?.addEventListener('focusin', this._onDashboardFocusIn);
     }
 
     render() {
@@ -192,6 +205,7 @@ export class DashboardRenderer {
             }
         }
         sessionDetailsService.sweep(agents);
+        this._syncCardTabStops();
         if (this.active) this._syncVisibleAgentIdsFromLayout();
     }
 
@@ -479,7 +493,6 @@ export class DashboardRenderer {
             event.stopPropagation();
             this._copyAgentId(card.dataset.agentId);
         });
-        copyBtn.addEventListener('keydown', (event) => event.stopPropagation());
 
         const parentChip = card.querySelector('.dash-card__parent-chip');
         const selectParent = (event) => {
@@ -497,6 +510,7 @@ export class DashboardRenderer {
         };
         parentChip.addEventListener('click', selectParent);
         const selectBtn = card.querySelector('.dash-card__select');
+        selectBtn.tabIndex = -1;
         selectBtn.addEventListener('click', () => {
             const current = this.world.agents.get(card.dataset.agentId);
             emitAgentSelected(current);
@@ -730,6 +744,83 @@ export class DashboardRenderer {
                 ?.setAttribute('aria-pressed', String(selected));
             this.cards.get(id)?.classList.toggle('dash-card--selected', selected);
         }
+        const focusIsInDashboard = this.gridEl?.contains?.(document.activeElement);
+        if (!focusIsInDashboard && nextId && this.cards.has(nextId)) {
+            this._focusedAgentId = nextId;
+        }
+        this._syncCardTabStops();
+    }
+
+    _cardIdsInVisualOrder() {
+        if (!this.gridEl) return [];
+        return [...this.gridEl.querySelectorAll('.dash-card[data-agent-id]')]
+            .map(card => card.dataset.agentId)
+            .filter(id => id && this.cards.has(id));
+    }
+
+    _syncCardTabStops(preferredId = null) {
+        const ids = this._cardIdsInVisualOrder();
+        let targetId = preferredId || this._focusedAgentId;
+        if (!ids.includes(targetId)) {
+            targetId = ids.includes(this._selectedAgentId) ? this._selectedAgentId : (ids[0] || null);
+        }
+        this._focusedAgentId = targetId;
+        for (const [id, card] of this.cards) {
+            const select = card._elements?.select;
+            if (select) select.tabIndex = id === targetId ? 0 : -1;
+        }
+        return targetId;
+    }
+
+    _focusCard(agentId, { select = false } = {}) {
+        const card = this.cards.get(agentId);
+        const control = card?._elements?.select;
+        if (!card || !control) return false;
+        this._syncCardTabStops(agentId);
+        control.focus({ preventScroll: true });
+        card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        if (select) emitAgentSelected(this.world.agents.get(agentId));
+        return true;
+    }
+
+    _handleDashboardKeyboardCommand(event) {
+        if (!event || !this.active || this._destroyed) return;
+        if (event.ctrlKey || event.metaKey || event.altKey) return;
+        if (isKeyboardEditTarget(document.activeElement)) return;
+        if (document.getElementById('modalOverlay')?.getAttribute('aria-hidden') === 'false') return;
+
+        if (event.code === 'KeyA') {
+            // TopBar owns the app-wide A command. It runs on document before
+            // this window handler; when it handled A, selection is already
+            // mirrored here and Dashboard only has to bring that card to focus.
+            if (event.defaultPrevented && this._selectedAgentId) {
+                this._focusCard(this._selectedAgentId);
+                return;
+            }
+            // Standalone Dashboard instances (including embeds/tests) retain
+            // the same longest-waiting, rotating attention behavior.
+            const ids = attentionAgentIds(this.world?.agents?.values?.());
+            if (!ids.length) return;
+            const id = ids[this._attentionCursor % ids.length];
+            this._attentionCursor = (this._attentionCursor + 1) % ids.length;
+            if (this._focusCard(id, { select: true })) event.preventDefault();
+            return;
+        }
+
+        if (event.code === 'Escape') {
+            emitAgentDeselected();
+            event.preventDefault();
+            return;
+        }
+
+        const direction = event.code === 'ArrowLeft' || event.code === 'ArrowUp'
+            ? -1
+            : (event.code === 'ArrowRight' || event.code === 'ArrowDown' ? 1 : 0);
+        if (!direction) return;
+        const ids = this._cardIdsInVisualOrder();
+        const activeCardId = document.activeElement?.closest?.('.dash-card')?.dataset?.agentId;
+        const targetId = nextCardId(ids, activeCardId || this._focusedAgentId, direction);
+        if (targetId && this._focusCard(targetId)) event.preventDefault();
     }
 
     _updateActivityAge(cardEl, agent) {
@@ -951,6 +1042,10 @@ export class DashboardRenderer {
     _removeCard(agentId, { removeEmptySection = true } = {}) {
         const cardEl = this.cards.get(agentId);
         const projectPath = cardEl?._projectPath;
+        const focusWasInCard = Boolean(cardEl?.contains?.(document.activeElement));
+        const idsBeforeRemoval = (focusWasInCard || this._focusedAgentId === agentId)
+            ? this._cardIdsInVisualOrder()
+            : null;
         if (cardEl) {
             this._observer?.unobserve?.(cardEl);
             this._pendingAvatarDraws.delete(cardEl);
@@ -959,6 +1054,11 @@ export class DashboardRenderer {
             cardEl._avatarCanvas = null;
             cardEl.remove();
             this.cards.delete(agentId);
+        }
+        if (idsBeforeRemoval) {
+            this._focusedAgentId = recoveryCardId(idsBeforeRemoval, agentId);
+            this._syncCardTabStops();
+            if (focusWasInCard && this._focusedAgentId) this._focusCard(this._focusedAgentId);
         }
         this.toolHistories.delete(agentId);
         this.usageFooters.delete(agentId);
@@ -1080,6 +1180,8 @@ export class DashboardRenderer {
         this._clearAllCardsAndSections();
         this._observer?.disconnect?.();
         this.selection?.destroy?.();
+        window.removeEventListener('keydown', this._onDashboardKeyDown);
+        this.gridEl?.removeEventListener('focusin', this._onDashboardFocusIn);
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
         eventBus.off('agent:added', this._onAgentAdded);
         eventBus.off('agent:updated', this._onAgentUpdated);

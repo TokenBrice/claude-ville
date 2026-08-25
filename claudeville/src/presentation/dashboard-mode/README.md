@@ -34,6 +34,15 @@ Cards show:
 
 Clicking a card emits `agent:selected`, the same event used by the sidebar and World mode. The right activity panel owns deselection/close behavior.
 
+## Keyboard Navigation
+
+- Dashboard cards use roving focus: `Tab` enters the card collection once, and arrow keys move through cards in their current visual order.
+- `Enter` or `Space` activates the focused card through its native button behavior. `Escape` emits `agent:deselected`, matching World mode.
+- `A` uses the application-wide attention command and moves focus to the selected card. A standalone renderer falls back to the same longest-waiting, rotating order.
+- Card focus and agent selection are separate. Cross-mode `agent:selected` events update the next Tab target without stealing focus; only an explicit Dashboard keyboard command moves focus.
+- DOM card reuse preserves focus across status reordering. If the focused agent disappears, focus moves to the next card at that position, or the previous final card.
+- The primary card button's gold `:focus-visible` outline in `dashboard.css` is the visible pixel/RPG focus treatment.
+
 ## Session Details
 
 Dashboard detail fetches flow through `shared/SessionDetailsService.js`, not direct `fetch()` calls. Dashboard uses `fetchSessionDetailsBatch()` and the server's `POST /api/session-details` route for its active-card refresh path; singular detail fetches remain available for one-agent surfaces such as the Activity Panel. The service dedupes in-flight requests, caches fresh responses briefly, serves stale data while a background refresh is running, and times out slow fetches.
