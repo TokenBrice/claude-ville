@@ -13,6 +13,7 @@ const WRITE_LEASE_TTL_MS = 15000;
 const AFFINITY_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const AFFINITY_CACHE_LIMIT = 1024;
 const MET_SESSION_PAIR_LIMIT = AFFINITY_CACHE_LIMIT;
+const ROSTER_LIMIT = AFFINITY_CACHE_LIMIT;
 const WARMTH_KINDLED_MS = AFFINITY_HALF_LIFE_MS / 4;
 
 /**
@@ -112,6 +113,17 @@ function normalizeAlias(value) {
     return String(value || '').trim().toLowerCase();
 }
 
+function isDepartedAgent(agent) {
+    return agent?.isDeparted === true
+        || (agent?.departedAt !== null
+            && agent?.departedAt !== undefined
+            && Number.isFinite(Number(agent.departedAt)));
+}
+
+function isLiveAgent(agent) {
+    return Boolean(agent) && !isDepartedAgent(agent);
+}
+
 /** Two live agents share context when they could plausibly "meet". */
 function sharesContext(a, b) {
     if (a.parentSessionId && a.parentSessionId === b.id) return true;
@@ -147,7 +159,7 @@ export class RelationshipAffinityService {
     constructor({ store = null } = {}) {
         this.store = store;
         this._affinities = new Map(); // pairKey -> PairAffinity
-        this._roster = new Map(); // agent.id -> live telemetry + observation baseline
+        this._roster = new Map(); // agent.id -> resident telemetry + observation baseline
         this._metSessionPairs = new Set();
         this._dirty = new Set();
         this._flushing = new Set();
@@ -156,6 +168,10 @@ export class RelationshipAffinityService {
         this._stopPromise = null;
         this._accepting = false;
         this._ready = Promise.resolve();
+        // Store-less instances are also used by pure signal tests and helper
+        // callers that exercise pair mutation directly; those have no preload
+        // gate to wait for.
+        this._readyState = store ? 'idle' : 'ready';
         this._leaseToken = randomToken();
         this._unsubscribers = [];
         this._channelListener = null;
@@ -165,13 +181,29 @@ export class RelationshipAffinityService {
     start() {
         if (!this.store || this._accepting || this._stopPromise) return this;
         this._accepting = true;
-        this._ready = this._preload().then(() => {
-            if (this._accepting) eventBus.emit('affinity:ready', { service: this });
-        });
+        this._readyState = 'loading';
+        this._ready = this._preload()
+            .then(() => {
+                this._readyState = 'ready';
+                if (!this._accepting) return;
+                this._replayRoster();
+                eventBus.emit('affinity:ready', { service: this });
+            })
+            .catch((err) => {
+                // _preload currently degrades internally, but keep the ready
+                // gate finite if a future store adapter rejects unexpectedly.
+                this._readyState = 'ready';
+                if (this._accepting) {
+                    console.warn('[RelationshipAffinityService] preload degraded:', err?.message || err);
+                    this._replayRoster();
+                    eventBus.emit('affinity:ready', { service: this });
+                }
+            });
         const seen = (agent) => {
-            this._ready.then(() => {
-                if (this._accepting) this._handleAgentSeen(agent);
-            }).catch(() => {});
+            // Do not attach a continuation for every polling update. While a
+            // blocked IndexedDB upgrade is pending, retain only the latest
+            // bounded roster entry and replay it once when preload settles.
+            this._handleAgentSeen(agent);
         };
         this._unsubscribers.push(eventBus.on('agent:added', seen));
         this._unsubscribers.push(eventBus.on('agent:updated', seen));
@@ -213,6 +245,7 @@ export class RelationshipAffinityService {
                 this._metSessionPairs.clear();
                 this._dirty.clear();
                 this._flushing.clear();
+                this._readyState = 'stopped';
             }
         })();
         return this._stopPromise;
@@ -308,9 +341,21 @@ export class RelationshipAffinityService {
 
     _handleAgentSeen(agent) {
         if (!this._accepting || !agent?.id) return;
+        const observation = this._rememberAgent(agent);
+        if (!observation || this._readyState !== 'ready') return;
+        this._processAgentSeen(observation.entry, observation.firstObservation);
+    }
+
+    _rememberAgent(agent) {
+        if (!this._accepting || !agent?.id) return null;
         let entry = this._roster.get(agent.id);
-        const firstObservation = !entry;
         if (!entry) {
+            if (this._roster.size >= ROSTER_LIMIT) {
+                const departedId = [...this._roster.values()]
+                    .find(candidate => isDepartedAgent(candidate.agent))?.agent?.id;
+                if (!departedId) return null;
+                this._roster.delete(departedId);
+            }
             entry = {
                 agent,
                 identityKey: null,
@@ -318,12 +363,19 @@ export class RelationshipAffinityService {
                 observedAt: Date.now(),
                 countedChatKeys: new Set(),
                 lastChatSignature: null,
+                observed: false,
             };
             this._roster.set(agent.id, entry);
         }
         entry.agent = agent;
         entry.identityKey = AgentBiography.identityKeyFor(agent);
-        if (!entry.identityKey || !this._holdsWriteLease()) return;
+        return { entry, firstObservation: !entry.observed };
+    }
+
+    _processAgentSeen(entry, firstObservation = false) {
+        if (!entry) return;
+        entry.observed = true;
+        if (!entry.identityKey || !isLiveAgent(entry.agent) || !this._holdsWriteLease()) return;
         const nextMeetingContext = meetingContextSignature(entry);
         if (firstObservation || entry.meetingContextSignature !== nextMeetingContext) {
             entry.meetingContextSignature = nextMeetingContext;
@@ -333,8 +385,16 @@ export class RelationshipAffinityService {
         // small live roster so already-visible telemetry is baselined once the
         // pair becomes resolvable.
         for (const rosterEntry of this._roster.values()) {
+            if (!isLiveAgent(rosterEntry.agent)) continue;
             this._recordChats(rosterEntry, rosterEntry === entry && firstObservation);
             this._recordSharedCommits(rosterEntry, rosterEntry === entry && firstObservation);
+        }
+    }
+
+    _replayRoster() {
+        for (const entry of this._roster.values()) {
+            if (!this._accepting || entry.observed) continue;
+            this._processAgentSeen(entry, true);
         }
     }
 
@@ -351,8 +411,9 @@ export class RelationshipAffinityService {
     }
 
     _recordMeetings(entry) {
+        if (!isLiveAgent(entry?.agent)) return;
         for (const other of this._roster.values()) {
-            if (other === entry || !other.identityKey) continue;
+            if (other === entry || !other.identityKey || !isLiveAgent(other.agent)) continue;
             if (!sharesContext(entry.agent, other.agent)) continue;
             const key = sessionPairKey(entry.agent.id, other.agent.id);
             if (this._metSessionPairs.has(key)) continue;
@@ -363,6 +424,7 @@ export class RelationshipAffinityService {
 
     _recordChats(entry, firstObservation = false) {
         const agent = entry.agent;
+        if (!isLiveAgent(agent)) return;
         const messages = Array.isArray(agent.sendMessages) ? agent.sendMessages : [];
         messages.forEach((message, index) => {
             const alias = normalizeAlias(message?.recipient);
@@ -400,7 +462,7 @@ export class RelationshipAffinityService {
 
     _findRecipient(entry, alias) {
         for (const other of this._roster.values()) {
-            if (other === entry || !other.identityKey) continue;
+            if (other === entry || !other.identityKey || !isLiveAgent(other.agent)) continue;
             const candidates = [other.agent.name, other.agent.agentName, other.agent.agentId];
             if (candidates.some(value => normalizeAlias(value) === alias)) {
                 return other;
@@ -411,14 +473,14 @@ export class RelationshipAffinityService {
 
     _recordSharedCommits(entry, firstObservation = false) {
         const project = entry.agent.projectPath;
-        if (!project) return;
+        if (!project || !isLiveAgent(entry.agent)) return;
         for (const event of entry.agent.gitEvents || []) {
             if (!isCountableGitEvent(event)) continue;
             const key = `git:${gitEventKey(event)}`;
             const at = eventTimestamp(event);
             const baseline = firstObservation || (at > 0 && at <= entry.observedAt);
             for (const other of this._roster.values()) {
-                if (other === entry || !other.identityKey) continue;
+                if (other === entry || !other.identityKey || !isLiveAgent(other.agent)) continue;
                 if (other.agent.projectPath !== project) continue;
                 this._mutatePair(entry, other, 'sharedCommit', key, { baseline });
             }
@@ -426,7 +488,7 @@ export class RelationshipAffinityService {
     }
 
     _mutatePair(entryA, entryB, kind, interactionKey, { baseline = false } = {}) {
-        if (!this._accepting) return null;
+        if (!this._accepting || isDepartedAgent(entryA?.agent) || isDepartedAgent(entryB?.agent)) return null;
         const pairKey = affinityPairKey(entryA.identityKey, entryB.identityKey);
         if (!pairKey) return null;
         const now = Date.now();

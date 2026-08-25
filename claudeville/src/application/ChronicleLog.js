@@ -31,6 +31,8 @@ const STATUS_EVENTS = {
 };
 
 const DIGEST_DETAIL_LIMIT = 8;
+export const DIGEST_STATE_LIMIT = 2048;
+const PENDING_ARRIVAL_LIMIT = 512;
 let activeChronicleLog = null;
 
 /** The running day book, used by services that are constructed before it. */
@@ -65,6 +67,13 @@ export function chronicleDateWindow(now = Date.now(), retentionDays = 14) {
 function boundedText(value, maxLength = 200) {
     if (value == null) return null;
     return String(value).slice(0, maxLength);
+}
+
+function isDepartedAgent(agent) {
+    return agent?.isDeparted === true
+        || (agent?.departedAt !== null
+            && agent?.departedAt !== undefined
+            && Number.isFinite(Number(agent.departedAt)));
 }
 
 function projectName(path) {
@@ -125,7 +134,7 @@ export class ChronicleLog {
         this._seq = 0;
         this._replayed = false;
         this._replayPromise = null;
-        this._pendingArrivals = [];
+        this._pendingArrivals = new Map();
         this._stopPromise = null;
     }
 
@@ -140,7 +149,7 @@ export class ChronicleLog {
         this._replayToday();
 
         this._onAdded = (agent) => {
-            this._statusById.set(agent.id, agent.status);
+            if (!isDepartedAgent(agent)) this._statusById.set(agent.id, agent.status);
             const arrived = this._noteArrival(agent);
             // A genuinely new resident may already be waiting, errored,
             // rate-limited, or complete when it enters the town. Preserve that
@@ -159,7 +168,7 @@ export class ChronicleLog {
         this._onRemoved = (agent) => {
             this._statusById.delete(agent.id);
             this._waitingSince.delete(agent.id);
-            this._pendingArrivals = this._pendingArrivals.filter((a) => a.id !== agent.id);
+            this._pendingArrivals.delete(agent.id);
             if (this._presentIds.delete(agent.id)) {
                 this.record(ChronicleEventKind.DEPARTED, agent);
             }
@@ -190,9 +199,12 @@ export class ChronicleLog {
     // Arrivals cannot be judged until the replay says who was already here, and
     // the first sessions can land before that read returns — so they queue.
     _noteArrival(agent) {
-        if (!this._isTownsfolk(agent)) return false;
+        if (!this._isTownsfolk(agent) || isDepartedAgent(agent)) return false;
         if (!this._replayed) {
-            this._pendingArrivals.push(agent);
+            this._pendingArrivals.set(agent.id, agent);
+            while (this._pendingArrivals.size > PENDING_ARRIVAL_LIMIT) {
+                this._pendingArrivals.delete(this._pendingArrivals.keys().next().value);
+            }
             return null;
         }
         if (this._presentIds.has(agent.id)) return false;
@@ -202,7 +214,8 @@ export class ChronicleLog {
     }
 
     _flushPendingArrivals() {
-        const queued = this._pendingArrivals.splice(0);
+        const queued = [...this._pendingArrivals.values()];
+        this._pendingArrivals.clear();
         for (const agent of queued) {
             const arrived = this._noteArrival(agent);
             if (arrived && STATUS_EVENTS[agent.status]) {
@@ -250,8 +263,15 @@ export class ChronicleLog {
     // Only transitions are logged; a status that merely persists across polls
     // would otherwise write a line every two seconds.
     _noteStatus(agent) {
-        const previous = this._statusById.get(agent.id);
         const status = agent.status;
+
+        // AgentManager projects a missing session onto COMPLETED while it is
+        // held in the short departed grace period. That is a presence marker,
+        // not an execution transition: do not record a completion or resolve
+        // a wait until the real session reports a status change.
+        if (isDepartedAgent(agent)) return;
+
+        const previous = this._statusById.get(agent.id);
         if (previous === status) return;
         this._statusById.set(agent.id, status);
 
@@ -530,9 +550,10 @@ function createDigestSummary() {
 }
 
 function digestAgentKey(event) {
-    return String(event?.agentId || '').trim()
-        || `${String(event?.agentName || '').trim()}\u0000${String(event?.project || '').trim()}`
-        || 'unknown';
+    const agentId = String(event?.agentId || '').trim();
+    if (agentId) return boundedText(agentId);
+    const fallback = `${String(event?.agentName || '').trim()}\u0000${String(event?.project || '').trim()}`;
+    return boundedText(fallback === '\u0000' ? 'unknown' : fallback, 400);
 }
 
 function addDigestAgentDetail(summary, field, event, kind) {
@@ -544,6 +565,7 @@ function addDigestAgentDetail(summary, field, event, kind) {
         existing.lastTs = Number(event?.ts) || existing.lastTs;
         return;
     }
+    if (map.size >= DIGEST_STATE_LIMIT) return;
 
     const detail = {
         kind,
@@ -569,6 +591,7 @@ function addDigestCommitDetail(summary, event) {
         existing.lastTs = Number(event?.ts) || existing.lastTs;
         return;
     }
+    if (summary._detailMaps.commitDetails.size >= DIGEST_STATE_LIMIT) return;
     const detail = {
         label,
         agentId: boundedText(event?.agentId),
@@ -590,14 +613,31 @@ function accumulateDigestSummary(summary, event) {
             break;
         case ChronicleEventKind.DEPARTED:
             summary.departures++;
+            clearDigestAgentState(summary, digestAgentKey(event), [
+                'waiting',
+                'errorAgents',
+                'rateLimitAgents',
+            ]);
             break;
         case ChronicleEventKind.WAITING:
+            clearDigestAgentState(summary, digestAgentKey(event), [
+                'errorAgents',
+                'rateLimitAgents',
+            ]);
             addDigestAgentDetail(summary, 'waiting', event, ChronicleEventKind.WAITING);
             break;
         case ChronicleEventKind.ERRORED:
+            clearDigestAgentState(summary, digestAgentKey(event), [
+                'waiting',
+                'rateLimitAgents',
+            ]);
             addDigestAgentDetail(summary, 'errorAgents', event, ChronicleEventKind.ERRORED);
             break;
         case ChronicleEventKind.RATE_LIMITED:
+            clearDigestAgentState(summary, digestAgentKey(event), [
+                'waiting',
+                'errorAgents',
+            ]);
             addDigestAgentDetail(summary, 'rateLimitAgents', event, ChronicleEventKind.RATE_LIMITED);
             break;
         case ChronicleEventKind.COMMIT:
@@ -605,6 +645,14 @@ function accumulateDigestSummary(summary, event) {
             break;
         case ChronicleEventKind.RESOLVED:
             summary.resolved++;
+            clearDigestAgentState(summary, digestAgentKey(event), ['waiting']);
+            break;
+        case ChronicleEventKind.COMPLETED:
+            clearDigestAgentState(summary, digestAgentKey(event), [
+                'waiting',
+                'errorAgents',
+                'rateLimitAgents',
+            ]);
             break;
         default:
             break;
@@ -612,11 +660,18 @@ function accumulateDigestSummary(summary, event) {
     return summary;
 }
 
+function clearDigestAgentState(summary, key, fields) {
+    for (const field of fields) summary._detailMaps[field]?.delete(key);
+}
+
 function finalizeDigestSummary(summary, { since = null, until = null } = {}) {
     const { _detailMaps: detailMaps, ...plain } = summary;
     const waitingAgentCount = detailMaps.waiting.size;
     const errorAgentCount = detailMaps.errorAgents.size;
     const rateLimitAgentCount = detailMaps.rateLimitAgents.size;
+    const waiting = [...detailMaps.waiting.values()].slice(0, DIGEST_DETAIL_LIMIT);
+    const errorAgents = [...detailMaps.errorAgents.values()].slice(0, DIGEST_DETAIL_LIMIT);
+    const rateLimitAgents = [...detailMaps.rateLimitAgents.values()].slice(0, DIGEST_DETAIL_LIMIT);
     const daySummary = finalizeDaySummary(plain);
     return {
         ...daySummary,
@@ -629,17 +684,22 @@ function finalizeDigestSummary(summary, { since = null, until = null } = {}) {
         since,
         until,
         hasActivity: daySummary.totalEvents > 0,
-        waiting: daySummary.waiting,
-        errorAgents: daySummary.errorAgents,
-        rateLimitAgents: daySummary.rateLimitAgents,
+        waiting,
+        errorAgents,
+        rateLimitAgents,
         commitDetails: daySummary.commitDetails,
         waitingAgents: waitingAgentCount,
         errorAgentCount,
         rateLimitAgentCount,
+        unresolved: {
+            waitingAgents: waitingAgentCount,
+            errorAgentCount,
+            rateLimitAgentCount,
+        },
         urgent: {
-            waiting: daySummary.waiting,
-            errors: daySummary.errorAgents,
-            rateLimits: daySummary.rateLimitAgents,
+            waiting,
+            errors: errorAgents,
+            rateLimits: rateLimitAgents,
         },
         routine: {
             completed: daySummary.completed,

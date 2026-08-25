@@ -8,6 +8,7 @@ const LATEST_COMMIT_IDS_PER_PROJECT_LIMIT = 64;
 const FOUNDING_META_KEY = 'founding';
 const EVENT_RETENTION_DAYS = 14;
 const EVENT_RETENTION_MAX_ROWS = 20_000;
+const CHRONICLE_OPEN_TIMEOUT_MS = 5000;
 
 const RETENTION_MS = {
     manifests: 24 * 60 * 60 * 1000,
@@ -62,10 +63,22 @@ function storeConfig(name) {
 }
 
 export class ChronicleStore {
-    constructor({ dbName = DB_NAME } = {}) {
+    constructor({
+        dbName = DB_NAME,
+        openTimeoutMs = CHRONICLE_OPEN_TIMEOUT_MS,
+        onStatusChange = null,
+    } = {}) {
         this.dbName = dbName;
         this.eventRetentionDays = EVENT_RETENTION_DAYS;
+        this.openTimeoutMs = Number.isFinite(Number(openTimeoutMs))
+            ? Math.max(1, Number(openTimeoutMs))
+            : CHRONICLE_OPEN_TIMEOUT_MS;
         this.db = null;
+        this.status = 'idle';
+        this.isDegraded = false;
+        this.degradedReason = null;
+        this.degradedError = null;
+        this._statusListener = typeof onStatusChange === 'function' ? onStatusChange : null;
         this.channel = typeof BroadcastChannel !== 'undefined'
             ? new BroadcastChannel('claudeville-chronicle')
             : null;
@@ -94,42 +107,147 @@ export class ChronicleStore {
         if (this._closed) return Promise.reject(new Error('ChronicleStore is closed'));
         if (this.db) return Promise.resolve(this);
         if (this._openPromise) return this._openPromise;
+        if (this.degradedError) return Promise.reject(this.degradedError);
         if (typeof indexedDB === 'undefined') {
-            return Promise.reject(new Error('IndexedDB is not available in this browser context'));
+            const error = new Error('IndexedDB is not available in this browser context');
+            this._setStatus('degraded', { reason: 'indexeddb-unavailable', error });
+            return Promise.reject(error);
         }
-        const request = indexedDB.open(this.dbName, DB_VERSION);
-        request.onupgradeneeded = () => {
-            const db = request.result;
-            const tx = request.transaction;
-            for (const name of ['manifests', 'monuments', 'trailSamples', 'auroraLog', 'biographies', 'affinities', 'events', 'meta']) {
-                const config = storeConfig(name);
-                this._ensureStore(db, tx, name, config.keyPath, config.indexes);
-            }
-        };
-        const openPromise = requestToPromise(request)
-            .then((db) => {
-                if (this._closed) {
-                    db.close?.();
-                    throw new Error('ChronicleStore closed while opening');
+        this._setStatus('opening');
+
+        let request;
+        try {
+            request = indexedDB.open(this.dbName, DB_VERSION);
+        } catch (error) {
+            const normalized = error instanceof Error ? error : new Error(String(error));
+            this._setStatus('degraded', { reason: 'open-failed', error: normalized });
+            return Promise.reject(normalized);
+        }
+
+        const openPromise = new Promise((resolve, reject) => {
+            let settled = false;
+            let timeoutId = null;
+            let cancelOpen = null;
+
+            const cleanup = () => {
+                if (timeoutId !== null) clearTimeout(timeoutId);
+                timeoutId = null;
+                if (this._openCancel === cancelOpen) this._openCancel = null;
+            };
+
+            const fail = (error, reason) => {
+                if (settled) return;
+                settled = true;
+                cleanup();
+                const normalized = error instanceof Error
+                    ? error
+                    : new Error(String(error || 'ChronicleStore failed to open'));
+                this._setStatus('degraded', { reason, error: normalized });
+                reject(normalized);
+            };
+
+            const succeed = (db) => {
+                if (settled) {
+                    db?.close?.();
+                    return;
                 }
+                settled = true;
+                cleanup();
+                if (this._closed) {
+                    db?.close?.();
+                    reject(new Error('ChronicleStore closed while opening'));
+                    return;
+                }
+                db.onversionchange = () => {
+                    // Let a newer schema version proceed in another tab. An
+                    // old open connection otherwise holds the upgrade hostage.
+                    try { db.close?.(); } catch { /* best effort */ }
+                    if (this.db !== db || this._closed) return;
+                    this.db = null;
+                    this._setStatus('idle');
+                };
                 this.db = db;
-                return this;
-            })
-            .finally(() => {
-                if (this._openPromise === openPromise) this._openPromise = null;
-            });
+                this._setStatus('ready');
+                resolve(this);
+            };
+
+            cancelOpen = () => fail(new Error('ChronicleStore closed while opening'), 'closed');
+            this._openCancel = cancelOpen;
+
+            request.onupgradeneeded = () => {
+                try {
+                    const db = request.result;
+                    const tx = request.transaction;
+                    for (const name of ['manifests', 'monuments', 'trailSamples', 'auroraLog', 'biographies', 'affinities', 'events', 'meta']) {
+                        const config = storeConfig(name);
+                        this._ensureStore(db, tx, name, config.keyPath, config.indexes);
+                    }
+                } catch (error) {
+                    fail(error, 'upgrade-failed');
+                }
+            };
+            request.onblocked = () => {
+                if (!settled) {
+                    // Keep trying briefly so an older tab can receive
+                    // versionchange and close, but expose the degraded state
+                    // immediately instead of leaving startup looking frozen.
+                    this._setStatus('degraded', { reason: 'upgrade-blocked', terminal: false });
+                }
+            };
+            request.onerror = () => fail(request.error, 'open-failed');
+            request.onsuccess = () => succeed(request.result);
+
+            timeoutId = setTimeout(() => {
+                const blocked = this.degradedReason === 'upgrade-blocked';
+                const reason = blocked ? 'upgrade-blocked-timeout' : 'open-timeout';
+                const error = new Error(
+                    `ChronicleStore open timed out after ${this.openTimeoutMs}ms`,
+                );
+                error.code = 'CHRONICLE_STORE_OPEN_TIMEOUT';
+                fail(error, reason);
+            }, this.openTimeoutMs);
+            timeoutId?.unref?.();
+        });
         this._openPromise = openPromise;
+        openPromise.then(
+            () => { if (this._openPromise === openPromise) this._openPromise = null; },
+            () => { if (this._openPromise === openPromise) this._openPromise = null; },
+        );
         return openPromise;
     }
 
     close() {
         if (this._closed) return;
         this._closed = true;
+        this._openCancel?.();
         this.db?.close?.();
         this.db = null;
         this.channel?.removeEventListener?.('message', this._onChannelMessage);
         this.channel?.close?.();
         this.channel = null;
+        this._setStatus('closed');
+    }
+
+    _setStatus(status, { reason = null, error = null, terminal = true } = {}) {
+        this.status = status;
+        this.isDegraded = status === 'degraded';
+        if (status === 'degraded') {
+            this.degradedReason = reason;
+            if (terminal && error) this.degradedError = error;
+            const detail = error?.message ? `: ${error.message}` : '';
+            console.warn(`[ChronicleStore] degraded (${reason || 'unavailable'})${detail}`);
+        } else {
+            this.degradedReason = null;
+            this.degradedError = null;
+        }
+        try {
+            this._statusListener?.({
+                status: this.status,
+                isDegraded: this.isDegraded,
+                reason: this.degradedReason,
+                error: this.degradedError,
+            });
+        } catch { /* status reporting must never break storage */ }
     }
 
     async put(storeName, record) {
@@ -688,6 +806,7 @@ export class ChronicleStore {
 export {
     DB_NAME,
     DB_VERSION,
+    CHRONICLE_OPEN_TIMEOUT_MS,
     EVENT_RETENTION_DAYS,
     EVENT_RETENTION_MAX_ROWS,
     RETENTION_MS,

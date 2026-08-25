@@ -75,12 +75,14 @@ function nowFrom(clock) {
 }
 
 function digestItems(digest, field, urgentField) {
-    return digest?.urgent?.[urgentField]
-        || digest?.[field]
-        || [];
+    const urgent = digest?.urgent?.[urgentField];
+    if (Array.isArray(urgent)) return urgent;
+    return Array.isArray(digest?.[field]) ? digest[field] : [];
 }
 
 function digestCount(digest, preferred, fallback) {
+    const unresolvedValue = Number(digest?.unresolved?.[preferred]);
+    if (Number.isFinite(unresolvedValue)) return Math.max(0, unresolvedValue);
     const value = Number(digest?.[preferred]);
     if (Number.isFinite(value)) return Math.max(0, value);
     const nestedValue = Number(digest?.routine?.[preferred]);
@@ -364,22 +366,40 @@ export class AttentionService {
     }
 
     _decorateDigest(digest, since, until) {
-        const waiting = digestItems(digest, 'waiting', 'waiting')
-            .map(item => this._decorateDigestItem(item, since, until));
-        const errors = digestItems(digest, 'errorAgents', 'errors')
-            .map(item => this._decorateDigestItem(item, since, until));
-        const rateLimits = digestItems(digest, 'rateLimitAgents', 'rateLimits')
-            .map(item => this._decorateDigestItem(item, since, until));
+        const waitingCount = digestCount(digest, 'waitingAgents', 'waits');
+        const errorCount = digestCount(digest, 'errorAgentCount', 'errors');
+        const rateLimitCount = digestCount(digest, 'rateLimitAgentCount', 'rateLimits');
+        // Chronicle supplies these as net state counts. Do not decorate stale
+        // entry arrays when a condition was resolved later in the interval.
+        const waiting = waitingCount > 0
+            ? digestItems(digest, 'waiting', 'waiting')
+                .map(item => this._decorateDigestItem(item, since, until))
+            : [];
+        const errors = errorCount > 0
+            ? digestItems(digest, 'errorAgents', 'errors')
+                .map(item => this._decorateDigestItem(item, since, until))
+            : [];
+        const rateLimits = rateLimitCount > 0
+            ? digestItems(digest, 'rateLimitAgents', 'rateLimits')
+                .map(item => this._decorateDigestItem(item, since, until))
+            : [];
         const desktopNotifiedCount = [...waiting, ...errors, ...rateLimits]
             .filter(item => item.desktopNotified).length;
-        const hasUrgent = digestCount(digest, 'waitingAgents', 'waits') > 0
-            || digestCount(digest, 'errorAgentCount', 'errors') > 0
-            || digestCount(digest, 'rateLimitAgentCount', 'rateLimits') > 0;
+        const hasUrgent = waitingCount > 0 || errorCount > 0 || rateLimitCount > 0;
         return {
             ...(digest || {}),
             waiting,
             errorAgents: errors,
             rateLimitAgents: rateLimits,
+            waitingAgents: waitingCount,
+            errorAgentCount: errorCount,
+            rateLimitAgentCount: rateLimitCount,
+            unresolved: {
+                ...(digest?.unresolved || {}),
+                waitingAgents: waitingCount,
+                errorAgentCount: errorCount,
+                rateLimitAgentCount: rateLimitCount,
+            },
             urgent: { waiting, errors, rateLimits },
             hasUrgent,
             desktopNotifiedCount,
