@@ -1,7 +1,52 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { AmbientAudioController } from './AmbientAudioController.js';
+import {
+    AmbientAudioController,
+    AUDIO_MIXER_DEFAULTS,
+    readStoredLayerLevels,
+} from './AmbientAudioController.js';
 import { formatCost, formatNumber, shortProjectName } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
+
+const SETTINGS_MODAL_OWNER = 'topbar-settings';
+
+export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
+    'claudeville.sound.enabled': 'false',
+    'claudeville.sound.volume': '0.5',
+    'claudeville.sound.mode': 'ambient',
+    'claudeville.sound.layers': JSON.stringify(AUDIO_MIXER_DEFAULTS),
+    'cv-auto-camera': '1',
+    'claudeville.alerts.desktop': '0',
+    'claudeville.sidebarCollapsed': 'false',
+});
+
+function storageValue(storage, key) {
+    try { return storage?.getItem(key) ?? null; } catch { return null; }
+}
+
+export function readPersistedSettings(storage = globalThis.window?.localStorage) {
+    const storedVolume = storageValue(storage, 'claudeville.sound.volume');
+    const rawVolume = storedVolume === null ? NaN : Number(storedVolume);
+    const volume = Number.isFinite(rawVolume)
+        ? Math.max(0, Math.min(1, rawVolume))
+        : 0.5;
+    const rawMode = storageValue(storage, 'claudeville.sound.mode');
+    return {
+        soundEnabled: storageValue(storage, 'claudeville.sound.enabled') === 'true',
+        soundVolume: volume,
+        soundMode: rawMode === 'bgm' ? 'bgm' : 'ambient',
+        soundLayers: readStoredLayerLevels(storage),
+        autoCamera: storageValue(storage, 'cv-auto-camera') !== '0',
+        desktopAlerts: storageValue(storage, 'claudeville.alerts.desktop') === '1',
+        sidebarCollapsed: storageValue(storage, 'claudeville.sidebarCollapsed') === 'true',
+    };
+}
+
+export function resetPersistedSettings(storage = globalThis.window?.localStorage) {
+    for (const [key, value] of Object.entries(PERSISTED_SETTING_DEFAULTS)) {
+        try { storage?.setItem(key, value); } catch { /* persistence is optional */ }
+    }
+    return readPersistedSettings(storage);
+}
 
 export class TopBar {
     constructor(world, { modal, attention, chronicle, spendLedger } = {}) {
@@ -58,6 +103,7 @@ export class TopBar {
         this._initAttentionControls();
         this._initChronicleButton();
         this._initSpendBreakdown();
+        this._initSettingsButton();
 
         this._onUpdate = () => this.render();
         eventBus.on('agent:added', this._onUpdate);
@@ -143,17 +189,10 @@ export class TopBar {
             if (!this.attention.desktopAlertsAvailable) {
                 btn.hidden = true;
             } else {
-                const apply = (on) => {
-                    btn.classList.toggle('topbar__sound-btn--on', on);
-                    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-                    btn.title = on
-                        ? 'Disable desktop notifications'
-                        : 'Enable desktop notifications';
-                };
-                apply(this.attention.desktopAlerts);
+                this._applyAlertsState(this.attention.desktopAlerts);
                 this._onAlertsClick = async () => {
                     const on = await this.attention.setDesktopAlerts(!this.attention.desktopAlerts);
-                    apply(on);
+                    this._applyAlertsState(on);
                     if (!on && Notification.permission === 'denied') {
                         btn.title = 'Blocked by the browser — allow notifications for localhost:4000';
                     }
@@ -174,6 +213,14 @@ export class TopBar {
         document.addEventListener('keydown', this._onAttentionKey);
     }
 
+    _applyAlertsState(on) {
+        const btn = this.els.alertsToggle;
+        if (!btn) return;
+        btn.classList.toggle('topbar__sound-btn--on', Boolean(on));
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+        btn.title = on ? 'Disable desktop notifications' : 'Enable desktop notifications';
+    }
+
     _initChronicleButton() {
         const btn = this.els.chronicleBtn;
         if (!btn) return;
@@ -184,6 +231,158 @@ export class TopBar {
             });
         };
         btn.addEventListener('click', this._onChronicleClick);
+    }
+
+    _initSettingsButton() {
+        if (!this.modal || !this.els.root) return;
+        const anchor = document.getElementById('topbarWorldControls') || this.els.soundMode;
+        if (!anchor?.parentElement) return;
+        const button = el('button', {
+            className: 'topbar__sound-btn',
+            text: 'SET',
+            title: 'Review settings and reset defaults',
+            ariaLabel: 'Open settings',
+            style: { fontSize: '9px', padding: '6px 7px', letterSpacing: '0.5px' },
+        });
+        button.type = 'button';
+        button.setAttribute('aria-haspopup', 'dialog');
+        this._onSettingsClick = () => this._openSettings();
+        button.addEventListener('click', this._onSettingsClick);
+        anchor.insertAdjacentElement('afterend', button);
+        this._settingsButtonEl = button;
+    }
+
+    _openSettings() {
+        if (!this.modal || this._destroyed) return;
+        this._hideMixerPanel();
+        this._hideSpendPanel();
+        this.modal.openContent('Settings', this._buildSettingsContent(), {
+            wide: true,
+            owner: SETTINGS_MODAL_OWNER,
+        });
+    }
+
+    _buildSettingsContent() {
+        const settings = readPersistedSettings();
+        const content = el('div', {
+            className: 'settings-panel',
+            style: { display: 'grid', gap: '14px' },
+        });
+        content.append(
+            this._settingsSection('SOUND', [
+                ['Sound', settings.soundEnabled ? 'On' : 'Off'],
+                ['Mode', settings.soundMode === 'bgm' ? 'Town music' : 'Reactive ambience'],
+                ['Master volume', `${Math.round(settings.soundVolume * 100)}%`],
+                ['Soundscape mix', Object.entries(settings.soundLayers)
+                    .map(([name, value]) => `${name} ${Math.round(value * 100)}%`)
+                    .join(' · ')],
+            ]),
+            this._settingsSection('WORLD & VIEW', [
+                ['Automatic camera', settings.autoCamera ? 'On' : 'Off'],
+                ['Current view', `${this._currentViewLabel()} · session only`],
+            ]),
+            this._settingsSection('ATTENTION', [
+                ['Desktop alerts', this.attention?.desktopAlertsAvailable
+                    ? (settings.desktopAlerts ? 'On' : 'Off')
+                    : 'Unavailable in this browser'],
+            ]),
+            this._settingsSection('LAYOUT', [
+                ['Agent sidebar', settings.sidebarCollapsed ? 'Collapsed' : 'Expanded'],
+            ]),
+        );
+
+        const actions = el('div', {
+            style: {
+                display: 'flex',
+                alignItems: 'center',
+                gap: '12px',
+                paddingTop: '12px',
+                borderTop: '1px solid var(--cv-border)',
+            },
+        });
+        const reset = el('button', {
+            className: 'topbar__sound-btn',
+            text: 'RESET TO DEFAULTS',
+            ariaLabel: 'Reset persisted settings to defaults',
+            style: { padding: '8px 10px' },
+        });
+        reset.type = 'button';
+        reset.addEventListener('click', () => this._resetSettings());
+        actions.append(reset, el('span', {
+            text: 'Keeps session history, names, pins, and Chronicle data.',
+            style: { color: 'var(--cv-text-muted)', fontSize: '11px' },
+        }));
+        content.appendChild(actions);
+        return content;
+    }
+
+    _settingsSection(title, rows) {
+        const list = el('div', {
+            style: {
+                display: 'grid',
+                gridTemplateColumns: '150px minmax(0, 1fr)',
+                gap: '7px 14px',
+                padding: '10px 12px',
+                border: '1px solid var(--cv-border)',
+                background: 'rgba(0, 0, 0, 0.12)',
+            },
+        });
+        for (const [label, value] of rows) {
+            list.append(
+                el('span', {
+                    text: label,
+                    style: { color: 'var(--cv-text-muted)', fontSize: '11px' },
+                }),
+                el('span', {
+                    text: value,
+                    style: { color: 'var(--cv-tan)', fontSize: '11px' },
+                }),
+            );
+        }
+        return el('section', {}, [
+            el('div', {
+                text: title,
+                style: {
+                    marginBottom: '6px',
+                    color: 'var(--cv-gold-bright, #f2d36b)',
+                    fontFamily: 'var(--font-pixel)',
+                    fontSize: '9px',
+                    letterSpacing: '1px',
+                },
+            }),
+            list,
+        ]);
+    }
+
+    _currentViewLabel() {
+        return document.getElementById('btnModeDashboard')
+            ?.classList.contains('topbar__mode-btn--active') ? 'Dashboard' : 'World';
+    }
+
+    _resetSettings() {
+        resetPersistedSettings();
+        this.audio?.setEnabled(false);
+        this.audio?.setVolume(0.5);
+        this.audio?.setMode('ambient');
+        for (const [name, value] of Object.entries(AUDIO_MIXER_DEFAULTS)) {
+            this.audio?.setLayerLevel(name, value);
+        }
+        eventBus.emit('camera:auto-camera', { enabled: true });
+        if (this.attention) {
+            void this.attention.setDesktopAlerts(false).then((on) => this._applyAlertsState(on));
+        }
+        const sidebar = document.getElementById('sidebar');
+        if (sidebar?.classList.contains('sidebar--collapsed')) {
+            document.getElementById('sidebarToggle')?.click();
+        }
+        if (this.modal?.isOpen(SETTINGS_MODAL_OWNER)) {
+            replaceChildren(this.modal.contentEl, [this._buildSettingsContent()]);
+            this.modal.closeBtn?.focus();
+        }
+    }
+
+    _closeSettings() {
+        if (this.modal?.isOpen(SETTINGS_MODAL_OWNER)) this.modal.close();
     }
 
     // The topbar remains a glance surface: one compact chip opens the deeper
@@ -323,6 +522,7 @@ export class TopBar {
 
     _showMixerPanel() {
         if (this._destroyed || !this._mixerButtonEl || !this._mixerPanelEl) return;
+        this._closeSettings?.();
         this._hideSpendPanel();
         const rect = this._mixerButtonEl.getBoundingClientRect();
         const panelWidth = 308;
@@ -437,6 +637,7 @@ export class TopBar {
 
     _showSpendPanel() {
         if (this._destroyed || !this.els.rateWrap) return;
+        this._closeSettings?.();
         this._hideMixerPanel();
         this._ensureSpendPanel();
         this._renderSpendPanel();
@@ -876,6 +1077,11 @@ export class TopBar {
         if (this._onChronicleClick && this.els.chronicleBtn) {
             this.els.chronicleBtn.removeEventListener('click', this._onChronicleClick);
         }
+        if (this._onSettingsClick && this._settingsButtonEl) {
+            this._settingsButtonEl.removeEventListener('click', this._onSettingsClick);
+        }
+        this._settingsButtonEl?.remove();
+        this._settingsButtonEl = null;
         if (this._onSpendClick && this.els.rateWrap) {
             this.els.rateWrap.removeEventListener('click', this._onSpendClick);
             this.els.rateWrap.removeEventListener('keydown', this._onSpendKeydown);

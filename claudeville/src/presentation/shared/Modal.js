@@ -22,6 +22,7 @@ export class Modal {
         this._isOpen = false;
         this._requestVersion = 0;
         this._inertRecords = [];
+        this._owner = null;
         // Element that had focus before the dialog opened; restored on close.
         this._previousFocus = null;
 
@@ -44,10 +45,10 @@ export class Modal {
         }
     }
 
-    open(title, contentHTML, { wide = false, request = null } = {}) {
+    open(title, contentHTML, { wide = false, request = null, owner = null } = {}) {
         if (this._destroyed) return false;
-        const owner = request ?? this.beginRequest();
-        if (!this.isRequestCurrent(owner)) return false;
+        const requestOwner = request ?? this.beginRequest();
+        if (!this.isRequestCurrent(requestOwner)) return false;
         this.titleEl.textContent = title;
         this.contentEl.innerHTML = contentHTML;
         this.box.classList.toggle('modal--wide', wide);
@@ -56,6 +57,7 @@ export class Modal {
             this._setBackgroundInert(true);
         }
         this._isOpen = true;
+        this._owner = owner;
         this.overlay.setAttribute('aria-hidden', 'false');
         this.overlay.style.display = 'flex';
         document.addEventListener('keydown', this._onKeydown);
@@ -64,11 +66,24 @@ export class Modal {
         return true;
     }
 
+    // Node-based companion to open(). Shared UI panels can keep their event
+    // handlers and avoid converting trusted DOM into an HTML string.
+    openContent(title, content, options = {}) {
+        if (!this.open(title, '', options)) return false;
+        this.contentEl.replaceChildren(content);
+        return true;
+    }
+
+    isOpen(owner = null) {
+        return this._isOpen && (owner === null || owner === this._owner);
+    }
+
     close() {
         if (!this.overlay) return;
         this.invalidateRequest();
         const wasOpen = this._isOpen;
         this._isOpen = false;
+        this._owner = null;
         this.overlay.style.display = 'none';
         this.overlay.setAttribute('aria-hidden', 'true');
         this.titleEl.textContent = '';

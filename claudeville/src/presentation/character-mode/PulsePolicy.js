@@ -34,6 +34,19 @@ export function pulseValue(bandName = 'intrinsic', frame = 0, motionScale = 1) {
     return band.base + Math.sin(phase) * band.amplitude;
 }
 
+// Normalized 0..1 frame-domain read. This is the frame-counter counterpart to
+// pulseBand01(); it lets existing renderers migrate without converting their
+// clocks to milliseconds or changing a band's authored cadence. `phase`
+// detunes individual marks while the reduced-motion result remains fixed.
+export function pulseBand01Frame(bandName = 'intrinsic', frame = 0, motionScale = 1, phase = 0) {
+    const band = DEFAULT_PULSE_BANDS[bandName] || DEFAULT_PULSE_BANDS.intrinsic;
+    if (motionScale <= 0) return 0.5;
+    const resolvedPhase = (Number(frame) || 0) * band.rate
+        + band.phase
+        + (Number(phase) || 0);
+    return Math.max(0, Math.min(1, 0.5 + Math.sin(resolvedPhase) * 0.5));
+}
+
 // Millisecond-domain twin of pulseValue() for overlay modules that track
 // performance.now() instead of a frame counter (plan 3.9 — snapping the local
 // sine cadences onto shared bands). Converts ms to frames so the authored

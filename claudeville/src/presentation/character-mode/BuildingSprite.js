@@ -18,6 +18,7 @@ import { normalizeLightSource } from './LightSourceRegistry.js';
 import { normalizeLightingState, smokeWindDrift } from './AtmosphereState.js';
 import { SMOKE_COOL_COLORS, SMOKE_WARM_COLORS } from './ParticleSystem.js';
 import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';
+import { pulseBand01Frame } from './PulsePolicy.js';
 import { buildingCenterToWorld, tileToWorld, worldToTile } from './Projection.js';
 import {
     BUILDING_EMITTER_FALLBACKS,
@@ -3821,7 +3822,9 @@ export class BuildingSprite {
     _pulseBandAlpha(visual, occupancy, baseAlpha) {
         const fallback = visual?.reducedMotionFallback || {};
         const pulse = this.motionScale
-            ? (Math.sin(this.frame * 0.075) + 1) / 2
+            // Exact legacy waveform: the working band is also 0.075 rad/frame;
+            // cancel its authored phase so this migration does not retune it.
+            ? pulseBand01Frame('working', this.frame, this.motionScale, -0.7)
             : Number.isFinite(fallback.pulse) ? fallback.pulse : 0.55;
         const band = visual?.pulseBand || {};
         const stateBoost = occupancy.state === 'full' || occupancy.state === 'alert'

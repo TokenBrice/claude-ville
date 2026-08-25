@@ -17,6 +17,7 @@ import { tileToWorld, worldToTile } from './Projection.js';
 import { resolveUpdateRouteBuilding } from './MovementRouting.js';
 import { releaseCanvasMap } from './CanvasBudget.js';
 import { AgentAction, resolveAgentAction } from './ActionVocabulary.js';
+import { AgentGpuOverlayRenderer } from './AgentGpuOverlayRenderer.js';
 
 // Hit-test geometry (unchanged from vector version).
 const SPRITE_HIT_HALF_WIDTH = 24;
@@ -381,6 +382,7 @@ export class AgentSprite {
         // snapping. Canvas remains authoritative for hit testing and fallback.
         this.gpuWorldEnabled = false;
         this._gpuFrameRecord = null;
+        this.gpuOverlayRenderer = new AgentGpuOverlayRenderer(this);
         this._lastBuildingType = null;
         this._lastIntentId = null;
         this._lastTargetTile = null;
@@ -476,6 +478,7 @@ export class AgentSprite {
 
         this._lastStatus = agent?.status || null;
         this._completedAtMs = 0;
+        this._departedResting = false;
         // #40 — error-distress story. While ERRORED/RATE_LIMITED the villager
         // storms the Pharos with a head-down distressed gait; on recovery it
         // straightens and sheds one relief spark. `_stormingLast` tracks the
@@ -1476,6 +1479,15 @@ export class AgentSprite {
 
     setMotionScale(scale) {
         this.motionScale = scale;
+        // Arming guards (setHandoffAck, setArrivalState) reject reduced motion, but
+        // they only run once. An effect already in flight kept reading wall-clock
+        // time, so switching reduced motion ON mid-animation did not stop it.
+        // Cancel in-flight one-shots here so the gate holds in both directions.
+        if (!(scale > 0)) {
+            this._handoffAckStart = 0;
+            this._arrivalCeremonyAt = 0;
+            this._arrivalBurstPending = false;
+        }
     }
 
     // 3.7 — hover affordance. Driven by the renderer's mousemove hit-test
@@ -1621,6 +1633,26 @@ export class AgentSprite {
             this._advanceIdleAnimation(dt);
             return;
         }
+        // Lingering departures are a static finished tableau, not an active
+        // participant. Clear stale travel/chat state once, then allocate no
+        // cadence, particles, paths, or animation work on subsequent frames.
+        if (this.agent?.isDeparted) {
+            if (!this._departedResting) {
+                this._departedResting = true;
+                this.moving = false;
+                this.chatting = false;
+                this.chatPartner = null;
+                this._gossiping = false;
+                this.waypoints = [];
+                this.targetX = this.x;
+                this.targetY = this.y;
+                this.animState = 'idle';
+                this.frame = 0;
+                this._resetWalkCycle();
+            }
+            return;
+        }
+        this._departedResting = false;
         const frameScale = Math.max(0, Math.min(3, dt / 16));
         this.statusAnim += 0.05 * this.motionScale * frameScale;
         this.bumpFlash = Math.max(0, this.bumpFlash - 0.08 * frameScale);
@@ -2177,6 +2209,7 @@ export class AgentSprite {
         const budgetMode = renderMode !== 'full' && !this.selected;
         if (budgetMode && !this.gpuWorldEnabled) {
             this._drawBudgetImpostor(ctx);
+            if (this.agent?.isDeparted) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
             if (renderMode === 'compact' && this.overlaySlot != null) {
                 this._drawCompactAgentBadge(ctx);
             }
@@ -2229,7 +2262,11 @@ export class AgentSprite {
         }
 
         // Ensure animState reflects current movement (idle when not moving).
-        this.animState = this.moving && this.motionScale > 0 ? 'walk' : 'idle';
+        // Lingering departures hold a finished resting frame even if stale
+        // movement state remains on the projected agent.
+        this.animState = this.agent?.isDeparted
+            ? 'idle'
+            : this.moving && this.motionScale > 0 ? 'walk' : 'idle';
 
         // GPU mode still resolves the real sprite while Canvas annotation LOD
         // is compact/minimal. This avoids turning dense GPU scenes into blank
@@ -2272,13 +2309,18 @@ export class AgentSprite {
 
         // Strong ground language keeps agents readable against dense pixel-art terrain.
         // 4.6 — effort aura first so it stays behind the sprite and rings.
-        this._drawEffortAura(ctx, identity);
+        if (!this.agent?.isDeparted) this._drawEffortAura(ctx, identity);
         this._drawGrounding(ctx);
-        this._drawEffortFloorRing(ctx, identity);
-        this._drawContextPressureRing(ctx);
+        if (!this.agent?.isDeparted) {
+            this._drawEffortFloorRing(ctx, identity);
+            this._drawContextPressureRing(ctx);
+        }
 
         if (!this.selected && zoom < 1) {
             this._drawLowZoomImpostor(ctx);
+            if (this.agent?.isDeparted && !this.gpuWorldEnabled) {
+                this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
+            }
             // #4 — the beacon must survive the low-zoom busy overview, the exact
             // scene where a waiting agent is otherwise lost in the cluster.
             if (this.agent?.status === AgentStatus.WAITING_ON_USER) {
@@ -2321,7 +2363,9 @@ export class AgentSprite {
         // offset (reduced motion). Walking keeps the drop so the gait reads
         // hunched all the way to the watchtower.
         const distressDrop = this._distressPostureDrop();
-        const bobY = this.animState === 'idle'
+        const bobY = this.agent?.isDeparted
+            ? 2
+            : this.animState === 'idle'
             ? this.motionScale > 0
                 ? Math.round(
                     (
@@ -2336,7 +2380,7 @@ export class AgentSprite {
         // the baton landing reads as the child nodding back. Half-sine envelope;
         // never fires under reduced motion (setHandoffAck guards motionScale 0).
         let ackBobY = 0;
-        if (this._handoffAckStart) {
+        if (this._handoffAckStart && this.motionScale > 0) {
             const ackAge = Date.now() - this._handoffAckStart;
             if (ackAge >= 0 && ackAge < 180) {
                 ackBobY = -Math.round(Math.sin((ackAge / 180) * Math.PI) * 2.4);
@@ -2391,6 +2435,12 @@ export class AgentSprite {
             identity,
             frameGeometry,
         });
+        const departedBody = this.agent?.isDeparted && !this.gpuWorldEnabled;
+        if (departedBody) {
+            ctx.save();
+            ctx.filter = 'grayscale(0.9) saturate(0.25) brightness(0.72)';
+            ctx.globalAlpha *= 0.72;
+        }
         this._drawCodexEquipment(ctx, identity, frameGeometry, 'back');
         this._drawSpriteSilhouette(ctx, cell, dx, dy, drawScale);
         ctx.drawImage(
@@ -2404,11 +2454,17 @@ export class AgentSprite {
             this._drawFrozenTint(ctx, cell, dx, dy, drawScale);
         }
         this._drawCodexEquipment(ctx, identity, frameGeometry, 'front');
+        if (departedBody) ctx.restore();
         if (arrivalPushed) ctx.restore();
         if (arrivalProgress > 0) this._drawArrivalRuneRing(ctx, arrivalProgress);
-        this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
-        this._drawActionPoseOverlay(ctx, { dx, dy, bounds, drawScale });
-        this._drawToolRitualOverlay(ctx, { dx, dy, bounds, drawScale });
+        if (!this.agent?.isDeparted) {
+            this._drawStanceOverlay(ctx, { dx, dy, bounds, drawScale });
+            this._drawActionPoseOverlay(ctx, { dx, dy, bounds, drawScale });
+            this._drawToolRitualOverlay(ctx, { dx, dy, bounds, drawScale });
+        }
+        if (this.agent?.isDeparted && !this.gpuWorldEnabled) {
+            this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
+        }
 
         // #4 — waiting-on-user amber beacon pillar. PRIMARY tier (never culled):
         // the action-demanding state must be visible from across the map even
@@ -2444,17 +2500,19 @@ export class AgentSprite {
         // Chat bubble overlay (if chatting).
         // Per-agent floating text bubbles are deferred to Phase 4; the chat
         // ellipsis animation already handled by _drawChatEffect below.
-        if (this.chatting) {
+        if (this.chatting && !this.agent?.isDeparted) {
             this._drawChatEffect(ctx);
-        } else {
+        } else if (!this.agent?.isDeparted) {
             this._drawStatus(ctx, contentTopY);
         }
-        this._drawStatusEmote(ctx, contentTopY);
+        if (!this.agent?.isDeparted) this._drawStatusEmote(ctx, contentTopY);
         // Plan-mode and retry glyphs sit above the silhouette. The status
         // emote (kind != null) wins the slot; otherwise plan-mode glyph renders
         // slightly higher. Retry glyph renders to the right.
-        this._drawPlanModeGlyph(ctx, contentTopY);
-        this._drawRetryGlyph(ctx, contentTopY);
+        if (!this.agent?.isDeparted) {
+            this._drawPlanModeGlyph(ctx, contentTopY);
+            this._drawRetryGlyph(ctx, contentTopY);
+        }
         this._drawNameTag(ctx);
 
         // Sparkle flash during the first 200 ms of the archive fade.
@@ -3218,110 +3276,19 @@ export class AgentSprite {
     }
 
     setGpuWorldEnabled(enabled) {
-        const next = Boolean(enabled);
-        this.gpuWorldEnabled = next;
-        if (!this.gpuWorldEnabled) this._gpuFrameRecord = null;
+        this.gpuOverlayRenderer.setEnabled(enabled);
     }
 
     getGpuWorldRecords() {
-        return this._gpuFrameRecord ? [this._gpuFrameRecord] : [];
+        return this.gpuOverlayRenderer.getRecords();
     }
 
     drawGpuWorldOverlay(ctx, zoom = 1, annotationMode = 'full') {
-        if (!this.gpuWorldEnabled || !this._gpuFrameRecord || !ctx) return;
-        this._zoom = zoom;
-        const contentTopY = Number.isFinite(this._gpuFrameRecord.contentTopY)
-            ? this._gpuFrameRecord.contentTopY
-            : this.y - 48;
-        const status = this.agent?.status;
-        const primary = this.selected || status === AgentStatus.WAITING_ON_USER
-            || status === AgentStatus.ERRORED || status === AgentStatus.RATE_LIMITED;
-
-        if (this.selected) {
-            this._drawFocusPillar(ctx, contentTopY);
-        } else if (this.hovered) {
-            this._drawHoverRing(ctx);
-        }
-
-        // Modular action props stay in the ungraded overlay. They add to the
-        // complete GPU body frame and can never punch holes in its alpha.
-        if (this._gpuFrameRecord.frameGeometry) {
-            this._drawActionPoseOverlay(ctx, this._gpuFrameRecord.frameGeometry);
-        }
-
-        const admitted = this.overlaySlot != null || this.nameTagSlot != null || primary;
-        if (primary || this.selected || annotationMode === 'full' || this.gpuActionOverlay) {
-            if (this.chatting) this._drawChatEffect(ctx);
-            else this._drawStatus(ctx, contentTopY);
-            this._drawStatusEmote(ctx, contentTopY);
-            this._drawPlanModeGlyph(ctx, contentTopY);
-            this._drawRetryGlyph(ctx, contentTopY);
-        }
-
-        if (this.selected || (annotationMode === 'full' && this.nameTagSlot != null)) {
-            this._drawNameTag(ctx);
-        } else if (admitted) {
-            this._drawCompactNameStatus(ctx);
-        }
+        this.gpuOverlayRenderer.draw(ctx, zoom, annotationMode);
     }
 
-    _setGpuFrameRecord({
-        cell,
-        dx,
-        dy,
-        drawScale,
-        profileKey,
-        spriteId,
-        alpha = 1,
-        contentTopY = null,
-        frameGeometry = null,
-    }) {
-        if (!this.gpuWorldEnabled || !this.spriteCanvas || !cell) {
-            this._gpuFrameRecord = null;
-            return;
-        }
-        const source = this._gpuBaseSpriteCanvas || this.spriteCanvas;
-        const sourceSx = cell.sx;
-        const sourceSy = cell.sy;
-        const sourceSw = cell.sw;
-        const sourceSh = cell.sh;
-        const status = this.agent?.status;
-        const materialSource = this.assets?.getSidecar?.(spriteId, 'material')
-            || this.assets?.getMaterialSidecar?.(spriteId, 'material')
-            || null;
-        this._gpuFrameRecord = {
-            id: `agent:${this.agent?.id || profileKey}`,
-            stableKey: this.agent?.id || profileKey,
-            textureKey: `agent-sheet:${profileKey}`,
-            sidecarKey: materialSource ? `${spriteId}:material` : '',
-            source,
-            materialSource,
-            sourceWidth: source.width,
-            sourceHeight: source.height,
-            sx: sourceSx,
-            sy: sourceSy,
-            sw: sourceSw,
-            sh: sourceSh,
-            x: dx,
-            y: dy,
-            width: sourceSw * drawScale,
-            height: sourceSh * drawScale,
-            alpha,
-            material: this.agent?.provider === 'codex' ? 'metal' : 'fabric',
-            elevation: 0.52,
-            occluder: 0.58,
-            emissive: status === AgentStatus.WAITING_ON_USER
-                ? 0.42
-                : status === AgentStatus.COMPLETED
-                    ? 0.20
-                    : status === AgentStatus.WORKING
-                        ? 0.08
-                        : 0,
-            textureRevision: profileKey,
-            sidecarRevision: this.assets?.assetVersion || null,
-            contentTopY,
-            frameGeometry,
-        };
+    _setGpuFrameRecord(record) {
+        this.gpuOverlayRenderer.setFrameRecord(record);
     }
 
     _drawSpriteSilhouette(ctx, cell, dx, dy, drawScale = 1) {
