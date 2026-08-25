@@ -2022,13 +2022,13 @@ export class BuildingSprite {
                 this._drawWatchtowerRitual(ctx, beacon);
             }
         } else if (building.type === 'harbor') {
-            if (splitPass !== 'back') {
-                this._drawHarborMasterOffice(ctx, localPoint, pulse, building);
-                // #33 — reduced-motion fallback: a single static cookfire wisp
-                // above the harbor brazier, standing in for the live smoke.
-                if (!this.motionScale) {
-                    this._drawStaticSmokeWisp(ctx, localPoint(48, 42), { heat: 0.4 });
-                }
+            // Harbor effects span the roofline and foreground quay. Draw in both
+            // split passes and let the active occlusion clip partition them.
+            this._drawHarborMasterOffice(ctx, localPoint, pulse, building);
+            // #33 — reduced-motion fallback: a single static chimney wisp in
+            // place of the live steam/smoke column.
+            if (!this.motionScale) {
+                this._drawStaticSmokeWisp(ctx, localPoint(127, 29), { heat: 0.2 });
             }
         } else if (building.type === 'archive') {
             if (splitPass !== 'back') this._drawArchiveEnhancement(ctx, localPoint, pulse);
@@ -2398,10 +2398,10 @@ export class BuildingSprite {
     }
 
     _drawHarborMasterOffice(ctx, localPoint, pulse, building = null) {
-        const signal = localPoint(74, 37);
-        const lantern = localPoint(171, 96);
-        const quayLight = localPoint(102, 151);
-        const pier = localPoint(256, 184);
+        const signal = localPoint(208, 38);
+        const lantern = localPoint(181, 156);
+        const quayLight = localPoint(79, 184);
+        const pier = localPoint(112, 187);
         const flagLift = this.motionScale ? Math.sin(this.frame * 0.08) * 1.8 : 0;
 
         ctx.globalCompositeOperation = 'screen';
@@ -3596,7 +3596,7 @@ export class BuildingSprite {
         // intensity passes 0.6. Crest emitter (y≈82) is unaffected.
         const archiveReadIntensity = b.type === 'archive' ? (this._archiveReadIntensity || 0) : 0;
         // #33 — signed wind drift shared by the smoke-family emitters so the
-        // forge chimney column, mine dust, and harbor cookfire all lean downwind
+        // forge chimney column, mine dust, and harbor steam all lean downwind
         // by the same amount.
         const windDrift = smokeWindDrift(this.atmosphereState);
         for (const emitter of BUILDING_EMITTER_FALLBACKS[b.type] || []) {
@@ -3620,8 +3620,8 @@ export class BuildingSprite {
     _smokeEmitterOptions(building, particleType, windDrift) {
         const isForgeSmoke = building.type === 'forge' && particleType === 'smoke';
         const isMineDust = building.type === 'mine' && particleType === 'mineDust';
-        const isHarborCookfire = building.type === 'harbor' && particleType === 'torch';
-        if (!isForgeSmoke && !isMineDust && !isHarborCookfire) return null;
+        const isHarborSmoke = building.type === 'harbor' && particleType === 'smoke';
+        if (!isForgeSmoke && !isMineDust && !isHarborSmoke) return null;
 
         const options = {};
         if (windDrift) options.windX = windDrift;

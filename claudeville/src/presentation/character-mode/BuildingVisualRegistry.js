@@ -40,7 +40,7 @@ export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
         emissiveSource('emissive.watchtower.windows', 'windows', 'windowRects', 0.68),
         emissiveSource('emissive.watchtower.beacon', 'fire', 'effectAnchors.lanternFire', 1),
     ]),
-    harbor: landmarkMaterial('harbor', 'timber', 224, 142, [
+    harbor: landmarkMaterial('harbor', 'timber', 232, 164, [
         emissiveSource('emissive.harbor.windows', 'windows', 'windowRects', 0.66),
         emissiveSource('emissive.harbor.lantern', 'lantern', 'lightSource', 0.82),
     ]),
@@ -228,8 +228,18 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         labelPriority: 'landmark',
         beaconBase: 0.9,
         windowRects: [
-            { at: [215, 86], w: 8, h: 10 },
-            { at: [233, 86], w: 6, h: 8 },
+            { at: [155, 70], w: 4, h: 8 },
+            { at: [181, 80], w: 4, h: 8 },
+            { at: [195, 89], w: 8, h: 7 },
+            { at: [222, 90], w: 4, h: 7 },
+            { at: [102, 110], w: 4, h: 9 },
+            { at: [179, 107], w: 4, h: 7 },
+            { at: [232, 110], w: 4, h: 8 },
+            { at: [122, 129], w: 4, h: 8 },
+            { at: [180, 136], w: 4, h: 8 },
+            { at: [167, 148], w: 4, h: 8 },
+            { at: [183, 155], w: 4, h: 8 },
+            { at: [190, 158], w: 4, h: 7 },
         ],
     },
 });
@@ -254,8 +264,8 @@ export const BUILDING_EMITTER_FALLBACKS = {
         { type: 'beaconMote', at: WATCHTOWER_LANTERN_FIRE.particle, chance: 0.038, count: 1 },
     ],
     harbor: [
-        { type: 'torch', at: [48, 42], chance: 0.026, count: 1 },
-        { type: 'sparkle', at: [70, 58], chance: 0.014, count: 1 },
+        { type: 'smoke', at: [127, 29], chance: 0.026, count: 1 },
+        { type: 'sparkle', at: [249, 88], chance: 0.014, count: 1 },
     ],
     taskboard: [
         { type: 'questPing', at: [128, 90], chance: 0.024, count: 1 },
@@ -272,7 +282,7 @@ export const BUILDING_LIGHT_FALLBACKS = {
     mine: { at: [128, 158], color: '#ffb84d', radius: 80, overlay: 'atmosphere.light.lantern-glow' },
     taskboard: { at: [128, 95], color: '#8bd7ff', radius: 42, overlay: 'atmosphere.light.lantern-glow' },
     archive: { at: [168, 88], color: '#b3d68c', radius: 96, overlay: 'atmosphere.light.lantern-glow' },
-    harbor: { at: [48, 42], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
+    harbor: { at: [181, 156], color: '#ffd37a', radius: 58, overlay: 'atmosphere.light.lantern-glow' },
 };
 
 export const LIGHT_SOURCE_REGISTRY = {

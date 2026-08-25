@@ -1,5 +1,5 @@
 style:
-  assetVersion: "2026-08-25-native-landmarks-v2"
+  assetVersion: "2026-08-25-native-landmarks-v3"
   anchor: "epic high-fantasy pixel art, dramatic lighting, painterly palette, crisp pixel edges, no anti-aliasing, heroic silhouettes, faint magical glow on landmarks"
 
 # Optional semantic channels. Canvas mode keeps loading the original albedo
@@ -767,26 +767,26 @@ buildings:
 
   # ── STANDARD: Harbor Master (commit ships / push departures) ──
   - id: building.harbor
-    tool: isometric_tile
-    prompt: "fantasy RPG wooden harbor dock landmark, weathered timber quay deck, angled dock fingers, stout mooring posts and pilings terminating directly in water with rope coils and localized foam contacts, compact blue-roof harbor master's shack with warm glowing window, signal mast, timber loading crane with pulley, low crates and barrels, lanterns, nautical guild style, bold readable isometric RPG landmark, no filled water tile, no ground slab, no large ship"
+    tool: map_object
+    prompt: "Grand compact high-fantasy steampunk Harbor Masters Guild landmark, designed as a wide readable isometric RPG sprite. A stacked three-level half-timbered guildhall rises directly from a structural timber quay and stone tide-gate pilings, with blue-black slate roofs, warm amber windows, dark oak galleries, stone lower arches, copper steam pipes, narrow smokestacks, brass pressure gauges, gear housings, iron catwalks, and one large ornate clockwork loading crane with chain hoist and suspended cargo crate. Several dock fingers, mooring posts, rope coils, cargo barrels, and visible supports terminate directly in the water. Strong asymmetrical crane-and-chimney silhouette, intricate but readable pixel clusters, medieval fantasy architecture fused with functional Victorian steam machinery. Structure and attached quay only, transparent empty space around and between pilings; no filled water tile, ship, airship, surrounding city, ground slab, cast shadow, text, letters, logo, or watermark."
     width: 352
-    height: 224
-    anchor: [176, 196]
+    height: 232
+    anchor: [176, 204]
     materialClass: timber
     atlasFrame: { atlas: world-pilot, key: building.harbor }
-    elevation: { base: 0, top: 224, unit: sprite-px }
+    elevation: { base: 0, top: 232, unit: sprite-px }
     emissive:
       strength: 0.82
       sources:
         - { id: emissive.harbor.windows, kind: windows, geometry: registry.windowRects, strength: 0.66 }
         - { id: emissive.harbor.lantern, kind: lantern, geometry: lightSource, strength: 0.82 }
-    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 142 }
+    occluder: { mode: alpha-silhouette, strength: 1, horizonY: 164 }
     splitForOcclusion: true
-    horizonY: 142
+    horizonY: 164
     emitters:
-      torch: [171, 96]
-      signal: [74, 37]
-    lightSource: [171, 96]
+      torch: [145, 96]
+      signal: [208, 38]
+    lightSource: [181, 156]
     lightColor: '#ffd37a'
     lightRadius: 96
     lightOverlay: 'atmosphere.light.lantern-glow'

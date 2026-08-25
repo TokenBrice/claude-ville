@@ -388,7 +388,7 @@
     "building.harbor": {
       "anchor": [
         176,
-        196
+        204
       ],
       "atlasFrame": {
         "atlas": "world-pilot",
@@ -407,9 +407,9 @@
       "id": "building.harbor",
       "materialClass": "timber",
       "sourcePath": "buildings/building.harbor/base.png",
-      "sourceSha256": "2c858e12c8988fec731b99f9b2febf8d442373a6062231ec6b6e6401104a96b9",
+      "sourceSha256": "7544f495b3b02350bce268769383a2adc0c81e98c31854ced402be9f4a9ce83e",
       "sourceSize": {
-        "h": 224,
+        "h": 232,
         "w": 352
       },
       "structureMask": null
@@ -699,10 +699,10 @@
     }
   },
   "channelSha256": {
-    "albedo": "d94f88423cfdbd99ac24e26d7a3c5cb56686523dc94b4030edd7f2b1a9721e82",
-    "emissive": "5e77ae036e71fb0a315c53aabecbfe25538467ca2fbfd6d8e46c9e67ee70dfae",
-    "material": "10a148398fc73b040e58ddacf82a325b06a25ffeeffbaad6ca7898e357a1c9d7",
-    "occluder": "fd266cf65d8734e837073c33de2796d42a77131ac7d69a8a7d12d049010dff84"
+    "albedo": "0071f534ddeb3247354a7ab9eeedfc9ef9a82e4db27336ac565b03135aa485ed",
+    "emissive": "623a5aee605f9c57db0cdfe3a9ac29d70a043adfe01f8010b0f13e32325cbd38",
+    "material": "df3b1e6865b5c93dfe509aaf01536e0bbe9e36c2081bd550c846645891b34a5e",
+    "occluder": "ca149700e652bd9950925898873a169daf9684f230fec9b577eeb90e682c274e"
   },
   "channels": {
     "albedo": "assets/sprites/atlases/world-pilot.albedo.png",
@@ -10034,13 +10034,13 @@
       "paddedRect": {
         "h": 236,
         "w": 260,
-        "x": 552,
+        "x": 908,
         "y": 0
       },
       "rect": {
         "h": 232,
         "w": 256,
-        "x": 554,
+        "x": 910,
         "y": 2
       },
       "sidecars": {
@@ -10067,7 +10067,7 @@
     "building.harbor": {
       "anchor": [
         176,
-        196
+        204
       ],
       "emissive": {
         "sources": [
@@ -10088,20 +10088,20 @@
       },
       "materialClass": "timber",
       "occluder": {
-        "horizonY": 142,
+        "horizonY": 164,
         "mode": "alpha-silhouette",
         "strength": 1
       },
       "paddedRect": {
-        "h": 228,
+        "h": 236,
         "w": 356,
-        "x": 1332,
+        "x": 552,
         "y": 0
       },
       "rect": {
-        "h": 224,
+        "h": 232,
         "w": 352,
-        "x": 1334,
+        "x": 554,
         "y": 2
       },
       "sidecars": {
@@ -10111,14 +10111,14 @@
       },
       "sourcePath": "buildings/building.harbor/base.png",
       "sourceRect": {
-        "h": 224,
+        "h": 232,
         "w": 352,
         "x": 0,
         "y": 0
       },
-      "sourceSha256": "2c858e12c8988fec731b99f9b2febf8d442373a6062231ec6b6e6401104a96b9",
+      "sourceSha256": "7544f495b3b02350bce268769383a2adc0c81e98c31854ced402be9f4a9ce83e",
       "sourceSize": {
-        "h": 224,
+        "h": 232,
         "w": 352
       },
       "tags": {
@@ -10155,13 +10155,13 @@
       "paddedRect": {
         "h": 236,
         "w": 260,
-        "x": 812,
+        "x": 1168,
         "y": 0
       },
       "rect": {
         "h": 232,
         "w": 256,
-        "x": 814,
+        "x": 1170,
         "y": 2
       },
       "sidecars": {
@@ -10380,13 +10380,13 @@
       "paddedRect": {
         "h": 236,
         "w": 260,
-        "x": 1072,
+        "x": 1428,
         "y": 0
       },
       "rect": {
         "h": 232,
         "w": 256,
-        "x": 1074,
+        "x": 1430,
         "y": 2
       },
       "sidecars": {
@@ -12196,10 +12196,10 @@
   "packOrder": [
     "building.watchtower",
     "building.observatory",
+    "building.harbor",
     "building.forge",
     "building.mine",
     "building.taskboard",
-    "building.harbor",
     "building.archive",
     "building.command",
     "building.portal",
