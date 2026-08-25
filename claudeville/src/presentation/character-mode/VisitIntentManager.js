@@ -5,6 +5,7 @@ import {
     clampRouteIndex,
     cloneItinerary,
     inferGoal,
+    intentBubbleText,
     normalizeGoal,
     normalizeItineraryRoute,
     normalizeRouteStop,
@@ -279,6 +280,10 @@ export class VisitIntentManager {
         this._nextSeenGitEventIds = null;
         this._gitReplayByAgent = null;
         this._expireIntents(currentNow);
+        for (const agent of activeAgents) {
+            if (!agent?.id) continue;
+            this._syncAgentBubbleIntent(agent, currentNow);
+        }
         return this;
     }
 
@@ -869,6 +874,23 @@ export class VisitIntentManager {
             this.intentsByAgent.set(agentId, map);
         }
         return map;
+    }
+
+    _syncAgentBubbleIntent(agent, now) {
+        const intent = this.getIntentForAgent(agent.id, now);
+        const bubble = intent ? {
+            intentId: intent.id,
+            reason: intent.reason || null,
+            phase: intent.phase || null,
+            text: intentBubbleText(intent, { agentId: agent.id, now }),
+            updatedAt: now,
+            expiresAt: intent.expiresAt,
+        } : null;
+        if (typeof agent.setVisitIntentBubble === 'function') {
+            agent.setVisitIntentBubble(bubble);
+        } else {
+            agent.visitIntentBubble = bubble;
+        }
     }
 
     _expireIntents(now) {

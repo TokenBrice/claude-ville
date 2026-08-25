@@ -1,9 +1,11 @@
 import { normalizeBuildingType } from '../../config/buildings.js';
 import { BUILDING_EVENTS, eventBus } from '../../domain/events/DomainEvent.js';
+import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { buildingCenterToWorld } from './Projection.js';
 
 const SCENE_LIMIT = 8;
+const OVERFLOW_BUCKET_MS = 1_000;
 const TOOL_EVENT_LIMIT = 40;
 const REPLAY_RETENTION_MS = 60_000;
 const REPLAY_SAMPLE_INTERVAL_MS = 750;
@@ -12,6 +14,7 @@ const BUILDING_SIGNAL_TTL_MS = 45_000;
 const SOCIAL_TTL_MS = 14_000;
 const INCIDENT_TTL_MS = 18_000;
 const RELEASE_TTL_MS = 26_000;
+const BIOGRAPHY_BANNER_TTL_MS = 9_000;
 const LIFE_TTL_MS = 12_000;
 // #40 — how long a recovery relief cue stays on the snapshot so the overlay
 // can fire one straighten-and-spark beat per healed incident.
@@ -100,7 +103,14 @@ export class VillageDirector {
         this.buildingPresence = new Map();
         this.lastSnapshot = this._emptySnapshot(Date.now());
         this._lastStats = this._emptyStats();
-        this._sceneDropCount = 0;
+        this._sceneOverflowCount = 0;
+        // Scenes beyond the visual budget are reduced to expiry/type cohorts.
+        // This preserves an exact count without retaining another render list.
+        this._sceneOverflowBuckets = new Map();
+        // Biography rewards share the release-parade stage, one batch at a
+        // time. The queue is not render state and never bypasses SCENE_LIMIT.
+        this._pendingBiographyBanners = [];
+        this._seenBiographyMilestones = new Set();
         this._lastReplaySampleAt = 0;
         this._lastSnapshotEmitAt = 0;
         this._lastSceneSignatures = new Set();
@@ -119,6 +129,7 @@ export class VillageDirector {
             eventBus.on('chronicle:milestone', (event) => {
                 if (event?.kind === 'release') this.triggerReleaseParade(event);
             }),
+            eventBus.on('biography:updated', (event) => this._onBiographyUpdated(event)),
             eventBus.on(BUILDING_EVENTS.SELECTED, (building) => this.setSelectedBuilding(building)),
             eventBus.on(BUILDING_EVENTS.DESELECTED, () => this.setSelectedBuilding(null)),
             eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, (payload) => this._onBuildingPresence(payload)),
@@ -131,6 +142,9 @@ export class VillageDirector {
         this.replaySamples = [];
         this.toolEvents = [];
         this.scenes = [];
+        this._sceneOverflowBuckets.clear();
+        this._pendingBiographyBanners = [];
+        this._seenBiographyMilestones.clear();
         this._distressedAgents.clear();
         this._recoveries.clear();
         this.buildingPresence.clear();
@@ -234,10 +248,67 @@ export class VillageDirector {
         });
     }
 
+    _onBiographyUpdated(payload = {}) {
+        const identityKey = String(payload?.identityKey || '').trim();
+        if (!identityKey) return;
+        const earned = [];
+        for (const milestone of Array.isArray(payload?.milestones) ? payload.milestones : []) {
+            const id = String(milestone?.id || '').trim();
+            if (!id) continue;
+            const key = `${identityKey}:${id}`;
+            if (this._seenBiographyMilestones.has(key)) continue;
+            this._seenBiographyMilestones.add(key);
+            earned.push(milestone);
+        }
+        if (!earned.length) return;
+
+        const agent = this._agentForBiography(identityKey);
+        const nickname = [...earned].reverse().find(entry => entry?.nickname)?.nickname;
+        const featured = nickname
+            ? String(nickname)
+            : String(earned.at(-1)?.label || 'Milestone earned');
+        const name = agent ? displayName(agent) : this._nameFromIdentityKey(identityKey);
+        this._pendingBiographyBanners.push({
+            identityKey,
+            milestoneIds: earned.map(entry => String(entry.id)),
+            agentId: agent?.id || null,
+            building: agentBuilding(agent) || 'command',
+            label: `${name} · ${featured}`.slice(0, 42),
+        });
+    }
+
+    _agentForBiography(identityKey) {
+        const agents = this.world?.agents?.values ? this.world.agents.values() : [];
+        for (const agent of agents) {
+            if (AgentBiography.identityKeyFor(agent) === identityKey) return agent;
+        }
+        return null;
+    }
+
+    _nameFromIdentityKey(identityKey) {
+        const value = String(identityKey || '').split(':').at(-1) || 'Villager';
+        return value.split('-').filter(Boolean).map(part => part[0]?.toUpperCase() + part.slice(1)).join(' ') || 'Villager';
+    }
+
+    _stageNextBiographyBanner(now) {
+        if (!this._pendingBiographyBanners.length || this.scenes.length >= SCENE_LIMIT) return;
+        if (this.scenes.some(scene => scene.type === 'release')) return;
+        const banner = this._pendingBiographyBanners.shift();
+        this._addScene({
+            ...banner,
+            type: 'release',
+            kind: 'biography-banner',
+            intensity: 0.68,
+            startedAt: now,
+            expiresAt: now + BIOGRAPHY_BANNER_TTL_MS,
+        });
+    }
+
     update(renderer, dt = 16, now = Date.now()) {
         const perfNow = nowMs();
         this._sampleReplay(renderer, now);
         this._prune(now);
+        this._stageNextBiographyBanner(now);
         const agents = this._agentSnapshots(renderer);
         const teams = this._teamClusters(agents, perfNow);
         const handoffs = this._handoffScenes(agents, now);
@@ -248,8 +319,9 @@ export class VillageDirector {
         const selectedBuildingSignal = this._selectedBuildingSignal(agents, buildingSignals);
         const hoverBuildingSignal = this._hoverBuildingSignal(agents, buildingSignals);
         const weatherInfluence = this._weatherInfluence(agents, incidents, now);
-        const releaseParade = this._releaseScene(now);
+        const releaseParade = this._releaseScene(now, agents);
         const replaySamples = this.replayActive ? this._recentReplaySamples(now) : [];
+        const sceneOverflow = this._sceneOverflowSummary(now);
 
         this.lastSnapshot = {
             now,
@@ -271,6 +343,7 @@ export class VillageDirector {
             releaseParade,
             weatherInfluence,
             activeSceneCount: this.scenes.length,
+            sceneOverflow,
         };
         this._lastStats = this._statsForSnapshot(this.lastSnapshot);
 
@@ -385,6 +458,7 @@ export class VillageDirector {
             releaseParade: null,
             weatherInfluence: null,
             activeSceneCount: 0,
+            sceneOverflow: null,
         };
     }
 
@@ -392,6 +466,8 @@ export class VillageDirector {
         return {
             activeScenes: 0,
             sceneDrops: 0,
+            sceneOverflow: 0,
+            sceneOverflowTotal: 0,
             buildingSignals: 0,
             hoverPreview: 0,
             selectedRoutes: 0,
@@ -645,10 +721,57 @@ export class VillageDirector {
         this._lastSceneSignatures.add(signature);
         this.scenes.push(normalized);
         if (this.scenes.length > SCENE_LIMIT) {
-            this._sceneDropCount += this.scenes.length - SCENE_LIMIT;
-            this.scenes.splice(0, this.scenes.length - SCENE_LIMIT);
+            const overflowed = [];
+            while (this.scenes.length > SCENE_LIMIT) {
+                let removeAt = 0;
+                for (let index = 1; index < this.scenes.length; index++) {
+                    if (this._sceneSalience(this.scenes[index]) < this._sceneSalience(this.scenes[removeAt])) {
+                        removeAt = index;
+                    }
+                }
+                overflowed.push(this.scenes.splice(removeAt, 1)[0]);
+            }
+            for (const item of overflowed) this._summarizeOverflowScene(item, now);
         }
         eventBus.emit('village:scene', normalized);
+    }
+
+    _sceneSalience(scene) {
+        if (scene?.type === 'incident') return 3;
+        if (scene?.type === 'release') return 1;
+        return 2;
+    }
+
+    _summarizeOverflowScene(scene, now = Date.now()) {
+        const expiresAt = Number(scene?.expiresAt) || now;
+        if (expiresAt <= now) return;
+        const bucketExpiry = Math.ceil(expiresAt / OVERFLOW_BUCKET_MS) * OVERFLOW_BUCKET_MS;
+        const type = scene?.type === 'incident' ? 'incident' : 'moment';
+        const key = `${type}:${bucketExpiry}`;
+        const bucket = this._sceneOverflowBuckets.get(key) || { type, expiresAt: bucketExpiry, count: 0 };
+        bucket.count += 1;
+        this._sceneOverflowBuckets.set(key, bucket);
+        this._sceneOverflowCount += 1;
+    }
+
+    _sceneOverflowSummary(now = Date.now()) {
+        let count = 0;
+        let incidentCount = 0;
+        let expiresAt = 0;
+        for (const bucket of this._sceneOverflowBuckets.values()) {
+            if (bucket.expiresAt <= now) continue;
+            count += bucket.count;
+            if (bucket.type === 'incident') incidentCount += bucket.count;
+            expiresAt = Math.max(expiresAt, bucket.expiresAt);
+        }
+        if (!count) return null;
+        const noun = incidentCount === count ? 'incident' : 'moment';
+        return {
+            count,
+            incidentCount,
+            label: `+${count} more ${noun}${count === 1 ? '' : 's'}`,
+            expiresAt,
+        };
     }
 
     _touchBuildingSignal(type, patch = {}) {
@@ -692,6 +815,9 @@ export class VillageDirector {
             if (now - (entry.recoveredAt || 0) > RECOVERY_TTL_MS) this._recoveries.delete(id);
         }
         this.scenes = this.scenes.filter(scene => (scene.expiresAt || 0) > now);
+        for (const [key, bucket] of this._sceneOverflowBuckets) {
+            if (bucket.expiresAt <= now) this._sceneOverflowBuckets.delete(key);
+        }
         this.toolEvents = this.toolEvents.filter(event => now - (Number(event.ts) || 0) <= BUILDING_SIGNAL_TTL_MS);
         for (const [type, entry] of this.buildingPresence.entries()) {
             if (now - (Number(entry.updatedAt) || 0) > BUILDING_SIGNAL_TTL_MS) this.buildingPresence.delete(type);
@@ -1017,14 +1143,17 @@ export class VillageDirector {
         return { storminess, clearing };
     }
 
-    _releaseScene(now) {
+    _releaseScene(now, agents = []) {
         const scene = [...this.scenes].reverse().find(item => item.type === 'release');
         if (!scene) return null;
+        const agent = scene.agentId ? agents.find(entry => entry.id === scene.agentId) : null;
         const building = this._buildingFor(scene.building || 'harbor');
         return {
             ...scene,
             progress: sceneProgress(scene, now),
-            center: building ? buildingCenterToWorld(building) : null,
+            center: agent
+                ? { x: agent.x, y: agent.y }
+                : building ? buildingCenterToWorld(building) : null,
         };
     }
 
@@ -1051,7 +1180,11 @@ export class VillageDirector {
         ), 0);
         return {
             activeScenes: snapshot.activeSceneCount || 0,
-            sceneDrops: this._sceneDropCount,
+            // Compatibility for the existing diagnostic line: nothing is
+            // silently dropped now. The adjacent fields expose overflow.
+            sceneDrops: 0,
+            sceneOverflow: snapshot.sceneOverflow?.count || 0,
+            sceneOverflowTotal: this._sceneOverflowCount,
             buildingSignals: snapshot.buildingSignals?.length || 0,
             hoverPreview: snapshot.hoverBuildingSignal ? 1 : 0,
             selectedRoutes: snapshot.selectedBuildingSignal?.routes?.length || 0,

@@ -5,6 +5,7 @@
 
 import { WEATHER_PRESETS, WEATHER_TYPES } from './AtmosphereState.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
 
 const CLEAR_TYPES = new Set(['clear', 'partly-cloudy']);
 const RAIN_TYPES = new Set(['rain', 'storm']);
@@ -30,6 +31,13 @@ const SPLASH_STAMP_MAX_COUNT = 18;
 const SPLASH_STATIC_GRID_COUNT = 12;
 const RIPPLE_TILE_THROTTLE_MS = 2000;
 const RIPPLE_TILE_TRACK_LIMIT = 256;
+const DISTRICT_TEXTURE_SIZE = 128;
+const DISTRICT_TEXTURE_CACHE_LIMIT = 12;
+const DISTRICT_COOL_TINT = '76, 104, 150';
+const DISTRICT_WARM_TINT = '226, 181, 112';
+const DISTRICT_DIM_TINT = '10, 14, 24';
+const DISTRICT_TILE_RADIUS_X = TILE_WIDTH / 2;
+const DISTRICT_TILE_RADIUS_Y = TILE_HEIGHT / 2;
 
 const DEFAULT_INTENSITY = {
     overcast: 0.38,
@@ -51,8 +59,14 @@ const RAIN_LAYERS = [
 ];
 
 export class WeatherRenderer {
-    constructor({ assets = null } = {}) {
+    constructor({ assets = null, canvasFactory = null } = {}) {
         this.assets = assets;
+        this.districtContext = null;
+        this._canvasFactory = typeof canvasFactory === 'function'
+            ? canvasFactory
+            : () => (typeof document !== 'undefined' ? document.createElement('canvas') : null);
+        this._districtWashTextures = new Map();
+        this._lastDistrictDrawCount = 0;
         this.elapsedMs = 0;
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
@@ -65,6 +79,10 @@ export class WeatherRenderer {
         this.assets = assets || null;
     }
 
+    setDistrictContext(context) {
+        this.districtContext = context || null;
+    }
+
     drawForeground(ctx, {
         canvas = ctx?.canvas,
         atmosphere = null,
@@ -72,6 +90,11 @@ export class WeatherRenderer {
         profileMark = null,
     } = {}) {
         if (!ctx || !canvas || !canvas.width || !canvas.height) return;
+
+        // District atmosphere is a static information layer, not weather
+        // motion. It remains visible under reduced motion and claims no pulse
+        // band, timers, particles, or per-frame animation state.
+        this._drawDistrictAtmosphere(ctx, atmosphere);
 
         const weather = normalizeWeather(atmosphere);
         if (!weather) return;
@@ -158,12 +181,160 @@ export class WeatherRenderer {
         this._lastSplashStamp = 0;
         this._splashStampSeed = 0;
         this._rippleStampTimes.clear();
+        for (const ratios of this._districtWashTextures.values()) {
+            for (const texture of ratios.values()) {
+                texture.width = 0;
+                texture.height = 0;
+            }
+            ratios.clear();
+        }
+        this._districtWashTextures.clear();
+        this.districtContext = null;
         if (this._washStrip) {
             this._washStrip.width = 0;
             this._washStrip.height = 0;
         }
         this._washStrip = null;
         this._washStripKey = '';
+    }
+
+    _drawDistrictAtmosphere(ctx, atmosphere) {
+        this._lastDistrictDrawCount = 0;
+        const districts = atmosphere?.districtAtmosphere;
+        const camera = this.districtContext?.camera;
+        const sprites = this.districtContext?.agentSprites;
+        if (!Array.isArray(districts) || !districts.length || !camera || !sprites?.get) return;
+
+        const zoom = Math.max(0.1, Number(camera.zoom) || 1);
+        const cameraX = Number(camera.x) || 0;
+        const cameraY = Number(camera.y) || 0;
+        for (let districtIndex = 0; districtIndex < districts.length; districtIndex++) {
+            const district = districts[districtIndex];
+            const agentIds = district?.agentIds;
+            if (!Array.isArray(agentIds) || !agentIds.length) continue;
+
+            let centerX = 0;
+            let centerY = 0;
+            let occupantCount = 0;
+            for (let agentIndex = 0; agentIndex < agentIds.length; agentIndex++) {
+                const sprite = sprites.get(agentIds[agentIndex]);
+                if (!sprite || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+                centerX += sprite.x;
+                centerY += sprite.y;
+                occupantCount++;
+            }
+            if (!occupantCount) continue;
+            centerX /= occupantCount;
+            centerY /= occupantCount;
+
+            let footprintRadius = 0;
+            for (let agentIndex = 0; agentIndex < agentIds.length; agentIndex++) {
+                const sprite = sprites.get(agentIds[agentIndex]);
+                if (!sprite || !Number.isFinite(sprite.x) || !Number.isFinite(sprite.y)) continue;
+                const distance = Math.hypot(sprite.x - centerX, sprite.y - centerY);
+                if (distance > footprintRadius) footprintRadius = distance;
+            }
+
+            const innerTiles = Math.max(0, Number(district?.falloff?.innerRadiusTiles) || 0);
+            const outerTiles = Math.max(innerTiles + 0.1, Number(district?.falloff?.outerRadiusTiles) || 0);
+            const radiusX = (footprintRadius + outerTiles * DISTRICT_TILE_RADIUS_X) * zoom;
+            const radiusY = (footprintRadius * 0.5 + outerTiles * DISTRICT_TILE_RADIUS_Y) * zoom;
+            const innerRatio = clamp(
+                (footprintRadius + innerTiles * DISTRICT_TILE_RADIUS_X)
+                    / Math.max(1, footprintRadius + outerTiles * DISTRICT_TILE_RADIUS_X),
+                0,
+                0.95,
+            );
+            const screenX = (centerX + cameraX) * zoom;
+            const screenY = (centerY + cameraY + 5) * zoom;
+            const hazeAlpha = clamp(Number(district?.groundHaze?.alpha) || 0, 0, 1);
+            const cool = clamp(Number(district?.lightingBias?.cool) || 0, 0, 1);
+            const warm = clamp(Number(district?.lightingBias?.warm) || 0, 0, 1);
+            const dim = clamp(Number(district?.lightingBias?.dim) || 0, 0, 1);
+
+            ctx.save();
+            ctx.globalCompositeOperation = 'source-over';
+            if (hazeAlpha > 0.002) {
+                this._drawDistrictWash(
+                    ctx,
+                    district.groundHaze?.tint || DISTRICT_COOL_TINT,
+                    innerRatio,
+                    hazeAlpha,
+                    screenX,
+                    screenY,
+                    radiusX,
+                    radiusY,
+                );
+            }
+            if (cool > 0.002) {
+                this._drawDistrictWash(ctx, DISTRICT_COOL_TINT, innerRatio, cool, screenX, screenY, radiusX, radiusY);
+            }
+            if (warm > 0.002) {
+                this._drawDistrictWash(ctx, DISTRICT_WARM_TINT, innerRatio, warm, screenX, screenY, radiusX, radiusY);
+            }
+            if (dim > 0.002) {
+                this._drawDistrictWash(ctx, DISTRICT_DIM_TINT, innerRatio, dim, screenX, screenY, radiusX, radiusY);
+            }
+            ctx.restore();
+            this._lastDistrictDrawCount++;
+        }
+    }
+
+    _drawDistrictWash(ctx, tint, innerRatio, alpha, x, y, radiusX, radiusY) {
+        const texture = this._districtWashTexture(tint, innerRatio);
+        if (!texture || radiusX <= 0 || radiusY <= 0) return;
+        ctx.globalAlpha = alpha;
+        ctx.drawImage(texture, x - radiusX, y - radiusY, radiusX * 2, radiusY * 2);
+        ctx.globalAlpha = 1;
+    }
+
+    _districtWashTexture(tint, innerRatio) {
+        const ratioBucket = Math.round(clamp(innerRatio, 0, 0.95) * 20) / 20;
+        let ratios = this._districtWashTextures.get(tint);
+        if (!ratios) {
+            ratios = new Map();
+            this._districtWashTextures.set(tint, ratios);
+        }
+        const cached = ratios.get(ratioBucket);
+        if (cached) return cached;
+        const canvas = this._canvasFactory();
+        if (!canvas) return null;
+        canvas.width = DISTRICT_TEXTURE_SIZE;
+        canvas.height = DISTRICT_TEXTURE_SIZE;
+        const textureCtx = canvas.getContext?.('2d');
+        if (!textureCtx?.createRadialGradient) return null;
+        const radius = DISTRICT_TEXTURE_SIZE / 2;
+        const gradient = textureCtx.createRadialGradient(radius, radius, 0, radius, radius, radius);
+        const span = 1 - ratioBucket;
+        gradient.addColorStop(0, `rgba(${tint}, 1)`);
+        gradient.addColorStop(ratioBucket, `rgba(${tint}, 1)`);
+        // Five samples approximate 1-smoothstep across the contract's broad
+        // falloff without allocating gradients in the render hot path.
+        gradient.addColorStop(ratioBucket + span * 0.25, `rgba(${tint}, 0.844)`);
+        gradient.addColorStop(ratioBucket + span * 0.5, `rgba(${tint}, 0.5)`);
+        gradient.addColorStop(ratioBucket + span * 0.75, `rgba(${tint}, 0.156)`);
+        gradient.addColorStop(1, `rgba(${tint}, 0)`);
+        textureCtx.fillStyle = gradient;
+        textureCtx.fillRect(0, 0, DISTRICT_TEXTURE_SIZE, DISTRICT_TEXTURE_SIZE);
+        ratios.set(ratioBucket, canvas);
+        this._trimDistrictTextureCache();
+        return canvas;
+    }
+
+    _trimDistrictTextureCache() {
+        let count = 0;
+        for (const ratios of this._districtWashTextures.values()) count += ratios.size;
+        if (count <= DISTRICT_TEXTURE_CACHE_LIMIT) return;
+        const firstTint = this._districtWashTextures.keys().next().value;
+        const ratios = this._districtWashTextures.get(firstTint);
+        const firstRatio = ratios?.keys().next().value;
+        const texture = ratios?.get(firstRatio);
+        if (texture) {
+            texture.width = 0;
+            texture.height = 0;
+        }
+        ratios?.delete(firstRatio);
+        if (!ratios?.size) this._districtWashTextures.delete(firstTint);
     }
 
     _drawWeatherWash(ctx, canvas, overcastIntensity, fogIntensity, rainOvercastIntensity = 0) {

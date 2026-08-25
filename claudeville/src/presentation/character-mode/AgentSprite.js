@@ -1,4 +1,5 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
+import { modelBehaviorProfile, moodBehaviorMultiplier } from '../../domain/value-objects/AgentMood.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { THEME, STATUS_VISUALS, MOOD_ACCENTS, MODEL_TIER_COLORS, PROVIDER_HUES, WORLD_BODY_FONT } from '../../config/theme.js';
 import { getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
@@ -11,8 +12,7 @@ import { pulseAlpha } from './PulsePolicy.js';
 import { drawToolGlyphBadge, toolGlyphKey } from './ToolGlyphBadge.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
-import { compactToolInput, toolActionLabel, toolCategory, classifyTool } from '../../domain/services/ToolIdentity.js';
-import { pickLoreLine } from '../../config/loreDialogue.js';
+import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { resolveUpdateRouteBuilding } from './MovementRouting.js';
 import { releaseCanvasMap } from './CanvasBudget.js';
@@ -25,10 +25,13 @@ const SPRITE_HIT_BOTTOM = 24;
 const WALK_PIXELS_PER_FRAME = 4.5;
 const DIRECTION_HOLD_MS = 70;
 const IDLE_FRAME_TICK_MS = 500;
+const FIDGET_COOLDOWN_MIN_MS = 4000;
+const FIDGET_COOLDOWN_RANGE_MS = 5000;
+const THINK_PULSE_FRAME_SCALE = 20;
+const THINK_DOT_PHASE_FRAMES = 60;
 const FOOTFALL_FRAMES = new Set([0, Math.floor(WALK_FRAMES / 2)]);
 // Status visuals, mood tones, and model-tier crests now live in theme.js (#1
 // House Palette) so World and Dashboard share one color authority.
-const LORE_ACCENT_DEFAULT = '#d8c08a';
 // #32 — arrival ceremony: a ~300ms scale-up "pop" with a portal-rune ring +
 // dust-puff the instant a villager lands (the ArrivalDeparture approach
 // finishes and setArrivalState flips pending → visible). Reduced motion skips
@@ -129,10 +132,7 @@ const STATUS_BUBBLE_HISTORY_MAX_WIDTH = Object.freeze({
     anchored: 216,
     floating: 320,
 });
-const TOOL_DETAIL_PREVIEW_CHARS = 36;
-const TOOL_DETAIL_KEY_CHARS = 56;
 const ACTIVITY_TEXT_CAP = 60;
-const MESSAGE_TEXT_CAP = 56;
 const TOOL_CONFIDENCE_THRESHOLD = 0.72;
 const TOOL_CLASSIFICATION_CACHE_LIMIT = 160;
 const TOOL_CLASSIFICATION_CACHE = new Map();
@@ -150,23 +150,6 @@ let codexEquipmentRasterScaleSince = 0;
 // Selection-ring asset recolored per provider accent; keyed by accent color.
 const TINTED_SELECTION_RING_CACHE = new Map();
 const TINTED_SELECTION_RING_CACHE_LIMIT = 24;
-const TOOL_ACTIVITY_LABEL_OVERRIDES = Object.freeze({
-    'functions.spawn_agent': 'Spawning',
-    'functions.send_input': 'Directing',
-    'functions.wait_agent': 'Waiting On',
-    'functions.resume_agent': 'Resuming',
-    'functions.close_agent': 'Closing',
-    'multi_tool_use.parallel': 'Coordinating',
-    // Unprefixed orchestration aliases (codex multi-agent tools arrive without
-    // the 'functions.' prefix) so bubbles read as words, not raw snake_case.
-    send_message: 'Messaging',
-    spawn_agent: 'Spawning',
-    wait_agent: 'Waiting On',
-    wait: 'Waiting On',
-    resume_agent: 'Resuming',
-    close_agent: 'Closing',
-    list_agents: 'Coordinating',
-});
 // Vertical step per stacked bubble slot, in screen pixels. Must match
 // IsometricRenderer AGENT_BUBBLE_STACK_STEP so the crowd de-collision slot the
 // renderer assigns lines up with the offset drawn here.
@@ -389,6 +372,9 @@ export class AgentSprite {
         this._idlePhaseTimerMs = (animSeed >>> 2) % IDLE_FRAME_TICK_MS;
         this.statusAnim = ((animSeed >>> 3) % 628) / 100;
         this.motionScale = (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) ? 0 : 1;
+        // R2-06 — immutable profile resolved only when agent telemetry changes;
+        // update/draw hot paths read scalars and never allocate tier state.
+        this._modelBehavior = modelBehaviorProfile(agent?.model, agent?.effort);
         this.lightingState = null;
         // The GPU-resident World path consumes a stable base-sprite record
         // after the Canvas draw has resolved identity, frame, bounds and pixel
@@ -1359,20 +1345,17 @@ export class AgentSprite {
         if (this.agent.status === AgentStatus.WAITING) base = 1.1;
         if (this.agent.status === AgentStatus.IDLE) base = 0.8;
         const speed = this._clamp(base * this._intentSpeedMultiplier(this._currentMotionIntent()), 0.62, 2.15);
-        // Mood (2.2) and congestion (3.13) gait modifiers apply after the
-        // tuned clamp so they read as a real slowdown/spring in the step.
-        return speed * this._moodGaitMultiplier() * this._congestionGaitMultiplier();
+        // Model temperament is deliberately narrow (±8%). Mood applies after
+        // it, preserving urgency/slump across every tier; pathing is unchanged.
+        return speed
+            * this._modelBehavior.walkPace
+            * this._moodGaitMultiplier()
+            * this._congestionGaitMultiplier();
     }
 
-    /** 2.2 — tired/distressed villagers drag their feet; proud ones stride. */
+    /** Mood remains primary: tired/distressed drag, anxious/proud quicken. */
     _moodGaitMultiplier() {
-        const mood = this.agent?.mood;
-        const intensity = Number(mood?.intensity) || 0;
-        if (!mood || intensity <= 0) return 1;
-        if (mood.type === 'tired') return 1 - 0.30 * intensity;
-        if (mood.type === 'distressed') return 1 - 0.18 * intensity;
-        if (mood.type === 'proud') return 1 + 0.12 * intensity;
-        return 1;
+        return moodBehaviorMultiplier(this.agent?.mood, 'walkPace');
     }
 
     // #13 — mood body language. `staticDy` is the resting head offset (also the
@@ -1395,6 +1378,11 @@ export class AgentSprite {
                 staticDy: Math.round(3 * intensity) || 1,
                 idleFrame: intensity >= 0.5 ? (IDLE_FRAMES - 1) : null,
             };
+        }
+        if (mood.type === 'anxious') {
+            // Slight forward set remains visible as a static pose under reduced
+            // motion; animated breathing tightens without overpowering alerts.
+            return { bobScale: 1 + 0.15 * intensity, staticDy: 1, idleFrame: null };
         }
         if (mood.type === 'proud') return { bobScale: 1 + 0.25 * intensity, staticDy: -Math.round(2 * intensity) || -1, idleFrame: null };
         return { bobScale: 1, staticDy: 0, idleFrame: null };
@@ -1594,6 +1582,7 @@ export class AgentSprite {
         this._pruneActivityTrail(now);
         const previous = this._activitySnapshot || this._captureActivitySnapshot(this.agent, now);
         this.agent = agent;
+        this._modelBehavior = modelBehaviorProfile(agent.model, agent.effort);
         const current = this._captureActivitySnapshot(agent, now);
         if (previous?.key && current?.key && previous.key !== current.key) {
             this._rememberActivitySnapshot(previous, now);
@@ -1954,7 +1943,7 @@ export class AgentSprite {
             return;
         }
         if (this._fidgetCooldownMs == null) {
-            this._fidgetCooldownMs = 3000 + Math.random() * 6000;
+            this._fidgetCooldownMs = this._nextFidgetCooldownMs();
         }
         // Re-anchor 4-9 s nudges back to building facingPoint when dwelling.
         if (this._anchorReinforceMs == null) {
@@ -1971,8 +1960,17 @@ export class AgentSprite {
             const sign = Math.random() > 0.5 ? 1 : -1;
             this.direction = (this.direction + sign + 8) % 8;
             this._fidgetActiveMs = 600 + Math.random() * 400;
-            this._fidgetCooldownMs = 4000 + Math.random() * 5000;
+            this._fidgetCooldownMs = this._nextFidgetCooldownMs();
         }
+    }
+
+    // Pulse band: `intrinsic` (slow). The band only detunes when a discrete
+    // fidget may recur; reduced motion exits before allocating cadence state.
+    _nextFidgetCooldownMs() {
+        const bandScale = pulseAlpha('intrinsic', this.statusAnim, this.motionScale, 0.9, 1.1);
+        const moodScale = moodBehaviorMultiplier(this.agent?.mood, 'fidgetInterval');
+        const base = FIDGET_COOLDOWN_MIN_MS + Math.random() * FIDGET_COOLDOWN_RANGE_MS;
+        return base * this._modelBehavior.fidgetInterval * moodScale * bandScale;
     }
 
     _advanceIdleStopAndLook(dt) {
@@ -5158,56 +5156,33 @@ export class AgentSprite {
     _activityEntryForAgent(agent = this.agent, timestamp = Date.now()) {
         if (!agent) return null;
         const entryTimestamp = Number(agent.lastSessionActivity) || timestamp;
-        const activityAge = Number(agent.activityAgeMs);
-        const hasFreshActivity = !Number.isFinite(activityAge) || activityAge <= ACTIVITY_BUBBLE_TTL_MS;
-
-        // 4.1 — occasionally speak village lore instead of the tool label.
-        // pickLoreLine is deterministic per agent + 45 s bucket, so this is
-        // flicker-free when called every frame; mood (2.2) tints the tone.
-        const moodType = agent.mood?.type || null;
-        const loreLine = pickLoreLine({
-            seedKey: agent.id,
-            buildingType: this._lastBuildingType || agent.lastKnownBuildingType || null,
-            mood: moodType,
-        });
-        if (loreLine) {
+        // Agent owns the complete intent -> lore -> tool -> message fallback
+        // chain. Keep the sprite as a presentation consumer so visible copy can
+        // never drift into a second, independently composed tool echo.
+        const bubbleText = this._truncateActivityText(agent.bubbleText, ACTIVITY_TEXT_CAP);
+        if (bubbleText) {
+            const currentTool = String(agent.currentTool || '').trim();
+            const classified = currentTool
+                ? memoizedToolClassification(currentTool, agent.currentToolInput)
+                : null;
+            const moodType = agent.mood?.type || null;
+            const intentBubble = agent.visitIntentBubble;
+            const intentExpiry = Number(intentBubble?.expiresAt);
+            const hasIntent = Boolean(
+                intentBubble?.text
+                && (!Number.isFinite(intentExpiry) || intentExpiry > Date.now())
+                && this._truncateActivityText(intentBubble.text, ACTIVITY_TEXT_CAP) === bubbleText
+            );
             return {
-                kind: 'lore',
-                key: `lore:${loreLine}`,
-                text: this._truncateActivityText(loreLine, ACTIVITY_TEXT_CAP),
-                accent: MOOD_ACCENTS[moodType] || LORE_ACCENT_DEFAULT,
-                timestamp: entryTimestamp,
-            };
-        }
-
-        const currentTool = String(agent.currentTool || '').trim();
-        if (currentTool && hasFreshActivity) {
-            const classified = memoizedToolClassification(currentTool, agent.currentToolInput);
-            const confidence = Number(classified?.confidence);
-            const toolLabel = this._toolActivityLabel(currentTool);
-            const detail = compactToolInput(agent.currentToolInput, TOOL_DETAIL_PREVIEW_CHARS);
-            const detailKey = compactToolInput(agent.currentToolInput, TOOL_DETAIL_KEY_CHARS);
-            const text = detail ? `${toolLabel} ${detail}` : toolLabel;
-            return {
-                kind: 'tool',
-                key: `tool:${currentTool}:${detailKey}`,
-                text: this._truncateActivityText(text, ACTIVITY_TEXT_CAP),
-                accent: this._providerTrimColor(agent),
-                tool: currentTool,
-                category: toolCategory(currentTool),
-                confidence: Number.isFinite(confidence) ? confidence : null,
-                timestamp: entryTimestamp,
-            };
-        }
-
-        const rawMessage = String(agent.lastMessage || '').replace(/\s+/g, ' ').trim();
-        if (rawMessage && hasFreshActivity) {
-            const quoted = `"${this._truncateActivityText(rawMessage, MESSAGE_TEXT_CAP)}"`;
-            return {
-                kind: 'message',
-                key: `message:${rawMessage}`,
-                text: quoted,
-                accent: '#8fc4ff',
+                kind: hasIntent ? 'intent' : (currentTool ? 'tool' : 'activity'),
+                key: `bubble:${bubbleText}`,
+                text: bubbleText,
+                accent: hasIntent
+                    ? (MOOD_ACCENTS[moodType] || this._providerTrimColor(agent))
+                    : this._providerTrimColor(agent),
+                tool: currentTool || null,
+                category: classified?.category || null,
+                confidence: null,
                 timestamp: entryTimestamp,
             };
         }
@@ -5256,22 +5231,6 @@ export class AgentSprite {
             const timestamp = Number(entry?.timestamp);
             return Number.isFinite(timestamp) && now - timestamp <= ACTION_TRAIL_TTL_MS;
         });
-    }
-
-    _toolActivityLabel(toolName) {
-        const tool = String(toolName || '').trim();
-        if (!tool) return 'Working';
-        const override = TOOL_ACTIVITY_LABEL_OVERRIDES[tool];
-        if (override) return override;
-        const labeled = toolActionLabel(tool);
-        if (labeled) return labeled;
-        const readable = tool
-            .split('.')
-            .pop()
-            .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
-            .replace(/[_-]+/g, ' ')
-            .trim();
-        return readable || 'Working';
     }
 
     _truncateActivityText(text, cap = ACTIVITY_TEXT_CAP) {
@@ -5509,10 +5468,21 @@ export class AgentSprite {
         const dotSize = 2;
         const gap = 3;
         const animated = this.motionScale > 0;
-        const phase = animated ? Math.floor(this.frame * 0.1) % 3 : -1;
+        const moodScale = moodBehaviorMultiplier(this.agent?.mood, 'thinkDuration');
+        const duration = this._modelBehavior.thinkDuration * moodScale;
         for (let i = 0; i < 3; i++) {
             ctx.fillStyle = color;
-            ctx.globalAlpha = phase === i || phase === -1 ? 1 : 0.45;
+            // Pulse band: `intrinsic` (slow). Heavy models hold each thought
+            // beat longer; reduced motion keeps the complete three-dot glyph.
+            ctx.globalAlpha = animated
+                ? pulseAlpha(
+                    'intrinsic',
+                    this.statusAnim * THINK_PULSE_FRAME_SCALE / duration + i * THINK_DOT_PHASE_FRAMES,
+                    this.motionScale,
+                    0.42,
+                    1,
+                )
+                : 1;
             ctx.beginPath();
             ctx.arc(-gap + i * gap, 0, dotSize / 2, 0, Math.PI * 2);
             ctx.fill();

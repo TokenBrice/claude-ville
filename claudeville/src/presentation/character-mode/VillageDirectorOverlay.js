@@ -588,21 +588,40 @@ export function drawPrimaryPillRestamp(ctx, snapshot, nightFactor = 0, getBuildi
 }
 
 export function drawVillageDirectorScreen(ctx, snapshot, viewport) {
-    if (!ctx || !snapshot?.replayActive || !viewport) return;
+    if (!ctx || !snapshot || !viewport) return;
+    if (!snapshot.replayActive && !(snapshot.sceneOverflow?.count > 0)) return;
     ctx.save();
     ctx.font = `10px ${WORLD_BODY_FONT}`;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
-    const text = `REPLAY 60S · ${snapshot.replayAgentCount || 0} AGENTS`;
-    const width = Math.ceil(ctx.measureText(text).width) + 18;
-    const x = 18;
     const y = Math.max(76, Math.round(viewport.height - 34));
-    ctx.fillStyle = 'rgba(18, 24, 28, 0.78)';
-    ctx.strokeStyle = 'rgba(125, 211, 252, 0.58)';
-    ctx.fillRect(x, y - 12, width, 22);
-    ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
-    ctx.fillStyle = '#dff7ff';
-    ctx.fillText(text, x + 9, y);
+    if (snapshot.replayActive) {
+        const text = `REPLAY 60S · ${snapshot.replayAgentCount || 0} AGENTS`;
+        const width = Math.ceil(ctx.measureText(text).width) + 18;
+        const x = 18;
+        ctx.fillStyle = 'rgba(18, 24, 28, 0.78)';
+        ctx.strokeStyle = 'rgba(125, 211, 252, 0.58)';
+        ctx.fillRect(x, y - 12, width, 22);
+        ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
+        ctx.fillStyle = '#dff7ff';
+        ctx.fillText(text, x + 9, y);
+    }
+
+    // Overflow is one static, screen-space PRIMARY mark. It does not join the
+    // world collision plane, animate, or create hit state; reduced motion is
+    // therefore pixel-identical. Logical expiry in VillageDirector removes it.
+    const overflow = snapshot.sceneOverflow;
+    if (overflow?.count > 0) {
+        const text = String(overflow.label || `+${overflow.count} more incidents`).toUpperCase();
+        const width = Math.ceil(ctx.measureText(text).width) + 18;
+        const x = Math.max(18, Math.round(viewport.width - width - 18));
+        ctx.fillStyle = 'rgba(28, 20, 16, 0.86)';
+        ctx.strokeStyle = 'rgba(250, 204, 21, 0.72)';
+        ctx.fillRect(x, y - 12, width, 22);
+        ctx.strokeRect(x + 0.5, y - 11.5, width - 1, 21);
+        ctx.fillStyle = '#fff4cf';
+        ctx.fillText(text, x + 9, y);
+    }
     ctx.restore();
 }
 

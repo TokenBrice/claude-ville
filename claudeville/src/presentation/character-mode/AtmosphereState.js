@@ -25,6 +25,10 @@ import { seasonTokenForMonth } from './SeasonalAmbience.js';
 
 const DAY_MINUTES = 24 * 60;
 const WEATHER_TIMELINE_KNOTS = 6;
+// VillageDirector still supplies a legacy global roll. Values below this floor
+// represent isolated agents (for example one troubled agent among five), not a
+// village-wide condition, and must not tint the shared dome.
+const SHARED_SKY_INFLUENCE_FLOOR = 0.2;
 
 const PHASES = [
     { name: 'dawn', start: 5 * 60 + 30, end: 7 * 60 },
@@ -635,7 +639,7 @@ function resolveWeather(date, override, { seedOverride = null, timelineMode = 'a
 }
 
 /**
- * Blend a village event influence (see domain/value-objects/AgentMood.js
+ * Blend a shared-sky event influence (see application/MoodService.js
  * `deriveWeatherInfluence`) into resolved weather. Storminess pushes cloud
  * cover/precipitation/intensity toward rain/storm; clearing pulls them back
  * toward clear skies. The weather type is only escalated when the influence
@@ -650,8 +654,10 @@ function resolveWeather(date, override, { seedOverride = null, timelineMode = 'a
  */
 function applyWeatherEventInfluence(weather, influence) {
     if (!weather || !influence) return weather;
-    const storminess = clamp(Number(influence.storminess) || 0);
-    const clearing = clamp(Number(influence.clearing) || 0);
+    const rawStorminess = clamp(Number(influence.storminess) || 0);
+    const rawClearing = clamp(Number(influence.clearing) || 0);
+    const storminess = rawStorminess < SHARED_SKY_INFLUENCE_FLOOR ? 0 : rawStorminess;
+    const clearing = rawClearing < SHARED_SKY_INFLUENCE_FLOOR ? 0 : rawClearing;
     if (storminess <= 0 && clearing <= 0) return weather;
 
     const cloudCover = clamp(weather.cloudCover + storminess * 0.45 - clearing * 0.45 * weather.cloudCover);
@@ -676,6 +682,44 @@ function applyWeatherEventInfluence(weather, influence) {
         ? 'fleet'
         : weather.cause || 'timeline';
     return { ...weather, type, intensity, cloudCover, precipitation, fog, cause };
+}
+
+/**
+ * Convert project-scoped mood influence into renderer-neutral ground effects.
+ * Consumers resolve `agentIds` to a project footprint, then feather the effect
+ * between inner/outer radii with smoothstep. Keeping precipitation and the sky
+ * out of this descriptor avoids implausible rain walls and hard district seams.
+ */
+export function buildDistrictAtmosphere(influences = []) {
+    if (!Array.isArray(influences)) return [];
+    return influences
+        .map((influence) => {
+            const storminess = clamp(Number(influence?.storminess) || 0);
+            const clearing = clamp(Number(influence?.clearing) || 0);
+            const strength = Math.max(storminess, clearing);
+            if (strength < 0.02) return null;
+            return {
+                project: String(influence?.project || 'unknown'),
+                agentIds: Array.isArray(influence?.agentIds) ? [...influence.agentIds] : [],
+                storminess,
+                clearing,
+                groundHaze: {
+                    alpha: Number((storminess * 0.24).toFixed(3)),
+                    tint: storminess > clearing ? '76, 68, 94' : '210, 226, 205',
+                },
+                lightingBias: {
+                    cool: Number((storminess * 0.18).toFixed(3)),
+                    warm: Number((clearing * 0.14).toFixed(3)),
+                    dim: Number((storminess * 0.12).toFixed(3)),
+                },
+                falloff: {
+                    shape: 'smoothstep',
+                    innerRadiusTiles: 2.5,
+                    outerRadiusTiles: 7,
+                },
+            };
+        })
+        .filter(Boolean);
 }
 
 function phaseLight(phase, phaseProgress) {
@@ -1048,6 +1092,7 @@ export function createAtmosphereSnapshot({
     // Explicit overrides (debug helper, scenario metadata) win over the
     // village event influence.
     if (!weatherOverride) weather = applyWeatherEventInfluence(weather, eventInfluence);
+    const districtAtmosphere = buildDistrictAtmosphere(eventInfluence?.districts);
     const preset = WEATHER_PRESETS[weather.type] || WEATHER_PRESETS.clear;
     const intensity = clamp(weather.intensity);
     const cloudCover = Number.isFinite(weather.cloudCover) ? weather.cloudCover : preset.cloudCover;
@@ -1077,6 +1122,9 @@ export function createAtmosphereSnapshot({
         // (violet cast) and timeline-driven.
         cacheKey: `${phase}|${weather.type}|i${intensityBucket}|c${cloudBucket}|p${precipitationBucket}|f${fogBucket}|b${timeBucket}|l${lightBucket}|${weather.cause === 'fleet' ? 'fleet' : 'timeline'}`,
         weather,
+        // Additive local-atmosphere contract. The shared sky remains coherent;
+        // renderers may paint these feathered effects around project occupants.
+        districtAtmosphere,
         sky: {
             palette: blendPalette(phase, phaseProgress, weather),
             assetIds,

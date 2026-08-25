@@ -13,6 +13,29 @@ const MATERIAL_BY_BUILDING = Object.freeze({
     portal: 'rune',
 });
 
+// Provider identity is layered over authored sprite channels. These profiles
+// are only deterministic defaults for agent records that do not name a
+// material; authored record/atlas values remain authoritative. Unknown
+// providers use the material contract's safe albedo-only fallback.
+export const DEFAULT_PROVIDER_MATERIAL_CLASS = 'unlit';
+export const PROVIDER_MATERIAL_PROFILES = Object.freeze({
+    claude: Object.freeze({ defaultMaterialClass: 'fabric' }),
+    codex: Object.freeze({ defaultMaterialClass: 'metal' }),
+    gemini: Object.freeze({ defaultMaterialClass: 'glass-rune' }),
+    git: Object.freeze({ defaultMaterialClass: 'unlit' }),
+    grok: Object.freeze({ defaultMaterialClass: 'fabric' }),
+    kimi: Object.freeze({ defaultMaterialClass: 'fabric' }),
+    omp: Object.freeze({ defaultMaterialClass: 'fabric' }),
+    opencode: Object.freeze({ defaultMaterialClass: 'fabric' }),
+    deepseek: Object.freeze({ defaultMaterialClass: 'earth' }),
+});
+
+export function gpuMaterialNameForProvider(provider) {
+    const key = String(provider || '').trim().toLowerCase();
+    return PROVIDER_MATERIAL_PROFILES[key]?.defaultMaterialClass
+        || DEFAULT_PROVIDER_MATERIAL_CLASS;
+}
+
 function finite(value, fallback = 0) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
@@ -269,7 +292,7 @@ function recordsForAgent(drawable, sequence) {
         id: record.id || `agent:${sprite.agent?.id || sequence}:${index}`,
         stableKey: record.stableKey || sprite.agent?.id || `agent:${sequence}`,
         textureKey: record.textureKey || `agent:${sprite._spriteProfileKey || sprite.agent?.id || sequence}`,
-        material: record.material ?? materialClassId(sprite.agent?.provider === 'codex' ? 'metal' : 'fabric'),
+        material: record.material ?? materialClassId(gpuMaterialNameForProvider(sprite.agent?.provider)),
         elevation: record.elevation ?? 0.52,
         occluder: record.occluder ?? 0.58,
         sequence: sequence + index / 100,
