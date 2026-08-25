@@ -3,7 +3,9 @@ import {
     clampGpuLights,
     emissivePhaseForAmbientLight,
     estimateGpuWorldTextureBytes,
+    gpuLightColorForShader,
     localLightPhaseForLighting,
+    selectGpuTimingMetrics,
 } from './GpuWorldPolicy.js';
 import {
     createPostFxLadder,
@@ -64,8 +66,10 @@ layout(location = 0) out vec4 outColor;
 layout(location = 1) out vec4 outEmission;
 uniform sampler2D u_albedo;
 uniform sampler2D u_materialMap;
+uniform sampler2D u_emissiveMap;
 uniform sampler2D u_occlusion;
 uniform bool u_hasMaterialMap;
+uniform bool u_hasEmissiveMap;
 uniform vec2 u_resolution;
 uniform vec2 u_occlusionResolution;
 uniform vec3 u_gradeBase;
@@ -155,8 +159,21 @@ void main() {
     float alpha = albedo.a * v_alpha;
     if (alpha < 0.01) discard;
     vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, v_uv) : vec4(0.0);
+    vec4 authoredEmission = u_hasEmissiveMap ? texture(u_emissiveMap, v_uv) : vec4(0.0);
     float material = sidecar.r > 0.003 ? floor(sidecar.r * 255.0 + 0.5) : v_material;
     float emissive = max(v_emissive, sidecar.g * 2.0);
+    vec3 emissionColor = albedo.rgb;
+    if (u_hasEmissiveMap) {
+        // The emissive channel owns both hue (RGB) and contribution (A). Do
+        // not reconstruct authored emission from the albedo texture.
+        emissionColor = authoredEmission.rgb;
+        emissive = authoredEmission.a * 2.0;
+    } else if (u_hasMaterialMap) {
+        // A material map without an authored emissive channel is explicitly
+        // non-emissive; never infer a glow from its albedo pixels.
+        emissionColor = vec3(0.0);
+        emissive = 0.0;
+    }
     // Authored emitters remain identifiable in daylight without behaving like
     // night-time floodlights. Ambient light falls through dusk/night, smoothly
     // restoring their full energy when illumination is actually needed.
@@ -194,7 +211,7 @@ void main() {
     float fog = clamp(u_weather.y, 0.0, 1.0);
     float groundFog = fog * (1.0 - elevation * 0.72) * smoothstep(0.18, 0.98, gl_FragCoord.y / max(1.0, u_resolution.y));
     color = mix(color, u_fogColor, groundFog * 0.48);
-    vec3 emission = albedo.rgb * emissive;
+    vec3 emission = emissionColor * emissive;
     color += emission * 0.42;
     outColor = vec4(max(color, vec3(0.0)) * alpha, alpha);
     outEmission = vec4(emission * alpha, alpha > 0.0 ? 1.0 : 0.0);
@@ -283,22 +300,6 @@ function ema(previous, sample) {
     return previous == null ? value : previous + (value - previous) * EMA_ALPHA;
 }
 
-function parseColor(value, fallback = [1, 1, 1]) {
-    if (Array.isArray(value) && value.length >= 3) {
-        return value.slice(0, 3).map(channel => clamp(finite(channel, 255) / 255, 0, 1));
-    }
-    const text = String(value || '');
-    const hex = text.match(/^#([0-9a-f]{6})$/i);
-    if (hex) {
-        return [0, 1, 2].map(index => parseInt(hex[1].slice(index * 2, index * 2 + 2), 16) / 255);
-    }
-    const rgb = text.match(/rgba?\(([^)]+)\)/i);
-    if (rgb) {
-        return rgb[1].split(',').slice(0, 3).map(channel => clamp(finite(channel, 255) / 255, 0, 1));
-    }
-    return fallback.slice();
-}
-
 function compileShader(gl, type, source) {
     const shader = gl.createShader(type);
     gl.shaderSource(shader, source);
@@ -371,6 +372,11 @@ export class GpuWorldRenderer {
         this.uploadMs = null;
         this.cpuMs = null;
         this.shaderCpuMs = null;
+        this.gpuMs = null;
+        this.timerExtension = null;
+        this.pendingGpuQueries = [];
+        this.qualityTimingSource = 'cpu-fallback';
+        this.gpuTimerErrors = 0;
         this.frameGapMs = null;
         this.uploads = 0;
         this.uploadBytes = 0;
@@ -442,9 +448,10 @@ export class GpuWorldRenderer {
         this.occlusionProgram = createProgram(gl, QUAD_VERTEX, OCCLUSION_FRAGMENT);
         this.bloomProgram = createProgram(gl, FULLSCREEN_VERTEX, BLOOM_FRAGMENT);
         this.compositeProgram = createProgram(gl, FULLSCREEN_VERTEX, COMPOSITE_FRAGMENT);
+        this.timerExtension = gl.getExtension?.('EXT_disjoint_timer_query_webgl2') || null;
         this.sceneUniforms = uniformLocations(gl, this.sceneProgram, [
-            'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap', 'u_occlusion',
-            'u_hasMaterialMap', 'u_occlusionResolution', 'u_gradeBase', 'u_gradeEdge',
+            'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap', 'u_emissiveMap', 'u_occlusion',
+            'u_hasMaterialMap', 'u_hasEmissiveMap', 'u_occlusionResolution', 'u_gradeBase', 'u_gradeEdge',
             'u_edgeAlpha', 'u_fogColor', 'u_weather', 'u_time', 'u_motionScale',
             'u_sun',
             'u_lightCount', 'u_lights[0]', 'u_lightColors[0]',
@@ -527,6 +534,9 @@ export class GpuWorldRenderer {
             this._abandonGpuResources();
             return;
         }
+        for (const query of this.pendingGpuQueries) gl.deleteQuery?.(query);
+        this.pendingGpuQueries.length = 0;
+        this.timerExtension = null;
         this._releaseTarget(this.sceneTarget);
         this._releaseTarget(this.bloomA);
         this._releaseTarget(this.bloomB);
@@ -569,6 +579,10 @@ export class GpuWorldRenderer {
         this.compositeProgram = null;
         this.textureBytes = 0;
         this.vertexBufferBytes = 0;
+        this.pendingGpuQueries.length = 0;
+        this.timerExtension = null;
+        this.gpuMs = null;
+        this.qualityTimingSource = 'cpu-fallback';
     }
 
     _ensureTargets() {
@@ -715,6 +729,82 @@ export class GpuWorldRenderer {
         this._updateTextureBytes();
     }
 
+    _beginGpuTimer() {
+        if (!this.timerExtension || !this.gl?.createQuery) return null;
+        let query = null;
+        try {
+            query = this.gl.createQuery();
+            if (!query) return null;
+            this.gl.beginQuery(this.timerExtension.TIME_ELAPSED_EXT, query);
+            return query;
+        } catch {
+            this.gl.deleteQuery?.(query);
+            this.gpuTimerErrors++;
+            return null;
+        }
+    }
+
+    _endGpuTimer(query) {
+        if (!query || !this.timerExtension) return;
+        try {
+            const gl = this.gl;
+            gl.endQuery(this.timerExtension.TIME_ELAPSED_EXT);
+            this.pendingGpuQueries.push(query);
+            if (this.pendingGpuQueries.length > 4) {
+                const stale = this.pendingGpuQueries.shift();
+                gl.deleteQuery?.(stale);
+            }
+        } catch {
+            this.gpuTimerErrors++;
+            this.gpuMs = null;
+            this.gl.deleteQuery?.(query);
+        }
+    }
+
+    _pollGpuQueries() {
+        if (!this.timerExtension || !this.pendingGpuQueries.length) return;
+        const gl = this.gl;
+        let disjoint = false;
+        try {
+            disjoint = Boolean(gl.getParameter(this.timerExtension.GPU_DISJOINT_EXT));
+        } catch {
+            return;
+        }
+        for (let index = this.pendingGpuQueries.length - 1; index >= 0; index--) {
+            const query = this.pendingGpuQueries[index];
+            let available = false;
+            try {
+                available = Boolean(gl.getQueryParameter(query, gl.QUERY_RESULT_AVAILABLE));
+            } catch {
+                this.pendingGpuQueries.splice(index, 1);
+                gl.deleteQuery?.(query);
+                this.gpuTimerErrors++;
+                continue;
+            }
+            if (!available) continue;
+            this.pendingGpuQueries.splice(index, 1);
+            try {
+                if (disjoint) {
+                    // A disjoint interval invalidates every result from it;
+                    // use the CPU path until a clean query arrives.
+                    this.gpuMs = null;
+                } else {
+                    const nanoseconds = Number(gl.getQueryParameter(query, gl.QUERY_RESULT));
+                    if (Number.isFinite(nanoseconds) && nanoseconds >= 0) {
+                        this.gpuMs = ema(this.gpuMs, nanoseconds / 1e6);
+                    } else {
+                        this.gpuMs = null;
+                    }
+                }
+            } catch {
+                this.gpuMs = null;
+                this.gpuTimerErrors++;
+            } finally {
+                gl.deleteQuery?.(query);
+            }
+        }
+    }
+
     _verticesFor(records) {
         const vertices = new Float32Array(records.length * 6 * VERTEX_FLOATS);
         let offset = 0;
@@ -778,6 +868,19 @@ export class GpuWorldRenderer {
         gl.bindTexture(gl.TEXTURE_2D, material);
         gl.uniform1i(uniforms.u_materialMap, 1);
         gl.uniform1i(uniforms.u_hasMaterialMap, batch.materialSource ? 1 : 0);
+        if (uniforms.u_emissiveMap) {
+            const emissive = batch.emissiveSource
+                ? this._textureFor(
+                    `emissive:${batch.sidecarKey || batch.textureKey}`,
+                    batch.emissiveSource,
+                    first?.sidecarRevision,
+                )
+                : this.emptyMaterialTexture;
+            gl.activeTexture(gl.TEXTURE3);
+            gl.bindTexture(gl.TEXTURE_2D, emissive);
+            gl.uniform1i(uniforms.u_emissiveMap, 3);
+            gl.uniform1i(uniforms.u_hasEmissiveMap, batch.emissiveSource ? 1 : 0);
+        }
         if (occlusion) {
             gl.uniform1f(uniforms.u_occluder, Math.max(...batch.records.map(record => record.occluder || 0)));
         }
@@ -854,7 +957,7 @@ export class GpuWorldRenderer {
         const lightColors = new Float32Array(MAX_LIGHTS * 4);
         for (let index = 0; index < lights.length; index++) {
             const light = lights[index];
-            const color = parseColor(light.color, [1, 0.78, 0.42]);
+            const color = gpuLightColorForShader(light, [1, 0.78, 0.42]);
             const offset = index * 4;
             lightValues[offset] = finite(light.x);
             lightValues[offset + 1] = this.height - finite(light.y);
@@ -951,6 +1054,7 @@ export class GpuWorldRenderer {
         this._lastRenderAtMs = started;
         this._frameUploadMs = 0;
         let qualityLevel = this.qualityLadder.getLevel();
+        let gpuTimer = null;
         // DISABLED means optional GPU effects are exhausted, not that the
         // renderer may swap composition paths mid-scene. Canvas-only fauna and
         // water details sit beneath this surface; toggling to Canvas and back
@@ -961,6 +1065,10 @@ export class GpuWorldRenderer {
             qualityLevel = Math.min(recovery.effectiveLevel, POST_FX_LEVELS.MINIMAL);
         }
         try {
+            // Timer results are asynchronous. Polling only availability keeps
+            // this path non-blocking; until the first clean result arrives the
+            // existing CPU submission measurement remains the ladder fallback.
+            this._pollGpuQueries();
             this._ensureTargets();
             const batches = buildStableGpuBatches(records);
             if (!batches.length) return false;
@@ -968,6 +1076,7 @@ export class GpuWorldRenderer {
             gl.enable(gl.BLEND);
             gl.disable(gl.DEPTH_TEST);
             gl.disable(gl.CULL_FACE);
+            gpuTimer = this._beginGpuTimer();
             const localLightsVisible = localLightPhaseForLighting(feed.lighting)
                 > LOCAL_LIGHT_VISIBILITY_FLOOR;
             if (qualityLevel < POST_FX_LEVELS.MINIMAL && localLightsVisible) {
@@ -984,6 +1093,8 @@ export class GpuWorldRenderer {
             if (bloomEnabled && this.lightCount > 0) this._renderBloom();
             gl.enable(gl.BLEND);
             this._present(qualityLevel);
+            this._endGpuTimer(gpuTimer);
+            gpuTimer = null;
             this._trimTextureCache();
             gl.bindTexture(gl.TEXTURE_2D, null);
             gl.bindBuffer(gl.ARRAY_BUFFER, null);
@@ -997,13 +1108,25 @@ export class GpuWorldRenderer {
             this.shaderCpuMs = ema(this.shaderCpuMs, shaderCpuMs);
             this.cpuMs = ema(this.cpuMs, totalMs);
             this.frameGapMs = ema(this.frameGapMs, frameGapMs);
-            this.qualityLadder.update({
+            const timing = selectGpuTimingMetrics({
                 uploadMs: this._frameUploadMs,
                 shaderCpuMs,
+                gpuMs: this.gpuMs,
+                gpuTimerSupported: Boolean(this.timerExtension),
                 frameGapMs,
-            }, started);
+            });
+            this.qualityTimingSource = timing.source;
+            this.qualityLadder.update(timing.metrics, started);
             return true;
         } catch (error) {
+            if (gpuTimer) {
+                try {
+                    gl.endQuery(this.timerExtension?.TIME_ELAPSED_EXT);
+                } catch {
+                    // Context loss or a driver error may already have ended it.
+                }
+                gl.deleteQuery?.(gpuTimer);
+            }
             if (!this._renderErrorLogged) {
                 this._renderErrorLogged = true;
                 console.warn('[GpuWorldRenderer] render failed; Canvas fallback remains active:', error);
@@ -1032,6 +1155,12 @@ export class GpuWorldRenderer {
             uploadMs: this.uploadMs ?? 0,
             cpuMs: this.cpuMs ?? 0,
             shaderCpuMs: this.shaderCpuMs ?? 0,
+            gpuMs: this.gpuMs,
+            gpuTimerSupported: Boolean(this.timerExtension),
+            gpuTimerExtension: this.timerExtension ? 'EXT_disjoint_timer_query_webgl2' : null,
+            gpuTimerPendingQueries: this.pendingGpuQueries.length,
+            gpuTimerErrors: this.gpuTimerErrors,
+            qualityTimingSource: this.qualityTimingSource,
             frameGapMs: this.frameGapMs ?? 0,
             textureBytes: this.textureBytes,
             cachedTextures: this._textureEntries.size,

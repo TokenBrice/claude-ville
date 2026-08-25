@@ -5,6 +5,7 @@
 
 import { TILE_WIDTH, TILE_HEIGHT } from '../../../config/constants.js';
 import { RENDERER_RESOURCE_BYTES_PER_PIXEL, canvasPixelCount, releaseCanvasBackingStore } from '../CanvasBudget.js';
+import { setGpuLightColor } from '../gpu/GpuWorldPolicy.js';
 
 const MAX_LIGHTS = 48;
 const MAX_HAZE = 8;
@@ -148,7 +149,19 @@ export function createPostFxFeed() {
     function lightSlot(index) {
         let slot = lightSlotPool[index];
         if (!slot) {
-            slot = { x: 0, y: 0, radius: 0, r: 255, g: 255, b: 255, intensity: 1, kind: 'point', night: false };
+            slot = {
+                id: '',
+                priority: 0,
+                x: 0,
+                y: 0,
+                radius: 0,
+                r: 255,
+                g: 255,
+                b: 255,
+                intensity: 1,
+                kind: 'point',
+                night: false,
+            };
             lightSlotPool[index] = slot;
         }
         return slot;
@@ -280,12 +293,12 @@ export function createPostFxFeed() {
 
             if (lightCount < MAX_LIGHTS) {
                 const slot = lightSlot(lightCount);
+                slot.id = String(src.id || `${kind}:${i}`);
+                slot.priority = finite(src.priority, 0);
                 slot.x = bx;
                 slot.y = by;
                 slot.radius = radiusBacking;
-                slot.r = r;
-                slot.g = g;
-                slot.b = b;
+                setGpuLightColor(slot, [r, g, b]);
                 slot.intensity = intensity;
                 slot.night = false;
                 slot.kind = kind;
@@ -323,13 +336,13 @@ export function createPostFxFeed() {
                 if (!Number.isFinite(sx) || !Number.isFinite(sy)) continue;
                 if (sx < -margin || sy < -margin || sx > cssW + margin || sy > cssH + margin) continue;
                 const slot = lightSlot(lightCount);
+                slot.id = String(src.id || `lantern:${src.fixture || i}`);
+                slot.priority = finite(src.priority, 0);
                 slot.x = sx * dpr;
                 slot.y = sy * dpr;
                 slot.radius = lanternRadius;
                 // Lantern token #ffd56a — matches _getLanternGlowStamp's core.
-                slot.r = 255;
-                slot.g = 213;
-                slot.b = 106;
+                setGpuLightColor(slot, [255, 213, 106]);
                 slot.intensity = 1;
                 slot.night = true;
                 slot.kind = 'point';

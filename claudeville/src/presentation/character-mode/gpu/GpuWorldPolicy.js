@@ -18,6 +18,51 @@ export const GPU_MATERIAL_CLASSES = Object.freeze({
 
 const VALID_MODES = new Set(Object.values(GPU_WORLD_RENDERER_MODES));
 
+// PostFxFeed and the direct GPU renderer share this slot shape. Colors stay in
+// 0-255 byte space until the renderer stages normalized uniforms; keeping the
+// conversion here prevents a string-vs-channel contract drift from silently
+// replacing authored light colors with a fallback.
+export const GPU_LIGHT_COLOR_ENCODING = 'rgb-255';
+
+export function setGpuLightColor(slot, rgb = []) {
+    if (!slot || !Array.isArray(rgb) || rgb.length < 3) return slot;
+    slot.r = Math.max(0, Math.min(255, finite(rgb[0], 255)));
+    slot.g = Math.max(0, Math.min(255, finite(rgb[1], 255)));
+    slot.b = Math.max(0, Math.min(255, finite(rgb[2], 255)));
+    return slot;
+}
+
+export function gpuLightColorForShader(light = {}, fallback = [1, 0.78, 0.42]) {
+    const channels = ['r', 'g', 'b'].map(channel => Number(light?.[channel]));
+    if (!channels.every(Number.isFinite)) return fallback.slice();
+    return channels.map(channel => Math.max(0, Math.min(1, channel / 255)));
+}
+
+export function selectGpuTimingMetrics({
+    uploadMs = 0,
+    shaderCpuMs = 0,
+    gpuMs = null,
+    gpuTimerSupported = false,
+    frameGapMs = 0,
+} = {}) {
+    const useGpu = Boolean(
+        gpuTimerSupported
+        && gpuMs !== null
+        && gpuMs !== undefined
+        && Number.isFinite(Number(gpuMs)),
+    );
+    return {
+        source: useGpu ? 'gpu-timer' : 'cpu-fallback',
+        metrics: {
+            uploadMs: Math.max(0, finite(uploadMs)),
+            frameGapMs: Math.max(0, finite(frameGapMs)),
+            ...(useGpu
+                ? { gpuMs: Math.max(0, finite(gpuMs)) }
+                : { shaderCpuMs: Math.max(0, finite(shaderCpuMs)) }),
+        },
+    };
+}
+
 function finite(value, fallback = 0) {
     const number = Number(value);
     return Number.isFinite(number) ? number : fallback;
@@ -63,6 +108,7 @@ export function normalizeGpuRecord(record = {}, sequence = 0) {
         ...record,
         source,
         materialSource: record.materialSource || record.sidecar || null,
+        emissiveSource: record.emissiveSource || null,
         textureKey,
         sidecarKey,
         sourceWidth,
@@ -112,11 +158,13 @@ export function buildStableGpuBatches(records = []) {
             record.blend,
         ].join('|');
         if (!current || current.key !== batchKey || current.source !== record.source
-            || current.materialSource !== record.materialSource) {
+            || current.materialSource !== record.materialSource
+            || current.emissiveSource !== record.emissiveSource) {
             current = {
                 key: batchKey,
                 source: record.source,
                 materialSource: record.materialSource,
+                emissiveSource: record.emissiveSource,
                 textureKey: record.textureKey,
                 sidecarKey: record.sidecarKey,
                 blend: record.blend,

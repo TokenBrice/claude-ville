@@ -59,11 +59,63 @@ function sidecarFor(assets, id, kind = 'material') {
         || null;
 }
 
-function packedLandmarkSidecar(renderer, id) {
+// The material/occluder map has four packed bytes. Authored emissive RGB does
+// not fit beside material id, strength, and occluder height, so it remains a
+// separate frame-local RGBA channel while the existing packed map stays stable.
+export function packGpuSidecarPixels({ material = null, emissive = null, occluder = null, pixelCount = null } = {}) {
+    const largestChannel = Math.max(
+        Number(material?.length) || 0,
+        Number(emissive?.length) || 0,
+        Number(occluder?.length) || 0,
+    );
+    const requestedPixels = Number(pixelCount);
+    const pixels = Number.isFinite(requestedPixels)
+        ? Math.max(0, Math.floor(requestedPixels))
+        : Math.ceil(largestChannel / 4);
+    const packed = new Uint8ClampedArray(pixels * 4);
+    const authoredEmissive = emissive ? new Uint8ClampedArray(pixels * 4) : null;
+    for (let index = 0; index < packed.length; index += 4) {
+        const occluderStrength = occluder
+            ? Math.max(occluder[index] || 0, occluder[index + 1] || 0, occluder[index + 2] || 0, occluder[index + 3] || 0)
+            : 0;
+        packed[index] = material?.[index] || 0;
+        packed[index + 1] = emissive?.[index + 3] || 0;
+        packed[index + 2] = occluderStrength;
+        packed[index + 3] = occluderStrength;
+        if (authoredEmissive) {
+            authoredEmissive[index] = emissive[index] || 0;
+            authoredEmissive[index + 1] = emissive[index + 1] || 0;
+            authoredEmissive[index + 2] = emissive[index + 2] || 0;
+            authoredEmissive[index + 3] = emissive[index + 3] || 0;
+        }
+    }
+    return { packed, emissive: authoredEmissive };
+}
+
+function canvasFromPixels(pixels, width, height) {
+    if (!pixels || typeof document === 'undefined') return null;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, width);
+    canvas.height = Math.max(1, height);
+    const ctx = canvas.getContext('2d', { alpha: true });
+    const image = ctx.createImageData(width, height);
+    image.data.set(pixels);
+    ctx.putImageData(image, 0, 0);
+    return canvas;
+}
+
+function packedLandmarkChannels(renderer, id) {
     const assets = renderer?.assets;
     const frame = assets?.getAtlasFrame?.(id);
     if (!frame?.atlas || !frame?.rect || typeof document === 'undefined') {
-        return sidecarFor(assets, id, 'material');
+        const material = sidecarFor(assets, id, 'material');
+        const emissive = sidecarFor(assets, id, 'emissive');
+        if (!material && !emissive) return null;
+        return {
+            material,
+            emissive,
+            revision: `${assets?.assetVersion || ''}:${id}:sidecars`,
+        };
     }
     const materialAtlas = assets.getAtlas?.(frame.atlas, 'material');
     const emissiveAtlas = assets.getAtlas?.(frame.atlas, 'emissive');
@@ -72,7 +124,7 @@ function packedLandmarkSidecar(renderer, id) {
     const revision = `${assets.assetVersion || ''}:${frame.atlas}:${frame.key}`;
     const cache = renderer._gpuPackedMaterialSidecars ||= new Map();
     const cached = cache.get(id);
-    if (cached?.revision === revision) return cached.canvas;
+    if (cached?.revision === revision) return cached;
 
     const { x, y, w, h } = frame.rect;
     const canvas = document.createElement('canvas');
@@ -88,23 +140,22 @@ function packedLandmarkSidecar(renderer, id) {
     const material = sample(materialAtlas);
     const emissive = sample(emissiveAtlas);
     const occluder = sample(occluderAtlas);
+    const channels = packGpuSidecarPixels({
+        material,
+        emissive,
+        occluder,
+        pixelCount: w * h,
+    });
     const packed = ctx.createImageData(w, h);
-    for (let index = 0; index < packed.data.length; index += 4) {
-        // Emissive atlases preserve the authored albedo hue in RGB and encode
-        // semantic strength in alpha. Reading max(RGBA) made any pale window
-        // effectively full-power even when its authored strength was 0.6.
-        const emissiveStrength = emissive ? emissive[index + 3] : 0;
-        const occluderStrength = occluder
-            ? Math.max(occluder[index], occluder[index + 1], occluder[index + 2], occluder[index + 3])
-            : 0;
-        packed.data[index] = material?.[index] || 0;
-        packed.data[index + 1] = emissiveStrength;
-        packed.data[index + 2] = occluderStrength;
-        packed.data[index + 3] = occluderStrength;
-    }
+    packed.data.set(channels.packed);
     ctx.putImageData(packed, 0, 0);
-    cache.set(id, { canvas, revision });
-    return canvas;
+    const result = {
+        material: canvas,
+        emissive: canvasFromPixels(channels.emissive, w, h),
+        revision,
+    };
+    cache.set(id, result);
+    return result;
 }
 
 function terrainMaterialSidecar(renderer, cached) {
@@ -200,7 +251,9 @@ function recordForBuilding(renderer, drawable, sequence) {
     const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
     const occupied = renderer?.buildingRenderer?._buildingOccupancyInfo?.(drawable.building)?.state;
     const active = occupied && occupied !== 'idle';
-    const materialSource = packedLandmarkSidecar(renderer, id);
+    const packedChannels = packedLandmarkChannels(renderer, id);
+    const materialSource = packedChannels?.material || null;
+    const emissiveSource = packedChannels?.emissive || null;
     return {
         id: `${id}:${drawable.kind}`,
         stableKey: `${id}:${drawable.kind}`,
@@ -208,6 +261,7 @@ function recordForBuilding(renderer, drawable, sequence) {
         sidecarKey: `${id}:material`,
         source,
         materialSource,
+        emissiveSource,
         sourceWidth: dims.w,
         sourceHeight: dims.h,
         sx: 0,
@@ -228,7 +282,7 @@ function recordForBuilding(renderer, drawable, sequence) {
             : 0,
         occluder: finite(materialMeta.occluder, 0.86),
         textureRevision: assets.assetVersion || null,
-        sidecarRevision: `${assets.assetVersion || ''}:${id}`,
+        sidecarRevision: packedChannels?.revision || `${assets.assetVersion || ''}:${id}`,
         sequence,
     };
 }
@@ -446,6 +500,7 @@ function packAgentFrameAtlas(renderer, records) {
         // Per-agent sidecars cannot be sampled after frame packing; semantic
         // material/elevation/emissive defaults stay on the record itself.
         record.materialSource = null;
+        record.emissiveSource = null;
         record.sidecarKey = '';
     }
     return records;
