@@ -5,6 +5,7 @@ import {
     chronicleDateWindow,
     summarizeDay,
 } from '../../application/ChronicleLog.js';
+import { eventBus } from '../../domain/events/DomainEvent.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { formatCost, formatNumber } from './Formatters.js';
 
@@ -36,6 +37,9 @@ const CHRONICLE_EXPORT_MIME = {
     markdown: 'text/markdown;charset=utf-8',
     csv: 'text/csv;charset=utf-8',
 };
+
+const CHRONICLE_READ_FAILURE_EVENT = 'chronicle:read-failed';
+const CHRONICLE_EXPORT_FAILURE_EVENT = 'chronicle:export-failed';
 
 function clockTime(ts) {
     const date = new Date(ts);
@@ -103,8 +107,21 @@ function orderedEvents(events) {
 function markdownCell(value) {
     return String(value ?? '')
         .replace(/\\/g, '\\\\')
-        .replace(/\r?\n/g, '<br>')
-        .replace(/\|/g, '\\|');
+        .replace(/[\r\n]+/g, ' ')
+        .replace(/\t/g, ' ')
+        // Encode HTML before escaping Markdown punctuation. Entities render as
+        // readable prose but cannot become tags in a permissive previewer.
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/\|/g, '\\|')
+        // Escaping the whole link/image delimiter prevents both inline and
+        // reference-style Markdown destinations from becoming active.
+        .replace(/!/g, '\\!')
+        .replace(/\[/g, '\\[')
+        .replace(/\]/g, '\\]')
+        .replace(/\(/g, '\\(')
+        .replace(/\)/g, '\\)');
 }
 
 function durationOrZero(ms) {
@@ -187,9 +204,14 @@ export function buildChronicleMarkdown({
 /** Escape one CSV cell, including Excel formula-injection protection. */
 export function csvEscapeCell(value) {
     const text = value == null ? '' : String(value);
+    // Spreadsheet applications may trim tabs, newlines, and other leading
+    // controls before deciding whether a cell is a formula. Detect the first
+    // visible character after that prefix, while preserving the original text
+    // inside the CSV cell.
+    const normalized = text.replace(/^[\s\p{C}]*/u, '');
     // A leading apostrophe makes Excel treat formula-like text as a literal.
-    const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
-    return /[",\r\n]/.test(safe)
+    const safe = /^[=+\-@]/.test(normalized) ? `'${text}` : text;
+    return /[",\r\n\t]/.test(safe)
         ? `"${safe.replace(/"/g, '""')}"`
         : safe;
 }
@@ -254,11 +276,12 @@ function downloadText(text, filename, mimeType) {
 }
 
 export class ChroniclePanel {
-    constructor({ modal, chronicleLog, spendLedger = null, usageGetter = null }) {
+    constructor({ modal, chronicleLog, spendLedger = null, usageGetter = null, toast = null }) {
         this.modal = modal;
         this.log = chronicleLog;
         this.spendLedger = spendLedger;
         this.usageGetter = usageGetter;
+        this.toast = toast;
         this._request = null;
         this._dateReadSeq = 0;
         this._selectedDateKey = null;
@@ -271,13 +294,29 @@ export class ChroniclePanel {
         if (request === null) return;
         this._request = request;
         const dateKey = chronicleDateKey();
-        this._selectedDateKey = dateKey;
-        const page = await this._readPage(dateKey);
+        let page;
+        try {
+            page = await this._readPage(dateKey);
+        } catch (error) {
+            if (
+                !this._destroyed
+                && this._request === request
+                && this.modal.isRequestCurrent(request)
+            ) {
+                this._reportFailure(
+                    CHRONICLE_READ_FAILURE_EVENT,
+                    'Could not load today\'s Chronicle.',
+                    { dateKey, error },
+                );
+            }
+            return;
+        }
         if (
             this._destroyed
             || this._request !== request
             || !this.modal.isRequestCurrent(request)
         ) return;
+        this._selectedDateKey = dateKey;
         if (!this.modal.open('Village Chronicle', '', { wide: true, request })) return;
         this._renderPage(page, dateKey, request);
     }
@@ -296,16 +335,54 @@ export class ChroniclePanel {
 
     async _showDate(dateKey, request) {
         if (!dateKey || dateKey === this._selectedDateKey) return;
-        this._selectedDateKey = dateKey;
+        const previousDateKey = this._selectedDateKey;
         const readSeq = ++this._dateReadSeq;
-        const page = await this._readPage(dateKey);
+        // The native date input changes before its async handler runs. Keep it
+        // on the committed day while the new page is loading so it cannot show
+        // a new date beside the old timeline.
+        this._setDatePickerValue(previousDateKey);
+        let page;
+        try {
+            page = await this._readPage(dateKey);
+        } catch (error) {
+            if (
+                !this._destroyed
+                && this._request === request
+                && readSeq === this._dateReadSeq
+                && this.modal.isRequestCurrent(request)
+            ) {
+                this._setDatePickerValue(previousDateKey);
+                this._reportFailure(
+                    CHRONICLE_READ_FAILURE_EVENT,
+                    'Could not load that Chronicle day.',
+                    { dateKey, error },
+                );
+            }
+            return;
+        }
         if (
             this._destroyed
             || this._request !== request
             || readSeq !== this._dateReadSeq
             || !this.modal.isRequestCurrent(request)
         ) return;
+        // Commit only after the read has succeeded and is still the current
+        // request. The rendered controls then receive the same committed key.
+        this._selectedDateKey = dateKey;
         this._renderPage(page, dateKey, request);
+    }
+
+    _setDatePickerValue(dateKey) {
+        const input = this.modal?.contentEl?.querySelector?.('.chronicle__date-input');
+        if (input && dateKey) input.value = dateKey;
+    }
+
+    _reportFailure(eventName, message, details = {}) {
+        if (this.toast?.show) {
+            this.toast.show(message, 'warning');
+            return;
+        }
+        eventBus.emit(eventName, { message, ...details });
     }
 
     _spendForExport(dateKey) {
@@ -352,8 +429,13 @@ export class ChroniclePanel {
             const text = isCsv ? buildChronicleCsv(data) : buildChronicleMarkdown(data);
             const extension = isCsv ? 'csv' : 'md';
             downloadText(text, `chronicle-${dateKey}.${extension}`, CHRONICLE_EXPORT_MIME[isCsv ? 'csv' : 'markdown']);
-        } catch {
-            // Export is best effort; a failed local read must not disrupt the modal.
+        } catch (error) {
+            const formatLabel = format === 'csv' ? 'CSV' : 'Markdown';
+            this._reportFailure(
+                CHRONICLE_EXPORT_FAILURE_EVENT,
+                `Could not export the Chronicle as ${formatLabel}.`,
+                { format, dateKey, error },
+            );
         }
     }
 
@@ -379,6 +461,7 @@ export class ChroniclePanel {
         this.log = null;
         this.spendLedger = null;
         this.usageGetter = null;
+        this.toast = null;
     }
 
     // The day's accounting lives here rather than in the topbar: a dollar

@@ -683,6 +683,12 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     font: 10px var(--font-body);
 }
 
+.topbar__mixer-panel:focus,
+.topbar__spend-panel:focus {
+    outline: 1px solid var(--cv-gold-soft, #d7b96f);
+    outline-offset: 3px;
+}
+
 .topbar__spend-heading {
     margin-bottom: 3px;
     color: var(--cv-gold-bright, #f2d36b);

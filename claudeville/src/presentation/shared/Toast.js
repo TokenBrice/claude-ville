@@ -8,6 +8,7 @@ const PRIMARY_CUE_DISMISS_MS = 8000;
 // A digest summarises a whole absence, so it needs longer than any single cue.
 const DIGEST_DISMISS_MS = 12000;
 const CUE_CONTEXT_MAX_AGE_MS = 1500;
+const ATTENTION_NOTICE_GRACE_MS = 1500;
 const PRIMARY_CUES = new Set(['distress', 'summons']);
 
 const CUE_PRESENTATION = Object.freeze({
@@ -23,6 +24,14 @@ const GLOBAL_CUE_COPY = Object.freeze({
     hourBell: 'The hour bell is ringing',
     aurora: 'A village milestone was reached',
     thunder: 'Thunder nearby',
+});
+
+const ATTENTION_REASON_COPY = Object.freeze({
+    question: 'asked you a question',
+    approval: 'is waiting for approval',
+    plan_review: 'wants you to review a plan',
+    errored: 'hit an error',
+    rate_limited: 'is rate limited',
 });
 
 function cleanLabel(value) {
@@ -43,6 +52,40 @@ function labelAlreadyDescribesCue(label) {
 
 function labelIsPredicate(label) {
     return /^(?:is|has|was|hit|reached)\b/i.test(label);
+}
+
+function attentionAgentId(payload) {
+    const value = payload?.agentId ?? payload?.agent?.id;
+    return value == null ? '' : cleanLabel(String(value));
+}
+
+function attentionNotice(payload, observedAgentLabel = '') {
+    if (!payload || typeof payload !== 'object') return '';
+    const name = cleanLabel(
+        payload.agent?.name
+        || payload.agent?.displayName
+        || observedAgentLabel,
+    );
+    const label = cleanLabel(
+        payload.label
+        || ATTENTION_REASON_COPY[cleanLabel(payload.reason)]
+        || ATTENTION_REASON_COPY[cleanLabel(payload.status)]
+        || 'needs your attention',
+    );
+    if (!name) return labelIsPredicate(label) ? `An agent ${label}` : label;
+    if (label.toLowerCase().startsWith(`${name.toLowerCase()} `)) return label;
+    return `${name} ${label}`;
+}
+
+function isAttentionNotice(message) {
+    return /\b(?:needs you|needs attention|asked you|waiting for you|waiting for approval|wants you|hit an error|rate[- ]limited)\b/i.test(message);
+}
+
+function attentionMessageSpecificity(message) {
+    const text = cleanLabel(message);
+    if (/\b(?:asked you|waiting for approval|review a plan|hit an error|rate[- ]limited)\b/i.test(text)) return 2;
+    if (/\b(?:needs you|needs attention|waiting for you|wants you)\b/i.test(text)) return 1;
+    return 0;
 }
 
 // Agent-scoped producers may send either a display name or a short reason.
@@ -90,6 +133,12 @@ export class Toast {
         // Keep the last label after removal so the ensuing departure cue can
         // still name its agent; the bounded cache prevents unbounded history.
         on('agent:removed', agent => this._rememberAgentLabel(agent));
+        // AttentionService emits this before calling toast.show(). Claim the
+        // specific event once here so the subsequent direct notice and the
+        // summons caption share one live-region entry.
+        on('attention:raised', payload => {
+            this.showAttention(payload);
+        });
         // Lifecycle audio is emitted synchronously from village scenes. Keep a
         // very short-lived context bridge for producers that use the contract's
         // nullable agentId and generic fallback label.
@@ -103,12 +152,53 @@ export class Toast {
         on('attention:digest', (payload) => {
             this.showDigest(payload);
         });
+        on('chronicle:read-failed', payload => {
+            this.show(payload?.message || 'Could not load the Chronicle day.', 'warning');
+        });
+        on('chronicle:export-failed', payload => {
+            this.show(payload?.message || 'Could not export the Chronicle.', 'warning');
+        });
     }
 
     show(message, type = 'info') {
         if (this._destroyed || !this.container) return;
 
-        return this._show(message, type, { dismissMs: AUTO_DISMISS_MS });
+        const cleanMessage = cleanLabel(message);
+        const collapsed = this._collapseDirectAttention(cleanMessage, type);
+        if (collapsed) return collapsed;
+
+        const agentId = isAttentionNotice(cleanMessage) ? this._agentIdForMessage(cleanMessage) : '';
+        return this._show(message, type, {
+            dismissMs: AUTO_DISMISS_MS,
+            attentionAgentId: agentId,
+            attentionExpectedMessages: agentId ? [cleanMessage] : [],
+        });
+    }
+
+    showAttention(payload) {
+        if (this._destroyed || !this.container) return;
+        const agentId = attentionAgentId(payload);
+        const observedName = this._agentLabels.get(agentId) || '';
+        if (payload?.agent) this._rememberAgentLabel(payload.agent);
+        const message = attentionNotice(payload, observedName);
+        if (!message) return;
+        const eventKey = `${agentId}:${cleanLabel(payload?.reason || payload?.status || payload?.label)}`;
+        const existing = [...this.toasts]
+            .reverse()
+            .find(entry => entry.attentionAgentId === agentId && entry.attentionEventKey === eventKey);
+        if (existing) {
+            this._preferMessage(existing, message);
+            return existing;
+        }
+        return this._show(message, 'warning', {
+            dismissMs: PRIMARY_CUE_DISMISS_MS,
+            cueKey: `attention:${eventKey}`,
+            cueKind: 'attention',
+            primary: true,
+            attentionAgentId: agentId,
+            attentionEventKey: eventKey,
+            attentionExpectedMessages: [message],
+        });
     }
 
     showDigest(payload) {
@@ -141,6 +231,15 @@ export class Toast {
         const message = formatCueCaption(payload, observedLabel);
         if (!message) return;
 
+        // AttentionService's direct notice is more specific than the generic
+        // summons caption. Reuse either an event-owned notice or a direct
+        // notice that was already shown for the same agent.
+        const attention = [...this.toasts]
+            .reverse()
+            .find(entry => entry.attentionAgentId === agentId && entry.attentionAt
+                && Date.now() - entry.attentionAt <= ATTENTION_NOTICE_GRACE_MS);
+        if (attention) return attention;
+
         const key = `${kind}:${agentId || message}`;
         const duplicate = this.toasts.find(entry => entry.cueKey === key);
         const isPrimary = PRIMARY_CUES.has(kind);
@@ -170,10 +269,62 @@ export class Toast {
             cueKey: key,
             cueKind: kind,
             primary: isPrimary,
+            agentId,
         });
     }
 
-    _show(message, type, { dismissMs, cueKey = '', cueKind = '', primary = false }) {
+    _collapseDirectAttention(message, type) {
+        if (!message || !isAttentionNotice(message) || (type !== 'warning' && type !== 'error')) return null;
+
+        const exact = [...this.toasts]
+            .reverse()
+            .find(entry => entry.attentionExpectedMessages?.has?.(message));
+        if (exact) {
+            this._preferMessage(exact, message);
+            return exact;
+        }
+
+        const agentId = this._agentIdForMessage(message);
+        if (!agentId) return null;
+        const existing = [...this.toasts]
+            .reverse()
+            .find(entry => (entry.cueKind === 'summons' || entry.attentionAgentId === agentId)
+                && (entry.agentId === agentId || entry.attentionAgentId === agentId));
+        if (!existing) return null;
+        existing.attentionAgentId = agentId;
+        existing.attentionAt = Date.now();
+        existing.attentionExpectedMessages ||= new Set();
+        existing.attentionExpectedMessages.add(message);
+        this._preferMessage(existing, message);
+        return existing;
+    }
+
+    _agentIdForMessage(message) {
+        for (const [agentId, label] of this._agentLabels) {
+            if (message.toLowerCase().startsWith(`${label.toLowerCase()} `)) return agentId;
+        }
+        return '';
+    }
+
+    _preferMessage(entry, message) {
+        const next = cleanLabel(message);
+        if (!entry || !next || entry.message === next) return;
+        if (attentionMessageSpecificity(next) < attentionMessageSpecificity(entry.message)) return;
+        entry.message = next;
+        entry.el.textContent = next;
+        entry.el.setAttribute('aria-label', next);
+    }
+
+    _show(message, type, {
+        dismissMs,
+        cueKey = '',
+        cueKind = '',
+        primary = false,
+        agentId = '',
+        attentionAgentId = '',
+        attentionEventKey = '',
+        attentionExpectedMessages = [],
+    }) {
         if (!this._makeRoom(primary)) return;
 
         const el = this.documentRef?.createElement?.('div');
@@ -194,6 +345,11 @@ export class Toast {
             cueKey,
             cueKind,
             primary,
+            agentId,
+            attentionAgentId,
+            attentionEventKey,
+            attentionAt: attentionAgentId || attentionEventKey ? Date.now() : 0,
+            attentionExpectedMessages: new Set(attentionExpectedMessages),
             dismissTimer: null,
             removalTimer: null,
         };

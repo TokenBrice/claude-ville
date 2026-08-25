@@ -23,6 +23,11 @@ function storageValue(storage, key) {
     try { return storage?.getItem(key) ?? null; } catch { return null; }
 }
 
+function focusWithoutScroll(element) {
+    if (!element?.focus) return;
+    try { element.focus({ preventScroll: true }); } catch { element.focus(); }
+}
+
 export function readPersistedSettings(storage = globalThis.window?.localStorage) {
     const storedVolume = storageValue(storage, 'claudeville.sound.volume');
     const rawVolume = storedVolume === null ? NaN : Number(storedVolume);
@@ -254,8 +259,8 @@ export class TopBar {
 
     _openSettings() {
         if (!this.modal || this._destroyed) return;
-        this._hideMixerPanel();
-        this._hideSpendPanel();
+        this._hideMixerPanel({ restoreFocus: false });
+        this._hideSpendPanel({ restoreFocus: false });
         this.modal.openContent('Settings', this._buildSettingsContent(), {
             wide: true,
             owner: SETTINGS_MODAL_OWNER,
@@ -426,6 +431,7 @@ export class TopBar {
         });
         panel.id = 'audioMixerPanel';
         panel.setAttribute('role', 'dialog');
+        panel.tabIndex = -1;
 
         const heading = el('div', {
             text: 'SOUNDSCAPE MIXER',
@@ -494,21 +500,37 @@ export class TopBar {
             this._toggleMixerPanel();
         };
         this._onMixerKeydown = (event) => {
-            if (event.key === 'Escape') this._hideMixerPanel();
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            this._hideMixerPanel();
         };
         this._onMixerPanelKeydown = (event) => {
             if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
             this._hideMixerPanel();
-            button.focus();
+        };
+        this._onMixerFocusOut = (event) => {
+            if (panel.style.display === 'none') return;
+            const next = event.relatedTarget;
+            if (next && (panel.contains?.(next) || button.contains?.(next))) return;
+            // Focus is already moving to the next surface; do not steal it
+            // back while dismissing a popover because focus left it.
+            this._hideMixerPanel({ restoreFocus: false });
         };
         this._onMixerOutside = (event) => {
             if (panel.style.display === 'none') return;
-            if (!panel.contains(event.target) && !button.contains(event.target)) this._hideMixerPanel();
+            if (!panel.contains(event.target) && !button.contains(event.target)) {
+                this._hideMixerPanel({ restoreFocus: false });
+            }
         };
-        this._onMixerResize = () => this._hideMixerPanel();
+        this._onMixerResize = () => this._hideMixerPanel({ restoreFocus: false });
         button.addEventListener('click', this._onMixerClick);
         button.addEventListener('keydown', this._onMixerKeydown);
         panel.addEventListener('keydown', this._onMixerPanelKeydown);
+        button.addEventListener('focusout', this._onMixerFocusOut);
+        panel.addEventListener('focusout', this._onMixerFocusOut);
         document.addEventListener('pointerdown', this._onMixerOutside);
         window.addEventListener('resize', this._onMixerResize);
         return { button, panel, controls };
@@ -523,7 +545,7 @@ export class TopBar {
     _showMixerPanel() {
         if (this._destroyed || !this._mixerButtonEl || !this._mixerPanelEl) return;
         this._closeSettings?.();
-        this._hideSpendPanel();
+        this._hideSpendPanel({ restoreFocus: false });
         const rect = this._mixerButtonEl.getBoundingClientRect();
         const panelWidth = 308;
         this._mixerPanelEl.style.left = `${Math.max(8, Math.min(rect.right - panelWidth, window.innerWidth - panelWidth - 8))}px`;
@@ -531,12 +553,18 @@ export class TopBar {
         this._mixerPanelEl.style.display = 'block';
         this._mixerButtonEl.setAttribute('aria-expanded', 'true');
         this._mixerButtonEl.classList.add('topbar__sound-btn--on');
+        const firstControl = this._mixerPanelEl.querySelector?.(
+            'input:not([disabled]), button:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+        );
+        focusWithoutScroll(firstControl || this._mixerPanelEl);
     }
 
-    _hideMixerPanel() {
+    _hideMixerPanel({ restoreFocus = true } = {}) {
+        const wasOpen = this._mixerPanelEl?.style.display !== 'none';
         if (this._mixerPanelEl) this._mixerPanelEl.style.display = 'none';
         this._mixerButtonEl?.setAttribute('aria-expanded', 'false');
         this._mixerButtonEl?.classList.remove('topbar__sound-btn--on');
+        if (restoreFocus && wasOpen) focusWithoutScroll(this._mixerButtonEl);
     }
 
     // Keep the thin topbar as the glance surface; its TODAY cell opens a
@@ -558,21 +586,36 @@ export class TopBar {
         };
         this._onSpendKeydown = (event) => {
             if (event.key === 'Escape') {
+                event.preventDefault();
+                event.stopPropagation();
                 this._hideSpendPanel();
             } else if (event.key === 'Enter' || event.key === ' ') {
                 event.preventDefault();
                 this._toggleSpendPanel();
             }
         };
+        this._onSpendPanelKeydown = (event) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            event.stopPropagation();
+            this._hideSpendPanel();
+        };
+        this._onSpendFocusOut = (event) => {
+            if (!this._spendPanelEl || this._spendPanelEl.style.display === 'none') return;
+            const next = event.relatedTarget;
+            if (next && (this._spendPanelEl.contains?.(next) || trigger.contains?.(next))) return;
+            this._hideSpendPanel({ restoreFocus: false });
+        };
         this._onSpendOutside = (event) => {
             if (!this._spendPanelEl || this._spendPanelEl.style.display === 'none') return;
             if (!this._spendPanelEl.contains(event.target) && !trigger.contains(event.target)) {
-                this._hideSpendPanel();
+                this._hideSpendPanel({ restoreFocus: false });
             }
         };
-        this._onSpendResize = () => this._hideSpendPanel();
+        this._onSpendResize = () => this._hideSpendPanel({ restoreFocus: false });
         trigger.addEventListener('click', this._onSpendClick);
         trigger.addEventListener('keydown', this._onSpendKeydown);
+        trigger.addEventListener('focusout', this._onSpendFocusOut);
         document.addEventListener('pointerdown', this._onSpendOutside);
         window.addEventListener('resize', this._onSpendResize);
     }
@@ -625,6 +668,9 @@ export class TopBar {
         });
         this._spendPanelEl.id = 'spendBreakdownPanel';
         this._spendPanelEl.setAttribute('role', 'dialog');
+        this._spendPanelEl.tabIndex = -1;
+        this._spendPanelEl.addEventListener('keydown', this._onSpendPanelKeydown);
+        this._spendPanelEl.addEventListener('focusout', this._onSpendFocusOut);
         document.body.appendChild(this._spendPanelEl);
     }
 
@@ -638,7 +684,7 @@ export class TopBar {
     _showSpendPanel() {
         if (this._destroyed || !this.els.rateWrap) return;
         this._closeSettings?.();
-        this._hideMixerPanel();
+        this._hideMixerPanel({ restoreFocus: false });
         this._ensureSpendPanel();
         this._renderSpendPanel();
         const panel = this._spendPanelEl;
@@ -647,11 +693,14 @@ export class TopBar {
         panel.style.top = `${rect.bottom + 7}px`;
         panel.style.display = 'block';
         this.els.rateWrap.setAttribute('aria-expanded', 'true');
+        focusWithoutScroll(panel);
     }
 
-    _hideSpendPanel() {
+    _hideSpendPanel({ restoreFocus = true } = {}) {
+        const wasOpen = this._spendPanelEl?.style.display !== 'none';
         if (this._spendPanelEl) this._spendPanelEl.style.display = 'none';
         this.els.rateWrap?.setAttribute('aria-expanded', 'false');
+        if (restoreFocus && wasOpen) focusWithoutScroll(this.els.rateWrap);
     }
 
     _renderSpendPanel() {
@@ -1085,17 +1134,28 @@ export class TopBar {
         if (this._onSpendClick && this.els.rateWrap) {
             this.els.rateWrap.removeEventListener('click', this._onSpendClick);
             this.els.rateWrap.removeEventListener('keydown', this._onSpendKeydown);
+            this.els.rateWrap.removeEventListener('focusout', this._onSpendFocusOut);
         }
         if (this._onSpendOutside) document.removeEventListener('pointerdown', this._onSpendOutside);
         if (this._onSpendResize) window.removeEventListener('resize', this._onSpendResize);
+        if (this._spendPanelEl && this._onSpendPanelKeydown) {
+            this._spendPanelEl.removeEventListener('keydown', this._onSpendPanelKeydown);
+        }
+        if (this._spendPanelEl && this._onSpendFocusOut) {
+            this._spendPanelEl.removeEventListener('focusout', this._onSpendFocusOut);
+        }
         this._spendPanelEl?.remove();
         this._spendPanelEl = null;
         if (this._onMixerClick && this._mixerButtonEl) {
             this._mixerButtonEl.removeEventListener('click', this._onMixerClick);
             this._mixerButtonEl.removeEventListener('keydown', this._onMixerKeydown);
+            this._mixerButtonEl.removeEventListener('focusout', this._onMixerFocusOut);
         }
         if (this._onMixerPanelKeydown && this._mixerPanelEl) {
             this._mixerPanelEl.removeEventListener('keydown', this._onMixerPanelKeydown);
+        }
+        if (this._onMixerFocusOut && this._mixerPanelEl) {
+            this._mixerPanelEl.removeEventListener('focusout', this._onMixerFocusOut);
         }
         if (this._onMixerOutside) document.removeEventListener('pointerdown', this._onMixerOutside);
         if (this._onMixerResize) window.removeEventListener('resize', this._onMixerResize);

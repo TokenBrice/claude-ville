@@ -29,6 +29,29 @@ import {
 const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const DETAIL_FETCH_LIMIT = 48;
 
+function hasOpenSurface(documentRef = globalThis.document) {
+    const modal = documentRef?.getElementById?.('modalOverlay');
+    if (modal?.getAttribute?.('aria-hidden') === 'false') return true;
+
+    for (const id of ['audioMixerPanel', 'spendBreakdownPanel']) {
+        const panel = documentRef?.getElementById?.(id);
+        if (panel && !panel.hidden && panel.style?.display !== 'none') return true;
+    }
+
+    const popovers = documentRef?.querySelectorAll?.('[popover]') || [];
+    return [...popovers].some(popover => {
+        if (typeof popover.matches === 'function') {
+            try {
+                return popover.matches(':popover-open') === true;
+            } catch {
+                // Older engines do not know :popover-open; use the fallback
+                // state below for test doubles and older native implementations.
+            }
+        }
+        return popover.hasAttribute?.('open') === true || popover.open === true;
+    });
+}
+
 // 1.8 — dashboard ambience follows the same local clock as the World sky.
 // Phase resolution (bounds + seasonal day-length offsets) is shared with the
 // world-side atmosphere stack via phaseNameForDate, so the two clocks cannot
@@ -808,6 +831,10 @@ export class DashboardRenderer {
         }
 
         if (event.code === 'Escape') {
+            // Dashboard owns Escape only while a dashboard card has focus. A
+            // topbar popover, modal, or native popover gets the first chance to
+            // close itself; it must not also clear the selected agent.
+            if (!this.gridEl?.contains?.(document.activeElement) || hasOpenSurface()) return;
             emitAgentDeselected();
             event.preventDefault();
             return;

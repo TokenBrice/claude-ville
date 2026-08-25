@@ -13,6 +13,21 @@ import { BgmPlayer } from './bgm/BgmPlayer.js';
 
 const TICK_MS = 1000;
 const ATMO_FRESH_MS = 3000;
+const AGENT_CUE_DEDUPE_MS = 2500;
+
+function cuePayload(payload) {
+    const source = payload && typeof payload === 'object' ? payload : {};
+    const agent = source.agent && typeof source.agent === 'object' ? source.agent : {};
+    return {
+        // Keep the original event fields (position, urgency, provider-specific
+        // context, and any future additions) intact for CueKit consumers.
+        ...source,
+        agentId: source.agentId ?? agent.id ?? source.id ?? null,
+        label: agent.name || agent.displayName || agent.agentName
+            || source.agentName || source.displayName || source.name || source.label || null,
+        provider: source.provider || agent.provider || null,
+    };
+}
 
 export class BgmDirector {
     constructor({ engine } = {}) {
@@ -28,6 +43,7 @@ export class BgmDirector {
         this._atmosphereSource = 'none';
         this._phase = 'day';
         this._lastBellHour = null;
+        this._recentAgentCues = new Map();
     }
 
     start() {
@@ -54,6 +70,7 @@ export class BgmDirector {
         this.player?.stop();
         this.player = null;
         this.cueKit = null;
+        this._recentAgentCues.clear();
     }
 
     _subscribe() {
@@ -67,18 +84,49 @@ export class BgmDirector {
             this._atmosphereSource = 'world';
         });
         on('village:scene', (scene) => {
-            if (scene?.kind === 'arrival') this.cue('arrival');
-            else if (scene?.kind === 'departure') this.cue('departure');
+            if (scene?.kind === 'arrival') this.cue('arrival', cuePayload(scene));
+            else if (scene?.kind === 'departure') this.cue('departure', cuePayload(scene));
         });
         on('distress:watchtower', (payload) => {
             const kind = payload?.kind;
-            if (kind === 'errored' || kind === 'rate_limited') this.cue('distress');
-            else if (kind === 'recovered') this.cue('recovery');
+            if (kind === 'errored' || kind === 'rate_limited') {
+                this._playAgentCue('distress', cuePayload(payload));
+            } else if (kind === 'recovered') {
+                const details = cuePayload(payload);
+                this._recentAgentCues.delete(details.agentId);
+                this.cue('recovery', details);
+            }
         });
-        on('team:gather', () => this.cue('council'));
-        on('chronicle:aurora', () => this.cue('aurora'));
+        on('team:gather', (payload) => this.cue('council', {
+            ...cuePayload(payload),
+            teamSize: Array.isArray(payload?.members)
+                ? payload.members.length
+                : payload?.teamSize ?? payload?.size,
+        }));
+        on('chronicle:aurora', (payload) => this.cue('aurora', cuePayload(payload)));
         // The one cue that is about the listener rather than the world.
-        on('attention:raised', () => this.cue('summons'));
+        on('attention:raised', payload => this._playAgentCue('summons', cuePayload(payload)));
+    }
+
+    _agentCueIsRecent(agentId) {
+        if (agentId == null || agentId === '') return false;
+        const recent = this._recentAgentCues.get(agentId);
+        if (!recent) return false;
+        if (Date.now() - recent.at >= AGENT_CUE_DEDUPE_MS) {
+            this._recentAgentCues.delete(agentId);
+            return false;
+        }
+        return true;
+    }
+
+    _playAgentCue(kind, payload) {
+        const agentId = payload?.agentId ?? payload?.agent?.id ?? null;
+        if (this._agentCueIsRecent(agentId)) return false;
+        const played = this.cue(kind, payload);
+        if (played && agentId != null && agentId !== '') {
+            this._recentAgentCues.set(agentId, { kind, at: Date.now() });
+        }
+        return played;
     }
 
     cue(kind, extra = {}) {
