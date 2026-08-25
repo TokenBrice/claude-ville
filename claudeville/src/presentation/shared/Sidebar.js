@@ -61,6 +61,10 @@ export class Sidebar {
         this._workflowPruneTimer = null;
         this._workflowPruneAt = 0;
         this._detailIndexTimer = null;
+        this._reactiveFrame = null;
+        this._reactiveFrameGeneration = 0;
+        this._pendingAgentChanges = new Map();
+        this._reactiveRenderPending = false;
         this._destroyed = false;
         this.isCollapsed = safeStorageGet(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
         this.selection = new AgentSelectionMirror({
@@ -70,16 +74,8 @@ export class Sidebar {
             },
         });
 
-        this._onAgentUpdate = (agent) => {
-            if (this._destroyed) return;
-            this._indexAgent(agent);
-            this.render();
-        };
-        this._onAgentRemoved = (agent) => {
-            if (this._destroyed) return;
-            this.searchIndex.remove(agent?.id);
-            this.render();
-        };
+        this._onAgentUpdate = agent => this._handleAgentUpdate(agent);
+        this._onAgentRemoved = agent => this._handleAgentRemoved(agent);
         this._onHarborUpdate = (repos = []) => {
             if (this._destroyed) return;
             const nextRepos = Array.isArray(repos) ? repos : [];
@@ -109,6 +105,93 @@ export class Sidebar {
         this.renderHarbor();
     }
 
+    _handleAgentUpdate(agent) {
+        if (this._destroyed) return;
+        this._queueAgentChange(agent, 'upsert');
+    }
+
+    _handleAgentRemoved(agent) {
+        if (this._destroyed) return;
+        this._queueAgentChange(agent, 'remove');
+    }
+
+    _queueAgentChange(agent, type) {
+        const id = agent?.id;
+        if (id) {
+            // Keep only the final operation for each agent in this frame. This
+            // preserves the final world state while avoiding repeated index work.
+            this._pendingAgentChanges.set(id, { agent, type });
+        } else {
+            // A malformed event can still mean the resident list changed.
+            this._reactiveRenderPending = true;
+        }
+        this._scheduleReactiveRender();
+    }
+
+    _scheduleReactiveRender() {
+        if (this._destroyed || this._reactiveFrame !== null) return;
+
+        const generation = ++this._reactiveFrameGeneration;
+        const callback = () => {
+            if (generation !== this._reactiveFrameGeneration) return;
+            this._reactiveFrame = null;
+            if (this._destroyed) return;
+            if (!this._reindexPendingAgentChanges()) return;
+            // Read selection only after all queued events have been applied so
+            // the frame cannot paint an intermediate cross-mode selection.
+            if (!this._destroyed) this.render();
+        };
+        const frame = this._requestAnimationFrame(callback);
+        if (frame === null || frame === undefined) {
+            // Browsers targeted by ClaudeVille provide rAF. Keep the sidebar
+            // usable in a non-browser harness without introducing a timer.
+            callback();
+            return;
+        }
+        this._reactiveFrame = frame;
+    }
+
+    _requestAnimationFrame(callback) {
+        if (typeof requestAnimationFrame !== 'function') return null;
+        return requestAnimationFrame(callback);
+    }
+
+    _cancelAnimationFrame(frame) {
+        if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(frame);
+    }
+
+    _cancelReactiveFrame() {
+        if (this._reactiveFrame === null) return;
+        this._reactiveFrameGeneration++;
+        this._cancelAnimationFrame(this._reactiveFrame);
+        this._reactiveFrame = null;
+    }
+
+    _reindexPendingAgentChanges() {
+        if (this._destroyed) {
+            this._pendingAgentChanges.clear();
+            this._reactiveRenderPending = false;
+            return false;
+        }
+
+        const changes = this._pendingAgentChanges;
+        const shouldRender = this._reactiveRenderPending || changes.size > 0;
+        this._pendingAgentChanges = new Map();
+        this._reactiveRenderPending = false;
+
+        for (const [id, change] of changes) {
+            if (change.type === 'remove') this.searchIndex.remove(id);
+            else this._indexAgent(change.agent);
+        }
+        return shouldRender;
+    }
+
+    _flushPendingReactiveChanges() {
+        if (this._destroyed) return false;
+        this._cancelReactiveFrame();
+        return this._reindexPendingAgentChanges();
+    }
+
     _bindFilter() {
         if (!this.listEl) return;
         const wrap = el('div', { className: 'sidebar__filter' }, [
@@ -122,15 +205,16 @@ export class Sidebar {
         this.filterEl.type = 'text';
         this.filterEl.placeholder = 'Search agents, tools, files…';
         this.listEl.parentNode?.insertBefore(wrap, this.listEl);
-        this._onFilterInput = (event) => {
-            this._filter = String(event.target.value || '').trim().toLowerCase();
-            this._renderSignature = '';
-            this.render();
-        };
+        this._onFilterInput = event => this._handleFilterInput(event);
         this.filterEl.addEventListener('input', this._onFilterInput);
         // Enter routes to the single matching agent (select + camera focus).
         this._onFilterKeydown = (event) => {
             if (event.key !== 'Enter') return;
+            const hadPendingChanges = this._flushPendingReactiveChanges();
+            if (hadPendingChanges) {
+                this._renderSignature = '';
+                this.render();
+            }
             const agents = Array.from(this.world.agents.values());
             const matches = this.searchIndex.search(this._filter, agents.map(agent => agent.id))
                 .map(match => this.world.agents.get(match.agentId))
@@ -138,6 +222,16 @@ export class Sidebar {
             if (matches.length === 1) emitAgentSelected(matches[0]);
         };
         this.filterEl.addEventListener('keydown', this._onFilterKeydown);
+    }
+
+    _handleFilterInput(event) {
+        if (this._destroyed) return;
+        this._filter = String(event.target.value || '').trim().toLowerCase();
+        this._renderSignature = '';
+        // Filter changes are operator input: apply queued index deltas and
+        // render now instead of making the keystroke wait for the next frame.
+        this._flushPendingReactiveChanges();
+        this.render();
     }
 
     _matchesFilter(agent) {
@@ -167,6 +261,7 @@ export class Sidebar {
                 detail: cachedDetail,
             });
             if (changed) {
+                this._flushPendingReactiveChanges();
                 this._renderSignature = '';
                 this.render();
             }
@@ -200,6 +295,7 @@ export class Sidebar {
         this._onListClick = (event) => {
             const toggle = event.target.closest('.sidebar__workflow-toggle[data-workflow-id]');
             if (toggle && this.listEl.contains(toggle)) {
+                this._flushPendingReactiveChanges();
                 const wfId = toggle.dataset.workflowId;
                 if (this._collapsedWorkflows.has(wfId)) this._collapsedWorkflows.delete(wfId);
                 else this._collapsedWorkflows.add(wfId);
@@ -673,6 +769,9 @@ export class Sidebar {
     destroy() {
         if (this._destroyed) return;
         this._destroyed = true;
+        this._cancelReactiveFrame();
+        this._pendingAgentChanges.clear();
+        this._reactiveRenderPending = false;
         eventBus.off('agent:added', this._onAgentUpdate);
         eventBus.off('agent:updated', this._onAgentUpdate);
         eventBus.off('agent:removed', this._onAgentRemoved);
