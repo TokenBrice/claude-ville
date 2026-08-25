@@ -50,7 +50,11 @@ test('authored emissive RGB is kept in a separate packed channel', () => {
         pixelCount: 2,
     });
     assert.deepEqual([...packed.emissive], [12, 34, 56, 64, 90, 80, 70, 128]);
-    assert.deepEqual([...packed.packed], [3, 64, 255, 255, 4, 128, 7, 7]);
+    // B carries occluder R (authored height) and A carries occluder G (strength).
+    // This assertion previously expected max(RGBA) collapsed into both, which was
+    // the packing defect itself: it destroyed the height/strength distinction the
+    // material contract defines.
+    assert.deepEqual([...packed.packed], [3, 64, 0, 2, 4, 128, 0, 7]);
 
     const source = { width: 2, height: 1 };
     const materialSource = { width: 2, height: 1 };

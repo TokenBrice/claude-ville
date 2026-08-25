@@ -7,6 +7,8 @@ export function normalizeLightSource(source = {}, defaults = {}) {
             ? { x: source.x, y: source.y }
             : null
     );
+    const priority = Number(source.priority);
+    const defaultPriority = Number(defaults.priority);
     return {
         id: source.id || defaults.id || `${defaults.buildingType || 'light'}:${kind}:${Math.round(origin?.x || 0)},${Math.round(origin?.y || 0)}`,
         kind,
@@ -21,6 +23,9 @@ export function normalizeLightSource(source = {}, defaults = {}) {
         length: source.length,
         width: source.width,
         alpha: Number.isFinite(source.alpha) ? source.alpha : defaults.alpha,
+        priority: Number.isFinite(priority)
+            ? priority
+            : Number.isFinite(defaultPriority) ? defaultPriority : 0,
         ttl: source.ttl ?? null,
         createdAt: source.createdAt,
         buildingType: source.buildingType || defaults.buildingType || null,

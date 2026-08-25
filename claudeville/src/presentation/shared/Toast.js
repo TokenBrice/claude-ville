@@ -192,6 +192,7 @@ export class Toast {
             message,
             count: 1,
             cueKey,
+            cueKind,
             primary,
             dismissTimer: null,
             removalTimer: null,

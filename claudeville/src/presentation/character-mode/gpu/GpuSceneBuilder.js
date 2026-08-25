@@ -75,13 +75,13 @@ export function packGpuSidecarPixels({ material = null, emissive = null, occlude
     const packed = new Uint8ClampedArray(pixels * 4);
     const authoredEmissive = emissive ? new Uint8ClampedArray(pixels * 4) : null;
     for (let index = 0; index < packed.length; index += 4) {
-        const occluderStrength = occluder
-            ? Math.max(occluder[index] || 0, occluder[index + 1] || 0, occluder[index + 2] || 0, occluder[index + 3] || 0)
-            : 0;
         packed[index] = material?.[index] || 0;
         packed[index + 1] = emissive?.[index + 3] || 0;
-        packed[index + 2] = occluderStrength;
-        packed[index + 3] = occluderStrength;
+        // The packed map keeps material in R and emissive contribution in G;
+        // preserve the authored occluder R/G pair in B/A instead of reducing
+        // all four source bytes to one mask value.
+        packed[index + 2] = occluder?.[index] || 0;
+        packed[index + 3] = occluder?.[index + 1] || 0;
         if (authoredEmissive) {
             authoredEmissive[index] = emissive[index] || 0;
             authoredEmissive[index + 1] = emissive[index + 1] || 0;

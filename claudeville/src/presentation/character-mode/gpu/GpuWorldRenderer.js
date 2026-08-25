@@ -97,8 +97,13 @@ float occlusionBetween(vec2 fromPx, vec2 toPx, float elevation) {
     for (int stepIndex = 1; stepIndex <= 3; stepIndex++) {
         float t = float(stepIndex) / 4.0;
         vec2 uv = mix(fromUv, toUv, t);
-        float h = texture(u_occlusion, clamp(uv, vec2(0.0), vec2(1.0))).r;
-        blocked = max(blocked, smoothstep(elevation + 0.03, elevation + 0.18, h));
+        vec4 occluder = texture(u_occlusion, clamp(uv, vec2(0.0), vec2(1.0)));
+        // Treat the light as ground-level and descend the receiver-to-light
+        // ray through the existing three samples. A short occluder can then
+        // block a low receiver without incorrectly shadowing a taller one.
+        float rayHeight = mix(elevation, 0.0, t);
+        float heightBlock = smoothstep(rayHeight + 0.03, rayHeight + 0.18, occluder.r);
+        blocked = max(blocked, heightBlock * occluder.a);
     }
     return blocked;
 }
@@ -231,8 +236,11 @@ void main() {
     float alpha = texture(u_albedo, v_uv).a * v_alpha;
     if (alpha < 0.05) discard;
     vec4 sidecar = u_hasMaterialMap ? texture(u_materialMap, v_uv) : vec4(0.0);
-    float height = max(max(v_elevation, sidecar.b), u_occluder * sidecar.a);
-    outColor = vec4(height * alpha, 0.0, 0.0, alpha);
+    // Height and strength are independent: authored strength attenuates the
+    // trace in the target alpha channel and never lowers the height itself.
+    float height = max(max(v_elevation, sidecar.b), u_occluder);
+    float strength = u_hasMaterialMap ? sidecar.a : 1.0;
+    outColor = vec4(height * alpha, 0.0, 0.0, strength * alpha);
 }`;
 
 const FULLSCREEN_VERTEX = `#version 300 es
