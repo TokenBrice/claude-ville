@@ -643,6 +643,43 @@ function trimCache(cache, maxSize) {
   }
 }
 
+function normalizeCacheTokenValue(rawValue) {
+  try {
+    const value = Number(rawValue);
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCacheTokenField(usage, fieldMap) {
+  const fields = Array.isArray(fieldMap)
+    ? fieldMap
+    : fieldMap == null ? [] : [fieldMap];
+
+  for (const field of fields) {
+    const rawValue = typeof field === 'function' ? field(usage) : usage?.[field];
+    const value = normalizeCacheTokenValue(rawValue);
+    if (value !== null) return value;
+  }
+  return 0;
+}
+
+/**
+ * Resolve provider-specific cache fields into the frontend contract.
+ *
+ * Each field-map value may be one field name, an ordered list of aliases, or
+ * a provider-local selector function when alias precedence is not a simple
+ * first-valid-number lookup. Provider parsing and error boundaries stay in
+ * the adapter that owns the source format.
+ */
+function normalizeCacheTokens(usage, providerFieldMap = {}) {
+  return {
+    cacheRead: normalizeCacheTokenField(usage, providerFieldMap?.cacheRead),
+    cacheCreate: normalizeCacheTokenField(usage, providerFieldMap?.cacheCreate),
+  };
+}
+
 function truncateText(value, maxLength, { compactWhitespace = false, ellipsis = false, falseyAsEmpty = false } = {}) {
   let text = falseyAsEmpty ? String(value || '') : String(value);
   if (compactWhitespace) text = text.replace(/\s+/g, ' ').trim();
@@ -750,6 +787,7 @@ module.exports = {
   fileSignature,
   getJsonlDiagnostics,
   getTailCacheDiagnostics,
+  normalizeCacheTokens,
   parseJsonLines,
   readByteRangeText,
   readHeadLines,

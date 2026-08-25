@@ -23,6 +23,7 @@ const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   createDetailResponse,
+  normalizeCacheTokens,
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
   trimCache,
@@ -197,6 +198,10 @@ const GEMINI_TOKEN_ALIASES = Object.freeze({
   reasoning: ['reasoning_output_tokens', 'reasoningOutputTokens', 'reasoning_tokens', 'thoughtsTokenCount', 'thoughts'],
   total: ['totalTokenCount', 'total_tokens', 'totalTokens', 'total'],
 });
+const GEMINI_CACHE_FIELD_MAP = Object.freeze({
+  cacheRead: GEMINI_TOKEN_ALIASES.cacheRead,
+  cacheCreate: GEMINI_TOKEN_ALIASES.cacheCreate,
+});
 
 function readTokenNumber(obj, keys) {
   if (!obj || typeof obj !== 'object') return 0;
@@ -248,8 +253,7 @@ function getTokenUsage(filePath, parsedSession) {
 
       const input = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.input);
       const output = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.output);
-      const cacheRead = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.cacheRead);
-      const cacheCreate = readTokenNumber(tokens, GEMINI_TOKEN_ALIASES.cacheCreate);
+      const { cacheRead, cacheCreate } = normalizeCacheTokens(tokens, GEMINI_CACHE_FIELD_MAP);
 
       tokenUsage.totalInput += input;
       tokenUsage.totalOutput += output;

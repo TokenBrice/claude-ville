@@ -19,6 +19,7 @@ const os = require('os');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
 const {
   createDetailResponse,
+  normalizeCacheTokens,
   readJsonLines: readSharedJsonLines,
   summarizeToolInput: summarizeSharedToolInput,
   trimCache,
@@ -35,6 +36,11 @@ const MAX_TAIL_BYTES = 8 * 1024 * 1024;
 const SESSION_CACHE_MAX = 256;
 const DETAIL_SCAN_LINES = 400;
 const GIT_EVENT_SCAN_LINES = 2000;
+const GROK_CACHE_FIELD_MAP = Object.freeze({
+  // Grok's ACP stream currently exposes only a cumulative context total.
+  cacheRead: [],
+  cacheCreate: [],
+});
 
 const GROK_TOOL_INPUT_FIELDS = Object.freeze([
   'command',
@@ -562,6 +568,7 @@ function getGitEvents(entry, context) {
 
 function buildTokenUsage(summary, liveDetail) {
   const contextWindow = Number(liveDetail?.contextTokens) || 0;
+  const cacheTokens = normalizeCacheTokens(null, GROK_CACHE_FIELD_MAP);
   const model = String(summary?.current_model_id || '').toLowerCase();
   let contextWindowMax = 500000;
   if (model.includes('composer')) contextWindowMax = 256000;
@@ -571,8 +578,8 @@ function buildTokenUsage(summary, liveDetail) {
     return {
       input: 0,
       output: 0,
-      cacheRead: 0,
-      cacheCreate: 0,
+      cacheRead: cacheTokens.cacheRead,
+      cacheCreate: cacheTokens.cacheCreate,
       contextWindow: 0,
       contextWindowMax,
     };
@@ -583,8 +590,8 @@ function buildTokenUsage(summary, liveDetail) {
   return {
     input: 0,
     output: 0,
-    cacheRead: 0,
-    cacheCreate: 0,
+    cacheRead: cacheTokens.cacheRead,
+    cacheCreate: cacheTokens.cacheCreate,
     contextWindow,
     contextWindowMax,
   };

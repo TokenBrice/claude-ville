@@ -10,6 +10,7 @@ const os = require('os');
 const path = require('path');
 const {
   createDetailResponse,
+  normalizeCacheTokens,
   readJsonLines,
   summarizeToolInput,
 } = require('./shared');
@@ -35,6 +36,10 @@ const TOOL_INPUT_FIELDS = Object.freeze([
   'target',
   'recipient',
 ]);
+const OMP_CACHE_FIELD_MAP = Object.freeze({
+  cacheRead: [usage => usage?.cacheRead ?? usage?.cache_read],
+  cacheCreate: [usage => usage?.cacheWrite ?? usage?.cacheCreate ?? usage?.cache_create],
+});
 
 function parseTimestamp(value) {
   if (value == null) return 0;
@@ -80,8 +85,7 @@ function readUsage(rawUsage, total) {
   const number = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
   const input = number(rawUsage.input ?? rawUsage.totalInput ?? rawUsage.input_tokens);
   const output = number(rawUsage.output ?? rawUsage.totalOutput ?? rawUsage.output_tokens);
-  const cacheRead = number(rawUsage.cacheRead ?? rawUsage.cache_read);
-  const cacheCreate = number(rawUsage.cacheWrite ?? rawUsage.cacheCreate ?? rawUsage.cache_create);
+  const { cacheRead, cacheCreate } = normalizeCacheTokens(rawUsage, OMP_CACHE_FIELD_MAP);
   total.input += input;
   total.output += output;
   total.cacheRead += cacheRead;

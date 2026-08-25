@@ -1,7 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 
 const GIT_EVENT_TYPES = new Set(['commit', 'push', 'pull', 'fetch']);
 const GIT_PULL_FETCH_FLAG_TRACKED = new Set(['--all', '--prune', '--tags']);
@@ -60,6 +60,36 @@ const GIT_TRACKING_TTL_MS = 6 * 60 * 60 * 1000;
 const GIT_TRACKING_MAX_PROJECTS = 512;
 const GIT_REMOTE_REF_SCAN_MAX_ENTRIES = 800;
 const GIT_REMOTE_REF_SCAN_MAX_DEPTH = 8;
+const GIT_WORKER_MAX_CONCURRENCY = boundedIntegerEnv(
+  'CLAUDEVILLE_GIT_WORKER_CONCURRENCY',
+  2,
+  1,
+  8,
+);
+const GIT_WORKER_MAX_QUEUE_DEPTH = boundedIntegerEnv(
+  'CLAUDEVILLE_GIT_WORKER_QUEUE_DEPTH',
+  32,
+  1,
+  256,
+);
+const GIT_WORKER_TIMEOUT_MS = boundedIntegerEnv(
+  'CLAUDEVILLE_GIT_WORKER_TIMEOUT_MS',
+  750,
+  50,
+  10_000,
+);
+const GIT_WORKER_RETRY_BASE_MS = boundedIntegerEnv(
+  'CLAUDEVILLE_GIT_WORKER_RETRY_BASE_MS',
+  1_000,
+  100,
+  60_000,
+);
+const GIT_WORKER_RETRY_MAX_MS = boundedIntegerEnv(
+  'CLAUDEVILLE_GIT_WORKER_RETRY_MAX_MS',
+  30_000,
+  GIT_WORKER_RETRY_BASE_MS,
+  5 * 60_000,
+);
 const _gitStatusCache = new Map();
 const _unpushedEventsCache = new Map();
 const _currentBranchCache = new Map();
@@ -87,20 +117,62 @@ const _perf = {
   recentRuns: [],
 };
 
+const _gitWorker = {
+  enabled: false,
+  stopping: false,
+  queue: [],
+  activeJobs: 0,
+  activeChildren: new Set(),
+  states: new Map(),
+  retryTimers: new Map(),
+  onDataReady: null,
+  requests: 0,
+  refreshes: 0,
+  refreshTimeMs: 0,
+  failures: 0,
+  retries: 0,
+  sheds: 0,
+  coalesced: 0,
+  staleCompletions: 0,
+  droppedOnShutdown: 0,
+  callbackErrors: 0,
+  maxQueueDepthObserved: 0,
+  lastError: null,
+  lastErrorAt: null,
+  lastRefreshAt: null,
+  lastRefreshProject: null,
+  lastRefreshReason: null,
+};
+
+function boundedIntegerEnv(name, fallback, minimum, maximum) {
+  const value = Number(process.env[name]);
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(minimum, Math.min(maximum, Math.floor(value)));
+}
+
 function invalidateGitStatusCaches({ project = null } = {}) {
+  const preserveStaleWorkerState = _gitWorker.enabled && !_gitWorker.stopping;
   if (!project) {
-    _gitStatusCache.clear();
-    _unpushedEventsCache.clear();
-    _currentBranchCache.clear();
+    if (!preserveStaleWorkerState) {
+      _gitStatusCache.clear();
+      _unpushedEventsCache.clear();
+      _currentBranchCache.clear();
+    }
+    if (_gitWorker.enabled) noteGitWorkerInvalidation();
     return;
   }
 
   const prefix = `${project}::`;
-  for (const key of _gitStatusCache.keys()) {
-    if (key === project || key.startsWith(prefix)) _gitStatusCache.delete(key);
+  if (!preserveStaleWorkerState) {
+    for (const key of _gitStatusCache.keys()) {
+      if (key === project || key.startsWith(prefix)) _gitStatusCache.delete(key);
+    }
+    _unpushedEventsCache.delete(project);
+    _currentBranchCache.delete(project);
   }
-  _unpushedEventsCache.delete(project);
-  _currentBranchCache.delete(project);
+  if (preserveStaleWorkerState || _gitWorker.states.has(project)) {
+    noteGitWorkerInvalidation(project);
+  }
 }
 
 function markProjectSessionActive(project, now = Date.now()) {
@@ -291,6 +363,634 @@ function isGitEnrichmentDisabled() {
   return ['1', 'true', 'yes'].includes(String(process.env.CLAUDEVILLE_DISABLE_GIT_ENRICHMENT || '').toLowerCase());
 }
 
+function gitWorkerErrorDetail(error) {
+  const detail = error?.message || error?.code || String(error || 'Unknown Git worker error');
+  return detail.length <= 256 ? detail : `${detail.slice(0, 255)}…`;
+}
+
+function isGitWorkerTimeout(error) {
+  return error?.code === 'ETIMEDOUT'
+    || error?.signal === 'SIGTERM'
+    || /timed? out|timeout/i.test(error?.message || '');
+}
+
+function gitWorkerState(project) {
+  const normalizedProject = path.resolve(String(project));
+  let state = _gitWorker.states.get(normalizedProject);
+  if (state) return state;
+
+  state = {
+    project: normalizedProject,
+    generation: 0,
+    queued: false,
+    running: false,
+    rerunRequested: false,
+    retryAttempt: 0,
+    nextRetryAt: 0,
+    retryTimer: null,
+    observedBranches: new Set(),
+    jobObservedBranches: new Set(),
+    lastRequestedAt: null,
+    lastCompletedAt: null,
+    lastGoodAt: null,
+    lastReason: null,
+  };
+  _gitWorker.states.set(normalizedProject, state);
+  trimGitWorkerStates(normalizedProject);
+  return state;
+}
+
+function trimGitWorkerStates(protectedProject = null) {
+  if (_gitWorker.states.size <= GIT_TRACKING_MAX_PROJECTS) return;
+  for (const [project, state] of _gitWorker.states) {
+    if (_gitWorker.states.size <= GIT_TRACKING_MAX_PROJECTS) break;
+    if (project === protectedProject) continue;
+    if (state.running || state.queued) continue;
+    if (state.retryTimer) clearTimeout(state.retryTimer);
+    _gitWorker.states.delete(project);
+  }
+}
+
+function noteGitWorkerInvalidation(project = null) {
+  const states = project
+    ? [gitWorkerState(project)]
+    : [..._gitWorker.states.values()];
+  for (const state of states) {
+    state.generation++;
+    if (state.running || state.queued) state.rerunRequested = true;
+  }
+}
+
+function scheduleGitWorkerRetry(project, state) {
+  if (!_gitWorker.enabled || _gitWorker.stopping || isGitEnrichmentDisabled()) return;
+  if (state.retryTimer) clearTimeout(state.retryTimer);
+  const delay = Math.min(
+    GIT_WORKER_RETRY_MAX_MS,
+    GIT_WORKER_RETRY_BASE_MS * (2 ** Math.min(state.retryAttempt - 1, 8)),
+  );
+  state.nextRetryAt = Date.now() + delay;
+  state.retryTimer = setTimeout(() => {
+    state.retryTimer = null;
+    state.nextRetryAt = 0;
+    if (!_gitWorker.enabled || _gitWorker.stopping || isGitEnrichmentDisabled()) return;
+    _gitWorker.retries++;
+    requestGitWorkerRefresh(project, { reason: 'retry' });
+  }, delay);
+  state.retryTimer.unref?.();
+}
+
+function workerSnapshot(project) {
+  const cached = _unpushedEventsCache.get(project);
+  return cached && Array.isArray(cached.value)
+    ? cached
+    : null;
+}
+
+function workerSnapshotNeedsRefresh(project, state, now = Date.now()) {
+  const cached = workerSnapshot(project);
+  if (!cached) return true;
+  if (cached.generation !== state.generation) return true;
+  return now - Number(cached.at || 0) >= GIT_STATUS_CACHE_TTL_MS;
+}
+
+function addObservedGitBranches(state, events = []) {
+  const branches = new Set();
+  for (const event of events) {
+    if (event?.type !== 'commit') continue;
+    branches.add(eventBranch(event));
+  }
+  let unseen = false;
+  for (const branch of branches) {
+    if (!state.observedBranches.has(branch) && !state.jobObservedBranches.has(branch)) unseen = true;
+    state.observedBranches.add(branch);
+  }
+  return unseen;
+}
+
+function runGitWorkerCommand(project, args) {
+  if (!project) return Promise.resolve('');
+
+  const start = Date.now();
+  _perf.gitCommandCount++;
+  return new Promise((resolve, reject) => {
+    let child = null;
+    let settled = false;
+    let hardTimeout = null;
+
+    const finish = (error, stdout = '') => {
+      if (settled) return;
+      settled = true;
+      if (hardTimeout) clearTimeout(hardTimeout);
+      if (child) _gitWorker.activeChildren.delete(child);
+      _perf.gitCommandTimeMs += Date.now() - start;
+
+      if (error) {
+        const expectedRefMiss = args[0] === 'rev-parse'
+          && args.includes('--verify')
+          && args.includes('--quiet')
+          && Number.isInteger(error?.status);
+        if (!expectedRefMiss) {
+          _perf.gitCommandErrors++;
+          if (isGitWorkerTimeout(error)) _perf.gitCommandTimeouts++;
+        }
+        reject(error);
+        return;
+      }
+      resolve(String(stdout || '').trim());
+    };
+
+    try {
+      child = execFile('git', ['-C', project, ...args], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        timeout: GIT_WORKER_TIMEOUT_MS,
+        killSignal: 'SIGTERM',
+        maxBuffer: 256 * 1024,
+      }, (error, stdout) => finish(error, stdout));
+      _gitWorker.activeChildren.add(child);
+      hardTimeout = setTimeout(() => {
+        const timeoutError = new Error(`git command timed out after ${GIT_WORKER_TIMEOUT_MS}ms`);
+        timeoutError.code = 'ETIMEDOUT';
+        timeoutError.signal = 'SIGTERM';
+        try { child.kill('SIGTERM'); } catch { /* ignore */ }
+        finish(timeoutError);
+      }, GIT_WORKER_TIMEOUT_MS + 250);
+      hardTimeout.unref?.();
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
+async function tryRunGitWorker(project, args) {
+  try {
+    return await runGitWorkerCommand(project, args);
+  } catch (error) {
+    if (
+      isGitWorkerTimeout(error)
+      || error?.code === 'ENOENT'
+      || error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+    ) throw error;
+    return '';
+  }
+}
+
+async function workerCurrentBranch(project, { force = false } = {}) {
+  const now = Date.now();
+  const cached = _currentBranchCache.get(project);
+  if (!force && cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) {
+    _perf.cacheHits++;
+    return cached.value;
+  }
+  const value = await tryRunGitWorker(project, ['branch', '--show-current']);
+  _currentBranchCache.set(project, { at: now, value });
+  return value;
+}
+
+async function workerBranchUpstream(project, branch) {
+  const normalized = normalizeLocalBranchName(branch);
+  if (!normalized) return '';
+  return tryRunGitWorker(project, [
+    'for-each-ref',
+    '--format=%(upstream:short)',
+    `refs/heads/${normalized}`,
+  ]);
+}
+
+async function workerSameNameRemoteBranch(project, branch) {
+  const normalized = normalizeLocalBranchName(branch);
+  if (!normalized) return '';
+  const refs = (await tryRunGitWorker(project, [
+    'for-each-ref',
+    '--format=%(refname:short)',
+    `refs/remotes/*/${normalized}`,
+  ]))
+    .split('\n')
+    .map((ref) => ref.trim())
+    .filter(Boolean)
+    .filter((ref) => !ref.endsWith('/HEAD'));
+  if (!refs.length) return '';
+  return refs.find((ref) => ref === `origin/${normalized}`) || refs[0];
+}
+
+async function workerRefExists(project, ref) {
+  if (!ref) return false;
+  try {
+    return !!(await runGitWorkerCommand(project, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]));
+  } catch (error) {
+    if (isGitWorkerTimeout(error) || error?.code === 'ENOENT') throw error;
+    return false;
+  }
+}
+
+async function workerDefaultComparisonBase(project, branch) {
+  const candidates = [
+    'origin/HEAD',
+    'origin/main',
+    'origin/master',
+    'main',
+    'master',
+  ].filter((ref) => ref && ref !== branch);
+
+  for (const ref of candidates) {
+    if (await workerRefExists(project, ref)) return ref;
+  }
+  return null;
+}
+
+async function workerBranchComparison(project, branch = '') {
+  const normalizedBranch = normalizeLocalBranchName(branch || await workerCurrentBranch(project, { force: true }));
+  const upstream = await workerBranchUpstream(project, normalizedBranch);
+  if (upstream) {
+    return { branch: normalizedBranch, baseRef: upstream, upstream, hasUpstream: true };
+  }
+
+  const remoteBranch = await workerSameNameRemoteBranch(project, normalizedBranch);
+  if (remoteBranch) {
+    return {
+      branch: normalizedBranch,
+      baseRef: remoteBranch,
+      upstream: remoteBranch,
+      hasUpstream: true,
+    };
+  }
+
+  const baseRef = await workerDefaultComparisonBase(project, normalizedBranch);
+  return {
+    branch: normalizedBranch,
+    baseRef,
+    upstream: null,
+    hasUpstream: false,
+  };
+}
+
+async function readPushStateAsync(project, branch = null, { force = false } = {}) {
+  const now = Date.now();
+  const normalizedBranch = normalizeLocalBranchName(branch);
+  const cacheKey = `${project}::${normalizedBranch || 'HEAD'}`;
+  const cached = _gitStatusCache.get(cacheKey);
+  if (!force && cached && now - cached.at < GIT_STATUS_CACHE_TTL_MS) {
+    _perf.cacheHits++;
+    return cached.value;
+  }
+
+  let value = { pushedToUpstream: false, upstream: null };
+  try {
+    if (await runGitWorkerCommand(project, ['rev-parse', '--is-inside-work-tree']) !== 'true') {
+      _gitStatusCache.set(cacheKey, { at: now, value });
+      return value;
+    }
+    const effectiveBranch = normalizedBranch || await workerCurrentBranch(project, { force });
+    const upstream = normalizedBranch
+      ? await workerBranchUpstream(project, normalizedBranch)
+      : await tryRunGitWorker(project, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+    if (!upstream) {
+      _gitStatusCache.set(cacheKey, { at: now, value });
+      return value;
+    }
+    const counts = (await runGitWorkerCommand(project, [
+      'rev-list',
+      '--left-right',
+      '--count',
+      `${effectiveBranch || 'HEAD'}...${upstream}`,
+    ]))
+      .split(/\s+/)
+      .map((part) => Number(part));
+    const ahead = Number.isFinite(counts[0]) ? counts[0] : null;
+    value = { pushedToUpstream: ahead === 0, upstream };
+  } catch (error) {
+    if (
+      isGitWorkerTimeout(error)
+      || error?.code === 'ENOENT'
+      || error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'
+    ) throw error;
+  }
+
+  _gitStatusCache.set(cacheKey, { at: now, value });
+  return value;
+}
+
+async function readUnpushedCommitEventsAsync(project, context = {}) {
+  if (!project) return [];
+  let insideWorkTree;
+  try {
+    insideWorkTree = await runGitWorkerCommand(project, ['rev-parse', '--is-inside-work-tree']);
+  } catch (error) {
+    if (Number.isInteger(error?.status)) {
+      return [];
+    }
+    throw error;
+  }
+  if (insideWorkTree !== 'true') {
+    return [];
+  }
+
+  const comparison = await workerBranchComparison(project);
+  if (!comparison.baseRef) {
+    return [];
+  }
+
+  let output;
+  try {
+    output = await runGitWorkerCommand(project, [
+      'log',
+      '--reverse',
+      `--max-count=${MAX_UNPUSHED_COMMITS_PER_BRANCH}`,
+      '--format=%H%x1f%ct%x1f%s',
+      `${comparison.baseRef}..${comparison.branch}`,
+    ]);
+  } catch (error) {
+    if (Number.isInteger(error?.status)) return workerSnapshot(project)?.value || [];
+    throw error;
+  }
+
+  const events = [];
+  for (const line of output.split('\n')) {
+    const [sha, timestampSeconds, subject] = line.split('\x1f');
+    if (!sha) continue;
+    const ts = Number(timestampSeconds) * 1000;
+    const id = `git-unpushed-${stableHash(`${project}:${comparison.branch || 'HEAD'}:${sha}`)}`;
+    events.push({
+      id,
+      type: 'commit',
+      command: `git commit ${sha.slice(0, 10)} (${subject || 'unpushed commit'})`,
+      project,
+      provider: context.provider,
+      sessionId: context.sessionId,
+      sourceId: 'git-upstream-status',
+      source: 'git-upstream-status',
+      confidence: 0.72,
+      ts: Number.isFinite(ts) ? ts : Date.now(),
+      commandHash: stableHash(id),
+      dryRun: false,
+      success: true,
+      exitCode: 0,
+      completedAt: Number.isFinite(ts) ? ts : Date.now(),
+      sha,
+      label: subject || sha.slice(0, 10),
+      inferred: true,
+      observed: false,
+      branch: comparison.branch || null,
+      targetRef: comparison.branch || comparison.baseRef,
+      upstream: comparison.upstream,
+      comparisonRef: comparison.baseRef,
+      hasUpstream: comparison.hasUpstream,
+    });
+  }
+  return dedupeGitEvents(events);
+}
+
+async function observeRepositoryPushTransitionsAsync(project, unpushedEvents = [], now = Date.now()) {
+  if (!project) return;
+  expireRecentRepositoryPushEvents(now);
+  const currentByBranch = groupCommitEventsByBranch(unpushedEvents);
+  for (const [branch, events] of currentByBranch.entries()) {
+    _lastUnpushedByProjectBranch.set(projectBranchKey(project, branch), {
+      project,
+      branch,
+      events: dedupeGitEvents(events),
+      observedAt: now,
+    });
+  }
+
+  for (const [key, previous] of _lastUnpushedByProjectBranch) {
+    if (previous.project !== project || currentByBranch.has(previous.branch)) continue;
+    try {
+      const pushState = await readPushStateAsync(project, previous.branch, { force: true });
+      if (pushState.pushedToUpstream) {
+        const event = syntheticRepositoryPushFromTransition(project, previous.branch, previous.events, pushState, now);
+        if (event) _recentRepositoryPushEvents.set(event.id, event);
+        _lastUnpushedByProjectBranch.delete(key);
+      }
+    } catch (error) {
+      if (!isGitWorkerTimeout(error) && error?.code !== 'ENOENT') continue;
+      throw error;
+    }
+  }
+}
+
+async function refreshGitWorkerProject(job, state) {
+  const { project, generation, reason } = job;
+  const startedAt = Date.now();
+  const startSignature = gitHeadSignature(project);
+  const observedBranches = new Set(state.observedBranches);
+  state.observedBranches.clear();
+  state.jobObservedBranches = new Set(observedBranches);
+  const recentPushesBefore = recentRepositoryPushEventsByProject([project], startedAt).get(project) || [];
+
+  try {
+    const events = await readUnpushedCommitEventsAsync(project, {
+      provider: 'git',
+      sessionId: `git-repo-${stableHash(project)}`,
+    });
+    for (const branch of observedBranches) {
+      await readPushStateAsync(project, branch || null, { force: true });
+    }
+    await observeRepositoryPushTransitionsAsync(project, events, Date.now());
+
+    const endSignature = gitHeadSignature(project);
+    if (state.generation !== generation || startSignature !== endSignature) {
+      _gitWorker.staleCompletions++;
+      state.generation++;
+      state.rerunRequested = true;
+      return;
+    }
+
+    const previous = workerSnapshot(project);
+    const previousValue = previous?.value || [];
+    const valueChanged = JSON.stringify(previousValue) !== JSON.stringify(events);
+    const completedAt = Date.now();
+    const recentPushesAfter = recentRepositoryPushEventsByProject([project], completedAt).get(project) || [];
+    const derivedStateChanged = JSON.stringify(recentPushesBefore) !== JSON.stringify(recentPushesAfter)
+      || observedBranches.size > 0;
+    _unpushedEventsCache.set(project, {
+      at: completedAt,
+      value: events,
+      generation: state.generation,
+    });
+    _gitHeadSignatureByProject.set(project, endSignature);
+    state.retryAttempt = 0;
+    state.nextRetryAt = 0;
+    state.lastGoodAt = completedAt;
+    state.lastCompletedAt = completedAt;
+    state.lastReason = reason;
+    _gitWorker.refreshes++;
+    _gitWorker.refreshTimeMs += completedAt - startedAt;
+    _gitWorker.lastRefreshAt = completedAt;
+    _gitWorker.lastRefreshProject = project;
+    _gitWorker.lastRefreshReason = reason;
+
+    if (!previous || valueChanged || derivedStateChanged) {
+      const rerunBeforePublish = state.rerunRequested;
+      try {
+        _gitWorker.onDataReady?.({
+          project,
+          reason: 'git-enrichment-refresh',
+          staleAgeMs: previous ? Math.max(0, completedAt - Number(previous.at || completedAt)) : null,
+        });
+      } catch (error) {
+        _gitWorker.callbackErrors++;
+        _gitWorker.lastError = gitWorkerErrorDetail(error);
+        _gitWorker.lastErrorAt = Date.now();
+      }
+      // The server invalidates its session-list cache when it publishes this
+      // completion. Keep the published snapshot aligned with that generation
+      // without losing a genuinely newer request coalesced during the job.
+      const published = _unpushedEventsCache.get(project);
+      if (published) published.generation = state.generation;
+      state.rerunRequested = rerunBeforePublish;
+    }
+  } catch (error) {
+    _gitWorker.failures++;
+    _gitWorker.lastError = `${project}: ${gitWorkerErrorDetail(error)}`;
+    _gitWorker.lastErrorAt = Date.now();
+    state.retryAttempt++;
+    scheduleGitWorkerRetry(project, state);
+  } finally {
+    state.jobObservedBranches.clear();
+  }
+}
+
+function drainGitWorkerQueue() {
+  if (!_gitWorker.enabled || _gitWorker.stopping) return;
+  while (_gitWorker.activeJobs < GIT_WORKER_MAX_CONCURRENCY && _gitWorker.queue.length) {
+    const job = _gitWorker.queue.shift();
+    const state = _gitWorker.states.get(job.project);
+    if (!state || !state.queued) continue;
+    state.queued = false;
+    state.running = true;
+    state.lastRequestedAt = job.requestedAt;
+    state.lastReason = job.reason;
+    _gitWorker.activeJobs++;
+    Promise.resolve(refreshGitWorkerProject(job, state))
+      .catch((error) => {
+        _gitWorker.failures++;
+        _gitWorker.lastError = gitWorkerErrorDetail(error);
+        _gitWorker.lastErrorAt = Date.now();
+      })
+      .finally(() => {
+        _gitWorker.activeJobs--;
+        state.running = false;
+        if (_gitWorker.enabled && !_gitWorker.stopping && state.rerunRequested) {
+          state.rerunRequested = false;
+          requestGitWorkerRefresh(job.project, { reason: 'coalesced-change' });
+        }
+        trimGitWorkerStates();
+        drainGitWorkerQueue();
+      })
+      .catch((error) => {
+        _gitWorker.failures++;
+        _gitWorker.lastError = gitWorkerErrorDetail(error);
+        _gitWorker.lastErrorAt = Date.now();
+      });
+  }
+}
+
+function requestGitWorkerRefresh(project, { reason = 'stale', observedEvents = [] } = {}) {
+  if (!_gitWorker.enabled || _gitWorker.stopping || isGitEnrichmentDisabled() || !project) return false;
+  const normalizedProject = path.resolve(String(project));
+  _gitWorker.requests++;
+  const state = gitWorkerState(normalizedProject);
+  const hasUnseenBranches = addObservedGitBranches(state, observedEvents);
+  if (state.running || state.queued) {
+    _gitWorker.coalesced++;
+    if (state.running && hasUnseenBranches) state.rerunRequested = true;
+    return true;
+  }
+  if (state.nextRetryAt > Date.now()) {
+    _gitWorker.coalesced++;
+    return true;
+  }
+  if (_gitWorker.queue.length >= GIT_WORKER_MAX_QUEUE_DEPTH) {
+    _gitWorker.sheds++;
+    state.observedBranches.clear();
+    return false;
+  }
+
+  state.queued = true;
+  state.lastRequestedAt = Date.now();
+  state.lastReason = reason;
+  _gitWorker.queue.push({
+    project: normalizedProject,
+    generation: state.generation,
+    reason,
+    requestedAt: state.lastRequestedAt,
+  });
+  _gitWorker.maxQueueDepthObserved = Math.max(_gitWorker.maxQueueDepthObserved, _gitWorker.queue.length);
+  drainGitWorkerQueue();
+  return true;
+}
+
+function configureGitEnrichmentWorker({ enabled = true, onDataReady = null } = {}) {
+  _gitWorker.enabled = Boolean(enabled);
+  _gitWorker.stopping = !_gitWorker.enabled;
+  _gitWorker.onDataReady = typeof onDataReady === 'function' ? onDataReady : null;
+  if (_gitWorker.enabled) drainGitWorkerQueue();
+  return getGitWorkerPerfStats();
+}
+
+function shutdownGitEnrichmentWorker() {
+  _gitWorker.stopping = true;
+  _gitWorker.enabled = false;
+  _gitWorker.onDataReady = null;
+  _gitWorker.droppedOnShutdown += _gitWorker.queue.length;
+  _gitWorker.queue.length = 0;
+  for (const timer of _gitWorker.retryTimers.values()) clearTimeout(timer);
+  _gitWorker.retryTimers.clear();
+  for (const state of _gitWorker.states.values()) {
+    if (state.retryTimer) clearTimeout(state.retryTimer);
+    state.retryTimer = null;
+    state.nextRetryAt = 0;
+    state.queued = false;
+    state.rerunRequested = false;
+  }
+  for (const child of _gitWorker.activeChildren) {
+    try { child.kill('SIGTERM'); } catch { /* ignore */ }
+  }
+}
+
+function getGitWorkerPerfStats() {
+  const now = Date.now();
+  let staleProjects = 0;
+  let maxStaleAgeMs = 0;
+  for (const cached of _unpushedEventsCache.values()) {
+    const age = Math.max(0, now - Number(cached?.at || now));
+    if (age >= GIT_STATUS_CACHE_TTL_MS) staleProjects++;
+    maxStaleAgeMs = Math.max(maxStaleAgeMs, age);
+  }
+  return {
+    enabled: _gitWorker.enabled,
+    stopping: _gitWorker.stopping,
+    maxConcurrency: GIT_WORKER_MAX_CONCURRENCY,
+    maxQueueDepth: GIT_WORKER_MAX_QUEUE_DEPTH,
+    timeoutMs: GIT_WORKER_TIMEOUT_MS,
+    retryBaseMs: GIT_WORKER_RETRY_BASE_MS,
+    retryMaxMs: GIT_WORKER_RETRY_MAX_MS,
+    activeJobs: _gitWorker.activeJobs,
+    activeSubprocesses: _gitWorker.activeChildren.size,
+    queueDepth: _gitWorker.queue.length,
+    stateCount: _gitWorker.states.size,
+    requests: _gitWorker.requests,
+    refreshes: _gitWorker.refreshes,
+    refreshTimeMs: _gitWorker.refreshTimeMs,
+    failures: _gitWorker.failures,
+    retries: _gitWorker.retries,
+    shedCount: _gitWorker.sheds,
+    coalescedRequests: _gitWorker.coalesced,
+    staleCompletions: _gitWorker.staleCompletions,
+    droppedOnShutdown: _gitWorker.droppedOnShutdown,
+    callbackErrors: _gitWorker.callbackErrors,
+    maxQueueDepthObserved: _gitWorker.maxQueueDepthObserved,
+    staleProjects,
+    maxStaleAgeMs,
+    lastError: _gitWorker.lastError,
+    lastErrorAt: _gitWorker.lastErrorAt,
+    lastRefreshAt: _gitWorker.lastRefreshAt,
+    lastRefreshProject: _gitWorker.lastRefreshProject,
+    lastRefreshReason: _gitWorker.lastRefreshReason,
+  };
+}
+
 function recordGitEnrichment(label, projectCount, fn) {
   const disabled = isGitEnrichmentDisabled();
   _perf.disabled = disabled;
@@ -336,9 +1036,14 @@ function recordGitEnrichment(label, projectCount, fn) {
 }
 
 function getGitEnrichmentPerfStats() {
+  const worker = getGitWorkerPerfStats();
   return {
     ..._perf,
     disabled: isGitEnrichmentDisabled(),
+    worker,
+    workerQueueDepth: worker.queueDepth,
+    workerShedCount: worker.shedCount,
+    workerActiveJobs: worker.activeJobs,
     statusCacheSize: _gitStatusCache.size,
     unpushedEventCacheSize: _unpushedEventsCache.size,
     currentBranchCacheSize: _currentBranchCache.size,
@@ -1121,14 +1826,13 @@ function readPushState(project, branch = null) {
   return value;
 }
 
-function syntheticPushForProject(project, commitEvents, now = Date.now()) {
+function buildSyntheticPushForState(project, commitEvents, pushState, now = Date.now()) {
   const commits = (commitEvents || [])
     .filter((event) => event?.type === 'commit' && event.project === project && event.success !== false)
     .sort((a, b) => ((b.completedAt || b.ts || 0) - (a.completedAt || a.ts || 0)));
   if (!commits.length) return null;
 
   const branch = commits[0].branch || commits[0].targetRef || null;
-  const pushState = readPushState(project, branch);
   if (!pushState.pushedToUpstream) return null;
 
   const latestCommit = commits[0];
@@ -1163,6 +1867,31 @@ function syntheticPushForProject(project, commitEvents, now = Date.now()) {
     inferred: true,
     observed: false,
   };
+}
+
+function syntheticPushForProject(project, commitEvents, now = Date.now()) {
+  const commits = (commitEvents || [])
+    .filter((event) => event?.type === 'commit' && event.project === project && event.success !== false)
+    .sort((a, b) => ((b.completedAt || b.ts || 0) - (a.completedAt || a.ts || 0)));
+  if (!commits.length) return null;
+  const branch = commits[0].branch || commits[0].targetRef || null;
+  return buildSyntheticPushForState(project, commits, readPushState(project, branch), now);
+}
+
+function cachedPushState(project, branch = null) {
+  const normalizedBranch = normalizeLocalBranchName(branch);
+  const cached = _gitStatusCache.get(`${project}::${normalizedBranch || 'HEAD'}`);
+  return cached?.value || null;
+}
+
+function syntheticPushForProjectFromCache(project, commitEvents, now = Date.now()) {
+  const commits = (commitEvents || [])
+    .filter((event) => event?.type === 'commit' && event.project === project && event.success !== false)
+    .sort((a, b) => ((b.completedAt || b.ts || 0) - (a.completedAt || a.ts || 0)));
+  if (!commits.length) return null;
+  const branch = commits[0].branch || commits[0].targetRef || null;
+  const pushState = cachedPushState(project, branch);
+  return pushState ? buildSyntheticPushForState(project, commits, pushState, now) : null;
 }
 
 function syntheticPushesForProject(project, commitEvents, now = Date.now()) {
@@ -1431,8 +2160,103 @@ function recentRepositoryUnpushedEvents(events = [], now = Date.now()) {
   });
 }
 
+function observeRepositoryPushTransitionsFromCache(project, unpushedEvents = [], now = Date.now()) {
+  if (!project) return;
+  expireRecentRepositoryPushEvents(now);
+  const currentByBranch = groupCommitEventsByBranch(unpushedEvents);
+  for (const [branch, events] of currentByBranch.entries()) {
+    _lastUnpushedByProjectBranch.set(projectBranchKey(project, branch), {
+      project,
+      branch,
+      events: dedupeGitEvents(events),
+      observedAt: now,
+    });
+  }
+
+  for (const [key, previous] of _lastUnpushedByProjectBranch) {
+    if (previous.project !== project || currentByBranch.has(previous.branch)) continue;
+    const pushState = cachedPushState(project, previous.branch);
+    if (!pushState?.pushedToUpstream) continue;
+    const event = syntheticRepositoryPushFromTransition(project, previous.branch, previous.events, pushState, now);
+    if (event) _recentRepositoryPushEvents.set(event.id, event);
+    _lastUnpushedByProjectBranch.delete(key);
+  }
+}
+
+function inferUnpushedGitEventsForSessionsAsync(sessions, options = {}) {
+  const now = Date.now();
+  const extraProjects = Array.isArray(options.projects)
+    ? options.projects.filter(Boolean)
+    : [];
+  if (sessions.length === 0 && extraProjects.length === 0) {
+    pruneGitTrackingState([], now);
+    return sessions;
+  }
+  if (isGitEnrichmentDisabled()) {
+    recordGitEnrichment('unpushed-async', 0, () => sessions);
+    return sessions;
+  }
+
+  const eventsByProject = new Map();
+  const projects = [
+    ...sessions.map((session) => session?.project).filter(Boolean),
+    ...extraProjects,
+  ];
+  const uniqueProjects = [...new Set(projects)];
+  return recordGitEnrichment('unpushed-async', uniqueProjects.length, () => {
+    pruneGitTrackingState(uniqueProjects, now);
+    for (const session of sessions) {
+      if (session?.project) markProjectSessionActive(session.project, now);
+    }
+
+    for (const project of uniqueProjects) {
+      const state = gitWorkerState(project);
+      invalidateOnGitHeadChange(project);
+      const currentState = _gitWorker.states.get(project) || state;
+      const cached = workerSnapshot(project);
+      const unpushed = cached?.value || [];
+      eventsByProject.set(project, unpushed);
+      observeRepositoryPushTransitionsFromCache(project, unpushed, now);
+      if (workerSnapshotNeedsRefresh(project, currentState, now)) {
+        requestGitWorkerRefresh(project, { reason: cached ? 'stale' : 'initial' });
+      }
+    }
+
+    const recentPushesByProject = recentRepositoryPushEventsByProject(uniqueProjects, now);
+    const hasUnpushed = [...eventsByProject.values()].some((events) => events.length > 0);
+    const hasRecentPushes = [...recentPushesByProject.values()].some((events) => events.length > 0);
+    if (!hasUnpushed && !hasRecentPushes) return sessions;
+
+    const enrichedSessions = sessions.map((session) => {
+      const project = session?.project;
+      const unpushed = project ? eventsByProject.get(project) || [] : [];
+      const recentPushes = project ? recentPushesByProject.get(project) || [] : [];
+      if (!unpushed.length && !recentPushes.length) return session;
+      const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
+      const commitEvents = mergeUnpushedGitEvents(ownEvents, unpushed);
+      return {
+        ...session,
+        gitEvents: dedupeGitEvents([...commitEvents, ...recentPushes]),
+      };
+    });
+
+    const sessionProjects = new Set(sessions.map((session) => session?.project).filter(Boolean));
+    for (const project of extraProjects) {
+      if (sessionProjects.has(project)) continue;
+      const unpushed = recentRepositoryUnpushedEvents(eventsByProject.get(project), now);
+      const recentPushes = recentPushesByProject.get(project) || [];
+      const events = dedupeGitEvents([...unpushed, ...recentPushes]);
+      if (!events.length) continue;
+      enrichedSessions.push(createRepositoryGitSession(project, events));
+    }
+
+    return enrichedSessions;
+  });
+}
+
 function inferUnpushedGitEventsForSessions(sessions, options = {}) {
   if (!Array.isArray(sessions)) return sessions;
+  if (_gitWorker.enabled) return inferUnpushedGitEventsForSessionsAsync(sessions, options);
 
   const now = Date.now();
   const extraProjects = Array.isArray(options.projects)
@@ -1503,12 +2327,69 @@ function inferUnpushedGitEventsForSessions(sessions, options = {}) {
   });
 }
 
+function inferPushedGitEventsForSessionsAsync(sessions, options = {}) {
+  const eventsByProject = new Map();
+  for (const session of sessions) {
+    for (const event of session.gitEvents || []) {
+      if (!event?.project) continue;
+      const events = eventsByProject.get(event.project) || [];
+      events.push(event);
+      eventsByProject.set(event.project, events);
+    }
+  }
+
+  return recordGitEnrichment('pushed-async', eventsByProject.size, () => {
+    const inferredByProject = new Map();
+    for (const [project, events] of eventsByProject.entries()) {
+      const now = Number.isFinite(options.now) ? options.now : Date.now();
+      const needsPushStateRefresh = events.some((event) => {
+        if (event?.type !== 'commit') return false;
+        const branch = eventBranch(event);
+        const cached = _gitStatusCache.get(`${project}::${normalizeLocalBranchName(branch) || 'HEAD'}`);
+        return !cached || now - Number(cached.at || 0) >= GIT_STATUS_CACHE_TTL_MS;
+      });
+      if (needsPushStateRefresh) {
+        requestGitWorkerRefresh(project, {
+          reason: 'observed-git-event',
+          observedEvents: events,
+        });
+      }
+      const inferred = events
+        .map((event) => event?.type === 'commit' ? syntheticPushForProjectFromCache(project, [event], now) : null)
+        .filter(Boolean);
+      if (inferred.length) inferredByProject.set(project, dedupeGitEvents(inferred));
+    }
+
+    if (!inferredByProject.size) return sessions;
+    return sessions.map((session) => {
+      const ownEvents = Array.isArray(session.gitEvents) ? session.gitEvents : [];
+      const additions = [];
+      for (const event of ownEvents) {
+        if (event?.type !== 'commit' || !event.project || !inferredByProject.has(event.project)) continue;
+        const branch = eventBranch(event);
+        const inferredForProject = inferredByProject.get(event.project);
+        if (!branch) {
+          additions.push(...inferredForProject.filter((inferred) => !inferred.branch));
+          continue;
+        }
+        additions.push(...inferredForProject.filter((inferred) => eventBranch(inferred) === branch));
+      }
+      if (!additions.length) return session;
+      return {
+        ...session,
+        gitEvents: dedupeGitEvents([...ownEvents, ...additions]),
+      };
+    });
+  });
+}
+
 function inferPushedGitEventsForSessions(sessions, options = {}) {
   if (!Array.isArray(sessions) || sessions.length === 0) return sessions;
   if (isGitEnrichmentDisabled()) {
     recordGitEnrichment('pushed', 0, () => sessions);
     return sessions;
   }
+  if (_gitWorker.enabled) return inferPushedGitEventsForSessionsAsync(sessions, options);
 
   const eventsByProject = new Map();
   for (const session of sessions) {
@@ -1558,9 +2439,11 @@ function extractGitEventsFromCommandSource(source, context = {}, options = {}) {
 
 module.exports = {
   dedupeGitEvents,
+  configureGitEnrichmentWorker,
   extractCommand,
   extractGitEventsFromCommandSource,
   getGitEnrichmentPerfStats,
+  getGitWorkerPerfStats,
   invalidateGitStatusCaches,
   inferPushedGitEvents,
   inferPushedGitEventsForSessions,
@@ -1568,5 +2451,7 @@ module.exports = {
   isGitEnrichmentDisabled,
   mergeUnpushedGitEvents,
   parseGitEventsFromCommand,
+  requestGitWorkerRefresh,
+  shutdownGitEnrichmentWorker,
   stableHash,
 };

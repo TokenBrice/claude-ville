@@ -16,6 +16,7 @@ const {
   clearTailCache,
   createDetailResponse,
   fileSignature,
+  normalizeCacheTokens,
   parseJsonLines,
   readHeadText: readSharedHeadText,
   readJsonLines: readSharedJsonLines,
@@ -46,6 +47,15 @@ const MAX_ROLLOUT_FILES = Math.max(
 );
 const MAX_WARM_ROLLOUT_DAY_DIRS = 4;
 const ROLLOUT_DIR_MTIME_EPSILON_MS = 1;
+const CODEX_TURN_CACHE_FIELD_MAP = Object.freeze({
+  cacheRead: ['cached_input_tokens', 'cache_read_input_tokens', 'cacheReadInputTokens'],
+  cacheCreate: ['cache_creation_input_tokens', 'cacheCreationInputTokens'],
+});
+const CODEX_TOTAL_CACHE_FIELD_MAP = Object.freeze({
+  cacheRead: ['cached_input_tokens', 'cache_read_input_tokens', 'cacheReadInputTokens'],
+  // Cumulative Codex token_count payloads have no cache-create field.
+  cacheCreate: [],
+});
 
 const _rolloutFileBySessionId = new Map();
 const _sessionNamesCache = { signature: '', value: new Map() };
@@ -631,15 +641,7 @@ function getTokenUsage(filePath) {
         'completionTokens',
         'total_output_tokens',
       ]);
-      const cacheRead = readUsageNumber(usage, [
-        'cached_input_tokens',
-        'cache_read_input_tokens',
-        'cacheReadInputTokens',
-      ]);
-      const cacheCreate = readUsageNumber(usage, [
-        'cache_creation_input_tokens',
-        'cacheCreationInputTokens',
-      ]);
+      const { cacheRead, cacheCreate } = normalizeCacheTokens(usage, CODEX_TURN_CACHE_FIELD_MAP);
 
       tokenUsage.totalInput += input;
       tokenUsage.totalOutput += output;
@@ -658,17 +660,14 @@ function getTokenUsage(filePath) {
       const total = latestTokenCount.total_token_usage || {};
       const last = latestTokenCount.last_token_usage || {};
       const totalInput = readUsageNumber(total, ['input_tokens', 'inputTokens']);
-      const cachedInput = readUsageNumber(total, [
-        'cached_input_tokens',
-        'cache_read_input_tokens',
-        'cacheReadInputTokens',
-      ]);
+      const totalCacheTokens = normalizeCacheTokens(total, CODEX_TOTAL_CACHE_FIELD_MAP);
+      const cachedInput = totalCacheTokens.cacheRead;
       const lastTotal = readUsageNumber(last, ['total_tokens', 'totalTokens', 'input_tokens', 'inputTokens']);
 
       tokenUsage.totalInput = Math.max(0, totalInput - cachedInput);
       tokenUsage.totalOutput = readUsageNumber(total, ['output_tokens', 'outputTokens']);
       tokenUsage.cacheRead = cachedInput;
-      tokenUsage.cacheCreate = 0;
+      tokenUsage.cacheCreate = totalCacheTokens.cacheCreate;
       tokenUsage.reasoningTokens = readUsageNumber(total, [
         'reasoning_output_tokens',
         'reasoningOutputTokens',

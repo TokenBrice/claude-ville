@@ -20,6 +20,10 @@ const {
   adapters,
 } = require('./adapters');
 const { clearTailCache, getTailCacheDiagnostics } = require('./adapters/shared');
+const {
+  configureGitEnrichmentWorker,
+  shutdownGitEnrichmentWorker,
+} = require('./adapters/gitEvents');
 
 // ─── Usage quota service ──────────────────────────────
 const usageQuota = require('./services/usageQuota');
@@ -79,6 +83,7 @@ const WATCH_ACTIVE_PROBE_CAP = Math.max(1, Math.min(4096, Number(process.env.CLA
 const WATCH_ZERO_CLIENT_GRACE_MS = Math.max(50, Number(process.env.CLAUDEVILLE_WATCH_ZERO_CLIENT_GRACE_MS || 15_000) || 15_000);
 const WATCH_RECONCILIATION_INTERVAL_MS = 30_000;
 const PERF_SAMPLE_INTERVAL_MS = 5000;
+const PROCESS_ERROR_DETAIL_MAX_LENGTH = 256;
 const LINUX_WATCH_SAMPLE_INTERVAL_MS = 15_000;
 const GIT_STATE_SCAN_INTERVAL_MS = 5000;
 const GIT_STATE_MAX_PROJECTS = 40;
@@ -377,6 +382,7 @@ function handleGetUsage(req, res) {
  */
 function handleGetPerf(req, res) {
   const gitEnrichment = getGitEnrichmentPerfStats();
+  const gitWorker = gitEnrichment.worker || null;
   sendApiPayload(res, 'Failed to fetch perf counters', () => ({
     websocketClients: wsClients.size,
     activeWatchPaths: serverPerf.activeWatchPaths,
@@ -395,6 +401,7 @@ function handleGetPerf(req, res) {
     })),
     providers: getAdapterPerfStats(),
     gitEnrichment,
+    gitWorker,
     gitRate: perfDiagnostics.gitRate,
     tailRate: perfDiagnostics.tailRate,
     jsonlDiagnostics: getJsonlDiagnostics(),
@@ -414,6 +421,7 @@ function handleGetPerf(req, res) {
       uptimeSeconds: Math.round(process.uptime()),
       memory: perfDiagnostics.memory,
       eventLoop: perfDiagnostics.eventLoop,
+      processErrors: getProcessErrorTelemetry(),
     },
     watchers: {
       configured: serverPerf.configuredWatchPaths,
@@ -988,6 +996,18 @@ let lastGitStateScanAt = 0;
 const perfDiagnostics = {
   memory: null,
   eventLoop: null,
+  processErrors: {
+    unhandledRejections: {
+      count: 0,
+      lastOccurredAt: null,
+      lastReason: null,
+    },
+    uncaughtExceptions: {
+      count: 0,
+      lastOccurredAt: null,
+      lastMessage: null,
+    },
+  },
   gitRate: null,
   tailRate: null,
   linuxWatchers: {
@@ -1881,6 +1901,73 @@ function millisecondsFromNanoseconds(value) {
   return Number.isFinite(value) ? Math.round((value / 1e6) * 1000) / 1000 : null;
 }
 
+function truncateProcessErrorDetail(value) {
+  let detail;
+  try {
+    if (value instanceof Error) {
+      detail = value.message || value.name;
+    } else if (typeof value === 'string') {
+      detail = value;
+    } else if (value === null || value === undefined) {
+      detail = String(value);
+    } else if (['bigint', 'boolean', 'number', 'symbol'].includes(typeof value)) {
+      detail = String(value);
+    } else {
+      const message = value.message;
+      detail = typeof message === 'string' && message
+        ? message
+        : Object.prototype.toString.call(value);
+    }
+  } catch {
+    detail = 'Unable to describe error';
+  }
+
+  if (typeof detail !== 'string' || !detail) detail = 'Unknown error';
+  if (detail.length <= PROCESS_ERROR_DETAIL_MAX_LENGTH) return detail;
+  return `${detail.slice(0, PROCESS_ERROR_DETAIL_MAX_LENGTH - 1)}…`;
+}
+
+function recordProcessError(entry, detailKey, value, occurredAt = Date.now()) {
+  entry.count++;
+  entry.lastOccurredAt = occurredAt;
+  entry[detailKey] = truncateProcessErrorDetail(value);
+}
+
+function recordUnhandledRejection(reason, occurredAt = Date.now()) {
+  recordProcessError(
+    perfDiagnostics.processErrors.unhandledRejections,
+    'lastReason',
+    reason,
+    occurredAt,
+  );
+}
+
+function recordUncaughtException(error, occurredAt = Date.now()) {
+  recordProcessError(
+    perfDiagnostics.processErrors.uncaughtExceptions,
+    'lastMessage',
+    error,
+    occurredAt,
+  );
+}
+
+function getProcessErrorTelemetry() {
+  return {
+    unhandledRejections: { ...perfDiagnostics.processErrors.unhandledRejections },
+    uncaughtExceptions: { ...perfDiagnostics.processErrors.uncaughtExceptions },
+  };
+}
+
+function resetProcessErrorTelemetry() {
+  const { unhandledRejections, uncaughtExceptions } = perfDiagnostics.processErrors;
+  unhandledRejections.count = 0;
+  unhandledRejections.lastOccurredAt = null;
+  unhandledRejections.lastReason = null;
+  uncaughtExceptions.count = 0;
+  uncaughtExceptions.lastOccurredAt = null;
+  uncaughtExceptions.lastMessage = null;
+}
+
 function sampleLinuxWatcherCount(now = Date.now(), { force = false } = {}) {
   if (process.platform !== 'linux') return;
   if (!force && now - lastLinuxWatchSampleAt < LINUX_WATCH_SAMPLE_INTERVAL_MS) return;
@@ -2217,6 +2304,19 @@ const ASCII_LOGO = `
 
 function startServer() {
   if (server.listening) return server;
+  configureGitEnrichmentWorker({
+    enabled: true,
+    onDataReady: ({ project = null, reason = 'git-enrichment-refresh' } = {}) => {
+      if (shutdownStarted) return;
+      markProviderDataDirty({
+        kind: 'git',
+        reason,
+        project,
+        path: project,
+      });
+      debouncedBroadcast();
+    },
+  });
   server.listen(PORT, LOOPBACK_HOST, () => {
     console.log(ASCII_LOGO);
     console.log(`  Server running: http://localhost:${PORT}`);
@@ -2281,6 +2381,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   heartbeatTimer = null;
   watcherSchedulerTimer = null;
   perfSampleTimer = null;
+  shutdownGitEnrichmentWorker();
 
   for (const timer of watchRetryTimers.values()) clearTimeout(timer);
   watchRetryTimers.clear();
@@ -2329,10 +2430,12 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
 
 function installProcessHandlers() {
   process.once('uncaughtException', (err) => {
+    recordUncaughtException(err);
     console.error('Unhandled exception:', err?.stack || err?.message || err);
     shutdownRuntime({ reason: 'uncaughtException', exitCode: 1 });
   });
   process.on('unhandledRejection', (reason) => {
+    recordUnhandledRejection(reason);
     console.error('Unhandled promise rejection:', reason);
   });
   process.once('SIGINT', () => shutdownRuntime({ reason: 'SIGINT' }));
@@ -2365,5 +2468,12 @@ module.exports = {
       WATCH_FALLBACK_MAX_ENTRIES,
       WATCH_FALLBACK_MAX_AGE_MS,
     },
+  },
+  _perfTest: {
+    getProcessErrorTelemetry,
+    recordUnhandledRejection,
+    recordUncaughtException,
+    resetProcessErrorTelemetry,
+    processErrorDetailMaxLength: PROCESS_ERROR_DETAIL_MAX_LENGTH,
   },
 };

@@ -15,6 +15,7 @@ const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = requi
 const {
   createDetailResponse,
   fileSignature,
+  normalizeCacheTokens,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 
@@ -44,6 +45,10 @@ const OPENCODE_TOOL_INPUT_FIELDS = Object.freeze([
   'prompt',
   'url',
 ]);
+const OPENCODE_CACHE_FIELD_MAP = Object.freeze({
+  cacheRead: ['tokens_cache_read'],
+  cacheCreate: ['tokens_cache_write'],
+});
 const ACTIVE_SESSION_CANDIDATE_SQL = `
   SELECT s.id, s.parent_id, s.directory, s.title, s.version, s.agent, s.model, s.cost,
          s.tokens_input, s.tokens_output, s.tokens_reasoning, s.tokens_cache_read,
@@ -226,8 +231,9 @@ function tokenUsageFromSession(row, parts = []) {
   const turnCount = parts.filter(part => part.type === 'step-finish').length;
   const input = Number(row.tokens_input) || 0;
   const output = Number(row.tokens_output) || 0;
-  const cacheRead = Number(row.tokens_cache_read) || 0;
-  const cacheWrite = Number(row.tokens_cache_write) || 0;
+  const cacheTokens = normalizeCacheTokens(row, OPENCODE_CACHE_FIELD_MAP);
+  const cacheRead = cacheTokens.cacheRead;
+  const cacheWrite = cacheTokens.cacheCreate;
 
   return {
     input,

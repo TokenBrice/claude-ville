@@ -9,6 +9,7 @@ const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = requi
 const {
   clearTailCache,
   createDetailResponse,
+  normalizeCacheTokens,
   readJsonLines: readSharedJsonLines,
   statCacheKey,
   summarizeToolInput: summarizeSharedToolInput,
@@ -89,6 +90,10 @@ const TRANSCRIPT_PROJECTION_TEXT_BYTES = 200;
 const TRANSCRIPT_PROJECTION_RESULT_BYTES = 32 * 1024;
 const TRANSCRIPT_PROJECTION_COMMAND_BYTES = 64 * 1024;
 const TRANSCRIPT_PROJECTION_FIELD_BYTES = 512;
+const CLAUDE_CACHE_FIELD_MAP = Object.freeze({
+  cacheRead: ['cache_read_input_tokens', 'cached_input_tokens', 'cacheReadInputTokens'],
+  cacheCreate: ['cache_creation_input_tokens', 'cacheCreationInputTokens'],
+});
 
 const _sessionEntryCache = new Map();
 let _sessionEntryCacheBytes = 0;
@@ -647,8 +652,7 @@ function addTranscriptEntry(aggregate, entry) {
     const usage = msg.usage;
     const input = readUsageNumber(usage, ['input_tokens', 'inputTokens', 'prompt_tokens', 'promptTokens']);
     const output = readUsageNumber(usage, ['output_tokens', 'outputTokens', 'completion_tokens', 'completionTokens']);
-    const cacheRead = readUsageNumber(usage, ['cache_read_input_tokens', 'cached_input_tokens', 'cacheReadInputTokens']);
-    const cacheCreate = readUsageNumber(usage, ['cache_creation_input_tokens', 'cacheCreationInputTokens']);
+    const { cacheRead, cacheCreate } = normalizeCacheTokens(usage, CLAUDE_CACHE_FIELD_MAP);
     aggregate.usage.totalInput += input;
     aggregate.usage.totalOutput += output;
     aggregate.usage.cacheRead += cacheRead;

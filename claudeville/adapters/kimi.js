@@ -22,6 +22,7 @@ const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = requi
 const {
   createDetailResponse,
   fileSignature,
+  normalizeCacheTokens,
   readJsonLines: readSharedJsonLines,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
@@ -75,6 +76,15 @@ const KIMI_TOOL_INPUT_FIELDS = Object.freeze([
   'skill',
   'id',
 ]);
+const KIMI_LEGACY_CACHE_FIELD_MAP = Object.freeze({
+  cacheRead: ['input_cache_read'],
+  cacheCreate: ['input_cache_creation'],
+});
+const KIMI_CODE_CACHE_FIELD_MAP = Object.freeze({
+  // Kimi Code skips null/empty aliases before trying the legacy spelling.
+  cacheRead: [usage => kimiCodeUsageNumber(usage, 'inputCacheRead', 'input_cache_read')],
+  cacheCreate: [usage => kimiCodeUsageNumber(usage, 'inputCacheCreation', 'input_cache_creation')],
+});
 
 const _configCache = { at: 0, value: null };
 const _kimiJsonCache = { at: 0, value: null };
@@ -674,8 +684,9 @@ function getTokenUsage(filePath) {
       if (usage && typeof usage === 'object') {
         totalInput += Number(usage.input_other) || 0;
         totalOutput += Number(usage.output) || 0;
-        totalCacheRead += Number(usage.input_cache_read) || 0;
-        totalCacheCreate += Number(usage.input_cache_creation) || 0;
+        const cacheTokens = normalizeCacheTokens(usage, KIMI_LEGACY_CACHE_FIELD_MAP);
+        totalCacheRead += cacheTokens.cacheRead;
+        totalCacheCreate += cacheTokens.cacheCreate;
         turnCount++;
       }
 
@@ -1003,8 +1014,7 @@ function getTokenUsageV2(filePath, contextWindowMax = 0) {
       if (!entry || entry.type !== 'usage.record' || !entry.usage) continue;
       const u = entry.usage;
       const inputOther = kimiCodeUsageNumber(u, 'inputOther', 'input_other');
-      const cacheRead = kimiCodeUsageNumber(u, 'inputCacheRead', 'input_cache_read');
-      const cacheCreate = kimiCodeUsageNumber(u, 'inputCacheCreation', 'input_cache_creation');
+      const { cacheRead, cacheCreate } = normalizeCacheTokens(u, KIMI_CODE_CACHE_FIELD_MAP);
       totalInput += inputOther;
       totalOutput += kimiCodeUsageNumber(u, 'output', 'output_tokens');
       totalCacheRead += cacheRead;
