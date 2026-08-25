@@ -25,6 +25,9 @@ const {
   trimCache,
   statCacheKey,
 } = require('./shared');
+const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
+
+const MAX_DIALOGUE_CANDIDATES_PER_KIND = 8;
 
 const GROK_DIR = path.join(os.homedir(), '.grok');
 const SESSIONS_DIR = path.join(GROK_DIR, 'sessions');
@@ -187,6 +190,25 @@ function extractTextContent(content) {
   return null;
 }
 
+function recordTimestampMs(record, { includeMeta = false } = {}) {
+  const timestamp = parseTimestampMs(record?.timestamp);
+  if (timestamp || !includeMeta) return timestamp;
+  return parseTimestampMs(record?.params?._meta?.agentTimestampMs);
+}
+
+function actionIdFromRecord(record, update = null) {
+  return record?.params?._meta?.eventId
+    || record?._meta?.eventId
+    || update?.toolCallId
+    || update?.tool_call_id
+    || update?.itemId
+    || update?.item_id
+    || update?.messageId
+    || update?.message_id
+    || record?.id
+    || null;
+}
+
 // ─── Session scan ───────────────────────────────────────────
 
 function listSessionDirs() {
@@ -322,12 +344,34 @@ function sessionActivityMs(entry, summary) {
   return Math.max(0, ...candidates.filter((n) => Number.isFinite(n) && n > 0));
 }
 
-function parseLiveDetail(entry) {
+function parseLiveDetail(entry, project = null) {
   const detail = {
     lastTool: null,
     lastToolInput: null,
     lastMessage: null,
     contextTokens: 0,
+    dialogueCandidates: [],
+    observedSources: emptyObservedSources(),
+  };
+  const dialogueCounts = { thinking: 0, assistant: 0 };
+
+  const addDialogue = ({ text, kind, source, record, update, actionId = undefined }) => {
+    if (typeof text !== 'string' || !text.trim()) return;
+    if (kind === 'thinking') detail.observedSources.thinkingPlaintext = true;
+    else if (kind === 'assistant') detail.observedSources.assistantText = true;
+    if (dialogueCounts[kind] >= MAX_DIALOGUE_CANDIDATES_PER_KIND) return;
+
+    const candidate = makeDialogue({
+      text,
+      kind,
+      source,
+      observedAt: recordTimestampMs(record, { includeMeta: true }),
+      actionId: actionId === undefined ? actionIdFromRecord(record, update) : actionId,
+      project,
+    });
+    if (!candidate) return;
+    detail.dialogueCandidates.push(candidate);
+    dialogueCounts[kind] += 1;
   };
 
   const cacheKeyPath = fs.existsSync(entry.updatesPath) ? entry.updatesPath : entry.chatPath;
@@ -368,12 +412,34 @@ function parseLiveDetail(entry) {
         }
       }
 
-      if (!detail.lastMessage && kind === 'agent_message_chunk') {
+      if (kind === 'agent_thought_chunk') {
+        addDialogue({
+          text: extractTextContent(update.content),
+          kind: 'thinking',
+          source: 'grok.thought.chunk',
+          actionId: record?.params?._meta?.eventId || null,
+          record,
+          update,
+        });
+      } else if (kind === 'agent_message_chunk') {
         const text = extractTextContent(update.content);
-        if (text) detail.lastMessage = text.substring(0, 80);
+        addDialogue({
+          text,
+          kind: 'assistant',
+          source: 'grok.message',
+          record,
+          update,
+        });
+        if (!detail.lastMessage && text) detail.lastMessage = text.substring(0, 80);
       }
 
-      if (detail.lastTool && detail.lastMessage && detail.contextTokens) break;
+      if (
+        detail.lastTool
+        && detail.lastMessage
+        && detail.contextTokens
+        && dialogueCounts.thinking >= MAX_DIALOGUE_CANDIDATES_PER_KIND
+        && dialogueCounts.assistant >= MAX_DIALOGUE_CANDIDATES_PER_KIND
+      ) break;
     }
 
     // If no agent_message_chunk yet, fall back to the latest user chunk for a breadcrumb.
@@ -660,9 +726,9 @@ class GrokAdapter {
       const prefixedId = `grok-${sessionUuid}`;
       registerSession(prefixedId, entry);
 
-      const live = parseLiveDetail(entry);
       const project = info.cwd || summary.git_root_dir || entry.projectFromName || null;
       const projectClean = project ? String(project).replace(/\/$/, '') : null;
+      const live = parseLiveDetail(entry, projectClean);
       const model = summary.current_model_id || 'grok';
       const agentName = summary.agent_name || summary.generated_title || summary.session_summary || null;
       const isSubagent = summary.session_kind === 'subagent';
@@ -684,6 +750,8 @@ class GrokAdapter {
         lastTool: live.lastTool,
         lastToolInput: live.lastToolInput,
         lastMessage: live.lastMessage,
+        dialogue: pickDialogue(live.dialogueCandidates, { now: Date.now() }),
+        observedSources: live.observedSources,
         tokenUsage: buildTokenUsage(summary, live),
         parentSessionId: parentUuid ? `grok-${parentUuid}` : null,
         reasoningEffort: summary.reasoning_effort || null,
@@ -703,7 +771,9 @@ class GrokAdapter {
     if (!entry) return createDetailResponse({ sessionId: prefixed });
 
     const summary = getSummary(entry.summaryPath);
-    const live = parseLiveDetail(entry);
+    const project = summary?.info?.cwd || summary?.git_root_dir || entry.projectFromName || null;
+    const projectClean = project ? String(project).replace(/\/$/, '') : null;
+    const live = parseLiveDetail(entry, projectClean);
     return createDetailResponse({
       toolHistory: getToolHistory(entry),
       messages: getRecentMessages(entry),

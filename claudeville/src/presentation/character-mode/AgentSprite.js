@@ -13,6 +13,7 @@ import { drawToolGlyphBadge, toolGlyphKey } from './ToolGlyphBadge.js';
 import { Compositor } from './Compositor.js';
 import { AgentBehaviorState } from './AgentBehaviorState.js';
 import { classifyTool } from '../../domain/services/ToolIdentity.js';
+import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { resolveUpdateRouteBuilding } from './MovementRouting.js';
 import { releaseCanvasMap } from './CanvasBudget.js';
@@ -133,7 +134,20 @@ const STATUS_BUBBLE_HISTORY_MAX_WIDTH = Object.freeze({
     anchored: 216,
     floating: 320,
 });
-const ACTIVITY_TEXT_CAP = 60;
+// Trail entries are capped upstream: adapters bound dialogue text and the
+// renderer truncates by measured pixel width, so there is no character cap
+// here. A second cap would silently re-introduce the mid-word truncation this
+// rework removed.
+// Provenance badge hues, keyed by dialogue kind. Only model-authored text gets
+// a badge; harness status labels stay unbadged so the absence of a dot is
+// itself information. Long-form reasoning ('thinking') is deliberately muted
+// because it renders as a chip, not a quote.
+const DIALOGUE_BADGE_COLORS = Object.freeze({
+    intent: '#8ce99a',
+    plan: '#8cd9ff',
+    thinking: '#b3a6d9',
+    assistant: '#ffd87a',
+});
 const TOOL_CONFIDENCE_THRESHOLD = 0.72;
 const TOOL_CLASSIFICATION_CACHE_LIMIT = 160;
 const TOOL_CLASSIFICATION_CACHE = new Map();
@@ -4394,7 +4408,11 @@ export class AgentSprite {
     _drawStatus(ctx, contentTopY = null) {
         const visual = this._statusVisual();
         const thread = this._activityThread();
-        if (!thread.length) return;
+        // The long-wait clock is a glyph, not speech: it reports how long this
+        // agent has been blocked and stays available even when the agent has
+        // said nothing we can attribute.
+        const useClock = this._shouldUseLongWaitClock();
+        if (!useClock && !thread.length) return;
         // 3.8 — this agent's bubble merged into a cluster-mate's identical
         // bubble: the representative draws one bubble with a ×N chip instead.
         if (this.bubbleMergedInto && !this.selected) return;
@@ -4406,12 +4424,17 @@ export class AgentSprite {
             return;
         }
         const stackShift = this.bubbleSlot > 0 ? -this.bubbleSlot * STATUS_BUBBLE_STACK_STEP : 0;
-        const head = thread[0];
-        const useClock = this._shouldUseLongWaitClock(head);
+        const head = thread[0] || null;
         if (useClock) {
-            this._drawLongWaitClockBubble(ctx, head.accent || visual.color, contentTopY, stackShift);
+            this._drawLongWaitClockBubble(ctx, head?.accent || visual.color, contentTopY, stackShift);
         } else {
-            this._drawBubble(ctx, head.text, head.accent || visual.color, contentTopY, head.confidence, stackShift);
+            this._drawBubble(ctx, head.text, head.accent || visual.color, contentTopY, head.confidence, stackShift, {
+                // Tailless for anything that is not the model's own quotable
+                // words: long-form reasoning excerpts must never wear speech
+                // styling, because an excerpt of a thought is not a quote.
+                tail: head.shape !== 'chip',
+                badge: head.badge || null,
+            });
         }
         if (thread.length > 1) {
             this._drawHistoryBubbles(ctx, thread.slice(1), contentTopY, stackShift);
@@ -4438,8 +4461,9 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _shouldUseLongWaitClock(entry) {
-        if (!entry || entry.kind !== 'status') return false;
+    // Derived from the agent, not from an activity entry: a blocked agent that
+    // is saying nothing still needs its wait to be visible.
+    _shouldUseLongWaitClock() {
         if (this.agent?.status !== AgentStatus.WAITING) return false;
         const age = Number(this.agent?.activityAgeMs);
         return Number.isFinite(age) && age > 60_000;
@@ -4494,7 +4518,7 @@ export class AgentSprite {
         ctx.restore();
     }
 
-    _drawBubble(ctx, text, accentColor, contentTopY = null, confidence = null, stackShift = 0) {
+    _drawBubble(ctx, text, accentColor, contentTopY = null, confidence = null, stackShift = 0, { tail = true, badge = null } = {}) {
         ctx.save();
         const s = 1 / (this._zoom || 1); // inverse zoom correction
 
@@ -4531,9 +4555,11 @@ export class AgentSprite {
         ctx.quadraticCurveTo(halfW, -bubbleH / 2, halfW, -bubbleH / 2 + radius);
         ctx.lineTo(halfW, bubbleH / 2 - radius);
         ctx.quadraticCurveTo(halfW, bubbleH / 2, halfW - radius, bubbleH / 2);
-        ctx.lineTo(4, bubbleH / 2);
-        ctx.lineTo(0, bubbleH / 2 + (anchored ? 6 : 7));
-        ctx.lineTo(-4, bubbleH / 2);
+        if (tail) {
+            ctx.lineTo(4, bubbleH / 2);
+            ctx.lineTo(0, bubbleH / 2 + (anchored ? 6 : 7));
+            ctx.lineTo(-4, bubbleH / 2);
+        }
         ctx.lineTo(-halfW + radius, bubbleH / 2);
         ctx.quadraticCurveTo(-halfW, bubbleH / 2, -halfW, bubbleH / 2 - radius);
         ctx.lineTo(-halfW, -bubbleH / 2 + radius);
@@ -4548,6 +4574,18 @@ export class AgentSprite {
         ctx.textBaseline = 'middle';
         this._applyReadableTextShadow(ctx);
         ctx.fillText(displayText, 0, 0, maxWidth);
+
+        // Provenance badge: a 2px dot on the leading edge, colored by where the
+        // line came from. Present only for model-authored text, so an unbadged
+        // bubble is by definition not a quote. The dot is deliberately mute —
+        // the full origin string lives in the selected-agent narration panel,
+        // which is the only surface that can render readable attribution.
+        if (badge) {
+            ctx.beginPath();
+            ctx.fillStyle = badge;
+            ctx.arc(-halfW + (anchored ? 4 : 5), -bubbleH / 2 + (anchored ? 4 : 5), anchored ? 1.6 : 2, 0, Math.PI * 2);
+            ctx.fill();
+        }
 
         // 3.8 — ×N chip: this bubble speaks for N cluster-mates sharing the
         // identical line (merged by the renderer's bubble-slot pass). Static
@@ -5108,68 +5146,63 @@ export class AgentSprite {
         return String(text || '').replace(/\s×\d+$/, '');
     }
 
+    // Hover text for this villager's current line: the full untrimmed wording
+    // when the bubble had to shorten it, plus the exact origin. Reads the
+    // snapshot the sprite already computed, so hovering costs no extra work.
+    dialogueTooltip() {
+        const entry = this._activitySnapshot;
+        if (!entry?.text || !entry.source) return '';
+        const body = entry.full || entry.text;
+        return `${body}\n${dialogueSourceLabel(entry)}`;
+    }
+
+    // Null when the agent has nothing attributable to say. `_activityThread`
+    // already skips textless entries, so silence propagates naturally: no
+    // bubble, no chip, no fabricated 'IDLE' line.
     _captureActivitySnapshot(agent = this.agent, timestamp = Date.now()) {
-        const entry = this._activityEntryForAgent(agent, timestamp);
-        if (entry) return entry;
-        return {
-            kind: 'status',
-            key: `status:${AgentStatus.IDLE}`,
-            text: 'IDLE',
-            accent: STATUS_VISUALS[AgentStatus.IDLE]?.color || '#8fb7cf',
-            timestamp,
-        };
+        return this._activityEntryForAgent(agent, timestamp);
     }
 
     _activityEntryForAgent(agent = this.agent, timestamp = Date.now()) {
         if (!agent) return null;
-        const entryTimestamp = Number(agent.lastSessionActivity) || timestamp;
-        // Agent owns the complete intent -> lore -> tool -> message fallback
-        // chain. Keep the sprite as a presentation consumer so visible copy can
-        // never drift into a second, independently composed tool echo.
-        const bubbleText = this._truncateActivityText(agent.bubbleText, ACTIVITY_TEXT_CAP);
-        if (bubbleText) {
+        // Agent.speech() is the only source of villager words. It returns the
+        // model's own text with provenance, or null — there is no preset pool,
+        // no tool label dressed as speech, and no stale line held over.
+        const speech = typeof agent.speech === 'function' ? agent.speech(timestamp) : null;
+        if (speech?.text) {
             const currentTool = String(agent.currentTool || '').trim();
             const classified = currentTool
                 ? memoizedToolClassification(currentTool, agent.currentToolInput)
                 : null;
-            const moodType = agent.mood?.type || null;
-            const intentBubble = agent.visitIntentBubble;
-            const intentExpiry = Number(intentBubble?.expiresAt);
-            const hasIntent = Boolean(
-                intentBubble?.text
-                && (!Number.isFinite(intentExpiry) || intentExpiry > Date.now())
-                && this._truncateActivityText(intentBubble.text, ACTIVITY_TEXT_CAP) === bubbleText
-            );
             return {
-                kind: hasIntent ? 'intent' : (currentTool ? 'tool' : 'activity'),
-                key: `bubble:${bubbleText}`,
-                text: bubbleText,
-                accent: hasIntent
-                    ? (MOOD_ACCENTS[moodType] || this._providerTrimColor(agent))
-                    : this._providerTrimColor(agent),
+                kind: speech.kind,
+                shape: speech.shape,
+                key: `speech:${speech.actionId || speech.source}:${speech.text}`,
+                text: speech.text,
+                full: speech.full,
+                source: speech.source,
+                fidelity: speech.fidelity,
+                redacted: speech.redacted,
+                badge: DIALOGUE_BADGE_COLORS[speech.kind] || null,
+                accent: this._providerTrimColor(agent),
                 tool: currentTool || null,
                 category: classified?.category || null,
                 confidence: null,
-                timestamp: entryTimestamp,
+                // The moment the model wrote it, not when we polled.
+                timestamp: speech.observedAt,
             };
         }
-
-        const visual = this._statusVisualFor(agent);
-        const rawStatus = agent?.status;
-        const status = typeof rawStatus === 'string' ? rawStatus : (rawStatus?.value || AgentStatus.IDLE);
-        return {
-            kind: 'status',
-            key: `status:${status}`,
-            text: visual?.label || 'IDLE',
-            accent: visual?.color || STATUS_VISUALS[AgentStatus.IDLE]?.color || '#8fb7cf',
-            timestamp,
-        };
+        // Nothing attributable to say: silence. Status stays legible through
+        // the existing non-text affordances — the selection ring, status
+        // overlays, the tool glyph, and the long-wait clock in `_drawStatus` —
+        // so an agent that is merely thinking no longer emits a word.
+        return null;
     }
 
     _rememberActivitySnapshot(entry, timestamp = Date.now()) {
         if (!entry?.text || !entry?.key) return;
-        // Status and lore bubbles are flavor, not work history.
-        if (entry.kind === 'status' || entry.kind === 'lore') return;
+        // Status is harness state, not work the agent narrated.
+        if (entry.kind === 'status') return;
         this._pruneActivityTrail(timestamp);
         const latest = this._activityTrail[0];
         if (latest?.key === entry.key) {
@@ -5179,6 +5212,14 @@ export class AgentSprite {
         }
         this._activityTrail.unshift({
             kind: entry.kind || 'tool',
+            // Provenance travels with the trail entry so a historical line can
+            // never be redrawn with more authority than it was captured with.
+            shape: entry.shape || 'bubble',
+            badge: entry.badge || null,
+            source: entry.source || null,
+            fidelity: entry.fidelity || null,
+            redacted: entry.redacted === true,
+            full: entry.full || null,
             key: entry.key,
             text: entry.text,
             accent: entry.accent || this._providerTrimColor(),
@@ -5198,13 +5239,6 @@ export class AgentSprite {
             const timestamp = Number(entry?.timestamp);
             return Number.isFinite(timestamp) && now - timestamp <= ACTION_TRAIL_TTL_MS;
         });
-    }
-
-    _truncateActivityText(text, cap = ACTIVITY_TEXT_CAP) {
-        const source = String(text || '').replace(/\s+/g, ' ').trim();
-        if (!source) return '';
-        if (source.length <= cap) return source;
-        return `${source.slice(0, Math.max(1, cap - 1))}…`;
     }
 
     _nameTagLayout(ctx, rawName) {
@@ -5227,11 +5261,29 @@ export class AgentSprite {
         const key = `${source}|${maxWidth}|${ctx.font}|${anchored ? 1 : 0}|${fontStatus}`;
         if (this._bubbleLayoutCacheKey === key && this._bubbleLayoutCache) return this._bubbleLayoutCache;
         let displayText = source;
-        while (displayText.length > 0 && ctx.measureText(displayText).width > maxWidth) {
-            displayText = displayText.substring(0, displayText.length - 1);
-        }
-        if (displayText.length < source.length) {
-            displayText = displayText.substring(0, displayText.length - 1) + '…';
+        if (source && ctx.measureText(source).width > maxWidth) {
+            // Binary search the longest prefix that fits with its ellipsis, then
+            // retreat to the last word boundary. The previous implementation
+            // shrank one character at a time (up to 80 measureText calls) and
+            // cut mid-word, which is what produced unreadable fragments like
+            // 'Reclassifying supplemen…'.
+            let lo = 0;
+            let hi = source.length;
+            while (lo < hi) {
+                const mid = (lo + hi + 1) >> 1;
+                if (ctx.measureText(`${source.slice(0, mid)}…`).width <= maxWidth) lo = mid;
+                else hi = mid - 1;
+            }
+            let cut = lo;
+            const boundary = source.lastIndexOf(' ', cut);
+            // Only honour a boundary that keeps most of the affordable width;
+            // otherwise a long unbroken token (a path, a command) would collapse.
+            if (boundary > cut * 0.5) cut = boundary;
+            // Never split a surrogate pair: that emits replacement junk.
+            const code = source.charCodeAt(cut - 1);
+            if (code >= 0xd800 && code <= 0xdbff) cut -= 1;
+            const body = source.slice(0, Math.max(1, cut)).replace(/[\s,;:.\-]+$/, '');
+            displayText = `${body}…`;
         }
         const layout = {
             displayText,

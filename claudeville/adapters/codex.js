@@ -23,6 +23,7 @@ const {
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
+const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 
 const CODEX_DIR = path.join(os.homedir(), '.codex');
 const SESSIONS_DIR = path.join(CODEX_DIR, 'sessions');
@@ -404,6 +405,36 @@ function parseRollout(filePath) {
 
   // Read recent tools/messages from the end of the file
   const entries = readJsonLines(filePath, { from: 'end', count: 50 });
+  const candidates = [];
+  const observedSources = emptyObservedSources();
+  const candidateCounts = { plan: 0, thinking: 0, assistant: 0 };
+  let collectDialogue = true;
+
+  const addDialogue = (text, kind, source, entry, payload) => {
+    if (typeof text !== 'string' || !text.trim()) return;
+
+    if (kind === 'plan') observedSources.planStep = true;
+    if (kind === 'thinking') observedSources.thinkingPlaintext = true;
+    if (kind === 'assistant') observedSources.assistantText = true;
+
+    if (!collectDialogue || candidateCounts[kind] >= 8) return;
+
+    const candidate = makeDialogue({
+      text,
+      kind,
+      source,
+      observedAt: parseTimestamp(entry?.timestamp),
+      actionId: payload?.call_id || payload?.id || null,
+      project: detail.project,
+    });
+    if (!candidate) return;
+
+    candidates.push(candidate);
+    candidateCounts[kind] += 1;
+    if (candidateCounts.plan >= 8 && candidateCounts.thinking >= 8 && candidateCounts.assistant >= 8) {
+      collectDialogue = false;
+    }
+  };
 
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
@@ -416,6 +447,27 @@ function parseRollout(filePath) {
       if (!detail.lastTool && (payload.type === 'function_call' || payload.type === 'command_execution' || payload.type === 'custom_tool_call')) {
         detail.lastTool = payload.name || payload.type;
         detail.lastToolInput = summarizeCodexToolPayload(payload);
+      }
+
+      if (payload.type === 'function_call' && payload.name === 'update_plan') {
+        let argumentsValue = null;
+        if (typeof payload.arguments === 'string') {
+          try {
+            argumentsValue = JSON.parse(payload.arguments);
+          } catch {
+            argumentsValue = null;
+          }
+        }
+        const plan = argumentsValue && Array.isArray(argumentsValue.plan) ? argumentsValue.plan : [];
+        const currentStep = plan.find((step) => (
+          step
+          && step.status === 'in_progress'
+          && typeof step.step === 'string'
+          && step.step.trim()
+        ));
+        if (currentStep) {
+          addDialogue(currentStep.step, 'plan', 'codex.plan.step', entry, payload);
+        }
       }
 
       // Text message (assistant)
@@ -436,6 +488,54 @@ function parseRollout(filePath) {
           }
         }
       }
+
+      if (payload.type === 'message' && payload.role === 'assistant') {
+        const content = payload.content;
+        if (typeof content === 'string') {
+          addDialogue(content, 'assistant', 'codex.message', entry, payload);
+        } else if (Array.isArray(content)) {
+          for (const block of content) {
+            if (
+              block
+              && (block.type === 'output_text' || block.type === 'text')
+              && typeof block.text === 'string'
+            ) {
+              addDialogue(block.text, 'assistant', 'codex.message', entry, payload);
+            }
+          }
+        }
+      }
+    }
+
+    if (entry.type === 'event_msg') {
+      if (payload.type === 'agent_reasoning' || payload.type === 'agent_reasoning_raw_content') {
+        addDialogue(
+          payload.text,
+          'thinking',
+          payload.type === 'agent_reasoning_raw_content'
+            ? 'codex.reasoning.raw'
+            : 'codex.reasoning.summary',
+          entry,
+          payload,
+        );
+      }
+    }
+
+    if (entry.type === 'response_item' && payload.type === 'reasoning') {
+      if (Array.isArray(payload.summary)) {
+        for (const part of payload.summary) {
+          if (part?.type === 'summary_text') {
+            addDialogue(part.text, 'thinking', 'codex.reasoning.summary', entry, payload);
+          }
+        }
+      }
+      if (Array.isArray(payload.content)) {
+        for (const part of payload.content) {
+          if (part?.type === 'reasoning_text') {
+            addDialogue(part.text, 'thinking', 'codex.reasoning.text', entry, payload);
+          }
+        }
+      }
     }
 
     // If model is missing, try extracting it from turn_context or event_msg
@@ -449,9 +549,12 @@ function parseRollout(filePath) {
   }
 
   Object.assign(detail, deriveCodexTurnState(entries));
+  detail.dialogue = pickDialogue(candidates, { now: Date.now() });
+  detail.observedSources = observedSources;
 
   return detail;
 }
+
 
 // Codex states its turn boundaries outright: `task_started` opens a turn and
 // `task_complete` closes it, while tool calls pair by `call_id`. Derived from
@@ -1161,6 +1264,8 @@ class CodexAdapter {
         lastMessage: detail.lastMessage,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
+        dialogue: detail.dialogue,
+        observedSources: detail.observedSources,
         tokenUsage: getTokenUsage(filePath),
         gitEvents: getGitEvents(filePath, {
           provider: 'codex',

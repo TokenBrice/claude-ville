@@ -41,6 +41,7 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'sendMessages',
     'lastSessionActivity',
     '_lastMessage',
+    'dialogue',
     'name',
     '_customName',
     'projectPath',
@@ -276,7 +277,7 @@ export class AgentManager {
                         waitReason: null,
                         awaitingSince: null,
                         resident: false,
-                        visitIntentBubble: null,
+                        dialogue: null,
                     });
                 }
             }
@@ -424,6 +425,8 @@ export class AgentManager {
             activityAgeMs,
             _lastMessage: session.lastMessage || null,
             lastMessage: session.lastMessage,
+            dialogue: session.dialogue ?? null,
+            observedSources: session.observedSources ?? null,
             name: agentName || null,
             _customName: !!agentName,
             projectPath: session.project || null,

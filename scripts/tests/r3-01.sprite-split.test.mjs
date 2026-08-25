@@ -111,7 +111,7 @@ test('departed sprites settle once and allocate no ongoing animation work', () =
     assert.equal(resetCount, 1);
 });
 
-test('split preserves model-tier behaviour and Agent.bubbleText as intent copy authority', async () => {
+test('split preserves model-tier behaviour and Agent.speech as the sole copy authority', async () => {
     const source = await readFile(
         new URL('../../claudeville/src/presentation/character-mode/AgentSprite.js', import.meta.url),
         'utf8',
@@ -122,7 +122,10 @@ test('split preserves model-tier behaviour and Agent.bubbleText as intent copy a
     );
 
     assert.match(source, /modelBehaviorProfile\(agent\?\.model, agent\?\.effort\)/);
-    assert.match(source, /agent\.bubbleText/);
+    assert.match(source, /agent\.speech/);
+    // The preset-pool era is over: the sprite must not reach for the old
+    // bubbleText contract or manufacture its own line.
+    assert.doesNotMatch(source, /agent\.bubbleText|visitIntentBubble/);
     assert.match(source, /this\.motionScale/);
     assert.doesNotMatch(overlaySource, /Math\.sin|setInterval|requestAnimationFrame/);
     assert.match(overlaySource, /static` motion/);

@@ -20,7 +20,7 @@ The canvas village's visual system (its terrain and water palette, its nine buil
 
 Whimsical, characterful, and lovingly hand-crafted. Mostly playful fantasy: agents are adventurers with their own identity and motion, and the world has the warmth of a town you would want to visit. Underneath the whimsy is genuine retro reverence — constrained pixel-art craft, the `Press Start 2P` typeface, torchlight on near-black, strong outlines, tiny props that carry meaning. 8/16-bit nostalgia done with care, not applied as a filter.
 
-Voice (UI copy and lore): in-world and characterful, leaning on the village/RPG framing (see `claudeville/src/config/loreDialogue.js`), playful without being cute for its own sake. Warm, a little mythic, never corporate.
+Voice (UI copy): in-world and characterful, leaning on the village/RPG framing, playful without being cute for its own sake. Warm, a little mythic, never corporate. This applies to *our* copy — labels, empty states, chrome. It never applies to villager speech: what an agent says over its head is the model's own words, attributed and unedited (see `claudeville/adapters/dialogue.js`). A villager with nothing attributable to say stays silent rather than reciting flavor text.
 
 Emotional goal: calm delight. A place that is nice to keep in the corner of your eye: alive and shifting with the time of day, rewarding a closer look, and never nagging.
 

@@ -15,6 +15,7 @@ const {
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
 const { deriveTurnState, toEpochMs } = require('./turnState');
+const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 
 const CLAUDE_DIR = path.join(os.homedir(), '.claude');
 const HISTORY_FILE = path.join(CLAUDE_DIR, 'history.jsonl');
@@ -264,6 +265,14 @@ function projectTranscriptContentBlock(block) {
       text: boundedProjectionString(text, TRANSCRIPT_PROJECTION_TEXT_BYTES),
     };
   }
+  if (block.type === 'thinking') {
+    const thinking = typeof block.thinking === 'string' ? block.thinking.trim() : '';
+    return {
+      type: 'thinking',
+      thinking: boundedProjectionString(thinking, TRANSCRIPT_PROJECTION_TEXT_BYTES),
+    };
+  }
+
   if (block.type === 'tool_use') {
     return {
       type: 'tool_use',
@@ -1143,47 +1152,126 @@ function getAgentLaunches(sessionFilePath) {
 
 // ─── Session parsing ────────────────────────────────────────
 
-function getClaudeTranscriptSummary(filePath, tailCount) {
-  const detail = { model: null, lastTool: null, lastMessage: null, lastToolInput: null };
-  if (!filePath || !fs.existsSync(filePath)) return detail;
+function getClaudeTranscriptSummary(filePath, tailCount, project = null) {
+  const detail = {
+    model: null,
+    lastTool: null,
+    lastMessage: null,
+    lastToolInput: null,
+    dialogue: null,
+    observedSources: emptyObservedSources(),
+  };
+  const candidates = [];
+  const candidateCounts = { intent: 0, plan: 0, thinking: 0, assistant: 0 };
+  const addCandidate = ({ text, kind, source, actionId = null, observedAt }) => {
+    if (typeof text !== 'string' || !text.trim()) return;
 
-  try {
-    const entries = tailEntries(filePath, tailCount);
+    if (kind === 'intent') detail.observedSources.toolIntent = true;
+    if (kind === 'plan') detail.observedSources.planStep = true;
+    if (kind === 'thinking') detail.observedSources.thinkingPlaintext = true;
+    if (kind === 'assistant') detail.observedSources.assistantText = true;
 
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const msg = entries[i].message;
-      if (!msg || msg.role !== 'assistant') continue;
+    if (candidateCounts[kind] >= 8 || !Number.isFinite(observedAt)) return;
+    const candidate = makeDialogue({
+      text,
+      kind,
+      source,
+      observedAt,
+      actionId,
+      project,
+    });
+    if (!candidate) return;
+    candidates.push(candidate);
+    candidateCounts[kind]++;
+  };
 
-      if (!detail.model && msg.model) detail.model = msg.model;
+  if (filePath && fs.existsSync(filePath)) {
+    try {
+      const entries = tailEntries(filePath, tailCount);
 
-      const content = msg.content;
-      if (!Array.isArray(content)) continue;
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        const msg = entry.message;
+        if (!msg || msg.role !== 'assistant') continue;
 
-      for (const block of content) {
-        if (!detail.lastTool && block.type === 'tool_use') {
-          detail.lastTool = block.name || null;
-          detail.lastToolInput = summarizeToolInput(block.input, { maxLength: 60, basenameFile: true });
+        if (!detail.model && msg.model) detail.model = msg.model;
+
+        const content = msg.content;
+        if (!Array.isArray(content)) continue;
+
+        const observedAt = typeof entry.timestamp === 'string' || typeof entry.timestamp === 'number'
+          ? toEpochMs(entry.timestamp)
+          : null;
+        for (const block of content) {
+          if (!detail.lastTool && block.type === 'tool_use') {
+            detail.lastTool = block.name || null;
+            detail.lastToolInput = summarizeToolInput(block.input, { maxLength: 60, basenameFile: true });
+          }
+          if (!detail.lastMessage && block.type === 'text' && block.text) {
+            const text = block.text.trim();
+            if (text.length > 0) detail.lastMessage = text.substring(0, 80);
+          }
+
+          if (block.type === 'tool_use') {
+            const input = block.input;
+            if (input && typeof input === 'object' && !Array.isArray(input)) {
+              const toolName = typeof block.name === 'string' && block.name.trim()
+                ? block.name.trim().toLowerCase()
+                : 'unknown';
+              addCandidate({
+                text: input.description,
+                kind: 'intent',
+                source: `claude.${toolName}.description`,
+                actionId: block.id,
+                observedAt,
+              });
+
+              const activeForm = typeof input.activeForm === 'string' && input.activeForm.trim()
+                ? input.activeForm
+                : null;
+              addCandidate({
+                text: activeForm || input.subject,
+                kind: 'intent',
+                source: activeForm ? 'claude.task.activeform' : 'claude.task.subject',
+                actionId: block.id,
+                observedAt,
+              });
+            }
+          } else if (block.type === 'thinking') {
+            addCandidate({
+              text: block.thinking,
+              kind: 'thinking',
+              source: 'claude.thinking',
+              actionId: null,
+              observedAt,
+            });
+          } else if (block.type === 'text') {
+            addCandidate({
+              text: block.text,
+              kind: 'assistant',
+              source: 'claude.text',
+              actionId: null,
+              observedAt,
+            });
+          }
         }
-        if (!detail.lastMessage && block.type === 'text' && block.text) {
-          const text = block.text.trim();
-          if (text.length > 0) detail.lastMessage = text.substring(0, 80);
-        }
+        if (detail.model && detail.lastTool && detail.lastMessage) break;
       }
-      if (detail.model && detail.lastTool && detail.lastMessage) break;
-    }
-  } catch { /* ignore */ }
+    } catch { /* ignore */ }
+  }
 
+  detail.dialogue = pickDialogue(candidates, { now: Date.now() });
   return detail;
 }
 
 function getClaudeMainSessionSummary(sessionId, projectPath) {
-  if (!projectPath) return getClaudeTranscriptSummary(null, 30);
+  if (!projectPath) return getClaudeTranscriptSummary(null, 30, projectPath);
   const encoded = projectPath.replace(/\//g, '-');
-  return getClaudeTranscriptSummary(path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`), 30);
+  return getClaudeTranscriptSummary(path.join(CLAUDE_DIR, 'projects', encoded, `${sessionId}.jsonl`), 30, projectPath);
 }
 
-function getSubAgentDetail(filePath) {
-  return getClaudeTranscriptSummary(filePath, 20);
+function getSubAgentDetail(filePath, project = null) {
+  return getClaudeTranscriptSummary(filePath, 20, project);
 }
 
 function getToolHistory(sessionFilePath, maxItems = 15) {
@@ -1619,7 +1707,7 @@ function latestSubAgentActivity(sessionDir, activeThresholdMs, now = Date.now())
 }
 
 function buildSubAgentSession({ filePath, agentId, decodedProject, parentSessionId, name, agentType, workflowId = null, workflowName = null, lastActivity }) {
-  const detail = getSubAgentDetail(filePath);
+  const detail = getSubAgentDetail(filePath, decodedProject);
   const sessionId = `subagent-${agentId}`;
   const permissionMode = getPermissionMode(filePath);
   return {
@@ -1637,6 +1725,8 @@ function buildSubAgentSession({ filePath, agentId, decodedProject, parentSession
     lastMessage: detail.lastMessage,
     lastTool: detail.lastTool,
     lastToolInput: detail.lastToolInput,
+    dialogue: detail.dialogue,
+    observedSources: detail.observedSources,
     tokenUsage: getTokenUsage(filePath),
     permissionMode,
     sendMessages: getSendMessageEdges(filePath),
@@ -1699,6 +1789,8 @@ class ClaudeAdapter {
           lastActivity: entry.timestamp || 0,
           project: entry.project || null,
           lastMessage: entry.display ? entry.display.substring(0, 100) : null,
+          dialogue: null,
+          observedSources: emptyObservedSources(),
         });
       }
     }
@@ -1732,6 +1824,8 @@ class ClaudeAdapter {
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
         lastMessage: detail.lastMessage || session.lastMessage,
+        dialogue: detail.dialogue,
+        observedSources: detail.observedSources,
         tokenUsage: sessionFilePath ? getTokenUsage(sessionFilePath) : null,
         permissionMode,
         sendMessages: sessionFilePath ? getSendMessageEdges(sessionFilePath) : [],
@@ -1902,8 +1996,8 @@ class ClaudeAdapter {
 
           if (now - lastActivity > activeThresholdMs) continue;
 
-          const detail = getSubAgentDetail(filePath);
           const decodedProject = resolveProjectPathFromMap(projectPathMap, projDir.name);
+          const detail = getSubAgentDetail(filePath, decodedProject);
           const sessionName = sessionNames.get(sessionId) || null;
           const teamName = sessionName ? teamMembership.get(sessionName) || null : null;
           const permissionMode = getPermissionMode(filePath);
@@ -1924,6 +2018,8 @@ class ClaudeAdapter {
             lastMessage: detail.lastMessage,
             lastTool: detail.lastTool,
             lastToolInput: detail.lastToolInput,
+            dialogue: detail.dialogue,
+            observedSources: detail.observedSources,
             tokenUsage: getTokenUsage(filePath),
             permissionMode,
             sendMessages: getSendMessageEdges(filePath),

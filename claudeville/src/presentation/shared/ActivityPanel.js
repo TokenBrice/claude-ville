@@ -4,6 +4,7 @@ import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
+import { dialogueShape, dialogueSourceLabel } from '../../config/dialogue.js';
 import { el, replaceChildren } from './DomSafe.js';
 import { formatCdCommand, formatCost, formatRelative, formatTokens, hashRows, shortenHomePath, truncateText } from './Formatters.js';
 import { emitAgentDeselected, emitAgentSelected } from './AgentSelection.js';
@@ -32,6 +33,8 @@ const JOURNEY_BREADCRUMB_LIMIT = 5;
 const BUILDING_ROUTE_HINT_LIMIT = 3;
 const BUILDING_RECENT_WORK_LIMIT = 3;
 const PIN_COMPARE_LIMIT = 2;
+const NARRATION_ENTRY_LIMIT = 20;
+const NARRATION_RETENTION_MS = 5 * 60_000;
 const PINNED_AGENTS_STORAGE_KEY = 'claudeville.pinnedAgents';
 const VILLAGE_DIRECTOR_EVENT = 'village:director';
 const VILLAGE_BUILDING_SIGNAL_EVENT = 'village:building-signal';
@@ -166,6 +169,8 @@ export class ActivityPanel {
             affinityService: getterFor(affinityService),
         };
         this.currentAgent = null;
+        this._narrationAgentId = null;
+        this._narrationEntries = [];
         this._mode = null;
         this._heroAvatar = null;
         this._heroPortraitEl = null;
@@ -224,6 +229,8 @@ export class ActivityPanel {
         this._currentBiographyIdentityKey = null;
         this._detailFetchSeq = 0;
         this._directorFeedSectionEl = null;
+        this._narrationSectionEl = null;
+        this._narrationBodyEl = null;
         this._directorFeedBodyEl = null;
         this._directorFeed = [];
         this._directorFeedIds = new Set();
@@ -243,6 +250,7 @@ export class ActivityPanel {
         this._ensurePinCompare();
         this._ensureWorkingDirectoryAction();
         this._ensureJourneySection();
+        this._ensureNarrationSection();
         this._ensureHarborLogSection();
         this._ensureChronicleSection();
         this._ensureDirectorFeedSection();
@@ -281,6 +289,8 @@ export class ActivityPanel {
                 const nextBiographyIdentityKey = this._biographyIdentityKey(agent);
                 const biographyIdentityChanged = nextBiographyIdentityKey !== this._currentBiographyIdentityKey;
                 this.currentAgent = agent;
+                this._ingestNarration(agent);
+                this._renderNarration(agent);
                 this._updateInfo(agent);
                 this._updateCurrentTool(agent);
                 this._updateJourney(agent);
@@ -296,6 +306,7 @@ export class ActivityPanel {
             }
         };
         this._onAgentRemoved = (agent) => {
+            if (agent?.id && agent.id === this._narrationAgentId) this._resetNarration();
             sessionDetailsService.deleteForAgent(agent);
             if (this._mode === 'agent' && this.currentAgent && agent.id === this.currentAgent.id) {
                 this.hide();
@@ -397,6 +408,7 @@ export class ActivityPanel {
             harborLog: '',
             chronicle: '',
             directorFeed: '',
+            narration: '',
             relationships: '',
             messageEdges: '',
             pins: '',
@@ -678,6 +690,8 @@ export class ActivityPanel {
 
     show(agent) {
         if (this._destroyed) return;
+        const agentId = agent?.id ?? null;
+        if (agentId !== this._narrationAgentId) this._resetNarration(agentId);
         this._detailFetchSeq++;
         this._chronicleFetchSeq++;
         // Agent selection takes over the panel: tear down any building view first.
@@ -692,6 +706,8 @@ export class ActivityPanel {
         this._setDetailState('Loading activity…', 'Loading usage…');
         this._setChronicleState('Loading biography…');
         this._showAgentSections();
+        this._ingestNarration(agent);
+        this._renderNarration(agent);
         this.panelEl.style.display = '';
         document.body.classList.add('cv-panel-open');
         this._mountHeroPortrait(agent);
@@ -714,6 +730,7 @@ export class ActivityPanel {
         this._detailFetchSeq++;
         this._chronicleFetchSeq++;
         // Building selection overrides agent selection. Close any agent state first.
+        this._resetNarration();
         if (this._mode === 'agent') {
             this._stopPolling();
             this.currentAgent = null;
@@ -743,6 +760,7 @@ export class ActivityPanel {
         const wasAgent = this._mode === 'agent';
         const wasBuilding = this._mode === 'building';
         this._detailFetchSeq++;
+        this._resetNarration();
         this._chronicleFetchSeq++;
         this._pinFetchSeq++;
         this.panelEl.style.display = 'none';
@@ -946,6 +964,8 @@ export class ActivityPanel {
         if (!this.currentAgent || this._destroyed) return;
         const agent = this.currentAgent;
         const seq = ++this._detailFetchSeq;
+        this._ingestNarration(agent);
+        this._renderNarration(agent);
         this._updateJourney(agent);
         this._updateHarborLog(agent);
         this._updateMessageEdges(agent);
@@ -1232,6 +1252,162 @@ export class ActivityPanel {
         }
         return { label: 'ok', color: 'var(--cv-green-soft)' };
     }
+    _ensureNarrationSection() {
+        if (this._narrationSectionEl && this._narrationBodyEl) return;
+        const body = el('div', { className: 'activity-panel__narration-list' });
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Narration' }),
+            body,
+        ]);
+        this._insertAgentSectionAfterMeta(section);
+        this._narrationSectionEl = section;
+        this._narrationBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    _resetNarration(agentId = null) {
+        this._narrationAgentId = agentId;
+        this._narrationEntries = [];
+        if (this._renderSignatures) this._renderSignatures.narration = '';
+    }
+
+    _narrationEntryKey(entry) {
+        const actionId = entry?.actionId === null || entry?.actionId === undefined
+            ? ''
+            : String(entry.actionId).trim();
+        if (actionId) return `action:${actionId}`;
+        return `fallback:${String(entry?.source || '')}|${String(entry?.text || '')}|${Number(entry?.observedAt)}`;
+    }
+
+    _pruneNarrationEntries(now = Date.now()) {
+        const current = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+        this._narrationEntries = (this._narrationEntries || [])
+            .filter((entry) => {
+                const observedAt = Number(entry?.observedAt);
+                return Number.isFinite(observedAt) && current - observedAt <= NARRATION_RETENTION_MS;
+            })
+            .sort((a, b) => Number(b.observedAt) - Number(a.observedAt))
+            .slice(0, NARRATION_ENTRY_LIMIT);
+    }
+
+    _ingestNarration(agent, now = Date.now()) {
+        const agentId = agent?.id ?? null;
+        if (agentId === null) return;
+        if (agentId !== this._narrationAgentId) this._resetNarration(agentId);
+        this._pruneNarrationEntries(now);
+
+        const dialogue = agent?.dialogue;
+        if (!dialogue || typeof dialogue !== 'object') return;
+        const text = typeof dialogue.text === 'string' ? dialogue.text : '';
+        if (!text.trim()) return;
+        const observedAt = Number(dialogue.observedAt);
+        if (!Number.isFinite(observedAt)) return;
+
+        const actionId = dialogue.actionId === null || dialogue.actionId === undefined
+            ? ''
+            : String(dialogue.actionId).trim();
+        const entry = {
+            text,
+            full: typeof dialogue.full === 'string' && dialogue.full ? dialogue.full : null,
+            kind: dialogue.kind || 'assistant',
+            source: String(dialogue.source || ''),
+            fidelity: dialogue.fidelity || null,
+            redacted: dialogue.redacted === true,
+            observedAt,
+            actionId: actionId || null,
+        };
+        const key = this._narrationEntryKey(entry);
+        if (this._narrationEntries.some(existing => this._narrationEntryKey(existing) === key)) return;
+        this._narrationEntries.push(entry);
+        this._pruneNarrationEntries(now);
+    }
+
+    _narrationEmptyCopy(agent) {
+        const sources = agent?.observedSources;
+        const observed = !!(
+            sources
+            && typeof sources === 'object'
+            && Object.values(sources).some(value => value === true)
+        );
+        return observed
+            ? 'Sources were observed, but no attributed narration entered the last 5 minutes.'
+            : 'No attributable narration was observed in the last 5 minutes.';
+    }
+
+    _renderNarration(agent, now = Date.now()) {
+        if (!this._narrationSectionEl || !this._narrationBodyEl) return;
+        if (this._mode !== 'agent' || !agent) {
+            this._narrationSectionEl.style.display = 'none';
+            this._renderSignatures.narration = '';
+            return;
+        }
+
+        this._pruneNarrationEntries(now);
+        const ordered = [...this._narrationEntries];
+        const emptyCopy = ordered.length ? '' : this._narrationEmptyCopy(agent);
+        const signature = `${emptyCopy}|${hashRows(ordered, [
+            entry => entry.actionId || '',
+            entry => entry.text || '',
+            entry => entry.full || '',
+            entry => entry.kind || '',
+            entry => entry.source || '',
+            entry => entry.fidelity || '',
+            entry => entry.redacted,
+            entry => entry.observedAt,
+            entry => formatRelative(entry.observedAt, now) || '',
+        ])}`;
+        this._narrationSectionEl.style.display = '';
+        if (signature === this._renderSignatures.narration) return;
+        this._renderSignatures.narration = signature;
+        replaceChildren(
+            this._narrationBodyEl,
+            ordered.length
+                ? ordered.map(entry => this._narrationRow(entry, now))
+                : [this._emptyState(emptyCopy)],
+        );
+    }
+
+    _narrationRow(entry, now = Date.now()) {
+        const shape = dialogueShape(entry.kind);
+        const text = entry.full || entry.text;
+        const flags = [];
+        if (entry.fidelity === 'excerpt') {
+            flags.push(el('span', {
+                className: 'activity-panel__narration-flag',
+                text: 'excerpt',
+            }));
+        }
+        if (entry.redacted) {
+            flags.push(el('span', {
+                className: 'activity-panel__narration-flag',
+                text: 'redacted',
+            }));
+        }
+        const footer = [
+            el('span', {
+                className: 'activity-panel__narration-provenance',
+                text: dialogueSourceLabel(entry),
+            }),
+            ...flags,
+            el('span', {
+                className: 'activity-panel__narration-time',
+                text: formatRelative(Number(entry.observedAt), now) || 'just now',
+            }),
+        ];
+        return el('div', {
+            className: [
+                'activity-panel__narration-row',
+                `activity-panel__narration-row--${shape}`,
+            ],
+        }, [
+            el('div', { className: 'activity-panel__narration-text', text }),
+            el('div', { className: 'activity-panel__narration-footer' }, footer),
+        ]);
+    }
+
 
     _ensureChronicleSection() {
         if (this._chronicleSectionEl && this._chronicleBodyEl) return;
@@ -3063,6 +3239,8 @@ export class ActivityPanel {
         if (this.panelEl) this.panelEl.style.display = 'none';
         document.body.classList.remove('cv-panel-open');
         this.currentAgent = null;
+        this._narrationAgentId = null;
+        this._narrationEntries = [];
         this._currentBiographyIdentityKey = null;
         this._selectedBuilding = null;
         this._mode = null;
@@ -3092,6 +3270,7 @@ export class ActivityPanel {
             this._harborLogSectionEl,
             this._chronicleSectionEl,
             this._directorFeedSectionEl,
+            this._narrationSectionEl,
             this._relationshipsSectionEl,
             this._messageEdgesSectionEl,
         ];
@@ -3126,6 +3305,8 @@ export class ActivityPanel {
         this._chronicleSectionEl = null;
         this._chronicleBodyEl = null;
         this._directorFeedSectionEl = null;
+        this._narrationSectionEl = null;
+        this._narrationBodyEl = null;
         this._directorFeedBodyEl = null;
         this._relationshipsSectionEl = null;
         this._relationshipsBodyEl = null;

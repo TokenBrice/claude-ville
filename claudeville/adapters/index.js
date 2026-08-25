@@ -15,6 +15,7 @@ const os = require('os');
 const path = require('path');
 const { getJsonlDiagnostics, trimCache } = require('./shared');
 const { decorateSessionPresentation } = require('./sessionPresentation');
+const { normalizeDialogue, normalizeObservedSources } = require('./dialogue');
 const {
   getGitEnrichmentPerfStats,
   invalidateGitStatusCaches,
@@ -91,6 +92,11 @@ function normalizeSession(session, context = {}) {
     lastTool: session?.lastTool ?? null,
     lastToolInput: session?.lastToolInput ?? null,
     lastMessage: session?.lastMessage ?? null,
+    // Provenance-tagged speech. Adapters that cannot supply it normalize to
+    // null dialogue with every observed source false, so the world view stays
+    // silent instead of inventing a line.
+    dialogue: normalizeDialogue(session?.dialogue),
+    observedSources: normalizeObservedSources(session?.observedSources),
     tokenUsage: session?.tokenUsage ?? session?.tokens ?? session?.usage ?? null,
     parentSessionId: session?.parentSessionId ?? null,
     reasoningEffort: session?.reasoningEffort ?? null,

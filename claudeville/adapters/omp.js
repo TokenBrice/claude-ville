@@ -14,6 +14,7 @@ const {
   readJsonLines,
   summarizeToolInput,
 } = require('./shared');
+const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 
 const OMP_HOME = path.join(os.homedir(), '.omp');
 const DEFAULT_SESSIONS_DIR = path.join(OMP_HOME, 'agent', 'sessions');
@@ -158,6 +159,19 @@ function parseOmpTranscript(records, {
     reasoningTokens: 0,
     turnCount: 0,
   };
+  const dialogueBuckets = new Map();
+  const observedSources = emptyObservedSources();
+  const rememberDialogue = ({ text, kind, source, observedAt, actionId = null, observedKey }) => {
+    if (typeof text !== 'string' || !text.trim()) return;
+    observedSources[observedKey] = true;
+    let bucket = dialogueBuckets.get(kind);
+    if (!bucket) {
+      bucket = [];
+      dialogueBuckets.set(kind, bucket);
+    }
+    bucket.unshift({ text, kind, source, observedAt, actionId });
+    if (bucket.length > 8) bucket.pop();
+  };
 
   for (const record of records || []) {
     const recordTs = parseTimestamp(record?.timestamp);
@@ -200,13 +214,41 @@ function parseOmpTranscript(records, {
       if (text) {
         latestAssistantText = compactText(text);
         latestAssistantTs = messageTs;
+        rememberDialogue({
+          text,
+          kind: 'assistant',
+          source: 'omp.message',
+          observedAt: messageTs,
+          observedKey: 'assistantText',
+        });
         if (detail) messages.push({ role: 'assistant', text: compactText(text), ts: messageTs });
       }
       for (const part of Array.isArray(message.content) ? message.content : []) {
-        if (!part || part.type !== 'toolCall') continue;
+        if (!part || typeof part !== 'object') continue;
+        if (part.type === 'thinking') {
+          rememberDialogue({
+            text: part.thinking,
+            kind: 'thinking',
+            source: 'omp.thinking',
+            observedAt: messageTs,
+            observedKey: 'thinkingPlaintext',
+          });
+          continue;
+        }
+        if (part.type !== 'toolCall') continue;
         const tool = String(part.name || 'tool');
         const toolCallId = String(part.id || `${tool}:${messageTs}:${toolHistory.length}`);
         const args = part.arguments ?? null;
+        if (args && typeof args === 'object') {
+          rememberDialogue({
+            text: args.i,
+            kind: 'intent',
+            source: 'omp.tool.i',
+            observedAt: messageTs,
+            actionId: part.id ?? null,
+            observedKey: 'toolIntent',
+          });
+        }
         const entry = {
           tool,
           detail: summarizeToolInput(args, {
@@ -246,6 +288,21 @@ function parseOmpTranscript(records, {
   })();
   latestActivity = Math.max(latestActivity, statActivity);
   if (activeThresholdMs != null && (now - latestActivity) > Number(activeThresholdMs)) return null;
+  const dialogueCandidates = [];
+  for (const bucket of dialogueBuckets.values()) {
+    for (const raw of bucket) {
+      const candidate = makeDialogue({
+        text: raw.text,
+        kind: raw.kind,
+        source: raw.source,
+        observedAt: raw.observedAt,
+        actionId: raw.actionId,
+        project,
+      });
+      if (candidate) dialogueCandidates.push(candidate);
+    }
+  }
+  const dialogue = pickDialogue(dialogueCandidates, { now });
 
   const tokenUsage = usage.turnCount > 0 ? {
     input: usage.input,
@@ -280,6 +337,8 @@ function parseOmpTranscript(records, {
       lastTool: latestTool,
       lastToolInput: latestToolInput,
       lastMessage: latestAssistantText,
+      dialogue,
+      observedSources,
       tokenUsage,
       parentSessionId: parentSessionId ? transcriptId(parentSessionId) : null,
       turnState,

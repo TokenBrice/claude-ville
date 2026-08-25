@@ -19,6 +19,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const {
   createDetailResponse,
   fileSignature,
@@ -574,12 +575,79 @@ function summarizeQuestionPrompt(argsStr, maxLength) {
   return entry ? entry.question.trim().substring(0, maxLength) : null;
 }
 
-function parseWireDetail(filePath) {
+const KIMI_DIALOGUE_INTENT_FIELDS = Object.freeze(['description', 'activeForm', 'i']);
+const DIALOGUE_CANDIDATE_LIMIT = 8;
+
+function parseKimiTimestamp(value) {
+  if (value == null || value === '') return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric;
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseKimiCodeDialogueTimestamp(entry, event) {
+  const eventAt = parseKimiTimestamp(event?.time);
+  return eventAt || parseKimiTimestamp(entry?.time);
+}
+
+function parseKimiToolArgs(args) {
+  if (args && typeof args === 'object') return args;
+  if (typeof args !== 'string') return null;
+  try {
+    const parsed = JSON.parse(args);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readKimiToolIntent(args) {
+  const value = parseKimiToolArgs(args);
+  if (!value) return null;
+  for (const field of KIMI_DIALOGUE_INTENT_FIELDS) {
+    if (typeof value[field] === 'string' && value[field].trim()) {
+      return { field, text: value[field] };
+    }
+  }
+  return null;
+}
+
+function parseWireDetail(filePath, project = null) {
   const detail = {
     model: null,
     lastTool: null,
     lastToolInput: null,
     lastMessage: null,
+    dialogueCandidates: [],
+    observedSources: emptyObservedSources(),
+  };
+  const candidateCounts = { intent: 0, assistant: 0 };
+  let collectDialogue = true;
+  const addDialogueCandidate = ({ text, kind, source, observedAt, actionId = null }) => {
+    if (typeof text !== 'string' || !text.trim()) return;
+    if (kind === 'intent') detail.observedSources.toolIntent = true;
+    if (kind === 'assistant') detail.observedSources.assistantText = true;
+    if (!collectDialogue || candidateCounts[kind] >= DIALOGUE_CANDIDATE_LIMIT) return;
+    const candidate = makeDialogue({
+      text,
+      kind,
+      source,
+      observedAt,
+      actionId,
+      project,
+    });
+    if (!candidate) return;
+    detail.dialogueCandidates.push(candidate);
+    candidateCounts[kind]++;
+    if (
+      candidateCounts.intent >= DIALOGUE_CANDIDATE_LIMIT
+      && candidateCounts.assistant >= DIALOGUE_CANDIDATE_LIMIT
+    ) {
+      collectDialogue = false;
+    }
   };
 
   const entries = readJsonLines(filePath, { from: 'end', count: 100 });
@@ -597,11 +665,35 @@ function parseWireDetail(filePath) {
       detail.lastTool = payload.function.name || null;
       detail.lastToolInput = summarizeToolInput(payload.function.arguments, { maxLength: 60, basenameFile: true });
     }
+    if (msg.type === 'ToolCall' && payload.function) {
+      const intent = readKimiToolIntent(payload.function.arguments);
+      if (intent) {
+        addDialogueCandidate({
+          text: intent.text,
+          kind: 'intent',
+          source: `kimi.tool.${intent.field}`,
+          observedAt: parseKimiTimestamp(entry.timestamp),
+          actionId: payload.function.id || payload.id || msg.id || entry.id || null,
+        });
+      }
+    }
 
     // ContentPart text
     if (!detail.lastMessage && msg.type === 'ContentPart' && payload.type === 'text' && payload.text) {
       const text = payload.text.trim();
       if (text.length > 0) detail.lastMessage = text.substring(0, 80);
+    }
+    if (msg.type === 'ContentPart' && payload.type === 'text' && typeof payload.text === 'string') {
+      const text = payload.text.trim();
+      if (text.length > 0) {
+        addDialogueCandidate({
+          text: payload.text,
+          kind: 'assistant',
+          source: 'kimi.message',
+          observedAt: parseKimiTimestamp(entry.timestamp),
+          actionId: msg.id || payload.id || entry.id || null,
+        });
+      }
     }
   }
 
@@ -862,8 +954,41 @@ function kimiCodeSessionModelKey(detailsByAgentName, agentRecords, now, activeTh
   return null;
 }
 
-function parseWireDetailV2(filePath) {
-  const detail = { model: null, project: null, lastTool: null, lastToolInput: null, lastMessage: null };
+function parseWireDetailV2(filePath, project = null) {
+  const detail = {
+    model: null,
+    project: null,
+    lastTool: null,
+    lastToolInput: null,
+    lastMessage: null,
+    dialogueCandidates: [],
+    observedSources: emptyObservedSources(),
+  };
+  const candidateCounts = { intent: 0, assistant: 0 };
+  let collectDialogue = true;
+  const addDialogueCandidate = ({ text, kind, source, observedAt, actionId = null }) => {
+    if (typeof text !== 'string' || !text.trim()) return;
+    if (kind === 'intent') detail.observedSources.toolIntent = true;
+    if (kind === 'assistant') detail.observedSources.assistantText = true;
+    if (!collectDialogue || candidateCounts[kind] >= DIALOGUE_CANDIDATE_LIMIT) return;
+    const candidate = makeDialogue({
+      text,
+      kind,
+      source,
+      observedAt,
+      actionId,
+      project: project || detail.project || null,
+    });
+    if (!candidate) return;
+    detail.dialogueCandidates.push(candidate);
+    candidateCounts[kind]++;
+    if (
+      candidateCounts.intent >= DIALOGUE_CANDIDATE_LIMIT
+      && candidateCounts.assistant >= DIALOGUE_CANDIDATE_LIMIT
+    ) {
+      collectDialogue = false;
+    }
+  };
   const entries = readJsonLines(filePath, { from: 'end', count: 100 });
 
   for (let i = entries.length - 1; i >= 0; i--) {
@@ -888,11 +1013,35 @@ function parseWireDetailV2(filePath) {
       detail.lastTool = call.name;
       detail.lastToolInput = summarizeToolInput(call.args, { maxLength: 60, basenameFile: true });
     }
+    if (call) {
+      const intent = readKimiToolIntent(call.args);
+      if (intent) {
+        addDialogueCandidate({
+          text: intent.text,
+          kind: 'intent',
+          source: `kimi.tool.${intent.field}`,
+          observedAt: parseKimiCodeDialogueTimestamp(entry, call),
+          actionId: kimiCodeToolCallId(call) || entry.event?.id || entry.id || null,
+        });
+      }
+    }
 
     const part = loopEvent(entry, 'content.part');
     if (!detail.lastMessage && part && part.part && part.part.type === 'text' && part.part.text) {
       const text = part.part.text.trim();
       if (text.length > 0) detail.lastMessage = text.substring(0, 80);
+    }
+    if (part && part.part && part.part.type === 'text' && typeof part.part.text === 'string') {
+      const text = part.part.text.trim();
+      if (text.length > 0) {
+        addDialogueCandidate({
+          text: part.part.text,
+          kind: 'assistant',
+          source: 'kimi.message',
+          observedAt: parseKimiCodeDialogueTimestamp(entry, part),
+          actionId: part.part.id || part.id || entry.event?.id || entry.id || null,
+        });
+      }
     }
 
     if (detail.project && detail.model && detail.lastTool && detail.lastMessage) break;
@@ -1178,6 +1327,7 @@ function getActiveSessionsV2(activeThresholdMs, now) {
       .map(record => record.agentName));
     const hasMainRecord = agentRecords.some(record => record.agentName === 'main');
     const detailsByAgentName = new Map();
+    const projectHint = indexEntry?.workDir || kimiCodeProjectFromState(stateMeta) || null;
     let wireProject = null;
     for (const record of agentRecords) {
       if (!activeAgentNames.has(record.agentName)) {
@@ -1185,11 +1335,11 @@ function getActiveSessionsV2(activeThresholdMs, now) {
         continue;
       }
       _perf.parsedActiveAgentWires++;
-      const detail = parseWireDetailV2(record.wirePath);
+      const detail = parseWireDetailV2(record.wirePath, projectHint);
       detailsByAgentName.set(record.agentName, detail);
       if (!wireProject && detail.project) wireProject = detail.project;
     }
-    const project = indexEntry?.workDir || kimiCodeProjectFromState(stateMeta) || wireProject;
+    const project = projectHint || wireProject;
 
     if (!hasMainRecord) {
       const modelKey = kimiCodeSessionModelKey(detailsByAgentName, agentRecords, now, activeThresholdMs)
@@ -1212,6 +1362,8 @@ function getActiveSessionsV2(activeThresholdMs, now) {
         lastMessage: null,
         lastTool: null,
         lastToolInput: null,
+        dialogue: null,
+        observedSources: emptyObservedSources(),
         tokenUsage: emptyKimiCodeUsage(ctxMax),
         gitEvents: [],
         parentSessionId: null,
@@ -1225,7 +1377,7 @@ function getActiveSessionsV2(activeThresholdMs, now) {
       const lastActivity = isMain ? Math.max(stat.mtimeMs, latestAgentActivity) : stat.mtimeMs;
       if (now - lastActivity > activeThresholdMs) continue;
 
-      const detail = detailsByAgentName.get(agentName) || parseWireDetailV2(wirePath);
+      const detail = detailsByAgentName.get(agentName) || parseWireDetailV2(wirePath, project);
       const sessionId = isMain ? `kimi-${sessionDirName}` : `kimi-${sessionDirName}::${agentName}`;
 
       const modelKey = detail.model || config.defaultModel;
@@ -1248,6 +1400,8 @@ function getActiveSessionsV2(activeThresholdMs, now) {
         lastMessage: detail.lastMessage,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
+        dialogue: pickDialogue(detail.dialogueCandidates, { now: Date.now() }),
+        observedSources: detail.observedSources,
         tokenUsage: getTokenUsageV2(wirePath, ctxMax),
         gitEvents: getGitEventsV2(wirePath, {
           provider: 'kimi',
@@ -1388,7 +1542,7 @@ class KimiAdapter {
 
             const statePath = path.join(sessionPath, 'state.json');
             const title = fs.existsSync(statePath) ? getSessionTitle(statePath) : null;
-            const detail = parseWireDetail(wirePath);
+            const detail = parseWireDetail(wirePath, project);
 
             sessions.push({
               sessionId: `kimi-${sessionId}`,
@@ -1404,6 +1558,8 @@ class KimiAdapter {
               lastMessage: detail.lastMessage,
               lastTool: detail.lastTool,
               lastToolInput: detail.lastToolInput,
+              dialogue: pickDialogue(detail.dialogueCandidates, { now: Date.now() }),
+              observedSources: detail.observedSources,
               tokenUsage: getTokenUsage(wirePath),
               gitEvents: getGitEvents(wirePath, {
                 provider: 'kimi',

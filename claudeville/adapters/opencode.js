@@ -18,6 +18,7 @@ const {
   normalizeCacheTokens,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
+const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 
 const OPENCODE_CONFIG_DIR = process.env.CLAUDEVILLE_OPENCODE_CONFIG_DIR
   || path.join(os.homedir(), '.config', 'opencode');
@@ -33,6 +34,7 @@ const DETAIL_TOOL_LIMIT = 15;
 const DETAIL_MESSAGE_OUTPUT_LIMIT = 5;
 const SQL_TIMEOUT_MS = 3000;
 const SQL_MAX_BUFFER = 4 * 1024 * 1024;
+const DIALOGUE_CANDIDATE_LIMIT = 8;
 const OPENCODE_TOOL_INPUT_FIELDS = Object.freeze([
   'description',
   'command',
@@ -415,6 +417,113 @@ function getLastMessage(parts) {
   return null;
 }
 
+function observedAtForPart(part) {
+  if (!part || typeof part !== 'object') return null;
+  for (const value of [part.timeCreated, part.timeUpdated]) {
+    if (value == null || value === '') continue;
+    const timestamp = Number(value);
+    if (Number.isFinite(timestamp) && timestamp > 0) return timestamp;
+  }
+  return null;
+}
+
+function actionIdForPart(part) {
+  if (!part || typeof part !== 'object') return null;
+  const callId = part.data && typeof part.data === 'object' ? part.data.callID : null;
+  if (callId != null && String(callId).trim()) return callId;
+  if (part.id != null && String(part.id).trim()) return part.id;
+  return null;
+}
+
+function modelAuthoredRole(role) {
+  if (typeof role !== 'string') return false;
+  const normalized = role.trim().toLowerCase();
+  return normalized === 'assistant' || normalized === 'model';
+}
+
+function toolInputForPart(part) {
+  if (!part || typeof part !== 'object' || !part.data || typeof part.data !== 'object') {
+    return null;
+  }
+  const state = part.data.state;
+  if (state && typeof state === 'object' && state.input && typeof state.input === 'object') {
+    return state.input;
+  }
+  if (part.data.input && typeof part.data.input === 'object') return part.data.input;
+  return null;
+}
+
+function getDialogue(parts, project) {
+  const candidates = [];
+  const observedSources = emptyObservedSources();
+  const counts = { intent: 0, thinking: 0, assistant: 0 };
+  const projectedParts = Array.isArray(parts) ? parts : [];
+
+  for (let i = projectedParts.length - 1; i >= 0; i--) {
+    const part = projectedParts[i];
+    if (!part || typeof part !== 'object') continue;
+
+    let text = '';
+    let kind = null;
+    let source = null;
+    if (part.type === 'reasoning') {
+      text = part.data && typeof part.data.text === 'string' ? part.data.text : '';
+      if (!text.trim()) continue;
+      observedSources.thinkingPlaintext = true;
+      kind = 'thinking';
+      source = 'opencode.reasoning';
+    } else if (part.type === 'text') {
+      if (!modelAuthoredRole(part.role)) continue;
+      text = part.data && typeof part.data.text === 'string' ? part.data.text : '';
+      if (!text.trim()) continue;
+      observedSources.assistantText = true;
+      kind = 'assistant';
+      source = 'opencode.message';
+    } else if (part.type === 'tool') {
+      const input = toolInputForPart(part);
+      const description = input && typeof input.description === 'string'
+        ? input.description
+        : '';
+      if (!description.trim()) continue;
+      observedSources.toolIntent = true;
+      text = description;
+      kind = 'intent';
+      source = 'opencode.tool.description';
+    } else {
+      continue;
+    }
+
+    if (counts[kind] >= DIALOGUE_CANDIDATE_LIMIT) continue;
+    const observedAt = observedAtForPart(part);
+    if (!observedAt) continue;
+    const candidate = makeDialogue({
+      text,
+      kind,
+      source,
+      observedAt,
+      actionId: actionIdForPart(part),
+      project,
+    });
+    if (candidate) {
+      candidates.push(candidate);
+      counts[kind]++;
+    }
+
+    if (
+      counts.intent >= DIALOGUE_CANDIDATE_LIMIT
+      && counts.thinking >= DIALOGUE_CANDIDATE_LIMIT
+      && counts.assistant >= DIALOGUE_CANDIDATE_LIMIT
+    ) {
+      break;
+    }
+  }
+
+  return {
+    dialogue: pickDialogue(candidates, { now: Date.now() }),
+    observedSources,
+  };
+}
+
 function getTextMessages(parts, maxItems = DETAIL_MESSAGE_OUTPUT_LIMIT) {
   const messages = [];
   for (const part of parts) {
@@ -552,6 +661,7 @@ class OpenCodeAdapter {
       const sessionId = `opencode-${row.id}`;
       const tool = getLastTool(parts);
       const project = row.directory || row.worktree || null;
+      const dialogue = getDialogue(parts, project);
       const title = compactText(row.title, 80) || null;
       const agentName = row.agent || title;
       return {
@@ -569,6 +679,8 @@ class OpenCodeAdapter {
         lastTool: tool.lastTool,
         lastToolInput: tool.lastToolInput,
         lastMessage: getLastMessage(parts),
+        dialogue: dialogue.dialogue,
+        observedSources: dialogue.observedSources,
         tokenUsage: tokenUsageFromSession(row, parts),
         gitEvents: getGitEvents(parts, { provider: 'opencode', sessionId, project }),
       };

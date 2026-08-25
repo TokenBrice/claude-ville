@@ -5,8 +5,8 @@ import { AgentBiography } from '../value-objects/AgentBiography.js';
 import { i18n } from '../../config/i18n.js';
 import { TokenUsage } from '../value-objects/TokenUsage.js';
 import { normalizeMood } from '../value-objects/AgentMood.js';
-import { buildingForTool, compactToolInput, toolActionLabel } from '../services/ToolIdentity.js';
-import { pickLoreLine } from '../../config/loreDialogue.js';
+import { buildingForTool } from '../services/ToolIdentity.js';
+import { DIALOGUE_STALE_MS, dialogueShape } from '../../config/dialogue.js';
 
 const AGENT_NAMES_EN = [
     'Ada', 'Alden', 'Ansel', 'Bess', 'Bram', 'Cedric', 'Cora', 'Cyril',
@@ -54,6 +54,8 @@ export class Agent {
         awaitingSince,
         resident,
         departedAt,
+        dialogue,
+        observedSources,
     }) {
         this.id = id;
         this._customName = !!name; // Whether the name was assigned by a team
@@ -102,9 +104,12 @@ export class Agent {
         this._lastMessage = lastMessage || null;
         // Telemetry-derived emotion; kept current by application/MoodService.js.
         this.mood = normalizeMood(null);
-        // Transient presentation hint populated by VisitIntentManager. Keeping
-        // the derived copy here avoids replacing or disguising raw tool data.
-        this.visitIntentBubble = null;
+        // Provenance-tagged speech from adapters/dialogue.js: the model's own
+        // words, with where they came from and whether they were trimmed or
+        // redacted. Null means the agent said nothing we can attribute, and the
+        // villager stays silent rather than reciting filler.
+        this.dialogue = dialogue || null;
+        this.observedSources = observedSources || null;
         this.refreshIdentityAppearance();
         this.position = new Position(20 + Math.random() * 10, 20 + Math.random() * 10);
         this.targetPosition = null;
@@ -196,46 +201,36 @@ export class Agent {
     }
 
     /**
-     * Text to display in the speech bubble (capped at ~24 chars).
+     * The line this villager is currently saying, or null for silence.
+     *
+     * Every field comes from the adapter-side dialogue contract: the model's
+     * own words, tagged with origin and whether they were trimmed or redacted.
+     * There is deliberately no fallback — no preset pool, no tool label dressed
+     * as speech, no stale line held over. When there is nothing attributable to
+     * say, the villager says nothing and the renderer shows status glyphs only.
+     *
+     * Text is NOT truncated here. The renderer fits it by measured pixel width,
+     * so truncation happens once, where the font and bubble width are known.
      */
-    get bubbleText() {
+    speech(now = Date.now()) {
         if (this.isDeparted) return null;
-        const CAP = 24;
-        const intentBubble = this.visitIntentBubble;
-        if (
-            intentBubble?.text
-            && (!Number.isFinite(Number(intentBubble.expiresAt)) || Number(intentBubble.expiresAt) > Date.now())
-        ) {
-            return Agent._truncate(intentBubble.text, CAP);
-        }
-        // Occasionally speak village lore instead of the tool label; the
-        // pick is seeded per agent + time bucket, so it stays stable
-        // across frames and returns null outside lore buckets.
-        const lore = pickLoreLine({
-            seedKey: this.id,
-            buildingType: this.lastKnownBuildingType,
-            mood: this.mood?.type,
-        });
-        if (lore) return Agent._truncate(lore, CAP);
-        if (this.currentTool) {
-            const toolLabel = toolActionLabel(this.currentTool);
-            const detail = compactToolInput(this.currentToolInput, 18);
-            const full = detail ? `${toolLabel} ${detail}` : toolLabel;
-            return Agent._truncate(full, CAP);
-        }
-        if (this._lastMessage) return Agent._truncate(this._lastMessage, CAP);
-        return null;
-    }
-
-    setVisitIntentBubble(bubble) {
-        this.visitIntentBubble = bubble?.text ? { ...bubble } : null;
-        return this.visitIntentBubble;
-    }
-
-    static _truncate(s, cap) {
-        const str = String(s);
-        if (str.length <= cap) return str;
-        return str.slice(0, cap - 1) + '…';
+        const dialogue = this.dialogue;
+        if (!dialogue?.text) return null;
+        const observedAt = Number(dialogue.observedAt);
+        if (!Number.isFinite(observedAt)) return null;
+        // Stale dialogue describes work the agent has already moved on from.
+        if (now - observedAt > DIALOGUE_STALE_MS) return null;
+        return {
+            text: dialogue.text,
+            full: dialogue.full || null,
+            kind: dialogue.kind,
+            source: dialogue.source,
+            fidelity: dialogue.fidelity,
+            redacted: dialogue.redacted === true,
+            observedAt,
+            actionId: dialogue.actionId || null,
+            shape: dialogueShape(dialogue.kind),
+        };
     }
 
     generateName(usedNames = null) {

@@ -188,8 +188,16 @@ const NAME_SLOT_PROP_CELL = 96;
 // a fixed head offset, so clustered agents pile unreadably; these drive the
 // rect-overlap slot search that stacks bubbles and caps how many render.
 const AGENT_BUBBLE_SLOT_CAP = 3;
+// Floor for the reservation estimate (short status labels).
 const AGENT_BUBBLE_EST_WIDTH = 104;
-const AGENT_BUBBLE_HEIGHT = 22;
+// Departure Mono advance at the anchored 10px body size, plus bubble padding.
+// Measured against the sprite's own layout, not guessed: AgentSprite adds 18px
+// of horizontal padding around the measured text at this size.
+const AGENT_BUBBLE_CHAR_WIDTH = 5.4;
+const AGENT_BUBBLE_PADDING = 18;
+// Mirrors STATUS_BUBBLE_MAIN_MAX_WIDTH.anchored in AgentSprite.js, which is
+// where the text is actually truncated to fit.
+const AGENT_BUBBLE_MAX_WIDTH = 232;
 const AGENT_BUBBLE_ANCHOR_Y = 58;
 // Vertical step per stacked slot, in screen pixels; must match AgentSprite
 // STATUS_BUBBLE_STACK_STEP so assigned slots line up with the drawn offset.
@@ -3240,7 +3248,10 @@ export class IsometricRenderer {
             this.buildingRenderer?.setHovered(null);
             this.villageDirector?.setHoveredBuilding?.(null);
             this.harborTraffic?.setHoveredShip?.(null);
-            if (this.canvas) this.canvas.title = '';
+            // Hovering a villager surfaces where its line actually came from,
+            // so the provenance badge on the bubble is legible rather than
+            // merely decorative.
+            if (this.canvas) this.canvas.title = hit.dialogueTooltip?.() || '';
         }
     }
 
@@ -4600,7 +4611,7 @@ export class IsometricRenderer {
     _bubbleMergeKey(sprite) {
         const head = sprite._activityThread?.()?.[0];
         if (!head || !head.text) return null;
-        if (sprite._shouldUseLongWaitClock?.(head)) return null;
+        if (sprite._shouldUseLongWaitClock?.()) return null;
         const accent = head.accent || sprite._statusVisual?.()?.color || '';
         return `${head.text}|${accent}|${head.confidence ?? ''}`;
     }
@@ -4608,12 +4619,16 @@ export class IsometricRenderer {
     _spriteWantsBubble(sprite) {
         if (!sprite || sprite.chatting) return false;
         if (sprite.isArrivalPending?.()) return false;
+        // A silent villager draws nothing, so it must not reserve a slot and
+        // push a speaking neighbour into a higher one. Reads the snapshot the
+        // sprite already computed rather than rebuilding its activity thread.
+        if (!sprite._activitySnapshot?.text && !sprite._shouldUseLongWaitClock?.()) return false;
         return true;
     }
 
     _agentBubbleSlotRect(sprite, slot) {
         const s = 1 / ((this.camera?.zoom) || 1);
-        const halfW = (AGENT_BUBBLE_EST_WIDTH / 2) * s;
+        const halfW = (this._agentBubbleWidth(sprite) / 2) * s;
         const halfH = (AGENT_BUBBLE_HEIGHT / 2) * s;
         const centerY = sprite.y - (AGENT_BUBBLE_ANCHOR_Y + slot * AGENT_BUBBLE_STACK_STEP) * s;
         return {
@@ -4622,6 +4637,19 @@ export class IsometricRenderer {
             w: halfW * 2,
             h: halfH * 2,
         };
+    }
+
+    // Reservation width for de-collision. Dialogue lines are real model text of
+    // varying length, so a single fixed estimate would under-reserve for long
+    // lines and let bubbles overlap. Estimating from character count at the
+    // anchored 10px body font keeps this allocation-free and off the
+    // measureText path, while STATUS_BUBBLE_MAIN_MAX_WIDTH caps it exactly as
+    // the sprite's own pixel truncation does.
+    _agentBubbleWidth(sprite) {
+        const text = sprite?._activitySnapshot?.text;
+        if (!text) return AGENT_BUBBLE_EST_WIDTH;
+        const estimate = text.length * AGENT_BUBBLE_CHAR_WIDTH + AGENT_BUBBLE_PADDING;
+        return Math.min(AGENT_BUBBLE_MAX_WIDTH, Math.max(AGENT_BUBBLE_EST_WIDTH, estimate));
     }
 
     _agentLabelPriority(sprite) {

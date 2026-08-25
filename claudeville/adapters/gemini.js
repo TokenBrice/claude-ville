@@ -21,6 +21,7 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 const { dedupeGitEvents, extractGitEventsFromCommandSource, stableHash } = require('./gitEvents');
+const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue');
 const {
   createDetailResponse,
   normalizeCacheTokens,
@@ -188,6 +189,41 @@ function summarizeGeminiRawInput(input, { maxLength = 60, missingValue = null } 
   });
 }
 
+const GEMINI_DIALOGUE_INTENT_FIELDS = Object.freeze(['description', 'activeForm', 'i']);
+const DIALOGUE_CANDIDATE_LIMIT = 8;
+
+function parseGeminiTimestamp(value) {
+  if (value == null || value === '') return 0;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return Math.abs(numeric) < 1e12 ? numeric * 1000 : numeric;
+  }
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function parseGeminiToolArgs(args) {
+  if (args && typeof args === 'object') return args;
+  if (typeof args !== 'string') return null;
+  try {
+    const parsed = JSON.parse(args);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function readGeminiToolIntent(args) {
+  const value = parseGeminiToolArgs(args);
+  if (!value) return null;
+  for (const field of GEMINI_DIALOGUE_INTENT_FIELDS) {
+    if (typeof value[field] === 'string' && value[field].trim()) {
+      return { field, text: value[field] };
+    }
+  }
+  return null;
+}
+
 // ─── Token usage ────────────────────────────────────────────
 
 const GEMINI_TOKEN_ALIASES = Object.freeze({
@@ -278,12 +314,39 @@ function getTokenUsage(filePath, parsedSession) {
  * Extract model/tools/messages from Gemini session JSON
  * Actual format: {sessionId, projectHash, messages: [{type, content, model, ...}]}
  */
-function parseSession(filePath, parsedSession) {
+function parseSession(filePath, parsedSession, project = null) {
   const detail = {
     model: null,
     lastTool: null,
     lastToolInput: null,
     lastMessage: null,
+    dialogueCandidates: [],
+    observedSources: emptyObservedSources(),
+  };
+  const candidateCounts = { intent: 0, assistant: 0 };
+  let collectDialogue = true;
+  const addDialogueCandidate = ({ text, kind, source, observedAt, actionId = null }) => {
+    if (typeof text !== 'string' || !text.trim()) return;
+    if (kind === 'intent') detail.observedSources.toolIntent = true;
+    if (kind === 'assistant') detail.observedSources.assistantText = true;
+    if (!collectDialogue || candidateCounts[kind] >= DIALOGUE_CANDIDATE_LIMIT) return;
+    const candidate = makeDialogue({
+      text,
+      kind,
+      source,
+      observedAt,
+      actionId,
+      project,
+    });
+    if (!candidate) return;
+    detail.dialogueCandidates.push(candidate);
+    candidateCounts[kind]++;
+    if (
+      candidateCounts.intent >= DIALOGUE_CANDIDATE_LIMIT
+      && candidateCounts.assistant >= DIALOGUE_CANDIDATE_LIMIT
+    ) {
+      collectDialogue = false;
+    }
   };
 
   try {
@@ -305,11 +368,18 @@ function parseSession(filePath, parsedSession) {
         }
 
         // Text message
-        if (!detail.lastMessage && msg.content) {
-          const text = typeof msg.content === 'string' ? msg.content.trim() : '';
-          if (text.length > 0) {
-            detail.lastMessage = text.substring(0, 80);
-          }
+        const text = typeof msg.content === 'string' ? msg.content.trim() : '';
+        if (!detail.lastMessage && text.length > 0) {
+          detail.lastMessage = text.substring(0, 80);
+        }
+        if (text.length > 0) {
+          addDialogueCandidate({
+            text: msg.content,
+            kind: 'assistant',
+            source: 'gemini.message',
+            observedAt: parseGeminiTimestamp(msg.timestamp),
+            actionId: msg.id || null,
+          });
         }
 
         // Tool use (when functionCall is present)
@@ -320,6 +390,19 @@ function parseSession(filePath, parsedSession) {
               detail.lastToolInput = summarizeGeminiToolArgs(tc.args, { maxLength: 60, basenameFile: true });
             }
             break;
+          }
+        }
+        if (msg.toolCalls && Array.isArray(msg.toolCalls)) {
+          for (const tc of msg.toolCalls) {
+            const intent = readGeminiToolIntent(tc.args);
+            if (!intent) continue;
+            addDialogueCandidate({
+              text: intent.text,
+              kind: 'intent',
+              source: `gemini.tool.${intent.field}`,
+              observedAt: parseGeminiTimestamp(msg.timestamp),
+              actionId: tc.id || msg.id || null,
+            });
           }
         }
       }
@@ -505,13 +588,12 @@ class GeminiAdapter {
 
     for (const { filePath, mtime, fileName, projectHash } of sessionFiles) {
       const parsedSession = getParsedSession(filePath);
-      const detail = parseSession(filePath, parsedSession);
+      const project = resolveProjectPath(projectHash);
+      const detail = parseSession(filePath, parsedSession, project);
       const sessionId = fileName.replace('session-', '').replace('.json', '');
       const fullSessionId = `gemini-${sessionId}`;
       activeSessionIds.add(fullSessionId);
       _sessionFileById.set(fullSessionId, filePath);
-      const project = resolveProjectPath(projectHash);
-
       sessions.push({
         sessionId: fullSessionId,
         provider: 'gemini',
@@ -524,6 +606,8 @@ class GeminiAdapter {
         lastMessage: detail.lastMessage,
         lastTool: detail.lastTool,
         lastToolInput: detail.lastToolInput,
+        dialogue: pickDialogue(detail.dialogueCandidates, { now: Date.now() }),
+        observedSources: detail.observedSources,
         tokenUsage: getTokenUsage(filePath, parsedSession),
         gitEvents: getGitEvents(filePath, {
           provider: 'gemini',
