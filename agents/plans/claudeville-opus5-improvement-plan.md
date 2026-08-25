@@ -205,3 +205,43 @@ Smaller deferrals: an in-app `legacyArt` debug flag (obsolete once R2-01 lands);
 ## Release framing
 
 Round 1 is a named minor release, and the theme writes itself: work that was already done, finally arriving. Round 2 is a second named release once the visual gate passes. Per `CLAUDE.md`, prepend a `CHANGELOG.md` entry and update the version in `claudeville/index.html` and `package.json` before pushing; every pushed version gets a matching tag and GitHub release.
+
+---
+
+## Execution record — 2026-08-25
+
+**Status:** Rounds 1–3 complete and committed. Wave 4 (frontier research + defect remediation) complete. Wave 5 (review remediation) in progress.
+
+**Baseline → outcome:** `5f6ba42` (v0.33.3) → 17+ commits, ~215 files, +14.5k/−2.2k. Unit suite 151 → 283+, plus a new end-to-end replay harness covering the adapter → server → WebSocket path that previously had zero automated coverage.
+
+### What the thesis predicted, and what it found
+
+The plan's organizing claim was that ClaudeVille repeatedly builds machinery and stops one step before delivering it. That held, and kept holding — including inside this plan's own execution:
+
+- Appearance rerolled every session despite a full cross-restart biography system. Fixed (R1-01).
+- The notification click stopped at `window.focus()`. Fixed (R1-02).
+- Audio suspended the one cue meant to reach an absent operator. Fixed (R1-03).
+- `PairAffinity` computed relationships nothing displayed. Fixed (R2-05).
+- 151 tests with no CI to run them. Fixed (R1-05).
+- **Recurred during execution:** intent bubbles, district atmosphere, and the unattended digest were each built with nothing rendering them (fixed by R2-WIRE and integration).
+- **Recurred again, found only by review:** the per-provider material table and 84 authored companion PNGs never reached agent shading, because the GPU overlay kept its own `codex ? metal : fabric` conditional and atlas packing discarded agent material/emissive sources (W5-C).
+
+### Method notes worth keeping
+
+- **Partition by file ownership, not by theme.** Most of the plan turned out mutually disjoint; Round 1 ran 20 agents concurrently in one shared tree with zero collisions.
+- **Reserve the integration surface.** `App.js`, `index.html`, `css/**` were never owned by a parallel agent. A serialized integration pass caught a real defect (duplicate Toast subscriptions) that no individual agent could see.
+- **Contract-first coupling works.** `audio:cue-played` was built by two agents that never saw each other's code and the seam fit. But contracts need a *renderer* named up front — three were built with no consumer.
+- **Strict ownership manufactures last-mile gaps.** The cost of preventing collisions is that agents stop at their boundary and report rather than wire. Budget an explicit wiring pass per round.
+- **Review is not optional.** Independent `sol high` review found 20 confirmed defects across three domains after every agent reported success and the suite was green — including two HIGH-severity issues introduced by this plan's own work (git cache eviction disabled; departed agents never expiring).
+
+### Research verdicts (Wave 4)
+
+Four frontier proposals were researched; three were rejected or deferred on evidence:
+
+| Proposal | Verdict |
+| --- | --- |
+| HDR / Display-P3 emissive | Viable, larger than assumed. `drawingBufferColorSpace` (not a `getContext` option); P3 is wide-gamut, not HDR; needs `RGBA16F` via draft `drawingBufferStorage`. Unblocked now that authored emissive RGB survives packing. |
+| Normal + height channels | **Do not add a height channel** — `occluder` already carries height in R and strength in G; a packing bug destroyed it (fixed, W4-F). Normals only as an indexed 8–12 orientation map quantized into existing bands. |
+| Radiance cascades 2D GI | Feasible in WebGL2 fragment passes; ~4–6 engineer-weeks. **Gated on an art decision, not engineering:** quantizing to the palette turns smooth penumbrae into discrete contours. If the appeal is the smooth look, it is contract-incompatible and should be killed. |
+| WebGPU renderer | **Not justified.** No measured WebGL2 blocker (12.6 ms rAF p95, 100% FULL, 58.8 MB of a 64 MiB gate). Attachment/buffer budgets are diagnostic only, never degradation triggers. Do the scene-category contract first — done (W4-C). |
+| OffscreenCanvas / worker | **Not justified, and unmeasurable.** No client-side instrumentation existed. Built the measurement instead (W4-B); the one credible mechanism it identified was then fixed directly (W4-E). |
