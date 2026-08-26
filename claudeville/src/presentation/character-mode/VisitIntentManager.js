@@ -624,15 +624,24 @@ export class VisitIntentManager {
             const parentIntent = this.getIntentForAgent(agent.parentSessionId, now);
             const parentLast = this.lastToolBuildingByAgent.get(agent.parentSessionId);
             const parentBuilding = parentIntent?.building || parentLast?.building || 'command';
+            // omp advisors are pinned to their parent: the advisor tether is
+            // only legible when the pair actually stands together, so the
+            // shadow intent outranks the advisor's own tool (80), git (85),
+            // alert (90), and token cash-out (95) intents. Only a live chat
+            // (100) may briefly pull the advisor aside.
+            const advisor = agent.isAdvisor === true;
             this._upsertIntent(agent.id, {
                 source: 'subagent',
                 sourceKey: `parent:${agent.parentSessionId}:${parentBuilding}`,
                 building: parentBuilding,
-                reason: parentBuilding === 'command' ? 'join-parent' : 'follow-parent-work',
+                reason: advisor
+                    ? 'advise-parent'
+                    : (parentBuilding === 'command' ? 'join-parent' : 'follow-parent-work'),
                 phase: parentLast?.phase || parentIntent?.phase || phaseFromIntentDraft({ source: 'subagent', building: parentBuilding }),
-                confidence: 0.72,
-                label: 'subagent',
-                payload: { parentId: agent.parentSessionId, parentBuilding },
+                confidence: advisor ? 0.9 : 0.72,
+                priority: advisor ? 96 : undefined,
+                label: advisor ? 'advisor' : 'subagent',
+                payload: { parentId: agent.parentSessionId, parentBuilding, advisor },
             }, now);
         }
         if (agent.teamName) {

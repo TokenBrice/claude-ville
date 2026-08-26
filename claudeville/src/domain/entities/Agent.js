@@ -66,6 +66,10 @@ export class Agent {
         this.parentSessionId = parentSessionId || null;
         this.workflowId = workflowId || null;
         this.workflowName = workflowName || null;
+        // isAdvisor (below) keys off the raw '__advisor' agentName; the
+        // display name is remapped once here so every surface (world tags,
+        // sidebar, inspector, toasts) reads it as a villager, not a slug.
+        if (this.isAdvisor) this.name = 'Advisor';
         this.model = model || 'unknown';
         this.effort = effort || null;
         this.status = normalizeAgentStatus(status);
@@ -137,6 +141,14 @@ export class Agent {
         return !!this.parentSessionId || (this.agentType && this.agentType !== 'main');
     }
 
+    // omp advisor threads arrive as subagent sessions literally named
+    // '__advisor'. The pairing with the parent session is a first-class
+    // relationship in the village (tether + shadowing), so detect it here
+    // once instead of re-matching the raw name in every consumer.
+    get isAdvisor() {
+        return !!this.parentSessionId && String(this.agentName || '') === '__advisor';
+    }
+
     get isToolFresh() {
         return !this.isDeparted && this.status === AgentStatus.WORKING && !!this.currentTool;
     }
@@ -181,6 +193,9 @@ export class Agent {
             updates.name = this.name || this.generateName();
         }
         Object.assign(this, updates);
+        // WS updates replay the raw '__advisor' session name; re-apply the
+        // villager-facing remap (mirrors the constructor).
+        if (this.isAdvisor && this.name === '__advisor') this.name = 'Advisor';
         this.refreshIdentityAppearance();
         this.lastActive = Date.now();
     }

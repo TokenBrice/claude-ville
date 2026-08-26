@@ -29,6 +29,7 @@ export class RelationshipState {
         this.parentToChildren = new Map();
         this.childToParent = new Map();
         this.teamToMembers = new Map();
+        this.advisorPairs = [];
         this.recentArrivals = [];
         this.recentDepartures = [];
         this.chatPairs = [];
@@ -83,6 +84,7 @@ export class RelationshipState {
         this.parentToChildren.clear();
         this.childToParent.clear();
         this.teamToMembers.clear();
+        this.advisorPairs = [];
         this.recentArrivals = [];
         this.recentDepartures = [];
         this.chatPairs = [];
@@ -122,6 +124,7 @@ export class RelationshipState {
                 ...cluster,
                 memberIds: [...cluster.memberIds],
             })),
+            advisorPairs: this.advisorPairs.map(pair => ({ ...pair })),
         };
         return this;
     }
@@ -140,6 +143,7 @@ export class RelationshipState {
             recentDepartures: this.recentDepartures.length,
             chatPairs: this.chatPairs.length,
             gossipClusters: this.gossipClusters.length,
+            advisorPairs: this.advisorPairs.length,
             rememberedSpriteTiles: this._lastSpriteTiles.size,
             rememberedMemberships: this._lastMembership.size,
             disposed: this._disposed,
@@ -150,9 +154,9 @@ export class RelationshipState {
         this.parentToChildren.clear();
         this.childToParent.clear();
         this.teamToMembers.clear();
+        this.advisorPairs = [];
         this._lastMembership.clear();
         this._cachedSnapshotTeamToMembersArrays.clear();
-
         for (const agent of this.world?.agents?.values?.() || []) {
             const parentSessionId = agent.parentSessionId || null;
             const teamName = agent.teamName || null;
@@ -165,6 +169,9 @@ export class RelationshipState {
                     this.parentToChildren.set(parentSessionId, bucket);
                 }
                 bucket.add(agent.id);
+            }
+            if (agent.isAdvisor) {
+                this.advisorPairs.push({ advisorId: agent.id, parentId: parentSessionId });
             }
             if (teamName) {
                 let members = this.teamToMembers.get(teamName);

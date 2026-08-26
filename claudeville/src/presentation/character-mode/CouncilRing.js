@@ -282,12 +282,16 @@ export function drawFamilyTethers(ctx, {
     const dashOffset = motionScale === 0 ? 0 : -(Math.floor(now * 0.06) % 9);
     const governor = getActiveMarkGovernor();
 
+    const advisorChildIds = new Set((snapshot.advisorPairs || []).map(pair => pair.advisorId));
+
     for (const [parentId, childIds] of snapshot.parentToChildren.entries()) {
         const parent = agentSprites.get(parentId);
         if (!parent || parent.isArrivalPending?.()) continue;
         const trim = gradeColor(parent._providerTrimColor?.() || parent.providerTrimColor || '#8b8b9e', grade);
 
         for (const childId of childIds) {
+            // Advisor pairs get their own explicit tether pass below.
+            if (advisorChildIds.has(childId)) continue;
             const child = agentSprites.get(childId);
             if (!child || child.isArrivalPending?.()) continue;
 
@@ -318,6 +322,75 @@ export function drawFamilyTethers(ctx, {
             ctx.stroke();
             ctx.restore();
         }
+    }
+}
+
+/**
+ * Explicit advisor link: an omp advisor thread is bound to the session it
+ * counsels. Unlike the faint dashed family tethers this is a solid, brighter
+ * cord in the advisor's trim colour with a mote travelling advisor → parent
+ * (counsel flowing to the advisee), so the pairing reads at a glance.
+ */
+export function drawAdvisorTethers(ctx, {
+    relationship,
+    agentSprites,
+    zoom = 1,
+    now = performance.now(),
+    motionScale = 1,
+    lighting = null,
+    grade = null,
+} = {}) {
+    const snapshot = relationshipSnapshot(relationship);
+    const pairs = snapshot?.advisorPairs;
+    if (!ctx || !Array.isArray(pairs) || !pairs.length || !agentSprites) return;
+
+    const boost = lightBoost(lighting);
+    const pulse = motionScale === 0 ? 1 : 0.82 + 0.18 * pulseBand01('intrinsic', now, motionScale, 0.9);
+    const alpha = Math.min(0.55, Math.max(0.3, 0.42 * boost * pulse));
+    const governor = getActiveMarkGovernor();
+    const invZoom = 1 / (zoom || 1);
+
+    for (const pair of pairs) {
+        const advisor = agentSprites.get(pair.advisorId);
+        const parent = agentSprites.get(pair.parentId);
+        if (!advisor || !parent) continue;
+        if (advisor.isArrivalPending?.() || parent.isArrivalPending?.()) continue;
+
+        const start = { x: advisor.x, y: advisor.y - 8 };
+        const end = { x: parent.x, y: parent.y - 8 };
+        const dist = Math.hypot(end.x - start.x, end.y - start.y);
+        if (dist < 1) continue;
+        const gate = governor
+            ? governor.admit(MarkTier.SECONDARY, start.x, start.y)
+            : { draw: true, alpha: 1 };
+        if (!gate.draw) continue;
+
+        const trim = gradeColor(advisor._providerTrimColor?.() || advisor.providerTrimColor || '#ffd76a', grade);
+        const control = {
+            x: (start.x + end.x) / 2,
+            y: (start.y + end.y) / 2 - Math.min(34, dist * 0.22),
+        };
+
+        ctx.save();
+        ctx.strokeStyle = rgba(trim, alpha * gate.alpha);
+        ctx.lineWidth = 1.4 * invZoom;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.moveTo(start.x, start.y);
+        ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
+        ctx.stroke();
+
+        // Counsel mote riding the curve toward the parent; static midpoint
+        // bead under reduced motion so the link stays marked.
+        const t = motionScale === 0 ? 0.5 : ((now % TALK_MOTE_PERIOD_MS) / TALK_MOTE_PERIOD_MS);
+        const inv = 1 - t;
+        const moteX = inv * inv * start.x + 2 * inv * t * control.x + t * t * end.x;
+        const moteY = inv * inv * start.y + 2 * inv * t * control.y + t * t * end.y;
+        ctx.fillStyle = rgba(trim, Math.min(0.85, (alpha + 0.3) * gate.alpha));
+        ctx.beginPath();
+        ctx.arc(moteX, moteY, 1.6 * invZoom, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
     }
 }
 

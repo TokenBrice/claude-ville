@@ -2,6 +2,20 @@
 
 ---
 
+## v0.34.2 — *The Golden Cord* · Aug 26, 2026
+
+Advisors stop wandering the village as anonymous strangers: the counsel bond between an agent and its advisor is now a visible, living relationship.
+
+**The advisor bond is explicit**
+- **Advisors are recognized as such.** An omp advisor thread (a subagent session named `__advisor`) is detected once at the domain layer and carries the pairing with the session it counsels everywhere — world tags, sidebar, inspector, and toasts all read "Advisor" instead of the raw slug.
+- **A golden cord links the pair.** A solid tether in the advisor's trim colour joins advisor and advisee, with a counsel mote travelling along the curve toward the advisee. Under reduced motion the cord keeps a static midpoint bead. Advisor pairs are excluded from the faint dashed family-tether pass, so the bond never double-draws.
+
+**Advisors keep counsel at their advisee's side**
+- **Shadowed movement.** The advisor's routing intent now pins it to whatever building its advisee works at, outranking the advisor's own tool, git, alert, and token cash-out pulls; only a live conversation may briefly draw it aside. The existing related-agent slot bonus then seats the pair on adjacent tiles.
+- **Ordinary subagents are untouched.** Task children keep their previous gentle join/follow behaviour and dashed family tethers; the stronger choreography is gated on the exact advisor identity.
+
+---
+
 ## v0.34.1 — *The Namekeepers* · Aug 26, 2026
 
 Villagers reclaim their stature and keep their names in view, from a quiet path to the busiest gathering in town.
