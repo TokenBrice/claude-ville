@@ -2236,8 +2236,8 @@ export class AgentSprite {
         if (budgetMode && !this.gpuWorldEnabled) {
             this._drawBudgetImpostor(ctx);
             if (this.agent?.isDeparted) this.gpuOverlayRenderer.drawDepartedTreatment(ctx);
-            if (renderMode === 'compact' && this.overlaySlot != null) {
-                this._drawCompactAgentBadge(ctx);
+            if (this.overlaySlot != null) {
+                this._drawCompactNameStatus(ctx);
             }
             if (archivePushed) ctx.restore();
             return;
@@ -2326,7 +2326,7 @@ export class AgentSprite {
                 frameGeometry,
             });
             this._drawBudgetImpostor(ctx);
-            if (renderMode === 'compact' && this.overlaySlot != null) {
+            if (this.overlaySlot != null) {
                 this._drawCompactAgentBadge(ctx);
             }
             if (archivePushed) ctx.restore();
@@ -4769,19 +4769,14 @@ export class AgentSprite {
         // 3.7 — hover affordance: a hovered (unselected) agent shows the full
         // pill, same as selection, so the click target identifies itself.
         const emphasized = this.selected || this.hovered;
-        // #14 — when this agent is parked at a building it folds into that
-        // building's status-tally chip (set in IsometricRenderer); suppress its
-        // own name pill so busy buildings stay legible at low zoom.
-        if (this.foldedIntoBuilding && !emphasized) return;
-        // #9 — below the full-pill threshold (not selected, zoomed out, or
-        // unslotted) fly the compact activity glyph badge instead of the dark
-        // name pill; full pills are reserved for selected/zoom >= 1.5.
+        // Full pills are reserved for emphasis/detail zoom. The compact form
+        // still carries the name, so identity never disappears at overview LOD.
         if (!emphasized && this._zoom < 1.5) {
-            this._drawToolGlyphBadge(ctx);
+            this._drawCompactNameStatus(ctx);
             return;
         }
         if (!emphasized && this.nameTagSlot == null) {
-            this._drawToolGlyphBadge(ctx);
+            this._drawCompactNameStatus(ctx);
             return;
         }
         ctx.save();

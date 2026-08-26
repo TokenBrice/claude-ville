@@ -9,11 +9,18 @@ import {
 } from '../../claudeville/src/presentation/shared/ChroniclePanel.js';
 import { ChronicleEventKind, chronicleDateKey, summarizeDay } from '../../claudeville/src/application/ChronicleLog.js';
 
-const DAY = '2026-08-25';
+const DAY = chronicleDateKey();
+
+function localTimestamp(dayOffset = 0) {
+    const date = new Date();
+    date.setDate(date.getDate() + dayOffset);
+    date.setHours(9, 5, 0, 0);
+    return date.getTime();
+}
 
 function event(overrides = {}) {
     return {
-        ts: new Date(2026, 7, 25, 9, 5).getTime(),
+        ts: localTimestamp(),
         kind: ChronicleEventKind.COMMIT,
         agentName: 'Ada',
         provider: 'codex',
@@ -32,7 +39,7 @@ test('Markdown export is a paste-ready selected-day recap with optional spend', 
         spend: { tokens: 1200, cacheRead: 300, cost: 0.12, costLabel: 'Est. cost' },
     });
 
-    assert.match(markdown, /^# Chronicle — 2026-08-25/m);
+    assert.ok(markdown.startsWith(`# Chronicle — ${DAY}`));
     assert.match(markdown, /## Summary/);
     assert.match(markdown, /## Spend summary/);
     assert.match(markdown, /\| Commits \| 1 \|/);
@@ -41,9 +48,12 @@ test('Markdown export is a paste-ready selected-day recap with optional spend', 
 });
 
 test('historical Markdown export omits the non-retained spend summary', () => {
-    const events = [event({ ts: new Date(2026, 7, 24, 9, 5).getTime() })];
+    const historical = new Date();
+    historical.setDate(historical.getDate() - 1);
+    const historicalKey = chronicleDateKey(historical);
+    const events = [event({ ts: localTimestamp(-1) })];
     const markdown = buildChronicleMarkdown({
-        dateKey: '2026-08-24',
+        dateKey: historicalKey,
         events,
         summary: summarizeDay(events),
         spend: { tokens: 99, cacheRead: 88, cost: 0.77, costLabel: 'Est. cost' },

@@ -2,6 +2,26 @@
 
 ---
 
+## v0.34.1 — *The Namekeepers* · Aug 26, 2026
+
+Villagers reclaim their stature and keep their names in view, from a quiet path to the busiest gathering in town.
+
+**Villagers stand at village scale**
+- **Agent sprites are 32% larger.** The authored characters, equipment, silhouettes, and interaction bounds now hold their own beside the village's newer hero-scale landmarks without changing movement or world geometry.
+- **Selection stays true to the visible body.** Hit targets grow with the character art, so the larger villagers remain natural to hover and select.
+
+**Every villager keeps their name**
+- **Names remain visible at every zoom and crowd density.** Overview and compact render modes use readable compact nameplates instead of status-only glyphs, and dense clusters no longer fade routine labels toward invisibility.
+- **Buildings no longer absorb identity.** Agents working at a landmark keep their own nameplate rather than disappearing into a building tally at low zoom.
+- **Crowds degrade by overlap, never anonymity.** Label placement still searches for a clear slot; when a cluster exhausts every clean position, the least-overlapped slot is used instead of suppressing the name.
+
+**Checked in the crowded square**
+- **Both render paths retain identity.** Canvas fallback and the default GPU overlay share the persistent-name behavior, including compact and minimal annotation modes.
+- **Dense-scene verification stays clean.** The deterministic 24-agent label-density scene keeps every name present with no browser warnings or frame errors, and focused salience, sprite-overlay, and dialogue-layout checks pass.
+- **The release gate survives a new day.** Chronicle export fixtures now derive today and yesterday from the local calendar instead of expiring after their authored date.
+
+---
+
 ## v0.34.0.1 · Aug 25, 2026 — Hotfix
 
 - **Only a real question is held open.** The speech hold introduced in v0.34.0 also matched the plain `waiting` status, which is assigned to any session whose file has merely been quiet for 30 seconds to two minutes. An agent that simply paused could therefore re-surface arbitrarily old prose. The hold is now limited to `waiting_on_user`, the status reserved for an actual question or blocked input; every other state keeps the normal 90-second ceiling.

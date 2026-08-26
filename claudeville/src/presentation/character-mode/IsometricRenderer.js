@@ -4370,39 +4370,16 @@ export class IsometricRenderer {
         return 'full';
     }
 
-    // #14 — at low zoom, agents parked at a building fold into that building's
-    // status-tally chip (BuildingSprite._drawStatusTallyChip) instead of each
-    // drawing a name pill. `_foldBuildingType` is tagged on the sprite by
-    // BuildingSprite._updateVisitorCounts earlier in the same frame's update.
-    _foldOccupantIntoBuilding(sprite, zoom) {
-        if (sprite.selected || zoom >= 1.5 || !sprite._foldBuildingType) {
-            sprite.foldedIntoBuilding = false;
-            return false;
-        }
-        sprite.foldedIntoBuilding = true;
-        sprite.overlaySlot = null;
-        sprite.nameTagSlot = null;
-        sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
-        return true;
-    }
-
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1, { agentRenderMode = 'full' } = {}) {
         const compactOccupied = [];
         const nameOccupied = [];
-        // Minimal is an annotation vocabulary, not anonymity. Keep a small,
-        // collision-aware sample of compact names/actions so a dense village
-        // remains learnable instead of becoming a faceless mob.
-        const compactLabelCap = agentRenderMode === 'minimal'
-            ? 10
-            : agentRenderMode === 'compact'
-                ? 16
-                : Infinity;
+        // Names are persistent at every annotation LOD. Action labels still
+        // retain a density cap because they are transient secondary detail.
         const actionLabelCap = agentRenderMode === 'minimal'
             ? 3
             : agentRenderMode === 'compact'
                 ? 4
                 : Infinity;
-        let compactLabels = 0;
         let actionLabels = 0;
         const prioritized = sprites
             .filter((sprite) => sprite.agent)
@@ -4423,8 +4400,7 @@ export class IsometricRenderer {
             sprite.nameTagSlot = null;
             sprite.gpuActionOverlay = false;
             sprite.labelAlpha = this._agentLabelAlpha(sprite, zoom);
-
-            if (this._foldOccupantIntoBuilding(sprite, zoom)) continue;
+            sprite.foldedIntoBuilding = false;
 
             if (sprite.selected) {
                 compactOccupied.push(this._agentCompactSlotRect(sprite, 0));
@@ -4432,28 +4408,18 @@ export class IsometricRenderer {
                 sprite.overlaySlot = 0;
                 sprite.nameTagSlot = 0;
                 sprite.gpuActionOverlay = true;
-                compactLabels++;
                 continue;
             }
 
-            let compactSlot = 0;
-            while (compactSlot < 4 && compactOccupied.some((item) => this._rectsOverlap(this._agentCompactSlotRect(sprite, compactSlot), item))) {
-                compactSlot++;
-            }
-            if (compactSlot >= 4 || compactLabels >= compactLabelCap) {
-                sprite.overlaySlot = null;
-            } else {
-                sprite.overlaySlot = compactSlot;
-                compactOccupied.push(this._agentCompactSlotRect(sprite, compactSlot));
-                compactLabels++;
-                if (sprite.agent?.currentTool && actionLabels < actionLabelCap) {
-                    sprite.gpuActionOverlay = true;
-                    actionLabels++;
-                }
+            const compactSlot = this._leastOverlappedCompactSlot(sprite, compactOccupied);
+            sprite.overlaySlot = compactSlot;
+            compactOccupied.push(this._agentCompactSlotRect(sprite, compactSlot));
+            if (sprite.agent?.currentTool && actionLabels < actionLabelCap) {
+                sprite.gpuActionOverlay = true;
+                actionLabels++;
             }
 
             if (agentRenderMode !== 'full' || zoom < 3) {
-                if (sprite.overlaySlot === null) continue;
                 sprite.nameTagSlot = null;
                 continue;
             }
@@ -4491,6 +4457,24 @@ export class IsometricRenderer {
             zoom,
             [...compactOccupied, ...nameOccupied],
         );
+    }
+
+    _leastOverlappedCompactSlot(sprite, occupied, slotCount = 4) {
+        let bestSlot = 0;
+        let bestOverlapCount = Infinity;
+        for (let slot = 0; slot < slotCount; slot++) {
+            const rect = this._agentCompactSlotRect(sprite, slot);
+            const overlapCount = occupied.reduce(
+                (count, item) => count + (this._rectsOverlap(rect, item) ? 1 : 0),
+                0,
+            );
+            if (overlapCount === 0) return slot;
+            if (overlapCount < bestOverlapCount) {
+                bestSlot = slot;
+                bestOverlapCount = overlapCount;
+            }
+        }
+        return bestSlot;
     }
 
     // Crowd bubble de-collision. Reuses the overlay-slot rect-overlap technique:
@@ -4665,43 +4649,9 @@ export class IsometricRenderer {
         return 120;
     }
 
-    // #16 — distance-and-density-aware label fade. PRIMARY-tier agents (selected,
-    // waiting-on-user, errored, rate-limited) never fade — their labels carry true
-    // action-demanding state. Everyone else fades toward 0 at zoom 1 inside a dense
-    // crowd cell (glyphs #9 + cluster banners #19 carry the overview read there) and
-    // resolves to full names at zoom 3. Static: no motion, no pulse band.
-    _agentLabelAlpha(sprite, zoom) {
-        if (sprite.selected) return 1;
-        const status = sprite.agent?.status;
-        if (
-            status === AgentStatus.WAITING_ON_USER ||
-            status === AgentStatus.ERRORED ||
-            status === AgentStatus.RATE_LIMITED
-        ) {
-            return 1;
-        }
-
-        const z = Number(zoom) || 1;
-        if (z >= 3) return 1;
-
-        // Base fade by zoom: calm at the overview zoom, fuller as the operator leans in.
-        const zoomFloor = z >= 2 ? 0.65 : 0.18;
-        if (!this._spriteInDenseCluster(sprite)) return 1;
-        return zoomFloor;
-    }
-
-    // True when the sprite shares a crowd cell with a dense cluster summarized this
-    // frame (same cellX,cellY bucket the CrowdClusters summary keys on).
-    _spriteInDenseCluster(sprite) {
-        const clusters = this._crowdStats?.clusters;
-        if (!Array.isArray(clusters) || clusters.length === 0) return false;
-        const tile = worldToTile(sprite.x, sprite.y);
-        if (!tile || !Number.isFinite(tile.tileX) || !Number.isFinite(tile.tileY)) return false;
-        const size = this._crowdStats.clusterCellSize || CROWD_CLUSTER_TILE_SIZE;
-        const cellX = Math.floor(tile.tileX / size);
-        const cellY = Math.floor(tile.tileY / size);
-        const id = `${cellX},${cellY}`;
-        return clusters.some((cluster) => cluster?.id === id);
+    // Identity labels remain fully opaque at every zoom and crowd density.
+    _agentLabelAlpha() {
+        return 1;
     }
 
     _collectAgentLabelHitRects(sprites) {
