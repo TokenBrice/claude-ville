@@ -20,9 +20,12 @@ import { releaseCanvasMap } from './CanvasBudget.js';
 import { AgentAction, resolveAgentAction } from './ActionVocabulary.js';
 import { AgentGpuOverlayRenderer } from './AgentGpuOverlayRenderer.js';
 
-// Hit-test geometry (unchanged from vector version).
-const SPRITE_HIT_HALF_WIDTH = 24;
-const SPRITE_HIT_TOP = -72;
+// Keep villagers visually authoritative beside the newer hero-scale buildings.
+// This multiplier applies to every authored body through _spriteDrawScale and
+// to the matching interaction bounds below.
+const AGENT_WORLD_SCALE = 1.32;
+const SPRITE_HIT_HALF_WIDTH = 24 * AGENT_WORLD_SCALE;
+const SPRITE_HIT_TOP = -72 * AGENT_WORLD_SCALE;
 const SPRITE_HIT_BOTTOM = 24;
 const WALK_PIXELS_PER_FRAME = 4.5;
 const DIRECTION_HOLD_MS = 70;
@@ -95,9 +98,9 @@ const PROVIDER_HOME_BUILDINGS = {
     opencode: 'portal',
     deepseek: 'observatory',
 };
-const TARGET_AGENT_CONTENT_HEIGHT = 92;
-const MIN_AGENT_DRAW_SCALE = 1;
-const MAX_AGENT_DRAW_SCALE = 1.25;
+const TARGET_AGENT_CONTENT_HEIGHT = 92 * AGENT_WORLD_SCALE;
+const MIN_AGENT_DRAW_SCALE = AGENT_WORLD_SCALE;
+const MAX_AGENT_DRAW_SCALE = 1.25 * AGENT_WORLD_SCALE;
 const ACTION_TRAIL_LIMIT = 2;
 const ACTIVITY_BUBBLE_TTL_MS = 12000;
 const ACTION_TRAIL_TTL_MS = ACTIVITY_BUBBLE_TTL_MS;
