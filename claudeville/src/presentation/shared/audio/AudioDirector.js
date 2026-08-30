@@ -10,12 +10,22 @@
 // is pure local-clock, so ambience keeps tracking time and weather anywhere.
 
 import { eventBus } from '../../../domain/events/DomainEvent.js';
+import {
+    actionableAgents,
+    bucketCounts,
+    bucketForStatus,
+} from '../../../domain/services/SignalLedger.js';
 import { MAP_SIZE, TILE_WIDTH } from '../../../config/constants.js';
 import { createAtmosphereSnapshot } from '../../character-mode/AtmosphereState.js';
 import { seasonTokenForAtmosphere } from '../../character-mode/SeasonalAmbience.js';
 import { clamp01, rand } from './AudioEngine.js';
 import { scaleForPhase } from './MusicalScale.js';
-import { CueGovernor } from './CueGovernor.js';
+import {
+    CUE_LANES,
+    CueGovernor,
+    cueLifecycleDecision,
+    updateQuietFloor,
+} from './CueGovernor.js';
 import { CueKit } from './cues/CueKit.js';
 import { WindLayer } from './layers/WindLayer.js';
 import { RainLayer } from './layers/RainLayer.js';
@@ -28,6 +38,8 @@ import { MusicLayer } from './layers/MusicLayer.js';
 const TICK_MS = 1000;
 const ATMO_FRESH_MS = 3000;
 const AGENT_CUE_DEDUPE_MS = 2500;
+const QUIET_ENTER_MS = 30000;
+const QUIET_LEAVE_MS = 4000;
 const SPATIAL_CUES = new Set(['arrival', 'departure', 'distress', 'recovery', 'summons']);
 const WORLD_TILE_SPAN = Math.max(1, MAP_SIZE - 1);
 const WORLD_SCREEN_X_HALF_SPAN = WORLD_TILE_SPAN * (TILE_WIDTH / 2);
@@ -133,6 +145,8 @@ export class AudioDirector {
         this._recentAgentCues = new Map();
         this._agentAudioContext = new Map();
         this._mode = 'character';
+        this._quietFloor = { mode: 'active', calmSince: null, activeSince: null };
+        this._framePressureLevel = 0;
 
         // Cue signals stay subscribed while audio is disabled so the
         // accessibility event stream remains useful without an AudioContext.
@@ -161,6 +175,7 @@ export class AudioDirector {
 
     stop() {
         this.running = false;
+        this.governor.clearRoutine();
         if (this._interval) clearInterval(this._interval);
         this._interval = null;
         for (const id of this._thunderTimers) clearTimeout(id);
@@ -176,6 +191,7 @@ export class AudioDirector {
         for (const unsubscribe of this._signalUnsubscribes) unsubscribe();
         this._signalUnsubscribes = [];
         this.cueKit = null;
+        this.governor.destroy();
         this._recentAgentCues.clear();
         this._agentAudioContext.clear();
     }
@@ -186,6 +202,7 @@ export class AudioDirector {
 
     setHidden(hidden) {
         this.hidden = Boolean(hidden);
+        this.governor.clearRoutine();
     }
 
     setHiddenSummonsHandler(handler) {
@@ -199,6 +216,7 @@ export class AudioDirector {
 
         on('mode:changed', (mode) => {
             this._mode = mode === 'dashboard' ? 'dashboard' : 'character';
+            this.governor.clearRoutine();
         });
         on('agent:added', (agent) => this._rememberAgentAudioContext(agent));
         on('agent:updated', (agent) => this._rememberAgentAudioContext(agent));
@@ -371,10 +389,23 @@ export class AudioDirector {
 
     _playDistress(payload, agentId) {
         if (this._agentCueIsRecent(agentId)) return false;
+        if (this.hidden && this._hiddenSummonsHandler) {
+            this._hiddenSummonsHandler({
+                ...payload,
+                agentId,
+                audioCueKind: 'distress',
+                label: this._agentLabel(payload, agentId),
+                provider: this._agentProvider(payload, agentId),
+                status: payload?.kind || payload?.status,
+            });
+            this._rememberAgentCue(agentId, 'distress');
+            return true;
+        }
         const played = this.cue('distress', {
             agentId,
             label: this._agentLabel(payload, agentId),
             provider: this._agentProvider(payload, agentId),
+            status: payload?.kind || payload?.status,
             ...spatialFields(payload),
         });
         if (played) this._rememberAgentCue(agentId, 'distress');
@@ -401,6 +432,7 @@ export class AudioDirector {
             provider: this._agentProvider(payload, agentId),
             waitingCount: payload?.waitingCount,
             oldestWaitMs: payload?.oldestWaitMs,
+            status: payload?.kind || payload?.status || payload?.agent?.status,
             ...spatialFields(payload),
         });
         if (played) this._rememberAgentCue(agentId, 'summons');
@@ -426,7 +458,30 @@ export class AudioDirector {
         if (SPATIAL_CUES.has(kind)) {
             payload.screenX = this._resolveScreenX(payload, agentId);
         }
+        payload.lane = this._laneForCue(kind, payload, agentId);
+        if (cueLifecycleDecision({ lane: payload.lane, hidden: this.hidden }) !== 'play') {
+            return false;
+        }
         return this.cueKit.play(kind, payload);
+    }
+
+    _laneForCue(kind, payload, agentId) {
+        if (kind === 'summons' || kind === 'distress') {
+            const status = payload?.status
+                || payload?.kind
+                || payload?.agent?.status
+                || this.world?.agents?.get?.(agentId)?.status;
+            const bucket = bucketForStatus(status);
+            if (bucket === 'errors') return CUE_LANES.ERRORS;
+            if (bucket === 'quota') return CUE_LANES.QUOTA;
+            // An attention summons is actionable even when an older producer
+            // omitted its status field.
+            return CUE_LANES.NEEDS_YOU;
+        }
+        if (kind === 'thunder' || kind === 'hourBell' || kind === 'aurora') {
+            return CUE_LANES.SCENERY;
+        }
+        return CUE_LANES.ROUTINE;
     }
 
     // QA hook: pin a layer's level for `holdMs`, overriding the tick mapping.
@@ -452,8 +507,17 @@ export class AudioDirector {
         const phase = atmosphere.phase || 'day';
         const phaseProgress = clamp01(atmosphere.phaseProgress);
         const season = seasonTokenForAtmosphere(atmosphere) || 'summer';
-        const stats = this.world?.getStats?.() || {};
-        const working = Number(stats.working) || 0;
+        const counts = bucketCounts(this.world);
+        const working = Number(counts.working) || 0;
+        const calm = actionableAgents(this.world).length === 0
+            && working === 0
+            && Number(counts.watchlist) === 0;
+        this._quietFloor = updateQuietFloor(this._quietFloor, {
+            calm,
+            now: Date.now(),
+            enterAfterMs: QUIET_ENTER_MS,
+            leaveAfterMs: QUIET_LEAVE_MS,
+        });
 
         this._phase = phase;
         const light = daylight(phase, phaseProgress);
@@ -486,6 +550,24 @@ export class AudioDirector {
             bed: BED_LEVEL_BY_PHASE[phase] ?? 0.2,
             music: clamp01(0.75 * (phase === 'night' ? 0.7 : 1) * (storm > 0 ? 0.4 : 1)),
         };
+
+        const pressure = this._readFramePressure();
+        this._framePressureLevel = pressure;
+        const detailScale = [1, 0.75, 0.4, 0][pressure] ?? 1;
+        levels.birds *= detailScale;
+        levels.crickets *= detailScale;
+        levels.music *= [1, 0.85, 0.6, 0.35][pressure] ?? 1;
+        if (pressure >= 2) levels.hum *= 0.6;
+
+        if (this._quietFloor.mode === 'resting') {
+            levels.wind *= 0.15;
+            levels.rain *= 0.15;
+            levels.birds = 0;
+            levels.crickets = 0;
+            levels.hum = 0;
+            levels.bed *= 0.08;
+            levels.music = 0;
+        }
 
         for (const [name, override] of this._overrides) {
             if (Date.now() > override.until) this._overrides.delete(name);
@@ -527,11 +609,26 @@ export class AudioDirector {
     snapshot() {
         return {
             running: this.running,
+            state: this.hidden
+                ? 'hidden'
+                : (this.running ? this._quietFloor.mode : 'stopped'),
+            resting: this.running && this._quietFloor.mode === 'resting',
             phase: this._phase,
+            framePressureLevel: this._framePressureLevel,
             atmosphereSource: this._atmosphereSource,
             levels: { ...this._levels },
             lastCue: this.cueKit?.lastCue || null,
             nowPlaying: this.layers.music?.nowPlaying || null,
         };
+    }
+
+    _readFramePressure() {
+        try {
+            const snapshot = globalThis.window?.__claudeVillePerf?.frameHealth?.();
+            const level = Number(snapshot?.level);
+            return Number.isFinite(level) ? Math.max(0, Math.min(3, Math.round(level))) : 0;
+        } catch {
+            return 0;
+        }
     }
 }

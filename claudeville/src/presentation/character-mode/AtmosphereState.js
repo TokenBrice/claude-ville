@@ -54,6 +54,14 @@ const SEASONAL_DAY_LENGTH_OFFSETS = {
     summer: { sunrise: -40, sunset: 55 },
 };
 
+const SOLAR_SHADOW_ANGLES = Object.freeze({
+    dawnHorizon: -0.78,
+    dawnMidpoint: -0.68,
+    noon: 0.28,
+    duskMidpoint: 0.72,
+    duskHorizon: 0.82,
+});
+
 function phasesForSeason(seasonToken) {
     const offsets = SEASONAL_DAY_LENGTH_OFFSETS[seasonToken];
     if (!offsets) return PHASES;
@@ -270,6 +278,87 @@ export function progressInInterval(minute, start, end) {
         if (adjustedMinute < start) adjustedMinute += DAY_MINUTES;
     }
     return clamp((adjustedMinute - start) / (adjustedEnd - start));
+}
+
+function easedSolarAngle(minute, start, end, fromAngle, toAngle) {
+    return fromAngle + (toAngle - fromAngle) * smoothstep(progressInInterval(minute, start, end));
+}
+
+// One clock-derived solar pose for every directional-light consumer. The
+// authored dawn, noon, and dusk angles remain calibration knots; smoothstep
+// only eases travel between them, while elevation follows the sky's sine arc.
+export function solarVectorForMinute(minuteOfDay, seasonToken = '') {
+    const minuteValue = Number(minuteOfDay);
+    const finiteMinute = Number.isFinite(minuteValue) ? minuteValue : 0;
+    const minute = ((finiteMinute % DAY_MINUTES) + DAY_MINUTES) % DAY_MINUTES;
+    const phases = phasesForSeason(seasonToken);
+    const dawn = phases[0];
+    const dusk = phases[2];
+    const sunriseMinute = dawn.start;
+    const dawnMidpointMinute = (dawn.start + dawn.end) / 2;
+    const sunsetMinute = dusk.end;
+    const duskMidpointMinute = (dusk.start + dusk.end) / 2;
+    const solarNoonMinute = (sunriseMinute + sunsetMinute) / 2;
+    const isDaylight = minute >= sunriseMinute && minute <= sunsetMinute;
+
+    let shadowAngleRad;
+    if (isDaylight) {
+        if (minute <= dawnMidpointMinute) {
+            shadowAngleRad = easedSolarAngle(
+                minute,
+                sunriseMinute,
+                dawnMidpointMinute,
+                SOLAR_SHADOW_ANGLES.dawnHorizon,
+                SOLAR_SHADOW_ANGLES.dawnMidpoint,
+            );
+        } else if (minute <= solarNoonMinute) {
+            shadowAngleRad = easedSolarAngle(
+                minute,
+                dawnMidpointMinute,
+                solarNoonMinute,
+                SOLAR_SHADOW_ANGLES.dawnMidpoint,
+                SOLAR_SHADOW_ANGLES.noon,
+            );
+        } else if (minute <= duskMidpointMinute) {
+            shadowAngleRad = easedSolarAngle(
+                minute,
+                solarNoonMinute,
+                duskMidpointMinute,
+                SOLAR_SHADOW_ANGLES.noon,
+                SOLAR_SHADOW_ANGLES.duskMidpoint,
+            );
+        } else {
+            shadowAngleRad = easedSolarAngle(
+                minute,
+                duskMidpointMinute,
+                sunsetMinute,
+                SOLAR_SHADOW_ANGLES.duskMidpoint,
+                SOLAR_SHADOW_ANGLES.duskHorizon,
+            );
+        }
+    } else {
+        shadowAngleRad = easedSolarAngle(
+            minute,
+            sunsetMinute,
+            sunriseMinute,
+            SOLAR_SHADOW_ANGLES.duskHorizon,
+            SOLAR_SHADOW_ANGLES.dawnHorizon,
+        );
+    }
+
+    const daylightProgress = progressInInterval(minute, sunriseMinute, sunsetMinute);
+    const elevation = isDaylight ? Math.sin(daylightProgress * Math.PI) : 0;
+    return {
+        sunDirIso: {
+            x: Math.cos(shadowAngleRad + Math.PI),
+            y: Math.sin(shadowAngleRad + Math.PI),
+        },
+        shadowAngleRad,
+        elevation,
+        sunriseMinute,
+        solarNoonMinute,
+        sunsetMinute,
+    };
 }
 
 function localDateKey(date) {
@@ -993,7 +1082,7 @@ function buildGrade(phase, phaseProgress, weather) {
     };
 }
 
-function buildLighting(phase, phaseProgress, weather) {
+function buildLighting(minute, seasonToken, phase, phaseProgress, weather) {
     const light = phaseLight(phase, phaseProgress);
     const dark = 1 - light;
     const dawnWarmth = phase === 'dawn' ? 1 - smoothstep(phaseProgress) : 0;
@@ -1004,14 +1093,11 @@ function buildLighting(phase, phaseProgress, weather) {
         : weather.type === 'fog'
             ? weather.intensity * 0.20
             : 0;
-    const shadowAngleRad = (phase === 'dawn' ? -0.68 : phase === 'dusk' ? 0.72 : 0.28);
+    const solar = solarVectorForMinute(minute, seasonToken);
     const shadowLength = clamp(0.72 + dark * 1.10 + sunWarmth * 0.72 + weatherDim * 0.28, 0.62, 2.35);
 
     return normalizeLightingState({
-        sunDirIso: {
-            x: Math.cos(shadowAngleRad + Math.PI),
-            y: Math.sin(shadowAngleRad + Math.PI),
-        },
+        sunDirIso: solar.sunDirIso,
         sunWarmth,
         ambientLight: clamp(light - weatherDim * 0.45),
         ambientTint: phase === 'night'
@@ -1021,7 +1107,7 @@ function buildLighting(phase, phaseProgress, weather) {
                 : phase === 'dawn'
                     ? '234, 185, 159'
                     : '196, 235, 255',
-        shadowAngleRad,
+        shadowAngleRad: solar.shadowAngleRad,
         shadowLength,
         shadowAlpha: clamp(0.18 + light * 0.10 + sunWarmth * 0.18 - weatherDim * 0.08, 0.12, 0.42),
         lightWarmth: clamp(0.72 + sunWarmth * 0.32),
@@ -1132,7 +1218,8 @@ export function createAtmosphereSnapshot({
     const minute = minutesSinceMidnight(effectiveDate);
     // 5.4 — season-modulated phase table (day length follows the month→season
     // mapping; equinox months keep the fixed PHASES baseline).
-    const phases = phasesForSeason(seasonTokenForMonth(effectiveDate.getMonth()));
+    const seasonToken = seasonTokenForMonth(effectiveDate.getMonth());
+    const phases = phasesForSeason(seasonToken);
     const { phase, phaseProgress } = resolvePhase(minute, phases);
     const dayProgress = minute / DAY_MINUTES;
     let weather = resolveWeather(effectiveDate, weatherOverride, { seedOverride, timelineMode });
@@ -1147,7 +1234,7 @@ export function createAtmosphereSnapshot({
     const cloudDensity = clamp(preset.cloudDensity * (0.58 + intensity * 0.28 + cloudCover * 0.52));
     const transition = phaseTransition(phase, phaseProgress);
     const assetIds = SKY_ASSETS[weather.type] || SKY_ASSETS.clear;
-    const lighting = buildLighting(phase, phaseProgress, weather);
+    const lighting = buildLighting(minute, seasonToken, phase, phaseProgress, weather);
     const timeBucket = Math.floor(dayProgress * 96);
     const lightBucket = Math.round(phaseLight(phase, phaseProgress) * 100);
     const intensityBucket = Math.round(intensity * 10);

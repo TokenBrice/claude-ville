@@ -1,5 +1,6 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { modelBehaviorProfile, moodBehaviorMultiplier } from '../../domain/value-objects/AgentMood.js';
+import { bucketForStatus } from '../../domain/services/SignalLedger.js';
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { THEME, STATUS_VISUALS, MOOD_ACCENTS, MODEL_TIER_COLORS, PROVIDER_HUES, WORLD_BODY_FONT } from '../../config/theme.js';
 import { getModelVisualIdentity, providerPaletteKey } from '../shared/ModelVisualIdentity.js';
@@ -405,6 +406,117 @@ function memoizedToolClassification(tool, input) {
         TOOL_CLASSIFICATION_CACHE.delete(TOOL_CLASSIFICATION_CACHE.keys().next().value);
     }
     return classified;
+}
+
+// Compact incident marks at overview zoom. Frozen descriptors so the common
+// (non-actionable) case allocates nothing, and an actionable sprite never
+// builds a per-frame object. Shape is the primary encoding; colour is secondary.
+const COMPACT_INCIDENT_SLOT = 'incident';
+const COMPACT_INCIDENT_SLOT_Y = -26;
+const COMPACT_INCIDENT_BOX = 12;
+const COMPACT_INCIDENT_MARKS = Object.freeze({
+    errors: Object.freeze({
+        shapeId: 'alert',
+        slot: COMPACT_INCIDENT_SLOT,
+        primary: true,
+        bucket: 'errors',
+        color: '#ff5a5a',
+        static: true,
+    }),
+    quota: Object.freeze({
+        shapeId: 'hourglass',
+        slot: COMPACT_INCIDENT_SLOT,
+        primary: true,
+        bucket: 'quota',
+        color: '#ffa64d',
+        static: true,
+    }),
+    needsYou: Object.freeze({
+        shapeId: 'beacon',
+        slot: COMPACT_INCIDENT_SLOT,
+        primary: true,
+        bucket: 'needsYou',
+        color: THEME.waitingOnUser || '#facc15',
+        static: true,
+    }),
+});
+
+/**
+ * Status -> compact incident-mark descriptor.
+ * `needsYou` keeps the existing waiting beacon (drawn separately); errors
+ * get a fixed alert; quota gets an hourglass. Working/idle/completed/waiting
+ * return null so overview costs nothing for the quiet majority.
+ *
+ * @param {string} status
+ * @param {{ motionScale?: number }} [options]
+ * @returns {{ shapeId: string, slot: string, primary: boolean, bucket: string, color: string, static: boolean } | null}
+ */
+export function compactIncidentMark(status, options = {}) {
+    const mark = COMPACT_INCIDENT_MARKS[bucketForStatus(status)] || null;
+    if (!mark) return null;
+    // Compact marks are static primitives. Callers pass motionScale so reduced
+    // motion is explicit at the call site; it never adds an animation phase.
+    void options.motionScale;
+    return mark;
+}
+
+function drawHourglassGlyph(ctx, box, color) {
+    const half = box / 2;
+    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.moveTo(-half, -half);
+    ctx.lineTo(half, -half);
+    ctx.lineTo(0, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.beginPath();
+    ctx.moveTo(-half, half);
+    ctx.lineTo(half, half);
+    ctx.lineTo(0, 0);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(8, 5, 4, 0.8)';
+    ctx.beginPath();
+    ctx.moveTo(-half, -half);
+    ctx.lineTo(half, -half);
+    ctx.moveTo(-half, half);
+    ctx.lineTo(half, half);
+    ctx.stroke();
+}
+
+function drawAlertCircleGlyph(ctx, box, color, mark) {
+    const r = box / 2;
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#1a1208';
+    ctx.font = `bold ${Math.round(box - 2)}px "Press Start 2P", monospace`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(mark, 0, 1);
+}
+
+/**
+ * Draw one compact incident mark in the fixed slot above the impostor.
+ * `beacon` is a no-op: the waiting-on-user pillar already occupies this
+ * grammar at overview and must not be double-drawn.
+ */
+export function drawCompactIncidentMark(ctx, mark, { x = 0, y = 0, zoom = 1 } = {}) {
+    if (!ctx || !mark || mark.shapeId === 'beacon') return;
+    const s = 1 / (zoom || 1);
+    ctx.save();
+    ctx.translate(Math.round(x), Math.round(y));
+    ctx.scale(s, s);
+    ctx.translate(0, COMPACT_INCIDENT_SLOT_Y);
+    if (mark.shapeId === 'hourglass') {
+        drawHourglassGlyph(ctx, COMPACT_INCIDENT_BOX, mark.color);
+    } else if (mark.shapeId === 'alert') {
+        drawAlertCircleGlyph(ctx, COMPACT_INCIDENT_BOX, mark.color, '!');
+    }
+    ctx.restore();
 }
 
 export class AgentSprite {
@@ -2618,6 +2730,13 @@ export class AgentSprite {
             // scene where a waiting agent is otherwise lost in the cluster.
             if (this.agent?.status === AgentStatus.WAITING_ON_USER) {
                 this._drawWaitingOnUserBeacon(ctx, null);
+            }
+            // Overview incident marks: errors (alert) and quota (hourglass).
+            // needsYou is the beacon above — the helper no-ops that shape.
+            // PRIMARY: never governor-gated. Common case is a null descriptor.
+            const incidentMark = compactIncidentMark(this.agent?.status, { motionScale: this.motionScale });
+            if (incidentMark) {
+                drawCompactIncidentMark(ctx, incidentMark, { x: this.x, y: this.y, zoom });
             }
             this._drawToolGlyphBadge(ctx);
             if (archivePushed) ctx.restore();
@@ -5801,12 +5920,13 @@ export class AgentSprite {
         ctx.scale(s, s);
         ctx.translate(0, -14);
         const box = 12;
-        if (kind === 'rate_limited') {
-            this._drawHourglassGlyph(ctx, box, '#ffa64d');
-        } else if (kind === 'errored') {
-            this._drawAlertCircleGlyph(ctx, box, '#ff5a5a', '!');
+        const incident = compactIncidentMark(this.agent?.status, { motionScale: this.motionScale });
+        if (incident?.shapeId === 'hourglass') {
+            drawHourglassGlyph(ctx, box, incident.color);
+        } else if (incident?.shapeId === 'alert') {
+            drawAlertCircleGlyph(ctx, box, incident.color, '!');
         } else if (kind === 'waiting_on_user') {
-            this._drawAlertCircleGlyph(ctx, box, '#ffd13a', '?');
+            drawAlertCircleGlyph(ctx, box, '#ffd13a', '?');
         } else if (kind === 'completed') {
             // 0.4 — the small-victory check wears the completed status's own
             // soft gold (STATUS_VISUALS.completed), not a foreign green.
@@ -5869,45 +5989,6 @@ export class AgentSprite {
         ctx.closePath();
         ctx.fill();
         ctx.restore();
-    }
-
-    _drawHourglassGlyph(ctx, box, color) {
-        const half = box / 2;
-        ctx.fillStyle = color;
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.moveTo(-half, -half);
-        ctx.lineTo(half, -half);
-        ctx.lineTo(0, 0);
-        ctx.closePath();
-        ctx.fill();
-        ctx.beginPath();
-        ctx.moveTo(-half, half);
-        ctx.lineTo(half, half);
-        ctx.lineTo(0, 0);
-        ctx.closePath();
-        ctx.fill();
-        ctx.strokeStyle = 'rgba(8, 5, 4, 0.8)';
-        ctx.beginPath();
-        ctx.moveTo(-half, -half);
-        ctx.lineTo(half, -half);
-        ctx.moveTo(-half, half);
-        ctx.lineTo(half, half);
-        ctx.stroke();
-    }
-
-    _drawAlertCircleGlyph(ctx, box, color, mark) {
-        const r = box / 2;
-        ctx.fillStyle = color;
-        ctx.beginPath();
-        ctx.arc(0, 0, r, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.fillStyle = '#1a1208';
-        ctx.font = `bold ${Math.round(box - 2)}px "Press Start 2P", monospace`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(mark, 0, 1);
     }
 
     _drawCheckGlyph(ctx, box, color) {

@@ -1,6 +1,7 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { WORLD_BODY_FONT } from '../../config/theme.js';
 import { gpuMaterialNameForProvider } from './gpu/GpuSceneBuilder.js';
+import { compactIncidentMark, drawCompactIncidentMark } from './AgentSprite.js';
 
 // Owns the GPU-world base-sprite record and the ungraded Canvas annotation
 // pass. The host remains authoritative for animation, identity, and all shared
@@ -23,15 +24,24 @@ export class AgentGpuOverlayRenderer {
 
     draw(ctx, zoom = 1, annotationMode = 'full') {
         const host = this.host;
-        const record = host._gpuFrameRecord;
-        if (!host.gpuWorldEnabled || !record || !ctx) return;
+        if (!host.gpuWorldEnabled || !ctx) return;
         host._zoom = zoom;
+        const status = host.agent?.status;
+        const incident = compactIncidentMark(status, { motionScale: host.motionScale });
+        const primary = host.selected || Boolean(incident);
+        const overview = !host.selected && zoom < 1;
+
+        // Additive overview annotation: the compact helper is PRIMARY and does
+        // not need a GPU body record. needsYou is a no-op (beacon already drawn).
+        if (overview && !host.agent?.isDeparted && incident) {
+            drawCompactIncidentMark(ctx, incident, { x: host.x, y: host.y, zoom });
+        }
+
+        const record = host._gpuFrameRecord;
+        if (!record) return;
         const contentTopY = Number.isFinite(record.contentTopY)
             ? record.contentTopY
             : host.y - 48;
-        const status = host.agent?.status;
-        const primary = host.selected || status === AgentStatus.WAITING_ON_USER
-            || status === AgentStatus.ERRORED || status === AgentStatus.RATE_LIMITED;
 
         if (host.selected) {
             host._drawFocusPillar(ctx, contentTopY);
@@ -53,7 +63,9 @@ export class AgentGpuOverlayRenderer {
         if (!host.agent?.isDeparted && (primary || host.selected || annotationMode === 'full' || host.gpuActionOverlay)) {
             if (host.chatting) host._drawChatEffect(ctx);
             else host._drawStatus(ctx, contentTopY);
-            host._drawStatusEmote(ctx, contentTopY);
+            // Overview already used the compact helper; skip the close-zoom
+            // emote so one incident mark occupies the slot.
+            if (!overview) host._drawStatusEmote(ctx, contentTopY);
             host._drawPlanModeGlyph(ctx, contentTopY);
             host._drawRetryGlyph(ctx, contentTopY);
         }

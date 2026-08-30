@@ -7,6 +7,11 @@ import { AtmosphereState } from './AtmosphereState.js';
 import { canvasPixelCount, releaseCanvasBackingStore } from './CanvasBudget.js';
 import { mapWorldCorners } from './Projection.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import {
+    ornamentPlan,
+    resolveCalmGate,
+    setCalmSceneHints,
+} from './MarkGovernor.js';
 
 // 5.2 — star density scales with viewport area: 90 stars was tuned for a
 // 1280×720 sky and read sparse/dead at 1440p+. The baked starfield and the
@@ -105,6 +110,21 @@ const CLOUD_LAYER_DEFAULTS = [
     { fy: 0.30, parallax: 0.07, driftMul: 0.92, alphaMul: 0.46 },
     { fy: 0.40, parallax: 0.11, driftMul: 1.20, alphaMul: 0.32 },
 ];
+const LIVE_TWINKLE_STARS_CALM = 3;
+const LIVE_TWINKLE_RATE_SCALE_CALM = 0.28;
+
+export function liveTwinkleBudget({ calm = false, motionScale = 1 } = {}) {
+    const plan = ornamentPlan({ calm, motionScale, level: 0 });
+    if (plan.liveTwinkle === 'off') return { count: 0, rateScale: 0 };
+    if (plan.liveTwinkle === 'sparse') {
+        return { count: LIVE_TWINKLE_STARS_CALM, rateScale: LIVE_TWINKLE_RATE_SCALE_CALM };
+    }
+    return { count: LIVE_TWINKLE_STARS, rateScale: 1 };
+}
+
+export function allowAmbientMeteor({ calm = false, motionScale = 1 } = {}) {
+    return ornamentPlan({ calm, motionScale, level: 0 }).ambientMeteors === 'on';
+}
 
 export class SkyRenderer {
     constructor({ assets } = {}) {
@@ -195,9 +215,29 @@ export class SkyRenderer {
         // frame. 0.6 — the hero rewards (aurora, shooting stars, sky-flare,
         // sun glints, push grade) ride the canopy pass (drawCanopy) so they
         // draw over terrain instead of behind the village.
+        this._publishCalmSceneHints(snapshot);
         this._drawLiveStarTwinkle(ctx, canvas, snapshot, motionScale);
         this._drawBackgroundWeather(ctx, canvas, snapshot);
         this._maybeTriggerAmbientMeteor(snapshot);
+    }
+
+    _publishCalmSceneHints(atmosphere) {
+        const districts = atmosphere?.eventInfluence?.districts;
+        const attention = Boolean(atmosphere?.attention)
+            || Number(atmosphere?.eventInfluence?.storminess) > 0
+            || (Array.isArray(districts) && districts.some(entry => Number(entry?.storminess) > 0));
+        const recentEvent = Boolean(
+            this._auroraStartedAt
+            || this._shootingStars.length
+            || this._skyFlareStartedAt
+            || this._sunGlints.length
+            || this._pushGradeStartedAt,
+        );
+        setCalmSceneHints({
+            weatherType: atmosphere?.weather?.type || null,
+            attention,
+            recentEvent,
+        });
     }
 
     // Compose background + slow layers into one offscreen frame. Refreshes on
@@ -997,6 +1037,11 @@ export class SkyRenderer {
     // PulsePolicy). Skipped under reduced motion or when the sky has no stars.
     _drawLiveStarTwinkle(ctx, canvas, atmosphere, motionScale = 1) {
         if (motionScale === 0) return;
+        const twinkle = liveTwinkleBudget({
+            calm: resolveCalmGate(),
+            motionScale,
+        });
+        if (twinkle.count <= 0) return;
         const starsAlpha = atmosphere.sky?.starsAlpha ?? 0;
         if (starsAlpha <= 0.01) return;
         const palette = atmosphere.sky?.palette || {};
@@ -1013,14 +1058,14 @@ export class SkyRenderer {
         ctx.save();
         ctx.fillStyle = palette.starHot || '#f2f7ff';
         let drawn = 0;
-        for (let i = 0; i < starCount && drawn < LIVE_TWINKLE_STARS; i++) {
+        for (let i = 0; i < starCount && drawn < twinkle.count; i++) {
             const xBase = next() * canvas.width;
             const y = Math.round(next() * ceilingY);
             const hot = next() < 0.18;
             if (!hot) continue;
             const drift = timeOffset * (0.12 + (i % 5) * 0.018);
             const x = Math.round(((xBase + drift) % canvas.width + canvas.width) % canvas.width);
-            const rate = 1.6 + (i % 4) * 0.55;
+            const rate = (1.6 + (i % 4) * 0.55) * twinkle.rateScale;
             const phase = i * 1.7;
             const pulse = 0.4 + 0.6 * Math.sin(time * rate + phase);
             ctx.globalAlpha = clamp(starsAlpha * pulse, 0, 1);
@@ -1287,6 +1332,10 @@ export class SkyRenderer {
     // (cap included), so it never stacks onto a subagent celebration. The
     // first eligible clear night only arms the timer — no boot-time meteor.
     _maybeTriggerAmbientMeteor(atmosphere) {
+        if (!allowAmbientMeteor({
+            calm: resolveCalmGate(),
+            motionScale: this._currentMotionScale,
+        })) return;
         if (!SHOOTING_STAR_NIGHT_PHASES.has(this._currentPhase)) return;
         if ((atmosphere.sky?.starsAlpha ?? 0) < AMBIENT_METEOR_MIN_STARS_ALPHA) return;
         if (this._currentCloudCover > AMBIENT_METEOR_MAX_CLOUD_COVER) return;

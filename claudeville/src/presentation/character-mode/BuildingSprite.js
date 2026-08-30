@@ -150,6 +150,16 @@ function clamp01(value) {
     return Math.max(0, Math.min(1, Number(value) || 0));
 }
 
+function shadowAngleForLighting(lighting) {
+    if (Number.isFinite(lighting?.shadowAngleRad)) return lighting.shadowAngleRad;
+    const sunX = Number(lighting?.sunDirIso?.x);
+    const sunY = Number(lighting?.sunDirIso?.y);
+    if (Number.isFinite(sunX) && Number.isFinite(sunY) && Math.hypot(sunX, sunY) > 0) {
+        return Math.atan2(-sunY, -sunX);
+    }
+    return 0.28;
+}
+
 function lerp(a, b, t) {
     return a + (b - a) * t;
 }
@@ -600,7 +610,7 @@ export class BuildingSprite {
         const lighting = this.lightingState || {};
         const shadowLength = lighting.shadowLength ?? 1;
         const shadowAlpha = lighting.shadowAlpha ?? 0.22;
-        const shadowAngle = lighting.shadowAngleRad ?? 0.28;
+        const shadowAngle = shadowAngleForLighting(lighting);
         for (const b of this.buildings) {
             const grounding = getBuildingVisual(b.type)?.grounding;
             const contact = grounding?.contact;
@@ -1740,12 +1750,19 @@ export class BuildingSprite {
             // Golden hour lays a warm rim-light along the ridgeline; a wet roof
             // adds a brighter rain sheen. `warmGlint` (dawn/dusk) tilts the hue
             // from cool wet silver toward gold and lengthens the highlight.
+            // Its orientation mirrors the canonical solar vector, matching
+            // the opposite cast-shadow direction without another light model.
             const goldTilt = Math.min(1, warmGlint * 1.4);
             const rimColor = goldTilt > 0.2
                 ? `rgba(255, 214, 138, ${Math.min(0.30, roofGlint * (0.5 + goldTilt * 0.4 + pulse * 0.24))})`
                 : `rgba(255, 231, 166, ${Math.min(0.22, roofGlint * (0.48 + pulse * 0.34))})`;
             const count = roofGlint > 0.16 || goldTilt > 0.4 ? 2 : 1;
             const span = 7 + goldTilt * 6;
+            const sunDir = this.lightingState?.sunDirIso;
+            const hasSunDir = Number.isFinite(sunDir?.x) && Number.isFinite(sunDir?.y);
+            const shadowAngle = shadowAngleForLighting(this.lightingState);
+            const glintDx = hasSunDir ? -sunDir.x * span : Math.cos(shadowAngle) * span;
+            const glintDy = hasSunDir ? sunDir.y * span : -Math.sin(shadowAngle) * span;
             ctx.strokeStyle = rimColor;
             ctx.lineWidth = 1 + (goldTilt > 0.4 ? 0.6 : 0);
             ctx.lineCap = 'round';
@@ -1755,8 +1772,8 @@ export class BuildingSprite {
                 if (!shouldDrawLocalY(ly)) continue;
                 const p = localPoint(lx, ly);
                 ctx.beginPath();
-                ctx.moveTo(p.x - span, p.y + 1);
-                ctx.lineTo(p.x + span, p.y - 3 - goldTilt * 1.5);
+                ctx.moveTo(p.x - glintDx, p.y - glintDy);
+                ctx.lineTo(p.x + glintDx, p.y + glintDy);
                 ctx.stroke();
             }
         }

@@ -701,6 +701,120 @@ body[data-cv-selected] .activity-panel__header::before {
     line-height: 1.5;
 }
 
+.activity-panel__life-milestones,
+.activity-panel__book-of-lives,
+.activity-panel__life-chapters {
+    display: flex;
+    flex-direction: column;
+}
+
+.activity-panel__life-milestones {
+    gap: 4px;
+    padding-top: 3px;
+}
+
+.activity-panel__life-subtitle,
+.activity-panel__life-title {
+    color: var(--cv-text-muted);
+    font-family: var(--font-display);
+    font-size: var(--fs-label);
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.activity-panel__life-milestone {
+    padding-left: 9px;
+    border-left: 1px solid var(--cv-divider);
+    color: var(--cv-text-soft);
+    font-size: var(--fs-label);
+    line-height: 1.5;
+}
+
+.activity-panel__book-of-lives {
+    gap: 7px;
+    margin-top: 3px;
+    padding-top: 10px;
+    border-top: 1px solid var(--cv-divider);
+}
+
+.activity-panel__life-scope,
+.activity-panel__life-summary-note,
+.activity-panel__life-empty {
+    color: var(--cv-text-muted);
+    font-size: var(--fs-label);
+    line-height: 1.5;
+}
+
+.activity-panel__life-seen {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.activity-panel__life-seen .activity-panel__token-value {
+    color: var(--cv-text-soft);
+    font-size: var(--fs-label);
+    font-weight: normal;
+}
+
+.activity-panel__life-chapters {
+    gap: 0;
+}
+
+.activity-panel__life-chapter {
+    display: grid;
+    grid-template-columns: 7px minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 6px;
+    padding: 5px 0;
+    border-top: 1px solid var(--cv-divider);
+}
+
+.activity-panel__life-mark {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--cv-text-muted);
+}
+
+.activity-panel__life-mark--arrived,
+.activity-panel__life-mark--resolved { background: var(--cv-green-soft); }
+.activity-panel__life-mark--waiting,
+.activity-panel__life-mark--rate_limited { background: var(--cv-status-waiting); }
+.activity-panel__life-mark--errored { background: var(--cv-status-errored); }
+.activity-panel__life-mark--commit,
+.activity-panel__life-mark--push { background: var(--cv-gold); }
+
+.activity-panel__life-copy {
+    min-width: 0;
+    color: var(--cv-text-soft);
+    font-size: var(--fs-data);
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+}
+
+.activity-panel__life-date {
+    color: var(--cv-text-muted);
+    font-size: var(--fs-label);
+    white-space: nowrap;
+}
+
+.activity-panel__life-archive-summary {
+    padding: 4px 0;
+    color: var(--cv-text-muted);
+    cursor: pointer;
+    font-size: var(--fs-label);
+}
+
+.activity-panel__life-archive[open] > .activity-panel__life-chapters {
+    padding-left: 7px;
+    border-left: 1px solid var(--cv-divider);
+}
+
+.activity-panel__life-summary-note {
+    font-style: italic;
+}
+
 .activity-panel__harbor-row {
     gap: 8px;
 }

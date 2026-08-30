@@ -121,11 +121,13 @@ export class AmbientAudioController {
         this._activationGeneration = 0;
         this._visibilityGeneration = 0;
         this._suspendTimer = null;
+        this._hiddenSummonsTimer = null;
         this._hiddenSummonsPending = new Set();
         this._layerBindings = new WeakMap();
         this._layerInputHandlers = new Map();
         this._destroyPromise = null;
         this._destroyed = false;
+        this._windowBlurred = false;
 
         this.engine = new AudioEngine();
         this.engine.setVolume(this.volume);
@@ -136,13 +138,17 @@ export class AmbientAudioController {
         this.directors.ambient.setHiddenSummonsHandler?.((payload) => {
             this._handleHiddenSummons(payload);
         });
-        this.directors.ambient.setHidden(false);
+        this.directors.ambient.setHidden(
+            typeof document !== 'undefined' && document.hidden,
+        );
         this.directors.ambient.setSignalRouting(true);
 
         this._onButtonClick = () => this._handleToggle();
         this._onModeClick = () => this.setMode(this.mode === 'ambient' ? 'bgm' : 'ambient');
         this._onUnlockGesture = (event) => this._handleUnlockGesture(event);
         this._onVisibility = () => this._handleVisibility();
+        this._onWindowBlur = () => this._handleWindowBlur();
+        this._onWindowFocus = () => this._handleWindowFocus();
         this._onVolumeInput = (event) => {
             this.setVolume(Number(event?.target?.value) / 100);
         };
@@ -158,6 +164,10 @@ export class AmbientAudioController {
         }
         if (typeof document !== 'undefined') {
             document.addEventListener('visibilitychange', this._onVisibility);
+        }
+        if (typeof window !== 'undefined') {
+            window.addEventListener('blur', this._onWindowBlur);
+            window.addEventListener('focus', this._onWindowFocus);
         }
 
         this._renderControls();
@@ -210,11 +220,14 @@ export class AmbientAudioController {
     setMode(mode) {
         if (this._destroyed || !MODES.includes(mode) || mode === this.mode) return;
         const wasRunning = this.director.running;
-        if (wasRunning) this.director.stop();
+        if (wasRunning) {
+            this.director.governor?.clearRoutine?.();
+            this.director.stop();
+        }
         this.mode = mode;
         writeStoredMode(mode);
         this._renderControls();
-        if (wasRunning && !document.hidden) {
+        if (wasRunning && !this._pageInactive()) {
             this.directors.ambient.setSignalRouting(this.mode !== 'bgm');
             this.director.start();
             this._installActiveLayerMix();
@@ -227,7 +240,7 @@ export class AmbientAudioController {
     }
 
     async _activate() {
-        if (!this.enabled || !this.available || this._destroyed || document.hidden) return;
+        if (!this.enabled || !this.available || this._destroyed || this._pageInactive()) return;
         if (this._suspendTimer) {
             clearTimeout(this._suspendTimer);
             this._suspendTimer = null;
@@ -250,11 +263,11 @@ export class AmbientAudioController {
             !ready
             || !this.enabled
             || this._destroyed
-            || document.hidden
+            || this._pageInactive()
             || activationGeneration !== this._activationGeneration
             || visibilityGeneration !== this._visibilityGeneration
         ) {
-            if (document.hidden) await this.engine.suspend();
+            if (this._pageInactive()) await this.engine.suspend();
             return;
         }
 
@@ -316,7 +329,10 @@ export class AmbientAudioController {
 
     _deactivate({ forceSuspend = false, visibilityGeneration = this._visibilityGeneration } = {}) {
         this._activationGeneration++;
-        for (const director of Object.values(this.directors)) director.stop();
+        for (const director of Object.values(this.directors)) {
+            director.governor?.clearRoutine?.();
+            director.stop();
+        }
         this.directors.ambient.setSignalRouting(true);
         this.engine.stop();
         if (this._suspendTimer) clearTimeout(this._suspendTimer);
@@ -325,7 +341,7 @@ export class AmbientAudioController {
             if (this._destroyed) return;
             const hiddenGenerationMatches = (
                 forceSuspend
-                && document.hidden
+                && this._pageInactive()
                 && visibilityGeneration === this._visibilityGeneration
             );
             if (!this.enabled || hiddenGenerationMatches) void this.engine.suspend();
@@ -347,17 +363,40 @@ export class AmbientAudioController {
         if (document.hidden) {
             this.directors.ambient.setHidden(true);
             this._deactivate({ forceSuspend: true, visibilityGeneration });
-        } else if (this.enabled && this.userActivated) {
+        } else if (!this._windowBlurred && this.enabled && this.userActivated) {
             this.directors.ambient.setHidden(false);
             void this._activate();
-        } else {
+        } else if (!this._windowBlurred) {
             this.directors.ambient.setHidden(false);
             this.directors.ambient.setSignalRouting(true);
         }
     }
 
+    _handleWindowBlur() {
+        if (this._destroyed || this._windowBlurred) return;
+        this._windowBlurred = true;
+        const visibilityGeneration = ++this._visibilityGeneration;
+        this.directors.ambient.setHidden(true);
+        this._deactivate({ forceSuspend: true, visibilityGeneration });
+    }
+
+    _handleWindowFocus() {
+        if (this._destroyed || !this._windowBlurred) return;
+        this._windowBlurred = false;
+        ++this._visibilityGeneration;
+        if (typeof document !== 'undefined' && document.hidden) return;
+        this.directors.ambient.setHidden(false);
+        if (this.enabled && this.userActivated) void this._activate();
+        else this.directors.ambient.setSignalRouting(true);
+    }
+
+    _pageInactive() {
+        return this._windowBlurred
+            || (typeof document !== 'undefined' && document.hidden);
+    }
+
     _syncSignalRouting() {
-        const hidden = typeof document !== 'undefined' && document.hidden;
+        const hidden = this._pageInactive();
         const bgmOwnsSignals = this.enabled && !hidden && this.mode === 'bgm' && this.directors.bgm.running;
         this.directors.ambient.setSignalRouting(!bgmOwnsSignals);
     }
@@ -371,7 +410,7 @@ export class AmbientAudioController {
         const generation = this._visibilityGeneration;
         const finish = () => this._hiddenSummonsPending.delete(agentId);
         if (!this.enabled || !this.available || !this.userActivated) {
-            this.directors.ambient.playSummons(payload);
+            this._playHiddenUrgent(payload);
             finish();
             return;
         }
@@ -396,18 +435,18 @@ export class AmbientAudioController {
             if (generation !== this._visibilityGeneration) {
                 // The event still deserves an accessibility caption if the
                 // user returned while resume was in flight.
-                this.directors.ambient.playSummons(payload);
+                this._playHiddenUrgent(payload);
                 finish();
                 return;
             }
             if (!ready) {
-                this.directors.ambient.playSummons(payload);
+                this._playHiddenUrgent(payload);
                 finish();
                 return;
             }
 
             this.engine.start();
-            this.directors.ambient.playSummons(payload);
+            this._playHiddenUrgent(payload);
             this._scheduleHiddenSummonsSuspend(generation);
             finish();
         })();
@@ -420,12 +459,19 @@ export class AmbientAudioController {
             if (
                 this._destroyed
                 || typeof document === 'undefined'
-                || !document.hidden
+                || !this._pageInactive()
                 || generation !== this._visibilityGeneration
             ) return;
             this.engine.stop();
             void this.engine.suspend();
         }, HIDDEN_SUMMONS_HOLD_MS);
+    }
+
+    _playHiddenUrgent(payload) {
+        if (payload?.audioCueKind === 'distress') {
+            return this.directors.ambient.cue('distress', payload);
+        }
+        return this.directors.ambient.playSummons(payload);
     }
 
     _armUnlockListeners() {
@@ -523,7 +569,10 @@ export class AmbientAudioController {
         this._activationGeneration++;
         this._visibilityGeneration++;
         this._removeUnlockListeners();
-        for (const director of Object.values(this.directors)) director.stop();
+        for (const director of Object.values(this.directors)) {
+            director.governor?.clearRoutine?.();
+            director.stop();
+        }
         if (this._suspendTimer) {
             clearTimeout(this._suspendTimer);
             this._suspendTimer = null;
@@ -544,6 +593,10 @@ export class AmbientAudioController {
         this._layerInputHandlers.clear();
         if (typeof document !== 'undefined') {
             document.removeEventListener('visibilitychange', this._onVisibility);
+        }
+        if (typeof window !== 'undefined') {
+            window.removeEventListener('blur', this._onWindowBlur);
+            window.removeEventListener('focus', this._onWindowFocus);
         }
 
         if (typeof window !== 'undefined' && window.__claudevilleAudio === this._debugHelper) {

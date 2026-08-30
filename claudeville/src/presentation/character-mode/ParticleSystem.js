@@ -1,5 +1,40 @@
+import {
+    getActiveMarkGovernor,
+    MarkTier,
+    ornamentPlan,
+    resolveCalmGate,
+    sampleFramePressure,
+} from './MarkGovernor.js';
+
 const PARTICLE_GRAVITY = 0.05;
 const MAX_PARTICLES = 240;
+
+export const PARTICLE_ROLES = Object.freeze({
+    fauna: Object.freeze(['butterfly', 'dragonfly', 'firefly']),
+    ambient: Object.freeze(['sparkle', 'leaf']),
+});
+
+export function particleRole(type) {
+    if (PARTICLE_ROLES.fauna.includes(type)) return 'fauna';
+    if (PARTICLE_ROLES.ambient.includes(type)) return 'ambient';
+    return 'semantic';
+}
+
+export function particleSpawnAllowed(type, {
+    level = 0,
+    calm = false,
+    motionEnabled = true,
+} = {}) {
+    if (!motionEnabled) return false;
+    const plan = ornamentPlan({ level, calm, motionScale: 1 });
+    const role = particleRole(type);
+    if (role === 'fauna' && plan.faunaCadence !== 'on') return false;
+    if (role === 'ambient') {
+        if (plan.ambientParticles === 'off') return false;
+        if (type === 'sparkle' && plan.ambientSparkle === 'off') return false;
+    }
+    return true;
+}
 
 // C6 — parse a `#rrggbb` string into an `rgba()` string at the given alpha.
 // Used for the firefly halo gradient stops; falls back to a warm glow tint for
@@ -470,6 +505,18 @@ export class ParticleSystem {
         const preset = PARTICLE_PRESETS[type];
         if (!preset || !this.motionEnabled) return;
 
+        const pressureLevel = Number.isFinite(Number(options.pressureLevel))
+            ? Number(options.pressureLevel)
+            : sampleFramePressure().level;
+        const calm = Object.prototype.hasOwnProperty.call(options, 'calm')
+            ? Boolean(options.calm)
+            : resolveCalmGate();
+        if (!particleSpawnAllowed(type, {
+            level: pressureLevel,
+            calm,
+            motionEnabled: this.motionEnabled,
+        })) return;
+
         const semanticTier = options.semanticTier || MarkTier.AMBIENT;
         const gate = getActiveMarkGovernor()?.admit(semanticTier, x, y);
         if (gate && !gate.draw) return;
@@ -595,4 +642,3 @@ export class ParticleSystem {
         this.particles = [];
     }
 }
-import { getActiveMarkGovernor, MarkTier } from './MarkGovernor.js';

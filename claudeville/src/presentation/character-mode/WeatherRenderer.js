@@ -11,6 +11,17 @@ import {
 } from './AtmosphereState.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
 import { TILE_HEIGHT, TILE_WIDTH } from '../../config/constants.js';
+import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
+
+export function weatherEmbellishmentAllowed(level = 0) {
+    return ornamentPlan({ level, motionScale: 1 }).ambientWeatherEmbellishment !== 'off';
+}
+
+export function weatherPassKeepsPrecipitation(level = 0) {
+    const moving = ornamentPlan({ level, motionScale: 1 });
+    const reduced = ornamentPlan({ level, motionScale: 0 });
+    return moving.weather === 'on' && reduced.weather === 'static';
+}
 
 const CLEAR_TYPES = new Set(['clear', 'partly-cloudy']);
 const RAIN_TYPES = new Set(['rain', 'storm']);
@@ -92,6 +103,7 @@ export class WeatherRenderer {
         this._rippleStampTimes = new Map();
         this._washStrip = null;
         this._washStripKey = '';
+        this._allowEmbellishment = true;
     }
 
     setAssets(assets) {
@@ -127,6 +139,8 @@ export class WeatherRenderer {
         if (!hasForegroundWeather) return;
 
         const particleEnabled = atmosphere?.motion?.particleEnabled !== false;
+        const pressure = sampleFramePressure();
+        this._allowEmbellishment = weatherEmbellishmentAllowed(pressure.level);
         if (particleEnabled) {
             const frameDt = Math.max(0, Math.min(MAX_FRAME_DT, Number(dt) || 0));
             this.elapsedMs = (this.elapsedMs + frameDt) % LOOP_MS;
@@ -505,11 +519,12 @@ export class WeatherRenderer {
         const area = canvas.width * canvas.height;
         const density = weather.type === 'storm' ? 1.28 : 1;
         const animatedScale = particleEnabled ? 1 : 0.42;
+        const embellishScale = this._allowEmbellishment ? 1 : 0.62;
         const count = Math.min(
             RAIN_MAX_STREAKS,
             Math.max(
                 RAIN_MIN_STREAKS,
-                Math.floor((area / RAIN_AREA_DENSITY) * (0.35 + intensity * 0.95) * density * animatedScale),
+                Math.floor((area / RAIN_AREA_DENSITY) * (0.35 + intensity * 0.95) * density * animatedScale * embellishScale),
             ),
         );
 
@@ -548,7 +563,7 @@ export class WeatherRenderer {
             }
         }
 
-        if (weather.type === 'storm' && intensity > 0.55) {
+        if (this._allowEmbellishment && weather.type === 'storm' && intensity > 0.55) {
             const fall = (phaseMs * speed) % travel;
             ctx.lineWidth = 1;
             ctx.strokeStyle = `rgba(220, 236, 244, ${Math.min(0.34, intensity * 0.18)})`;
@@ -576,11 +591,11 @@ export class WeatherRenderer {
         // drops below the 0.7 threshold and the curtains never draw — keeping
         // the busy scene legible. Reduced motion skips this whole branch
         // (caller gates _drawStormFlash & curtains on particleEnabled).
-        if (weather.type === 'storm' && intensity > 0.7 && particleEnabled) {
+        if (this._allowEmbellishment && weather.type === 'storm' && intensity > 0.7 && particleEnabled) {
             this._drawRainCurtains(ctx, canvas, { intensity, windX, phaseMs, seed });
         }
 
-        if (weather.precipitation > SPLASH_PRECIP_THRESHOLD || intensity > SPLASH_PRECIP_THRESHOLD) {
+        if (this._allowEmbellishment && (weather.precipitation > SPLASH_PRECIP_THRESHOLD || intensity > SPLASH_PRECIP_THRESHOLD)) {
             this._drawRainSplashes(ctx, canvas, {
                 intensity,
                 precipitation: clamp(weather.precipitation, 0, 1),

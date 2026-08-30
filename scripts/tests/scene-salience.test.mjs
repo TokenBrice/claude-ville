@@ -33,10 +33,54 @@ test('attention queue sorts human intervention before errors and waits', () => {
     assert.deepEqual(sorted.map(item => item.id), ['n', 'e', 'w']);
 });
 
-test('five-action vocabulary maps semantic work without provider branches', () => {
-    assert.equal(resolveAgentAction({ status: 'working', currentTool: 'Read' }), AgentAction.READ);
-    assert.equal(resolveAgentAction({ status: 'working', currentTool: 'exec' }), AgentAction.WORK);
-    assert.equal(resolveAgentAction({ status: 'waiting', currentTool: 'plan' }), AgentAction.THINK);
-    assert.equal(resolveAgentAction({ status: 'working', currentTool: 'SendMessage' }), AgentAction.TALK);
-    assert.equal(resolveAgentAction({ status: 'completed' }), AgentAction.CELEBRATE);
+test('six-action vocabulary maps semantic work without provider branches', () => {
+    assert.deepEqual(AgentAction, {
+        READ: 'read',
+        WORK: 'work',
+        THINK: 'think',
+        TALK: 'talk',
+        CELEBRATE: 'celebrate',
+        SETTLED: 'settled',
+    });
+
+    const fixtures = [
+        [{ status: 'working', currentTool: 'Read' }, AgentAction.READ],
+        [{ status: 'working', currentTool: 'exec' }, AgentAction.WORK],
+        [{ status: 'waiting', currentTool: 'plan' }, AgentAction.THINK],
+        [{ status: 'working', currentTool: 'SendMessage' }, AgentAction.TALK],
+    ];
+    const identities = [
+        { provider: 'claude', model: 'claude-sonnet' },
+        { provider: 'codex', model: 'gpt-5' },
+        { provider: 'gemini', model: 'gemini-pro' },
+    ];
+    for (const [input, expected] of fixtures) {
+        for (const identity of identities) {
+            assert.equal(resolveAgentAction({ ...input, ...identity }), expected);
+        }
+    }
+
+    const now = 100_000;
+    const completed = { id: 'agent-1', status: 'completed', departedAt: null };
+    const verifiedOutcome = {
+        kind: 'commit',
+        project: 'claude-ville',
+        agentId: 'agent-1',
+        at: now,
+    };
+    assert.equal(resolveAgentAction(completed, { now }), null);
+    assert.equal(resolveAgentAction(completed, { verifiedOutcome, now }), AgentAction.CELEBRATE);
+    assert.notEqual(resolveAgentAction(completed, {
+        verifiedOutcome: { ...verifiedOutcome, agentId: 'another-agent' },
+        now,
+    }), AgentAction.CELEBRATE);
+    assert.notEqual(resolveAgentAction(completed, {
+        verifiedOutcome: { ...verifiedOutcome, at: now - 5000 },
+        now,
+    }), AgentAction.CELEBRATE);
+    assert.equal(resolveAgentAction({ ...completed, departedAt: now - 1 }, {
+        verifiedOutcome,
+        now,
+    }), AgentAction.SETTLED);
+    assert.equal(resolveAgentAction({ ...completed, provider: 'unknown', model: 'unknown' }, { now }), null);
 });

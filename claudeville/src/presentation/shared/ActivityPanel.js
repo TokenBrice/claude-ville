@@ -47,6 +47,129 @@ const BUILDING_PAYLOAD_FIELD_LIMIT = 128;
 const BUILDING_PAYLOAD_CHARACTER_LIMIT = 8192;
 const BUILDING_PAYLOAD_SCAN_LIMIT = 512;
 const BUILDING_PAYLOAD_ENTRY_LIMIT = 64;
+export const BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT = 6;
+export const BOOK_OF_LIVES_CHAPTER_LIMIT = 32;
+export const BOOK_OF_LIVES_MILESTONE_LIMIT = 6;
+
+const BOOK_OF_LIVES_EPISODE_LABELS = Object.freeze({
+    arrived: 'Arrived',
+    departed: 'Departed',
+    completed: 'Completed a task',
+    waiting: 'Waited for you',
+    resolved: 'Recovered',
+    errored: 'Encountered an error',
+    rate_limited: 'Paused at a rate limit',
+    commit: 'Committed',
+    push: 'Pushed',
+});
+
+const BOOK_OF_LIVES_NICKNAME_LABELS = Object.freeze({
+    'nickname-errorsRecovered-10': 'Earned the nickname "the Debugger"',
+    'nickname-commitsPushed-25': 'Earned the nickname "the Shipwright"',
+    'nickname-sessionsCompleted-25': 'Earned the nickname "the Veteran"',
+    'nickname-lifetimeTokens-100000000': 'Earned the nickname "the Tokensmith"',
+});
+
+function bookOfLivesDate(timestamp) {
+    const at = Number(timestamp);
+    if (!Number.isFinite(at) || at <= 0) return 'Unknown';
+    return new Intl.DateTimeFormat('en', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+    }).format(new Date(at));
+}
+
+function bookOfLivesProject(value) {
+    const project = String(value || '').trim().slice(0, 80);
+    return project && project !== '_unknown' ? project : '';
+}
+
+function generatedMilestoneLabel(milestone) {
+    const id = String(milestone?.id || '');
+    if (id === 'first-seen') return 'Settled in the village';
+    if (id === 'village-founder') return 'Founded the village';
+    if (BOOK_OF_LIVES_NICKNAME_LABELS[id]) return BOOK_OF_LIVES_NICKNAME_LABELS[id];
+    const match = /^(sessionsCompleted|commitsPushed|lifetimeTokens|errorsRecovered)-(\d+)$/.exec(id);
+    if (!match) return '';
+    const value = Number(match[2]);
+    switch (match[1]) {
+        case 'sessionsCompleted':
+            return value === 1 ? 'First session completed' : `${value} sessions completed`;
+        case 'commitsPushed':
+            return value === 1 ? 'First push to the harbor' : `${value} pushes to the harbor`;
+        case 'lifetimeTokens':
+            return `${value >= 1e9 ? `${value / 1e9}B` : `${value / 1e6}M`} lifetime tokens`;
+        case 'errorsRecovered':
+            return value === 1 ? 'First error overcome' : `${value} errors overcome`;
+        default:
+            return '';
+    }
+}
+
+/**
+ * Build the bounded, prose-free presentation model for a villager's memory.
+ * Episode and milestone labels are regenerated from closed identifiers; stored
+ * labels, prompts, reasoning, and transcript text never enter the model.
+ */
+export function buildBookOfLivesViewModel(biography, { now = Date.now() } = {}) {
+    const identityKey = String(biography?.identityKey || '');
+    const sessionScoped = identityKey.startsWith('anonymous:') || !identityKey.startsWith('named:');
+    const firstSeenAt = Number(biography?.firstSeenAt) || 0;
+    const lastSeenAt = Number(biography?.lastSeenAt) || firstSeenAt;
+    const episodes = (Array.isArray(biography?.extensions?.lifeEpisodes)
+        ? biography.extensions.lifeEpisodes
+        : [])
+        .map((episode, index) => {
+            const kind = String(episode?.kind || '');
+            const label = BOOK_OF_LIVES_EPISODE_LABELS[kind];
+            const at = Number(episode?.at) || 0;
+            if (!label || at <= 0) return null;
+            const project = bookOfLivesProject(episode?.project);
+            return {
+                kind,
+                at,
+                label,
+                project,
+                copy: project ? `${label} in ${project}` : label,
+                dateLabel: bookOfLivesDate(at),
+                _order: index,
+            };
+        })
+        .filter(Boolean)
+        .sort((a, b) => a.at - b.at || a._order - b._order)
+        .slice(-BOOK_OF_LIVES_CHAPTER_LIMIT)
+        .map(({ _order, ...chapter }) => chapter);
+    const visibleChapters = episodes.slice(-BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT);
+    const archivedChapters = episodes.slice(0, -BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT);
+    const milestones = (Array.isArray(biography?.milestones) ? biography.milestones : [])
+        .map((milestone, index) => ({
+            at: Number(milestone?.at) || 0,
+            label: generatedMilestoneLabel(milestone),
+            _order: index,
+        }))
+        .filter(milestone => milestone.label)
+        .sort((a, b) => a.at - b.at || a._order - b._order)
+        .slice(-BOOK_OF_LIVES_MILESTONE_LIMIT)
+        .map(({ _order, ...milestone }) => milestone);
+
+    return {
+        sessionScoped,
+        scopeLabel: sessionScoped
+            ? 'This history is scoped to this session; this villager has no durable identity.'
+            : 'This history follows this named villager across sessions.',
+        firstSeenAt,
+        firstSeenLabel: firstSeenAt ? bookOfLivesDate(firstSeenAt) : 'Not recorded',
+        lastSeenAt,
+        lastReturnedLabel: lastSeenAt ? (formatRelative(lastSeenAt, now) || 'just now') : 'Not recorded',
+        summaryLabel: 'History is retained as a summary of generated event labels; no transcript content is stored.',
+        emptyLabel: 'No life chapters have been recorded yet.',
+        milestones,
+        visibleChapters,
+        archivedChapters,
+        chapterCount: episodes.length,
+    };
+}
 
 export function shouldFocusActivityPanel(selectionOrigin) {
     return selectionOrigin === 'keyboard';
@@ -1585,7 +1708,7 @@ export class ActivityPanel {
             this._renderSignatures.chronicle = '';
             return;
         }
-        const latest = this._latestBiographyMilestone(biography);
+        const book = buildBookOfLivesViewModel(biography);
         const signature = [
             biography.identityKey,
             biography.nickname || '',
@@ -1593,8 +1716,11 @@ export class ActivityPanel {
             biography.lifetimeTokens,
             biography.commitsPushed,
             biography.errorsRecovered,
-            latest?.id || '',
-            latest?.at || 0,
+            book.firstSeenAt,
+            book.lastSeenAt,
+            book.milestones.map(milestone => `${milestone.at}:${milestone.label}`).join(','),
+            [...book.archivedChapters, ...book.visibleChapters]
+                .map(chapter => `${chapter.at}:${chapter.kind}:${chapter.project}`).join(','),
         ].join('|');
         this._chronicleSectionEl.style.display = '';
         if (signature === this._renderSignatures.chronicle) return;
@@ -1610,10 +1736,57 @@ export class ActivityPanel {
             this._tokenCell('Pushes', biography.commitsPushed.toLocaleString()),
             this._tokenCell('Recovered', biography.errorsRecovered.toLocaleString()),
         ]));
-        if (latest) {
-            nodes.push(this._buildingRow('Milestone', latest.label || latest.id));
+        if (book.milestones.length) {
+            nodes.push(el('div', { className: 'activity-panel__life-milestones' }, [
+                el('div', { className: 'activity-panel__life-subtitle', text: 'Milestones' }),
+                ...book.milestones.map(milestone => el('div', {
+                    className: 'activity-panel__life-milestone',
+                    text: milestone.label,
+                })),
+            ]));
         }
+        nodes.push(this._bookOfLivesNode(book));
         replaceChildren(this._chronicleBodyEl, nodes);
+    }
+
+    _bookOfLivesNode(book) {
+        const chapterNodes = book.visibleChapters.map(chapter => this._bookOfLivesChapterNode(chapter));
+        if (!chapterNodes.length) {
+            chapterNodes.push(el('div', { className: 'activity-panel__life-empty', text: book.emptyLabel }));
+        }
+        if (book.archivedChapters.length) {
+            chapterNodes.unshift(el('details', { className: 'activity-panel__life-archive' }, [
+                el('summary', {
+                    className: 'activity-panel__life-archive-summary',
+                    text: `${book.archivedChapters.length} earlier ${book.archivedChapters.length === 1 ? 'chapter' : 'chapters'}`,
+                }),
+                el('div', { className: 'activity-panel__life-chapters' },
+                    book.archivedChapters.map(chapter => this._bookOfLivesChapterNode(chapter))),
+            ]));
+        }
+        return el('section', {
+            className: 'activity-panel__book-of-lives',
+            ariaLabel: 'Book of Lives',
+        }, [
+            el('div', { className: 'activity-panel__life-title', text: 'Book of Lives' }),
+            el('div', { className: 'activity-panel__life-scope', text: book.scopeLabel }),
+            el('div', { className: 'activity-panel__life-seen' }, [
+                this._buildingRow('First seen', book.firstSeenLabel),
+                this._buildingRow('Last returned', book.lastReturnedLabel),
+            ]),
+            el('div', { className: 'activity-panel__life-chapters' }, chapterNodes),
+            el('div', { className: 'activity-panel__life-summary-note', text: book.summaryLabel }),
+        ]);
+    }
+
+    _bookOfLivesChapterNode(chapter) {
+        return el('div', { className: 'activity-panel__life-chapter' }, [
+            el('span', {
+                className: `activity-panel__life-mark activity-panel__life-mark--${chapter.kind}`,
+            }),
+            el('span', { className: 'activity-panel__life-copy', text: chapter.copy }),
+            el('time', { className: 'activity-panel__life-date', text: chapter.dateLabel }),
+        ]);
     }
 
     _hasBiographyContent(biography) {
@@ -1624,14 +1797,14 @@ export class ActivityPanel {
             Number(biography.commitsPushed) ||
             Number(biography.errorsRecovered)
         );
-        return !!(statTotal || biography.nickname || (Array.isArray(biography.milestones) && biography.milestones.length > 1));
-    }
-
-    _latestBiographyMilestone(biography) {
-        const milestones = Array.isArray(biography?.milestones) ? biography.milestones : [];
-        return milestones
-            .filter(milestone => milestone?.id && milestone.id !== 'first-seen')
-            .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0))[0] || null;
+        const episodes = biography?.extensions?.lifeEpisodes;
+        return !!(
+            statTotal
+            || biography.nickname
+            || Number(biography.firstSeenAt)
+            || (Array.isArray(biography.milestones) && biography.milestones.length)
+            || (Array.isArray(episodes) && episodes.length)
+        );
     }
 
     // ─── Director scene-log narrative ribbon (#47) ──────

@@ -4,6 +4,13 @@ import { resolveAgentStatus } from '../domain/services/StatusResolver.js';
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
 import { dialogueIsHeldable } from '../config/dialogue.js';
+import {
+    createVerifiedOutcome,
+    verifiedOutcomeFromGitEvent,
+    verifiedOutcomeIsLive,
+    verifiedOutcomeKey,
+    VERIFIED_OUTCOME_EVENT,
+} from '../presentation/character-mode/ChronicleEvents.js';
 
 const GENERATED_NAMES_STORAGE_KEY = 'claudeville.generatedAgentNames.v1';
 
@@ -57,6 +64,7 @@ const SIGNATURE_FIELD_CHARACTER_BUDGET = 1024;
 const SIGNATURE_COLLECTION_CHARACTER_BUDGET = 15 * 1024;
 const SIGNATURE_CHARACTER_BUDGET = 64 * 1024;
 const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages']);
+const VERIFIED_OUTCOME_KEY_LIMIT = 512;
 
 function mixDigestCode(state, code) {
     state.a = Math.imul(state.a ^ code, 16777619);
@@ -197,6 +205,11 @@ export class AgentManager {
         this._usageGetter = null;
         this._agentSignatures = new Map();
         this._generatedNames = this._loadGeneratedNames();
+        this._verifiedOutcomeKeys = new Set();
+        this._unsubscribeVerifiedMilestones = [
+            eventBus.on('chronicle:milestone', (record) => this._noteVerifiedMilestone(record)),
+            eventBus.on('chronicle:milestone-banner', (record) => this._noteVerifiedMilestone(record)),
+        ];
     }
 
     setUsageGetter(fn) {
@@ -307,6 +320,7 @@ export class AgentManager {
     }
 
     _upsertAgent(session, teamMembers) {
+        this._noteVerifiedGitOutcomes(session);
         const payload = this._sessionToAgentPayload(session, teamMembers);
         const { id } = payload;
         const signature = this._agentSignature(payload);
@@ -344,6 +358,40 @@ export class AgentManager {
 
     _agentSignature(payload) {
         return digestAgentPayload(payload);
+    }
+
+    _noteVerifiedGitOutcomes(session) {
+        const agentId = session?.sessionId || session?.agentId || null;
+        for (const event of session?.gitEvents || []) {
+            const outcome = verifiedOutcomeFromGitEvent(event, {
+                project: session?.project,
+                agentId,
+                at: this._now(),
+            });
+            this._emitVerifiedOutcome(outcome, event?.id || event?.commandHash || event?.sha || 'git');
+        }
+    }
+
+    _noteVerifiedMilestone(record) {
+        const kind = record?.kind === 'release' ? 'release' : 'milestone';
+        const outcome = createVerifiedOutcome(
+            kind,
+            record?.project,
+            record?.agentId ?? null,
+            record?.startedAt ?? record?.plantedAt ?? record?.ts
+        );
+        this._emitVerifiedOutcome(outcome, record?.id || record?.dedupKey || record?.tier || 'milestone');
+    }
+
+    _emitVerifiedOutcome(outcome, sourceId) {
+        if (!outcome || !verifiedOutcomeIsLive(outcome, this._now())) return;
+        const key = verifiedOutcomeKey(outcome, sourceId);
+        if (!key || this._verifiedOutcomeKeys.has(key)) return;
+        this._verifiedOutcomeKeys.add(key);
+        while (this._verifiedOutcomeKeys.size > VERIFIED_OUTCOME_KEY_LIMIT) {
+            this._verifiedOutcomeKeys.delete(this._verifiedOutcomeKeys.values().next().value);
+        }
+        eventBus.emit(VERIFIED_OUTCOME_EVENT, outcome);
     }
 
     _usedAgentNames() {
