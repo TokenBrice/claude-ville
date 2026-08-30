@@ -55,16 +55,21 @@ test('pruning applies both the calendar cutoff and hard row ceiling', async () =
     assert.equal(deleted.events, 5);
 });
 
-test('schema 6 migration preserves existing events while adding missing indexes', () => {
-    assert.equal(DB_VERSION, 6);
+test('schema 7 migration preserves existing events, adds identity indexes, and is idempotent', async () => {
+    assert.equal(DB_VERSION, 7);
     const rows = [{ id: 'today', ts: Date.now(), kind: ChronicleEventKind.ARRIVED }];
+    const originalRows = rows.map(row => ({ ...row }));
+    const existingIndexes = new Set(['ts', 'kind']);
     const createdIndexes = [];
     const eventStore = {
         keyPath: 'id',
         indexNames: {
-            contains(name) { return name === 'ts' || name === 'kind'; },
+            contains(name) { return existingIndexes.has(name); },
         },
-        createIndex(name) { createdIndexes.push(name); },
+        createIndex(name) {
+            createdIndexes.push(name);
+            existingIndexes.add(name);
+        },
         rows,
     };
     const db = {
@@ -73,11 +78,70 @@ test('schema 6 migration preserves existing events while adding missing indexes'
         createObjectStore() { throw new Error('existing event store must be reused'); },
     };
     const tx = { objectStore(name) { assert.equal(name, 'events'); return eventStore; } };
+    const eventIndexes = ['ts', 'kind', 'localDate', 'identityKey'];
 
-    ChronicleStore.prototype._ensureStore.call({}, db, tx, 'events', 'id', ['ts', 'kind', 'localDate']);
+    ChronicleStore.prototype._ensureStore.call({}, db, tx, 'events', 'id', eventIndexes);
 
-    assert.deepEqual(createdIndexes, ['localDate']);
-    assert.deepEqual(rows, [{ id: 'today', ts: rows[0].ts, kind: ChronicleEventKind.ARRIVED }]);
+    assert.deepEqual(createdIndexes, ['localDate', 'identityKey']);
+    assert.deepEqual(rows, originalRows);
+
+    ChronicleStore.prototype._ensureStore.call({}, db, tx, 'events', 'id', eventIndexes);
+
+    assert.deepEqual(createdIndexes, ['localDate', 'identityKey']);
+    assert.equal(createdIndexes.filter(name => name === 'identityKey').length, 1);
+    assert.deepEqual(rows, originalRows);
+
+    const legacyRows = [
+        { id: 'legacy-arrival', ts: localTime(2026, 8, 25, 9), kind: ChronicleEventKind.ARRIVED },
+        { id: 'legacy-push', ts: localTime(2026, 8, 25, 10), kind: ChronicleEventKind.PUSH },
+    ];
+    const originalLegacyRows = legacyRows.map(row => ({ ...row }));
+    const legacyIndexes = new Set(['ts', 'kind', 'localDate']);
+    const legacyCreatedIndexes = [];
+    const legacyEventStore = {
+        keyPath: 'id',
+        indexNames: {
+            contains(name) { return legacyIndexes.has(name); },
+        },
+        createIndex(name) {
+            legacyCreatedIndexes.push(name);
+            legacyIndexes.add(name);
+        },
+        rows: legacyRows,
+    };
+    const legacyDb = {
+        objectStoreNames: { contains(name) { return name === 'events'; } },
+        deleteObjectStore() { throw new Error('migration must not replace the legacy event store'); },
+        createObjectStore() { throw new Error('legacy event store must be reused'); },
+    };
+    const legacyTx = {
+        objectStore(name) {
+            assert.equal(name, 'events');
+            return legacyEventStore;
+        },
+    };
+
+    ChronicleStore.prototype._ensureStore.call({}, legacyDb, legacyTx, 'events', 'id', eventIndexes);
+
+    assert.deepEqual(legacyCreatedIndexes, ['identityKey']);
+    assert.deepEqual(legacyRows, originalLegacyRows);
+    assert.equal(legacyRows.every(row => row.identityKey === undefined), true);
+
+    const readableLegacyStore = {
+        eventRetentionDays: EVENT_RETENTION_DAYS,
+        async queryRange(name, options) {
+            assert.equal(name, 'events');
+            assert.equal(options.index, 'ts');
+            return legacyEventStore.rows
+                .filter(row => row.ts >= options.lower && row.ts <= options.upper)
+                .sort((a, b) => a.ts - b.ts);
+        },
+    };
+    const legacyPage = await new ChronicleLog({ store: readableLegacyStore })
+        .readDayPage('2026-08-25');
+    assert.deepEqual(legacyPage.events.slice().reverse(), originalLegacyRows);
+    assert.equal(legacyPage.totalCount, originalLegacyRows.length);
+    assert.equal(legacyPage.events.every(row => row.identityKey === undefined), true);
 });
 
 test('day reads reach yesterday without mixing in today', async () => {

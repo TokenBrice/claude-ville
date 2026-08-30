@@ -11,6 +11,7 @@ const {
   getSessionDetailsBatch,
   getAllWatchPaths,
   getActiveProviders,
+  getProviderHealth,
   isKnownSessionDetailProvider,
   invalidateSessionCaches,
   getAdapterPerfStats,
@@ -357,15 +358,47 @@ function handlePostSessionDetails(req, res) {
   });
 }
 
+const PROVIDER_HEALTH_STATES = new Set(['unavailable', 'empty', 'healthy', 'degraded']);
+const PROVIDER_WATCH_STATES = new Set(['unavailable', 'pending', 'idle', 'watching', 'failed']);
+
+function safeProviderErrorCode(value) {
+  if (typeof value !== 'string' || !value) return null;
+  const normalized = value
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return normalized ? normalized.slice(0, 48) : null;
+}
+
+function serializeProviderHealth(records = []) {
+  return records.map((record) => ({
+    id: String(record?.id || 'unknown'),
+    name: String(record?.name || record?.id || 'Unknown'),
+    health: PROVIDER_HEALTH_STATES.has(record?.health) ? record.health : 'unavailable',
+    sessions: Math.max(0, Number(record?.sessions) || 0),
+    lastScanStartedAt: Number(record?.lastScanStartedAt) || null,
+    lastSuccessAt: Number(record?.lastSuccessAt) || null,
+    errorCode: safeProviderErrorCode(record?.errorCode),
+    watchState: PROVIDER_WATCH_STATES.has(record?.watchState) ? record.watchState : 'unavailable',
+    skippedLines: Math.max(0, Number(record?.skippedLines) || 0),
+  }));
+}
+
+function buildProvidersPayload() {
+  const providers = getActiveProviders();
+  return {
+    providers,
+    count: providers.length,
+    health: serializeProviderHealth(getProviderHealth()),
+  };
+}
+
 /**
  * GET /api/providers
- * Active provider list
+ * Active provider list and safe health summaries
  */
 function handleGetProviders(req, res) {
-  sendApiPayload(res, 'Failed to fetch providers', () => {
-    const providers = getActiveProviders();
-    return { providers, count: providers.length };
-  }, 'Unable to load provider information.');
+  sendApiPayload(res, 'Failed to fetch providers', buildProvidersPayload, 'Unable to load provider information.');
 }
 
 /**
@@ -2450,6 +2483,10 @@ if (require.main === module) {
 module.exports = {
   startServer,
   shutdownRuntime,
+  _providerHealthTest: {
+    buildProvidersPayload,
+    serializeProviderHealth,
+  },
   _watcherTest: {
     cacheControlFor,
     canonicalizeWatchDescriptors,

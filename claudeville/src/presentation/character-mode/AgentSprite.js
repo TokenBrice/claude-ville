@@ -16,9 +16,17 @@ import { classifyTool } from '../../domain/services/ToolIdentity.js';
 import { dialogueSourceLabel } from '../../config/dialogue.js';
 import { tileToWorld, worldToTile } from './Projection.js';
 import { resolveUpdateRouteBuilding } from './MovementRouting.js';
-import { releaseCanvasMap } from './CanvasBudget.js';
+import {
+    RESOURCE_OWNERSHIP,
+    registerRendererResourceEstimateProvider,
+    releaseCanvasBackingStore,
+    releaseCanvasMap,
+    shouldEvictAtHighWater,
+    unpinnedCacheKeys,
+} from './CanvasBudget.js';
 import { AgentAction, resolveAgentAction } from './ActionVocabulary.js';
 import { AgentGpuOverlayRenderer } from './AgentGpuOverlayRenderer.js';
+import { clampDt, inDutyPause, IDLE_STRIDE_PERIOD_MS, IDLE_STRIDE_PAUSE_FRACTION } from './MotionClock.js';
 
 // Keep villagers visually authoritative beside the newer hero-scale buildings.
 // This multiplier applies to every authored body through _spriteDrawScale and
@@ -174,6 +182,10 @@ const GPU_EQUIPPED_SHEET_CACHE = new Map();
 const GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT = 12;
 const GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT = 48_000_000;
 let gpuEquippedSheetCachePixels = 0;
+const SHARED_DERIVED_HIGH_WATER_ESTIMATE_BYTES = 192 * 1024 * 1024;
+const ACTIVE_PROFILE_REFS = new Map();
+const PRIVATE_DERIVED_CACHE_ESTIMATES = new Map();
+const GPU_AGENT_CHANNEL_ATLAS_RECORDS = new Map();
 
 function gpuEquippedSheetEntryPixels(entry) {
     let pixels = 0;
@@ -182,6 +194,52 @@ function gpuEquippedSheetEntryPixels(entry) {
     }
     return pixels;
 }
+
+function canvasEstimateBytes(canvas) {
+    return Math.max(0, Number(canvas?.width) || 0) * Math.max(0, Number(canvas?.height) || 0) * 4;
+}
+
+function entryProfileKey(entry) {
+    return entry?.profileKey || entry?.__cvProfileKey || '';
+}
+
+function entryIsPinned(entry, profiles) {
+    if (profiles.has(entryProfileKey(entry))) return true;
+    for (const key of entry?.__cvProfileKeys || []) {
+        if (profiles.has(key)) return true;
+    }
+    return false;
+}
+
+function activeProfilePins() {
+    return new Set(ACTIVE_PROFILE_REFS.keys());
+}
+
+function releaseSharedEntry(entry) {
+    for (const canvas of [entry?.canvas, entry?.albedo, entry?.material, entry?.emissive, entry]) {
+        if (typeof canvas?.getContext === 'function') releaseCanvasBackingStore(canvas);
+    }
+}
+
+function oldestUnpinnedCacheKey(map) {
+    const profiles = activeProfilePins();
+    for (const [key, entry] of map) {
+        if (!entryIsPinned(entry, profiles)) return key;
+    }
+    return null;
+}
+
+function sharedResourceEstimateLeaves() {
+    const stats = AgentSprite.sharedCacheStats();
+    return {
+        cpuDerived: [{
+            key: 'agent-sprite:shared-and-private-derived',
+            estimateBytes: stats.cpuDerivedEstimateBytes,
+        }],
+    };
+}
+
+registerRendererResourceEstimateProvider(sharedResourceEstimateLeaves);
 // Selection-ring asset recolored per provider accent; keyed by accent color.
 const TINTED_SELECTION_RING_CACHE = new Map();
 const TINTED_SELECTION_RING_CACHE_LIMIT = 24;
@@ -351,10 +409,68 @@ function memoizedToolClassification(tool, input) {
 
 export class AgentSprite {
     static sharedCacheStats() {
+        // Canvas implementations do not expose allocation sizes. All byte
+        // values below estimate RGBA backing from dimensions; cache entries
+        // are counted once here regardless of how many sprites reference them.
         let tintedSelectionRingPixels = 0;
+        let gpuEquippedAlbedoPixels = 0;
+        let gpuEquippedMaterialPixels = 0;
+        let gpuEquippedEmissivePixels = 0;
         for (const canvas of TINTED_SELECTION_RING_CACHE.values()) {
             tintedSelectionRingPixels += (canvas?.width || 0) * (canvas?.height || 0);
         }
+        for (const entry of GPU_EQUIPPED_SHEET_CACHE.values()) {
+            gpuEquippedAlbedoPixels += (entry.albedo?.width || 0) * (entry.albedo?.height || 0);
+            gpuEquippedMaterialPixels += (entry.material?.width || 0) * (entry.material?.height || 0);
+            gpuEquippedEmissivePixels += (entry.emissive?.width || 0) * (entry.emissive?.height || 0);
+        }
+        const privateDerivedEstimateBytes = [...PRIVATE_DERIVED_CACHE_ESTIMATES.values()]
+            .reduce((sum, bytes) => sum + bytes, 0);
+        const activeSpriteCount = [...ACTIVE_PROFILE_REFS.values()]
+            .reduce((sum, refs) => sum + refs.owners.size, 0);
+        let gpuAgentChannelCellSize = 1;
+        let hasGpuAgentMaterialAtlas = false;
+        let hasGpuAgentEmissiveAtlas = false;
+        for (const record of GPU_AGENT_CHANNEL_ATLAS_RECORDS.values()) {
+            const cell = Math.max(1, Math.ceil(Math.max(record.sw || 1, record.sh || 1)));
+            gpuAgentChannelCellSize = Math.max(gpuAgentChannelCellSize, cell);
+            hasGpuAgentMaterialAtlas ||= record.material;
+            hasGpuAgentEmissiveAtlas ||= record.emissive;
+        }
+        const gpuAgentAtlasCapacity = Math.max(activeSpriteCount, GPU_AGENT_CHANNEL_ATLAS_RECORDS.size, 1);
+        const gpuAgentAtlasColumns = Math.max(1, Math.ceil(Math.sqrt(gpuAgentAtlasCapacity)));
+        const gpuAgentAtlasRows = Math.max(1, Math.ceil(gpuAgentAtlasCapacity / gpuAgentAtlasColumns));
+        const gpuAgentChannelAtlasEstimateBytes = gpuAgentAtlasColumns
+            * gpuAgentChannelCellSize
+            * gpuAgentAtlasRows
+            * gpuAgentChannelCellSize
+            * 4;
+        const gpuAgentMaterialAtlasEstimateBytes = hasGpuAgentMaterialAtlas
+            ? gpuAgentChannelAtlasEstimateBytes
+            : 0;
+        const gpuAgentEmissiveAtlasEstimateBytes = hasGpuAgentEmissiveAtlas
+            ? gpuAgentChannelAtlasEstimateBytes
+            : 0;
+        const compositorCanvases = new Set(Compositor.shared()?.cache?.values?.() || []);
+        for (const refs of ACTIVE_PROFILE_REFS.values()) {
+            if (refs.baseCanvas) compositorCanvases.add(refs.baseCanvas);
+        }
+        const processedSpriteEstimateBytes = processedSpriteCachePixels * 4;
+        const compositorEstimateBytes = [...compositorCanvases]
+            .reduce((sum, canvas) => sum + canvasEstimateBytes(canvas), 0);
+        const codexEquipmentEstimateBytes = codexEquipmentCachePixels * 4;
+        // Despite the cache name, these are Canvas source backings. Their GL
+        // uploads remain separate GPU-owned leaves in the renderer ledger.
+        const gpuEquippedSheetEstimateBytes = gpuEquippedSheetCachePixels * 4;
+        const tintedSelectionRingEstimateBytes = tintedSelectionRingPixels * 4;
+        const cpuDerivedEstimateBytes = compositorEstimateBytes
+            + processedSpriteEstimateBytes
+            + codexEquipmentEstimateBytes
+            + gpuEquippedSheetEstimateBytes
+            + tintedSelectionRingEstimateBytes
+            + privateDerivedEstimateBytes
+            + gpuAgentMaterialAtlasEstimateBytes
+            + gpuAgentEmissiveAtlasEstimateBytes;
         return {
             processedSpriteSheets: PROCESSED_SPRITE_CACHE.size,
             processedSpritePixels: processedSpriteCachePixels,
@@ -362,10 +478,132 @@ export class AgentSprite {
             processedSpritePixelLimit: PROCESSED_SPRITE_CACHE_PIXEL_LIMIT,
             codexEquipmentAssets: CODEX_EQUIPMENT_CACHE.size,
             codexEquipmentPixels: codexEquipmentCachePixels,
+            codexEquipmentEstimateBytes,
+            gpuEquippedSheets: GPU_EQUIPPED_SHEET_CACHE.size,
+            gpuEquippedSheetPixels: gpuEquippedSheetCachePixels,
+            gpuEquippedSheetEstimateBytes,
+            gpuEquippedAlbedoEstimateBytes: gpuEquippedAlbedoPixels * 4,
+            gpuEquippedMaterialEstimateBytes: gpuEquippedMaterialPixels * 4,
+            gpuEquippedEmissiveEstimateBytes: gpuEquippedEmissivePixels * 4,
+            gpuEquippedSheetPixelLimit: GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT,
             tintedSelectionRings: TINTED_SELECTION_RING_CACHE.size,
             tintedSelectionRingPixels,
+            tintedSelectionRingEstimateBytes,
+            processedSpriteEstimateBytes,
+            compositorEstimateBytes,
+            privateDerivedEstimateBytes,
+            gpuAgentMaterialAtlasEstimateBytes,
+            gpuAgentEmissiveAtlasEstimateBytes,
+            cpuDerivedEstimateBytes,
+            ownership: {
+                compositorSpriteSheets: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: compositorEstimateBytes,
+                },
+                processedSpriteSheets: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: processedSpriteEstimateBytes,
+                },
+                codexEquipmentCanvases: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: codexEquipmentEstimateBytes,
+                },
+                gpuEquippedAlbedoSheets: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: gpuEquippedAlbedoPixels * 4,
+                },
+                gpuEquippedMaterialSheets: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: gpuEquippedMaterialPixels * 4,
+                },
+                gpuEquippedEmissiveSheets: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: gpuEquippedEmissivePixels * 4,
+                },
+                tintedSelectionRings: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: tintedSelectionRingEstimateBytes,
+                },
+                perSpriteEffectCells: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: privateDerivedEstimateBytes,
+                },
+                gpuAgentMaterialAtlas: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: gpuAgentMaterialAtlasEstimateBytes,
+                },
+                gpuAgentEmissiveAtlas: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: gpuAgentEmissiveAtlasEstimateBytes,
+                },
+            },
+            activeProfileKeys: [...ACTIVE_PROFILE_REFS.keys()].sort(),
+            selectedProfilePins: [...ACTIVE_PROFILE_REFS]
+                .filter(([, refs]) => refs.selectedOwners.size > 0)
+                .map(([key]) => key)
+                .sort(),
+            primaryProfilePins: [...ACTIVE_PROFILE_REFS]
+                .filter(([, refs]) => refs.primaryOwners.size > 0)
+                .map(([key]) => key)
+                .sort(),
+            sharedDerivedHighWaterEstimateBytes: SHARED_DERIVED_HIGH_WATER_ESTIMATE_BYTES,
             toolClassifications: TOOL_CLASSIFICATION_CACHE.size,
         };
+    }
+
+    static evictUnpinnedSharedCaches({
+        highWaterEstimateBytes = SHARED_DERIVED_HIGH_WATER_ESTIMATE_BYTES,
+    } = {}) {
+        const candidates = [];
+        const compositor = Compositor.shared();
+        for (const [key, canvas] of compositor?.cache || []) {
+            candidates.push({ key: `compositor:${key}`, cacheKey: key, cache: compositor.cache, entry: canvas, estimateBytes: canvasEstimateBytes(canvas) });
+        }
+        for (const [key, canvas] of PROCESSED_SPRITE_CACHE) {
+            candidates.push({ key: `processed:${key}`, cacheKey: key, cache: PROCESSED_SPRITE_CACHE, entry: canvas, estimateBytes: canvasEstimateBytes(canvas) });
+        }
+        for (const [key, entry] of CODEX_EQUIPMENT_CACHE) {
+            candidates.push({ key: `equipment:${key}`, cacheKey: key, cache: CODEX_EQUIPMENT_CACHE, entry, estimateBytes: canvasEstimateBytes(entry.canvas) });
+        }
+        for (const [key, entry] of GPU_EQUIPPED_SHEET_CACHE) {
+            candidates.push({ key: `gpu-equipped:${key}`, cacheKey: key, cache: GPU_EQUIPPED_SHEET_CACHE, entry, estimateBytes: gpuEquippedSheetEntryPixels(entry) * 4 });
+        }
+        for (const [key, canvas] of TINTED_SELECTION_RING_CACHE) {
+            candidates.push({ key: `selection-ring:${key}`, cacheKey: key, cache: TINTED_SELECTION_RING_CACHE, entry: canvas, estimateBytes: canvasEstimateBytes(canvas) });
+        }
+        let residentEstimateBytes = candidates.reduce((sum, entry) => sum + entry.estimateBytes, 0);
+        if (!shouldEvictAtHighWater(residentEstimateBytes, highWaterEstimateBytes)) {
+            return { evicted: [], residentEstimateBytes };
+        }
+        const profiles = activeProfilePins();
+        const pinnedKeys = new Set(candidates
+            .filter((candidate) => entryIsPinned(candidate.entry, profiles))
+            .map((candidate) => candidate.key));
+        const evictable = new Set(unpinnedCacheKeys(candidates, pinnedKeys));
+        const evicted = [];
+        for (const candidate of candidates) {
+            if (!evictable.has(candidate.key)) continue;
+            candidate.cache.delete(candidate.cacheKey);
+            releaseSharedEntry(candidate.entry);
+            evicted.push(candidate.key);
+            residentEstimateBytes -= candidate.estimateBytes;
+            if (!shouldEvictAtHighWater(residentEstimateBytes, highWaterEstimateBytes)) break;
+        }
+        AgentSprite._recountSharedCachePixels();
+        if (compositor) {
+            compositor.cachePixels = [...compositor.cache.values()]
+                .reduce((sum, canvas) => sum + canvasEstimateBytes(canvas) / 4, 0);
+        }
+        return { evicted, residentEstimateBytes: Math.max(0, residentEstimateBytes) };
+    }
+
+    static _recountSharedCachePixels() {
+        processedSpriteCachePixels = [...PROCESSED_SPRITE_CACHE.values()]
+            .reduce((sum, canvas) => sum + canvasEstimateBytes(canvas) / 4, 0);
+        codexEquipmentCachePixels = [...CODEX_EQUIPMENT_CACHE.values()]
+            .reduce((sum, entry) => sum + canvasEstimateBytes(entry.canvas) / 4, 0);
+        gpuEquippedSheetCachePixels = [...GPU_EQUIPPED_SHEET_CACHE.values()]
+            .reduce((sum, entry) => sum + gpuEquippedSheetEntryPixels(entry), 0);
     }
 
     static releaseSharedCaches() {
@@ -407,6 +645,8 @@ export class AgentSprite {
         this.walkFrame = 0;
         this.waitTimer = 0;
         this.selected = false;
+        this._resourceOwnerKey = Symbol(String(agent?.id || 'agent'));
+        this._ownedProfileKey = '';
         // 3.7 — hover affordance. The renderer's mousemove pass sets this via
         // setHovered(); draw() then shows a static trim ring + the name pill.
         this.hovered = false;
@@ -488,18 +728,6 @@ export class AgentSprite {
         this.chatting = false;       // chatting flag
         this.chatTimer = 0;          // chat animation timer
         this.chatBubbleAnim = 0;     // speech bubble animation
-
-        // #38 — idle gossip cluster. RelationshipState groups loitering IDLE
-        // villagers near a scenic point; the renderer's CouncilRing pass calls
-        // enterGossip() with the knot centroid. While gossiping the sprite faces
-        // the centroid, reuses the chat speech-bubble effect (chatting=true), and
-        // disperses after a short timer, then enters a cooldown so it doesn't
-        // immediately re-cluster. Under reduced motion it just stands and faces
-        // the centroid (timer/cooldown still advance; no bubble cycling).
-        this._gossiping = false;
-        this._gossipCenter = null;
-        this._gossipDisperseMs = 0;
-        this._gossipCooldownUntil = 0;
 
         // Active pose-bearing tool ritual record from RitualConductor (per
         // building work gesture: hammer / page / pick / scroll / …), synced by
@@ -619,6 +847,76 @@ export class AgentSprite {
         this._bubbleLayoutCache = null;
         this._compactNameStatusCacheKey = '';
         this._compactNameStatusCache = null;
+        this._releaseProfileOwnership();
+        PRIVATE_DERIVED_CACHE_ESTIMATES.delete(this._resourceOwnerKey);
+        GPU_AGENT_CHANNEL_ATLAS_RECORDS.delete(this._resourceOwnerKey);
+    }
+
+    _syncProfileOwnership(profileKey, assetIds) {
+        if (this._ownedProfileKey && this._ownedProfileKey !== profileKey) {
+            this._releaseProfileOwnership();
+        }
+        let refs = ACTIVE_PROFILE_REFS.get(profileKey);
+        if (!refs) {
+            refs = {
+                owners: new Map(),
+                selectedOwners: new Set(),
+                primaryOwners: new Set(),
+                assetIds: new Set(),
+                assets: this.assets,
+                baseCanvas: null,
+            };
+            ACTIVE_PROFILE_REFS.set(profileKey, refs);
+        }
+        const primary = this.selected
+            || this.agent?.status === AgentStatus.ERRORED
+            || this.agent?.status === AgentStatus.WAITING_ON_USER;
+        refs.owners.set(this._resourceOwnerKey, { selected: this.selected, primary });
+        if (this.selected) refs.selectedOwners.add(this._resourceOwnerKey);
+        else refs.selectedOwners.delete(this._resourceOwnerKey);
+        if (primary) refs.primaryOwners.add(this._resourceOwnerKey);
+        else refs.primaryOwners.delete(this._resourceOwnerKey);
+        for (const id of assetIds) {
+            if (id) refs.assetIds.add(id);
+        }
+        refs.assets?.retainProfileAssets?.(profileKey, [...refs.assetIds], {
+            selected: refs.selectedOwners.size > 0,
+            primary: refs.primaryOwners.size > 0,
+        });
+        this._ownedProfileKey = profileKey;
+    }
+
+    _releaseProfileOwnership() {
+        const profileKey = this._ownedProfileKey;
+        if (!profileKey) return;
+        const refs = ACTIVE_PROFILE_REFS.get(profileKey);
+        if (refs) {
+            refs.owners.delete(this._resourceOwnerKey);
+            refs.selectedOwners.delete(this._resourceOwnerKey);
+            refs.primaryOwners.delete(this._resourceOwnerKey);
+            if (refs.owners.size === 0) {
+                refs.assets?.releaseProfileAssets?.(profileKey);
+                ACTIVE_PROFILE_REFS.delete(profileKey);
+            } else {
+                refs.assets?.retainProfileAssets?.(profileKey, [...refs.assetIds], {
+                    selected: refs.selectedOwners.size > 0,
+                    primary: refs.primaryOwners.size > 0,
+                });
+            }
+        }
+        this._ownedProfileKey = '';
+    }
+
+    _updatePrivateDerivedEstimate() {
+        let pixels = 0;
+        for (const canvas of this._silhouetteCellCache.values()) {
+            pixels += (canvas?.width || 0) * (canvas?.height || 0);
+        }
+        for (const canvas of this._frozenTintCellCache.values()) {
+            pixels += (canvas?.width || 0) * (canvas?.height || 0);
+        }
+        if (pixels > 0) PRIVATE_DERIVED_CACHE_ESTIMATES.set(this._resourceOwnerKey, pixels * 4);
+        else PRIVATE_DERIVED_CACHE_ESTIMATES.delete(this._resourceOwnerKey);
     }
 
     _pickTarget() {
@@ -1619,9 +1917,6 @@ export class AgentSprite {
         this.chatPartner = null;
         this.chatting = false;
         this.chatBubbleAnim = 0;
-        this._gossiping = false;
-        this._gossipCenter = null;
-        this._gossipDisperseMs = 0;
         this.setArrivalState('visible');
         this._lastPathTileKey = null;
         this._assignTarget(screen.x, screen.y, tileX, tileY);
@@ -1696,7 +1991,6 @@ export class AgentSprite {
                 this.moving = false;
                 this.chatting = false;
                 this.chatPartner = null;
-                this._gossiping = false;
                 this.waypoints = [];
                 this.targetX = this.x;
                 this.targetY = this.y;
@@ -1716,24 +2010,6 @@ export class AgentSprite {
         this._advanceDistressRecovery(particleSystem);
         this._advanceArrivalCeremony(particleSystem);
         this._advanceTokenFlowMotes(particleSystem, frameScale);
-
-        // #38 — gossip knot: stand, face the cluster centroid, run the speech
-        // bubble, and disperse after the timer. Checked before the pairwise chat
-        // branch because enterGossip sets chatting=true without a chatPartner.
-        if (this._gossiping) {
-            // Disperse early if the villager is no longer idle (e.g. work resumed)
-            // or got pulled into a pairwise SendMessage chat.
-            if (this.agent?.status !== AgentStatus.IDLE || this.chatPartner) {
-                this.leaveGossip();
-            } else {
-                this._faceGossipCenter();
-                this.chatBubbleAnim += 0.06 * this.motionScale * frameScale;
-                this._gossipDisperseMs -= dt;
-                if (this._gossipDisperseMs <= 0) this.leaveGossip();
-                this._advanceIdleAnimation(dt);
-                return; // Do not move while gossiping
-            }
-        }
 
         // Handle chatting state
         if (this.chatting) {
@@ -1901,14 +2177,13 @@ export class AgentSprite {
             return;
         }
 
-        // Deliberate stride pause for IDLE strollers: hold the frame for 6 ticks
-        // out of every 12 so motion looks unhurried. Pause is skipped when
-        // reduced-motion is active (motionScale 0).
+        // Deliberate stride pause for IDLE strollers: hold the frame for the
+        // first half of a 200 ms period so motion looks unhurried. Pause is
+        // skipped when reduced-motion is active (motionScale 0).
         const isIdleStroll = this.agent?.status === AgentStatus.IDLE && !this.chatPartner && !this.chatting;
         if (isIdleStroll) {
-            this._idleStrideTick = (this._idleStrideTick || 0) + 1;
-            const phase = this._idleStrideTick % 12;
-            if (phase < 6) {
+            this._idleStrideMs = (this._idleStrideMs || 0) + clampDt(dt);
+            if (inDutyPause(this._idleStrideMs, IDLE_STRIDE_PERIOD_MS, IDLE_STRIDE_PAUSE_FRACTION)) {
                 // Pause stride: skip distance accumulation, keep current frame.
                 this.walkFrame = this.frame;
                 return;
@@ -2141,58 +2416,6 @@ export class AgentSprite {
         this._pickTarget(); // resume normal behavior
     }
 
-    // #38 — gossip cluster lifecycle (driven from CouncilRing.applyGossipClusters).
-    isGossiping() {
-        return this._gossiping;
-    }
-
-    isGossipCoolingDown() {
-        return this._gossipCooldownUntil > Date.now();
-    }
-
-    /** Join a standing gossip knot centred on (centerX, centerY). */
-    enterGossip(centerX, centerY) {
-        if (this._gossiping) {
-            this._gossipCenter = { x: centerX, y: centerY };
-            this._faceGossipCenter();
-            return;
-        }
-        if (this.chatPartner || this.chatting || this.isArrivalPending()) return;
-        if (this.agent?.status !== AgentStatus.IDLE) return;
-        this._releaseVisitReservation();
-        this._gossiping = true;
-        this.chatting = true; // reuse the speech-bubble effect in draw()
-        this.chatBubbleAnim = 0;
-        this.moving = false;
-        this.waitTimer = 0;
-        this._gossipCenter = { x: centerX, y: centerY };
-        // 4-8 s standing knot, then disperse.
-        this._gossipDisperseMs = 4000 + Math.random() * 4000;
-        this.behavior?.transition?.('chatting', 'gossip');
-        this._resetWalkCycle();
-        this._faceGossipCenter();
-    }
-
-    /** Leave the gossip knot and cool down before re-clustering. */
-    leaveGossip() {
-        if (!this._gossiping) return;
-        this._gossiping = false;
-        this.chatting = false;
-        this.chatBubbleAnim = 0;
-        this._gossipCenter = null;
-        this._gossipDisperseMs = 0;
-        this._gossipCooldownUntil = Date.now() + 12000 + Math.random() * 8000;
-        this.behavior?.finishVisit?.();
-        this.behavior?.transition?.('cooldown', 'gossip-ended');
-        this._pickTarget();
-    }
-
-    _faceGossipCenter() {
-        if (!this._gossipCenter) return;
-        const dir = dirFromVelocity(this._gossipCenter.x - this.x, this._gossipCenter.y - this.y);
-        if (dir != null) this.direction = dir;
-    }
-
     getBehaviorDebugSnapshot() {
         const tile = this._screenToTile(this.x, this.y);
         const behavior = this.behavior.snapshot();
@@ -2292,9 +2515,21 @@ export class AgentSprite {
         const teamTrim = this._teamTrimAccent();
         const teamHash = teamTrim || '_';
         const profileKey = `${spriteId}|${paletteKey}|${variant}|${accessory || '_'}|${equipmentKey}|${cleanupKey}|${teamHash}`;
+        const equipmentAssetId = CODEX_WEAPON_ASSETS[equipmentKey]?.id || null;
+        const accessoryAssetId = accessory
+            ? accessory.startsWith('overlay.') ? accessory : `overlay.accessory.${accessory}`
+            : null;
+        this._syncProfileOwnership(profileKey, [spriteId, equipmentAssetId, accessoryAssetId]);
 
         if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
-            const baseCanvas = this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim);
+            const profileRefs = ACTIVE_PROFILE_REFS.get(profileKey);
+            const baseCanvas = profileRefs?.baseCanvas
+                || this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim);
+            if (baseCanvas) {
+                baseCanvas.__cvProfileKeys ||= new Set();
+                baseCanvas.__cvProfileKeys.add(profileKey);
+                if (profileRefs) profileRefs.baseCanvas = baseCanvas;
+            }
             // GPU animation samples this sheet as a texture. Start from the
             // untouched generated sheet — the scrubbed Canvas sheet alone
             // shows missing limbs during movement — and let
@@ -2305,8 +2540,9 @@ export class AgentSprite {
             if (this.spriteCanvas) {
                 this.spriteSheet = new SpriteSheet(this.spriteCanvas);
                 this._spriteProfileKey = profileKey;
-                this._silhouetteCellCache.clear();
-                this._frozenTintCellCache.clear();
+                releaseCanvasMap(this._silhouetteCellCache);
+                releaseCanvasMap(this._frozenTintCellCache);
+                this._updatePrivateDerivedEstimate();
                 this._cellBoundsCache.clear();
             }
         }
@@ -2602,16 +2838,18 @@ export class AgentSprite {
         // canvas so body draw-scale still reads hat-free measurements (D3).
         if (baseCanvas.__cvBaseBounds) canvas.__cvBaseBounds = baseCanvas.__cvBaseBounds;
         PROCESSED_SPRITE_CACHE.set(cacheKey, canvas);
+        canvas.__cvProfileKey = cacheKey;
         processedSpriteCachePixels += canvas.width * canvas.height;
         while (
             PROCESSED_SPRITE_CACHE.size > PROCESSED_SPRITE_CACHE_ENTRY_LIMIT
             || processedSpriteCachePixels > PROCESSED_SPRITE_CACHE_PIXEL_LIMIT
         ) {
-            const oldestKey = PROCESSED_SPRITE_CACHE.keys().next().value;
+            const oldestKey = oldestUnpinnedCacheKey(PROCESSED_SPRITE_CACHE);
             if (oldestKey == null) break;
             const oldest = PROCESSED_SPRITE_CACHE.get(oldestKey);
             PROCESSED_SPRITE_CACHE.delete(oldestKey);
             processedSpriteCachePixels -= (oldest?.width || 0) * (oldest?.height || 0);
+            releaseSharedEntry(oldest);
         }
         processedSpriteCachePixels = Math.max(0, processedSpriteCachePixels);
         return canvas;
@@ -3352,6 +3590,17 @@ export class AgentSprite {
 
     _setGpuFrameRecord(record) {
         this.gpuOverlayRenderer.setFrameRecord(record);
+        const frame = this._gpuFrameRecord;
+        if (frame?.materialSource || frame?.emissiveSource) {
+            GPU_AGENT_CHANNEL_ATLAS_RECORDS.set(this._resourceOwnerKey, {
+                sw: frame.sw,
+                sh: frame.sh,
+                material: Boolean(frame.materialSource),
+                emissive: Boolean(frame.emissiveSource),
+            });
+        } else {
+            GPU_AGENT_CHANNEL_ATLAS_RECORDS.delete(this._resourceOwnerKey);
+        }
     }
 
     // GPU-world bodies are sampled from a packed sheet texture, so the runtime
@@ -3461,6 +3710,7 @@ export class AgentSprite {
                 material: material ? this._padSidecarSheet(material, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
                 emissive: emissive ? this._padSidecarSheet(emissive, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
                 layout: { pad: GPU_EQUIP_SHEET_PAD, cellSize },
+                profileKey,
             };
             GPU_EQUIPPED_SHEET_CACHE.set(key, entry);
             gpuEquippedSheetCachePixels += gpuEquippedSheetEntryPixels(entry);
@@ -3468,11 +3718,12 @@ export class AgentSprite {
                 GPU_EQUIPPED_SHEET_CACHE.size > GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT
                 || gpuEquippedSheetCachePixels > GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT
             ) {
-                const oldestKey = GPU_EQUIPPED_SHEET_CACHE.keys().next().value;
-                if (oldestKey == null || oldestKey === key) break;
+                const oldestKey = oldestUnpinnedCacheKey(GPU_EQUIPPED_SHEET_CACHE);
+                if (oldestKey == null) break;
                 const oldest = GPU_EQUIPPED_SHEET_CACHE.get(oldestKey);
                 GPU_EQUIPPED_SHEET_CACHE.delete(oldestKey);
                 gpuEquippedSheetCachePixels -= gpuEquippedSheetEntryPixels(oldest);
+                releaseSharedEntry(oldest);
             }
             gpuEquippedSheetCachePixels = Math.max(0, gpuEquippedSheetCachePixels);
         }
@@ -3525,6 +3776,7 @@ export class AgentSprite {
             outlineCtx.drawImage(black, ox, oy);
         }
         this._silhouetteCellCache.set(key, outline);
+        this._updatePrivateDerivedEstimate();
         return outline;
     }
 
@@ -3553,6 +3805,7 @@ export class AgentSprite {
         tintCtx.fillStyle = '#2e4258';   // cold slate; drawn at low alpha over the body
         tintCtx.fillRect(0, 0, canvas.width, canvas.height);
         this._frozenTintCellCache.set(key, canvas);
+        this._updatePrivateDerivedEstimate();
         return canvas;
     }
 
@@ -3684,6 +3937,8 @@ export class AgentSprite {
         if (!ring?.width || !ring?.height) return null;
         const cached = TINTED_SELECTION_RING_CACHE.get(accent);
         if (cached) {
+            cached.__cvProfileKeys ||= new Set();
+            cached.__cvProfileKeys.add(this._spriteProfileKey);
             TINTED_SELECTION_RING_CACHE.delete(accent);
             TINTED_SELECTION_RING_CACHE.set(accent, cached);
             return cached;
@@ -3701,8 +3956,13 @@ export class AgentSprite {
         tintCtx.globalCompositeOperation = 'destination-in';
         tintCtx.drawImage(ring, 0, 0);
         TINTED_SELECTION_RING_CACHE.set(accent, canvas);
+        canvas.__cvProfileKeys = new Set([this._spriteProfileKey]);
         while (TINTED_SELECTION_RING_CACHE.size > TINTED_SELECTION_RING_CACHE_LIMIT) {
-            TINTED_SELECTION_RING_CACHE.delete(TINTED_SELECTION_RING_CACHE.keys().next().value);
+            const oldestKey = oldestUnpinnedCacheKey(TINTED_SELECTION_RING_CACHE);
+            if (oldestKey == null) break;
+            const oldest = TINTED_SELECTION_RING_CACHE.get(oldestKey);
+            TINTED_SELECTION_RING_CACHE.delete(oldestKey);
+            releaseSharedEntry(oldest);
         }
         return canvas;
     }
@@ -3928,18 +4188,19 @@ export class AgentSprite {
         cacheCtx.rotate(angle);
         this._drawCodexWeaponAssetImage(cacheCtx, assetDef);
 
-        const cached = { canvas, offsetX: minX, offsetY: minY };
+        const cached = { canvas, offsetX: minX, offsetY: minY, profileKey: this._spriteProfileKey };
         CODEX_EQUIPMENT_CACHE.set(cacheKey, cached);
         codexEquipmentCachePixels += canvas.width * canvas.height;
         while (
             CODEX_EQUIPMENT_CACHE.size > CODEX_EQUIPMENT_CACHE_ENTRY_LIMIT
             || codexEquipmentCachePixels > CODEX_EQUIPMENT_CACHE_PIXEL_LIMIT
         ) {
-            const oldestKey = CODEX_EQUIPMENT_CACHE.keys().next().value;
+            const oldestKey = oldestUnpinnedCacheKey(CODEX_EQUIPMENT_CACHE);
             if (oldestKey == null) break;
             const oldest = CODEX_EQUIPMENT_CACHE.get(oldestKey);
             CODEX_EQUIPMENT_CACHE.delete(oldestKey);
             codexEquipmentCachePixels -= (oldest?.canvas?.width || 0) * (oldest?.canvas?.height || 0);
+            releaseSharedEntry(oldest);
         }
         codexEquipmentCachePixels = Math.max(0, codexEquipmentCachePixels);
         return CODEX_EQUIPMENT_CACHE.get(cacheKey) || null;

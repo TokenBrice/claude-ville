@@ -1,5 +1,7 @@
+import { eventBus } from '../domain/events/DomainEvent.js';
+
 const DB_NAME = 'claudeville-chronicle';
-const DB_VERSION = 6;
+const DB_VERSION = 7;
 const LEASE_KEY = 'claudeville.chronicle.captureLease';
 const DEFAULT_LEASE_TTL_MS = 7000;
 const LIFETIME_COUNTS_META_KEY = 'lifetimeCounts';
@@ -49,6 +51,17 @@ function nowMs() {
     return Date.now();
 }
 
+function normalizedStatusReason(value) {
+    if (value == null) return null;
+    const reason = String(value)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 64);
+    return reason || 'unavailable';
+}
+
 function storeConfig(name) {
     return {
         manifests: { keyPath: 'id', indexes: ['project', 'ts', 'pinned'] },
@@ -56,7 +69,7 @@ function storeConfig(name) {
         trailSamples: { keyPath: 'id', indexes: ['agentId', 'ts'] },
         auroraLog: { keyPath: 'localDate', indexes: ['ts'] },
         biographies: { keyPath: 'identityKey', indexes: ['firstSeenAt', 'lastSeenAt'] },
-        events: { keyPath: 'id', indexes: ['ts', 'kind', 'localDate'] },
+        events: { keyPath: 'id', indexes: ['ts', 'kind', 'localDate', 'identityKey'] },
         affinities: { keyPath: 'pairKey', indexes: ['lastInteractionAt'] },
         meta: { keyPath: 'key', indexes: [] },
     }[name];
@@ -183,6 +196,7 @@ export class ChronicleStore {
                         this._ensureStore(db, tx, name, config.keyPath, config.indexes);
                     }
                 } catch (error) {
+                    try { request.transaction?.abort?.(); } catch { /* best effort */ }
                     fail(error, 'upgrade-failed');
                 }
             };
@@ -232,7 +246,7 @@ export class ChronicleStore {
         this.status = status;
         this.isDegraded = status === 'degraded';
         if (status === 'degraded') {
-            this.degradedReason = reason;
+            this.degradedReason = normalizedStatusReason(reason);
             if (terminal && error) this.degradedError = error;
             const detail = error?.message ? `: ${error.message}` : '';
             console.warn(`[ChronicleStore] degraded (${reason || 'unavailable'})${detail}`);
@@ -248,6 +262,10 @@ export class ChronicleStore {
                 error: this.degradedError,
             });
         } catch { /* status reporting must never break storage */ }
+        eventBus.emit('chronicle:status', {
+            status: this.status,
+            reason: this.degradedReason,
+        });
     }
 
     async put(storeName, record) {
@@ -694,8 +712,7 @@ export class ChronicleStore {
         if (db.objectStoreNames.contains(name)) {
             store = tx.objectStore(name);
             if (store.keyPath !== keyPath) {
-                db.deleteObjectStore(name);
-                store = db.createObjectStore(name, { keyPath });
+                throw new Error(`Chronicle store ${name} has an incompatible key path`);
             }
         } else {
             store = db.createObjectStore(name, { keyPath });

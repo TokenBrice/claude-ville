@@ -1,4 +1,5 @@
 import { eventBus } from '../events/DomainEvent.js';
+import { bucketCounts } from '../services/SignalLedger.js';
 import { AgentStatus, normalizeAgentStatus } from '../value-objects/AgentStatus.js';
 import { TokenUsage } from '../value-objects/TokenUsage.js';
 
@@ -63,24 +64,30 @@ export class World {
     getStats() {
         let totalTokens = 0;
         let totalCost = 0;
-        let working = 0;
         let idle = 0;
-        let waiting = 0;
-        let errored = 0;
-        let attention = 0;
 
         for (const agent of this.agents.values()) {
             totalTokens += TokenUsage.totalTokens(agent.tokens);
             totalCost += agent.cost;
             const status = normalizeAgentStatus(agent.status);
-            if (status === AgentStatus.WORKING) working++;
-            else if (status === AgentStatus.IDLE) idle++;
-            else if (status === AgentStatus.WAITING) waiting++;
-            if (status === AgentStatus.ERRORED) errored++;
-            if (status === AgentStatus.RATE_LIMITED || status === AgentStatus.WAITING_ON_USER) attention++;
+            if (status === AgentStatus.IDLE) idle++;
         }
 
-        return { totalTokens, totalCost, working, idle, waiting, errored, attention, total: this.agents.size };
+        const counts = bucketCounts(this.agents);
+        return {
+            totalTokens,
+            totalCost,
+            working: counts.working,
+            idle,
+            waiting: counts.watchlist,
+            errored: counts.errors,
+            attention: counts.actionable,
+            total: this.agents.size,
+            needsYou: counts.needsYou,
+            errors: counts.errors,
+            quota: counts.quota,
+            watchlist: counts.watchlist,
+        };
     }
 
     get activeTime() {

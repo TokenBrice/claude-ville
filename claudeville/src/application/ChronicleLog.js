@@ -1,4 +1,5 @@
 import { eventBus } from '../domain/events/DomainEvent.js';
+import { AgentBiography } from '../domain/value-objects/AgentBiography.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
 
 // The village has always been a live view: look away for forty minutes and
@@ -285,6 +286,15 @@ export class ChronicleLog {
             }
         }
 
+        if (
+            (previous === AgentStatus.ERRORED || previous === AgentStatus.RATE_LIMITED)
+            && status
+            && status !== AgentStatus.ERRORED
+            && status !== AgentStatus.RATE_LIMITED
+        ) {
+            this.record(ChronicleEventKind.RESOLVED, agent, { waitedMs: 0 });
+        }
+
         const kind = STATUS_EVENTS[status];
         if (!kind) return;
         if (status === AgentStatus.WAITING_ON_USER) {
@@ -362,13 +372,17 @@ export class ChronicleLog {
             provider: agent?.provider || null,
             project: projectName(agent?.projectPath),
             ...extra,
+            identityKey: AgentBiography.identityKeyFor(agent),
         };
         delete record.ts_;
         // A row ceiling bounds count; bounding free-form fields also bounds
         // each row so an unusual provider payload cannot defeat that ceiling.
-        for (const key of ['agentId', 'agentName', 'provider', 'project', 'reason', 'tool', 'label', 'sha']) {
+        for (const key of [
+            'agentId', 'agentName', 'provider', 'project', 'reason', 'tool', 'label', 'sha', 'identityKey',
+        ]) {
             record[key] = boundedText(record[key]);
         }
+        eventBus.emit('chronicle:recorded', record);
         this._writeTail = this._writeTail
             .then(() => this.store.put('events', record))
             .catch(() => { /* the day book is best effort; never break the app */ });

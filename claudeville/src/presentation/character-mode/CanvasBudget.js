@@ -30,6 +30,14 @@ const MAX_RENDERER_CANVAS_PIXELS = MAX_MAIN_CANVAS_PIXELS * SCREEN_SURFACE_COUNT
 // Native-Retina GPU cost measured at 1488x946 CSS: ~42.5MB of cached source
 // textures plus ~54.5MB of full-resolution scene attachments.
 const MAX_GPU_RESOURCE_BYTES = 128 * 1024 * 1024;
+const RESOURCE_ESTIMATE_PROVIDERS = new Set();
+
+export const RESOURCE_OWNERSHIP = Object.freeze({
+    CPU_DECODED: 'CPU-decoded',
+    CPU_DERIVED: 'CPU-derived',
+    CANVAS_VISIBLE: 'Canvas-visible',
+    GPU_OWNED: 'GPU-owned',
+});
 
 export const CANVAS_BUDGET = Object.freeze({
     maxRendererCanvasPixels: MAX_RENDERER_CANVAS_PIXELS,
@@ -120,6 +128,79 @@ function normalizedResourceGroup(group = {}) {
     return out;
 }
 
+function normalizedEstimateEntries(entries, ownershipClass) {
+    if (!entries) return [];
+    const source = Array.isArray(entries)
+        ? entries
+        : Object.entries(entries).map(([key, estimateBytes]) => ({ key, estimateBytes }));
+    return source.map((entry, index) => ({
+        key: String(entry?.key ?? index),
+        estimateBytes: Math.max(0, Math.round(Number(entry?.estimateBytes) || 0)),
+        ownershipClass,
+    }));
+}
+
+/**
+ * Sum estimated backing bytes once per ownership class and artifact key.
+ * CPU backing and a GL upload intentionally use different ownership classes:
+ * they can coexist, but can never silently collapse into one ambiguous value.
+ */
+export function sumUniqueResourceEstimates(entries = []) {
+    const seen = new Set();
+    let estimateBytes = 0;
+    for (const entry of entries) {
+        const ownershipClass = String(entry?.ownershipClass || '');
+        const key = String(entry?.key || '');
+        const identity = `${ownershipClass}\u0000${key}`;
+        if (!ownershipClass || !key || seen.has(identity)) continue;
+        seen.add(identity);
+        estimateBytes += Math.max(0, Math.round(Number(entry?.estimateBytes) || 0));
+    }
+    return estimateBytes;
+}
+
+export function shouldEvictAtHighWater(currentEstimateBytes, highWaterEstimateBytes) {
+    const current = Math.max(0, Number(currentEstimateBytes) || 0);
+    const highWater = Math.max(0, Number(highWaterEstimateBytes) || 0);
+    return highWater > 0 && current > highWater;
+}
+
+export function unpinnedCacheKeys(entries = [], pinnedKeys = new Set()) {
+    const pins = pinnedKeys instanceof Set ? pinnedKeys : new Set(pinnedKeys || []);
+    return entries
+        .filter((entry) => entry?.key != null && !pins.has(entry.key))
+        .map((entry) => entry.key);
+}
+
+/** Register a live diagnostic provider. Registration does not allocate or evict. */
+export function registerRendererResourceEstimateProvider(provider) {
+    if (typeof provider !== 'function') return () => {};
+    RESOURCE_ESTIMATE_PROVIDERS.add(provider);
+    return () => RESOURCE_ESTIMATE_PROVIDERS.delete(provider);
+}
+
+function registeredResourceEstimates() {
+    const combined = {
+        cpuDecoded: [],
+        cpuDerived: [],
+        canvasVisible: [],
+        gpuOwned: [],
+    };
+    for (const provider of RESOURCE_ESTIMATE_PROVIDERS) {
+        let estimates = null;
+        try {
+            estimates = provider();
+        } catch {
+            estimates = null;
+        }
+        if (!estimates) continue;
+        for (const name of Object.keys(combined)) {
+            combined[name].push(...(estimates[name] || []));
+        }
+    }
+    return combined;
+}
+
 /**
  * Build one byte ledger for renderer-owned GPU resources. Callers keep named
  * leaves (rather than an opaque total) so future attachments cannot silently
@@ -143,28 +224,65 @@ export function gpuResourceAccounting({ textures = {}, attachments = {}, buffers
 }
 
 /**
- * Combine Canvas pixels and the GPU byte ledger without assuming every future
- * resource is RGBA8. The returned breakdown is suitable for perf captures.
+ * Combine approximate CPU backing, Canvas surfaces, and the GPU byte ledger
+ * without assuming every future resource is RGBA8. Estimates remain separated
+ * by ownership class so a CPU source and its GL upload are both visible.
  */
 export function unifiedRendererResourceAccounting({
     visibleCanvasPixels = 0,
     volatileCanvasPixels = 0,
     retainedCanvasPixels = 0,
     gpu = null,
+    cpuDecodedEstimates = [],
+    cpuDerivedEstimates = [],
+    canvasVisibleEstimates = [],
+    gpuOwnedEstimates = [],
 } = {}) {
+    const registered = registeredResourceEstimates();
     const canvas = {
         visible: Math.max(0, Math.round(Number(visibleCanvasPixels) || 0)) * BYTES_PER_RGBA_PIXEL,
         volatile: Math.max(0, Math.round(Number(volatileCanvasPixels) || 0)) * BYTES_PER_RGBA_PIXEL,
         retained: Math.max(0, Math.round(Number(retainedCanvasPixels) || 0)) * BYTES_PER_RGBA_PIXEL,
     };
-    const canvasBytes = Object.values(canvas).reduce((sum, bytes) => sum + bytes, 0);
-    const gpuBytes = Math.max(0, Number(gpu?.totalBytes) || 0);
+    const gpuLedger = gpu || gpuResourceAccounting();
+    const estimates = [
+        ...normalizedEstimateEntries(registered.cpuDecoded, RESOURCE_OWNERSHIP.CPU_DECODED),
+        ...normalizedEstimateEntries(cpuDecodedEstimates, RESOURCE_OWNERSHIP.CPU_DECODED),
+        ...normalizedEstimateEntries(registered.cpuDerived, RESOURCE_OWNERSHIP.CPU_DERIVED),
+        ...normalizedEstimateEntries(cpuDerivedEstimates, RESOURCE_OWNERSHIP.CPU_DERIVED),
+        ...normalizedEstimateEntries(registered.canvasVisible, RESOURCE_OWNERSHIP.CANVAS_VISIBLE),
+        ...normalizedEstimateEntries(canvasVisibleEstimates, RESOURCE_OWNERSHIP.CANVAS_VISIBLE),
+        ...normalizedEstimateEntries(registered.gpuOwned, RESOURCE_OWNERSHIP.GPU_OWNED),
+        ...normalizedEstimateEntries(gpuOwnedEstimates, RESOURCE_OWNERSHIP.GPU_OWNED),
+        { key: 'legacy.visible-canvases', estimateBytes: canvas.visible, ownershipClass: RESOURCE_OWNERSHIP.CANVAS_VISIBLE },
+        { key: 'legacy.volatile-canvases', estimateBytes: canvas.volatile, ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED },
+        { key: 'legacy.retained-canvases', estimateBytes: canvas.retained, ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED },
+        { key: 'renderer.gl-resources', estimateBytes: gpuLedger.totalBytes, ownershipClass: RESOURCE_OWNERSHIP.GPU_OWNED },
+    ];
+    const ownershipLeaves = {
+        cpuDecodedEstimateBytes: sumUniqueResourceEstimates(estimates.filter(
+            (entry) => entry.ownershipClass === RESOURCE_OWNERSHIP.CPU_DECODED,
+        )),
+        cpuDerivedEstimateBytes: sumUniqueResourceEstimates(estimates.filter(
+            (entry) => entry.ownershipClass === RESOURCE_OWNERSHIP.CPU_DERIVED,
+        )),
+        canvasVisibleEstimateBytes: sumUniqueResourceEstimates(estimates.filter(
+            (entry) => entry.ownershipClass === RESOURCE_OWNERSHIP.CANVAS_VISIBLE,
+        )),
+        gpuOwnedBytes: sumUniqueResourceEstimates(estimates.filter(
+            (entry) => entry.ownershipClass === RESOURCE_OWNERSHIP.GPU_OWNED,
+        )),
+    };
+    const canvasBytes = ownershipLeaves.cpuDerivedEstimateBytes
+        + ownershipLeaves.canvasVisibleEstimateBytes;
+    const gpuBytes = ownershipLeaves.gpuOwnedBytes;
     return {
         canvas,
         canvasBytes,
-        gpu: gpu || gpuResourceAccounting(),
+        gpu: gpuLedger,
         gpuBytes,
-        totalBytes: canvasBytes + gpuBytes,
+        ownershipLeaves,
+        totalBytes: Object.values(ownershipLeaves).reduce((sum, bytes) => sum + bytes, 0),
         budgetBytes: CANVAS_BUDGET.maxUnifiedRendererBytes,
     };
 }

@@ -22,6 +22,15 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { AgentBiography } from '../../domain/value-objects/AgentBiography.js';
 import { Camera } from './Camera.js';
+import { createMotionClock, advanceMotionClock, virtualFramesFor } from './MotionClock.js';
+import {
+    createFrameEnvelope,
+    recordFrameEnvelope,
+    enableFrameEnvelopeRings,
+    snapshotFrameEnvelope,
+    getClientPerfMetrics,
+    percentileAtSnapshot,
+} from '../shared/ClientPerfMetrics.js';
 import { CameraDirector } from './CameraDirector.js';
 import { ParticleSystem, WAKE_FOAM_COLORS } from './ParticleSystem.js';
 import { AgentSprite, drawFamiliarMotes, familiarMoteLightSources } from './AgentSprite.js';
@@ -58,6 +67,7 @@ import {
 } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { extractRecipientName } from '../../domain/services/RecipientResolver.js';
+import { bucketCounts } from '../../domain/services/SignalLedger.js';
 import { BUILDING_EVENTS } from '../../domain/events/DomainEvent.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
@@ -532,6 +542,7 @@ export class IsometricRenderer {
         this.foliageRenderer = new FoliageRenderer(this);
         this.wildlifeRenderer = new WildlifeRenderer(this);
         this.terrainSeed = [];
+        this._motionClock = createMotionClock();
         this.waterFrame = 0;
         this.motionQuery = typeof window !== 'undefined' ? window.matchMedia?.('(prefers-reduced-motion: reduce)') : null;
         this.motionScale = this.motionQuery?.matches ? 0 : 1;
@@ -624,6 +635,10 @@ export class IsometricRenderer {
             paused: false,
         };
         this._performanceSamples = null;
+        this._frameEnvelope = createFrameEnvelope();
+        this._frameTimer = null;
+        this._frameHealthHelper = null;
+        this._installFrameHealthHelper();
 
         // Generate deterministic terrain seed so the village keeps its geography across reloads.
         for (let y = 0; y < MAP_SIZE; y++) {
@@ -1410,6 +1425,26 @@ export class IsometricRenderer {
         window[name] = value;
     }
 
+    _installFrameHealthHelper() {
+        if (typeof window === 'undefined') return;
+        if (!this._frameHealthHelper) {
+            this._frameHealthHelper = () => this.frameHealth();
+        }
+        const existing = window.__claudeVillePerf || {};
+        if (existing.frameHealth === this._frameHealthHelper) return;
+        window.__claudeVillePerf = {
+            ...existing,
+            frameHealth: this._frameHealthHelper,
+        };
+    }
+
+    _releaseFrameHealthHelper() {
+        if (typeof window === 'undefined') return;
+        const perf = window.__claudeVillePerf;
+        if (!perf || perf.frameHealth !== this._frameHealthHelper) return;
+        delete perf.frameHealth;
+    }
+
     _releaseDebugGlobals() {
         if (typeof window === 'undefined') {
             this._debugGlobals.clear();
@@ -1540,6 +1575,7 @@ export class IsometricRenderer {
         this._installDebugGlobal('__agentCrowds', () => this._crowdStats || this._summarizeCrowdClusters());
         this._installDebugGlobal('__villageDirector', () => this.villageDirector?.getSnapshot?.() || null);
         this._installDebugGlobal('__worldPerformance', () => this.getWorldPerformanceDiagnostics());
+        this._installFrameHealthHelper();
 
         // Subscribe to domain events
         this._unsubscribers.push(
@@ -1756,6 +1792,7 @@ export class IsometricRenderer {
         this.ritualConductor?.dispose?.();
         this.villageDirector?.dispose?.();
         if (getActiveMarkGovernor() === this.markGovernor) setActiveMarkGovernor(null);
+        this._releaseFrameHealthHelper();
         this._releaseDebugGlobals();
         this.agentEventStream = null;
         this.relationshipState = null;
@@ -2188,6 +2225,10 @@ export class IsometricRenderer {
             }
             for (const agentId of departures) this._removeAgentSprite(agentId);
         }
+    }
+
+    get motionTimeMs() {
+        return this._motionClock?.elapsedMs ?? 0;
     }
 
     setQuotaState(state) {
@@ -3284,30 +3325,58 @@ export class IsometricRenderer {
         if (!this._worldModeActive || this._contextLost) return;
         if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
         const now = performance.now();
+        const frameGapMs = Number.isFinite(this._lastFrameTime) ? now - this._lastFrameTime : 0;
         const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
         this._lastFrameTime = now;
-        const profileStart = this._performanceSamples ? performance.now() : 0;
-        let renderStart = 0;
+        advanceMotionClock(this._motionClock, dt, this.motionScale ?? 1);
+        this.waterFrame = virtualFramesFor(this.motionTimeMs) * WATER_FRAME_STEP;
+        const perf = getClientPerfMetrics();
+        let updateToken = null;
+        let renderToken = null;
         let stage = 'update';
+        let updateMs = 0;
+        let renderMs = 0;
+        const updateStart = now;
+        let renderStart = now;
         try {
+            if (perf?.enabled) updateToken = perf.beginRenderStage('world-update');
             this._update(dt);
-            if (this._performanceSamples) renderStart = performance.now();
+            const afterUpdate = performance.now();
+            updateMs = afterUpdate - updateStart;
+            if (updateToken) {
+                perf.endRenderStage(updateToken);
+                updateToken = null;
+            }
             stage = 'render';
+            renderStart = afterUpdate;
+            if (perf?.enabled) renderToken = perf.beginRenderStage('world-render');
             this._render(dt);
+            const afterRender = performance.now();
+            renderMs = afterRender - renderStart;
+            if (renderToken) {
+                perf.endRenderStage(renderToken);
+                renderToken = null;
+            }
+            this._recordFrameEnvelope(updateMs, renderMs, afterRender - updateStart, frameGapMs, null);
             if (this._performanceSamples) {
-                const completedAt = performance.now();
-                this._recordPerformanceSample({
-                    updateMs: renderStart - profileStart,
-                    renderMs: completedAt - renderStart,
-                    totalMs: completedAt - profileStart,
-                });
+                this._recordPerformanceSample(updateMs, renderMs, afterRender - updateStart);
             }
             stage = 'telemetry';
             this._trackFps(now);
             this._frameFailureStats.consecutive = 0;
         } catch (error) {
+            const failedAt = performance.now();
+            if (stage === 'update') {
+                updateMs = failedAt - updateStart;
+            } else if (stage === 'render') {
+                updateMs = renderStart - updateStart;
+                renderMs = failedAt - renderStart;
+            }
+            this._recordFrameEnvelope(updateMs, renderMs, failedAt - updateStart, frameGapMs, stage);
             this._reportFrameFailure(error, stage, now);
         } finally {
+            if (updateToken) perf?.endRenderStage?.(updateToken);
+            if (renderToken) perf?.endRenderStage?.(renderToken);
             this._startLoop();
         }
     }
@@ -3384,33 +3453,128 @@ export class IsometricRenderer {
     }
 
     startPerformanceProfile() {
-        this._performanceSamples = [];
+        this._performanceSamples = {
+            slots: new Array(600),
+            index: 0,
+            count: 0,
+            capacity: 600,
+        };
         this._frameTimingSamples?.clear?.();
+        enableFrameEnvelopeRings(this._frameEnvelope);
         return true;
     }
 
     stopPerformanceProfile() {
         const profile = this.getPerformanceProfile();
         this._performanceSamples = null;
+        if (!getClientPerfMetrics()?.enabled) this._frameEnvelope.ringsEnabled = false;
         return profile;
     }
 
     getPerformanceProfile() {
         return {
-            enabled: Array.isArray(this._performanceSamples),
-            samples: this._performanceSamples ? [...this._performanceSamples] : [],
-            renderTimings: this._lastRenderStats?.timings || null,
+            enabled: Boolean(this._performanceSamples),
+            samples: this._collectPerformanceSamples(),
+            renderTimings: this._snapshotRenderTimings(),
         };
     }
 
-    _recordPerformanceSample(sample) {
-        if (!this._performanceSamples) return;
-        if (this._performanceSamples.length >= 600) this._performanceSamples.shift();
-        this._performanceSamples.push({
-            ...sample,
-            agentCount: this.agentSprites.size,
-            renderMode: this._lastRenderStats?.quality?.agentRenderMode || null,
+    frameHealth() {
+        const gpu = this.gpuWorld?.getDiagnostics?.() || null;
+        const postFx = this.postFx?.getDiagnostics?.() || null;
+        const gpuMs = Number.isFinite(gpu?.gpuMs)
+            ? gpu.gpuMs
+            : (Number.isFinite(postFx?.gpuMs) ? postFx.gpuMs : null);
+        const qualityLevel = gpu?.qualityLevel ?? postFx?.ladder?.effectiveLevel ?? null;
+        const qualityReason = gpu?.qualityReason ?? postFx?.ladder?.lastDecisionReason ?? null;
+        return snapshotFrameEnvelope(this._frameEnvelope, {
+            gpuMs,
+            qualityLevel,
+            qualityReason,
         });
+    }
+
+    _syncFrameEnvelopeRings() {
+        const requested = Boolean(this._performanceSamples || getClientPerfMetrics()?.enabled);
+        if (requested) enableFrameEnvelopeRings(this._frameEnvelope);
+        else this._frameEnvelope.ringsEnabled = false;
+    }
+
+    _recordFrameEnvelope(updateMs, renderMs, totalMs, frameGapMs, failureStage) {
+        this._syncFrameEnvelopeRings();
+        recordFrameEnvelope(this._frameEnvelope, updateMs, renderMs, totalMs, frameGapMs, failureStage);
+    }
+
+    _recordPerformanceSample(updateMs, renderMs, totalMs) {
+        const ring = this._performanceSamples;
+        if (!ring) return;
+        let slot = ring.slots[ring.index];
+        if (!slot) {
+            slot = {
+                updateMs: 0,
+                renderMs: 0,
+                totalMs: 0,
+                agentCount: 0,
+                renderMode: null,
+            };
+            ring.slots[ring.index] = slot;
+        }
+        slot.updateMs = updateMs;
+        slot.renderMs = renderMs;
+        slot.totalMs = totalMs;
+        slot.agentCount = this.agentSprites.size;
+        slot.renderMode = this._lastRenderStats?.quality?.agentRenderMode || null;
+        ring.index += 1;
+        if (ring.index >= ring.capacity) ring.index = 0;
+        if (ring.count < ring.capacity) ring.count += 1;
+    }
+
+    _collectPerformanceSamples() {
+        const ring = this._performanceSamples;
+        if (!ring || ring.count === 0) return [];
+        const samples = new Array(ring.count);
+        const start = ring.count < ring.capacity ? 0 : ring.index;
+        for (let i = 0; i < ring.count; i++) {
+            const slot = ring.slots[(start + i) % ring.capacity];
+            samples[i] = slot
+                ? {
+                    updateMs: slot.updateMs,
+                    renderMs: slot.renderMs,
+                    totalMs: slot.totalMs,
+                    agentCount: slot.agentCount,
+                    renderMode: slot.renderMode,
+                }
+                : null;
+        }
+        return samples;
+    }
+
+    _snapshotRenderTimings() {
+        const timer = this._frameTimer;
+        const rings = this._frameTimingSamples;
+        if (!timer && !rings) return this._lastRenderStats?.timings || null;
+        const markCount = timer?.markCount || 0;
+        const segments = [];
+        for (let i = 0; i < markCount; i++) {
+            const label = timer.markLabels[i];
+            const ring = rings?.get(label);
+            segments.push({
+                label,
+                ms: timer.markMs[i],
+                p50: ring ? percentileAtSnapshot(ring.values, 0.5, ring.count) : null,
+                p95: ring ? percentileAtSnapshot(ring.values, 0.95, ring.count) : null,
+            });
+        }
+        if (segments.length > 1) {
+            segments.sort((a, b) => (Number(b.p95) || 0) - (Number(a.p95) || 0));
+        }
+        const totalRing = rings?.get('total');
+        return {
+            totalMs: timer?.lastTotalMs ?? this._lastRenderStats?.timings?.totalMs ?? 0,
+            totalP50: totalRing ? percentileAtSnapshot(totalRing.values, 0.5, totalRing.count) : null,
+            totalP95: totalRing ? percentileAtSnapshot(totalRing.values, 0.95, totalRing.count) : null,
+            segments,
+        };
     }
 
     _updateChatMatching() {
@@ -3487,7 +3651,6 @@ export class IsometricRenderer {
     }
 
     _update(dt = 16) {
-        this.waterFrame += WATER_FRAME_STEP * this.motionScale;
         this._ritualSyncFrame = (this._ritualSyncFrame + 1) % 1000000;
 
         // Update camera follow
@@ -4259,11 +4422,9 @@ export class IsometricRenderer {
         const el = document.getElementById('worldSemanticSummary');
         if (!el) return;
         const agents = Array.from(this.agentSprites.values()).map(sprite => sprite.agent).filter(Boolean);
-        const needs = agents.filter(agent => agent.status === AgentStatus.WAITING_ON_USER).length;
-        const errors = agents.filter(agent => agent.status === AgentStatus.ERRORED || agent.status === AgentStatus.RATE_LIMITED).length;
-        const working = agents.filter(agent => agent.status === AgentStatus.WORKING).length;
+        const counts = bucketCounts(agents);
         const selected = this.selectedAgent?.name ? ` Selected ${this.selectedAgent.name}.` : '';
-        const text = `Village: ${agents.length} agents. ${needs} need you, ${errors} errored or quota-limited, ${working} working.${selected}`;
+        const text = `Village: ${agents.length} agents. ${counts.needsYou} need you, ${counts.errors} errored, ${counts.quota} quota-limited, ${counts.watchlist} waiting, ${counts.working} working.${selected}`;
         if (text !== this._semanticSummaryText) { this._semanticSummaryText = text; el.textContent = text; }
     }
 

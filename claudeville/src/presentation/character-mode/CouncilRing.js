@@ -108,24 +108,6 @@ export function applyTeamPlazaPreferences(relationship, agentSprites) {
     }
 
     applyTeamGatherChoreography(relationship, agentSprites);
-    applyGossipClusters(snapshot, agentSprites);
-}
-
-// #38 — drive idle gossip knots from the relationship snapshot. The detection
-// (which IDLE villagers stand near which scenic point) lives in
-// RelationshipState; here we just nudge each member into its standing-chat
-// state facing the knot centroid. AgentSprite owns the dispersal timer and
-// post-gossip cooldown, so members that have already dispersed are skipped by
-// their own enterGossip guards.
-export function applyGossipClusters(snapshot, agentSprites) {
-    const data = relationshipSnapshot(snapshot);
-    if (!data?.gossipClusters || !agentSprites) return;
-    for (const cluster of data.gossipClusters) {
-        for (const memberId of cluster.memberIds || []) {
-            const sprite = agentSprites.get?.(memberId);
-            sprite?.enterGossip?.(cluster.cx, cluster.cy);
-        }
-    }
 }
 
 export function applyTeamGatherChoreography(snapshot, agentSprites, { now = performance.now() } = {}) {
@@ -493,14 +475,6 @@ export function admitTalkArcMarks({ relationship, agentSprites } = {}) {
         _talkArcGates.set(`talk:${pair.aId}:${pair.bId}`, governor.admit(MarkTier.SECONDARY, a.x, a.y - 18));
     }
 
-    (snapshot.gossipClusters || []).forEach((cluster, index) => {
-        const members = (cluster.memberIds || [])
-            .map(id => agentSprites.get(id))
-            .filter(sprite => sprite && !sprite.isArrivalPending?.());
-        if (members.length < 2) return;
-        _talkArcGates.set(`gossip:${index}`, governor.admit(MarkTier.SECONDARY, members[0].x, members[0].y - 16));
-    });
-
     _talkArcGateFrame = governor._frame;
 }
 
@@ -573,44 +547,6 @@ export function drawTalkArcs(ctx, {
             ctx.arc(mx, my, 1.8 / (zoom || 1), 0, Math.PI * 2);
             ctx.fill();
         }
-        ctx.restore();
-    }
-
-    // #38 — idle gossip knots: a closed triangle (or line for a pair) linking
-    // the loiterers, with the same warm chat hue. Reduced motion drops the
-    // shimmer to a steady dashed outline; the standing facing already reads as a
-    // conversation, so no travelling mote is drawn here.
-    for (const [clusterIndex, cluster] of (snapshot.gossipClusters || []).entries()) {
-        const members = (cluster.memberIds || [])
-            .map(id => agentSprites.get(id))
-            .filter(sprite => sprite && !sprite.isArrivalPending?.());
-        if (members.length < 2) continue;
-        const gate = preAdmittedGate(governor, `gossip:${clusterIndex}`)
-            || (governor
-                ? governor.admit(MarkTier.SECONDARY, members[0].x, members[0].y)
-                : { draw: true, alpha: 1 });
-        if (!gate.draw) continue;
-
-        const arcColor = gradeColor(THEME.chatting || '#f2d36b', grade);
-        ctx.save();
-        ctx.strokeStyle = rgba(arcColor, alpha * 0.85 * gate.alpha);
-        ctx.lineWidth = 1.2 / (zoom || 1);
-        if (motionScale === 0) ctx.setLineDash([2 / (zoom || 1), 4 / (zoom || 1)]);
-        ctx.beginPath();
-        for (let i = 0; i < members.length; i++) {
-            const a = members[i];
-            const b = members[(i + 1) % members.length];
-            if (members.length === 2 && i === 1) break; // a pair is a single edge
-            const start = { x: a.x, y: a.y - 16 };
-            const end = { x: b.x, y: b.y - 16 };
-            const control = {
-                x: (start.x + end.x) / 2,
-                y: (start.y + end.y) / 2 - 10,
-            };
-            ctx.moveTo(start.x, start.y);
-            ctx.quadraticCurveTo(control.x, control.y, end.x, end.y);
-        }
-        ctx.stroke();
         ctx.restore();
     }
 }

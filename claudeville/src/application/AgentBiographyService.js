@@ -108,6 +108,10 @@ export class AgentBiographyService {
         this._unsubscribers.push(eventBus.on('agent:added', seen));
         this._unsubscribers.push(eventBus.on('agent:updated', seen));
         this._unsubscribers.push(eventBus.on('agent:removed', (agent) => this._handleAgentRemoved(agent)));
+        this._unsubscribers.push(eventBus.on(
+            'chronicle:recorded',
+            (record) => this._handleChronicleRecord(record),
+        ));
         if (this.store.channel?.addEventListener) {
             this._channelListener = (event) => {
                 if (event.data?.type !== 'biography-updated') return;
@@ -307,6 +311,14 @@ export class AgentBiographyService {
         this._mutate(session.identityKey, (biography) => {
             biography.noteSeen(now);
             return biography.recordSessionCompleted(now);
+        });
+    }
+
+    _handleChronicleRecord(record) {
+        if (!this._accepting || !record?.identityKey || !this._holdsWriteLease()) return;
+        this._mutate(record.identityKey, (biography) => {
+            biography.rememberLifeEpisode(record);
+            return [];
         });
     }
 

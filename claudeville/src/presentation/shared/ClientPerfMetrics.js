@@ -8,6 +8,14 @@ const DEFAULT_RENDER_WINDOWS = 120;
 const DEFAULT_PENDING_DELTAS = 128;
 const RECENT_SNAPSHOT_SAMPLES = 64;
 const MID_FRAME_EPSILON_MS = 0.5;
+export const FRAME_ENVELOPE_EMA_ALPHA = 0.125;
+export const FRAME_ENVELOPE_RING_CAPACITY = 120;
+
+let lastClientPerfMetrics = null;
+
+export function getClientPerfMetrics() {
+    return lastClientPerfMetrics;
+}
 
 function defaultNow() {
     if (typeof performance !== 'undefined' && typeof performance.now === 'function') {
@@ -82,6 +90,228 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
 
 function copyRecent(buffer) {
     return buffer.slice(-RECENT_SNAPSHOT_SAMPLES).map(sample => ({ ...sample }));
+}
+
+function finiteNonNeg(value) {
+    const number = Number(value);
+    return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+/**
+ * Always-on frame-envelope arithmetic.
+ *
+ * The live path mutates a handful of scalars (and optional preallocated rings).
+ * Percentiles are computed only when a snapshot is requested.
+ */
+export function updateEma(previous, sample, alpha = FRAME_ENVELOPE_EMA_ALPHA) {
+    const value = Number(sample);
+    if (!Number.isFinite(value)) return Number.isFinite(previous) ? previous : 0;
+    if (!Number.isFinite(previous)) return value;
+    const weight = Number(alpha);
+    if (!Number.isFinite(weight) || weight <= 0) return previous;
+    if (weight >= 1) return value;
+    return previous + (value - previous) * weight;
+}
+
+export function hostGapMs(frameGapMs, appTotalMs) {
+    const gap = Number(frameGapMs);
+    if (!Number.isFinite(gap) || gap <= 0) return 0;
+    const app = Number(appTotalMs);
+    const owned = Number.isFinite(app) && app > 0 ? app : 0;
+    const residual = gap - owned;
+    return residual > 0 ? residual : 0;
+}
+
+export function percentileAtSnapshot(values, fraction, length) {
+    const size = Number.isFinite(length) ? length : (values?.length || 0);
+    if (!values || size <= 0) return null;
+    const finiteValues = [];
+    for (let i = 0; i < size; i++) {
+        const value = values[i];
+        if (Number.isFinite(value)) finiteValues.push(value);
+    }
+    if (finiteValues.length === 0) return null;
+    finiteValues.sort((a, b) => a - b);
+    const clamped = Math.min(1, Math.max(0, Number(fraction)));
+    if (!Number.isFinite(clamped)) return finiteValues[0];
+    const position = (finiteValues.length - 1) * clamped;
+    const lower = Math.floor(position);
+    const upper = Math.ceil(position);
+    if (lower === upper) return finiteValues[lower];
+    return finiteValues[lower] + (finiteValues[upper] - finiteValues[lower]) * (position - lower);
+}
+
+export function createBoundedRing(capacity) {
+    const size = Math.max(1, Math.floor(Number(capacity) || 0));
+    return {
+        values: new Float64Array(size),
+        index: 0,
+        count: 0,
+        capacity: size,
+    };
+}
+
+export function writeBoundedRing(ring, value) {
+    if (!ring || !ring.values) return 0;
+    const dropped = ring.count >= ring.capacity ? 1 : 0;
+    ring.values[ring.index] = finiteNonNeg(value);
+    ring.index += 1;
+    if (ring.index >= ring.capacity) ring.index = 0;
+    if (ring.count < ring.capacity) ring.count += 1;
+    return dropped;
+}
+
+export function createFrameEnvelope() {
+    return {
+        appUpdateMs: 0,
+        appRenderMs: 0,
+        appTotalMs: 0,
+        frameGapMs: 0,
+        hostGapMs: 0,
+        emaUpdateMs: NaN,
+        emaRenderMs: NaN,
+        emaTotalMs: NaN,
+        emaFrameGapMs: NaN,
+        emaHostGapMs: NaN,
+        sampleCount: 0,
+        droppedSamples: 0,
+        lastFailureStage: null,
+        ringsEnabled: false,
+        rings: null,
+    };
+}
+
+export function enableFrameEnvelopeRings(envelope, capacity = FRAME_ENVELOPE_RING_CAPACITY) {
+    if (!envelope) return envelope;
+    envelope.ringsEnabled = true;
+    if (envelope.rings) return envelope;
+    const size = Math.max(1, Math.floor(Number(capacity) || FRAME_ENVELOPE_RING_CAPACITY));
+    envelope.rings = {
+        capacity: size,
+        index: 0,
+        count: 0,
+        updateMs: new Float64Array(size),
+        renderMs: new Float64Array(size),
+        totalMs: new Float64Array(size),
+        frameGapMs: new Float64Array(size),
+        hostGapMs: new Float64Array(size),
+    };
+    return envelope;
+}
+
+export function recordFrameEnvelope(envelope, updateMs, renderMs, totalMs, frameGapMs, failureStage) {
+    if (!envelope) return envelope;
+    const nextUpdate = finiteNonNeg(updateMs);
+    const nextRender = finiteNonNeg(renderMs);
+    const nextTotal = finiteNonNeg(totalMs);
+    const nextGap = finiteNonNeg(frameGapMs);
+    const nextHost = hostGapMs(nextGap, nextTotal);
+    envelope.appUpdateMs = nextUpdate;
+    envelope.appRenderMs = nextRender;
+    envelope.appTotalMs = nextTotal;
+    envelope.frameGapMs = nextGap;
+    envelope.hostGapMs = nextHost;
+    envelope.emaUpdateMs = updateEma(envelope.emaUpdateMs, nextUpdate);
+    envelope.emaRenderMs = updateEma(envelope.emaRenderMs, nextRender);
+    envelope.emaTotalMs = updateEma(envelope.emaTotalMs, nextTotal);
+    envelope.emaFrameGapMs = updateEma(envelope.emaFrameGapMs, nextGap);
+    envelope.emaHostGapMs = updateEma(envelope.emaHostGapMs, nextHost);
+    envelope.sampleCount += 1;
+    if (typeof failureStage === 'string' && failureStage) {
+        envelope.lastFailureStage = failureStage;
+    }
+    const rings = envelope.ringsEnabled ? envelope.rings : null;
+    if (!rings) return envelope;
+    if (rings.count >= rings.capacity) envelope.droppedSamples += 1;
+    rings.updateMs[rings.index] = nextUpdate;
+    rings.renderMs[rings.index] = nextRender;
+    rings.totalMs[rings.index] = nextTotal;
+    rings.frameGapMs[rings.index] = nextGap;
+    rings.hostGapMs[rings.index] = nextHost;
+    rings.index += 1;
+    if (rings.index >= rings.capacity) rings.index = 0;
+    if (rings.count < rings.capacity) rings.count += 1;
+    return envelope;
+}
+
+export function snapshotFrameEnvelope(envelope, extras) {
+    const gpuMs = extras && Number.isFinite(Number(extras.gpuMs)) ? Number(extras.gpuMs) : null;
+    const qualityLevel = extras && extras.qualityLevel != null && Number.isFinite(Number(extras.qualityLevel))
+        ? Number(extras.qualityLevel)
+        : null;
+    const qualityReason = extras && typeof extras.qualityReason === 'string'
+        ? extras.qualityReason
+        : null;
+    if (!envelope) {
+        return {
+            appUpdateMs: 0,
+            appRenderMs: 0,
+            appTotalMs: 0,
+            frameGapMs: 0,
+            hostGapMs: 0,
+            emaAppUpdateMs: null,
+            emaAppRenderMs: null,
+            emaAppTotalMs: null,
+            emaFrameGapMs: null,
+            emaHostGapMs: null,
+            p95AppUpdateMs: null,
+            p95AppRenderMs: null,
+            p95AppTotalMs: null,
+            p95FrameGapMs: null,
+            p95HostGapMs: null,
+            gpuMs,
+            qualityLevel,
+            qualityReason,
+            droppedSamples: 0,
+            lastFailureStage: null,
+            sampleCount: 0,
+            ringsEnabled: false,
+            attribution: {
+                appTotalMs: 0,
+                frameGapMs: 0,
+                hostGapMs: 0,
+                rendererCostMs: 0,
+            },
+        };
+    }
+    const rings = envelope.rings;
+    const count = rings ? rings.count : 0;
+    const p95 = (field) => (rings && count > 0)
+        ? round(percentileAtSnapshot(rings[field], 0.95, count))
+        : null;
+    const appTotalMs = round(envelope.appTotalMs) ?? 0;
+    const frameGapMs = round(envelope.frameGapMs) ?? 0;
+    const residualMs = round(envelope.hostGapMs) ?? 0;
+    return {
+        appUpdateMs: round(envelope.appUpdateMs) ?? 0,
+        appRenderMs: round(envelope.appRenderMs) ?? 0,
+        appTotalMs,
+        frameGapMs,
+        hostGapMs: residualMs,
+        emaAppUpdateMs: round(envelope.emaUpdateMs),
+        emaAppRenderMs: round(envelope.emaRenderMs),
+        emaAppTotalMs: round(envelope.emaTotalMs),
+        emaFrameGapMs: round(envelope.emaFrameGapMs),
+        emaHostGapMs: round(envelope.emaHostGapMs),
+        p95AppUpdateMs: p95('updateMs'),
+        p95AppRenderMs: p95('renderMs'),
+        p95AppTotalMs: p95('totalMs'),
+        p95FrameGapMs: p95('frameGapMs'),
+        p95HostGapMs: p95('hostGapMs'),
+        gpuMs: gpuMs === null ? null : round(gpuMs),
+        qualityLevel,
+        qualityReason,
+        droppedSamples: envelope.droppedSamples || 0,
+        lastFailureStage: envelope.lastFailureStage || null,
+        sampleCount: envelope.sampleCount || 0,
+        ringsEnabled: Boolean(envelope.ringsEnabled),
+        attribution: {
+            appTotalMs,
+            frameGapMs,
+            hostGapMs: residualMs,
+            rendererCostMs: appTotalMs,
+        },
+    };
 }
 
 /**
@@ -169,6 +399,7 @@ export class ClientPerfMetrics {
             stopClientPerf: () => this.stop(),
             resetClientPerf: () => this.reset(),
         };
+        lastClientPerfMetrics = this;
     }
 
     getDebugHelpers() {

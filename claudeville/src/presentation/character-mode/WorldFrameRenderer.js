@@ -19,6 +19,10 @@ import {
 } from './VillageDirectorOverlay.js';
 import { worldSceneCategoryRegistry } from './SceneCategoryRegistry.js';
 import { buildGpuWorldRecords } from './gpu/GpuSceneBuilder.js';
+import { createBoundedRing, writeBoundedRing } from '../shared/ClientPerfMetrics.js';
+
+const FRAME_TIMING_RING_CAPACITY = 90;
+const FRAME_TIMER_MAX_MARKS = 48;
 
 // Follow-up after layer extraction: move private renderer calls used here into
 // explicit layer/context methods so this module stays a frame orchestrator.
@@ -933,49 +937,85 @@ function emitSceneCategoryDiagnostics(renderer, diagnostics = []) {
     }
 }
 
+function frameTimingRequested(renderer) {
+    return Boolean(renderer?.debugOverlay?.enabled || renderer?._performanceSamples);
+}
+
+function createFrameTimer() {
+    return {
+        start: 0,
+        last: 0,
+        markCount: 0,
+        maxMarks: FRAME_TIMER_MAX_MARKS,
+        dropped: 0,
+        lastTotalMs: 0,
+        markLabels: new Array(FRAME_TIMER_MAX_MARKS),
+        markMs: new Float64Array(FRAME_TIMER_MAX_MARKS),
+        segmentPool: Array.from({ length: FRAME_TIMER_MAX_MARKS }, () => ({ label: '', ms: 0, p95: 0 })),
+        lastTimings: { totalMs: 0, totalP50: 0, totalP95: 0, segments: [] },
+    };
+}
+
 function beginFrameTiming(renderer) {
-    if (!renderer?.debugOverlay?.enabled && !renderer?._performanceSamples) return null;
+    if (!frameTimingRequested(renderer)) return null;
+    const timer = renderer._frameTimer || (renderer._frameTimer = createFrameTimer());
     const now = performance.now();
-    return { start: now, last: now, segments: [] };
+    timer.start = now;
+    timer.last = now;
+    timer.markCount = 0;
+    return timer;
 }
 
 function markFrameTiming(timer, label) {
     if (!timer) return;
     const now = performance.now();
-    timer.segments.push({ label, ms: now - timer.last });
+    const ms = now - timer.last;
     timer.last = now;
+    if (timer.markCount >= timer.maxMarks) {
+        timer.dropped += 1;
+        return;
+    }
+    const index = timer.markCount;
+    timer.markLabels[index] = label;
+    timer.markMs[index] = ms;
+    timer.markCount = index + 1;
+}
+
+function writeFrameTimingSample(renderer, label, ms) {
+    const rings = renderer._frameTimingSamples || (renderer._frameTimingSamples = new Map());
+    let ring = rings.get(label);
+    if (!ring) {
+        ring = createBoundedRing(FRAME_TIMING_RING_CAPACITY);
+        rings.set(label, ring);
+    }
+    writeBoundedRing(ring, ms);
 }
 
 function finishFrameTiming(renderer, timer) {
     if (!timer) return renderer?._lastRenderStats?.timings || null;
     const totalMs = performance.now() - timer.start;
-    const samples = renderer._frameTimingSamples || (renderer._frameTimingSamples = new Map());
-    const segments = timer.segments.map((segment) => {
-        const values = samples.get(segment.label) || [];
-        values.push(segment.ms);
-        if (values.length > 90) values.shift();
-        samples.set(segment.label, values);
-        return {
-            ...segment,
-            p50: percentile(values, 0.5),
-            p95: percentile(values, 0.95),
-        };
-    }).sort((a, b) => b.p95 - a.p95);
-    const totalValues = samples.get('total') || [];
-    totalValues.push(totalMs);
-    if (totalValues.length > 90) totalValues.shift();
-    samples.set('total', totalValues);
-    return {
-        totalMs,
-        totalP50: percentile(totalValues, 0.5),
-        totalP95: percentile(totalValues, 0.95),
-        segments,
-    };
-}
-
-function percentile(values, p) {
-    if (!values?.length) return 0;
-    const ordered = [...values].sort((a, b) => a - b);
-    const index = Math.max(0, Math.min(ordered.length - 1, Math.ceil(ordered.length * p) - 1));
-    return ordered[index];
+    timer.lastTotalMs = totalMs;
+    writeFrameTimingSample(renderer, 'total', totalMs);
+    const timings = timer.lastTimings;
+    const segments = timings.segments;
+    const pool = timer.segmentPool;
+    for (let i = 0; i < timer.markCount; i++) {
+        const label = timer.markLabels[i];
+        const ms = timer.markMs[i];
+        writeFrameTimingSample(renderer, label, ms);
+        const slot = pool[i];
+        slot.label = label;
+        slot.ms = ms;
+        slot.p95 = 0;
+        segments[i] = slot;
+    }
+    segments.length = timer.markCount;
+    timings.totalMs = totalMs;
+    timings.totalP50 = 0;
+    timings.totalP95 = 0;
+    if (timer.dropped) {
+        if (renderer._frameEnvelope) renderer._frameEnvelope.droppedSamples += timer.dropped;
+        timer.dropped = 0;
+    }
+    return timings;
 }

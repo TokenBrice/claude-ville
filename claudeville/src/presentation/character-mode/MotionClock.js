@@ -65,13 +65,16 @@ export function dtAlpha(perFrameSmoothing, dtMs, refDtMs = REF_DT_MS) {
 export function createMotionClock() {
     return { elapsedMs: 0, virtualFrame: 0, lastDtMs: 0 };
 }
-
 /**
  * Advance a clock by one frame.
  *
  * Reduced motion (`motionScale <= 0`) freezes the clock in place: the village
  * holds a static tableau rather than running a second, slower animation.
- * Returns the same object so callers can chain without allocating.
+ *
+ * A fractional scale between 0 and 1 slows the clock proportionally, which
+ * preserves the semantics of the per-frame accumulators this replaced (they
+ * multiplied their step by `motionScale`). Returns the same object so callers
+ * can chain without allocating.
  */
 export function advanceMotionClock(clock, dtMs, motionScale = 1) {
     if (!clock) return createMotionClock();
@@ -80,7 +83,7 @@ export function advanceMotionClock(clock, dtMs, motionScale = 1) {
         clock.lastDtMs = 0;
         return clock;
     }
-    const dt = clampDt(dtMs);
+    const dt = clampDt(dtMs) * Math.min(1, scale);
     clock.lastDtMs = dt;
     clock.elapsedMs += dt;
     clock.virtualFrame = virtualFramesFor(clock.elapsedMs);

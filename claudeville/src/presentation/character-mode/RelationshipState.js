@@ -1,23 +1,9 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { tileToWorld, worldToTile } from './Projection.js';
-import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
-import { AMBIENT_SCENIC_POINTS } from '../../config/scenery.js';
+import { worldToTile } from './Projection.js';
 
 const ARRIVAL_WINDOW_MS = 8000;
 const DEPARTURE_WINDOW_MS = 12000;
 const MAX_RECENT_DEPARTURES = 6;
-
-// #38 — idle gossip clusters. When 2-3 IDLE villagers loiter near the same
-// scenic point they form a standing chat knot. Detection is cheap (a screen
-// distance check against the precomputed scenic-point world positions) and
-// runs on the relationship cadence, not per frame.
-const GOSSIP_RADIUS_PX = 30;
-const GOSSIP_MIN_MEMBERS = 2;
-const GOSSIP_MAX_MEMBERS = 3;
-const _scenicPointWorld = AMBIENT_SCENIC_POINTS.map(point => ({
-    id: point.id,
-    ...tileToWorld({ tileX: point.tileX, tileY: point.tileY }),
-}));
 
 function pairKey(aId, bId) {
     return [aId, bId].sort().join('|');
@@ -33,7 +19,6 @@ export class RelationshipState {
         this.recentArrivals = [];
         this.recentDepartures = [];
         this.chatPairs = [];
-        this.gossipClusters = [];
         this._lastSpriteTiles = new Map();
         this._membershipDirty = true;
         this._lastMembership = new Map();
@@ -88,7 +73,6 @@ export class RelationshipState {
         this.recentArrivals = [];
         this.recentDepartures = [];
         this.chatPairs = [];
-        this.gossipClusters = [];
         this._lastSpriteTiles.clear();
         this._lastMembership.clear();
         this._cachedSnapshotTeamToMembersArrays.clear();
@@ -112,7 +96,6 @@ export class RelationshipState {
             this._membershipDirty = false;
         }
         this._rebuildChatPairs(sprites);
-        this._rebuildGossipClusters(sprites);
         this._snapshot = {
             parentToChildren: this.parentToChildren,
             childToParent: this.childToParent,
@@ -120,10 +103,6 @@ export class RelationshipState {
             recentArrivals: this.recentArrivals.map(item => ({ ...item, sinceMs: now - item.at })),
             recentDepartures: this.recentDepartures.map(item => ({ ...item, sinceMs: now - item.at })),
             chatPairs: this.chatPairs.map(pair => ({ ...pair })),
-            gossipClusters: this.gossipClusters.map(cluster => ({
-                ...cluster,
-                memberIds: [...cluster.memberIds],
-            })),
             advisorPairs: this.advisorPairs.map(pair => ({ ...pair })),
         };
         return this;
@@ -142,7 +121,6 @@ export class RelationshipState {
             recentArrivals: this.recentArrivals.length,
             recentDepartures: this.recentDepartures.length,
             chatPairs: this.chatPairs.length,
-            gossipClusters: this.gossipClusters.length,
             advisorPairs: this.advisorPairs.length,
             rememberedSpriteTiles: this._lastSpriteTiles.size,
             rememberedMemberships: this._lastMembership.size,
@@ -201,44 +179,6 @@ export class RelationshipState {
             out.push({ aId, bId });
         }
         this.chatPairs = out;
-    }
-
-    // #38 — group loitering IDLE villagers near each scenic point into standing
-    // gossip knots. A sprite is eligible when it is IDLE, not already in a
-    // pairwise SendMessage chat, not pending arrival, and not in its own
-    // post-gossip cooldown (tracked on the sprite). Each scenic point yields at
-    // most one cluster of 2-3 members; clusters carry a screen-space centroid so
-    // members can rotate to face it and the renderer can draw the knot triangle.
-    _rebuildGossipClusters(sprites) {
-        if (sprites.length < GOSSIP_MIN_MEMBERS) { this.gossipClusters = []; return; }
-
-        const taken = new Set();
-        const out = [];
-        for (const point of _scenicPointWorld) {
-            const near = [];
-            for (const sprite of sprites) {
-                const id = sprite.agent?.id;
-                if (!id || taken.has(id)) continue;
-                if (sprite.agent?.status !== AgentStatus.IDLE) continue;
-                if (sprite.chatPartner || (sprite.chatting && !sprite.isGossiping?.())) continue;
-                if (sprite.isArrivalPending?.()) continue;
-                if (sprite.isGossipCoolingDown?.()) continue;
-                if (Math.hypot(sprite.x - point.x, sprite.y - point.y) > GOSSIP_RADIUS_PX) continue;
-                near.push(sprite);
-                if (near.length >= GOSSIP_MAX_MEMBERS) break;
-            }
-            if (near.length < GOSSIP_MIN_MEMBERS) continue;
-            const cx = near.reduce((sum, s) => sum + s.x, 0) / near.length;
-            const cy = near.reduce((sum, s) => sum + s.y, 0) / near.length;
-            for (const sprite of near) taken.add(sprite.agent.id);
-            out.push({
-                id: point.id,
-                cx,
-                cy,
-                memberIds: near.map(s => s.agent.id),
-            });
-        }
-        this.gossipClusters = out;
     }
 
     _rememberSpriteTiles(sprites) {

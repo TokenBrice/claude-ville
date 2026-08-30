@@ -1,5 +1,6 @@
 import { eventBus } from '../domain/events/DomainEvent.js';
 import { WS_RECONNECT_INTERVAL } from '../config/constants.js';
+import { LinkState } from '../application/VillageState.js';
 
 function unescapeJsonPointerToken(token) {
     return token.replace(/~1/g, '/').replace(/~0/g, '~');
@@ -74,6 +75,14 @@ export class WebSocketClient {
         this.reconnectTimer = null;
         this.reconnectAttempts = 0;
         this.performanceMetrics = performanceMetrics;
+        this.state = Object.freeze({
+            state: LinkState.SYNCING,
+            attempts: 0,
+            nextRetryAt: null,
+            lastMessageAt: null,
+            lastSnapshotAt: null,
+            lastErrorCode: null,
+        });
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.url = `${protocol}//${window.location.host}/ws`;
         // Delta protocol state: last full {sessions, teams, usage} snapshot
@@ -107,6 +116,10 @@ export class WebSocketClient {
                 this.send({ type: 'hello', deltas: true });
                 eventBus.emit('ws:connected');
                 this._clearReconnect();
+                this._publishState({
+                    state: this.reconnectAttempts > 0 ? LinkState.RECONNECTING : LinkState.SYNCING,
+                    nextRetryAt: null,
+                });
             };
 
             socket.onmessage = (event) => {
@@ -117,10 +130,12 @@ export class WebSocketClient {
                     : null;
                 try {
                     const data = JSON.parse(event.data);
+                    this._publishState({ lastMessageAt: Date.now() });
                     this._handleMessage(data, messagePerf);
                 } catch (err) {
                     if (messagePerf) metrics.cancelMessage?.(messagePerf);
                     console.error('[WS] Failed to parse message:', err.message);
+                    this._publishState({ lastErrorCode: 'message-invalid' });
                 }
             };
 
@@ -131,17 +146,22 @@ export class WebSocketClient {
                 this._clearProtocolState();
                 console.log('[WS] Disconnected');
                 eventBus.emit('ws:disconnected');
-                this._scheduleReconnect();
+                this._scheduleReconnect('socket-closed');
             };
 
             socket.onerror = () => {
                 if (this.ws !== socket) return;
                 console.error('[WS] Error occurred');
                 this.connected = false;
+                this._publishState({
+                    lastErrorCode: this.state.lastSnapshotAt === null
+                        ? 'initial-sync-failed'
+                        : 'socket-error',
+                });
             };
         } catch (err) {
             console.error('[WS] Connection failed:', err.message);
-            this._scheduleReconnect();
+            this._scheduleReconnect('initial-sync-failed');
         }
     }
 
@@ -179,12 +199,15 @@ export class WebSocketClient {
                 // so half-open TCPs that never deliver init keep backing off.
                 this.reconnectAttempts = 0;
                 this._rememberSnapshot(data);
+                this._publishSnapshot();
                 eventBus.emit('ws:init', data);
                 if (data.usage) eventBus.emit('usage:updated', data.usage);
                 break;
             case 'update':
                 if (messagePerf) this.performanceMetrics.cancelMessage?.(messagePerf);
                 this._rememberSnapshot(data);
+                this.reconnectAttempts = 0;
+                this._publishSnapshot();
                 eventBus.emit('ws:update', data);
                 if (data.usage) eventBus.emit('usage:updated', data.usage);
                 break;
@@ -239,6 +262,7 @@ export class WebSocketClient {
             : null;
         if (!this._state || this._seq === null || data.baseSeq !== this._seq) {
             if (deltaPerf) metrics.discardDelta?.(deltaPerf, 'resync');
+            this._publishState({ lastErrorCode: 'delta-baseline-mismatch' });
             this._requestResync();
             return;
         }
@@ -249,12 +273,15 @@ export class WebSocketClient {
         } catch (err) {
             if (deltaPerf) metrics.discardDelta?.(deltaPerf, 'resync');
             console.warn('[WS] Failed to apply delta, requesting resync:', err.message);
+            this._publishState({ lastErrorCode: 'patch-failed' });
             this._requestResync();
             return;
         }
         if (deltaPerf) metrics.markPatchApplied?.(deltaPerf, data.patch.length);
         this._state = next;
         this._seq = data.seq;
+        this.reconnectAttempts = 0;
+        this._publishSnapshot();
         const payload = {
             type: 'update',
             sessions: next.sessions,
@@ -279,7 +306,7 @@ export class WebSocketClient {
         this.send({ type: 'resync' });
     }
 
-    _scheduleReconnect() {
+    _scheduleReconnect(errorCode = 'socket-closed') {
         this._clearReconnect();
         this.reconnectAttempts++;
         const backoff = Math.min(
@@ -288,6 +315,13 @@ export class WebSocketClient {
         );
         // Jitter avoids lockstep reconnect storms when many tabs reopen at once.
         const delay = backoff + Math.random() * 500;
+        const nextRetryAt = Date.now() + delay;
+        this._publishState({
+            state: LinkState.RECONNECTING,
+            attempts: this.reconnectAttempts,
+            nextRetryAt,
+            lastErrorCode: errorCode,
+        });
         this.reconnectTimer = setTimeout(() => {
             if (this.reconnectAttempts > 3) {
                 console.log(`[WS] Reconnect attempt... (retrying in ${Math.round(delay / 1000)} seconds)`);
@@ -301,5 +335,36 @@ export class WebSocketClient {
             clearTimeout(this.reconnectTimer);
             this.reconnectTimer = null;
         }
+    }
+
+    _publishSnapshot() {
+        this._publishState({
+            state: LinkState.LIVE,
+            attempts: 0,
+            nextRetryAt: null,
+            lastSnapshotAt: Date.now(),
+            lastErrorCode: null,
+        });
+    }
+
+    _publishState(updates = {}) {
+        const next = {
+            state: updates.state ?? this.state.state,
+            attempts: updates.attempts ?? this.reconnectAttempts,
+            nextRetryAt: updates.nextRetryAt !== undefined
+                ? updates.nextRetryAt
+                : this.state.nextRetryAt,
+            lastMessageAt: updates.lastMessageAt !== undefined
+                ? updates.lastMessageAt
+                : this.state.lastMessageAt,
+            lastSnapshotAt: updates.lastSnapshotAt !== undefined
+                ? updates.lastSnapshotAt
+                : this.state.lastSnapshotAt,
+            lastErrorCode: updates.lastErrorCode !== undefined
+                ? updates.lastErrorCode
+                : this.state.lastErrorCode,
+        };
+        this.state = Object.freeze(next);
+        eventBus.emit('ws:state', next);
     }
 }

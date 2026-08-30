@@ -1,4 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { actionableAgents, bucketAgents, bucketCounts, bucketForStatus } from '../../domain/services/SignalLedger.js';
 import { AvatarCanvas } from './AvatarCanvas.js';
 import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
@@ -7,7 +8,7 @@ import { replaceChildren } from '../shared/DomSafe.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
 import { formatCost, formatRelative, formatTokens, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
-import { operatorStatusLabel, sortAttentionAgents } from '../shared/SemanticTriage.js';
+import { operatorStatusLabel } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
 import { phaseNameForDate } from '../character-mode/AtmosphereState.js';
 import { attentionAgentIds, isKeyboardEditTarget, nextCardId, recoveryCardId } from './DashboardKeyboardNavigation.js';
@@ -28,6 +29,70 @@ import {
 
 const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const DETAIL_FETCH_LIMIT = 48;
+
+/** Dashboard health display precedence: error, blocked, quota, working, waiting, idle. */
+export const SECTION_HEALTH_ORDER = Object.freeze([
+    'errors',
+    'needsYou',
+    'quota',
+    'working',
+    'watchlist',
+    'idle',
+]);
+
+const SECTION_HEALTH_PRESENTATION = Object.freeze({
+    errors: Object.freeze({ className: 'errored', label: 'error' }),
+    needsYou: Object.freeze({ className: 'needs-you', label: 'blocked' }),
+    quota: Object.freeze({ className: 'quota', label: 'quota' }),
+    working: Object.freeze({ className: 'working', label: 'working' }),
+    watchlist: Object.freeze({ className: 'watchlist', label: 'waiting' }),
+    idle: Object.freeze({ className: 'idle', label: 'idle' }),
+});
+
+/**
+ * Project-header counts derived from the shared SignalLedger vocabulary.
+ * `quiet` combines idle, completed, and unknown statuses for the compact
+ * header readout and is presented as `idle`.
+ */
+export function sectionHealthCounts(agents) {
+    const counts = bucketCounts(agents);
+    return {
+        errors: counts.errors,
+        needsYou: counts.needsYou,
+        quota: counts.quota,
+        working: counts.working,
+        watchlist: counts.watchlist,
+        idle: counts.quiet,
+    };
+}
+
+/** Stable display order with zero-count buckets omitted. */
+export function nonZeroSectionHealthBuckets(counts) {
+    return SECTION_HEALTH_ORDER.filter(bucket => Number(counts?.[bucket]) > 0);
+}
+
+/** The edge flash belongs only to a genuine errored status. */
+export function shouldFlashForStatus(status) {
+    return bucketForStatus(status) === 'errors';
+}
+
+function healthCounterText(bucket, count) {
+    const label = SECTION_HEALTH_PRESENTATION[bucket].label;
+    return `${count} ${bucket === 'errors' && count !== 1 ? `${label}s` : label}`;
+}
+
+function healthDescription(bucket, count) {
+    const agentNoun = count === 1 ? 'agent' : 'agents';
+    const descriptions = {
+        errors: `${count} errored ${agentNoun}`,
+        needsYou: `${count} blocked ${agentNoun} waiting for your input`,
+        quota: `${count} rate-limited ${agentNoun}`,
+        working: `${count} working ${agentNoun}`,
+        watchlist: `${count} waiting ${agentNoun} on the watchlist`,
+        idle: `${count} idle or completed ${agentNoun}`,
+    };
+    return descriptions[bucket];
+}
 
 function hasOpenSurface(documentRef = globalThis.document) {
     const modal = documentRef?.getElementById?.('modalOverlay');
@@ -352,33 +417,39 @@ export class DashboardRenderer {
                 <span class="dashboard__label-icon">#</span>
                 <span class="dashboard__section-name" style="color: ${profile.labelText || profile.accent}"></span>
                 <span class="dashboard__section-path"></span>
-                <span class="dashboard__section-health">
-                    <span class="dashboard__health-stat dashboard__health-stat--errored" style="display: none"></span>
-                    <span class="dashboard__health-stat dashboard__health-stat--working" style="display: none"></span>
-                    <span class="dashboard__health-stat dashboard__health-stat--idle" style="display: none"></span>
-                </span>
+                <span class="dashboard__section-health" aria-label="Project health"></span>
                 <span class="dashboard__section-count" style="color: ${profile.labelText || profile.accent}"></span>
             </div>
             <div class="dashboard__section-healthbar" aria-hidden="true">
-                <span class="dashboard__healthbar-seg dashboard__healthbar-seg--errored"></span>
-                <span class="dashboard__healthbar-seg dashboard__healthbar-seg--working"></span>
-                <span class="dashboard__healthbar-seg dashboard__healthbar-seg--idle"></span>
+                ${SECTION_HEALTH_ORDER.map(bucket => {
+                    const className = SECTION_HEALTH_PRESENTATION[bucket].className;
+                    return `<span class="dashboard__healthbar-seg dashboard__healthbar-seg--${className}" style="display: none"></span>`;
+                }).join('')}
             </div>
             <div class="dashboard__section-grid"></div>
         `;
+        const health = section.querySelector('.dashboard__section-health');
         section._sectionRefs = {
             name: section.querySelector('.dashboard__section-name'),
             path: section.querySelector('.dashboard__section-path'),
             count: section.querySelector('.dashboard__section-count'),
             grid: section.querySelector('.dashboard__section-grid'),
-            healthErrored: section.querySelector('.dashboard__health-stat--errored'),
-            healthWorking: section.querySelector('.dashboard__health-stat--working'),
-            healthIdle: section.querySelector('.dashboard__health-stat--idle'),
-            healthBarErrored: section.querySelector('.dashboard__healthbar-seg--errored'),
-            healthBarWorking: section.querySelector('.dashboard__healthbar-seg--working'),
-            healthBarIdle: section.querySelector('.dashboard__healthbar-seg--idle'),
+            health,
+            healthStats: Object.fromEntries(SECTION_HEALTH_ORDER.map(bucket => {
+                const className = SECTION_HEALTH_PRESENTATION[bucket].className;
+                const stat = document.createElement('span');
+                stat.className = `dashboard__health-stat dashboard__health-stat--${className}`;
+                stat.style.display = 'none';
+                stat.setAttribute('aria-hidden', 'true');
+                health.appendChild(stat);
+                return [bucket, stat];
+            })),
+            healthBars: Object.fromEntries(SECTION_HEALTH_ORDER.map(bucket => {
+                const className = SECTION_HEALTH_PRESENTATION[bucket].className;
+                return [bucket, section.querySelector(`.dashboard__healthbar-seg--${className}`)];
+            })),
         };
-        section._erroredCount = 0;
+        section._trueErrorCount = 0;
         return section;
     }
 
@@ -395,44 +466,50 @@ export class DashboardRenderer {
         this._updateSectionHealth(sectionEl, refs, agents);
     }
 
-    // Health rollup: errored/working/idle counts for the section's agents.
+    // Health rollup: six SignalLedger buckets for the section's agents.
     _updateSectionHealth(sectionEl, refs, agents) {
-        const counts = { errored: 0, working: 0, idle: 0 };
-        for (const agent of agents) {
-            const status = normalizeStatus(agent.status);
-            if (status === 'errored') counts.errored++;
-            else if (status === 'rate_limited' || status === 'waiting_on_user') counts.errored++;
-            else if (status === 'working') counts.working++;
-            else counts.idle++;
-        }
-        const stats = [
-            [refs.healthErrored, counts.errored, 'errored'],
-            [refs.healthWorking, counts.working, 'working'],
-            [refs.healthIdle, counts.idle, 'idle'],
-        ];
-        for (const [el, count, label] of stats) {
+        const counts = sectionHealthCounts(agents);
+        const orderedBuckets = nonZeroSectionHealthBuckets(counts);
+        const visibleBuckets = new Set(orderedBuckets);
+        const descriptions = orderedBuckets.map(bucket => healthDescription(bucket, counts[bucket]));
+        refs.health.title = descriptions.join('; ');
+        refs.health.setAttribute('aria-label', `Project health: ${descriptions.join('; ')}`);
+        for (const bucket of SECTION_HEALTH_ORDER) {
+            const el = refs.healthStats[bucket];
+            const count = counts[bucket];
             if (!el) continue;
-            if (count > 0) {
-                this._setText(el, count);
-                el.title = `${count} ${label}`;
+            if (visibleBuckets.has(bucket)) {
+                this._setText(el, healthCounterText(bucket, count));
+                const description = healthDescription(bucket, count);
+                el.title = description;
+                el.dataset.separator = String(bucket !== orderedBuckets.at(-1));
+                el.setAttribute('aria-label', description);
+                el.setAttribute('aria-hidden', 'false');
                 this._setStyle(el, 'display', '');
             } else {
+                this._setText(el, '');
+                el.title = '';
+                el.removeAttribute('data-separator');
+                el.removeAttribute('aria-label');
+                el.setAttribute('aria-hidden', 'true');
                 this._setStyle(el, 'display', 'none');
             }
         }
 
-        // #44 — composite health pulse-bar: 2px segments sized by status counts,
-        // one-shot red edge-flash when a section gains an errored card.
-        const total = counts.errored + counts.working + counts.idle;
-        const pct = (n) => (total > 0 ? `${(n / total) * 100}%` : '0%');
-        this._setStyle(refs.healthBarErrored, 'flexBasis', pct(counts.errored));
-        this._setStyle(refs.healthBarWorking, 'flexBasis', pct(counts.working));
-        this._setStyle(refs.healthBarIdle, 'flexBasis', pct(counts.idle));
+        // #44 — composite health pulse-bar: 2px segments sized by the same
+        // six counts, with a one-shot red edge-flash only for a new true error.
+        for (const bucket of SECTION_HEALTH_ORDER) {
+            const segment = refs.healthBars[bucket];
+            if (!segment) continue;
+            this._setStyle(segment, 'flexGrow', String(counts[bucket]));
+            this._setStyle(segment, 'display', visibleBuckets.has(bucket) ? '' : 'none');
+        }
 
-        if (counts.errored > (sectionEl._erroredCount || 0)) {
+        if (counts.errors > (sectionEl._trueErrorCount || 0)
+            && agents.some(agent => shouldFlashForStatus(agent.status))) {
             this._flashSectionErrored(sectionEl);
         }
-        sectionEl._erroredCount = counts.errored;
+        sectionEl._trueErrorCount = counts.errors;
     }
 
     _flashSectionErrored(sectionEl) {
@@ -571,19 +648,25 @@ export class DashboardRenderer {
 
     _renderAttentionQueue(agents) {
         if (!this.attentionEl) return;
-        const actionable = sortAttentionAgents(agents).filter(agent => ['waiting_on_user', 'errored', 'rate_limited', 'waiting'].includes(normalizeStatus(agent.status)));
-        this.attentionEl.hidden = actionable.length === 0;
-        if (!actionable.length) { replaceChildren(this.attentionEl, []); return; }
+        const buckets = bucketAgents(agents);
+        const actionable = actionableAgents(buckets);
+        const watchlist = buckets.watchlist;
+        const queued = [...actionable, ...watchlist];
+        this.attentionEl.hidden = queued.length === 0;
+        if (!queued.length) { replaceChildren(this.attentionEl, []); return; }
         const heading = document.createElement('div');
         heading.className = 'dashboard-attention__heading';
-        heading.textContent = `NEEDS YOU & WATCHLIST · ${actionable.length}`;
+        heading.textContent = `NEEDS YOU & WATCHLIST · ${queued.length}`;
         const list = document.createElement('div');
         list.className = 'dashboard-attention__list';
-        for (const agent of actionable) {
+        for (const agent of queued) {
+            const status = normalizeStatus(agent.status);
+            const isWatchlist = status === 'waiting';
             const button = document.createElement('button');
             button.type = 'button';
-            button.className = `dashboard-attention__item dashboard-attention__item--${normalizeStatus(agent.status)}`;
-            button.textContent = `${operatorStatusLabel(agent.status)} · ${agent.name || agent.id} · ${shortProjectName(agent.projectPath || '')}`;
+            button.className = `dashboard-attention__item dashboard-attention__item--${status}${isWatchlist ? ' dashboard-attention__item--watchlist' : ''}`;
+            const queueLabel = isWatchlist ? 'Watchlist' : operatorStatusLabel(agent.status);
+            button.textContent = `${queueLabel} · ${agent.name || agent.id} · ${shortProjectName(agent.projectPath || '')}`;
             button.addEventListener('click', () => emitAgentSelected(this.world.agents.get(agent.id)));
             list.appendChild(button);
         }

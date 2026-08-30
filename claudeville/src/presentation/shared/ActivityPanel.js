@@ -47,6 +47,34 @@ const BUILDING_PAYLOAD_FIELD_LIMIT = 128;
 const BUILDING_PAYLOAD_CHARACTER_LIMIT = 8192;
 const BUILDING_PAYLOAD_SCAN_LIMIT = 512;
 const BUILDING_PAYLOAD_ENTRY_LIMIT = 64;
+
+export function shouldFocusActivityPanel(selectionOrigin) {
+    return selectionOrigin === 'keyboard';
+}
+
+export function shouldHandleActivityPanelEscape({ panelOpen = false, modalOpen = false, popoverOpen = false } = {}) {
+    return panelOpen && !modalOpen && !popoverOpen;
+}
+
+function hasOpenPopover(documentRef = globalThis.document) {
+    for (const id of ['audioMixerPanel', 'spendBreakdownPanel']) {
+        const panel = documentRef?.getElementById?.(id);
+        if (panel && !panel.hidden && panel.style?.display !== 'none') return true;
+    }
+
+    const popovers = documentRef?.querySelectorAll?.('[popover]') || [];
+    return [...popovers].some(popover => {
+        if (typeof popover.matches === 'function') {
+            try {
+                return popover.matches(':popover-open') === true;
+            } catch {
+                // Older engines do not know :popover-open; use the fallback state.
+            }
+        }
+        return popover.hasAttribute?.('open') === true || popover.open === true;
+    });
+}
+
 const BUILDING_PAYLOAD_FIELDS = new Set([
     'active',
     'activeAgents',
@@ -211,6 +239,11 @@ export class ActivityPanel {
             panelTurnCount: document.getElementById('panelTurnCount'),
             panelEstCost: document.getElementById('panelEstCost'),
         };
+        this.panelEl?.setAttribute('role', 'region');
+        this.panelEl?.setAttribute('aria-labelledby', 'panelAgentName');
+        this.dom.panelAgentName?.setAttribute('role', 'heading');
+        this.dom.panelAgentName?.setAttribute('aria-level', '2');
+        if (this.dom.panelAgentName) this.dom.panelAgentName.tabIndex = -1;
         this._toolEls = {
             icon: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-icon'),
             name: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-name'),
@@ -264,6 +297,10 @@ export class ActivityPanel {
         this._buildingContentEl = null;
         this._renderSignatures = this._emptyRenderSignatures();
         this._destroyed = false;
+        this._selectionIntent = null;
+        this._selectionTrigger = null;
+        this._focusRequestVersion = 0;
+        this._panelKeydownBound = false;
 
         this._bind();
         this._renderPinCompare();
@@ -277,6 +314,24 @@ export class ActivityPanel {
             }
         };
         this._onWorkingDirectoryCopyClick = () => this._copyWorkingDirectory();
+        this._onInteractionClick = (event) => {
+            this._recordSelectionIntent(event.detail === 0 ? 'keyboard' : 'pointer', event.target);
+        };
+        this._onInteractionKeydown = (event) => {
+            this._recordSelectionIntent('keyboard', event.target);
+        };
+        this._onPanelKeydown = (event) => {
+            if (event.key !== 'Escape' || event.defaultPrevented) return;
+            const modalOpen = document.getElementById('modalOverlay')?.getAttribute('aria-hidden') === 'false';
+            if (!shouldHandleActivityPanelEscape({
+                panelOpen: this._mode !== null,
+                modalOpen,
+                popoverOpen: hasOpenPopover(document),
+            })) return;
+            event.preventDefault();
+            event.stopPropagation();
+            this.hide();
+        };
         this._onAgentSelected = (agent) => {
             if (agent) this.show(agent);
         };
@@ -383,6 +438,8 @@ export class ActivityPanel {
         this.closeBtn.addEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.addEventListener('click', this._onPinToggleClick);
         this._workingDirectoryCopyBtn?.addEventListener('click', this._onWorkingDirectoryCopyClick);
+        document.addEventListener('click', this._onInteractionClick, true);
+        document.addEventListener('keydown', this._onInteractionKeydown, true);
         eventBus.on('agent:selected', this._onAgentSelected);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
@@ -397,6 +454,53 @@ export class ActivityPanel {
         eventBus.on('affinity:changed', this._onAffinityChanged);
         eventBus.on('affinity:ready', this._onAffinityReady);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
+    }
+
+    _recordSelectionIntent(origin, trigger) {
+        const intent = { origin, trigger };
+        this._selectionIntent = intent;
+        queueMicrotask(() => {
+            if (this._selectionIntent === intent) this._selectionIntent = null;
+        });
+    }
+
+    _preparePanelFocus() {
+        const intent = this._selectionIntent;
+        const trigger = intent?.trigger || document.activeElement;
+        if (trigger && trigger !== document.body && !this.panelEl?.contains(trigger)) {
+            this._selectionTrigger = trigger;
+        }
+
+        const request = ++this._focusRequestVersion;
+        if (!shouldFocusActivityPanel(intent?.origin)) return;
+        queueMicrotask(() => {
+            if (request !== this._focusRequestVersion || this._mode === null) return;
+            const active = document.activeElement;
+            if ((!this._selectionTrigger || this._selectionTrigger === document.body)
+                && active && active !== document.body && !this.panelEl?.contains(active)) {
+                this._selectionTrigger = active;
+            }
+            this.closeBtn?.focus({ preventScroll: true });
+        });
+    }
+
+    _startPanelKeyboardHandling() {
+        if (this._panelKeydownBound) return;
+        this._panelKeydownBound = true;
+        document.addEventListener('keydown', this._onPanelKeydown);
+    }
+
+    _stopPanelKeyboardHandling() {
+        if (!this._panelKeydownBound) return;
+        this._panelKeydownBound = false;
+        document.removeEventListener('keydown', this._onPanelKeydown);
+    }
+
+    _restoreSelectionFocus() {
+        const trigger = this._selectionTrigger;
+        this._selectionTrigger = null;
+        if (!trigger?.isConnected || typeof trigger.focus !== 'function') return;
+        trigger.focus({ preventScroll: true });
     }
 
     _emptyRenderSignatures() {
@@ -690,6 +794,7 @@ export class ActivityPanel {
 
     show(agent) {
         if (this._destroyed) return;
+        this._preparePanelFocus();
         const agentId = agent?.id ?? null;
         if (agentId !== this._narrationAgentId) this._resetNarration(agentId);
         this._detailFetchSeq++;
@@ -710,6 +815,7 @@ export class ActivityPanel {
         this._renderNarration(agent);
         this.panelEl.style.display = '';
         document.body.classList.add('cv-panel-open');
+        this._startPanelKeyboardHandling();
         this._mountHeroPortrait(agent);
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
@@ -727,6 +833,7 @@ export class ActivityPanel {
 
     showBuilding(building) {
         if (this._destroyed) return;
+        this._preparePanelFocus();
         this._detailFetchSeq++;
         this._chronicleFetchSeq++;
         // Building selection overrides agent selection. Close any agent state first.
@@ -751,6 +858,7 @@ export class ActivityPanel {
         this._ensureBuildingContentEl();
         this.panelEl.style.display = '';
         document.body.classList.add('cv-panel-open');
+        this._startPanelKeyboardHandling();
         this._renderBuildingView();
         this._startBuildingPolling();
     }
@@ -763,6 +871,8 @@ export class ActivityPanel {
         this._resetNarration();
         this._chronicleFetchSeq++;
         this._pinFetchSeq++;
+        this._focusRequestVersion++;
+        this._stopPanelKeyboardHandling();
         this.panelEl.style.display = 'none';
         document.body.classList.remove('cv-panel-open');
         this._teardownHeroPortrait();
@@ -776,6 +886,7 @@ export class ActivityPanel {
         if (wasBuilding) this._teardownBuildingView();
         this._mode = null;
         if (wasAgent) emitAgentDeselected();
+        this._restoreSelectionFocus();
     }
 
     _updateInfo(agent) {
@@ -3232,8 +3343,10 @@ export class ActivityPanel {
         this._detailFetchSeq++;
         this._chronicleFetchSeq++;
         this._pinFetchSeq++;
+        this._focusRequestVersion++;
         this._stopPolling();
         this._stopBuildingPolling();
+        this._stopPanelKeyboardHandling();
         this._teardownHeroPortrait();
         this._teardownBuildingView();
         if (this.panelEl) this.panelEl.style.display = 'none';
@@ -3247,6 +3360,8 @@ export class ActivityPanel {
         this.closeBtn?.removeEventListener('click', this._onCloseClick);
         this._pinToggleBtn?.removeEventListener('click', this._onPinToggleClick);
         this._workingDirectoryCopyBtn?.removeEventListener('click', this._onWorkingDirectoryCopyClick);
+        document.removeEventListener('click', this._onInteractionClick, true);
+        document.removeEventListener('keydown', this._onInteractionKeydown, true);
         eventBus.off('agent:selected', this._onAgentSelected);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);

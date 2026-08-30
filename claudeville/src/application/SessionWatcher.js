@@ -16,8 +16,8 @@ export class SessionWatcher {
 
         this._onWsInit = (data) => this.agentManager.handleWebSocketMessage(data);
         this._onWsUpdate = (data) => this.agentManager.handleWebSocketMessage(data);
-        this._onWsDisconnected = () => this._startPolling();
-        this._onWsConnected = () => this._stopPolling();
+        this._onWsDisconnected = () => this._startPolling('socket-disconnected');
+        this._onWsConnected = () => this._stopPolling('websocket-active');
     }
 
     start() {
@@ -35,13 +35,13 @@ export class SessionWatcher {
 
         // Start fallback polling too (until the WebSocket connects)
         if (!this.wsClient.isConnected) {
-            this._startPolling();
+            this._startPolling('websocket-unavailable');
         }
     }
 
     stop() {
         this.running = false;
-        this._stopPolling();
+        this._stopPolling('watcher-stopped');
 
         eventBus.off('ws:init', this._onWsInit);
         eventBus.off('ws:update', this._onWsUpdate);
@@ -51,22 +51,24 @@ export class SessionWatcher {
         this.wsClient.disconnect();
     }
 
-    _startPolling() {
+    _startPolling(reason = 'websocket-unavailable') {
         if (this.pollTimer || !this.running) return;
         this._pollGeneration++;
         console.log('[SessionWatcher] Started fallback polling');
+        eventBus.emit('watcher:state', { state: 'polling', reason });
         void this._poll();
         this.pollTimer = setInterval(() => void this._poll(), REFRESH_INTERVAL);
     }
 
-    _stopPolling() {
+    _stopPolling(reason = 'websocket-active') {
         this._pollGeneration++;
         if (this.pollTimer) {
             clearInterval(this.pollTimer);
             this.pollTimer = null;
             console.log('[SessionWatcher] Stopped polling (WebSocket active)');
+            eventBus.emit('watcher:state', { state: 'idle', reason });
         }
-        this._pollController?.abort?.();
+        this._pollController?.abort?.('poll-stopped');
         this._pollController = null;
     }
 
@@ -75,7 +77,7 @@ export class SessionWatcher {
         const generation = this._pollGeneration;
         const controller = new AbortController();
         this._pollController = controller;
-        const timeout = setTimeout(() => controller.abort(), POLL_TIMEOUT_MS);
+        const timeout = setTimeout(() => controller.abort('poll-timeout'), POLL_TIMEOUT_MS);
         const pollPromise = this._runPoll(generation, controller.signal)
             .finally(() => {
                 clearTimeout(timeout);
@@ -92,14 +94,22 @@ export class SessionWatcher {
                 this.dataSource.getSessions({ signal }),
                 this.dataSource.getUsage({ signal }),
             ]);
-            if (!this.running || signal.aborted || generation !== this._pollGeneration) return;
+            if (!this.running || generation !== this._pollGeneration) return;
+            if (signal.aborted) {
+                if (signal.reason === 'poll-timeout') {
+                    eventBus.emit('watcher:state', { ok: false, code: 'poll-timeout' });
+                }
+                return;
+            }
             if (sessionsResult.status === 'fulfilled') {
                 const sessions = sessionsResult.value;
                 if (sessions) {
                     this.agentManager.handleWebSocketMessage({ sessions });
                 }
+                eventBus.emit('watcher:state', { ok: true, at: Date.now() });
             } else {
                 console.error('[SessionWatcher] Polling sessions failed:', sessionsResult.reason?.message || sessionsResult.reason);
+                eventBus.emit('watcher:state', { ok: false, code: 'session-poll-failed' });
             }
 
             if (usageResult.status === 'fulfilled') {
@@ -111,6 +121,7 @@ export class SessionWatcher {
         } catch (err) {
             if (signal.aborted || generation !== this._pollGeneration || !this.running) return;
             console.error('[SessionWatcher] Polling failed:', err.message);
+            eventBus.emit('watcher:state', { ok: false, code: 'poll-failed' });
         }
     }
 }

@@ -8,10 +8,18 @@ import {
     normalizeAtlasFrame,
     normalizeMaterialMetadata,
 } from './MaterialRegistry.js';
+import {
+    RESOURCE_OWNERSHIP,
+    registerRendererResourceEstimateProvider,
+    shouldEvictAtHighWater,
+    unpinnedCacheKeys,
+} from './CanvasBudget.js';
 
 const PLACEHOLDER_PATH = 'assets/sprites/_placeholder/checker-64.png';
 const OUTLINE_COLOR = '#f2d36b';
 const ALPHA_THRESHOLD = 16;
+const OPTIONAL_SIDECAR_HIGH_WATER_ESTIMATE_BYTES = 192 * 1024 * 1024;
+let assetManagerResourceSequence = 0;
 
 export class AssetManager {
     constructor(manifestPath = 'assets/sprites/manifest.yaml', options = {}) {
@@ -53,6 +61,13 @@ export class AssetManager {
         this._decodePasses = 0;
         this._disposed = false;
         this._optionalLoadMisses = [];
+        this._activeProfilePins = new Map();
+        this._evictedOptionalEntries = new Map();
+        this._optionalReloads = new Map();
+        this._resourceEstimateId = ++assetManagerResourceSequence;
+        this._unregisterResourceEstimates = registerRendererResourceEstimateProvider(
+            () => this._resourceEstimateLeaves(),
+        );
     }
 
     load({ signal = null } = {}) {
@@ -81,6 +96,10 @@ export class AssetManager {
         this._loadGeneration++;
         this._loadController?.abort?.();
         this._materialLoadController?.abort?.();
+        // Pins protect live-World pressure eviction only. A mode-driven
+        // suspension is authoritative and must leave no stale ownership that
+        // can influence the next generation's reload.
+        this._activeProfilePins.clear();
         this._releaseDecodedEntries();
     }
 
@@ -380,6 +399,7 @@ export class AssetManager {
         }
         const albedoDims = this.dimensions.get(entry.id);
         if (albedoDims && (img.width !== albedoDims.w || img.height !== albedoDims.h)) {
+            this._releaseImage(img);
             this._optionalLoadMisses.push({
                 id: entry.id,
                 channel,
@@ -421,6 +441,7 @@ export class AssetManager {
                 Number(metadata.width) !== img.width
                 || Number(metadata.height) !== img.height
             ) {
+                this._releaseImage(img);
                 this._optionalLoadMisses.push({
                     id: atlas.id,
                     channel,
@@ -692,7 +713,9 @@ export class AssetManager {
         return this._entryById.get(id);
     }
     getCompanion(id, channel) {
-        return this.companions.get(channel)?.get(id) || null;
+        const image = this.companions.get(channel)?.get(id) || null;
+        if (!image) this._reloadOptionalEntry(`companion:${channel}:${id}`);
+        return image;
     }
     // Compatibility name used by GPU scene builders; companion channels are
     // the same optional sidecar images and still never use checker fallback.
@@ -717,7 +740,9 @@ export class AssetManager {
         return normalizeMaterialMetadata(entry);
     }
     getAtlas(atlasId, channel = 'albedo') {
-        return this.atlasImages.get(`${atlasId}:${channel}`) || null;
+        const image = this.atlasImages.get(`${atlasId}:${channel}`) || null;
+        if (!image) this._reloadOptionalEntry(`atlas:${atlasId}:${channel}`);
+        return image;
     }
     getAtlasChannels(atlasId) {
         return Object.fromEntries(MATERIAL_CHANNELS.map((channel) => [
@@ -769,12 +794,17 @@ export class AssetManager {
 
     cacheStats() {
         let bitmapPixels = 0;
+        let decodedBitmapPixels = 0;
+        let derivedBitmapPixels = 0;
         let maskBytes = 0;
         let outlinePixels = 0;
         let companionPixels = 0;
         let atlasPixels = 0;
         for (const bitmap of this.bitmaps.values()) {
-            bitmapPixels += Math.max(0, Number(bitmap?.width) || 0) * Math.max(0, Number(bitmap?.height) || 0);
+            const pixels = Math.max(0, Number(bitmap?.width) || 0) * Math.max(0, Number(bitmap?.height) || 0);
+            bitmapPixels += pixels;
+            if (typeof bitmap?.getContext === 'function') derivedBitmapPixels += pixels;
+            else decodedBitmapPixels += pixels;
         }
         for (const mask of this.alphaMasks.values()) maskBytes += mask?.byteLength || 0;
         for (const outline of this.outlines.values()) {
@@ -788,7 +818,14 @@ export class AssetManager {
         for (const image of this.atlasImages.values()) {
             atlasPixels += Math.max(0, Number(image?.width) || 0) * Math.max(0, Number(image?.height) || 0);
         }
-        return {
+        // Browser image/canvas implementations do not expose allocation size.
+        // RGBA width x height is therefore a diagnostic estimate, not a claim
+        // that every backing allocation is simultaneously resident or exact.
+        const baseDecodedImageEstimateBytes = decodedBitmapPixels * 4;
+        const optionalMaterialImageEstimateBytes = (companionPixels + atlasPixels) * 4;
+        const decodedImageEstimateBytes = baseDecodedImageEstimateBytes + optionalMaterialImageEstimateBytes;
+        const derivedCanvasEstimateBytes = (derivedBitmapPixels + outlinePixels) * 4 + maskBytes;
+        const stats = {
             bitmaps: this.bitmaps.size,
             bitmapPixels,
             masks: this.alphaMasks.size,
@@ -800,7 +837,9 @@ export class AssetManager {
             atlasImages: this.atlasImages.size,
             atlasPixels,
             atlasMetadata: this.atlasMetadata.size,
-            materialTextureBytes: (companionPixels + atlasPixels) * 4,
+            // Retain the original enumerable diagnostic contract. The value is
+            // still an RGBA dimension estimate despite this legacy field name.
+            materialTextureBytes: optionalMaterialImageEstimateBytes,
             missing: this.missing.size,
             optionalMissing: this._optionalLoadMisses.length,
             decodedLoaded: this._decodedLoaded,
@@ -810,6 +849,191 @@ export class AssetManager {
             loadInFlight: this._loadPromise !== null,
             decodePasses: this._decodePasses,
         };
+        // New accounting diagnostics are non-enumerable so existing snapshot
+        // consumers keep their stable shape. They remain normal readable API
+        // properties and are consumed directly by the unified ledger.
+        Object.defineProperties(stats, {
+            ownership: { value: {
+                decodedImages: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DECODED,
+                    estimateBytes: baseDecodedImageEstimateBytes,
+                },
+                normalizedBitmapsAndOutlines: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: (derivedBitmapPixels + outlinePixels) * 4,
+                },
+                alphaMasks: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DERIVED,
+                    estimateBytes: maskBytes,
+                },
+                optionalMaterialImages: {
+                    ownershipClass: RESOURCE_OWNERSHIP.CPU_DECODED,
+                    estimateBytes: optionalMaterialImageEstimateBytes,
+                },
+            } },
+            decodedImageEstimateBytes: { value: decodedImageEstimateBytes },
+            derivedCanvasEstimateBytes: { value: derivedCanvasEstimateBytes },
+            materialTextureEstimateBytes: { value: optionalMaterialImageEstimateBytes },
+            optionalSidecarHighWaterEstimateBytes: { value: OPTIONAL_SIDECAR_HIGH_WATER_ESTIMATE_BYTES },
+            activeProfileKeys: { value: [...this._activeProfilePins.keys()].sort() },
+            selectedProfilePins: { value: [...this._activeProfilePins]
+                .filter(([, pin]) => pin.selected)
+                .map(([key]) => key)
+                .sort() },
+            primaryProfilePins: { value: [...this._activeProfilePins]
+                .filter(([, pin]) => pin.primary)
+                .map(([key]) => key)
+                .sort() },
+            evictedOptionalEntries: { value: this._evictedOptionalEntries.size },
+        });
+        return stats;
+    }
+
+    _resourceEstimateLeaves() {
+        const stats = this.cacheStats();
+        return {
+            cpuDecoded: [{
+                key: `asset-manager:${this._resourceEstimateId}:decoded`,
+                estimateBytes: stats.decodedImageEstimateBytes,
+            }],
+            cpuDerived: [{
+                key: `asset-manager:${this._resourceEstimateId}:derived`,
+                estimateBytes: stats.derivedCanvasEstimateBytes,
+            }],
+        };
+    }
+
+    retainProfileAssets(profileKey, assetIds = [], { selected = false, primary = false } = {}) {
+        if (!profileKey) return;
+        this._activeProfilePins.set(profileKey, {
+            assetIds: new Set(assetIds.filter(Boolean)),
+            selected: Boolean(selected),
+            primary: Boolean(primary),
+        });
+    }
+
+    releaseProfileAssets(profileKey) {
+        if (profileKey) this._activeProfilePins.delete(profileKey);
+    }
+
+    /**
+     * Explicit pressure operation for optional decoded sidecars only. It never
+     * changes a quality setting and is not called by the diagnostic budget.
+     */
+    evictUnpinnedOptionalSidecars({
+        highWaterEstimateBytes = OPTIONAL_SIDECAR_HIGH_WATER_ESTIMATE_BYTES,
+    } = {}) {
+        const candidates = [];
+        for (const [channel, images] of this.companions) {
+            for (const [id, image] of images) {
+                candidates.push({
+                    key: `companion:${channel}:${id}`,
+                    estimateBytes: (image?.width || 0) * (image?.height || 0) * 4,
+                    image,
+                });
+            }
+        }
+        for (const [atlasKey, image] of this.atlasImages) {
+            const separator = atlasKey.lastIndexOf(':');
+            const atlasId = atlasKey.slice(0, separator);
+            const channel = atlasKey.slice(separator + 1);
+            candidates.push({
+                key: `atlas:${atlasId}:${channel}`,
+                estimateBytes: (image?.width || 0) * (image?.height || 0) * 4,
+                image,
+            });
+        }
+        let residentEstimateBytes = candidates.reduce((sum, entry) => sum + entry.estimateBytes, 0);
+        if (!shouldEvictAtHighWater(residentEstimateBytes, highWaterEstimateBytes)) {
+            return { evicted: [], residentEstimateBytes };
+        }
+        const pinnedKeys = this._optionalSidecarPins();
+        const evictable = new Set(unpinnedCacheKeys(candidates, pinnedKeys));
+        const evicted = [];
+        for (const entry of candidates) {
+            if (!evictable.has(entry.key)) continue;
+            const parts = entry.key.split(':');
+            if (parts[0] === 'companion') this.companions.get(parts[1])?.delete(parts.slice(2).join(':'));
+            else this.atlasImages.delete(`${parts[1]}:${parts.slice(2).join(':')}`);
+            this._releaseImage(entry.image);
+            this._evictedOptionalEntries.set(entry.key, true);
+            evicted.push(entry.key);
+            residentEstimateBytes -= entry.estimateBytes;
+            if (!shouldEvictAtHighWater(residentEstimateBytes, highWaterEstimateBytes)) break;
+        }
+        return { evicted, residentEstimateBytes: Math.max(0, residentEstimateBytes) };
+    }
+
+    _optionalSidecarPins() {
+        const pins = new Set();
+        for (const pin of this._activeProfilePins.values()) {
+            for (const id of pin.assetIds) {
+                for (const channel of MATERIAL_CHANNELS) {
+                    if (channel !== 'albedo') pins.add(`companion:${channel}:${id}`);
+                }
+                const atlasId = normalizeAtlasFrame(this.getEntry(id)?.atlasFrame)?.atlas;
+                if (!atlasId) continue;
+                for (const channel of MATERIAL_CHANNELS) pins.add(`atlas:${atlasId}:${channel}`);
+            }
+        }
+        return pins;
+    }
+
+    _reloadOptionalEntry(key) {
+        if (!this._evictedOptionalEntries.has(key) || this._optionalReloads.has(key)) return;
+        const parts = key.split(':');
+        const generation = this._loadGeneration;
+        let operation = null;
+        if (parts[0] === 'companion') {
+            const channel = parts[1];
+            const id = parts.slice(2).join(':');
+            const entry = this.getEntry(id);
+            const path = entry && companionPathFor(entry, channel, this._pathFor(entry));
+            if (entry && path) operation = this._loadCompanion(entry, channel, path, { generation });
+        } else {
+            const atlasId = parts[1];
+            const channel = parts.slice(2).join(':');
+            const atlas = (this.manifest?.atlases || []).find((item) => item.id === atlasId);
+            if (atlas) operation = this._reloadAtlasChannel(atlas, channel, { generation });
+        }
+        if (!operation) return;
+        const tracked = Promise.resolve(operation).finally(() => {
+            if (this._optionalReloads.get(key) === tracked) this._optionalReloads.delete(key);
+            if (this._optionalEntryResident(key)) this._evictedOptionalEntries.delete(key);
+        });
+        this._optionalReloads.set(key, tracked);
+    }
+
+    _optionalEntryResident(key) {
+        const parts = key.split(':');
+        if (parts[0] === 'companion') {
+            return this.companions.get(parts[1])?.has(parts.slice(2).join(':')) || false;
+        }
+        return this.atlasImages.has(`${parts[1]}:${parts.slice(2).join(':')}`);
+    }
+
+    async _reloadAtlasChannel(atlas, channel, { generation }) {
+        const path = atlas?.channels?.[channel];
+        const metadata = this.atlasMetadata.get(atlas?.id);
+        if (!path || !metadata) return;
+        const { img, ok, reason } = await this._loadOptionalImage(path);
+        if (!this._canCommitLoad(null, generation)) return;
+        if (
+            !ok
+            || !img
+            || Number(metadata.width) !== img.width
+            || Number(metadata.height) !== img.height
+        ) {
+            if (img) this._releaseImage(img);
+            this._optionalLoadMisses.push({
+                id: atlas.id,
+                channel,
+                path,
+                reason: reason || `dimension ${img?.width}x${img?.height} != metadata ${metadata.width}x${metadata.height}`,
+            });
+            return;
+        }
+        this.atlasImages.set(`${atlas.id}:${channel}`, img);
     }
 
     _releaseDecodedEntries() {
@@ -849,6 +1073,8 @@ export class AssetManager {
         this.atlasImages.clear();
         this.atlasMetadata.clear();
         this._optionalLoadMisses.length = 0;
+        this._evictedOptionalEntries.clear();
+        this._optionalReloads.clear();
         this._materialDecodedLoaded = false;
     }
 
@@ -879,5 +1105,8 @@ export class AssetManager {
         this.palettes = null;
         this.assetVersion = null;
         this._materialAssetsEnabled = false;
+        this._activeProfilePins.clear();
+        this._unregisterResourceEstimates?.();
+        this._unregisterResourceEstimates = null;
     }
 }

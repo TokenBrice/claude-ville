@@ -59,6 +59,19 @@ const REPOSITORY_SCAN_MAX_PROJECTS = Math.max(1, Number(process.env.CLAUDEVILLE_
 const DIRTY_KINDS = new Set(['transcript', 'discovery', 'metadata', 'teams', 'git', 'reconcile']);
 const REPOSITORY_SCAN_ROOT = process.env.CLAUDEVILLE_REPOSITORY_SCAN_ROOT
   || path.join(os.homedir(), 'Documents', 'git');
+const ERROR_CODE_MAX_LENGTH = 48;
+
+const _providerHealth = new Map(adapters.map((adapter) => [adapter.provider, {
+  id: adapter.provider,
+  name: adapter.name,
+  health: 'unavailable',
+  sessions: 0,
+  lastScanStartedAt: null,
+  lastSuccessAt: null,
+  errorCode: null,
+  watchState: 'unavailable',
+  skippedLines: 0,
+}]));
 
 const _sessionListCache = {
   at: 0,
@@ -71,6 +84,49 @@ const _repositoryScanCache = {
   at: 0,
   projects: [],
 };
+
+function boundedErrorCode(err, fallback) {
+  const source = typeof err?.code === 'string' && err.code ? err.code : fallback;
+  const normalized = String(source || fallback)
+    .toUpperCase()
+    .replace(/[^A-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+  return (normalized || fallback).slice(0, ERROR_CODE_MAX_LENGTH);
+}
+
+function providerSkippedLines(provider) {
+  const count = Number(getJsonlDiagnostics()[provider]?.skippedLines);
+  return Number.isFinite(count) && count > 0 ? Math.floor(count) : 0;
+}
+
+function updateProviderHealth(adapter, updates) {
+  const current = _providerHealth.get(adapter.provider);
+  if (!current) return;
+  Object.assign(current, updates, {
+    skippedLines: providerSkippedLines(adapter.provider),
+  });
+}
+
+function recordProviderUnavailable(adapter) {
+  updateProviderHealth(adapter, {
+    health: 'unavailable',
+    sessions: 0,
+    errorCode: null,
+    watchState: 'unavailable',
+  });
+}
+
+function recordProviderFailure(adapter, errorCode, updates = {}) {
+  updateProviderHealth(adapter, {
+    health: 'degraded',
+    errorCode,
+    ...updates,
+  });
+}
+
+function getProviderHealth() {
+  return adapters.map((adapter) => ({ ..._providerHealth.get(adapter.provider) }));
+}
 
 function normalizeProviderId(provider, fallback = 'claude') {
   return String(provider || fallback).toLowerCase();
@@ -244,12 +300,49 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
 
   const allSessions = [];
   for (const adapter of adapters) {
-    if (!adapter.isAvailable()) continue;
+    const lastScanStartedAt = Date.now();
+    let available = false;
+    try {
+      available = adapter.isAvailable();
+    } catch (err) {
+      recordProviderFailure(adapter, boundedErrorCode(err, 'ADAPTER_AVAILABILITY_FAILED'), {
+        sessions: 0,
+        lastScanStartedAt,
+      });
+      console.error(`[${adapter.name}] Failed to check availability:`, err.message);
+      continue;
+    }
+    if (!available) {
+      updateProviderHealth(adapter, { lastScanStartedAt });
+      recordProviderUnavailable(adapter);
+      continue;
+    }
     try {
       const sessions = adapter.getActiveSessions(activeThresholdMs);
-      if (!Array.isArray(sessions)) continue;
+      if (!Array.isArray(sessions)) {
+        recordProviderFailure(adapter, 'INVALID_SESSION_RESULT', {
+          sessions: 0,
+          lastScanStartedAt,
+        });
+        continue;
+      }
       allSessions.push(...sessions.map((session) => normalizeSession(session, { provider: adapter.provider })));
+      const lastSuccessAt = Date.now();
+      updateProviderHealth(adapter, {
+        health: sessions.length > 0 ? 'healthy' : 'empty',
+        sessions: sessions.length,
+        lastScanStartedAt,
+        lastSuccessAt,
+        errorCode: null,
+        watchState: _providerHealth.get(adapter.provider)?.watchState === 'unavailable'
+          ? 'pending'
+          : _providerHealth.get(adapter.provider)?.watchState,
+      });
     } catch (err) {
+      recordProviderFailure(adapter, boundedErrorCode(err, 'ADAPTER_READ_FAILED'), {
+        sessions: 0,
+        lastScanStartedAt,
+      });
       console.error(`[${adapter.name}] Failed to fetch sessions:`, err.message);
     }
   }
@@ -401,18 +494,36 @@ function _trimSessionDetailCache() {
 function getAllWatchPaths({ sessions = [], activeThresholdMs = null } = {}) {
   const paths = [];
   for (const adapter of adapters) {
-    if (!adapter.isAvailable()) continue;
+    let available = false;
+    try {
+      available = adapter.isAvailable();
+    } catch (err) {
+      recordProviderFailure(adapter, boundedErrorCode(err, 'ADAPTER_AVAILABILITY_FAILED'), {
+        watchState: 'failed',
+      });
+      continue;
+    }
+    if (!available) {
+      recordProviderUnavailable(adapter);
+      continue;
+    }
     try {
       const providerSessions = sessions.filter((session) => session?.provider === adapter.provider);
-      paths.push(...adapter.getWatchPaths({
+      const watchPaths = adapter.getWatchPaths({
         sessions: providerSessions,
         activeThresholdMs,
-      }).map((watchPath) => ({
+      });
+      paths.push(...watchPaths.map((watchPath) => ({
         ...watchPath,
         provider: adapter.provider,
       })));
-    } catch {
-      // ignore
+      updateProviderHealth(adapter, {
+        watchState: watchPaths.length > 0 ? 'watching' : 'idle',
+      });
+    } catch (err) {
+      recordProviderFailure(adapter, boundedErrorCode(err, 'ADAPTER_WATCH_FAILED'), {
+        watchState: 'failed',
+      });
     }
   }
   return paths;
@@ -449,6 +560,7 @@ module.exports = {
   getSessionDetailsBatch,
   getAllWatchPaths,
   getActiveProviders,
+  getProviderHealth,
   getAdapterPerfStats,
   getGitEnrichmentPerfStats,
   getJsonlDiagnostics,

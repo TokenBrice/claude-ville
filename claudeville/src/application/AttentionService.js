@@ -1,5 +1,5 @@
 import { eventBus } from '../domain/events/DomainEvent.js';
-import { isAttentionStatus } from '../domain/services/StatusResolver.js';
+import { actionableAgents } from '../domain/services/SignalLedger.js';
 import { AgentStatus } from '../domain/value-objects/AgentStatus.js';
 import { getActiveChronicleLog } from './ChronicleLog.js';
 
@@ -249,14 +249,7 @@ export class AttentionService {
 
     /** Agents needing a person, longest-waiting first. */
     list() {
-        const agents = [...(this.world?.agents?.values?.() || [])]
-            .filter(agent => isAttentionStatus(agent.status));
-        agents.sort((a, b) => {
-            const aSince = a.awaitingSince || a.lastSessionActivity || 0;
-            const bSince = b.awaitingSince || b.lastSessionActivity || 0;
-            return aSince - bSince;
-        });
-        return agents;
+        return actionableAgents(this.world);
     }
 
     refresh() {

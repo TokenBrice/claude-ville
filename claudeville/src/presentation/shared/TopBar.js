@@ -6,8 +6,78 @@ import {
 } from './AmbientAudioController.js';
 import { formatCost, formatNumber, shortProjectName } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
+import {
+    initialVillageState,
+    isStale,
+    LinkState,
+    linkStatusText,
+    snapshotAgeMs,
+} from '../../application/VillageState.js';
+import { bucketAgents } from '../../domain/services/SignalLedger.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
+
+const ATTENTION_SEGMENTS = Object.freeze([
+    { key: 'needsYou', label: 'Needs you' },
+    { key: 'errors', label: 'Errors' },
+    { key: 'quota', label: 'Quota' },
+    { key: 'watchlist', label: 'Watchlist' },
+]);
+
+function countValue(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : null;
+}
+
+/** Pure view model for the four meanings previously collapsed into attention. */
+export function attentionSegmentDescriptors(stats = {}) {
+    const errors = countValue(stats.errors) ?? countValue(stats.errored) ?? 0;
+    const quota = countValue(stats.quota) ?? 0;
+    const watchlist = countValue(stats.watchlist) ?? countValue(stats.waiting) ?? 0;
+    const legacyAttention = countValue(stats.attention) ?? 0;
+    const knownActionable = errors + quota;
+    const needsYou = countValue(stats.needsYou) ?? Math.max(0, legacyAttention - knownActionable);
+    const counts = { needsYou, errors, quota, watchlist };
+
+    return ATTENTION_SEGMENTS.map(segment => ({
+        ...segment,
+        count: counts[segment.key],
+        ariaLabel: `${segment.label}: ${counts[segment.key]} ${counts[segment.key] === 1 ? 'agent' : 'agents'}`,
+    }));
+}
+
+const CONNECTION_REASON_COPY = Object.freeze({
+    'connection-refused': 'The local session link refused the connection.',
+    'econnrefused': 'The local session link refused the connection.',
+    'connection-reset': 'The local session link was reset.',
+    'econnreset': 'The local session link was reset.',
+    'socket-closed': 'The local session link closed unexpectedly.',
+    'socket-error': 'The local session link reported a transport problem.',
+    'websocket-closed': 'The local session link closed unexpectedly.',
+    'initial-sync-failed': 'The initial local session sync did not complete.',
+    'message-invalid': 'A session update could not be understood.',
+    'delta-baseline-mismatch': 'A session update did not match the last snapshot.',
+    'patch-failed': 'A session update could not be applied safely.',
+    'watcher-unavailable': 'The local session watcher is unavailable.',
+    'watcher-failed': 'The local session watcher could not read session updates.',
+    'poll-timeout': 'The local session poll took too long.',
+    'session-poll-failed': 'The local session watcher could not refresh sessions.',
+    'poll-failed': 'The local session watcher could not complete a refresh.',
+    'source-failed': 'A local session source could not be read.',
+    'timeout': 'The local session link timed out.',
+    'timed-out': 'The local session link timed out.',
+});
+
+/** Safe operator copy from a normalized code; raw diagnostic text never passes through. */
+export function connectionReasonText(code) {
+    const normalized = String(code || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-+|-+$/g, '')
+        .slice(0, 48);
+    return CONNECTION_REASON_COPY[normalized] || 'Connection interrupted; ClaudeVille will keep retrying locally.';
+}
 
 export const PERSISTED_SETTING_DEFAULTS = Object.freeze({
     'claudeville.sound.enabled': 'false',
@@ -72,6 +142,10 @@ export class TopBar {
             badgeAttention: document.getElementById('badgeAttention'),
             erroredWrap: document.getElementById('badgeErroredWrap'),
             attentionWrap: document.getElementById('badgeAttentionWrap'),
+            quotaBadge: document.getElementById('badgeQuota'),
+            quotaBadgeWrap: document.getElementById('badgeQuotaWrap'),
+            watchlistBadge: document.getElementById('badgeWatchlist'),
+            watchlistBadgeWrap: document.getElementById('badgeWatchlistWrap'),
             connection: document.getElementById('topbarConnection'),
             version: document.querySelector('.topbar__version'),
             soundToggle: document.getElementById('topbarSoundToggle'),
@@ -94,6 +168,14 @@ export class TopBar {
         this._changelogHtml = null;
         this._changelogController = null;
         this._destroyed = false;
+        this._villageState = initialVillageState();
+        this._watcherErrorCode = null;
+        this._watcherPolling = false;
+        this._connectionAnnouncementKey = null;
+        this._recoverySweepPending = false;
+        this._recoveryBaselineSnapshotAt = null;
+        this._lastSweptSnapshotAt = null;
+        this._staleTimer = null;
         const audioMixer = this._buildAudioMixer();
         this.audio = new AmbientAudioController({
             button: this.els.soundToggle,
@@ -105,6 +187,7 @@ export class TopBar {
             world: this.world,
         });
         this._initCinemaToggle();
+        this._prepareAttentionSegments();
         this._initAttentionControls();
         this._initChronicleButton();
         this._initSpendBreakdown();
@@ -123,8 +206,13 @@ export class TopBar {
 
         this._onWsConnected = () => this._setConnection(true);
         this._onWsDisconnected = () => this._setConnection(false);
+        this._onWsState = (payload) => this._applyWsState(payload);
+        this._onWatcherState = (payload) => this._applyWatcherState(payload);
         eventBus.on('ws:connected', this._onWsConnected);
         eventBus.on('ws:disconnected', this._onWsDisconnected);
+        eventBus.on('ws:state', this._onWsState);
+        eventBus.on('watcher:state', this._onWatcherState);
+        this._initConnectionInstrument();
 
         if (this.modal && this.els.version) {
             this.els.version.title = 'View changelog';
@@ -182,6 +270,14 @@ export class TopBar {
     // longest-waiting agent, and ALERTS opts into desktop notifications from a
     // real user gesture (browsers reject permission prompts otherwise).
     _initAttentionControls() {
+        if (this.els.erroredWrap) {
+            this._onErroredClick = () => {
+                const agent = bucketAgents(this.world).errors[0];
+                if (agent) eventBus.emit('agent:selected', agent);
+            };
+            this.els.erroredWrap.addEventListener('click', this._onErroredClick);
+        }
+
         if (!this.attention) return;
 
         if (this.els.attentionWrap) {
@@ -216,6 +312,89 @@ export class TopBar {
             if (agent) event.preventDefault();
         };
         document.addEventListener('keydown', this._onAttentionKey);
+    }
+
+    _prepareAttentionSegments() {
+        const segments = [
+            {
+                key: 'needsYou',
+                wrapKey: 'attentionWrap',
+                valueKey: 'badgeAttention',
+                glyph: '?',
+                label: 'Needs you',
+            },
+            {
+                key: 'errors',
+                wrapKey: 'erroredWrap',
+                valueKey: 'badgeErrored',
+                glyph: '!',
+                label: 'Errors',
+                button: true,
+            },
+            {
+                key: 'quota',
+                wrapKey: 'quotaBadgeWrap',
+                valueKey: 'quotaBadge',
+                glyph: '||',
+                label: 'Quota',
+            },
+            {
+                key: 'watchlist',
+                wrapKey: 'watchlistBadgeWrap',
+                valueKey: 'watchlistBadge',
+                glyph: '~',
+                label: 'Watchlist',
+            },
+        ];
+        let parent = null;
+        for (const segment of segments) {
+            let wrap = this.els[segment.wrapKey];
+            const value = this.els[segment.valueKey];
+            if (!wrap || !value) continue;
+            if (segment.button && wrap.tagName !== 'BUTTON') {
+                const button = document.createElement('button');
+                for (const attribute of wrap.attributes) {
+                    button.setAttribute(attribute.name, attribute.value);
+                }
+                button.type = 'button';
+                while (wrap.firstChild) button.appendChild(wrap.firstChild);
+                wrap.replaceWith(button);
+                wrap = button;
+                this.els[segment.wrapKey] = button;
+            }
+            if (wrap.tagName === 'BUTTON') wrap.type = 'button';
+            wrap.classList.remove(
+                'topbar__badge',
+                'topbar__badge--attention',
+                'topbar__badge--errored',
+            );
+            wrap.classList.add(
+                'topbar__tag',
+                'topbar__attention-segment',
+                `topbar__attention-segment--${segment.key}`,
+            );
+            const glyph = el('span', {
+                className: 'topbar__attention-glyph',
+                text: segment.glyph,
+            });
+            glyph.setAttribute('aria-hidden', 'true');
+            replaceChildren(wrap, [
+                glyph,
+                value,
+                el('span', {
+                    className: 'topbar__attention-label',
+                    text: segment.label,
+                }),
+            ]);
+            value.classList.add('topbar__attention-count');
+            parent = parent || wrap.parentElement;
+        }
+        if (!parent) return;
+        parent.classList.add('topbar__badges--segmented');
+        for (const segment of segments) {
+            const wrap = this.els[segment.wrapKey];
+            if (wrap?.parentElement === parent) parent.appendChild(wrap);
+        }
     }
 
     _applyAlertsState(on) {
@@ -628,12 +807,25 @@ export class TopBar {
         this.els.idle.textContent = stats.idle;
         this.els.waiting.textContent = stats.waiting;
 
-        this.els.badgeErrored.textContent = stats.errored;
-        this.els.erroredWrap.style.display = stats.errored > 0 ? '' : 'none';
-        this.els.badgeAttention.textContent = stats.attention;
-        this.els.attentionWrap.style.display = stats.attention > 0 ? '' : 'none';
+        this._renderAttentionSegments(stats);
 
         this._renderActivityRail(stats);
+    }
+
+    _renderAttentionSegments(stats) {
+        const elements = {
+            needsYou: [this.els.attentionWrap, this.els.badgeAttention],
+            errors: [this.els.erroredWrap, this.els.badgeErrored],
+            quota: [this.els.quotaBadgeWrap, this.els.quotaBadge],
+            watchlist: [this.els.watchlistBadgeWrap, this.els.watchlistBadge],
+        };
+        for (const descriptor of attentionSegmentDescriptors(stats)) {
+            const [wrap, value] = elements[descriptor.key] || [];
+            if (value) value.textContent = descriptor.count;
+            if (!wrap) continue;
+            wrap.style.display = '';
+            wrap.setAttribute('aria-label', descriptor.ariaLabel);
+        }
     }
 
     // Today's observed spend, the live burn rate, and quota headroom — the
@@ -859,25 +1051,250 @@ export class TopBar {
         style.setProperty('--cv-rail-bleed', `${bleed}%`);
     }
 
+    _initConnectionInstrument() {
+        const chip = this.els.connection;
+        if (!chip) return;
+        chip.tabIndex = 0;
+        chip.setAttribute('role', 'button');
+        chip.setAttribute('aria-haspopup', 'dialog');
+        chip.setAttribute('aria-controls', 'topbarConnectionDetails');
+        chip.setAttribute('aria-expanded', 'false');
+        chip.title = 'Connection details';
+        this._connectionLiveEl = el('span', {
+            className: 'topbar__connection-live',
+        });
+        this._connectionLiveEl.setAttribute('aria-live', 'polite');
+        chip.insertAdjacentElement('afterend', this._connectionLiveEl);
+        this._onConnectionClick = (event) => {
+            event.stopPropagation();
+            this._toggleConnectionDetails();
+        };
+        this._onConnectionEnter = () => this._showConnectionDetails({ focus: false });
+        this._onConnectionLeave = (event) => {
+            if (this._connectionPanelEl?.contains(event.relatedTarget)) return;
+            this._hideConnectionDetails({ restoreFocus: false });
+        };
+        this._onConnectionKeydown = (event) => {
+            if (event.key === 'Escape') {
+                event.preventDefault();
+                this._hideConnectionDetails();
+            } else if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                this._toggleConnectionDetails();
+            }
+        };
+        this._onConnectionOutside = (event) => {
+            if (this._connectionPanelEl?.contains(event.target) || chip.contains(event.target)) return;
+            this._hideConnectionDetails({ restoreFocus: false });
+        };
+        chip.addEventListener('click', this._onConnectionClick);
+        chip.addEventListener('mouseenter', this._onConnectionEnter);
+        chip.addEventListener('mouseleave', this._onConnectionLeave);
+        chip.addEventListener('keydown', this._onConnectionKeydown);
+        document.addEventListener('pointerdown', this._onConnectionOutside);
+        this._renderConnection();
+    }
+
     _setConnection(connected) {
-        if (!this.els.connection) return;
-        this.els.connection.textContent = connected ? 'LIVE' : 'OFFLINE';
-        this.els.connection.classList.toggle('topbar__conn--connected', connected);
-        this.els.connection.classList.toggle('topbar__conn--disconnected', !connected);
+        const link = this._villageState.link;
+        this._villageState = {
+            ...this._villageState,
+            link: {
+                ...link,
+                state: connected ? LinkState.LIVE : LinkState.RECONNECTING,
+                attempts: connected ? 0 : Math.max(1, link.attempts || 0),
+            },
+        };
         this._applyConnectionChrome(connected);
+        this._renderConnection();
+    }
+
+    _applyWsState(payload = {}) {
+        const rawState = String(payload?.state || '').toLowerCase();
+        const stateAliases = {
+            connected: LinkState.LIVE,
+            open: LinkState.LIVE,
+            disconnected: LinkState.RECONNECTING,
+            closed: LinkState.RECONNECTING,
+            offline: LinkState.RECONNECTING,
+            connecting: LinkState.SYNCING,
+        };
+        const state = Object.values(LinkState).includes(rawState) ? rawState : stateAliases[rawState];
+        const displayState = state === LinkState.RECONNECTING && this._watcherPolling
+            ? LinkState.POLLING
+            : state;
+        const link = this._villageState.link;
+        this._villageState = {
+            ...this._villageState,
+            link: {
+                ...link,
+                ...(displayState ? { state: displayState } : {}),
+                attempts: payload.attempts === undefined ? link.attempts : Math.max(0, Number(payload.attempts) || 0),
+                nextRetryAt: payload.nextRetryAt === undefined ? link.nextRetryAt : Number(payload.nextRetryAt) || null,
+                lastMessageAt: payload.lastMessageAt === undefined ? link.lastMessageAt : Number(payload.lastMessageAt) || null,
+                lastSnapshotAt: payload.lastSnapshotAt === undefined ? link.lastSnapshotAt : Number(payload.lastSnapshotAt) || null,
+                lastErrorCode: payload.lastErrorCode === undefined ? link.lastErrorCode : payload.lastErrorCode,
+            },
+        };
+        if (displayState) {
+            const connected = displayState === LinkState.LIVE
+                || displayState === LinkState.POLLING
+                || displayState === LinkState.SYNCING;
+            this._applyConnectionChrome(connected);
+        }
+        this._renderConnection();
+    }
+
+    _applyWatcherState(payload = {}) {
+        const state = String(payload?.state || '').toLowerCase();
+        if (state === 'polling') this._watcherPolling = true;
+        else if (state === 'idle') this._watcherPolling = false;
+        const healthy = payload?.ok === true || ['live', 'ready', 'watching', 'healthy'].includes(state);
+        if (healthy) this._watcherErrorCode = null;
+        else if (payload?.ok === false || ['failed', 'degraded', 'unavailable', 'error'].includes(state)) {
+            this._watcherErrorCode = payload?.code || 'watcher-unavailable';
+        }
+        const link = this._villageState.link;
+        const snapshotAt = Number(payload?.at) || null;
+        if (state === 'polling' || snapshotAt) {
+            this._villageState = {
+                ...this._villageState,
+                link: {
+                    ...link,
+                    state: LinkState.POLLING,
+                    ...(snapshotAt ? { lastSnapshotAt: snapshotAt } : {}),
+                },
+            };
+        }
+        if (snapshotAt) {
+            this._applyConnectionChrome(true);
+        }
+        this._renderConnection();
+    }
+
+    _renderConnection(now = Date.now()) {
+        const chip = this.els.connection;
+        if (!chip) return;
+        const label = linkStatusText(this._villageState, now);
+        const stale = isStale(this._villageState, now);
+        const state = stale ? LinkState.STALE : this._villageState.link.state;
+        chip.textContent = label;
+        chip.classList.toggle('topbar__conn--connected', state === LinkState.LIVE);
+        chip.classList.toggle('topbar__conn--disconnected', state === LinkState.RECONNECTING);
+        chip.classList.toggle('topbar__conn--syncing', state === LinkState.SYNCING);
+        chip.classList.toggle('topbar__conn--polling', state === LinkState.POLLING);
+        chip.classList.toggle('topbar__conn--reconnecting', state === LinkState.RECONNECTING);
+        chip.classList.toggle('topbar__conn--stale', stale);
+        const announcementKey = stale ? LinkState.STALE : state;
+        if (announcementKey !== this._connectionAnnouncementKey) {
+            this._connectionAnnouncementKey = announcementKey;
+            if (this._connectionLiveEl) this._connectionLiveEl.textContent = `Connection ${label}`;
+        }
+        this._renderConnectionDetails(now);
+        if (stale) this._scheduleStaleTick();
+        else this._stopStaleTick();
+    }
+
+    _scheduleStaleTick() {
+        if (this._staleTimer || this._destroyed) return;
+        this._staleTimer = setTimeout(() => {
+            this._staleTimer = null;
+            if (!this._destroyed && isStale(this._villageState)) this._renderConnection();
+        }, 1000);
+    }
+
+    _stopStaleTick() {
+        if (!this._staleTimer) return;
+        clearTimeout(this._staleTimer);
+        this._staleTimer = null;
+    }
+
+    _ensureConnectionDetails() {
+        if (this._connectionPanelEl || !document.body) return;
+        this._connectionPanelEl = el('div', {
+            className: 'topbar__connection-panel',
+            ariaLabel: 'Connection details',
+            style: { display: 'none' },
+        });
+        this._connectionPanelEl.id = 'topbarConnectionDetails';
+        this._connectionPanelEl.setAttribute('role', 'dialog');
+        this._connectionPanelEl.tabIndex = -1;
+        this._connectionPanelEl.addEventListener('keydown', this._onConnectionKeydown);
+        this._onConnectionPanelLeave = (event) => {
+            if (this.els.connection?.contains(event.relatedTarget)) return;
+            this._hideConnectionDetails({ restoreFocus: false });
+        };
+        this._connectionPanelEl.addEventListener('mouseleave', this._onConnectionPanelLeave);
+        document.body.appendChild(this._connectionPanelEl);
+    }
+
+    _toggleConnectionDetails() {
+        this._ensureConnectionDetails();
+        if (this._connectionPanelEl?.style.display === 'none') this._showConnectionDetails();
+        else this._hideConnectionDetails();
+    }
+
+    _showConnectionDetails({ focus = true } = {}) {
+        if (this._destroyed || !this.els.connection) return;
+        this._ensureConnectionDetails();
+        const panel = this._connectionPanelEl;
+        if (!panel) return;
+        this._renderConnectionDetails();
+        const rect = this.els.connection.getBoundingClientRect();
+        panel.style.left = `${Math.max(8, rect.left)}px`;
+        panel.style.top = `${rect.bottom}px`;
+        panel.style.display = 'grid';
+        this.els.connection.setAttribute('aria-expanded', 'true');
+        if (focus) focusWithoutScroll(panel);
+    }
+
+    _hideConnectionDetails({ restoreFocus = true } = {}) {
+        const wasOpen = this._connectionPanelEl?.style.display !== 'none';
+        if (this._connectionPanelEl) this._connectionPanelEl.style.display = 'none';
+        this.els.connection?.setAttribute('aria-expanded', 'false');
+        if (restoreFocus && wasOpen) focusWithoutScroll(this.els.connection);
+    }
+
+    _renderConnectionDetails(now = Date.now()) {
+        const panel = this._connectionPanelEl;
+        if (!panel) return;
+        const link = this._villageState.link;
+        const age = snapshotAgeMs(this._villageState, now);
+        const snapshot = age === null
+            ? 'Last successful snapshot: not received yet'
+            : `Last successful snapshot: ${Math.round(age / 1000)}s ago`;
+        const rows = [el('div', { text: snapshot })];
+        if (link.state === LinkState.RECONNECTING && link.nextRetryAt) {
+            const retryMs = Math.max(0, link.nextRetryAt - now);
+            rows.push(el('div', { text: `Next retry: in ${Math.ceil(retryMs / 1000)}s` }));
+        }
+        const code = link.lastErrorCode || this._watcherErrorCode;
+        if (code) rows.push(el('div', { text: `Reason: ${connectionReasonText(code)}` }));
+        replaceChildren(panel, rows);
     }
 
     // Connection-loss as a felt chrome event: while offline the whole app
     // desaturates and dashboard cards freeze to a muted, shimmering opacity.
     // On reconnect a single warm gold sweep washes color back across the
-    // chrome. The sweep is a one-shot class cleared by its animationend (and
-    // by a fallback timer for reduced-motion, where the animation never fires).
+    // chrome. The sweep waits for a new successful snapshot and its class is
+    // cleared by a fallback timer, including when reduced motion is enabled.
     _applyConnectionChrome(connected) {
         const body = document.body;
         if (!body) return;
-        const wasOffline = body.classList.contains('cv-offline');
+        if (!connected && !this._recoverySweepPending) {
+            this._recoverySweepPending = true;
+            this._recoveryBaselineSnapshotAt = this._villageState.link.lastSnapshotAt;
+        }
         body.classList.toggle('cv-offline', !connected);
-        if (connected && wasOffline) {
+        const snapshotAt = this._villageState.link.lastSnapshotAt;
+        if (connected
+            && this._recoverySweepPending
+            && snapshotAt
+            && snapshotAt !== this._recoveryBaselineSnapshotAt
+            && snapshotAt !== this._lastSweptSnapshotAt) {
+            this._recoverySweepPending = false;
+            this._recoveryBaselineSnapshotAt = snapshotAt;
+            this._lastSweptSnapshotAt = snapshotAt;
             this._fireRecoverySweep(body);
         }
     }
@@ -1090,6 +1507,7 @@ export class TopBar {
             clearTimeout(this._sweepTimer);
             this._sweepTimer = null;
         }
+        this._stopStaleTick();
         this._changelogController?.abort?.();
         this._changelogController = null;
         eventBus.off('agent:added', this._onUpdate);
@@ -1106,6 +1524,22 @@ export class TopBar {
         this._fpsSamples = [];
         eventBus.off('ws:connected', this._onWsConnected);
         eventBus.off('ws:disconnected', this._onWsDisconnected);
+        eventBus.off('ws:state', this._onWsState);
+        eventBus.off('watcher:state', this._onWatcherState);
+        if (this.els.connection) {
+            this.els.connection.removeEventListener('click', this._onConnectionClick);
+            this.els.connection.removeEventListener('mouseenter', this._onConnectionEnter);
+            this.els.connection.removeEventListener('mouseleave', this._onConnectionLeave);
+            this.els.connection.removeEventListener('keydown', this._onConnectionKeydown);
+        }
+        if (this._onConnectionOutside) document.removeEventListener('pointerdown', this._onConnectionOutside);
+        if (this._connectionPanelEl && this._onConnectionPanelLeave) {
+            this._connectionPanelEl.removeEventListener('mouseleave', this._onConnectionPanelLeave);
+        }
+        this._connectionPanelEl?.remove();
+        this._connectionLiveEl?.remove();
+        this._connectionPanelEl = null;
+        this._connectionLiveEl = null;
         if (this._onAutoCamera) eventBus.off('camera:auto-camera', this._onAutoCamera);
         if (this._onCinemaClick && this.els.cinemaToggle) {
             this.els.cinemaToggle.removeEventListener('click', this._onCinemaClick);
@@ -1118,6 +1552,9 @@ export class TopBar {
         }
         if (this._onAttentionClick && this.els.attentionWrap) {
             this.els.attentionWrap.removeEventListener('click', this._onAttentionClick);
+        }
+        if (this._onErroredClick && this.els.erroredWrap) {
+            this.els.erroredWrap.removeEventListener('click', this._onErroredClick);
         }
         if (this._onAlertsClick && this.els.alertsToggle) {
             this.els.alertsToggle.removeEventListener('click', this._onAlertsClick);

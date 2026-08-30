@@ -212,6 +212,104 @@
     color: var(--cv-status-errored);
 }
 
+.topbar__conn--syncing {
+    color: var(--cv-text-muted);
+}
+
+.topbar__conn--syncing::before {
+    border: 1px solid currentColor;
+    background: transparent;
+    box-shadow: none;
+}
+
+.topbar__conn--polling {
+    color: var(--cv-status-idle);
+}
+
+.topbar__conn--polling::before {
+    border-radius: 1px;
+    box-shadow: none;
+}
+
+.topbar__conn--reconnecting {
+    color: var(--cv-status-rate-limited);
+}
+
+.topbar__conn--reconnecting::before {
+    border-radius: 1px;
+    box-shadow: none;
+    animation: none;
+    opacity: 0.72;
+}
+
+.topbar__conn--stale {
+    padding: 2px 5px;
+    color: var(--cv-status-errored);
+    border: 2px solid currentColor;
+    background: color-mix(in srgb, var(--cv-status-errored) 14%, transparent);
+    box-shadow: 0 0 9px color-mix(in srgb, var(--cv-status-errored) 38%, transparent);
+    font-weight: bold;
+    animation: topbar-stale-warning 1.8s ease-in-out infinite;
+}
+
+.topbar__conn--stale::before {
+    width: 6px;
+    height: 6px;
+    border-radius: 0;
+    animation: none;
+}
+
+.topbar__conn[role="button"] {
+    cursor: pointer;
+}
+
+.topbar__conn[role="button"]:focus-visible {
+    outline: 1px solid var(--cv-gold-soft);
+    outline-offset: 3px;
+}
+
+@keyframes topbar-stale-warning {
+    0%, 100% { box-shadow: 0 0 5px color-mix(in srgb, var(--cv-status-errored) 24%, transparent); }
+    50% { box-shadow: 0 0 12px color-mix(in srgb, var(--cv-status-errored) 52%, transparent); }
+}
+
+.topbar__connection-live {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+}
+
+.topbar__connection-panel {
+    position: fixed;
+    z-index: 1200;
+    display: grid;
+    gap: 7px;
+    width: 318px;
+    padding: 10px 11px;
+    color: var(--cv-tan);
+    background: linear-gradient(180deg, var(--cv-panel), var(--cv-panel-deep));
+    border: 1px solid var(--cv-gold-warm);
+    border-radius: 2px;
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--cv-panel-deep) 92%, transparent), var(--cv-elev-2);
+    font: 10px var(--font-body);
+    line-height: 1.45;
+}
+
+.topbar__connection-panel > * + * {
+    padding-top: 7px;
+    border-top: 1px solid var(--cv-border-soft);
+}
+
+.topbar__connection-panel:focus {
+    outline: 1px solid var(--cv-gold-soft);
+    outline-offset: 3px;
+}
+
 /* ── #48 Connection-loss chrome ── */
 /* While the WebSocket is down, body.cv-offline desaturates and dims the topbar
    so the lost link is felt, not alarmed. A slow shimmer keeps it from reading
@@ -263,6 +361,9 @@
         animation: none;
         background: linear-gradient(90deg, transparent, rgba(255, 226, 138, 0.62), rgba(126, 82, 39, 0.5), transparent);
         height: 3px;
+    }
+    .topbar__conn--stale {
+        animation: none;
     }
 }
 
@@ -364,6 +465,121 @@
     align-items: center;
     gap: 7px;
     flex-shrink: 0;
+}
+
+.topbar__badges--segmented {
+    gap: 0;
+}
+
+.topbar__badges--segmented .topbar__status {
+    margin-right: 7px;
+}
+
+/* Four compact meanings share one segmented treatment. Glyph and border
+   changes keep urgency readable without relying on hue alone. */
+.topbar__attention-segment {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    min-height: 27px;
+    padding: 4px 6px;
+    border-radius: 0;
+    color: var(--cv-text-muted);
+    white-space: nowrap;
+}
+
+button.topbar__attention-segment {
+    cursor: pointer;
+    font: inherit;
+    letter-spacing: inherit;
+}
+
+.topbar__attention-segment--needsYou {
+    border-radius: 2px 0 0 2px;
+}
+
+.topbar__attention-segment--watchlist {
+    border-radius: 0 2px 2px 0;
+}
+
+.topbar__attention-segment + .topbar__attention-segment {
+    border-left-width: 0;
+}
+
+.topbar__attention-glyph {
+    display: inline-grid;
+    place-items: center;
+    width: 12px;
+    min-width: 12px;
+    height: 12px;
+    line-height: 1;
+}
+
+.topbar__attention-count {
+    min-width: 1ch;
+    font-family: var(--font-body);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.topbar__attention-label {
+    font-size: 9px;
+    letter-spacing: 0.35px;
+    text-transform: uppercase;
+}
+
+.topbar__attention-segment--needsYou {
+    color: var(--cv-status-waiting-user);
+    border-bottom-width: 2px;
+    font-weight: bold;
+}
+
+.topbar__attention-segment--needsYou .topbar__attention-glyph {
+    border: 1px solid currentColor;
+    border-radius: 50%;
+}
+
+.topbar__attention-segment--errors {
+    color: var(--cv-status-errored);
+    border-top-width: 2px;
+    font-weight: bold;
+}
+
+.topbar__attention-segment--errors .topbar__attention-glyph {
+    border: 1px solid currentColor;
+    border-radius: 1px;
+}
+
+.topbar__attention-segment--quota {
+    color: var(--cv-status-rate-limited);
+    border-bottom: 2px double currentColor;
+}
+
+.topbar__attention-segment--quota .topbar__attention-glyph {
+    font-weight: bold;
+    letter-spacing: -2px;
+}
+
+.topbar__attention-segment--watchlist {
+    color: var(--cv-status-waiting);
+    border-style: dashed;
+}
+
+button.topbar__attention-segment:hover {
+    color: var(--cv-gold-bright);
+    background: color-mix(in srgb, var(--cv-gold-soft) 10%, transparent);
+}
+
+button.topbar__attention-segment:active {
+    transform: translateY(1px);
+}
+
+button.topbar__attention-segment:focus-visible {
+    position: relative;
+    z-index: 1;
+    outline: 1px solid var(--cv-gold-soft);
+    outline-offset: 2px;
 }
 
 /* ── Exception badge pills (errored/attention) ── */
@@ -683,6 +899,10 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     font: 10px var(--font-body);
 }
 
+.topbar__fps-panel {
+    isolation: isolate;
+}
+
 .topbar__mixer-panel:focus,
 .topbar__spend-panel:focus {
     outline: 1px solid var(--cv-gold-soft, #d7b96f);
@@ -711,6 +931,11 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
 
 .topbar__spend-section {
     min-width: 0;
+}
+
+.topbar__spend-section--projects,
+.topbar__spend-section--providers {
+    position: relative;
 }
 
 .topbar__spend-section-heading {

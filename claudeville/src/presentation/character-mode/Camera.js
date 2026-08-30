@@ -1,6 +1,7 @@
 import { MAP_SIZE } from '../../config/constants.js';
 import { BUILDING_DEFS } from '../../config/buildings.js';
 import { eventBus } from '../../domain/events/DomainEvent.js';
+import { dtAlpha } from './MotionClock.js';
 import { mapWorldCorners, tileToWorld, worldToTile } from './Projection.js';
 
 // #50 — idle Ken-Burns drift tuning. Begins after this much input-free time,
@@ -509,8 +510,9 @@ export class Camera {
             this._clampToBounds();
             return;
         }
-        this.x += (targetX - this.x) * this.followSmoothing;
-        this.y += (targetY - this.y) * this.followSmoothing;
+        const alpha = dtAlpha(this.followSmoothing, dt);
+        this.x += (targetX - this.x) * alpha;
+        this.y += (targetY - this.y) * alpha;
         this._clampToBounds();
     }
 

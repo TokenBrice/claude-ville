@@ -9,6 +9,15 @@ import { ClaudeDataSource } from '../infrastructure/ClaudeDataSource.js';
 import { WebSocketClient } from '../infrastructure/WebSocketClient.js';
 import { ChronicleStore } from '../infrastructure/ChronicleStore.js';
 
+import {
+    VillagePhase,
+    LinkState,
+    ProviderHealth,
+    initialVillageState,
+    reduceVillageState,
+    bootStatusText,
+    isRetryable,
+} from '../application/VillageState.js';
 import { AgentManager } from '../application/AgentManager.js';
 import { ModeManager } from '../application/ModeManager.js';
 import { SessionWatcher } from '../application/SessionWatcher.js';
@@ -27,8 +36,8 @@ import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
 import { ChroniclePanel } from './shared/ChroniclePanel.js';
 import { ActivityPanel } from './shared/ActivityPanel.js';
-import { el, replaceChildren } from './shared/DomSafe.js';
-import { emitAgentSelected, resetAgentSelection } from './shared/AgentSelection.js';
+import { el } from './shared/DomSafe.js';
+import { emitAgentSelected, emitAgentDeselected, resetAgentSelection } from './shared/AgentSelection.js';
 import { sessionDetailsService } from './shared/SessionDetailsService.js';
 import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
 
@@ -37,6 +46,58 @@ import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 
 const LIFECYCLE_DRAIN_TIMEOUT_MS = 2000;
 const FIRST_RUN_HINT_STORAGE_KEY = 'claudeville.firstRunHint.worldControls.v1';
+
+const USABLE_VILLAGE_PHASES = new Set([
+    VillagePhase.READY_LIVE,
+    VillagePhase.READY_EMPTY,
+    VillagePhase.READY_NO_PROVIDERS,
+    VillagePhase.DEGRADED,
+]);
+
+const EMPTY_SURFACE_COPY = Object.freeze({
+    [VillagePhase.STARTING]: Object.freeze({
+        title: 'OPENING THE VILLAGE',
+        copy: 'Preparing the local watchtowers.',
+        next: 'The first snapshot has not arrived yet.',
+    }),
+    [VillagePhase.SYNCING]: Object.freeze({
+        title: 'LISTENING FOR LOCAL SESSIONS',
+        copy: 'Still syncing with this machine.',
+        next: 'Wait here — agents appear when a session is read.',
+    }),
+    [VillagePhase.READY_NO_PROVIDERS]: Object.freeze({
+        title: 'NO PROVIDERS FOUND',
+        copy: 'No supported coding CLI is installed on this machine.',
+        next: 'Install Claude, Codex, Gemini, OpenCode, or Kimi, then try again.',
+    }),
+    [VillagePhase.READY_EMPTY]: Object.freeze({
+        title: 'PROVIDERS FOUND / NOTHING ACTIVE',
+        copy: 'A watchtower is ready, but no coding session is running.',
+        next: 'Start a coding CLI session to see agents here.',
+    }),
+    [VillagePhase.DEGRADED]: Object.freeze({
+        title: 'A WATCHTOWER IS UNREADABLE',
+        copy: 'The village cannot read one or more local session sources.',
+        next: 'Try again to re-read local sessions.',
+    }),
+    [VillagePhase.FAILED]: Object.freeze({
+        title: 'THE VILLAGE DID NOT OPEN',
+        copy: 'The village shell is still here. A step failed while opening.',
+        next: 'Try again to re-run the failed step.',
+    }),
+});
+
+const BOOT_FAILURE_COPY = Object.freeze({
+    'network-failed': 'Could not reach the local village server.',
+    'server-error': 'The village server returned an error.',
+    'request-failed': 'The village server refused a request.',
+    'session-read-failed': 'Could not read local sessions.',
+    'providers-failed': 'Could not read installed providers.',
+    'assets-failed': 'Village art failed to load.',
+    'renderer-failed': 'The world renderer failed to open.',
+    'aborted': 'Opening the village was interrupted.',
+    'boot-failed': 'The village did not finish opening.',
+});
 
 export class App {
     constructor() {
@@ -98,6 +159,21 @@ export class App {
         this._cleanupPromise = null;
         this._bootState = 'idle';
         this._destroyed = false;
+        this._chronicleSignalsBound = false;
+        this._agentFollowBound = false;
+        this._deepLinkBound = false;
+        this.villageState = initialVillageState();
+        this._villageBound = false;
+        this._foundationReady = false;
+        this._surfacesBound = false;
+        this._usageRequested = false;
+        this._bootStatusWrap = null;
+        this._bootStatusEl = null;
+        this._bootFailureEl = null;
+        this._bootActionEl = null;
+        this._onBootRetry = null;
+        this._retryPromise = null;
+        this._firstRunHintRevealed = false;
     }
 
     boot() {
@@ -118,105 +194,46 @@ export class App {
             // 0. Stamp --cv-status-* from STATUS_VISUALS so CSS and canvas can
             // never fork (plan 1.1); reset.css holds identical fallbacks.
             this._stampStatusCssVars();
+            this._ensureBootStatus();
+            this._renderVillageSurfaces();
+            await new Promise((resolve) => requestAnimationFrame(resolve));
+            if (this._destroyed) return null;
 
-            // 1. Initialize domain
-            this.world = new World();
-            for (const def of BUILDING_DEFS) {
-                this.world.addBuilding(new Building(def));
-            }
+            this._dispatchVillage({ type: 'sync-start' });
+            this._advanceFromStarting();
 
-            // 2. Initialize infrastructure
-            this.dataSource = new ClaudeDataSource();
-            // Opt-in client-side timing: delta-to-paint latency and delta-correlated
-            // frame gaps. Disabled by default; costs one state check per message.
-            this.clientPerfMetrics = new ClientPerfMetrics();
-            this.wsClient = new WebSocketClient({
-                performanceMetrics: this.clientPerfMetrics,
-            });
-            this.chronicleStore = new ChronicleStore();
-            const initialStore = this.chronicleStore;
-            this._trackChronicleTask(this._runChroniclePrune().then(() => {
-                if (!initialStore._closed) window.__chronicle = initialStore;
-            }).catch((err) => {
-                console.warn('[App] ChronicleStore unavailable:', err.message);
-            }));
-            // 2.1 / 2.4 — persistent biography and pair-affinity accumulation
-            // (ChronicleStore-backed); both listen on agent:* domain events.
-            this.biographyService = new AgentBiographyService({ store: this.chronicleStore }).start();
-            this.affinityService = new RelationshipAffinityService({ store: this.chronicleStore }).start();
-            this.auroraGate = new AuroraGate({ store: this.chronicleStore });
-            this._chroniclePruneInterval = window.setInterval(() => {
-                this._runChroniclePrune().catch((err) => {
-                    console.warn('[App] ChronicleStore prune failed:', err.message);
-                });
-            }, 5 * 60 * 1000);
-
-            // 3. Initialize UI components
-            this.toast = new Toast();
-            this.modal = new Modal();
-            // Attention marks (title, favicon, cue, jump-to) must exist before
-            // the TopBar so the ATTN chip and the `A` hotkey can bind to them.
-            this.attentionService = new AttentionService(this.world, { toast: this.toast });
-            // The day book: records arrivals, waits, completions and git events
-            // so the Chronicle can answer "what did I miss?".
-            this.chronicleLog = new ChronicleLog({ store: this.chronicleStore }).start();
-            // Today's observed spend, banked from token deltas and persisted so
-            // a reload does not reset the day.
-            this.spendLedger = new SpendLedger(this.world, { store: this.chronicleStore });
-            this._trackChronicleTask(this.spendLedger.start().catch((err) => {
-                console.warn('[App] SpendLedger unavailable:', err.message);
-            }));
-            this.chroniclePanel = new ChroniclePanel({
-                modal: this.modal,
-                chronicleLog: this.chronicleLog,
-                spendLedger: this.spendLedger,
-                usageGetter: () => this.latestUsage,
-            });
-            this.topBar = new TopBar(this.world, {
-                modal: this.modal,
-                attention: this.attentionService,
-                chronicle: this.chroniclePanel,
-                spendLedger: this.spendLedger,
-            });
-            this.sidebar = new Sidebar(this.world);
-            this._bindWorldEmptyState();
-            this._initFirstRunHint();
-
-            // 4. Initialize application services
-            this.agentManager = new AgentManager(this.world, this.dataSource);
-            this.agentManager.setUsageGetter(() => this.latestUsage);
-            this.modeManager = new ModeManager();
-            this.notificationService = new NotificationService(this.toast);
-            // 2.2 — telemetry → mood mapping; keeps Agent.mood current and
-            // aggregates the village weather influence read by World mode.
-            this.moodService = new MoodService().start();
-            this._bindChronicleSignals();
+            this._bootFoundation();
+            this._bindVillageObservations();
 
             // 4-1. Behavior simulator (?sim=1, dev only — overrides session ingestion)
             const simMode = new URLSearchParams(location.search).get('sim') === '1';
             this.simMode = simMode;
-            if (simMode) {
+            if (simMode && !this.agentSimulator) {
                 const mod = await import('./character-mode/__simfixture__/AgentSimulator.js');
                 if (this._destroyed) return null;
                 this.agentSimulator = new mod.default({ world: this.world, agentManager: this.agentManager, eventBus });
                 this.agentSimulator.start();
             }
 
-            // 5. Load initial data
-            if (!simMode) await this.agentManager.loadInitialData({ signal: this._bootController?.signal });
+            // 5. Load initial data — observe the session read at this layer
+            // because AgentManager swallows the failure.
+            await this._syncVillageSources({ signal: this._bootController?.signal });
             if (this._destroyed) return null;
 
             // 5-1. Load initial usage data
-            this.dataSource.getUsage({ signal: this._bootController?.signal }).then(usage => {
-                if (this._destroyed) return;
-                if (usage) {
-                    this.latestUsage = usage;
-                    eventBus.emit('usage:updated', usage);
-                }
-            });
+            if (!this._usageRequested && this.dataSource) {
+                this._usageRequested = true;
+                this.dataSource.getUsage({ signal: this._bootController?.signal }).then(usage => {
+                    if (this._destroyed) return;
+                    if (usage) {
+                        this.latestUsage = usage;
+                        eventBus.emit('usage:updated', usage);
+                    }
+                });
+            }
 
             // 6. Start session watching (skipped in sim mode)
-            if (!simMode) {
+            if (!simMode && !this.sessionWatcher) {
                 this.sessionWatcher = new SessionWatcher(
                     this.agentManager, this.wsClient, this.dataSource
                 );
@@ -224,10 +241,10 @@ export class App {
             }
 
             // 7. Handle canvas resizing (run before the renderer so the canvas size is set)
-            this._bindResize();
+            if (!this._resizeWorldCanvas) this._bindResize();
 
             // 8. Preload sprite assets, then dynamically load character renderer
-            this.assets = new AssetManager();
+            if (!this.assets) this.assets = new AssetManager();
             await this.assets.load({ signal: this._bootController?.signal });
             if (this._destroyed) return null;
             const renderParams = new URLSearchParams(location.search);
@@ -238,31 +255,34 @@ export class App {
                 if (this._destroyed) return null;
             }
             console.log('[App] sprite assets loaded');
-            await this._loadRenderer();
+            if (!this.renderer) await this._loadRenderer();
             if (this._destroyed) return null;
 
             // 8-1. Load dashboard renderer
-            await this._loadDashboard();
+            if (!this.dashboardRenderer) await this._loadDashboard();
             if (this._destroyed) return null;
 
             // 9. right-side live activity panel
-            this.activityPanel = new ActivityPanel({
-                world: () => this.world,
-                renderer: () => this.renderer,
-                harborTraffic: () => this.renderer?.harborTraffic || null,
-                biographyService: () => this.biographyService,
-                affinityService: () => this.affinityService,
-                toast: this.toast,
-            });
-            this._bindAgentFollow();
-            this._bindDeepLink();
-            if (this.renderer?.selectedAgent) {
-                emitAgentSelected(this.renderer.selectedAgent);
+            if (!this.activityPanel) {
+                this.activityPanel = new ActivityPanel({
+                    world: () => this.world,
+                    renderer: () => this.renderer,
+                    harborTraffic: () => this.renderer?.harborTraffic || null,
+                    biographyService: () => this.biographyService,
+                    affinityService: () => this.affinityService,
+                    toast: this.toast,
+                });
+                this._bindAgentFollow();
+                this._bindDeepLink();
+                if (this.renderer?.selectedAgent) {
+                    emitAgentSelected(this.renderer.selectedAgent);
+                }
+                this._applyDeepLink();
             }
-            this._applyDeepLink();
 
             // 10. Apply initial i18n
             this._applyI18n();
+            this._renderVillageSurfaces();
 
             if (this._destroyed) return null;
             this._bootState = 'ready';
@@ -273,11 +293,7 @@ export class App {
                 await this._cleanupOwned();
                 return null;
             }
-            console.error('[App] boot failed:', err);
-            this._destroyed = true;
-            await this._cleanupOwned();
-            this._bootState = 'failed';
-            this._showBootError(err);
+            this._handleBootFailure(err);
             return null;
         }
     }
@@ -291,12 +307,513 @@ export class App {
         }
     }
 
-    _bindWorldEmptyState() {
-        const emptyEl = document.getElementById('worldEmpty');
-        if (!emptyEl) return;
-        const sync = () => {
-            emptyEl.hidden = (this.world?.agents?.size || 0) > 0;
+    _bootFoundation() {
+        if (this._foundationReady) return;
+
+        // 1. Initialize domain
+        if (!this.world) {
+            this.world = new World();
+            for (const def of BUILDING_DEFS) {
+                this.world.addBuilding(new Building(def));
+            }
+        }
+
+        // 2. Initialize infrastructure
+        if (!this.dataSource) this.dataSource = new ClaudeDataSource();
+        if (!this.clientPerfMetrics) this.clientPerfMetrics = new ClientPerfMetrics();
+        if (!this.wsClient) {
+            this.wsClient = new WebSocketClient({
+                performanceMetrics: this.clientPerfMetrics,
+            });
+        }
+        if (!this.chronicleStore) {
+            this.chronicleStore = new ChronicleStore();
+            this._bindVillageObservations();
+            const initialStore = this.chronicleStore;
+            this._trackChronicleTask(this._runChroniclePrune().then(() => {
+                if (!initialStore._closed) window.__chronicle = initialStore;
+            }).catch((err) => {
+                console.warn('[App] ChronicleStore unavailable:', err.message);
+            }));
+            this.biographyService = new AgentBiographyService({ store: this.chronicleStore }).start();
+            this.affinityService = new RelationshipAffinityService({ store: this.chronicleStore }).start();
+            this.auroraGate = new AuroraGate({ store: this.chronicleStore });
+            this._chroniclePruneInterval = window.setInterval(() => {
+                this._runChroniclePrune().catch((err) => {
+                    console.warn('[App] ChronicleStore prune failed:', err.message);
+                });
+            }, 5 * 60 * 1000);
+        } else {
+            this._bindVillageObservations();
+        }
+
+        // 3. Initialize UI components
+        if (!this.toast) this.toast = new Toast();
+        if (!this.modal) this.modal = new Modal();
+        if (!this.attentionService) {
+            this.attentionService = new AttentionService(this.world, { toast: this.toast });
+        }
+        if (!this.chronicleLog) {
+            this.chronicleLog = new ChronicleLog({ store: this.chronicleStore }).start();
+        }
+        if (!this.spendLedger) {
+            this.spendLedger = new SpendLedger(this.world, { store: this.chronicleStore });
+            this._trackChronicleTask(this.spendLedger.start().catch((err) => {
+                console.warn('[App] SpendLedger unavailable:', err.message);
+            }));
+        }
+        if (!this.chroniclePanel) {
+            this.chroniclePanel = new ChroniclePanel({
+                modal: this.modal,
+                chronicleLog: this.chronicleLog,
+                spendLedger: this.spendLedger,
+                usageGetter: () => this.latestUsage,
+            });
+        }
+        if (!this.topBar) {
+            this.topBar = new TopBar(this.world, {
+                modal: this.modal,
+                attention: this.attentionService,
+                chronicle: this.chroniclePanel,
+                spendLedger: this.spendLedger,
+            });
+        }
+        if (!this.sidebar) this.sidebar = new Sidebar(this.world);
+        this._bindWorldEmptyState();
+        this._initFirstRunHint();
+
+        // 4. Initialize application services
+        if (!this.agentManager) {
+            this.agentManager = new AgentManager(this.world, this.dataSource);
+            this.agentManager.setUsageGetter(() => this.latestUsage);
+        }
+        if (!this.modeManager) this.modeManager = new ModeManager();
+        if (!this.notificationService) this.notificationService = new NotificationService(this.toast);
+        if (!this.moodService) this.moodService = new MoodService().start();
+        this._bindChronicleSignals();
+
+        this._foundationReady = true;
+    }
+
+    _dispatchVillage(action, { render = true } = {}) {
+        this.villageState = reduceVillageState(this.villageState || initialVillageState(), action);
+        if (render) {
+            eventBus.emit('village:state', this.villageState);
+            this._renderVillageSurfaces();
+        }
+        return this.villageState;
+    }
+
+    _advanceFromStarting() {
+        // The reducer latches STARTING until a non-STARTING phase is stored,
+        // so boot must advance the latch once loading begins.
+        if (this.villageState?.phase !== VillagePhase.STARTING) return;
+        this.villageState = { ...this.villageState, phase: VillagePhase.SYNCING };
+        eventBus.emit('village:state', this.villageState);
+        this._renderVillageSurfaces();
+    }
+
+    _bindVillageObservations() {
+        if (this._villageBound) return;
+        this._villageBound = true;
+
+        const onWsState = (payload = {}) => {
+            this._dispatchVillage({
+                type: 'link',
+                state: payload.state,
+                attempts: payload.attempts,
+                nextRetryAt: payload.nextRetryAt,
+                lastErrorCode: payload.lastErrorCode,
+            });
         };
+        const onWatcherState = (payload = {}) => {
+            if (payload?.ok === true) {
+                this._dispatchVillage({
+                    type: 'snapshot',
+                    agentCount: this.world?.agents?.size || 0,
+                    at: payload.at || Date.now(),
+                });
+                return;
+            }
+            if (payload?.ok === false) {
+                this._dispatchVillage({
+                    type: 'source-failed',
+                    code: payload.code || 'session-poll-failed',
+                });
+                return;
+            }
+            if (payload?.state === 'polling') {
+                this._dispatchVillage({ type: 'link', state: LinkState.POLLING });
+            }
+        };
+        const onWsSnapshot = (data) => {
+            const count = Array.isArray(data?.sessions)
+                ? data.sessions.length
+                : (this.world?.agents?.size || 0);
+            this._dispatchVillage({
+                type: 'snapshot',
+                agentCount: count,
+                at: Date.now(),
+            });
+        };
+        const onChronicleStatus = (payload = {}) => {
+            this._dispatchVillage({
+                type: 'storage',
+                chronicle: payload.status || 'unknown',
+            });
+        };
+
+        this._eventUnsubscribers.push(eventBus.on('ws:state', onWsState));
+        this._eventUnsubscribers.push(eventBus.on('watcher:state', onWatcherState));
+        this._eventUnsubscribers.push(eventBus.on('ws:init', onWsSnapshot));
+        this._eventUnsubscribers.push(eventBus.on('ws:update', onWsSnapshot));
+        this._eventUnsubscribers.push(eventBus.on('chronicle:status', onChronicleStatus));
+    }
+
+    async _syncVillageSources({ signal = null } = {}) {
+        if (this._destroyed) return;
+        if (this.simMode) {
+            this._dispatchVillage({
+                type: 'providers',
+                providers: [{
+                    id: 'sim',
+                    name: 'Simulator',
+                    health: ProviderHealth.HEALTHY,
+                    sessions: this.world?.agents?.size || 0,
+                }],
+            });
+            this._dispatchVillage({
+                type: 'snapshot',
+                agentCount: this.world?.agents?.size || 0,
+                at: Date.now(),
+            });
+            return;
+        }
+
+        const providersResult = await this._readProviders({ signal });
+        if (this._destroyed || signal?.aborted) return;
+        const sessionsResult = await this._readInitialSessions({ signal });
+        if (this._destroyed || signal?.aborted) return;
+        if (providersResult?.failed && sessionsResult?.ok) {
+            this._dispatchVillage({
+                type: 'source-failed',
+                code: providersResult.code || 'providers-failed',
+            });
+        }
+    }
+
+    async _readProviders({ signal = null } = {}) {
+        if (!this.dataSource) {
+            this._dispatchVillage({ type: 'source-failed', code: 'source-unavailable' });
+            this._dispatchVillage({ type: 'providers', providers: [] });
+            return { failed: true, code: 'source-unavailable' };
+        }
+        try {
+            const providers = await this.dataSource.getProviders({ signal, rejectOnError: true });
+            if (this._destroyed || signal?.aborted) return { failed: false };
+            this._dispatchVillage({ type: 'providers', providers });
+            return { failed: false };
+        } catch (err) {
+            if (this._destroyed || signal?.aborted || err?.name === 'AbortError') return { failed: false };
+            console.error('[App] Failed to read providers:', err);
+            const code = this._failureCode(err, 'providers-failed');
+            this._dispatchVillage({ type: 'source-failed', code });
+            this._dispatchVillage({ type: 'providers', providers: [] });
+            return { failed: true, code };
+        }
+    }
+
+    async _readInitialSessions({ signal = null } = {}) {
+        const dataSource = this.dataSource;
+        if (!dataSource) {
+            this._dispatchVillage({ type: 'source-failed', code: 'source-unavailable' });
+            return { ok: false, failed: true };
+        }
+
+        const originalGetSessions = dataSource.getSessions;
+        const read = { seen: false, ok: false, code: null, count: 0 };
+        dataSource.getSessions = async (...args) => {
+            try {
+                const sessions = await originalGetSessions.apply(dataSource, args);
+                read.seen = true;
+                read.ok = true;
+                read.code = null;
+                read.count = Array.isArray(sessions) ? sessions.length : 0;
+                return sessions;
+            } catch (err) {
+                read.seen = true;
+                read.ok = false;
+                read.code = this._failureCode(err, 'session-read-failed');
+                read.count = 0;
+                throw err;
+            }
+        };
+
+        try {
+            if (this.agentManager && !this.sessionWatcher) {
+                await this.agentManager.loadInitialData({ signal });
+            } else {
+                try {
+                    const sessions = await dataSource.getSessions({ signal });
+                    if (this.agentManager && Array.isArray(sessions)) {
+                        this.agentManager.handleWebSocketMessage({ sessions });
+                    }
+                } catch (err) {
+                    if (signal?.aborted || err?.name === 'AbortError') return;
+                }
+            }
+        } finally {
+            dataSource.getSessions = originalGetSessions;
+        }
+
+        if (this._destroyed || signal?.aborted) return { ok: false, failed: false };
+        if (read.ok) {
+            this._dispatchVillage({
+                type: 'snapshot',
+                agentCount: this.world?.agents?.size || read.count,
+                at: Date.now(),
+            });
+            return { ok: true, failed: false };
+        }
+        if (read.seen) {
+            // Snapshot then fail in one turn: DEGRADED is unreachable until
+            // providersKnown and lastSnapshotAt are both set, and a lone
+            // source-failed would leave the operator stuck on SYNCING without retry.
+            this._dispatchVillage({
+                type: 'snapshot',
+                agentCount: this.world?.agents?.size || 0,
+                at: Date.now(),
+            }, { render: false });
+            this._dispatchVillage({
+                type: 'source-failed',
+                code: read.code || 'session-read-failed',
+            }, { render: false });
+            this._dispatchVillage({ type: 'link', state: LinkState.SYNCING });
+            return { ok: false, failed: true };
+        }
+        return { ok: false, failed: false };
+    }
+
+    _failureCode(err, fallback = 'boot-failed') {
+        if (!err) return fallback;
+        if (err.name === 'AbortError') return 'aborted';
+        const message = String(err.message || '');
+        if (/failed to fetch|networkerror|net::/i.test(message)) return 'network-failed';
+        if (/HTTP 5\d\d/.test(message)) return 'server-error';
+        if (/HTTP 4\d\d/.test(message)) return 'request-failed';
+        if (/asset|sprite|yaml/i.test(message)) return 'assets-failed';
+        if (/renderer/i.test(message)) return 'renderer-failed';
+        return fallback;
+    }
+
+    _failureCopy(code) {
+        return BOOT_FAILURE_COPY[code] || BOOT_FAILURE_COPY['boot-failed'];
+    }
+
+    _handleBootFailure(err) {
+        console.error('[App] boot failed:', err);
+        this._bootState = 'failed';
+        this._dispatchVillage({ type: 'boot-failed', code: this._failureCode(err, 'boot-failed') });
+    }
+
+    async _retryVillage() {
+        if (this._destroyed) return null;
+        if (this._retryPromise) return this._retryPromise;
+        this._retryPromise = this._retryVillageOnce();
+        try {
+            return await this._retryPromise;
+        } finally {
+            this._retryPromise = null;
+        }
+    }
+
+    async _retryVillageOnce() {
+        const failed = this.villageState?.phase === VillagePhase.FAILED || this._bootState === 'failed';
+        this._dispatchVillage({ type: 'retry' });
+        if (this._bootActionEl) this._bootActionEl.disabled = true;
+        try {
+            if (failed) {
+                this._bootPromise = null;
+                this._bootState = 'idle';
+                return await this.boot();
+            }
+            await this._syncVillageSources({ signal: this._bootController?.signal });
+            if (!this.renderer) await this._loadRenderer();
+            if (!this.dashboardRenderer) await this._loadDashboard();
+            this._renderVillageSurfaces();
+            return this;
+        } catch (err) {
+            this._handleBootFailure(err);
+            return null;
+        } finally {
+            if (this._bootActionEl) this._bootActionEl.disabled = false;
+        }
+    }
+
+    _ensureBootStatus() {
+        if (this._bootStatusEl?.isConnected) return;
+        const wrap = el('div', {
+            className: 'boot-status-wrap',
+            style: {
+                position: 'fixed',
+                top: '58px',
+                left: '50%',
+                transform: 'translateX(-50%)',
+                zIndex: '90',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                gap: '8px',
+                pointerEvents: 'none',
+                maxWidth: '520px',
+                textAlign: 'center',
+            },
+        });
+        wrap.id = 'bootStatusWrap';
+
+        const status = el('div', {
+            className: 'boot-status',
+            text: bootStatusText(this.villageState),
+            style: {
+                fontFamily: 'var(--font-display), monospace',
+                fontSize: '9px',
+                letterSpacing: '1.5px',
+                color: 'var(--cv-gold-bright, #ffe58d)',
+                textShadow: '1px 1px 0 #2d1a12',
+            },
+        });
+        status.id = 'bootStatus';
+        status.setAttribute('role', 'status');
+        status.setAttribute('aria-live', 'polite');
+        status.setAttribute('aria-atomic', 'true');
+
+        const failure = el('div', {
+            className: 'boot-failure',
+            style: {
+                fontFamily: 'var(--font-display), monospace',
+                fontSize: '8px',
+                letterSpacing: '0.5px',
+                color: 'var(--cv-text-muted, #8b8b9e)',
+                display: 'none',
+            },
+        });
+        failure.id = 'bootFailureCopy';
+
+        const action = document.createElement('button');
+        action.id = 'bootAction';
+        action.type = 'button';
+        action.className = 'boot-action';
+        action.textContent = 'TRY AGAIN';
+        action.setAttribute('aria-label', 'Try again');
+        Object.assign(action.style, {
+            pointerEvents: 'auto',
+            fontFamily: 'var(--font-display), monospace',
+            fontSize: '9px',
+            letterSpacing: '1px',
+            color: '#1b120d',
+            background: 'var(--cv-gold-bright, #ffe58d)',
+            border: '1px solid rgba(214, 169, 81, 0.8)',
+            padding: '6px 12px',
+            cursor: 'pointer',
+            display: 'none',
+        });
+        this._onBootRetry = () => { void this._retryVillage(); };
+        action.addEventListener('click', this._onBootRetry);
+
+        wrap.append(status, failure, action);
+        document.body.appendChild(wrap);
+        this._bootStatusWrap = wrap;
+        this._bootStatusEl = status;
+        this._bootFailureEl = failure;
+        this._bootActionEl = action;
+    }
+
+    _renderVillageSurfaces() {
+        if (this._destroyed) return;
+        this._ensureBootStatus();
+        const state = this.villageState || initialVillageState();
+        const phase = state.phase;
+        let status = bootStatusText(state);
+        if (state.storage?.chronicle === 'degraded') {
+            status = `${status} · CHRONICLE HISTORY UNAVAILABLE`;
+        }
+        this._setTextIfChanged(this._bootStatusEl, status);
+
+        const retryable = isRetryable(state);
+        const failureCode = state.failureCode || (phase === VillagePhase.DEGRADED ? state.link?.lastErrorCode : null);
+        if (this._bootFailureEl) {
+            if (phase === VillagePhase.FAILED) {
+                this._setTextIfChanged(this._bootFailureEl, this._failureCopy(failureCode));
+                this._bootFailureEl.style.display = '';
+            } else {
+                this._bootFailureEl.style.display = 'none';
+            }
+        }
+        if (this._bootActionEl) {
+            this._bootActionEl.style.display = retryable ? '' : 'none';
+            this._bootActionEl.disabled = Boolean(this._retryPromise);
+        }
+
+        const copy = EMPTY_SURFACE_COPY[phase] || EMPTY_SURFACE_COPY[VillagePhase.SYNCING];
+        const occupied = (state.agentCount || 0) > 0 || (this.world?.agents?.size || 0) > 0;
+        const showEmpty = phase !== VillagePhase.READY_LIVE && !occupied;
+        this._paintEmptySurface(document.getElementById('worldEmpty'), {
+            titleSel: '.world-empty__title',
+            copySel: '.world-empty__copy',
+            nextClass: 'world-empty__next',
+            copy,
+            show: showEmpty,
+            useHidden: true,
+        });
+        this._paintEmptySurface(document.getElementById('dashboardEmpty'), {
+            titleSel: '.dashboard__empty-text',
+            copySel: '.dashboard__empty-sub',
+            nextClass: 'dashboard__empty-next',
+            copy,
+            show: showEmpty,
+            visibleClass: 'dashboard__empty--visible',
+        });
+
+        this._syncFirstRunHint();
+    }
+
+    _paintEmptySurface(root, { titleSel, copySel, nextClass, copy, show, useHidden, visibleClass }) {
+        if (!root) return;
+        const title = root.querySelector(titleSel);
+        const body = root.querySelector(copySel);
+        let next = root.querySelector(`.${nextClass}`);
+        if (!next) {
+            next = el('span', {
+                className: nextClass,
+                style: {
+                    maxWidth: '340px',
+                    fontFamily: 'var(--font-display), monospace',
+                    fontSize: '8px',
+                    letterSpacing: '0.5px',
+                    color: 'var(--cv-tan, #d8b77a)',
+                },
+            });
+            root.appendChild(next);
+        }
+        this._setTextIfChanged(title, copy.title);
+        this._setTextIfChanged(body, copy.copy);
+        this._setTextIfChanged(next, copy.next);
+        if (useHidden) root.hidden = !show;
+        if (visibleClass) root.classList.toggle(visibleClass, show);
+        const hints = root.querySelector('.dashboard__empty-hints');
+        if (hints) hints.hidden = copy !== EMPTY_SURFACE_COPY[VillagePhase.READY_EMPTY];
+    }
+
+    _setTextIfChanged(node, text) {
+        if (!node) return;
+        const next = text == null ? '' : String(text);
+        if (node.textContent !== next) node.textContent = next;
+    }
+
+    _bindWorldEmptyState() {
+        if (this._surfacesBound) return;
+        this._surfacesBound = true;
+        const sync = () => this._renderVillageSurfaces();
         this._eventUnsubscribers.push(eventBus.on('agent:added', sync));
         this._eventUnsubscribers.push(eventBus.on('agent:removed', sync));
         sync();
@@ -306,23 +823,41 @@ export class App {
         const hint = document.getElementById('firstRunHint');
         const dismiss = document.getElementById('firstRunHintDismiss');
         if (!hint || !dismiss) return;
+        if (this._onFirstRunHintDismiss) return;
 
-        let seen = false;
-        try {
-            seen = window.localStorage?.getItem(FIRST_RUN_HINT_STORAGE_KEY) === '1';
-            if (!seen) window.localStorage?.setItem(FIRST_RUN_HINT_STORAGE_KEY, '1');
-        } catch {
-            // Storage may be disabled; the hint remains dismissible for this page.
-        }
-        if (seen) return;
-
-        hint.hidden = false;
         this._onFirstRunHintDismiss = () => {
             hint.hidden = true;
             dismiss.removeEventListener('click', this._onFirstRunHintDismiss);
             this._onFirstRunHintDismiss = null;
+            this._markFirstRunHintSeen();
         };
         dismiss.addEventListener('click', this._onFirstRunHintDismiss);
+    }
+
+    _syncFirstRunHint() {
+        const hint = document.getElementById('firstRunHint');
+        if (!hint || this._firstRunHintRevealed) return;
+        if (!USABLE_VILLAGE_PHASES.has(this.villageState?.phase)) return;
+        if (this._hasFirstRunHintBeenSeen()) return;
+        hint.hidden = false;
+        this._firstRunHintRevealed = true;
+        this._markFirstRunHintSeen();
+    }
+
+    _hasFirstRunHintBeenSeen() {
+        try {
+            return window.localStorage?.getItem(FIRST_RUN_HINT_STORAGE_KEY) === '1';
+        } catch {
+            return false;
+        }
+    }
+
+    _markFirstRunHintSeen() {
+        try {
+            window.localStorage?.setItem(FIRST_RUN_HINT_STORAGE_KEY, '1');
+        } catch {
+            // Storage may be disabled; the hint remains dismissible for this page.
+        }
     }
 
     _bindPageExit() {
@@ -390,7 +925,8 @@ export class App {
             if (this.latestUsage) candidate.setQuotaState?.(this.latestUsage);
 
             candidate.onAgentSelect = (agent) => {
-                emitAgentSelected(agent);
+                if (agent) emitAgentSelected(agent);
+                else emitAgentDeselected();
             };
 
             const scenarioMetadata = this.agentSimulator?.getScenario?.()?.metadata || null;
@@ -448,6 +984,8 @@ export class App {
     }
 
     _bindAgentFollow() {
+        if (this._agentFollowBound) return;
+        this._agentFollowBound = true;
         // Follow the camera when an agent is selected
         this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
             if (agent && this.renderer) {
@@ -464,6 +1002,8 @@ export class App {
     }
 
     _bindDeepLink() {
+        if (this._deepLinkBound) return;
+        this._deepLinkBound = true;
         // Mirror the current agent selection into the URL fragment so links
         // like /#agent=<id> can be shared.
         this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
@@ -491,6 +1031,8 @@ export class App {
     }
 
     _bindChronicleSignals() {
+        if (this._chronicleSignalsBound) return;
+        this._chronicleSignalsBound = true;
         this._eventUnsubscribers.push(eventBus.on('chronicle:milestone', (monument) => {
             this.auroraGate?.recordMilestone(monument);
             this._trackChronicleTask(this.auroraGate?.evaluate(Date.now(), {
@@ -702,32 +1244,7 @@ export class App {
     }
 
     _showBootError(err) {
-        replaceChildren(document.body, [
-            el('div', {
-                style: {
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    height: '100vh',
-                    fontFamily: "'Press Start 2P',monospace",
-                    color: '#ef4444',
-                    fontSize: '10px',
-                    flexDirection: 'column',
-                    gap: '16px',
-                    background: '#0a0a0f',
-                },
-            }, [
-                el('div', { text: 'BOOT FAILED' }),
-                el('div', {
-                    text: err?.message || 'Unknown boot error',
-                    style: { color: '#8b8b9e', fontSize: '7px' },
-                }),
-                el('div', {
-                    text: 'Check console for details',
-                    style: { color: '#8b8b9e', fontSize: '7px' },
-                }),
-            ]),
-        ]);
+        this._handleBootFailure(err);
     }
 
     destroy() {
@@ -783,6 +1300,24 @@ export class App {
             );
             this._onFirstRunHintDismiss = null;
         }
+        if (this._onBootRetry && this._bootActionEl) {
+            this._bootActionEl.removeEventListener('click', this._onBootRetry);
+        }
+        this._bootStatusWrap?.remove?.();
+        this._bootStatusWrap = null;
+        this._bootStatusEl = null;
+        this._bootFailureEl = null;
+        this._bootActionEl = null;
+        this._onBootRetry = null;
+        this._villageBound = false;
+        this._foundationReady = false;
+        this._surfacesBound = false;
+        this._chronicleSignalsBound = false;
+        this._agentFollowBound = false;
+        this._deepLinkBound = false;
+        this._usageRequested = false;
+        this._firstRunHintRevealed = false;
+        this.villageState = initialVillageState();
         resetAgentSelection();
 
         if (this._onWindowResize) {

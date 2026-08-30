@@ -27,6 +27,11 @@ export function getPulsePriority() {
     }
 }
 
+/*
+ * Legacy frame-domain helpers remain only for callers not yet migrated to the
+ * shared MotionClock. New code must use the millisecond-domain twins, and no
+ * subsystem may keep a private frame counter.
+ */
 export function pulseValue(bandName = 'intrinsic', frame = 0, motionScale = 1) {
     const band = DEFAULT_PULSE_BANDS[bandName] || DEFAULT_PULSE_BANDS.intrinsic;
     if (motionScale <= 0) return band.base;
@@ -57,6 +62,10 @@ export function pulseValueMs(bandName = 'intrinsic', nowMs = 0, motionScale = 1,
     if (motionScale <= 0) return band.base;
     const frames = (Number(nowMs) || 0) / (1000 / 60);
     return band.base + Math.sin(frames * band.rate + band.phase + (Number(phase) || 0)) * band.amplitude;
+}
+
+export function pulseValueFromClock(bandName = 'intrinsic', clock, motionScale = 1, phase = 0) {
+    return pulseValueMs(bandName, clock?.elapsedMs, motionScale, phase);
 }
 
 // Normalized 0..1 read of a band (base±amplitude mapped to 0..1), for callers

@@ -25,7 +25,7 @@
             <div class="topbar__brand">
                 <span class="topbar__logo">ClaudeVille</span>
                 <div class="topbar__meta">
-                    <span id="topbarConnection" class="topbar__conn topbar__conn--connected">LIVE</span>
+                    <span id="topbarConnection" class="topbar__conn topbar__conn--syncing" title="Connection state and data freshness">SYNCING</span>
                     <span class="topbar__version" tabindex="0" role="button">v0.35</span>
                     <span id="statFps" class="topbar__fps">-- FPS</span>
                     <span id="statQuotaWrap" class="topbar__quota-meta" hidden>
@@ -63,6 +63,8 @@
                     </span>
                 </div>
                 <span class="topbar__badge topbar__tag topbar__badge--errored" id="badgeErroredWrap" style="display:none"><span class="topbar__badge-glyph">!</span> <span id="badgeErrored">0</span> ERRORED</span>
+                <span class="topbar__badge topbar__tag" id="badgeQuotaWrap" style="display:none"><span class="topbar__badge-glyph">|</span> <span id="badgeQuota">0</span> QUOTA</span>
+                <span class="topbar__badge topbar__tag" id="badgeWatchlistWrap" style="display:none"><span class="topbar__badge-glyph">~</span> <span id="badgeWatchlist">0</span> WATCHLIST</span>
                 <button class="topbar__badge topbar__tag topbar__badge--attention" id="badgeAttentionWrap" type="button" style="display:none" title="Jump to the longest-waiting agent (A)"><span class="topbar__badge-glyph">?</span> <span id="badgeAttention">0</span> NEEDS YOU</button>
             </div>
         </div>

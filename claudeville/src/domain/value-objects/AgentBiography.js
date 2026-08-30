@@ -11,6 +11,35 @@
 export const BIOGRAPHY_SCHEMA_VERSION = 3;
 
 const RECENT_PUSH_KEY_LIMIT = 96;
+export const LIFE_EPISODE_LIMIT = 32;
+
+const LIFE_EPISODE_ID_LIMIT = 180;
+const LIFE_EPISODE_PROJECT_LIMIT = 80;
+const LIFE_EPISODE_WAIT_LIMIT_MS = 14 * 24 * 60 * 60 * 1000;
+
+export const LifeEpisodeKind = Object.freeze({
+    ARRIVED: 'arrived',
+    DEPARTED: 'departed',
+    COMPLETED: 'completed',
+    WAITING: 'waiting',
+    RESOLVED: 'resolved',
+    ERRORED: 'errored',
+    RATE_LIMITED: 'rate_limited',
+    COMMIT: 'commit',
+    PUSH: 'push',
+});
+
+export const LifeEpisodeLabel = Object.freeze({
+    [LifeEpisodeKind.ARRIVED]: 'Arrived in the village',
+    [LifeEpisodeKind.DEPARTED]: 'Left the village',
+    [LifeEpisodeKind.COMPLETED]: 'Completed a task',
+    [LifeEpisodeKind.WAITING]: 'Waited for guidance',
+    [LifeEpisodeKind.RESOLVED]: 'Resumed the journey',
+    [LifeEpisodeKind.ERRORED]: 'Met an error',
+    [LifeEpisodeKind.RATE_LIMITED]: 'Paused at a rate limit',
+    [LifeEpisodeKind.COMMIT]: 'Recorded a commit',
+    [LifeEpisodeKind.PUSH]: 'Pushed changes',
+});
 
 const FIRST_SEEN_MILESTONE = { id: 'first-seen', kind: 'milestone', label: 'Settled in the village' };
 const FOUNDER_MILESTONE = {
@@ -116,6 +145,57 @@ function normalizePushMemory(raw) {
     };
 }
 
+function boundedString(value, limit) {
+    return String(value || '').trim().slice(0, limit);
+}
+
+function normalizeLifeEpisode(raw) {
+    const kind = boundedString(raw?.kind, 32);
+    const label = LifeEpisodeLabel[kind];
+    const id = boundedString(raw?.id, LIFE_EPISODE_ID_LIMIT);
+    const at = nonNegativeNumber(raw?.at);
+    if (!id || !label || !at) return null;
+    return {
+        id,
+        kind,
+        at,
+        project: boundedString(raw?.project, LIFE_EPISODE_PROJECT_LIMIT),
+        waitMs: Math.min(nonNegativeNumber(raw?.waitMs), LIFE_EPISODE_WAIT_LIMIT_MS),
+        label,
+    };
+}
+
+function normalizeLifeEpisodes(raw) {
+    const byId = new Map();
+    for (const value of Array.isArray(raw) ? raw : []) {
+        const episode = normalizeLifeEpisode(value);
+        if (episode && !byId.has(episode.id)) byId.set(episode.id, episode);
+    }
+    return [...byId.values()]
+        .sort((a, b) => a.at - b.at || a.id.localeCompare(b.id))
+        .slice(-LIFE_EPISODE_LIMIT);
+}
+
+/**
+ * Fold one attributed Chronicle row into a bounded, prose-free life ring.
+ * Legacy rows without identityKey and rows for another identity are ignored.
+ */
+export function reduceLifeEpisodes(episodes, event, identityKey) {
+    const expectedIdentity = String(identityKey || '');
+    if (!expectedIdentity || String(event?.identityKey || '') !== expectedIdentity) {
+        return normalizeLifeEpisodes(episodes);
+    }
+    const episode = normalizeLifeEpisode({
+        id: event?.id,
+        kind: event?.kind,
+        at: event?.ts,
+        project: event?.project,
+        waitMs: event?.waitedMs,
+    });
+    if (!episode) return normalizeLifeEpisodes(episodes);
+    return normalizeLifeEpisodes([...(Array.isArray(episodes) ? episodes : []), episode]);
+}
+
 export class AgentBiography {
     constructor({
         identityKey,
@@ -142,6 +222,7 @@ export class AgentBiography {
         this.extensions = {
             ...rawExtensions,
             biographyEvents: normalizePushMemory(rawExtensions.biographyEvents),
+            lifeEpisodes: normalizeLifeEpisodes(rawExtensions.lifeEpisodes),
         };
     }
 
@@ -151,18 +232,18 @@ export class AgentBiography {
      * Precedence:
      * 1. Team/custom-named agents keep their given name across sessions
      *    (`named:<provider>:<name>`).
-     * 2. Anonymous sessions map to a recurring villager: the generated
-     *    name is deterministic from the session-id hash, so the same
-     *    villager character accrues history across sessions
-     *    (`villager:<provider>:<generated-name>`).
+     * 2. Anonymous agents are scoped to their provider session id. Generated
+     *    display names are presentation, not trustworthy cross-session
+     *    identity (`anonymous:<provider>:<session-id>`).
      */
     static identityKeyFor(agent) {
         if (!agent) return null;
         const provider = slug(agent.provider || 'unknown');
         const givenName = agent.agentName || (agent._customName ? agent.name : null);
-        if (givenName) return `named:${provider}:${slug(givenName)}`;
-        const villagerName = agent.name || agent.displayName || agent.id;
-        return `villager:${provider}:${slug(villagerName)}`;
+        if (givenName) return compactEventKey(`named:${provider}:${slug(givenName)}`);
+        const sessionId = agent.id || agent.sessionId;
+        if (!sessionId) return null;
+        return compactEventKey(`anonymous:${provider}:${slug(sessionId)}`);
     }
 
     static create(identityKey, now = Date.now()) {
@@ -197,8 +278,18 @@ export class AgentBiography {
                     ...this.extensions.biographyEvents,
                     recentPushKeys: [...this.extensions.biographyEvents.recentPushKeys],
                 },
+                lifeEpisodes: this.extensions.lifeEpisodes.map(episode => ({ ...episode })),
             },
         };
+    }
+
+    rememberLifeEpisode(event) {
+        const current = this.extensions.lifeEpisodes;
+        const next = reduceLifeEpisodes(current, event, this.identityKey);
+        const changed = next.length !== current.length
+            || next.some((episode, index) => episode.id !== current[index]?.id);
+        if (changed) this.extensions.lifeEpisodes = next;
+        return changed;
     }
 
     /**

@@ -30,6 +30,12 @@
 .dashboard-attention__item:hover, .dashboard-attention__item:focus-visible { color: var(--cv-gold-bright); border-color: var(--cv-gold-bright); outline: none; }
 .dashboard-attention__item--waiting_on_user { color: var(--cv-status-waiting-user); }
 .dashboard-attention__item--errored { color: var(--cv-status-errored); }
+.dashboard-attention__item--rate_limited { color: var(--cv-status-rate-limited); }
+.dashboard-attention__item--waiting { color: var(--cv-status-waiting); }
+.dashboard-attention__item--watchlist {
+    border-style: dashed;
+    font-weight: normal;
+}
 
 /* ═══ Project section ═══ */
 .dashboard__section {
@@ -95,6 +101,7 @@
     font-family: var(--font-body);
     color: var(--cv-text-muted);
     flex: 1;
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -113,8 +120,9 @@
 .dashboard__section-health {
     display: inline-flex;
     align-items: center;
-    gap: 8px;
+    gap: 5px;
     flex-shrink: 0;
+    white-space: nowrap;
 }
 
 .dashboard__health-stat {
@@ -131,17 +139,51 @@
     height: 6px;
     border-radius: 50%;
     background: currentColor;
+    box-sizing: border-box;
+    flex-shrink: 0;
 }
 
-.dashboard__health-stat--errored { color: var(--cv-status-errored); }
-.dashboard__health-stat--errored::before { box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-errored) 60%, transparent); }
-.dashboard__health-stat--working { color: var(--cv-status-working); }
-.dashboard__health-stat--working::before { box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-working) 50%, transparent); }
-.dashboard__health-stat--idle    { color: var(--cv-status-idle); }
+.dashboard__health-stat[data-separator='true']::after {
+    content: '-';
+    margin-left: 2px;
+    color: var(--cv-text-muted);
+    font-weight: normal;
+}
 
-/* ─ #44 composite health pulse-bar: 2px strip under the header, segments
-   sized by working/waiting/errored counts; one-shot red edge-flash on a
-   newly-errored card (project accent already carried on the header rail). ─ */
+.dashboard__health-stat--errored {
+    color: var(--cv-status-errored);
+    font-weight: 800;
+}
+.dashboard__health-stat--errored::before {
+    box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-errored) 60%, transparent);
+}
+.dashboard__health-stat--needs-you { color: var(--cv-status-waiting-user); }
+.dashboard__health-stat--needs-you::before {
+    border: 1px solid currentColor;
+    border-radius: 1px;
+    background: transparent;
+}
+.dashboard__health-stat--quota {
+    color: var(--cv-status-rate-limited);
+    font-weight: normal;
+}
+.dashboard__health-stat--quota::before {
+    width: 8px;
+    height: 5px;
+    border-block: 1px solid currentColor;
+    border-radius: 0;
+    background: transparent;
+}
+.dashboard__health-stat--working { color: var(--cv-status-working); }
+.dashboard__health-stat--working::before {
+    box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-working) 50%, transparent);
+}
+.dashboard__health-stat--watchlist { color: var(--cv-status-waiting); }
+.dashboard__health-stat--watchlist::before { border-radius: 1px; }
+.dashboard__health-stat--idle { color: var(--cv-status-idle); }
+
+/* ─ #44 composite health pulse-bar: 2px strip under the header, with all six
+   SignalLedger buckets and a one-shot edge flash for true errors only. ─ */
 .dashboard__section-healthbar {
     display: flex;
     height: 2px;
@@ -152,19 +194,39 @@
 
 .dashboard__healthbar-seg {
     height: 100%;
+    box-sizing: border-box;
     flex-grow: 0;
     flex-shrink: 0;
     flex-basis: 0;
-    transition: flex-basis 240ms ease;
+    transition: flex-grow 240ms ease;
 }
 
 .dashboard__healthbar-seg--errored {
     background: var(--cv-status-errored);
     box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-errored) 60%, transparent);
 }
+.dashboard__healthbar-seg--needs-you {
+    border-inline: 1px solid var(--cv-status-waiting-user);
+    background: repeating-linear-gradient(
+        135deg,
+        var(--cv-status-waiting-user) 0 2px,
+        transparent 2px 4px
+    );
+}
+.dashboard__healthbar-seg--quota {
+    border-block: 1px solid var(--cv-status-rate-limited);
+    background: transparent;
+}
 .dashboard__healthbar-seg--working {
     background: var(--cv-status-working);
     box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-working) 50%, transparent);
+}
+.dashboard__healthbar-seg--watchlist {
+    background: repeating-linear-gradient(
+        90deg,
+        var(--cv-status-waiting) 0 3px,
+        transparent 3px 5px
+    );
 }
 .dashboard__healthbar-seg--idle {
     background: var(--cv-status-idle);
