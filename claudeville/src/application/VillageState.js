@@ -105,8 +105,13 @@ export function derivePhase(state) {
     // A source we could not read outranks an empty village: silence and
     // blindness are opposite operational facts.
     if (state.sourceFailed || degradedProviders(state.providers).length > 0) return VillagePhase.DEGRADED;
-    if (usableProviders(state.providers).length === 0) return VillagePhase.READY_NO_PROVIDERS;
+    // Live agents are direct evidence that a provider was readable, and they
+    // outrank the provider roster's own classification. Without this, a
+    // mis-mapped or stale roster can make a populated village announce
+    // "NO PROVIDERS FOUND" while villagers are visibly at work — observed in a
+    // browser before this guard existed.
     if (state.agentCount > 0) return VillagePhase.READY_LIVE;
+    if (usableProviders(state.providers).length === 0) return VillagePhase.READY_NO_PROVIDERS;
     return VillagePhase.READY_EMPTY;
 }
 

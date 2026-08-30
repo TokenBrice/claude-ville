@@ -242,54 +242,136 @@ test('fallback polling publishes lifecycle events with exact shapes', () => {
     }
 });
 
-test('provider responses normalize legacy and current shapes without inventing health', async () => {
+let providerImportId = 0;
+
+async function readProviders(responseBody) {
     const previousWindow = globalThis.window;
     const previousFetch = globalThis.fetch;
     globalThis.window = { location: { origin: 'http://localhost:4000' } };
     globalThis.fetch = async () => ({
         ok: true,
-        json: async () => ({
-            active: [
-                'claude',
-                { provider: 'codex', name: 'Codex', sessions: 2 },
-                { id: 'gemini', name: 'Gemini', health: 'healthy', skippedLines: 3 },
-            ],
-            count: 3,
-        }),
+        status: 200,
+        json: async () => responseBody,
     });
 
     try {
         const { ClaudeDataSource } = await import(
-            `../../claudeville/src/infrastructure/ClaudeDataSource.js?providers=${Date.now()}`
+            `../../claudeville/src/infrastructure/ClaudeDataSource.js?providers=${Date.now()}-${providerImportId++}`
         );
-        assert.deepEqual(await new ClaudeDataSource().getProviders(), [
-            {
-                id: 'claude',
-                name: 'claude',
-                health: 'unavailable',
-                sessions: 0,
-                lastSuccessAt: null,
-                skippedLines: 0,
-            },
-            {
-                id: 'codex',
-                name: 'Codex',
-                health: 'unavailable',
-                sessions: 2,
-                lastSuccessAt: null,
-                skippedLines: 0,
-            },
-            {
-                id: 'gemini',
-                name: 'Gemini',
-                health: 'healthy',
-                sessions: 0,
-                lastSuccessAt: null,
-                skippedLines: 3,
-            },
-        ]);
+        return await new ClaudeDataSource().getProviders();
     } finally {
         globalThis.window = previousWindow;
         globalThis.fetch = previousFetch;
     }
+}
+
+test('provider health summaries take precedence over legacy provider metadata', async () => {
+    const providers = await readProviders({
+        providers: [
+            {
+                name: 'Claude Code',
+                provider: 'claude',
+                homeDir: '/home/test/.claude',
+                synthetic: false,
+                supportsDetail: true,
+                supportsWatchPaths: true,
+            },
+            {
+                name: 'Gemini CLI',
+                provider: 'gemini',
+                homeDir: '/home/test/.gemini',
+                synthetic: false,
+                supportsDetail: true,
+                supportsWatchPaths: true,
+            },
+        ],
+        count: 2,
+        health: [
+            {
+                id: 'claude',
+                name: 'Claude Code',
+                health: 'empty',
+                sessions: 0,
+                lastScanStartedAt: 10,
+                lastSuccessAt: 20,
+                errorCode: null,
+                watchState: 'idle',
+                skippedLines: 2,
+            },
+            {
+                id: 'gemini',
+                name: 'Gemini CLI',
+                health: 'unavailable',
+                sessions: 0,
+                lastScanStartedAt: null,
+                lastSuccessAt: null,
+                errorCode: null,
+                watchState: 'unavailable',
+                skippedLines: 0,
+            },
+        ],
+    });
+
+    assert.equal(providers.find(provider => provider.id === 'claude').health, 'empty');
+    assert.equal(providers.find(provider => provider.id === 'gemini').health, 'unavailable');
+    assert.equal(providers.find(provider => provider.id === 'claude').lastSuccessAt, 20);
+    assert.equal(providers.find(provider => provider.id === 'claude').skippedLines, 2);
+});
+
+test('legacy-only provider responses remain conservative about health', async () => {
+    const providers = await readProviders({
+        providers: [
+            { provider: 'claude', name: 'Claude Code' },
+            { provider: 'codex', name: 'Codex', sessions: 2 },
+        ],
+        count: 2,
+    });
+
+    assert.deepEqual(providers.map(provider => provider.id), ['claude', 'codex']);
+    assert.deepEqual(providers.map(provider => provider.health), ['unavailable', 'unavailable']);
+});
+
+test('bare arrays and active provider responses remain supported', async () => {
+    const bareProviders = await readProviders([
+        'claude',
+        { provider: 'codex', name: 'Codex' },
+    ]);
+    assert.deepEqual(bareProviders.map(provider => provider.id), ['claude', 'codex']);
+
+    const activeProviders = await readProviders({
+        active: [
+            'claude',
+            { id: 'gemini', name: 'Gemini', health: 'healthy', skippedLines: 3 },
+        ],
+    });
+    assert.deepEqual(activeProviders, [
+        {
+            id: 'claude',
+            name: 'claude',
+            health: 'unavailable',
+            sessions: 0,
+            lastSuccessAt: null,
+            skippedLines: 0,
+        },
+        {
+            id: 'gemini',
+            name: 'Gemini',
+            health: 'healthy',
+            sessions: 0,
+            lastSuccessAt: null,
+            skippedLines: 3,
+        },
+    ]);
+});
+
+test('health and legacy provider entries are both retained when unmatched', async () => {
+    const providers = await readProviders({
+        providers: [{ provider: 'legacy-only', name: 'Legacy Only' }],
+        count: 1,
+        health: [{ id: 'health-only', name: 'Health Only', health: 'empty', sessions: 0 }],
+    });
+
+    assert.deepEqual(providers.map(provider => provider.id), ['health-only', 'legacy-only']);
+    assert.equal(providers.find(provider => provider.id === 'health-only').health, 'empty');
+    assert.equal(providers.find(provider => provider.id === 'legacy-only').health, 'unavailable');
 });

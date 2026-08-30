@@ -179,6 +179,15 @@ export function shouldHandleActivityPanelEscape({ panelOpen = false, modalOpen =
     return panelOpen && !modalOpen && !popoverOpen;
 }
 
+export function resolveClose({ origin = 'panel' } = {}) {
+    const eventDriven = origin === 'event';
+    return {
+        emit: !eventDriven,
+        stopPolling: true,
+        moveFocus: !eventDriven,
+    };
+}
+
 function hasOpenPopover(documentRef = globalThis.document) {
     for (const id of ['audioMixerPanel', 'spendBreakdownPanel']) {
         const panel = documentRef?.getElementById?.(id);
@@ -458,6 +467,9 @@ export class ActivityPanel {
         this._onAgentSelected = (agent) => {
             if (agent) this.show(agent);
         };
+        this._onAgentDeselected = () => {
+            if (this._mode === 'agent' && this.currentAgent) this._close({ origin: 'event' });
+        };
         this._onAgentUpdated = (agent) => {
             if (agent?.id && this._pinned.has(agent.id)) {
                 this._renderPinCompare();
@@ -564,6 +576,7 @@ export class ActivityPanel {
         document.addEventListener('click', this._onInteractionClick, true);
         document.addEventListener('keydown', this._onInteractionKeydown, true);
         eventBus.on('agent:selected', this._onAgentSelected);
+        eventBus.on('agent:deselected', this._onAgentDeselected);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on(BUILDING_EVENTS.SELECTED, this._onBuildingSelected);
@@ -986,10 +999,11 @@ export class ActivityPanel {
         this._startBuildingPolling();
     }
 
-    hide() {
+    _close({ origin = 'panel' } = {}) {
         if (this._destroyed) return;
         const wasAgent = this._mode === 'agent';
         const wasBuilding = this._mode === 'building';
+        const { emit, stopPolling, moveFocus } = resolveClose({ origin });
         this._detailFetchSeq++;
         this._resetNarration();
         this._chronicleFetchSeq++;
@@ -1004,12 +1018,22 @@ export class ActivityPanel {
         this._renderSignatures = this._emptyRenderSignatures();
         this._updatePinToggle(null);
         this._updateWorkingDirectory(null);
-        this._stopPolling();
-        this._stopBuildingPolling();
+        if (stopPolling) {
+            this._stopPolling();
+            this._stopBuildingPolling();
+        }
         if (wasBuilding) this._teardownBuildingView();
         this._mode = null;
-        if (wasAgent) emitAgentDeselected();
-        this._restoreSelectionFocus();
+        if (wasAgent && emit) emitAgentDeselected();
+        if (moveFocus) {
+            this._restoreSelectionFocus();
+        } else {
+            this._selectionTrigger = null;
+        }
+    }
+
+    hide() {
+        this._close({ origin: 'panel' });
     }
 
     _updateInfo(agent) {
@@ -3536,6 +3560,7 @@ export class ActivityPanel {
         document.removeEventListener('click', this._onInteractionClick, true);
         document.removeEventListener('keydown', this._onInteractionKeydown, true);
         eventBus.off('agent:selected', this._onAgentSelected);
+        eventBus.off('agent:deselected', this._onAgentDeselected);
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off(BUILDING_EVENTS.SELECTED, this._onBuildingSelected);

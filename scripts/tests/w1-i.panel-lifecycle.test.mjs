@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 
 import {
+    resolveClose,
     shouldFocusActivityPanel,
     shouldHandleActivityPanelEscape,
 } from '../../claudeville/src/presentation/shared/ActivityPanel.js';
@@ -28,6 +29,62 @@ test('activity panel Escape yields to a modal', () => {
         modalOpen: false,
         popoverOpen: true,
     }), false);
+});
+
+test('activity panel closes on agent deselection without re-emitting or moving focus', async () => {
+    const source = await readFile(new URL('../../claudeville/src/presentation/shared/ActivityPanel.js', import.meta.url), 'utf8');
+    const eventClose = resolveClose({ origin: 'event' });
+    assert.deepEqual(eventClose, {
+        emit: false,
+        stopPolling: true,
+        moveFocus: false,
+    });
+    const handlerStart = source.indexOf('this._onAgentDeselected =');
+    const handlerEnd = source.indexOf('this._onAgentUpdated =', handlerStart);
+    const handler = source.slice(handlerStart, handlerEnd);
+    assert.match(handler, /this\._onAgentDeselected = \(\) => \{\s*if \(this\._mode === 'agent' && this\.currentAgent\) this\._close\(\{ origin: 'event' \}\);\s*\};/);
+    assert.doesNotMatch(handler, /this\.hide\(\)/);
+    assert.match(source, /eventBus\.on\('agent:deselected', this\._onAgentDeselected\);/);
+    assert.match(source, /eventBus\.off\('agent:deselected', this\._onAgentDeselected\);/);
+    assert.match(source, /this\._mode = null;\s*if \(wasAgent && emit\) emitAgentDeselected\(\);/);
+
+    const bus = {
+        emissions: 0,
+        listeners: [],
+        on(listener) {
+            this.listeners.push(listener);
+        },
+        emit() {
+            this.emissions++;
+            for (const listener of this.listeners) listener();
+        },
+    };
+    let closeCalls = 0;
+    bus.on(() => {
+        closeCalls++;
+        if (eventClose.emit) bus.emit('agent:deselected');
+    });
+    bus.emit('agent:deselected');
+    assert.equal(closeCalls, 1);
+    assert.equal(bus.emissions, 1);
+});
+
+test('activity panel close initiated by the panel emits once and restores focus after stopping polling', () => {
+    const decision = resolveClose({ origin: 'panel' });
+    assert.deepEqual(decision, {
+        emit: true,
+        stopPolling: true,
+        moveFocus: true,
+    });
+
+    const bus = {
+        emissions: 0,
+        emit() {
+            this.emissions++;
+        },
+    };
+    if (decision.emit) bus.emit('agent:deselected');
+    assert.equal(bus.emissions, 1);
 });
 
 test('sidebar status dots stop pulsing under reduced motion without viewport media queries', async () => {

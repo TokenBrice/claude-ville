@@ -2,9 +2,21 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { AttentionService } from '../../claudeville/src/application/AttentionService.js';
+import {
+    LinkState,
+    ProviderHealth,
+    VillagePhase,
+    bootStatusText,
+    initialVillageState,
+    linkStatusText,
+    reduceVillageState,
+} from '../../claudeville/src/application/VillageState.js';
 import { World } from '../../claudeville/src/domain/entities/World.js';
 import {
     ACTIONABLE_BUCKETS,
+    SIGNAL_BUCKETS,
+    actionableAgents,
+    bucketAgents,
     bucketCounts,
     bucketForStatus,
 } from '../../claudeville/src/domain/services/SignalLedger.js';
@@ -52,6 +64,206 @@ function keyedSegments(stats) {
         attentionSegmentDescriptors(stats).map(segment => [segment.key, segment.count]),
     );
 }
+
+function provider(id, health) {
+    return Object.freeze({ id, name: id, health, sessions: 0 });
+}
+
+function observedVillage(providers, agentCount = 2) {
+    let state = reduceVillageState(initialVillageState(), { type: 'providers', providers });
+    state = reduceVillageState(state, { type: 'snapshot', agentCount, at: 1_000 });
+    return state;
+}
+
+test('a populated village never claims that providers or agents are absent', () => {
+    const cases = [
+        {
+            name: 'all-empty',
+            providers: [provider('claude', ProviderHealth.EMPTY), provider('codex', ProviderHealth.EMPTY)],
+        },
+        {
+            name: 'mixed-empty-and-unavailable',
+            providers: [provider('claude', ProviderHealth.EMPTY), provider('codex', ProviderHealth.UNAVAILABLE)],
+        },
+        {
+            name: 'all-unavailable-but-agents-present',
+            providers: [provider('claude', ProviderHealth.UNAVAILABLE), provider('codex', ProviderHealth.UNAVAILABLE)],
+        },
+    ];
+
+    for (const entry of cases) {
+        // The all-unavailable case is genuinely contradictory: agents cannot
+        // exist when zero providers are readable. The reducer resolves that
+        // contradiction in favor of the concrete populated snapshot.
+        const state = observedVillage(entry.providers);
+        const status = bootStatusText(state);
+
+        assert.equal(
+            state.phase,
+            VillagePhase.READY_LIVE,
+            `populated-village invariant (${entry.name}): snapshot evidence must resolve to ready-live`,
+        );
+        assert.notEqual(
+            state.phase,
+            VillagePhase.READY_NO_PROVIDERS,
+            `populated-village invariant (${entry.name}): agents cannot coexist with ready-no-providers`,
+        );
+        assert.equal(
+            status.includes('NO PROVIDERS'),
+            false,
+            `populated-village invariant (${entry.name}): status must not deny providers while agents render`,
+        );
+        assert.notEqual(
+            state.phase,
+            VillagePhase.READY_EMPTY,
+            `populated-village invariant (${entry.name}): agents cannot coexist with ready-empty`,
+        );
+        assert.equal(
+            status.includes('NOTHING ACTIVE'),
+            false,
+            `populated-village invariant (${entry.name}): status must not call a populated village empty`,
+        );
+    }
+});
+
+test('freshness cannot outrun snapshot evidence for any link state', () => {
+    for (const linkState of Object.values(LinkState)) {
+        const state = reduceVillageState(initialVillageState(), { type: 'link', state: linkState });
+        const status = linkStatusText(state, 2_000);
+
+        assert.equal(
+            state.link.lastSnapshotAt,
+            null,
+            `freshness invariant (${linkState}): a link event must not forge a snapshot timestamp`,
+        );
+        assert.equal(
+            status,
+            'SYNCING',
+            `freshness invariant (${linkState}): missing snapshot evidence must render SYNCING`,
+        );
+        assert.notEqual(
+            status,
+            'LIVE',
+            `freshness invariant (${linkState}): missing snapshot evidence must never render LIVE`,
+        );
+    }
+});
+
+test('degraded provider evidence outranks silence', () => {
+    const cases = [
+        [provider('claude', ProviderHealth.DEGRADED)],
+        [provider('claude', ProviderHealth.DEGRADED), provider('codex', ProviderHealth.EMPTY)],
+        [provider('claude', ProviderHealth.DEGRADED), provider('codex', ProviderHealth.UNAVAILABLE)],
+    ];
+
+    for (const [index, providers] of cases.entries()) {
+        const state = observedVillage(providers, 0);
+
+        assert.equal(
+            state.phase,
+            VillagePhase.DEGRADED,
+            `degraded-outranks-silence invariant (case ${index + 1}): unreadable evidence must render degraded`,
+        );
+        assert.equal(
+            [VillagePhase.READY_EMPTY, VillagePhase.READY_NO_PROVIDERS].includes(state.phase),
+            false,
+            `degraded-outranks-silence invariant (case ${index + 1}): blindness must not render as silence`,
+        );
+    }
+});
+
+test('operator status text never leaks normalized error details', () => {
+    const errorCodes = [
+        'provider-read-failed',
+        'websocket-closed',
+        'permission-denied',
+        'session-source-unavailable',
+        'adapter-timeout',
+    ];
+    const forbidden = /[\\/]|Users|Error:|undefined|null/;
+
+    for (const code of errorCodes) {
+        let state = observedVillage([provider('claude', ProviderHealth.EMPTY)], 0);
+        state = reduceVillageState(state, { type: 'source-failed', code });
+        state = reduceVillageState(state, {
+            type: 'link',
+            state: LinkState.RECONNECTING,
+            attempts: 2,
+            lastErrorCode: code,
+        });
+
+        assert.equal(
+            forbidden.test(bootStatusText(state)),
+            false,
+            `status-text invariant (${code}): boot copy must not leak paths, errors, or nullish values`,
+        );
+        assert.equal(
+            forbidden.test(linkStatusText(state, 2_000)),
+            false,
+            `status-text invariant (${code}): link copy must not leak paths, errors, or nullish values`,
+        );
+    }
+});
+
+test('SignalLedger bucket totals reconcile with the World population', () => {
+    const ledger = bucketCounts(FIXTURE);
+    const stats = fixtureWorld().getStats();
+    const bucketTotal = SIGNAL_BUCKETS.reduce((sum, name) => sum + ledger[name], 0);
+    const actionableTotal = stats.needsYou + stats.errors + stats.quota;
+    const actionableIds = actionableAgents(FIXTURE).map(agent => agent.id);
+
+    assert.equal(
+        SIGNAL_BUCKETS.length,
+        6,
+        'bucket-reconciliation invariant: the canonical partition must contain all six buckets',
+    );
+    assert.equal(
+        bucketTotal,
+        FIXTURE.length,
+        'bucket-reconciliation invariant: six bucket totals must equal the agent population',
+    );
+    assert.equal(
+        ledger.total,
+        FIXTURE.length,
+        'bucket-reconciliation invariant: ledger total must equal the agent population',
+    );
+    assert.equal(
+        stats.attention,
+        actionableTotal,
+        'bucket-reconciliation invariant: World attention must equal needsYou + errors + quota exactly',
+    );
+    assert.equal(
+        new Set(actionableIds).size,
+        stats.attention,
+        'bucket-reconciliation invariant: World attention must count each actionable agent once',
+    );
+});
+
+test('every actionable bucket member is visible to attention traversal', () => {
+    const bucketed = bucketAgents(FIXTURE);
+    const bucketMembers = ACTIONABLE_BUCKETS.flatMap(name => bucketed[name]);
+    const ledgerMembers = actionableAgents(bucketed);
+    const attentionMembers = AttentionService.prototype.list.call({ world: fixtureWorld() });
+    const ledgerIds = new Set(ledgerMembers.map(agent => agent.id));
+
+    for (const bucketAgent of bucketMembers) {
+        assert.equal(
+            ledgerIds.has(bucketAgent.id),
+            true,
+            `actionable-visible invariant (${bucketAgent.id}): actionable bucket membership must enter attention population`,
+        );
+    }
+    assert.deepEqual(
+        new Set(ledgerMembers.map(agent => agent.id)),
+        new Set(bucketMembers.map(agent => agent.id)),
+        'actionable-visible invariant: SignalLedger traversal must contain every actionable bucket member',
+    );
+    assert.deepEqual(
+        attentionMembers.map(agent => agent.id),
+        ledgerMembers.map(agent => agent.id),
+        'actionable-visible invariant: AttentionService and SignalLedger must expose identical membership and order',
+    );
+});
 
 test('Wave 1 consumers agree on one seven-status partition', () => {
     const world = fixtureWorld();

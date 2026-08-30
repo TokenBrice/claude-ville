@@ -2,6 +2,55 @@
 
 ---
 
+## v0.36.0 — *The Common Clock* · Aug 30, 2026
+
+The village stops disagreeing with itself. One vocabulary for its own state, one clock for its motion, one measurement for its cost — and celebrations it has actually earned.
+
+**Every surface tells the same truth**
+- **One attention vocabulary.** A new `SignalLedger` is the single classifier for needs-you, errors, quota, watchlist, working and quiet. `World.getStats()` previously counted errored agents separately while *excluding* them from the attention total, so the NEEDS YOU badge disagreed with the attention service about who needs a person. Errored agents now count, every legacy key is preserved, and `AttentionService.list()` keeps its longest-waiting-first traversal exactly.
+- **The Dashboard stops calling paused work a failure.** The project health strip incremented the *error* counter for rate-limited and waiting-on-user agents, painting an agent awaiting your approval as a crash. Six honest buckets now sit in a stable order, the health bar matches, and the red edge flash is reserved for a genuine error.
+- **Four labelled counts in the top bar.** Needs you, Errors, Quota and Watchlist each carry a text and accessible label instead of one number meaning four things. ERRORED is now reachable rather than a dead badge; `A` and NEEDS YOU behave exactly as before.
+- **The World summary separates errors from quota.** It previously merged them into one figure and reported only blocked input as needing a person.
+
+**A truthful first ten seconds**
+- **`LIVE` is no longer a hardcoded lie.** The shell shipped a connected-looking chip before any server result. A readiness reducer now drives the boot line through OPENING THE VILLAGE and LISTENING FOR LOCAL SESSIONS, and `LIVE` is unreachable until a snapshot is actually fulfilled — an opened socket is not evidence that data arrived.
+- **Four different empty states.** "Still syncing", "no providers found", "providers found, nothing active" and "a watchtower is unreadable" were one ambiguous message. Silence and blindness are opposite operational facts and now read differently.
+- **Provider health is visible.** The registry silently skipped unavailable adapters and swallowed watch failures. Providers now report unavailable, empty, healthy or degraded, with degraded reserved for a real read or watch failure — an idle provider is calm, not an alarm.
+- **A boot failure keeps the village.** It used to replace the whole document with a `BOOT FAILED` tombstone. The branded shell now survives, with short English copy and a working TRY AGAIN. No filesystem path or stack text reaches the DOM.
+- **The connection chip became an instrument.** SYNCING, LIVE, POLLING, RECONNECTING with a count, and STALE with the age of the last good snapshot, plus a lazy details popover. The stale clock ticks at most once a second and only while stale.
+
+**One clock for the whole village**
+- **Motion no longer depends on your refresh rate.** Camera follow used a fixed per-frame coefficient, the water clock advanced by a constant per update despite a computed delta, and idle stride pauses were counted in update calls — so the village literally ran faster on a 120 Hz display. All three now derive from elapsed milliseconds through a shared `MotionClock`, with 60 Hz output unchanged and reduced motion freezing the clock rather than slowing it.
+
+**Beauty that yields in the right order**
+- **Pressure with a moral compass.** One attributed input governs marks, weather, particles and sky. Cost is app-owned; host gap is recorded as evidence and never as a trigger, so another process saturating your machine can no longer make the village throw away detail. The shed order is fixed and tested — ambient weather and fauna, then ambient particles, then secondary glyphs, with the post-effect ladder last. Primary marks keep unbounded limits at every rung.
+- **Calm nights are actually calm.** On clear weather with nothing waiting and nothing recent, ambient meteors stop, twinkle goes sparse and ambient sparkle stops, so the next real event is perceptible. Static stars, lanterns, real weather and every attention or event cue always survive.
+
+**Light, ground and material**
+- **The sun casts a moving shadow.** A continuous sun position was already computed and then discarded for three constants, so the key light jumped at phase boundaries and contact shadows, roof glints and highlights could disagree. One continuous solar vector now feeds structural and tower shadows, roof glints, agent grounding, the GPU key-facing term and god-ray direction, preserving the authored dawn/noon/dusk calibration and the stepped palette.
+- **Mist sits on the ground.** Fog was a canvas-wide gradient plus screen-space bands. A quarter-resolution haze field derived from real water, lowland and road geometry now draws in the ground stage, so mist follows the river when you pan. Alpha is hard-capped and roads and the focused subject are carved open, so silhouettes and incident marks stay legible. No blur kernel; the authored pixel edges are intact.
+- **Rain leaves a material memory.** Timber and earth had authored wetness coefficients that nothing consumed. Every non-fire class now responds within bounded, stepped highlights, and a deterministic drying transition reads as weather passing. Fire and emissive runes stay warm.
+- **The mine and the portal get their own windows.** Seven landmarks had calibrated window rects; these two fell back to a generic radial blob. Both now have authored sprite-local rects and an occupancy-scaled doorstep spill — no roof cutaway, no interior reveal.
+- **Authored channels finally reach the GPU.** Two atlas-only agents were shaded flat because the overlay looked only for individual sidecars, terrain used a procedural class map instead of its authored semantic classes, and props got heuristics. One resolver now serves all of them, sidecar first and atlas second, and derived art is idle-scheduled so a new villager appears immediately while its channels settle in behind it.
+
+**Memory and honesty**
+- **Incidents are findable at a glance.** Zoomed out, the Canvas path drew only the waiting beacon and returned, so a crashed agent looked identical to a busy one. Errors, quota stops and blocked prompts now carry distinct static shapes at overview zoom in both render paths, shape-primary so the encoding is not colour-only.
+- **The village no longer celebrates disappearances.** Every `COMPLETED` agent raised its arms, including the ten-minute departed projection that is documented as a *presence* marker rather than a result. Only a verified commit, push, release or milestone can now produce a celebration; a vanished session settles quietly.
+- **Idle proximity is no longer rendered as conversation.** Two villagers resting near the same scenic point grew a chat bubble based on nothing but status and a 30-pixel radius — no message, no affinity, no event. That machinery is deleted. Real pairwise chat is untouched, and no canned lines replace the silence.
+- **The Chronicler has a reason to walk.** It traced four fixed waypoints on a timer. It now waits at the Archive and makes a bounded errand only when something real was recorded.
+- **The Book of Lives is visible.** Ten biography fields persisted while the dossier showed four counters and one milestone. Bounded chronological chapters now show first and last sighting and real history, honest about what was summarised, and scoped to the session when an identity cannot be trusted to be the same person.
+
+**Sound that ranks what it hears**
+- **One priority arbiter.** Six arrivals in a moment become one intelligible answer; a summons is never queued behind thunder. Urgent cues get their space by ducking ambience rather than by getting louder, with reserved master headroom.
+- **Silence has state.** After a genuinely calm interval the bed settles into perceptible rest, with hysteresis both ways, so the next summons is heard rather than habituated away. Resting is distinguishable from a stalled engine. The generative music system is deliberately untouched.
+
+**Kept honest**
+- **A local pre-push gate.** `npm run gate:release` chains the quick validation, the replay smoke, the server security and fatal smokes, and a new boot-contract smoke that starts an isolated child server on an ephemeral port with a temporary HOME and proves the HTTP routes, a WebSocket handshake and initial snapshot, a delta and a resync. Browser and visual verification remain manual; nothing under `.github/` was touched.
+- **Real defects caught by the new tests, not asserted around.** A `Number(null)` coercion let pressure recovery begin before its probe window elapsed; audio aggregation had deferred cue construction so spatial panners and per-provider council bells were momentarily absent; and a `cacheStats()` shape change broke the World-to-Dashboard release contract. All three were fixed at the source.
+- **527 unit tests pass, up from 345.** `gate:release` is green end to end.
+
+---
+
 ## v0.35.0.1 · Aug 30, 2026 — Hotfix
 
 - **js-yaml 4.3.0 → 4.3.1** (CVE-2026-59870, quadratic CPU in `!!omap` resolution): merged the dependabot bump and refreshed the vendored browser copy at `claudeville/vendor/js-yaml.min.js`, which the dependency bump alone does not touch. Verified in-app YAML parsing against the refreshed vendor build.

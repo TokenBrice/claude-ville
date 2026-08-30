@@ -14,10 +14,42 @@ function normalizeProvider(provider) {
     };
 }
 
+function providerKeys(provider) {
+    const value = typeof provider === 'string' ? { id: provider } : provider || {};
+    const keys = [value.id, value.provider].filter(key => key !== null && key !== undefined);
+    return (keys.length > 0 ? keys : [value.name])
+        .filter(key => key !== null && key !== undefined)
+        .map(String);
+}
+
+function mergeProviders(health, legacy) {
+    const matchedLegacy = new Set();
+    const merged = health.map(healthProvider => {
+        const healthKeys = providerKeys(healthProvider);
+        const legacyIndex = legacy.findIndex((legacyProvider, index) => (
+            !matchedLegacy.has(index)
+            && providerKeys(legacyProvider).some(key => healthKeys.includes(key))
+        ));
+
+        if (legacyIndex < 0) return healthProvider;
+        matchedLegacy.add(legacyIndex);
+        return { ...legacy[legacyIndex], ...healthProvider };
+    });
+
+    legacy.forEach((legacyProvider, index) => {
+        if (!matchedLegacy.has(index)) merged.push(legacyProvider);
+    });
+
+    return merged.map(normalizeProvider);
+}
+
 function selectProviders(data) {
     const providers = Array.isArray(data)
         ? data
         : (Array.isArray(data?.providers) ? data.providers : data?.active);
+    if (Array.isArray(data?.health)) {
+        return mergeProviders(data.health, Array.isArray(data.providers) ? data.providers : []);
+    }
     return (Array.isArray(providers) ? providers : []).map(normalizeProvider);
 }
 
