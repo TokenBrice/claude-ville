@@ -25,6 +25,7 @@ import {
     BUILDING_LIGHT_FALLBACKS,
     EMITTER_LIGHTS,
     getBuildingBeaconBase,
+    getBuildingDoorSpillDescriptor,
     getBuildingEffectAnchor,
     getBuildingLabelAccent,
     getBuildingLabelEmblem,
@@ -32,6 +33,7 @@ import {
     getBuildingOccupancyState,
     getBuildingPennantAnchor,
     getBuildingVisual,
+    getBuildingWindowColor,
     getBuildingWindowRects,
     LIGHT_SOURCE_REGISTRY,
 } from './BuildingVisualRegistry.js';
@@ -1728,7 +1730,14 @@ export class BuildingSprite {
             // instead of the generic mid-wall warmth blobs.
             const windowRects = getBuildingWindowRects(building.type);
             if (windowRects) {
-                this._drawWarmthWindows(ctx, windowRects, localPoint, shouldDrawLocalY, warmthAlpha);
+                this._drawWarmthWindows(
+                    ctx,
+                    windowRects,
+                    localPoint,
+                    shouldDrawLocalY,
+                    warmthAlpha,
+                    getBuildingWindowColor(building.type),
+                );
             } else {
                 const lightPoints = this._buildingReactionLightPoints(building, entry, dims);
                 for (const point of lightPoints) {
@@ -1743,6 +1752,16 @@ export class BuildingSprite {
                     ctx.ellipse(p.x, p.y, point.r || 18, (point.r || 18) * 0.48, 0, 0, Math.PI * 2);
                     ctx.fill();
                 }
+            }
+
+            const doorSpill = getBuildingDoorSpillDescriptor(building.type, {
+                occupancy,
+                beaconIntensity: this._beaconScaleFor(building.type),
+                weatherWetness: this.atmosphereState?.weather?.precipitation || 0,
+                atmosphereWarmth: windowWarmth,
+            });
+            if (doorSpill?.alpha > 0) {
+                this._drawDoorSpill(ctx, doorSpill, localPoint, shouldDrawLocalY);
             }
         }
 
@@ -1810,7 +1829,7 @@ export class BuildingSprite {
     // small ellipse) + a hot center line, so the sprite reads as *lit windows*
     // at zoom 2/3 rather than a mid-wall blob. Caller already set the 'screen'
     // composite; alpha derives from the shared warmthAlpha math.
-    _drawWarmthWindows(ctx, rects, localPoint, shouldDrawLocalY, warmthAlpha) {
+    _drawWarmthWindows(ctx, rects, localPoint, shouldDrawLocalY, warmthAlpha, color = null) {
         // Crisp cores punch much harder than the legacy blobs: the point is
         // windows that stay visibly lit through the night atmosphere multiply
         // (~50% at deep night), so the core carries an explicit night
@@ -1822,6 +1841,18 @@ export class BuildingSprite {
             ?? this.atmosphereState?.lighting?.beaconIntensity ?? 0);
         const coreAlpha = Math.min(0.85, warmthAlpha * 7 * (1 + night * 1.5));
         const glowAlpha = warmthAlpha * 1.6 * (1 + night);
+        const coreRgb = color ? hexToRgb(color) : { r: 255, g: 205, b: 112 };
+        const glowRgb = color ? coreRgb : { r: 255, g: 190, b: 96 };
+        const fadeRgb = color ? coreRgb : { r: 255, g: 162, b: 78 };
+        const hotRgb = color ? {
+            r: Math.round(lerp(coreRgb.r, 255, 0.58)),
+            g: Math.round(lerp(coreRgb.g, 244, 0.58)),
+            b: Math.round(lerp(coreRgb.b, 208, 0.58)),
+        } : {
+            r: 255,
+            g: 236,
+            b: 176,
+        };
         for (const rect of rects) {
             const [lx, ly] = rect.at || [];
             if (!Number.isFinite(lx) || !Number.isFinite(ly) || !shouldDrawLocalY(ly)) continue;
@@ -1829,14 +1860,14 @@ export class BuildingSprite {
             const h = Math.max(3, Math.round(rect.h || 8));
             const p = localPoint(lx, ly);
             const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, Math.max(w, h) * 1.7);
-            grad.addColorStop(0, `rgba(255, 190, 96, ${glowAlpha})`);
-            grad.addColorStop(1, 'rgba(255, 162, 78, 0)');
+            grad.addColorStop(0, `rgba(${glowRgb.r}, ${glowRgb.g}, ${glowRgb.b}, ${glowAlpha})`);
+            grad.addColorStop(1, `rgba(${fadeRgb.r}, ${fadeRgb.g}, ${fadeRgb.b}, 0)`);
             ctx.fillStyle = grad;
             ctx.beginPath();
             ctx.ellipse(p.x, p.y, w * 1.7, h * 1.5, 0, 0, Math.PI * 2);
             ctx.fill();
 
-            ctx.fillStyle = `rgba(255, 205, 112, ${coreAlpha})`;
+            ctx.fillStyle = `rgba(${coreRgb.r}, ${coreRgb.g}, ${coreRgb.b}, ${coreAlpha})`;
             const left = Math.round(p.x - w / 2);
             const top = Math.round(p.y - h / 2);
             if (rect.shape === 'ellipse') {
@@ -1846,8 +1877,22 @@ export class BuildingSprite {
             } else {
                 ctx.fillRect(left, top, w, h);
             }
-            ctx.fillStyle = `rgba(255, 236, 176, ${Math.min(0.8, coreAlpha * 1.35)})`;
+            ctx.fillStyle = `rgba(${hotRgb.r}, ${hotRgb.g}, ${hotRgb.b}, ${Math.min(0.8, coreAlpha * 1.35)})`;
             ctx.fillRect(Math.round(p.x - 1), Math.round(p.y - h / 2 + 1), 2, Math.max(2, Math.round(h * 0.45)));
+        }
+    }
+
+    _drawDoorSpill(ctx, descriptor, localPoint, shouldDrawLocalY) {
+        const [lx, ly] = descriptor.at;
+        const { r, g, b } = hexToRgb(descriptor.color);
+        ctx.fillStyle = `rgba(${r}, ${g}, ${b}, ${descriptor.alpha})`;
+        for (const step of descriptor.steps) {
+            const offsetX = Number(step.offset?.[0]) || 0;
+            const offsetY = Number(step.offset?.[1]) || 0;
+            const localY = ly + offsetY;
+            if (!shouldDrawLocalY(localY)) continue;
+            const p = localPoint(lx + offsetX, localY);
+            ctx.fillRect(p.x, p.y, Math.max(1, step.w || 1), Math.max(1, step.h || 1));
         }
     }
 

@@ -4,6 +4,7 @@
 import {
     MATERIAL_CHANNELS,
     companionPathFor,
+    defaultChannelPixel,
     materialDebugDescriptor,
     normalizeAtlasFrame,
     normalizeMaterialMetadata,
@@ -19,7 +20,213 @@ const PLACEHOLDER_PATH = 'assets/sprites/_placeholder/checker-64.png';
 const OUTLINE_COLOR = '#f2d36b';
 const ALPHA_THRESHOLD = 16;
 const OPTIONAL_SIDECAR_HIGH_WATER_ESTIMATE_BYTES = 192 * 1024 * 1024;
+const DERIVED_ART_SLICE_MS = 2;
+const AGENT_CELL_DIRECTIONS = Object.freeze(['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw']);
+const WALK_ROWS = 6;
 let assetManagerResourceSequence = 0;
+let derivedArtJobSequence = 0;
+
+export const DERIVED_ART_PRIORITY = Object.freeze({
+    SELECTED_WAITING_ERROR: 0,
+    ONSCREEN_LANDMARK: 1,
+    BACKGROUND_PROFILE: 2,
+});
+
+export function materialChannelCacheKey(assetVersion, atlasKey, frameKey) {
+    return `${String(assetVersion || '')}::${String(atlasKey || '')}::${String(frameKey || '')}`;
+}
+
+export function resolveMaterialChannelSources({ sidecar = {}, atlas = {} } = {}) {
+    const pick = (channel) => {
+        if (sidecar?.[channel]) return { source: sidecar[channel], origin: 'sidecar' };
+        if (atlas?.[channel]) return { source: atlas[channel], origin: 'atlas' };
+        return {
+            source: null,
+            origin: 'fallback',
+            pixel: defaultChannelPixel(channel),
+        };
+    };
+    const material = pick('material');
+    const emissive = pick('emissive');
+    const occluder = pick('occluder');
+    const origin = [material, emissive, occluder].some((entry) => entry.origin === 'sidecar')
+        ? 'sidecar'
+        : [material, emissive, occluder].some((entry) => entry.origin === 'atlas')
+            ? 'atlas'
+            : 'fallback';
+    return {
+        origin,
+        material: material.source,
+        emissive: emissive.source,
+        occluder: occluder.source,
+        channels: Object.freeze({ material, emissive, occluder }),
+        pixels: Object.freeze({
+            material: material.pixel || defaultChannelPixel('material'),
+            emissive: emissive.pixel || defaultChannelPixel('emissive'),
+            occluder: occluder.pixel || defaultChannelPixel('occluder'),
+        }),
+    };
+}
+
+export function agentFrameKeyFromCell(cell = {}, cellSize = 92) {
+    const size = Math.max(1, Number(cell.sw) || Number(cellSize) || 92);
+    const col = Math.floor((Number(cell.sx) || 0) / size);
+    const row = Math.floor((Number(cell.sy) || 0) / size);
+    const idle = row >= WALK_ROWS;
+    const frame = idle ? row - WALK_ROWS : row;
+    const dir = AGENT_CELL_DIRECTIONS[((col % 8) + 8) % 8] || 's';
+    return `${idle ? 'idle' : 'walk'}/${dir}/${Math.max(0, frame)}`;
+}
+
+export function atlasSourceRect(rect = {}, {
+    split = false,
+    front = false,
+    horizonY = null,
+} = {}) {
+    const x = Math.max(0, Math.round(Number(rect.x) || 0));
+    const y = Math.max(0, Math.round(Number(rect.y) || 0));
+    const w = Math.max(1, Math.round(Number(rect.w ?? rect.width) || 1));
+    const h = Math.max(1, Math.round(Number(rect.h ?? rect.height) || 1));
+    if (!split) return { sx: x, sy: y, sw: w, sh: h };
+    const horizon = Math.max(1, Math.min(Math.round(Number(horizonY)), h - 1));
+    if (!Number.isFinite(horizon) || horizon <= 0) return { sx: x, sy: y, sw: w, sh: h };
+    if (front) return { sx: x, sy: y + horizon, sw: w, sh: h - horizon };
+    return { sx: x, sy: y, sw: w, sh: horizon };
+}
+
+export function shouldUseAtlasForCategory({
+    atlasBytes = 0,
+    individualBytes = 0,
+    recordCount = 0,
+    atlasResident = false,
+} = {}) {
+    const atlas = Math.max(0, Number(atlasBytes) || 0);
+    const individual = Math.max(0, Number(individualBytes) || 0);
+    const count = Math.max(0, Math.floor(Number(recordCount) || 0));
+    if (count <= 0 || atlas <= 0) return false;
+    if (atlasResident) return true;
+    if (individual >= atlas) return true;
+    return count >= 2;
+}
+
+export function derivedArtPriority(job = {}) {
+    const status = String(job.status || '').toLowerCase();
+    if (job.selected || status === 'waiting_on_user' || status === 'errored') {
+        return DERIVED_ART_PRIORITY.SELECTED_WAITING_ERROR;
+    }
+    if (job.onScreen && (job.kind === 'landmark' || job.kind === 'building'
+        || job.kind === 'prop' || job.kind === 'agent')) {
+        return DERIVED_ART_PRIORITY.ONSCREEN_LANDMARK;
+    }
+    return DERIVED_ART_PRIORITY.BACKGROUND_PROFILE;
+}
+
+export function growTypedArray(TypedArray, buffer, needed, min = 32) {
+    const want = Math.max(0, Math.floor(Number(needed) || 0));
+    const length = buffer?.length || 0;
+    if (buffer && length >= want) return buffer;
+    let cap = Math.max(min, length || min);
+    while (cap < want) cap *= 2;
+    return new TypedArray(cap);
+}
+
+export function createDerivedArtQueue({
+    sliceMs = DERIVED_ART_SLICE_MS,
+    now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now()),
+    scheduleIdle = null,
+    scheduleTimeout = null,
+} = {}) {
+    const pending = new Map();
+    let generation = 0;
+    let idleHandle = null;
+    let timeoutHandle = null;
+    let pumping = false;
+
+    const idle = scheduleIdle
+        || (typeof requestIdleCallback === 'function'
+            ? (fn) => requestIdleCallback(fn, { timeout: 16 })
+            : null);
+    const timeout = scheduleTimeout
+        || ((fn) => setTimeout(fn, 0));
+    const cancelIdle = typeof cancelIdleCallback === 'function' ? cancelIdleCallback : null;
+    const cancelTimeout = typeof clearTimeout === 'function' ? clearTimeout : null;
+
+    function clearSchedule() {
+        if (idleHandle != null && cancelIdle) cancelIdle(idleHandle);
+        if (timeoutHandle != null && cancelTimeout) cancelTimeout(timeoutHandle);
+        idleHandle = null;
+        timeoutHandle = null;
+    }
+
+    function schedule() {
+        if (pumping || idleHandle != null || timeoutHandle != null || pending.size === 0) return;
+        if (idle) {
+            idleHandle = idle((deadline) => tick(deadline));
+            return;
+        }
+        timeoutHandle = timeout(() => tick());
+    }
+
+    function tick(deadline) {
+        idleHandle = null;
+        timeoutHandle = null;
+        pumping = true;
+        const start = now();
+        const jobs = [...pending.values()].sort((a, b) => (
+            a.priority - b.priority || a.seq - b.seq
+        ));
+        for (const job of jobs) {
+            if (now() - start >= sliceMs) break;
+            if (typeof deadline?.timeRemaining === 'function' && deadline.timeRemaining() <= 0) break;
+            pending.delete(job.key);
+            if (job.generation !== generation) continue;
+            job.build?.();
+        }
+        pumping = false;
+        if (pending.size) schedule();
+    }
+
+    return {
+        enqueue(job = {}) {
+            if (!job.key || typeof job.build !== 'function') return;
+            const priority = Number.isFinite(job.priority) ? job.priority : derivedArtPriority(job);
+            const existing = pending.get(job.key);
+            if (existing) {
+                if (priority < existing.priority) existing.priority = priority;
+                existing.generation = job.generation ?? generation;
+                existing.build = job.build;
+                existing.status = job.status;
+                existing.selected = job.selected;
+                existing.onScreen = job.onScreen;
+                existing.kind = job.kind;
+                return;
+            }
+            pending.set(job.key, {
+                ...job,
+                priority,
+                generation: job.generation ?? generation,
+                seq: ++derivedArtJobSequence,
+            });
+            schedule();
+        },
+        cancel(key) {
+            if (key) pending.delete(key);
+        },
+        cancelAll() {
+            pending.clear();
+            clearSchedule();
+        },
+        bumpGeneration() {
+            generation += 1;
+            pending.clear();
+            clearSchedule();
+            return generation;
+        },
+        get generation() { return generation; },
+        get size() { return pending.size; },
+        tick,
+    };
+}
 
 export class AssetManager {
     constructor(manifestPath = 'assets/sprites/manifest.yaml', options = {}) {
@@ -68,6 +275,9 @@ export class AssetManager {
         this._unregisterResourceEstimates = registerRendererResourceEstimateProvider(
             () => this._resourceEstimateLeaves(),
         );
+        this._materialChannelCache = new Map();
+        this._derivedArtQueue = createDerivedArtQueue();
+        this._materialChannelRevision = 0;
     }
 
     load({ signal = null } = {}) {
@@ -100,6 +310,7 @@ export class AssetManager {
         // suspension is authoritative and must leave no stale ownership that
         // can influence the next generation's reload.
         this._activeProfilePins.clear();
+        this._invalidateDerivedArt();
         this._releaseDecodedEntries();
     }
 
@@ -770,6 +981,187 @@ export class AssetManager {
             ...frame,
         };
     }
+
+    // C5: sidecar, then atlas, then the deterministic fallback. Cache lookup
+    // only — cropping and packing run on the derived-art queue so a visible
+    // draw never waits on pixel archaeology.
+    resolveMaterialChannels(id, frameKey = null, hint = {}) {
+        const declaration = normalizeAtlasFrame(this.getEntry(id)?.atlasFrame);
+        const atlasKey = declaration?.atlas || '';
+        const cropRequested = Boolean(hint.crop || frameKey);
+        const resolvedFrameKey = frameKey
+            || (cropRequested ? `${declaration?.key || id || ''}#local` : (declaration?.key || id || ''));
+        const cacheKey = materialChannelCacheKey(this.assetVersion, atlasKey, resolvedFrameKey);
+        const cached = this._materialChannelCache.get(cacheKey);
+        if (cached && cached.generation === this._loadGeneration) return cached;
+
+        const sidecar = {
+            material: this.getCompanion(id, 'material'),
+            emissive: this.getCompanion(id, 'emissive'),
+            occluder: this.getCompanion(id, 'occluder'),
+        };
+        const frame = this.getAtlasFrame(id, frameKey);
+        const atlasId = frame?.atlas || atlasKey || null;
+        const atlas = atlasId ? {
+            material: this.getAtlas(atlasId, 'material'),
+            emissive: this.getAtlas(atlasId, 'emissive'),
+            occluder: this.getAtlas(atlasId, 'occluder'),
+        } : {};
+        const picked = resolveMaterialChannelSources({ sidecar, atlas });
+        if (cropRequested && picked.origin === 'atlas' && !frame?.rect) {
+            return {
+                id,
+                frameKey: resolvedFrameKey,
+                origin: 'fallback',
+                layout: 'fallback',
+                albedo: this.get(id),
+                material: null,
+                emissive: null,
+                occluder: null,
+                frame: null,
+                atlas: atlasId,
+                revision: cacheKey,
+                ready: false,
+                generation: this._loadGeneration,
+                pixels: picked.pixels,
+            };
+        }
+        const crop = Boolean(cropRequested && frame?.rect && picked.origin === 'atlas');
+        if (picked.origin !== 'atlas' || !crop) {
+            const result = {
+                id,
+                frameKey: resolvedFrameKey,
+                origin: picked.origin,
+                layout: picked.origin === 'atlas' ? 'atlas-rect' : picked.origin === 'sidecar' ? 'sidecar' : 'fallback',
+                albedo: picked.origin === 'atlas' && atlasId ? this.getAtlas(atlasId, 'albedo') : this.get(id),
+                material: picked.material,
+                emissive: picked.emissive,
+                occluder: picked.occluder,
+                frame: frame || null,
+                atlas: atlasId,
+                revision: cacheKey,
+                ready: true,
+                generation: this._loadGeneration,
+                pixels: picked.pixels,
+            };
+            this._materialChannelCache.set(cacheKey, result);
+            return result;
+        }
+
+        const pending = {
+            id,
+            frameKey: resolvedFrameKey,
+            origin: 'fallback',
+            layout: 'fallback',
+            albedo: this.get(id),
+            material: null,
+            emissive: null,
+            occluder: null,
+            frame,
+            atlas: atlasId,
+            revision: cacheKey,
+            ready: false,
+            generation: this._loadGeneration,
+            pixels: picked.pixels,
+        };
+        this._enqueueAtlasFrameCrop({
+            id,
+            frameKey,
+            cacheKey,
+            frame,
+            hint,
+        });
+        return pending;
+    }
+
+    enqueueDerivedArt(job) {
+        this._derivedArtQueue.enqueue(job);
+    }
+
+    get derivedArtGeneration() {
+        return this._loadGeneration;
+    }
+
+    _enqueueAtlasFrameCrop({ id, frameKey, cacheKey, frame, hint = {} }) {
+        const generation = this._loadGeneration;
+        this._derivedArtQueue.enqueue({
+            key: cacheKey,
+            kind: hint.kind || 'agent',
+            status: hint.status,
+            selected: hint.selected,
+            onScreen: hint.onScreen !== false,
+            build: () => {
+                if (generation !== this._loadGeneration) return;
+                const composed = this._composeAtlasFrameCrop(frame);
+                if (!composed || generation !== this._loadGeneration) {
+                    if (composed) this._releaseCroppedChannels(composed);
+                    return;
+                }
+                const revision = cacheKey;
+                const result = {
+                    id,
+                    frameKey,
+                    origin: 'atlas',
+                    layout: 'frame-local',
+                    albedo: composed.albedo,
+                    material: composed.material,
+                    emissive: composed.emissive,
+                    occluder: composed.occluder,
+                    frame,
+                    atlas: frame.atlas,
+                    revision,
+                    ready: true,
+                    generation,
+                    pixels: resolveMaterialChannelSources({}).pixels,
+                };
+                this._materialChannelCache.set(cacheKey, result);
+                this._materialChannelRevision += 1;
+            },
+        });
+    }
+
+    _composeAtlasFrameCrop(frame) {
+        if (!frame?.rect || typeof document === 'undefined') return null;
+        const { x, y, w, h } = frame.rect;
+        if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return null;
+        const crop = (source) => {
+            if (!source) return null;
+            const canvas = document.createElement('canvas');
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext('2d', { alpha: true });
+            if (!ctx) return null;
+            ctx.imageSmoothingEnabled = false;
+            ctx.drawImage(source, x, y, w, h, 0, 0, w, h);
+            return canvas;
+        };
+        return {
+            albedo: crop(this.getAtlas(frame.atlas, 'albedo')),
+            material: crop(this.getAtlas(frame.atlas, 'material')),
+            emissive: crop(this.getAtlas(frame.atlas, 'emissive')),
+            occluder: crop(this.getAtlas(frame.atlas, 'occluder')),
+        };
+    }
+
+    _releaseCroppedChannels(channels = {}) {
+        for (const image of Object.values(channels)) this._releaseImage(image);
+    }
+
+    _invalidateDerivedArt() {
+        this._derivedArtQueue?.bumpGeneration();
+        for (const entry of this._materialChannelCache.values()) {
+            if (entry?.layout === 'frame-local') {
+                this._releaseCroppedChannels({
+                    albedo: entry.albedo,
+                    material: entry.material,
+                    emissive: entry.emissive,
+                    occluder: entry.occluder,
+                });
+            }
+        }
+        this._materialChannelCache.clear();
+        this._materialChannelRevision += 1;
+    }
     materialDebugSnapshot() {
         const assets = [];
         for (const entry of this._entryById.values()) {
@@ -1076,6 +1468,7 @@ export class AssetManager {
         this._evictedOptionalEntries.clear();
         this._optionalReloads.clear();
         this._materialDecodedLoaded = false;
+        this._invalidateDerivedArt();
     }
 
     _releaseImage(image) {
@@ -1098,6 +1491,7 @@ export class AssetManager {
         this._loadGeneration++;
         this._loadController?.abort?.();
         this._materialLoadController?.abort?.();
+        this._invalidateDerivedArt();
         this._releaseDecodedEntries();
         this._entryById.clear();
         this._entriesCache = null;

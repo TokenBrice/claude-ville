@@ -22,7 +22,7 @@ export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
         emissiveSource('emissive.forge.furnace', 'fire', 'windowRects', 1),
     ]),
     mine: landmarkMaterial('mine', 'stone', 232, null, [
-        emissiveSource('emissive.mine.cave', 'lantern', 'lightSource', 0.82),
+        emissiveSource('emissive.mine.cave', 'fire', 'windowRects', 0.82),
         emissiveSource('emissive.mine.crystals', 'rune', 'emitters.sparkle', 0.62),
     ]),
     archive: landmarkMaterial('archive', 'stone', 224, 145, [
@@ -34,6 +34,7 @@ export const BUILDING_MATERIAL_REGISTRY = Object.freeze({
         emissiveSource('emissive.observatory.dome', 'rune', 'effectAnchors.domeAperture', 0.78),
     ]),
     portal: landmarkMaterial('portal', 'glass-rune', 208, 130, [
+        emissiveSource('emissive.portal.aperture', 'rune', 'windowRects', 0.78),
         emissiveSource('emissive.portal.vortex', 'rune', 'layers.portalGlow', 1),
     ]),
     watchtower: landmarkMaterial('watchtower', 'stone', 384, 300, [
@@ -104,6 +105,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
     mine: {
         material: BUILDING_MATERIAL_REGISTRY.mine,
         grounding: BUILDING_GROUNDING_PROFILES.mine,
+        nativeSize: { w: 256, h: 232 },
         labelAccent: '#ffab47',
         emblem: 'pick',
         districtTint: 'rgba(255, 171, 71, 0.22)',
@@ -112,6 +114,23 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.55, busyMax: 0.9 },
         labelPriority: 'landmark',
         beaconBase: 0.78,
+        // The timber-framed cave mouth, calibrated against the 256x232 pilot.
+        windowColor: '#ffb84d',
+        windowRects: [
+            { at: [157, 137], w: 6, h: 28 },
+            { at: [168, 135], w: 7, h: 32 },
+            { at: [178, 139], w: 5, h: 24 },
+        ],
+        doorSpill: {
+            at: [163, 163],
+            color: '#ffb84d',
+            maxAlpha: 0.22,
+            steps: [
+                { offset: [-7, 0], w: 14, h: 1 },
+                { offset: [-10, 1], w: 20, h: 2 },
+                { offset: [-14, 3], w: 28, h: 1 },
+            ],
+        },
     },
     archive: {
         material: BUILDING_MATERIAL_REGISTRY.archive,
@@ -172,6 +191,7 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
     portal: {
         material: BUILDING_MATERIAL_REGISTRY.portal,
         grounding: BUILDING_GROUNDING_PROFILES.portal,
+        nativeSize: { w: 312, h: 208 },
         labelAccent: '#8bd7ff',
         emblem: 'rune',
         districtTint: 'rgba(139, 215, 255, 0.2)',
@@ -180,6 +200,23 @@ export const BUILDING_VISUAL_REGISTRY = Object.freeze({
         occupancyThresholds: { occupiedMax: 0.5, busyMax: 0.86 },
         labelPriority: 'landmark',
         beaconBase: 0.92,
+        // Violet rune aperture; kept separate from the mine's amber fire.
+        windowColor: '#b38cff',
+        windowRects: [
+            { at: [134, 91], w: 5, h: 28 },
+            { at: [144, 84], w: 8, h: 32, shape: 'ellipse' },
+            { at: [154, 91], w: 5, h: 28 },
+        ],
+        doorSpill: {
+            at: [144, 128],
+            color: '#9b7cff',
+            maxAlpha: 0.2,
+            steps: [
+                { offset: [-8, 0], w: 16, h: 1 },
+                { offset: [-12, 1], w: 24, h: 2 },
+                { offset: [-16, 3], w: 32, h: 1 },
+            ],
+        },
         pennant: { at: [170, 30] },
     },
     watchtower: {
@@ -333,6 +370,42 @@ export function getBuildingEffectAnchor(type, key, fallback = null) {
 export function getBuildingWindowRects(type) {
     const rects = getBuildingVisual(type)?.windowRects;
     return Array.isArray(rects) && rects.length ? rects : null;
+}
+
+export function getBuildingWindowColor(type, fallback = null) {
+    return getBuildingVisual(type)?.windowColor || fallback;
+}
+
+export function getBuildingDoorSpill(type) {
+    const spill = getBuildingVisual(type)?.doorSpill;
+    return Array.isArray(spill?.at) && Array.isArray(spill?.steps) && spill.steps.length ? spill : null;
+}
+
+// A static, phase-free lighting descriptor for the reaction pass. The spill
+// is an occupancy signal, so an empty building has no doorstep sheen.
+export function getBuildingDoorSpillDescriptor(type, {
+    occupancy = 0,
+    beaconIntensity = 0,
+    weatherWetness = 0,
+    atmosphereWarmth = 1,
+} = {}) {
+    const spill = getBuildingDoorSpill(type);
+    if (!spill) return null;
+    const occupancyScale = Math.max(0, Math.min(1, Number(occupancy) || 0));
+    const beaconScale = Math.max(0, Math.min(1, Number(beaconIntensity) || 0));
+    const wetnessScale = Math.max(0, Math.min(1, Number(weatherWetness) || 0));
+    const warmthScale = Math.max(0, Math.min(1, Number(atmosphereWarmth) || 0));
+    const maxAlpha = Number.isFinite(spill.maxAlpha) ? spill.maxAlpha : 0.2;
+    const alpha = Math.min(maxAlpha, occupancyScale * warmthScale * maxAlpha * (
+        0.48 + beaconScale * 0.36 + wetnessScale * 0.16
+    ));
+    return {
+        at: spill.at,
+        steps: spill.steps,
+        color: spill.color || getBuildingWindowColor(type, '#ffcd70'),
+        alpha,
+        staticAlpha: true,
+    };
 }
 
 // #53 — optional occupancy-pennant anchor (sprite-local pole base). Only hero

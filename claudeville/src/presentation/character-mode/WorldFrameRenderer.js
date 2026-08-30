@@ -20,9 +20,383 @@ import {
 import { worldSceneCategoryRegistry } from './SceneCategoryRegistry.js';
 import { buildGpuWorldRecords } from './gpu/GpuSceneBuilder.js';
 import { createBoundedRing, writeBoundedRing } from '../shared/ClientPerfMetrics.js';
+import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
 const FRAME_TIMER_MAX_MARKS = 48;
+
+// Quarter-res occupancy field, matching the PostFx water-mask budget. One
+// byte per sample; the renderer paints it into a reused quarter-res canvas
+// only when the pose/viewport/atmosphere key changes.
+export const HAZE_FIELD_SCALE = 0.25;
+export const HAZE_FIELD_BYTES_PER_SAMPLE = 1;
+export const HAZE_ALPHA_CAP = 0.16;
+export const HAZE_WATER_FALLOFF_PX = 220;
+export const HAZE_LOWLAND_FALLOFF_PX = 160;
+export const HAZE_ROAD_CARVE_RADIUS_PX = 28;
+export const HAZE_SUBJECT_CARVE_RADIUS_PX = 42;
+export const HAZE_ROAD_CARVE = 0.12;
+export const HAZE_SUBJECT_CARVE = 0.18;
+export const WETNESS_ATTACK_MS = 480;
+export const WETNESS_RELEASE_MS = 4000;
+export const DAMP_MARK_LIMIT = 24;
+export const DAMP_MATERIAL_MULTIPLIER = Object.freeze({
+    roof: 1,
+    dock: 1.12,
+    stone: 0.82,
+    road: 0.7,
+    fire: 0,
+    emissive: 0,
+});
+
+function clamp01(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return 0;
+    return n < 0 ? 0 : n > 1 ? 1 : n;
+}
+
+export function isoFromTileKey(key, tileWidth = TILE_WIDTH, tileHeight = TILE_HEIGHT) {
+    const text = String(key || '');
+    const comma = text.indexOf(',');
+    if (comma < 0) return null;
+    const tileX = Number(text.slice(0, comma));
+    const tileY = Number(text.slice(comma + 1));
+    if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+    return {
+        tileX,
+        tileY,
+        x: (tileX - tileY) * tileWidth / 2,
+        y: (tileX + tileY) * tileHeight / 2,
+    };
+}
+
+export function isoFromTile(tileX, tileY, tileWidth = TILE_WIDTH, tileHeight = TILE_HEIGHT) {
+    if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) return null;
+    return {
+        tileX,
+        tileY,
+        x: (tileX - tileY) * tileWidth / 2,
+        y: (tileX + tileY) * tileHeight / 2,
+    };
+}
+
+export function hazeFieldSampleCount(viewportWidth, viewportHeight, scale = HAZE_FIELD_SCALE) {
+    const width = Math.max(1, Math.ceil(Math.max(0, Number(viewportWidth) || 0) * scale));
+    const height = Math.max(1, Math.ceil(Math.max(0, Number(viewportHeight) || 0) * scale));
+    return width * height;
+}
+
+export function hazeFieldMemoryBytes(viewportWidth, viewportHeight, scale = HAZE_FIELD_SCALE) {
+    return hazeFieldSampleCount(viewportWidth, viewportHeight, scale) * HAZE_FIELD_BYTES_PER_SAMPLE;
+}
+
+export function hazePlanForPressure(level = 0, motionScale = 1) {
+    const reduced = Number(motionScale) <= 0;
+    const plan = ornamentPlan({ level, motionScale: reduced ? 0 : 1 });
+    const shed = plan.ambientWeatherEmbellishment === 'off';
+    return {
+        density: shed ? 0.36 : 1,
+        detail: shed ? 0 : 1,
+        fieldScale: shed ? 0.125 : HAZE_FIELD_SCALE,
+        static: reduced,
+        rebuild: !reduced,
+        pressureLevel: Number(level) || 0,
+    };
+}
+
+export function hazeFieldCacheKey({
+    camera = null,
+    viewport = null,
+    atmosphereBucket = '',
+    pressureLevel = 0,
+    focusedId = '',
+    fieldScale = HAZE_FIELD_SCALE,
+} = {}) {
+    const x = Math.round((Number(camera?.x) || 0) * 2) / 2;
+    const y = Math.round((Number(camera?.y) || 0) * 2) / 2;
+    const z = Math.round((Number(camera?.zoom) || 1) * 100);
+    const vw = Math.round(Number(viewport?.width) || 0);
+    const vh = Math.round(Number(viewport?.height) || 0);
+    return `${x}|${y}|${z}|${vw}x${vh}|${atmosphereBucket}|p${pressureLevel}|f${focusedId || ''}|s${fieldScale}`;
+}
+
+export function shouldRebuildHazeField(previousKey, nextKey, { motionScale = 1, hasField = false } = {}) {
+    if (!nextKey) return false;
+    if (previousKey === nextKey) return false;
+    if (Number(motionScale) <= 0 && hasField) return false;
+    return true;
+}
+
+export function collectHazeAnchors({
+    waterTiles = [],
+    waterMeta = null,
+    lowlandPoints = [],
+    waterBucketSize = 9,
+    waterLimit = 6,
+    tileWidth = TILE_WIDTH,
+    tileHeight = TILE_HEIGHT,
+} = {}) {
+    const buckets = new Map();
+    for (const key of waterTiles || []) {
+        const iso = isoFromTileKey(key, tileWidth, tileHeight);
+        if (!iso) continue;
+        const bucketKey = `${Math.floor(iso.tileX / waterBucketSize)},${Math.floor(iso.tileY / waterBucketSize)}`;
+        const bucket = buckets.get(bucketKey) || { n: 0, sx: 0, sy: 0, weight: 0 };
+        bucket.n += 1;
+        bucket.sx += iso.tileX;
+        bucket.sy += iso.tileY;
+        const meta = waterMeta?.get?.(key) || null;
+        const region = meta?.region || meta?.weatherProfile || '';
+        bucket.weight += region === 'lagoon' ? 1.2 : region === 'harbor' ? 1.1 : 1;
+        buckets.set(bucketKey, bucket);
+    }
+    const ranked = [...buckets.values()].sort((a, b) => b.n - a.n).slice(0, waterLimit);
+    const anchors = [];
+    for (const bucket of ranked) {
+        const tileX = bucket.sx / bucket.n;
+        const tileY = bucket.sy / bucket.n;
+        const iso = isoFromTile(tileX, tileY, tileWidth, tileHeight);
+        if (!iso) continue;
+        anchors.push({
+            x: iso.x,
+            y: iso.y,
+            kind: 'water',
+            weight: Math.min(1.35, bucket.weight / bucket.n),
+            seed: (bucket.n % 7) / 7,
+        });
+    }
+    for (let i = 0; i < (lowlandPoints || []).length; i++) {
+        const point = lowlandPoints[i];
+        if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+        anchors.push({
+            x: point.x,
+            y: point.y,
+            kind: 'lowland',
+            weight: 0.72,
+            seed: i === 0 ? 0.31 : 0.67,
+        });
+    }
+    return { anchors };
+}
+
+export function collectRoadCarvePoints({
+    pathTiles = [],
+    mainAvenueTiles = [],
+    dirtPathTiles = [],
+    commandCenterRoadTiles = [],
+    stride = 4,
+    limit = 28,
+    tileWidth = TILE_WIDTH,
+    tileHeight = TILE_HEIGHT,
+} = {}) {
+    const points = [];
+    const seen = new Set();
+    const ingest = (tiles, extraStride = 0) => {
+        if (!tiles) return;
+        let index = 0;
+        const step = Math.max(1, stride + extraStride);
+        for (const key of tiles) {
+            if ((index++ % step) !== 0) continue;
+            if (seen.has(key)) continue;
+            const iso = isoFromTileKey(key, tileWidth, tileHeight);
+            if (!iso) continue;
+            seen.add(key);
+            points.push({ x: iso.x, y: iso.y, key });
+            if (points.length >= limit) return;
+        }
+    };
+    ingest(mainAvenueTiles, 0);
+    ingest(commandCenterRoadTiles, 1);
+    ingest(pathTiles, 1);
+    ingest(dirtPathTiles, 2);
+    return points;
+}
+
+export function lowlandPointsFromDiamond(points) {
+    if (!Array.isArray(points) || points.length < 4) return [];
+    const bottom = points[2];
+    const left = points[3];
+    const right = points[1];
+    if (!bottom || !left || !right) return [];
+    return [
+        { x: (bottom.x + left.x) / 2, y: (bottom.y + left.y) / 2 },
+        { x: (bottom.x + right.x) / 2, y: (bottom.y + right.y) / 2 },
+    ];
+}
+
+function isoDistance(ax, ay, bx, by) {
+    const dx = ax - bx;
+    const dy = (ay - by) * 2;
+    return Math.hypot(dx, dy);
+}
+
+export function hazeOccupancyAtWorld(worldX, worldY, {
+    anchors = [],
+    roads = [],
+    focused = null,
+} = {}) {
+    let occupancy = 0;
+    for (let i = 0; i < anchors.length; i++) {
+        const anchor = anchors[i];
+        const falloff = anchor.kind === 'lowland' ? HAZE_LOWLAND_FALLOFF_PX : HAZE_WATER_FALLOFF_PX;
+        const dist = isoDistance(worldX, worldY, anchor.x, anchor.y);
+        const contrib = (anchor.weight || 1) * Math.max(0, 1 - dist / falloff);
+        if (contrib > occupancy) occupancy = contrib;
+    }
+    occupancy = Math.min(1, occupancy);
+    for (let i = 0; i < roads.length; i++) {
+        const road = roads[i];
+        const dist = isoDistance(worldX, worldY, road.x, road.y);
+        if (dist >= HAZE_ROAD_CARVE_RADIUS_PX) continue;
+        const t = 1 - dist / HAZE_ROAD_CARVE_RADIUS_PX;
+        occupancy *= 1 - t * (1 - HAZE_ROAD_CARVE);
+    }
+    if (focused && Number.isFinite(focused.x) && Number.isFinite(focused.y)) {
+        const dist = isoDistance(worldX, worldY, focused.x, focused.y);
+        if (dist < HAZE_SUBJECT_CARVE_RADIUS_PX) {
+            const t = 1 - dist / HAZE_SUBJECT_CARVE_RADIUS_PX;
+            occupancy *= 1 - t * (1 - HAZE_SUBJECT_CARVE);
+        }
+    }
+    return occupancy;
+}
+
+export function hazeDensityAtWorld(worldX, worldY, options = {}) {
+    const alphaCap = Number.isFinite(Number(options.alphaCap)) ? Number(options.alphaCap) : HAZE_ALPHA_CAP;
+    const occupancy = hazeOccupancyAtWorld(worldX, worldY, options);
+    return Math.min(alphaCap, occupancy * alphaCap);
+}
+
+export function projectWorldToScreen(camera, worldX, worldY) {
+    const zoom = Number(camera?.zoom) || 1;
+    return {
+        x: (worldX + (Number(camera?.x) || 0)) * zoom,
+        y: (worldY + (Number(camera?.y) || 0)) * zoom,
+    };
+}
+
+export function projectScreenToWorld(camera, screenX, screenY) {
+    const zoom = Number(camera?.zoom) || 1;
+    return {
+        x: screenX / zoom - (Number(camera?.x) || 0),
+        y: screenY / zoom - (Number(camera?.y) || 0),
+    };
+}
+
+export function projectHazeField({
+    anchors = [],
+    roads = [],
+    focused = null,
+    camera = { x: 0, y: 0, zoom: 1 },
+    viewport = { width: 1280, height: 720 },
+    scale = HAZE_FIELD_SCALE,
+    strength = 1,
+    densityScale = 1,
+    alphaCap = HAZE_ALPHA_CAP,
+} = {}) {
+    const width = Math.max(1, Math.ceil(Math.max(0, Number(viewport.width) || 0) * scale));
+    const height = Math.max(1, Math.ceil(Math.max(0, Number(viewport.height) || 0) * scale));
+    const samples = new Uint8Array(width * height);
+    const invScale = 1 / scale;
+    const gain = clamp01(strength) * clamp01(densityScale);
+    for (let y = 0; y < height; y++) {
+        const sy = (y + 0.5) * invScale;
+        for (let x = 0; x < width; x++) {
+            const sx = (x + 0.5) * invScale;
+            const world = projectScreenToWorld(camera, sx, sy);
+            const occupancy = hazeOccupancyAtWorld(world.x, world.y, { anchors, roads, focused });
+            samples[y * width + x] = Math.round(Math.min(1, occupancy * gain) * 255);
+        }
+    }
+    return {
+        width,
+        height,
+        scale,
+        samples,
+        bytes: samples.length * HAZE_FIELD_BYTES_PER_SAMPLE,
+        alphaCap,
+    };
+}
+
+export function sampleHazeField(field, screenX, screenY) {
+    if (!field?.samples || !field.width || !field.height) return 0;
+    const scale = field.scale || HAZE_FIELD_SCALE;
+    const x = Math.floor(screenX * scale);
+    const y = Math.floor(screenY * scale);
+    if (x < 0 || y < 0 || x >= field.width || y >= field.height) return 0;
+    return field.samples[y * field.width + x] / 255;
+}
+
+export function advanceSurfaceWetness(current = 0, {
+    precipitation = 0,
+    dt = 16,
+    weatherType = 'clear',
+} = {}) {
+    const wetness = clamp01(current);
+    const precip = clamp01(precipitation);
+    const raining = precip > 0.04 || weatherType === 'rain' || weatherType === 'storm';
+    const frameDt = Math.max(0, Number(dt) || 0);
+    if (raining) {
+        const attack = frameDt / WETNESS_ATTACK_MS;
+        return clamp01(wetness + Math.max(precip, 0.35) * attack);
+    }
+    return clamp01(wetness - frameDt / WETNESS_RELEASE_MS);
+}
+
+export function dampMaterialMultiplier(material) {
+    return DAMP_MATERIAL_MULTIPLIER[material] ?? 0;
+}
+
+export function dampMarkAlpha(wetness, material, seed = 0.5) {
+    const multiplier = dampMaterialMultiplier(material);
+    if (multiplier <= 0) return 0;
+    return Math.min(0.22, clamp01(wetness) * multiplier * (0.45 + clamp01(seed) * 0.35));
+}
+
+export function applySurfaceWetnessToReactions(reactions = {}, wetness = 0) {
+    const w = clamp01(wetness);
+    return {
+        ...reactions,
+        surfaceWetness: w,
+        puddleAlpha: Math.max(Number(reactions.puddleAlpha) || 0, w * 0.38),
+        roofGlintAlpha: Math.max(Number(reactions.roofGlintAlpha) || 0, w * 0.18),
+    };
+}
+
+export function collectDampMarks({
+    roads = [],
+    docks = [],
+    roofs = [],
+    footings = [],
+    wetness = 0,
+    limit = DAMP_MARK_LIMIT,
+    layer = 'all',
+} = {}) {
+    if (clamp01(wetness) <= 0.03) return [];
+    const marks = [];
+    const take = (items, material) => {
+        if (layer === 'roofs' && material !== 'roof') return;
+        if (layer === 'ground' && material === 'roof') return;
+        for (let i = 0; i < (items || []).length; i++) {
+            const item = items[i];
+            if (!item || !Number.isFinite(item.x) || !Number.isFinite(item.y)) continue;
+            if (dampMaterialMultiplier(material) <= 0) continue;
+            marks.push({
+                x: Math.round(item.x),
+                y: Math.round(item.y),
+                material,
+                seed: clamp01(item.seed),
+                alpha: dampMarkAlpha(wetness, material, item.seed),
+            });
+            if (marks.length >= limit) return;
+        }
+    };
+    take(roads, 'road');
+    take(docks, 'dock');
+    take(footings, 'stone');
+    take(roofs, 'roof');
+    return marks.slice(0, limit);
+}
 
 // Follow-up after layer extraction: move private renderer calls used here into
 // explicit layer/context methods so this module stays a frame orchestrator.
@@ -81,10 +455,18 @@ export function renderWorldFrame(renderer, dt = 16) {
         ? wx.intensity
         : 0;
     renderer._waterWeather = renderer._waterWeatherState(atmosphere);
-    renderer._atmosphereReactions = atmosphere?.reactions || {};
+    renderer._surfaceWetness = advanceSurfaceWetness(renderer._surfaceWetness || 0, {
+        precipitation: wx?.precipitation || 0,
+        weatherType: wx?.type || 'clear',
+        dt,
+    });
+    const reactions = applySurfaceWetnessToReactions(atmosphere?.reactions || {}, renderer._surfaceWetness);
+    renderer._atmosphereReactions = reactions;
     renderer.buildingRenderer?.setLightingState(atmosphere?.lighting);
     renderer.buildingRenderer?.setClockState?.(atmosphere?.clock);
-    renderer.buildingRenderer?.setAtmosphereState?.(atmosphere);
+    renderer.buildingRenderer?.setAtmosphereState?.(atmosphere
+        ? { ...atmosphere, reactions }
+        : atmosphere);
     // #3 — grade authority: harbor anchorage glows lerp toward the time-of-day tint.
     renderer.harborTraffic?.setGradeState?.(atmosphere?.grade);
     const perfNow = performance.now();
@@ -114,8 +496,9 @@ export function renderWorldFrame(renderer, dt = 16) {
         // #24 — cloud-shadow parallax: feathered shadows slide across the baked
         // terrain on the wind, giving the flat iso plane depth under the live sky.
         drawCloudShadows(renderer, ctx, atmosphere, perfNow);
-        // 6.4 — ground fog at dawn / over water, on the ground plane ahead of the
-        // village so agents and buildings stand up out of the mist.
+        // 6.4 — ground haze over water and lowlands, drawn on the ground plane
+        // ahead of agents and buildings. The ten wisps are the crest of this
+        // field, not the whole effect.
         drawGroundFog(renderer, ctx, atmosphere, perfNow);
     }
     markFrameTiming(frameTimer, 'ground-atmosphere');
@@ -243,6 +626,7 @@ export function renderWorldFrame(renderer, dt = 16) {
         agentRenderMode,
         gpuWorldActive,
     });
+    if (!gpuWorldActive) renderer._drawSurfaceWetnessMarks?.(ctx, 'roofs');
     markFrameTiming(frameTimer, 'drawables');
     drawTalkArcs(ctx, {
         relationship: renderer.relationshipState,
@@ -588,20 +972,16 @@ function primaryRestampNightFactor(renderer, atmosphere) {
 }
 
 // ---------------------------------------------------------------------------
-// 6.4 — ground fog at dawn / over water. Budget story: placement is computed
-// ONCE (lazily, cached on the renderer) by bucketing the scenery water-tile
-// set into a handful of anchor points plus two lowland spots on the village
-// diamond; the wisp visual is the manifest's baked `atmosphere.fog.wisp.low`
-// sprite with a one-off baked gradient stamp as the no-asset fallback. The
-// per-frame cost is therefore capped at FOG_SPOT_LIMIT drawImage calls, and
-// only while the dawn envelope (or weather fog) is active — zero cost the
-// rest of the day. Drift rides a ~52s slow band; reduced motion freezes the
-// drift and keeps the static wisps (fixed alpha from the dawn envelope).
+// 6.4 — ground haze over water and lowlands. The coherent field is a
+// quarter-resolution occupancy mask keyed by camera pose / viewport /
+// atmosphere bucket and rebuilt only when that key changes. The existing
+// ten wisps remain the visible crest of that field, not the whole effect.
 const FOG_SPOT_LIMIT = 10;
 const FOG_WATER_ANCHOR_LIMIT = 6;
 const FOG_DRIFT_PERIOD_MS = 52000;
 const FOG_DRIFT_PX = 14;
 const FOG_WISP_SPRITE_ID = 'atmosphere.fog.wisp.low';
+const HAZE_FIELD_RGB = Object.freeze([214, 228, 236]);
 let _fogStamp = null;
 
 function fogStampCanvas() {
@@ -627,41 +1007,45 @@ function fogStampCanvas() {
 
 function groundFogSpots(renderer) {
     if (renderer._groundFogSpots) return renderer._groundFogSpots;
-    const spots = [];
-    // Water anchors: bucket the water-tile set into coarse cells and keep the
-    // largest bodies (lagoon, river, harbor sea lanes).
-    const buckets = new Map();
-    for (const key of renderer.waterTiles || []) {
-        const [tileX, tileY] = String(key).split(',').map(Number);
-        if (!Number.isFinite(tileX) || !Number.isFinite(tileY)) continue;
-        const bucketKey = `${Math.floor(tileX / 9)},${Math.floor(tileY / 9)}`;
-        const bucket = buckets.get(bucketKey) || { n: 0, sx: 0, sy: 0 };
-        bucket.n += 1;
-        bucket.sx += tileX;
-        bucket.sy += tileY;
-        buckets.set(bucketKey, bucket);
-    }
-    const ranked = [...buckets.values()].sort((a, b) => b.n - a.n).slice(0, FOG_WATER_ANCHOR_LIMIT);
-    for (const bucket of ranked) {
-        const tileX = bucket.sx / bucket.n;
-        const tileY = bucket.sy / bucket.n;
-        spots.push({
-            x: (tileX - tileY) * TILE_WIDTH / 2,
-            y: (tileX + tileY) * TILE_HEIGHT / 2,
-            seed: (bucket.n % 7) / 7,
-        });
-    }
-    // Lowland anchors: two spots on the lower flanks of the village diamond.
-    const points = renderer._worldDiamondPoints?.();
-    if (Array.isArray(points) && points.length >= 4) {
-        const bottom = points[2];
-        const left = points[3];
-        const right = points[1];
-        spots.push({ x: (bottom.x + left.x) / 2, y: (bottom.y + left.y) / 2, seed: 0.31 });
-        spots.push({ x: (bottom.x + right.x) / 2, y: (bottom.y + right.y) / 2, seed: 0.67 });
-    }
-    renderer._groundFogSpots = spots.slice(0, FOG_SPOT_LIMIT);
+    const { anchors } = collectHazeAnchors({
+        waterTiles: renderer.waterTiles,
+        waterMeta: renderer.waterMeta,
+        lowlandPoints: lowlandPointsFromDiamond(renderer._worldDiamondPoints?.()),
+        waterLimit: FOG_WATER_ANCHOR_LIMIT,
+    });
+    renderer._groundFogSpots = anchors.slice(0, FOG_SPOT_LIMIT).map((anchor) => ({
+        x: anchor.x,
+        y: anchor.y,
+        seed: anchor.seed || 0,
+    }));
     return renderer._groundFogSpots;
+}
+
+function hazeRoadPoints(renderer) {
+    if (renderer._hazeRoadPoints) return renderer._hazeRoadPoints;
+    renderer._hazeRoadPoints = collectRoadCarvePoints({
+        pathTiles: renderer.pathTiles,
+        mainAvenueTiles: renderer.mainAvenueTiles,
+        dirtPathTiles: renderer.dirtPathTiles,
+        commandCenterRoadTiles: renderer.commandCenterRoadTiles,
+    });
+    return renderer._hazeRoadPoints;
+}
+
+function hazeAtmosphereBucket(atmosphere) {
+    if (atmosphere?.cacheKey) return atmosphere.cacheKey;
+    const fog = Math.round((Number(atmosphere?.weather?.fog) || 0) * 10);
+    const precip = Math.round((Number(atmosphere?.weather?.precipitation) || 0) * 10);
+    return `${atmosphere?.phase || 'day'}|f${fog}|p${precip}`;
+}
+
+function focusedHazeSubject(renderer) {
+    const selected = renderer.selectedAgent;
+    const sprite = selected?.id ? renderer.agentSprites?.get?.(selected.id) : null;
+    if (sprite && Number.isFinite(sprite.x) && Number.isFinite(sprite.y)) {
+        return { id: selected.id, x: sprite.x, y: sprite.y };
+    }
+    return null;
 }
 
 function groundFogStrength(renderer, atmosphere) {
@@ -672,12 +1056,124 @@ function groundFogStrength(renderer, atmosphere) {
         strength = Math.sin(progress * Math.PI);
     }
     const weatherFog = Number(renderer._waterWeather?.fog) || 0;
-    return Math.max(strength, weatherFog * 0.7);
+    const precipitation = Number(renderer._waterWeather?.rain) || 0;
+    return Math.max(strength, weatherFog * 0.7, precipitation * 0.45);
+}
+
+function paintHazeMaskCanvas(field) {
+    if (typeof document === 'undefined') return null;
+    const width = field.width;
+    const height = field.height;
+    let canvas = field.canvas;
+    if (!canvas || canvas.width !== width || canvas.height !== height) {
+        canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+    }
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    const imageData = ctx.createImageData(width, height);
+    const data = imageData.data;
+    const samples = field.samples;
+    const r = HAZE_FIELD_RGB[0];
+    const g = HAZE_FIELD_RGB[1];
+    const b = HAZE_FIELD_RGB[2];
+    for (let i = 0; i < samples.length; i++) {
+        const offset = i * 4;
+        data[offset] = r;
+        data[offset + 1] = g;
+        data[offset + 2] = b;
+        data[offset + 3] = samples[i];
+    }
+    ctx.putImageData(imageData, 0, 0);
+    field.canvas = canvas;
+    return canvas;
+}
+
+function ensureHazeField(renderer, atmosphere, plan) {
+    const viewport = renderer._screenViewport?.() || { width: 0, height: 0 };
+    if (!(viewport.width > 0) || !(viewport.height > 0)) return null;
+    const focused = focusedHazeSubject(renderer);
+    const key = hazeFieldCacheKey({
+        camera: renderer.camera,
+        viewport,
+        atmosphereBucket: hazeAtmosphereBucket(atmosphere),
+        pressureLevel: plan.pressureLevel || 0,
+        focusedId: focused?.id || '',
+        fieldScale: plan.fieldScale,
+    });
+    const cached = renderer._hazeField;
+    if (!shouldRebuildHazeField(cached?.key, key, {
+        motionScale: renderer.motionScale ?? 1,
+        hasField: Boolean(cached?.canvas || cached?.samples),
+    })) {
+        return cached;
+    }
+    const { anchors } = collectHazeAnchors({
+        waterTiles: renderer.waterTiles,
+        waterMeta: renderer.waterMeta,
+        lowlandPoints: lowlandPointsFromDiamond(renderer._worldDiamondPoints?.()),
+        waterLimit: FOG_WATER_ANCHOR_LIMIT,
+    });
+    if (!anchors.length) {
+        renderer._hazeField = { key, width: 0, height: 0, samples: new Uint8Array(0), canvas: null };
+        return renderer._hazeField;
+    }
+    const field = projectHazeField({
+        anchors,
+        roads: hazeRoadPoints(renderer),
+        focused,
+        camera: renderer.camera,
+        viewport,
+        scale: plan.fieldScale,
+        strength: 1,
+        densityScale: 1,
+    });
+    field.key = key;
+    if (paintHazeMaskCanvas(field)) field.samples = null;
+    renderer._hazeField = field;
+    return field;
+}
+
+function clipProjectedDiamond(renderer, ctx) {
+    const points = renderer._worldDiamondPoints?.();
+    const camera = renderer.camera;
+    if (!Array.isArray(points) || points.length < 4 || !camera?.worldToScreen) return false;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) {
+        const screen = camera.worldToScreen(points[i].x, points[i].y);
+        if (i === 0) ctx.moveTo(screen.x, screen.y);
+        else ctx.lineTo(screen.x, screen.y);
+    }
+    ctx.closePath();
+    ctx.clip();
+    return true;
+}
+
+function drawHazeField(renderer, ctx, field, strength) {
+    if (!field?.canvas || !(field.width > 0) || strength <= 0.01) return;
+    const viewport = renderer._screenViewport?.();
+    if (!viewport?.width || !viewport?.height) return;
+    ctx.save();
+    renderer._resetScreenTransform?.(ctx);
+    clipProjectedDiamond(renderer, ctx);
+    ctx.imageSmoothingEnabled = false;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.globalAlpha = Math.min(HAZE_ALPHA_CAP, HAZE_ALPHA_CAP * strength);
+    ctx.drawImage(field.canvas, 0, 0, viewport.width, viewport.height);
+    ctx.restore();
 }
 
 function drawGroundFog(renderer, ctx, atmosphere, perfNow) {
     const strength = groundFogStrength(renderer, atmosphere);
-    if (strength <= 0.04) return;
+    const pressure = sampleFramePressure();
+    const plan = hazePlanForPressure(pressure.level, renderer.motionScale ?? 1);
+    const fieldStrength = strength * plan.density;
+    if (fieldStrength <= 0.02) return;
+    const field = ensureHazeField(renderer, atmosphere, plan);
+    if (field) drawHazeField(renderer, ctx, field, fieldStrength);
+
+    if (plan.detail <= 0) return;
     const spots = groundFogSpots(renderer);
     if (!spots.length) return;
     const drifting = (renderer.motionScale ?? 1) > 0;
@@ -699,7 +1195,6 @@ function drawGroundFog(renderer, ctx, atmosphere, perfNow) {
             flipX: spot.seed > 0.5,
         });
         if (drew) continue;
-        // No-asset fallback: the baked gradient stamp, same soft-wisp shape.
         const stamp = fogStampCanvas();
         ctx.globalAlpha = alpha;
         ctx.drawImage(stamp, Math.round(spot.x + dx - 80), Math.round(spot.y - 26), 160, 64);

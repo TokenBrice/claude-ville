@@ -77,7 +77,12 @@ import { tileToWorld, worldToTile, buildingCenterToWorld } from './Projection.js
 import { summarizeCrowdClusterEntries } from './CrowdClusters.js';
 import { buildStaticPropDrawables } from './StaticPropDrawables.js';
 import { createDepthDrawable, propDepthDrawable } from './DrawablePass.js';
-import { renderWorldFrame } from './WorldFrameRenderer.js';
+import {
+    renderWorldFrame,
+    collectDampMarks,
+    isoFromTileKey,
+    isoFromTile,
+} from './WorldFrameRenderer.js';
 import { createPostFx } from './postfx/PostFx.js';
 import { createPostFxFeed } from './postfx/PostFxFeed.js';
 import { createGpuWorldRenderer } from './gpu/GpuWorldRenderer.js';
@@ -4995,6 +5000,8 @@ export class IsometricRenderer {
         profileMark?.('water-highlights');
         this._drawWeatherPuddles(ctx);
         profileMark?.('weather-puddles');
+        this._drawSurfaceWetnessMarks(ctx, 'ground');
+        profileMark?.('surface-wetness');
         this._drawStaticBuildingSmoke(ctx);
         profileMark?.('static-building-smoke');
     }
@@ -6688,6 +6695,103 @@ export class IsometricRenderer {
                 ctx.fill();
             }
         }
+    }
+
+    _drawSurfaceWetnessMarks(ctx, layer = 'ground') {
+        const wetness = this._atmosphereReactions?.surfaceWetness || 0;
+        if (wetness <= 0.03) return;
+
+        const sparseTiles = (tiles, stride, salt) => {
+            const points = [];
+            if (!tiles) return points;
+            let index = 0;
+            for (const key of tiles) {
+                if ((index++ % stride) !== 0) continue;
+                const iso = isoFromTileKey(key);
+                if (!iso) continue;
+                points.push({
+                    x: iso.x,
+                    y: iso.y,
+                    seed: ((iso.tileX * 13 + iso.tileY * 7 + salt) % 10) / 10,
+                });
+            }
+            return points;
+        };
+
+        const docks = [];
+        if (this.bridgeTiles?.size && (layer === 'ground' || layer === 'all')) {
+            for (const [key, info] of this.bridgeTiles) {
+                if (info?.kind !== 'dock') continue;
+                const iso = isoFromTileKey(key);
+                if (!iso) continue;
+                docks.push({
+                    x: iso.x,
+                    y: iso.y,
+                    seed: ((iso.tileX * 17 + iso.tileY * 5) % 10) / 10,
+                });
+            }
+        }
+
+        const roofs = [];
+        if ((layer === 'roofs' || layer === 'all') && this.world?.buildings) {
+            for (const building of this.world.buildings.values()) {
+                const type = String(building?.type || '');
+                if (type === 'watchfire') continue;
+                const pos = building.position;
+                if (!pos || !Number.isFinite(pos.tileX) || !Number.isFinite(pos.tileY)) continue;
+                const iso = isoFromTile(
+                    pos.tileX + (Number(building.width) || 1) / 2,
+                    pos.tileY + (Number(building.height) || 1) / 2,
+                );
+                if (!iso) continue;
+                roofs.push({
+                    x: iso.x,
+                    y: iso.y - 22,
+                    seed: ((iso.tileX * 11 + iso.tileY * 3) % 10) / 10,
+                });
+            }
+        }
+
+        const footings = [];
+        if (layer === 'ground' || layer === 'all') {
+            for (const route of VILLAGE_WALL_ROUTES) {
+                for (const point of route.points) {
+                    const iso = isoFromTile(point.tileX, point.tileY);
+                    if (!iso) continue;
+                    footings.push({
+                        x: iso.x,
+                        y: iso.y + 10,
+                        seed: 0.62,
+                    });
+                }
+            }
+        }
+
+        const marks = collectDampMarks({
+            roads: layer === 'roofs' ? [] : sparseTiles(this.pathTiles, 7, 2),
+            docks: layer === 'roofs' ? [] : docks,
+            roofs,
+            footings: layer === 'roofs' ? [] : footings,
+            wetness,
+            layer,
+        });
+        if (!marks.length) return;
+
+        ctx.save();
+        SpriteRenderer.disableSmoothing(ctx);
+        ctx.globalCompositeOperation = 'screen';
+        for (const mark of marks) {
+            if (mark.alpha <= 0.01) continue;
+            const cool = mark.material === 'dock' || mark.material === 'stone';
+            ctx.fillStyle = cool
+                ? `rgba(168, 214, 224, ${mark.alpha})`
+                : `rgba(196, 220, 228, ${mark.alpha})`;
+            const x = Math.round(mark.x);
+            const y = Math.round(mark.y);
+            ctx.fillRect(x - 2, y, 5, 1);
+            if (mark.seed > 0.55) ctx.fillRect(x, y - 1, 1, 2);
+        }
+        ctx.restore();
     }
 
     _getAtmosphereEffectSprite(id) {

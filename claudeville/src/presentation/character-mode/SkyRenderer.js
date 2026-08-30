@@ -126,6 +126,10 @@ export function allowAmbientMeteor({ calm = false, motionScale = 1 } = {}) {
     return ornamentPlan({ calm, motionScale, level: 0 }).ambientMeteors === 'on';
 }
 
+// Weather plate is a vertical, canvas-wide sky condition. Spatial ground
+// haze lives in WorldFrameRenderer (ground-atmosphere stage).
+export const SKY_WEATHER_PLATE_SPACE = 'vertical-canvas';
+
 export class SkyRenderer {
     constructor({ assets } = {}) {
         this.assets = assets || null;
@@ -507,6 +511,8 @@ export class SkyRenderer {
         }
     }
 
+    // Sky condition only: a vertical canvas-wide gradient. This is not ground
+    // fog and must not follow terrain, roads, or water.
     _paintStaticWeatherPlate(ctx, canvas, atmosphere) {
         const { weather } = atmosphere;
         if (!weather) return;

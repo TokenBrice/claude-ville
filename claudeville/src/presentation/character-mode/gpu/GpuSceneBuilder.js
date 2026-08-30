@@ -1,5 +1,21 @@
 import { materialClassId } from './GpuWorldPolicy.js';
 import { tileToWorld, TILE_HALF_HEIGHT, TILE_HALF_WIDTH } from '../Projection.js';
+import {
+    atlasSourceRect,
+    shouldUseAtlasForCategory,
+} from '../AssetManager.js';
+
+const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.runeBrazier']);
+const TERRAIN_TILE_SOURCES = Object.freeze([
+    Object.freeze({ tiles: 'deepWaterTiles', id: 'terrain.shallow-deep' }),
+    Object.freeze({ tiles: 'waterTiles', id: 'terrain.shore-shallow' }),
+    Object.freeze({ tiles: 'shoreTiles', id: 'terrain.grass-shore' }),
+    Object.freeze({ tiles: 'townSquareTiles', id: 'terrain.cobble-square' }),
+    Object.freeze({ tiles: 'mainAvenueTiles', id: 'terrain.grass-cobble' }),
+    Object.freeze({ tiles: 'pathTiles', id: 'terrain.grass-dirt' }),
+    Object.freeze({ tiles: 'dirtPathTiles', id: 'terrain.grass-dirt' }),
+    Object.freeze({ tiles: 'bridgeTiles', id: null, materialClass: 'timber' }),
+]);
 
 const MATERIAL_BY_BUILDING = Object.freeze({
     command: 'stone',
@@ -92,87 +108,53 @@ export function packGpuSidecarPixels({ material = null, emissive = null, occlude
     return { packed, emissive: authoredEmissive };
 }
 
-function canvasFromPixels(pixels, width, height) {
-    if (!pixels || typeof document === 'undefined') return null;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, width);
-    canvas.height = Math.max(1, height);
-    const ctx = canvas.getContext('2d', { alpha: true });
-    const image = ctx.createImageData(width, height);
-    image.data.set(pixels);
-    ctx.putImageData(image, 0, 0);
-    return canvas;
-}
-
-function packedLandmarkChannels(renderer, id) {
+function packedLandmarkChannels(renderer, id, { crop = false } = {}) {
     const assets = renderer?.assets;
-    const frame = assets?.getAtlasFrame?.(id);
-    if (!frame?.atlas || !frame?.rect || typeof document === 'undefined') {
-        const material = sidecarFor(assets, id, 'material');
-        const emissive = sidecarFor(assets, id, 'emissive');
-        if (!material && !emissive) return null;
+    const resolved = assets?.resolveMaterialChannels?.(id, null, {
+        crop,
+        kind: 'landmark',
+        onScreen: true,
+    });
+    if (resolved?.ready && resolved.origin !== 'fallback') {
+        if (crop && resolved.layout === 'atlas-rect') return null;
         return {
-            material,
-            emissive,
-            revision: `${assets?.assetVersion || ''}:${id}:sidecars`,
+            material: resolved.material,
+            emissive: resolved.emissive,
+            revision: resolved.revision,
+            origin: resolved.origin,
+            layout: resolved.layout,
+            frame: resolved.frame,
         };
     }
-    const materialAtlas = assets.getAtlas?.(frame.atlas, 'material');
-    const emissiveAtlas = assets.getAtlas?.(frame.atlas, 'emissive');
-    const occluderAtlas = assets.getAtlas?.(frame.atlas, 'occluder');
-    if (!materialAtlas && !emissiveAtlas && !occluderAtlas) return null;
-    const revision = `${assets.assetVersion || ''}:${frame.atlas}:${frame.key}`;
-    const cache = renderer._gpuPackedMaterialSidecars ||= new Map();
-    const cached = cache.get(id);
-    if (cached?.revision === revision) return cached;
-
-    const { x, y, w, h } = frame.rect;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, w);
-    canvas.height = Math.max(1, h);
-    const ctx = canvas.getContext('2d', { alpha: true, willReadFrequently: true });
-    const sample = (atlas) => {
-        if (!atlas) return null;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.drawImage(atlas, x, y, w, h, 0, 0, w, h);
-        return ctx.getImageData(0, 0, w, h).data;
-    };
-    const material = sample(materialAtlas);
-    const emissive = sample(emissiveAtlas);
-    const occluder = sample(occluderAtlas);
-    const channels = packGpuSidecarPixels({
+    const material = sidecarFor(assets, id, 'material');
+    const emissive = sidecarFor(assets, id, 'emissive');
+    if (!material && !emissive) return null;
+    return {
         material,
         emissive,
-        occluder,
-        pixelCount: w * h,
-    });
-    const packed = ctx.createImageData(w, h);
-    packed.data.set(channels.packed);
-    ctx.putImageData(packed, 0, 0);
-    const result = {
-        material: canvas,
-        emissive: canvasFromPixels(channels.emissive, w, h),
-        revision,
+        revision: `${assets?.assetVersion || ''}:${id}:sidecars`,
+        origin: 'sidecar',
+        layout: 'sidecar',
     };
-    cache.set(id, result);
-    return result;
 }
 
-function terrainMaterialSidecar(renderer, cached) {
-    if (!cached?.canvas || !cached?.bounds || typeof document === 'undefined') return null;
-    const revision = `${renderer.terrainCacheKey || ''}:terrain-material-v1`;
-    if (renderer._gpuTerrainMaterialSidecar?.revision === revision) {
-        return renderer._gpuTerrainMaterialSidecar.canvas;
+export function terrainSourceHasAuthoredChannels(assets, source) {
+    if (!source?.id || !assets) return false;
+    if (typeof assets.resolveMaterialChannels === 'function') {
+        const resolved = assets.resolveMaterialChannels(source.id);
+        return resolved?.origin === 'sidecar' || resolved?.origin === 'atlas';
     }
-    const scale = 0.25;
-    const canvas = document.createElement('canvas');
-    canvas.width = Math.max(1, Math.ceil(cached.canvas.width * scale));
-    canvas.height = Math.max(1, Math.ceil(cached.canvas.height * scale));
-    const ctx = canvas.getContext('2d', { alpha: true });
-    ctx.imageSmoothingEnabled = false;
+    return Boolean(
+        sidecarFor(assets, source.id, 'material')
+        || sidecarFor(assets, source.id, 'emissive')
+        || assets.getAtlasFrame?.(source.id),
+    );
+}
+
+function paintTerrainClassMap(ctx, renderer, cached, scale, sources) {
     const colorFor = (name) => `rgba(${materialClassId(name)},0,0,1)`;
     ctx.fillStyle = colorFor('earth');
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     const drawTiles = (tiles, material) => {
         ctx.fillStyle = colorFor(material);
         for (const key of tiles || []) {
@@ -192,11 +174,81 @@ function terrainMaterialSidecar(renderer, cached) {
             ctx.fill();
         }
     };
-    drawTiles(renderer.pathTiles, 'cobble');
-    drawTiles(renderer.dirtPathTiles, 'earth');
-    drawTiles(renderer.waterTiles, 'water');
-    drawTiles(renderer.bridgeTiles, 'timber');
-    renderer._gpuTerrainMaterialSidecar = { canvas, revision };
+    for (const source of sources) {
+        const tiles = renderer[source.tiles];
+        if (!tiles) continue;
+        const materialName = source.materialClass
+            || renderer.assets?.getMaterialMetadata?.(source.id)?.materialClass
+            || 'earth';
+        drawTiles(tiles, materialName);
+    }
+}
+
+function composeProceduralTerrainMaterial(renderer, cached) {
+    const scale = 0.25;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(cached.canvas.width * scale));
+    canvas.height = Math.max(1, Math.ceil(cached.canvas.height * scale));
+    const ctx = canvas.getContext('2d', { alpha: true });
+    ctx.imageSmoothingEnabled = false;
+    paintTerrainClassMap(ctx, renderer, cached, scale, [
+        { tiles: 'pathTiles', materialClass: 'cobble' },
+        { tiles: 'dirtPathTiles', materialClass: 'earth' },
+        { tiles: 'waterTiles', materialClass: 'water' },
+        { tiles: 'bridgeTiles', materialClass: 'timber' },
+    ]);
+    return canvas;
+}
+
+function composeAuthoredTerrainMaterial(renderer, cached) {
+    const scale = 0.25;
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.ceil(cached.canvas.width * scale));
+    canvas.height = Math.max(1, Math.ceil(cached.canvas.height * scale));
+    const ctx = canvas.getContext('2d', { alpha: true });
+    ctx.imageSmoothingEnabled = false;
+    paintTerrainClassMap(ctx, renderer, cached, scale, TERRAIN_TILE_SOURCES);
+    return canvas;
+}
+
+function terrainMaterialSidecar(renderer, cached) {
+    if (!cached?.canvas || !cached?.bounds || typeof document === 'undefined') return null;
+    const authored = TERRAIN_TILE_SOURCES.some((source) => (
+        terrainSourceHasAuthoredChannels(renderer?.assets, source)
+    ));
+    const cacheToken = renderer.terrainCacheKey || '';
+    const authoredRevision = `${cacheToken}:terrain-material:authored`;
+    const proceduralRevision = `${cacheToken}:terrain-material:procedural`;
+    if (authored && renderer._gpuTerrainAuthoredMaterial?.revision === authoredRevision) {
+        renderer._gpuTerrainMaterialOrigin = 'authored';
+        return renderer._gpuTerrainAuthoredMaterial.canvas;
+    }
+    if (authored && renderer.assets?.enqueueDerivedArt) {
+        const generation = renderer.assets.derivedArtGeneration;
+        renderer.assets.enqueueDerivedArt({
+            key: authoredRevision,
+            kind: 'landmark',
+            onScreen: true,
+            build: () => {
+                if (generation !== renderer.assets?.derivedArtGeneration) return;
+                if (typeof document === 'undefined') return;
+                const canvas = composeAuthoredTerrainMaterial(renderer, cached);
+                if (generation !== renderer.assets?.derivedArtGeneration) {
+                    canvas.width = 0;
+                    canvas.height = 0;
+                    return;
+                }
+                renderer._gpuTerrainAuthoredMaterial = { canvas, revision: authoredRevision };
+            },
+        });
+    }
+    if (renderer._gpuTerrainMaterialSidecar?.revision === proceduralRevision) {
+        renderer._gpuTerrainMaterialOrigin = authored ? 'authored-pending' : 'procedural';
+        return renderer._gpuTerrainMaterialSidecar.canvas;
+    }
+    const canvas = composeProceduralTerrainMaterial(renderer, cached);
+    renderer._gpuTerrainMaterialSidecar = { canvas, revision: proceduralRevision };
+    renderer._gpuTerrainMaterialOrigin = authored ? 'authored-pending' : 'procedural';
     return canvas;
 }
 
@@ -227,50 +279,90 @@ function recordForTerrain(renderer) {
         emissive: 0,
         occluder: 0,
         textureRevision: renderer.terrainCacheKey || null,
-        sidecarRevision: renderer._gpuTerrainMaterialSidecar?.revision || null,
+        sidecarRevision: renderer._gpuTerrainAuthoredMaterial?.revision
+            || renderer._gpuTerrainMaterialSidecar?.revision
+            || null,
         sequence: -1,
+        sourceKind: 'individual',
     };
 }
 
 function recordForBuilding(renderer, drawable, sequence) {
     const assets = renderer?.assets;
     const id = drawable?.entry?.id;
-    const source = assets?.get?.(id);
-    if (!source || !id) return null;
-    const dims = assets.getDims(id) || { w: source.width, h: source.height };
+    if (!id) return null;
+    const individual = assets?.get?.(id);
+    const dims = assets?.getDims?.(id) || (individual ? { w: individual.width, h: individual.height } : null);
+    if (!dims) return null;
     const [ax, ay] = assets.getAnchor(id) || [dims.w / 2, dims.h];
     const split = drawable.kind === 'building-back' || drawable.kind === 'building-front';
     const horizon = split
         ? Math.max(1, Math.min(finite(drawable.horizonY, dims.h / 2), dims.h - 1))
         : null;
     const front = drawable.kind === 'building-front';
-    const sy = split && front ? horizon : 0;
-    const sh = split ? (front ? dims.h - horizon : horizon) : dims.h;
+    const atlasFrame = assets.getAtlasFrame?.(id);
+    const atlasAlbedo = atlasFrame?.atlas ? assets.getAtlas?.(atlasFrame.atlas, 'albedo') : null;
+    const useAtlas = Boolean(renderer._gpuAtlasDecision?.building && atlasAlbedo && atlasFrame?.rect);
+    let source;
+    let sourceWidth;
+    let sourceHeight;
+    let sx;
+    let sy;
+    let sw;
+    let sh;
+    let textureKey;
+    if (useAtlas) {
+        source = atlasAlbedo;
+        sourceWidth = atlasAlbedo.width;
+        sourceHeight = atlasAlbedo.height;
+        const rect = atlasSourceRect(atlasFrame.rect, { split, front, horizonY: horizon });
+        sx = rect.sx;
+        sy = rect.sy;
+        sw = rect.sw;
+        sh = rect.sh;
+        textureKey = atlasFrame.atlas;
+    } else {
+        source = individual;
+        if (!source) return null;
+        sourceWidth = dims.w;
+        sourceHeight = dims.h;
+        sx = 0;
+        sy = split && front ? horizon : 0;
+        sw = dims.w;
+        sh = split ? (front ? dims.h - horizon : horizon) : dims.h;
+        textureKey = id;
+    }
     const buildingType = drawable.building?.type || id.replace(/^building\./, '');
     const materialMeta = drawable.entry?.material || drawable.entry?.gpuMaterial || {};
     const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
     const occupied = renderer?.buildingRenderer?._buildingOccupancyInfo?.(drawable.building)?.state;
     const active = occupied && occupied !== 'idle';
-    const packedChannels = packedLandmarkChannels(renderer, id);
-    const materialSource = packedChannels?.material || null;
-    const emissiveSource = packedChannels?.emissive || null;
+    const resolved = useAtlas
+        ? assets.resolveMaterialChannels?.(id, null, { kind: 'landmark', onScreen: true })
+        : packedLandmarkChannels(renderer, id, { crop: true });
+    const materialSource = (useAtlas && resolved?.layout === 'atlas-rect' ? resolved.material : resolved?.material)
+        || null;
+    const emissiveSource = resolved?.emissive || null;
+    const sidecarKey = useAtlas && atlasFrame?.atlas
+        ? `${atlasFrame.atlas}:channels`
+        : `${id}:material`;
     return {
         id: `${id}:${drawable.kind}`,
         stableKey: `${id}:${drawable.kind}`,
-        textureKey: id,
-        sidecarKey: `${id}:material`,
+        textureKey,
+        sidecarKey,
         source,
         materialSource,
         emissiveSource,
-        sourceWidth: dims.w,
-        sourceHeight: dims.h,
-        sx: 0,
+        sourceWidth,
+        sourceHeight,
+        sx,
         sy,
-        sw: dims.w,
+        sw,
         sh,
         x: Math.round(drawable.wx - ax),
-        y: Math.round(drawable.wy - ay + sy),
-        width: dims.w,
+        y: Math.round(drawable.wy - ay + (split && front ? horizon : 0)),
+        width: useAtlas ? sw : dims.w,
         height: sh,
         material: materialClassId(materialName),
         elevation: finite(materialMeta.elevation, 0.82),
@@ -282,8 +374,9 @@ function recordForBuilding(renderer, drawable, sequence) {
             : 0,
         occluder: finite(materialMeta.occluder, 0.86),
         textureRevision: assets.assetVersion || null,
-        sidecarRevision: packedChannels?.revision || `${assets.assetVersion || ''}:${id}`,
+        sidecarRevision: resolved?.revision || `${assets.assetVersion || ''}:${id}`,
         sequence,
+        sourceKind: useAtlas ? 'atlas' : 'individual',
     };
 }
 
@@ -292,47 +385,106 @@ function recordForProp(renderer, drawable, sequence) {
     if (!sprite?._getCachedCanvas) return null;
     const cached = sprite._getCachedCanvas(renderer?.camera?.zoom || 1);
     if (!cached?.canvas) return null;
-    const source = cached.canvas;
     const part = drawable?.payload?.part || 'whole';
-    let sx = 0;
-    let sy = 0;
-    let sw = source.width;
-    let sh = source.height;
-    let y = cached.y;
-    if (sprite.splitForOcclusion && part !== 'whole') {
+    const cachedW = cached.canvas.width;
+    const cachedH = cached.canvas.height;
+    let destY = cached.y;
+    let destW = cachedW;
+    let destH = cachedH;
+    let splitLocalY = 0;
+    const split = Boolean(sprite.splitForOcclusion && part !== 'whole');
+    if (split) {
         const splitWorldY = sprite.y + finite(sprite.bounds?.splitY, -18);
-        const splitLocalY = Math.max(1, Math.min(source.height - 1, Math.round(splitWorldY - cached.y)));
-        if (part === 'back') {
-            sh = splitLocalY;
-        } else {
-            sy = splitLocalY;
-            sh = source.height - splitLocalY;
-            y += splitLocalY;
+        splitLocalY = Math.max(1, Math.min(cachedH - 1, Math.round(splitWorldY - cached.y)));
+        if (part === 'back') destH = splitLocalY;
+        else {
+            destY += splitLocalY;
+            destH = cachedH - splitLocalY;
         }
     }
-    const materialName = sprite.materialClass || materialForProp(sprite);
+    const assets = renderer?.assets;
+    const propId = sprite.id || '';
+    const isPilot = PILOT_PROP_IDS.includes(propId);
+    const atlasFrame = isPilot ? assets?.getAtlasFrame?.(propId) : null;
+    const atlasAlbedo = atlasFrame?.atlas ? assets?.getAtlas?.(atlasFrame.atlas, 'albedo') : null;
+    const useAtlas = Boolean(isPilot && renderer._gpuAtlasDecision?.prop && atlasAlbedo && atlasFrame?.rect);
+    let source = cached.canvas;
+    let sourceWidth = cachedW;
+    let sourceHeight = cachedH;
+    let sx = 0;
+    let sy = 0;
+    let sw = cachedW;
+    let sh = cachedH;
+    let textureKey = `prop-cache:${propId || 'procedural'}:${sprite.tileX},${sprite.tileY}`;
+    let sourceKind = 'individual';
+    if (useAtlas) {
+        source = atlasAlbedo;
+        sourceWidth = atlasAlbedo.width;
+        sourceHeight = atlasAlbedo.height;
+        const native = atlasSourceRect(atlasFrame.rect);
+        sx = native.sx;
+        sy = native.sy;
+        sw = native.sw;
+        sh = native.sh;
+        textureKey = atlasFrame.atlas;
+        sourceKind = 'atlas';
+        if (split) {
+            const splitSrc = Math.max(1, Math.min(native.sh - 1, Math.round(splitLocalY * native.sh / cachedH)));
+            if (part === 'back') sh = splitSrc;
+            else {
+                sy += splitSrc;
+                sh = native.sh - splitSrc;
+            }
+        }
+    } else if (split) {
+        if (part === 'back') sh = splitLocalY;
+        else {
+            sy = splitLocalY;
+            sh = cachedH - splitLocalY;
+        }
+    }
+    const resolved = isPilot
+        ? assets?.resolveMaterialChannels?.(propId, null, {
+            crop: !useAtlas,
+            kind: 'prop',
+            onScreen: true,
+        })
+        : null;
+    const authoredClass = isPilot && resolved && resolved.origin !== 'fallback'
+        ? assets.getMaterialMetadata?.(propId)?.materialClass
+        : null;
+    const materialName = sprite.materialClass || authoredClass || materialForProp(sprite);
     const elevated = Math.max(0, finite(sprite.bounds?.bottom) - finite(sprite.bounds?.top));
+    const materialSource = isPilot && resolved?.origin !== 'fallback' ? resolved.material : null;
+    const emissiveSource = isPilot && resolved?.origin !== 'fallback' ? resolved.emissive : null;
     return {
-        id: `prop:${sprite.id || `${sprite.tileX},${sprite.tileY}`}:${part}`,
-        stableKey: drawable.stableKey || sprite.id || `${sprite.tileX},${sprite.tileY}`,
-        textureKey: `prop-cache:${sprite.id || 'procedural'}:${sprite.tileX},${sprite.tileY}`,
+        id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}`,
+        stableKey: drawable.stableKey || propId || `${sprite.tileX},${sprite.tileY}`,
+        textureKey,
+        sidecarKey: materialSource
+            ? (useAtlas && atlasFrame?.atlas ? `${atlasFrame.atlas}:channels` : `${propId}:channels`)
+            : '',
         source,
-        sourceWidth: source.width,
-        sourceHeight: source.height,
+        materialSource,
+        emissiveSource,
+        sourceWidth,
+        sourceHeight,
         sx,
         sy,
         sw,
         sh,
         x: cached.x,
-        y,
-        width: sw,
-        height: sh,
+        y: destY,
+        width: destW,
+        height: destH,
         material: materialClassId(materialName),
         elevation: materialName === 'foliage' ? 0.64 : elevated > 70 ? 0.58 : 0.34,
-        emissive: materialName === 'fire' ? 0.35 : 0,
+        emissive: emissiveSource ? 0 : (materialName === 'fire' ? 0.35 : 0),
         occluder: elevated > 36 ? 0.58 : 0.2,
-        textureRevision: sprite._gpuCacheRevision || 0,
+        textureRevision: useAtlas ? (assets.assetVersion || 0) : (sprite._gpuCacheRevision || 0),
+        sidecarRevision: resolved?.revision || null,
         sequence,
+        sourceKind,
     };
 }
 
@@ -440,17 +592,29 @@ function drawAgentChannelAtlas(atlas, records, slots, columns, cell, channel) {
         ctx.clearRect(slotX, slotY, cell, cell);
         const source = record[channel];
         if (!source) continue;
-        ctx.drawImage(
-            source,
-            record.sx,
-            record.sy,
-            record.sw,
-            record.sh,
-            slotX,
-            slotY,
-            record.sw,
-            record.sh,
-        );
+        const srcW = source.width || 0;
+        const srcH = source.height || 0;
+        if (srcW === record.sw && srcH === record.sh) {
+            ctx.drawImage(source, 0, 0, srcW, srcH, slotX, slotY, record.sw, record.sh);
+            continue;
+        }
+        if (srcW >= (record.sx || 0) + record.sw && srcH >= (record.sy || 0) + record.sh) {
+            ctx.drawImage(
+                source,
+                record.sx,
+                record.sy,
+                record.sw,
+                record.sh,
+                slotX,
+                slotY,
+                record.sw,
+                record.sh,
+            );
+            continue;
+        }
+        const ox = Math.max(0, Math.floor((record.sw - srcW) / 2));
+        const oy = Math.max(0, Math.floor((record.sh - srcH) / 2));
+        ctx.drawImage(source, 0, 0, srcW, srcH, slotX + ox, slotY + oy, srcW, srcH);
     }
 }
 
@@ -620,7 +784,100 @@ export function packGpuAgentFrameAtlas(renderer, records) {
     return records;
 }
 
+function uniqueAssetBytes(assets, id) {
+    const dims = assets?.getDims?.(id);
+    if (dims) return Math.max(0, dims.w) * Math.max(0, dims.h) * 4;
+    const image = assets?.get?.(id);
+    return Math.max(0, image?.width || 0) * Math.max(0, image?.height || 0) * 4;
+}
+
+function decideAtlasCategories(renderer, drawables = []) {
+    const assets = renderer?.assets;
+    const atlas = assets?.getAtlas?.('world-pilot', 'albedo');
+    const atlasBytes = atlas ? atlas.width * atlas.height * 4 : 0;
+    const buildings = new Map();
+    const props = new Map();
+    for (const drawable of drawables || []) {
+        if (drawable.kind?.startsWith?.('building')) {
+            const id = drawable.payload?.entry?.id || drawable.entry?.id;
+            if (!id || buildings.has(id) || !assets?.getAtlasFrame?.(id)) continue;
+            buildings.set(id, uniqueAssetBytes(assets, id));
+        } else if (drawable.kind?.startsWith?.('prop')) {
+            const sprite = drawable.payload?.sprite || drawable.sprite;
+            const id = sprite?.id;
+            if (!id || !PILOT_PROP_IDS.includes(id) || props.has(id) || !assets?.getAtlasFrame?.(id)) continue;
+            props.set(id, uniqueAssetBytes(assets, id));
+        }
+    }
+    const atlasResident = Boolean(renderer._gpuAtlasResident);
+    const building = shouldUseAtlasForCategory({
+        category: 'building',
+        atlasBytes,
+        individualBytes: [...buildings.values()].reduce((sum, bytes) => sum + bytes, 0),
+        recordCount: buildings.size,
+        atlasResident,
+    });
+    const prop = shouldUseAtlasForCategory({
+        category: 'prop',
+        atlasBytes,
+        individualBytes: [...props.values()].reduce((sum, bytes) => sum + bytes, 0),
+        recordCount: props.size,
+        atlasResident: atlasResident || building,
+    });
+    if (building || prop) renderer._gpuAtlasResident = true;
+    return {
+        building,
+        prop,
+        atlasBytes,
+        buildingIds: buildings.size,
+        propIds: props.size,
+        buildingBytes: [...buildings.values()].reduce((sum, bytes) => sum + bytes, 0),
+        propBytes: [...props.values()].reduce((sum, bytes) => sum + bytes, 0),
+    };
+}
+
+function sourceKindCensus(records = [], decision = {}) {
+    let atlasRecords = 0;
+    let individualRecords = 0;
+    let uploadBytesEstimate = 0;
+    const seenTextures = new Set();
+    for (const record of records) {
+        const kind = record.sourceKind
+            || (String(record.textureKey || '').startsWith('world-pilot') || record.textureKey === 'world-pilot'
+                ? 'atlas'
+                : 'individual');
+        if (kind === 'atlas') atlasRecords += 1;
+        else individualRecords += 1;
+        const key = record.textureKey || record.id;
+        if (seenTextures.has(key)) continue;
+        seenTextures.add(key);
+        uploadBytesEstimate += Math.max(0, record.sourceWidth || 0) * Math.max(0, record.sourceHeight || 0) * 4;
+        if (record.materialSource && record.materialSource !== record.source) {
+            uploadBytesEstimate += Math.max(0, record.materialSource.width || 0)
+                * Math.max(0, record.materialSource.height || 0) * 4;
+        }
+        if (record.emissiveSource && record.emissiveSource !== record.source) {
+            uploadBytesEstimate += Math.max(0, record.emissiveSource.width || 0)
+                * Math.max(0, record.emissiveSource.height || 0) * 4;
+        }
+    }
+    return {
+        atlasRecords,
+        individualRecords,
+        uploadBytesEstimate,
+        batchCount: seenTextures.size,
+        categories: {
+            building: decision.building ? 'atlas' : 'individual',
+            prop: decision.prop ? 'atlas' : 'individual',
+            terrain: 'cache',
+            agent: 'frame-atlas',
+        },
+    };
+}
+
 export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
+    const decision = decideAtlasCategories(renderer, drawables);
+    if (renderer) renderer._gpuAtlasDecision = decision;
     const records = [];
     const terrain = recordForTerrain(renderer);
     if (terrain) records.push(terrain);
@@ -648,7 +905,12 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     const sceneRecords = records.filter(record => (
         record.id !== 'terrain:static' && !String(record.id || '').startsWith('ground:')
     ));
-    return [...terrainRecords, ...groundRecords, ...sceneRecords];
+    const ordered = [...terrainRecords, ...groundRecords, ...sceneRecords];
+    if (renderer) {
+        renderer._gpuMaterialPacketDiagnostics = sourceKindCensus(ordered, decision);
+        renderer._gpuMaterialPacketDiagnostics.terrainOrigin = renderer._gpuTerrainMaterialOrigin || 'procedural';
+    }
+    return ordered;
 }
 
 export function gpuMaterialNameForBuilding(type) {

@@ -1,5 +1,6 @@
 import { AgentStatus } from '../../domain/value-objects/AgentStatus.js';
 import { WORLD_BODY_FONT } from '../../config/theme.js';
+import { agentFrameKeyFromCell } from './AssetManager.js';
 import { gpuMaterialNameForProvider } from './gpu/GpuSceneBuilder.js';
 import { compactIncidentMark, drawCompactIncidentMark } from './AgentSprite.js';
 
@@ -135,11 +136,25 @@ export class AgentGpuOverlayRenderer {
         const padded = pad ? cellSize + pad * 2 : 0;
         const col = pad ? Math.floor(cell.sx / cellSize) : 0;
         const row = pad ? Math.floor(cell.sy / cellSize) : 0;
-        const materialSource = (pad ? host._gpuEquippedMaterialSheet : null)
+        const frameKey = agentFrameKeyFromCell(cell);
+        const equippedMaterial = pad ? host._gpuEquippedMaterialSheet : null;
+        const equippedEmissive = pad ? host._gpuEquippedEmissiveSheet : null;
+        const resolved = (equippedMaterial || equippedEmissive)
+            ? null
+            : host.assets?.resolveMaterialChannels?.(spriteId, frameKey, {
+                kind: 'agent',
+                status,
+                selected: host.selected,
+                onScreen: true,
+            });
+        const resolvedReady = resolved?.ready && resolved.origin !== 'fallback';
+        const materialSource = equippedMaterial
+            || (resolvedReady ? resolved.material : null)
             || (pad ? null : host.assets?.getSidecar?.(spriteId, 'material')
                 || host.assets?.getMaterialSidecar?.(spriteId, 'material'))
             || null;
-        const emissiveSource = (pad ? host._gpuEquippedEmissiveSheet : null)
+        const emissiveSource = equippedEmissive
+            || (resolvedReady ? resolved.emissive : null)
             || (pad ? null : host.assets?.getSidecar?.(spriteId, 'emissive')
                 || host.assets?.getMaterialSidecar?.(spriteId, 'emissive'))
             || null;
@@ -151,7 +166,7 @@ export class AgentGpuOverlayRenderer {
             source,
             materialSource,
             emissiveSource,
-            channelRevision: host.assets?.assetVersion || null,
+            channelRevision: resolved?.revision || host.assets?.assetVersion || null,
             sourceWidth: source.width,
             sourceHeight: source.height,
             sx: pad ? col * padded : cell.sx,
@@ -178,7 +193,7 @@ export class AgentGpuOverlayRenderer {
             // The equipped-sheet key folds in the asset version, so a weapon
             // asset arriving after a fallback-vector bake re-uploads the sheet.
             textureRevision: host._gpuEquippedSheetKey || profileKey,
-            sidecarRevision: host.assets?.assetVersion || null,
+            sidecarRevision: resolved?.revision || host.assets?.assetVersion || null,
             contentTopY,
             frameGeometry,
         };

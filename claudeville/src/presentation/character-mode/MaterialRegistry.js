@@ -201,6 +201,53 @@ export function materialDebugDescriptor(metadata, availableChannels = {}) {
     };
 }
 
+// Authored wetness/reflection, fire forced to zero. GPU weather reads this
+// table so timber and earth darken in rain without a plastic universal shine.
+export const MATERIAL_WEATHER_RESPONSE = Object.freeze(Object.fromEntries(
+    MATERIAL_CLASS_NAMES.map((name) => {
+        const authored = MATERIAL_PROFILES[name] || MATERIAL_PROFILES.unlit;
+        const fire = name === 'fire';
+        return [name, Object.freeze({
+            name,
+            id: MATERIAL_CLASS_IDS[name],
+            wetness: fire ? 0 : clamp01(authored.wetness),
+            reflection: fire ? 0 : clamp01(authored.reflection),
+        })];
+    }),
+));
+
+export function materialWeatherResponseFor(value) {
+    return MATERIAL_WEATHER_RESPONSE[normalizeMaterialClass(value)];
+}
+
+export function glslMaterialWeatherFunctions() {
+    const wetnessMixes = [];
+    const reflectionMixes = [];
+    for (const row of Object.values(MATERIAL_WEATHER_RESPONSE)) {
+        if (row.wetness > 0) {
+            wetnessMixes.push(
+                `    value = mix(value, ${row.wetness.toFixed(4)}, materialNear(material, ${row.id}.0));`,
+            );
+        }
+        if (row.reflection > 0) {
+            reflectionMixes.push(
+                `    value = mix(value, ${row.reflection.toFixed(4)}, materialNear(material, ${row.id}.0));`,
+            );
+        }
+    }
+    return `float materialWetness(float material) {
+    float value = 0.0;
+${wetnessMixes.join('\n')}
+    return value;
+}
+
+float materialReflection(float material) {
+    float value = 0.0;
+${reflectionMixes.join('\n')}
+    return value;
+}`;
+}
+
 function profile(name, values) {
     return Object.freeze({
         name,

@@ -37,6 +37,8 @@ const SNOW_MAX_FLAKES = 420;
 const SNOW_MIN_FLAKES = 24;
 const FOG_MAX_BANDS = 9;
 const FOG_MIN_BANDS = 3;
+// Aerial fog only. Spatial ground haze is WorldFrameRenderer's field.
+export const FOG_BAND_Y_RANGE = Object.freeze({ min: 0.10, max: 0.40 });
 
 const RAIN_SPLASH_SPRITE_ID = 'atmosphere.rain.splash';
 const RAIN_RIPPLE_SPRITE_ID = 'atmosphere.water.ripple.rain';
@@ -179,7 +181,7 @@ export class WeatherRenderer {
         );
         profileMark?.('weather-wash');
 
-        if (fogActive) {
+        if (fogActive && this._allowEmbellishment) {
             this._drawFogBands(ctx, canvas, fogIntensity, phaseMs, seed, particleEnabled);
         }
         profileMark?.('weather-fog-bands');
@@ -197,7 +199,7 @@ export class WeatherRenderer {
             if (storm && particleEnabled) {
                 this._drawStormFlash(ctx, canvas, Math.max(weather.intensity, precipitation) * legibility.flash, seed, weather.cause);
             }
-        } else if (weather.type === 'overcast' && fog <= 0.04) {
+        } else if (this._allowEmbellishment && weather.type === 'overcast' && fog <= 0.04) {
             this._drawFogBands(ctx, canvas, weather.intensity * 0.34, phaseMs, seed, particleEnabled);
         }
         profileMark?.('weather-precipitation');
@@ -881,7 +883,8 @@ export class WeatherRenderer {
             const bandSeed = i * 97;
             const bandHeight = 18 + random01(seed, bandSeed + 11) * 42;
             const lowerBias = Math.pow(random01(seed, bandSeed + 23), 0.56);
-            const yBase = canvas.height * (0.42 + lowerBias * 0.52);
+            const yBase = canvas.height * (FOG_BAND_Y_RANGE.min
+                + lowerBias * (FOG_BAND_Y_RANGE.max - FOG_BAND_Y_RANGE.min));
             const y = Math.round(yBase + Math.sin(i * 1.7 + phaseMs * 0.0008) * (particleEnabled ? 5 : 0));
             const width = canvas.width * (0.58 + random01(seed, bandSeed + 37) * 0.56);
             const xDrift = drift * (0.32 + random01(seed, bandSeed + 41) * 0.52);

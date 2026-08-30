@@ -12,6 +12,8 @@ import {
     createPostFxLadder,
     POST_FX_LEVELS,
 } from '../postfx/PostFxLadder.js';
+import { glslMaterialWeatherFunctions } from '../MaterialRegistry.js';
+import { growTypedArray } from '../AssetManager.js';
 
 const MAX_LIGHTS = 16;
 const VERTEX_FLOATS = 8;
@@ -109,20 +111,20 @@ float occlusionBetween(vec2 fromPx, vec2 toPx, float elevation) {
     return blocked;
 }
 
+${glslMaterialWeatherFunctions()}
+
 vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
     float rain = u_weather.x;
-    float wettable = max(
-        max(materialNear(material, 1.0), materialNear(material, 3.0)),
-        max(materialNear(material, 7.0), materialNear(material, 8.0))
-    );
+    float wetness = materialWetness(material);
+    float reflection = materialReflection(material);
     float foliage = materialNear(material, 4.0);
     float phase = u_motionScale <= 0.0 ? 0.37 : u_time * 0.001 * u_motionScale;
     float ordered = mod(floor(px.x) + 2.0 * floor(px.y), 4.0) / 3.0;
-    float wet = rain * wettable;
+    float wet = rain * wetness;
     color *= mix(1.0, 0.80, wet);
     color = mix(color, color * vec3(0.82, 0.94, 1.08), wet * 0.24);
     float glint = step(0.86, fract((px.x + px.y * 0.5) * 0.031 + phase * 0.07 + ordered * 0.08));
-    color += vec3(0.22, 0.30, 0.34) * glint * wet * 0.16;
+    color += vec3(0.22, 0.30, 0.34) * glint * wet * reflection * 0.16;
     color = mix(color, color * vec3(0.86, 0.94, 0.82), rain * foliage * 0.12);
     return color;
 }
@@ -412,6 +414,27 @@ export class GpuWorldRenderer {
         this._frameUploadMs = 0;
         this._lastRenderAtMs = null;
         this._textureEntries = new Map();
+        this._vertexScratch = new Float32Array(64);
+        this._vertexScratchUsed = 0;
+        this._lightScratch = new Float32Array(MAX_LIGHTS * 4);
+        this._lightColorScratch = new Float32Array(MAX_LIGHTS * 4);
+        this._occlusionRecords = [];
+        this._occlusionBatch = {
+            key: '',
+            source: null,
+            materialSource: null,
+            emissiveSource: null,
+            textureKey: '',
+            sidecarKey: '',
+            blend: 'normal',
+            records: this._occlusionRecords,
+        };
+        this._sourceCensus = {
+            atlasRecords: 0,
+            individualRecords: 0,
+            batchCount: 0,
+            uploadBytes: 0,
+        };
         this._renderErrorLogged = false;
         this._onContextLost = event => {
             event.preventDefault();
@@ -823,7 +846,9 @@ export class GpuWorldRenderer {
     }
 
     _verticesFor(records) {
-        const vertices = new Float32Array(records.length * 6 * VERTEX_FLOATS);
+        const needed = records.length * 6 * VERTEX_FLOATS;
+        this._vertexScratch = growTypedArray(Float32Array, this._vertexScratch, needed, 64);
+        const vertices = this._vertexScratch;
         let offset = 0;
         const push = (x, y, u, v, record) => {
             vertices[offset++] = x;
@@ -851,7 +876,8 @@ export class GpuWorldRenderer {
             push(x1, y0, u1, v0, record);
             push(x1, y1, u1, v1, record);
         }
-        return vertices;
+        this._vertexScratchUsed = needed;
+        return vertices.subarray(0, needed);
     }
 
     _setCameraUniforms(uniforms, camera, scale = 1) {
@@ -899,7 +925,12 @@ export class GpuWorldRenderer {
             gl.uniform1i(uniforms.u_hasEmissiveMap, batch.emissiveSource ? 1 : 0);
         }
         if (occlusion) {
-            gl.uniform1f(uniforms.u_occluder, Math.max(...batch.records.map(record => record.occluder || 0)));
+            let occluderMax = 0;
+            for (let index = 0; index < batch.records.length; index++) {
+                const value = batch.records[index].occluder || 0;
+                if (value > occluderMax) occluderMax = value;
+            }
+            gl.uniform1f(uniforms.u_occluder, occluderMax);
         }
         gl.drawArrays(gl.TRIANGLES, 0, batch.records.length * 6);
         return batch.records.length;
@@ -916,10 +947,24 @@ export class GpuWorldRenderer {
         gl.useProgram(this.occlusionProgram);
         this._setCameraUniforms(this.occlusionUniforms, camera, OCCLUSION_SCALE);
         gl.uniform2f(this.occlusionUniforms.u_resolution, target.width, target.height);
+        const occluding = this._occlusionRecords;
+        const packet = this._occlusionBatch;
         for (const batch of batches) {
-            const occluding = batch.records.filter(record => record.occluder > 0 || record.elevation > 0.05);
+            occluding.length = 0;
+            for (let index = 0; index < batch.records.length; index++) {
+                const record = batch.records[index];
+                if (record.occluder > 0 || record.elevation > 0.05) occluding.push(record);
+            }
             if (!occluding.length) continue;
-            this._bindBatch(this.occlusionProgram, this.occlusionUniforms, { ...batch, records: occluding }, { occlusion: true });
+            packet.key = batch.key;
+            packet.source = batch.source;
+            packet.materialSource = batch.materialSource;
+            packet.emissiveSource = batch.emissiveSource;
+            packet.textureKey = batch.textureKey;
+            packet.sidecarKey = batch.sidecarKey;
+            packet.blend = batch.blend;
+            packet.records = occluding;
+            this._bindBatch(this.occlusionProgram, this.occlusionUniforms, packet, { occlusion: true });
         }
     }
 
@@ -970,8 +1015,10 @@ export class GpuWorldRenderer {
                 ? 10
                 : MAX_LIGHTS;
         const lights = clampGpuLights(feed.lights, lightLimit);
-        const lightValues = new Float32Array(MAX_LIGHTS * 4);
-        const lightColors = new Float32Array(MAX_LIGHTS * 4);
+        const lightValues = this._lightScratch;
+        const lightColors = this._lightColorScratch;
+        lightValues.fill(0);
+        lightColors.fill(0);
         for (let index = 0; index < lights.length; index++) {
             const light = lights[index];
             const color = gpuLightColorForShader(light, [1, 0.78, 0.42]);
@@ -1089,6 +1136,18 @@ export class GpuWorldRenderer {
             this._ensureTargets();
             const batches = buildStableGpuBatches(records);
             if (!batches.length) return false;
+            let atlasRecords = 0;
+            let individualRecords = 0;
+            for (let index = 0; index < records.length; index++) {
+                if (records[index]?.sourceKind === 'atlas') atlasRecords += 1;
+                else individualRecords += 1;
+            }
+            this._sourceCensus = {
+                atlasRecords,
+                individualRecords,
+                batchCount: batches.length,
+                uploadBytes: this.uploadBytes,
+            };
             gl.bindVertexArray(this.vao);
             gl.enable(gl.BLEND);
             gl.disable(gl.DEPTH_TEST);
@@ -1193,6 +1252,10 @@ export class GpuWorldRenderer {
             qualityTransitionAtMs: quality.lastTransitionAtMs,
             qualityTransitionMetrics: quality.lastTransitionMetrics,
             resources: this.getResourceAccounting(),
+            atlasRecords: this._sourceCensus?.atlasRecords || 0,
+            individualRecords: this._sourceCensus?.individualRecords || 0,
+            sourceBatchCount: this._sourceCensus?.batchCount || this.batches,
+            sourceUploadBytes: this._sourceCensus?.uploadBytes || this.uploadBytes,
         };
     }
 
