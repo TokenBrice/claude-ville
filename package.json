@@ -64,7 +64,7 @@
     "vendor:refresh-js-yaml": "node scripts/vendor/refresh-js-yaml.mjs"
   },
   "devDependencies": {
-    "js-yaml": "^4.3.0",
+    "js-yaml": "^4.3.1",
     "pixelmatch": "^7.1.0",
     "playwright": "^1.59.1",
     "pngjs": "^7.0.0"
