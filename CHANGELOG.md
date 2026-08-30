@@ -2,6 +2,12 @@
 
 ---
 
+## v0.35.0.1 · Aug 30, 2026 — Hotfix
+
+- **js-yaml 4.3.0 → 4.3.1** (CVE-2026-59870, quadratic CPU in `!!omap` resolution): merged the dependabot bump and refreshed the vendored browser copy at `claudeville/vendor/js-yaml.min.js`, which the dependency bump alone does not touch. Verified in-app YAML parsing against the refreshed vendor build.
+
+---
+
 ## v0.35.0 — *The Whetstone* · Aug 30, 2026
 
 Codex villagers get their weapons back under the WebGL world renderer, and every blade is held the way a blade should be.
