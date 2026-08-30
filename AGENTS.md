@@ -64,10 +64,13 @@ Match validation to what you changed:
 | Adapter discovery or relationship state | `node scripts/smoke/adapters.mjs`; `NODE_NO_WARNINGS=1 node scripts/smoke/relationship.mjs` |
 | Runtime / API behavior | `npm run dev`; then `curl http://localhost:4000/api/{providers,sessions}` and confirm browser console |
 | Anything under `src/` | Open `http://localhost:4000`, test World + Dashboard, resize, agent select/deselect |
+| Pre-push release gate | `npm run gate:release`; package.json promises Node `>=18`, but the gate runs only on the developer's local Node version |
 | Sprite assets or `manifest.yaml` | `npm run sprites:audit-refresh`; for visuals, `sprites:capture-fresh` then `sprites:visual-diff` |
 | World building or terrain config | `npm run world:validate-buildings`; `npm run world:validate-terrain` |
 | Root agent docs | parity must hold: `diff <(tail -n +3 CLAUDE.md) <(tail -n +3 AGENTS.md)` empty |
 | Docs-only | diff review + `git status --short` |
+
+Browser and visual verification remain MANUAL because there is no browser or component test runner; `npm run gate:release` does not change that.
 
 First-hour failure modes: [`docs/troubleshooting.md`](docs/troubleshooting.md). Load-bearing constraints (port 4000, hand-written WebSocket, static pricing, polling cadence): [`docs/design-decisions.md`](docs/design-decisions.md).
 

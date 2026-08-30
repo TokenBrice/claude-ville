@@ -1,7 +1,7 @@
 # scripts/smoke/
 
 Deterministic smoke checks against fixture data. The project has no test
-runner by design; these scripts provide minimum confidence for two critical
+runner by design; these scripts provide minimum confidence for critical
 paths and are intended to be run by hand before risky merges.
 
 They are **not** a replacement for a test runner.
@@ -27,6 +27,9 @@ They are **not** a replacement for a test runner.
   grid for uniqueness, walkability, and reachability from the village gate.
 - `server-security.mjs` — Starts an isolated server and verifies loopback-only
   binding, Host/Origin policy, WebSocket handshakes, and frame validation.
+- `boot-contract.mjs` — Starts the production server as an isolated child on an
+  OS-assigned port with a temporary HOME, then verifies the HTML route, JSON
+  APIs, WebSocket snapshot, delta, and resync contract.
 - `ui-remediation.mjs` — Exercises session-failure recovery, selection races,
   keyboard controls, modal focus containment, and storage failure fallback.
 
@@ -37,6 +40,7 @@ node scripts/smoke/adapters.mjs
 node scripts/smoke/relationship.mjs
 node scripts/smoke/world-visit-paths.mjs
 node scripts/smoke/server-security.mjs
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/boot-contract.mjs
 node scripts/smoke/ui-remediation.mjs
 ```
 

@@ -42,6 +42,7 @@
     "test:unit": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test \"scripts/tests/*.test.mjs\"",
     "test:e2e:replay": "node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/r1-18.e2e-replay.mjs",
     "validate:quick": "npm run check:server && npm run check:adapters && npm run check:services && npm run check:frontend-syntax && npm run check:scripts && npm run check:git-events && npm run check:adapter-fixtures && npm run check:theme-tokens && npm run test:unit && npm run sprites:audit-ids",
+    "gate:release": "npm run validate:quick && npm run test:e2e:replay && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/server-security.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/server-fatal.mjs && node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/smoke/boot-contract.mjs",
     "sprites:audit-ids": "node scripts/sprites/manifest-id-audit.mjs",
     "sprites:audit-refresh": "sh -c 'npm run sprites:audit-ids; ids=$?; npm run sprites:validate; manifest=$?; exit $((ids || manifest))'",
     "sprites:plan": "node scripts/sprites/plan.mjs",
