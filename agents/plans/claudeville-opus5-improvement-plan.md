@@ -1,6 +1,6 @@
 # ClaudeVille improvement plan — Opus 5
 
-**Status:** `proposed — not started`
+**Status:** `executed` — this header previously read `proposed — not started`, which was stale. Evidence: this document's own execution record and research verdicts below, `scripts/tests/r1-*`, `r2-*`, `r3-*`, `r4-*`, `w4-*`, `w5-*` (66 test files), and `.github/workflows/ci.yml`. Corrected 2026-08-30.
 
 **Source:** Five parallel research sweeps (visual/rendering, agent model/simulation, sound, features/UX, architecture/engineering health) run 2026-08-25 against the baseline below.
 

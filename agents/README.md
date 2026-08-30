@@ -17,7 +17,8 @@ Statuses below are the statuses recorded in the artifacts themselves.
 | Artifact | Status | Purpose |
 | --- | --- | --- |
 | [`plans/claudeville-comprehensive-remediation-plan.md`](plans/claudeville-comprehensive-remediation-plan.md) | `implemented and verified` | Comprehensive remediation plan and verification record. |
-| [`plans/claudeville-opus5-improvement-plan.md`](plans/claudeville-opus5-improvement-plan.md) | `proposed — not started` | Opus 5 improvement plan and round assignments. |
+| [`plans/claudeville-council-enchantment-plan.md`](plans/claudeville-council-enchantment-plan.md) | `proposed — not started` | Council of Six enchantment plan: 15 consolidated items, cross-item contracts, and wave sequencing against `v0.35.0.1`. |
+| [`plans/claudeville-opus5-improvement-plan.md`](plans/claudeville-opus5-improvement-plan.md) | `executed` | Opus 5 improvement plan, round assignments, execution record, and Wave 4 research verdicts. Its header formerly read `proposed — not started`; that was stale and was corrected 2026-08-30. |
 | [`plans/claudeville-post-oom-reliability-performance-plan.md`](plans/claudeville-post-oom-reliability-performance-plan.md) | `implemented and release-verified` | Post-OOM reliability and performance plan. |
 | [`plans/claudeville-semantic-diorama-rendering-plan.md`](plans/claudeville-semantic-diorama-rendering-plan.md) | `implemented and release-verified for v0.33.0` | Semantic diorama rendering plan and release record. |
 | [`plans/open-followups.md`](plans/open-followups.md) | `live checklist` | Active ledger of open, deferred, conditional, and already-landed follow-ups. |
