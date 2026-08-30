@@ -2,6 +2,23 @@
 
 ---
 
+## v0.35.0 — *The Whetstone* · Aug 30, 2026
+
+Codex villagers get their weapons back under the WebGL world renderer, and every blade is held the way a blade should be.
+
+**Weapons return to the GPU world**
+- **Runtime equipment is baked into the GPU sprite sheet.** The WebGL renderer samples villager bodies from a packed sheet texture, so the codex weapons composited per-frame by the Canvas path (wrench, runeblade, dawnblade, crescent saber, earthbreaker, greatswords, heavy armor) never reached the screen. Each sheet cell now bakes back-layer equipment, body, and front-layer equipment with the exact Canvas geometry, preserving behind-the-body carry on away-facing directions and full lighting/grade on the weapon.
+- **Blade tips are never truncated.** Cells in the equipped sheet carry 24px of padding per side — an upright dawnblade or polearm tip reaches well past the 92px body cell — and the GPU record's UVs and on-screen quad grow to match. Material/emissive sidecars are re-laid onto the same padded grid so their channels stay aligned.
+- **Late-loading weapon art swaps in.** The composed sheet keys on the asset version, so a weapon sprite arriving after a fallback-vector bake rebuilds the sheet and re-uploads the texture.
+
+**Weapons sit right in the hand**
+- **Held blades stand near-upright.** Hand-held weapon lean is softened (up to −0.38 rad down to −0.20) so long sabers read as gripped swords instead of shafts tilted across the villager's head. Applies identically to the Canvas and WebGL paths.
+
+**Kept lean under a swarm**
+- **Same-profile villagers share one equipped sheet.** Composed sheets (albedo plus padded sidecars) live in a bounded shared cache — a 20-agent audit swarm of one model costs a single ~6 MB sheet, not one per villager — and the cache empties with the other shared sprite caches on renderer release.
+
+---
+
 ## v0.34.2 — *The Golden Cord* · Aug 26, 2026
 
 Advisors stop wandering the village as anonymous strangers: the counsel bond between an agent and its advisor is now a visible, living relationship.

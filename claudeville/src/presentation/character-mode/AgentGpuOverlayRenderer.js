@@ -113,11 +113,23 @@ export class AgentGpuOverlayRenderer {
         }
         const source = host._gpuBaseSpriteCanvas || host.spriteCanvas;
         const status = host.agent?.status;
-        const materialSource = host.assets?.getSidecar?.(spriteId, 'material')
-            || host.assets?.getMaterialSidecar?.(spriteId, 'material')
+        // Equipped codex sheets are re-laid on a padded cell grid so baked
+        // blade tips survive past the 92px body cell; remap the cell UVs and
+        // grow the on-screen quad by the same padding. Sidecars are padded
+        // copies built alongside the albedo so their UVs stay aligned.
+        const layout = host._gpuEquippedSheetLayout;
+        const pad = layout && source === host._gpuBaseSpriteCanvas ? layout.pad : 0;
+        const cellSize = pad ? layout.cellSize : 0;
+        const padded = pad ? cellSize + pad * 2 : 0;
+        const col = pad ? Math.floor(cell.sx / cellSize) : 0;
+        const row = pad ? Math.floor(cell.sy / cellSize) : 0;
+        const materialSource = (pad ? host._gpuEquippedMaterialSheet : null)
+            || (pad ? null : host.assets?.getSidecar?.(spriteId, 'material')
+                || host.assets?.getMaterialSidecar?.(spriteId, 'material'))
             || null;
-        const emissiveSource = host.assets?.getSidecar?.(spriteId, 'emissive')
-            || host.assets?.getMaterialSidecar?.(spriteId, 'emissive')
+        const emissiveSource = (pad ? host._gpuEquippedEmissiveSheet : null)
+            || (pad ? null : host.assets?.getSidecar?.(spriteId, 'emissive')
+                || host.assets?.getMaterialSidecar?.(spriteId, 'emissive'))
             || null;
         host._gpuFrameRecord = {
             id: `agent:${host.agent?.id || profileKey}`,
@@ -130,14 +142,14 @@ export class AgentGpuOverlayRenderer {
             channelRevision: host.assets?.assetVersion || null,
             sourceWidth: source.width,
             sourceHeight: source.height,
-            sx: cell.sx,
-            sy: cell.sy,
-            sw: cell.sw,
-            sh: cell.sh,
-            x: dx,
-            y: dy,
-            width: cell.sw * drawScale,
-            height: cell.sh * drawScale,
+            sx: pad ? col * padded : cell.sx,
+            sy: pad ? row * padded : cell.sy,
+            sw: pad ? padded : cell.sw,
+            sh: pad ? padded : cell.sh,
+            x: dx - pad * drawScale,
+            y: dy - pad * drawScale,
+            width: (pad ? padded : cell.sw) * drawScale,
+            height: (pad ? padded : cell.sh) * drawScale,
             alpha: host.agent?.isDeparted ? alpha * 0.58 : alpha,
             material: gpuMaterialNameForProvider(host.agent?.provider),
             elevation: 0.52,
@@ -151,7 +163,9 @@ export class AgentGpuOverlayRenderer {
                         : status === AgentStatus.WORKING
                             ? 0.08
                             : 0,
-            textureRevision: profileKey,
+            // The equipped-sheet key folds in the asset version, so a weapon
+            // asset arriving after a fallback-vector bake re-uploads the sheet.
+            textureRevision: host._gpuEquippedSheetKey || profileKey,
             sidecarRevision: host.assets?.assetVersion || null,
             contentTopY,
             frameGeometry,

@@ -165,6 +165,23 @@ const CODEX_EQUIPMENT_SCALE_STABLE_MS = 120;
 let codexEquipmentCachePixels = 0;
 let codexEquipmentRasterScale = 0;
 let codexEquipmentRasterScaleSince = 0;
+// Padding per cell side in the GPU equipped sheet: covers the tallest baked
+// weapon overhang (polearm/dawnblade tips reach ~50px past the pose anchor).
+const GPU_EQUIP_SHEET_PAD = 24;
+// Padded equipped sheets shared by every sprite of one profile (albedo +
+// padded sidecars + layout). ~48M px ≈ eight distinct armed profiles.
+const GPU_EQUIPPED_SHEET_CACHE = new Map();
+const GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT = 12;
+const GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT = 48_000_000;
+let gpuEquippedSheetCachePixels = 0;
+
+function gpuEquippedSheetEntryPixels(entry) {
+    let pixels = 0;
+    for (const canvas of [entry?.albedo, entry?.material, entry?.emissive]) {
+        pixels += (canvas?.width || 0) * (canvas?.height || 0);
+    }
+    return pixels;
+}
 // Selection-ring asset recolored per provider accent; keyed by accent color.
 const TINTED_SELECTION_RING_CACHE = new Map();
 const TINTED_SELECTION_RING_CACHE_LIMIT = 24;
@@ -357,10 +374,12 @@ export class AgentSprite {
         // incoming sprites may already reference one of these shared canvases.
         PROCESSED_SPRITE_CACHE.clear();
         CODEX_EQUIPMENT_CACHE.clear();
+        GPU_EQUIPPED_SHEET_CACHE.clear();
         TINTED_SELECTION_RING_CACHE.clear();
         TOOL_CLASSIFICATION_CACHE.clear();
         processedSpriteCachePixels = 0;
         codexEquipmentCachePixels = 0;
+        gpuEquippedSheetCachePixels = 0;
         codexEquipmentRasterScale = 0;
         codexEquipmentRasterScaleSince = 0;
     }
@@ -408,6 +427,10 @@ export class AgentSprite {
         // snapping. Canvas remains authoritative for hit testing and fallback.
         this.gpuWorldEnabled = false;
         this._gpuFrameRecord = null;
+        this._gpuEquippedSheetKey = '';
+        this._gpuEquippedSheetLayout = null;
+        this._gpuEquippedMaterialSheet = null;
+        this._gpuEquippedEmissiveSheet = null;
         this.gpuOverlayRenderer = new AgentGpuOverlayRenderer(this);
         this._lastBuildingType = null;
         this._lastIntentId = null;
@@ -585,6 +608,11 @@ export class AgentSprite {
         this.spriteSheet = null;
         this._spriteProfileKey = '';
         this._gpuFrameRecord = null;
+        this._gpuBaseSpriteCanvas = null;
+        this._gpuEquippedSheetKey = '';
+        this._gpuEquippedSheetLayout = null;
+        this._gpuEquippedMaterialSheet = null;
+        this._gpuEquippedEmissiveSheet = null;
         this._nameTagLayoutCacheKey = '';
         this._nameTagLayoutCache = null;
         this._bubbleLayoutCacheKey = '';
@@ -2267,10 +2295,11 @@ export class AgentSprite {
 
         if (!this.spriteCanvas || this._spriteProfileKey !== profileKey) {
             const baseCanvas = this.compositor.spriteFor(spriteId, paletteKey, variant, accessory, teamTrim);
-            // GPU animation uses the untouched generated sheet. Canvas may
-            // scrub a baked sidearm and reconstruct equipment in front/back
-            // layers, but packing that scrubbed sheet alone creates apparent
-            // missing limbs during movement.
+            // GPU animation samples this sheet as a texture. Start from the
+            // untouched generated sheet — the scrubbed Canvas sheet alone
+            // shows missing limbs during movement — and let
+            // _syncGpuEquippedSheet replace it with an equipment-baked copy
+            // for codex classes, or WebGL villagers render empty-handed.
             this._gpuBaseSpriteCanvas = baseCanvas;
             this.spriteCanvas = this._prepareSpriteCanvas(baseCanvas, identity, profileKey);
             if (this.spriteCanvas) {
@@ -2286,6 +2315,8 @@ export class AgentSprite {
             if (archivePushed) ctx.restore();
             return;
         }
+
+        this._syncGpuEquippedSheet(identity, profileKey);
 
         // Ensure animState reflects current movement (idle when not moving).
         // Lingering departures hold a finished resting frame even if stale
@@ -3302,6 +3333,12 @@ export class AgentSprite {
     }
 
     setGpuWorldEnabled(enabled) {
+        // Force an equipped-sheet rebuild when GPU mode actually flips: the
+        // composed sheet key survives a disable/enable cycle, but
+        // _gpuBaseSpriteCanvas may have been reset to the untouched base sheet
+        // in the meantime. This setter runs every frame, so an unconditional
+        // reset would recompose the 80-cell sheet each frame.
+        if (Boolean(enabled) !== this.gpuWorldEnabled) this._gpuEquippedSheetKey = '';
         this.gpuOverlayRenderer.setEnabled(enabled);
     }
 
@@ -3315,6 +3352,134 @@ export class AgentSprite {
 
     _setGpuFrameRecord(record) {
         this.gpuOverlayRenderer.setFrameRecord(record);
+    }
+
+    // GPU-world bodies are sampled from a packed sheet texture, so the runtime
+    // codex equipment (composited per-frame around the Canvas body blit) must
+    // be baked into every cell of that sheet or WebGL villagers render
+    // empty-handed. Geometry is derived purely from cell bounds + direction,
+    // so baking at drawScale 1 reproduces the Canvas result exactly; the GPU
+    // then scales the whole cell. Each cell gets GPU_EQUIP_SHEET_PAD px of
+    // padding on every side — an upright blade tip extends well past the 92px
+    // body cell (dawnblade: ~46px above the shoulder anchor) and clipping it
+    // at the cell edge truncates the weapon on screen. Cells are still clipped
+    // to their own padded rect so a tip can never bleed into a neighbour.
+    _composeGpuEquippedSheet(identity) {
+        const sheet = this.spriteCanvas;
+        if (!sheet?.width || !sheet?.height) return null;
+        const cellSize = this.spriteSheet?.cellSize || 92;
+        const pad = GPU_EQUIP_SHEET_PAD;
+        const padded = cellSize + pad * 2;
+        const cols = Math.floor(sheet.width / cellSize);
+        const rows = Math.floor(sheet.height / cellSize);
+        const canvas = document.createElement('canvas');
+        canvas.width = cols * padded;
+        canvas.height = rows * padded;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.imageSmoothingEnabled = false;
+        for (let col = 0; col < cols; col++) {
+            const directionKey = DIRECTIONS[col] || 's';
+            for (let row = 0; row < rows; row++) {
+                const cell = { sx: col * cellSize, sy: row * cellSize, sw: cellSize, sh: cellSize };
+                const bounds = this._getCellContentBounds(cell);
+                if (!bounds) continue;
+                const frameGeometry = { dx: 0, dy: 0, bounds, drawScale: 1, cacheEquipment: false };
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(col * padded, row * padded, padded, padded);
+                ctx.clip();
+                ctx.translate(col * padded + pad, row * padded + pad);
+                this._drawCodexEquipment(ctx, identity, frameGeometry, 'back', directionKey);
+                ctx.drawImage(sheet, cell.sx, cell.sy, cellSize, cellSize, 0, 0, cellSize, cellSize);
+                this._drawCodexEquipment(ctx, identity, frameGeometry, 'front', directionKey);
+                ctx.restore();
+            }
+        }
+        return canvas;
+    }
+
+    // Re-lays an unpadded sheet-layout sidecar (material/emissive companion)
+    // into the padded cell grid so its UVs stay aligned with the equipped
+    // albedo sheet. Weapon pixels carry no channel data and fall back to the
+    // default material, matching the Canvas renderer.
+    _padSidecarSheet(source, cellSize, pad, cols, rows) {
+        if (!source?.width || !source?.height) return null;
+        const padded = cellSize + pad * 2;
+        const canvas = document.createElement('canvas');
+        canvas.width = cols * padded;
+        canvas.height = rows * padded;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return null;
+        ctx.imageSmoothingEnabled = false;
+        for (let col = 0; col < cols; col++) {
+            for (let row = 0; row < rows; row++) {
+                ctx.drawImage(
+                    source,
+                    col * cellSize, row * cellSize, cellSize, cellSize,
+                    col * padded + pad, row * padded + pad, cellSize, cellSize,
+                );
+            }
+        }
+        return canvas;
+    }
+
+    // Keeps _gpuBaseSpriteCanvas in sync with the current profile and asset
+    // version. Asset version participates so a weapon sprite arriving after a
+    // fallback-vector compose triggers a rebuild (and, via the key doubling as
+    // the record's textureRevision, a texture re-upload). Composed sheets are
+    // shared across sprites via a module-level cache — a padded sheet is
+    // ~6 MB, and audit swarms routinely field 20+ villagers of one profile.
+    _syncGpuEquippedSheet(identity, profileKey) {
+        if (!this.gpuWorldEnabled) return;
+        const equipment = this._normalizedCodexEquipment(this._runtimeCodexEquipment(identity));
+        const key = `${profileKey}|${equipment || '_'}|${this.assets?.assetVersion || 0}`;
+        if (this._gpuEquippedSheetKey === key) return;
+        this._gpuEquippedSheetKey = key;
+        this._gpuEquippedSheetLayout = null;
+        this._gpuEquippedMaterialSheet = null;
+        this._gpuEquippedEmissiveSheet = null;
+        if (!equipment) return;
+        let entry = GPU_EQUIPPED_SHEET_CACHE.get(key);
+        if (entry) {
+            // LRU refresh.
+            GPU_EQUIPPED_SHEET_CACHE.delete(key);
+            GPU_EQUIPPED_SHEET_CACHE.set(key, entry);
+        } else {
+            const composed = this._composeGpuEquippedSheet(identity);
+            if (!composed) return;
+            const cellSize = this.spriteSheet?.cellSize || 92;
+            const cols = Math.floor(this.spriteCanvas.width / cellSize);
+            const rows = Math.floor(this.spriteCanvas.height / cellSize);
+            const spriteId = identity?.spriteId || '';
+            const material = this.assets?.getSidecar?.(spriteId, 'material')
+                || this.assets?.getMaterialSidecar?.(spriteId, 'material') || null;
+            const emissive = this.assets?.getSidecar?.(spriteId, 'emissive')
+                || this.assets?.getMaterialSidecar?.(spriteId, 'emissive') || null;
+            entry = {
+                albedo: composed,
+                material: material ? this._padSidecarSheet(material, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
+                emissive: emissive ? this._padSidecarSheet(emissive, cellSize, GPU_EQUIP_SHEET_PAD, cols, rows) : null,
+                layout: { pad: GPU_EQUIP_SHEET_PAD, cellSize },
+            };
+            GPU_EQUIPPED_SHEET_CACHE.set(key, entry);
+            gpuEquippedSheetCachePixels += gpuEquippedSheetEntryPixels(entry);
+            while (
+                GPU_EQUIPPED_SHEET_CACHE.size > GPU_EQUIPPED_SHEET_CACHE_ENTRY_LIMIT
+                || gpuEquippedSheetCachePixels > GPU_EQUIPPED_SHEET_CACHE_PIXEL_LIMIT
+            ) {
+                const oldestKey = GPU_EQUIPPED_SHEET_CACHE.keys().next().value;
+                if (oldestKey == null || oldestKey === key) break;
+                const oldest = GPU_EQUIPPED_SHEET_CACHE.get(oldestKey);
+                GPU_EQUIPPED_SHEET_CACHE.delete(oldestKey);
+                gpuEquippedSheetCachePixels -= gpuEquippedSheetEntryPixels(oldest);
+            }
+            gpuEquippedSheetCachePixels = Math.max(0, gpuEquippedSheetCachePixels);
+        }
+        this._gpuBaseSpriteCanvas = entry.albedo;
+        this._gpuEquippedSheetLayout = entry.layout;
+        this._gpuEquippedMaterialSheet = entry.material;
+        this._gpuEquippedEmissiveSheet = entry.emissive;
     }
 
     _drawSpriteSilhouette(ctx, cell, dx, dy, drawScale = 1) {
@@ -3542,11 +3707,11 @@ export class AgentSprite {
         return canvas;
     }
 
-    _drawCodexEquipment(ctx, identity, frameGeometry, layer = 'front') {
+    _drawCodexEquipment(ctx, identity, frameGeometry, layer = 'front', directionOverride = null) {
         const equipment = this._normalizedCodexEquipment(this._runtimeCodexEquipment(identity));
         if (!equipment) return;
 
-        const directionKey = DIRECTIONS[this.direction] || 's';
+        const directionKey = directionOverride || DIRECTIONS[this.direction] || 's';
         const geometry = this._codexWeaponGeometry(frameGeometry, directionKey);
         const useCache = frameGeometry.cacheEquipment !== false;
         const heavyGearBaked = identity?.codexHeavyGearBaked && this.assets?.has?.(identity.spriteId);
@@ -3944,9 +4109,11 @@ export class AgentSprite {
     }
 
     _heldWeaponLeanForDirection(directionKey) {
-        if (directionKey === 'e' || directionKey === 'w') return -0.20;
-        if (directionKey === 'ne' || directionKey === 'nw') return -0.34;
-        if (directionKey === 'n') return -0.38;
+        // Kept shallow so a hand-held blade reads as gripped upright; the old
+        // -0.34/-0.38 leans tilted long sabers diagonally across the head.
+        if (directionKey === 'e' || directionKey === 'w') return -0.14;
+        if (directionKey === 'ne' || directionKey === 'nw') return -0.18;
+        if (directionKey === 'n') return -0.20;
         if (directionKey === 'se' || directionKey === 'sw') return -0.04;
         return 0.08;
     }
