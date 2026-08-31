@@ -24,7 +24,6 @@ import { isAttentionStatus } from '../../claudeville/src/domain/services/StatusR
 import { AgentStatus } from '../../claudeville/src/domain/value-objects/AgentStatus.js';
 import { sectionHealthCounts } from '../../claudeville/src/presentation/dashboard-mode/DashboardRenderer.js';
 import { operatorStatusLabel, sortAttentionAgents } from '../../claudeville/src/presentation/shared/SemanticTriage.js';
-import { attentionSegmentDescriptors } from '../../claudeville/src/presentation/shared/TopBar.js';
 
 const FIXTURE = Object.freeze([
     fixtureAgent('working', AgentStatus.WORKING, 700, 1),
@@ -57,12 +56,6 @@ function fixtureWorld() {
     const world = new World();
     world.agents = new Map(FIXTURE.map(agent => [agent.id, agent]));
     return world;
-}
-
-function keyedSegments(stats) {
-    return Object.fromEntries(
-        attentionSegmentDescriptors(stats).map(segment => [segment.key, segment.count]),
-    );
 }
 
 function provider(id, health) {
@@ -270,7 +263,6 @@ test('Wave 1 consumers agree on one seven-status partition', () => {
     const ledger = bucketCounts(FIXTURE);
     const stats = world.getStats();
     const dashboard = sectionHealthCounts(FIXTURE);
-    const topBar = keyedSegments(stats);
 
     assert.deepEqual(
         {
@@ -302,13 +294,6 @@ test('Wave 1 consumers agree on one seven-status partition', () => {
     });
     assert.equal(dashboard.errors, 1, 'blocked and rate-limited work must not count as errors');
 
-    assert.deepEqual(topBar, {
-        needsYou: ledger.needsYou,
-        errors: ledger.errors,
-        quota: ledger.quota,
-        watchlist: ledger.watchlist,
-    });
-    assert.deepEqual(Object.keys(topBar), ['needsYou', 'errors', 'quota', 'watchlist']);
 });
 
 test('attention membership and traversal agree across the ledger and resolver', () => {
@@ -344,7 +329,6 @@ test('generic waiting remains watchlist-only on every classification surface', (
     const waitingWorld = new World();
     waitingWorld.agents = new Map([[waitingAgent.id, waitingAgent]]);
     const waitingDashboard = sectionHealthCounts([waitingAgent]);
-    const waitingTopBar = keyedSegments(waitingLedger);
 
     assert.equal(ACTIONABLE_BUCKETS.includes(bucketForStatus(waitingAgent.status)), false);
     assert.equal(isAttentionStatus(waitingAgent.status), false);
@@ -357,12 +341,6 @@ test('generic waiting remains watchlist-only on every classification surface', (
         working: 0,
         watchlist: 1,
         idle: 0,
-    });
-    assert.deepEqual(waitingTopBar, {
-        needsYou: 0,
-        errors: 0,
-        quota: 0,
-        watchlist: 1,
     });
 });
 

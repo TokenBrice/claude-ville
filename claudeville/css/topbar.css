@@ -121,9 +121,7 @@
 }
 
 /* ── Shared chip base ── */
-/* Framed tags (.topbar__badge, mode + sound buttons) share one border + one
-   subtle inset shadow. No nested ::before double-border. */
-.topbar__badge,
+/* Mode and sound buttons share one border and subtle inset shadow. */
 .topbar__sound-btn,
 .topbar__mode-btn {
     border: 1px solid rgba(214, 169, 81, 0.28);
@@ -133,9 +131,7 @@
 }
 
 /* ── Shared tag base ── */
-/* The center "tags" (metrics ledger, status block, exception badges) are one
-   family: same frame, same parchment gradient, same inset shadow. Kept after
-   the chip base so the brighter tag frame wins on .topbar__badge. */
+/* The center tags (metrics ledger and status block) share one frame. */
 .topbar__tag {
     border: 1px solid rgba(236, 187, 89, 0.46);
     border-radius: 2px;
@@ -467,131 +463,6 @@
     flex-shrink: 0;
 }
 
-.topbar__badges--segmented {
-    gap: 0;
-}
-
-.topbar__badges--segmented .topbar__status {
-    margin-right: 7px;
-}
-
-/* Four compact meanings share one segmented treatment. Glyph and border
-   changes keep urgency readable without relying on hue alone. */
-.topbar__attention-segment {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    min-height: 27px;
-    padding: 4px 6px;
-    border-radius: 0;
-    color: var(--cv-text-muted);
-    white-space: nowrap;
-}
-
-button.topbar__attention-segment {
-    cursor: pointer;
-    font: inherit;
-    letter-spacing: inherit;
-}
-
-.topbar__attention-segment--needsYou {
-    border-radius: 2px 0 0 2px;
-}
-
-.topbar__attention-segment--watchlist {
-    border-radius: 0 2px 2px 0;
-}
-
-.topbar__attention-segment + .topbar__attention-segment {
-    border-left-width: 0;
-}
-
-.topbar__attention-glyph {
-    display: inline-grid;
-    place-items: center;
-    width: 12px;
-    min-width: 12px;
-    height: 12px;
-    line-height: 1;
-}
-
-.topbar__attention-count {
-    min-width: 1ch;
-    font-family: var(--font-body);
-    font-size: 12px;
-    font-variant-numeric: tabular-nums;
-    text-align: right;
-}
-
-.topbar__attention-label {
-    font-size: 9px;
-    letter-spacing: 0.35px;
-    text-transform: uppercase;
-}
-
-.topbar__attention-segment--needsYou {
-    color: var(--cv-status-waiting-user);
-    border-bottom-width: 2px;
-    font-weight: bold;
-}
-
-.topbar__attention-segment--needsYou .topbar__attention-glyph {
-    border: 1px solid currentColor;
-    border-radius: 50%;
-}
-
-.topbar__attention-segment--errors {
-    color: var(--cv-status-errored);
-    border-top-width: 2px;
-    font-weight: bold;
-}
-
-.topbar__attention-segment--errors .topbar__attention-glyph {
-    border: 1px solid currentColor;
-    border-radius: 1px;
-}
-
-.topbar__attention-segment--quota {
-    color: var(--cv-status-rate-limited);
-    border-bottom: 2px double currentColor;
-}
-
-.topbar__attention-segment--quota .topbar__attention-glyph {
-    font-weight: bold;
-    letter-spacing: -2px;
-}
-
-.topbar__attention-segment--watchlist {
-    color: var(--cv-status-waiting);
-    border-style: dashed;
-}
-
-button.topbar__attention-segment:hover {
-    color: var(--cv-gold-bright);
-    background: color-mix(in srgb, var(--cv-gold-soft) 10%, transparent);
-}
-
-button.topbar__attention-segment:active {
-    transform: translateY(1px);
-}
-
-button.topbar__attention-segment:focus-visible {
-    position: relative;
-    z-index: 1;
-    outline: 1px solid var(--cv-gold-soft);
-    outline-offset: 2px;
-}
-
-/* ── Exception badge pills (errored/attention) ── */
-.topbar__badge {
-    display: flex;
-    align-items: center;
-    gap: 4px;
-    font-size: 10px;
-    padding: 4px 8px;
-    text-shadow: 0 1px 0 rgba(0, 0, 0, 0.75);
-}
-
 .topbar__badge-dot {
     width: 6px;
     height: 6px;
@@ -647,37 +518,6 @@ button.topbar__attention-segment:focus-visible {
 
 .topbar__seg--waiting {
     color: var(--cv-status-waiting);
-}
-
-/* ── Exception badges (errored/attention) — primary tier, glyph-coded ── */
-.topbar__badge--errored {
-    color: var(--cv-status-errored);
-}
-
-.topbar__badge--attention {
-    color: var(--cv-status-rate-limited);
-}
-
-/* The attention badge is the one chip that is also a control: it jumps the
-   camera to the longest-waiting agent, so it has to read as pressable. */
-button.topbar__badge--attention {
-    cursor: pointer;
-    font: inherit;
-    letter-spacing: inherit;
-}
-
-button.topbar__badge--attention:hover {
-    color: var(--cv-gold-bright);
-    border-color: rgba(255, 229, 141, 0.6);
-}
-
-button.topbar__badge--attention:active {
-    transform: translateY(1px);
-}
-
-.topbar__badge-glyph {
-    font-weight: bold;
-    line-height: 1;
 }
 
 .topbar__right {

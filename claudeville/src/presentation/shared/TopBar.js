@@ -13,38 +13,8 @@ import {
     linkStatusText,
     snapshotAgeMs,
 } from '../../application/VillageState.js';
-import { bucketAgents } from '../../domain/services/SignalLedger.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
-
-const ATTENTION_SEGMENTS = Object.freeze([
-    { key: 'needsYou', label: 'Needs you' },
-    { key: 'errors', label: 'Errors' },
-    { key: 'quota', label: 'Quota' },
-    { key: 'watchlist', label: 'Watchlist' },
-]);
-
-function countValue(value) {
-    const number = Number(value);
-    return Number.isFinite(number) ? Math.max(0, Math.floor(number)) : null;
-}
-
-/** Pure view model for the four meanings previously collapsed into attention. */
-export function attentionSegmentDescriptors(stats = {}) {
-    const errors = countValue(stats.errors) ?? countValue(stats.errored) ?? 0;
-    const quota = countValue(stats.quota) ?? 0;
-    const watchlist = countValue(stats.watchlist) ?? countValue(stats.waiting) ?? 0;
-    const legacyAttention = countValue(stats.attention) ?? 0;
-    const knownActionable = errors + quota;
-    const needsYou = countValue(stats.needsYou) ?? Math.max(0, legacyAttention - knownActionable);
-    const counts = { needsYou, errors, quota, watchlist };
-
-    return ATTENTION_SEGMENTS.map(segment => ({
-        ...segment,
-        count: counts[segment.key],
-        ariaLabel: `${segment.label}: ${counts[segment.key]} ${counts[segment.key] === 1 ? 'agent' : 'agents'}`,
-    }));
-}
 
 const CONNECTION_REASON_COPY = Object.freeze({
     'connection-refused': 'The local session link refused the connection.',
@@ -138,14 +108,6 @@ export class TopBar {
             working: document.getElementById('badgeWorking'),
             idle: document.getElementById('badgeIdle'),
             waiting: document.getElementById('badgeWaiting'),
-            badgeErrored: document.getElementById('badgeErrored'),
-            badgeAttention: document.getElementById('badgeAttention'),
-            erroredWrap: document.getElementById('badgeErroredWrap'),
-            attentionWrap: document.getElementById('badgeAttentionWrap'),
-            quotaBadge: document.getElementById('badgeQuota'),
-            quotaBadgeWrap: document.getElementById('badgeQuotaWrap'),
-            watchlistBadge: document.getElementById('badgeWatchlist'),
-            watchlistBadgeWrap: document.getElementById('badgeWatchlistWrap'),
             connection: document.getElementById('topbarConnection'),
             version: document.querySelector('.topbar__version'),
             soundToggle: document.getElementById('topbarSoundToggle'),
@@ -187,7 +149,6 @@ export class TopBar {
             world: this.world,
         });
         this._initCinemaToggle();
-        this._prepareAttentionSegments();
         this._initAttentionControls();
         this._initChronicleButton();
         this._initSpendBreakdown();
@@ -266,24 +227,11 @@ export class TopBar {
         eventBus.on('camera:auto-camera', this._onAutoCamera);
     }
 
-    // Attention plumbing: the ATTN chip and the `A` hotkey both jump to the
-    // longest-waiting agent, and ALERTS opts into desktop notifications from a
-    // real user gesture (browsers reject permission prompts otherwise).
+    // The `A` hotkey jumps to the longest-waiting actionable agent, and ALERTS
+    // opts into desktop notifications from a real user gesture (browsers reject
+    // permission prompts otherwise).
     _initAttentionControls() {
-        if (this.els.erroredWrap) {
-            this._onErroredClick = () => {
-                const agent = bucketAgents(this.world).errors[0];
-                if (agent) eventBus.emit('agent:selected', agent);
-            };
-            this.els.erroredWrap.addEventListener('click', this._onErroredClick);
-        }
-
         if (!this.attention) return;
-
-        if (this.els.attentionWrap) {
-            this._onAttentionClick = () => this.attention.focusNext();
-            this.els.attentionWrap.addEventListener('click', this._onAttentionClick);
-        }
 
         const btn = this.els.alertsToggle;
         if (btn) {
@@ -312,89 +260,6 @@ export class TopBar {
             if (agent) event.preventDefault();
         };
         document.addEventListener('keydown', this._onAttentionKey);
-    }
-
-    _prepareAttentionSegments() {
-        const segments = [
-            {
-                key: 'needsYou',
-                wrapKey: 'attentionWrap',
-                valueKey: 'badgeAttention',
-                glyph: '?',
-                label: 'Needs you',
-            },
-            {
-                key: 'errors',
-                wrapKey: 'erroredWrap',
-                valueKey: 'badgeErrored',
-                glyph: '!',
-                label: 'Errors',
-                button: true,
-            },
-            {
-                key: 'quota',
-                wrapKey: 'quotaBadgeWrap',
-                valueKey: 'quotaBadge',
-                glyph: '||',
-                label: 'Quota',
-            },
-            {
-                key: 'watchlist',
-                wrapKey: 'watchlistBadgeWrap',
-                valueKey: 'watchlistBadge',
-                glyph: '~',
-                label: 'Watchlist',
-            },
-        ];
-        let parent = null;
-        for (const segment of segments) {
-            let wrap = this.els[segment.wrapKey];
-            const value = this.els[segment.valueKey];
-            if (!wrap || !value) continue;
-            if (segment.button && wrap.tagName !== 'BUTTON') {
-                const button = document.createElement('button');
-                for (const attribute of wrap.attributes) {
-                    button.setAttribute(attribute.name, attribute.value);
-                }
-                button.type = 'button';
-                while (wrap.firstChild) button.appendChild(wrap.firstChild);
-                wrap.replaceWith(button);
-                wrap = button;
-                this.els[segment.wrapKey] = button;
-            }
-            if (wrap.tagName === 'BUTTON') wrap.type = 'button';
-            wrap.classList.remove(
-                'topbar__badge',
-                'topbar__badge--attention',
-                'topbar__badge--errored',
-            );
-            wrap.classList.add(
-                'topbar__tag',
-                'topbar__attention-segment',
-                `topbar__attention-segment--${segment.key}`,
-            );
-            const glyph = el('span', {
-                className: 'topbar__attention-glyph',
-                text: segment.glyph,
-            });
-            glyph.setAttribute('aria-hidden', 'true');
-            replaceChildren(wrap, [
-                glyph,
-                value,
-                el('span', {
-                    className: 'topbar__attention-label',
-                    text: segment.label,
-                }),
-            ]);
-            value.classList.add('topbar__attention-count');
-            parent = parent || wrap.parentElement;
-        }
-        if (!parent) return;
-        parent.classList.add('topbar__badges--segmented');
-        for (const segment of segments) {
-            const wrap = this.els[segment.wrapKey];
-            if (wrap?.parentElement === parent) parent.appendChild(wrap);
-        }
     }
 
     _applyAlertsState(on) {
@@ -807,25 +672,7 @@ export class TopBar {
         this.els.idle.textContent = stats.idle;
         this.els.waiting.textContent = stats.waiting;
 
-        this._renderAttentionSegments(stats);
-
         this._renderActivityRail(stats);
-    }
-
-    _renderAttentionSegments(stats) {
-        const elements = {
-            needsYou: [this.els.attentionWrap, this.els.badgeAttention],
-            errors: [this.els.erroredWrap, this.els.badgeErrored],
-            quota: [this.els.quotaBadgeWrap, this.els.quotaBadge],
-            watchlist: [this.els.watchlistBadgeWrap, this.els.watchlistBadge],
-        };
-        for (const descriptor of attentionSegmentDescriptors(stats)) {
-            const [wrap, value] = elements[descriptor.key] || [];
-            if (value) value.textContent = descriptor.count;
-            if (!wrap) continue;
-            wrap.style.display = '';
-            wrap.setAttribute('aria-label', descriptor.ariaLabel);
-        }
     }
 
     // Today's observed spend, the live burn rate, and quota headroom — the
@@ -1549,12 +1396,6 @@ export class TopBar {
         }
         if (this._onVersionKeydown && this.els.version) {
             this.els.version.removeEventListener('keydown', this._onVersionKeydown);
-        }
-        if (this._onAttentionClick && this.els.attentionWrap) {
-            this.els.attentionWrap.removeEventListener('click', this._onAttentionClick);
-        }
-        if (this._onErroredClick && this.els.erroredWrap) {
-            this.els.erroredWrap.removeEventListener('click', this._onErroredClick);
         }
         if (this._onAlertsClick && this.els.alertsToggle) {
             this.els.alertsToggle.removeEventListener('click', this._onAlertsClick);
