@@ -1924,6 +1924,21 @@ export class IsometricRenderer {
         this.postFxFeed?.dispose?.();
         releaseCanvasBackingStore(this._gpuAgentFrameAtlas);
         this._gpuAgentFrameAtlas = null;
+        releaseCanvasBackingStore(this._gpuAgentMaterialAtlas);
+        this._gpuAgentMaterialAtlas = null;
+        releaseCanvasBackingStore(this._gpuAgentEmissiveAtlas);
+        this._gpuAgentEmissiveAtlas = null;
+        this._gpuAgentMaterialAtlasState = null;
+        this._gpuAgentEmissiveAtlasState = null;
+        releaseCanvasMap(this._gpuAgentAlbedoUpdateCanvases);
+        releaseCanvasMap(this._gpuAgentMaterialUpdateCanvases);
+        releaseCanvasMap(this._gpuAgentEmissiveUpdateCanvases);
+        this._gpuAgentAlbedoUpdateCanvases = null;
+        this._gpuAgentMaterialUpdateCanvases = null;
+        this._gpuAgentEmissiveUpdateCanvases = null;
+        this._gpuAgentAlbedoTextureUpdates = [];
+        this._gpuAgentMaterialTextureUpdates = [];
+        this._gpuAgentEmissiveTextureUpdates = [];
         this._gpuAgentFrameAtlasSignature = '';
         this._gpuAgentFrameAtlasRevision = 0;
         this._gpuAgentAtlasSlots?.clear?.();
@@ -10272,6 +10287,11 @@ export class IsometricRenderer {
             atmosphere: canvasPixelCount(this.atmosphereVignetteCache),
             lightGradients: canvasMapPixelCount(this.lightGradientCache),
             gpuAgentAtlas: canvasPixelCount(this._gpuAgentFrameAtlas),
+            gpuAgentMaterialAtlas: canvasPixelCount(this._gpuAgentMaterialAtlas),
+            gpuAgentEmissiveAtlas: canvasPixelCount(this._gpuAgentEmissiveAtlas),
+            gpuAgentAtlasUpdateSlots: canvasMapPixelCount(this._gpuAgentAlbedoUpdateCanvases)
+                + canvasMapPixelCount(this._gpuAgentMaterialUpdateCanvases)
+                + canvasMapPixelCount(this._gpuAgentEmissiveUpdateCanvases),
         };
         const volatilePixels = Object.values(volatile).reduce((sum, value) => sum + value, 0);
         const visibleCanvasPixels = canvasPixelCount(this.canvas);

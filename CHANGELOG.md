@@ -2,6 +2,14 @@
 
 ---
 
+## v0.36.0.1 · Aug 31, 2026 — Hotfix
+
+- **Dense villages hold the display refresh rate.** Animated agents now update only their changed albedo, material, and emissive atlas cells instead of replacing the complete packed texture. The 30-agent browser profile dropped from roughly 171 ms to 8.8 ms at the median, while the live village sustained about 65 FPS and regularly exceeded 100 FPS without shedding visual detail.
+- **Atlas channel pages stay resident.** Atlas-sourced landmarks now keep one page-scoped material/emissive source identity, eliminating repeated full-page uploads and incorrect sidecar sampling at atlas UV coordinates.
+- **The top bar is quieter.** Redundant alert-status segments were removed; the shared village counts and existing attention navigation remain authoritative.
+
+---
+
 ## v0.36.0 — *The Common Clock* · Aug 31, 2026
 
 The village stops disagreeing with itself. One vocabulary for its own state, one clock for its motion, one measurement for its cost — and celebrations it has actually earned.

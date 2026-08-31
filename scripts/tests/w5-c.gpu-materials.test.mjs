@@ -13,6 +13,7 @@ import {
     gpuMaterialNameForProvider,
     packGpuAgentFrameAtlas,
 } from '../../claudeville/src/presentation/character-mode/gpu/GpuSceneBuilder.js';
+import { GpuWorldRenderer } from '../../claudeville/src/presentation/character-mode/gpu/GpuWorldRenderer.js';
 import {
     createGpuTimingMetricsScratch,
     materialClassId,
@@ -112,6 +113,102 @@ test('agent atlas packing preserves matching authored material and emissive fram
         if (previousDocument === undefined) delete globalThis.document;
         else globalThis.document = previousDocument;
     }
+});
+
+test('agent atlas revisions expose changed slots for incremental GPU uploads', () => {
+    const previousDocument = globalThis.document;
+    globalThis.document = { createElement: () => fakeCanvas() };
+    try {
+        const source = fakeCanvas(16, 16);
+        const record = {
+            id: 'agent:codex-1',
+            textureKey: 'agent-sheet:codex',
+            source,
+            sourceWidth: 16,
+            sourceHeight: 16,
+            sx: 0,
+            sy: 0,
+            sw: 8,
+            sh: 8,
+            width: 8,
+            height: 8,
+            textureRevision: 'frame-1',
+        };
+        const renderer = { agentSprites: new Map([['codex-1', {}]]) };
+        packGpuAgentFrameAtlas(renderer, [record]);
+
+        renderer._gpuAgentAtlasUpdatedAt = -Infinity;
+        record.source = source;
+        record.sx = 8;
+        record.textureRevision = 'frame-2';
+        const [packed] = packGpuAgentFrameAtlas(renderer, [record]);
+
+        assert.equal(packed.textureUpdates.length, 1);
+        assert.deepEqual(
+            { x: packed.textureUpdates[0].x, y: packed.textureUpdates[0].y },
+            { x: 0, y: 0 },
+        );
+        assert.equal(packed.textureUpdates[0].source.width, 8);
+        assert.equal(packed.textureUpdates[0].source.height, 8);
+        assert.notEqual(packed.textureUpdates[0].source, renderer._gpuAgentFrameAtlas);
+    } finally {
+        if (previousDocument === undefined) delete globalThis.document;
+        else globalThis.document = previousDocument;
+    }
+});
+
+test('GPU textures use slot uploads after allocating atlas storage', () => {
+    const calls = { full: 0, sub: 0 };
+    const gl = {
+        TEXTURE_2D: 1,
+        TEXTURE_MIN_FILTER: 2,
+        TEXTURE_MAG_FILTER: 3,
+        TEXTURE_WRAP_S: 4,
+        TEXTURE_WRAP_T: 5,
+        NEAREST: 6,
+        CLAMP_TO_EDGE: 7,
+        UNPACK_PREMULTIPLY_ALPHA_WEBGL: 8,
+        UNPACK_FLIP_Y_WEBGL: 9,
+        RGBA: 10,
+        UNSIGNED_BYTE: 11,
+        createTexture: () => ({}),
+        bindTexture() {},
+        texParameteri() {},
+        pixelStorei() {},
+        texImage2D() { calls.full++; },
+        texSubImage2D() { calls.sub++; },
+    };
+    const renderer = Object.create(GpuWorldRenderer.prototype);
+    Object.assign(renderer, {
+        gl,
+        frames: 0,
+        uploads: 0,
+        uploadBytes: 0,
+        _frameUploadMs: 0,
+        _textureEntries: new Map(),
+        _updateTextureBytes() {},
+    });
+    const atlas = fakeCanvas(64, 64);
+    const slot = fakeCanvas(8, 8);
+
+    renderer._textureFor('agent-frame-atlas', atlas, 1);
+    renderer._textureFor('agent-frame-atlas', atlas, 2, [{
+        x: 8,
+        y: 16,
+        width: 8,
+        height: 8,
+        source: slot,
+    }]);
+    renderer._textureFor('agent-frame-atlas', atlas, 3, [{
+        x: 60,
+        y: 60,
+        width: 8,
+        height: 8,
+        source: slot,
+    }]);
+
+    assert.deepEqual(calls, { full: 2, sub: 1 });
+    assert.equal(renderer.uploadBytes, (64 * 64 * 4 * 2) + (8 * 8 * 4));
 });
 
 test('district lighting selects contract bands while district haze remains independently feathered', () => {

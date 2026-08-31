@@ -609,6 +609,34 @@ function ensureAgentChannelAtlas(renderer, property, width, height, state) {
     return state;
 }
 
+function drawAgentChannelFrame(ctx, record, channel, x, y) {
+    const source = record[channel];
+    if (!source) return;
+    const srcW = source.width || 0;
+    const srcH = source.height || 0;
+    if (srcW === record.sw && srcH === record.sh) {
+        ctx.drawImage(source, 0, 0, srcW, srcH, x, y, record.sw, record.sh);
+        return;
+    }
+    if (srcW >= (record.sx || 0) + record.sw && srcH >= (record.sy || 0) + record.sh) {
+        ctx.drawImage(
+            source,
+            record.sx,
+            record.sy,
+            record.sw,
+            record.sh,
+            x,
+            y,
+            record.sw,
+            record.sh,
+        );
+        return;
+    }
+    const ox = Math.max(0, Math.floor((record.sw - srcW) / 2));
+    const oy = Math.max(0, Math.floor((record.sh - srcH) / 2));
+    ctx.drawImage(source, 0, 0, srcW, srcH, x + ox, y + oy, srcW, srcH);
+}
+
 function drawAgentChannelAtlas(atlas, records, slots, columns, cell, channel) {
     if (!atlas) return;
     const ctx = atlas.getContext('2d', { alpha: true });
@@ -619,32 +647,44 @@ function drawAgentChannelAtlas(atlas, records, slots, columns, cell, channel) {
         const slotX = (slot % columns) * cell;
         const slotY = Math.floor(slot / columns) * cell;
         ctx.clearRect(slotX, slotY, cell, cell);
-        const source = record[channel];
-        if (!source) continue;
-        const srcW = source.width || 0;
-        const srcH = source.height || 0;
-        if (srcW === record.sw && srcH === record.sh) {
-            ctx.drawImage(source, 0, 0, srcW, srcH, slotX, slotY, record.sw, record.sh);
-            continue;
-        }
-        if (srcW >= (record.sx || 0) + record.sw && srcH >= (record.sy || 0) + record.sh) {
-            ctx.drawImage(
-                source,
-                record.sx,
-                record.sy,
-                record.sw,
-                record.sh,
-                slotX,
-                slotY,
-                record.sw,
-                record.sh,
-            );
-            continue;
-        }
-        const ox = Math.max(0, Math.floor((record.sw - srcW) / 2));
-        const oy = Math.max(0, Math.floor((record.sh - srcH) / 2));
-        ctx.drawImage(source, 0, 0, srcW, srcH, slotX + ox, slotY + oy, srcW, srcH);
+        drawAgentChannelFrame(ctx, record, channel, slotX, slotY);
     }
+}
+
+function buildAgentAtlasTextureUpdates(renderer, poolProperty, records, slots, columns, cell, channel) {
+    const updates = [];
+    if (!records.length || typeof document === 'undefined') return updates;
+    const pool = renderer[poolProperty] ||= new Map();
+    const liveIds = new Set();
+    for (const record of records) {
+        liveIds.add(record.id);
+        let canvas = pool.get(record.id);
+        if (!canvas) {
+            canvas = document.createElement('canvas');
+            pool.set(record.id, canvas);
+        }
+        if (canvas.width !== cell || canvas.height !== cell) {
+            canvas.width = cell;
+            canvas.height = cell;
+        }
+        const ctx = canvas.getContext('2d', { alpha: true });
+        if (!ctx) continue;
+        ctx.imageSmoothingEnabled = false;
+        ctx.clearRect(0, 0, cell, cell);
+        drawAgentChannelFrame(ctx, record, channel, 0, 0);
+        const slot = slots.get(record.id) || 0;
+        updates.push({
+            x: (slot % columns) * cell,
+            y: Math.floor(slot / columns) * cell,
+            width: cell,
+            height: cell,
+            source: canvas,
+        });
+    }
+    for (const id of pool.keys()) {
+        if (!liveIds.has(id) && !slots.has(id)) pool.delete(id);
+    }
+    return updates;
 }
 
 export function packGpuAgentFrameAtlas(renderer, records) {
@@ -699,6 +739,7 @@ export function packGpuAgentFrameAtlas(renderer, records) {
     desiredKeys.length = agentRecords.length;
     let changed = resized || newSlot;
     let missingFrame = false;
+    const dirtyRecords = [];
     for (let index = 0; index < agentRecords.length; index++) {
         const record = agentRecords[index];
         const key = [
@@ -714,7 +755,10 @@ export function packGpuAgentFrameAtlas(renderer, records) {
             record.emissiveSource ? 'emissive' : '',
         ].join(':');
         desiredKeys[index] = key;
-        if (frameKeys.get(record.id) !== key) changed = true;
+        if (frameKeys.get(record.id) !== key) {
+            changed = true;
+            dirtyRecords.push(record);
+        }
         if (!frameKeys.has(record.id)) missingFrame = true;
     }
     const materialAtlasState = renderer._gpuAgentMaterialAtlasState ||= { atlas: null, resized: false };
@@ -736,6 +780,9 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         || emissiveAtlasState.resized;
     const now = typeof performance !== 'undefined' ? performance.now() : Date.now();
     const cadenceElapsed = now - (renderer._gpuAgentAtlasUpdatedAt || 0) >= 125;
+    renderer._gpuAgentAlbedoTextureUpdates = [];
+    renderer._gpuAgentMaterialTextureUpdates = [];
+    renderer._gpuAgentEmissiveTextureUpdates = [];
     if (changed && (resized || newSlot || missingFrame || cadenceElapsed)) {
         const ctx = atlas.getContext('2d', { alpha: true });
         ctx.imageSmoothingEnabled = false;
@@ -762,6 +809,17 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         renderer._gpuAgentFrameAtlasSignature = desiredKeys.slice().sort().join('|');
         renderer._gpuAgentFrameAtlasRevision++;
         renderer._gpuAgentAtlasUpdatedAt = now;
+        if (!resized) {
+            renderer._gpuAgentAlbedoTextureUpdates = buildAgentAtlasTextureUpdates(
+                renderer,
+                '_gpuAgentAlbedoUpdateCanvases',
+                dirtyRecords,
+                slots,
+                columns,
+                cell,
+                'source',
+            );
+        }
     }
     const packNow = resized
         || newSlot
@@ -770,9 +828,11 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         || materialAtlasState.resized
         || emissiveAtlasState.resized;
     if (channelsChanged && packNow) {
+        const materialRecords = materialAtlasState.resized ? agentRecords : dirtyRecords;
+        const emissiveRecords = emissiveAtlasState.resized ? agentRecords : dirtyRecords;
         drawAgentChannelAtlas(
             materialAtlasState.atlas,
-            agentRecords,
+            materialRecords,
             slots,
             columns,
             cell,
@@ -780,13 +840,35 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         );
         drawAgentChannelAtlas(
             emissiveAtlasState.atlas,
-            agentRecords,
+            emissiveRecords,
             slots,
             columns,
             cell,
             'emissiveSource',
         );
         renderer._gpuAgentSidecarRevision = (renderer._gpuAgentSidecarRevision || 0) + 1;
+        if (!materialAtlasState.resized && materialAtlasState.atlas) {
+            renderer._gpuAgentMaterialTextureUpdates = buildAgentAtlasTextureUpdates(
+                renderer,
+                '_gpuAgentMaterialUpdateCanvases',
+                materialRecords,
+                slots,
+                columns,
+                cell,
+                'materialSource',
+            );
+        }
+        if (!emissiveAtlasState.resized && emissiveAtlasState.atlas) {
+            renderer._gpuAgentEmissiveTextureUpdates = buildAgentAtlasTextureUpdates(
+                renderer,
+                '_gpuAgentEmissiveUpdateCanvases',
+                emissiveRecords,
+                slots,
+                columns,
+                cell,
+                'emissiveSource',
+            );
+        }
     }
     for (const record of agentRecords) {
         const slot = slots.get(record.id) || 0;
@@ -797,6 +879,7 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         record.sy = Math.floor(slot / columns) * cell;
         record.textureKey = 'agent-frame-atlas';
         record.textureRevision = renderer._gpuAgentFrameAtlasRevision;
+        record.textureUpdates = renderer._gpuAgentAlbedoTextureUpdates;
         // Pack the authored channels into the same slot geometry as albedo so
         // the GL batch can bind one frame-local material/emissive source for
         // every agent. Empty slots stay transparent and use the profile/default
@@ -809,6 +892,8 @@ export function packGpuAgentFrameAtlas(renderer, records) {
         record.sidecarRevision = materialAtlasState.atlas || emissiveAtlasState.atlas
             ? renderer._gpuAgentSidecarRevision || 0
             : null;
+        record.materialTextureUpdates = renderer._gpuAgentMaterialTextureUpdates;
+        record.emissiveTextureUpdates = renderer._gpuAgentEmissiveTextureUpdates;
     }
     return records;
 }

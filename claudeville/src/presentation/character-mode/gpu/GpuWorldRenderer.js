@@ -713,22 +713,22 @@ export class GpuWorldRenderer {
         }
     }
 
-    _textureFor(key, source, revision = null) {
+    _textureFor(key, source, revision = null, updates = null) {
         const gl = this.gl;
         if (!source) return null;
         const width = Math.max(1, Math.floor(source.width || source.videoWidth || 1));
         const height = Math.max(1, Math.floor(source.height || source.videoHeight || 1));
         let entry = this._textureEntries.get(key);
-        const changed = !entry
+        const storageChanged = !entry
             || entry.source !== source
-            || entry.revision !== revision
             || entry.width !== width
             || entry.height !== height;
+        const revisionChanged = !entry || entry.revision !== revision;
         if (!entry) {
             entry = { texture: gl.createTexture(), source: null, revision: null, width: 0, height: 0 };
             this._textureEntries.set(key, entry);
         }
-        if (changed) {
+        if (storageChanged || revisionChanged) {
             const started = performance.now();
             gl.bindTexture(gl.TEXTURE_2D, entry.texture);
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
@@ -737,16 +737,55 @@ export class GpuWorldRenderer {
             gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
             gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
             gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-            gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+            const canPatch = !storageChanged
+                && Array.isArray(updates)
+                && updates.length > 0
+                && updates.every((update) => {
+                    const updateWidth = Math.floor(update?.width || update?.source?.width || 0);
+                    const updateHeight = Math.floor(update?.height || update?.source?.height || 0);
+                    const updateX = Math.floor(update?.x || 0);
+                    const updateY = Math.floor(update?.y || 0);
+                    return Boolean(
+                        update?.source
+                        && updateWidth > 0
+                        && updateHeight > 0
+                        && update?.source?.width === updateWidth
+                        && update?.source?.height === updateHeight
+                        && updateX >= 0
+                        && updateY >= 0
+                        && updateX + updateWidth <= width
+                        && updateY + updateHeight <= height
+                    );
+                });
+            let uploadedBytes = 0;
+            if (canPatch) {
+                for (const update of updates) {
+                    if (!update?.source) continue;
+                    gl.texSubImage2D(
+                        gl.TEXTURE_2D,
+                        0,
+                        Math.max(0, Math.floor(update.x || 0)),
+                        Math.max(0, Math.floor(update.y || 0)),
+                        gl.RGBA,
+                        gl.UNSIGNED_BYTE,
+                        update.source,
+                    );
+                    uploadedBytes += Math.max(0, Math.floor(update.width || update.source.width || 0))
+                        * Math.max(0, Math.floor(update.height || update.source.height || 0)) * 4;
+                }
+            } else {
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, source);
+                uploadedBytes = width * height * 4;
+            }
             gl.bindTexture(gl.TEXTURE_2D, null);
             entry.source = source;
             entry.revision = revision;
             entry.width = width;
             entry.height = height;
             this.uploads++;
-            this.uploadBytes += width * height * 4;
+            this.uploadBytes += uploadedBytes;
             this._frameUploadMs += performance.now() - started;
-            this._updateTextureBytes();
+            if (storageChanged) this._updateTextureBytes();
         }
         entry.lastUsedFrame = this.frames + 1;
         return entry.texture;
@@ -895,10 +934,20 @@ export class GpuWorldRenderer {
     _bindBatch(program, uniforms, batch, { occlusion = false } = {}) {
         const gl = this.gl;
         const first = batch.records[0];
-        const albedo = this._textureFor(batch.textureKey, batch.source, first?.textureRevision);
+        const albedo = this._textureFor(
+            batch.textureKey,
+            batch.source,
+            first?.textureRevision,
+            first?.textureUpdates,
+        );
         if (!albedo) return 0;
         const material = batch.materialSource
-            ? this._textureFor(`material:${batch.sidecarKey || batch.textureKey}`, batch.materialSource, first?.sidecarRevision)
+            ? this._textureFor(
+                `material:${batch.sidecarKey || batch.textureKey}`,
+                batch.materialSource,
+                first?.sidecarRevision,
+                first?.materialTextureUpdates,
+            )
             : this.emptyMaterialTexture;
         const vertices = this._verticesFor(batch.records);
         this.vertexBufferBytes = Math.max(this.vertexBufferBytes || 0, vertices.byteLength);
@@ -917,6 +966,7 @@ export class GpuWorldRenderer {
                     `emissive:${batch.sidecarKey || batch.textureKey}`,
                     batch.emissiveSource,
                     first?.sidecarRevision,
+                    first?.emissiveTextureUpdates,
                 )
                 : this.emptyMaterialTexture;
             gl.activeTexture(gl.TEXTURE3);
