@@ -2,7 +2,7 @@
 
 ---
 
-## v0.36.0 — *The Common Clock* · Aug 30, 2026
+## v0.36.0 — *The Common Clock* · Aug 31, 2026
 
 The village stops disagreeing with itself. One vocabulary for its own state, one clock for its motion, one measurement for its cost — and celebrations it has actually earned.
 
@@ -46,8 +46,9 @@ The village stops disagreeing with itself. One vocabulary for its own state, one
 
 **Kept honest**
 - **A local pre-push gate.** `npm run gate:release` chains the quick validation, the replay smoke, the server security and fatal smokes, and a new boot-contract smoke that starts an isolated child server on an ephemeral port with a temporary HOME and proves the HTTP routes, a WebSocket handshake and initial snapshot, a delta and a resync. Browser and visual verification remain manual; nothing under `.github/` was touched.
-- **Real defects caught by the new tests, not asserted around.** A `Number(null)` coercion let pressure recovery begin before its probe window elapsed; audio aggregation had deferred cue construction so spatial panners and per-provider council bells were momentarily absent; and a `cacheStats()` shape change broke the World-to-Dashboard release contract. All three were fixed at the source.
-- **527 unit tests pass, up from 345.** `gate:release` is green end to end.
+- **Real defects caught by the new tests, not asserted around.** A `Number(null)` coercion let pressure recovery begin before its probe window elapsed; audio aggregation had deferred cue construction so spatial panners and per-provider council bells were momentarily absent; and a `cacheStats()` shape change broke the World-to-Dashboard release contract. All three were fixed at the source rather than worked around in a test.
+- **Two defects caught only by driving the real app.** With the whole unit suite green, a populated village still announced NO PROVIDERS FOUND: the provider route gained a health summary but the browser kept reading the legacy list, so every provider normalised to unavailable. And clicking empty ground left a stale Activity Panel open, because the deselection event was published and nothing ever subscribed to it. Both are fixed, and seven cross-surface invariants now make that class of contradiction fail a test instead of reaching an operator.
+- **538 unit tests pass, up from 345.** `gate:release` is green end to end.
 
 ---
 
