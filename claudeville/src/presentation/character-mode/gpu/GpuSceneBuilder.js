@@ -138,6 +138,17 @@ function packedLandmarkChannels(renderer, id, { crop = false } = {}) {
     };
 }
 
+// The material/emissive sidecar cache key is scoped to the atlas page, because
+// one whole-page channel image is shared by every frame packed into that page.
+// Its revision must be scoped identically: a per-record revision makes
+// GpuWorldRenderer._textureFor see a mismatch on every batch that binds the
+// page, which re-uploads the full 2048x2048 channel image several times per
+// frame (~96 MB/frame measured, uploadMs ~50) and pins the GPU quality ladder
+// at "disabled:uploadMs".
+function atlasChannelRevision(assets, atlasId) {
+    return `${assets?.assetVersion || ''}::${atlasId}::channels`;
+}
+
 export function terrainSourceHasAuthoredChannels(assets, source) {
     if (!source?.id || !assets) return false;
     if (typeof assets.resolveMaterialChannels === 'function') {
@@ -337,13 +348,21 @@ function recordForBuilding(renderer, drawable, sequence) {
     const materialName = materialMeta.class || drawable.entry?.materialClass || MATERIAL_BY_BUILDING[buildingType] || 'stone';
     const occupied = renderer?.buildingRenderer?._buildingOccupancyInfo?.(drawable.building)?.state;
     const active = occupied && occupied !== 'idle';
-    const resolved = useAtlas
-        ? assets.resolveMaterialChannels?.(id, null, { kind: 'landmark', onScreen: true })
-        : packedLandmarkChannels(renderer, id, { crop: true });
-    const materialSource = (useAtlas && resolved?.layout === 'atlas-rect' ? resolved.material : resolved?.material)
-        || null;
-    const emissiveSource = resolved?.emissive || null;
-    const sidecarKey = useAtlas && atlasFrame?.atlas
+    // Material/emissive are sampled with the albedo's UVs (see the GL fragment
+    // shaders), so a channel source must share the albedo's geometry. When the
+    // albedo comes from an atlas page the channels must be that page's channel
+    // pages; a per-landmark sidecar keyed under the shared `<atlas>:channels`
+    // key sampled the wrong pixels and made every batch rebind the key with a
+    // different source, re-uploading the full 2048x2048 page several times per
+    // frame.
+    const resolved = useAtlas ? null : packedLandmarkChannels(renderer, id, { crop: true });
+    const materialSource = (useAtlas
+        ? assets.getAtlas?.(atlasFrame.atlas, 'material')
+        : resolved?.material) || null;
+    const emissiveSource = (useAtlas
+        ? assets.getAtlas?.(atlasFrame.atlas, 'emissive')
+        : resolved?.emissive) || null;
+    const sidecarKey = useAtlas
         ? `${atlasFrame.atlas}:channels`
         : `${id}:material`;
     return {
@@ -374,7 +393,9 @@ function recordForBuilding(renderer, drawable, sequence) {
             : 0,
         occluder: finite(materialMeta.occluder, 0.86),
         textureRevision: assets.assetVersion || null,
-        sidecarRevision: resolved?.revision || `${assets.assetVersion || ''}:${id}`,
+        sidecarRevision: useAtlas && atlasFrame?.atlas
+            ? atlasChannelRevision(assets, atlasFrame.atlas)
+            : (resolved?.revision || `${assets.assetVersion || ''}:${id}`),
         sequence,
         sourceKind: useAtlas ? 'atlas' : 'individual',
     };
@@ -443,20 +464,26 @@ function recordForProp(renderer, drawable, sequence) {
             sh = cachedH - splitLocalY;
         }
     }
-    const resolved = isPilot
+    // Same UV-space rule as landmarks: an atlas albedo takes the atlas channel
+    // pages, never a per-prop sidecar.
+    const resolved = isPilot && !useAtlas
         ? assets?.resolveMaterialChannels?.(propId, null, {
-            crop: !useAtlas,
+            crop: true,
             kind: 'prop',
             onScreen: true,
         })
         : null;
-    const authoredClass = isPilot && resolved && resolved.origin !== 'fallback'
+    const authoredClass = isPilot && (useAtlas || (resolved && resolved.origin !== 'fallback'))
         ? assets.getMaterialMetadata?.(propId)?.materialClass
         : null;
     const materialName = sprite.materialClass || authoredClass || materialForProp(sprite);
     const elevated = Math.max(0, finite(sprite.bounds?.bottom) - finite(sprite.bounds?.top));
-    const materialSource = isPilot && resolved?.origin !== 'fallback' ? resolved.material : null;
-    const emissiveSource = isPilot && resolved?.origin !== 'fallback' ? resolved.emissive : null;
+    const materialSource = (useAtlas
+        ? assets?.getAtlas?.(atlasFrame.atlas, 'material')
+        : (isPilot && resolved?.origin !== 'fallback' ? resolved.material : null)) || null;
+    const emissiveSource = (useAtlas
+        ? assets?.getAtlas?.(atlasFrame.atlas, 'emissive')
+        : (isPilot && resolved?.origin !== 'fallback' ? resolved.emissive : null)) || null;
     return {
         id: `prop:${propId || `${sprite.tileX},${sprite.tileY}`}:${part}`,
         stableKey: drawable.stableKey || propId || `${sprite.tileX},${sprite.tileY}`,
@@ -482,7 +509,9 @@ function recordForProp(renderer, drawable, sequence) {
         emissive: emissiveSource ? 0 : (materialName === 'fire' ? 0.35 : 0),
         occluder: elevated > 36 ? 0.58 : 0.2,
         textureRevision: useAtlas ? (assets.assetVersion || 0) : (sprite._gpuCacheRevision || 0),
-        sidecarRevision: resolved?.revision || null,
+        sidecarRevision: useAtlas && atlasFrame?.atlas
+            ? atlasChannelRevision(assets, atlasFrame.atlas)
+            : (resolved?.revision || null),
         sequence,
         sourceKind,
     };
