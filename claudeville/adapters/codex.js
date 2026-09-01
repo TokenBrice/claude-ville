@@ -19,6 +19,7 @@ const {
   normalizeCacheTokens,
   parseJsonLines,
   readHeadText: readSharedHeadText,
+  readJsonLineWindows: readSharedJsonLineWindows,
   readJsonLines: readSharedJsonLines,
   summarizeToolInput: summarizeSharedToolInput,
 } = require('./shared');
@@ -36,9 +37,12 @@ const MAX_METADATA_BYTES = 512 * 1024;
 const MAX_METADATA_LINES = 24;
 const METADATA_BACKSCAN_CHUNK_BYTES = 64 * 1024;
 const MAX_METADATA_BACKSCAN_BYTES = 32 * 1024 * 1024;
+const MAX_EARLY_METADATA_CACHE_ENTRIES = 256;
 const MAX_TURN_METADATA_CACHE_ENTRIES = 256;
 const TAIL_CHUNK_BYTES = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
+const SUMMARY_SCAN_LINES = 50;
+const TOKEN_USAGE_SCAN_LINES = 500;
 const GIT_EVENT_SCAN_LINES = 5000;
 const MAX_CURRENT_TOOL_INPUT_CHARS = 500;
 const MAX_ROLLOUT_DAY_DIRS = 8192;
@@ -60,6 +64,7 @@ const CODEX_TOTAL_CACHE_FIELD_MAP = Object.freeze({
 
 const _rolloutFileBySessionId = new Map();
 const _sessionNamesCache = { signature: '', value: new Map() };
+const _earlyMetadataCache = new Map();
 const _turnMetadataCache = new Map();
 // The bounded historical index is revisited during reconciliation. Ordinary
 // polling stats only warm files plus a small newest-day discovery frontier.
@@ -91,6 +96,14 @@ function readJsonLines(filePath, { from = 'end', count = 50 } = {}) {
     from,
     count,
     headMaxBytes: MAX_HEAD_BYTES,
+    tailChunkBytes: TAIL_CHUNK_BYTES,
+    tailMaxBytes: MAX_TAIL_BYTES,
+    source: 'codex',
+  });
+}
+
+function readJsonLineWindows(filePath, counts) {
+  return readSharedJsonLineWindows(filePath, counts, {
     tailChunkBytes: TAIL_CHUNK_BYTES,
     tailMaxBytes: MAX_TAIL_BYTES,
     source: 'codex',
@@ -323,13 +336,60 @@ function summarizeCodexToolPayload(payload, { maxLength = MAX_CURRENT_TOOL_INPUT
   return missingValue;
 }
 
-function parseEarlyMetadata(filePath, detail) {
-  let headText = '';
+function earlyMetadataIdentity(filePath) {
   try {
-    headText = readHeadText(filePath);
+    const stat = fs.statSync(filePath);
+    return {
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+      ino: stat.ino || 0,
+    };
   } catch {
-    return;
+    return null;
   }
+}
+
+function sameEarlyMetadataIdentity(cached, identity) {
+  return cached
+    && cached.size === identity.size
+    && cached.mtimeMs === identity.mtimeMs
+    && cached.ino === identity.ino;
+}
+
+function cacheEarlyMetadata(filePath, identity, metadata) {
+  _earlyMetadataCache.delete(filePath);
+  _earlyMetadataCache.set(filePath, { ...identity, metadata });
+  while (_earlyMetadataCache.size > MAX_EARLY_METADATA_CACHE_ENTRIES) {
+    _earlyMetadataCache.delete(_earlyMetadataCache.keys().next().value);
+  }
+  return metadata;
+}
+
+function readEarlyMetadata(filePath) {
+  const identity = earlyMetadataIdentity(filePath);
+  if (!identity) {
+    _earlyMetadataCache.delete(filePath);
+    return null;
+  }
+
+  const cached = _earlyMetadataCache.get(filePath);
+  if (sameEarlyMetadataIdentity(cached, identity)) {
+    return cacheEarlyMetadata(filePath, identity, cached.metadata);
+  }
+
+  const headText = readHeadText(filePath);
+  if (!headText && identity.size > 0) return null;
+
+  const metadata = {
+    agentId: null,
+    agentName: null,
+    agentType: 'main',
+    agentPath: null,
+    parentThreadId: null,
+    model: null,
+    reasoningEffort: null,
+    project: null,
+  };
 
   const lines = headText.split('\n').slice(0, MAX_METADATA_LINES);
   for (const line of lines) {
@@ -340,7 +400,7 @@ function parseEarlyMetadata(filePath, detail) {
 
     if (entry?.type === 'session_meta' && entry.payload) {
       const subagent = entry.payload.source?.subagent?.thread_spawn;
-      applySessionMetadata(detail, {
+      applySessionMetadata(metadata, {
         agentId: entry.payload.id || null,
         agentName: entry.payload.agent_nickname || subagent?.agent_nickname || null,
         agentType: entry.payload.agent_role || subagent?.agent_role || 'main',
@@ -350,17 +410,25 @@ function parseEarlyMetadata(filePath, detail) {
         project: entry.payload.cwd || null,
       });
     } else if (line.includes('"type":"session_meta"') || line.includes('"type": "session_meta"')) {
-      applySessionMetadata(detail, extractSessionMetadataFromText(line));
+      applySessionMetadata(metadata, extractSessionMetadataFromText(line));
     }
 
     if (entry?.type === 'turn_context') {
-      applyTurnMetadata(detail, extractTurnMetadataFromPayload(entry.payload));
+      applyTurnMetadata(metadata, extractTurnMetadataFromPayload(entry.payload));
     } else if (line.includes('"type":"turn_context"') || line.includes('"type": "turn_context"')) {
-      applyTurnMetadata(detail, extractTurnMetadataFromText(line));
+      applyTurnMetadata(metadata, extractTurnMetadataFromText(line));
     }
 
-    if (detail.agentId && detail.project && detail.model && detail.reasoningEffort) break;
+    if (metadata.agentId && metadata.project && metadata.model && metadata.reasoningEffort) break;
   }
+
+  return cacheEarlyMetadata(filePath, identity, metadata);
+}
+
+function parseEarlyMetadata(filePath, detail) {
+  const metadata = readEarlyMetadata(filePath);
+  applySessionMetadata(detail, metadata);
+  applyTurnMetadata(detail, metadata);
 }
 
 /**
@@ -382,7 +450,20 @@ function inferCodexModel(detail) {
  * Extract session metadata/tools/messages from Codex rollout JSONL
  * Actual format: all data is inside entry.payload
  */
-function parseRollout(filePath) {
+function createActiveRolloutScanContext(filePath) {
+  const windows = readJsonLineWindows(filePath, [
+    SUMMARY_SCAN_LINES,
+    TOKEN_USAGE_SCAN_LINES,
+    GIT_EVENT_SCAN_LINES,
+  ]);
+  return {
+    summaryEntries: windows.get(SUMMARY_SCAN_LINES) || [],
+    tokenEntries: windows.get(TOKEN_USAGE_SCAN_LINES) || [],
+    gitEntries: windows.get(GIT_EVENT_SCAN_LINES) || [],
+  };
+}
+
+function parseRollout(filePath, scanContext = null) {
   const detail = {
     agentId: null,
     agentName: null,
@@ -404,7 +485,8 @@ function parseRollout(filePath) {
   }
 
   // Read recent tools/messages from the end of the file
-  const entries = readJsonLines(filePath, { from: 'end', count: 50 });
+  const entries = scanContext?.summaryEntries
+    || readJsonLines(filePath, { from: 'end', count: SUMMARY_SCAN_LINES });
   const candidates = [];
   const observedSources = emptyObservedSources();
   const candidateCounts = { plan: 0, thinking: 0, assistant: 0 };
@@ -700,7 +782,7 @@ function readUsageNumber(usage, keys) {
  * Codex rollout usage is usually emitted as cumulative token_count events.
  * Older formats may attach per-turn usage directly, so keep that fallback too.
  */
-function getTokenUsage(filePath) {
+function getTokenUsage(filePath, entries = null) {
   const tokenUsage = {
     totalInput: 0,
     totalOutput: 0,
@@ -717,7 +799,7 @@ function getTokenUsage(filePath) {
   };
 
   try {
-    const entries = readJsonLines(filePath, { from: 'end', count: 500 });
+    entries = entries || readJsonLines(filePath, { from: 'end', count: TOKEN_USAGE_SCAN_LINES });
     let lastInput = 0;
     let latestTokenCount = null;
 
@@ -874,10 +956,10 @@ function applyCompletionMetadata(eventsById, completion) {
   }
 }
 
-function getGitEvents(filePath, context) {
+function getGitEvents(filePath, context, entries = null) {
   const events = [];
   try {
-    const entries = readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
+    entries = entries || readJsonLines(filePath, { from: 'end', count: GIT_EVENT_SCAN_LINES });
     const eventsBySourceId = new Map();
     const eventsByCommandHash = new Map();
 
@@ -1228,21 +1310,22 @@ class CodexAdapter {
     const sessionIdByThreadId = new Map();
 
     for (const { filePath, mtime, fileName } of rollouts) {
-      const detail = parseRollout(filePath);
+      const scanContext = createActiveRolloutScanContext(filePath);
+      const detail = parseRollout(filePath, scanContext);
       // Extract session ID from the filename: rollout-2025-01-22T10-30-00-abc123.jsonl
       const sessionId = fileName.replace('rollout-', '').replace('.jsonl', '');
       const fullSessionId = `codex-${sessionId}`;
       _rolloutFileBySessionId.set(fullSessionId, filePath);
       const threadId = detail.agentId || sessionId;
       sessionIdByThreadId.set(threadId, fullSessionId);
-      parsedRollouts.push({ filePath, mtime, detail, sessionId, fullSessionId, threadId });
+      parsedRollouts.push({ filePath, mtime, detail, scanContext, sessionId, fullSessionId, threadId });
     }
     const activeSessionIds = new Set(parsedRollouts.map((rollout) => rollout.fullSessionId));
     for (const sessionId of _rolloutFileBySessionId.keys()) {
       if (!activeSessionIds.has(sessionId)) _rolloutFileBySessionId.delete(sessionId);
     }
 
-    for (const { filePath, mtime, detail, sessionId, fullSessionId, threadId } of parsedRollouts) {
+    for (const { filePath, mtime, detail, scanContext, sessionId, fullSessionId, threadId } of parsedRollouts) {
       const sessionName = sessionNames.get(threadId) || sessionNames.get(sessionId) || detail.agentName || null;
       sessions.push({
         sessionId: fullSessionId,
@@ -1266,12 +1349,12 @@ class CodexAdapter {
         lastToolInput: detail.lastToolInput,
         dialogue: detail.dialogue,
         observedSources: detail.observedSources,
-        tokenUsage: getTokenUsage(filePath),
+        tokenUsage: getTokenUsage(filePath, scanContext.tokenEntries),
         gitEvents: getGitEvents(filePath, {
           provider: 'codex',
           sessionId: fullSessionId,
           project: detail.project || null,
-        }),
+        }, scanContext.gitEntries),
         parentSessionId: detail.parentThreadId
           ? sessionIdByThreadId.get(detail.parentThreadId) || `codex-${detail.parentThreadId}`
           : null,
@@ -1363,13 +1446,17 @@ class CodexAdapter {
     _rolloutFileBySessionId.clear();
     _sessionNamesCache.signature = '';
     _sessionNamesCache.value = new Map();
+    _earlyMetadataCache.clear();
     // Keep rollout discovery metadata across ordinary provider invalidations.
     // Watch events usually mean one file changed; dropping this cache would turn
     // every active-session refresh back into a full historical scan.
   }
 
   invalidateCachesForDirty(dirty = {}) {
-    if (dirty.path) _turnMetadataCache.delete(dirty.path);
+    if (dirty.path) {
+      _earlyMetadataCache.delete(dirty.path);
+      _turnMetadataCache.delete(dirty.path);
+    }
     if (dirty.kind === 'metadata') {
       _sessionNamesCache.signature = '';
       _sessionNamesCache.value = new Map();
@@ -1395,6 +1482,7 @@ class CodexAdapter {
         cachedDayDirectories: _rolloutDiscoveryCache.dayDirMtimes.size,
         warmFiles: _rolloutDiscoveryCache.warmFilePaths.size,
         indexedSessions: _rolloutFileBySessionId.size,
+        earlyMetadataEntries: _earlyMetadataCache.size,
         turnMetadataEntries: _turnMetadataCache.size,
       },
     };

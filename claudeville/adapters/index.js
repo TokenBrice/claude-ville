@@ -78,6 +78,8 @@ const _sessionListCache = {
   threshold: null,
   sessions: [],
 };
+const _sessionsByProvider = new Map();
+const _dirtySessionProviders = new Set();
 
 const _sessionDetailCache = new Map();
 const _repositoryScanCache = {
@@ -294,12 +296,21 @@ function getRepositoryScanProjects() {
  */
 function getAllSessions(activeThresholdMs, { force = false } = {}) {
   const now = Date.now();
-  if (!force && _sessionListCache.threshold === activeThresholdMs && (now - _sessionListCache.at) < SESSION_LIST_CACHE_TTL_MS) {
+  const canRefreshProviders = !force
+    && _sessionListCache.threshold === activeThresholdMs
+    && (now - _sessionListCache.at) < SESSION_LIST_CACHE_TTL_MS;
+  if (canRefreshProviders && _dirtySessionProviders.size === 0) {
     return _sessionListCache.sessions;
   }
 
-  const allSessions = [];
-  for (const adapter of adapters) {
+  const adaptersToScan = canRefreshProviders
+    ? adapters.filter((adapter) => _dirtySessionProviders.has(adapter.provider))
+    : adapters;
+  const refreshedProviders = new Set(adaptersToScan.map((adapter) => adapter.provider));
+  // TTL expiry still reconciles every adapter. Within that window, refresh only
+  // dirty provider slices, then merge them in the original adapter order.
+  for (const adapter of adaptersToScan) {
+    _sessionsByProvider.set(adapter.provider, []);
     const lastScanStartedAt = Date.now();
     let available = false;
     try {
@@ -326,7 +337,10 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
         });
         continue;
       }
-      allSessions.push(...sessions.map((session) => normalizeSession(session, { provider: adapter.provider })));
+      _sessionsByProvider.set(
+        adapter.provider,
+        sessions.map((session) => normalizeSession(session, { provider: adapter.provider })),
+      );
       const lastSuccessAt = Date.now();
       updateProviderHealth(adapter, {
         health: sessions.length > 0 ? 'healthy' : 'empty',
@@ -346,6 +360,7 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
       console.error(`[${adapter.name}] Failed to fetch sessions:`, err.message);
     }
   }
+  const allSessions = adapters.flatMap((adapter) => _sessionsByProvider.get(adapter.provider) || []);
   const repositoryScanProjects = isGitEnrichmentDisabled() ? [] : getRepositoryScanProjects();
   const sessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions, {
     projects: repositoryScanProjects,
@@ -353,9 +368,14 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
     .map((session) => normalizeSession(session))
     .sort((a, b) => b.lastActivity - a.lastActivity);
 
-  _sessionListCache.at = now;
+  _sessionListCache.at = Date.now();
   _sessionListCache.threshold = activeThresholdMs;
   _sessionListCache.sessions = sessions;
+  if (canRefreshProviders) {
+    for (const provider of refreshedProviders) _dirtySessionProviders.delete(provider);
+  } else {
+    _dirtySessionProviders.clear();
+  }
   return sessions;
 }
 
@@ -427,9 +447,16 @@ function invalidateSessionCaches({ details = true, provider = null, dirty = null
   const scopedProvider = normalizedProvider && ADAPTER_BY_PROVIDER[normalizedProvider]
     ? normalizedProvider
     : null;
-  _sessionListCache.at = 0;
-  _sessionListCache.threshold = null;
-  _sessionListCache.sessions = [];
+  const isProviderScoped = !!scopedProvider && descriptor.kind !== 'reconcile';
+  if (isProviderScoped) {
+    _dirtySessionProviders.add(scopedProvider);
+  } else {
+    _sessionListCache.at = 0;
+    _sessionListCache.threshold = null;
+    _sessionListCache.sessions = [];
+    _sessionsByProvider.clear();
+    _dirtySessionProviders.clear();
+  }
 
   if (descriptor.kind === 'git' && (descriptor.project || descriptor.path)) {
     invalidateGitStatusCaches({ project: descriptor.project || descriptor.path });
@@ -457,7 +484,7 @@ function invalidateSessionCaches({ details = true, provider = null, dirty = null
     }
   }
 
-  const adaptersToInvalidate = scopedProvider
+  const adaptersToInvalidate = isProviderScoped
     ? [ADAPTER_BY_PROVIDER[scopedProvider]]
     : (['discovery', 'metadata', 'reconcile'].includes(descriptor.kind) ? adapters : []);
 

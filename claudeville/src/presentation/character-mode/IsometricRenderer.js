@@ -50,7 +50,6 @@ import { TerrainTileset } from './TerrainTileset.js';
 import { Compositor } from './Compositor.js';
 import { HarborTraffic } from './HarborTraffic.js';
 import { LandmarkActivity } from './LandmarkActivity.js';
-import { DebugOverlay } from './DebugOverlay.js';
 import { AgentEventStream } from './AgentEventStream.js';
 import { RelationshipState } from './RelationshipState.js';
 import { RitualConductor } from './RitualConductor.js';
@@ -133,6 +132,10 @@ const FAST_PROP_CSS_PIXELS = 800_000;
 const FAST_PROP_MIN_ZOOM = 1.5;
 const FAST_PROP_AGENT_MARGIN = 36;
 const FAST_PROP_SCREEN_MARGIN = 96;
+// Covers the tallest selected bubble stack plus the sprite body. Agents beyond
+// this screen-space apron cannot contribute pixels to the viewport.
+const AGENT_SCREEN_CULL_MARGIN = 420;
+const AGENT_OVERLAY_GRID_CELL = 96;
 // E1 — per-phase brightness *multipliers* for the atmosphere grade (blitted
 // with a `multiply` composite). `base` fills the whole overlay; `edge` darkens
 // the vignette corners at `edgeAlpha`. Near-white = identity; night is a cool
@@ -525,11 +528,30 @@ export class IsometricRenderer {
         this.gateDoorsOpen = false;
         this._gateDoorsOpenUntilMs = 0;
         this._sortedSprites = [];
+        this._allSpritesSnapshot = [];
+        this._visibleSortedSprites = [];
+        this._visibleSpriteCandidates = new Set();
         this._movingSprites = [];
         this._pairBuckets = new Map();
         this._pairIds = new Map();
         this._pairVisited = new Set();
         this._spritesNeedSort = true;
+        this._overlayPrioritizedSprites = [];
+        this._overlayBubbleSprites = [];
+        this._overlayBubbleOrder = [];
+        this._overlayBubbleBaseRects = [];
+        this._overlayBubbleClusters = [];
+        this._overlayBubbleClusterCount = 0;
+        this._overlayBubbleGroups = new Map();
+        this._agentLabelHitRects = [];
+        this._overlayCompactRects = [];
+        this._overlayNameRects = [];
+        this._overlayReservedRects = [];
+        this._overlayBubbleOccupiedRects = [];
+        this._overlayCompactGrid = this._createRectGrid();
+        this._overlayNameGrid = this._createRectGrid();
+        this._overlayBubbleGrid = this._createRectGrid();
+        this._overlayClusterGrid = this._createRectGrid();
         this._laneTiles = new Map();
         this._staticPropDrawables = [];
         this._drawables = [];
@@ -625,6 +647,9 @@ export class IsometricRenderer {
         this._worldResumePromise = null;
         this._worldResumeFailures = 0;
         this._worldSpritesDirty = false;
+        this._idleFrameDirty = true;
+        this._idleLastRenderCamera = { x: NaN, y: NaN, zoom: NaN };
+        this._idleResourceWorkObserved = false;
         this._harborFailedPushState = null;
         this._activeWorkingCount = 0;
         this._onModeChanged = null;
@@ -826,7 +851,8 @@ export class IsometricRenderer {
 
         // Event subscriptions
         this._unsubscribers = [];
-        this.debugOverlay = new DebugOverlay();
+        this.debugOverlay = null;
+        this._debugOverlayModulePromise = null;
     }
 
     _generatePaths() {
@@ -1617,6 +1643,7 @@ export class IsometricRenderer {
                 }
             }),
             eventBus.on('subagent:dispatched', (payload) => {
+                this._invalidateIdleFrame();
                 this._enqueueSubagentSummonRitual(payload);
             }),
             // Cache the latest building presence tiers so per-frame emitter
@@ -1624,21 +1651,31 @@ export class IsometricRenderer {
             // without hot-path enumeration of agent sprites.
             eventBus.on(BUILDING_EVENTS.ACTIVE_AGENTS, (payload) => {
                 if (!payload) return;
+                this._invalidateIdleFrame();
                 this._buildingPresenceMap = new Map(Object.entries(payload));
             }),
+            eventBus.on(BUILDING_EVENTS.SELECTED, () => this._invalidateIdleFrame()),
+            eventBus.on(BUILDING_EVENTS.DESELECTED, () => this._invalidateIdleFrame()),
             // #39 — celebratory gull scatter: a harbor push-success scatters
             // the flock skyward for a few seconds by lifting the active-gull
             // target toward GULL_MAX_ACTIVE_TARGET. Also records the moment so
             // SeasonalAmbience suppresses decorative drift while the real git
             // reward is on screen.
-            eventBus.on('harbor:push-success', () => this._triggerGullScatter()),
-            eventBus.on('git:pushed', () => this._triggerGullScatter()),
+            eventBus.on('harbor:push-success', () => {
+                this._invalidateIdleFrame();
+                this._triggerGullScatter();
+            }),
+            eventBus.on('git:pushed', () => {
+                this._invalidateIdleFrame();
+                this._triggerGullScatter();
+            }),
             // #attract — topbar toggle flips the idle-attract camera live.
             eventBus.on('camera:auto-camera', (payload) => this.cameraDirector?.setAutoMode?.(payload?.enabled !== false)),
             // 4.8 — earned nicknames garnish agent name tags.
             eventBus.on('biography:updated', (payload) => {
                 const identityKey = payload?.identityKey;
                 if (!identityKey) return;
+                this._invalidateIdleFrame();
                 const nickname = payload?.biography?.nickname || null;
                 this._cacheNickname(identityKey, nickname);
                 this._applyNicknames();
@@ -1659,6 +1696,7 @@ export class IsometricRenderer {
                     const nickname = biography?.nickname || null;
                     this._cacheNickname(identityKey, nickname);
                     this._applyNicknames();
+                    this._invalidateIdleFrame();
                 }).catch(() => {});
             };
             this.chronicleStore.channel.addEventListener('message', this._chronicleChannelListener);
@@ -1682,6 +1720,7 @@ export class IsometricRenderer {
         this._agentHoverX = 0;
         this._agentHoverY = 0;
         this._onMouseMoveMain = (e) => {
+            this._invalidateIdleFrame();
             const rect = canvas.getBoundingClientRect();
             const screenX = e.clientX - rect.left;
             const screenY = e.clientY - rect.top;
@@ -1716,8 +1755,8 @@ export class IsometricRenderer {
         };
         canvas.addEventListener('mouseleave', this._onMouseLeaveMain);
         this._onKeyDown = (e) => {
-            if (e.code === 'KeyD' && e.shiftKey) this.debugOverlay.toggle();
-            if (e.code === 'KeyP' && e.shiftKey) this.debugOverlay.togglePathDebug();
+            if (e.code === 'KeyD' && e.shiftKey) void this._toggleDebugOverlay('toggle');
+            if (e.code === 'KeyP' && e.shiftKey) void this._toggleDebugOverlay('togglePathDebug');
             this._handleWorldKeyboardCommand(e);
         };
         window.addEventListener('keydown', this._onKeyDown);
@@ -1728,6 +1767,28 @@ export class IsometricRenderer {
         this.running = true;
         this._startLoop();
         return true;
+    }
+
+    _toggleDebugOverlay(method) {
+        if (this.debugOverlay) {
+            this.debugOverlay[method]?.();
+            this._invalidateIdleFrame();
+            return Promise.resolve(true);
+        }
+        if (!this._debugOverlayModulePromise) {
+            this._debugOverlayModulePromise = import('./DebugOverlay.js');
+        }
+        return this._debugOverlayModulePromise.then((module) => {
+            if (this._disposed || !module.DebugOverlay) return false;
+            if (!this.debugOverlay) this.debugOverlay = new module.DebugOverlay();
+            this.debugOverlay[method]?.();
+            this._invalidateIdleFrame();
+            return true;
+        }).catch((error) => {
+            console.warn('[IsometricRenderer] Debug overlay unavailable:', error.message);
+            this._debugOverlayModulePromise = null;
+            return false;
+        });
     }
 
     hide() {
@@ -1776,6 +1837,22 @@ export class IsometricRenderer {
         this._onModeChanged = null;
         this.chronicler?.destroy?.();
         this._sortedSprites = [];
+        this._allSpritesSnapshot.length = 0;
+        this._visibleSortedSprites.length = 0;
+        this._visibleSpriteCandidates.clear();
+        this._overlayPrioritizedSprites.length = 0;
+        this._overlayBubbleSprites.length = 0;
+        this._overlayBubbleOrder.length = 0;
+        this._overlayBubbleBaseRects.length = 0;
+        this._agentLabelHitRects.length = 0;
+        this._overlayCompactRects.length = 0;
+        this._overlayNameRects.length = 0;
+        this._overlayReservedRects.length = 0;
+        this._overlayBubbleOccupiedRects.length = 0;
+        this._overlayCompactGrid.buckets.clear();
+        this._overlayNameGrid.buckets.clear();
+        this._overlayBubbleGrid.buckets.clear();
+        this._overlayClusterGrid.buckets.clear();
         this._spritesNeedSort = true;
         this._suspendWorldModeResources();
         this.agentSprites.clear();
@@ -2083,15 +2160,88 @@ export class IsometricRenderer {
 
     _markSpritesDirty() {
         this._spritesNeedSort = true;
+        this._invalidateIdleFrame();
+    }
+
+    _snapshotAllSprites() {
+        const sprites = this._allSpritesSnapshot;
+        sprites.length = 0;
+        for (const sprite of this.agentSprites.values()) sprites.push(sprite);
+        return sprites;
+    }
+
+    _agentVisibleOnScreen(sprite, viewport = this._screenViewport(), margin = AGENT_SCREEN_CULL_MARGIN) {
+        if (!sprite || !viewport || !this.camera) return true;
+        const point = this.camera.worldToScreen(sprite.x, sprite.y);
+        return point.x >= -margin
+            && point.x <= viewport.width + margin
+            && point.y >= -margin
+            && point.y <= viewport.height + margin;
     }
 
     _snapshotSortedSprites() {
-        if (!this._spritesNeedSort) return this._sortedSprites;
-        const agents = Array.from(this.agentSprites.values());
-        this._sortedSprites = agents;
-        this._sortedSprites.sort((a, b) => a.y - b.y);
+        const viewport = this._screenViewport();
+        const candidates = this._visibleSpriteCandidates;
+        candidates.clear();
+        let rosterOrder = 0;
+        for (const sprite of this.agentSprites.values()) {
+            sprite._rendererRosterOrder = rosterOrder++;
+            if (this._agentVisibleOnScreen(sprite, viewport)) candidates.add(sprite);
+        }
+
+        // Retain the previous visible order so the common case only needs a
+        // monotonicity scan. Remove sprites that left the apron in place, then
+        // append newly-visible sprites before repairing the near-sorted list.
+        const visible = this._visibleSortedSprites;
+        let next = 0;
+        for (let i = 0; i < visible.length; i++) {
+            const sprite = visible[i];
+            if (!candidates.has(sprite)) continue;
+            visible[next++] = sprite;
+            candidates.delete(sprite);
+        }
+        visible.length = next;
+        for (const sprite of this.agentSprites.values()) {
+            if (candidates.has(sprite)) visible.push(sprite);
+        }
+
+        let ordered = true;
+        for (let i = 1; i < visible.length; i++) {
+            const previous = visible[i - 1];
+            const current = visible[i];
+            if (
+                previous.y > current.y
+                || (previous.y === current.y && previous._rendererRosterOrder > current._rendererRosterOrder)
+            ) {
+                ordered = false;
+                break;
+            }
+        }
+        if (!ordered) {
+            // Agent motion is continuous, so the previous frame is almost
+            // sorted. Insertion repair is linear for unchanged relative order
+            // and moves only sprites that actually crossed in Y.
+            for (let i = 1; i < visible.length; i++) {
+                const sprite = visible[i];
+                let insertAt = i;
+                while (insertAt > 0) {
+                    const previous = visible[insertAt - 1];
+                    if (
+                        previous.y < sprite.y
+                        || (
+                            previous.y === sprite.y
+                            && previous._rendererRosterOrder <= sprite._rendererRosterOrder
+                        )
+                    ) break;
+                    visible[insertAt] = visible[insertAt - 1];
+                    insertAt--;
+                }
+                visible[insertAt] = sprite;
+            }
+        }
+        this._sortedSprites = visible;
         this._spritesNeedSort = false;
-        return this._sortedSprites;
+        return visible;
     }
 
     _enumeratePropDrawables() {
@@ -2217,6 +2367,7 @@ export class IsometricRenderer {
     }
 
     _setMotionScale(scale) {
+        this._invalidateIdleFrame();
         this.motionScale = scale;
         this.buildingRenderer?.setMotionScale(scale);
         this.ritualConductor?.setMotionScale(scale);
@@ -2797,6 +2948,7 @@ export class IsometricRenderer {
     }
 
     invalidateViewportCaches() {
+        this._invalidateIdleFrame();
         releaseCanvasBackingStore(this.atmosphereVignetteCache);
         this.atmosphereVignetteCache = null;
         this.atmosphereVignetteCacheKey = '';
@@ -3237,6 +3389,7 @@ export class IsometricRenderer {
 
     _handleClick(worldX, worldY) {
         if (!this.agentSprites.size && !this.buildingRenderer) return;
+        this._invalidateIdleFrame();
 
         let clicked = null;
 
@@ -3319,6 +3472,7 @@ export class IsometricRenderer {
 
     _setHoveredAgentSprite(sprite) {
         if (this._hoveredAgentSprite === sprite) return;
+        this._invalidateIdleFrame();
         if (this._hoveredAgentSprite) this._hoveredAgentSprite.setHovered(false);
         this._hoveredAgentSprite = sprite || null;
         if (this._hoveredAgentSprite) this._hoveredAgentSprite.setHovered(true);
@@ -3339,6 +3493,143 @@ export class IsometricRenderer {
         return reasons.length ? `${label}: ${count} - ${reasons.join(', ')}` : `${label}: ${count}`;
     }
 
+    _invalidateIdleFrame() {
+        this._idleFrameDirty = true;
+    }
+
+    _cameraIdleStable() {
+        const camera = this.camera;
+        if (!camera) return false;
+        if (
+            camera.dragging
+            || camera.followTarget
+            || camera._momentum
+            || camera._snapZoom
+            || camera._zoomAnimation
+            || camera._directorGlide
+            || camera._idleDrift
+            || camera._villageTour
+            || camera._followEase
+            || camera.isDirectorGliding?.()
+        ) return false;
+        const last = this._idleLastRenderCamera;
+        return camera.x === last.x && camera.y === last.y && camera.zoom === last.zoom;
+    }
+
+    _hasTimedIdleTransition(now = Date.now()) {
+        if (this.debugOverlay?.enabled || this.debugOverlay?.pathDebugEnabled) return true;
+        // AgentSprite.update owns routing, dwelling, reservation renewal, chat
+        // convergence and movement even under reduced motion. Only departed
+        // tableaux are truly static enough to stop advancing.
+        for (const sprite of this.agentSprites.values()) {
+            if (!sprite.agent?.isDeparted) return true;
+            if (sprite._archiveAnim || sprite.moving || sprite.chatting || sprite.chatPartner) return true;
+        }
+        if (this.gateTransits.size || this.gateDoorsOpen || now < this._gateDoorsOpenUntilMs) return true;
+        const arrival = this.arrivalDeparture;
+        if (
+            arrival?.arrivals?.size
+            || arrival?.dispatches?.size
+            || arrival?.merges?.size
+            || arrival?.sigils?.length
+            || arrival?.completionCues?.length
+            || arrival?.orphanReturns?.length
+        ) return true;
+        if (this.ritualConductor?.rituals?.length || this.particleSystem?.particles?.length) return true;
+        if (this._gullScatterActive()) return true;
+
+        const chronicler = this.chronicler;
+        if (
+            chronicler?._activeErrand
+            || chronicler?._errandQueue?.length
+            || (chronicler?.phase && chronicler.phase !== 'home')
+        ) return true;
+        if (now >= this._chronicleNextUpdateAt) return true;
+
+        const director = this.villageDirector;
+        if (
+            director?.replayActive
+            || director?.scenes?.length
+            || director?._recoveries?.size
+            || director?._pendingBiographyBanners?.length
+            || director?.buildingPresence?.size
+            || director?.toolEvents?.length
+        ) return true;
+        if (this.moodService?.getWeatherInfluence?.(now)) return true;
+        const harbor = this.harborTraffic;
+        if (
+            harbor?._hasTimedLifecycle
+            || harbor?.storageTransfers?.size
+            || harbor?.harborCrates?.size
+            || harbor?.state?.pushEvents?.size
+            || harbor?._pendingRepoSummaries?.length
+        ) return true;
+
+        // The live clock continuously changes sky, light and deterministic
+        // weather. A frozen date or explicit hour is required before the scene
+        // can be considered timeless.
+        if (!this.atmosphereState?._frozenDate && !Number.isFinite(this.atmosphereState?._hourOverride)) {
+            return true;
+        }
+        const atmosphere = this._lastAtmosphere;
+        const weather = atmosphere?.weather;
+        const weatherProgress = Number(weather?.transitionProgress);
+        if (
+            !atmosphere
+            || (weather?.timelineMode === 'auto' && weatherProgress > 0 && weatherProgress < 1)
+            || (
+                weather?.previousType !== weather?.nextType
+                && weatherProgress > 0
+                && weatherProgress < 1
+            )
+            || (Number(weather?.precipitation) || 0) > 0.001
+            || (Number(this._surfaceWetness) || 0) > 0.001
+        ) return true;
+        return false;
+    }
+
+    _pendingIdleResourceWork() {
+        const assets = this.assets;
+        const pending = Boolean(
+            this._worldResumePromise
+            || this._chronicleUpdatePromise
+            || assets?._loadPromise
+            || assets?._materialLoadPromise
+            || assets?._characterLoads?.size
+            || assets?._derivedArtQueue?.size
+            || this.gpuWorld?.pendingGpuQueries?.length
+        );
+        if (pending) {
+            this._idleResourceWorkObserved = true;
+            return true;
+        }
+        // Resource completion can change drawable pixels without a domain
+        // event. Force exactly one post-completion frame before becoming idle.
+        if (this._idleResourceWorkObserved) {
+            this._idleResourceWorkObserved = false;
+            return true;
+        }
+        return false;
+    }
+
+    _canSkipIdleFrame(now = Date.now()) {
+        return this.motionScale <= 0
+            && !this._idleFrameDirty
+            && this._cameraIdleStable()
+            && !this._hasTimedIdleTransition(now)
+            && !this._pendingIdleResourceWork();
+    }
+
+    _recordIdleRenderState() {
+        const camera = this.camera;
+        if (camera) {
+            this._idleLastRenderCamera.x = camera.x;
+            this._idleLastRenderCamera.y = camera.y;
+            this._idleLastRenderCamera.zoom = camera.zoom;
+        }
+        this._idleFrameDirty = false;
+    }
+
     _loop() {
         if (!this.running) return;
         this.frameId = null;
@@ -3348,6 +3639,14 @@ export class IsometricRenderer {
         const frameGapMs = Number.isFinite(this._lastFrameTime) ? now - this._lastFrameTime : 0;
         const dt = this._lastFrameTime ? Math.min(50, now - this._lastFrameTime) : 16;
         this._lastFrameTime = now;
+        if (this._canSkipIdleFrame(Date.now())) {
+            this._recordFrameEnvelope(0, 0, 0, frameGapMs, null);
+            if (this._performanceSamples) this._recordPerformanceSample(0, 0, 0);
+            this._trackFps(now);
+            this._frameFailureStats.consecutive = 0;
+            this._startLoop();
+            return;
+        }
         advanceMotionClock(this._motionClock, dt, this.motionScale ?? 1);
         this.waterFrame = virtualFramesFor(this.motionTimeMs) * WATER_FRAME_STEP;
         const perf = getClientPerfMetrics();
@@ -3373,6 +3672,7 @@ export class IsometricRenderer {
             this._render(dt);
             const afterRender = performance.now();
             renderMs = afterRender - renderStart;
+            this._recordIdleRenderState();
             if (renderToken) {
                 perf.endRenderStage(renderToken);
                 renderToken = null;
@@ -3651,6 +3951,7 @@ export class IsometricRenderer {
     }
 
     selectAgentById(agentId) {
+        this._invalidateIdleFrame();
         if (agentId && !this.selectedAgent) this._inspectionPose = this.camera.capturePose();
         for (const sprite of this.agentSprites.values()) {
             sprite.selected = false;
@@ -3723,11 +4024,19 @@ export class IsometricRenderer {
             this._updateChronicleSystems(chronicleNow);
         }
 
-        // Update agent sprites
+        // Update agent sprites. Routing, reservations, chat convergence and
+        // arrival/departure completion remain global: skipping those off-screen
+        // would make villagers jump or arrive in the wrong state when revealed.
+        // Particle emission is purely visual, so sprites beyond the generous
+        // screen apron advance against a null sink while keeping all state.
         let shouldResort = false;
         const completedDepartures = [];
+        const viewport = this._screenViewport();
         for (const sprite of this.agentSprites.values()) {
-            sprite.update(this.particleSystem, dt);
+            const particleSink = this._agentVisibleOnScreen(sprite, viewport)
+                ? this.particleSystem
+                : null;
+            sprite.update(particleSink, dt);
             const transit = this.gateTransits.get(sprite.agent?.id);
             if (transit && !sprite.moving && sprite.hasReachedTarget?.()) {
                 if (transit.type === 'departure') {
@@ -3769,7 +4078,9 @@ export class IsometricRenderer {
             this._resolveStationaryOverlaps();
         }
 
-        const sortedSnapshot = this._snapshotSortedSprites();
+        // These consumers need every live position but do not require painter
+        // order. Defer Y ordering until the render path has viewport-culled.
+        const allSpritesSnapshot = this._snapshotAllSprites();
         this._replayActiveToolRituals();
         this.ritualConductor?.update?.(dt);
         this._syncToolRitualPoses();
@@ -3791,12 +4102,12 @@ export class IsometricRenderer {
                 activeWorkingCount,
             });
         }
-        this.landmarkActivity?.update?.(agents, sortedSnapshot, dt, chronicleNow);
+        this.landmarkActivity?.update?.(agents, allSpritesSnapshot, dt, chronicleNow);
         const updateNow = Date.now();
         this.villageDirector?.update?.(this, dt, updateNow);
 
         // Update building renderer (pass agent sprite positions)
-        this.buildingRenderer?.setAgentSprites(sortedSnapshot);
+        this.buildingRenderer?.setAgentSprites(allSpritesSnapshot);
         this.buildingRenderer?.update(dt);
         this._updateAmbientEffects(dt);
 
@@ -3832,6 +4143,7 @@ export class IsometricRenderer {
         pending.finally(() => {
             if (this._chronicleUpdatePromise === pending) this._chronicleUpdatePromise = null;
             this._chronicleUpdating = false;
+            this._invalidateIdleFrame();
         });
     }
 
@@ -4529,8 +4841,13 @@ export class IsometricRenderer {
         return drawables;
     }
 
-    _agentRenderMode(viewport = this._screenViewport(), sprites = this._snapshotSortedSprites()) {
-        const count = sprites?.length || 0;
+    _agentRenderMode(viewport = this._screenViewport(), _visibleSprites = this._snapshotSortedSprites()) {
+        // Annotation LOD remains a whole-village policy so viewport culling
+        // cannot visibly change label style while the camera pans. Pressure
+        // does not depend on painter order, so the reusable unsorted snapshot
+        // preserves the previous semantics without reintroducing a full sort.
+        const sprites = this._snapshotAllSprites();
+        const count = sprites.length;
         const zoom = this.camera?.zoom || 1;
         const overlayArea = count * (zoom >= 3 ? 3900 : 2100);
         const collisions = Number(this._crowdStats?.congestedAgents) || 0;
@@ -4551,9 +4868,139 @@ export class IsometricRenderer {
         return 'full';
     }
 
+    _createRectGrid(cellSize = AGENT_OVERLAY_GRID_CELL) {
+        return {
+            cellSize,
+            generation: 0,
+            buckets: new Map(),
+            seen: new Set(),
+        };
+    }
+
+    _beginRectGridFrame(grid) {
+        grid.generation++;
+        if (grid.generation < 1000000000) return;
+        grid.generation = 1;
+        grid.buckets.clear();
+    }
+
+    _insertRectGridItem(grid, rect, item = rect) {
+        if (!grid || !rect) return;
+        const size = grid.cellSize;
+        const x0 = Math.floor(rect.x / size);
+        const x1 = Math.floor((rect.x + rect.w) / size);
+        const y0 = Math.floor(rect.y / size);
+        const y1 = Math.floor((rect.y + rect.h) / size);
+        for (let x = x0; x <= x1; x++) {
+            for (let y = y0; y <= y1; y++) {
+                const key = (x + 32768) * 65536 + y + 32768;
+                let bucket = grid.buckets.get(key);
+                if (!bucket) {
+                    bucket = { generation: grid.generation, items: [] };
+                    grid.buckets.set(key, bucket);
+                } else if (bucket.generation !== grid.generation) {
+                    bucket.generation = grid.generation;
+                    bucket.items.length = 0;
+                }
+                bucket.items.push(item);
+            }
+        }
+    }
+
+    _rectGridOverlapCount(grid, rect) {
+        if (!grid || !rect) return 0;
+        const seen = grid.seen;
+        seen.clear();
+        const size = grid.cellSize;
+        const x0 = Math.floor(rect.x / size);
+        const x1 = Math.floor((rect.x + rect.w) / size);
+        const y0 = Math.floor(rect.y / size);
+        const y1 = Math.floor((rect.y + rect.h) / size);
+        let overlaps = 0;
+        for (let x = x0; x <= x1; x++) {
+            for (let y = y0; y <= y1; y++) {
+                const bucket = grid.buckets.get((x + 32768) * 65536 + y + 32768);
+                if (!bucket || bucket.generation !== grid.generation) continue;
+                for (const item of bucket.items) {
+                    if (seen.has(item)) continue;
+                    seen.add(item);
+                    const itemRect = item.rect || item;
+                    if (this._rectsOverlap(rect, itemRect)) overlaps++;
+                }
+            }
+        }
+        return overlaps;
+    }
+
+    _rectGridHasOverlap(grid, rect) {
+        if (!grid || !rect) return false;
+        const size = grid.cellSize;
+        const x0 = Math.floor(rect.x / size);
+        const x1 = Math.floor((rect.x + rect.w) / size);
+        const y0 = Math.floor(rect.y / size);
+        const y1 = Math.floor((rect.y + rect.h) / size);
+        for (let x = x0; x <= x1; x++) {
+            for (let y = y0; y <= y1; y++) {
+                const bucket = grid.buckets.get((x + 32768) * 65536 + y + 32768);
+                if (!bucket || bucket.generation !== grid.generation) continue;
+                for (const item of bucket.items) {
+                    if (this._rectsOverlap(rect, item.rect || item)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    _rectListOverlapCount(items, rect) {
+        let overlaps = 0;
+        for (const item of items) {
+            if (this._rectsOverlap(rect, item.rect || item)) overlaps++;
+        }
+        return overlaps;
+    }
+
+    _rectListHasOverlap(items, rect) {
+        for (const item of items) {
+            if (this._rectsOverlap(rect, item.rect || item)) return true;
+        }
+        return false;
+    }
+
+    _firstRectGridOverlap(grid, rect) {
+        if (!grid || !rect) return null;
+        const seen = grid.seen;
+        seen.clear();
+        const size = grid.cellSize;
+        const x0 = Math.floor(rect.x / size);
+        const x1 = Math.floor((rect.x + rect.w) / size);
+        const y0 = Math.floor(rect.y / size);
+        const y1 = Math.floor((rect.y + rect.h) / size);
+        let first = null;
+        for (let x = x0; x <= x1; x++) {
+            for (let y = y0; y <= y1; y++) {
+                const bucket = grid.buckets.get((x + 32768) * 65536 + y + 32768);
+                if (!bucket || bucket.generation !== grid.generation) continue;
+                for (const item of bucket.items) {
+                    if (seen.has(item)) continue;
+                    seen.add(item);
+                    if (!this._rectsOverlap(rect, item.rect || item)) continue;
+                    if (!first || item.order < first.order) first = item;
+                }
+            }
+        }
+        return first;
+    }
+
     _assignAgentOverlaySlots(sprites, zoom = this.camera?.zoom || 1, { agentRenderMode = 'full' } = {}) {
-        const compactOccupied = [];
-        const nameOccupied = [];
+        const compactGrid = this._overlayCompactGrid;
+        const nameGrid = this._overlayNameGrid;
+        const bubbleGrid = this._overlayBubbleGrid;
+        const compactRects = this._overlayCompactRects;
+        const nameRects = this._overlayNameRects;
+        const reservedRects = this._overlayReservedRects;
+        compactRects.length = 0;
+        nameRects.length = 0;
+        reservedRects.length = 0;
         // Names are persistent at every annotation LOD. Action labels still
         // retain a density cap because they are transient secondary detail.
         const actionLabelCap = agentRenderMode === 'minimal'
@@ -4562,9 +5009,24 @@ export class IsometricRenderer {
                 ? 4
                 : Infinity;
         let actionLabels = 0;
-        const prioritized = sprites
-            .filter((sprite) => sprite.agent)
-            .sort((a, b) => this._agentLabelPriority(b) - this._agentLabelPriority(a));
+        // Cull before priority sorting or allocating any label geometry. The
+        // input is normally already the visible painter snapshot, but keeping
+        // this guard here makes the layout contract safe for other callers.
+        const viewport = this._screenViewport();
+        const prioritized = this._overlayPrioritizedSprites;
+        prioritized.length = 0;
+        for (const sprite of sprites || []) {
+            if (sprite.agent && this._agentVisibleOnScreen(sprite, viewport)) prioritized.push(sprite);
+        }
+        prioritized.sort((a, b) => this._agentLabelPriority(b) - this._agentLabelPriority(a));
+        // A direct scan is faster for small visible sets. Above that, the grid
+        // bounds each query to spatial neighbours instead of the full crowd.
+        const useSpatialGrid = prioritized.length > 32;
+        if (useSpatialGrid) {
+            this._beginRectGridFrame(compactGrid);
+            this._beginRectGridFrame(nameGrid);
+            this._beginRectGridFrame(bubbleGrid);
+        }
 
         // Primary agents reserve their label envelope before buildings and
         // routine agents request overlay space later in the frame.
@@ -4584,17 +5046,37 @@ export class IsometricRenderer {
             sprite.foldedIntoBuilding = false;
 
             if (sprite.selected) {
-                compactOccupied.push(this._agentCompactSlotRect(sprite, 0));
-                nameOccupied.push(this._agentNameSlotRect(sprite, 0));
+                const compactRect = this._agentCompactSlotRect(sprite, 0);
+                const nameRect = this._agentNameSlotRect(sprite, 0);
+                if (useSpatialGrid) {
+                    this._insertRectGridItem(compactGrid, compactRect);
+                    this._insertRectGridItem(nameGrid, nameRect);
+                    this._insertRectGridItem(bubbleGrid, compactRect);
+                    this._insertRectGridItem(bubbleGrid, nameRect);
+                } else {
+                    compactRects.push(compactRect);
+                    nameRects.push(nameRect);
+                    reservedRects.push(compactRect, nameRect);
+                }
                 sprite.overlaySlot = 0;
                 sprite.nameTagSlot = 0;
                 sprite.gpuActionOverlay = true;
                 continue;
             }
 
-            const compactSlot = this._leastOverlappedCompactSlot(sprite, compactOccupied);
+            const compactSlot = this._leastOverlappedCompactSlot(
+                sprite,
+                useSpatialGrid ? compactGrid : compactRects,
+            );
             sprite.overlaySlot = compactSlot;
-            compactOccupied.push(this._agentCompactSlotRect(sprite, compactSlot));
+            const compactRect = this._agentCompactSlotRect(sprite, compactSlot);
+            if (useSpatialGrid) {
+                this._insertRectGridItem(compactGrid, compactRect);
+                this._insertRectGridItem(bubbleGrid, compactRect);
+            } else {
+                compactRects.push(compactRect);
+                reservedRects.push(compactRect);
+            }
             if (sprite.agent?.currentTool && actionLabels < actionLabelCap) {
                 sprite.gpuActionOverlay = true;
                 actionLabels++;
@@ -4611,7 +5093,10 @@ export class IsometricRenderer {
             // tags and static prop footprints (tags stay off prop art).
             while (
                 nameSlot < 7 &&
-                (nameOccupied.some((item) => this._rectsOverlap(nameRect, item)) || this._nameSlotRectHitsProp(nameRect, sprite.y))
+                ((useSpatialGrid
+                    ? this._rectGridHasOverlap(nameGrid, nameRect)
+                    : this._rectListHasOverlap(nameRects, nameRect))
+                    || this._nameSlotRectHitsProp(nameRect, sprite.y))
             ) {
                 nameSlot++;
                 nameRect = this._agentNameSlotRect(sprite, nameSlot);
@@ -4620,35 +5105,45 @@ export class IsometricRenderer {
                 sprite.nameTagSlot = null;
             } else {
                 sprite.nameTagSlot = nameSlot;
-                nameOccupied.push(nameRect);
+                if (useSpatialGrid) {
+                    this._insertRectGridItem(nameGrid, nameRect);
+                    this._insertRectGridItem(bubbleGrid, nameRect);
+                } else {
+                    nameRects.push(nameRect);
+                    reservedRects.push(nameRect);
+                }
             }
         }
 
-        const bubbleSprites = agentRenderMode === 'full'
-            ? prioritized
-            : prioritized.filter((sprite) => {
+        const bubbleSprites = this._overlayBubbleSprites;
+        bubbleSprites.length = 0;
+        for (const sprite of prioritized) {
+            if (agentRenderMode === 'full') {
+                bubbleSprites.push(sprite);
+            } else {
                 const status = sprite.agent?.status;
-                return sprite.gpuActionOverlay || sprite.selected
+                if (sprite.gpuActionOverlay || sprite.selected
                     || status === AgentStatus.WAITING_ON_USER
                     || status === AgentStatus.ERRORED
-                    || status === AgentStatus.RATE_LIMITED;
-            });
+                    || status === AgentStatus.RATE_LIMITED) bubbleSprites.push(sprite);
+            }
+        }
         this._assignAgentBubbleSlots(
             bubbleSprites,
             zoom,
-            [...compactOccupied, ...nameOccupied],
+            useSpatialGrid ? null : reservedRects,
+            useSpatialGrid ? bubbleGrid : false,
         );
     }
 
-    _leastOverlappedCompactSlot(sprite, occupied, slotCount = 4) {
+    _leastOverlappedCompactSlot(sprite, occupiedGrid, slotCount = 4) {
         let bestSlot = 0;
         let bestOverlapCount = Infinity;
         for (let slot = 0; slot < slotCount; slot++) {
             const rect = this._agentCompactSlotRect(sprite, slot);
-            const overlapCount = occupied.reduce(
-                (count, item) => count + (this._rectsOverlap(rect, item) ? 1 : 0),
-                0,
-            );
+            const overlapCount = Array.isArray(occupiedGrid)
+                ? this._rectListOverlapCount(occupiedGrid, rect)
+                : this._rectGridOverlapCount(occupiedGrid, rect);
             if (overlapCount === 0) return slot;
             if (overlapCount < bestOverlapCount) {
                 bestSlot = slot;
@@ -4664,21 +5159,39 @@ export class IsometricRenderer {
     // an ellipsis dot so at most AGENT_BUBBLE_SLOT_CAP full bubbles render per
     // cluster. Deterministic priority (selected, then label priority, then stable
     // id) keeps slots from flickering frame to frame. Pure layout, no motion.
-    _assignAgentBubbleSlots(sprites, zoom = this.camera?.zoom || 1, reservedLabels = []) {
+    _assignAgentBubbleSlots(
+        sprites,
+        zoom = this.camera?.zoom || 1,
+        reservedLabels = [],
+        occupiedGrid = null,
+    ) {
         // Names and thoughts share one reservation plane even though their
         // anchors are deliberately below and above the character respectively.
         // This prevents one villager's thought from covering another's name.
-        const occupied = [...reservedLabels];
-        const order = sprites
-            .filter((sprite) => sprite.agent && this._spriteWantsBubble(sprite))
-            .sort((a, b) => {
-                const delta = this._agentLabelPriority(b) - this._agentLabelPriority(a);
-                if (delta !== 0) return delta;
-                return String(a.agent.id) < String(b.agent.id) ? -1 : 1;
-            });
+        const useSpatialGrid = occupiedGrid !== false;
+        const grid = useSpatialGrid ? (occupiedGrid || this._overlayBubbleGrid) : null;
+        const occupied = this._overlayBubbleOccupiedRects;
+        occupied.length = 0;
+        if (useSpatialGrid && !occupiedGrid) {
+            this._beginRectGridFrame(grid);
+            for (const rect of reservedLabels) this._insertRectGridItem(grid, rect);
+        } else if (!useSpatialGrid) {
+            for (const rect of reservedLabels) occupied.push(rect);
+        }
+        const order = this._overlayBubbleOrder;
+        order.length = 0;
+        for (const sprite of sprites || []) {
+            if (sprite.agent && this._spriteWantsBubble(sprite)) order.push(sprite);
+        }
+        order.sort((a, b) => {
+            const delta = this._agentLabelPriority(b) - this._agentLabelPriority(a);
+            if (delta !== 0) return delta;
+            return String(a.agent.id) < String(b.agent.id) ? -1 : 1;
+        });
         // 3.8 — each sprite's slot-0 rect, kept for the identical-bubble merge
         // pass below (same allocation envelope the slot loop already has).
-        const baseRects = [];
+        const baseRects = this._overlayBubbleBaseRects;
+        baseRects.length = 0;
         for (const sprite of order) {
             sprite.bubbleSlot = 0;
             sprite.bubbleSuppressed = false;
@@ -4692,7 +5205,9 @@ export class IsometricRenderer {
             const slotCap = sprite.selected ? 8 : AGENT_BUBBLE_SLOT_CAP;
             while (
                 slot < slotCap &&
-                occupied.some((item) => this._rectsOverlap(rect, item))
+                (useSpatialGrid
+                    ? this._rectGridHasOverlap(grid, rect)
+                    : this._rectListHasOverlap(occupied, rect))
             ) {
                 slot++;
                 rect = this._agentBubbleSlotRect(sprite, slot);
@@ -4701,10 +5216,11 @@ export class IsometricRenderer {
                 sprite.bubbleSuppressed = true;
             } else {
                 sprite.bubbleSlot = slot;
-                occupied.push(rect);
+                if (useSpatialGrid) this._insertRectGridItem(grid, rect);
+                else occupied.push(rect);
             }
         }
-        this._mergeIdenticalClusterBubbles(order, baseRects);
+        this._mergeIdenticalClusterBubbles(order, baseRects, useSpatialGrid);
     }
 
     // 3.8 — identical-bubble merge. Within one bubble-slot cluster (sprites
@@ -4715,25 +5231,38 @@ export class IsometricRenderer {
     // comes from the stable `order` sort, so membership cannot flicker. Slot
     // assignment above is left untouched: merged members keep their slots, so
     // unmerged neighbours never reshuffle frame to frame.
-    _mergeIdenticalClusterBubbles(order, baseRects) {
-        const clusters = [];
+    _mergeIdenticalClusterBubbles(order, baseRects, useSpatialGrid = true) {
+        const clusters = this._overlayBubbleClusters;
+        const clusterGrid = this._overlayClusterGrid;
+        if (useSpatialGrid) this._beginRectGridFrame(clusterGrid);
+        let clusterCount = 0;
         for (let i = 0; i < order.length; i++) {
             const sprite = order[i];
             if (sprite.selected) continue; // selected agents never merge
             const rect = baseRects[i];
-            let cluster = null;
-            for (const candidate of clusters) {
-                if (this._rectsOverlap(rect, candidate.rect)) {
+            let cluster = useSpatialGrid ? this._firstRectGridOverlap(clusterGrid, rect) : null;
+            if (!useSpatialGrid) {
+                for (let clusterIndex = 0; clusterIndex < clusterCount; clusterIndex++) {
+                    const candidate = clusters[clusterIndex];
+                    if (!this._rectsOverlap(rect, candidate.rect)) continue;
                     cluster = candidate;
                     break;
                 }
             }
             if (!cluster) {
-                cluster = {
-                    rect: { x: rect.x, y: rect.y, w: rect.w, h: rect.h },
+                cluster = clusters[clusterCount] || {
+                    rect: { x: 0, y: 0, w: 0, h: 0 },
                     members: [],
+                    order: 0,
                 };
-                clusters.push(cluster);
+                clusters[clusterCount] = cluster;
+                cluster.order = clusterCount;
+                cluster.rect.x = rect.x;
+                cluster.rect.y = rect.y;
+                cluster.rect.w = rect.w;
+                cluster.rect.h = rect.h;
+                cluster.members.length = 0;
+                clusterCount++;
             } else {
                 // Union rect so transitively-overlapping sprites join one cluster.
                 const x1 = Math.max(cluster.rect.x + cluster.rect.w, rect.x + rect.w);
@@ -4744,27 +5273,26 @@ export class IsometricRenderer {
                 cluster.rect.h = y1 - cluster.rect.y;
             }
             cluster.members.push(sprite);
+            // A union can enter new cells. Old bucket references are harmless;
+            // overlap is always rechecked against the current union rect.
+            if (useSpatialGrid) this._insertRectGridItem(clusterGrid, cluster.rect, cluster);
         }
-        for (const cluster of clusters) {
+        this._overlayBubbleClusterCount = clusterCount;
+        const groups = this._overlayBubbleGroups;
+        for (let clusterIndex = 0; clusterIndex < clusterCount; clusterIndex++) {
+            const cluster = clusters[clusterIndex];
             if (cluster.members.length < 2) continue;
-            const groups = new Map();
+            groups.clear();
             for (const sprite of cluster.members) {
                 const key = this._bubbleMergeKey(sprite);
                 if (!key) continue;
-                let group = groups.get(key);
-                if (!group) {
-                    group = [];
-                    groups.set(key, group);
+                const representative = groups.get(key);
+                if (!representative) {
+                    groups.set(key, sprite);
+                    continue;
                 }
-                group.push(sprite);
-            }
-            for (const group of groups.values()) {
-                if (group.length < 2) continue;
-                const representative = group[0];
-                representative.bubbleMergedCount = group.length;
-                for (let i = 1; i < group.length; i++) {
-                    group[i].bubbleMergedInto = representative;
-                }
+                representative.bubbleMergedCount++;
+                sprite.bubbleMergedInto = representative;
             }
         }
     }
@@ -4775,7 +5303,13 @@ export class IsometricRenderer {
     // or showing the long-wait clock bubble, which has no ×N chip path —
     // never merge.
     _bubbleMergeKey(sprite) {
-        const head = sprite._activityThread?.()?.[0];
+        // Layout already reads the sprite's current activity snapshot. Reusing
+        // it avoids rebuilding/pruning the complete activity thread solely to
+        // derive a merge key.
+        const archiveProgress = sprite._archiveFadeProgress?.();
+        const head = archiveProgress > 0 && archiveProgress < 1
+            ? { text: 'FINAL', accent: sprite._statusVisual?.()?.color || '#f2d36b' }
+            : sprite._activitySnapshot;
         if (!head || !head.text) return null;
         if (sprite._shouldUseLongWaitClock?.()) return null;
         const accent = head.accent || sprite._statusVisual?.()?.color || '';
@@ -4837,7 +5371,8 @@ export class IsometricRenderer {
 
     _collectAgentLabelHitRects(sprites) {
         const zoom = this.camera?.zoom || 1;
-        const out = [];
+        const out = this._agentLabelHitRects;
+        out.length = 0;
         for (const sprite of sprites) {
             if (!sprite.agent) continue;
 

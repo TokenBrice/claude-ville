@@ -226,6 +226,13 @@ export class WebSocketClient {
     _rememberSnapshot(data) {
         this._state = {
             sessions: Array.isArray(data.sessions) ? data.sessions : [],
+            gitEventFields: Array.isArray(data.gitEventFields) ? data.gitEventFields : [],
+            gitEventStringTables: Array.isArray(data.gitEventStringTables)
+                ? data.gitEventStringTables
+                : [],
+            gitEventsById: data.gitEventsById && typeof data.gitEventsById === 'object'
+                ? data.gitEventsById
+                : {},
             teams: Array.isArray(data.teams) ? data.teams : [],
             usage: data.usage ?? null,
         };
@@ -285,6 +292,9 @@ export class WebSocketClient {
         const payload = {
             type: 'update',
             sessions: next.sessions,
+            gitEventFields: next.gitEventFields,
+            gitEventStringTables: next.gitEventStringTables,
+            gitEventsById: next.gitEventsById,
             teams: next.teams,
             usage: next.usage,
             timestamp: data.timestamp,

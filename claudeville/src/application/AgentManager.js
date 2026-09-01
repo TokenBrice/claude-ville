@@ -66,6 +66,22 @@ const SIGNATURE_CHARACTER_BUDGET = 64 * 1024;
 const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages']);
 const VERIFIED_OUTCOME_KEY_LIMIT = 512;
 
+function gitEventWireReference(value) {
+    let hash = 2166136261;
+    const text = String(value || '');
+    for (let index = 0; index < text.length; index++) {
+        hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+    }
+    const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+    let encoded = '';
+    let remaining = hash >>> 0;
+    for (let index = 0; index < 6; index++) {
+        encoded = alphabet[remaining % 64] + encoded;
+        remaining = Math.floor(remaining / 64);
+    }
+    return encoded;
+}
+
 function mixDigestCode(state, code) {
     state.a = Math.imul(state.a ^ code, 16777619);
     state.b = Math.imul(state.b ^ code, 2246822519);
@@ -243,8 +259,9 @@ export class AgentManager {
 
             this._teamMembers = this._buildTeamMembers(teams);
 
+            const gitEventWire = this._gitEventWireFrom(sessions);
             for (const session of sessions) {
-                this._upsertAgent(session, this._teamMembers);
+                this._upsertAgent(session, this._teamMembers, gitEventWire);
             }
 
             console.log(`[AgentManager] ${this.world.agents.size} agents loaded`);
@@ -264,9 +281,10 @@ export class AgentManager {
 
         const currentIds = new Set();
 
+        const gitEventWire = this._gitEventWireFrom(data, data.sessions);
         for (const session of data.sessions) {
             currentIds.add(session.sessionId);
-            this._upsertAgent(session, this._teamMembers);
+            this._upsertAgent(session, this._teamMembers, gitEventWire);
         }
 
         // Missing sessions linger as departed villagers. COMPLETED is an
@@ -319,9 +337,9 @@ export class AgentManager {
         return Number.isFinite(now) ? now : Date.now();
     }
 
-    _upsertAgent(session, teamMembers) {
-        this._noteVerifiedGitOutcomes(session);
-        const payload = this._sessionToAgentPayload(session, teamMembers);
+    _upsertAgent(session, teamMembers, gitEventWire = null) {
+        const payload = this._sessionToAgentPayload(session, teamMembers, gitEventWire);
+        this._noteVerifiedGitOutcomes(session, payload.gitEvents);
         const { id } = payload;
         const signature = this._agentSignature(payload);
 
@@ -360,9 +378,9 @@ export class AgentManager {
         return digestAgentPayload(payload);
     }
 
-    _noteVerifiedGitOutcomes(session) {
+    _noteVerifiedGitOutcomes(session, gitEvents = session?.gitEvents) {
         const agentId = session?.sessionId || session?.agentId || null;
-        for (const event of session?.gitEvents || []) {
+        for (const event of gitEvents || []) {
             const outcome = verifiedOutcomeFromGitEvent(event, {
                 project: session?.project,
                 agentId,
@@ -429,7 +447,7 @@ export class AgentManager {
         }
     }
 
-    _sessionToAgentPayload(session, teamMembers) {
+    _sessionToAgentPayload(session, teamMembers, gitEventWire = null) {
         const id = session.sessionId;
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
         const agentName = teamInfo?.name || session.name || session.agentName || session.nickname || null;
@@ -462,7 +480,7 @@ export class AgentManager {
             currentToolInput: hasFreshTool ? session.lastToolInput || null : null,
             lastTool: session.lastTool || null,
             lastToolInput: session.lastToolInput || null,
-            gitEvents: Array.isArray(session.gitEvents) ? session.gitEvents : [],
+            gitEvents: this._rehydrateGitEvents(session.gitEvents, gitEventWire),
             permissionMode: session.permissionMode ?? null,
             turnState: session.turnState ?? 'unknown',
             pendingTool: session.pendingTool ?? null,
@@ -481,6 +499,95 @@ export class AgentManager {
             projectPath: session.project || null,
             provider: session.provider || 'claude',
         };
+    }
+
+    _gitEventWireFrom(primary, fallback = null) {
+        const eventsById = primary?.gitEventsById || fallback?.gitEventsById || null;
+        const idsByReference = Object.create(null);
+        const usedReferences = new Set();
+        for (const id of Object.keys(eventsById || {}).sort()) {
+            const baseReference = gitEventWireReference(id);
+            let reference = baseReference;
+            let suffix = 2;
+            while (usedReferences.has(reference)) reference = `${baseReference}~${suffix++}`;
+            usedReferences.add(reference);
+            idsByReference[reference] = id;
+        }
+        return {
+            idsByReference,
+            fields: primary?.gitEventFields || fallback?.gitEventFields || null,
+            stringTables: primary?.gitEventStringTables || fallback?.gitEventStringTables || null,
+            eventsById,
+        };
+    }
+
+    _rehydrateGitEvents(gitEvents, wire) {
+        if (!Array.isArray(gitEvents)) return [];
+        if (!gitEvents.some(reference => typeof reference === 'string' || Number.isInteger(reference))) {
+            return gitEvents;
+        }
+
+        const resolved = [];
+        for (const reference of gitEvents) {
+            if (reference && typeof reference === 'object' && !Array.isArray(reference)) {
+                resolved.push(this._cloneGitEventValue(reference));
+                continue;
+            }
+            const event = this._gitEventFromReference(reference, wire);
+            if (event) resolved.push(event);
+        }
+        return resolved;
+    }
+
+    _gitEventFromReference(reference, wire) {
+        const directKey = typeof reference === 'string' ? reference : null;
+        const key = directKey && Object.prototype.hasOwnProperty.call(wire?.eventsById || {}, directKey)
+            ? directKey
+            : wire?.idsByReference?.[directKey];
+        if (
+            typeof key !== 'string'
+            || !wire?.eventsById
+            || !Object.prototype.hasOwnProperty.call(wire.eventsById, key)
+        ) return null;
+
+        const row = wire.eventsById[key];
+        if (!Array.isArray(row)) {
+            return row && typeof row === 'object' ? this._cloneGitEventValue(row) : null;
+        }
+        if (!Array.isArray(row[0]) || !Array.isArray(wire.fields)) return null;
+
+        const dictionaries = new Map();
+        for (const entry of wire.stringTables || []) {
+            if (Array.isArray(entry) && Number.isInteger(entry[0]) && Array.isArray(entry[1])) {
+                dictionaries.set(entry[0], entry[1]);
+            }
+        }
+        const event = {};
+        let valueIndex = 1;
+        for (let fieldIndex = 0; fieldIndex < wire.fields.length; fieldIndex++) {
+            const mask = Number(row[0][Math.floor(fieldIndex / 30)]) || 0;
+            const present = Math.floor(mask / (2 ** (fieldIndex % 30))) % 2 === 1;
+            if (!present) continue;
+            if (valueIndex >= row.length) return null;
+            let value = row[valueIndex++];
+            const dictionary = dictionaries.get(fieldIndex);
+            if (dictionary) {
+                if (!Number.isInteger(value) || value < 0 || value >= dictionary.length) return null;
+                value = dictionary[value];
+            }
+            event[wire.fields[fieldIndex]] = this._cloneGitEventValue(value);
+        }
+        return event;
+    }
+
+    _cloneGitEventValue(value) {
+        if (Array.isArray(value)) return value.map(item => this._cloneGitEventValue(item));
+        if (!value || typeof value !== 'object') return value;
+        const clone = {};
+        for (const [key, child] of Object.entries(value)) {
+            clone[key] = this._cloneGitEventValue(child);
+        }
+        return clone;
     }
 
     /**

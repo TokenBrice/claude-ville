@@ -24,6 +24,7 @@ import { ornamentPlan, sampleFramePressure } from './MarkGovernor.js';
 
 const FRAME_TIMING_RING_CAPACITY = 90;
 const FRAME_TIMER_MAX_MARKS = 48;
+const CANVAS_SCENE_BACKEND = Object.freeze({ id: 'canvas-2d', canvasFallback: true });
 
 // Quarter-res occupancy field, matching the PostFx water-mask budget. One
 // byte per sample; the renderer paints it into a reused quarter-res canvas
@@ -407,16 +408,20 @@ export function renderWorldFrame(renderer, dt = 16) {
     if (!ctx || !canvas || !overlayCtx) return;
     if (!canvas.width || !canvas.height) return;
     const frameTimer = beginFrameTiming(renderer);
+    const collectStructuralDiagnostics = renderer.debugOverlay?.enabled === true;
     const renderNow = Date.now();
     const villageSnapshot = renderer.villageDirector?.getSnapshot?.() || null;
     const viewport = renderer._screenViewport();
     const gpuWorldRequested = renderer.gpuWorld?.isActive?.() === true;
-    const sceneCategoryFrame = worldSceneCategoryRegistry.enumerate({ renderer, renderNow });
+    const sceneCategoryContext = renderer._sceneCategoryContext || (renderer._sceneCategoryContext = {});
+    sceneCategoryContext.renderer = renderer;
+    sceneCategoryContext.renderNow = renderNow;
+    const sceneCategoryFrame = worldSceneCategoryRegistry.enumerate(sceneCategoryContext);
     const sceneCategoryResolution = worldSceneCategoryRegistry.resolve(
         sceneCategoryFrame,
         gpuWorldRequested
-            ? sceneCommandBackend(renderer.gpuWorld)
-            : { id: 'canvas-2d', canvasFallback: true },
+            ? sceneCommandBackend(renderer, renderer.gpuWorld)
+            : CANVAS_SCENE_BACKEND,
     );
     emitSceneCategoryDiagnostics(renderer, sceneCategoryResolution.diagnostics);
     const gpuWorldActive = gpuWorldRequested && !sceneCategoryResolution.requireCanvasFrame;
@@ -428,7 +433,8 @@ export function renderWorldFrame(renderer, dt = 16) {
     // director's baton reaches it (progress near terminus), deduped per scene id.
     if (villageSnapshot?.handoffs?.length) {
         const acked = (renderer._handoffAcked ||= new Set());
-        const live = new Set();
+        const live = renderer._liveHandoffIds || (renderer._liveHandoffIds = new Set());
+        live.clear();
         for (const h of villageSnapshot.handoffs) {
             if (h?.kind !== 'handoff' || !h?.to?.id) continue;
             live.add(h.id);
@@ -601,31 +607,39 @@ export function renderWorldFrame(renderer, dt = 16) {
 
     const drawables = renderer._drawables;
     drawables.length = 0;
-    appendDepthSortedDrawables(drawables, {
-        buildingDrawables,
-        propDrawables,
-        agentSprites: sortedSprites,
-        sceneCategoryFrame,
-        landmarkDrawables,
-        chronicleMonumentDrawables,
-        chroniclerDrawables,
-        familiarDrawables,
-    });
-    const cullingStats = cullDepthSortedDrawables(drawables, renderer.camera, viewport, 220);
-    const drawableStats = summarizeDrawableLayers(drawables, cullingStats);
+    const drawableAssembly = renderer._drawableAssembly || (renderer._drawableAssembly = {});
+    drawableAssembly.buildingDrawables = buildingDrawables;
+    drawableAssembly.propDrawables = propDrawables;
+    drawableAssembly.agentSprites = sortedSprites;
+    drawableAssembly.sceneCategoryFrame = sceneCategoryFrame;
+    drawableAssembly.landmarkDrawables = landmarkDrawables;
+    drawableAssembly.chronicleMonumentDrawables = chronicleMonumentDrawables;
+    drawableAssembly.chroniclerDrawables = chroniclerDrawables;
+    drawableAssembly.familiarDrawables = familiarDrawables;
+    appendDepthSortedDrawables(drawables, drawableAssembly);
+    const cullingStats = cullDepthSortedDrawables(
+        drawables,
+        renderer.camera,
+        viewport,
+        220,
+        collectStructuralDiagnostics,
+    );
+    const drawableStats = collectStructuralDiagnostics
+        ? summarizeDrawableLayers(drawables, cullingStats)
+        : null;
     markFrameTiming(frameTimer, 'sort/cull');
-    drawDepthSortedDrawables(ctx, drawables, {
-        zoom,
-        renderNow,
-        renderer,
-        buildingRenderer: renderer.buildingRenderer,
-        harborTraffic: renderer.harborTraffic,
-        landmarkActivity: renderer.landmarkActivity,
-        chronicleMonuments: renderer.chronicleMonuments,
-        chronicler: renderer.chronicler,
-        agentRenderMode,
-        gpuWorldActive,
-    });
+    const drawableContext = renderer._drawableContext || (renderer._drawableContext = {});
+    drawableContext.zoom = zoom;
+    drawableContext.renderNow = renderNow;
+    drawableContext.renderer = renderer;
+    drawableContext.buildingRenderer = renderer.buildingRenderer;
+    drawableContext.harborTraffic = renderer.harborTraffic;
+    drawableContext.landmarkActivity = renderer.landmarkActivity;
+    drawableContext.chronicleMonuments = renderer.chronicleMonuments;
+    drawableContext.chronicler = renderer.chronicler;
+    drawableContext.agentRenderMode = agentRenderMode;
+    drawableContext.gpuWorldActive = gpuWorldActive;
+    drawDepthSortedDrawables(ctx, drawables, drawableContext);
     if (!gpuWorldActive) renderer._drawSurfaceWetnessMarks?.(ctx, 'roofs');
     markFrameTiming(frameTimer, 'drawables');
     drawTalkArcs(ctx, {
@@ -661,27 +675,28 @@ export function renderWorldFrame(renderer, dt = 16) {
     let gpuWorldRendered = false;
     let postFxRendered = false;
     const needsGpuFeed = gpuWorldActive || postFxActive;
+    const postFxFeedContext = renderer._postFxFeedContext || (renderer._postFxFeedContext = {});
+    postFxFeedContext.renderer = renderer;
+    postFxFeedContext.atmosphere = atmosphere;
+    postFxFeedContext.villageSnapshot = villageSnapshot;
+    postFxFeedContext.nowMs = renderNow;
     const feed = needsGpuFeed
-        ? renderer.postFxFeed?.build?.({
-            renderer,
-            atmosphere,
-            villageSnapshot,
-            nowMs: renderNow,
-        }) || null
+        ? renderer.postFxFeed?.build?.(postFxFeedContext) || null
         : null;
     if (gpuWorldActive) {
-        const records = buildGpuWorldRecords(renderer, { drawables });
-        const gpuFeed = Object.assign(renderer._gpuFeedEnvelope ||= {}, feed || {}, {
-            atmosphere,
-            weather: atmosphere?.weather || null,
-            lighting: atmosphere?.lighting || null,
-        });
-        gpuWorldRendered = renderer.gpuWorld?.render?.({
-            records,
-            camera: renderer.camera,
-            feed: gpuFeed,
-            sceneCommands: sceneCategoryResolution.nativeCommandBatches,
-        }) === true;
+        const gpuBuildContext = renderer._gpuBuildContext || (renderer._gpuBuildContext = {});
+        gpuBuildContext.drawables = drawables;
+        const records = buildGpuWorldRecords(renderer, gpuBuildContext);
+        const gpuFeed = Object.assign(renderer._gpuFeedEnvelope ||= {}, feed || {});
+        gpuFeed.atmosphere = atmosphere;
+        gpuFeed.weather = atmosphere?.weather || null;
+        gpuFeed.lighting = atmosphere?.lighting || null;
+        const gpuRenderContext = renderer._gpuRenderContext || (renderer._gpuRenderContext = {});
+        gpuRenderContext.records = records;
+        gpuRenderContext.camera = renderer.camera;
+        gpuRenderContext.feed = gpuFeed;
+        gpuRenderContext.sceneCommands = sceneCategoryResolution.nativeCommandBatches;
+        gpuWorldRendered = renderer.gpuWorld?.render?.(gpuRenderContext) === true;
         markFrameTiming(frameTimer, 'gpu-world');
     } else if (postFxActive) {
         postFxRendered = renderer.postFx?.render?.(canvas, feed) === true;
@@ -710,11 +725,11 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.camera.applyTransform(overlayCtx);
     if (gpuWorldRendered) {
         renderer.trailRenderer?.draw?.(overlayCtx, renderer.camera, viewport, renderNow);
-        drawSceneCategoryOverlays(overlayCtx, drawables, sceneCategoryResolution, {
-            zoom,
-            renderNow,
-            renderer,
-        });
+        const sceneOverlayContext = renderer._sceneOverlayContext || (renderer._sceneOverlayContext = {});
+        sceneOverlayContext.zoom = zoom;
+        sceneOverlayContext.renderNow = renderNow;
+        sceneOverlayContext.renderer = renderer;
+        drawSceneCategoryOverlays(overlayCtx, drawables, sceneCategoryResolution, sceneOverlayContext);
         renderer.harborTraffic?.drawFinaleEffects?.(overlayCtx, renderNow);
     }
     // 0.7 — re-stamp the PRIMARY mark set (waiting beacons, selection rings,
@@ -737,27 +752,28 @@ export function renderWorldFrame(renderer, dt = 16) {
         occupiedBoxes: renderer._collectAgentLabelHitRects(sortedSprites),
         harborPendingRepos,
     });
-    renderer._lastRenderStats = buildRenderStats(renderer, {
-        drawableStats,
-        cullingStats,
-        harborPendingRepos,
-        sceneCategoryResolution,
-        inputCounts: {
-            buildings: buildingDrawables.length,
-            props: propDrawables.length,
-            agents: sortedSprites.length,
-            sceneCategories: Object.fromEntries(sceneCategoryFrame.entries.map(entry => [
-                entry.category.id,
-                entry.items.length,
-            ])),
-            landmarks: landmarkDrawables.length,
-            monuments: chronicleMonumentDrawables.length,
-            chronicler: chroniclerDrawables.length,
-            familiars: familiarDrawables.length,
-        },
-        agentRenderMode,
-        gpuWorld: renderer.gpuWorld?.getDiagnostics?.() || null,
-    });
+    if (collectStructuralDiagnostics) {
+        renderer._lastRenderStats = buildRenderStats(renderer, {
+            drawableStats,
+            cullingStats,
+            harborPendingRepos,
+            sceneCategoryResolution,
+            inputCounts: {
+                buildings: buildingDrawables.length,
+                props: propDrawables.length,
+                agents: sortedSprites.length,
+                sceneCategories: Object.fromEntries(sceneCategoryFrame.entries.map(entry => [
+                    entry.category.id,
+                    entry.items.length,
+                ])),
+                landmarks: landmarkDrawables.length,
+                monuments: chronicleMonumentDrawables.length,
+                chronicler: chroniclerDrawables.length,
+                familiars: familiarDrawables.length,
+            },
+            agentRenderMode,
+        });
+    }
     markFrameTiming(frameTimer, 'labels');
 
     renderer._resetScreenTransform(overlayCtx);
@@ -776,10 +792,11 @@ export function renderWorldFrame(renderer, dt = 16) {
     // the frame. Never fires under reduced motion (no cue glides happen).
     drawCueLetterbox(overlayCtx, renderer.camera, viewport);
     drawDebugOverlay(renderer, overlayCtx, atmosphere, viewport);
-    renderer._lastRenderStats = {
-        ...renderer._lastRenderStats,
-        timings: finishFrameTiming(renderer, frameTimer),
-    };
+    const timings = finishFrameTiming(renderer, frameTimer);
+    if (frameTimer) {
+        const renderStats = renderer._lastRenderStats || (renderer._lastRenderStats = {});
+        renderStats.timings = timings;
+    }
 }
 
 function hexToRgb(hex) {
@@ -1412,13 +1429,17 @@ function buildRenderStats(renderer, {
     };
 }
 
-function sceneCommandBackend(backend) {
-    return {
-        id: backend?.backendId || backend?.constructor?.name || 'gpu-world',
+function sceneCommandBackend(renderer, backend) {
+    const adapter = renderer._sceneCommandBackend || (renderer._sceneCommandBackend = {
+        id: 'gpu-world',
+        backend: null,
         supportsSceneCommands(request) {
-            return backend?.supportsSceneCommands?.(request) === true;
+            return this.backend?.supportsSceneCommands?.(request) === true;
         },
-    };
+    });
+    adapter.id = backend?.backendId || backend?.constructor?.name || 'gpu-world';
+    adapter.backend = backend;
+    return adapter;
 }
 
 function emitSceneCategoryDiagnostics(renderer, diagnostics = []) {

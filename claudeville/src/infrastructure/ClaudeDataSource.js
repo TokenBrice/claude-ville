@@ -59,7 +59,20 @@ export class ClaudeDataSource {
             '/api/sessions',
             [],
             'sessions',
-            (data) => data.sessions || [],
+            (data) => {
+                const sessions = Array.isArray(data.sessions) ? data.sessions : [];
+                for (const field of [
+                    'gitEventFields',
+                    'gitEventStringTables',
+                    'gitEventsById',
+                ]) {
+                    Object.defineProperty(sessions, field, {
+                        value: data[field] || null,
+                        configurable: true,
+                    });
+                }
+                return sessions;
+            },
             { ...options, rejectOnError: true },
         );
     }

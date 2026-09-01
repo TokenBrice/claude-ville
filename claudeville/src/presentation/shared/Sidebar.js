@@ -66,6 +66,12 @@ export class Sidebar {
         this._pendingAgentChanges = new Map();
         this._reactiveRenderPending = false;
         this._destroyed = false;
+        this._agentRows = new Map();
+        this._projectGroups = new Map();
+        this._workflowGroups = new Map();
+        this._emptyLegendEl = null;
+        this._emptyNoMatchEl = null;
+        this._renderWhileHidden = false;
         this.isCollapsed = safeStorageGet(SIDEBAR_COLLAPSED_STORAGE_KEY) === 'true';
         this.selection = new AgentSelectionMirror({
             onChange: (nextId, previousId) => {
@@ -92,10 +98,17 @@ export class Sidebar {
             this.harborRepos = nextRepos;
             this.renderHarbor();
         };
+        this._onVisibilityChange = () => {
+            if (!document.hidden && this._renderWhileHidden) {
+                this.render();
+                this.renderHarbor();
+            }
+        };
         eventBus.on('agent:added', this._onAgentUpdate);
         eventBus.on('agent:updated', this._onAgentUpdate);
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on('harbor:updated', this._onHarborUpdate);
+        document.addEventListener('visibilitychange', this._onVisibilityChange);
 
         this._bindToggle();
         this._bindFilter();
@@ -286,6 +299,10 @@ export class Sidebar {
             this.isCollapsed = !this.isCollapsed;
             safeStorageSet(SIDEBAR_COLLAPSED_STORAGE_KEY, String(this.isCollapsed));
             this._applyCollapsedState();
+            if (!this.isCollapsed && this._renderWhileHidden) {
+                this.render();
+                this.renderHarbor();
+            }
         };
         this.toggleEl.addEventListener('click', this._onToggleClick);
     }
@@ -334,6 +351,11 @@ export class Sidebar {
 
     render() {
         if (this._destroyed) return;
+        if (this._isRenderHidden()) {
+            this._renderWhileHidden = true;
+            return;
+        }
+        this._renderWhileHidden = false;
         const agents = Array.from(this.world.agents.values());
         for (const agent of agents) {
             if (!this.searchIndex.has(agent.id)) this._indexAgent(agent);
@@ -341,7 +363,7 @@ export class Sidebar {
         const searchResults = this.searchIndex.search(this._filter, agents.map(agent => agent.id));
         const matchesById = new Map(searchResults.map(match => [match.agentId, match]));
         this._reconcileWorkflowState(agents);
-        this.countEl.textContent = agents.length;
+        this._setText(this.countEl, agents.length);
         // 4.12 — per-row extras (idle-age suffix, subagent parent link) feed
         // both the render signature and the row builder; the formatted age
         // string only changes when the displayed text would, so it stays cheap.
@@ -391,6 +413,7 @@ export class Sidebar {
             return;
         }
         this._renderSignature = signature;
+        const transientState = this._captureTransientState();
 
         // Group by project
         const groups = [...groupAgentsByProject(agents)];
@@ -404,11 +427,14 @@ export class Sidebar {
         }
 
         const nodes = [];
+        const visibleProjectPaths = new Set();
+        const visibleWorkflowKeys = new Set();
         for (const [projectPath, groupAgents] of groups) {
             const visible = groupAgents
                 .filter(agent => this._matchesFilter(agent))
                 .sort((a, b) => (matchesById.get(b.id)?.score || 0) - (matchesById.get(a.id)?.score || 0));
             if (visible.length === 0) continue;
+            visibleProjectPaths.add(projectPath);
 
             // Split workflow subagents (collapsible per workflow) from top-level rows.
             const topLevel = [];
@@ -424,36 +450,16 @@ export class Sidebar {
 
             const projectName = shortProjectName(projectPath, i18n.t('unknownProject'));
             const profile = projectProfile(projectPath, { surface: 'sidebar' });
-            const groupEl = el('div', { className: 'sidebar__project-group' });
-            groupEl.append(el('div', {
-                className: 'sidebar__project-header',
-                style: {
-                    borderLeftColor: profile.panelBorder || profile.accent,
-                    background: profile.panel,
-                },
-            }, [
-                el('span', {
-                    className: ['sidebar__project-dot', 'sidebar__project-dot--repo'],
-                    style: {
-                        background: profile.accent,
-                        boxShadow: `0 0 6px ${profile.glow}`,
-                    },
-                }),
-                el('span', { className: 'sidebar__label-icon', text: '#' }),
-                el('span', {
-                    className: 'sidebar__project-name',
-                    text: projectName,
-                    style: { color: profile.labelText || profile.accent },
-                }),
-                el('span', {
-                    className: 'sidebar__project-count',
-                    text: visible.length,
-                    style: { color: profile.labelText || profile.accent },
-                }),
-            ]));
+            let groupEl = this._projectGroups.get(projectPath);
+            if (!groupEl) {
+                groupEl = this._createProjectGroup();
+                this._projectGroups.set(projectPath, groupEl);
+            }
+            this._patchProjectGroup(groupEl, projectName, visible.length, profile);
+            const groupNodes = [groupEl._sidebarRefs.header];
 
             for (const agent of topLevel) {
-                groupEl.append(this._buildAgentRow(agent, profile, rowExtras.get(agent.id)));
+                groupNodes.push(this._getAgentRow(agent, profile, rowExtras.get(agent.id)));
             }
 
             for (const [workflowId, members] of workflows) {
@@ -461,42 +467,42 @@ export class Sidebar {
                 // A search reveals matching workflow members without mutating
                 // the operator's persisted collapsed/expanded preference.
                 const collapsed = !this._filter && this._collapsedWorkflows.has(workflowId);
-                const wfEl = el('div', {
-                    className: collapsed
-                        ? ['sidebar__workflow-group', 'sidebar__workflow-group--collapsed']
-                        : 'sidebar__workflow-group',
-                });
-                wfEl.append(el('button', {
-                    className: 'sidebar__workflow-toggle',
-                    dataset: { workflowId },
-                }, [
-                    el('span', { className: 'sidebar__workflow-caret', text: '▶' }),
-                    el('span', { className: 'sidebar__workflow-icon', text: 'W' }),
-                    el('span', { className: 'sidebar__workflow-name', text: workflowName }),
-                    el('span', { className: 'sidebar__workflow-count', text: members.length }),
-                ]));
-                const membersEl = el('div', { className: 'sidebar__workflow-members' });
-                for (const agent of members) {
-                    membersEl.append(this._buildAgentRow(agent, profile, rowExtras.get(agent.id)));
+                const workflowKey = `${projectPath}\u0001${workflowId}`;
+                visibleWorkflowKeys.add(workflowKey);
+                let wfEl = this._workflowGroups.get(workflowKey);
+                if (!wfEl) {
+                    wfEl = this._createWorkflowGroup(workflowId);
+                    this._workflowGroups.set(workflowKey, wfEl);
                 }
-                wfEl.append(membersEl);
-                groupEl.append(wfEl);
+                this._patchWorkflowGroup(wfEl, workflowName, members.length, collapsed);
+                const memberNodes = [];
+                for (const agent of members) {
+                    memberNodes.push(this._getAgentRow(agent, profile, rowExtras.get(agent.id)));
+                }
+                this._placeChildren(wfEl._sidebarRefs.members, memberNodes);
+                groupNodes.push(wfEl);
             }
 
+            this._placeChildren(groupEl, groupNodes);
             nodes.push(groupEl);
         }
 
+        this._prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys);
         if (agents.length === 0) {
-            replaceChildren(this.listEl, this._emptyLegendNodes());
+            this._emptyLegendEl ||= this._emptyLegendNodes()[0];
+            this._placeChildren(this.listEl, [this._emptyLegendEl]);
         } else if (nodes.length === 0) {
-            replaceChildren(this.listEl, [
-                el('div', { className: 'sidebar__empty-nomatch', text: 'No agents match your filter' }),
-            ]);
+            this._emptyNoMatchEl ||= el('div', {
+                className: 'sidebar__empty-nomatch',
+                text: 'No agents match your filter',
+            });
+            this._placeChildren(this.listEl, [this._emptyNoMatchEl]);
         } else {
-            replaceChildren(this.listEl, nodes);
+            this._placeChildren(this.listEl, nodes);
         }
         this._applyWorkflowToggleState();
         this._syncSelection(null, this.selection.selectedId);
+        this._restoreTransientState(transientState);
     }
 
     _reconcileWorkflowState(agents, now = Date.now()) {
@@ -571,7 +577,239 @@ export class Sidebar {
         ];
     }
 
-    _buildAgentRow(agent, profile, extras = {}) {
+    _isRenderHidden() {
+        if (this.isCollapsed || document.hidden) return true;
+        if (!this.sidebarEl || !this.listEl) return true;
+        return this.sidebarEl.hidden || this.sidebarEl.style?.display === 'none';
+    }
+
+    _setText(node, value) {
+        const text = String(value ?? '');
+        if (node && node.textContent !== text) node.textContent = text;
+    }
+
+    _setNodeText(node, value) {
+        const text = String(value ?? '');
+        if (node.nodeValue !== text) node.nodeValue = text;
+    }
+
+    _setAttribute(node, name, value) {
+        const text = String(value);
+        if (node.getAttribute(name) !== text) node.setAttribute(name, text);
+    }
+
+    _setStyle(node, property, value) {
+        const text = value || '';
+        node._sidebarStyleValues ||= new Map();
+        if (node._sidebarStyleValues.get(property) === text) return;
+        node.style[property] = text;
+        node._sidebarStyleValues.set(property, text);
+    }
+
+    _toggleOptional(parent, node, present, before = null) {
+        if (!present) {
+            if (node.parentNode === parent) node.remove();
+            return;
+        }
+        if (node.parentNode !== parent || (before && node.nextSibling !== before)) {
+            parent.insertBefore(node, before);
+        }
+    }
+
+    _placeChildren(parent, desired) {
+        const desiredSet = new Set(desired);
+        for (const child of [...parent.children]) {
+            if (!desiredSet.has(child)) child.remove();
+        }
+        for (let index = 0; index < desired.length; index++) {
+            const node = desired[index];
+            const current = parent.children[index] || null;
+            if (current !== node) parent.insertBefore(node, current);
+        }
+    }
+
+    _captureTransientState() {
+        const scrollEl = this.listEl.parentElement;
+        const activeElement = this.listEl.contains(document.activeElement)
+            ? document.activeElement
+            : null;
+        const selection = document.getSelection?.();
+        const selectionState = selection?.rangeCount
+            && this.listEl.contains(selection.getRangeAt(0).commonAncestorContainer)
+            ? {
+                anchorNode: selection.anchorNode,
+                anchorOffset: selection.anchorOffset,
+                focusNode: selection.focusNode,
+                focusOffset: selection.focusOffset,
+                ranges: Array.from(
+                    { length: selection.rangeCount },
+                    (_, index) => selection.getRangeAt(index).cloneRange(),
+                ),
+            }
+            : null;
+        return {
+            scrollEl,
+            scrollTop: scrollEl?.scrollTop || 0,
+            scrollLeft: scrollEl?.scrollLeft || 0,
+            activeElement,
+            selectionState,
+        };
+    }
+
+    _restoreTransientState(state) {
+        if (!state) return;
+        if (state.activeElement && this.listEl.contains(state.activeElement)
+            && document.activeElement !== state.activeElement) {
+            state.activeElement.focus({ preventScroll: true });
+        }
+        const selection = document.getSelection?.();
+        const saved = state.selectionState;
+        if (selection && saved && this.listEl.contains(saved.anchorNode)
+            && this.listEl.contains(saved.focusNode)) {
+            if (typeof selection.setBaseAndExtent === 'function') {
+                selection.setBaseAndExtent(
+                    saved.anchorNode,
+                    saved.anchorOffset,
+                    saved.focusNode,
+                    saved.focusOffset,
+                );
+            } else {
+                selection.removeAllRanges();
+                for (const range of saved.ranges) selection.addRange(range);
+            }
+        }
+        if (state.scrollEl) {
+            state.scrollEl.scrollTop = state.scrollTop;
+            state.scrollEl.scrollLeft = state.scrollLeft;
+        }
+    }
+
+    _createProjectGroup() {
+        const dot = el('span', {
+            className: ['sidebar__project-dot', 'sidebar__project-dot--repo'],
+        });
+        const name = el('span', { className: 'sidebar__project-name' });
+        const count = el('span', { className: 'sidebar__project-count' });
+        const header = el('div', { className: 'sidebar__project-header' }, [
+            dot,
+            el('span', { className: 'sidebar__label-icon', text: '#' }),
+            name,
+            count,
+        ]);
+        const group = el('div', { className: 'sidebar__project-group' }, [header]);
+        group._sidebarRefs = { header, dot, name, count };
+        return group;
+    }
+
+    _patchProjectGroup(group, projectName, count, profile) {
+        const refs = group._sidebarRefs;
+        const labelColor = profile.labelText || profile.accent;
+        this._setStyle(refs.header, 'borderLeftColor', profile.panelBorder || profile.accent);
+        this._setStyle(refs.header, 'background', profile.panel);
+        this._setStyle(refs.dot, 'background', profile.accent);
+        this._setStyle(refs.dot, 'boxShadow', `0 0 6px ${profile.glow}`);
+        this._setText(refs.name, projectName);
+        this._setStyle(refs.name, 'color', labelColor);
+        this._setText(refs.count, count);
+        this._setStyle(refs.count, 'color', labelColor);
+    }
+
+    _createWorkflowGroup(workflowId) {
+        const name = el('span', { className: 'sidebar__workflow-name' });
+        const count = el('span', { className: 'sidebar__workflow-count' });
+        const toggle = el('button', {
+            className: 'sidebar__workflow-toggle',
+            dataset: { workflowId },
+        }, [
+            el('span', { className: 'sidebar__workflow-caret', text: '▶' }),
+            el('span', { className: 'sidebar__workflow-icon', text: 'W' }),
+            name,
+            count,
+        ]);
+        const members = el('div', { className: 'sidebar__workflow-members' });
+        const group = el('div', { className: 'sidebar__workflow-group' }, [toggle, members]);
+        group._sidebarRefs = { toggle, name, count, members };
+        return group;
+    }
+
+    _patchWorkflowGroup(group, workflowName, count, collapsed) {
+        const refs = group._sidebarRefs;
+        const className = collapsed
+            ? 'sidebar__workflow-group sidebar__workflow-group--collapsed'
+            : 'sidebar__workflow-group';
+        if (group.className !== className) group.className = className;
+        this._setText(refs.name, workflowName);
+        this._setText(refs.count, count);
+        this._setAttribute(refs.toggle, 'aria-expanded', String(!collapsed));
+    }
+
+    _getAgentRow(agent, profile, extras = {}) {
+        let row = this._agentRows.get(agent.id);
+        if (!row) {
+            row = this._createAgentRow(agent.id);
+            this._agentRows.set(agent.id, row);
+        }
+        const parent = agent.parentSessionId
+            ? this.world.agents.get(agent.parentSessionId)
+            : null;
+        const signature = [
+            agent.name,
+            agent.status,
+            agent.model,
+            agent.effort,
+            agent.provider,
+            agent.teamName,
+            agent.workflowName,
+            agent.parentSessionId,
+            extras.ageText,
+            extras.parentLabel,
+            extras.searchContext,
+            Boolean(parent),
+            profile.accent,
+        ].join('\u0001');
+        if (row._sidebarSignature !== signature) {
+            row._sidebarSignature = signature;
+            this._patchAgentRow(row, agent, profile, extras, parent);
+        }
+        return row;
+    }
+
+    _createAgentRow(agentId) {
+        const nameText = document.createTextNode('');
+        const team = el('span', { className: 'sidebar__team-icon', text: 'T' });
+        const workflow = el('span', { className: 'sidebar__workflow-icon', text: 'W' });
+        const name = el('span', { className: 'sidebar__agent-name' }, [nameText]);
+        const provider = el('span', { style: { fontWeight: 'bold' } });
+        const modelText = document.createTextNode('');
+        const age = el('span');
+        const model = el('span', { className: 'sidebar__agent-model' }, [provider, modelText]);
+        const match = el('span', {
+            className: ['sidebar__agent-model', 'sidebar__agent-match'],
+        });
+        const info = el('span', { className: 'sidebar__agent-info' }, [name, model]);
+        const dot = el('span', { className: 'sidebar__agent-dot' });
+        const caret = el('span', { className: 'sidebar__working-caret' });
+        caret.setAttribute('aria-hidden', 'true');
+        const rail = el('span', { className: 'sidebar__agent-rail' }, [dot]);
+        const select = el('button', {
+            className: 'sidebar__agent-select',
+            dataset: { agentId },
+        }, [rail, info]);
+        select.type = 'button';
+        const parent = el('button', { className: 'sidebar__agent-parent' });
+        parent.type = 'button';
+        const row = el('div', {
+            className: 'sidebar__agent',
+            dataset: { agentId },
+        }, [select]);
+        row._sidebarRefs = {
+            nameText, team, workflow, name, provider, modelText, age, model,
+            match, info, dot, caret, rail, select, parent,
+        };
+        return row;
+    }
+
+    _patchAgentRow(row, agent, profile, extras, parentAgent) {
         const model = modelPresentation(agent);
         const provider = providerPresentation(agent.provider, model.identity);
         const team = agent.teamName ? getTeamColor(agent.teamName) : null;
@@ -579,112 +817,103 @@ export class Sidebar {
         const status = statusClass(agent.status);
         const agentClasses = ['sidebar__agent', `sidebar__agent--${status}`];
         if (this.selection.isSelected(agent.id)) agentClasses.push('sidebar__agent--selected');
-        const nameChildren = [];
-        if (team) {
-            nameChildren.push(el('span', {
-                className: 'sidebar__team-icon',
-                title: teamLabel,
-                ariaLabel: teamLabel,
-                text: 'T',
-                style: {
-                    background: team.accent,
-                    boxShadow: `0 0 6px ${team.glow}`,
-                },
-            }));
+        const refs = row._sidebarRefs;
+        const className = agentClasses.join(' ');
+        if (row.className !== className) row.className = className;
+        if (profile.accent && row._sidebarRepoColor !== profile.accent) {
+            row.style.setProperty('--cv-repo-color', profile.accent);
+            row._sidebarRepoColor = profile.accent;
         }
+        this._setNodeText(refs.nameText, agent.name || '');
+        this._setStyle(refs.name, 'color', profile.accent);
+
+        this._toggleOptional(refs.name, refs.team, Boolean(team), refs.workflow.parentNode === refs.name
+            ? refs.workflow
+            : refs.nameText);
+        if (team) {
+            this._setAttribute(refs.team, 'title', teamLabel);
+            this._setAttribute(refs.team, 'aria-label', teamLabel);
+            this._setStyle(refs.team, 'background', team.accent);
+            this._setStyle(refs.team, 'boxShadow', `0 0 6px ${team.glow}`);
+        }
+        this._toggleOptional(refs.name, refs.workflow, Boolean(agent.workflowName), refs.nameText);
         if (agent.workflowName) {
             const workflowLabel = `Workflow ${agent.workflowName}`;
-            nameChildren.push(el('span', {
-                className: 'sidebar__workflow-icon',
-                title: workflowLabel,
-                ariaLabel: workflowLabel,
-                text: 'W',
-            }));
+            this._setAttribute(refs.workflow, 'title', workflowLabel);
+            this._setAttribute(refs.workflow, 'aria-label', workflowLabel);
         }
-        nameChildren.push(agent.name || '');
 
-        const providerIcon = el('span', {
-            text: provider.icon,
-            style: { color: provider.color, fontWeight: 'bold' },
-        });
-        const modelEl = el('span', { className: 'sidebar__agent-model' }, [
-            providerIcon,
-            ` ${model.label}`,
-        ]);
-        // 4.12 — idle-age suffix (dashboard's "last active" chip parity), shown
-        // only for quiet statuses so working rows stay noise-free.
+        this._setText(refs.provider, provider.icon);
+        this._setStyle(refs.provider, 'color', provider.color);
+        this._setNodeText(refs.modelText, ` ${model.label}`);
+        this._toggleOptional(refs.model, refs.age, Boolean(extras.ageText));
         if (extras.ageText) {
-            modelEl.append(el('span', {
-                text: ` · ${extras.ageText}`,
-                title: `Last active ${extras.ageText}`,
-            }));
+            this._setText(refs.age, ` · ${extras.ageText}`);
+            this._setAttribute(refs.age, 'title', `Last active ${extras.ageText}`);
         }
-        const infoChildren = [
-            el('span', {
-                className: 'sidebar__agent-name',
-                style: { color: profile.accent },
-            }, nameChildren),
-            modelEl,
-        ];
+        this._toggleOptional(refs.info, refs.match, Boolean(extras.searchContext));
         if (extras.searchContext) {
-            infoChildren.push(el('span', {
-                className: ['sidebar__agent-model', 'sidebar__agent-match'],
-                text: extras.searchContext,
-                title: extras.searchContext,
-            }));
-        }
-        // 4.12 — subagent parent link (dashboard parent-chip parity): selects
-        // the parent session; muted static text once the parent has ended.
-        let parentButton = null;
-        if (agent.parentSessionId) {
-            const parent = this.world.agents.get(agent.parentSessionId);
-            parentButton = el('button', {
-                className: 'sidebar__agent-parent',
-                text: `↩ ${extras.parentLabel}`,
-                title: parent ? `Select parent ${extras.parentLabel}` : 'Parent session ended',
-                ariaLabel: parent ? `Select parent ${extras.parentLabel}` : 'Parent session ended',
-                dataset: parent ? { parentId: agent.parentSessionId } : null,
-            });
-            parentButton.type = 'button';
-            parentButton.disabled = !parent;
+            this._setText(refs.match, extras.searchContext);
+            this._setAttribute(refs.match, 'title', extras.searchContext);
         }
 
-        const dotChildren = [
-            el('span', {
-                className: ['sidebar__agent-dot', `sidebar__agent-dot--${status}`],
-            }),
-        ];
-        if (status === 'working') {
-            const caret = el('span', { className: 'sidebar__working-caret' });
-            caret.setAttribute('aria-hidden', 'true');
-            dotChildren.push(caret);
+        const hasParent = Boolean(agent.parentSessionId);
+        this._toggleOptional(row, refs.parent, hasParent);
+        if (hasParent) {
+            const parentLabel = parentAgent
+                ? `Select parent ${extras.parentLabel}`
+                : 'Parent session ended';
+            this._setText(refs.parent, `↩ ${extras.parentLabel}`);
+            this._setAttribute(refs.parent, 'title', parentLabel);
+            this._setAttribute(refs.parent, 'aria-label', parentLabel);
+            if (parentAgent) refs.parent.dataset.parentId = agent.parentSessionId;
+            else delete refs.parent.dataset.parentId;
+            if (refs.parent.disabled !== !parentAgent) refs.parent.disabled = !parentAgent;
         }
 
-        const select = el('button', {
-            className: 'sidebar__agent-select',
-            ariaLabel: `Select ${agent.name || agent.id}, ${status.replaceAll('_', ' ')}`,
-            dataset: { agentId: agent.id },
-        }, [
-            el('span', { className: 'sidebar__agent-rail' }, dotChildren),
-            el('span', { className: 'sidebar__agent-info' }, infoChildren),
-        ]);
-        select.type = 'button';
-        select.setAttribute('aria-pressed', String(this.selection.isSelected(agent.id)));
+        const dotClass = `sidebar__agent-dot sidebar__agent-dot--${status}`;
+        if (refs.dot.className !== dotClass) refs.dot.className = dotClass;
+        this._toggleOptional(refs.rail, refs.caret, status === 'working');
+        this._setAttribute(
+            refs.select,
+            'aria-label',
+            `Select ${agent.name || agent.id}, ${status.replaceAll('_', ' ')}`,
+        );
+        this._setAttribute(
+            refs.select,
+            'aria-pressed',
+            String(this.selection.isSelected(agent.id)),
+        );
+    }
 
-        const row = el('div', {
-            className: agentClasses,
-            dataset: { agentId: agent.id },
-        }, [select, parentButton]);
-        // Repo-tinted left rail (color-mix in CSS reads --cv-repo-color).
-        if (profile.accent) row.style.setProperty('--cv-repo-color', profile.accent);
-        return row;
+    _prunePersistentElements(agents, visibleProjectPaths, visibleWorkflowKeys) {
+        const liveIds = new Set(agents.map(agent => agent.id));
+        const liveProjects = new Set(agents.map(agent => agent.projectPath || '_unknown'));
+        const liveWorkflows = new Set(agents
+            .filter(agent => agent.agentType === 'workflow-subagent' && agent.workflowId)
+            .map(agent => `${agent.projectPath || '_unknown'}\u0001${agent.workflowId}`));
+        for (const [id, row] of this._agentRows) {
+            if (liveIds.has(id)) continue;
+            row.remove();
+            this._agentRows.delete(id);
+        }
+        for (const [path, group] of this._projectGroups) {
+            if (liveProjects.has(path) || visibleProjectPaths.has(path)) continue;
+            group.remove();
+            this._projectGroups.delete(path);
+        }
+        for (const [key, group] of this._workflowGroups) {
+            if (liveWorkflows.has(key) || visibleWorkflowKeys.has(key)) continue;
+            group.remove();
+            this._workflowGroups.delete(key);
+        }
     }
 
     _applyWorkflowToggleState() {
         this.listEl?.querySelectorAll('.sidebar__workflow-toggle[data-workflow-id]')
             .forEach(toggle => {
                 const collapsed = !this._filter && this._collapsedWorkflows.has(toggle.dataset.workflowId);
-                toggle.setAttribute('aria-expanded', String(!collapsed));
+                this._setAttribute(toggle, 'aria-expanded', String(!collapsed));
             });
     }
 
@@ -698,15 +927,22 @@ export class Sidebar {
         for (const id of ids) {
             const selector = `.sidebar__agent[data-agent-id="${CSS.escape(id)}"]`;
             const row = this.listEl?.querySelector(selector);
-            row?.classList.toggle('sidebar__agent--selected', id === nextId);
-            row?.querySelector('.sidebar__agent-select')
-                ?.setAttribute('aria-pressed', String(id === nextId));
+            const selected = id === nextId;
+            if (row?.classList.contains('sidebar__agent--selected') !== selected) {
+                row?.classList.toggle('sidebar__agent--selected', selected);
+            }
+            const select = row?.querySelector('.sidebar__agent-select');
+            if (select) this._setAttribute(select, 'aria-pressed', String(selected));
         }
     }
 
     renderHarbor() {
         if (this._destroyed) return;
         if (!this.harborListEl || !this.harborCountEl) return;
+        if (this._isRenderHidden()) {
+            this._renderWhileHidden = true;
+            return;
+        }
 
         const repos = [...this.harborRepos]
             .filter(repo => (Number(repo.pendingCommits ?? repo.count) || 0) > 0)
@@ -776,6 +1012,9 @@ export class Sidebar {
         eventBus.off('agent:updated', this._onAgentUpdate);
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off('harbor:updated', this._onHarborUpdate);
+        if (typeof document !== 'undefined') {
+            document.removeEventListener('visibilitychange', this._onVisibilityChange);
+        }
         this.selection?.destroy?.();
         if (this._onToggleClick) this.toggleEl?.removeEventListener('click', this._onToggleClick);
         if (this._onListClick) this.listEl?.removeEventListener('click', this._onListClick);
@@ -797,6 +1036,12 @@ export class Sidebar {
         this._harborSignature = '';
         this._renderSignature = '';
         this._filter = '';
+        this._agentRows?.clear?.();
+        this._projectGroups?.clear?.();
+        this._workflowGroups?.clear?.();
+        this._emptyLegendEl = null;
+        this._emptyNoMatchEl = null;
+        this._renderWhileHidden = false;
         this.searchIndex.clear();
         this._seenWorkflows.clear();
         this._collapsedWorkflows.clear();

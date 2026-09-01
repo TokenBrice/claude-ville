@@ -2,6 +2,53 @@
 
 ---
 
+## v0.37.0 — *The Thaw* · Sep 01, 2026
+
+The village had frozen solid. Not the picture — that still ran at sixty frames — but the ground beneath it: the server spent ninety-three percent of its life locked inside a synchronous filesystem scan, and every request for a stylesheet, a sprite or a session queued behind it. The thaw is measurable. A static file that took 36.9 seconds to arrive now takes 0.26.
+
+**The village was frozen, and the FPS counter never mentioned it**
+- **Ninety-three percent of wall time, blocked.** Probing a 156-line stylesheet returned in 18.195 s with a TCP connect of 0.0003 s — the socket was accepted instantly and the handler simply could not run. Over 450 s of continuous sampling the server was unavailable for roughly 418 s, in stalls of 10-37 s separated by three-second windows. That, not rendering, was the 20-30 second dark screen.
+- **One watchtower was reading a gigabyte every two seconds.** The `omp` adapter applied its two-minute activity cutoff *after* parsing, so every pass read 941 MB and ran 158,551 `JSON.parse` calls across all 338 historical transcripts — to surface the two that were actually active, totalling 581 KB. A control run with the threshold set to zero, where no file can possibly qualify, still read 941,756,247 bytes and returned nothing. It now stats and rejects before opening: **3,840 ms → 42 ms, 941 MB → 3.8 MB, 158,551 parses → 459**, and a threshold of zero opens no files at all.
+- **This is why it got worse over time.** The cost scaled with total history rather than with activity, so every session you ever ran made the next boot slower.
+
+**One scan, not two**
+- **A cache that was born expired.** The session list was stamped with the time captured when a scan *started*, so a ten-second scan against a two-second TTL was already eight seconds stale the moment it was stored. A non-forced call issued immediately after a completed scan was measured at 9,804 ms — a full rescan. It is now stamped at completion: **the same call is 0.002 ms.**
+- **Two paths that each scanned twice.** A directory event scheduled a refresh *and* a broadcast, and the thirty-second reconciliation forced a scan and then broadcast one; in both cases the second pass missed the expired cache and scanned again. A monotonic dirty generation, an in-flight guard and duration-derived backoff now produce one collection per generation.
+- **Invalidation stopped being a blunt instrument.** A dirty mark naming a single provider cleared the entire all-provider list. Scoping it means one chatty provider no longer forces every adapter to rescan.
+- **Codex stopped reading the same file three times.** Each active rollout was read at 50, then 500, then 5,000 lines, and growing a cached window discarded the previous read. One shared scan context now serves all three consumers: **35 opens → 9, 105 MB → 56 MB, 23 tail parses → 9** for nine rollouts. The 5,000-record git window is unchanged, so no event is lost.
+
+**Lighter words on the wire**
+- **A snapshot that was 96% duplication.** The sessions payload had grown to 859,135 bytes, of which 828,493 were git events — 974 rows carrying just 90 unique event IDs. Unique events are now sent once in a payload-level table and referenced by id, then rehydrated at the single client ingestion funnel, so all thirteen consumers still receive exactly the array they always did. **859,135 B → 149,268 B**, and 7,153 B on the wire once gzipped.
+- **Responses are compressed.** JSON, JavaScript and CSS now negotiate gzip; already-compressed sprites and fonts are left alone.
+- **A reload stops re-downloading the app.** No validator existed, so every load pulled all 141 modules again — at least 3.94 MB across 154 requests. Static files now carry a strong SHA-256 ETag, memoised per edit, and honour `If-None-Match`; unchanged modules return **304 with an empty body**. A content hash rather than mtime-and-size, because a same-size edit inside one filesystem tick would otherwise serve a stale module and cost someone an afternoon.
+- **Boot stopped fetching everything twice.** A REST snapshot and an immediate WebSocket frame carried the same data, roughly 1.72 MB per boot. The socket is now the normal bootstrap; REST remains the fallback.
+
+**A shorter walk to first light**
+- **The village no longer waits for twenty-one strangers.** All 21 character sheets loaded before first paint regardless of who was present — 7.76 MiB across 242 requests. Boot now loads the resident cast and fetches the rest on arrival, taking a typical two-to-three agent session to roughly **1.8-2.1 MiB**. A late arrival appears a frame after its sheet lands; it never flashes placeholder art.
+- **Less blocking in the head.** Dashboard, activity-panel and modal stylesheets are loaded when their surface is first shown, and `js-yaml` now loads with the manifest that needs it: **123,888 B → 50,984 B** of render-blocking CSS. Audio, the chronicle UI and the debug overlay are deferred behind dynamic imports; targeted `modulepreload` hints flatten the seven-level dependency waterfall.
+- **Mode switching stays instant.** Deferring the Dashboard *module* left the panel blank for ~390 ms after a click, so it is fetched concurrently with the renderer module and joined before boot reports ready — deferred bytes, not a deferred switch.
+
+**Frames stop paying for what you cannot see**
+- **The harbour stopped rebuilding its own history.** Two thousand retained ships cost 2.21 ms mean and 4.32 ms p95 every frame to emit ten drawables. Packed frames are now cached and only representatives are enumerated: **27.765 ms → 0.006 ms** in an isolated 2,000-ship pass, with the same 84 drawables, stacks, positions and animations.
+- **Overlay layout culls first.** Name and bubble placement was worst-case `O(A²)` and ran *before* viewport culling. It now culls to a 420 px apron and buckets spatially above 32 visible agents: at 100 agents, **0.161 ms → 0.029 ms mean, 0.244 ms → 0.056 ms p95**. A 200-layout randomised harness confirms identical slots, suppression and merge representatives.
+- **The frame path stopped allocating.** Depth wrappers, closures, diagnostics, arrays, Maps and Sets were rebuilt every frame, and structural diagnostics were computed even with the debug overlay off: **1,778 allocations per frame → 0**. The overlay shows everything it always did when enabled.
+- **A narrow idle path.** A genuinely static reduced-motion scene stops redrawing, gated on a long list of conditions — no camera movement, no transition, no weather change, no pending work. Off-screen agents still simulate in full: routing, waypoints, dwell timers, visit reservations and gate transit are load-bearing, and culling them would make agents teleport when scrolled into view. Only particle emission is skipped beyond the apron.
+- **The sidebar patches instead of rebuilding.** It replaced its entire tree on every update — up to 5,520 element creations per minute with twenty agents, destroying scroll position and selection each time. A steady-state update now creates **zero nodes**, matching the dashboard cards, and preserves scroll, focus and selection.
+
+**Honest instruments**
+- **The frame counter stopped flattering itself.** Displayed FPS was a 500 ms average of animation-frame callbacks: structurally incapable of showing p95 hitches, GC pauses, long tasks or dropped frames — which is exactly how a village could feel slower while reporting sixty. Frame-time p50/p95/p99, over-budget and long-frame counters now sit alongside it, on preallocated typed-array rings that allocate nothing per frame.
+- **The loudest adapter was invisible.** `omp` was the only available adapter without `getPerfStats`, so it never appeared in `/api/perf` despite being 98.42% of all parsed lines — anyone ranking cost there would have studied the small adapters and missed the culprit entirely. It now reports discovery, stats, skips, opens, bytes, parsed lines and pass duration.
+
+**Measured after**
+- Static asset worst case **36.9 s → 0.26 s**, with no multi-second stall across 100 samples.
+- Event-loop delay p99 **~370 ms → 22 ms**.
+- Broadcast **3,313 ms → 1 ms**; its session stage was 99.97% of that.
+- Full registry scan **10,186 ms → 533 ms** cold, and 0.002 ms when cached.
+- Sustained tail read rate **202 MB/s → 36 MB/s**.
+- 542 unit tests and 11 smoke suites green, including the end-to-end WebSocket delta replay and the browser UI pass.
+
+---
+
 ## v0.36.0.1 · Aug 31, 2026 — Hotfix
 
 - **Dense villages hold the display refresh rate.** Animated agents now update only their changed albedo, material, and emissive atlas cells instead of replacing the complete packed texture. The 30-agent browser profile dropped from roughly 171 ms to 8.8 ms at the median, while the live village sustained about 65 FPS and regularly exceeded 100 FPS without shedding visual detail.

@@ -17,6 +17,7 @@ const KIND_ORDER = Object.freeze({
     'building-front': 90,
     building: 95,
 });
+const EMPTY_SEMANTICS = Object.freeze({});
 
 /**
  * Shared depth drawable contract for World mode overlap rendering.
@@ -29,39 +30,74 @@ const KIND_ORDER = Object.freeze({
  * - hitArea: optional future hit-test metadata.
  * - payload: original source object for legacy consumers.
  */
-export function createDepthDrawable(kind, sortY, payload, drawFallback, semantics = {}) {
-    const material = drawableMaterialMetadata(payload, semantics);
+export function createDepthDrawable(kind, sortY, payload, drawFallback, semantics = EMPTY_SEMANTICS) {
+    return initializeDepthDrawable({}, kind, sortY, payload, drawFallback, semantics);
+}
+
+function drawDepthDrawableFallback(ctx, zoom, context) {
+    this._drawFallback?.call(undefined, ctx, zoom, context, this.payload, this);
+}
+
+function buildDepthDrawableGpuRecord(context = {}) {
+    if (typeof this._gpuBuilder === 'function') {
+        return this._gpuBuilder.call(undefined, context, this.payload, this);
+    }
+    return context.spriteRenderer?.buildGpuRecordForDrawable?.(this, context) ?? null;
+}
+
+function initializeDepthDrawable(drawable, kind, sortY, payload, drawFallback, semantics = EMPTY_SEMANTICS) {
+    const materialSource = drawableMaterialSource(payload, semantics);
+    const materialId = drawableMaterialId(payload, semantics, materialSource);
+    let material = drawable._material;
+    if (
+        !material
+        || drawable._materialSource !== materialSource
+        || drawable._materialId !== materialId
+        || drawable._materialClass !== (semantics?.materialClass ?? materialSource.materialClass)
+        || drawable._elevation !== (semantics?.elevation ?? materialSource.elevation)
+        || drawable._emissive !== (semantics?.emissive ?? materialSource.emissive)
+        || drawable._occluder !== (semantics?.occluder ?? materialSource.occluder)
+        || drawable._atlasFrame !== (semantics?.atlasFrame ?? materialSource.atlasFrame)
+    ) {
+        material = drawableMaterialMetadata(payload, semantics, materialSource, materialId);
+        drawable._material = material;
+        drawable._materialSource = materialSource;
+        drawable._materialId = materialId;
+        drawable._materialClass = semantics?.materialClass ?? materialSource.materialClass;
+        drawable._elevation = semantics?.elevation ?? materialSource.elevation;
+        drawable._emissive = semantics?.emissive ?? materialSource.emissive;
+        drawable._occluder = semantics?.occluder ?? materialSource.occluder;
+        drawable._atlasFrame = semantics?.atlasFrame ?? materialSource.atlasFrame;
+    }
     const gpuBuilder = semantics?.buildGpuRecord || payload?.buildGpuRecord || null;
-    const fallback = (ctx, zoom, context) => {
-        drawFallback?.(ctx, zoom, context, payload);
-    };
-    return {
-        kind,
-        sortY: finiteSortY(sortY),
-        sortBand: Number.isFinite(Number(semantics?.sortBand))
-            ? Number(semantics.sortBand)
-            : KIND_ORDER[kind] ?? 50,
-        stableKey: payloadStableKey(payload),
-        salience: normalizeSalience(semantics?.salience ?? payload?.salience),
-        materialId: material.materialId,
-        materialClass: material.materialClass,
-        elevation: material.elevation,
-        emissive: material.emissive,
-        occluder: material.occluder,
-        atlasFrame: material.atlasFrame,
-        hitArea: payload?.hitArea || null,
-        payload,
-        drawFallback: fallback,
-        // Legacy alias: Canvas callers keep the exact same call path.
-        draw: fallback,
-        gpuReady: typeof gpuBuilder === 'function',
-        buildGpuRecord(context = {}) {
-            if (typeof gpuBuilder === 'function') {
-                return gpuBuilder(context, payload, this);
-            }
-            return context.spriteRenderer?.buildGpuRecordForDrawable?.(this, context) ?? null;
-        },
-    };
+    // Every mutable/public field is assigned on every checkout. In particular,
+    // category-only fields are reset here so a wrapper reused for another kind
+    // cannot retain scene policy from its previous entity.
+    drawable.kind = kind;
+    drawable.sortY = finiteSortY(sortY);
+    drawable.sortBand = Number.isFinite(Number(semantics?.sortBand))
+        ? Number(semantics.sortBand)
+        : KIND_ORDER[kind] ?? 50;
+    drawable.stableKey = payloadStableKey(payload);
+    drawable.salience = normalizeSalience(semantics?.salience ?? payload?.salience);
+    drawable.materialId = material.materialId;
+    drawable.materialClass = material.materialClass;
+    drawable.elevation = material.elevation;
+    drawable.emissive = material.emissive;
+    drawable.occluder = material.occluder;
+    drawable.atlasFrame = material.atlasFrame;
+    drawable.hitArea = payload?.hitArea || null;
+    drawable.payload = payload;
+    drawable._drawFallback = drawFallback || null;
+    drawable.drawFallback = drawDepthDrawableFallback;
+    drawable.draw = drawDepthDrawableFallback;
+    drawable._gpuBuilder = gpuBuilder;
+    drawable.gpuReady = typeof gpuBuilder === 'function';
+    drawable.buildGpuRecord = buildDepthDrawableGpuRecord;
+    drawable.sceneCategory = null;
+    drawable.overlayBand = 0;
+    drawable.sequence = 0;
+    return drawable;
 }
 
 function drawAgent(ctx, zoom, context, sprite) {
@@ -92,6 +128,76 @@ function drawFamiliarMotes(ctx, zoom, context, drawable) {
     drawable?.draw?.(ctx, zoom, context);
 }
 
+function drawSceneCategory(ctx, zoom, context, payload, drawable) {
+    drawable.sceneCategory?.canvasFallback(ctx, payload, zoom, context);
+}
+
+const _framePools = new WeakMap();
+const _sceneCategorySemantics = new WeakMap();
+
+function sceneCategorySemantics(category) {
+    let semantics = _sceneCategorySemantics.get(category);
+    if (!semantics) {
+        semantics = { sortBand: category.sortBand };
+        _sceneCategorySemantics.set(category, semantics);
+    } else {
+        semantics.sortBand = category.sortBand;
+    }
+    return semantics;
+}
+
+function pooledDepthDrawable(target, kind, sortY, payload, drawFallback, semantics) {
+    let pool = _framePools.get(target);
+    if (!pool) {
+        pool = {
+            byEntity: new WeakMap(),
+            stableCurrent: new Map(),
+            stablePrevious: new Map(),
+            fallback: [],
+            fallbackCursor: 0,
+            generation: 0,
+        };
+        _framePools.set(target, pool);
+    }
+    let drawable = null;
+    const entity = payload?.building || payload?.agent || payload?.sprite || null;
+    if (entity && (typeof entity === 'object' || typeof entity === 'function')) {
+        let byKind = pool.byEntity.get(entity);
+        if (!byKind) {
+            byKind = new Map();
+            pool.byEntity.set(entity, byKind);
+        }
+        drawable = byKind.get(kind);
+        if (!drawable) {
+            drawable = {};
+            byKind.set(kind, drawable);
+        }
+    } else {
+        const stableKey = payloadStableKey(payload);
+        if (stableKey) {
+            let byKind = pool.stableCurrent.get(stableKey);
+            if (!byKind) {
+                byKind = new Map();
+                pool.stableCurrent.set(stableKey, byKind);
+            }
+            drawable = byKind.get(kind);
+            if (!drawable) {
+                drawable = pool.stablePrevious.get(stableKey)?.get(kind) || {};
+                byKind.set(kind, drawable);
+            }
+        } else {
+            const index = pool.fallbackCursor++;
+            drawable = pool.fallback[index] || (pool.fallback[index] = {});
+        }
+    }
+    if (drawable && drawable._poolGeneration === pool.generation) {
+        const index = pool.fallbackCursor++;
+        drawable = pool.fallback[index] || (pool.fallback[index] = {});
+    }
+    drawable._poolGeneration = pool.generation;
+    return initializeDepthDrawable(drawable, kind, sortY, payload, drawFallback, semantics);
+}
+
 export function propDepthDrawable(sprite, part = 'whole') {
     const kind = part === 'whole' ? 'prop' : `prop-${part}`;
     const sortY = part === 'back'
@@ -112,24 +218,34 @@ export function appendDepthSortedDrawables(target, {
     chroniclerDrawables = [],
     familiarDrawables = [],
 } = {}) {
+    const pool = _framePools.get(target);
+    if (pool) {
+        pool.fallbackCursor = 0;
+        pool.generation += 1;
+        const previous = pool.stablePrevious;
+        pool.stablePrevious = pool.stableCurrent;
+        pool.stableCurrent = previous;
+        pool.stableCurrent.clear();
+    }
     for (const drawable of buildingDrawables) {
-        pushDepthDrawable(target, createDepthDrawable(drawable.kind, drawable.sortY, drawable, drawBuilding));
+        pushDepthDrawable(target, pooledDepthDrawable(target, drawable.kind, drawable.sortY, drawable, drawBuilding));
     }
     for (const drawable of propDrawables) {
         pushDepthDrawable(target, drawable);
     }
     for (const sprite of agentSprites) {
-        pushDepthDrawable(target, createDepthDrawable('agent', sprite.y, sprite, drawAgent));
+        pushDepthDrawable(target, pooledDepthDrawable(target, 'agent', sprite.y, sprite, drawAgent));
     }
     for (const entry of sceneCategoryFrame?.entries || []) {
         const category = entry.category;
         for (const item of entry.items) {
-            const drawable = createDepthDrawable(
+            const drawable = pooledDepthDrawable(
+                target,
                 category.id,
                 item?.sortY,
                 item,
-                (ctx, zoom, context, payload) => category.canvasFallback(ctx, payload, zoom, context),
-                { sortBand: category.sortBand },
+                drawSceneCategory,
+                sceneCategorySemantics(category),
             );
             drawable.sceneCategory = category;
             drawable.overlayBand = category.overlayBand;
@@ -137,18 +253,42 @@ export function appendDepthSortedDrawables(target, {
         }
     }
     for (const drawable of landmarkDrawables) {
-        pushDepthDrawable(target, createDepthDrawable('landmark-activity', drawable.sortY, drawable, drawLandmarkActivity));
+        pushDepthDrawable(target, pooledDepthDrawable(target, 'landmark-activity', drawable.sortY, drawable, drawLandmarkActivity));
     }
     for (const drawable of chronicleMonumentDrawables) {
-        pushDepthDrawable(target, createDepthDrawable('chronicle-monument', drawable.sortY, drawable, drawChronicleMonument));
+        pushDepthDrawable(target, pooledDepthDrawable(target, 'chronicle-monument', drawable.sortY, drawable, drawChronicleMonument));
     }
     for (const drawable of chroniclerDrawables) {
-        pushDepthDrawable(target, createDepthDrawable('chronicler', drawable.sortY, drawable, drawChronicler));
+        pushDepthDrawable(target, pooledDepthDrawable(target, 'chronicler', drawable.sortY, drawable, drawChronicler));
     }
     for (const drawable of familiarDrawables) {
-        pushDepthDrawable(target, createDepthDrawable(drawable.kind || 'familiar-motes', drawable.sortY, drawable, drawFamiliarMotes));
+        pushDepthDrawable(target, pooledDepthDrawable(target, drawable.kind || 'familiar-motes', drawable.sortY, drawable, drawFamiliarMotes));
+    }
+    const activePool = _framePools.get(target);
+    for (let index = activePool?.fallbackCursor || 0; index < (activePool?.fallback.length || 0); index++) {
+        clearPooledDrawable(activePool.fallback[index]);
     }
     target.sort(compareDepthDrawables);
+}
+
+function clearPooledDrawable(drawable) {
+    drawable.kind = null;
+    drawable.stableKey = '';
+    drawable.hitArea = null;
+    drawable.payload = null;
+    drawable._drawFallback = null;
+    drawable._gpuBuilder = null;
+    drawable.sceneCategory = null;
+    drawable.elevation = null;
+    drawable.emissive = null;
+    drawable.occluder = null;
+    drawable.atlasFrame = null;
+    drawable._material = null;
+    drawable._materialSource = null;
+    drawable._elevation = null;
+    drawable._emissive = null;
+    drawable._occluder = null;
+    drawable._atlasFrame = null;
 }
 
 export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
@@ -167,11 +307,11 @@ export function drawDepthSortedDrawables(ctx, drawables, context = {}) {
 // Legacy selective-draw helper retained for non-category callers. Scene backend
 // fallback must use drawSceneCategoryOverlays() so policy stays in the registry.
 export function drawDepthSortedDrawableKinds(ctx, drawables, kinds, context = {}) {
-    const accepted = kinds instanceof Set ? kinds : new Set(kinds || []);
-    if (!accepted.size) return;
+    const accepted = kinds || [];
+    if (!accepted.size && !accepted.length) return;
     const zoom = context.zoom || 1;
     for (const drawable of drawables || []) {
-        if (!accepted.has(drawable?.kind)) continue;
+        if (accepted instanceof Set ? !accepted.has(drawable?.kind) : !accepted.includes(drawable?.kind)) continue;
         drawable.draw?.(ctx, zoom, context);
     }
 }
@@ -182,15 +322,22 @@ export function drawDepthSortedDrawableKinds(ctx, drawables, kinds, context = {}
 export function drawSceneCategoryOverlays(ctx, drawables, resolution, context = {}) {
     const accepted = resolution?.overlayCategoryIds;
     if (!(accepted instanceof Set) || !accepted.size) return;
-    const selected = [];
+    const selected = _sceneOverlayBuffer;
+    selected.length = 0;
     for (let index = 0; index < (drawables || []).length; index++) {
         const drawable = drawables[index];
         if (!drawable?.sceneCategory || !accepted.has(drawable.sceneCategory.id)) continue;
-        selected.push({ drawable, index });
+        selected.push(drawable);
     }
-    selected.sort((a, b) => (a.drawable.overlayBand - b.drawable.overlayBand) || (a.index - b.index));
+    selected.sort(compareOverlayBands);
     const zoom = context.zoom || 1;
-    for (const { drawable } of selected) drawable.draw?.(ctx, zoom, context);
+    for (const drawable of selected) drawable.draw?.(ctx, zoom, context);
+}
+
+const _sceneOverlayBuffer = [];
+
+function compareOverlayBands(a, b) {
+    return a.overlayBand - b.overlayBand;
 }
 
 // Converts the already-sorted stream without reordering painter semantics.
@@ -224,32 +371,36 @@ export function buildGpuRecordsFromDrawables(drawables, context = {}) {
     return records;
 }
 
-export function cullDepthSortedDrawables(drawables, camera, viewport, margin = 180) {
-    const rect = worldViewportRect(camera, viewport, margin);
+export function cullDepthSortedDrawables(drawables, camera, viewport, margin = 180, collectDiagnostics = true) {
+    const rect = worldViewportRect(camera, viewport, margin, _viewportRect);
     if (!rect) {
-        return { enabled: false, input: drawables.length, drawn: drawables.length, culled: 0 };
+        return collectDiagnostics
+            ? { enabled: false, input: drawables.length, drawn: drawables.length, culled: 0 }
+            : null;
     }
 
     let writeIndex = 0;
-    const byKind = {};
+    const byKind = collectDiagnostics ? {} : null;
     for (let i = 0; i < drawables.length; i++) {
         const drawable = drawables[i];
         if (drawableVisibleInRect(drawable, rect)) {
             drawables[writeIndex++] = drawable;
             continue;
         }
-        const kind = drawable.kind || 'unknown';
-        byKind[kind] = (byKind[kind] || 0) + 1;
+        if (byKind) {
+            const kind = drawable.kind || 'unknown';
+            byKind[kind] = (byKind[kind] || 0) + 1;
+        }
     }
     const input = drawables.length;
     drawables.length = writeIndex;
-    return {
+    return collectDiagnostics ? {
         enabled: true,
         input,
         drawn: writeIndex,
         culled: input - writeIndex,
         byKind,
-    };
+    } : null;
 }
 
 export function summarizeDrawableLayers(drawables, culling = null) {
@@ -294,20 +445,21 @@ function compareDepthDrawables(a, b) {
         || ((a.sequence || 0) - (b.sequence || 0));
 }
 
-function worldViewportRect(camera, viewport, margin) {
+const _viewportRect = { left: 0, right: 0, top: 0, bottom: 0 };
+
+function worldViewportRect(camera, viewport, margin, rect) {
     if (!camera || typeof camera.screenToWorld !== 'function' || !viewport?.width || !viewport?.height) return null;
     const a = camera.screenToWorld(-margin, -margin);
     const b = camera.screenToWorld(viewport.width + margin, viewport.height + margin);
-    return {
-        left: Math.min(a.x, b.x),
-        right: Math.max(a.x, b.x),
-        top: Math.min(a.y, b.y),
-        bottom: Math.max(a.y, b.y),
-    };
+    rect.left = Math.min(a.x, b.x);
+    rect.right = Math.max(a.x, b.x);
+    rect.top = Math.min(a.y, b.y);
+    rect.bottom = Math.max(a.y, b.y);
+    return rect;
 }
 
 function drawableVisibleInRect(drawable, rect) {
-    const point = drawablePoint(drawable);
+    const point = drawablePoint(drawable, _drawablePoint);
     if (!point) return true;
     const radius = drawableRadius(drawable);
     return point.x >= rect.left - radius
@@ -316,19 +468,29 @@ function drawableVisibleInRect(drawable, rect) {
         && point.y <= rect.bottom + radius;
 }
 
-function drawablePoint(drawable) {
+const _drawablePoint = { x: 0, y: 0 };
+
+function drawablePoint(drawable, point) {
     const payload = drawable?.payload || drawable;
     if (Number.isFinite(Number(payload?.wx)) && Number.isFinite(Number(payload?.wy))) {
-        return { x: Number(payload.wx), y: Number(payload.wy) };
+        point.x = Number(payload.wx);
+        point.y = Number(payload.wy);
+        return point;
     }
     if (Number.isFinite(Number(payload?.x)) && Number.isFinite(Number(payload?.y))) {
-        return { x: Number(payload.x), y: Number(payload.y) };
+        point.x = Number(payload.x);
+        point.y = Number(payload.y);
+        return point;
     }
     if (Number.isFinite(Number(drawable?.x)) && Number.isFinite(Number(drawable?.y))) {
-        return { x: Number(drawable.x), y: Number(drawable.y) };
+        point.x = Number(drawable.x);
+        point.y = Number(drawable.y);
+        return point;
     }
     if (Number.isFinite(Number(payload?.payload?.x)) && Number.isFinite(Number(payload?.payload?.y))) {
-        return { x: Number(payload.payload.x), y: Number(payload.payload.y) };
+        point.x = Number(payload.payload.x);
+        point.y = Number(payload.payload.y);
+        return point;
     }
     return null;
 }
@@ -360,15 +522,22 @@ function normalizeSalience(value) {
         : 'ambient';
 }
 
-function drawableMaterialMetadata(payload, semantics) {
+function drawableMaterialSource(payload, semantics) {
     const entry = payload?.entry || payload?.sprite?.entry || null;
-    const source = semantics?.material || payload?.material || entry || {};
-    const materialId = semantics?.materialId
+    return semantics?.material || payload?.material || entry || EMPTY_SEMANTICS;
+}
+
+function drawableMaterialId(payload, semantics, source) {
+    const entry = payload?.entry || payload?.sprite?.entry || null;
+    return semantics?.materialId
         || source.materialId
         || entry?.id
         || payload?.sprite?.id
         || payload?.id
         || 'material.default';
+}
+
+function drawableMaterialMetadata(payload, semantics, source, materialId) {
     return normalizeMaterialMetadata(source, {
         materialId,
         materialClass: semantics?.materialClass ?? source.materialClass,

@@ -10,6 +10,8 @@ const os = require('os');
 const path = require('path');
 const {
   createDetailResponse,
+  getJsonlDiagnostics,
+  getTailCacheDiagnostics,
   normalizeCacheTokens,
   readJsonLines,
   summarizeToolInput,
@@ -19,6 +21,7 @@ const { emptyObservedSources, makeDialogue, pickDialogue } = require('./dialogue
 const OMP_HOME = path.join(os.homedir(), '.omp');
 const DEFAULT_SESSIONS_DIR = path.join(OMP_HOME, 'agent', 'sessions');
 const TRANSCRIPT_HEAD_LINES = 32;
+const TRANSCRIPT_HEAD_MAX_BYTES = 256 * 1024;
 const TRANSCRIPT_TAIL_LINES = 2500;
 const DETAIL_TAIL_LINES = 5000;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
@@ -137,6 +140,7 @@ function parseOmpTranscript(records, {
   activeThresholdMs = null,
   fallbackProject = null,
   detail = true,
+  fileMtimeMs = null,
 } = {}) {
   let session = null;
   let title = null;
@@ -283,9 +287,11 @@ function parseOmpTranscript(records, {
   if (!session?.id) return null;
   const sessionId = transcriptId(String(session.id));
   const project = session.cwd || fallbackProject || null;
-  const statActivity = (() => {
-    try { return fs.statSync(filePath).mtimeMs; } catch { return 0; }
-  })();
+  const statActivity = fileMtimeMs != null && Number.isFinite(Number(fileMtimeMs))
+    ? Number(fileMtimeMs)
+    : (() => {
+      try { return fs.statSync(filePath).mtimeMs; } catch { return 0; }
+    })();
   latestActivity = Math.max(latestActivity, statActivity);
   if (activeThresholdMs != null && (now - latestActivity) > Number(activeThresholdMs)) return null;
   const dialogueCandidates = [];
@@ -364,6 +370,29 @@ class OmpAdapter {
     this.home = path.resolve(this.sessionsDir, '..', '..');
     this.now = now;
     this._index = new Map();
+    this._perf = {
+      activePasses: 0,
+      filesDiscovered: 0,
+      filesStatted: 0,
+      filesSkippedBeforeRead: 0,
+      filesOpened: 0,
+      bytesRead: 0,
+      linesParsed: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      statErrors: 0,
+      lastPassAt: null,
+      lastPassDurationMs: 0,
+      lastFilesDiscovered: 0,
+      lastFilesStatted: 0,
+      lastFilesSkippedBeforeRead: 0,
+      lastFilesOpened: 0,
+      lastBytesRead: 0,
+      lastLinesParsed: 0,
+      lastCacheHits: 0,
+      lastCacheMisses: 0,
+      lastStatErrors: 0,
+    };
   }
 
   get name() { return 'Oh My Pi'; }
@@ -395,7 +424,7 @@ class OmpAdapter {
     const head = readJsonLines(filePath, {
       from: 'start',
       count: TRANSCRIPT_HEAD_LINES,
-      headMaxBytes: 256 * 1024,
+      headMaxBytes: TRANSCRIPT_HEAD_MAX_BYTES,
       source: this.provider,
     });
     const tail = readJsonLines(filePath, {
@@ -407,7 +436,7 @@ class OmpAdapter {
     return mergeRecords(head, tail);
   }
 
-  _parseFile(filePath, { activeThresholdMs = null, detail = false } = {}) {
+  _parseFile(filePath, { activeThresholdMs = null, detail = false, fileStat = null } = {}) {
     const records = this._readRecords(filePath, detail ? DETAIL_TAIL_LINES : TRANSCRIPT_TAIL_LINES);
     return parseOmpTranscript(records, {
       filePath,
@@ -416,19 +445,88 @@ class OmpAdapter {
       now: this.now(),
       activeThresholdMs,
       detail,
+      fileMtimeMs: fileStat?.mtimeMs,
     });
   }
 
   getActiveSessions(activeThresholdMs) {
+    const startedAt = Date.now();
     this._index.clear();
     const sessions = [];
-    for (const filePath of this._listTranscriptFiles()) {
-      const parsed = this._parseFile(filePath, { activeThresholdMs });
+    const files = this._listTranscriptFiles();
+    const pass = {
+      filesDiscovered: files.length,
+      filesStatted: 0,
+      filesSkippedBeforeRead: 0,
+      filesOpened: 0,
+      bytesRead: 0,
+      linesParsed: 0,
+      cacheHits: 0,
+      cacheMisses: 0,
+      statErrors: 0,
+    };
+    const diagnosticsBefore = getJsonlDiagnostics()[this.provider]?.parsedLines || 0;
+    const tailBefore = getTailCacheDiagnostics().parsed;
+    const threshold = activeThresholdMs == null ? null : Number(activeThresholdMs);
+    const now = this.now();
+
+    for (const filePath of files) {
+      let fileStat;
+      pass.filesStatted += 1;
+      try {
+        fileStat = fs.statSync(filePath);
+      } catch {
+        pass.statErrors += 1;
+        pass.filesSkippedBeforeRead += 1;
+        continue;
+      }
+
+      const ageMs = now - fileStat.mtimeMs;
+      const inactive = threshold != null && (
+        threshold <= 0
+        || (Number.isFinite(threshold) && Number.isFinite(ageMs) && ageMs >= 0 && ageMs > threshold)
+      );
+      if (inactive) {
+        pass.filesSkippedBeforeRead += 1;
+        continue;
+      }
+
+      pass.filesOpened += 1;
+      pass.bytesRead += Math.min(fileStat.size, TRANSCRIPT_HEAD_MAX_BYTES);
+      const parsed = this._parseFile(filePath, { activeThresholdMs, fileStat });
       if (!parsed) continue;
       this._index.set(rawSessionId(parsed.session.sessionId), { filePath, parentSessionId: parsed.session.parentSessionId });
       sessions.push(parsed.session);
     }
+
+    const diagnosticsAfter = getJsonlDiagnostics()[this.provider]?.parsedLines || 0;
+    const tailAfter = getTailCacheDiagnostics().parsed;
+    pass.bytesRead += Math.max(0, tailAfter.bytesRead - tailBefore.bytesRead);
+    pass.linesParsed = Math.max(0, diagnosticsAfter - diagnosticsBefore);
+    pass.cacheHits = Math.max(0, tailAfter.hits - tailBefore.hits);
+    pass.cacheMisses = Math.max(0, tailAfter.misses - tailBefore.misses);
+    this._recordActivePass(startedAt, pass);
     return sessions;
+  }
+
+  _recordActivePass(startedAt, pass) {
+    this._perf.activePasses += 1;
+    for (const field of [
+      'filesDiscovered',
+      'filesStatted',
+      'filesSkippedBeforeRead',
+      'filesOpened',
+      'bytesRead',
+      'linesParsed',
+      'cacheHits',
+      'cacheMisses',
+      'statErrors',
+    ]) {
+      this._perf[field] += pass[field];
+      this._perf[`last${field[0].toUpperCase()}${field.slice(1)}`] = pass[field];
+    }
+    this._perf.lastPassAt = Date.now();
+    this._perf.lastPassDurationMs = this._perf.lastPassAt - startedAt;
   }
 
   getSessionDetail(sessionId, project) {
@@ -456,6 +554,10 @@ class OmpAdapter {
 
   invalidateCachesForDirty() {
     this._index.clear();
+  }
+
+  getPerfStats() {
+    return { ...this._perf };
   }
 
   shutdown() {

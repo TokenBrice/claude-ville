@@ -3036,6 +3036,20 @@ export class HarborTraffic {
         this._hasTimedLifecycle = false;
         this._dockLayout = buildDockSquadLayout(this.state);
         this._repoDockSummaryCache = new Map();
+        // The semantic state retains replay history, but frames only need the
+        // ships selected by the 15-individual / 30-per-stack visual packing
+        // policy plus currently animated ships. Rebuild this window when state
+        // changes instead of walking the complete retained history every frame.
+        this._packedDockedEntries = [];
+        this._activeRenderShips = [];
+        this._repoQuayDrawableCache = [];
+        this._markerByRepoCache = new Map();
+        this._repoAnchorageDrawableCache = [];
+        this._drawableBuffer = [];
+        this._departingBuffer = [];
+        this._crateDrawnForKeys = new Set();
+        this._convoyGroups = new Map();
+        this._enumeratedFrame = -1;
         this._previousDebugHarbor = null;
         this._disposed = false;
         if (typeof window !== 'undefined' && window.localStorage?.getItem('claudeVilleDebug') === '1') {
@@ -3087,11 +3101,13 @@ export class HarborTraffic {
 
     setWaterRouteData(routeData) {
         this.waterRouteData = routeData || null;
+        this._enumeratedFrame = -1;
     }
 
     setMotionScale(scale) {
         this.motionScale = scale === 0 ? 0 : 1;
         if (this.motionScale <= 0) this.storageTransfers.clear();
+        this._enumeratedFrame = -1;
     }
 
     setGradeState(grade) {
@@ -3150,12 +3166,15 @@ export class HarborTraffic {
             this._repoDockSummaryCache = this._repoDockSummaries(this._dockLayout);
             this._pendingRepoSummaries = pendingRepoSummariesFromDockSummaries(this._repoDockSummaryCache);
             this._observeStorageTransfers(this._dockLayout, now);
+            this._refreshRenderWindow(now);
         } else {
             this._unchangedReconciliations++;
         }
         this._observeHarborCrates(agents, sourceChanged || force ? events : [], now);
         this._observeRepoAnchorages(agents, now);
+        this._repoAnchorageDrawableCache = this._repoAnchorageDrawables(this._repoDockSummaryCache, now);
         this._observePeakDensity(now);
+        this._enumeratedFrame = -1;
         return this;
     }
 
@@ -3223,6 +3242,16 @@ export class HarborTraffic {
         this._hasTimedLifecycle = false;
         this._dockLayout = null;
         this._repoDockSummaryCache?.clear?.();
+        this._packedDockedEntries.length = 0;
+        this._activeRenderShips.length = 0;
+        this._repoQuayDrawableCache.length = 0;
+        this._markerByRepoCache.clear();
+        this._repoAnchorageDrawableCache.length = 0;
+        this._drawableBuffer.length = 0;
+        this._departingBuffer.length = 0;
+        this._crateDrawnForKeys.clear();
+        this._convoyGroups.clear();
+        this._enumeratedFrame = -1;
         this.waterRouteData = null;
         this._grade = null;
         this.sprites = null;
@@ -3555,120 +3584,138 @@ export class HarborTraffic {
         };
     }
 
-    enumerateDrawables(now = Date.now()) {
+    _refreshRenderWindow(now = Date.now()) {
         const dockLayout = this._dockLayout || buildDockSquadLayout(this.state);
         const visualPackByShipId = buildDockedVisualPackMap(dockLayout);
-        const repoSummaries = this._repoDockSummaryCache?.size
-            ? this._repoDockSummaryCache
-            : this._repoDockSummaries(dockLayout);
-        const markers = this._repoQuayDrawables(repoSummaries);
-        const markerByRepo = new Map();
-        for (const marker of markers) {
-            if (marker.payload?.type !== 'repo-quay') continue;
-            const profile = marker.payload?.profile || trafficProfile(marker.payload?.project, marker.payload?.branch);
-            const key = profile.key;
-            if (key) markerByRepo.set(key, marker.payload);
-            const baseKey = cachedRepoProfile(marker.payload?.project).key;
-            if (baseKey && !markerByRepo.has(baseKey)) markerByRepo.set(baseKey, marker.payload);
-        }
-        // 3.6 — compute untethered projects (no upstream, >N docked commits).
         const untetheredProjects = this._computeUntetheredProjects(now);
-        const dockedByRepo = new Map();
-        const departing = [];
+        const packed = this._packedDockedEntries;
+        const active = this._activeRenderShips;
+        packed.length = 0;
+        active.length = 0;
 
-        for (const ship of this.state.ships.values()) {
-            const drawable = this._shipDrawable(ship, now);
-            if (!drawable) continue;
-            if (drawable.payload.status === 'docked') {
-                const key = trafficProfile(drawable.payload.project, drawable.payload.branch).key;
-                const list = dockedByRepo.get(key) || [];
-                list.push(drawable);
-                dockedByRepo.set(key, list);
-            } else {
-                departing.push(drawable);
-            }
-        }
-
-        const visible = [];
-        const crateDrawnForKeys = new Set();
-        for (const squad of dockLayout.squads) {
-            const list = dockedByRepo.get(squad.key) || [];
-            const byId = new Map(list.map(drawable => [drawable.payload.id, drawable]));
-            // 4.17: precompute screen positions for each ship in the squad so
-            // we can wire a `buntingNext` field onto each drawable (the next
-            // sibling's anchor). Bunting renders only when squad.ships.length >= 2.
-            const squadAnchors = squad.ships
-                .map(ship => ({ id: ship.id, meta: dockLayout.byShipId.get(ship.id), pack: visualPackByShipId.get(ship.id) }))
-                .filter(entry => entry.meta && entry.pack);
-            for (const ship of squad.ships) {
+        // Squads contain every retained docked ship, while the pack map only
+        // contains representatives that can produce a drawable. Materialize
+        // that sparse join once per semantic state version.
+        for (const squad of dockLayout.squads || []) {
+            const visibleSquad = [];
+            for (const ship of squad.ships || []) {
                 const pack = visualPackByShipId.get(ship.id);
-                if (!pack) continue;
-                const drawable = byId.get(ship.id);
-                const meta = dockLayout.byShipId.get(ship.id);
-                if (!drawable || !meta) continue;
-                drawable.payload.x = meta.x;
-                drawable.payload.y = meta.y;
-                drawable.payload.repoDockIndex = meta.repoDockIndex;
-                drawable.payload.repoDockCount = meta.repoDockCount;
-                drawable.payload.repoTotalDockCount = meta.repoTotalDockCount;
-                drawable.payload.repoDockVisibleCount = pack.visibleCount || meta.repoDockVisibleCount;
-                drawable.payload.squadKey = meta.squadKey;
-                drawable.payload.squadIndex = meta.squadIndex;
-                drawable.payload.squadCount = meta.squadCount;
-                drawable.payload.squadShipIndex = Number.isFinite(Number(pack.visualIndex))
+                const meta = pack ? dockLayout.byShipId.get(ship.id) : null;
+                if (!pack || !meta) continue;
+                visibleSquad.push({ ship, pack, meta, nextMeta: null, drawable: null });
+            }
+            for (let index = 0; index < visibleSquad.length; index++) {
+                const entry = visibleSquad[index];
+                entry.nextMeta = visibleSquad[index + 1]?.meta || null;
+                const drawable = this._shipDrawable(entry.ship, now);
+                if (!drawable) continue;
+                const { meta, pack } = entry;
+                const payload = drawable.payload;
+                payload.x = meta.x;
+                payload.y = meta.y;
+                payload.repoDockIndex = meta.repoDockIndex;
+                payload.repoDockCount = meta.repoDockCount;
+                payload.repoTotalDockCount = meta.repoTotalDockCount;
+                payload.repoDockVisibleCount = pack.visibleCount || meta.repoDockVisibleCount;
+                payload.squadKey = meta.squadKey;
+                payload.squadIndex = meta.squadIndex;
+                payload.squadCount = meta.squadCount;
+                payload.squadShipIndex = Number.isFinite(Number(pack.visualIndex))
                     ? Number(pack.visualIndex)
                     : meta.squadShipIndex;
-                drawable.payload.squadShipCount = pack.visibleCount || meta.squadShipCount;
-                drawable.payload.squadDensity = meta.squadDensity;
-                drawable.payload.compactCommitLabel = meta.compactCommitLabel || pack.visualPackSize > 1;
-                drawable.payload.showCommitLabel = pack.visualPackSize > 1 ? false : meta.showCommitLabel;
-                drawable.payload.waitingZone = meta.waitingZone;
-                drawable.payload.zoneSquadIndex = meta.zoneSquadIndex;
-                drawable.payload.anchorageName = meta.anchorageName;
-                drawable.payload.anchorageIndex = meta.anchorageIndex;
-                drawable.payload.formationColumn = meta.column;
-                drawable.payload.formationRow = meta.row;
-                drawable.payload.visualPackSize = pack.visualPackSize;
-                drawable.payload.visualPackStartIndex = pack.visualPackStartIndex;
-                drawable.payload.visualPackEndIndex = pack.visualPackEndIndex;
-                drawable.payload.visualPackHiddenCount = pack.visualPackHiddenCount;
-                const transfer = this._storageTransferPosition(ship.id, meta, now);
-                if (transfer) {
-                    drawable.payload.x = transfer.x;
-                    drawable.payload.y = transfer.y;
-                    drawable.payload.tailX = transfer.tailX;
-                    drawable.payload.tailY = transfer.tailY;
-                    drawable.payload.storageTransferProgress = transfer.progress;
-                    drawable.payload.storageTransfer = transfer.progress < 1;
-                }
-                drawable.payload.harborCrate = !crateDrawnForKeys.has(squad.key)
-                    ? this.harborCrates.get(squad.key) || null
+                payload.squadShipCount = pack.visibleCount || meta.squadShipCount;
+                payload.squadDensity = meta.squadDensity;
+                payload.compactCommitLabel = meta.compactCommitLabel || pack.visualPackSize > 1;
+                payload.showCommitLabel = pack.visualPackSize > 1 ? false : meta.showCommitLabel;
+                payload.waitingZone = meta.waitingZone;
+                payload.zoneSquadIndex = meta.zoneSquadIndex;
+                payload.anchorageName = meta.anchorageName;
+                payload.anchorageIndex = meta.anchorageIndex;
+                payload.formationColumn = meta.column;
+                payload.formationRow = meta.row;
+                payload.visualPackSize = pack.visualPackSize;
+                payload.visualPackStartIndex = pack.visualPackStartIndex;
+                payload.visualPackEndIndex = pack.visualPackEndIndex;
+                payload.visualPackHiddenCount = pack.visualPackHiddenCount;
+                payload.buntingNext = entry.nextMeta
+                    ? { x: entry.nextMeta.x, y: entry.nextMeta.y }
                     : null;
-                if (drawable.payload.harborCrate) crateDrawnForKeys.add(squad.key);
-                // 3.6 — mark flagship of an untethered project so renderer can draw broken-rope chevron.
-                if (meta.squadShipIndex === 0 && untetheredProjects.has(String(drawable.payload.project || 'unknown'))) {
-                    drawable.payload.untetheredFlag = true;
-                }
-                // 4.17: bunting neighbor anchor (next docked ship in the same
-                // squad). Read by _drawShip to draw a thin arc between the two
-                // adjacent ships when squadAnchors.length >= 2.
-                const visibleAnchorIndex = squadAnchors.findIndex(entry => entry.id === ship.id);
-                if (squadAnchors.length >= 2 && visibleAnchorIndex >= 0 && visibleAnchorIndex < squadAnchors.length - 1) {
-                    const next = squadAnchors[visibleAnchorIndex + 1];
-                    if (next?.meta) {
-                        drawable.payload.buntingNext = { x: next.meta.x, y: next.meta.y };
-                    }
-                }
-                drawable.sortY = drawable.payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
-                visible.push(drawable);
+                payload.untetheredFlag = meta.squadShipIndex === 0
+                    && untetheredProjects.has(String(payload.project || 'unknown'));
+                drawable.sortY = payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
+                entry.drawable = drawable;
+                packed.push(entry);
             }
+        }
+
+        for (const ship of this.state.ships.values()) {
+            if (ship.status !== 'docked') active.push(ship);
+        }
+
+        this._repoQuayDrawableCache = this._repoQuayDrawables(this._repoDockSummaryCache);
+        this._markerByRepoCache.clear();
+        for (const marker of this._repoQuayDrawableCache) {
+            if (marker.payload?.type !== 'repo-quay') continue;
+            const profile = marker.payload.profile || trafficProfile(marker.payload.project, marker.payload.branch);
+            if (profile.key) this._markerByRepoCache.set(profile.key, marker.payload);
+            const baseKey = cachedRepoProfile(marker.payload.project).key;
+            if (baseKey && !this._markerByRepoCache.has(baseKey)) {
+                this._markerByRepoCache.set(baseKey, marker.payload);
+            }
+        }
+        this._enumeratedFrame = -1;
+    }
+
+    enumerateDrawables(now = Date.now()) {
+        if (this._enumeratedFrame === this.frame) return this._drawableBuffer;
+        if (!this._packedDockedEntries.length && this.state.ships.size) {
+            this._refreshRenderWindow(now);
+        }
+        const markerByRepo = this._markerByRepoCache;
+        const departing = this._departingBuffer;
+        departing.length = 0;
+        for (const ship of this._activeRenderShips) {
+            const drawable = this._shipDrawable(ship, now);
+            if (!drawable) continue;
+            departing.push(drawable);
+        }
+
+        const visible = this._drawableBuffer;
+        visible.length = 0;
+        const crateDrawnForKeys = this._crateDrawnForKeys;
+        crateDrawnForKeys.clear();
+        for (const entry of this._packedDockedEntries) {
+            const { drawable, meta, ship } = entry;
+            const payload = drawable.payload;
+            payload.x = meta.x;
+            payload.y = meta.y;
+            payload.tailX = ship.tailX;
+            payload.tailY = ship.tailY;
+            payload.storageTransferProgress = null;
+            payload.storageTransfer = false;
+            const transfer = this._storageTransferPosition(ship.id, meta, now);
+            if (transfer) {
+                payload.x = transfer.x;
+                payload.y = transfer.y;
+                payload.tailX = transfer.tailX;
+                payload.tailY = transfer.tailY;
+                payload.storageTransferProgress = transfer.progress;
+                payload.storageTransfer = transfer.progress < 1;
+            }
+            payload.harborCrate = !crateDrawnForKeys.has(meta.squadKey)
+                ? this.harborCrates.get(meta.squadKey) || null
+                : null;
+            if (payload.harborCrate) crateDrawnForKeys.add(meta.squadKey);
+            drawable.sortY = payload.y + REPO_DOCK_SHIP_SORT_OFFSET;
+            visible.push(drawable);
         }
 
         departing.sort((a, b) => ((a.payload.departStartedAt || 0) - (b.payload.departStartedAt || 0))
             || ((a.payload.departSquadIndex || 0) - (b.payload.departSquadIndex || 0))
             || ((a.payload.eventTime || 0) - (b.payload.eventTime || 0))
             || a.payload.id.localeCompare(b.payload.id));
-        const convoyGroups = new Map();
+        const convoyGroups = this._convoyGroups;
+        convoyGroups.clear();
         for (const drawable of departing) {
             const convoy = drawable.payload?.convoy;
             if (!convoy?.id || (drawable.payload?.pushStatus || '') !== 'success') continue;
@@ -3704,16 +3751,18 @@ export class HarborTraffic {
         if (buoyDrawable) visible.push(buoyDrawable);
 
         // Home Waters — persistent per-repo anchorages.
-        for (const drawable of this._repoAnchorageDrawables(repoSummaries, now)) {
+        for (const drawable of this._repoAnchorageDrawableCache) {
             visible.push(drawable);
         }
 
-        const sorted = visible.sort((a, b) => a.sortY - b.sortY);
+        visible.sort((a, b) => a.sortY - b.sortY);
         // 3.6 — hover lore: snapshot ship positions in draw order for hit testing.
-        this._shipHitEntries = sorted
-            .filter(drawable => drawable.payload?.type === 'ship')
-            .map(drawable => drawable.payload);
-        return sorted;
+        this._shipHitEntries.length = 0;
+        for (const drawable of visible) {
+            if (drawable.payload?.type === 'ship') this._shipHitEntries.push(drawable.payload);
+        }
+        this._enumeratedFrame = this.frame;
+        return visible;
     }
 
     // 3.6 — hover lore: topmost-drawn ship under a world-space point, or null.
@@ -3765,9 +3814,9 @@ export class HarborTraffic {
             const profile = trafficProfile(ship.project, ship.branch);
             activeProfile = profile;
             activeProject = trafficLabel(ship.project, ship.branch);
-            // Count commits flowing toward the harbor via the lagoon.
-            for (const other of this.state.ships.values()) {
-                if (other.status === 'docked' && other.project === ship.project) activeCount += 1;
+            // Dock summaries already include retained and overflow history.
+            for (const summary of this._repoDockSummaryCache.values()) {
+                if (summary.project === ship.project) activeCount += Number(summary.count) || 0;
             }
             break;
         }
@@ -3776,7 +3825,7 @@ export class HarborTraffic {
         let castOff = 0;
         let castOffProfile = null;
         const castOffWindow = CAST_OFF_MS + 1400;
-        for (const ship of this.state.ships.values()) {
+        for (const ship of this._activeRenderShips) {
             if (ship.status !== 'departing') continue;
             if (Math.max(1, Number(ship.departSquadCount || 1)) < 2) continue;
             const elapsed = now - (Number(ship.departStartedAt) || now);

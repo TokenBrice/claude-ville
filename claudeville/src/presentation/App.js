@@ -1,7 +1,7 @@
 import { World } from '../domain/entities/World.js';
 import { Building } from '../domain/entities/Building.js';
 import { BUILDING_DEFS } from '../config/buildings.js';
-import { eventBus } from '../domain/events/DomainEvent.js';
+import { BUILDING_EVENTS, eventBus } from '../domain/events/DomainEvent.js';
 import { i18n } from '../config/i18n.js';
 import { STATUS_VISUALS, STATUS_CSS_VARS } from '../config/theme.js';
 
@@ -34,18 +34,23 @@ import { TopBar } from './shared/TopBar.js';
 import { Sidebar } from './shared/Sidebar.js';
 import { Toast } from './shared/Toast.js';
 import { Modal } from './shared/Modal.js';
-import { ChroniclePanel } from './shared/ChroniclePanel.js';
-import { ActivityPanel } from './shared/ActivityPanel.js';
 import { el } from './shared/DomSafe.js';
 import { emitAgentSelected, emitAgentDeselected, resetAgentSelection } from './shared/AgentSelection.js';
 import { sessionDetailsService } from './shared/SessionDetailsService.js';
 import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
+import { getModelVisualIdentity } from './shared/ModelVisualIdentity.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
 
 const LIFECYCLE_DRAIN_TIMEOUT_MS = 2000;
+const INITIAL_WEBSOCKET_TIMEOUT_MS = 2500;
 const FIRST_RUN_HINT_STORAGE_KEY = 'claudeville.firstRunHint.worldControls.v1';
+const FEATURE_STYLES = Object.freeze({
+    activity: 'css/activity-panel.css',
+    dashboard: 'css/dashboard.css',
+    modal: 'css/modal.css',
+});
 
 const USABLE_VILLAGE_PHASES = new Set([
     VillagePhase.READY_LIVE,
@@ -174,6 +179,16 @@ export class App {
         this._onBootRetry = null;
         this._retryPromise = null;
         this._firstRunHintRevealed = false;
+        this._rendererModulePromise = null;
+        this._yamlParserPromise = null;
+        this._dashboardLoadPromise = null;
+        this._activityPanelLoadPromise = null;
+        this._chroniclePanelLoadPromise = null;
+        this._stylesheetPromises = new Map();
+        this._onDashboardIntent = null;
+        this._onDeferredModalIntent = null;
+        this._deferredActivityBound = false;
+        this._characterAssetsBound = false;
     }
 
     boot() {
@@ -215,15 +230,60 @@ export class App {
                 this.agentSimulator.start();
             }
 
-            // 5. Load initial data — observe the session read at this layer
-            // because AgentManager swallows the failure.
-            await this._syncVillageSources({ signal: this._bootController?.signal });
+            const signal = this._bootController?.signal;
+
+            // 5. Start the independent boot work together. Character image
+            // loading joins only after the initial snapshot tells us which
+            // profiles are actually resident; parser/module/network discovery
+            // does not need to wait for that data dependency.
+            if (!this.assets) this.assets = new AssetManager();
+            const assetMetadataPromise = this._prepareAssetMetadata({ signal });
+            const rendererModulePromise = this._getRendererModule();
+            // Dashboard is fetched concurrently with the renderer module rather
+            // than lazily on click: a mode switch must paint immediately, and a
+            // click can land the instant boot reports ready. Concurrent here, so
+            // it costs no serial round trip; it is joined before ready below.
+            const dashboardReadyPromise = this._loadDashboard();
+            const renderParams = new URLSearchParams(location.search);
+            const materialWorldRequested = renderParams.get('renderer') !== 'canvas'
+                && renderParams.get('postfx') !== '0';
+            let assetsReady = null;
+            const beginResidentAssets = (snapshotResult) => {
+                if (assetsReady) return;
+                if (snapshotResult?.source === 'websocket' && !simMode && !this.sessionWatcher) {
+                    this.sessionWatcher = new SessionWatcher(
+                        this.agentManager, this.wsClient, this.dataSource
+                    );
+                    this.sessionWatcher.start();
+                }
+                const snapshotKnown = snapshotResult?.ok === true;
+                assetsReady = assetMetadataPromise.then(() => {
+                    const characterIds = snapshotKnown
+                        ? this._residentCharacterIds()
+                        : null;
+                    const albedo = this.assets.load({ signal, characterIds });
+                    // From this point onward the manager has either a known
+                    // narrowed set or the legacy all-character policy.
+                    this._bindCharacterAssetRequests();
+                    const materials = materialWorldRequested
+                        ? this.assets.loadMaterialAssets({ signal, characterIds })
+                        : Promise.resolve(true);
+                    return Promise.all([albedo, materials]);
+                });
+            };
+            const sourceResult = await this._syncVillageSources({
+                signal,
+                onSnapshot: beginResidentAssets,
+            });
+            if (!assetsReady) beginResidentAssets({ ok: sourceResult?.snapshotKnown === true });
             if (this._destroyed) return null;
 
-            // 5-1. Load initial usage data
-            if (!this._usageRequested && this.dataSource) {
+            // A normal WebSocket init already includes usage. REST usage is a
+            // fallback only, so the same payload is not transferred and parsed
+            // twice during a healthy boot.
+            if (sourceResult?.source !== 'websocket' && !this._usageRequested && this.dataSource) {
                 this._usageRequested = true;
-                this.dataSource.getUsage({ signal: this._bootController?.signal }).then(usage => {
+                this.dataSource.getUsage({ signal }).then(usage => {
                     if (this._destroyed) return;
                     if (usage) {
                         this.latestUsage = usage;
@@ -243,47 +303,36 @@ export class App {
             // 7. Handle canvas resizing (run before the renderer so the canvas size is set)
             if (!this._resizeWorldCanvas) this._bindResize();
 
-            // 8. Preload sprite assets, then dynamically load character renderer
-            if (!this.assets) this.assets = new AssetManager();
-            await this.assets.load({ signal: this._bootController?.signal });
+            // 8. Join the asset and renderer-module branches only when both are
+            // ready to mount the World surface.
+            const [, rendererModule] = await Promise.all([
+                assetsReady,
+                rendererModulePromise,
+            ]);
             if (this._destroyed) return null;
-            const renderParams = new URLSearchParams(location.search);
-            const materialWorldRequested = renderParams.get('renderer') !== 'canvas'
-                && renderParams.get('postfx') !== '0';
-            if (materialWorldRequested) {
-                await this.assets.loadMaterialAssets({ signal: this._bootController?.signal });
-                if (this._destroyed) return null;
-            }
             console.log('[App] sprite assets loaded');
-            if (!this.renderer) await this._loadRenderer();
+            if (!this.renderer) await this._loadRenderer(rendererModule);
             if (this._destroyed) return null;
 
-            // 8-1. Load dashboard renderer
-            if (!this.dashboardRenderer) await this._loadDashboard();
-            if (this._destroyed) return null;
-
-            // 9. right-side live activity panel
-            if (!this.activityPanel) {
-                this.activityPanel = new ActivityPanel({
-                    world: () => this.world,
-                    renderer: () => this.renderer,
-                    harborTraffic: () => this.renderer?.harborTraffic || null,
-                    biographyService: () => this.biographyService,
-                    affinityService: () => this.affinityService,
-                    toast: this.toast,
-                });
-                this._bindAgentFollow();
-                this._bindDeepLink();
-                if (this.renderer?.selectedAgent) {
-                    emitAgentSelected(this.renderer.selectedAgent);
-                }
-                this._applyDeepLink();
+            // 9. Selection plumbing is critical; the panel itself is not. Its
+            // module and stylesheet load together on the first selection.
+            this._bindAgentFollow();
+            this._bindDeepLink();
+            if (this.renderer?.selectedAgent) {
+                emitAgentSelected(this.renderer.selectedAgent);
             }
+            this._applyDeepLink();
 
             // 10. Apply initial i18n
             this._applyI18n();
             this._renderVillageSurfaces();
 
+            if (this._destroyed) return null;
+            // Join the concurrent Dashboard fetch before reporting ready, so a
+            // mode switch immediately after boot renders on the next frame
+            // instead of waiting on a network round trip. A failure here is not
+            // fatal to World mode; the click path retries.
+            await dashboardReadyPromise.catch(() => {});
             if (this._destroyed) return null;
             this._bootState = 'ready';
             console.log('[App] ClaudeVille boot complete!');
@@ -363,12 +412,9 @@ export class App {
             }));
         }
         if (!this.chroniclePanel) {
-            this.chroniclePanel = new ChroniclePanel({
-                modal: this.modal,
-                chronicleLog: this.chronicleLog,
-                spendLedger: this.spendLedger,
-                usageGetter: () => this.latestUsage,
-            });
+            this.chroniclePanel = {
+                open: () => this._openChroniclePanel(),
+            };
         }
         if (!this.topBar) {
             this.topBar = new TopBar(this.world, {
@@ -390,6 +436,9 @@ export class App {
         if (!this.modeManager) this.modeManager = new ModeManager();
         if (!this.notificationService) this.notificationService = new NotificationService(this.toast);
         if (!this.moodService) this.moodService = new MoodService().start();
+        this._bindDeferredDashboard();
+        this._bindDeferredActivityPanel();
+        this._bindDeferredModalCss();
         this._bindChronicleSignals();
 
         this._foundationReady = true;
@@ -470,7 +519,7 @@ export class App {
         this._eventUnsubscribers.push(eventBus.on('chronicle:status', onChronicleStatus));
     }
 
-    async _syncVillageSources({ signal = null } = {}) {
+    async _syncVillageSources({ signal = null, onSnapshot = null } = {}) {
         if (this._destroyed) return;
         if (this.simMode) {
             this._dispatchVillage({
@@ -487,19 +536,85 @@ export class App {
                 agentCount: this.world?.agents?.size || 0,
                 at: Date.now(),
             });
-            return;
+            const result = { ok: true, source: 'simulator', snapshotKnown: true };
+            onSnapshot?.(result);
+            return result;
         }
 
-        const providersResult = await this._readProviders({ signal });
-        if (this._destroyed || signal?.aborted) return;
-        const sessionsResult = await this._readInitialSessions({ signal });
-        if (this._destroyed || signal?.aborted) return;
+        const providersPromise = this._readProviders({ signal });
+        const sessionsResult = await this._readInitialSnapshot({ signal });
+        onSnapshot?.(sessionsResult);
+        const providersResult = await providersPromise;
+        if (this._destroyed || signal?.aborted) {
+            return { source: 'aborted', snapshotKnown: false };
+        }
         if (providersResult?.failed && sessionsResult?.ok) {
             this._dispatchVillage({
                 type: 'source-failed',
                 code: providersResult.code || 'providers-failed',
             });
         }
+        return {
+            source: sessionsResult?.source || 'rest',
+            snapshotKnown: sessionsResult?.ok === true,
+        };
+    }
+
+    async _readInitialSnapshot({ signal = null } = {}) {
+        const websocket = await this._waitForInitialWebSocketSnapshot({ signal });
+        if (websocket?.ok || this._destroyed || signal?.aborted) return websocket;
+        const rest = await this._readInitialSessions({ signal });
+        return { ...rest, source: 'rest' };
+    }
+
+    _waitForInitialWebSocketSnapshot({ signal = null } = {}) {
+        if (!this.wsClient || !this.agentManager || signal?.aborted) {
+            return Promise.resolve({ ok: false, failed: false, source: 'websocket' });
+        }
+
+        return new Promise((resolve) => {
+            let settled = false;
+            let timeoutHandle = null;
+            const unsubscribers = [];
+            const finish = (result) => {
+                if (settled) return;
+                settled = true;
+                if (timeoutHandle !== null) window.clearTimeout(timeoutHandle);
+                for (const unsubscribe of unsubscribers) unsubscribe?.();
+                signal?.removeEventListener?.('abort', onAbort);
+                resolve(result);
+            };
+            const onInit = (data) => {
+                if (!Array.isArray(data?.sessions)) return;
+                this.agentManager.handleWebSocketMessage(data);
+                finish({
+                    ok: true,
+                    failed: false,
+                    source: 'websocket',
+                    count: data.sessions.length,
+                });
+            };
+            const onDisconnected = () => finish({
+                ok: false,
+                failed: true,
+                source: 'websocket',
+            });
+            const onAbort = () => finish({
+                ok: false,
+                failed: false,
+                source: 'websocket',
+            });
+
+            unsubscribers.push(eventBus.on('ws:init', onInit));
+            unsubscribers.push(eventBus.on('ws:disconnected', onDisconnected));
+            signal?.addEventListener?.('abort', onAbort, { once: true });
+            timeoutHandle = window.setTimeout(() => finish({
+                ok: false,
+                failed: true,
+                source: 'websocket',
+            }), INITIAL_WEBSOCKET_TIMEOUT_MS);
+            this.wsClient.connect();
+        });
     }
 
     async _readProviders({ signal = null } = {}) {
@@ -639,7 +754,6 @@ export class App {
             }
             await this._syncVillageSources({ signal: this._bootController?.signal });
             if (!this.renderer) await this._loadRenderer();
-            if (!this.dashboardRenderer) await this._loadDashboard();
             this._renderVillageSurfaces();
             return this;
         } catch (err) {
@@ -882,11 +996,249 @@ export class App {
         return prunePromise;
     }
 
-    async _loadRenderer() {
+    _prepareAssetMetadata({ signal = null } = {}) {
+        const warm = (url) => fetch(url, { signal }).then((response) => {
+            if (!response.ok) throw new Error(`HTTP ${response.status} for ${url}`);
+            return response.text();
+        });
+        const warmMetadata = Promise.allSettled([
+            warm('assets/sprites/manifest.yaml'),
+            warm('assets/sprites/palettes.yaml'),
+        ]);
+        return Promise.all([
+            this._loadYamlParser(),
+            warmMetadata,
+        ]);
+    }
+
+    _loadYamlParser() {
+        if (globalThis.jsyaml?.load) return Promise.resolve(globalThis.jsyaml);
+        if (!this._yamlParserPromise) {
+            this._yamlParserPromise = import('../../vendor/js-yaml.min.js').then(() => {
+                if (!globalThis.jsyaml?.load) {
+                    throw new Error('js-yaml did not expose its parser');
+                }
+                return globalThis.jsyaml;
+            });
+        }
+        return this._yamlParserPromise;
+    }
+
+    _residentCharacterIds() {
+        const agents = this.world?.agents;
+        if (!agents || typeof agents.values !== 'function') return null;
+        const ids = new Set();
+        for (const agent of agents.values()) {
+            const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider);
+            if (identity?.spriteId?.startsWith('agent.')) ids.add(identity.spriteId);
+        }
+        return [...ids];
+    }
+
+    _bindCharacterAssetRequests() {
+        if (this._characterAssetsBound) return;
+        this._characterAssetsBound = true;
+        const request = (agent) => {
+            const identity = getModelVisualIdentity(agent?.model, agent?.effort, agent?.provider);
+            const id = identity?.spriteId;
+            if (!id?.startsWith('agent.')) return;
+            void this._loadYamlParser().then(() => (
+                this.assets?.requestCharacterAssets?.(id, {
+                    signal: this._bootController?.signal,
+                })
+            )).catch((error) => {
+                if (!this._destroyed) {
+                    console.warn('[App] Character assets failed to load:', error.message);
+                }
+            });
+        };
+        this._eventUnsubscribers.push(eventBus.on('agent:added', request));
+        this._eventUnsubscribers.push(eventBus.on('agent:updated', request));
+    }
+
+    _getRendererModule() {
+        if (!this._rendererModulePromise) {
+            this._rendererModulePromise = import('./character-mode/IsometricRenderer.js');
+        }
+        return this._rendererModulePromise;
+    }
+
+    _ensureStylesheet(feature) {
+        const href = FEATURE_STYLES[feature];
+        if (!href) return Promise.reject(new Error(`Unknown feature stylesheet: ${feature}`));
+        if (this._stylesheetPromises.has(feature)) return this._stylesheetPromises.get(feature);
+
+        const existing = document.querySelector(`link[data-cv-feature-style="${feature}"]`);
+        const promise = new Promise((resolve, reject) => {
+            const link = existing || document.createElement('link');
+            const onLoad = () => {
+                link.dataset.cvLoaded = 'true';
+                resolve(link);
+            };
+            const onError = () => {
+                link.remove();
+                reject(new Error(`Failed to load ${href}`));
+            };
+            if (link.dataset.cvLoaded === 'true' || link.sheet) {
+                resolve(link);
+                return;
+            }
+            link.addEventListener('load', onLoad, { once: true });
+            link.addEventListener('error', onError, { once: true });
+            if (!existing) {
+                link.rel = 'stylesheet';
+                link.href = href;
+                link.dataset.cvFeatureStyle = feature;
+                document.head.append(link);
+            }
+        }).catch((error) => {
+            this._stylesheetPromises.delete(feature);
+            throw error;
+        });
+        this._stylesheetPromises.set(feature, promise);
+        return promise;
+    }
+
+    _stylesheetLoaded(feature) {
+        const link = document.querySelector(`link[data-cv-feature-style="${feature}"]`);
+        return Boolean(link && (link.dataset.cvLoaded === 'true' || link.sheet));
+    }
+
+    _bindDeferredDashboard() {
+        if (this._onDashboardIntent) return;
+        const button = document.getElementById('btnModeDashboard');
+        if (!button) return;
+        this._onDashboardIntent = (event) => {
+            if (this.dashboardRenderer || this._destroyed) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            void this._loadDashboard().then((loaded) => {
+                if (loaded && !this._destroyed) this.modeManager?.switchMode('dashboard');
+            }).finally(() => {
+                if (!button.isConnected) return;
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            });
+        };
+        button.addEventListener('click', this._onDashboardIntent, true);
+    }
+
+    _bindDeferredActivityPanel() {
+        if (this._deferredActivityBound) return;
+        this._deferredActivityBound = true;
+        this._deferredSelectionIntent = null;
+        this._onDeferredInteractionClick = (event) => {
+            this._deferredSelectionIntent = {
+                origin: event.detail === 0 ? 'keyboard' : 'pointer',
+                trigger: event.target,
+            };
+            queueMicrotask(() => { this._deferredSelectionIntent = null; });
+        };
+        this._onDeferredInteractionKeydown = (event) => {
+            this._deferredSelectionIntent = { origin: 'keyboard', trigger: event.target };
+            queueMicrotask(() => { this._deferredSelectionIntent = null; });
+        };
+        document.addEventListener('click', this._onDeferredInteractionClick, true);
+        document.addEventListener('keydown', this._onDeferredInteractionKeydown, true);
+
+        this._eventUnsubscribers.push(eventBus.on('agent:selected', (agent) => {
+            if (!agent || this.activityPanel) return;
+            const intent = this._deferredSelectionIntent;
+            void this._loadActivityPanel().then((panel) => {
+                if (!panel || this._destroyed) return;
+                if (intent) panel._selectionIntent = intent;
+                panel.show(agent);
+            });
+        }));
+        this._eventUnsubscribers.push(eventBus.on(BUILDING_EVENTS.SELECTED, (building) => {
+            if (!building || this.activityPanel) return;
+            const intent = this._deferredSelectionIntent;
+            void this._loadActivityPanel().then((panel) => {
+                if (!panel || this._destroyed) return;
+                if (intent) panel._selectionIntent = intent;
+                panel.showBuilding(building);
+            });
+        }));
+    }
+
+    _loadActivityPanel() {
+        if (this.activityPanel) return Promise.resolve(this.activityPanel);
+        if (this._activityPanelLoadPromise) return this._activityPanelLoadPromise;
+        this._activityPanelLoadPromise = Promise.all([
+            this._ensureStylesheet('activity'),
+            import('./shared/ActivityPanel.js'),
+        ]).then(([, module]) => {
+            if (this._destroyed || !module.ActivityPanel) return null;
+            this.activityPanel = new module.ActivityPanel({
+                world: () => this.world,
+                renderer: () => this.renderer,
+                harborTraffic: () => this.renderer?.harborTraffic || null,
+                biographyService: () => this.biographyService,
+                affinityService: () => this.affinityService,
+                toast: this.toast,
+            });
+            return this.activityPanel;
+        }).catch((error) => {
+            console.warn('[App] ActivityPanel failed to load:', error.message);
+            this._activityPanelLoadPromise = null;
+            return null;
+        });
+        return this._activityPanelLoadPromise;
+    }
+
+    _bindDeferredModalCss() {
+        if (this._onDeferredModalIntent) return;
+        this._onDeferredModalIntent = (event) => {
+            if (event.type === 'keydown' && event.key !== 'Enter' && event.key !== ' ') return;
+            const target = event.target?.closest?.(
+                '.topbar__version, [aria-label="Open settings"]',
+            );
+            if (!target || this._stylesheetLoaded('modal')) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+            target.setAttribute('aria-busy', 'true');
+            void this._ensureStylesheet('modal').then(() => {
+                if (!this._destroyed && target.isConnected) target.click();
+            }).catch((error) => {
+                console.warn('[App] Modal stylesheet failed to load:', error.message);
+            }).finally(() => target.removeAttribute('aria-busy'));
+        };
+        document.addEventListener('click', this._onDeferredModalIntent, true);
+        document.addEventListener('keydown', this._onDeferredModalIntent, true);
+    }
+
+    async _openChroniclePanel() {
+        if (!this._chroniclePanelLoadPromise) {
+            this._chroniclePanelLoadPromise = Promise.all([
+                this._ensureStylesheet('modal'),
+                import('./shared/ChroniclePanel.js'),
+            ]).then(([, module]) => {
+                if (this._destroyed || !module.ChroniclePanel) return null;
+                const panel = new module.ChroniclePanel({
+                    modal: this.modal,
+                    chronicleLog: this.chronicleLog,
+                    spendLedger: this.spendLedger,
+                    usageGetter: () => this.latestUsage,
+                    toast: this.toast,
+                });
+                this.chroniclePanel = panel;
+                return panel;
+            }).catch((error) => {
+                this._chroniclePanelLoadPromise = null;
+                throw error;
+            });
+        }
+        const panel = await this._chroniclePanelLoadPromise;
+        return panel?.open?.();
+    }
+
+    async _loadRenderer(rendererModule = null) {
         let candidate = null;
         try {
             if (this._destroyed) return;
-            const module = await import('./character-mode/IsometricRenderer.js');
+            const module = rendererModule || await this._getRendererModule();
             if (this._destroyed) return;
             const canvas = document.getElementById('worldCanvas');
 
@@ -961,10 +1313,20 @@ export class App {
     }
 
     async _loadDashboard() {
+        if (this.dashboardRenderer) return true;
+        if (this._dashboardLoadPromise) return this._dashboardLoadPromise;
+        this._dashboardLoadPromise = this._loadDashboardOnce();
+        return this._dashboardLoadPromise;
+    }
+
+    async _loadDashboardOnce() {
         let candidate = null;
         try {
             if (this._destroyed) return;
-            const module = await import('./dashboard-mode/DashboardRenderer.js');
+            const [, module] = await Promise.all([
+                this._ensureStylesheet('dashboard'),
+                import('./dashboard-mode/DashboardRenderer.js'),
+            ]);
             if (this._destroyed) return;
             if (module.DashboardRenderer) {
                 candidate = new module.DashboardRenderer(this.world, { toast: this.toast });
@@ -975,12 +1337,16 @@ export class App {
                 this.dashboardRenderer?.destroy?.();
                 this.dashboardRenderer = candidate;
                 console.log('[App] DashboardRenderer loaded');
+                return true;
             }
         } catch (err) {
             candidate?.destroy?.();
             if (this.dashboardRenderer === candidate) this.dashboardRenderer = null;
+            this._dashboardLoadPromise = null;
             console.warn('[App] DashboardRenderer failed to load:', err.message);
+            return false;
         }
+        return false;
     }
 
     _bindAgentFollow() {
@@ -1293,6 +1659,28 @@ export class App {
         for (const unsubscribe of this._eventUnsubscribers.splice(0)) {
             unsubscribe?.();
         }
+        if (this._onDashboardIntent) {
+            document.getElementById('btnModeDashboard')?.removeEventListener(
+                'click',
+                this._onDashboardIntent,
+                true,
+            );
+            this._onDashboardIntent = null;
+        }
+        if (this._onDeferredModalIntent) {
+            document.removeEventListener('click', this._onDeferredModalIntent, true);
+            document.removeEventListener('keydown', this._onDeferredModalIntent, true);
+            this._onDeferredModalIntent = null;
+        }
+        if (this._onDeferredInteractionClick) {
+            document.removeEventListener('click', this._onDeferredInteractionClick, true);
+            this._onDeferredInteractionClick = null;
+        }
+        if (this._onDeferredInteractionKeydown) {
+            document.removeEventListener('keydown', this._onDeferredInteractionKeydown, true);
+            this._onDeferredInteractionKeydown = null;
+        }
+        this._deferredSelectionIntent = null;
         if (this._onFirstRunHintDismiss) {
             document.getElementById('firstRunHintDismiss')?.removeEventListener(
                 'click',
@@ -1312,6 +1700,8 @@ export class App {
         this._villageBound = false;
         this._foundationReady = false;
         this._surfacesBound = false;
+        this._deferredActivityBound = false;
+        this._characterAssetsBound = false;
         this._chronicleSignalsBound = false;
         this._agentFollowBound = false;
         this._deepLinkBound = false;
@@ -1365,6 +1755,7 @@ export class App {
         );
         this._callLifecycle('ActivityPanel.destroy', () => this.activityPanel?.destroy?.());
         this._callLifecycle('DashboardRenderer.destroy', () => this.dashboardRenderer?.destroy?.());
+        this._callLifecycle('ChroniclePanel.destroy', () => this.chroniclePanel?.destroy?.());
         this._callLifecycle('SessionDetailsService.clear', () => sessionDetailsService.clear());
         this._callLifecycle('ModeManager.destroy', () => this.modeManager?.destroy?.());
         this._callLifecycle('Sidebar.destroy', () => this.sidebar?.destroy?.());
@@ -1478,6 +1869,11 @@ export class App {
         this._cameraSetHelper = null;
         this._resizeWorldCanvas = null;
         this._bootController = null;
+        this._rendererModulePromise = null;
+        this._dashboardLoadPromise = null;
+        this._activityPanelLoadPromise = null;
+        this._chroniclePanelLoadPromise = null;
+        this._stylesheetPromises.clear();
     }
 
     _callLifecycle(label, callback) {

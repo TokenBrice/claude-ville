@@ -23,6 +23,8 @@ const OPTIONAL_SIDECAR_HIGH_WATER_ESTIMATE_BYTES = 192 * 1024 * 1024;
 const DERIVED_ART_SLICE_MS = 2;
 const AGENT_CELL_DIRECTIONS = Object.freeze(['s', 'se', 'e', 'ne', 'n', 'nw', 'w', 'sw']);
 const WALK_ROWS = 6;
+const CHARACTER_RETRY_BASE_MS = 5_000;
+const CHARACTER_RETRY_MAX_MS = 60_000;
 let assetManagerResourceSequence = 0;
 let derivedArtJobSequence = 0;
 
@@ -264,6 +266,14 @@ export class AssetManager {
         this._loadController = null;
         this._materialLoadPromise = null;
         this._materialLoadController = null;
+        this._requestedCharacterIds = new Set();
+        // Distinguishes "caller named a character set" from "caller named
+        // nothing". Unspecified must keep loading every character sheet so
+        // existing callers behave exactly as before.
+        this._characterSelectionProvided = false;
+        this._characterLoads = new Map();
+        this._characterLoadControllers = new Map();
+        this._characterFailures = new Map();
         this._loadGeneration = 0;
         this._decodePasses = 0;
         this._disposed = false;
@@ -280,18 +290,24 @@ export class AssetManager {
         this._materialChannelRevision = 0;
     }
 
-    load({ signal = null } = {}) {
-        return this._ensureDecoded({ signal, loadManifest: !this.manifest });
+    load({ signal = null, characterIds = null } = {}) {
+        this._rememberCharacterIds(characterIds);
+        return this._ensureDecoded({ signal, loadManifest: !this.manifest }).then((loaded) => (
+            loaded ? this._ensureRequestedCharacters({ signal }) : false
+        ));
     }
 
     /**
      * Reload decoded World assets after Dashboard mode released them. The
      * parsed manifest/palettes stay resident, so a resume only fetches images.
      */
-    resume({ signal = null } = {}) {
+    resume({ signal = null, characterIds = null } = {}) {
         if (this._disposed) return Promise.resolve(false);
+        this._rememberCharacterIds(characterIds);
         this._suspended = false;
-        return this._ensureDecoded({ signal, loadManifest: !this.manifest });
+        return this._ensureDecoded({ signal, loadManifest: !this.manifest }).then((loaded) => (
+            loaded ? this._ensureRequestedCharacters({ signal }) : false
+        ));
     }
 
     /**
@@ -306,6 +322,7 @@ export class AssetManager {
         this._loadGeneration++;
         this._loadController?.abort?.();
         this._materialLoadController?.abort?.();
+        this._abortCharacterLoads();
         // Pins protect live-World pressure eviction only. A mode-driven
         // suspension is authoritative and must leave no stale ownership that
         // can influence the next generation's reload.
@@ -388,7 +405,12 @@ export class AssetManager {
         const entries = this._entriesCache || [];
         this._releaseDecodedEntries();
         this._loadMisses = [];
-        await Promise.all(entries.map(entry => this._loadEntry(entry, { signal, generation })));
+        const criticalEntries = entries.filter((entry) => (
+            !this._isCharacterEntry(entry)
+            || !this._characterSelectionProvided
+            || this._requestedCharacterIds.has(entry.id)
+        ));
+        await Promise.all(criticalEntries.map(entry => this._loadEntry(entry, { signal, generation })));
         if (!this._canCommitLoad(signal, generation)) return false;
 
         if (this._materialAssetsEnabled) {
@@ -407,11 +429,18 @@ export class AssetManager {
         return true;
     }
 
-    async loadMaterialAssets({ signal = null } = {}) {
+    async loadMaterialAssets({ signal = null, characterIds = null } = {}) {
         if (this._disposed || this._suspended) return false;
+        this._rememberCharacterIds(characterIds);
         this._materialAssetsEnabled = true;
         const decoded = await this._ensureDecoded({ signal, loadManifest: !this.manifest });
         if (!decoded) return false;
+        const requested = [...this._requestedCharacterIds]
+            .filter((id) => !this.bitmaps.has(id));
+        if (requested.length > 0) {
+            await Promise.all(requested.map((id) => this.requestCharacterAssets(id, { signal })));
+            if (signal?.aborted || this._disposed || this._suspended) return false;
+        }
         if (this._materialDecodedLoaded) return true;
         return this._ensureMaterialDecoded({ signal });
     }
@@ -447,6 +476,160 @@ export class AssetManager {
             && !this._disposed
             && !this._suspended
             && generation === this._loadGeneration;
+    }
+
+    _rememberCharacterIds(characterIds) {
+        if (characterIds === null || characterIds === undefined) return;
+        const ids = typeof characterIds === 'string' ? [characterIds] : characterIds;
+        if (typeof ids[Symbol.iterator] !== 'function') return;
+        // An explicit (even empty) selection opts into narrowed eager loading;
+        // anything absent from it arrives later via requestCharacterAssets().
+        this._characterSelectionProvided = true;
+        for (const id of ids) {
+            if (typeof id === 'string' && id.startsWith('agent.')) {
+                this._requestedCharacterIds.add(id);
+            }
+        }
+    }
+
+    async _ensureRequestedCharacters({ signal = null } = {}) {
+        const missingIds = [...this._requestedCharacterIds]
+            .filter((id) => !this.has(id, { request: false }));
+        if (missingIds.length === 0) return true;
+        await Promise.all(missingIds.map((id) => (
+            this.requestCharacterAssets(id, { signal })
+        )));
+        return !signal?.aborted && !this._disposed && !this._suspended;
+    }
+
+    _isCharacterEntry(entry) {
+        return Boolean(entry?.id?.startsWith('agent.'));
+    }
+
+    /**
+     * Ensure one manifest character sheet is resident. Calls for the same id
+     * share one operation; a failed request remains drawable-safe and retries
+     * with bounded backoff when a later frame asks for the character again.
+     */
+    requestCharacterAssets(id, { signal = null, retry = false } = {}) {
+        if (typeof id !== 'string' || !id.startsWith('agent.')) return Promise.resolve(false);
+        if (this._disposed || this._suspended || signal?.aborted) return Promise.resolve(false);
+        this._requestedCharacterIds.add(id);
+        if (this.has(id, { request: false })) return Promise.resolve(true);
+
+        const existing = this._characterLoads.get(id);
+        if (existing) {
+            const controller = this._characterLoadControllers.get(id);
+            const forwardAbort = () => controller?.abort(signal?.reason);
+            signal?.addEventListener?.('abort', forwardAbort, { once: true });
+            return existing.finally(() => {
+                signal?.removeEventListener?.('abort', forwardAbort);
+            });
+        }
+
+        const failure = this._characterFailures.get(id);
+        if (!retry && failure && Date.now() < failure.retryAt) return Promise.resolve(false);
+
+        if (!this.manifest) {
+            return this._ensureDecoded({ signal, loadManifest: true }).then((loaded) => (
+                Boolean(loaded && this.has(id, { request: false }))
+            ));
+        }
+        const entry = this._entryById.get(id);
+        if (!this._isCharacterEntry(entry)) return Promise.resolve(false);
+
+        const controller = new AbortController();
+        const generation = this._loadGeneration;
+        const forwardAbort = () => controller.abort(signal?.reason);
+        if (signal?.aborted) forwardAbort();
+        else signal?.addEventListener?.('abort', forwardAbort, { once: true });
+        this._characterLoadControllers.set(id, controller);
+
+        const operation = this._loadCharacterEntry(entry, {
+            signal: controller.signal,
+            generation,
+        }).catch((error) => {
+            if (
+                controller.signal.aborted
+                || this._disposed
+                || this._suspended
+                || error?.name === 'AbortError'
+            ) return false;
+            this._recordCharacterFailure(id, this._pathFor(entry), error?.message || 'load failed');
+            return false;
+        });
+        const tracked = operation.finally(() => {
+            signal?.removeEventListener?.('abort', forwardAbort);
+            if (this._characterLoads.get(id) === tracked) this._characterLoads.delete(id);
+            if (this._characterLoadControllers.get(id) === controller) {
+                this._characterLoadControllers.delete(id);
+            }
+        });
+        this._characterLoads.set(id, tracked);
+        return tracked;
+    }
+
+    async _loadCharacterEntry(entry, { signal, generation }) {
+        const path = this._pathFor(entry);
+        const { img, ok, reason } = await this._loadOptionalImage(path, { signal });
+        if (!this._canCommitLoad(signal, generation)) return false;
+        if (!ok || !img) {
+            this._recordCharacterFailure(entry.id, path, reason || 'load failed');
+            return false;
+        }
+        this.missing.delete(entry.id);
+        this._characterFailures.delete(entry.id);
+        if (this._materialDecodedLoaded) {
+            // Keep the albedo private until its declared material channels have
+            // settled. This prevents a draw from caching a fallback material in
+            // the narrow window between sheet and sidecar completion.
+            this.dimensions.set(entry.id, { w: img.width, h: img.height });
+            try {
+                await this._loadCharacterCompanions(entry, { signal, generation });
+            } catch (error) {
+                this.dimensions.delete(entry.id);
+                this._releaseImage(img);
+                throw error;
+            }
+            if (!this._canCommitLoad(signal, generation)) {
+                this.dimensions.delete(entry.id);
+                this._releaseImage(img);
+                return false;
+            }
+        }
+        this._storeBitmap(entry.id, img, {
+            anchor: entry.anchor || null,
+            generation,
+        });
+        return true;
+    }
+
+    async _loadCharacterCompanions(entry, { signal, generation }) {
+        const loads = [];
+        for (const channel of MATERIAL_CHANNELS) {
+            if (channel === 'albedo') continue;
+            const path = companionPathFor(entry, channel, this._pathFor(entry));
+            if (path) loads.push(this._loadCompanion(entry, channel, path, { signal, generation }));
+        }
+        await Promise.all(loads);
+    }
+
+    _recordCharacterFailure(id, path, reason) {
+        const previous = this._characterFailures.get(id);
+        const attempts = (previous?.attempts || 0) + 1;
+        const retryMs = Math.min(
+            CHARACTER_RETRY_MAX_MS,
+            CHARACTER_RETRY_BASE_MS * (2 ** Math.min(attempts - 1, 4)),
+        );
+        this._characterFailures.set(id, { attempts, retryAt: Date.now() + retryMs });
+        this.missing.add(id);
+        console.warn(`[AssetManager] character ${id} unavailable; retrying on demand: ${reason}`, path);
+    }
+
+    _abortCharacterLoads() {
+        for (const controller of this._characterLoadControllers.values()) controller.abort();
+        this._characterLoadControllers.clear();
+        this._characterLoads.clear();
     }
 
     async _fetchText(path, { signal = null } = {}) {
@@ -504,6 +687,13 @@ export class AssetManager {
         if (!ok) {
             this.missing.add(entry.id);
             this._loadMisses.push({ id: entry.id, path });
+            if (this._isCharacterEntry(entry)) {
+                const attempts = (this._characterFailures.get(entry.id)?.attempts || 0) + 1;
+                this._characterFailures.set(entry.id, {
+                    attempts,
+                    retryAt: Date.now() + CHARACTER_RETRY_BASE_MS,
+                });
+            }
         }
         const normalizedImg = this._normalizeImageToManifestSize(entry, loadedImg);
         const img = this._applyStructureMask(entry, normalizedImg);
@@ -522,8 +712,8 @@ export class AssetManager {
         });
         // Recurse for layered entries (overlays).
         if (entry.layers) {
-            for (const [name, layer] of Object.entries(entry.layers)) {
-                if (name === 'base') continue;
+            await Promise.all(Object.entries(entry.layers).map(([name, layer]) => {
+                if (name === 'base') return null;
                 const layerId = `${entry.id}.${name}`;
                 // Building overlay layers (e.g. watchfire, beacon) live beside the
                 // base PNG at buildings/<id>/<name>.png — same convention the
@@ -532,8 +722,8 @@ export class AssetManager {
                 const layerPath = entry.id.startsWith('building.')
                     ? `assets/sprites/buildings/${entry.id}/${name}.png`
                     : this._pathFor({ id: layerId, ...layer });
-                await this._loadLayer(layerId, layer, layerPath, { signal, generation });
-            }
+                return this._loadLayer(layerId, layer, layerPath, { signal, generation });
+            }));
         }
     }
 
@@ -576,7 +766,9 @@ export class AssetManager {
     async _decodeMaterialAssets({ signal, generation }) {
         this._releaseMaterialEntries();
         this._optionalLoadMisses = [];
-        const entries = [...this._entryById.values()];
+        const entries = [...this._entryById.values()].filter((entry) => (
+            !this._isCharacterEntry(entry) || this.bitmaps.has(entry.id)
+        ));
         const sidecarLoads = [];
         for (const entry of entries) {
             for (const channel of MATERIAL_CHANNELS) {
@@ -703,7 +895,10 @@ export class AssetManager {
                 return;
             }
             signal?.addEventListener?.('abort', abort, { once: true });
-            img.onload = () => finish({ img, ok: true, reason: null });
+            img.onload = async () => {
+                await this._decodeImage(img);
+                if (!signal?.aborted) finish({ img, ok: true, reason: null });
+            };
             img.onerror = () => finish({ img: null, ok: false, reason: 'load failed' });
             img.src = this._versionedPath(path);
         });
@@ -742,7 +937,10 @@ export class AssetManager {
                 return;
             }
             signal?.addEventListener?.('abort', abort, { once: true });
-            img.onload = () => finish({ img, ok: true });
+            img.onload = async () => {
+                await this._decodeImage(img);
+                if (!signal?.aborted) finish({ img, ok: true });
+            };
             img.onerror = () => {
                 if (signal?.aborted) return;
                 placeholder = new Image();
@@ -752,6 +950,16 @@ export class AssetManager {
             };
             img.src = this._versionedPath(path);
         });
+    }
+
+    async _decodeImage(img) {
+        if (typeof img?.decode !== 'function') return;
+        try {
+            await img.decode();
+        } catch {
+            // onload already established a drawable image. Some browsers
+            // reject decode() for otherwise usable images, so keep that path.
+        }
     }
 
     _versionedPath(path) {
@@ -913,11 +1121,27 @@ export class AssetManager {
         return canvas;
     }
 
-    get(id) { return this.bitmaps.get(id); }
+    get(id, { request = true } = {}) {
+        const character = typeof id === 'string' && id.startsWith('agent.');
+        if (character && (!this.bitmaps.has(id) || this.missing.has(id))) {
+            if (request) this.requestCharacterAssets(id).catch(() => {});
+            return undefined;
+        }
+        return this.bitmaps.get(id);
+    }
     // Returns true only when the real PNG loaded successfully (not a placeholder).
-    has(id) { return this.bitmaps.has(id) && !this.missing.has(id); }
+    has(id, { request = true } = {}) {
+        const available = this.bitmaps.has(id) && !this.missing.has(id);
+        if (!available && request && typeof id === 'string' && id.startsWith('agent.')) {
+            this.requestCharacterAssets(id).catch(() => {});
+        }
+        return available;
+    }
     getMask(id) { return this.alphaMasks.get(id); }
-    getDims(id) { return this.dimensions.get(id); }
+    getDims(id) {
+        if (typeof id === 'string' && id.startsWith('agent.') && !this.has(id)) return undefined;
+        return this.dimensions.get(id);
+    }
     getAnchor(id) { return this.anchors.get(id) ?? [0, 0]; }
     getOutline(id) { return this.outlines.get(id); }
     getEntry(id) {
@@ -1452,6 +1676,7 @@ export class AssetManager {
         this.anchors.clear();
         this.outlines.clear();
         this.missing.clear();
+        this._characterFailures.clear();
         this._loadMisses.length = 0;
         this._releaseMaterialEntries();
     }
@@ -1491,6 +1716,7 @@ export class AssetManager {
         this._loadGeneration++;
         this._loadController?.abort?.();
         this._materialLoadController?.abort?.();
+        this._abortCharacterLoads();
         this._invalidateDerivedArt();
         this._releaseDecodedEntries();
         this._entryById.clear();
@@ -1499,6 +1725,7 @@ export class AssetManager {
         this.palettes = null;
         this.assetVersion = null;
         this._materialAssetsEnabled = false;
+        this._requestedCharacterIds.clear();
         this._activeProfilePins.clear();
         this._unregisterResourceEstimates?.();
         this._unregisterResourceEstimates = null;

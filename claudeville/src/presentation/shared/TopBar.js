@@ -1,9 +1,4 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import {
-    AmbientAudioController,
-    AUDIO_MIXER_DEFAULTS,
-    readStoredLayerLevels,
-} from './AmbientAudioController.js';
 import { formatCost, formatNumber, shortProjectName } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
 import {
@@ -15,6 +10,26 @@ import {
 } from '../../application/VillageState.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
+const AUDIO_LAYER_LEVELS_KEY = 'claudeville.sound.layers';
+const AUDIO_MIXER_DEFAULTS = Object.freeze({
+    wind: 1,
+    rain: 1,
+    wildlife: 1,
+    hum: 1,
+    music: 1,
+});
+
+function readStoredLayerLevels(storage = globalThis.window?.localStorage) {
+    try {
+        const parsed = JSON.parse(storage?.getItem(AUDIO_LAYER_LEVELS_KEY) || '{}');
+        return Object.fromEntries(Object.entries(AUDIO_MIXER_DEFAULTS).map(([name, fallback]) => {
+            const value = Number(parsed?.[name]);
+            return [name, Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : fallback];
+        }));
+    } catch {
+        return { ...AUDIO_MIXER_DEFAULTS };
+    }
+}
 
 const CONNECTION_REASON_COPY = Object.freeze({
     'connection-refused': 'The local session link refused the connection.',
@@ -139,7 +154,9 @@ export class TopBar {
         this._lastSweptSnapshotAt = null;
         this._staleTimer = null;
         const audioMixer = this._buildAudioMixer();
-        this.audio = new AmbientAudioController({
+        this.audio = null;
+        this._audioLoadPromise = null;
+        this._audioOptions = {
             button: this.els.soundToggle,
             modeButton: this.els.soundMode,
             volumeSlider: this.els.soundVolume,
@@ -147,7 +164,8 @@ export class TopBar {
             mixerPanel: audioMixer.panel,
             layerControls: audioMixer.controls,
             world: this.world,
-        });
+        };
+        this._bindDeferredAudio();
         this._initCinemaToggle();
         this._initAttentionControls();
         this._initChronicleButton();
@@ -416,6 +434,7 @@ export class TopBar {
         for (const [name, value] of Object.entries(AUDIO_MIXER_DEFAULTS)) {
             this.audio?.setLayerLevel(name, value);
         }
+        if (!this.audio) this._renderDeferredAudioControl();
         eventBus.emit('camera:auto-camera', { enabled: true });
         if (this.attention) {
             void this.attention.setDesktopAlerts(false).then((on) => this._applyAlertsState(on));
@@ -432,6 +451,55 @@ export class TopBar {
 
     _closeSettings() {
         if (this.modal?.isOpen(SETTINGS_MODAL_OWNER)) this.modal.close();
+    }
+
+    _bindDeferredAudio() {
+        const button = this.els.soundToggle;
+        if (!button) return;
+        this._onDeferredAudioClick = (event) => {
+            event.preventDefault();
+            if (this._audioLoadPromise) return;
+            button.disabled = true;
+            button.setAttribute('aria-busy', 'true');
+            void this._ensureAudio().then((audio) => {
+                if (audio && !this._destroyed) return audio.setEnabled(!audio.enabled);
+                return null;
+            }).catch((error) => {
+                console.warn('[TopBar] Audio unavailable:', error.message);
+            }).finally(() => {
+                if (!button.isConnected) return;
+                button.disabled = false;
+                button.removeAttribute('aria-busy');
+            });
+        };
+        button.addEventListener('click', this._onDeferredAudioClick);
+        this._renderDeferredAudioControl();
+    }
+
+    _renderDeferredAudioControl() {
+        const button = this.els.soundToggle;
+        if (!button) return;
+        const enabled = storageValue(globalThis.window?.localStorage, 'claudeville.sound.enabled') === 'true';
+        button.setAttribute('aria-pressed', String(enabled));
+        button.classList.toggle('topbar__sound-btn--on', enabled);
+        button.title = enabled ? 'Disable sound' : 'Enable sound';
+    }
+
+    _ensureAudio() {
+        if (this.audio) return Promise.resolve(this.audio);
+        if (!this._audioLoadPromise) {
+            this._audioLoadPromise = import('./AmbientAudioController.js').then((module) => {
+                if (this._destroyed) return null;
+                this.els.soundToggle?.removeEventListener('click', this._onDeferredAudioClick);
+                this._onDeferredAudioClick = null;
+                this.audio = new module.AmbientAudioController(this._audioOptions);
+                return this.audio;
+            }).catch((error) => {
+                this._audioLoadPromise = null;
+                throw error;
+            });
+        }
+        return this._audioLoadPromise;
     }
 
     // The topbar remains a glance surface: one compact chip opens the deeper
@@ -1443,6 +1511,11 @@ export class TopBar {
         this._mixerPanelEl = null;
         this.chronicle?.destroy?.();
         this.chronicle = null;
+        if (this._onDeferredAudioClick) {
+            this.els.soundToggle?.removeEventListener('click', this._onDeferredAudioClick);
+            this._onDeferredAudioClick = null;
+        }
+        this._audioOptions = null;
         document.body?.classList.remove('cv-offline', 'cv-reconnect-sweep');
         this._destroyPromise = Promise.resolve(this.audio?.destroy?.());
         this.audio = null;

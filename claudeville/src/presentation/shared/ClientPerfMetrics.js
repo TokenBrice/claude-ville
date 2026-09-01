@@ -8,6 +8,8 @@ const DEFAULT_RENDER_WINDOWS = 120;
 const DEFAULT_PENDING_DELTAS = 128;
 const RECENT_SNAPSHOT_SAMPLES = 64;
 const MID_FRAME_EPSILON_MS = 0.5;
+const FRAME_BUDGET_MS = 1000 / 60;
+const LONG_FRAME_MS = 50;
 export const FRAME_ENVELOPE_EMA_ALPHA = 0.125;
 export const FRAME_ENVELOPE_RING_CAPACITY = 120;
 
@@ -90,6 +92,58 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
 
 function copyRecent(buffer) {
     return buffer.slice(-RECENT_SNAPSHOT_SAMPLES).map(sample => ({ ...sample }));
+}
+
+function snapshotFrameRing(ring) {
+    const samples = [];
+    const gapValues = [];
+    const deltaFrameValues = [];
+    const baselineFrameValues = [];
+    const start = ring.count < ring.capacity ? 0 : ring.index;
+    for (let offset = 0; offset < ring.count; offset++) {
+        const index = (start + offset) % ring.capacity;
+        const gapMs = finite(ring.gapMs[index]);
+        const deltaCount = ring.deltaCount[index];
+        samples.push({ at: finite(ring.at[index]), gapMs, deltaCount });
+        if (gapMs === null) continue;
+        gapValues.push(gapMs);
+        if (deltaCount > 0) deltaFrameValues.push(gapMs);
+        else baselineFrameValues.push(gapMs);
+    }
+    return { samples, gapValues, deltaFrameValues, baselineFrameValues };
+}
+
+function summarizeFrameHealth(values, totals) {
+    let overBudgetCount = 0;
+    let longFrameCount = 0;
+    for (const value of values) {
+        if (value > FRAME_BUDGET_MS) overBudgetCount++;
+        if (value > LONG_FRAME_MS) longFrameCount++;
+    }
+    const count = values.length;
+    const totalCount = totals.count;
+    return {
+        windowSize: count,
+        totalCount,
+        budgetMs: round(FRAME_BUDGET_MS),
+        longFrameThresholdMs: LONG_FRAME_MS,
+        p50Ms: round(percentile(values, 0.5)),
+        p95Ms: round(percentile(values, 0.95)),
+        p99Ms: round(percentile(values, 0.99)),
+        maxMs: count > 0 ? round(Math.max(...values)) : null,
+        overBudget: {
+            count: overBudgetCount,
+            rate: count > 0 ? round(overBudgetCount / count) : 0,
+            totalCount: totals.overBudget,
+            totalRate: totalCount > 0 ? round(totals.overBudget / totalCount) : 0,
+        },
+        longFrames: {
+            count: longFrameCount,
+            rate: count > 0 ? round(longFrameCount / count) : 0,
+            totalCount: totals.longFrames,
+            totalRate: totalCount > 0 ? round(totals.longFrames / totalCount) : 0,
+        },
+    };
 }
 
 function finiteNonNeg(value) {
@@ -353,7 +407,15 @@ export class ClientPerfMetrics {
 
         this.enabled = false;
         this._deltaSamples = [];
-        this._frameSamples = [];
+        this._frameRing = {
+            at: new Float64Array(this._limits.frameSamples),
+            gapMs: new Float64Array(this._limits.frameSamples),
+            deltaCount: new Uint32Array(this._limits.frameSamples),
+            index: 0,
+            count: 0,
+            capacity: this._limits.frameSamples,
+        };
+        this._frameTotals = { count: 0, overBudget: 0, longFrames: 0 };
         this._longTaskSamples = [];
         this._inputSamples = [];
         this._updateWindows = [];
@@ -435,7 +497,9 @@ export class ClientPerfMetrics {
 
     reset() {
         this._deltaSamples = [];
-        this._frameSamples = [];
+        this._frameRing.index = 0;
+        this._frameRing.count = 0;
+        this._frameTotals = { count: 0, overBudget: 0, longFrames: 0 };
         this._longTaskSamples = [];
         this._inputSamples = [];
         this._updateWindows = [];
@@ -569,13 +633,10 @@ export class ClientPerfMetrics {
         const deltaPaintValues = this._deltaSamples.map(sample => sample.messageToPaintMs);
         const patchValues = this._deltaSamples.map(sample => sample.patchApplyMs);
         const fanoutValues = this._deltaSamples.map(sample => sample.eventFanoutMs);
-        const frameValues = this._frameSamples.map(sample => sample.gapMs);
-        const deltaFrameValues = this._frameSamples
-            .filter(sample => sample.deltaCount > 0)
-            .map(sample => sample.gapMs);
-        const baselineFrameValues = this._frameSamples
-            .filter(sample => sample.deltaCount === 0)
-            .map(sample => sample.gapMs);
+        const frameRing = snapshotFrameRing(this._frameRing);
+        const frameValues = frameRing.gapValues;
+        const deltaFrameValues = frameRing.deltaFrameValues;
+        const baselineFrameValues = frameRing.baselineFrameValues;
         const inputDelayValues = this._inputSamples.map(sample => sample.inputDelayMs);
         const deltaPaint = summarizeValues(deltaPaintValues);
         const deltaFrameGap = summarizeValues(deltaFrameValues);
@@ -602,11 +663,13 @@ export class ClientPerfMetrics {
             },
             frames: {
                 ...summarizeValues(frameValues),
-                sampledCount: this._frameSamples.length,
+                p99Ms: round(percentile(frameValues, 0.99)),
+                sampledCount: this._frameRing.count,
                 associatedWithDelta: deltaFrameGap,
                 withoutDelta: baselineFrameGap,
-                samples: copyRecent(this._frameSamples),
+                samples: frameRing.samples.slice(-RECENT_SNAPSHOT_SAMPLES),
             },
+            frameHealth: summarizeFrameHealth(frameValues, this._frameTotals),
             deltaFrameCorrelation: {
                 deltaCount: this._deltaSamples.length,
                 midFrameCount: this._deltaSamples.filter(sample => sample.landedMidFrame).length,
@@ -675,52 +738,61 @@ export class ClientPerfMetrics {
             : (Number.isFinite(timestamp) ? timestamp : null);
         const previousFrameAt = this._lastFrameAt;
         const frameGapMs = duration(previousFrameAt, frameAt);
-        const painted = [];
-        for (const [id, token] of this._pendingDeltas) {
-            if (token.fanoutEndedAt <= frameAt + MID_FRAME_EPSILON_MS) {
-                this._pendingDeltas.delete(id);
-                painted.push(token);
+        let paintedCount = 0;
+        if (this._pendingDeltas.size > 0) {
+            for (const [id, token] of this._pendingDeltas) {
+                if (token.fanoutEndedAt <= frameAt + MID_FRAME_EPSILON_MS) {
+                    this._pendingDeltas.delete(id);
+                    paintedCount++;
+                    this._recordPaintedDelta(token, frameAt, frameGapMs);
+                }
             }
         }
 
-        boundedPush(
-            this._frameSamples,
-            { at: frameAt, gapMs: frameGapMs, deltaCount: painted.length },
-            this._limits.frameSamples,
-            () => { this._dropped.frameSamples++; },
-        );
+        const ring = this._frameRing;
+        if (ring.count >= ring.capacity) this._dropped.frameSamples++;
+        ring.at[ring.index] = Number.isFinite(frameAt) ? frameAt : NaN;
+        ring.gapMs[ring.index] = Number.isFinite(frameGapMs) ? frameGapMs : NaN;
+        ring.deltaCount[ring.index] = paintedCount;
+        ring.index = (ring.index + 1) % ring.capacity;
+        if (ring.count < ring.capacity) ring.count++;
+        if (Number.isFinite(frameGapMs)) {
+            this._frameTotals.count++;
+            if (frameGapMs > FRAME_BUDGET_MS) this._frameTotals.overBudget++;
+            if (frameGapMs > LONG_FRAME_MS) this._frameTotals.longFrames++;
+        }
         this._lastFrameAt = frameAt;
 
-        for (const token of painted) {
-            const framePhaseMs = duration(token.previousFrameAt, token.arrivedAt);
-            const sample = {
-                id: token.id,
-                arrivedAt: token.arrivedAt,
-                nextFrameAt: frameAt,
-                parseMs: token.parseMs,
-                patchApplyMs: token.patchApplyMs,
-                eventFanoutMs: token.eventFanoutMs,
-                arrivalToPatchMs: token.arrivalToPatchMs,
-                arrivalToFanoutMs: token.arrivalToFanoutMs,
-                messageToPaintMs: duration(token.arrivedAt, frameAt),
-                fanoutToPaintMs: duration(token.fanoutEndedAt, frameAt),
-                framePhaseMs,
-                frameGapMs,
-                operationCount: token.operationCount,
-                landedMidFrame: Number.isFinite(framePhaseMs)
-                    && framePhaseMs > MID_FRAME_EPSILON_MS
-                    && token.arrivedAt < frameAt,
-                outcome: token.outcome || 'painted',
-            };
-            boundedPush(
-                this._deltaSamples,
-                sample,
-                this._limits.deltaSamples,
-                () => { this._dropped.deltaSamples++; },
-            );
-        }
-
         this._scheduleFrame();
+    }
+
+    _recordPaintedDelta(token, frameAt, frameGapMs) {
+        const framePhaseMs = duration(token.previousFrameAt, token.arrivedAt);
+        const sample = {
+            id: token.id,
+            arrivedAt: token.arrivedAt,
+            nextFrameAt: frameAt,
+            parseMs: token.parseMs,
+            patchApplyMs: token.patchApplyMs,
+            eventFanoutMs: token.eventFanoutMs,
+            arrivalToPatchMs: token.arrivalToPatchMs,
+            arrivalToFanoutMs: token.arrivalToFanoutMs,
+            messageToPaintMs: duration(token.arrivedAt, frameAt),
+            fanoutToPaintMs: duration(token.fanoutEndedAt, frameAt),
+            framePhaseMs,
+            frameGapMs,
+            operationCount: token.operationCount,
+            landedMidFrame: Number.isFinite(framePhaseMs)
+                && framePhaseMs > MID_FRAME_EPSILON_MS
+                && token.arrivedAt < frameAt,
+            outcome: token.outcome || 'painted',
+        };
+        boundedPush(
+            this._deltaSamples,
+            sample,
+            this._limits.deltaSamples,
+            () => { this._dropped.deltaSamples++; },
+        );
     }
 
     _recordUpdateWindow(token) {

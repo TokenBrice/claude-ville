@@ -1,6 +1,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { isDeepStrictEqual } = require('util');
 const { execFile, execFileSync } = require('child_process');
 
 const GIT_EVENT_TYPES = new Set(['commit', 'push', 'pull', 'fetch']);
@@ -1518,6 +1519,160 @@ function dedupeGitEvents(events) {
   return unique;
 }
 
+function gitEventWireReference(value) {
+  let hash = 2166136261;
+  const text = String(value || '');
+  for (let index = 0; index < text.length; index++) {
+    hash = Math.imul(hash ^ text.charCodeAt(index), 16777619);
+  }
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
+  let encoded = '';
+  let remaining = hash >>> 0;
+  for (let index = 0; index < 6; index++) {
+    encoded = alphabet[remaining % 64] + encoded;
+    remaining = Math.floor(remaining / 64);
+  }
+  return encoded;
+}
+
+/**
+ * Replace repeated session git-event objects with payload-level references.
+ * Event ids are the normal table keys. A deterministic content suffix keeps
+ * two non-identical events with the same id lossless instead of silently
+ * merging them. Session references use stable short aliases derived from the
+ * sorted full ids, while bitmap rows and repeated-string tables remove JSON
+ * field-name overhead without changing the rehydrated event shape.
+ */
+function compactGitEventsForWire(sessions) {
+  if (!Array.isArray(sessions)) {
+    return {
+      sessions: [],
+      gitEventFields: [],
+      gitEventStringTables: [],
+      gitEventsById: {},
+    };
+  }
+
+  const gitEventsById = Object.create(null);
+  const entriesById = new Map();
+
+  const referenceFor = (event) => {
+    if (!event || typeof event !== 'object' || Array.isArray(event)) return null;
+    const eventId = String(event.id || '').trim();
+    let serialized = null;
+    const serialize = () => {
+      if (serialized === null) serialized = JSON.stringify(event);
+      return serialized;
+    };
+    const baseKey = eventId || `git-event-${stableHash(serialize())}`;
+    const existing = entriesById.get(baseKey) || [];
+    for (const entry of existing) {
+      if (entry.event === event || isDeepStrictEqual(entry.event, event)) return entry.key;
+    }
+
+    let key = baseKey;
+    if (existing.length > 0) {
+      const contentHash = stableHash(serialize());
+      key = `${baseKey}~${contentHash}`;
+      let suffix = 2;
+      while (Object.prototype.hasOwnProperty.call(gitEventsById, key)) {
+        key = `${baseKey}~${contentHash}-${suffix++}`;
+      }
+    }
+    gitEventsById[key] = event;
+    existing.push({ key, event });
+    entriesById.set(baseKey, existing);
+    return key;
+  };
+
+  const referencedSessions = sessions.map((session) => {
+    if (!session || typeof session !== 'object' || Array.isArray(session)) return session;
+    const references = [];
+    for (const event of Array.isArray(session.gitEvents) ? session.gitEvents : []) {
+      const reference = referenceFor(event);
+      if (reference) references.push(reference);
+    }
+    return { ...session, gitEvents: references };
+  });
+
+  const gitEventIds = Object.keys(gitEventsById).sort();
+  const gitEventReferenceById = new Map();
+  const usedReferences = new Set();
+  for (const id of gitEventIds) {
+    const baseReference = gitEventWireReference(id);
+    let reference = baseReference;
+    let suffix = 2;
+    while (usedReferences.has(reference)) reference = `${baseReference}~${suffix++}`;
+    usedReferences.add(reference);
+    gitEventReferenceById.set(id, reference);
+  }
+  // Normalize through JSON once so undefined/non-JSON properties have exactly
+  // the same semantics as the former direct session payload.
+  const events = gitEventIds.map((id) => JSON.parse(JSON.stringify(gitEventsById[id])));
+  const gitEventFields = [...new Set(events.flatMap((event) => Object.keys(event)))].sort();
+  const gitEventStringTables = [];
+  const stringTableByField = new Map();
+
+  for (let fieldIndex = 0; fieldIndex < gitEventFields.length; fieldIndex++) {
+    const field = gitEventFields[fieldIndex];
+    const values = events
+      .filter((event) => Object.prototype.hasOwnProperty.call(event, field))
+      .map((event) => event[field]);
+    if (!values.length || values.some((value) => typeof value !== 'string')) continue;
+
+    const uniqueValues = [...new Set(values)];
+    const indexByValue = new Map(uniqueValues.map((value, index) => [value, index]));
+    const rawBytes = values.reduce((total, value) => total + Buffer.byteLength(JSON.stringify(value)), 0);
+    const indexedBytes = Buffer.byteLength(JSON.stringify(uniqueValues))
+      + values.reduce((total, value) => total + String(indexByValue.get(value)).length, 0)
+      + 10;
+    if (indexedBytes >= rawBytes) continue;
+
+    stringTableByField.set(field, indexByValue);
+    gitEventStringTables.push([fieldIndex, uniqueValues]);
+  }
+
+  const encodedGitEventsById = Object.create(null);
+  for (let eventIndex = 0; eventIndex < events.length; eventIndex++) {
+    const event = events[eventIndex];
+    const masks = [];
+    for (let start = 0; start < gitEventFields.length; start += 30) {
+      let mask = 0;
+      for (let offset = 0; offset < 30 && start + offset < gitEventFields.length; offset++) {
+        if (Object.prototype.hasOwnProperty.call(event, gitEventFields[start + offset])) {
+          mask += 2 ** offset;
+        }
+      }
+      masks.push(mask);
+    }
+
+    const row = [masks];
+    for (const field of gitEventFields) {
+      if (!Object.prototype.hasOwnProperty.call(event, field)) continue;
+      const value = event[field];
+      row.push(stringTableByField.has(field)
+        ? stringTableByField.get(field).get(value)
+        : value);
+    }
+    encodedGitEventsById[gitEventIds[eventIndex]] = row;
+  }
+
+  const compactedSessions = referencedSessions.map((session) => {
+    if (!session || typeof session !== 'object' || Array.isArray(session)) return session;
+    return {
+      ...session,
+      gitEvents: session.gitEvents.map((id) => gitEventReferenceById.get(id)),
+    };
+  });
+
+  return {
+    sessions: compactedSessions,
+    gitEventFields,
+    gitEventStringTables,
+    gitEventsById: encodedGitEventsById,
+  };
+}
+
 function eventTime(event) {
   return parseTimestamp(event?.completedAt || event?.completed_at || event?.ts || event?.timestamp || event?.time);
 }
@@ -2438,6 +2593,7 @@ function extractGitEventsFromCommandSource(source, context = {}, options = {}) {
 }
 
 module.exports = {
+  compactGitEventsForWire,
   dedupeGitEvents,
   configureGitEnrichmentWorker,
   extractCommand,

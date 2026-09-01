@@ -530,6 +530,22 @@ function parseJsonRecord(line, { source, file, lines, index, lastContentIndex, p
   }
 }
 
+function jsonRecordWindow(records, count) {
+  const start = Math.max(0, records.length - count);
+  const results = [];
+  for (let index = start; index < records.length; index++) {
+    const record = records[index];
+    if (record?.valid) results.push(record.value);
+  }
+  return results;
+}
+
+function jsonRecordWindows(records, counts) {
+  const windows = new Map();
+  for (const count of counts) windows.set(count, jsonRecordWindow(records, count));
+  return windows;
+}
+
 function readJsonLines(filePath, options = {}) {
   if (options.from === 'start') {
     return parseJsonLines(readLines(filePath, options), {
@@ -540,11 +556,32 @@ function readJsonLines(filePath, options = {}) {
   }
 
   const requestedLines = readLines(filePath, options);
-  if (!requestedLines.length) return [];
+  const windowCounts = options._windowCounts || null;
+  if (!requestedLines.length) {
+    return windowCounts
+      ? new Map(windowCounts.map(count => [count, []]))
+      : [];
+  }
   const state = _tailStateCache.get(filePath);
   if (!state) {
     _parsedTailStats.misses += 1;
     _parsedTailStats.parsePasses += 1;
+    if (windowCounts) {
+      let lastContentIndex = requestedLines.length - 1;
+      while (lastContentIndex >= 0 && !requestedLines[lastContentIndex].trim()) lastContentIndex -= 1;
+      const records = requestedLines.map((line, index) => {
+        if (!line.trim()) return { valid: false, value: null, classification: 'blank' };
+        return parseJsonRecord(line, {
+          source: options.source || 'unknown',
+          file: filePath,
+          lines: requestedLines,
+          index,
+          lastContentIndex,
+          project: options.project,
+        });
+      });
+      return jsonRecordWindows(records, windowCounts);
+    }
     const stats = _jsonlStatsFor(options.source);
     const parsedBefore = stats.parsedLines;
     const results = parseJsonLines(requestedLines, {
@@ -614,13 +651,28 @@ function readJsonLines(filePath, options = {}) {
   }
   _parsedTailStats.reusedLines += reusedThisRead;
 
-  const start = Math.max(0, lines.length - requestedLines.length);
-  const results = [];
-  for (let index = start; index < view.records.length; index++) {
-    const record = view.records[index];
-    if (record?.valid) results.push(record.value);
-  }
-  return results;
+  const requestedRecords = view.records.slice(-requestedLines.length);
+  if (windowCounts) return jsonRecordWindows(requestedRecords, windowCounts);
+  return jsonRecordWindow(requestedRecords, requestedRecords.length);
+}
+
+/**
+ * Parse one largest tail and expose exact smaller line windows from the same
+ * snapshot. Invalid and trailing records retain their line positions, so a
+ * 50-line view has the same semantics as an independent 50-line tail read.
+ */
+function readJsonLineWindows(filePath, counts, options = {}) {
+  const normalizedCounts = Array.from(new Set(
+    (Array.isArray(counts) ? counts : [counts])
+      .map(count => Math.max(1, Number(count) || 1)),
+  ));
+  if (!normalizedCounts.length) return new Map();
+  return readJsonLines(filePath, {
+    ...options,
+    from: 'end',
+    count: Math.max(...normalizedCounts),
+    _windowCounts: normalizedCounts,
+  });
 }
 
 function statCacheKey(filePath, stat) {
@@ -792,6 +844,7 @@ module.exports = {
   readByteRangeText,
   readHeadLines,
   readHeadText,
+  readJsonLineWindows,
   readJsonLines,
   readLines,
   readTailLines,
