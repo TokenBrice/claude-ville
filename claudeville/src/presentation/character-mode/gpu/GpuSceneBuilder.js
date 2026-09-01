@@ -4,6 +4,7 @@ import {
     atlasSourceRect,
     shouldUseAtlasForCategory,
 } from '../AssetManager.js';
+import { getBuildingVisual } from '../BuildingVisualRegistry.js';
 
 const PILOT_PROP_IDS = Object.freeze(['prop.lantern', 'prop.runeBrazier']);
 const TERRAIN_TILE_SOURCES = Object.freeze([
@@ -298,6 +299,185 @@ function recordForTerrain(renderer) {
     };
 }
 
+function recordForHaze(renderer) {
+    const field = renderer?._hazeField;
+    const strength = finite(renderer?._gpuHazeStrength, 0);
+    const viewport = renderer?._screenViewport?.();
+    const camera = renderer?.camera;
+    const zoom = Math.max(0.0001, finite(camera?.zoom, 1));
+    if (!field?.canvas || !(field.width > 0) || !(field.height > 0) || strength <= 0.02) return null;
+    if (!(viewport?.width > 0) || !(viewport?.height > 0)) return null;
+    return {
+        id: 'ground:haze',
+        stableKey: 'ground:haze',
+        textureKey: 'ground-haze-field',
+        source: field.canvas,
+        sourceWidth: field.canvas.width,
+        sourceHeight: field.canvas.height,
+        sx: 0,
+        sy: 0,
+        sw: field.canvas.width,
+        sh: field.canvas.height,
+        x: -finite(camera?.x),
+        y: -finite(camera?.y),
+        width: viewport.width / zoom,
+        height: viewport.height / zoom,
+        alpha: Math.min(1, strength),
+        blend: 'add',
+        material: materialClassId('default'),
+        elevation: 0,
+        emissive: 0,
+        occluder: 0,
+        textureRevision: field.key || null,
+        sequence: -0.9,
+        sourceKind: 'individual',
+    };
+}
+
+let sharedBuildingShadow = null;
+const towerBuildingShadows = new Map();
+
+function buildingShadowStamp() {
+    if (sharedBuildingShadow || typeof document === 'undefined') return sharedBuildingShadow;
+    const canvas = document.createElement('canvas');
+    canvas.width = 64;
+    canvas.height = 28;
+    const ctx = canvas.getContext('2d', { alpha: true });
+    ctx.imageSmoothingEnabled = false;
+    ctx.fillStyle = '#0f161e';
+    const rx = 32;
+    const ry = 14;
+    for (let y = -ry; y < ry; y += 2) {
+        const normalized = y / ry;
+        const half = rx * Math.sqrt(Math.max(0, 1 - normalized * normalized));
+        ctx.fillRect(
+            Math.round(32 - half),
+            Math.round(14 + y),
+            Math.max(1, Math.round(half * 2)),
+            2,
+        );
+    }
+    sharedBuildingShadow = canvas;
+    return sharedBuildingShadow;
+}
+
+function buildingShadowAngle(lighting = {}) {
+    if (Number.isFinite(lighting.shadowAngleRad)) return lighting.shadowAngleRad;
+    const sunX = Number(lighting.sunDirIso?.x);
+    const sunY = Number(lighting.sunDirIso?.y);
+    if (Number.isFinite(sunX) && Number.isFinite(sunY) && Math.hypot(sunX, sunY) > 0) {
+        return Math.atan2(-sunY, -sunX);
+    }
+    return 0.28;
+}
+
+function towerBuildingShadow(stamp, buildingId, contact, shadowAngle, shadowLength) {
+    const castLength = finite(contact.castLength) * Math.max(0.45, shadowLength);
+    const stampCount = Math.max(3, Math.min(4, Math.round(finite(contact.castLength) / 28) + 1));
+    const stamps = [];
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let index = 0; index < stampCount; index++) {
+        const t = index / stampCount;
+        const width = Math.max(1, Math.round(contact.width * (index ? 1 - t * 0.68 : 1)));
+        const height = Math.max(4, Math.round(contact.depth * (index ? 1 - t * 0.76 : 1)));
+        const x = Math.round(index ? Math.cos(shadowAngle) * castLength * t : 0);
+        const y = Math.round(index ? Math.sin(shadowAngle) * castLength * 0.55 * t : 0);
+        const alpha = index ? (1 - t) * 0.48 : 1;
+        stamps.push({ x, y, width, height, alpha });
+        minX = Math.min(minX, x - Math.ceil(width / 2));
+        minY = Math.min(minY, y - Math.ceil(height / 2));
+        maxX = Math.max(maxX, x + Math.ceil(width / 2));
+        maxY = Math.max(maxY, y + Math.ceil(height / 2));
+    }
+    const revision = stamps
+        .map(({ x, y, width, height, alpha }) => `${x},${y},${width},${height},${alpha.toFixed(3)}`)
+        .join('|');
+    let cached = towerBuildingShadows.get(buildingId);
+    if (!cached) {
+        cached = { canvas: document.createElement('canvas'), revision: '' };
+        towerBuildingShadows.set(buildingId, cached);
+    }
+    const width = Math.max(1, maxX - minX);
+    const height = Math.max(1, maxY - minY);
+    if (cached.revision !== revision || cached.canvas.width !== width || cached.canvas.height !== height) {
+        cached.canvas.width = width;
+        cached.canvas.height = height;
+        const ctx = cached.canvas.getContext('2d', { alpha: true });
+        ctx.imageSmoothingEnabled = false;
+        for (const course of stamps) {
+            ctx.globalAlpha = course.alpha;
+            ctx.drawImage(
+                stamp,
+                Math.round(course.x - course.width / 2 - minX),
+                Math.round(course.y - course.height / 2 - minY),
+                course.width,
+                course.height,
+            );
+        }
+        ctx.globalAlpha = 1;
+        cached.revision = revision;
+    }
+    cached.offsetX = minX;
+    cached.offsetY = minY;
+    return cached;
+}
+
+function buildingShadowRecords(renderer, drawable, sequence) {
+    if (drawable?.kind === 'building-front') return [];
+    const stamp = buildingShadowStamp();
+    const building = drawable?.building;
+    const grounding = getBuildingVisual(building?.type)?.grounding;
+    const contact = grounding?.contact;
+    if (!stamp || grounding?.shadow === 'none' || !(contact?.width > 0) || !(contact?.depth > 0)) return [];
+
+    const lighting = renderer?._lastAtmosphere?.lighting || renderer?.buildingRenderer?.lightingState || {};
+    const shadowLength = finite(lighting.shadowLength, 1);
+    const shadowAngle = buildingShadowAngle(lighting);
+    const shadowAlpha = finite(lighting.shadowAlpha, 0.22) * finite(contact.opacity, 0.75);
+    const towerCast = grounding.shadow === 'tower-cast' && contact.castLength > 0;
+    const offsetScale = towerCast ? 0.72 : 0.3;
+    const baseX = finite(drawable.wx)
+        + finite(contact.offsetX)
+        + Math.cos(shadowAngle) * 12 * shadowLength * offsetScale;
+    const baseY = finite(drawable.wy)
+        + finite(contact.offsetY)
+        + Math.sin(shadowAngle) * 7 * shadowLength * offsetScale;
+    const buildingId = String(building?.type || drawable?.entry?.id || sequence).replace(/^building\./, '');
+    const towerSource = towerCast
+        ? towerBuildingShadow(stamp, buildingId, contact, shadowAngle, shadowLength)
+        : null;
+    const source = towerSource?.canvas || stamp;
+    const width = towerSource?.canvas.width || contact.width;
+    const height = towerSource?.canvas.height || contact.depth;
+    return [{
+        id: `ground:building:${buildingId}`,
+        stableKey: `ground:building:${buildingId}`,
+        textureKey: towerCast ? `building-ground-shadow:${buildingId}` : 'building-ground-shadow',
+        source,
+        sourceWidth: source.width,
+        sourceHeight: source.height,
+        sx: 0,
+        sy: 0,
+        sw: source.width,
+        sh: source.height,
+        x: Math.round(baseX + (towerSource?.offsetX ?? -width / 2)),
+        y: Math.round(baseY + (towerSource?.offsetY ?? -height / 2)),
+        width,
+        height,
+        alpha: shadowAlpha,
+        material: materialClassId('default'),
+        elevation: 0,
+        occluder: 0,
+        emissive: 0,
+        sequence: sequence - 0.5,
+        textureRevision: towerSource?.revision || null,
+        sourceKind: 'individual',
+    }];
+}
+
 function recordForBuilding(renderer, drawable, sequence) {
     const assets = renderer?.assets;
     const id = drawable?.entry?.id;
@@ -365,7 +545,7 @@ function recordForBuilding(renderer, drawable, sequence) {
     const sidecarKey = useAtlas
         ? `${atlasFrame.atlas}:channels`
         : `${id}:material`;
-    return {
+    const record = {
         id: `${id}:${drawable.kind}`,
         stableKey: `${id}:${drawable.kind}`,
         textureKey,
@@ -399,6 +579,8 @@ function recordForBuilding(renderer, drawable, sequence) {
         sequence,
         sourceKind: useAtlas ? 'atlas' : 'individual',
     };
+    const shadows = buildingShadowRecords(renderer, drawable, sequence);
+    return shadows.length ? [...shadows, record] : record;
 }
 
 function recordForProp(renderer, drawable, sequence) {
@@ -995,6 +1177,8 @@ export function buildGpuWorldRecords(renderer, { drawables = [] } = {}) {
     const records = [];
     const terrain = recordForTerrain(renderer);
     if (terrain) records.push(terrain);
+    const haze = recordForHaze(renderer);
+    if (haze) records.push(haze);
     let sequence = 0;
     for (const drawable of drawables || []) {
         let next = null;

@@ -240,39 +240,73 @@
 }
 
 .sidebar__agent-dot--working {
-    background: var(--cv-status-working);
-    box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+    color: var(--cv-status-working);
+    background: currentColor;
+    box-shadow: 0 0 6px color-mix(in srgb, currentColor 50%, transparent);
     animation: sidebar-pulse-dot 1.5s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--idle {
-    background: var(--cv-status-idle);
-    box-shadow: 0 0 4px rgba(96, 165, 250, 0.3);
+    color: var(--cv-status-idle);
+    background: currentColor;
+    box-shadow: 0 0 4px color-mix(in srgb, currentColor 30%, transparent);
 }
 
 .sidebar__agent-dot--waiting {
-    background: var(--cv-status-waiting);
-    box-shadow: 0 0 4px rgba(249, 115, 22, 0.3);
+    color: var(--cv-status-waiting);
+    background: currentColor;
+    box-shadow: 0 0 4px color-mix(in srgb, currentColor 30%, transparent);
     animation: sidebar-pulse-dot 2s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--rate_limited {
-    background: var(--cv-status-rate-limited);
-    box-shadow: 0 0 6px rgba(245, 158, 11, 0.45);
+    color: var(--cv-status-rate-limited);
+    background: currentColor;
+    box-shadow: 0 0 6px color-mix(in srgb, currentColor 45%, transparent);
     animation: sidebar-pulse-dot 2.4s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--errored {
-    background: var(--cv-status-errored);
-    box-shadow: 0 0 8px rgba(239, 68, 68, 0.55);
+    color: var(--cv-status-errored);
+    background: currentColor;
+    box-shadow: 0 0 8px color-mix(in srgb, currentColor 55%, transparent);
     animation: sidebar-pulse-dot 1.2s ease-in-out infinite;
 }
 
 .sidebar__agent-dot--waiting_on_user {
-    background: var(--cv-status-waiting-user);
-    box-shadow: 0 0 6px rgba(250, 204, 21, 0.5);
+    color: var(--cv-status-waiting-user);
+    background: currentColor;
+    box-shadow: 0 0 6px color-mix(in srgb, currentColor 50%, transparent);
     animation: sidebar-pulse-dot 1.6s ease-in-out infinite;
 }
+
+/* Attention dots carry a compact glyph as a second cue, so status is never
+   communicated by hue alone. The larger disc preserves readability at the
+   sidebar's dense 10px label scale. */
+.sidebar__agent-dot--errored,
+.sidebar__agent-dot--waiting_on_user,
+.sidebar__agent-dot--rate_limited {
+    display: inline-grid;
+    place-items: center;
+    width: 14px;
+    height: 14px;
+}
+
+.sidebar__agent-dot--errored::after,
+.sidebar__agent-dot--waiting_on_user::after,
+.sidebar__agent-dot--rate_limited::after {
+    font-family: var(--font-body);
+    font-size: 10px;
+    font-weight: 700;
+    line-height: 1;
+    color: var(--cv-bg);
+    text-align: center;
+    text-shadow: none;
+}
+
+.sidebar__agent-dot--errored::after { content: '!'; }
+.sidebar__agent-dot--waiting_on_user::after { content: '?'; }
+.sidebar__agent-dot--rate_limited::after { content: '~'; }
 
 @media (prefers-reduced-motion: reduce) {
     .sidebar__agent-dot--working,
@@ -286,8 +320,9 @@
 
 /* Completed is terminal: static soft-gold dot, claims no pulse band. */
 .sidebar__agent-dot--completed {
-    background: var(--cv-status-completed, #e8c96a);
-    box-shadow: 0 0 6px color-mix(in srgb, var(--cv-status-completed, #e8c96a) 50%, transparent);
+    color: var(--cv-status-completed);
+    background: currentColor;
+    box-shadow: 0 0 6px color-mix(in srgb, currentColor 50%, transparent);
 }
 
 @keyframes sidebar-pulse-dot {
@@ -303,10 +338,10 @@
 
 @keyframes sidebar-working-breathe {
     0%, 100% {
-        box-shadow: inset 10px 0 16px rgba(74, 222, 128, 0.05);
+        box-shadow: inset 10px 0 16px color-mix(in srgb, var(--cv-status-working) 5%, transparent);
     }
     50% {
-        box-shadow: inset 16px 0 22px rgba(74, 222, 128, 0.14);
+        box-shadow: inset 16px 0 22px color-mix(in srgb, var(--cv-status-working) 14%, transparent);
     }
 }
 
@@ -325,8 +360,8 @@
     flex-shrink: 0;
     border-radius: 50%;
     border: 1px solid transparent;
-    border-top-color: var(--cv-status-working, #4ade80);
-    border-right-color: color-mix(in srgb, var(--cv-status-working, #4ade80) 40%, transparent);
+    border-top-color: var(--cv-status-working);
+    border-right-color: color-mix(in srgb, var(--cv-status-working) 40%, transparent);
     animation: sidebar-caret-spin 0.9s linear infinite;
 }
 
@@ -337,7 +372,7 @@
 @media (prefers-reduced-motion: reduce) {
     .sidebar__agent--working:not(.sidebar__agent--selected) {
         animation: none;
-        box-shadow: inset 14px 0 20px rgba(74, 222, 128, 0.12);
+        box-shadow: inset 14px 0 20px color-mix(in srgb, var(--cv-status-working) 12%, transparent);
     }
     .sidebar__working-caret {
         animation: none;

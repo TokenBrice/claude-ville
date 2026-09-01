@@ -19,6 +19,13 @@ const AGENT_NAMES_EN = [
     'Verity', 'Wren', 'Wystan', 'Yara', 'Yorick', 'Zara', 'Alba', 'Corin',
 ];
 
+function optionalNumber(value, { nonnegative = false } = {}) {
+    if (value === null || value === undefined || value === '') return null;
+    const number = Number(value);
+    if (!Number.isFinite(number) || (nonnegative && number < 0)) return null;
+    return number;
+}
+
 export class Agent {
     constructor({
         id,
@@ -28,6 +35,8 @@ export class Agent {
         status,
         role,
         tokens,
+        estimatedCost,
+        cost,
         messages,
         teamName,
         projectPath,
@@ -50,8 +59,14 @@ export class Agent {
         activityAgeMs,
         turnState,
         pendingTool,
+        pendingSince,
         waitReason,
         awaitingSince,
+        turnStartedAt,
+        lastTurnDurationMs,
+        signalSource,
+        workingSet,
+        collisions,
         resident,
         departedAt,
         dialogue,
@@ -75,6 +90,9 @@ export class Agent {
         this.status = normalizeAgentStatus(status);
         this.role = role || 'general';
         this.tokens = TokenUsage.normalize(tokens);
+        this.estimatedCost = optionalNumber(estimatedCost, { nonnegative: true });
+        this._cost = null;
+        this.cost = cost;
         this.messages = messages || [];
         this.teamName = teamName;
         this.projectPath = projectPath;
@@ -90,8 +108,16 @@ export class Agent {
         // the server is holding past its active window.
         this.turnState = turnState || 'unknown';
         this.pendingTool = pendingTool || null;
+        this.pendingSince = optionalNumber(pendingSince);
         this.waitReason = waitReason || null;
-        this.awaitingSince = Number.isFinite(Number(awaitingSince)) ? Number(awaitingSince) : null;
+        this.awaitingSince = optionalNumber(awaitingSince);
+        this.turnStartedAt = optionalNumber(turnStartedAt);
+        this.lastTurnDurationMs = optionalNumber(lastTurnDurationMs, { nonnegative: true });
+        this.signalSource = signalSource === 'hook' || signalSource === 'transcript'
+            ? signalSource
+            : null;
+        this.workingSet = Array.isArray(workingSet) ? workingSet.slice(0, 16) : [];
+        this.collisions = Array.isArray(collisions) ? collisions : [];
         this.resident = resident === true;
         // A departed agent is no longer present in the live server roster, but
         // remains in the world briefly so burst workloads stay perceptible.
@@ -118,7 +144,7 @@ export class Agent {
         this.position = new Position(20 + Math.random() * 10, 20 + Math.random() * 10);
         this.targetPosition = null;
         this.walkFrame = 0;
-        this.lastActive = Date.now();
+        this.lastActive = Number(this.lastSessionActivity) || Date.now();
     }
 
     get isWorking() {
@@ -135,6 +161,38 @@ export class Agent {
 
     get isDeparted() {
         return Number.isFinite(this.departedAt);
+    }
+
+    get statusSince() {
+        const finite = (...values) => values
+            .map(Number)
+            .find(value => Number.isFinite(value) && value > 0) || null;
+        if (this.status === AgentStatus.WAITING_ON_USER) {
+            return finite(
+                this.awaitingSince,
+                this.pendingSince,
+                this.turnStartedAt,
+                this.lastSessionActivity,
+                this.lastActive,
+            );
+        }
+        if (this.status === AgentStatus.WORKING) {
+            return finite(
+                this.turnStartedAt,
+                this.pendingSince,
+                this.lastSessionActivity,
+                this.lastActive,
+            );
+        }
+        if (this.status === AgentStatus.WAITING) {
+            return finite(
+                this.pendingSince,
+                this.turnStartedAt,
+                this.lastSessionActivity,
+                this.lastActive,
+            );
+        }
+        return finite(this.lastSessionActivity, this.lastActive);
     }
 
     get isSubagent() {
@@ -154,7 +212,30 @@ export class Agent {
     }
 
     get cost() {
-        return TokenUsage.estimateCost(this.tokens, this.model, this.provider);
+        if (this._cost) return this._cost;
+        const estimate = TokenUsage.estimateCost(this.tokens, this.model, this.provider);
+        estimate.source = 'estimate';
+        estimate.rateRevision = TokenUsage.rateRevision;
+        return estimate;
+    }
+
+    set cost(value) {
+        if (!value || typeof value !== 'object' || !Number.isFinite(Number(value.usd))) {
+            this._cost = null;
+            return;
+        }
+        const normalized = {
+            usd: Math.max(0, Number(value.usd)),
+            source: value.source === 'provider' ? 'provider' : 'estimate',
+            rateMatch: value.rateMatch == null ? null : String(value.rateMatch),
+            rateRevision: String(value.rateRevision || TokenUsage.rateRevision),
+            unknownModel: value.unknownModel === true,
+        };
+        Object.defineProperty(normalized, 'valueOf', {
+            value: () => normalized.usd,
+            enumerable: false,
+        });
+        this._cost = normalized;
     }
 
     get lastMessage() {

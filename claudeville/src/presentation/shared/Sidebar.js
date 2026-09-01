@@ -5,7 +5,14 @@ import { repoBranchProfile } from './RepoColor.js';
 import { AgentSearchIndex } from './SearchIndex.js';
 import { sessionDetailsService } from './SessionDetailsService.js';
 import { el, replaceChildren } from './DomSafe.js';
-import { formatRelative, hashRows, shortProjectName, statusClass } from './Formatters.js';
+import {
+    formatRelative,
+    formatStatusElapsed,
+    hashRows,
+    shortProjectName,
+    statusClass,
+    subscribeElapsedText,
+} from './Formatters.js';
 import {
     AgentSelectionMirror,
     emitAgentSelected,
@@ -364,17 +371,13 @@ export class Sidebar {
         const matchesById = new Map(searchResults.map(match => [match.agentId, match]));
         this._reconcileWorkflowState(agents);
         this._setText(this.countEl, agents.length);
-        // 4.12 — per-row extras (idle-age suffix, subagent parent link) feed
+        // Per-row extras (time in state, subagent parent link) feed
         // both the render signature and the row builder; the formatted age
         // string only changes when the displayed text would, so it stays cheap.
         const now = Date.now();
         const rowExtras = new Map();
         for (const agent of agents) {
-            const status = statusClass(agent.status);
-            let ageText = '';
-            if (status === 'idle' || status === 'completed') {
-                ageText = formatRelative(Number(agent.lastSessionActivity) || 0, now);
-            }
+            const ageText = formatStatusElapsed(agent, now);
             let parentLabel = '';
             if (agent.parentSessionId) {
                 parentLabel = this.world.agents.get(agent.parentSessionId)?.name || 'ended';
@@ -806,6 +809,11 @@ export class Sidebar {
             nameText, team, workflow, name, provider, modelText, age, model,
             match, info, dot, caret, rail, select, parent,
         };
+        row._elapsedUnsubscribe = subscribeElapsedText(age, () => {
+            const current = this.world.agents.get(agentId);
+            const text = current ? formatStatusElapsed(current) : '';
+            return text ? ` · ${text}` : '';
+        });
         return row;
     }
 
@@ -894,6 +902,8 @@ export class Sidebar {
             .map(agent => `${agent.projectPath || '_unknown'}\u0001${agent.workflowId}`));
         for (const [id, row] of this._agentRows) {
             if (liveIds.has(id)) continue;
+            row._elapsedUnsubscribe?.();
+            row._elapsedUnsubscribe = null;
             row.remove();
             this._agentRows.delete(id);
         }
@@ -1033,10 +1043,11 @@ export class Sidebar {
         if (this.countEl) this.countEl.textContent = '0';
         if (this.harborCountEl) this.harborCountEl.textContent = '0';
         this.harborRepos = [];
+        for (const row of this._agentRows?.values?.() || []) row._elapsedUnsubscribe?.();
+        this._agentRows?.clear?.();
         this._harborSignature = '';
         this._renderSignature = '';
         this._filter = '';
-        this._agentRows?.clear?.();
         this._projectGroups?.clear?.();
         this._workflowGroups?.clear?.();
         this._emptyLegendEl = null;

@@ -65,6 +65,26 @@ Each capture records:
 
 The census is deliberately descriptive. It freezes the current vocabulary until the scene-salience governor exposes authoritative admission counts.
 
+## Canvas and WebGL2 effect parity
+
+The ground-truth signals below must be present in both renderer modes. WebGL2 keeps them inside existing scene records, overlay-safe categories, or the scene-grade shader; it does not add a pass.
+
+| Effect | Canvas path | WebGL2 path |
+| --- | --- | --- |
+| Building sun/contact shadows | Stepped structure shadows | One `ground:building:<id>` stepped-ellipse record per building; tower textures bake three or four fading stamps into that record |
+| Coherent ground haze | Quarter-resolution haze field | One additive `ground:haze` record using the same cached field and live strength |
+| Cloud shadows | Terrain-clipped cloud ellipses | Three stepped `u_cloudShadow` courses in `applyGrade`, restricted to earth, foliage, and cobble |
+| Water state and night reflection | Canvas water animation and light-reflection layer | Material `8.0` ordered-dither shimmer plus the existing local-light reflection branch; reduced motion holds a fixed phase |
+| Surface wetness | Material darkening plus discrete damp marks | Material weather response on authored material pixels, including terrain and water |
+| Fish, waterfowl, gulls, land birds, waterfalls, and harbor traffic | Overlay-safe category in the Canvas depth stream | The same category is replayed above the GPU island |
+
+The following decorations are intentionally Canvas-only and must not be mistaken for a missing state signal during paired review:
+
+- the ten low-fog wisp sprites; WebGL2 carries the coherent haze field;
+- discrete ground and roof damp-mark stamps; WebGL2 carries material wetness instead;
+- building activity and hover ground-footprint decoration;
+- the directional lighthouse beam; WebGL2 retains the lighthouse local light and water reflection.
+
 ## Trail camera benchmark
 
 Persisted movement history remains available to diagnostics and replay, but routine history is not painted over the live village. Only a short recent route for the selected or action-needed agent draws directly; camera motion never allocates or repaints an ambient trail cache.

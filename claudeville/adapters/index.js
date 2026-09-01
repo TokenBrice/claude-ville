@@ -136,6 +136,16 @@ function normalizeProviderId(provider, fallback = 'claude') {
 
 function normalizeSession(session, context = {}) {
   const provider = normalizeProviderId(session?.provider, context.provider || 'unknown');
+  const workingSet = Array.isArray(session?.workingSet)
+    ? session.workingSet.slice(0, 16).flatMap((item) => {
+      const itemPath = typeof item?.path === 'string' ? item.path.trim() : '';
+      const op = item?.op === 'read' || item?.op === 'write' ? item.op : null;
+      const source = item?.source === 'hook' || item?.source === 'transcript' ? item.source : null;
+      const at = Number(item?.at);
+      if (!itemPath || !op || !source || !Number.isFinite(at)) return [];
+      return [{ path: itemPath, op, at, source }];
+    })
+    : [];
   return decorateSessionPresentation({
     ...session,
     sessionId: String(session?.sessionId || ''),
@@ -165,6 +175,20 @@ function normalizeSession(session, context = {}) {
     pendingTool: session?.pendingTool ?? null,
     pendingSince: Number.isFinite(Number(session?.pendingSince)) ? Number(session.pendingSince) : null,
     awaitingSince: Number.isFinite(Number(session?.awaitingSince)) ? Number(session.awaitingSince) : null,
+    turnStartedAt: session?.turnStartedAt !== null
+      && session?.turnStartedAt !== undefined
+      && Number.isFinite(Number(session.turnStartedAt))
+      ? Number(session.turnStartedAt)
+      : null,
+    lastTurnDurationMs: session?.lastTurnDurationMs !== null
+      && session?.lastTurnDurationMs !== undefined
+      && Number.isFinite(Number(session.lastTurnDurationMs))
+      ? Math.max(0, Number(session.lastTurnDurationMs))
+      : null,
+    signalSource: session?.signalSource === 'hook' || session?.signalSource === 'transcript'
+      ? session.signalSource
+      : null,
+    workingSet,
     waitReason: session?.waitReason ?? null,
     resident: session?.resident === true,
     sendMessages: Array.isArray(session?.sendMessages) ? session.sendMessages : [],

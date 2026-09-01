@@ -81,6 +81,7 @@ uniform float u_edgeAlpha;
 uniform vec3 u_fogColor;
 uniform vec4 u_weather;
 uniform vec4 u_sun;
+uniform vec4 u_cloudShadow[3];
 uniform float u_time;
 uniform float u_motionScale;
 uniform int u_lightCount;
@@ -129,6 +130,19 @@ vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
     return color;
 }
 
+vec3 applyWaterState(vec3 color, vec2 px) {
+    float phase = u_motionScale <= 0.0 ? 0.0 : floor(u_time * 0.004 * u_motionScale);
+    float storm = step(0.5, u_weather.z);
+    vec2 calmCell = floor(px / 3.0);
+    vec2 roughCell = floor(px / 2.0);
+    float calmCourse = mod(calmCell.x + 2.0 * calmCell.y + phase, 4.0);
+    float roughCourse = mod(3.0 * roughCell.x + roughCell.y + phase * 2.0, 4.0);
+    float shimmer = step(2.0, mix(calmCourse, roughCourse, storm));
+    float contrast = mix(0.07, 0.13, storm);
+    vec3 phaseTint = mix(vec3(0.82, 0.94, 1.08), u_gradeBase, 0.22);
+    return color * phaseTint * mix(1.0 - contrast, 1.0 + contrast, shimmer);
+}
+
 vec3 applyAuthoredSunBand(vec3 color, float material) {
     float response = 0.36;
     response = mix(response, 0.62, materialNear(material, 1.0));
@@ -149,7 +163,7 @@ vec3 applyAuthoredSunBand(vec3 color, float material) {
     return color * mix(1.0, quantized, clamp(u_sun.w, 0.0, 1.0));
 }
 
-vec3 applyGrade(vec3 color, vec2 topLeftPx) {
+vec3 applyGrade(vec3 color, vec2 topLeftPx, float material) {
     vec2 centre = vec2(u_resolution.x * 0.5, u_resolution.y * 0.46);
     float inner = min(u_resolution.x, u_resolution.y) * 0.18;
     float outer = max(u_resolution.x, u_resolution.y) * 0.72;
@@ -159,6 +173,20 @@ vec3 applyGrade(vec3 color, vec2 topLeftPx) {
         : mix(u_edgeAlpha * 0.4, u_edgeAlpha, (t - 0.62) / 0.38);
     color *= u_gradeBase;
     color *= mix(vec3(1.0), u_gradeEdge, edge);
+    float cloudReceiver = max(
+        materialNear(material, 4.0),
+        max(materialNear(material, 6.0), materialNear(material, 7.0))
+    );
+    for (int i = 0; i < 3; i++) {
+        vec4 shadow = u_cloudShadow[i];
+        if (shadow.w <= 0.0) continue;
+        vec2 delta = (topLeftPx - shadow.xy) / vec2(max(1.0, shadow.z), max(1.0, shadow.z * 0.5));
+        float distanceSquared = dot(delta, delta);
+        float course = step(distanceSquared, 1.0) * 0.34
+            + step(distanceSquared, 0.49) * 0.33
+            + step(distanceSquared, 0.16) * 0.33;
+        color *= 1.0 - shadow.w * course * cloudReceiver;
+    }
     return color;
 }
 
@@ -195,8 +223,9 @@ void main() {
     // glint/material classification work when every weather contribution is
     // mathematically zero; rainy output remains byte-for-byte equivalent.
     if (u_weather.x > 0.001) color = applyMaterialWeather(color, material, px);
+    if (materialNear(material, 8.0) > 0.5) color = applyWaterState(color, px);
     color = applyAuthoredSunBand(color, material);
-    color = applyGrade(color, px);
+    color = applyGrade(color, px, material);
 
     for (int i = 0; i < 16; i++) {
         if (i >= u_lightCount) break;
@@ -364,6 +393,45 @@ function weatherUniform(feed = {}) {
     ];
 }
 
+function writeCloudShadowUniforms(target, ranked, feed, width, height) {
+    target.fill(0);
+    ranked.fill(null);
+    const atmosphere = feed.atmosphere || {};
+    const layers = atmosphere.sky?.cloudLayers;
+    const cloudCover = clamp(finite(atmosphere.weather?.cloudCover), 0, 1);
+    if (!Array.isArray(layers) || !layers.length || cloudCover <= 0.04) return target;
+
+    for (let index = 0; index < layers.length; index++) {
+        const layer = layers[index];
+        const scale = finite(layer?.scale);
+        for (let slot = 0; slot < ranked.length; slot++) {
+            if (ranked[slot] && finite(ranked[slot].scale) >= scale) continue;
+            for (let shift = ranked.length - 1; shift > slot; shift--) ranked[shift] = ranked[shift - 1];
+            ranked[slot] = layer;
+            break;
+        }
+    }
+
+    const span = Math.max(1, width + height);
+    const windX = finite(atmosphere.motion?.windX, 1);
+    const driftTime = feed.reducedMotion || finite(feed.motionScale, 1) <= 0
+        ? 0
+        : finite(feed.timeMs) * 0.012;
+    for (let slot = 0; slot < ranked.length; slot++) {
+        const layer = ranked[slot];
+        if (!layer) continue;
+        const parallax = finite(layer.parallax, 0.5);
+        const rawX = finite(layer.xFrac) * span + windX * driftTime * parallax;
+        const wrappedX = ((rawX % span) + span) % span;
+        const offset = slot * 4;
+        target[offset] = wrappedX - height * 0.5;
+        target[offset + 1] = finite(layer.yFrac, 0.3) * height;
+        target[offset + 2] = Math.max(48, finite(layer.scale, 1) * width * 0.22);
+        target[offset + 3] = 0.12 * cloudCover * (0.6 + finite(layer.alpha, 0.3));
+    }
+    return target;
+}
+
 export class GpuWorldRenderer {
     constructor(canvas, { enabled = true } = {}) {
         this.canvas = canvas || null;
@@ -418,6 +486,8 @@ export class GpuWorldRenderer {
         this._vertexScratchUsed = 0;
         this._lightScratch = new Float32Array(MAX_LIGHTS * 4);
         this._lightColorScratch = new Float32Array(MAX_LIGHTS * 4);
+        this._cloudShadowScratch = new Float32Array(12);
+        this._cloudShadowLayers = [null, null, null];
         this._occlusionRecords = [];
         this._occlusionBatch = {
             key: '',
@@ -493,7 +563,7 @@ export class GpuWorldRenderer {
             'u_camera', 'u_resolution', 'u_albedo', 'u_materialMap', 'u_emissiveMap', 'u_occlusion',
             'u_hasMaterialMap', 'u_hasEmissiveMap', 'u_occlusionResolution', 'u_gradeBase', 'u_gradeEdge',
             'u_edgeAlpha', 'u_fogColor', 'u_weather', 'u_time', 'u_motionScale',
-            'u_sun',
+            'u_sun', 'u_cloudShadow[0]',
             'u_lightCount', 'u_lights[0]', 'u_lightColors[0]',
         ]);
         this.occlusionUniforms = uniformLocations(gl, this.occlusionProgram, [
@@ -1048,8 +1118,21 @@ export class GpuWorldRenderer {
             clamp(finite(feed.lighting?.sunWarmth), 0, 1),
             clamp(finite(feed.lighting?.ambientLight, 1), 0, 1),
         );
+        gl.uniform4fv(
+            uniforms['u_cloudShadow[0]'],
+            writeCloudShadowUniforms(
+                this._cloudShadowScratch,
+                this._cloudShadowLayers,
+                feed,
+                this.width,
+                this.height,
+            ),
+        );
         this.emissivePhase = emissivePhaseForAmbientLight(feed.lighting?.ambientLight);
-        gl.uniform1f(uniforms.u_time, finite(feed.timeMs, Date.now()));
+        // Keep the existing time channel inside float32's precise range. The
+        // one-million-ms period closes on both shader phase multipliers.
+        const shaderTimeMs = ((finite(feed.timeMs, Date.now()) % 1000000) + 1000000) % 1000000;
+        gl.uniform1f(uniforms.u_time, shaderTimeMs);
         gl.uniform1f(uniforms.u_motionScale, feed.reducedMotion ? 0 : clamp(finite(feed.motionScale, 1), 0, 2));
         gl.activeTexture(gl.TEXTURE2);
         gl.bindTexture(gl.TEXTURE_2D, this.occlusionTarget.textures[0]);

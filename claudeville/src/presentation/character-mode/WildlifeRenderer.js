@@ -23,6 +23,33 @@ const GULL_MAX_ACTIVE_TARGET = Math.max(GULL_MIN_ACTIVE_TARGET, Math.floor(GULL_
 // #39 — how long a celebratory flock scatter holds the active-gull target at
 // its maximum after a harbor push-success / git push.
 const GULL_SCATTER_DURATION_MS = 6000;
+const WILDLIFE_SCENE_ITEMS = Object.freeze([
+    Object.freeze({
+        sourceCategory: 'wildlife',
+        stableKey: 'wildlife:ground-and-air',
+        sortY: -1000000,
+    }),
+]);
+
+// Wildlife and waterfalls are world detail rather than occluders. Keeping the
+// whole layer overlay-safe lets the Canvas fallback retain its original early
+// draw order while the direct GPU island replays it on the transparent overlay.
+export const WILDLIFE_SCENE_CATEGORY = Object.freeze({
+    id: 'wildlife',
+    sortBand: 40,
+    enumerate({ renderer } = {}) {
+        return renderer?.wildlifeRenderer ? WILDLIFE_SCENE_ITEMS : [];
+    },
+    emitSceneCommands() {
+        return null;
+    },
+    canvasFallback(ctx, drawable, zoom, context = {}) {
+        const wildlife = context.renderer?.wildlifeRenderer;
+        wildlife?.drawSceneLayer?.(ctx, context.renderNow);
+    },
+    unsupported: 'overlay-safe',
+    overlayBand: 40,
+});
 
 // Owns fauna animation state. The host supplies stable world classifiers,
 // culling, renderer services, and the live frame/motion values.
@@ -33,6 +60,22 @@ export class WildlifeRenderer {
         this._landBirdRoutes = null;
         this._landBirdLastNow = 0;
         this._gullScatterUntil = 0;
+        this._sceneFrameToken = null;
+        this._sceneFrameNow = 0;
+    }
+
+    drawSceneLayer(ctx, frameToken = null) {
+        if (this._sceneFrameToken !== frameToken) {
+            this._sceneFrameToken = frameToken;
+            this._sceneFrameNow = (typeof performance !== 'undefined' && performance.now)
+                ? performance.now()
+                : Date.now();
+        }
+        this.drawFishSchools(ctx);
+        this.drawWaterfowl(ctx);
+        this.host._drawTropicalWaterfalls?.(ctx);
+        this.drawOpenSeaGulls(ctx);
+        this.drawLandBirds(ctx, this._sceneFrameNow);
     }
 
     drawFishSchools(ctx) {
@@ -93,7 +136,7 @@ export class WildlifeRenderer {
     // Songbirds flitting on small looping flight paths between the trees of the
     // inhabited belt — the land analogue of the sea gulls. Wing frames cycle
     // when motion is on; a single gliding frame is shown under reduced motion.
-    drawLandBirds(ctx) {
+    drawLandBirds(ctx, frameNow = null) {
         if (!this.host.sprites || !LAND_BIRD_ROUTES.length) return;
         if (!this._landBirdRoutes) {
             this._landBirdRoutes = LAND_BIRD_ROUTES.map((r) => ({
@@ -113,9 +156,11 @@ export class WildlifeRenderer {
                 perchProgress: (r.phase ?? 0) % 1,
             }));
         }
-        const now = (typeof performance !== 'undefined' && performance.now)
-            ? performance.now()
-            : Date.now();
+        const now = Number.isFinite(frameNow)
+            ? frameNow
+            : (typeof performance !== 'undefined' && performance.now)
+                ? performance.now()
+                : Date.now();
         const dtMs = this._landBirdLastNow ? Math.max(0, Math.min(120, now - this._landBirdLastNow)) : 0;
         this._landBirdLastNow = now;
         const visible = this.host._getVisibleTileBounds(3);

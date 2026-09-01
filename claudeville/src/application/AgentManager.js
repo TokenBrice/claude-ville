@@ -35,6 +35,8 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'role',
     'teamName',
     'tokens',
+    'estimatedCost',
+    'cost',
     'currentTool',
     'currentToolInput',
     'lastTool',
@@ -43,8 +45,14 @@ const AGENT_SIGNATURE_FIELDS = Object.freeze([
     'permissionMode',
     'turnState',
     'pendingTool',
+    'pendingSince',
     'waitReason',
     'awaitingSince',
+    'turnStartedAt',
+    'lastTurnDurationMs',
+    'signalSource',
+    'workingSet',
+    'collisions',
     'resident',
     'sendMessages',
     'lastSessionActivity',
@@ -63,7 +71,7 @@ const SIGNATURE_COLLECTION_VALUE_BUDGET = 1024;
 const SIGNATURE_FIELD_CHARACTER_BUDGET = 1024;
 const SIGNATURE_COLLECTION_CHARACTER_BUDGET = 15 * 1024;
 const SIGNATURE_CHARACTER_BUDGET = 64 * 1024;
-const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages']);
+const SIGNATURE_COLLECTION_FIELDS = new Set(['gitEvents', 'sendMessages', 'workingSet', 'collisions']);
 const VERIFIED_OUTCOME_KEY_LIMIT = 512;
 
 function gitEventWireReference(value) {
@@ -260,8 +268,14 @@ export class AgentManager {
             this._teamMembers = this._buildTeamMembers(teams);
 
             const gitEventWire = this._gitEventWireFrom(sessions);
+            const collisionsByAgent = this._collisionsByAgent(sessions.collisions);
             for (const session of sessions) {
-                this._upsertAgent(session, this._teamMembers, gitEventWire);
+                this._upsertAgent(
+                    session,
+                    this._teamMembers,
+                    gitEventWire,
+                    collisionsByAgent.get(String(session.sessionId)) || [],
+                );
             }
 
             console.log(`[AgentManager] ${this.world.agents.size} agents loaded`);
@@ -282,9 +296,15 @@ export class AgentManager {
         const currentIds = new Set();
 
         const gitEventWire = this._gitEventWireFrom(data, data.sessions);
+        const collisionsByAgent = this._collisionsByAgent(data.collisions || data.sessions.collisions);
         for (const session of data.sessions) {
             currentIds.add(session.sessionId);
-            this._upsertAgent(session, this._teamMembers, gitEventWire);
+            this._upsertAgent(
+                session,
+                this._teamMembers,
+                gitEventWire,
+                collisionsByAgent.get(String(session.sessionId)) || [],
+            );
         }
 
         // Missing sessions linger as departed villagers. COMPLETED is an
@@ -337,8 +357,8 @@ export class AgentManager {
         return Number.isFinite(now) ? now : Date.now();
     }
 
-    _upsertAgent(session, teamMembers, gitEventWire = null) {
-        const payload = this._sessionToAgentPayload(session, teamMembers, gitEventWire);
+    _upsertAgent(session, teamMembers, gitEventWire = null, collisions = []) {
+        const payload = this._sessionToAgentPayload(session, teamMembers, gitEventWire, collisions);
         this._noteVerifiedGitOutcomes(session, payload.gitEvents);
         const { id } = payload;
         const signature = this._agentSignature(payload);
@@ -447,7 +467,7 @@ export class AgentManager {
         }
     }
 
-    _sessionToAgentPayload(session, teamMembers, gitEventWire = null) {
+    _sessionToAgentPayload(session, teamMembers, gitEventWire = null, collisions = []) {
         const id = session.sessionId;
         const teamInfo = teamMembers ? teamMembers.get(session.agentId) : null;
         const agentName = teamInfo?.name || session.name || session.agentName || session.nickname || null;
@@ -476,6 +496,12 @@ export class AgentManager {
             role: teamInfo?.agentType || session.agentType || 'general',
             teamName,
             tokens: session.tokenUsage || session.tokens || session.usage || null,
+            estimatedCost: session.estimatedCost !== null
+                && session.estimatedCost !== undefined
+                && Number.isFinite(Number(session.estimatedCost))
+                ? Number(session.estimatedCost)
+                : null,
+            cost: session.cost && typeof session.cost === 'object' ? { ...session.cost } : null,
             currentTool: hasFreshTool ? session.lastTool : null,
             currentToolInput: hasFreshTool ? session.lastToolInput || null : null,
             lastTool: session.lastTool || null,
@@ -484,8 +510,32 @@ export class AgentManager {
             permissionMode: session.permissionMode ?? null,
             turnState: session.turnState ?? 'unknown',
             pendingTool: session.pendingTool ?? null,
+            pendingSince: session.pendingSince !== null
+                && session.pendingSince !== undefined
+                && Number.isFinite(Number(session.pendingSince))
+                ? Number(session.pendingSince)
+                : null,
             waitReason: session.waitReason ?? null,
-            awaitingSince: Number.isFinite(Number(session.awaitingSince)) ? Number(session.awaitingSince) : null,
+            awaitingSince: session.awaitingSince !== null
+                && session.awaitingSince !== undefined
+                && Number.isFinite(Number(session.awaitingSince))
+                ? Number(session.awaitingSince)
+                : null,
+            turnStartedAt: session.turnStartedAt !== null
+                && session.turnStartedAt !== undefined
+                && Number.isFinite(Number(session.turnStartedAt))
+                ? Number(session.turnStartedAt)
+                : null,
+            lastTurnDurationMs: session.lastTurnDurationMs !== null
+                && session.lastTurnDurationMs !== undefined
+                && Number.isFinite(Number(session.lastTurnDurationMs))
+                ? Math.max(0, Number(session.lastTurnDurationMs))
+                : null,
+            signalSource: session.signalSource === 'hook' || session.signalSource === 'transcript'
+                ? session.signalSource
+                : null,
+            workingSet: Array.isArray(session.workingSet) ? session.workingSet.slice(0, 16) : [],
+            collisions: Array.isArray(collisions) ? collisions : [],
             resident: session.resident === true,
             sendMessages: Array.isArray(session.sendMessages) ? session.sendMessages : [],
             lastSessionActivity,
@@ -499,6 +549,20 @@ export class AgentManager {
             projectPath: session.project || null,
             provider: session.provider || 'claude',
         };
+    }
+
+    _collisionsByAgent(collisions) {
+        const byAgent = new Map();
+        for (const collision of Array.isArray(collisions) ? collisions : []) {
+            if (!collision || !Array.isArray(collision.agents)) continue;
+            for (const id of collision.agents) {
+                const key = String(id || '');
+                if (!key) continue;
+                if (!byAgent.has(key)) byAgent.set(key, []);
+                byAgent.get(key).push(collision);
+            }
+        }
+        return byAgent;
     }
 
     _gitEventWireFrom(primary, fallback = null) {

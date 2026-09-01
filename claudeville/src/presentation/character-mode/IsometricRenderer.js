@@ -5294,7 +5294,49 @@ export class IsometricRenderer {
                 representative.bubbleMergedCount++;
                 sprite.bubbleMergedInto = representative;
             }
+            this._foldRoutineClusterNames(cluster);
         }
+    }
+
+    // F5 — under annotation pressure, a slot-0 crowd delegates routine
+    // identities to the occupancy chip on the building they are visiting.
+    // Primary and recent agents remain named; selection/hover therefore also
+    // expands an individual immediately. Calm (`full`) scenes keep every name.
+    _foldRoutineClusterNames(cluster) {
+        if (!this._annotationMode || this._annotationMode === 'full' || cluster.members.length <= 5) return;
+        for (const sprite of cluster.members) {
+            if (!this._isRoutineFoldCandidate(sprite)) continue;
+            const buildingType = sprite._foldBuildingType;
+            if (!buildingType) continue;
+            let building = null;
+            for (const candidate of this.buildingRenderer?.buildings || []) {
+                if (candidate.type !== buildingType) continue;
+                building = candidate;
+                break;
+            }
+            const occupancy = building
+                ? this.buildingRenderer?._buildingOccupancyInfo?.(building)
+                : null;
+            if (!occupancy || occupancy.count <= 0) continue;
+            sprite.foldedIntoBuilding = true;
+            sprite.overlaySlot = null;
+            sprite.nameTagSlot = null;
+            // Canvas labels are invoked from AgentSprite even without a slot;
+            // zero alpha suppresses that fallback. The GPU overlay admits
+            // routine labels only when a slot survives.
+            sprite.labelAlpha = 0;
+        }
+    }
+
+    _isRoutineFoldCandidate(sprite) {
+        if (!sprite || sprite.selected || sprite.hovered) return false;
+        const status = sprite.agent?.status;
+        if ([AgentStatus.WAITING_ON_USER, AgentStatus.ERRORED, AgentStatus.RATE_LIMITED].includes(status)) {
+            return false;
+        }
+        const spawnAge = performance.now() - (sprite.addedAt || 0);
+        if (spawnAge >= 0 && spawnAge < 12000) return false;
+        return true;
     }
 
     // Merge identity = the head line the bubble will actually draw (same text,

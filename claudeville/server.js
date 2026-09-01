@@ -31,6 +31,7 @@ const {
 // ─── Usage quota service ──────────────────────────────
 const usageQuota = require('./services/usageQuota');
 const { SessionResidency } = require('./services/sessionResidency');
+const { detectCollisions } = require('./services/workingSet');
 
 // Claude adapter (teams/tasks are Claude-only)
 const claudeAdapter = adapters.find(a => a.provider === 'claude');
@@ -392,7 +393,11 @@ function handleGetSessions(req, res, parsedUrl) {
         { coalesce: false },
       );
     }
-    const collectedSessions = collectSessionsForClients({ force, allowStale: !force, reason: 'api' });
+    const { sessions: collectedSessions, collisions } = collectSessionsForClients({
+      force,
+      allowStale: !force,
+      reason: 'api',
+    });
     const compacted = compactGitEventsForWire(collectedSessions);
     const { sessions } = compacted;
     const scanning = sessionScanRunning
@@ -402,6 +407,7 @@ function handleGetSessions(req, res, parsedUrl) {
       gitEventFields: compacted.gitEventFields,
       gitEventStringTables: compacted.gitEventStringTables,
       gitEventsById: compacted.gitEventsById,
+      collisions,
       count: sessions.length,
       scanning,
       staleAt: scanning ? sessionSnapshotStaleAt : null,
@@ -1120,14 +1126,17 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
     let state = lastBroadcastState;
     let seq = broadcastSeq;
     if (!state || forceFresh) {
-      const compacted = compactGitEventsForWire(
-        collectSessionsForClients({ force: true, reason: forceFresh ? 'ws-resync' : 'ws-init' }),
-      );
+      const clientSnapshot = collectSessionsForClients({
+        force: true,
+        reason: forceFresh ? 'ws-resync' : 'ws-init',
+      });
+      const compacted = compactGitEventsForWire(clientSnapshot.sessions);
       state = {
         sessions: compacted.sessions,
         gitEventFields: compacted.gitEventFields,
         gitEventStringTables: compacted.gitEventStringTables,
         gitEventsById: compacted.gitEventsById,
+        collisions: clientSnapshot.collisions,
         teams: getTeamsCached({ force: true }),
         usage: usageQuota.fetchUsage(),
       };
@@ -1151,6 +1160,7 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
       gitEventFields: state.gitEventFields,
       gitEventStringTables: state.gitEventStringTables,
       gitEventsById: state.gitEventsById,
+      collisions: state.collisions,
       teams: state.teams,
       usage: state.usage,
       seq,
@@ -1424,11 +1434,13 @@ function collectSessionSnapshot({ force = false, reason = 'collection' } = {}) {
     const live = getAllSessions(ACTIVE_THRESHOLD_MS, { force });
     updateCanonicalActiveProjects(live);
     const sessions = sessionResidency.merge(live);
+    const collisions = detectCollisions(sessions);
     lastSessionScanDurationMs = Date.now() - startedAt;
     sessionCollectionSnapshot = {
       generation,
       live,
       sessions,
+      collisions,
       collectedAt: Date.now(),
       elapsed: lastSessionScanDurationMs,
       reason,
@@ -1452,9 +1464,14 @@ function collectSessionSnapshot({ force = false, reason = 'collection' } = {}) {
 // the watcher footprint.
 function collectSessionsForClients({ force = false, allowStale = false, reason = 'client' } = {}) {
   const snapshot = collectSessionSnapshot({ force, reason });
-  if (snapshot) return snapshot.sessions;
-  if (allowStale && sessionCollectionSnapshot) return sessionCollectionSnapshot.sessions;
-  return [];
+  if (snapshot) return { sessions: snapshot.sessions, collisions: snapshot.collisions };
+  if (allowStale && sessionCollectionSnapshot) {
+    return {
+      sessions: sessionCollectionSnapshot.sessions,
+      collisions: sessionCollectionSnapshot.collisions,
+    };
+  }
+  return { sessions: [], collisions: [] };
 }
 
 function getTeamsCached({ force = false } = {}) {
@@ -1541,6 +1558,7 @@ function collectBroadcastPayload({ force = false } = {}) {
     gitEventFields: compacted.gitEventFields,
     gitEventStringTables: compacted.gitEventStringTables,
     gitEventsById: compacted.gitEventsById,
+    collisions: sessionSnapshot.collisions,
     teams: stage('teams', () => getTeamsCached({ force })),
     usage: stage('usage', () => usageQuota.fetchUsage()),
     scanning: false,
@@ -1574,6 +1592,7 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
         gitEventFields: payload.gitEventFields,
         gitEventStringTables: payload.gitEventStringTables,
         gitEventsById: payload.gitEventsById,
+        collisions: payload.collisions,
         teams: payload.teams,
         usage: payload.usage,
       });
@@ -1601,6 +1620,7 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
       gitEventFields: payload.gitEventFields,
       gitEventStringTables: payload.gitEventStringTables,
       gitEventsById: payload.gitEventsById,
+      collisions: payload.collisions,
       teams: payload.teams,
       usage: payload.usage,
     };

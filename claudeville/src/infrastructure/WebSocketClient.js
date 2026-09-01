@@ -85,7 +85,8 @@ export class WebSocketClient {
         });
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.url = `${protocol}//${window.location.host}/ws`;
-        // Delta protocol state: last full {sessions, teams, usage} snapshot
+        // Delta protocol state: last full {sessions, collisions, teams, usage}
+        // snapshot
         // and its server sequence number. Old servers never send deltas, so
         // these simply stay unused against a full-payload-only server.
         this._state = null;
@@ -233,6 +234,7 @@ export class WebSocketClient {
             gitEventsById: data.gitEventsById && typeof data.gitEventsById === 'object'
                 ? data.gitEventsById
                 : {},
+            collisions: Array.isArray(data.collisions) ? data.collisions : [],
             teams: Array.isArray(data.teams) ? data.teams : [],
             usage: data.usage ?? null,
         };
@@ -295,6 +297,7 @@ export class WebSocketClient {
             gitEventFields: next.gitEventFields,
             gitEventStringTables: next.gitEventStringTables,
             gitEventsById: next.gitEventsById,
+            collisions: next.collisions,
             teams: next.teams,
             usage: next.usage,
             timestamp: data.timestamp,

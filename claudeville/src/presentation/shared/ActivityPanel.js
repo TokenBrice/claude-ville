@@ -6,7 +6,20 @@ import { SESSION_DETAIL_PANEL_REFRESH_INTERVAL } from '../../config/constants.js
 import { BUILDING_DEFS, normalizeBuildingType } from '../../config/buildings.js';
 import { dialogueShape, dialogueSourceLabel } from '../../config/dialogue.js';
 import { el, replaceChildren } from './DomSafe.js';
-import { formatCdCommand, formatCost, formatRelative, formatTokens, formatToolDetail, hashRows, shortenHomePath, truncateText } from './Formatters.js';
+import {
+    collisionsForAgent,
+    formatCdCommand,
+    formatCost,
+    formatRelative,
+    formatStatusElapsed,
+    formatTokens,
+    formatToolDetail,
+    hashRows,
+    shortenHomePath,
+    subscribeElapsedText,
+    truncateText,
+    workingSetForAgent,
+} from './Formatters.js';
 import { emitAgentDeselected, emitAgentSelected } from './AgentSelection.js';
 import { Toast } from './Toast.js';
 import {
@@ -376,6 +389,19 @@ export class ActivityPanel {
         this.dom.panelAgentName?.setAttribute('role', 'heading');
         this.dom.panelAgentName?.setAttribute('aria-level', '2');
         if (this.dom.panelAgentName) this.dom.panelAgentName.tabIndex = -1;
+        this._statusElapsedEl = el('span', {
+            className: 'activity-panel__value',
+            style: { marginLeft: '0.5rem' },
+        });
+        this.dom.panelAgentStatus?.parentNode?.insertBefore(
+            this._statusElapsedEl,
+            this.dom.panelAgentStatus.nextSibling,
+        );
+        this._elapsedUnsubscribe = subscribeElapsedText(this._statusElapsedEl, () => (
+            this._mode === 'agent' && this.currentAgent
+                ? formatStatusElapsed(this.currentAgent)
+                : ''
+        ));
         this._toolEls = {
             icon: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-icon'),
             name: this.dom.panelCurrentTool.querySelector('.activity-panel__tool-name'),
@@ -415,6 +441,7 @@ export class ActivityPanel {
         this._ensurePinCompare();
         this._ensureWorkingDirectoryAction();
         this._ensureJourneySection();
+        this._ensureWorkingSetSection();
         this._ensureNarrationSection();
         this._ensureHarborLogSection();
         this._ensureChronicleSection();
@@ -483,6 +510,7 @@ export class ActivityPanel {
                 this._renderNarration(agent);
                 this._updateInfo(agent);
                 this._updateCurrentTool(agent);
+                this._updateWorkingSet(agent);
                 this._updateJourney(agent);
                 this._updateHarborLog(agent);
                 this._updateMessageEdges(agent);
@@ -651,6 +679,7 @@ export class ActivityPanel {
             narration: '',
             relationships: '',
             messageEdges: '',
+            workingSet: '',
             pins: '',
             buildingSignal: '',
             buildingOccupants: '',
@@ -962,6 +991,7 @@ export class ActivityPanel {
         this._mountHeroPortrait(agent);
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
+        this._updateWorkingSet(agent);
         this._updateJourney(agent);
         this._updateHarborLog(agent);
         this._updateMessageEdges(agent);
@@ -1166,6 +1196,59 @@ export class ActivityPanel {
         iconEl.textContent = tool.icon;
         nameEl.textContent = tool.name;
         inputEl.textContent = tool.detail;
+    }
+
+    _ensureWorkingSetSection() {
+        if (this._workingSetSectionEl && this._workingSetBodyEl) return;
+        const body = el('div', { className: 'activity-panel__token-usage' });
+        const section = el('div', { className: 'activity-panel__section' }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Working set' }),
+            body,
+        ]);
+        this._insertAgentSectionAfterMeta(section);
+        this._workingSetSectionEl = section;
+        this._workingSetBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    _updateWorkingSet(agent) {
+        if (!this._workingSetSectionEl || !this._workingSetBodyEl) return;
+        const workingSet = workingSetForAgent(agent);
+        const collisions = collisionsForAgent(agent);
+        const signature = JSON.stringify([workingSet, collisions]);
+        if (signature === this._renderSignatures.workingSet) return;
+        this._renderSignatures.workingSet = signature;
+
+        const rows = workingSet.length
+            ? workingSet.map(item => el('div', {
+                className: 'activity-panel__tool-item',
+                title: item.path,
+            }, [
+                el('span', {
+                    className: 'activity-panel__tool-item-name',
+                    text: String(item.op).toUpperCase(),
+                }),
+                el('span', {
+                    className: 'activity-panel__tool-item-detail',
+                    text: item.path,
+                }),
+            ]))
+            : [this._emptyState('no file activity recorded')];
+        for (const collision of collisions) {
+            const others = collision.agents
+                .filter(id => String(id) !== String(agent.id))
+                .map(id => this._getWorld()?.agents?.get?.(String(id))?.name || String(id));
+            rows.push(el('div', {
+                className: 'activity-panel__tool-item',
+                text: `OVERLAP: ${collision.path} with ${others.join(', ')}`,
+                style: {
+                    color: collision.kind === 'write-write'
+                        ? 'var(--cv-status-errored, #e06c5b)'
+                        : 'var(--cv-text-muted, #8b8b9e)',
+                },
+            }));
+        }
+        replaceChildren(this._workingSetBodyEl, rows);
     }
 
     // ─── Live polling ────────────────────────────────
@@ -3562,6 +3645,8 @@ export class ActivityPanel {
         this._stopPanelKeyboardHandling();
         this._teardownHeroPortrait();
         this._teardownBuildingView();
+        this._elapsedUnsubscribe?.();
+        this._elapsedUnsubscribe = null;
         if (this.panelEl) this.panelEl.style.display = 'none';
         document.body.classList.remove('cv-panel-open');
         this.currentAgent = null;
@@ -3595,6 +3680,8 @@ export class ActivityPanel {
             this._pinStripEl,
             this._pinToggleBtn,
             this._workingDirectoryRowEl,
+            this._statusElapsedEl,
+            this._workingSetSectionEl,
             this._journeySectionEl,
             this._harborLogSectionEl,
             this._chronicleSectionEl,

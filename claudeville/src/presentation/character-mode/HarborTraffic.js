@@ -13,6 +13,7 @@ import {
     shortGitLabel,
 } from '../shared/GitEventIdentity.js';
 import { tileToWorld, worldToTile } from './Projection.js';
+import { WILDLIFE_SCENE_CATEGORY } from './WildlifeRenderer.js';
 
 export { normalizeGitEvent } from '../shared/GitEventIdentity.js';
 
@@ -175,18 +176,30 @@ const MAX_REPO_ANCHORAGES = REPO_ANCHORAGE_SLOTS.length;
 const REPO_ANCHORAGE_ACTIVE_MS = 5 * 60 * 1000;
 
 // Harbor traffic is intentionally overlay-safe: its routes stay in open water
-// and never require agent/building depth interleaving. It emits no neutral scene
-// commands yet, so command-driven backends must apply that explicit policy.
+// and never require agent/building depth interleaving. Wildlife and waterfalls
+// share the same resolved category so the existing registry can replay every
+// water/air detail above the direct GPU island without adding a renderer pass.
+const OVERLAY_SAFE_SCENE_ITEMS = [];
 export const HARBOR_TRAFFIC_SCENE_CATEGORY = Object.freeze({
     id: 'harbor-traffic',
     sortBand: 40,
     enumerate({ renderer } = {}) {
-        return renderer?.harborTraffic?.enumerateDrawables?.() ?? [];
+        const items = OVERLAY_SAFE_SCENE_ITEMS;
+        items.length = 0;
+        const wildlifeItems = WILDLIFE_SCENE_CATEGORY.enumerate({ renderer });
+        for (let index = 0; index < wildlifeItems.length; index++) items.push(wildlifeItems[index]);
+        const harborItems = renderer?.harborTraffic?.enumerateDrawables?.() ?? [];
+        for (let index = 0; index < harborItems.length; index++) items.push(harborItems[index]);
+        return items;
     },
     emitSceneCommands() {
         return null;
     },
     canvasFallback(ctx, drawable, zoom, context = {}) {
+        if (drawable?.sourceCategory === WILDLIFE_SCENE_CATEGORY.id) {
+            WILDLIFE_SCENE_CATEGORY.canvasFallback(ctx, drawable, zoom, context);
+            return;
+        }
         const harborTraffic = context.renderer?.harborTraffic || context.harborTraffic;
         harborTraffic?.draw?.(ctx, drawable, zoom);
     },

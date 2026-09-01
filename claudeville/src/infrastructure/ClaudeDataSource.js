@@ -65,6 +65,7 @@ export class ClaudeDataSource {
                     'gitEventFields',
                     'gitEventStringTables',
                     'gitEventsById',
+                    'collisions',
                 ]) {
                     Object.defineProperty(sessions, field, {
                         value: data[field] || null,

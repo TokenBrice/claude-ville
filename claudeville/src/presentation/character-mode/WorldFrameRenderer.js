@@ -494,6 +494,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.camera.applyTransform(ctx);
     renderer._drawDistantSeaHorizon(ctx, atmosphere);
     markFrameTiming(frameTimer, 'horizon');
+    renderer._gpuHazeStrength = 0;
     if (!gpuWorldActive) {
         renderer._drawTerrain(
             ctx,
@@ -506,6 +507,11 @@ export function renderWorldFrame(renderer, dt = 16) {
         // ahead of agents and buildings. The ten wisps are the crest of this
         // field, not the whole effect.
         drawGroundFog(renderer, ctx, atmosphere, perfNow);
+    } else {
+        const pressure = sampleFramePressure();
+        const plan = hazePlanForPressure(pressure.level, renderer.motionScale ?? 1);
+        renderer._gpuHazeStrength = groundFogStrength(renderer, atmosphere) * plan.density;
+        if (renderer._gpuHazeStrength > 0.02) ensureHazeField(renderer, atmosphere, plan);
     }
     markFrameTiming(frameTimer, 'ground-atmosphere');
     // [0.6] Draw-order: the canopy pass now also carries the hero sky rewards
@@ -515,11 +521,9 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer._drawSkyCanopy(ctx, atmosphere, dt, renderer.motionScale);
     renderer.camera.applyTransform(ctx);
     markFrameTiming(frameTimer, 'sky-canopy');
-    renderer._drawFishSchools(ctx);
-    renderer._drawWaterfowl(ctx);
-    renderer._drawTropicalWaterfalls(ctx);
-    renderer._drawOpenSeaGulls(ctx);
-    renderer._drawLandBirds(ctx);
+    // Wildlife and waterfalls now enter through the harbor's overlay-safe
+    // scene category. Canvas draws them in the depth stream; direct GPU replays
+    // the same category above its opaque island.
     markFrameTiming(frameTimer, 'fauna');
     if (!gpuWorldActive) renderer.trailRenderer?.draw?.(ctx, renderer.camera, viewport, renderNow);
     markFrameTiming(frameTimer, 'trails');
@@ -640,6 +644,8 @@ export function renderWorldFrame(renderer, dt = 16) {
     drawableContext.agentRenderMode = agentRenderMode;
     drawableContext.gpuWorldActive = gpuWorldActive;
     drawDepthSortedDrawables(ctx, drawables, drawableContext);
+    // Direct GPU carries wetness in the material shader; the discrete Canvas
+    // damp-mark decoration remains fallback-only and is documented as such.
     if (!gpuWorldActive) renderer._drawSurfaceWetnessMarks?.(ctx, 'roofs');
     markFrameTiming(frameTimer, 'drawables');
     drawTalkArcs(ctx, {
@@ -747,6 +753,7 @@ export function renderWorldFrame(renderer, dt = 16) {
     renderer.buildingRenderer?.drawBubbles(overlayCtx, renderer.world);
     renderer.buildingRenderer?.drawLabels(overlayCtx, {
         zoom,
+        scaleMode: 'screen-fixed',
         occupiedBoxes: renderer._collectAgentLabelHitRects(sortedSprites),
         harborPendingRepos,
     });

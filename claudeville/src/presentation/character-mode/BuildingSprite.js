@@ -688,7 +688,13 @@ export class BuildingSprite {
     // icon glyph so similar-looking sprites stay distinguishable. Drawn as a top overlay
     // (called from IsometricRenderer._render after drawBubbles) so labels stay readable
     // regardless of depth-sort occlusion.
-    drawLabels(ctx, { zoom = 1, occupiedBoxes = [], harborPendingRepos = [] } = {}) {
+    drawLabels(ctx, {
+        zoom = 1,
+        occupiedBoxes = [],
+        harborPendingRepos = [],
+        scaleMode = 'screen-fixed',
+    } = {}) {
+        const labelScale = 1 / Math.max(0.01, zoom);
         const occupied = [];
         const normalizedOccupiedBoxes = this._normalizeBoxes(occupiedBoxes);
         const harborLedgerRows = this._harborLedgerRows(harborPendingRepos);
@@ -741,6 +747,7 @@ export class BuildingSprite {
                     zoom,
                     isHovered,
                     isLandmark,
+                    scaleMode,
                 });
                 let displaySubText = '';
                 let displaySubRows = [];
@@ -755,6 +762,7 @@ export class BuildingSprite {
                             zoom,
                             isHovered,
                             isLandmark,
+                            scaleMode,
                         });
                         subTw = Math.max(subTw, subMetrics.width);
                         return { ...row, label: subMetrics.displayText };
@@ -768,6 +776,7 @@ export class BuildingSprite {
                         zoom,
                         isHovered,
                         isLandmark,
+                        scaleMode,
                     });
                     displaySubText = subMetrics.displayText;
                     subTw = subMetrics.width;
@@ -781,8 +790,8 @@ export class BuildingSprite {
                     occupiedExternal: blocksAgentRectangles ? normalizedOccupiedBoxes : [],
                     centerX: baseX,
                     centerY: baseY,
-                    tagW,
-                    tagH,
+                    tagW: tagW * labelScale,
+                    tagH: tagH * labelScale,
                     isLandmark,
                     maxOverlap: attempt.overlapTolerance,
                     localLabelDensity,
@@ -849,6 +858,15 @@ export class BuildingSprite {
             const labelAlpha = degraded ? 0.52 : 1;
             const glowAlpha = degraded ? 0.55 : (isHovered ? 1 : 0.92);
 
+            // F5 — plaques use the same screen-fixed scale policy as agent
+            // name tags. Layout remains in world space, while the tag itself
+            // counter-scales around its chosen anchor. The stalk is drawn
+            // after this restore so it remains world-space geometry.
+            ctx.save();
+            ctx.translate(bx, by);
+            ctx.scale(labelScale, labelScale);
+            ctx.translate(-bx, -by);
+
             // Banner shadow and landmark glow: deliberately map-like rather than debug UI.
             if (isHovered || isLandmark) {
                 ctx.fillStyle = isHovered
@@ -861,7 +879,6 @@ export class BuildingSprite {
 
             const notch = isHovered || isLandmark ? 6 : 4;
             const isHarborLedger = b.type === 'harbor' && (displaySubText || displaySubRows.length);
-            const poleTop = tagTop + tagH - 1;
             const poleBottom = Math.min(center.y - dims.h * 0.52, tagTop + tagH + (isHovered ? 18 : isLandmark ? 14 : 7));
 
             ctx.globalAlpha = isHovered ? 1 : degraded ? labelAlpha : isLandmark ? 0.96 : 0.78;
@@ -978,10 +995,18 @@ export class BuildingSprite {
             }
             ctx.restore();
 
+            // #14 — at low zoom, fold parked occupants into a status-tally chip
+            // tucked under the label so the busy-building pill-soup stays legible.
+            if (zoom < TALLY_FOLD_ZOOM) {
+                this._drawStatusTallyChip(ctx, b, bx, tagTop + tagH + 3);
+            }
+
+            ctx.restore();
+
             ctx.strokeStyle = isHovered ? 'rgba(255, 242, 197, 0.72)' : isLandmark ? 'rgba(242, 211, 107, 0.5)' : 'rgba(215, 185, 121, 0.26)';
             ctx.lineWidth = isHovered ? 2 : 1;
             ctx.beginPath();
-            ctx.moveTo(bx, poleTop);
+            ctx.moveTo(bx, by + (tagH / 2 - 1) * labelScale);
             ctx.lineTo(bx, poleBottom);
             ctx.stroke();
 
@@ -989,12 +1014,6 @@ export class BuildingSprite {
             ctx.beginPath();
             ctx.ellipse(bx, poleBottom + 1, isHovered ? 5 : 3, isHovered ? 2 : 1.5, 0, 0, Math.PI * 2);
             ctx.fill();
-
-            // #14 — at low zoom, fold parked occupants into a status-tally chip
-            // tucked under the label so the busy-building pill-soup stays legible.
-            if (zoom < TALLY_FOLD_ZOOM) {
-                this._drawStatusTallyChip(ctx, b, bx, tagTop + tagH + 3);
-            }
 
             ctx.restore();
         }
@@ -4405,9 +4424,17 @@ export class BuildingSprite {
             .join(' ');
     }
 
-    _labelMetrics(ctx, building, { text, labelFont, maxTextWidth, zoom, isHovered, isLandmark }) {
+    _labelMetrics(ctx, building, {
+        text,
+        labelFont,
+        maxTextWidth,
+        zoom,
+        isHovered,
+        isLandmark,
+        scaleMode = 'screen-fixed',
+    }) {
         const zoomBucket = zoom >= LABEL_DETAIL_ZOOM ? 'detail' : zoom >= LABEL_VISIBLE_ZOOM ? 'mid' : 'far';
-        const key = `${building.type}|${text}|${labelFont}|${maxTextWidth}|${zoomBucket}|${isHovered ? 1 : 0}|${isLandmark ? 1 : 0}`;
+        const key = `${building.type}|${text}|${labelFont}|${maxTextWidth}|${zoomBucket}|${scaleMode}|${isHovered ? 1 : 0}|${isLandmark ? 1 : 0}`;
         const cached = this._labelMetricsCache.get(key);
         if (cached) return cached;
 

@@ -6,7 +6,20 @@ import { sessionDetailsService } from '../shared/SessionDetailsService.js';
 import { SESSION_DETAIL_REFRESH_INTERVAL } from '../../config/constants.js';
 import { replaceChildren } from '../shared/DomSafe.js';
 import { TokenUsage } from '../../domain/value-objects/TokenUsage.js';
-import { formatCost, formatRelative, formatTokens, formatToolDetail, normalizeStatus, shortenHomePath, shortProjectName, truncateText } from '../shared/Formatters.js';
+import {
+    collisionsForAgent,
+    formatCost,
+    formatRelative,
+    formatStatusElapsed,
+    formatTokens,
+    formatToolDetail,
+    normalizeStatus,
+    shortenHomePath,
+    shortProjectName,
+    subscribeElapsedText,
+    truncateText,
+    workingSetForAgent,
+} from '../shared/Formatters.js';
 import { AgentSelectionMirror, emitAgentDeselected, emitAgentSelected } from '../shared/AgentSelection.js';
 import { operatorStatusLabel } from '../shared/SemanticTriage.js';
 import { getTeamColor, shortTeamName } from '../shared/TeamColor.js';
@@ -174,7 +187,10 @@ export class DashboardRenderer {
 
         this._onAgentAdded = () => { if (this.active) this.render(); };
         this._onAgentUpdated = (agent) => {
-            if (this.active) this._renderAgentUpdate(agent);
+            if (this.active) {
+                this._renderAgentUpdate(agent);
+                this._renderAttentionQueue(Array.from(this.world.agents.values()));
+            }
         };
         this._onAgentRemoved = (agent) => {
             this._removeCard(agent.id);
@@ -551,6 +567,7 @@ export class DashboardRenderer {
                 <div class="dash-card__status">
                     <span class="dash-card__status-dot"></span>
                     <span class="dash-card__status-label"></span>
+                    <span class="dash-card__status-elapsed"></span>
                 </div>
             </div>
             <div class="dash-card__activity">
@@ -562,6 +579,7 @@ export class DashboardRenderer {
                     </div>
                 </div>
                 <div class="dash-card__message"></div>
+                <div class="dash-card__working-set"></div>
             </div>
             <div class="dash-card__tools">
                 <div class="dash-card__tools-title">${i18n.t('toolHistory')}</div>
@@ -629,12 +647,14 @@ export class DashboardRenderer {
             providerBadge: card.querySelector('.dash-card__provider-badge'),
             status: card.querySelector('.dash-card__status'),
             statusLabel: card.querySelector('.dash-card__status-label'),
+            statusElapsed: card.querySelector('.dash-card__status-elapsed'),
             staleBadge: card.querySelector('.dash-card__stale-badge'),
             currentTool: card.querySelector('.dash-card__current-tool'),
             toolIcon: card.querySelector('.dash-card__tool-icon'),
             toolName: card.querySelector('.dash-card__tool-name'),
             toolDetail: card.querySelector('.dash-card__tool-detail'),
             message: card.querySelector('.dash-card__message'),
+            workingSet: card.querySelector('.dash-card__working-set'),
             tools: card.querySelector('.dash-card__tools'),
             toolList: card.querySelector('.dash-card__tool-list'),
             usage: card.querySelector('.dash-card__usage'),
@@ -642,6 +662,11 @@ export class DashboardRenderer {
             usageCost: card.querySelector('.dash-card__usage-cost'),
             buildingEmblem: card.querySelector('.dash-card__building-emblem'),
         };
+        card._elapsedUnsubscribe = subscribeElapsedText(card._elements.statusElapsed, () => {
+            const current = this.world.agents.get(card.dataset.agentId);
+            const text = current ? formatStatusElapsed(current) : '';
+            return text ? ` · ${text}` : '';
+        });
 
         return card;
     }
@@ -652,11 +677,19 @@ export class DashboardRenderer {
         const actionable = actionableAgents(buckets);
         const watchlist = buckets.watchlist;
         const queued = [...actionable, ...watchlist];
-        this.attentionEl.hidden = queued.length === 0;
-        if (!queued.length) { replaceChildren(this.attentionEl, []); return; }
+        const collisionMap = new Map();
+        for (const agent of agents) {
+            for (const collision of collisionsForAgent(agent)) {
+                collisionMap.set(`${collision.project}\u0000${collision.path}`, collision);
+            }
+        }
+        const collisions = [...collisionMap.values()];
+        const itemCount = queued.length + collisions.length;
+        this.attentionEl.hidden = itemCount === 0;
+        if (!itemCount) { replaceChildren(this.attentionEl, []); return; }
         const heading = document.createElement('div');
         heading.className = 'dashboard-attention__heading';
-        heading.textContent = `NEEDS YOU & WATCHLIST · ${queued.length}`;
+        heading.textContent = `NEEDS YOU, WATCHLIST & OVERLAPS · ${itemCount}`;
         const list = document.createElement('div');
         list.className = 'dashboard-attention__list';
         for (const agent of queued) {
@@ -668,6 +701,26 @@ export class DashboardRenderer {
             const queueLabel = isWatchlist ? 'Watchlist' : operatorStatusLabel(agent.status);
             button.textContent = `${queueLabel} · ${agent.name || agent.id} · ${shortProjectName(agent.projectPath || '')}`;
             button.addEventListener('click', () => emitAgentSelected(this.world.agents.get(agent.id)));
+            list.appendChild(button);
+        }
+        for (const collision of collisions) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = `dashboard-attention__item dashboard-attention__item--${collision.kind === 'write-write' ? 'errored' : 'watchlist'}`;
+            const names = collision.agents
+                .map(id => this.world.agents.get(String(id))?.name || String(id))
+                .join(', ');
+            button.textContent = `OVERLAP · ${collision.path} · ${names}`;
+            button.title = collision.kind === 'write-write'
+                ? 'Multiple agents are writing this file'
+                : 'One agent is writing a file another agent read';
+            if (collision.kind === 'read-write') button.style.opacity = '0.65';
+            button.addEventListener('click', () => {
+                const first = collision.agents
+                    .map(id => this.world.agents.get(String(id)))
+                    .find(Boolean);
+                if (first) emitAgentSelected(first);
+            });
             list.appendChild(button);
         }
         replaceChildren(this.attentionEl, [heading, list]);
@@ -787,6 +840,7 @@ export class DashboardRenderer {
 
         this._updateParentChip(cardEl, agent);
         this._updateActivityAge(cardEl, agent);
+        this._renderWorkingSet(cardEl, agent);
 
         const appearance = agent.appearance || {};
         const avatarSignature = [
@@ -818,6 +872,49 @@ export class DashboardRenderer {
         this._renderUsageFooter(cardEl, this.usageFooters.get(agent.id));
 
         this._updateStaleBadge(cardEl, agent);
+    }
+
+    _renderWorkingSet(cardEl, agent) {
+        const container = cardEl._elements?.workingSet;
+        if (!container) return;
+        const workingSet = workingSetForAgent(agent);
+        const collisions = collisionsForAgent(agent);
+        const signature = JSON.stringify([workingSet, collisions]);
+        if (container._workingSetSignature === signature) return;
+        container._workingSetSignature = signature;
+
+        const title = document.createElement('div');
+        title.className = 'dash-card__tools-title';
+        title.textContent = 'WORKING SET';
+        const rows = document.createElement('div');
+        rows.className = 'dash-card__tool-list';
+        if (!workingSet.length) {
+            const empty = document.createElement('div');
+            empty.className = 'dash-card__tool-detail';
+            empty.textContent = 'no file activity recorded';
+            rows.appendChild(empty);
+        } else {
+            for (const item of workingSet) {
+                const row = document.createElement('div');
+                row.className = 'dash-card__tool-detail';
+                row.textContent = `${String(item.op).toUpperCase()} · ${item.path}`;
+                row.title = item.path;
+                rows.appendChild(row);
+            }
+        }
+        for (const collision of collisions) {
+            const others = collision.agents
+                .filter(id => String(id) !== String(agent.id))
+                .map(id => this.world.agents.get(String(id))?.name || String(id));
+            const row = document.createElement('div');
+            row.className = 'dash-card__tool-detail';
+            row.textContent = `OVERLAP: ${collision.path} with ${others.join(', ')}`;
+            row.style.color = collision.kind === 'write-write'
+                ? 'var(--cv-status-errored, #e06c5b)'
+                : 'var(--cv-text-muted, #8b8b9e)';
+            rows.appendChild(row);
+        }
+        replaceChildren(container, [title, rows]);
     }
 
     _updateParentChip(cardEl, agent) {
@@ -1173,6 +1270,8 @@ export class DashboardRenderer {
             this._observer?.unobserve?.(cardEl);
             this._pendingAvatarDraws.delete(cardEl);
             if (cardEl._parentFlashTimer) clearTimeout(cardEl._parentFlashTimer);
+            cardEl._elapsedUnsubscribe?.();
+            cardEl._elapsedUnsubscribe = null;
             cardEl._avatarCanvas?.destroy?.();
             cardEl._avatarCanvas = null;
             cardEl.remove();

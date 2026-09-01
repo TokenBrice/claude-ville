@@ -50,24 +50,24 @@
     --cv-status-idle: #86bfe0;
     --cv-status-waiting: #df8c3f;
     --cv-status-rate-limited: #8fa6bd;
-    --cv-status-errored: #ef4444;
-    --cv-status-waiting-user: #facc15;
+    --cv-status-errored: #e06c5b;
+    --cv-status-waiting-user: #e8d44d;
     --cv-status-chatting: #f2d36b;
     --cv-status-completed: #ffd873;
 
     /* Tool category colors (tool history items) */
-    --cv-tool-read: #60a5fa;
-    --cv-tool-write: #f59e0b;
-    --cv-tool-exec: #ef4444;
-    --cv-tool-search: #a78bfa;
-    --cv-tool-task: #34d399;
+    --cv-tool-read: #7eb7d6;
+    --cv-tool-write: #d8843a;
+    --cv-tool-exec: #e06c5b;
+    --cv-tool-search: #b79ae6;
+    --cv-tool-task: #72d071;
     --cv-tool-other: #a89476;
 
     /* Accents */
     --cv-green-soft: #72d071;
     --cv-blue-soft: #7eb7d6;
-    --cv-purple: #c084fc;
-    --cv-warn-yellow: #eab308;
+    --cv-purple: #b79ae6;
+    --cv-warn-yellow: #e8d44d;
     --cv-amber-deep: #d8843a;
 
     /* ─── Type system (two-face: pixel display + legible companion) ─── */

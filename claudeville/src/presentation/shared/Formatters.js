@@ -9,6 +9,9 @@ const RELATIVE_TIME_THRESHOLDS = [
     [24 * 60 * 60_000, (ms) => `${Math.floor(ms / (60 * 60_000))}h ago`],
     [7 * 24 * 60 * 60_000, (ms) => `${Math.floor(ms / (24 * 60 * 60_000))}d ago`],
 ];
+const ELAPSED_PATCH_INTERVAL_MS = 1000;
+const elapsedTargets = new Set();
+let elapsedTimer = null;
 
 export function hashRows(rows, fields) {
     let hash = 2166136261;
@@ -66,6 +69,84 @@ export function formatRelative(ts, now = Date.now()) {
         if (ms < bound) return typeof fmt === 'function' ? fmt(ms) : fmt;
     }
     return `${Math.floor(ms / (7 * 24 * 60 * 60_000))}w ago`;
+}
+
+export function formatElapsed(ms) {
+    const elapsed = Math.max(0, Math.floor(Number(ms) || 0));
+    const seconds = Math.floor(elapsed / 1000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remainingSeconds = seconds % 60;
+    if (minutes < 60) return remainingSeconds ? `${minutes}m${remainingSeconds}s` : `${minutes}m`;
+    const hours = Math.floor(minutes / 60);
+    const remainingMinutes = minutes % 60;
+    if (hours < 24) return remainingMinutes ? `${hours}h${remainingMinutes}m` : `${hours}h`;
+    const days = Math.floor(hours / 24);
+    const remainingHours = hours % 24;
+    return remainingHours ? `${days}d${remainingHours}h` : `${days}d`;
+}
+
+export function workingSetForAgent(agent) {
+    return Array.isArray(agent?.workingSet) ? agent.workingSet.slice(0, 16) : [];
+}
+
+export function collisionsForAgent(agent) {
+    return Array.isArray(agent?.collisions) ? agent.collisions : [];
+}
+
+export function formatStatusElapsed(agent, now = Date.now()) {
+    const since = Number(agent?.statusSince);
+    if (!Number.isFinite(since) || since <= 0) return '';
+    const elapsed = formatElapsed(Math.max(0, now - since));
+    const status = normalizeStatus(agent?.status);
+    const prefix = {
+        [AgentStatus.WORKING]: 'Working for',
+        [AgentStatus.WAITING_ON_USER]: 'Waiting on you for',
+        [AgentStatus.WAITING]: 'Waiting for',
+        [AgentStatus.RATE_LIMITED]: 'Rate limited for',
+        [AgentStatus.ERRORED]: 'Errored for',
+        [AgentStatus.COMPLETED]: 'Idle',
+        [AgentStatus.IDLE]: 'Idle',
+    }[status] || 'In state for';
+    return `${prefix} ${elapsed}`;
+}
+
+function patchElapsedTargets() {
+    const now = Date.now();
+    for (const target of [...elapsedTargets]) {
+        if (!target.node?.isConnected) {
+            elapsedTargets.delete(target);
+            continue;
+        }
+        const text = String(target.text(now) ?? '');
+        if (target.node.nodeType === 3) {
+            if (target.node.nodeValue !== text) target.node.nodeValue = text;
+        } else if (target.node.textContent !== text) {
+            target.node.textContent = text;
+        }
+    }
+    if (elapsedTargets.size === 0 && elapsedTimer !== null) {
+        clearInterval(elapsedTimer);
+        elapsedTimer = null;
+    }
+}
+
+/** Register an existing text node/element for the single shared 1 Hz patch. */
+export function subscribeElapsedText(node, text) {
+    if (!node || typeof text !== 'function') return () => {};
+    const target = { node, text };
+    elapsedTargets.add(target);
+    const initial = String(text(Date.now()) ?? '');
+    if (node.nodeType === 3) node.nodeValue = initial;
+    else node.textContent = initial;
+    if (elapsedTimer === null) elapsedTimer = setInterval(patchElapsedTargets, ELAPSED_PATCH_INTERVAL_MS);
+    return () => {
+        elapsedTargets.delete(target);
+        if (elapsedTargets.size === 0 && elapsedTimer !== null) {
+            clearInterval(elapsedTimer);
+            elapsedTimer = null;
+        }
+    };
 }
 
 export function formatCost(cost) {
