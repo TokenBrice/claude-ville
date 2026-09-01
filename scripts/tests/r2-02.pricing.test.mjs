@@ -85,9 +85,11 @@ test('server and browser estimates agree on cost provenance', () => {
 
 test('rate selection shape and session payload expose F1 provenance', () => {
   const selected = ratesForModel('claude-fable-5-1', 'claude');
-  assert.equal(selected.match, 'fable-5');
+  assert.equal(selected.match, 'fable-5-1');
   assert.equal(selected.isDefault, false);
   assert.equal(selected.rate.input, 10);
+  assert.equal(selected.rate.cacheRead, 0.25);
+  assert.equal(ratesForModel('claude-fable-5', 'claude').rate.cacheRead, 1);
 
   const session = decorateSessionPresentation({
     provider: 'claude',
@@ -96,9 +98,9 @@ test('rate selection shape and session payload expose F1 provenance', () => {
   });
   assert.equal(session.estimatedCost, session.cost.usd);
   assert.deepEqual(session.cost, {
-    usd: 15.875,
+    usd: 15.6875,
     source: 'estimate',
-    rateMatch: 'fable-5',
+    rateMatch: 'fable-5-1',
     rateRevision: pricing.revision,
     unknownModel: false,
   });

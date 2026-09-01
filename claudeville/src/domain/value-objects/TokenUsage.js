@@ -14,6 +14,8 @@ const DEFAULT_TOKEN_USAGE = {
 };
 
 const CLAUDE_RATES = [
+    { match: 'fable-5-1', input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
+    { match: 'mythos-5-1', input: 10, output: 50, cacheRead: 0.25, cacheCreate: 12.5 },
     { match: 'fable-5', input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
     { match: 'mythos-5', input: 10, output: 50, cacheRead: 1, cacheCreate: 12.5 },
     { match: 'opus-5', input: 5, output: 25, cacheRead: 0.5, cacheCreate: 6.25 },
