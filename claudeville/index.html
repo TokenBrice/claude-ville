@@ -200,14 +200,14 @@
                         <span id="panelRole" class="activity-panel__value"></span>
                     </div>
                     <div class="activity-panel__meta-row">
-                        <span class="activity-panel__label">LEVEL</span>
+                        <span class="activity-panel__label">EFFORT</span>
                         <span id="panelLevel" class="activity-panel__value"></span>
                     </div>
                     <div class="activity-panel__meta-row">
                         <span class="activity-panel__label" data-i18n="team">TEAM</span>
                         <span id="panelTeam" class="activity-panel__value"></span>
                     </div>
-                    <div class="activity-panel__meta-row">
+                    <div id="panelMoodRow" class="activity-panel__meta-row">
                         <span class="activity-panel__label">Mood</span>
                         <span id="panelMood" class="activity-panel__value">-</span>
                     </div>
@@ -220,8 +220,8 @@
                         <span id="panelMode" class="activity-panel__value"></span>
                     </div>
                 </div>
-                <div class="activity-panel__section">
-                    <div class="activity-panel__section-title">Token Usage</div>
+                <div class="activity-panel__section" data-section="cost-tokens">
+                    <div class="activity-panel__section-title">Cost &amp; Tokens</div>
                     <div id="panelTokenUsage" class="activity-panel__token-usage">
                         <div class="activity-panel__token-row">
                             <span class="activity-panel__token-label">Context</span>
@@ -248,7 +248,7 @@
                                 <span id="panelCacheCreate" class="activity-panel__token-cell-value">0</span>
                             </div>
                             <div class="activity-panel__token-cell">
-                                <span class="activity-panel__token-cell-label">Cache Hit</span>
+                                <span class="activity-panel__token-cell-label">Total</span>
                                 <span id="panelCacheHit" class="activity-panel__token-cell-value">-</span>
                             </div>
                             <div class="activity-panel__token-cell">
@@ -258,12 +258,12 @@
                         </div>
                         <div id="panelNoUsage" class="activity-panel__no-usage" hidden>No usage data</div>
                         <div id="panelCostRow" class="activity-panel__token-row">
-                            <span class="activity-panel__token-label">Est. Cost</span>
+                            <span id="panelCostLabel" class="activity-panel__token-label">Cost</span>
                             <span id="panelEstCost" class="activity-panel__token-value activity-panel__token-value--cost">$0.00</span>
                         </div>
                     </div>
                 </div>
-                <div class="activity-panel__section">
+                <div class="activity-panel__section" data-section="current-tool">
                     <div class="activity-panel__section-title">Current Tool</div>
                     <div id="panelCurrentTool" class="activity-panel__current-tool">
                         <span class="activity-panel__tool-icon"></span>
@@ -273,11 +273,11 @@
                         </div>
                     </div>
                 </div>
-                <div class="activity-panel__section activity-panel__section--grow">
+                <div class="activity-panel__section activity-panel__section--grow" data-section="tool-history">
                     <div class="activity-panel__section-title">Tool History</div>
                     <div id="panelToolHistory" class="activity-panel__tool-history"></div>
                 </div>
-                <div class="activity-panel__section">
+                <div class="activity-panel__section" data-section="messages">
                     <div class="activity-panel__section-title">Messages</div>
                     <div id="panelMessages" class="activity-panel__messages"></div>
                 </div>

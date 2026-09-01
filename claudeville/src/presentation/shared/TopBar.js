@@ -2,6 +2,11 @@ import { eventBus } from '../../domain/events/DomainEvent.js';
 import { formatCost, formatNumber, shortProjectName } from './Formatters.js';
 import { el, replaceChildren } from './DomSafe.js';
 import {
+    installReducedMotionOverride,
+    readReducedMotionOverride,
+    SettingsPanel,
+} from './SettingsPanel.js';
+import {
     initialVillageState,
     isStale,
     LinkState,
@@ -10,6 +15,7 @@ import {
 } from '../../application/VillageState.js';
 
 const SETTINGS_MODAL_OWNER = 'topbar-settings';
+const UNKNOWN_MODEL_DATE_KEY = 'claudeville.pricing.unknownModelDate';
 const AUDIO_LAYER_LEVELS_KEY = 'claudeville.sound.layers';
 const AUDIO_MIXER_DEFAULTS = Object.freeze({
     wind: 1,
@@ -110,6 +116,7 @@ export function resetPersistedSettings(storage = globalThis.window?.localStorage
 
 export class TopBar {
     constructor(world, { modal, attention, chronicle, spendLedger } = {}) {
+        this._motionOverride = installReducedMotionOverride();
         this.world = world;
         this.modal = modal || null;
         this.attention = attention || null;
@@ -140,8 +147,10 @@ export class TopBar {
         };
         this._usage = null;
         this.timeInterval = null;
-        this._fpsSamples = [];
-        this._fpsPanelEl = null;
+        this._lastFps = null;
+        this._settingsPanel = null;
+        this._hookSeenAtByProvider = new Map();
+        this._chronicleStatus = 'unknown';
         this._changelogHtml = null;
         this._changelogController = null;
         this._destroyed = false;
@@ -172,7 +181,10 @@ export class TopBar {
         this._initSpendBreakdown();
         this._initSettingsButton();
 
-        this._onUpdate = () => this.render();
+        this._onUpdate = (agent) => {
+            this._observeHookSignal(agent);
+            this.render();
+        };
         eventBus.on('agent:added', this._onUpdate);
         eventBus.on('agent:updated', this._onUpdate);
         eventBus.on('agent:removed', this._onUpdate);
@@ -191,6 +203,10 @@ export class TopBar {
         eventBus.on('ws:disconnected', this._onWsDisconnected);
         eventBus.on('ws:state', this._onWsState);
         eventBus.on('watcher:state', this._onWatcherState);
+        this._onChronicleStatus = (payload = {}) => {
+            this._chronicleStatus = String(payload.status || 'unknown');
+        };
+        eventBus.on('chronicle:status', this._onChronicleStatus);
         this._initConnectionInstrument();
 
         if (this.modal && this.els.version) {
@@ -206,14 +222,7 @@ export class TopBar {
             this.els.version.addEventListener('keydown', this._onVersionKeydown);
         }
 
-        // 4.12 — perf-health readout: hover the FPS chip for a rolling summary.
-        if (this.els.fps) {
-            this.els.fps.title = 'Render health — hover for details';
-            this._onFpsEnter = () => this._showFpsPanel();
-            this._onFpsLeave = () => this._hideFpsPanel();
-            this.els.fps.addEventListener('mouseenter', this._onFpsEnter);
-            this.els.fps.addEventListener('mouseleave', this._onFpsLeave);
-        }
+        if (this.els.fps) this.els.fps.hidden = true;
 
         this._startTimer();
         this.render();
@@ -305,14 +314,13 @@ export class TopBar {
         const anchor = document.getElementById('topbarWorldControls') || this.els.soundMode;
         if (!anchor?.parentElement) return;
         const button = el('button', {
-            className: 'topbar__sound-btn',
-            text: 'SET',
-            title: 'Review settings and reset defaults',
+            className: 'topbar__sound-btn topbar__icon-btn topbar__icon-btn--action',
+            title: 'Settings and health',
             ariaLabel: 'Open settings',
-            style: { padding: '6px 7px', letterSpacing: '0.5px' },
         });
         button.type = 'button';
         button.setAttribute('aria-haspopup', 'dialog');
+        button.appendChild(el('span', { className: 'topbar__settings-icon' }));
         this._onSettingsClick = () => this._openSettings();
         button.addEventListener('click', this._onSettingsClick);
         anchor.insertAdjacentElement('afterend', button);
@@ -330,98 +338,34 @@ export class TopBar {
     }
 
     _buildSettingsContent() {
-        const settings = readPersistedSettings();
-        const content = el('div', {
-            className: 'settings-panel',
-            style: { display: 'grid', gap: '14px' },
-        });
-        content.append(
-            this._settingsSection('SOUND', [
-                ['Sound', settings.soundEnabled ? 'On' : 'Off'],
-                ['Mode', settings.soundMode === 'bgm' ? 'Town music' : 'Reactive ambience'],
-                ['Master volume', `${Math.round(settings.soundVolume * 100)}%`],
-                ['Soundscape mix', Object.entries(settings.soundLayers)
-                    .map(([name, value]) => `${name} ${Math.round(value * 100)}%`)
-                    .join(' · ')],
-            ]),
-            this._settingsSection('WORLD & VIEW', [
-                ['Automatic camera', settings.autoCamera ? 'On' : 'Off'],
-                ['Current view', `${this._currentViewLabel()} · session only`],
-            ]),
-            this._settingsSection('ATTENTION', [
-                ['Desktop alerts', this.attention?.desktopAlertsAvailable
-                    ? (settings.desktopAlerts ? 'On' : 'Off')
-                    : 'Unavailable in this browser'],
-            ]),
-            this._settingsSection('LAYOUT', [
-                ['Agent sidebar', settings.sidebarCollapsed ? 'Collapsed' : 'Expanded'],
-            ]),
-        );
-
-        const actions = el('div', {
-            style: {
-                display: 'flex',
-                alignItems: 'center',
-                gap: '12px',
-                paddingTop: '12px',
-                borderTop: '1px solid var(--cv-border)',
-            },
-        });
-        const reset = el('button', {
-            className: 'topbar__sound-btn',
-            text: 'RESET TO DEFAULTS',
-            ariaLabel: 'Reset persisted settings to defaults',
-            style: { padding: '8px 10px' },
-        });
-        reset.type = 'button';
-        reset.addEventListener('click', () => this._resetSettings());
-        actions.append(reset, el('span', {
-            className: 'settings-panel__note',
-            text: 'Keeps session history, names, pins, and Chronicle data.',
-        }));
-        content.appendChild(actions);
-        return content;
-    }
-
-    _settingsSection(title, rows) {
-        const list = el('div', {
-            style: {
-                display: 'grid',
-                gridTemplateColumns: '150px minmax(0, 1fr)',
-                gap: '7px 14px',
-                padding: '10px 12px',
-                border: '1px solid var(--cv-border)',
-                background: 'rgba(0, 0, 0, 0.12)',
-            },
-        });
-        for (const [label, value] of rows) {
-            list.append(
-                el('span', {
-                    className: 'settings-panel__key',
-                    text: label,
-                }),
-                el('span', {
-                    className: 'settings-panel__value',
-                    text: value,
-                }),
-            );
-        }
-        return el('section', {}, [
-            el('div', {
-                className: 'settings-panel__heading',
-                text: title,
+        this._settingsPanel?.destroy();
+        this._settingsPanel = new SettingsPanel({
+            readSettings: () => ({
+                ...readPersistedSettings(),
+                reducedMotion: readReducedMotionOverride(),
             }),
-            list,
-        ]);
-    }
-
-    _currentViewLabel() {
-        return document.getElementById('btnModeDashboard')
-            ?.classList.contains('topbar__mode-btn--active') ? 'Dashboard' : 'World';
+            onSoundEnabled: (enabled) => this._setSoundEnabled(enabled),
+            onSoundMode: (mode) => this._setSoundMode(mode),
+            onSoundVolume: (volume) => this._setSoundVolume(volume),
+            onSoundLayer: (name, value) => this._setSoundLayer(name, value),
+            onAutoCamera: (enabled) => this._setAutoCamera(enabled),
+            onDesktopAlerts: (enabled) => this._setDesktopAlerts(enabled),
+            onSidebarCollapsed: (collapsed) => this._setSidebarCollapsed(collapsed),
+            onReducedMotion: (reduced) => this._setReducedMotion(reduced),
+            onReset: () => this._resetSettings(),
+            getVillageState: () => this._villageState,
+            getChronicleStatus: () => globalThis.window?.__chronicle?.status || this._chronicleStatus,
+            getCurrentFps: () => this._lastFps,
+            getHookFreshness: (provider, now) => this._hookFreshness(provider, now),
+            unknownModelSeenToday: () => this._unknownModelSeenToday(),
+            alertsAvailable: this.attention?.desktopAlertsAvailable === true,
+        });
+        return this._settingsPanel.build();
     }
 
     _resetSettings() {
         resetPersistedSettings();
+        this._setReducedMotion(false);
         this.audio?.setEnabled(false);
         this.audio?.setVolume(0.5);
         this.audio?.setMode('ambient');
@@ -437,10 +381,108 @@ export class TopBar {
         if (sidebar?.classList.contains('sidebar--collapsed')) {
             document.getElementById('sidebarToggle')?.click();
         }
-        if (this.modal?.isOpen(SETTINGS_MODAL_OWNER)) {
-            replaceChildren(this.modal.contentEl, [this._buildSettingsContent()]);
-            this.modal.closeBtn?.focus();
+        this._settingsPanel?.syncControls();
+    }
+
+    async _setSoundEnabled(enabled) {
+        try {
+            const audio = await this._ensureAudio();
+            audio?.setEnabled(Boolean(enabled));
+            return Boolean(audio?.enabled);
+        } catch (error) {
+            console.warn('[TopBar] Audio unavailable:', error.message);
+            this._renderDeferredAudioControl();
+            return false;
         }
+    }
+
+    async _setSoundMode(mode) {
+        try {
+            const audio = await this._ensureAudio();
+            audio?.setMode(mode);
+            return audio?.mode || 'ambient';
+        } catch (error) {
+            console.warn('[TopBar] Audio unavailable:', error.message);
+            return readPersistedSettings().soundMode;
+        }
+    }
+
+    async _setSoundVolume(volume) {
+        try {
+            const audio = await this._ensureAudio();
+            audio?.setVolume(volume);
+            return audio?.volume ?? 0.5;
+        } catch (error) {
+            console.warn('[TopBar] Audio unavailable:', error.message);
+            return readPersistedSettings().soundVolume;
+        }
+    }
+
+    async _setSoundLayer(name, value) {
+        try {
+            const audio = await this._ensureAudio();
+            audio?.setLayerLevel(name, value);
+            return audio?.layerLevels?.[name] ?? value;
+        } catch (error) {
+            console.warn('[TopBar] Audio unavailable:', error.message);
+            return readPersistedSettings().soundLayers[name];
+        }
+    }
+
+    _setAutoCamera(enabled) {
+        const next = Boolean(enabled);
+        const current = readPersistedSettings().autoCamera;
+        if (current !== next && this.els.cinemaToggle) this.els.cinemaToggle.click();
+        else if (current !== next) {
+            try { window.localStorage?.setItem('cv-auto-camera', next ? '1' : '0'); } catch { /* persistence is optional */ }
+            eventBus.emit('camera:auto-camera', { enabled: next });
+        }
+        return readPersistedSettings().autoCamera;
+    }
+
+    async _setDesktopAlerts(enabled) {
+        if (!this.attention?.desktopAlertsAvailable) return false;
+        const on = await this.attention.setDesktopAlerts(Boolean(enabled));
+        this._applyAlertsState(on);
+        return on;
+    }
+
+    _setSidebarCollapsed(collapsed) {
+        const next = Boolean(collapsed);
+        const sidebar = document.getElementById('sidebar');
+        const current = sidebar?.classList.contains('sidebar--collapsed')
+            ?? readPersistedSettings().sidebarCollapsed;
+        if (current !== next) document.getElementById('sidebarToggle')?.click();
+        return document.getElementById('sidebar')?.classList.contains('sidebar--collapsed') ?? next;
+    }
+
+    _setReducedMotion(reduced) {
+        this._motionOverride = this._motionOverride || installReducedMotionOverride();
+        return this._motionOverride?.set(Boolean(reduced)) ?? Boolean(reduced);
+    }
+
+    _observeHookSignal(agent) {
+        if (agent?.signalSource !== 'hook') return;
+        const provider = String(agent.provider || '').trim().toLowerCase();
+        if (provider) this._hookSeenAtByProvider.set(provider, Date.now());
+    }
+
+    _hookFreshness(provider, now = Date.now()) {
+        const seenAt = this._hookSeenAtByProvider.get(String(provider || '').trim().toLowerCase());
+        return Number.isFinite(seenAt) ? Math.max(0, now - seenAt) : null;
+    }
+
+    _unknownModelSeenToday() {
+        const date = new Date();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const today = `${date.getFullYear()}-${month}-${day}`;
+        const agents = this.world?.agents?.values?.() || [];
+        if ([...agents].some((agent) => agent.cost?.unknownModel === true)) {
+            try { window.localStorage?.setItem(UNKNOWN_MODEL_DATE_KEY, today); } catch { /* persistence is optional */ }
+            return true;
+        }
+        return storageValue(globalThis.window?.localStorage, UNKNOWN_MODEL_DATE_KEY) === today;
     }
 
     _closeSettings() {
@@ -719,6 +761,8 @@ export class TopBar {
 
     render() {
         const stats = this.world.getStats();
+        for (const agent of this.world?.agents?.values?.() || []) this._observeHookSignal(agent);
+        this._unknownModelSeenToday();
 
         this._renderSpend();
         this.els.working.textContent = stats.working;
@@ -921,7 +965,9 @@ export class TopBar {
         if (!wrap) return;
         const fiveHour = Number(quota?.fiveHour);
         const sevenDay = Number(quota?.sevenDay);
-        if (!Number.isFinite(fiveHour) && !Number.isFinite(sevenDay)) {
+        const hasFiveHourUsage = Number.isFinite(fiveHour) && fiveHour > 0;
+        const hasSevenDayUsage = Number.isFinite(sevenDay) && sevenDay > 0;
+        if (!hasFiveHourUsage && !hasSevenDayUsage) {
             wrap.hidden = true;
             return;
         }
@@ -931,10 +977,11 @@ export class TopBar {
         const seven = pct(sevenDay);
         if (this.els.quota5h) this.els.quota5h.style.width = `${five}%`;
         if (this.els.quota7d) this.els.quota7d.style.width = `${seven}%`;
-        // Bars carry the glance; the exact numbers live in the tooltip so the
-        // meta line stays narrow enough for the center ledger to breathe.
-        if (this.els.quotaText) this.els.quotaText.textContent = `${Math.max(five, seven)}%`;
-        wrap.title = `Claude usage: ${five}% of the 5-hour window, ${seven}% of the 7-day window`;
+        const windows = [];
+        if (hasFiveHourUsage) windows.push(`5h ${five}%`);
+        if (hasSevenDayUsage) windows.push(`7d ${seven}%`);
+        if (this.els.quotaText) this.els.quotaText.textContent = windows.join(' · ');
+        wrap.title = `Claude usage: ${windows.join(', ')}`;
         // Near the ceiling the bars stop being scenery.
         const hot = Math.max(fiveHour || 0, sevenDay || 0) > 0.85;
         wrap.classList.toggle('topbar__quota-meta--hot', hot);
@@ -1228,95 +1275,19 @@ export class TopBar {
     // fps is a number while the World render loop runs, null when it stops.
     renderFps(fps) {
         if (!this.els.fps) return;
-        if (fps == null) {
-            this.els.fps.textContent = '-- FPS';
-            this.els.fps.classList.remove('topbar__fps--warn', 'topbar__fps--danger');
-            this._fpsSamples.length = 0;
+        const value = Number(fps);
+        if (!Number.isFinite(value)) {
+            this._lastFps = null;
+            this.els.fps.hidden = true;
+            this.els.fps.classList.remove('topbar__fps--danger');
             return;
         }
-        this.els.fps.textContent = `${fps} FPS`;
-        this.els.fps.classList.toggle('topbar__fps--danger', fps < 25);
-        this.els.fps.classList.toggle('topbar__fps--warn', fps >= 25 && fps < 45);
-        // 4.12 — rolling window for the hover readout (~2/s emits → ~2 min cap).
-        this._fpsSamples.push(fps);
-        if (this._fpsSamples.length > 240) this._fpsSamples.shift();
-    }
-
-    // 4.12 — perf-health hover panel: now/avg/min over the rolling sample
-    // window plus the threshold legend behind the warn/danger colors. Built
-    // lazily and updated only on hover; pointer-events: none so it never
-    // steals the mouseleave that dismisses it.
-    _ensureFpsPanel() {
-        if (this._fpsPanelEl || !document.body) return;
-        this._fpsPanelEl = el('div', {
-            className: 'topbar__fps-panel',
-            style: {
-                position: 'fixed',
-                display: 'none',
-                zIndex: '1200',
-                padding: '8px 10px',
-                border: '1px solid var(--cv-border)',
-                borderRadius: '3px',
-                background: 'var(--cv-panel)',
-                boxShadow: 'var(--cv-elev-2)',
-                font: '10px var(--font-body)',
-                color: 'var(--cv-tan)',
-                whiteSpace: 'nowrap',
-                pointerEvents: 'none',
-            },
-        });
-        document.body.appendChild(this._fpsPanelEl);
-    }
-
-    _showFpsPanel() {
-        if (this._destroyed || !this.els.fps) return;
-        this._ensureFpsPanel();
-        const panel = this._fpsPanelEl;
-        if (!panel) return;
-        const samples = this._fpsSamples;
-        if (samples.length === 0) {
-            replaceChildren(panel, [
-                el('div', {
-                    text: 'World render loop idle (dashboard mode)',
-                    style: { color: 'var(--cv-text-muted)' },
-                }),
-            ]);
-        } else {
-            const current = samples[samples.length - 1];
-            let min = Infinity;
-            let sum = 0;
-            for (const sample of samples) {
-                sum += sample;
-                if (sample < min) min = sample;
-            }
-            const avg = Math.round(sum / samples.length);
-            const seconds = Math.max(1, Math.round(samples.length / 2));
-            replaceChildren(panel, [
-                el('div', {
-                    text: `now ${current} · avg ${avg} · min ${min} FPS (~${seconds}s window)`,
-                    style: {
-                        fontWeight: 'bold',
-                        color: current < 25
-                            ? 'var(--cv-status-errored)'
-                            : current < 45
-                                ? 'var(--cv-warn-yellow)'
-                                : 'rgba(150, 195, 130, 0.95)',
-                    },
-                }),
-                el('div', {
-                    text: '≥45 smooth · 25–44 degraded · <25 struggling',
-                    style: { color: 'var(--cv-text-muted)', marginTop: '3px' },
-                }),
-            ]);
-        }
-        const rect = this.els.fps.getBoundingClientRect();
-        panel.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - 240))}px`;
-        panel.style.top = `${rect.bottom + 6}px`;
-        panel.style.display = 'block';
-    }
-
-    _hideFpsPanel() {
-        if (this._fpsPanelEl) this._fpsPanelEl.style.display = 'none';
+        this._lastFps = value;
+        const danger = value < 25;
+        this.els.fps.textContent = `${Math.round(value)} FPS`;
+        this.els.fps.hidden = !danger;
+        this.els.fps.classList.toggle('topbar__fps--danger', danger);
+        this.els.fps.title = danger ? 'Render health is struggling; open Settings for details' : '';
     }
 
     _startTimer() {
@@ -1429,17 +1400,11 @@ export class TopBar {
         eventBus.off('agent:removed', this._onUpdate);
         eventBus.off('fps:updated', this._onFps);
         eventBus.off('usage:updated', this._onUsage);
-        if (this._onFpsEnter && this.els.fps) {
-            this.els.fps.removeEventListener('mouseenter', this._onFpsEnter);
-            this.els.fps.removeEventListener('mouseleave', this._onFpsLeave);
-        }
-        this._fpsPanelEl?.remove();
-        this._fpsPanelEl = null;
-        this._fpsSamples = [];
         eventBus.off('ws:connected', this._onWsConnected);
         eventBus.off('ws:disconnected', this._onWsDisconnected);
         eventBus.off('ws:state', this._onWsState);
         eventBus.off('watcher:state', this._onWatcherState);
+        eventBus.off('chronicle:status', this._onChronicleStatus);
         if (this.els.connection) {
             this.els.connection.removeEventListener('click', this._onConnectionClick);
             this.els.connection.removeEventListener('mouseenter', this._onConnectionEnter);
@@ -1476,6 +1441,8 @@ export class TopBar {
         }
         this._settingsButtonEl?.remove();
         this._settingsButtonEl = null;
+        this._settingsPanel?.destroy();
+        this._settingsPanel = null;
         if (this._onSpendClick && this.els.rateWrap) {
             this.els.rateWrap.removeEventListener('click', this._onSpendClick);
             this.els.rateWrap.removeEventListener('keydown', this._onSpendKeydown);

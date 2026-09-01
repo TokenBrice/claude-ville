@@ -42,7 +42,7 @@ test('activity panel closes on agent deselection without re-emitting or moving f
     const handlerStart = source.indexOf('this._onAgentDeselected =');
     const handlerEnd = source.indexOf('this._onAgentUpdated =', handlerStart);
     const handler = source.slice(handlerStart, handlerEnd);
-    assert.match(handler, /this\._onAgentDeselected = \(\) => \{\s*if \(this\._mode === 'agent' && this\.currentAgent\) this\._close\(\{ origin: 'event' \}\);\s*\};/);
+    assert.match(handler, /this\._onAgentDeselected = \(\) => \{\s*if \(this\._viewMode === 'dashboard'\) \{\s*this\.currentAgent = null;\s*return;\s*\}\s*if \(this\._mode === 'agent' && this\.currentAgent\) this\._close\(\{ origin: 'event' \}\);\s*\};/);
     assert.doesNotMatch(handler, /this\.hide\(\)/);
     assert.match(source, /eventBus\.on\('agent:deselected', this\._onAgentDeselected\);/);
     assert.match(source, /eventBus\.off\('agent:deselected', this\._onAgentDeselected\);/);
@@ -67,6 +67,28 @@ test('activity panel closes on agent deselection without re-emitting or moving f
     bus.emit('agent:deselected');
     assert.equal(closeCalls, 1);
     assert.equal(bus.emissions, 1);
+});
+
+test('dashboard mode switches retain selection but dashboard deselection clears it', async () => {
+    const source = await readFile(new URL('../../claudeville/src/presentation/shared/ActivityPanel.js', import.meta.url), 'utf8');
+    const modeClose = resolveClose({ origin: 'mode' });
+    assert.deepEqual(modeClose, {
+        emit: false,
+        stopPolling: true,
+        moveFocus: false,
+    });
+
+    const modeHandlerStart = source.indexOf('this._onModeChanged =');
+    const modeHandlerEnd = source.indexOf('// Pause polling while the tab is hidden', modeHandlerStart);
+    const modeHandler = source.slice(modeHandlerStart, modeHandlerEnd);
+    assert.match(modeHandler, /if \(mode === 'dashboard'\) \{\s*if \(this\._mode !== null\) this\._close\(\{ origin: 'mode' \}\);\s*return;\s*\}/);
+    assert.match(modeHandler, /if \(mode === 'character' && this\._mode === null && this\.currentAgent\) \{\s*this\.show\(this\.currentAgent\);\s*\}/);
+    assert.match(source, /const keepCurrentAgent = origin === 'mode' && wasAgent;\s*const retainedAgent = keepCurrentAgent \? this\.currentAgent : null;/);
+
+    const deselectionStart = source.indexOf('this._onAgentDeselected =');
+    const deselectionEnd = source.indexOf('this._onAgentUpdated =', deselectionStart);
+    const deselectionHandler = source.slice(deselectionStart, deselectionEnd);
+    assert.match(deselectionHandler, /if \(this\._viewMode === 'dashboard'\) \{\s*this\.currentAgent = null;\s*return;\s*\}/);
 });
 
 test('activity panel close initiated by the panel emits once and restores focus after stopping polling', () => {

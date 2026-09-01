@@ -217,16 +217,6 @@ vec3 applyGrade(vec3 color, vec2 topLeftPx, float material) {
             + step(distanceSquared, 0.16) * 0.33;
         color *= 1.0 - shadow.w * course * cloudReceiver;
     }
-    // Night owns three fixed tone bands (0, 1/3, 2/3). The existing
-    // four-pixel wetness order chooses the adjacent band at thresholds, so the
-    // darker grade reads as authored pixel steps instead of a smooth wash.
-    if (dot(u_gradeBase, vec3(0.2126, 0.7152, 0.0722)) < 0.72) {
-        float tone = dot(color, vec3(0.2126, 0.7152, 0.0722));
-        float scaled = clamp(tone * 3.0, 0.0, 2.0);
-        float lowerBand = floor(scaled);
-        float band = min(2.0, lowerBand + step(orderedDither4(topLeftPx), fract(scaled))) / 3.0;
-        color *= band / max(tone, 0.001);
-    }
     return color;
 }
 
@@ -527,6 +517,7 @@ export class GpuWorldRenderer {
         this._lastTextureTrimFrame = 0;
         this._vertexScratch = new Float32Array(64);
         this._vertexScratchUsed = 0;
+        this.vertexBufferBytes = 0;
         this._batchScratch = [];
         this._normalizedRecordScratch = [];
         this._lightAdmissionCache = { source: null, sourceLength: 0, ranked: [], admitted: [], snapshots: [] };
@@ -1055,7 +1046,8 @@ export class GpuWorldRenderer {
         const byteLength = needed * Float32Array.BYTES_PER_ELEMENT;
         const gl = this.gl;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.vertexBuffer);
-        if (byteLength > this.vertexBufferBytes) {
+        const allocatedBytes = this.vertexBufferBytes || 0;
+        if (byteLength > allocatedBytes) {
             gl.bufferData(gl.ARRAY_BUFFER, byteLength, gl.DYNAMIC_DRAW);
             this.vertexBufferBytes = byteLength;
         }

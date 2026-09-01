@@ -971,6 +971,293 @@
     flex-shrink: 0;
 }
 
+/* Exception-first dashboard: every unselected agent is one dense instrument
+   row. The selected row alone opens the diagnostic card below it. */
+.dashboard__grid {
+    gap: 8px;
+}
+
+.dashboard-attention {
+    position: sticky;
+    top: 0;
+    z-index: 24;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 42px;
+    margin-bottom: 8px;
+    padding: 6px 10px;
+}
+
+.dashboard-attention__heading {
+    flex: 0 0 auto;
+    margin: 0;
+    white-space: nowrap;
+}
+
+.dashboard-attention__list {
+    flex: 1;
+    flex-wrap: nowrap;
+    align-items: center;
+    min-width: 0;
+    overflow-x: auto;
+}
+
+.dashboard-attention__item {
+    flex: 0 0 auto;
+    padding: 3px 7px;
+    font-family: var(--font-body);
+}
+
+.dashboard-attention__item[aria-pressed='true'] {
+    border-color: var(--cv-gold-bright);
+    background: rgba(115, 75, 30, 0.72);
+    color: var(--cv-gold-bright);
+    box-shadow: inset 0 0 0 1px rgba(255, 226, 138, 0.12);
+}
+
+.dashboard-attention__provider-label,
+.dashboard-attention__search {
+    flex: 0 0 auto;
+    color: var(--cv-text-muted);
+    font: var(--fs-label) var(--font-body);
+    white-space: nowrap;
+}
+
+.dashboard-attention__provider-label {
+    margin-left: 4px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.dashboard-attention__search {
+    margin-left: auto;
+    color: var(--cv-dash-tan-warm);
+}
+
+.dashboard__section {
+    overflow: visible;
+    contain: style;
+    content-visibility: visible;
+}
+
+.dashboard__section-header {
+    position: sticky;
+    top: 55px;
+    z-index: 20;
+    min-height: 30px;
+    padding: 5px 10px;
+}
+
+.dashboard__section-grid {
+    display: block;
+    padding: 3px 6px 5px;
+}
+
+.dashboard__section-grid .dash-card + .dash-card {
+    margin-top: 3px;
+}
+
+.dashboard__filtered-empty {
+    padding: 24px;
+    border: 1px dashed rgba(var(--cv-dash-rim-rgb), 0.3);
+    color: var(--cv-text-muted);
+    font: var(--fs-data) var(--font-body);
+    text-align: center;
+}
+
+.dash-card {
+    contain: layout style;
+}
+
+.dash-card__row {
+    display: grid;
+    grid-template-columns:
+        118px minmax(95px, 0.7fr) 126px minmax(120px, 1fr)
+        minmax(125px, 1fr) minmax(145px, 1.1fr) 120px 145px;
+    align-items: center;
+    gap: 7px;
+    width: 100%;
+    min-height: 38px;
+    padding: 4px 8px;
+    color: var(--cv-tan);
+    text-align: left;
+    cursor: pointer;
+}
+
+.dash-card__row > * {
+    min-width: 0;
+}
+
+.dash-card__row:hover {
+    background: rgba(242, 211, 107, 0.035);
+}
+
+.dash-card__identity,
+.dash-card__model-cell,
+.dash-card__row-cell,
+.dash-card__usage {
+    display: flex;
+    min-width: 0;
+}
+
+.dash-card__identity,
+.dash-card__row-cell,
+.dash-card__usage {
+    flex-direction: column;
+    justify-content: center;
+}
+
+.dash-card__identity .dash-card__name {
+    overflow: hidden;
+    font-size: var(--fs-data);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dash-card__identity .dash-card__role {
+    overflow: hidden;
+    color: var(--cv-text-muted);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dash-card__model-cell {
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 2px 5px;
+    overflow: hidden;
+}
+
+.dash-card__model-cell .dash-card__provider-badge {
+    padding: 0 4px;
+}
+
+.dash-card__signal-source {
+    overflow: hidden;
+    padding: 0 3px;
+    border: 1px solid rgba(var(--cv-dash-rim-dim-rgb), 0.24);
+    border-radius: 2px;
+    color: var(--cv-text-muted);
+    font: 10px var(--font-body);
+    letter-spacing: 0.4px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dash-card__row-label {
+    overflow: hidden;
+    color: var(--cv-text-muted);
+    font: 10px var(--font-display);
+    letter-spacing: 0.5px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dash-card__row-value,
+.dash-card__row-detail {
+    overflow: hidden;
+    font: var(--fs-data) var(--font-body);
+    line-height: 1.15;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dash-card__row-detail {
+    color: var(--cv-text-muted);
+    font-size: var(--fs-label);
+}
+
+.dash-card__blocker-cell:not(.dash-card__blocker-cell--active) .dash-card__row-value {
+    color: var(--cv-text-muted);
+}
+
+.dash-card__blocker-cell--active .dash-card__row-value,
+.dash-card__blocker-cell--active .dash-card__row-detail {
+    color: var(--cv-status-waiting-user);
+}
+
+.dash-card__work-cell--collision .dash-card__row-value {
+    color: var(--cv-status-errored);
+}
+
+.dash-card__row .dash-card__status {
+    min-width: 0;
+    padding: 2px 5px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dash-card__row .dash-card__status-label,
+.dash-card__row .dash-card__status-elapsed {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.dash-card__row .dash-card__usage {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: baseline;
+    gap: 0 5px;
+    padding: 0;
+    border: 0;
+    font-size: var(--fs-label);
+}
+
+.dash-card__row .dash-card__usage-tokens {
+    grid-column: 1 / -1;
+}
+
+.dash-card__row .dash-card__usage-cost {
+    margin: 0;
+}
+
+.dash-card__usage-source {
+    color: var(--cv-text-muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.dash-card__search-context {
+    grid-column: 1 / -1;
+    overflow: hidden;
+    padding: 2px 6px;
+    border-top: 1px solid rgba(var(--cv-dash-rim-rgb), 0.12);
+    color: var(--cv-dash-tan-warm);
+    font: var(--fs-label) var(--font-body);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.dash-card__detail {
+    display: none;
+    border-top: 1px solid rgba(var(--cv-dash-rim-rgb), 0.24);
+}
+
+.dash-card--selected .dash-card__detail {
+    display: block;
+}
+
+.dash-card--selected .dash-card__row {
+    background: rgba(242, 211, 107, 0.055);
+}
+
+.dash-card__detail .dash-card__header {
+    min-height: 58px;
+    padding: 6px 12px;
+}
+
+.dash-card__detail .dash-card__avatar {
+    width: 44px;
+    height: 52px;
+}
+
+.dash-card__detail .dash-card__working-set {
+    margin-top: 8px;
+}
+
 /* ─ Reduced motion ─ */
 @media (prefers-reduced-motion: reduce) {
     .dash-card,

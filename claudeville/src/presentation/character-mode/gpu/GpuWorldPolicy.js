@@ -19,7 +19,7 @@ export const WORLD_PHASE_GRADES = Object.freeze({
         fog: Object.freeze([0.55, 0.68, 0.74]),
     }),
     night: Object.freeze({
-        base: Object.freeze([0.40, 0.48, 0.66]),
+        base: Object.freeze([0.50, 0.59, 0.77]),
         edge: Object.freeze([0.32, 0.42, 0.60]),
         edgeAlpha: 0.46,
         fog: Object.freeze([0.08, 0.12, 0.22]),

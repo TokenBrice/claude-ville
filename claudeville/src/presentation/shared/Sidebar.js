@@ -30,6 +30,8 @@ import {
 const WORKFLOW_STATE_GRACE_MS = 60 * 1000;
 const WORKFLOW_STATE_GRACE_LIMIT = 32;
 const SIDEBAR_COLLAPSED_STORAGE_KEY = 'claudeville.sidebarCollapsed';
+const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
+const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
 
 function safeStorageGet(key) {
     try {
@@ -61,6 +63,7 @@ export class Sidebar {
         this._harborSignature = '';
         this._renderSignature = '';
         this._filter = '';
+        this._sharedFilterSignature = '';
         this._highlightedAgentId = null;
         this.searchIndex = new AgentSearchIndex();
         this._collapsedWorkflows = new Set();
@@ -112,10 +115,12 @@ export class Sidebar {
                 this.renderHarbor();
             }
         };
+        this._onSharedFilterRequest = () => this._publishSharedFilter(null, true);
         eventBus.on('agent:added', this._onAgentUpdate);
         eventBus.on('agent:updated', this._onAgentUpdate);
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on('harbor:updated', this._onHarborUpdate);
+        eventBus.on(DASHBOARD_FILTER_REQUEST_EVENT, this._onSharedFilterRequest);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
 
         this._bindToggle();
@@ -459,16 +464,17 @@ export class Sidebar {
 
     render() {
         if (this._destroyed) return;
-        if (this._isRenderHidden()) {
-            this._renderWhileHidden = true;
-            return;
-        }
-        this._renderWhileHidden = false;
         const agents = Array.from(this.world.agents.values());
         for (const agent of agents) {
             if (!this.searchIndex.has(agent.id)) this._indexAgent(agent);
         }
         const searchResults = this.searchIndex.search(this._filter, agents.map(agent => agent.id));
+        this._publishSharedFilter(searchResults);
+        if (this._isRenderHidden()) {
+            this._renderWhileHidden = true;
+            return;
+        }
+        this._renderWhileHidden = false;
         const matchesById = new Map(searchResults.map(match => [match.agentId, match]));
         this._reconcileWorkflowState(agents);
         this._setText(this.countEl, agents.length);
@@ -609,6 +615,26 @@ export class Sidebar {
         this._syncSelection(null, this.selection.selectedId);
         this._syncRovingTabindex();
         this._restoreTransientState(transientState);
+    }
+
+    _publishSharedFilter(results = null, force = false) {
+        if (this._destroyed) return;
+        const agents = Array.from(this.world.agents.values());
+        const matches = results || this.searchIndex.search(this._filter, agents.map(agent => agent.id));
+        const signature = `${this._filter}\u0001${this.searchIndex.revision}\u0001${matches
+            .map(match => `${match.agentId}:${match.score}:${match.context || ''}`)
+            .join('\u0002')}`;
+        if (!force && signature === this._sharedFilterSignature) return;
+        this._sharedFilterSignature = signature;
+        eventBus.emit(DASHBOARD_FILTER_EVENT, {
+            query: this._filter,
+            matches: matches.map(match => ({
+                agentId: match.agentId,
+                score: match.score,
+                context: match.context || null,
+            })),
+            revision: this.searchIndex.revision,
+        });
     }
 
     _reconcileWorkflowState(agents, now = Date.now()) {
@@ -1127,6 +1153,7 @@ export class Sidebar {
         eventBus.off('agent:updated', this._onAgentUpdate);
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off('harbor:updated', this._onHarborUpdate);
+        eventBus.off(DASHBOARD_FILTER_REQUEST_EVENT, this._onSharedFilterRequest);
         if (typeof document !== 'undefined') {
             document.removeEventListener('visibilitychange', this._onVisibilityChange);
         }
@@ -1154,6 +1181,7 @@ export class Sidebar {
         this._harborSignature = '';
         this._renderSignature = '';
         this._filter = '';
+        this._sharedFilterSignature = '';
         this._highlightedAgentId = null;
         this._projectGroups?.clear?.();
         this._workflowGroups?.clear?.();

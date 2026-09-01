@@ -65,6 +65,17 @@
     }
 }
 
+/* The persisted operator override covers CSS-only motion immediately. Canvas
+   systems receive the same preference through SettingsPanel's matchMedia bridge. */
+.cv-reduced-motion-override *,
+.cv-reduced-motion-override *::before,
+.cv-reduced-motion-override *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+}
+
 /* Subtle bottom glow line */
 .topbar::after {
     content: "";
@@ -110,7 +121,7 @@
     display: flex;
     align-items: center;
     font-family: var(--font-body);
-    font-size: var(--fs-data);
+    font-size: 11px;
     line-height: 1;
     color: var(--cv-text-muted);
     -webkit-font-smoothing: auto;
@@ -159,13 +170,9 @@
     text-underline-offset: 2px;
 }
 
-/* ── FPS (meta sub-line); warn/danger color states kept for JS hooks ── */
+/* ── FPS (meta sub-line); absent unless the render loop enters danger ── */
 .topbar__fps {
-    color: rgba(150, 195, 130, 0.85);
-}
-
-.topbar__fps--warn {
-    color: var(--cv-warn-yellow);
+    color: var(--cv-status-errored);
 }
 
 .topbar__fps--danger {
@@ -416,6 +423,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
+    color: var(--cv-text-muted);
 }
 
 .topbar__quota {
@@ -653,6 +661,19 @@
     shape-rendering: crispEdges;
 }
 
+.topbar__settings-icon {
+    display: block;
+    width: 16px;
+    height: 16px;
+    background:
+        linear-gradient(currentColor, currentColor) 1px 3px / 14px 2px no-repeat,
+        linear-gradient(currentColor, currentColor) 1px 8px / 14px 2px no-repeat,
+        linear-gradient(currentColor, currentColor) 1px 13px / 14px 2px no-repeat,
+        linear-gradient(currentColor, currentColor) 5px 1px / 3px 6px no-repeat,
+        linear-gradient(currentColor, currentColor) 10px 6px / 3px 6px no-repeat,
+        linear-gradient(currentColor, currentColor) 4px 11px / 3px 5px no-repeat;
+}
+
 .topbar__icon-btn--action {
     color: rgba(215, 185, 121, 0.84);
 }
@@ -742,10 +763,6 @@ body:has(#worldGrammar:popover-open) #topbarWorldControls {
     border-radius: 2px;
     box-shadow: 0 0 0 2px rgba(28, 17, 11, 0.96), var(--cv-elev-2);
     font: var(--fs-data)/var(--lh-body) var(--font-body);
-}
-
-.topbar__fps-panel {
-    isolation: isolate;
 }
 
 .topbar__mixer-panel:focus,

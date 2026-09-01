@@ -198,6 +198,300 @@
     border-radius: 2px;
 }
 
+/* ── Settings & health ─────────────────────────────────────── */
+
+.settings-panel {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 12px;
+}
+
+.settings-panel__intro,
+.settings-section--controls,
+.settings-actions {
+    grid-column: 1 / -1;
+}
+
+.settings-panel__intro {
+    margin: 0;
+    color: var(--cv-text-muted);
+    font: var(--fs-data)/var(--lh-body) var(--font-body);
+}
+
+.settings-section {
+    min-width: 0;
+    padding: 11px 12px 12px;
+    border: 1px solid var(--cv-border);
+    border-radius: 2px;
+    background: rgba(8, 6, 6, 0.22);
+    box-shadow: inset 0 1px 0 rgba(255, 231, 150, 0.035);
+}
+
+.settings-section__heading {
+    margin: 0 0 9px;
+    color: var(--cv-gold-soft);
+    font: 10px/1.4 var(--font-display);
+    letter-spacing: 1px;
+}
+
+.settings-controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 1px 16px;
+}
+
+.settings-control {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 10px;
+    min-height: 43px;
+    border-bottom: 1px solid var(--cv-border-soft);
+}
+
+.settings-control__copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.settings-control__label,
+.settings-fact-row__label,
+.settings-ledger dt,
+.settings-provider__name {
+    color: var(--cv-tan);
+    font-size: var(--fs-data);
+}
+
+.settings-control__detail {
+    color: var(--cv-text-muted);
+    font-size: var(--fs-data);
+    line-height: 1.25;
+}
+
+.settings-switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    cursor: pointer;
+}
+
+.settings-switch__input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+.settings-switch__track {
+    position: relative;
+    width: 38px;
+    height: 20px;
+    border: 1px solid rgba(199, 157, 76, 0.48);
+    border-radius: 2px;
+    background: rgba(13, 10, 12, 0.88);
+    box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+.settings-switch__track::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 12px;
+    height: 12px;
+    border-radius: 1px;
+    background: var(--cv-text-muted);
+    transition: transform 0.12s ease, background 0.12s ease;
+}
+
+.settings-switch__input:checked + .settings-switch__track {
+    border-color: var(--cv-gold-warm);
+    background: rgba(88, 57, 27, 0.62);
+}
+
+.settings-switch__input:checked + .settings-switch__track::after {
+    background: var(--cv-gold-bright);
+    transform: translateX(18px);
+}
+
+.settings-switch__input:focus-visible + .settings-switch__track,
+.settings-select:focus-visible,
+.settings-range:focus-visible,
+.settings-actions__reset:focus-visible {
+    outline: 2px solid var(--cv-gold-bright);
+    outline-offset: 2px;
+}
+
+.settings-switch__input:disabled + .settings-switch__track {
+    cursor: not-allowed;
+    opacity: 0.46;
+}
+
+.settings-select {
+    max-width: 190px;
+    min-height: 30px;
+    padding: 4px 25px 4px 7px;
+    color: var(--cv-tan);
+    border: 1px solid rgba(199, 157, 76, 0.48);
+    border-radius: 2px;
+    background: var(--cv-panel-deep);
+    font: var(--fs-data)/1.3 var(--font-body);
+}
+
+.settings-range-wrap {
+    display: grid;
+    grid-template-columns: 96px 42px;
+    align-items: center;
+    gap: 7px;
+}
+
+.settings-range {
+    width: 96px;
+    accent-color: var(--cv-gold-warm);
+}
+
+.settings-range__value {
+    color: var(--cv-text-muted);
+    font: var(--fs-data)/1 var(--font-body);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+}
+
+.settings-soundscape {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1px 16px;
+    min-width: 0;
+    margin: 10px 0 0;
+    padding: 8px 0 0;
+    border: 0;
+    border-top: 1px solid var(--cv-border);
+}
+
+.settings-soundscape__legend {
+    padding-right: 8px;
+    color: var(--cv-gold-soft);
+    font: 10px/1.4 var(--font-display);
+    letter-spacing: 1px;
+}
+
+.settings-roster,
+.settings-ledger,
+.settings-section--health,
+.settings-section--pricing {
+    display: grid;
+    gap: 6px;
+}
+
+.settings-provider,
+.settings-fact-row {
+    display: grid;
+    grid-template-columns: minmax(105px, auto) minmax(0, 1fr);
+    gap: 10px;
+    align-items: baseline;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--cv-border-soft);
+}
+
+.settings-provider:last-child,
+.settings-fact-row:last-child {
+    padding-bottom: 0;
+    border-bottom: 0;
+}
+
+.settings-provider__name::before {
+    content: '·';
+    display: inline-block;
+    width: 12px;
+    color: var(--cv-text-muted);
+}
+
+.settings-provider--ready .settings-provider__name::before {
+    content: '+';
+    color: var(--cv-status-working);
+}
+
+.settings-provider--degraded .settings-provider__name::before {
+    content: '!';
+    color: var(--cv-status-errored);
+}
+
+.settings-provider__state,
+.settings-fact-row__value,
+.settings-ledger dd,
+.settings-empty,
+.settings-storage__notice,
+.settings-actions__note {
+    color: var(--cv-text-muted);
+    font: var(--fs-data)/1.35 var(--font-body);
+}
+
+.settings-provider__state,
+.settings-fact-row__value {
+    text-align: right;
+}
+
+.settings-provider--degraded .settings-provider__state,
+.settings-empty--degraded,
+.settings-storage__notice--degraded,
+.settings-pricing__state--unknown {
+    color: var(--cv-status-errored);
+}
+
+.settings-empty,
+.settings-storage__notice {
+    margin: 0;
+}
+
+.settings-ledger {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    margin: 0;
+}
+
+.settings-ledger dt,
+.settings-ledger dd {
+    margin: 0;
+    padding-bottom: 5px;
+    border-bottom: 1px solid var(--cv-border-soft);
+}
+
+.settings-ledger dd {
+    text-align: right;
+}
+
+.settings-storage__notice {
+    margin-top: 8px;
+    padding-top: 8px;
+    border-top: 1px solid var(--cv-border);
+}
+
+.settings-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding-top: 12px;
+    border-top: 1px solid var(--cv-border);
+}
+
+.settings-actions__reset {
+    min-height: 31px;
+    padding: 7px 9px;
+    color: var(--cv-tan);
+    border: 1px solid rgba(199, 157, 76, 0.48);
+    border-radius: 2px;
+    background: linear-gradient(180deg, rgba(43, 28, 20, 0.86), rgba(18, 12, 11, 0.9));
+    font: 10px/1.2 var(--font-display);
+}
+
+.settings-actions__reset:hover:not(:disabled) {
+    color: var(--cv-gold-bright);
+    border-color: var(--cv-gold-warm);
+}
+
 /* ── Village Chronicle: the day's recap ─────────────────────────────────
    A ledger of counts over a newest-first timeline. Deliberately quiet — the
    Chronicle is read on purpose, so it never competes with the live view. */

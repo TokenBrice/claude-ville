@@ -1,5 +1,5 @@
 import { eventBus } from '../../domain/events/DomainEvent.js';
-import { actionableAgents, bucketAgents, bucketCounts, bucketForStatus } from '../../domain/services/SignalLedger.js';
+import { bucketAgents, bucketCounts, bucketForStatus } from '../../domain/services/SignalLedger.js';
 import { AvatarCanvas } from './AvatarCanvas.js';
 import { i18n } from '../../config/i18n.js';
 import { sessionDetailsService } from '../shared/SessionDetailsService.js';
@@ -33,7 +33,6 @@ import {
     modelPresentation,
     projectProfile,
     providerPresentation,
-    sortAgentsByStatus,
     statusPresentation,
     waitReasonLabel,
     toolHistoryNodes,
@@ -41,8 +40,29 @@ import {
 } from '../shared/AgentPresentation.js';
 
 const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
-const DETAIL_FETCH_LIMIT = 48;
 const PROMPT_DETAIL_MAX_LENGTH = 200;
+const DASHBOARD_FILTER_EVENT = 'dashboard:filter-changed';
+const DASHBOARD_FILTER_REQUEST_EVENT = 'dashboard:filter-requested';
+const ROW_STATUS_FILTERS = Object.freeze([
+    { key: 'needsYou', label: 'Needs you' },
+    { key: 'errors', label: 'Errors' },
+    { key: 'quota', label: 'Quota' },
+    { key: 'working', label: 'Working' },
+]);
+const ROW_STATUS_RANK = Object.freeze({
+    waiting_on_user: 0,
+    errored: 1,
+    rate_limited: 2,
+    working: 3,
+    waiting: 4,
+    idle: 5,
+    completed: 6,
+});
+const TURN_STATE_LABELS = Object.freeze({
+    tool_pending: 'Tool pending',
+    awaiting_input: 'Awaiting input',
+    working: 'Responding',
+});
 
 function safePromptDetail(agent) {
     const source = agent?.promptDetail
@@ -58,7 +78,29 @@ function safePromptDetail(agent) {
 }
 
 function waitProvenance(agent) {
-    return agent?.signalSource === 'hook' ? 'HOOK' : 'TRANSCRIPT · inferred';
+    return agent?.signalSource === 'hook' ? 'HOOK' : 'TRANSCRIPT';
+}
+
+function rowWaitAnchor(agent) {
+    return Number(agent?.awaitingSince
+        || agent?.pendingSince
+        || agent?.turnStartedAt
+        || agent?.lastSessionActivity
+        || 0) || 0;
+}
+
+function rowPhase(agent) {
+    if (agent?.currentTool) return agent.currentTool;
+    return TURN_STATE_LABELS[agent?.turnState]
+        || operatorStatusLabel(agent?.status)
+        || 'Unknown';
+}
+
+function rowExceptionRank(agent) {
+    const statusRank = ROW_STATUS_RANK[normalizeStatus(agent?.status)] ?? 7;
+    if (statusRank <= 2) return statusRank;
+    if (collisionsForAgent(agent).length) return 3;
+    return statusRank + 1;
 }
 
 /** Dashboard health display precedence: error, blocked, quota, working, waiting, idle. */
@@ -179,6 +221,17 @@ export class DashboardRenderer {
         this._selectedAgentId = null;
         this._focusedAgentId = null;
         this._attentionCursor = 0;
+        this._statusFilters = new Set();
+        this._providerFilters = new Set();
+        this._searchQuery = '';
+        this._searchMatches = null;
+        this._searchContexts = new Map();
+        this._stableAgentOrder = new Map();
+        this._stableProjectOrder = new Map();
+        this._nextStableAgentOrder = 0;
+        this._nextStableProjectOrder = 0;
+        this._controlsSignature = '';
+        this._filteredEmptyEl = null;
         this.active = false;
         this._destroyed = false;
         this._isFetchingDetails = false;
@@ -241,18 +294,32 @@ export class DashboardRenderer {
             this._focusedAgentId = card.dataset.agentId;
             this._syncCardTabStops();
         };
+        this._onSharedFilterChanged = (payload = {}) => {
+            this._searchQuery = String(payload.query || '').trim().toLowerCase();
+            const matches = Array.isArray(payload.matches) ? payload.matches : [];
+            this._searchMatches = this._searchQuery
+                ? new Set(matches.map(match => String(match.agentId)))
+                : null;
+            this._searchContexts = new Map(matches
+                .filter(match => match?.context)
+                .map(match => [String(match.agentId), String(match.context)]));
+            if (this.active) this.render();
+        };
         eventBus.on('agent:added', this._onAgentAdded);
         eventBus.on('agent:updated', this._onAgentUpdated);
         eventBus.on('agent:removed', this._onAgentRemoved);
         eventBus.on('mode:changed', this._onModeChanged);
+        eventBus.on(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
         window.addEventListener('keydown', this._onDashboardKeyDown);
         this.gridEl?.addEventListener('focusin', this._onDashboardFocusIn);
+        eventBus.emit(DASHBOARD_FILTER_REQUEST_EVENT);
     }
 
     render() {
         this._visibilityLayoutDirty = true;
         const agents = Array.from(this.world.agents.values());
+        this._rememberStableOrder(agents);
         this._renderAttentionQueue(agents);
 
         if (agents.length === 0) {
@@ -266,23 +333,26 @@ export class DashboardRenderer {
 
         this.gridEl.style.display = '';
         this.emptyEl.classList.remove('dashboard__empty--visible');
+        const visibleAgents = this._filteredAgents(agents);
+        this._setFilteredEmpty(visibleAgents.length === 0);
 
-        const groups = groupAgentsByProject(agents);
+        const groups = [...groupAgentsByProject(visibleAgents)];
+        this._sortProjectGroups(groups);
 
         const existingIds = new Set();
         const existingSections = new Set();
 
         for (const [projectPath, groupAgents] of groups) {
             existingSections.add(projectPath);
-            sortAgentsByStatus(groupAgents);
+            this._sortAgentsExceptionFirst(groupAgents);
 
             // Create/get section element
             let sectionEl = this._sectionEls.get(projectPath);
             if (!sectionEl) {
                 sectionEl = this._createSection(projectPath);
                 this._sectionEls.set(projectPath, sectionEl);
-                this.gridEl.appendChild(sectionEl);
             }
+            this.gridEl.appendChild(sectionEl);
             this._updateSectionHeader(sectionEl, projectPath, groupAgents);
 
             const gridInner = sectionEl._sectionRefs?.grid || sectionEl.querySelector('.dashboard__section-grid');
@@ -329,6 +399,77 @@ export class DashboardRenderer {
         sessionDetailsService.sweep(agents);
         this._syncCardTabStops();
         if (this.active) this._syncVisibleAgentIdsFromLayout();
+    }
+
+    _rememberStableOrder(agents) {
+        const liveIds = new Set();
+        const liveProjects = new Set();
+        for (const agent of agents) {
+            liveIds.add(String(agent.id));
+            const project = agent.projectPath || '_unknown';
+            liveProjects.add(project);
+            if (!this._stableAgentOrder.has(String(agent.id))) {
+                this._stableAgentOrder.set(String(agent.id), this._nextStableAgentOrder++);
+            }
+            if (!this._stableProjectOrder.has(project)) {
+                this._stableProjectOrder.set(project, this._nextStableProjectOrder++);
+            }
+        }
+        for (const id of this._stableAgentOrder.keys()) {
+            if (!liveIds.has(id)) this._stableAgentOrder.delete(id);
+        }
+        for (const project of this._stableProjectOrder.keys()) {
+            if (!liveProjects.has(project)) this._stableProjectOrder.delete(project);
+        }
+    }
+
+    _filteredAgents(agents) {
+        return agents.filter(agent => {
+            if (this._searchMatches && !this._searchMatches.has(String(agent.id))) return false;
+            if (this._statusFilters.size) {
+                const bucket = bucketForStatus(agent.status);
+                if (!this._statusFilters.has(bucket)) return false;
+            }
+            if (this._providerFilters.size
+                && !this._providerFilters.has(String(agent.provider || 'claude').toLowerCase())) return false;
+            return true;
+        });
+    }
+
+    _sortAgentsExceptionFirst(agents) {
+        agents.sort((a, b) => {
+            const rankDelta = rowExceptionRank(a) - rowExceptionRank(b);
+            if (rankDelta) return rankDelta;
+            const waitDelta = rowWaitAnchor(a) - rowWaitAnchor(b);
+            if (waitDelta) return waitDelta;
+            return (this._stableAgentOrder.get(String(a.id)) ?? 0)
+                - (this._stableAgentOrder.get(String(b.id)) ?? 0);
+        });
+        return agents;
+    }
+
+    _sortProjectGroups(groups) {
+        const projectRank = ([, agents]) => Math.min(
+            ...agents.map(rowExceptionRank),
+        );
+        const projectWait = ([, agents]) => Math.min(
+            ...agents.map(rowWaitAnchor).filter(Boolean),
+            Number.MAX_SAFE_INTEGER,
+        );
+        groups.sort((a, b) => projectRank(a) - projectRank(b)
+            || projectWait(a) - projectWait(b)
+            || (this._stableProjectOrder.get(a[0]) ?? 0) - (this._stableProjectOrder.get(b[0]) ?? 0));
+    }
+
+    _setFilteredEmpty(visible) {
+        if (!this.gridEl) return;
+        if (!this._filteredEmptyEl) {
+            this._filteredEmptyEl = document.createElement('div');
+            this._filteredEmptyEl.className = 'dashboard__filtered-empty';
+            this._filteredEmptyEl.textContent = 'No agents match the active filters';
+            this.gridEl.appendChild(this._filteredEmptyEl);
+        }
+        this._filteredEmptyEl.hidden = !visible;
     }
 
     _createVisibilityObserver() {
@@ -563,55 +704,82 @@ export class DashboardRenderer {
         card.dataset.agentId = agent.id;
 
         card.innerHTML = `
-            <div class="dash-card__header">
-                <span class="dash-card__building-emblem" aria-hidden="true" style="display: none"></span>
-                <button type="button" class="dash-card__select">
-                    <span class="dash-card__avatar"></span>
-                    <span class="dash-card__info">
-                        <span class="dash-card__name"></span>
-                        <span class="dash-card__meta">
-                            <span class="dash-card__provider-badge"></span>
-                            <span class="dash-card__model"></span>
-                            <span class="dash-card__workflow-badge"></span>
-                            <span class="dash-card__team-badge" style="display: none"></span>
-                            <span class="dash-card__role"></span>
-                            <span class="dash-card__activity-age" style="display: none"></span>
-                        </span>
-                    </span>
-                </button>
-                <button type="button" class="dash-card__parent-chip" style="display: none"></button>
-                <button type="button" class="dash-card__copy-id" title="Copy session ID" aria-label="Copy session ID">⧉</button>
-                <span class="dash-card__stale-badge" style="display: none" title="Showing cached data; latest refresh did not complete">STALE</span>
-                <div class="dash-card__status">
+            <button type="button" class="dash-card__select dash-card__row">
+                <span class="dash-card__status">
                     <span class="dash-card__status-dot"></span>
                     <span class="dash-card__status-label"></span>
                     <span class="dash-card__status-elapsed"></span>
+                </span>
+                <span class="dash-card__identity">
+                    <span class="dash-card__name"></span>
+                    <span class="dash-card__role"></span>
+                </span>
+                <span class="dash-card__model-cell">
+                    <span class="dash-card__provider-badge"></span>
+                    <span class="dash-card__model"></span>
+                    <span class="dash-card__signal-source"></span>
+                </span>
+                <span class="dash-card__row-cell dash-card__phase-cell">
+                    <span class="dash-card__row-label">PHASE / TOOL</span>
+                    <span class="dash-card__row-value dash-card__phase"></span>
+                    <span class="dash-card__row-detail dash-card__phase-detail"></span>
+                </span>
+                <span class="dash-card__row-cell dash-card__blocker-cell">
+                    <span class="dash-card__row-label">BLOCKER</span>
+                    <span class="dash-card__row-value dash-card__blocker"></span>
+                    <span class="dash-card__row-detail dash-card__prompt-detail"></span>
+                </span>
+                <span class="dash-card__row-cell dash-card__work-cell">
+                    <span class="dash-card__row-label">WORKING SET</span>
+                    <span class="dash-card__row-value dash-card__work-summary"></span>
+                </span>
+                <span class="dash-card__usage">
+                    <span class="dash-card__usage-tokens"></span>
+                    <span class="dash-card__usage-cost"></span>
+                    <span class="dash-card__usage-source"></span>
+                </span>
+                <span class="dash-card__row-cell dash-card__children-cell">
+                    <span class="dash-card__row-label">CHILDREN</span>
+                    <span class="dash-card__row-value dash-card__children"></span>
+                </span>
+                <span class="dash-card__search-context" style="display: none"></span>
+            </button>
+            <div class="dash-card__detail" aria-hidden="true">
+                <div class="dash-card__header">
+                    <span class="dash-card__building-emblem" aria-hidden="true" style="display: none"></span>
+                    <span class="dash-card__avatar"></span>
+                    <span class="dash-card__info">
+                        <span class="dash-card__meta">
+                            <span class="dash-card__workflow-badge"></span>
+                            <span class="dash-card__team-badge" style="display: none"></span>
+                            <span class="dash-card__activity-age" style="display: none"></span>
+                        </span>
+                    </span>
+                    <button type="button" class="dash-card__parent-chip" style="display: none"></button>
+                    <button type="button" class="dash-card__copy-id" title="Copy session ID" aria-label="Copy session ID">ID</button>
+                    <span class="dash-card__stale-badge" style="display: none" title="Showing cached data; latest refresh did not complete">STALE</span>
                 </div>
-            </div>
-            <div class="dash-card__activity">
-                <div class="dash-card__current-tool">
-                    <span class="dash-card__tool-icon"></span>
-                    <div class="dash-card__tool-info">
-                        <div class="dash-card__tool-name"></div>
-                        <div class="dash-card__tool-detail"></div>
+                <div class="dash-card__activity">
+                    <div class="dash-card__current-tool">
+                        <span class="dash-card__tool-icon"></span>
+                        <div class="dash-card__tool-info">
+                            <div class="dash-card__tool-name"></div>
+                            <div class="dash-card__tool-detail"></div>
+                        </div>
+                    </div>
+                    <div class="dash-card__message"></div>
+                    <div class="dash-card__working-set"></div>
+                </div>
+                <div class="dash-card__tools">
+                    <div class="dash-card__tools-title">${i18n.t('toolHistory')}</div>
+                    <div class="dash-card__tool-list">
+                        <div class="dash-card__skeleton" aria-hidden="true">
+                            <span class="dash-card__skeleton-line"></span>
+                            <span class="dash-card__skeleton-line"></span>
+                            <span class="dash-card__skeleton-line"></span>
+                        </div>
                     </div>
                 </div>
-                <div class="dash-card__message"></div>
-                <div class="dash-card__working-set"></div>
-            </div>
-            <div class="dash-card__tools">
-                <div class="dash-card__tools-title">${i18n.t('toolHistory')}</div>
-                <div class="dash-card__tool-list">
-                    <div class="dash-card__skeleton" aria-hidden="true">
-                        <span class="dash-card__skeleton-line"></span>
-                        <span class="dash-card__skeleton-line"></span>
-                        <span class="dash-card__skeleton-line"></span>
-                    </div>
-                </div>
-            </div>
-            <div class="dash-card__usage" style="display: none">
-                <span class="dash-card__usage-tokens"></span>
-                <span class="dash-card__usage-cost"></span>
             </div>
         `;
         card.dataset.loading = 'true';
@@ -666,7 +834,16 @@ export class DashboardRenderer {
             status: card.querySelector('.dash-card__status'),
             statusLabel: card.querySelector('.dash-card__status-label'),
             statusElapsed: card.querySelector('.dash-card__status-elapsed'),
+            signalSource: card.querySelector('.dash-card__signal-source'),
             staleBadge: card.querySelector('.dash-card__stale-badge'),
+            detail: card.querySelector('.dash-card__detail'),
+            phase: card.querySelector('.dash-card__phase'),
+            phaseDetail: card.querySelector('.dash-card__phase-detail'),
+            blocker: card.querySelector('.dash-card__blocker'),
+            promptDetail: card.querySelector('.dash-card__prompt-detail'),
+            workSummary: card.querySelector('.dash-card__work-summary'),
+            children: card.querySelector('.dash-card__children'),
+            searchContext: card.querySelector('.dash-card__search-context'),
             currentTool: card.querySelector('.dash-card__current-tool'),
             toolIcon: card.querySelector('.dash-card__tool-icon'),
             toolName: card.querySelector('.dash-card__tool-name'),
@@ -678,6 +855,7 @@ export class DashboardRenderer {
             usage: card.querySelector('.dash-card__usage'),
             usageTokens: card.querySelector('.dash-card__usage-tokens'),
             usageCost: card.querySelector('.dash-card__usage-cost'),
+            usageSource: card.querySelector('.dash-card__usage-source'),
             buildingEmblem: card.querySelector('.dash-card__building-emblem'),
         };
         card._elapsedUnsubscribe = subscribeElapsedText(card._elements.statusElapsed, () => {
@@ -692,73 +870,99 @@ export class DashboardRenderer {
     _renderAttentionQueue(agents) {
         if (!this.attentionEl) return;
         const buckets = bucketAgents(agents);
-        const actionable = actionableAgents(buckets);
-        const watchlist = buckets.watchlist;
-        const queued = [...actionable, ...watchlist];
-        const collisionMap = new Map();
-        for (const agent of agents) {
-            for (const collision of collisionsForAgent(agent)) {
-                collisionMap.set(`${collision.project}\u0000${collision.path}`, collision);
-            }
-        }
-        const collisions = [...collisionMap.values()];
-        const itemCount = queued.length + collisions.length;
-        this.attentionEl.hidden = itemCount === 0;
-        if (!itemCount) { replaceChildren(this.attentionEl, []); return; }
+        const counts = bucketCounts(buckets);
+        const providers = [...new Set(agents.map(agent => String(agent.provider || 'claude').toLowerCase()))]
+            .sort((a, b) => a.localeCompare(b));
+        const providerCounts = Object.fromEntries(providers.map(provider => [
+            provider,
+            agents.filter(agent => String(agent.provider || 'claude').toLowerCase() === provider).length,
+        ]));
+        const signature = JSON.stringify({
+            counts: ROW_STATUS_FILTERS.map(({ key }) => counts[key] || 0),
+            providerCounts,
+            status: [...this._statusFilters].sort(),
+            provider: [...this._providerFilters].sort(),
+            search: this._searchQuery,
+            matches: this._searchMatches?.size ?? agents.length,
+        });
+        this.attentionEl.hidden = false;
+        if (signature === this._controlsSignature) return;
+        this._controlsSignature = signature;
+
+        const focusedKey = this.attentionEl.contains(document.activeElement)
+            ? document.activeElement?.dataset?.filterKey
+            : null;
         const heading = document.createElement('div');
         heading.className = 'dashboard-attention__heading';
-        heading.textContent = `NEEDS YOU, WATCHLIST & OVERLAPS · ${itemCount}`;
+        heading.textContent = `EXCEPTIONS FIRST · ${counts.actionable} NEED ACTION`;
         const list = document.createElement('div');
         list.className = 'dashboard-attention__list';
-        for (const agent of queued) {
-            const status = normalizeStatus(agent.status);
-            const isWatchlist = status === 'waiting';
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = `dashboard-attention__item dashboard-attention__item--${status}${isWatchlist ? ' dashboard-attention__item--watchlist' : ''}`;
-            const queueLabel = isWatchlist ? 'Watchlist' : operatorStatusLabel(agent.status);
-            const tool = agent.pendingTool || agent.currentTool || agent.lastTool || '';
-            const reason = waitReasonLabel(agent);
-            const detail = safePromptDetail(agent);
-            const summary = [
-                queueLabel,
-                agent.name || agent.id,
-                shortProjectName(agent.projectPath || ''),
-                reason && tool ? `${tool} ${reason.toLowerCase()}` : reason,
-                detail,
-            ].filter(Boolean).join(' · ');
-            button.appendChild(document.createTextNode(summary));
-            if (reason || isWatchlist || agent.turnState === 'tool_pending' || agent.turnState === 'awaiting_input') {
-                const provenance = document.createElement('span');
-                provenance.className = 'dash-card__provider-badge';
-                provenance.textContent = waitProvenance(agent);
-                provenance.style.marginLeft = '6px';
-                button.appendChild(provenance);
-            }
-            button.addEventListener('click', () => emitAgentSelected(this.world.agents.get(agent.id)));
-            list.appendChild(button);
+        for (const { key, label } of ROW_STATUS_FILTERS) {
+            list.appendChild(this._filterButton({
+                key: `status:${key}`,
+                label: `${label} ${counts[key] || 0}`,
+                pressed: this._statusFilters.has(key),
+                onClick: () => {
+                    if (this._statusFilters.has(key)) this._statusFilters.delete(key);
+                    else this._statusFilters.add(key);
+                    this._controlsSignature = '';
+                    this.render();
+                },
+            }));
         }
-        for (const collision of collisions) {
-            const button = document.createElement('button');
-            button.type = 'button';
-            button.className = `dashboard-attention__item dashboard-attention__item--${collision.kind === 'write-write' ? 'errored' : 'watchlist'}`;
-            const names = collision.agents
-                .map(id => this.world.agents.get(String(id))?.name || String(id))
-                .join(', ');
-            button.textContent = `OVERLAP · ${collision.path} · ${names}`;
-            button.title = collision.kind === 'write-write'
-                ? 'Multiple agents are writing this file'
-                : 'One agent is writing a file another agent read';
-            if (collision.kind === 'read-write') button.style.opacity = '0.65';
-            button.addEventListener('click', () => {
-                const first = collision.agents
-                    .map(id => this.world.agents.get(String(id)))
-                    .find(Boolean);
-                if (first) emitAgentSelected(first);
-            });
-            list.appendChild(button);
+        const providerLabel = document.createElement('span');
+        providerLabel.className = 'dashboard-attention__provider-label';
+        providerLabel.textContent = 'Provider';
+        list.appendChild(providerLabel);
+        for (const provider of providers) {
+            list.appendChild(this._filterButton({
+                key: `provider:${provider}`,
+                label: `${providerPresentation(provider).badge.label} ${providerCounts[provider]}`,
+                pressed: this._providerFilters.has(provider),
+                onClick: () => {
+                    if (this._providerFilters.has(provider)) this._providerFilters.delete(provider);
+                    else this._providerFilters.add(provider);
+                    this._controlsSignature = '';
+                    this.render();
+                },
+            }));
+        }
+        if (this._statusFilters.size || this._providerFilters.size) {
+            list.appendChild(this._filterButton({
+                key: 'clear',
+                label: 'Clear filters',
+                pressed: false,
+                onClick: () => {
+                    this._statusFilters.clear();
+                    this._providerFilters.clear();
+                    this._controlsSignature = '';
+                    this.render();
+                },
+            }));
+        }
+        if (this._searchQuery) {
+            const search = document.createElement('span');
+            search.className = 'dashboard-attention__search';
+            search.textContent = `Search "${truncateText(this._searchQuery, 32)}" · ${this._searchMatches?.size || 0} matches`;
+            list.appendChild(search);
         }
         replaceChildren(this.attentionEl, [heading, list]);
+        if (focusedKey) {
+            [...this.attentionEl.querySelectorAll('[data-filter-key]')]
+                .find(button => button.dataset.filterKey === focusedKey)
+                ?.focus({ preventScroll: true });
+        }
+    }
+
+    _filterButton({ key, label, pressed, onClick }) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'dashboard-attention__item';
+        button.dataset.filterKey = key;
+        button.setAttribute('aria-pressed', String(pressed));
+        button.textContent = label;
+        button.addEventListener('click', onClick);
+        return button;
     }
 
     _updateCard(cardEl, agent) {
@@ -780,6 +984,9 @@ export class DashboardRenderer {
             agent.teamName || '',
             status,
             agent.waitReason || '',
+            agent.signalSource || '',
+            agent.turnState || '',
+            safePromptDetail(agent),
             agent.pendingTool || '',
             agent.currentTool || '',
             agent.currentToolInput || '',
@@ -797,6 +1004,8 @@ export class DashboardRenderer {
             if (cardEl.className !== nextClass) cardEl.className = nextClass;
             refs.select.setAttribute('aria-label', `Select agent ${agent.name || agent.id}, ${statusInfo.label}`);
             refs.select.setAttribute('aria-pressed', String(this.selection.isSelected(agent.id)));
+            refs.select.setAttribute('aria-expanded', String(this.selection.isSelected(agent.id)));
+            refs.detail?.setAttribute('aria-hidden', String(!this.selection.isSelected(agent.id)));
 
             this._setText(refs.name, agent.name);
             this._setText(refs.model, model.label);
@@ -831,13 +1040,15 @@ export class DashboardRenderer {
             this._setText(refs.providerBadge, badge.label);
             this._setStyle(refs.providerBadge, 'color', badge.color);
             this._setStyle(refs.providerBadge, 'background', badge.bg);
+            this._setText(refs.signalSource, waitProvenance(agent));
+            refs.signalSource.title = agent.signalSource === 'hook'
+                ? 'Live hook signal'
+                : 'Transcript-derived signal';
 
             const nextStatusClass = `dash-card__status dash-card__status--${status}`;
             if (refs.status.className !== nextStatusClass) refs.status.className = nextStatusClass;
-            // A blocked agent says what it is blocked on; the generic status
-            // label is only useful when there is nothing more specific.
             const reason = waitReasonLabel(agent);
-            this._setText(refs.statusLabel, reason || operatorStatusLabel(status));
+            this._setText(refs.statusLabel, operatorStatusLabel(status));
             refs.status.title = reason ? `${statusInfo.label} — ${reason}` : '';
 
             const tool = currentToolPresentation(agent, i18n);
@@ -845,6 +1056,30 @@ export class DashboardRenderer {
             this._setText(refs.toolIcon, tool.icon);
             this._setText(refs.toolName, tool.name);
             this._setText(refs.toolDetail, tool.detail);
+            this._setText(refs.phase, rowPhase(agent));
+            this._setText(refs.phaseDetail, formatToolDetail(tool.detail, {
+                max: 54,
+                projectPath: agent.projectPath || '',
+            }));
+            refs.phaseDetail.title = tool.detail || '';
+
+            const promptDetail = safePromptDetail(agent);
+            const blocker = reason
+                || (status === 'waiting_on_user' ? 'Waiting for input' : '')
+                || (status === 'errored' ? 'Session error' : '')
+                || (status === 'rate_limited' ? 'Quota limit' : '')
+                || 'None';
+            this._setText(refs.blocker, blocker);
+            this._setText(refs.promptDetail, promptDetail);
+            refs.promptDetail.title = promptDetail;
+            refs.blocker.parentElement?.classList.toggle(
+                'dash-card__blocker-cell--active',
+                Boolean(reason || ['waiting_on_user', 'errored', 'rate_limited'].includes(status)),
+            );
+
+            const searchContext = this._searchContexts.get(String(agent.id)) || '';
+            this._setText(refs.searchContext, searchContext);
+            this._setStyle(refs.searchContext, 'display', searchContext ? '' : 'none');
 
             if (agent.lastMessage) {
                 this._setText(refs.message, `"${agent.lastMessage}"`);
@@ -876,6 +1111,7 @@ export class DashboardRenderer {
         this._updateParentChip(cardEl, agent);
         this._updateActivityAge(cardEl, agent);
         this._renderWorkingSet(cardEl, agent);
+        this._updateChildProgress(cardEl, agent);
 
         const appearance = agent.appearance || {};
         const avatarSignature = [
@@ -903,8 +1139,11 @@ export class DashboardRenderer {
             this._renderToolHistory(cardEl, agent.id, history);
         }
 
-        // Render cost/token footer from the latest fetched detail
-        this._renderUsageFooter(cardEl, this.usageFooters.get(agent.id));
+        // The compact row always uses the live session payload. Detail fetches
+        // are reserved for the one selected row and may refine token totals.
+        this._renderUsageFooter(cardEl, this.selection.isSelected(agent.id)
+            ? (this.usageFooters.get(agent.id) || this._usageFooterFor(agent, null))
+            : this._usageFooterFor(agent, null));
 
         this._updateStaleBadge(cardEl, agent);
     }
@@ -914,6 +1153,18 @@ export class DashboardRenderer {
         if (!container) return;
         const workingSet = workingSetForAgent(agent);
         const collisions = collisionsForAgent(agent);
+        const summary = cardEl._elements?.workSummary;
+        const writes = workingSet.filter(item => item.op === 'write').length;
+        const reads = workingSet.filter(item => item.op === 'read').length;
+        const leadPath = collisions[0]?.path || workingSet[0]?.path || '';
+        const counts = [writes ? `${writes} write` : '', reads ? `${reads} read` : ''].filter(Boolean);
+        const prefix = collisions.length ? `${collisions.length} overlap` : counts.join(' · ');
+        const summaryText = leadPath
+            ? `${prefix}${prefix ? ' · ' : ''}${formatToolDetail(leadPath, { max: 38, projectPath: agent.projectPath || '' })}`
+            : 'No files';
+        this._setText(summary, summaryText);
+        if (summary) summary.title = leadPath;
+        summary?.parentElement?.classList.toggle('dash-card__work-cell--collision', collisions.length > 0);
         const signature = JSON.stringify([workingSet, collisions]);
         if (container._workingSetSignature === signature) return;
         container._workingSetSignature = signature;
@@ -952,6 +1203,23 @@ export class DashboardRenderer {
         replaceChildren(container, [title, rows]);
     }
 
+    _updateChildProgress(cardEl, agent) {
+        const target = cardEl._elements?.children;
+        if (!target) return;
+        const children = [...this.world.agents.values()]
+            .filter(candidate => String(candidate.parentSessionId || '') === String(agent.id));
+        if (!children.length) {
+            this._setText(target, agent.parentSessionId ? 'Child agent' : 'None');
+            target.title = agent.parentSessionId ? `Parent ${agent.parentSessionId}` : 'No child agents';
+            return;
+        }
+        const completed = children.filter(child => normalizeStatus(child.status) === 'completed').length;
+        const active = children.filter(child => ['working', 'waiting', 'waiting_on_user']
+            .includes(normalizeStatus(child.status))).length;
+        this._setText(target, `${completed} done · ${active} active · ${children.length} total`);
+        target.title = children.map(child => `${child.name}: ${operatorStatusLabel(child.status)}`).join('; ');
+    }
+
     _updateParentChip(cardEl, agent) {
         const chip = cardEl._elements?.parentChip;
         if (!chip) return;
@@ -980,7 +1248,18 @@ export class DashboardRenderer {
             const selected = id === nextId;
             this.cards.get(id)?._elements?.select
                 ?.setAttribute('aria-pressed', String(selected));
+            this.cards.get(id)?._elements?.select
+                ?.setAttribute('aria-expanded', String(selected));
             this.cards.get(id)?.classList.toggle('dash-card--selected', selected);
+            this.cards.get(id)?._elements?.detail
+                ?.setAttribute('aria-hidden', String(!selected));
+            const agent = this.world.agents.get(id);
+            const card = this.cards.get(id);
+            if (agent && card) {
+                this._renderUsageFooter(card, selected
+                    ? (this.usageFooters.get(id) || this._usageFooterFor(agent, null))
+                    : this._usageFooterFor(agent, null));
+            }
         }
         const focusIsInDashboard = this.gridEl?.contains?.(document.activeElement);
         if (!focusIsInDashboard && nextId && this.cards.has(nextId)) {
@@ -1108,16 +1387,20 @@ export class DashboardRenderer {
     }
 
     _usageFooterFor(agent, data) {
-        const raw = data.tokenUsage || data.tokens || data.usage;
-        if (!raw) return null;
+        const raw = data?.tokenUsage || data?.tokens || data?.usage || agent?.tokens || null;
         const usage = TokenUsage.normalize(raw);
         const totalTokens = TokenUsage.totalTokens(usage);
-        if (totalTokens <= 0) return null;
-        const cost = TokenUsage.estimateCost(usage, agent.model, agent.provider);
+        const reported = agent?.cost?.source === 'provider' ? agent.cost : null;
+        const cost = reported || TokenUsage.estimateCost(usage, agent.model, agent.provider);
+        const source = reported ? 'provider' : 'estimate';
+        const revision = cost.rateRevision || TokenUsage.rateRevision;
         return {
             tokens: `${formatTokens(totalTokens)} tokens`,
-            cost: `~${formatCost(cost.usd)}`,
-            costTitle: `Estimated using ${cost.rateMatch} rates, revision ${TokenUsage.rateRevision}`,
+            cost: `${source === 'estimate' ? '~' : ''}${formatCost(cost.usd)}`,
+            costTitle: source === 'provider'
+                ? `Reported by ${agent.provider || 'provider'}`
+                : `Estimated using ${cost.rateMatch || 'default'} rates, revision ${revision}`,
+            source,
             unknownModel: cost.unknownModel,
         };
     }
@@ -1130,6 +1413,7 @@ export class DashboardRenderer {
             return;
         }
         this._setText(refs.usageTokens, footer.tokens);
+        this._setText(refs.usageSource, footer.source === 'provider' ? 'reported' : 'estimate');
         refs.usageCost.title = footer.costTitle;
         refs.usageCost.replaceChildren(
             document.createTextNode(footer.cost),
@@ -1150,7 +1434,7 @@ export class DashboardRenderer {
         this._setStyle(cardEl._elements.tools, 'display', '');
         const errorEl = document.createElement('div');
         errorEl.className = 'dash-card__tool-error';
-        errorEl.textContent = '⚠ Session details unavailable';
+        errorEl.textContent = 'Session details unavailable';
         replaceChildren(cardEl._elements.toolList, [errorEl]);
     }
 
@@ -1251,6 +1535,7 @@ export class DashboardRenderer {
         const agents = Array.from(this.world.agents.values());
         try {
             const candidates = this._detailCandidates(agents);
+            if (!candidates.length) return;
             const detailsByAgentId = await sessionDetailsService.fetchSessionDetailsBatch(candidates);
             if (!this.active || generation !== this._detailFetchGeneration) return;
             for (const agent of candidates) {
@@ -1334,24 +1619,9 @@ export class DashboardRenderer {
     }
 
     _detailCandidates(agents) {
-        if (this._visibilityLayoutDirty) this._syncVisibleAgentIdsFromLayout();
-        const selected = [];
-        const active = [];
-        const visible = [];
-        for (const agent of agents) {
-            if (agent.id === this._selectedAgentId) selected.push(agent);
-            else if (['working', 'waiting', 'errored', 'rate_limited', 'waiting_on_user'].includes(normalizeStatus(agent.status))) active.push(agent);
-            else if (!this._observer || this._visibleAgentIds.has(agent.id)) visible.push(agent);
-        }
-        const seen = new Set();
-        const out = [];
-        for (const agent of [...selected, ...active, ...visible]) {
-            if (seen.has(agent.id)) continue;
-            seen.add(agent.id);
-            out.push(agent);
-            if (out.length >= DETAIL_FETCH_LIMIT) break;
-        }
-        return out;
+        if (!this._selectedAgentId) return [];
+        const selected = agents.find(agent => String(agent.id) === String(this._selectedAgentId));
+        return selected ? [selected] : [];
     }
 
     _syncVisibleAgentIdsFromLayout() {
@@ -1444,5 +1714,6 @@ export class DashboardRenderer {
         eventBus.off('agent:updated', this._onAgentUpdated);
         eventBus.off('agent:removed', this._onAgentRemoved);
         eventBus.off('mode:changed', this._onModeChanged);
+        eventBus.off(DASHBOARD_FILTER_EVENT, this._onSharedFilterChanged);
     }
 }

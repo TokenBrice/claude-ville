@@ -49,6 +49,7 @@ const PIN_COMPARE_LIMIT = 2;
 const NARRATION_ENTRY_LIMIT = 20;
 const NARRATION_RETENTION_MS = 5 * 60_000;
 const PINNED_AGENTS_STORAGE_KEY = 'claudeville.pinnedAgents';
+const VILLAGE_OPEN_STORAGE_KEY = 'claudeville.activityPanel.villageOpen';
 const VILLAGE_DIRECTOR_EVENT = 'village:director';
 const VILLAGE_BUILDING_SIGNAL_EVENT = 'village:building-signal';
 const CONFIGURED_BUILDING_TYPES = new Set(BUILDING_DEFS.map(def => normalizeBuildingType(def.type)));
@@ -64,6 +65,22 @@ const PROMPT_DETAIL_MAX_LENGTH = 200;
 export const BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT = 6;
 export const BOOK_OF_LIVES_CHAPTER_LIMIT = 32;
 export const BOOK_OF_LIVES_MILESTONE_LIMIT = 6;
+export const SECTION_ORDER = Object.freeze([
+    'blocked',
+    'current-tool',
+    'tool-history',
+    'messages',
+    'cost-tokens',
+    'prompt-plan',
+    'working-set',
+    'journey',
+    'village',
+    'scene-log',
+    'chronicle',
+    'harbor-log',
+    'narration',
+    'village-bonds',
+]);
 
 function safePromptDetail(agent) {
     const source = agent?.promptDetail
@@ -207,11 +224,11 @@ export function shouldHandleActivityPanelEscape({ panelOpen = false, modalOpen =
 }
 
 export function resolveClose({ origin = 'panel' } = {}) {
-    const eventDriven = origin === 'event';
+    const eventDriven = origin === 'event' || origin === 'mode';
     return {
         emit: !eventDriven,
         stopPolling: true,
-        moveFocus: !eventDriven,
+        moveFocus: origin === 'panel',
     };
 }
 
@@ -338,9 +355,14 @@ const RELATIONSHIP_WARMTH_LABELS = Object.freeze({
 export function relationshipLoreLine(bond, now = Date.now()) {
     const commits = Number(bond?.sharedCommits) || 0;
     const commitLore = commits === 1 ? '1 shared commit' : `${commits} shared commits`;
-    const warmthLore = RELATIONSHIP_WARMTH_LABELS[bond?.warmth] || 'Faint trail';
+    const showsWarmth = bond?.tier !== 'strangers';
+    const warmthLore = showsWarmth
+        ? RELATIONSHIP_WARMTH_LABELS[bond?.warmth] || 'Faint trail'
+        : '';
     const ago = formatRelative(Number(bond?.lastInteractionAt), now);
-    return [warmthLore, commitLore, ago ? `crossed paths ${ago}` : 'no meeting recorded'].join(' · ');
+    return [warmthLore, commitLore, ago ? `crossed paths ${ago}` : 'no meeting recorded']
+        .filter(Boolean)
+        .join(' · ');
 }
 
 export class ActivityPanel {
@@ -378,6 +400,7 @@ export class ActivityPanel {
             panelRole: document.getElementById('panelRole'),
             panelLevel: document.getElementById('panelLevel'),
             panelTeam: document.getElementById('panelTeam'),
+            panelMoodRow: document.getElementById('panelMoodRow'),
             panelMood: document.getElementById('panelMood'),
             panelLastActive: document.getElementById('panelLastActive'),
             panelModeRow: document.getElementById('panelModeRow'),
@@ -390,6 +413,7 @@ export class ActivityPanel {
             panelTokenGrid: document.getElementById('panelTokenGrid'),
             panelNoUsage: document.getElementById('panelNoUsage'),
             panelCostRow: document.getElementById('panelCostRow'),
+            panelCostLabel: document.getElementById('panelCostLabel'),
             panelInputTokens: document.getElementById('panelInputTokens'),
             panelOutputTokens: document.getElementById('panelOutputTokens'),
             panelCacheRead: document.getElementById('panelCacheRead'),
@@ -419,16 +443,11 @@ export class ActivityPanel {
             style: { marginLeft: '0.5rem' },
         });
         this._blockedBannerEl = el('div', {
-            className: 'activity-panel__meta-row',
+            className: 'activity-panel__blocked',
             style: {
                 display: 'none',
-                marginTop: '0.5rem',
-                padding: '0.5rem',
-                border: '1px solid currentColor',
-                flexWrap: 'wrap',
             },
         }, [this._blockedPromptEl, this._blockedProvenanceEl]);
-        this.dom.panelAgentStatus?.closest('.activity-panel__header')?.appendChild(this._blockedBannerEl);
         this._elapsedUnsubscribe = subscribeElapsedText(this._statusElapsedEl, () => (
             this._mode === 'agent' && this.currentAgent
                 ? formatStatusElapsed(this.currentAgent)
@@ -461,17 +480,27 @@ export class ActivityPanel {
         this._relationshipsBodyEl = null;
         this._messageEdgesSectionEl = null;
         this._messageEdgesBodyEl = null;
+        this._promptPlanSectionEl = null;
+        this._promptPlanBodyEl = null;
+        this._villageSectionEl = null;
+        this._villageBodyEl = null;
         this._pinStripEl = null;
         this._pinToggleBtn = null;
         this._pinFetchSeq = 0;
         this._pinned = new Set(this._loadPinnedAgentIds());
         this._pinnedDetails = new Map();
         this._agentSections = [];
+        this._viewMode = 'character';
         this._workingDirectoryRowEl = null;
         this._workingDirectoryValueEl = null;
         this._workingDirectoryCopyBtn = null;
         this._ensurePinCompare();
         this._ensureWorkingDirectoryAction();
+        this._ensureVillageSection();
+        this._mountExistingSections();
+        this._mountSection('blocked', this._blockedBannerEl);
+        this._registerAgentSection(this._blockedBannerEl);
+        this._ensurePromptPlanSection();
         this._ensureJourneySection();
         this._ensureWorkingSetSection();
         this._ensureNarrationSection();
@@ -524,9 +553,18 @@ export class ActivityPanel {
             this.hide();
         };
         this._onAgentSelected = (agent) => {
-            if (agent) this.show(agent);
+            if (!agent) return;
+            if (this._viewMode === 'dashboard') {
+                this.currentAgent = agent;
+                return;
+            }
+            this.show(agent);
         };
         this._onAgentDeselected = () => {
+            if (this._viewMode === 'dashboard') {
+                this.currentAgent = null;
+                return;
+            }
             if (this._mode === 'agent' && this.currentAgent) this._close({ origin: 'event' });
         };
         this._onAgentUpdated = (agent) => {
@@ -542,6 +580,7 @@ export class ActivityPanel {
                 this._renderNarration(agent);
                 this._updateInfo(agent);
                 this._updateCurrentTool(agent);
+                this._updatePromptPlan(agent);
                 this._updateWorkingSet(agent);
                 this._updateJourney(agent);
                 this._updateHarborLog(agent);
@@ -558,8 +597,9 @@ export class ActivityPanel {
         this._onAgentRemoved = (agent) => {
             if (agent?.id && agent.id === this._narrationAgentId) this._resetNarration();
             sessionDetailsService.deleteForAgent(agent);
-            if (this._mode === 'agent' && this.currentAgent && agent.id === this.currentAgent.id) {
-                this.hide();
+            if (this.currentAgent && agent.id === this.currentAgent.id) {
+                if (this._mode === 'agent') this.hide();
+                else this.currentAgent = null;
             }
             this._renderPinCompare();
         };
@@ -627,6 +667,16 @@ export class ActivityPanel {
             if (service && service !== this._getAffinityService()) return;
             this._renderRelationships(this.currentAgent);
         };
+        this._onModeChanged = (mode) => {
+            this._viewMode = mode;
+            if (mode === 'dashboard') {
+                if (this._mode !== null) this._close({ origin: 'mode' });
+                return;
+            }
+            if (mode === 'character' && this._mode === null && this.currentAgent) {
+                this.show(this.currentAgent);
+            }
+        };
         // Pause polling while the tab is hidden; refresh once on return.
         this._onVisibilityChange = () => this._syncPollingForVisibility();
 
@@ -649,6 +699,7 @@ export class ActivityPanel {
         eventBus.on('biography:updated', this._onBiographyUpdated);
         eventBus.on('affinity:changed', this._onAffinityChanged);
         eventBus.on('affinity:ready', this._onAffinityReady);
+        eventBus.on('mode:changed', this._onModeChanged);
         document.addEventListener('visibilitychange', this._onVisibilityChange);
     }
 
@@ -712,6 +763,7 @@ export class ActivityPanel {
             relationships: '',
             messageEdges: '',
             workingSet: '',
+            promptPlan: '',
             pins: '',
             buildingSignal: '',
             buildingOccupants: '',
@@ -722,6 +774,49 @@ export class ActivityPanel {
     _registerAgentSection(node) {
         if (!node || this._agentSections.includes(node)) return;
         this._agentSections.push(node);
+    }
+
+    _mountExistingSections() {
+        for (const key of [...SECTION_ORDER].reverse()) {
+            const node = this.panelEl?.querySelector(`[data-section="${key}"]`);
+            if (node) this._mountSection(key, node);
+        }
+    }
+
+    _mountSection(key, node) {
+        const index = SECTION_ORDER.indexOf(key);
+        if (!node || index < 0 || !this.panelEl) return;
+        node.dataset.section = key;
+
+        const villageIndex = SECTION_ORDER.indexOf('village');
+        const insideVillage = index > villageIndex;
+        const parent = insideVillage ? this._villageBodyEl : this.panelEl;
+        if (!parent) return;
+
+        const next = SECTION_ORDER.slice(index + 1)
+            .map(nextKey => parent.querySelector(`[data-section="${nextKey}"]`))
+            .find(candidate => candidate?.parentNode === parent);
+        if (next) {
+            parent.insertBefore(node, next);
+            return;
+        }
+        parent.appendChild(node);
+    }
+
+    _ensureVillageSection() {
+        if (this._villageSectionEl && this._villageBodyEl) return;
+        const body = el('div', { className: 'activity-panel__village-body' });
+        const details = el('details', { className: 'activity-panel__village' }, [
+            el('summary', { className: 'activity-panel__village-summary', text: 'IN THE VILLAGE' }),
+            body,
+        ]);
+        details.open = this._loadVillageOpen();
+        this._onVillageToggle = () => this._persistVillageOpen();
+        details.addEventListener('toggle', this._onVillageToggle);
+        this._villageSectionEl = details;
+        this._villageBodyEl = body;
+        this._mountSection('village', details);
+        this._registerAgentSection(details);
     }
 
     _loadPinnedAgentIds() {
@@ -742,6 +837,22 @@ export class ActivityPanel {
         if (typeof localStorage === 'undefined') return;
         try {
             localStorage.setItem(PINNED_AGENTS_STORAGE_KEY, JSON.stringify([...this._pinned].slice(0, PIN_COMPARE_LIMIT)));
+        } catch { /* ignore */ }
+    }
+
+    _loadVillageOpen() {
+        if (typeof localStorage === 'undefined') return false;
+        try {
+            return localStorage.getItem(VILLAGE_OPEN_STORAGE_KEY) === 'true';
+        } catch {
+            return false;
+        }
+    }
+
+    _persistVillageOpen() {
+        if (typeof localStorage === 'undefined' || !this._villageSectionEl) return;
+        try {
+            localStorage.setItem(VILLAGE_OPEN_STORAGE_KEY, String(this._villageSectionEl.open));
         } catch { /* ignore */ }
     }
 
@@ -917,9 +1028,16 @@ export class ActivityPanel {
             const tokenUsage = this._tokenUsageForPin(agent, detail);
             const maxContext = tokenUsage.contextWindowMax || contextWindowLimitForModel(agent?.model, agent?.provider);
             const contextPct = maxContext ? Math.min(100, (tokenUsage.contextWindow / maxContext) * 100) : 0;
-            const cost = agent
-                ? TokenUsage.estimateCost(tokenUsage, agent.model, agent.provider)
-                : { usd: 0, rateMatch: null, unknownModel: false };
+            const suppliedCost = agent?.cost;
+            const cost = suppliedCost && Number.isFinite(Number(suppliedCost.usd))
+                ? suppliedCost
+                : agent
+                    ? {
+                        ...TokenUsage.estimateCost(tokenUsage, agent.model, agent.provider),
+                        source: 'estimate',
+                        rateRevision: TokenUsage.rateRevision,
+                    }
+                    : { usd: 0, source: 'estimate', rateMatch: null, unknownModel: false };
             return {
                 id,
                 agent,
@@ -937,7 +1055,9 @@ export class ActivityPanel {
             row => row.tool?.icon || '',
             row => row.tool?.name || '',
             row => Math.round(row.contextPct),
-            row => row.cost.usd.toFixed(6),
+            row => Number(row.cost.usd).toFixed(6),
+            row => row.cost.source || 'estimate',
+            row => row.cost.unknownModel,
         ]);
         this._pinStripEl.style.display = '';
         if (signature === this._renderSignatures.pins) return;
@@ -969,6 +1089,7 @@ export class ActivityPanel {
         const name = truncateText(row.agent.displayName || row.agent.name || row.id, 8);
         const pct = Math.max(0, Math.min(100, row.contextPct));
         const statusColor = row.status?.color || '#8b8b9e';
+        const estimated = row.cost.source !== 'provider';
         return el('div', {
             className: 'activity-panel__pin-cell',
             title: row.agent.name || row.id,
@@ -981,11 +1102,13 @@ export class ActivityPanel {
             el('span', { className: 'activity-panel__pin-tool', text: row.tool?.icon || '-' }),
             el('span', {
                 className: 'activity-panel__pin-cost',
-                title: `Estimated using ${row.cost.rateMatch || 'default'} rates, revision ${TokenUsage.rateRevision}`,
+                title: estimated
+                    ? `Estimated using ${row.cost.rateMatch || 'default'} rates, revision ${row.cost.rateRevision || TokenUsage.rateRevision}`
+                    : 'Provider-reported cost',
             }, [
-                `~${formatCost(row.cost.usd)}`,
+                `${estimated ? '~' : ''}${formatCost(row.cost.usd)}`,
                 row.cost.unknownModel ? ' ' : null,
-                row.cost.unknownModel ? el('span', { className: 'dash-card__provider-badge', text: 'default rate' }) : null,
+                row.cost.unknownModel ? el('span', { className: 'activity-panel__cost-source', text: 'default rate' }) : null,
             ]),
             el('span', { className: 'activity-panel__pin-context' }, [
                 el('span', {
@@ -998,6 +1121,10 @@ export class ActivityPanel {
 
     show(agent) {
         if (this._destroyed) return;
+        if (this._viewMode === 'dashboard') {
+            this.currentAgent = agent;
+            return;
+        }
         this._preparePanelFocus();
         const agentId = agent?.id ?? null;
         if (agentId !== this._narrationAgentId) this._resetNarration(agentId);
@@ -1018,11 +1145,13 @@ export class ActivityPanel {
         this._ingestNarration(agent);
         this._renderNarration(agent);
         this.panelEl.style.display = '';
+        this.panelEl.scrollTop = 0;
         document.body.classList.add('cv-panel-open');
         this._startPanelKeyboardHandling();
         this._mountHeroPortrait(agent);
         this._updateInfo(agent);
         this._updateCurrentTool(agent);
+        this._updatePromptPlan(agent);
         this._updateWorkingSet(agent);
         this._updateJourney(agent);
         this._updateHarborLog(agent);
@@ -1073,9 +1202,11 @@ export class ActivityPanel {
         if (this._destroyed) return;
         const wasAgent = this._mode === 'agent';
         const wasBuilding = this._mode === 'building';
+        const keepCurrentAgent = origin === 'mode' && wasAgent;
+        const retainedAgent = keepCurrentAgent ? this.currentAgent : null;
         const { emit, stopPolling, moveFocus } = resolveClose({ origin });
         this._detailFetchSeq++;
-        this._resetNarration();
+        if (!keepCurrentAgent) this._resetNarration();
         this._chronicleFetchSeq++;
         this._pinFetchSeq++;
         this._focusRequestVersion++;
@@ -1083,11 +1214,13 @@ export class ActivityPanel {
         this.panelEl.style.display = 'none';
         document.body.classList.remove('cv-panel-open');
         this._teardownHeroPortrait();
-        this.currentAgent = null;
-        this._currentBiographyIdentityKey = null;
+        this.currentAgent = retainedAgent;
+        this._currentBiographyIdentityKey = keepCurrentAgent
+            ? this._biographyIdentityKey(retainedAgent)
+            : null;
         this._renderSignatures = this._emptyRenderSignatures();
-        this._updatePinToggle(null);
-        this._updateWorkingDirectory(null);
+        this._updatePinToggle(retainedAgent);
+        this._updateWorkingDirectory(retainedAgent);
         if (stopPolling) {
             this._stopPolling();
             this._stopBuildingPolling();
@@ -1127,7 +1260,11 @@ export class ActivityPanel {
         this.dom.panelLevel.textContent = this._formatAgentLevel(model.identity);
         this.dom.panelLevel.style.color = model.identity.accent?.[1] || model.identity.accent?.[0] || '';
         this.dom.panelTeam.textContent = agent.teamName || '-';
-        this.dom.panelMood.textContent = this._formatMood(agent.mood);
+        const moodLabel = this._formatMood(agent.mood);
+        this.dom.panelMood.textContent = moodLabel;
+        if (this.dom.panelMoodRow) {
+            this.dom.panelMoodRow.style.display = moodLabel === '-' ? 'none' : '';
+        }
         this.dom.panelLastActive.textContent = this._formatLastActive(agent);
         this._updateWorkingDirectory(agent);
         const modeLabel = this._formatPermissionMode(agent.permissionMode);
@@ -1253,6 +1390,65 @@ export class ActivityPanel {
         inputEl.textContent = tool.detail;
     }
 
+    _ensurePromptPlanSection() {
+        if (this._promptPlanSectionEl && this._promptPlanBodyEl) return;
+        const body = el('div', { className: 'activity-panel__prompt-plan' });
+        const section = el('div', {
+            className: 'activity-panel__section',
+            style: { display: 'none' },
+        }, [
+            el('div', { className: 'activity-panel__section-title', text: 'Prompt & Plan' }),
+            body,
+        ]);
+        this._mountSection('prompt-plan', section);
+        this._promptPlanSectionEl = section;
+        this._promptPlanBodyEl = body;
+        this._registerAgentSection(section);
+    }
+
+    _updatePromptPlan(agent) {
+        if (!this._promptPlanSectionEl || !this._promptPlanBodyEl) return;
+        const prompt = truncateText(String(agent?.lastPrompt || '').trim(), PROMPT_DETAIL_MAX_LENGTH);
+        const todos = (Array.isArray(agent?.todos) ? agent.todos : [])
+            .slice(0, 12)
+            .flatMap((todo) => {
+                const subject = String(todo?.subject || '').trim();
+                if (!subject) return [];
+                return [{
+                    subject: truncateText(subject, 120),
+                    status: String(todo?.status || 'pending').trim().toLowerCase(),
+                }];
+            });
+        if (!prompt && !todos.length) {
+            this._promptPlanSectionEl.style.display = 'none';
+            this._renderSignatures.promptPlan = '';
+            replaceChildren(this._promptPlanBodyEl, []);
+            return;
+        }
+
+        const signature = `${prompt}|${todos.map(todo => `${todo.status}:${todo.subject}`).join('|')}`;
+        this._promptPlanSectionEl.style.display = '';
+        if (signature === this._renderSignatures.promptPlan) return;
+        this._renderSignatures.promptPlan = signature;
+
+        const nodes = [];
+        if (prompt) {
+            nodes.push(el('div', { className: 'activity-panel__prompt', text: prompt }));
+        }
+        if (todos.length) {
+            nodes.push(el('div', { className: 'activity-panel__todo-list' }, todos.map(todo => el('div', {
+                className: [
+                    'activity-panel__todo',
+                    `activity-panel__todo--${todo.status.replace(/[^a-z0-9_-]/g, '-')}`,
+                ],
+            }, [
+                el('span', { className: 'activity-panel__todo-status', text: todo.status }),
+                el('span', { className: 'activity-panel__todo-subject', text: todo.subject }),
+            ]))));
+        }
+        replaceChildren(this._promptPlanBodyEl, nodes);
+    }
+
     _ensureWorkingSetSection() {
         if (this._workingSetSectionEl && this._workingSetBodyEl) return;
         const body = el('div', { className: 'activity-panel__token-usage' });
@@ -1260,7 +1456,7 @@ export class ActivityPanel {
             el('div', { className: 'activity-panel__section-title', text: 'Working set' }),
             body,
         ]);
-        this._insertAgentSectionAfterMeta(section);
+        this._mountSection('working-set', section);
         this._workingSetSectionEl = section;
         this._workingSetBodyEl = body;
         this._registerAgentSection(section);
@@ -1386,6 +1582,14 @@ export class ActivityPanel {
         this._renderToolHistory(data.toolHistory || []);
         this._renderMessages(data.messages || []);
         this._renderTokenUsage(data.tokenUsage || data.tokens || data.usage);
+        if (Object.prototype.hasOwnProperty.call(data, 'lastPrompt')
+            || Object.prototype.hasOwnProperty.call(data, 'todos')) {
+            this._updatePromptPlan({
+                ...agent,
+                lastPrompt: data.lastPrompt ?? agent.lastPrompt,
+                todos: Array.isArray(data.todos) ? data.todos : agent.todos,
+            });
+        }
     }
 
     // ─── Rendering ─────────────────────────────────────
@@ -1436,7 +1640,7 @@ export class ActivityPanel {
         if (!Number.isFinite(exitCode) || exitCode === 0) return null;
         return el('span', {
             className: 'activity-panel__tool-item-exit',
-            text: `⚠ exit ${exitCode}`,
+            text: `exit ${exitCode}`,
             title: entry?.toolStderr
                 ? truncateText(entry.toolStderr, 200)
                 : `Exit code ${exitCode}`,
@@ -1486,7 +1690,8 @@ export class ActivityPanel {
         }
 
         const normalizedUsage = TokenUsage.normalize(usage);
-        const usageSignature = `${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}`;
+        const cost = this._costForUsage(normalizedUsage);
+        const usageSignature = `${normalizedUsage.totalInput}|${normalizedUsage.totalOutput}|${normalizedUsage.cacheRead}|${normalizedUsage.cacheCreate}|${normalizedUsage.contextWindow}|${normalizedUsage.contextWindowMax}|${normalizedUsage.turnCount}|${cost.usd}|${cost.source}|${cost.rateMatch}|${cost.rateRevision}|${cost.unknownModel}`;
         if (usageSignature === this._renderSignatures.tokenUsage) return;
         this._renderSignatures.tokenUsage = usageSignature;
 
@@ -1519,23 +1724,57 @@ export class ActivityPanel {
             formatTokens(normalizedUsage.cacheRead);
         this.dom.panelCacheCreate.textContent =
             formatTokens(normalizedUsage.cacheCreate);
-        const cacheHitDenominator = normalizedUsage.totalInput + normalizedUsage.cacheRead;
-        this.dom.panelCacheHit.textContent = cacheHitDenominator > 0
-            ? `${Math.round((normalizedUsage.cacheRead / cacheHitDenominator) * 100)}%`
-            : '-';
+        this.dom.panelCacheHit.textContent = formatTokens(TokenUsage.totalTokens(normalizedUsage));
         this.dom.panelTurnCount.textContent =
             normalizedUsage.turnCount.toLocaleString();
 
-        const cost = TokenUsage.estimateCost(
-            normalizedUsage,
+        this._renderCost(cost);
+    }
+
+    _costForUsage(usage) {
+        const supplied = this.currentAgent?.cost;
+        if (supplied && Number.isFinite(Number(supplied.usd))) {
+            return {
+                usd: Math.max(0, Number(supplied.usd)),
+                source: supplied.source === 'provider' ? 'provider' : 'estimate',
+                rateMatch: supplied.rateMatch ?? null,
+                rateRevision: supplied.rateRevision || TokenUsage.rateRevision,
+                unknownModel: supplied.unknownModel === true,
+            };
+        }
+        const estimated = TokenUsage.estimateCost(
+            usage,
             this.currentAgent?.model,
             this.currentAgent?.provider,
         );
-        this.dom.panelEstCost.title = `Estimated using ${cost.rateMatch} rates, revision ${TokenUsage.rateRevision}`;
+        return {
+            ...estimated,
+            source: 'estimate',
+            rateRevision: TokenUsage.rateRevision,
+        };
+    }
+
+    _renderCost(cost) {
+        if (!cost || !Number.isFinite(Number(cost.usd))) {
+            this.dom.panelCostRow.hidden = true;
+            this.dom.panelEstCost.textContent = '-';
+            return;
+        }
+        const estimated = cost.source !== 'provider';
+        this.dom.panelCostRow.hidden = false;
+        this.dom.panelCostLabel.textContent = 'Cost';
+        this.dom.panelEstCost.title = estimated
+            ? `Estimated using ${cost.rateMatch || 'default'} rates, revision ${cost.rateRevision || TokenUsage.rateRevision}`
+            : 'Provider-reported cost';
         replaceChildren(this.dom.panelEstCost, [
-            `~${formatCost(cost.usd)}`,
+            `${estimated ? '~' : ''}${formatCost(cost.usd)}`,
+            ' ',
+            el('span', {
+                className: 'activity-panel__cost-source',
+                text: estimated ? 'estimate' : 'provider',
+            }),
             cost.unknownModel ? ' ' : null,
-            cost.unknownModel ? el('span', { className: 'dash-card__provider-badge', text: 'default rate' }) : null,
+            cost.unknownModel ? el('span', { className: 'activity-panel__cost-source', text: 'default rate' }) : null,
         ]);
     }
 
@@ -1562,7 +1801,7 @@ export class ActivityPanel {
         this.dom.panelCacheCreate.textContent = '-';
         this.dom.panelCacheHit.textContent = '-';
         this.dom.panelTurnCount.textContent = '-';
-        this.dom.panelEstCost.textContent = '-';
+        this._renderCost(this._costForUsage(null));
     }
 
     _emptyState(text) {
@@ -1585,7 +1824,7 @@ export class ActivityPanel {
             el('div', { className: 'activity-panel__section-title', text: 'Harbor Log' }),
             details,
         ]);
-        this._insertAgentSectionAfterMeta(section);
+        this._mountSection('harbor-log', section);
         this._harborLogSectionEl = section;
         this._harborLogBodyEl = body;
         this._registerAgentSection(section);
@@ -1674,7 +1913,7 @@ export class ActivityPanel {
             el('div', { className: 'activity-panel__section-title', text: 'Narration' }),
             body,
         ]);
-        this._insertAgentSectionAfterMeta(section);
+        this._mountSection('narration', section);
         this._narrationSectionEl = section;
         this._narrationBodyEl = body;
         this._registerAgentSection(section);
@@ -1737,18 +1976,6 @@ export class ActivityPanel {
         this._pruneNarrationEntries(now);
     }
 
-    _narrationEmptyCopy(agent) {
-        const sources = agent?.observedSources;
-        const observed = !!(
-            sources
-            && typeof sources === 'object'
-            && Object.values(sources).some(value => value === true)
-        );
-        return observed
-            ? 'Sources were observed, but no attributed narration entered the last 5 minutes.'
-            : 'No attributable narration was observed in the last 5 minutes.';
-    }
-
     _renderNarration(agent, now = Date.now()) {
         if (!this._narrationSectionEl || !this._narrationBodyEl) return;
         if (this._mode !== 'agent' || !agent) {
@@ -1759,8 +1986,13 @@ export class ActivityPanel {
 
         this._pruneNarrationEntries(now);
         const ordered = [...this._narrationEntries];
-        const emptyCopy = ordered.length ? '' : this._narrationEmptyCopy(agent);
-        const signature = `${emptyCopy}|${hashRows(ordered, [
+        if (!ordered.length) {
+            this._narrationSectionEl.style.display = 'none';
+            this._renderSignatures.narration = '';
+            replaceChildren(this._narrationBodyEl, []);
+            return;
+        }
+        const signature = hashRows(ordered, [
             entry => entry.actionId || '',
             entry => entry.text || '',
             entry => entry.full || '',
@@ -1770,15 +2002,13 @@ export class ActivityPanel {
             entry => entry.redacted,
             entry => entry.observedAt,
             entry => formatRelative(entry.observedAt, now) || '',
-        ])}`;
+        ]);
         this._narrationSectionEl.style.display = '';
         if (signature === this._renderSignatures.narration) return;
         this._renderSignatures.narration = signature;
         replaceChildren(
             this._narrationBodyEl,
-            ordered.length
-                ? ordered.map(entry => this._narrationRow(entry, now))
-                : [this._emptyState(emptyCopy)],
+            ordered.map(entry => this._narrationRow(entry, now)),
         );
     }
 
@@ -1835,7 +2065,7 @@ export class ActivityPanel {
             el('div', { className: 'activity-panel__section-title', text: 'Chronicle' }),
             details,
         ]);
-        this._insertAgentSectionAfterMeta(section);
+        this._mountSection('chronicle', section);
         this._chronicleSectionEl = section;
         this._chronicleBodyEl = body;
         this._registerAgentSection(section);
@@ -2005,7 +2235,7 @@ export class ActivityPanel {
             el('div', { className: 'activity-panel__section-title', text: 'Scene Log' }),
             details,
         ]);
-        this._insertAgentSectionAfterMeta(section);
+        this._mountSection('scene-log', section);
         this._directorFeedSectionEl = section;
         this._directorFeedBodyEl = body;
         this._registerAgentSection(section);
@@ -2070,14 +2300,7 @@ export class ActivityPanel {
             }),
             body,
         ]);
-        const currentToolSection = this.dom.panelCurrentTool?.closest?.('.activity-panel__section');
-        if (currentToolSection?.nextSibling) {
-            this.panelEl.insertBefore(section, currentToolSection.nextSibling);
-        } else if (currentToolSection) {
-            this.panelEl.appendChild(section);
-        } else {
-            this._insertAgentSectionAfterMeta(section);
-        }
+        this._mountSection('village-bonds', section);
         this._relationshipsSectionEl = section;
         this._relationshipsBodyEl = body;
         this._registerAgentSection(section);
@@ -2092,20 +2315,20 @@ export class ActivityPanel {
         const service = this._getAffinityService();
         const identityKey = this._biographyIdentityKey(agent);
         if (!identityKey) {
-            this._relationshipsSectionEl.style.display = 'none';
-            this._renderSignatures.relationships = '';
+            this._relationshipsSectionEl.style.display = '';
+            this._renderSignatures.relationships = 'empty';
+            replaceChildren(this._relationshipsBodyEl, [this._emptyState('No shared work yet.')]);
             return;
         }
         const now = Date.now();
-        const bonds = service?.collaboratorsFor?.(identityKey, now) || [];
+        const bonds = (service?.collaboratorsFor?.(identityKey, now) || [])
+            .filter(bond => bond?.tier !== 'strangers' || Number(bond?.sharedCommits) > 0);
         this._relationshipsSectionEl.style.display = '';
         if (!bonds.length) {
             const signature = 'empty';
             if (signature === this._renderSignatures.relationships) return;
             this._renderSignatures.relationships = signature;
-            replaceChildren(this._relationshipsBodyEl, [this._emptyState(
-                'No bonds recorded yet. Shared work, messages, and meetings will write the first entry.',
-            )]);
+            replaceChildren(this._relationshipsBodyEl, [this._emptyState('No shared work yet.')]);
             return;
         }
         const shown = bonds.slice(0, PANEL_RELATIONSHIP_LIMIT);
@@ -2130,18 +2353,24 @@ export class ActivityPanel {
     }
 
     _relationshipRow(bond, now = Date.now()) {
+        const tier = bond?.tier === 'allies' || bond?.tier === 'acquaintances'
+            ? bond.tier
+            : 'strangers';
         const tierLabel = {
             allies: 'ally',
             acquaintances: 'acquaintance',
             strangers: 'stranger',
-        }[bond.tier] || 'stranger';
-        return el('div', { className: ['activity-panel__rel-row', `activity-panel__rel-row--${bond.tier}`] }, [
+        }[tier];
+        return el('div', { className: ['activity-panel__rel-row', `activity-panel__rel-row--${tier}`] }, [
             el('div', { className: 'activity-panel__rel-head' }, [
-                el('span', { className: `activity-panel__rel-dot activity-panel__rel-dot--${bond.tier}` }),
+                el('span', { className: `activity-panel__rel-dot activity-panel__rel-dot--${tier}` }),
                 el('span', { className: 'activity-panel__rel-name', text: bond.name }),
-                el('span', { className: `activity-panel__rel-tier activity-panel__rel-tier--${bond.tier}`, text: tierLabel }),
+                el('span', { className: `activity-panel__rel-tier activity-panel__rel-tier--${tier}`, text: tierLabel }),
             ]),
-            el('div', { className: 'activity-panel__rel-meta', text: relationshipLoreLine(bond, now) }),
+            el('div', {
+                className: 'activity-panel__rel-meta',
+                text: relationshipLoreLine({ ...bond, tier }, now),
+            }),
         ]);
     }
 
@@ -2174,13 +2403,14 @@ export class ActivityPanel {
             body,
         ]);
         const section = el('div', {
-            className: 'activity-panel__section',
+            className: 'activity-panel__message-edges',
             style: { display: 'none' },
         }, [
             el('div', { className: 'activity-panel__section-title', text: 'Team Messages' }),
             details,
         ]);
-        this._insertAgentSectionAfterMeta(section);
+        const messagesSection = this.dom.panelMessages?.closest?.('[data-section="messages"]');
+        messagesSection?.appendChild(section);
         this._messageEdgesSectionEl = section;
         this._messageEdgesBodyEl = body;
         this._registerAgentSection(section);
@@ -2246,17 +2476,6 @@ export class ActivityPanel {
         return raw;
     }
 
-    _insertAgentSectionAfterMeta(section) {
-        const meta = this.panelEl?.querySelector('.activity-panel__meta');
-        if (meta?.nextSibling) {
-            this.panelEl.insertBefore(section, meta.nextSibling);
-        } else if (meta) {
-            this.panelEl.appendChild(section);
-        } else {
-            this.panelEl?.appendChild(section);
-        }
-    }
-
     _tokenCell(label, value) {
         return el('div', { className: 'activity-panel__token-cell' }, [
             el('span', { className: 'activity-panel__token-cell-label', text: label }),
@@ -2284,12 +2503,7 @@ export class ActivityPanel {
             el('div', { className: 'activity-panel__section-title', text: 'Journey' }),
             body,
         ]);
-        const meta = this.panelEl?.querySelector('.activity-panel__meta');
-        if (meta?.nextSibling) {
-            this.panelEl.insertBefore(section, meta.nextSibling);
-        } else if (meta) {
-            this.panelEl.appendChild(section);
-        }
+        this._mountSection('journey', section);
         this._journeySectionEl = section;
         this._journeyBodyEl = body;
         this._journeyWhyEl = whyEl;
@@ -3729,13 +3943,17 @@ export class ActivityPanel {
         eventBus.off('biography:updated', this._onBiographyUpdated);
         eventBus.off('affinity:changed', this._onAffinityChanged);
         eventBus.off('affinity:ready', this._onAffinityReady);
+        eventBus.off('mode:changed', this._onModeChanged);
         document.removeEventListener('visibilitychange', this._onVisibilityChange);
+        this._villageSectionEl?.removeEventListener('toggle', this._onVillageToggle);
 
         const ownedNodes = [
             this._pinStripEl,
             this._pinToggleBtn,
             this._workingDirectoryRowEl,
             this._statusElapsedEl,
+            this._blockedBannerEl,
+            this._promptPlanSectionEl,
             this._workingSetSectionEl,
             this._journeySectionEl,
             this._harborLogSectionEl,
@@ -3744,6 +3962,7 @@ export class ActivityPanel {
             this._narrationSectionEl,
             this._relationshipsSectionEl,
             this._messageEdgesSectionEl,
+            this._villageSectionEl,
         ];
         for (const node of ownedNodes) node?.remove?.();
         this._agentSections = [];
@@ -3783,5 +4002,9 @@ export class ActivityPanel {
         this._relationshipsBodyEl = null;
         this._messageEdgesSectionEl = null;
         this._messageEdgesBodyEl = null;
+        this._promptPlanSectionEl = null;
+        this._promptPlanBodyEl = null;
+        this._villageSectionEl = null;
+        this._villageBodyEl = null;
     }
 }

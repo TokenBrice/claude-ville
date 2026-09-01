@@ -151,10 +151,10 @@ export function subscribeElapsedText(node, text) {
 
 export function formatCost(cost) {
     const value = Number(cost);
-    if (!Number.isFinite(value) || value <= 0) return '$0.0000';
-    if (value < 0.0001) return '<$0.0001';
-    if (value >= 10) return `$${value.toFixed(2)}`;
-    return `$${value.toFixed(4)}`;
+    if (!Number.isFinite(value) || value <= 0) return '$0.00';
+    if (value < 0.001) return '<$0.001';
+    if (value >= 1) return `$${value.toFixed(2)}`;
+    return `$${value.toFixed(3)}`;
 }
 
 export function shortenHomePath(path) {
