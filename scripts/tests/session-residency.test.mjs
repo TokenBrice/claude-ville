@@ -15,7 +15,7 @@ const T = 1_700_000_000_000;
 const session = (sessionId, turnState, extra = {}) => ({ sessionId, turnState, ...extra });
 const ids = (list) => list.map((s) => s.sessionId).sort().join(',');
 
-test('finished and blocked sessions survive; working ones do not', () => {
+test('only unresolved tool calls survive the active window', () => {
     const residency = new SessionResidency({ ttlMs: 60_000 });
     residency.merge([
         session('done', 'awaiting_input'),
@@ -24,7 +24,7 @@ test('finished and blocked sessions survive; working ones do not', () => {
     ], T);
 
     const after = residency.merge([], T + 1000);
-    assert.equal(ids(after), 'blocked,done');
+    assert.equal(ids(after), 'blocked');
     assert.ok(after.every((s) => s.resident === true));
 });
 
@@ -52,7 +52,7 @@ test('a resident is re-classified as its wait lengthens', () => {
 
 test('residents expire at the TTL', () => {
     const residency = new SessionResidency({ ttlMs: 5_000 });
-    residency.merge([session('done', 'awaiting_input')], T);
+    residency.merge([session('blocked', 'tool_pending', { pendingTool: 'Bash', pendingSince: T })], T);
     assert.equal(residency.merge([], T + 4_000).length, 1);
     assert.equal(residency.merge([], T + 6_000).length, 0);
     assert.equal(residency.getDiagnostics().expired, 1);
@@ -60,9 +60,9 @@ test('residents expire at the TTL', () => {
 
 test('a live session shadows its resident copy rather than duplicating it', () => {
     const residency = new SessionResidency({ ttlMs: 60_000 });
-    residency.merge([session('done', 'awaiting_input')], T);
+    residency.merge([session('blocked', 'tool_pending', { pendingTool: 'Bash', pendingSince: T })], T);
     residency.merge([], T + 1000);
-    const resumed = residency.merge([session('done', 'working')], T + 2000);
+    const resumed = residency.merge([session('blocked', 'working')], T + 2000);
     assert.equal(resumed.length, 1);
     assert.equal(resumed[0].resident, undefined);
     assert.equal(residency.getDiagnostics().resumed, 1);
@@ -72,9 +72,9 @@ test('a live session shadows its resident copy rather than duplicating it', () =
 
 test('the cap evicts the stalest residents first', () => {
     const residency = new SessionResidency({ ttlMs: 10 * 60_000, maxResidents: 2 });
-    residency.merge([session('a', 'awaiting_input')], T);
-    residency.merge([session('b', 'awaiting_input')], T + 1000);
-    residency.merge([session('c', 'awaiting_input')], T + 2000);
+    residency.merge([session('a', 'tool_pending', { pendingTool: 'Bash' })], T);
+    residency.merge([session('b', 'tool_pending', { pendingTool: 'Bash' })], T + 1000);
+    residency.merge([session('c', 'tool_pending', { pendingTool: 'Bash' })], T + 2000);
     const held = residency.merge([], T + 3000);
     assert.equal(ids(held), 'b,c');
     assert.equal(residency.getDiagnostics().capEvictions, 1);
@@ -82,9 +82,9 @@ test('the cap evicts the stalest residents first', () => {
 
 test('merge never drops or reorders the live list', () => {
     const residency = new SessionResidency({ ttlMs: 60_000 });
-    residency.merge([session('done', 'awaiting_input')], T);
+    residency.merge([session('blocked', 'tool_pending', { pendingTool: 'Bash' })], T);
     const live = [session('one', 'working'), session('two', 'working')];
     const merged = residency.merge(live, T + 1000);
     assert.deepEqual(merged.slice(0, 2).map((s) => s.sessionId), ['one', 'two']);
-    assert.equal(merged[2].sessionId, 'done');
+    assert.equal(merged[2].sessionId, 'blocked');
 });

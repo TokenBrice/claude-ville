@@ -42,8 +42,8 @@ const STATIC_ROOT = path.resolve(STATIC_DIR);
 const realpathSync = fs.realpathSync.native || fs.realpathSync;
 const STATIC_REAL_ROOT = realpathSync(STATIC_ROOT);
 const ACTIVE_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
-// Sessions that stopped on a question, a permission prompt, or a finished turn
-// are held past the active window so the village still shows them.
+// Sessions with unresolved tool calls are held past the active window so slow
+// work and prompts stay visible. Finished turns use the browser departure grace.
 const sessionResidency = new SessionResidency();
 const STARTUP_BOOTSTRAP_DELAY_MS = 25;
 const STARTUP_STATS_WARNING_MS = 1500;
@@ -1170,7 +1170,7 @@ function updateCanonicalActiveProjects(sessions = []) {
 
 // Client-facing session collection. Discovery, canonical project tracking, and
 // watch topology all stay on the raw active window; only what reaches a browser
-// gets residents folded in, so holding a finished session visible never widens
+// gets residents folded in, so holding an unresolved tool visible never widens
 // the watcher footprint.
 function collectSessionsForClients({ force = false } = {}) {
   const live = getAllSessions(ACTIVE_THRESHOLD_MS, { force });

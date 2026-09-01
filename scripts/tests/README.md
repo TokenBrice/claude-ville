@@ -14,7 +14,7 @@ and World validators.
 | --- | --- |
 | `turn-state.test.mjs` | `adapters/turnState.js` — turn-state derivation, and the dwell/permission-mode rules that separate a pending permission prompt from a tool that is simply slow. |
 | `status-resolver.test.mjs` | `src/domain/services/StatusResolver.js` — status priority, and the two regressions the module exists to prevent: a long-running tool decaying to WAITING, and a finished turn never producing COMPLETED. |
-| `session-residency.test.mjs` | `services/sessionResidency.js` — which sessions survive the active window, TTL expiry, re-classification as a wait lengthens, and the resident cap. |
+| `session-residency.test.mjs` | `services/sessionResidency.js` — unresolved-tool residency, completed-turn exclusion, TTL expiry, re-classification as a wait lengthens, and the resident cap. |
 | `chronicle-log.test.mjs` | `src/application/ChronicleLog.js` — commit-subject extraction and the day rollup. |
 | `spend-ledger.test.mjs` | `src/application/SpendLedger.js` — delta banking, cache-read separation, backwards counters, rate windowing, and midnight rollover. |
 | `material-contract.test.mjs` | Semantic material defaults, nine-landmark metadata, Canvas-compatible drawable/GPU seams, SpriteRenderer placement parity, and deterministic atlas packing. |

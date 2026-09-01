@@ -2,16 +2,15 @@
  * Session residency.
  *
  * Adapters only report sessions touched inside ACTIVE_THRESHOLD_MS, which is
- * right for discovery and wrong for the village: a session goes quiet exactly
- * when it finishes a turn or stops on a permission prompt, so the two states
- * worth looking at were the two that disappeared fastest.
+ * right for discovery but can hide a silent unresolved tool call. Completed
+ * turns already have a shorter presentation-layer departure grace.
  *
- * Residency keeps those — and only those — after they leave the active window.
- * A session whose last known turn state was `awaiting_input` (done, your move)
- * or `tool_pending` (a call with no result) stays resident until it resumes,
- * ages out, or is pushed out by the cap. A session that vanished mid-work, or
- * one from a provider with no turn state, is dropped as before: silence there
- * means the process ended, not that something needs a person.
+ * Residency keeps unresolved tool calls after they leave the active window.
+ * Completed turns use the browser's shorter departed-villager grace instead;
+ * retaining them here as well stacked both lifecycles and filled the village
+ * with finished sessions for nearly an hour. A session that vanished mid-work,
+ * completed normally, or comes from a provider with no turn state is dropped:
+ * silence there does not mean an unresolved tool still needs observation.
  */
 
 const { classifyPendingTool } = require('../adapters/turnState');
@@ -19,7 +18,7 @@ const { classifyPendingTool } = require('../adapters/turnState');
 const DEFAULT_TTL_MS = 45 * 60 * 1000;
 const DEFAULT_MAX_RESIDENTS = 24;
 
-const RETAINED_TURN_STATES = new Set(['awaiting_input', 'tool_pending']);
+const RETAINED_TURN_STATES = new Set(['tool_pending']);
 
 class SessionResidency {
   constructor({ ttlMs = DEFAULT_TTL_MS, maxResidents = DEFAULT_MAX_RESIDENTS } = {}) {

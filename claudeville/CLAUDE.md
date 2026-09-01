@@ -19,7 +19,7 @@ API: `/api/sessions`; `/api/session-detail?sessionId=&project=&provider=`; POST 
 
 `/api/tasks`, `/api/providers`, and `/api/perf` are loopback-only diagnostic/external integration surfaces; the product UI does not consume `/api/tasks`.
 
-Client-facing session collection goes through `collectSessionsForClients()`, which folds `services/sessionResidency.js` residents into the live list. Discovery, canonical active projects, and watch topology deliberately stay on the raw `ACTIVE_THRESHOLD_MS` window so residency never widens the watcher footprint.
+Client-facing session collection goes through `collectSessionsForClients()`, which folds unresolved `tool_pending` residents from `services/sessionResidency.js` into the live list. Completed turns are excluded and use the frontend's shorter departed-villager grace. Discovery, canonical active projects, and watch topology deliberately stay on the raw `ACTIVE_THRESHOLD_MS` window so residency never widens the watcher footprint.
 
 Do not change port `4000` casually. The README and local workflows assume it.
 
