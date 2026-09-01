@@ -1,5 +1,5 @@
 import { TILE_WIDTH, TILE_HEIGHT, MAP_SIZE } from '../../config/constants.js';
-import { THEME, WORLD_BODY_FONT } from '../../config/theme.js';
+import { INCIDENT_COLORS_RGB, THEME, WORLD_BODY_FONT } from '../../config/theme.js';
 import { drawPixelFlame, fillPixelEllipse, fillTileDiamond } from './PixelShapes.js';
 import { normalizeBuildingType } from '../../config/buildings.js';
 import { PORTAL_SPAWN_TILE, TOWN_ROAD_ROUTES, VILLAGE_GATE, VILLAGE_GATE_BOUNDS, VILLAGE_WALL_ROUTES } from '../../config/townPlan.js';
@@ -66,7 +66,7 @@ import {
 } from './CouncilRing.js';
 import { ArrivalDepartureController } from './ArrivalDeparture.js';
 import { extractRecipientName } from '../../domain/services/RecipientResolver.js';
-import { bucketCounts } from '../../domain/services/SignalLedger.js';
+import { bucketCounts, buckets as signalBuckets } from '../../domain/services/SignalLedger.js';
 import { BUILDING_EVENTS } from '../../domain/events/DomainEvent.js';
 import { ChronicleMonuments } from './ChronicleMonuments.js';
 import { TrailRenderer } from './TrailRenderer.js';
@@ -85,7 +85,12 @@ import {
 import { createPostFx } from './postfx/PostFx.js';
 import { createPostFxFeed } from './postfx/PostFxFeed.js';
 import { createGpuWorldRenderer } from './gpu/GpuWorldRenderer.js';
-import { localLightPhaseForLighting, resolveGpuWorldRendererMode } from './gpu/GpuWorldPolicy.js';
+import {
+    GPU_ATTENTION_LIGHT_PRIORITY,
+    localLightPhaseForLighting,
+    resolveGpuWorldRendererMode,
+    WORLD_PHASE_GRADES,
+} from './gpu/GpuWorldPolicy.js';
 import {
     CANVAS_BUDGET,
     canvasMapPixelCount,
@@ -136,16 +141,10 @@ const FAST_PROP_SCREEN_MARGIN = 96;
 // this screen-space apron cannot contribute pixels to the viewport.
 const AGENT_SCREEN_CULL_MARGIN = 420;
 const AGENT_OVERLAY_GRID_CELL = 96;
-// E1 — per-phase brightness *multipliers* for the atmosphere grade (blitted
-// with a `multiply` composite). `base` fills the whole overlay; `edge` darkens
-// the vignette corners at `edgeAlpha`. Near-white = identity; night is a cool
-// moonlight floor (~128/255 red) so agents and terrain stay readable,
-// dusk/dawn golden.
-const MULTIPLY_GRADE = Object.freeze({
-    day: { base: 'rgb(255, 254, 250)', edge: 'rgb(214, 224, 232)', edgeAlpha: 0.28 },
-    night: { base: 'rgb(128, 150, 196)', edge: 'rgb(82, 108, 154)', edgeAlpha: 0.46 },
-    dusk: { base: 'rgb(236, 190, 158)', edge: 'rgb(150, 96, 96)', edgeAlpha: 0.42 },
-    dawn: { base: 'rgb(226, 202, 200)', edge: 'rgb(126, 118, 150)', edgeAlpha: 0.40 },
+const ATTENTION_LIGHT_STYLES = Object.freeze({
+    needsYou: Object.freeze({ color: THEME.waitingOnUser, radius: 88, intensity: 2.15 }),
+    errors: Object.freeze({ color: THEME.error, radius: 78, intensity: 1.55 }),
+    quota: Object.freeze({ color: `rgb(${INCIDENT_COLORS_RGB.quota})`, radius: 68, intensity: 0.85 }),
 });
 const TERRAIN_CACHE_MARGIN = 360;
 const TERRAIN_CACHE_CHUNK_SIZE = 16;
@@ -170,6 +169,14 @@ const LOCAL_AVOIDANCE = Object.freeze({
     denseStrengthPx: 0.62,
     bucketPx: 40,
 });
+
+function phaseGradeForCanvas(phase = 'day') {
+    return WORLD_PHASE_GRADES[phase] || WORLD_PHASE_GRADES.day;
+}
+
+function gradeColorForCanvas(channels = []) {
+    return `rgb(${channels.map(channel => Math.round(channel * 255)).join(', ')})`;
+}
 // Scene-complexity gates: how many sprites and labels compete for screen area
 // is a CSS-space property. They must never read backing pixels — a Retina
 // canvas has 4x as many for the same scene, which would strip annotations off
@@ -10176,10 +10183,36 @@ export class IsometricRenderer {
         });
     }
 
+    _attentionLightSources() {
+        const ledger = signalBuckets(this.world);
+        const sources = [];
+        for (const [bucket, style] of Object.entries(ATTENTION_LIGHT_STYLES)) {
+            for (const agent of ledger[bucket]) {
+                const sprite = this.agentSprites.get(agent.id);
+                if (!sprite || sprite.isArrivalPending?.()) continue;
+                sources.push({
+                    ...normalizeLightSource({
+                        id: `attention:${bucket}:${agent.id}`,
+                        kind: 'point',
+                        x: sprite.x,
+                        y: sprite.y + 7,
+                        radius: style.radius,
+                        color: style.color,
+                        intensity: style.intensity,
+                        priority: GPU_ATTENTION_LIGHT_PRIORITY,
+                    }),
+                    attention: bucket,
+                });
+            }
+        }
+        return sources;
+    }
+
     _computeFrameLightSources(atmosphere = null, now = performance.now()) {
         const lighting = atmosphere?.lighting || null;
         const building = this.buildingRenderer?.getLightSources?.(lighting) || [];
         const ambient = [
+            ...this._attentionLightSources(),
             ...building,
             ...relationshipLightSources({
                 relationship: this.relationshipState,
@@ -10413,8 +10446,10 @@ export class IsometricRenderer {
         stamp.height = height;
         const stampCtx = stamp.getContext('2d');
         const phase = atmosphere?.phase || 'day';
-        const grade = MULTIPLY_GRADE[phase] || MULTIPLY_GRADE.day;
-        stampCtx.fillStyle = grade.base;
+        const grade = phaseGradeForCanvas(phase);
+        const gradeBase = gradeColorForCanvas(grade.base);
+        const gradeEdge = gradeColorForCanvas(grade.edge);
+        stampCtx.fillStyle = gradeBase;
         stampCtx.fillRect(0, 0, width, height);
         const vignette = stampCtx.createRadialGradient(
             width * 0.5,
@@ -10424,9 +10459,9 @@ export class IsometricRenderer {
             height * 0.5,
             Math.max(width, height) * 0.72,
         );
-        vignette.addColorStop(0, this._withAlpha(grade.edge, 0));
-        vignette.addColorStop(0.62, this._withAlpha(grade.edge, this._quantizedAlpha(grade.edgeAlpha * 0.4)));
-        vignette.addColorStop(1, this._withAlpha(grade.edge, this._quantizedAlpha(grade.edgeAlpha)));
+        vignette.addColorStop(0, this._withAlpha(gradeEdge, 0));
+        vignette.addColorStop(0.62, this._withAlpha(gradeEdge, this._quantizedAlpha(grade.edgeAlpha * 0.4)));
+        vignette.addColorStop(1, this._withAlpha(gradeEdge, this._quantizedAlpha(grade.edgeAlpha)));
         stampCtx.fillStyle = vignette;
         stampCtx.fillRect(0, 0, width, height);
 
@@ -10451,8 +10486,14 @@ export class IsometricRenderer {
             visible.push({ light, d2: (p.x - cx) ** 2 + (p.y - cy) ** 2 });
         }
         if (!visible.length) return;
-        visible.sort((a, b) => a.d2 - b.d2);
-        const nearest = visible.slice(0, 12).map(v => v.light);
+        visible.sort((a, b) => (
+            Number(Boolean(b.light.attention)) - Number(Boolean(a.light.attention))
+            || (Number(b.light.priority) || 0) - (Number(a.light.priority) || 0)
+            || a.d2 - b.d2
+        ));
+        let protectedCount = 0;
+        while (protectedCount < visible.length && visible[protectedCount].light.attention) protectedCount++;
+        const nearest = visible.slice(0, Math.max(12, protectedCount)).map(v => v.light);
         this._drawLightGlowStamps(ctx, canvas, atmosphere, nearest);
     }
 
@@ -10715,8 +10756,10 @@ export class IsometricRenderer {
         // values grade it. Painting the opaque base first, then a
         // transparent→dark radial, keeps the whole overlay opaque while
         // darkening toward the edges (the vignette).
-        const grade = MULTIPLY_GRADE[phase] || MULTIPLY_GRADE.day;
-        overlayCtx.fillStyle = grade.base;
+        const grade = phaseGradeForCanvas(phase);
+        const gradeBase = gradeColorForCanvas(grade.base);
+        const gradeEdge = gradeColorForCanvas(grade.edge);
+        overlayCtx.fillStyle = gradeBase;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 
         const vignette = overlayCtx.createRadialGradient(
@@ -10727,9 +10770,9 @@ export class IsometricRenderer {
             canvas.height * 0.5,
             Math.max(canvas.width, canvas.height) * 0.72,
         );
-        vignette.addColorStop(0, this._withAlpha(grade.edge, 0));
-        vignette.addColorStop(0.62, this._withAlpha(grade.edge, this._quantizedAlpha(grade.edgeAlpha * 0.4)));
-        vignette.addColorStop(1, this._withAlpha(grade.edge, this._quantizedAlpha(grade.edgeAlpha)));
+        vignette.addColorStop(0, this._withAlpha(gradeEdge, 0));
+        vignette.addColorStop(0.62, this._withAlpha(gradeEdge, this._quantizedAlpha(grade.edgeAlpha * 0.4)));
+        vignette.addColorStop(1, this._withAlpha(gradeEdge, this._quantizedAlpha(grade.edgeAlpha)));
         overlayCtx.fillStyle = vignette;
         overlayCtx.fillRect(0, 0, canvas.width, canvas.height);
 

@@ -7,9 +7,9 @@ export const THEME = {
     working: '#79d975',
     idle: '#86bfe0',
     waiting: '#df8c3f',
-    error: '#ef4444',
+    error: '#e06c5b',
     rateLimited: '#8fa6bd',
-    waitingOnUser: '#facc15',
+    waitingOnUser: '#e8d44d',
     chatting: '#f2d36b',
     // 0.4 — completed is a first-class status: soft-gold "small victory" tone.
     completed: '#ffd873',

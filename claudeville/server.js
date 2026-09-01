@@ -32,6 +32,7 @@ const {
 const usageQuota = require('./services/usageQuota');
 const { SessionResidency } = require('./services/sessionResidency');
 const { detectCollisions } = require('./services/workingSet');
+const { hookOverlay } = require('./adapters/hooks');
 
 // Claude adapter (teams/tasks are Claude-only)
 const claudeAdapter = adapters.find(a => a.provider === 'claude');
@@ -489,6 +490,57 @@ function handlePostSessionDetails(req, res) {
     } catch (fetchErr) {
       console.error('Failed to fetch batch session details:', fetchErr.message);
       sendError(res, 500, 'Unable to load session details.');
+    }
+  });
+}
+
+function ingestTokenAccepted(req) {
+  const expected = process.env.CLAUDEVILLE_INGEST_TOKEN;
+  if (!expected) return true;
+  const supplied = req.headers['x-claudeville-ingest-token'];
+  if (typeof supplied !== 'string') return false;
+  const expectedBuffer = Buffer.from(expected);
+  const suppliedBuffer = Buffer.from(supplied);
+  return expectedBuffer.length === suppliedBuffer.length
+    && crypto.timingSafeEqual(expectedBuffer, suppliedBuffer);
+}
+
+/**
+ * POST /api/ingest/hook
+ * Accept a normalized, transient provider lifecycle event.
+ */
+function handlePostIngestHook(req, res) {
+  const localRequest = validateLocalRequest(req, { requireOrigin: false });
+  if (!localRequest.ok) {
+    return sendError(res, localRequest.statusCode, localRequest.message);
+  }
+  if (!ingestTokenAccepted(req)) return sendError(res, 401, 'Unauthorized');
+
+  readJsonBody(req, (err, body) => {
+    if (err) {
+      const statusCode = err.statusCode === 413 ? 413 : 400;
+      return sendError(res, statusCode, statusCode === 413 ? 'Payload Too Large' : 'invalid JSON body');
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      return sendError(res, 400, 'invalid hook event');
+    }
+    try {
+      const overlay = hookOverlay.ingest(body);
+      nextSessionScanAt = 0;
+      markProviderDataDirty({
+        provider: overlay.provider,
+        kind: 'transcript',
+        reason: 'hook-ingest',
+        sessionId: overlay.sessionId,
+      }, null, { coalesce: false });
+      debouncedBroadcast();
+      scheduleHookOverlayExpiry();
+      return sendJson(res, 202, { accepted: true });
+    } catch (ingestError) {
+      const message = ingestError?.code === 'UNKNOWN_PROVIDER'
+        ? 'unknown provider'
+        : 'invalid hook event';
+      return sendError(res, 400, message);
     }
   });
 }
@@ -1175,6 +1227,7 @@ function sendInitialData(socket, { scanning = null, staleAt = null, forceFresh =
 
 let watchDebounce = null;
 let watchRefreshDebounce = null;
+let hookOverlayExpiryTimer = null;
 let dynamicWatchRetireTimer = null;
 let heartbeatTimer = null;
 let watcherSchedulerTimer = null;
@@ -1680,6 +1733,34 @@ function broadcastUpdate({ force = false, reason = 'poll' } = {}) {
 function debouncedBroadcast() {
   if (watchDebounce) clearTimeout(watchDebounce);
   watchDebounce = setTimeout(() => broadcastUpdate({ reason: 'watch' }), BROADCAST_DEBOUNCE_MS);
+}
+
+function scheduleHookOverlayExpiry() {
+  if (hookOverlayExpiryTimer) clearTimeout(hookOverlayExpiryTimer);
+  const now = Date.now();
+  hookOverlay.prune(now);
+  const expiries = [
+    hookOverlay.nextMergeExpiryAt(now),
+    hookOverlay.nextExpiryAt(now),
+  ].filter(value => value !== null);
+  const expiresAt = expiries.length ? Math.min(...expiries) : null;
+  if (expiresAt === null) {
+    hookOverlayExpiryTimer = null;
+    return;
+  }
+  hookOverlayExpiryTimer = setTimeout(() => {
+    hookOverlayExpiryTimer = null;
+    if (shutdownStarted) return;
+    nextSessionScanAt = 0;
+    markProviderDataDirty(
+      { kind: 'reconcile', reason: 'hook-overlay-inactive' },
+      null,
+      { coalesce: false },
+    );
+    debouncedBroadcast();
+    scheduleHookOverlayExpiry();
+  }, Math.max(1, expiresAt - now + 5));
+  hookOverlayExpiryTimer.unref?.();
 }
 
 function debouncedWatchRefresh() {
@@ -2616,6 +2697,7 @@ const API_ROUTES = {
   ]),
   POST: new Map([
     ['/api/session-details', handlePostSessionDetails],
+    ['/api/ingest/hook', handlePostIngestHook],
   ]),
 };
 
@@ -2640,6 +2722,9 @@ const server = http.createServer((req, res) => {
   const routeHandler = API_ROUTES[req.method]?.get(pathname);
   if (routeHandler) {
     return routeHandler(req, res, parsedUrl);
+  }
+  if (pathname === '/api/ingest/hook') {
+    return sendError(res, 405, 'Method Not Allowed');
   }
 
   handleStaticFile(req, res, parsedUrl);
@@ -2744,6 +2829,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   clearRuntimeTimer(startupTimer);
   clearRuntimeTimer(watchDebounce);
   clearRuntimeTimer(watchRefreshDebounce);
+  clearRuntimeTimer(hookOverlayExpiryTimer);
   clearRuntimeTimer(sessionScanTimer);
   clearRuntimeTimer(dynamicWatchRetireTimer);
   clearRuntimeTimer(heartbeatTimer);
@@ -2752,6 +2838,7 @@ function shutdownRuntime({ reason = 'shutdown', exitCode = 0, exitProcess = true
   startupTimer = null;
   watchDebounce = null;
   watchRefreshDebounce = null;
+  hookOverlayExpiryTimer = null;
   sessionScanTimer = null;
   dynamicWatchRetireTimer = null;
   heartbeatTimer = null;

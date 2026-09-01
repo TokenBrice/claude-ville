@@ -4,22 +4,12 @@ import {
     gpuResourceAccounting,
     unifiedRendererResourceAccounting,
 } from '../CanvasBudget.js';
-import { localLightPhaseForLighting } from '../gpu/GpuWorldPolicy.js';
+import { localLightPhaseForLighting, WORLD_PHASE_GRADES } from '../gpu/GpuWorldPolicy.js';
 
 const MAX_LIGHTS = 48;
 const MAX_HAZE_ANCHORS = 8;
 const EMA_ALPHA = 0.1;
 const GOD_RAY_SCALE = 0.25;
-
-// These values are deliberately the same authored colors and stops used by
-// IsometricRenderer's E1 multiply vignette. The shader does the multiply in a
-// single pass so the ungraded Canvas-2D scene remains the source of truth.
-const PHASE_GRADES = Object.freeze({
-    day: { base: [255, 254, 250], edge: [214, 224, 232], edgeAlpha: 0.28 },
-    night: { base: [128, 150, 196], edge: [82, 108, 154], edgeAlpha: 0.46 },
-    dusk: { base: [236, 190, 158], edge: [150, 96, 96], edgeAlpha: 0.42 },
-    dawn: { base: [226, 202, 200], edge: [126, 118, 150], edgeAlpha: 0.40 },
-});
 
 const FULLSCREEN_VERTEX = `#version 300 es
 precision highp float;
@@ -792,12 +782,12 @@ class PostFxInstance {
         const reducedMotion = Boolean(feed?.reducedMotion);
         const motionScale = reducedMotion ? 0 : clamp(finite(feed?.motionScale, 1), 0, 2);
         const phase = typeof feed?.phase === 'string' ? feed.phase : 'day';
-        const phaseGrade = PHASE_GRADES[phase] || PHASE_GRADES.day;
+        const phaseGrade = WORLD_PHASE_GRADES[phase] || WORLD_PHASE_GRADES.day;
         const grade = feed?.grade || {};
         const lighting = feed?.lighting || {};
         const worldTint = parseColor(grade.worldTint, [0.5, 0.5, 0.5]);
-        const edge = phaseGrade.edge.map(channel => channel / 255);
-        const base = phaseGrade.base.map(channel => channel / 255);
+        const edge = phaseGrade.edge;
+        const base = phaseGrade.base;
         const flow = feed?.water
             ? [clamp(finite(feed.water.flowX), -1, 1), clamp(finite(feed.water.flowY), -1, 1)]
             : [0, 0];

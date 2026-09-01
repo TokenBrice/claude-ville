@@ -39,6 +39,7 @@ import { emitAgentSelected, emitAgentDeselected, resetAgentSelection } from './s
 import { sessionDetailsService } from './shared/SessionDetailsService.js';
 import { ClientPerfMetrics } from './shared/ClientPerfMetrics.js';
 import { getModelVisualIdentity } from './shared/ModelVisualIdentity.js';
+import { isKeyboardEditTarget } from './dashboard-mode/DashboardKeyboardNavigation.js';
 
 import { AssetManager } from './character-mode/AssetManager.js';
 import { effectiveCanvasDpr } from './character-mode/CanvasBudget.js';
@@ -194,6 +195,7 @@ export class App {
         this._stylesheetPromises = new Map();
         this._onDashboardIntent = null;
         this._onDeferredModalIntent = null;
+        this._onGlobalKeydown = null;
         this._deferredActivityBound = false;
         this._characterAssetsBound = false;
     }
@@ -432,6 +434,7 @@ export class App {
             });
         }
         if (!this.sidebar) this.sidebar = new Sidebar(this.world);
+        this._bindGlobalKeyboardNavigation();
         this._bindWorldEmptyState();
         this._initFirstRunHint();
 
@@ -1157,6 +1160,27 @@ export class App {
         button.addEventListener('click', this._onDashboardIntent, true);
     }
 
+    _bindGlobalKeyboardNavigation() {
+        if (this._onGlobalKeydown) return;
+        this._onGlobalKeydown = (event) => {
+            if (event.defaultPrevented || isKeyboardEditTarget(event.target)) return;
+            const searchShortcut = (event.key === '/' && !event.ctrlKey && !event.metaKey && !event.altKey)
+                || (event.key.toLowerCase() === 'k'
+                    && (event.ctrlKey || event.metaKey)
+                    && !event.altKey);
+            if (searchShortcut) {
+                event.preventDefault();
+                this.sidebar?.focusSearch();
+                return;
+            }
+            if (event.key === 'Escape' && this.sidebar?.clearFilter()) {
+                event.preventDefault();
+                event.stopImmediatePropagation();
+            }
+        };
+        document.addEventListener('keydown', this._onGlobalKeydown);
+    }
+
     _bindDeferredActivityPanel() {
         if (this._deferredActivityBound) return;
         this._deferredActivityBound = true;
@@ -1690,6 +1714,10 @@ export class App {
 
         for (const unsubscribe of this._eventUnsubscribers.splice(0)) {
             unsubscribe?.();
+        }
+        if (this._onGlobalKeydown) {
+            document.removeEventListener('keydown', this._onGlobalKeydown);
+            this._onGlobalKeydown = null;
         }
         if (this._onDashboardIntent) {
             document.getElementById('btnModeDashboard')?.removeEventListener(

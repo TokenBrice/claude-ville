@@ -7,6 +7,7 @@ import {
     gpuLightColorForShader,
     localLightPhaseForLighting,
     selectGpuTimingMetrics,
+    WORLD_PHASE_GRADES,
 } from './GpuWorldPolicy.js';
 import {
     createPostFxLadder,
@@ -15,7 +16,7 @@ import {
 import { glslMaterialWeatherFunctions } from '../MaterialRegistry.js';
 import { growTypedArray } from '../AssetManager.js';
 
-const MAX_LIGHTS = 16;
+const MAX_LIGHTS = 32;
 const VERTEX_FLOATS = 8;
 const VERTEX_STRIDE = VERTEX_FLOATS * Float32Array.BYTES_PER_ELEMENT;
 const BLOOM_SCALE = 0.375;
@@ -24,13 +25,6 @@ const EMA_ALPHA = 0.1;
 const MAX_CACHED_TEXTURE_BYTES = 48 * 1024 * 1024;
 const MAX_CACHED_TEXTURES = 512;
 const LOCAL_LIGHT_VISIBILITY_FLOOR = 0.04;
-
-const PHASE_GRADES = Object.freeze({
-    day: { base: [1, 0.996, 0.98], edge: [0.84, 0.88, 0.91], edgeAlpha: 0.28, fog: [0.55, 0.68, 0.74] },
-    night: { base: [0.50, 0.59, 0.77], edge: [0.32, 0.42, 0.60], edgeAlpha: 0.46, fog: [0.08, 0.12, 0.22] },
-    dusk: { base: [0.93, 0.75, 0.62], edge: [0.59, 0.38, 0.38], edgeAlpha: 0.42, fog: [0.38, 0.29, 0.34] },
-    dawn: { base: [0.89, 0.79, 0.78], edge: [0.49, 0.46, 0.59], edgeAlpha: 0.40, fog: [0.44, 0.46, 0.58] },
-});
 
 const QUAD_VERTEX = `#version 300 es
 precision highp float;
@@ -85,8 +79,8 @@ uniform vec4 u_cloudShadow[3];
 uniform float u_time;
 uniform float u_motionScale;
 uniform int u_lightCount;
-uniform vec4 u_lights[16];
-uniform vec4 u_lightColors[16];
+uniform vec4 u_lights[32];
+uniform vec4 u_lightColors[32];
 
 float materialNear(float value, float target) {
     return 1.0 - step(0.45, abs(value - target));
@@ -114,13 +108,17 @@ float occlusionBetween(vec2 fromPx, vec2 toPx, float elevation) {
 
 ${glslMaterialWeatherFunctions()}
 
+float orderedDither4(vec2 px) {
+    return mod(floor(px.x) + 2.0 * floor(px.y), 4.0) / 3.0;
+}
+
 vec3 applyMaterialWeather(vec3 color, float material, vec2 px) {
     float rain = u_weather.x;
     float wetness = materialWetness(material);
     float reflection = materialReflection(material);
     float foliage = materialNear(material, 4.0);
     float phase = u_motionScale <= 0.0 ? 0.37 : u_time * 0.001 * u_motionScale;
-    float ordered = mod(floor(px.x) + 2.0 * floor(px.y), 4.0) / 3.0;
+    float ordered = orderedDither4(px);
     float wet = rain * wetness;
     color *= mix(1.0, 0.80, wet);
     color = mix(color, color * vec3(0.82, 0.94, 1.08), wet * 0.24);
@@ -168,9 +166,10 @@ vec3 applyGrade(vec3 color, vec2 topLeftPx, float material) {
     float inner = min(u_resolution.x, u_resolution.y) * 0.18;
     float outer = max(u_resolution.x, u_resolution.y) * 0.72;
     float t = clamp((distance(topLeftPx, centre) - inner) / max(1.0, outer - inner), 0.0, 1.0);
-    float edge = t <= 0.62
-        ? mix(0.0, u_edgeAlpha * 0.4, t / 0.62)
-        : mix(u_edgeAlpha * 0.4, u_edgeAlpha, (t - 0.62) / 0.38);
+    float edge = u_edgeAlpha * (
+        step(0.62, t) * 0.4
+        + step(0.84, t) * 0.6
+    );
     color *= u_gradeBase;
     color *= mix(vec3(1.0), u_gradeEdge, edge);
     float cloudReceiver = max(
@@ -186,6 +185,16 @@ vec3 applyGrade(vec3 color, vec2 topLeftPx, float material) {
             + step(distanceSquared, 0.49) * 0.33
             + step(distanceSquared, 0.16) * 0.33;
         color *= 1.0 - shadow.w * course * cloudReceiver;
+    }
+    // Night owns three fixed tone bands (0, 1/3, 2/3). The existing
+    // four-pixel wetness order chooses the adjacent band at thresholds, so the
+    // darker grade reads as authored pixel steps instead of a smooth wash.
+    if (dot(u_gradeBase, vec3(0.2126, 0.7152, 0.0722)) < 0.72) {
+        float tone = dot(color, vec3(0.2126, 0.7152, 0.0722));
+        float scaled = clamp(tone * 3.0, 0.0, 2.0);
+        float lowerBand = floor(scaled);
+        float band = min(2.0, lowerBand + step(orderedDither4(topLeftPx), fract(scaled))) / 3.0;
+        color *= band / max(tone, 0.001);
     }
     return color;
 }
@@ -227,7 +236,7 @@ void main() {
     color = applyAuthoredSunBand(color, material);
     color = applyGrade(color, px, material);
 
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < 32; i++) {
         if (i >= u_lightCount) break;
         vec4 light = u_lights[i];
         float radius = max(1.0, light.z);
@@ -378,7 +387,7 @@ function uniformLocations(gl, program, names) {
 
 function phaseGrade(feed = {}) {
     const phase = String(feed.phase || feed.atmosphere?.phase || 'day').toLowerCase();
-    return PHASE_GRADES[phase] || PHASE_GRADES.day;
+    return WORLD_PHASE_GRADES[phase] || WORLD_PHASE_GRADES.day;
 }
 
 function weatherUniform(feed = {}) {
@@ -1147,7 +1156,11 @@ export class GpuWorldRenderer {
             : qualityLevel >= POST_FX_LEVELS.REDUCED
                 ? 10
                 : MAX_LIGHTS;
-        const lights = clampGpuLights(feed.lights, lightLimit);
+        const lights = clampGpuLights(
+            feed.lights,
+            lightLimit,
+            daylightSuppressesLights ? 0 : MAX_LIGHTS,
+        );
         const lightValues = this._lightScratch;
         const lightColors = this._lightColorScratch;
         lightValues.fill(0);

@@ -32,9 +32,10 @@ function request(port, {
   host = `localhost:${port}`,
   origin,
   body = null,
+  headers: extraHeaders = {},
 } = {}) {
   return new Promise((resolve, reject) => {
-    const headers = { Host: host };
+    const headers = { Host: host, ...extraHeaders };
     if (origin !== undefined) headers.Origin = origin;
     if (body !== null) {
       headers['Content-Type'] = 'application/json';
@@ -210,6 +211,7 @@ try {
       ...process.env,
       HOME: tmpHome,
       CLAUDEVILLE_DISABLE_GIT_ENRICHMENT: '1',
+      CLAUDEVILLE_INGEST_TOKEN: 'security-smoke-token',
       CLAUDEVILLE_SMOKE_PORT: String(port),
     },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -276,6 +278,80 @@ try {
     body: JSON.stringify({ value: 'x'.repeat(256 * 1024) }),
   });
   assert.equal(oversizedJson.statusCode, 413);
+
+  const hookBody = JSON.stringify({
+    provider: 'codex',
+    sessionId: 'security-smoke',
+    cwd: tmpHome,
+    ts: Date.now(),
+    kind: 'PermissionRequest',
+    tool: 'Bash',
+    input: { command: 'npm test' },
+  });
+  const ingestHeaders = { 'X-ClaudeVille-Ingest-Token': 'security-smoke-token' };
+
+  const missingHookToken = await request(port, {
+    method: 'POST',
+    pathname: '/api/ingest/hook',
+    body: hookBody,
+  });
+  assert.equal(missingHookToken.statusCode, 401);
+
+  const acceptedHook = await request(port, {
+    method: 'POST',
+    pathname: '/api/ingest/hook',
+    body: hookBody,
+    headers: ingestHeaders,
+  });
+  assert.equal(acceptedHook.statusCode, 202);
+
+  const hookWrongMethod = await request(port, {
+    method: 'GET',
+    pathname: '/api/ingest/hook',
+  });
+  assert.equal(hookWrongMethod.statusCode, 405);
+
+  const hookHostileHost = await request(port, {
+    method: 'POST',
+    pathname: '/api/ingest/hook',
+    host: 'attacker.example',
+    body: hookBody,
+  });
+  assert.equal(hookHostileHost.statusCode, 421);
+
+  const hookHostileOrigin = await request(port, {
+    method: 'POST',
+    pathname: '/api/ingest/hook',
+    origin: 'https://attacker.example',
+    body: hookBody,
+  });
+  assert.equal(hookHostileOrigin.statusCode, 403);
+
+  const malformedHook = await request(port, {
+    method: 'POST',
+    pathname: '/api/ingest/hook',
+    body: '{',
+    headers: ingestHeaders,
+  });
+  assert.equal(malformedHook.statusCode, 400);
+  assert.doesNotMatch(malformedHook.body, /\bat\s+\S+|stack|SyntaxError/i);
+
+  const oversizedHook = await request(port, {
+    method: 'POST',
+    pathname: '/api/ingest/hook',
+    body: JSON.stringify({ value: 'x'.repeat(256 * 1024) }),
+    headers: ingestHeaders,
+  });
+  assert.equal(oversizedHook.statusCode, 413);
+  assert.doesNotMatch(oversizedHook.body, /\bat\s+\S+|stack|SyntaxError/i);
+
+  const unknownHookProvider = await request(port, {
+    method: 'POST',
+    pathname: '/api/ingest/hook',
+    body: JSON.stringify({ provider: 'unknown', sessionId: 'x', kind: 'SessionStart' }),
+    headers: ingestHeaders,
+  });
+  assert.equal(unknownHookProvider.statusCode, 400);
 
   const hostileSocket = await websocketUpgrade(port, { origin: 'https://attacker.example' });
   assert.equal(hostileSocket.statusCode, 403);

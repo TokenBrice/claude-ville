@@ -34,6 +34,129 @@ Provider scan windows also matter:
 
 Repository-only `git` sessions can also appear when git enrichment detects unpushed or pushed GitHub repository activity outside a live provider session. That scan defaults to `~/Documents/git`, can be narrowed with `CLAUDEVILLE_REPOSITORY_SCAN_ROOT`, capped with `CLAUDEVILLE_REPOSITORY_SCAN_MAX`, and disabled with `CLAUDEVILLE_DISABLE_GIT_ENRICHMENT=1`. Synthetic git session detail returns a reason string rather than a provider transcript.
 
+## Permission prompts are inferred or arrive late
+
+Transcript parsing remains the default and requires no configuration. To opt into the transient permission overlay, configure the CLI yourself to send ClaudeVille's normalized body to `POST /api/ingest/hook`. ClaudeVille never edits provider settings. The route accepts `{ provider, sessionId, cwd, ts, kind, tool, input, decision }`, keeps at most 256 sessions in memory, and never persists or logs request bodies. Displayed command/path detail is secret-stripped and capped at 200 characters.
+
+All examples use `curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook` and an asynchronous hook so a stopped dashboard does not block the CLI. They require `jq`. If ClaudeVille runs with `CLAUDEVILLE_INGEST_TOKEN`, export the same value into the CLI environment; the helpers always send it in `X-ClaudeVille-Ingest-Token` (an empty value is harmless when the server token is unset).
+
+For Claude Code, save this executable helper as `~/.config/claudeville/ingest-claude-hook`:
+
+```sh
+#!/bin/sh
+jq -c '{
+  provider: "claude",
+  sessionId: .session_id,
+  cwd: .cwd,
+  ts: (now * 1000 | floor),
+  kind: .hook_event_name,
+  tool: (.tool_name // null),
+  input: ((.tool_input.command? // .tool_input.file_path? // .tool_input.path? // .tool_input.query? // .tool_input.pattern? // null) | if type == "string" then .[0:200] else . end),
+  decision: (.permission_mode // null)
+}' | curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook \
+  -H 'Content-Type: application/json' \
+  -H "X-ClaudeVille-Ingest-Token: ${CLAUDEVILLE_INGEST_TOKEN:-}" \
+  --data-binary @- >/dev/null 2>&1 || true
+```
+
+Then add the following entries to your own Claude Code `settings.json`. `PreToolUse` supplies the tool and truncated command/path; the `permission_prompt`-scoped `Notification` turns that latest tool into an exact approval wait. `PostToolUse` and `Stop` clear or close the short-lived overlay.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash|Read|Write|Edit|Glob|Grep|Agent",
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-claude-hook", "async": true, "timeout": 1 }]
+    }],
+    "Notification": [{
+      "matcher": "permission_prompt",
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-claude-hook", "async": true, "timeout": 1 }]
+    }],
+    "PostToolUse": [{
+      "matcher": "Bash|Read|Write|Edit|Glob|Grep|Agent",
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-claude-hook", "async": true, "timeout": 1 }]
+    }],
+    "Stop": [{
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-claude-hook", "async": true, "timeout": 1 }]
+    }]
+  }
+}
+```
+
+For Codex CLI lifecycle hooks, save the analogous executable helper as `~/.config/claudeville/ingest-codex-hook`:
+
+```sh
+#!/bin/sh
+jq -c '{
+  provider: "codex",
+  sessionId: .session_id,
+  cwd: .cwd,
+  ts: (now * 1000 | floor),
+  kind: .hook_event_name,
+  tool: (.tool_name // null),
+  input: ((.tool_input.command? // .tool_input.file_path? // .tool_input.path? // .tool_input.description? // null) | if type == "string" then .[0:200] else . end),
+  decision: (.permission_mode // null)
+}' | curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook \
+  -H 'Content-Type: application/json' \
+  -H "X-ClaudeVille-Ingest-Token: ${CLAUDEVILLE_INGEST_TOKEN:-}" \
+  --data-binary @- >/dev/null 2>&1 || true
+```
+
+Add these Bash lifecycle entries to your own `~/.codex/hooks.json`; Codex only emits `PreToolUse`/`PostToolUse` for Bash in the verified CLI payload, while `PermissionRequest` is the exact approval signal.
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-codex-hook", "async": true, "timeout": 1 }]
+    }],
+    "PermissionRequest": [{
+      "matcher": "Bash",
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-codex-hook", "async": true, "timeout": 1 }]
+    }],
+    "PostToolUse": [{
+      "matcher": "Bash",
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-codex-hook", "async": true, "timeout": 1 }]
+    }],
+    "Stop": [{
+      "hooks": [{ "type": "command", "command": "~/.config/claudeville/ingest-codex-hook", "async": true, "timeout": 1 }]
+    }]
+  }
+}
+```
+
+Codex's legacy `notify` setting is a different interface: it passes one argv JSON object with kebab-case keys. Save this executable helper as `~/.config/claudeville/ingest-codex-notify`; it maps `thread-id` to `sessionId` and `type` to `kind` without sending `input-messages` or assistant text:
+
+```sh
+#!/bin/sh
+printf '%s' "$1" | jq -c '{
+  provider: "codex",
+  sessionId: ."thread-id",
+  cwd: .cwd,
+  ts: (now * 1000 | floor),
+  kind: .type,
+  tool: null,
+  input: null,
+  decision: null
+}' | curl --max-time 1 -s -X POST http://127.0.0.1:4000/api/ingest/hook \
+  -H 'Content-Type: application/json' \
+  -H "X-ClaudeVille-Ingest-Token: ${CLAUDEVILLE_INGEST_TOKEN:-}" \
+  --data-binary @- >/dev/null 2>&1 || true
+```
+
+Point the legacy `notify` array in your own `~/.codex/config.toml` at that helper, using its absolute path (Codex appends the one JSON argument):
+
+```toml
+notify = ["/bin/sh", "/home/YOU/.config/claudeville/ingest-codex-notify"]
+```
+
+Its verified `approval-requested` type produces an exact wait signal, but it has no verified tool input, so it cannot add command/path detail by itself.
+
+Gemini CLI lifecycle hooks appear analogous, but their current payload shape has not been verified. Do not copy either mapping into Gemini configuration until its documented fields are checked.
+
+If the overlay does not appear, POST one normalized fixture with `curl`, confirm a `202` response, and fetch `/api/sessions` immediately. A `401` means the token header does not match; `403`/`421` means the Origin/Host is not local; `400` means the provider, event, session id, or JSON is invalid. After 10 seconds the transcript state wins again, and after 30 seconds the in-memory event is discarded.
+
 ## WebSocket never connects / port 4000 collision (`EADDRINUSE`)
 
 The port is hardcoded at `claudeville/server.js` (`const PORT = 4000;`). On startup, `server.on('error', ...)` prints `Port 4000 is already in use.` and the process stays up but cannot serve.

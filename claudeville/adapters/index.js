@@ -16,6 +16,7 @@ const path = require('path');
 const { getJsonlDiagnostics, trimCache } = require('./shared');
 const { decorateSessionPresentation } = require('./sessionPresentation');
 const { normalizeDialogue, normalizeObservedSources } = require('./dialogue');
+const { hookOverlay, mergeOverlay } = require('./hooks');
 const {
   getGitEnrichmentPerfStats,
   invalidateGitStatusCaches,
@@ -185,9 +186,10 @@ function normalizeSession(session, context = {}) {
       && Number.isFinite(Number(session.lastTurnDurationMs))
       ? Math.max(0, Number(session.lastTurnDurationMs))
       : null,
-    signalSource: session?.signalSource === 'hook' || session?.signalSource === 'transcript'
-      ? session.signalSource
-      : null,
+    signalSource: session?.signalSource === 'hook' ? 'hook' : 'transcript',
+    promptDetail: session?.signalSource === 'hook' && typeof session?.promptDetail === 'string'
+      ? session.promptDetail.slice(0, 200)
+      : undefined,
     workingSet,
     waitReason: session?.waitReason ?? null,
     resident: session?.resident === true,
@@ -386,10 +388,14 @@ function getAllSessions(activeThresholdMs, { force = false } = {}) {
   }
   const allSessions = adapters.flatMap((adapter) => _sessionsByProvider.get(adapter.provider) || []);
   const repositoryScanProjects = isGitEnrichmentDisabled() ? [] : getRepositoryScanProjects();
+  hookOverlay.prune(now);
   const sessions = inferPushedGitEventsForSessions(inferUnpushedGitEventsForSessions(allSessions, {
     projects: repositoryScanProjects,
   }))
-    .map((session) => normalizeSession(session))
+    .map((session) => {
+      const normalized = normalizeSession(session);
+      return mergeOverlay(normalized, hookOverlay.overlayFor(normalized.sessionId, now), now);
+    })
     .sort((a, b) => b.lastActivity - a.lastActivity);
 
   _sessionListCache.at = Date.now();

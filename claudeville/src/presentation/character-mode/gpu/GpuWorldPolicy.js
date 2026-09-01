@@ -8,6 +8,41 @@ export const GPU_WORLD_RENDERER_MODES = Object.freeze({
     CANVAS: 'canvas',
 });
 
+// One authored grade contract for the direct GPU world, hybrid PostFx, and
+// Canvas fallback. Normalized channels can be uploaded as uniforms directly;
+// the Canvas path converts the same values to byte-space CSS colors.
+export const WORLD_PHASE_GRADES = Object.freeze({
+    day: Object.freeze({
+        base: Object.freeze([1, 0.996, 0.98]),
+        edge: Object.freeze([0.84, 0.88, 0.91]),
+        edgeAlpha: 0.28,
+        fog: Object.freeze([0.55, 0.68, 0.74]),
+    }),
+    night: Object.freeze({
+        base: Object.freeze([0.40, 0.48, 0.66]),
+        edge: Object.freeze([0.32, 0.42, 0.60]),
+        edgeAlpha: 0.46,
+        fog: Object.freeze([0.08, 0.12, 0.22]),
+    }),
+    dusk: Object.freeze({
+        base: Object.freeze([0.93, 0.75, 0.62]),
+        edge: Object.freeze([0.59, 0.38, 0.38]),
+        edgeAlpha: 0.42,
+        fog: Object.freeze([0.38, 0.29, 0.34]),
+    }),
+    dawn: Object.freeze({
+        base: Object.freeze([0.89, 0.79, 0.78]),
+        edge: Object.freeze([0.49, 0.46, 0.59]),
+        edgeAlpha: 0.40,
+        fog: Object.freeze([0.44, 0.46, 0.58]),
+    }),
+});
+
+// Ambient sources currently use the registry default (0). Keeping attention
+// in an explicit high band makes the operator signal stable if ambient source
+// priorities grow later.
+export const GPU_ATTENTION_LIGHT_PRIORITY = 1_000_000;
+
 // Compatibility aliases stay public for focused renderer tests, while the
 // manifest/tooling registry is the single numeric authority.
 export const GPU_MATERIAL_CLASSES = Object.freeze({
@@ -231,16 +266,24 @@ export function estimateGpuWorldTextureBytes({
     return { targets, textures, total: targets + textures };
 }
 
-export function clampGpuLights(lights = [], limit = 16) {
+function isAttentionLight(light) {
+    return Boolean(light?.attention) || String(light?.id || '').startsWith('attention:');
+}
+
+export function clampGpuLights(lights = [], limit = 16, hardLimit = limit) {
     const cap = Math.max(0, Math.floor(finite(limit, 16)));
-    return (lights || [])
+    const hardCap = Math.max(cap, Math.floor(finite(hardLimit, cap)));
+    const ranked = (lights || [])
         .filter(light => Number.isFinite(Number(light?.x)) && Number.isFinite(Number(light?.y)))
         .sort((a, b) => (
-            finite(b.priority, 0) - finite(a.priority, 0)
+            Number(isAttentionLight(b)) - Number(isAttentionLight(a))
+            || finite(b.priority, 0) - finite(a.priority, 0)
             || finite(b.intensity, 1) - finite(a.intensity, 1)
             || String(a.id || '').localeCompare(String(b.id || ''))
-        ))
-        .slice(0, cap);
+        ));
+    let protectedCount = 0;
+    while (protectedCount < ranked.length && isAttentionLight(ranked[protectedCount])) protectedCount++;
+    return ranked.slice(0, Math.min(hardCap, Math.max(cap, protectedCount)));
 }
 
 export function emissivePhaseForAmbientLight(ambientLight = 1) {

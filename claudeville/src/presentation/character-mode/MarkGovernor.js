@@ -19,6 +19,7 @@ export const PRESSURE_SHED_ORDER = Object.freeze([
 
 export const PRESSURE_PROTECTED = Object.freeze([
     'primary-marks',
+    'attention-lights',
     'selected-state',
     'provider-identity',
     'primary-route',

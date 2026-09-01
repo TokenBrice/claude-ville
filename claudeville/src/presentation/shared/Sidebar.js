@@ -61,6 +61,7 @@ export class Sidebar {
         this._harborSignature = '';
         this._renderSignature = '';
         this._filter = '';
+        this._highlightedAgentId = null;
         this.searchIndex = new AgentSearchIndex();
         this._collapsedWorkflows = new Set();
         this._seenWorkflows = new Set();
@@ -120,6 +121,7 @@ export class Sidebar {
         this._bindToggle();
         this._bindFilter();
         this._bindListClick();
+        this._bindListKeyboard();
         this._applyCollapsedState();
         this.render();
         this.renderHarbor();
@@ -227,21 +229,43 @@ export class Sidebar {
         this.listEl.parentNode?.insertBefore(wrap, this.listEl);
         this._onFilterInput = event => this._handleFilterInput(event);
         this.filterEl.addEventListener('input', this._onFilterInput);
-        // Enter routes to the single matching agent (select + camera focus).
         this._onFilterKeydown = (event) => {
-            if (event.key !== 'Enter') return;
             const hadPendingChanges = this._flushPendingReactiveChanges();
             if (hadPendingChanges) {
                 this._renderSignature = '';
                 this.render();
             }
-            const agents = Array.from(this.world.agents.values());
-            const matches = this.searchIndex.search(this._filter, agents.map(agent => agent.id))
-                .map(match => this.world.agents.get(match.agentId))
-                .filter(Boolean);
-            if (matches.length === 1) emitAgentSelected(matches[0]);
+            if (this._handleAgentNavigationKey(event, { fromSearch: true })) return;
+            if (event.key === 'Escape' && this.clearFilter()) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
         };
         this.filterEl.addEventListener('keydown', this._onFilterKeydown);
+    }
+
+    focusSearch() {
+        if (this._destroyed || !this.filterEl) return false;
+        if (this.isCollapsed) {
+            this.isCollapsed = false;
+            safeStorageSet(SIDEBAR_COLLAPSED_STORAGE_KEY, 'false');
+            this._applyCollapsedState();
+            this.render();
+            this.renderHarbor();
+        }
+        this.filterEl.focus({ preventScroll: true });
+        this.filterEl.select();
+        return document.activeElement === this.filterEl;
+    }
+
+    clearFilter() {
+        if (this._destroyed || !this._filter) return false;
+        this._filter = '';
+        if (this.filterEl) this.filterEl.value = '';
+        this._renderSignature = '';
+        this._flushPendingReactiveChanges();
+        this.render();
+        return true;
     }
 
     _handleFilterInput(event) {
@@ -338,9 +362,86 @@ export class Sidebar {
             const select = event.target.closest('.sidebar__agent-select[data-agent-id]');
             if (!select || !this.listEl.contains(select)) return;
             const id = select.dataset.agentId;
+            this._highlightedAgentId = id;
+            this._syncRovingTabindex(id);
             toggleAgentSelection(this.world, id, this.selection.selectedId);
         };
         this.listEl.addEventListener('click', this._onListClick);
+    }
+
+    _bindListKeyboard() {
+        if (!this.listEl) return;
+        this._onListKeydown = (event) => {
+            if (event.key === 'Escape' && this.clearFilter()) {
+                event.preventDefault();
+                event.stopPropagation();
+                this.filterEl?.focus({ preventScroll: true });
+                return;
+            }
+            if (!event.target.closest('.sidebar__agent-select[data-agent-id]')) return;
+            this._handleAgentNavigationKey(event);
+        };
+        this.listEl.addEventListener('keydown', this._onListKeydown);
+    }
+
+    _visibleAgentSelects() {
+        return [...(this.listEl?.querySelectorAll('.sidebar__agent-select[data-agent-id]') || [])]
+            .filter(select => !select.closest('.sidebar__workflow-group--collapsed'));
+    }
+
+    _syncRovingTabindex(preferredId = this._highlightedAgentId) {
+        const selects = this._visibleAgentSelects();
+        if (!selects.length) {
+            this._highlightedAgentId = null;
+            return;
+        }
+        const preferred = selects.find(select => select.dataset.agentId === preferredId);
+        const selected = selects.find(select => select.dataset.agentId === this.selection.selectedId);
+        const highlighted = preferred || selected || selects[0];
+        this._highlightedAgentId = highlighted.dataset.agentId;
+        for (const select of selects) {
+            select.tabIndex = select === highlighted ? 0 : -1;
+        }
+    }
+
+    _focusAgentSelect(select) {
+        if (!select) return;
+        this._highlightedAgentId = select.dataset.agentId;
+        this._syncRovingTabindex(this._highlightedAgentId);
+        select.focus({ preventScroll: true });
+        select.scrollIntoView?.({ block: 'nearest' });
+    }
+
+    _handleAgentNavigationKey(event, { fromSearch = false } = {}) {
+        const keys = new Set(['ArrowDown', 'ArrowUp', 'Home', 'End', 'Enter']);
+        if (!keys.has(event.key)) return false;
+        const selects = this._visibleAgentSelects();
+        if (!selects.length) return false;
+
+        event.preventDefault();
+        event.stopPropagation();
+        const activeIndex = fromSearch
+            ? -1
+            : selects.findIndex(select => select === event.target.closest('.sidebar__agent-select'));
+        let nextIndex = activeIndex;
+        if (event.key === 'Home') nextIndex = 0;
+        else if (event.key === 'End') nextIndex = selects.length - 1;
+        else if (event.key === 'ArrowDown') nextIndex = activeIndex < 0
+            ? 0
+            : (activeIndex + 1) % selects.length;
+        else if (event.key === 'ArrowUp') nextIndex = activeIndex < 0
+            ? selects.length - 1
+            : (activeIndex - 1 + selects.length) % selects.length;
+        else if (event.key === 'Enter') {
+            const highlighted = fromSearch
+                ? selects.find(select => select.dataset.agentId === this._highlightedAgentId) || selects[0]
+                : selects[activeIndex];
+            const agent = this.world.agents.get(highlighted?.dataset.agentId);
+            if (agent) emitAgentSelected(agent);
+            return true;
+        }
+        this._focusAgentSelect(selects[nextIndex]);
+        return true;
     }
 
     _applyCollapsedState() {
@@ -413,6 +514,7 @@ export class Sidebar {
         ].join('');
         if (signature === this._renderSignature) {
             this._syncSelection(null, this.selection.selectedId);
+            this._syncRovingTabindex();
             return;
         }
         this._renderSignature = signature;
@@ -505,6 +607,7 @@ export class Sidebar {
         }
         this._applyWorkflowToggleState();
         this._syncSelection(null, this.selection.selectedId);
+        this._syncRovingTabindex();
         this._restoreTransientState(transientState);
     }
 
@@ -799,6 +902,7 @@ export class Sidebar {
             dataset: { agentId },
         }, [rail, info]);
         select.type = 'button';
+        select.tabIndex = -1;
         const parent = el('button', { className: 'sidebar__agent-parent' });
         parent.type = 'button';
         const row = el('div', {
@@ -944,6 +1048,7 @@ export class Sidebar {
             const select = row?.querySelector('.sidebar__agent-select');
             if (select) this._setAttribute(select, 'aria-pressed', String(selected));
         }
+        if (nextId) this._syncRovingTabindex(nextId);
     }
 
     renderHarbor() {
@@ -1028,6 +1133,7 @@ export class Sidebar {
         this.selection?.destroy?.();
         if (this._onToggleClick) this.toggleEl?.removeEventListener('click', this._onToggleClick);
         if (this._onListClick) this.listEl?.removeEventListener('click', this._onListClick);
+        if (this._onListKeydown) this.listEl?.removeEventListener('keydown', this._onListKeydown);
         if (this._onFilterInput) this.filterEl?.removeEventListener('input', this._onFilterInput);
         if (this._onFilterKeydown) this.filterEl?.removeEventListener('keydown', this._onFilterKeydown);
         if (this._workflowPruneTimer) clearTimeout(this._workflowPruneTimer);
@@ -1048,6 +1154,7 @@ export class Sidebar {
         this._harborSignature = '';
         this._renderSignature = '';
         this._filter = '';
+        this._highlightedAgentId = null;
         this._projectGroups?.clear?.();
         this._workflowGroups?.clear?.();
         this._emptyLegendEl = null;

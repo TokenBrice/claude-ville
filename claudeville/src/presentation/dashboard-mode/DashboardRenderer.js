@@ -42,6 +42,24 @@ import {
 
 const DASHBOARD_TOOL_HISTORY_LIMIT = 12;
 const DETAIL_FETCH_LIMIT = 48;
+const PROMPT_DETAIL_MAX_LENGTH = 200;
+
+function safePromptDetail(agent) {
+    const source = agent?.promptDetail
+        || (agent?.signalSource === 'hook' ? agent?.lastToolInput : '');
+    const clean = String(source || '')
+        .replace(/\b((?:[A-Za-z0-9_-]*?(?:key|token)))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1=[REDACTED]')
+        .replace(/[A-Za-z0-9_-]{32,}/g, '[REDACTED]')
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (clean.length <= PROMPT_DETAIL_MAX_LENGTH) return clean;
+    return `${clean.slice(0, PROMPT_DETAIL_MAX_LENGTH - 1).trimEnd()}…`;
+}
+
+function waitProvenance(agent) {
+    return agent?.signalSource === 'hook' ? 'HOOK' : 'TRANSCRIPT · inferred';
+}
 
 /** Dashboard health display precedence: error, blocked, quota, working, waiting, idle. */
 export const SECTION_HEALTH_ORDER = Object.freeze([
@@ -699,7 +717,24 @@ export class DashboardRenderer {
             button.type = 'button';
             button.className = `dashboard-attention__item dashboard-attention__item--${status}${isWatchlist ? ' dashboard-attention__item--watchlist' : ''}`;
             const queueLabel = isWatchlist ? 'Watchlist' : operatorStatusLabel(agent.status);
-            button.textContent = `${queueLabel} · ${agent.name || agent.id} · ${shortProjectName(agent.projectPath || '')}`;
+            const tool = agent.pendingTool || agent.currentTool || agent.lastTool || '';
+            const reason = waitReasonLabel(agent);
+            const detail = safePromptDetail(agent);
+            const summary = [
+                queueLabel,
+                agent.name || agent.id,
+                shortProjectName(agent.projectPath || ''),
+                reason && tool ? `${tool} ${reason.toLowerCase()}` : reason,
+                detail,
+            ].filter(Boolean).join(' · ');
+            button.appendChild(document.createTextNode(summary));
+            if (reason || isWatchlist || agent.turnState === 'tool_pending' || agent.turnState === 'awaiting_input') {
+                const provenance = document.createElement('span');
+                provenance.className = 'dash-card__provider-badge';
+                provenance.textContent = waitProvenance(agent);
+                provenance.style.marginLeft = '6px';
+                button.appendChild(provenance);
+            }
             button.addEventListener('click', () => emitAgentSelected(this.world.agents.get(agent.id)));
             list.appendChild(button);
         }

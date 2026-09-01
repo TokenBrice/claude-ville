@@ -12,6 +12,16 @@ The server binds `127.0.0.1` rather than every interface. HTTP requests require 
 
 If you change this, update: `claudeville/server.js`, README, both `CLAUDE.md` files, `AGENTS.md`, and `docs/troubleshooting.md`.
 
+## Push ingestion is optional, loopback-only and overlay-only
+
+`POST /api/ingest/hook` accepts normalized lifecycle events from local CLI hooks. The server applies the same local Host/Origin validation as its other routes with `requireOrigin: false`, because a shell hook has no browser `Origin`; the `127.0.0.1` bind remains the network boundary. Set `CLAUDEVILLE_INGEST_TOKEN` to require the same value in `X-ClaudeVille-Ingest-Token`. Requests are capped at 256 KiB and their bodies are never logged.
+
+The hook registry is not a provider and performs no discovery. It holds at most 256 sessions in process memory, expires records after 30 seconds, and only merges a signal during its first 10 seconds. A fresh hook can escalate or refresh transcript state, but cannot suppress transcript-derived `awaiting_input`. Prompt detail is secret-stripped and capped at 200 characters before it reaches the session payload; nothing from the hook overlay is persisted.
+
+ClaudeVille never creates or edits Claude Code, Codex, or other provider configuration. Operators may opt in by copying the examples in `docs/troubleshooting.md`; stopping or restarting ClaudeVille immediately falls back to transcript inference. Approval stays in the terminal: the dashboard deliberately has no approve action. OTLP ingestion is outside this route's scope.
+
+If you change this, update: `claudeville/server.js`, `claudeville/adapters/hooks.js`, `claudeville/adapters/index.js`, `claudeville/CLAUDE.md`, `docs/troubleshooting.md`, and the hook overlay/security tests.
+
 ## Dependency-free runtime, no build step
 
 `package.json` declares no runtime `dependencies`. The server uses only Node built-ins (`http`, `fs`, `path`, `crypto`, `https`, `child_process`, `os`). The frontend is plain HTML, CSS, and ES modules served as-is.

@@ -60,9 +60,23 @@ const BUILDING_PAYLOAD_FIELD_LIMIT = 128;
 const BUILDING_PAYLOAD_CHARACTER_LIMIT = 8192;
 const BUILDING_PAYLOAD_SCAN_LIMIT = 512;
 const BUILDING_PAYLOAD_ENTRY_LIMIT = 64;
+const PROMPT_DETAIL_MAX_LENGTH = 200;
 export const BOOK_OF_LIVES_VISIBLE_CHAPTER_LIMIT = 6;
 export const BOOK_OF_LIVES_CHAPTER_LIMIT = 32;
 export const BOOK_OF_LIVES_MILESTONE_LIMIT = 6;
+
+function safePromptDetail(agent) {
+    const source = agent?.promptDetail
+        || (agent?.signalSource === 'hook' ? agent?.lastToolInput : '');
+    const clean = String(source || '')
+        .replace(/\b((?:[A-Za-z0-9_-]*?(?:key|token)))\s*=\s*(?:"[^"]*"|'[^']*'|[^\s&;,]+)/gi, '$1=[REDACTED]')
+        .replace(/[A-Za-z0-9_-]{32,}/g, '[REDACTED]')
+        .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (clean.length <= PROMPT_DETAIL_MAX_LENGTH) return clean;
+    return `${clean.slice(0, PROMPT_DETAIL_MAX_LENGTH - 1).trimEnd()}…`;
+}
 
 const BOOK_OF_LIVES_EPISODE_LABELS = Object.freeze({
     arrived: 'Arrived',
@@ -397,6 +411,24 @@ export class ActivityPanel {
             this._statusElapsedEl,
             this.dom.panelAgentStatus.nextSibling,
         );
+        this._blockedPromptEl = el('span', {
+            className: 'activity-panel__value',
+        });
+        this._blockedProvenanceEl = el('span', {
+            className: 'activity-panel__narration-provenance',
+            style: { marginLeft: '0.5rem' },
+        });
+        this._blockedBannerEl = el('div', {
+            className: 'activity-panel__meta-row',
+            style: {
+                display: 'none',
+                marginTop: '0.5rem',
+                padding: '0.5rem',
+                border: '1px solid currentColor',
+                flexWrap: 'wrap',
+            },
+        }, [this._blockedPromptEl, this._blockedProvenanceEl]);
+        this.dom.panelAgentStatus?.closest('.activity-panel__header')?.appendChild(this._blockedBannerEl);
         this._elapsedUnsubscribe = subscribeElapsedText(this._statusElapsedEl, () => (
             this._mode === 'agent' && this.currentAgent
                 ? formatStatusElapsed(this.currentAgent)
@@ -1021,6 +1053,7 @@ export class ActivityPanel {
         this._teardownHeroPortrait();
         this._mode = 'building';
         this._selectedBuilding = building;
+        this._updateBlockedBanner(null);
         this._renderSignatures.buildingSignal = '';
         this._renderSignatures.buildingOccupants = '';
         this._renderSignatures.buildingState = '';
@@ -1083,6 +1116,7 @@ export class ActivityPanel {
         statusEl.textContent = (reason || statusInfo.label).toUpperCase();
         statusEl.style.color = statusInfo.color;
         statusEl.title = reason ? statusInfo.label : '';
+        this._updateBlockedBanner(agent, reason);
 
         const model = modelPresentation(agent);
         this.dom.panelModel.textContent = model.label;
@@ -1110,6 +1144,27 @@ export class ActivityPanel {
             this.dom.panelMode.textContent = '';
             this.dom.panelMode.className = 'activity-panel__value';
         }
+    }
+
+    _updateBlockedBanner(agent, reason = waitReasonLabel(agent)) {
+        if (!this._blockedBannerEl) return;
+        if (!agent || !reason) {
+            this._blockedBannerEl.style.display = 'none';
+            this._blockedPromptEl.textContent = '';
+            this._blockedProvenanceEl.textContent = '';
+            return;
+        }
+        const tool = agent.pendingTool || agent.currentTool || agent.lastTool || '';
+        const detail = safePromptDetail(agent);
+        this._blockedPromptEl.textContent = [
+            tool ? `${tool} ${String(reason).toLowerCase()}` : reason,
+            detail,
+        ].filter(Boolean).join(' · ');
+        this._blockedProvenanceEl.textContent = agent.signalSource === 'hook'
+            ? 'HOOK'
+            : 'TRANSCRIPT · inferred';
+        this._blockedBannerEl.style.color = statusPresentation(agent.status).color;
+        this._blockedBannerEl.style.display = 'flex';
     }
 
     // ─── Hero portrait (#46) ────────────────────────────
